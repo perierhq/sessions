@@ -40,9 +40,8 @@ export function createRunRpcMcpServer(
       "/mcp/list",
       serverName,
       {},
-      {
-        timeoutMs: RUN_RPC_LIST_TIMEOUT_MS,
-      },
+      // Listing changes nothing, so it may be re-sent after a lost connection.
+      { timeoutMs: RUN_RPC_LIST_TIMEOUT_MS, idempotent: true },
     );
     return { tools: data.tools || [] };
   });

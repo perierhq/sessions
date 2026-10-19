@@ -56,6 +56,7 @@ let dir: string;
 let gateway: FakeRunRpcGateway | undefined;
 const runtimes: McpRuntime[] = [];
 const mountSets: RunRpcMcpMounts[] = [];
+const clients: Array<{ close(): void }> = [];
 let previousState: string | undefined;
 
 beforeEach(() => {
@@ -67,6 +68,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.close();
   for (const mounts of mountSets.splice(0)) mounts.close();
+  for (const client of clients.splice(0)) client.close();
   await gateway?.stop();
   gateway = undefined;
   if (previousState === undefined) delete process.env.OPENSESSION_STATE_DIR;
@@ -102,6 +104,13 @@ function mountsFor(
   })!;
   mountSets.push(mounts);
   return mounts;
+}
+
+/** A bare shared client, closed after the test. */
+function clientFor(target: RunRpcTarget) {
+  const client = createRunRpcClient(target, { retryDelayMs: 20 });
+  clients.push(client);
+  return client;
 }
 
 /** The run's MCP runtime, wired the way pi-runner wires a run host's. */
@@ -464,6 +473,75 @@ describe("the shared run-rpc client", () => {
     await Bun.sleep(150);
     expect(gw.wsPings()).toBe(pings);
     expect(gw.wsConnections()).toBe(1);
+  });
+
+  test("closing the mounts mid-call cancels the call in the gateway", async () => {
+    const gw = await start(["opensession-a"]);
+    const runtime = await runtimeFor(["opensession-a"], "in-process", {
+      ws: true,
+    });
+    const pending = call(runtime, "opensession-a_wait");
+    pending.catch(() => {});
+    await waitUntil(() => gw.calls.some((c) => c.tool === "wait"));
+    runtime.mounts.close();
+    await waitUntil(() => gw.aborted.includes("opensession-a_wait"));
+  });
+
+  test("a dropped rpc-ws fails every in-flight call once and re-sends none", async () => {
+    const names = ["opensession-a", "opensession-b", "opensession-c"];
+    const gw = await start(names);
+    const runtime = await runtimeFor(names, "in-process", { ws: true });
+    await runtime.catalog();
+    const outcomes = names.map((name) =>
+      call(runtime, `${name}_wait`).then(
+        () => "answered",
+        (e: Error) => e.message,
+      ),
+    );
+    await waitUntil(
+      () => gw.calls.filter((c) => c.tool === "wait").length === names.length,
+    );
+    gw.dropWsConnections();
+    for (const message of await Promise.all(outcomes))
+      expect(message).toMatch(
+        /connection dropped while the call was in flight.*may or may not have finished/,
+      );
+    // The gateway cancelled them when the connection closed.
+    await waitUntil(() =>
+      names.every((name) => gw.aborted.includes(`${name}_wait`)),
+    );
+    // Nothing is re-sent after the client reconnects.
+    await call(runtime, "opensession-b_echo", { value: "after" });
+    await Bun.sleep(100);
+    expect(gw.calls.filter((c) => c.tool === "wait")).toHaveLength(
+      names.length,
+    );
+    expect(gw.calls.filter((c) => c.tool === "echo")).toHaveLength(1);
+    expect(gw.wsConnections()).toBe(2);
+  });
+
+  test("an abort while the rpc-ws is dialing sends nothing", async () => {
+    const gw = await start(["opensession-a"]);
+    const rpc = clientFor(targetOf(gw, true));
+    const abort = new AbortController();
+    const pending = rpc.call(
+      "/mcp/call",
+      "opensession-a",
+      { tool: "wait", args: {} },
+      { signal: abort.signal, timeoutMs: 5_000 },
+    );
+    abort.abort(new Error("caller gave up"));
+    // Without the check the frame goes out and the call never settles.
+    const settled = Bun.sleep(2_000).then(() => {
+      throw new Error("the aborted call is still pending");
+    });
+    await expect(Promise.race([pending, settled])).rejects.toThrow(
+      "caller gave up",
+    );
+    // The connection opens, but no frame follows it.
+    await waitUntil(() => gw.wsConnections() === 1);
+    await Bun.sleep(100);
+    expect(gw.calls).toEqual([]);
   });
 });
 

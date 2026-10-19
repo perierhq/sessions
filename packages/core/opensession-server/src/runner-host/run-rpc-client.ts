@@ -25,6 +25,10 @@ export interface RunRpcCallOptions {
   timeoutMs?: number;
   /** Aborting cancels the call on the gateway side too. */
   signal?: AbortSignal;
+  /** Safe to send twice (tools/list). A call that is not is retried only
+   *  while it provably never reached the gateway; once it may have, a lost
+   *  connection fails it instead of running the tool a second time. */
+  idempotent?: boolean;
 }
 
 export interface RunRpcClient {
@@ -68,6 +72,30 @@ function rpcError(status: number, data: any): RunRpcError {
   );
 }
 
+/** The connection failed before an answer. `sent` says whether the request
+ *  may already have reached the gateway (and the tool may have run). */
+class ConnectionLost extends Error {
+  constructor(
+    message: string,
+    readonly sent: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** Bun's fetch codes for a unix socket nobody answers: the request never
+ *  left this process. Anything else (ECONNRESET, a closed connection) may
+ *  come after the gateway read it. */
+const NEVER_SENT_CODES = new Set([
+  "FailedToOpenSocket",
+  "ConnectionRefused",
+  "ECONNREFUSED",
+  "ENOENT",
+]);
+
+const MAYBE_RAN =
+  "The tool may or may not have finished: check its result before calling it again.";
+
 /**
  * The body of an answered call. Long calls stream heartbeat padding before
  * the JSON, so a call cut short by a restart arrives as a 200 with no body.
@@ -78,7 +106,7 @@ function answeredBody(status: number, data: any): Record<string, any> {
   if (status !== 200) throw rpcError(status, data);
   if (!data || typeof data !== "object")
     throw new RunRpcError(
-      "opensession closed the call before answering, probably a restart. The tool may or may not have finished: check its result before calling it again.",
+      `opensession closed the call before answering, probably a restart. ${MAYBE_RAN}`,
     );
   // Long tool calls report failures in the body instead of the status.
   if (typeof data.error === "string" && data.error)
@@ -99,9 +127,9 @@ export function createRunRpcClient(
 
   // ── WS transport: one persistent connection, request/response frames by
   // id. Frames out: {id, path, token, server, tool?, args?}; frames in:
-  // {id, status, body}. A dropped connection rejects the in-flight waiters as
-  // retryable, the same as a unix-socket connect failure (the attempt is
-  // re-sent after reconnect until the deadline).
+  // {id, status, body}. A dropped connection rejects every in-flight waiter
+  // as sent: the gateway may already be running those calls (it cancels them
+  // when it sees the close), so call() re-sends only idempotent ones.
   const wsDialUrl = ws
     ? `${ws.wsUrl}${ws.wsUrl.includes("?") ? "&" : "?"}host=${encodeURIComponent(ws.wsHost)}`
     : "";
@@ -167,14 +195,14 @@ export function createRunRpcClient(
       sock.onclose = () => {
         if (wsLive === sock) wsLive = null;
         wsDialing = null;
-        const err = new Error("rpc-ws connection dropped");
+        const err = new ConnectionLost("rpc-ws connection dropped", true);
         for (const [id, w] of [...wsPending]) {
           wsPending.delete(id);
-          w.reject(err); // retryable: call()'s loop re-sends after reconnect
+          w.reject(err);
         }
         if (!settled) {
           settled = true;
-          reject(err);
+          reject(new ConnectionLost("rpc-ws connection dropped", false));
         }
       };
       sock.onerror = () => {}; // onclose follows and owns the rejection
@@ -188,30 +216,35 @@ export function createRunRpcClient(
     signal?: AbortSignal,
   ): Promise<Record<string, any>> => {
     const sock = await ensureWs();
+    // Aborted while dialing: nothing was sent, so there is nothing to cancel.
+    signal?.throwIfAborted();
+    // Bun drops sends on a closing socket without an error.
+    if (sock.readyState !== WebSocket.OPEN)
+      throw new ConnectionLost("rpc-ws connection dropped", false);
     const id = crypto.randomUUID();
+    let onAbort: (() => void) | undefined;
     const res = await new Promise<{ status: number; body: any }>(
       (resolve, reject) => {
-        wsPending.set(id, { resolve, reject });
-        // Our caller gave up: tell opensession to cancel the tool call.
-        signal?.addEventListener(
-          "abort",
-          () => {
-            if (!wsPending.delete(id)) return;
-            try {
-              sock.send(JSON.stringify({ t: "cancel", id }));
-            } catch {}
-            reject(signal.reason);
-          },
-          { once: true },
-        );
         try {
           sock.send(JSON.stringify({ id, path, ...body }));
         } catch (e) {
-          wsPending.delete(id);
-          reject(e);
+          reject(new ConnectionLost(`rpc-ws send failed: ${e}`, false));
+          return;
         }
+        wsPending.set(id, { resolve, reject });
+        // Our caller gave up: tell opensession to cancel the tool call.
+        onAbort = () => {
+          if (!wsPending.delete(id)) return;
+          try {
+            sock.send(JSON.stringify({ t: "cancel", id }));
+          } catch {}
+          reject(signal!.reason);
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
       },
-    );
+    ).finally(() => {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    });
     return answeredBody(res.status, res.body);
   };
 
@@ -221,14 +254,23 @@ export function createRunRpcClient(
     signal?: AbortSignal,
   ): Promise<Record<string, any>> => {
     // Aborting drops the request, which cancels the tool call on the far side.
-    const res = await fetch(`http://backstage${path}`, {
-      method: "POST",
-      signal,
-      // Bun extension: route the request over a unix socket.
-      unix: socket,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    } as any);
+    let res: Response;
+    try {
+      res = await fetch(`http://backstage${path}`, {
+        method: "POST",
+        signal,
+        // Bun extension: route the request over a unix socket.
+        unix: socket,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      } as any);
+    } catch (e: any) {
+      if (signal?.aborted) throw e;
+      throw new ConnectionLost(
+        String(e?.message || e),
+        !NEVER_SENT_CODES.has(String(e?.code || "")),
+      );
+    }
     let data: any = null;
     try {
       data = await res.json();
@@ -239,12 +281,15 @@ export function createRunRpcClient(
   return {
     /**
      * Connection-level failures (socket gone, WS dropped: opensession
-     * restarting) retry until the deadline. Answered errors surface
-     * immediately, except an unknown run token during restart recovery.
+     * restarting) retry until the deadline, but a call that is not
+     * idempotent is re-sent only if it never left this process. Answered
+     * errors surface immediately, except an unknown run token during restart
+     * recovery (the gateway refused it, so nothing ran).
      */
     async call(path, server, body, options = {}) {
       const timeoutMs = options.timeoutMs ?? 120_000;
       const signal = options.signal;
+      const idempotent = options.idempotent === true;
       const frame = { token: target.token, server, ...body };
       const deadline = Date.now() + timeoutMs;
       let lastErr: unknown;
@@ -257,6 +302,10 @@ export function createRunRpcClient(
         } catch (e) {
           if (signal?.aborted) throw e;
           if (e instanceof RunRpcError && !e.retryable) throw e;
+          if (e instanceof ConnectionLost && e.sent && !idempotent)
+            throw new RunRpcError(
+              `opensession's connection dropped while the call was in flight, probably a restart. ${MAYBE_RAN}`,
+            );
           lastErr = e; // connect failure: opensession likely restarting
         }
         if (closed) throw new Error("run-rpc client closed");
