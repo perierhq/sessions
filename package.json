@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tellahq/opensession.git"
+    "url": "git+https://github.com/perierhq/sessions.git"
   },
   "bin": {
     "opensession": "scripts/cli.ts"

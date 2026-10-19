@@ -271,7 +271,7 @@ function loadPage(
 // ── Fetch ───────────────────────────────────────────────────────────────────
 
 const UA =
-  "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/tellahq/opensession)";
+  "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/perierhq/sessions)";
 
 /** Follow redirects by hand so every hop is address-checked, not just the
  *  first. Returns the final response and the URL it came from. */

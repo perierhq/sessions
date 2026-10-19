@@ -2,7 +2,7 @@
 <#
 Open Session installer for Windows.
 
-  irm https://raw.githubusercontent.com/tellahq/opensession/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/perierhq/sessions/main/install.ps1 | iex
 
 Gets a Windows machine to a working `opensession` command: installs Bun if
 needed, clones the source, installs dependencies, and puts an
@@ -34,7 +34,7 @@ $ErrorActionPreference = "Stop"
 
 $OpensessionHome = if ($env:OPENSESSION_HOME) { $env:OPENSESSION_HOME } else { Join-Path $env:USERPROFILE ".opensession" }
 if (-not $Dir) { $Dir = if ($env:OPENSESSION_DIR) { $env:OPENSESSION_DIR } else { Join-Path $OpensessionHome "src" } }
-if (-not $Repo) { $Repo = if ($env:OPENSESSION_REPO) { $env:OPENSESSION_REPO } else { "https://github.com/tellahq/opensession.git" } }
+if (-not $Repo) { $Repo = if ($env:OPENSESSION_REPO) { $env:OPENSESSION_REPO } else { "https://github.com/perierhq/sessions.git" } }
 if (-not $Channel -and $env:OPENSESSION_CHANNEL) { $Channel = $env:OPENSESSION_CHANNEL }
 if ($env:NO_MODIFY_PATH -eq "1") { $NoModifyPath = $true }
 $BinDir = Join-Path $OpensessionHome "bin"

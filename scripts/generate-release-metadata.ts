@@ -219,7 +219,7 @@ export function generateReleaseMetadata(options: {
     dataLicense: "CC0-1.0",
     SPDXID: "SPDXRef-DOCUMENT",
     name: `${options.name}-${options.version}`,
-    documentNamespace: `https://github.com/tellahq/opensession/sbom/${lockDigest}`,
+    documentNamespace: `https://github.com/perierhq/sessions/sbom/${lockDigest}`,
     creationInfo: {
       created,
       creators: ["Tool: opensession-generate-release-metadata/1.0"],

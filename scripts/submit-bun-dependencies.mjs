@@ -123,7 +123,7 @@ const snapshot = {
   detector: {
     name: "bun-lock-submission",
     version: "2.0.0",
-    url: "https://github.com/tellahq/opensession",
+    url: "https://github.com/perierhq/sessions",
   },
   scanned: new Date().toISOString(),
   manifests,

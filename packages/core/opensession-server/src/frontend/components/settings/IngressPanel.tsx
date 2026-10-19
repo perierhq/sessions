@@ -421,7 +421,7 @@ function PrivateAppSetup({
                 </InlineAlert>
                 <CodeBlock>
                   {
-                    "curl -fsSL https://raw.githubusercontent.com/tellahq/opensession/main/install.sh | bash -s -- --caddy --no-onboard"
+                    "curl -fsSL https://raw.githubusercontent.com/perierhq/sessions/main/install.sh | bash -s -- --caddy --no-onboard"
                   }
                 </CodeBlock>
               </>
@@ -1040,7 +1040,7 @@ export function IngressPanel({
                                     <div className="mt-2">
                                       <CodeBlock>
                                         {
-                                          "curl -fsSL https://raw.githubusercontent.com/tellahq/opensession/main/install.sh | bash -s -- --cloudflare --no-onboard"
+                                          "curl -fsSL https://raw.githubusercontent.com/perierhq/sessions/main/install.sh | bash -s -- --cloudflare --no-onboard"
                                         }
                                       </CodeBlock>
                                     </div>
@@ -1273,7 +1273,7 @@ export function IngressPanel({
                                     {!settings.custom.caddyInstalled && (
                                       <CodeBlock>
                                         {
-                                          "curl -fsSL https://raw.githubusercontent.com/tellahq/opensession/main/install.sh | bash -s -- --caddy --no-onboard"
+                                          "curl -fsSL https://raw.githubusercontent.com/perierhq/sessions/main/install.sh | bash -s -- --caddy --no-onboard"
                                         }
                                       </CodeBlock>
                                     )}

@@ -66,7 +66,7 @@ export type UpdateOptions = {
 /** Where published releases are downloaded from (mirrors install.sh). */
 const RELEASE_BASE =
   process.env.OPENSESSION_RELEASE_BASE ||
-  "https://github.com/tellahq/opensession/releases/latest/download";
+  "https://github.com/perierhq/sessions/releases/latest/download";
 
 export function parseSha256Checksum(text: string): string | undefined {
   const expected = text.trim().split(/\s+/)[0]?.toLowerCase();
@@ -268,7 +268,7 @@ async function updateRelease(
 }
 
 /** The upstream project this source came from. */
-const UPSTREAM_URL_RE = /github\.com[/:]tellahq\/opensession(\.git)?$/;
+const UPSTREAM_URL_RE = /github\.com[/:]perierhq\/sessions(\.git)?$/;
 
 export interface Remote {
   name: string;

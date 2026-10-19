@@ -2574,12 +2574,12 @@ export async function runnersPair(): Promise<number> {
   heading("On the machine you want to attach");
   info(
     dim(
-      "  curl -fsSL https://raw.githubusercontent.com/tellahq/opensession/main/install.sh | bash",
+      "  curl -fsSL https://raw.githubusercontent.com/perierhq/sessions/main/install.sh | bash",
     ),
   );
   info(
     dim(
-      "  (Windows: irm https://raw.githubusercontent.com/tellahq/opensession/main/install.ps1 | iex)",
+      "  (Windows: irm https://raw.githubusercontent.com/perierhq/sessions/main/install.ps1 | iex)",
     ),
   );
   info(
