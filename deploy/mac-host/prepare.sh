@@ -31,7 +31,7 @@ SERVER=""
 CODE=""
 AUTOLOGIN_PASSWORD=""
 TS_AUTHKEY="${TS_AUTHKEY:-}"
-INSTALL_URL="${OPENSESSION_INSTALL_URL:-https://raw.githubusercontent.com/tellahq/opensession/main/install.sh}"
+INSTALL_URL="${OPENSESSION_INSTALL_URL:-https://raw.githubusercontent.com/perierhq/sessions/main/install.sh}"
 
 usage() {
   sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'

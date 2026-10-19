@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tellahq/opensession.git",
+    "url": "git+https://github.com/perierhq/sessions.git",
     "directory": "packages/core/subscription-gateway"
   },
   "type": "module",

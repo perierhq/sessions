@@ -9,8 +9,8 @@ import { mkdtempSync, readlinkSync, rmSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const UPSTREAM_HTTPS = "https://github.com/tellahq/opensession.git";
-const UPSTREAM_SSH = "git@github.com:tellahq/opensession.git";
+const UPSTREAM_HTTPS = "https://github.com/perierhq/sessions.git";
+const UPSTREAM_SSH = "git@github.com:perierhq/sessions.git";
 const FORK = "git@github.com:acme/opensession.git";
 
 describe("parseSha256Checksum", () => {

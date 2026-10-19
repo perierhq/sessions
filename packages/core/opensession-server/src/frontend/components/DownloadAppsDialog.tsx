@@ -6,7 +6,7 @@ import { Modal } from "../ui/modal";
 import { IconChevronLeft } from "./icons";
 
 const MAC_DOWNLOAD_URL =
-  "https://github.com/tellahq/opensession/releases/latest/download/OpenSession-arm64.dmg";
+  "https://github.com/perierhq/sessions/releases/latest/download/OpenSession-arm64.dmg";
 
 /** Apple's mark, for the Mac download. A solid glyph, not part of the stroke set. */
 function IconApple({ size = 20 }: { size?: number }) {
