@@ -66,11 +66,12 @@ const RELEASE_METADATA: Record<
   },
 };
 
-/** Price changes newer than pi's builtin catalog, applied over its rows. */
-const PRICE_UPDATES: Record<string, Partial<PiCatalogModel["cost"]>> = {
-  // Sonnet 5.5 cache reads halved to $0.10/MTok on 2026-10-07.
-  "claude-sonnet-5-5": { cacheRead: 0.1 },
-};
+type PriceUpdates = Record<string, Partial<PiCatalogModel["cost"]>>;
+
+/** Price changes newer than pi's builtin catalog, applied over its rows.
+ *  Empty while the bundled catalog is current; add an entry (with the date of
+ *  the published change) when Anthropic reprices ahead of a pi release. */
+const PRICE_UPDATES: PriceUpdates = {};
 
 /**
  * The Anthropic catalog pi-runtime-binding registers on pi's builtin
@@ -82,9 +83,11 @@ const PRICE_UPDATES: Record<string, Partial<PiCatalogModel["cost"]>> = {
 export function buildPiAnthropicModels(
   builtin: readonly PiCatalogModel[],
   ensureModelId?: string,
+  /** Test seam: the price corrections to apply (defaults to PRICE_UPDATES). */
+  priceUpdates: PriceUpdates = PRICE_UPDATES,
 ): PiCatalogModel[] {
   const models = builtin.map((m) => {
-    const price = PRICE_UPDATES[m.id];
+    const price = priceUpdates[m.id];
     return price ? { ...m, cost: { ...m.cost, ...price } } : { ...m };
   });
   if (ensureModelId && !models.some((m) => m.id === ensureModelId)) {

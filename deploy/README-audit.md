@@ -35,9 +35,6 @@ events include:
   fallbacks can produce multiple attempts for one logical turn.
 - `pi_gate_denied` when the run-kind gate refuses a turn. Account switches and
   queued, injected, retracted, or undelivered steering are also recorded.
-- `pi_anthropic_request` `in`/`out` events for requests routed through the
-  Anthropic SDK provider, including bounded prompt or response summaries and
-  request usage.
 - `pi_mcp_call` for each bridged MCP call, with server, tool, outcome, and
   duration. Arguments and results are not included.
 - Paired `pi_command_start` / `pi_command_finish` events for each local bash

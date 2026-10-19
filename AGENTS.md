@@ -41,9 +41,9 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 
 ## Order of work
 
-1. **Agent runner:** run pi with Kacper's extensions (no `noExtensions`), and
-   remove the Claude CLI bridge (`anthropic-bridge.ts`); providers come from
-   pi and its multi-account extension.
+1. **Agent runner:** done. Claude turns run native-only on pi's own Anthropic
+   provider with the Claude account pool; the Claude CLI bridge is gone. Pi
+   extensions are not loaded, by decision.
 2. **Strip audit:** a keep/cut list per feature, approved by Kacper before any
    deletion.
 3. **Cuts,** one PR each.

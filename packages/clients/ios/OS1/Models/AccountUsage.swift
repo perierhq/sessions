@@ -49,8 +49,9 @@ struct AccountUsage: Codable, Sendable, Equatable {
     var sevenDay: UsageWindow?
     var scopedLimits: [ScopedUsageLimit]?
     var extraUsage: ExtraUsage?
-    /// "meridian" = observed through a live proxy rather than the OAuth
-    /// endpoint, so it is a floor rather than the account's own number.
+    /// Legacy: older servers sent "meridian" for usage observed through the
+    /// former Claude bridge (a floor, not the account's own number). Current
+    /// servers never set it; kept so those payloads still decode.
     var source: String?
 
     // Codex

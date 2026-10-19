@@ -312,3 +312,47 @@ describe("pickClaudeAccount pool mode (no designation)", () => {
     expect("error" in moved).toBe(false);
   });
 });
+
+describe("pickClaudeAccount peek and usage credits", () => {
+  test("a peek reports the next account without taking its turn", () => {
+    designate([]);
+    seedAccounts(["peek-a", "peek-b"]);
+    accounts.__setUsageCacheForTest("peek-a", freshUsage);
+    accounts.__setUsageCacheForTest("peek-b", freshUsage);
+    const pick = (peek?: boolean) =>
+      (pickClaudeAccount("claude-sonnet-5", peek ? { peek } : {}) as any).id;
+    // Without peeks the round-robin alternates: a, b, a.
+    expect(pick()).toBe("peek-a");
+    // Peeks announce the next account and leave the turn in place, however
+    // many times they run.
+    expect(pick(true)).toBe("peek-b");
+    expect(pick(true)).toBe("peek-b");
+    // So the real picks continue the same a, b, a sequence.
+    expect(pick()).toBe("peek-b");
+    expect(pick()).toBe("peek-a");
+  });
+
+  test("an account past its 5-hour limit serves on credits only when allowed", () => {
+    designate([]);
+    seedAccounts(["credit-a"]);
+    accounts.__setUsageCacheForTest("credit-a", {
+      ...maxedUsage,
+      fetchedAt: new Date().toISOString(),
+      extraUsage: { enabled: true, usedCredits: 10, monthlyLimit: 100 },
+    });
+    const refused = pickClaudeAccount("claude-sonnet-5");
+    expect((refused as any).error).toMatch(/no usable Claude account/);
+    const credited = pickClaudeAccount("claude-sonnet-5", {
+      usageCredits: true,
+    });
+    expect((credited as any).id).toBe("credit-a");
+    // A spent credit cap leaves no headroom, so credits cannot serve it either.
+    accounts.__setUsageCacheForTest("credit-a", {
+      ...maxedUsage,
+      fetchedAt: new Date().toISOString(),
+      extraUsage: { enabled: true, usedCredits: 100, monthlyLimit: 100 },
+    });
+    const spent = pickClaudeAccount("claude-sonnet-5", { usageCredits: true });
+    expect((spent as any).error).toMatch(/no usable Claude account/);
+  });
+});
