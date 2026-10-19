@@ -33,6 +33,12 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 - new session: pick a project, type the goal
 - the phone is the same product, never a lite version
 
+## Scope decisions
+
+- **Keep every client and feature for now:** the native iOS and Mac apps, the
+  Chrome extension, the website, remote sandboxes and all integrations. Do not
+  strip features without Kacper asking; remote sandboxes may be revisited.
+
 ## Order of work
 
 1. **Agent runner:** run pi with Kacper's extensions (no `noExtensions`), and
