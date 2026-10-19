@@ -10,7 +10,6 @@
  *    Open Session's owned stores and detached run-host protocol.
  */
 
-import { join } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
@@ -19,39 +18,18 @@ import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import { askBashDenyReason, describeUsageLimitReset } from "./runner-shared";
 import { pickClaudeAccount } from "./claude-account-pick";
-import {
-  enableAnthropicPayloadCapture,
-  enableAnthropicPromptCompat,
-} from "./anthropic-prompt-compat";
-import {
-  enableAnthropicRateLimitCapture,
-  formatAnthropicReset,
-} from "./anthropic-rate-limit";
+import { formatAnthropicReset } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { bindXaiAccount, xaiSubscriptionModelEfforts } from "./xai-accounts";
+import { bindXaiAccount } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
-import { enableXaiProxyPayload } from "./xai-payload";
-import {
-  enableOpenaiFastMode,
-  pickOpenaiAccount,
-  buildSeededOpenaiAuth,
-} from "./openai-auth";
+import { pickOpenaiAccount, buildSeededOpenaiAuth } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
-import { openaiServiceTier } from "./openai-service-tier";
-import {
-  logInjectedContext,
-  logStandingContext,
-  sessionStartContext,
-} from "./context-log";
+import { logInjectedContext } from "./context-log";
 import { wrapContext } from "./prompt-context";
 import {
-  PI_TURN_CHECKPOINT_FILE,
   createPiTurnCheckpointWriter,
   interruptedReplyNote,
-  repairInterruptedPiTurn,
-  takePiTurnCheckpoint,
   type PiTurnCheckpointWriter,
-  type PiTurnRepair,
 } from "./pi-turn-checkpoint";
 import { stagePromptImages, withImagesNote } from "./prompt-attachments";
 import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
@@ -61,10 +39,7 @@ import {
   transcriptLineUser,
   storeAppendUserLineEarly,
 } from "./transcript-persistence";
-import { transcript } from "./actor-transcript";
-import { transcriptForwarder } from "./transcript-forward";
 import { providerAccountUser } from "./session-actors";
-import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
 import {
   createPiRuntimeBinding,
@@ -126,8 +101,10 @@ import {
   type PiSteerBoundary,
 } from "./pi-tools";
 import {
-  findPiSessionFile,
+  installPiPayloadHooks,
+  logPiSessionStart,
   piThinkingLevel,
+  planPiResume,
   preparePiResources,
 } from "./pi-session-setup";
 
@@ -574,74 +551,16 @@ async function* runPiAttempt(
         boundary,
       });
 
-    // Resume: the journaled engine id is pi's session-header uuid — find its
-    // jsonl in this unified session's dir. Not found (rotated dir, pruned
-    // file) → fresh session; the store already holds the unified history and
-    // Cross-engine handoff notes ride the prompt. A detached host also gets a
-    // server-read seed snapshot for the resume-miss case because it must never
-    // open transcripts.db itself.
-    const resumePath =
-      !walk.continuation && opts.sessionId
-        ? findPiSessionFile(sessionDir, opts.sessionId)
-        : null;
-    // Resume-miss bridge: pi's SessionManager buffers a session's jsonl until
-    // its first ASSISTANT message, so a turn that died before any assistant
-    // output (bridge 429 pre-token, instant cancel) journaled a piSessionId
-    // that has NO file. Same engine ⇒ run-session builds no handoff note, and
-    // a silently-fresh session would drop the model's context while the store
-    // still shows the turns. Bridge it from the store ourselves.
-    let resumeMissNote: string | null = null;
-    if (
-      !walk.continuation &&
-      opts.sessionId &&
-      !resumePath &&
-      unifiedSessionId
-    ) {
-      try {
-        const tail = (
-          transcriptForwarder()
-            ? opts.seedTranscriptEntries || []
-            : (await transcript.readTail(unifiedSessionId, 200)).entries
-        )
-          // This turn's own prompt was already early-persisted — the model
-          // gets it as the actual prompt, not as history.
-          .filter((e) => e.id !== String(userLine.uuid));
-        if (tail.length) {
-          resumeMissNote = buildEngineSwitchHandoffNote({
-            fromModel: model,
-            fromProvider: PROVIDER,
-            toProvider: PROVIDER,
-            sameEngineRestart: true,
-            entries: tail,
-            maxEntries: 200,
-            maxChars: 60_000,
-          });
-        }
-      } catch (e) {
-        console.warn("[pi-runner] resume-miss handoff build failed:", e);
-      }
-    }
-    const sessionManager =
-      walk.continuation ??
-      (resumePath
-        ? sdk.SessionManager.open(resumePath, sessionDir)
-        : sdk.SessionManager.create(cwd, sessionDir));
-    // A previous turn on this Pi session that died with its process left
-    // tool calls without results and lost the reply it was streaming
-    // (pi-turn-checkpoint.ts). Close those calls before the model sees the
-    // session, and keep the reply for the prompt below.
-    const checkpointPath = join(sessionDir, PI_TURN_CHECKPOINT_FILE);
-    let turnRepair: PiTurnRepair | null = null;
-    if (!walk.continuation && opts.sessionId && unifiedSessionId) {
-      try {
-        turnRepair = repairInterruptedPiTurn(
-          resumePath ? sessionManager : null,
-          await takePiTurnCheckpoint(checkpointPath, opts.sessionId),
-        );
-      } catch (e) {
-        console.warn("[pi-runner] interrupted-turn repair failed:", e);
-      }
-    }
+    const { resumeMissNote, sessionManager, checkpointPath, turnRepair } =
+      await planPiResume({
+        sdk,
+        opts,
+        walk,
+        model,
+        sessionDir,
+        unifiedSessionId,
+        userLine,
+      });
 
     const thinkingLevel = piThinkingLevel(opts.effort);
 
@@ -661,87 +580,18 @@ async function* runPiAttempt(
       settingsManager,
     });
     session = created.session;
-    // Pi's provider supports `service_tier`, but its simple-stream adapter
-    // drops that option before building the Codex request. Patch the final
-    // payload instead. Restrict this to seeded ChatGPT OAuth credentials: API
-    // key accounts use ordinary OpenAI billing and are not the subscription
-    // fast mode exposed by the clients.
-    // Ultrafast additionally needs GPT-6 Astra and a Pro $500 login; any
-    // other account the picker had to fall back to still runs at Fast.
-    const serviceTier = binding.usesOpenaiOAuth
-      ? openaiServiceTier({
-          speed,
-          model: parsed.modelID,
-          plan: binding.openaiPlan,
-        })
-      : undefined;
-    if (serviceTier) {
-      enableOpenaiFastMode(session.agent, serviceTier);
-      if (speed === "ultrafast") {
-        audit({
-          msg: "openai_service_tier",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          model: parsed.modelID,
-          service_tier: serviceTier,
-          plan: binding.openaiPlan,
-          engine: "pi",
-        });
-      }
-    }
-    // Native Anthropic subscription turns reword a few lines of pi's stock
-    // prompt in every request (anthropic-prompt-compat.ts). Same hook. pi's
-    // compaction and branch summaries bypass agent.onPayload; their prompts
-    // carry none of those lines (see enableAnthropicPromptCompat).
-    if (binding.usesNativeAnthropic) {
-      enableAnthropicPromptCompat(session.agent);
-      // Opt-in diagnostics: OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR writes the
-      // final request body of each native Anthropic call to that directory
-      // (mode 0600). Request bodies carry no credentials; auth is a header.
-      enableAnthropicPayloadCapture(
-        session.agent,
-        process.env.OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR,
-        unifiedSessionId || runKey,
-      );
-      // pi's error text for a failed request drops the response headers, and
-      // its onResponse hook never sees a 429: read the limit status and reset
-      // off each response here instead.
-      enableAnthropicRateLimitCapture(session.agent, (snapshot) => {
+    installPiPayloadHooks(session, {
+      binding,
+      parsed,
+      speed,
+      journal,
+      unifiedSessionId,
+      runKey,
+      onRateLimit: (snapshot) => {
         accounts.rateLimit = snapshot;
-      });
-    }
-    // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
-    // Responses fields (xai-payload.ts). Same hook, no host extension.
-    if (binding.usesXaiProxy) {
-      enableXaiProxyPayload(session.agent, {
-        modelId: parsed.modelID,
-        sessionId: unifiedSessionId || runKey,
-        reasoning: piModel.reasoning,
-        effortCapable: xaiSubscriptionModelEfforts(parsed.modelID).length > 0,
-      });
-    }
-    // The first complete provider input only exists after Pi has combined its
-    // base prompt with Open Session instructions, AGENTS.md, skills and active
-    // tool guidance. Record it once for the collapsed transcript-start audit
-    // row. Later turns can change ambient memory, but this row deliberately
-    // answers what preceded the session's initial message.
-    // The agent's tools are the declarations as sent, after codemode adds
-    // itself and appends each tool's script signature to its description.
-    if (!opts.sessionId && !walk.continuation) {
-      await logStandingContext({
-        sessionId: unifiedSessionId,
-        turnId: opts.promptEntryId || opts.startToken,
-        source: "session-start",
-        content: sessionStartContext(
-          session.systemPrompt,
-          session.state.tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          })),
-        ),
-      });
-    }
+      },
+    });
+    await logPiSessionStart(session, { opts, walk, unifiedSessionId });
     // previous runner appends every pending noReply steer before its next LLM step.
     // Match that behavior instead of Pi's one-message-per-step default.
     session.setSteeringMode("all");
