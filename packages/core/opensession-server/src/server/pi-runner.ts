@@ -2252,9 +2252,13 @@ async function* runPiAttempt(
   // Runs journaled before `speed` existed carry only fastMode.
   const speed = sessionSpeed(opts);
   // Which session an account pick belongs to: HRW affinity on the Codex and
-  // SuperGrok pools, the remembered account on the native Claude pool.
+  // SuperGrok pools.
   const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
-  const claudeSessionKey = affinity;
+  // The native Claude pool remembers an account per session, never per
+  // checkout: a run keyed only by its cwd (a one-shot, an automation) takes
+  // the plain pool pick, so parallel runs in one checkout keep spreading.
+  const claudeSessionKey =
+    opts.accountAffinityKey || journal?.osSessionId || undefined;
   // Why the Claude pool had no other account, when the walk asked and it had
   // none. Lets the terminal say the pool is dry instead of echoing one
   // account's limit as if nothing else had been tried.

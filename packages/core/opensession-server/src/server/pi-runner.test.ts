@@ -2234,6 +2234,21 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     expect(fake.usedTokens).toEqual([a.token, b.token]);
   });
 
+  test("runs keyed only by their checkout keep spreading over the pool", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const fake = fakeNativeSdk(() => undefined);
+    // No account affinity key and no session id: a one-shot or an
+    // automation, keyed for other pools by its cwd.
+    for (const n of [1, 2]) {
+      await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${n}`,
+      });
+    }
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+  });
 });
 
 describe("local-tool path containment", () => {
