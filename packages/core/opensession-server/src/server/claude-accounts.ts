@@ -7,27 +7,31 @@
  * expiry never interrupts model work or touches the host Claude CLI login.
  *
  * Tokens live in ~/.opensession-claude-accounts.json (mode 0600). Usage per
- * account is polled from the OAuth usage endpoint every POLL_INTERVAL_MS and
- * kept in memory; the UI reads it via the /api/claude-accounts routes.
+ * account is polled from the OAuth usage endpoint every POLL_INTERVAL_MS; the
+ * UI reads it via the /api/claude-accounts routes. The snapshots and the
+ * round-robin's pick times live in files beside the store
+ * (claude-account-shared-state.ts): each hosted turn picks its account in its
+ * own run-host process, which must see the gateway's usage and the turns
+ * other processes already took.
  */
 
 import { homeDir } from "./paths";
 import { chmodSync, existsSync, readFileSync } from "fs";
 import { writeFileAtomic } from "./shared/atomic-write";
 import { userMatchesAny } from "./shared/user-mappings";
-import { stateDir } from "./paths";
 import { readJsonFileCopy } from "./shared/json-file-cache";
+import {
+  claudeAccountsStorePath,
+  lastPickedTimes,
+  recordPick as recordSharedPick,
+  sharedUsageCache,
+} from "./claude-account-shared-state";
 
 const HOME = homeDir();
 // The env override is a test seam — bun tests point it at a temp store so they
 // never read (or clobber) the real account pool. Resolved per call, not at
 // module load, so the override works regardless of import order.
-function storePath(): string {
-  return (
-    process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH ||
-    stateDir("claude-accounts.json")
-  );
-}
+const storePath = claudeAccountsStorePath;
 // Sideline state lives beside the account store, in its own file so it can
 // never corrupt the accounts themselves.
 function sidelineStatePath(): string {
@@ -132,11 +136,11 @@ export interface ClaudeAccountPublic {
   usable: boolean;
 }
 
-const usageCache = new Map<string, AccountUsage>();
+// Shared across processes: see claude-account-shared-state.ts.
+const usageCache = sharedUsageCache;
 // One map for both sideline scopes, keyed by exhaustionKey(id, model?): the
 // same shape as codex-accounts.ts.
 const exhaustedUntil = new Map<string, number>();
-const lastPickedAt = new Map<string, number>();
 // After a 429 from the usage endpoint, don't hit that same account again until
 // this passes. The endpoint rate-limits per token; one account must not hide
 // usage for every other account in the dashboard.
@@ -1057,30 +1061,42 @@ function selectAccount(
   allowExtraUsage?: boolean,
   recordPick = true,
 ): ClaudeAccount | undefined {
-  const eligible = readStore().filter(
+  const store = readStore();
+  const eligible = store.filter(
     (a) => !exclude?.has(a.id) && isAccountUsableFor(a, model, allowExtraUsage),
   );
-  const best = (list: ClaudeAccount[]): ClaudeAccount | undefined =>
-    list
-      .map((a) => ({
-        a,
-        bucket: Math.floor(accountUtilization(a, model) / 10),
-        picked: lastPickedAt.get(a.id) ?? 0,
-      }))
-      // Credit-headroom accounts sort by their (high) utilization bucket, so
-      // subscription capacity is always drained before paid credits.
-      .filter(
-        ({ a, bucket }) =>
-          bucket * 10 < EXHAUSTED_UTILIZATION ||
-          (!!allowExtraUsage && hasCreditHeadroom(a)),
-      )
-      .sort((x, y) => x.bucket - y.bucket || x.picked - y.picked)[0]?.a;
-  const personal = user
-    ? best(eligible.filter((a) => a.owner && userMatchesAny(user, [a.owner])))
-    : undefined;
-  const picked = personal ?? best(eligible.filter((a) => !a.owner));
-  if (picked && recordPick) lastPickedAt.set(picked.id, Date.now());
-  return picked;
+  const choose = (
+    lastPickedAt: Readonly<Record<string, number>>,
+  ): ClaudeAccount | undefined => {
+    const best = (list: ClaudeAccount[]): ClaudeAccount | undefined =>
+      list
+        .map((a) => ({
+          a,
+          bucket: Math.floor(accountUtilization(a, model) / 10),
+          picked: lastPickedAt[a.id] ?? 0,
+        }))
+        // Credit-headroom accounts sort by their (high) utilization bucket, so
+        // subscription capacity is always drained before paid credits.
+        .filter(
+          ({ a, bucket }) =>
+            bucket * 10 < EXHAUSTED_UTILIZATION ||
+            (!!allowExtraUsage && hasCreditHeadroom(a)),
+        )
+        .sort((x, y) => x.bucket - y.bucket || x.picked - y.picked)[0]?.a;
+    const personal = user
+      ? best(eligible.filter((a) => a.owner && userMatchesAny(user, [a.owner])))
+      : undefined;
+    return personal ?? best(eligible.filter((a) => !a.owner));
+  };
+  // A peek reads the turns without taking one. A real pick decides and
+  // stamps its turn under the shared lock, so a pick in another process
+  // lands on the next account instead of this one.
+  if (!recordPick) return choose(lastPickedTimes());
+  if (!eligible.length) return undefined;
+  return recordSharedPick(
+    store.map((a) => a.id),
+    choose,
+  );
 }
 
 export function pickAccount(
@@ -1241,6 +1257,9 @@ export function __applyUsagePollForTest(id: string, usage: AccountUsage): void {
   usageCache.set(id, usage);
   releaseDisprovenSidelines(account, usage);
 }
+
+/** Test seam: forget usage snapshots and round-robin turns. */
+export { __resetSharedPickStateForTest } from "./claude-account-shared-state";
 
 /** Test seam: inject a usage snapshot for an account (bun tests only). */
 export function __setUsageCacheForTest(id: string, usage: AccountUsage): void {
