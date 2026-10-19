@@ -79,9 +79,9 @@ describe("normalizePiConfig", () => {
     expect(cfg).toEqual({ enabled: true, pickerModels: [] });
   });
 
-  it('keeps anthropicTransport only as the literal non-default "bridge"', () => {
-    // Absent = the "inprocess" default; only the exact rollback value
-    // survives normalization (present-implies-non-default).
+  it('keeps anthropicTransport only as the literal non-defaults "bridge" and "native"', () => {
+    // Absent = the "inprocess" default; only the exact non-default values
+    // survive normalization (present-implies-non-default).
     expect(
       normalizePiConfig({ enabled: true }).anthropicTransport,
     ).toBeUndefined();
@@ -89,9 +89,15 @@ describe("normalizePiConfig", () => {
       normalizePiConfig({ enabled: true, anthropicTransport: "bridge" })
         .anthropicTransport,
     ).toBe("bridge");
+    expect(
+      normalizePiConfig({ enabled: true, anthropicTransport: "native" })
+        .anthropicTransport,
+    ).toBe("native");
     for (const junk of [
       "inprocess",
       "Bridge",
+      "Native",
+      " native",
       "loopback",
       42,
       null,
@@ -176,7 +182,7 @@ describe("readPiEngineConfig", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('resolves piAnthropicTransport to "inprocess" unless the file says "bridge"', () => {
+  it('resolves piAnthropicTransport to "inprocess" unless the file says "bridge" or "native"', () => {
     // Missing file → default.
     const dir = withConfigFile();
     expect(piAnthropicTransport()).toBe("inprocess");
@@ -186,6 +192,12 @@ describe("readPiEngineConfig", () => {
       JSON.stringify({ enabled: true, anthropicTransport: "bridge" }),
     );
     expect(piAnthropicTransport()).toBe("bridge");
+    // Opt-in pi-native provider.
+    writeFileSync(
+      join(dir, "pi.json"),
+      JSON.stringify({ enabled: true, anthropicTransport: "native" }),
+    );
+    expect(piAnthropicTransport()).toBe("native");
     // Junk values fall back to the default.
     writeFileSync(
       join(dir, "pi.json"),
