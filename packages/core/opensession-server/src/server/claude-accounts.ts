@@ -56,6 +56,8 @@ const EXHAUSTED_UTILIZATION = 97;
 // cap (verified live at 97%), and a real limit error still sidelines the
 // account via markExhausted. The 5-hour buffer above stays conservative.
 const SCOPED_EXHAUSTED_UTILIZATION = 100;
+// The account-wide 7-day window counts as spent only when full.
+const WEEKLY_EXHAUSTED_UTILIZATION = 100;
 
 export interface ClaudeAccount {
   id: string;
@@ -216,7 +218,9 @@ function isExhaustionKeyActive(key: string): boolean {
  * shows headroom returns the account early. The two scopes need different
  * evidence: the account-level entry answers to the 5-hour window, while a
  * model-scoped entry answers to that model's own weekly cap, and 5-hour
- * headroom says nothing about a spent Fable week.
+ * headroom says nothing about a spent Fable week. A model with no weekly cap
+ * of its own (Sonnet, Opus) is governed by the account-wide windows, so its
+ * entry is released once both the 7-day and 5-hour windows show headroom.
  */
 function releaseDisprovenSidelines(
   account: ClaudeAccount,
@@ -239,12 +243,32 @@ function releaseDisprovenSidelines(
   for (const key of [...map.keys()]) {
     if (!key.startsWith(prefix)) continue;
     const model = key.slice(prefix.length);
-    const scoped = scopedLimitForModel(usage, model);
-    if (scoped !== null && scoped < SCOPED_EXHAUSTED_UTILIZATION) {
+    if (scopedEntryForModel(usage, model)) {
+      const scoped = scopedLimitForModel(usage, model);
+      if (scoped !== null && scoped < SCOPED_EXHAUSTED_UTILIZATION) {
+        map.delete(key);
+        changed = true;
+        console.log(
+          `[claude-accounts] ${account.name} usable again for ${model} (${scoped}%${via})`,
+        );
+      }
+      continue;
+    }
+    // Only release on windows the poll actually reported: a missing window
+    // is no evidence of headroom.
+    const reported = (w: UsageWindow | null | undefined) =>
+      w?.utilization !== null && w?.utilization !== undefined;
+    if (!reported(usage.sevenDay) || !reported(usage.fiveHour)) continue;
+    const sevenDay = currentUtilization(usage.sevenDay);
+    const fiveHour = currentUtilization(usage.fiveHour);
+    if (
+      sevenDay < WEEKLY_EXHAUSTED_UTILIZATION &&
+      fiveHour < EXHAUSTED_UTILIZATION
+    ) {
       map.delete(key);
       changed = true;
       console.log(
-        `[claude-accounts] ${account.name} usable again for ${model} (${scoped}%${via})`,
+        `[claude-accounts] ${account.name} usable again for ${model} (7d at ${sevenDay}%, 5h at ${fiveHour}%${via})`,
       );
     }
   }
@@ -1335,6 +1359,15 @@ export function resolveAccount(req: AccountRequest): AccountResolution {
   return {
     refusal: hasAccounts() ? { kind: "pool-dry" } : { kind: "none-configured" },
   };
+}
+
+/** Test seam: apply a successful usage poll for an account, as
+ *  refreshAccountUsage does after fetching it (bun tests only). */
+export function __applyUsagePollForTest(id: string, usage: AccountUsage): void {
+  const account = readStore().find((a) => a.id === id);
+  if (!account) throw new Error(`unknown account ${id}`);
+  usageCache.set(id, usage);
+  releaseDisprovenSidelines(account, usage);
 }
 
 /** Test seam: inject a usage snapshot for an account (bun tests only). */
