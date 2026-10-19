@@ -54,6 +54,7 @@ import {
 import type { PiBashAuditEvent } from "./pi-runner";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
 import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
+import { formatAnthropicReset } from "./anthropic-rate-limit";
 
 describe("acceptSteerOnce", () => {
   test("records only successful acceptance and deduplicates retries", () => {
@@ -2023,10 +2024,12 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       expect(sidelinedUntil).toBeLessThan(started + 2 * 60 * 60_000);
     }
     if (strict) {
-      // A hard pin never moves onto an account the person did not pick.
+      // A hard pin never moves onto an account the person did not pick,
+      // and its error names that account's limit, not the pool's.
       expect(usedTokens).toEqual([first.token]);
       expect(errors).toHaveLength(1);
       expect(errors[0].usageLimitExhausted).toBe(true);
+      expect(errors[0].content).toBe(`pi: ${limit.error}`);
       return;
     }
     expect(usedTokens).toEqual([first.token, second.token]);
@@ -2090,6 +2093,41 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     }
     expect(fake.usedTokens).toEqual([a.token, b.token, b.token, b.token]);
     expect(fake.usedTokens).not.toContain(c.token);
+  });
+
+  test("a dry pool reports every account as usage-limited", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const limits = new Map([
+      [a.token, rateLimited("rejected")],
+      [b.token, rateLimited("rejected")],
+    ]);
+    const fake = fakeNativeSdk((token) => limits.get(token));
+    const { errors, warnings } = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}`,
+      accountAffinityKey: `affinity-${suffix}`,
+    });
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+    expect(errors).toHaveLength(1);
+    const reset = formatAnthropicReset(limits.get(b.token)!.resetAt);
+    expect(errors[0].content).toBe(
+      `pi: every Claude account is usage-limited for ${model}, the soonest ` +
+        `resets ${reset}. Last account tried ("${b.id}") said: ${rateLimitBody}`,
+    );
+    expect(errors[0].usageLimitExhausted).toBe(true);
+    // Still a usage limit to every classifier downstream.
+    expect(
+      isPiUsageLimitShape(String(errors[0].content), "anthropic", "native"),
+    ).toBe(true);
+    expect(
+      warnings.some((message) =>
+        message.includes(
+          "and no other account can serve it: no usable Claude account",
+        ),
+      ),
+    ).toBe(true);
   });
 
   test("a session keeps its account from turn to turn", async () => {

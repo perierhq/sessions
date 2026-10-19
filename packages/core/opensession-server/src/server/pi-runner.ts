@@ -53,6 +53,7 @@ import {
   isClaudeSubscriptionError,
   isClaudeUsageLimitError,
   isCodexUsageLimitError,
+  describeUsageLimitReset,
   usageLimitResetAt,
 } from "./runner-shared";
 import { ensureAnthropicBridge, pickBridgeAccount } from "./anthropic-bridge";
@@ -62,6 +63,7 @@ import {
 } from "./anthropic-prompt-compat";
 import {
   enableAnthropicRateLimitCapture,
+  formatAnthropicReset,
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
 import {
@@ -2252,6 +2254,10 @@ async function* runPiAttempt(
   // Which session an account pick belongs to: HRW affinity on the Codex and
   // SuperGrok pools, the remembered account on the native Claude pool.
   const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
+  // Why the Claude pool had no other account, when the walk asked and it had
+  // none. Lets the terminal say the pool is dry instead of echoing one
+  // account's limit as if nothing else had been tried.
+  let claudePoolRefusal: string | undefined;
   const nextPoolAccount = (): PoolAccountRef | undefined => {
     if (!pickedAccount) return undefined;
     if (opts.accountStrict && opts.accountId) return undefined;
@@ -2270,7 +2276,11 @@ async function* runPiAttempt(
         excludeIds: [...excluded],
         peek: true,
       });
-      return "error" in next ? undefined : claudePoolRef(next);
+      if ("error" in next) {
+        claudePoolRefusal = next.error;
+        return undefined;
+      }
+      return claudePoolRef(next);
     }
     if (pickedAccount.pool === "openai") {
       const next = pickOpenaiAccount(
@@ -2304,6 +2314,7 @@ async function* runPiAttempt(
    *  failure. Records the burn, audits the switch and closes this attempt's
    *  audit; runPi resumes or replays the attempt on the next account. */
   const takeAccountRotation = (errorText: string): boolean => {
+    claudePoolRefusal = undefined;
     if (!pickedAccount || (sawStreamedOutput && !session?.sessionManager))
       return false;
     const next = nextPoolAccount();
@@ -3808,8 +3819,10 @@ async function* runPiAttempt(
     };
     let terminal: StreamEvent;
     let terminalUsageLimit = false;
+    let terminalMessage = "";
     if (!failed.ok) {
       const message = String((failed.error as Error)?.message || failed.error);
+      terminalMessage = message;
       const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
       sidelineOnUsageLimit(usageLimit, message);
@@ -3824,6 +3837,7 @@ async function* runPiAttempt(
     } else if (lastStopReason === "error" || lastStopReason === "aborted") {
       const message =
         lastErrorMessage || `run ended with stopReason ${lastStopReason}`;
+      terminalMessage = message;
       const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
       sidelineOnUsageLimit(usageLimit, message);
@@ -3852,6 +3866,34 @@ async function* runPiAttempt(
     // the native session so the next account continues completed work.
     if (terminalUsageLimit && takeAccountRotation(String(terminal.content))) {
       return;
+    }
+    // The walk asked the Claude pool for another account and it had none:
+    // say the whole pool is limited, as the in-process provider does. The
+    // account's own message stays inside the sentence, so the usage-limit
+    // classifiers downstream still match it. A strict pin never asks the
+    // pool, so its refusal keeps naming the account the person chose.
+    if (
+      terminalUsageLimit &&
+      claudePoolRefusal &&
+      pickedAccount?.pool === "claude"
+    ) {
+      console.warn(
+        `[pi-runner] usage limit on Claude account "${pickedAccount.name}" ` +
+          `(${parsed.modelID}) and no other account can serve it: ${claudePoolRefusal}`,
+      );
+      const resetAt = nativeLimit429()?.resetAt;
+      const reset =
+        describeUsageLimitReset(terminalMessage) ??
+        (resetAt !== undefined ? formatAnthropicReset(resetAt) : undefined);
+      terminal = {
+        ...terminal,
+        content: piErrorContent(
+          `every Claude account is usage-limited for ${parsed.modelID}` +
+            (reset ? `, the soonest resets ${reset}` : "") +
+            `. Last account tried ("${pickedAccount.name}") said: ${terminalMessage}`,
+          parsed.providerID,
+        ),
+      };
     }
     reachedTerminal = true;
     endTurn({
