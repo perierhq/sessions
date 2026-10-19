@@ -666,7 +666,7 @@ Enabling `userPrAuth` activates both halves below:
   _device flow_ (Connections UI card, or implicitly by signing in). Tokens
   live per-login in `~/.opensession/github-auth.json` (0600, never returned
   by any API). A code turn a connected person started holds their token in
-  its shell (pi-runner `runGithubEnv`, also for a Sandbox workspace, where
+  its shell (pi-github-env `runGithubEnv`, also for a Sandbox workspace, where
   each shell command receives it in its environment), so its pushes and any PR it opens are theirs; the gateway uses the
   same token for the UI's PR routes (merge, close, review, comment). Agents
   use `gh` directly rather than dedicated PR MCP tools. Ask runs, unattended

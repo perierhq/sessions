@@ -8,6 +8,11 @@
  *  - third-party providers receive only their configured API key;
  *  - sessions, transcript writes, steering, cancellation, retries and audit events all use
  *    Open Session's owned stores and detached run-host protocol.
+ *
+ * This file is the entry point (`runPi`), the per-attempt orchestrator
+ * (`runPiAttempt`) and re-exports. The parts of a turn live in the pi-*.ts
+ * modules (AGENTS.md lists them). None of them imports this file except
+ * pi-smoke.ts, which runs a turn through runPi and is never re-exported here.
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
@@ -687,7 +692,7 @@ async function* runPiAttempt(
     // it. Expanded here rather than by pi for two reasons: a bare "/name"
     // works, which is what the composer's "/" menu inserts, and this text
     // stays identical to the user message pi echoes back, which the
-    // steer-delivery check below compares against.
+    // steer-delivery check in createPiEventMapper compares against.
     const promptWithSkill = expandSkillCommand(
       prompt,
       loader.getSkills().skills,

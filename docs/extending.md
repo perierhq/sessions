@@ -227,11 +227,11 @@ publishable, and it deliberately carries no runtime code. See
 
 ## What not to extend
 
-**The runner.** `agent-runner.ts`, `pi-runner.ts` and `host-client.ts` are
-runner internals with a lot of load-bearing behaviour around restarts,
-reattachment and account rotation. Changes there need a real restart and are easy
-to get subtly wrong — a mistake usually shows up as sessions that look fine and
-silently never progress.
+**The runner.** `agent-runner.ts`, `pi-runner.ts` with its `pi-*.ts` modules,
+and `host-client.ts` are runner internals with a lot of load-bearing behaviour
+around restarts, reattachment and account rotation. Changes there need a real
+restart and are easy to get subtly wrong — a mistake usually shows up as
+sessions that look fine and silently never progress.
 
 **The entry file.** `opensession.ts` is deliberately thin. If your change needs
 to go there, check whether the right move is a new extension point instead.
