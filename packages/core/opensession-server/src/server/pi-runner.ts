@@ -19,12 +19,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
-import {
-  journalSet,
-  buildRunJournalRecord,
-  journalClear,
-  registerActiveRunProbe,
-} from "./run-journal";
+import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import {
   askBashDenyReason,
   isClaudeSubscriptionError,
@@ -187,6 +182,14 @@ import {
   shippedSkillRoots,
 } from "./pi-guarded-tools";
 import { makePiBashTool, piBashHomeEnv } from "./pi-bash-tool";
+import {
+  aliasPiRun,
+  cancelPiRun,
+  claimPiRun,
+  releasePiRun,
+  retractPendingSteer,
+  type PiRunHandle,
+} from "./pi-run-registry";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -221,8 +224,15 @@ export {
   piBashHomeEnv,
   type PiBashAuditEvent,
 } from "./pi-bash-tool";
-
-const g = globalThis as any;
+export {
+  acceptSteerOnce,
+  activePiRunCount,
+  cancelPiRun,
+  isPiSessionBusy,
+  retractPendingSteer,
+  retractPiSteer,
+  steerPiRun,
+} from "./pi-run-registry";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -235,32 +245,6 @@ const PROVIDER = PI_PROVIDER;
  */
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
-}
-
-// ── Live-run registry ────────────────────────────────────────────────────────
-
-interface PiRunHandle {
-  abort: AbortController;
-  /** Distinct-run identity: every alias key maps to the same handle object. */
-
-  steer?: (text: string, images?: ImageInput[], steerId?: string) => void;
-  retractSteer?: (steerId: string) => boolean;
-  acceptedSteerIds?: Set<string>;
-}
-
-// Alias keys (runKey, unified session id, pi session id) → shared handle,
-// parked on globalThis so hot reloads keep cancel/steer/isBusy working for
-// in-flight turns — same pattern as the previous runner runner's activeRuns.
-const activeRuns: Map<string, PiRunHandle> = (g.__piActiveRuns ??= new Map());
-
-registerActiveRunProbe((runKey) => activeRuns.has(runKey));
-
-export function isPiSessionBusy(id: string): boolean {
-  return activeRuns.has(id);
-}
-
-export function activePiRunCount(): number {
-  return new Set(activeRuns.values()).size;
 }
 
 /** Activate exactly the tools backed by custom definitions. Pi falls back to
@@ -417,69 +401,6 @@ export function piCodemodeExtension(
         },
       }),
     );
-}
-
-export function cancelPiRun(id: string): boolean {
-  const handle = activeRuns.get(id);
-  if (!handle) return false;
-  handle.abort.abort();
-  return true;
-}
-
-/** Native mid-turn steer: session.steer() queues the text for delivery at the
- *  next completed tool or assistant-message boundary, before the next LLM
- *  call. True = a live run accepted it; false = nothing steerable (caller
- *  queues for the next turn instead). */
-export function acceptSteerOnce(
-  accepted: Set<string>,
-  steerId: string,
-  accept: () => void,
-): boolean {
-  if (accepted.has(steerId)) return true;
-  accept();
-  accepted.add(steerId);
-  return true;
-}
-
-export function steerPiRun(
-  id: string,
-  text: string,
-  images?: ImageInput[],
-  steerId?: string,
-): boolean {
-  const handle = activeRuns.get(id);
-  if (!handle?.steer) return false;
-  if (!steerId) {
-    handle.steer(text, images);
-    return true;
-  }
-  return acceptSteerOnce((handle.acceptedSteerIds ??= new Set()), steerId, () =>
-    handle.steer!(text, images, steerId),
-  );
-}
-
-export function retractPiSteer(id: string, steerId: string): boolean {
-  const handle = activeRuns.get(id);
-  const retracted = handle?.retractSteer?.(steerId) === true;
-  if (retracted) handle?.acceptedSteerIds?.delete(steerId);
-  return retracted;
-}
-
-/** Remove one exact pending steer, then let the caller rebuild the engine queue.
- * The synchronous mutation is the race boundary: delivery either removed the
- * item first, or retraction does, never both. */
-export function retractPendingSteer<T extends { steerId?: string }>(
-  pending: T[],
-  steerId: string,
-  replay: (remaining: readonly T[]) => void,
-): boolean {
-  const index = pending.findIndex((item) => item.steerId === steerId);
-  if (index < 0) return false;
-  const remaining = pending.filter((_, candidate) => candidate !== index);
-  pending.splice(0, pending.length, ...remaining);
-  replay(remaining);
-
-  return true;
 }
 
 // ── Gate ─────────────────────────────────────────────────────────────────────
@@ -883,13 +804,12 @@ async function* runPiAttempt(
   if (opts.sessionId) registeredKeys.add(opts.sessionId);
   if (journal?.osSessionId) registeredKeys.add(journal.osSessionId);
   if (opts.transcriptSessionId) registeredKeys.add(opts.transcriptSessionId);
-  if ([...registeredKeys].some((key) => activeRuns.has(key))) {
+  const abort = new AbortController();
+  const handle: PiRunHandle = { abort };
+  if (!claimPiRun(registeredKeys, handle)) {
     yield { type: "error", content: "Session is busy" };
     return;
   }
-  const abort = new AbortController();
-  const handle: PiRunHandle = { abort };
-  for (const key of registeredKeys) activeRuns.set(key, handle);
 
   // The unified session id every transcript row keys on; kind-only loop runs
   // may pass transcriptSessionId instead (map-only, never journaled).
@@ -1922,10 +1842,7 @@ async function* runPiAttempt(
     }
 
     // Register the engine-id alias + the steer surface on the shared handle.
-    if (!registeredKeys.has(piSessionId)) {
-      registeredKeys.add(piSessionId);
-      activeRuns.set(piSessionId, handle);
-    }
+    aliasPiRun(registeredKeys, piSessionId, handle);
     const liveSession = session;
     // Steer contract: accept = enqueue + receipt. The transcript user line is
     // written only when the queued message is actually DELIVERED (its user
@@ -2755,9 +2672,7 @@ async function* runPiAttempt(
       } catch {}
     }
     walk.cancelled ||= abort.signal.aborted;
-    for (const key of registeredKeys) {
-      if (activeRuns.get(key) === handle) activeRuns.delete(key);
-    }
+    releasePiRun(registeredKeys, handle);
     // Journal survives ONLY a mid-turn teardown (boot's continuation
     // re-prompt); a reached terminal or a user cancel clears it.
     if (journal?.osSessionId && (reachedTerminal || abort.signal.aborted)) {
