@@ -7,12 +7,15 @@
  * the durable record, so a gateway restart, a crash or a second gateway
  * process loses nothing, and something without the label is never touched.
  *
- * - Every local run, script, Portal and session-tagged setup gets
- *   `OPENSESSION_SESSION_ID` (sessionOwnershipEnv).
+ * - Every local run, script and Portal gets `OPENSESSION_SESSION_ID`
+ *   (sessionOwnershipEnv). Worktree setup does not: it belongs to the
+ *   worktree, which sibling sessions may share, so what it starts must not
+ *   go when the session that happened to create the worktree is archived.
  * - Containers: the same environments put a small `podman`/`docker` shim
  *   first on PATH. On `run`/`create` (also `container run|create`) with
- *   `OPENSESSION_SESSION_ID` set, it adds `--label opensession.session=<id>`
- *   and `--label opensession.instance=<instance>` and execs the real CLI;
+ *   `OPENSESSION_SESSION_ID` set, it drops any `opensession.*` label the
+ *   caller passed, adds `--label opensession.session=<id>` and
+ *   `--label opensession.instance=<instance>`, and execs the real CLI;
  *   every other invocation, and every shell outside a session, reaches the
  *   real CLI unchanged. Anything started another way (compose, an absolute
  *   path) can carry the same label by hand; the run instructions say so.
@@ -21,8 +24,9 @@
  *   `systemd-run --user --description="$OPENSESSION_UNIT_LABEL"`.
  *
  * The instance label names this installation's state root, so a second
- * instance sharing the host user (a dev gateway) never reaps another
- * instance's containers as ownerless.
+ * instance sharing the host user (a dev gateway) never stops another
+ * instance's containers: teardown and the reaper act only on resources
+ * labelled with this instance, or with no instance at all.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -635,6 +639,10 @@ export function stopLabelledResource(
 
 // ── Environment ──────────────────────────────────────────────────────────────
 
+/** A file in every shim dir, so one shim never runs another's (see the
+ * dev gateway note in docs/session-resources.md). */
+const SHIM_DIR_MARKER = ".opensession-container-shims";
+
 export function containerShimDir(): string {
   return statePath("container-shims");
 }
@@ -665,6 +673,9 @@ for dir in $PATH; do
   dir=\${dir%/}
   [ -n "$dir" ] || continue
   [ "$dir" = "$shim_dir" ] && continue
+  # Another instance's shims (a dev gateway started inside a session):
+  # skip them too, or they would relabel this session's containers.
+  [ -f "$dir/${SHIM_DIR_MARKER}" ] && continue
   if [ -f "$dir/$tool" ] && [ -x "$dir/$tool" ] && ! [ "$dir/$tool" -ef "$0" ]; then
     real=$dir/$tool
     break
@@ -675,23 +686,55 @@ if [ -z "$real" ]; then
   echo "$tool: command not found" >&2
   exit 127
 fi
+sub=
+group=
 if [ -n "\${OPENSESSION_SESSION_ID:-}" ]; then
   case "$1" in
     run|create)
       sub=$1
       shift
-      exec "$real" "$sub" ${label} "$@"
       ;;
     container)
       case "\${2:-}" in
         run|create)
+          group=container
           sub=$2
           shift 2
-          exec "$real" container "$sub" ${label} "$@"
           ;;
       esac
       ;;
   esac
+fi
+if [ -n "$sub" ]; then
+  # Drop opensession.* labels the caller passed: the last --label wins, so
+  # one copied from elsewhere would claim the container for another
+  # session. Other labels pass through.
+  reset=1
+  pending=
+  for arg do
+    if [ -n "$reset" ]; then
+      set --
+      reset=
+    fi
+    if [ -n "$pending" ]; then
+      case "$arg" in
+        opensession.*) ;;
+        *) set -- "$@" "$pending" "$arg" ;;
+      esac
+      pending=
+      continue
+    fi
+    case "$arg" in
+      --label|-l) pending=$arg ;;
+      --label=opensession.*|-l=opensession.*) ;;
+      *) set -- "$@" "$arg" ;;
+    esac
+  done
+  [ -z "$pending" ] || set -- "$@" "$pending"
+  if [ -n "$group" ]; then
+    exec "$real" "$group" "$sub" ${label} "$@"
+  fi
+  exec "$real" "$sub" ${label} "$@"
 fi
 exec "$real" "$@"
 `;
@@ -715,6 +758,8 @@ export function ensureContainerShims(path: string): string | null {
   if (!clis.length) return null;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o755 });
+    const marker = join(dir, SHIM_DIR_MARKER);
+    if (!existsSync(marker)) writeFileSync(marker, "");
     const instance = resourceInstanceId();
     for (const cli of clis) {
       const file = join(dir, cli);

@@ -651,6 +651,106 @@ describe("session environment and container shims", () => {
     ]);
   });
 
+  test("the shim drops opensession labels the caller passed and keeps the rest", async () => {
+    fakeCli("podman");
+    const env = sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`);
+    const label = [
+      "--label",
+      "opensession.session=os-1",
+      "--label",
+      `opensession.instance=${resourceInstanceId()}`,
+    ];
+    expect(
+      (
+        await runShim(
+          [
+            "run",
+            "--label",
+            "opensession.session=os-other",
+            "-l",
+            "opensession.instance=000000000000",
+            "--label=opensession.session=os-x",
+            "-l=opensession.session=os-y",
+            "--label",
+            "app=web",
+            "-l",
+            "tier=db",
+            "--label=team=core",
+            "postgres",
+          ],
+          env,
+        )
+      ).split("\n"),
+    ).toEqual([
+      "run",
+      ...label,
+      "--label",
+      "app=web",
+      "-l",
+      "tier=db",
+      "--label=team=core",
+      "postgres",
+    ]);
+    expect(
+      (
+        await runShim(
+          ["container", "create", "-l", "opensession.session=os-z", "x"],
+          env,
+        )
+      ).split("\n"),
+    ).toEqual(["container", "create", ...label, "x"]);
+    // A trailing --label with no value reaches the CLI to complain about.
+    expect((await runShim(["run", "--label"], env)).split("\n")).toEqual([
+      "run",
+      ...label,
+      "--label",
+    ]);
+    // Outside a session nothing is rewritten.
+    const { OPENSESSION_SESSION_ID: _id, ...outside } = env;
+    expect(
+      (
+        await runShim(
+          ["run", "--label", "opensession.session=os-q", "x"],
+          outside,
+        )
+      ).split("\n"),
+    ).toEqual(["run", "--label", "opensession.session=os-q", "x"]);
+  });
+
+  test("the shim skips another instance's shims on PATH", async () => {
+    fakeCli("podman");
+    // An outer instance's shims (a dev gateway started inside a session):
+    // running them would relabel this session's containers as theirs.
+    const outerState = mkdtempSync(join(tmpdir(), "os-ownership-outer-"));
+    try {
+      process.env.OPENSESSION_STATE_DIR = outerState;
+      const outerShims = containerShimDir();
+      sessionOwnershipEnv("os-outer", bin);
+      expect(existsSync(join(outerShims, "podman"))).toBe(true);
+      process.env.OPENSESSION_STATE_DIR = state;
+      const env = sessionOwnershipEnv(
+        "os-inner",
+        `${outerShims}:${bin}:/usr/bin:/bin`,
+      );
+      expect(env.PATH!.split(":").slice(0, 3)).toEqual([
+        containerShimDir(),
+        outerShims,
+        bin,
+      ]);
+      expect((await runShim(["run", "x"], env)).split("\n")).toEqual([
+        "run",
+        "--label",
+        "opensession.session=os-inner",
+        "--label",
+        `opensession.instance=${resourceInstanceId()}`,
+        "x",
+      ]);
+    } finally {
+      process.env.OPENSESSION_STATE_DIR = state;
+      rmSync(outerState, { recursive: true, force: true });
+    }
+  });
+
   test("a local environment shares the gateway's runtime dir; a remote one does not", () => {
     const previous = process.env.XDG_RUNTIME_DIR;
     process.env.XDG_RUNTIME_DIR = join(state, "runtime");
