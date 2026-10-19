@@ -11,6 +11,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { readPortalRegistry, type PortalRecord } from "./portal-supervisor";
 import {
+  forgetSessionResourceView,
   hostSessionResources,
   sessionResourceList,
   stopSessionWorkloads,
@@ -40,13 +41,17 @@ type Fake = {
 };
 let fakes: Fake[] = [];
 let stops: string[][] = [];
+/** Every listing and stats call, by its first two words. */
+let reads: string[] = [];
 
 function install(): void {
+  forgetSessionResourceView();
   __setOwnershipRuntimeForTest({
     containerClis: () => ["podman"],
     systemdUser: () => true,
     uptimeMs: async () => 86_400_000,
     run: async (argv) => {
+      if (!argv.includes("stop")) reads.push(argv.slice(0, 3).join(" "));
       if (argv[0] === "podman" && argv[1] === "ps")
         return {
           exitCode: 0,
@@ -152,6 +157,7 @@ beforeEach(() => {
   __setWorkloadScopingForTest(false);
   fakes = [];
   stops = [];
+  reads = [];
   install();
 });
 
@@ -278,6 +284,54 @@ describe("stopping part-way", () => {
       }),
     ).toEqual({ stopped: 0, interrupted: true });
     expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual(["awake"]);
+    expect(stops).toEqual([]);
+  });
+});
+
+describe("shared host listing", () => {
+  test("views share one listing and memory read for a while; a stop refreshes it", async () => {
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a", memory: 64 },
+      { kind: "container", handle: ID_B, session: "os-b", memory: 32 },
+    ];
+    install();
+    const a = { id: "os-a", worktreeDir: worktree };
+    const b = { id: "os-b", worktreeDir: null };
+    await sessionResourceList(a, [a, b]);
+    await sessionResourceList(b, [a, b]);
+    await hostSessionResources([a, b]);
+    expect(reads.filter((read) => read.startsWith("podman"))).toEqual([
+      "podman ps --no-trunc",
+      "podman stats --no-stream",
+    ]);
+    // Stopping marks it stale: the next view reads again (the listing
+    // itself comes from the short-lived one the stop just used, minus
+    // what it stopped).
+    reads = [];
+    await stopSessionWorkloads(a, [a, b]);
+    const after = await sessionResourceList(b, [a, b]);
+    expect(after.items.map((item) => item.id)).toEqual([`container:${ID_B}`]);
+    expect(reads).toContain("podman stats --no-stream");
+  });
+
+  test("Runner and Sandbox sessions run no host listing", async () => {
+    fakes = [{ kind: "container", handle: ID_A, session: "os-a" }];
+    install();
+    for (const session of [
+      { id: "os-a", worktreeDir: worktree, runner: "runner-1" as never },
+      {
+        id: "os-a",
+        worktreeDir: worktree,
+        sandbox: { sandboxId: "sbx-1" } as never,
+      },
+    ]) {
+      expect((await sessionResourceList(session, [session])).items).toEqual([]);
+      expect(await stopSessionWorkloads(session, [session])).toEqual({
+        stopped: 0,
+        interrupted: false,
+      });
+    }
+    expect(reads).toEqual([]);
     expect(stops).toEqual([]);
   });
 });

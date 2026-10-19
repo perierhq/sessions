@@ -585,7 +585,16 @@ export function listLabelledResources(): Promise<LabelledResource[]> {
   return entry.rows;
 }
 
+/** Bumped whenever a labelled resource is stopped, so longer-lived views of
+ * the listing (session-resource-inventory.ts) know theirs is stale. */
+let stopGeneration = 0;
+
+export function labelledStopGeneration(): number {
+  return stopGeneration;
+}
+
 function forgetListed(resource: LabelledResource): void {
+  stopGeneration++;
   if (!inventory) return;
   const previous = inventory;
   const next: { at?: number; rows: Promise<LabelledResource[]> } = {

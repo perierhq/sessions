@@ -7,6 +7,11 @@
  * containers and units (session-ownership.ts). Memory comes from systemd
  * (MemoryCurrent of a scope or unit) and the container CLIs' `stats`, and is
  * left out where neither can say cheaply (an unscoped process group).
+ *
+ * The container and unit listing and the memory figures are host-wide and
+ * cost a few CLI calls, so every view shares one snapshot for
+ * VIEW_TTL_MS (counted from when it finished). A stop anywhere marks it
+ * stale. Runner and Sandbox sessions run elsewhere and list nothing here.
  */
 import type {
   HostSessionResources,
@@ -21,6 +26,7 @@ import {
 } from "./portal-supervisor";
 import {
   containersMemory,
+  labelledStopGeneration,
   listLabelledResources,
   unitsMemory,
   type LabelledResource,
@@ -39,6 +45,91 @@ import type { UnifiedSession } from "./types";
 export type InventoryOwner = PortalOwnerSession &
   SessionResourceOwner &
   Partial<Pick<UnifiedSession, "runner" | "sandbox">>;
+
+/** How long the labelled listing and memory figures are reused. */
+const VIEW_TTL_MS = 20_000;
+
+type LabelledView = {
+  rows: LabelledResource[];
+  /** Memory of every labelled container, by full id. */
+  containerMemory: Map<string, number>;
+};
+
+let labelledView: {
+  /** When it finished; undefined while it runs (shared meanwhile). */
+  at?: number;
+  generation: number;
+  value: Promise<LabelledView>;
+} | null = null;
+
+/** Every labelled container and unit on the host, with container memory:
+ * one `ps` and one `stats --no-stream` per CLI, shared by every session's
+ * view and host health for VIEW_TTL_MS, or until something is stopped. */
+function labelledSnapshot(): Promise<LabelledView> {
+  const generation = labelledStopGeneration();
+  if (
+    labelledView &&
+    labelledView.generation === generation &&
+    (labelledView.at === undefined ||
+      Date.now() - labelledView.at < VIEW_TTL_MS)
+  )
+    return labelledView.value;
+  const entry: NonNullable<typeof labelledView> = {
+    generation,
+    value: Promise.resolve({ rows: [], containerMemory: new Map() }),
+  };
+  entry.value = (async () => {
+    try {
+      const rows = await listLabelledResources();
+      const containerMemory = await containersMemory(
+        rows.filter((row) => row.kind === "container"),
+      );
+      return { rows, containerMemory };
+    } finally {
+      entry.at = Date.now();
+    }
+  })();
+  labelledView = entry;
+  return entry.value;
+}
+
+const unitMemoryCache = new Map<string, { at: number; bytes?: number }>();
+
+/** unitsMemory, reusing each unit's figure for VIEW_TTL_MS. */
+async function cachedUnitsMemory(
+  units: readonly string[],
+): Promise<Map<string, number>> {
+  let now = Date.now();
+  for (const [unit, entry] of unitMemoryCache)
+    if (now - entry.at >= VIEW_TTL_MS) unitMemoryCache.delete(unit);
+  const missing = [...new Set(units)].filter(
+    (unit) => !unitMemoryCache.has(unit),
+  );
+  if (missing.length) {
+    const fresh = await unitsMemory(missing);
+    now = Date.now();
+    for (const unit of missing)
+      unitMemoryCache.set(unit, { at: now, bytes: fresh.get(unit) });
+  }
+  const result = new Map<string, number>();
+  for (const unit of units) {
+    const bytes = unitMemoryCache.get(unit)?.bytes;
+    if (bytes !== undefined) result.set(unit, bytes);
+  }
+  return result;
+}
+
+/** Drop the shared snapshot and memory figures (after a stop, and tests). */
+export function forgetSessionResourceView(): void {
+  labelledView = null;
+  unitMemoryCache.clear();
+}
+
+/** Runner and Sandbox sessions run on another machine: nothing of theirs
+ * is on this host to list or stop. */
+function runsElsewhere(session: InventoryOwner): boolean {
+  return !!session.runner || !!session.sandbox?.sandboxId;
+}
 
 function scopeName(unit: string): string {
   return unit.endsWith(".scope") || unit.endsWith(".service")
@@ -110,28 +201,27 @@ export async function sessionResourceList(
   session: InventoryOwner,
   sessions: readonly SessionResourceOwner[],
 ): Promise<SessionResourceList> {
+  if (runsElsewhere(session)) return { items: [] };
   const ids = new Set(sessionResourceOwnerIds(session));
   const [portals, records, labelled] = await Promise.all([
     sessionHostPortals(session),
     sessionOwnedRecords(session, sessions),
-    listLabelledResources(),
+    labelledSnapshot(),
   ]);
   const alive: SessionResource[] = [];
   for (const record of records)
     if (await sessionResourceAlive(record)) alive.push(record);
-  const owned = labelled.filter((resource) => ids.has(resource.sessionId));
-  const [unitMemory, containerMemory] = await Promise.all([
-    unitsMemory([
-      ...portals
-        .map(({ record }) => record.scopeUnit)
-        .filter((unit): unit is string => !!unit)
-        .map(scopeName),
-      ...alive
-        .map((record) => record.unit)
-        .filter((unit): unit is string => !!unit)
-        .map(scopeName),
-    ]),
-    containersMemory(owned.filter((resource) => resource.kind === "container")),
+  const owned = labelled.rows.filter((resource) => ids.has(resource.sessionId));
+  const containerMemory = labelled.containerMemory;
+  const unitMemory = await cachedUnitsMemory([
+    ...portals
+      .map(({ record }) => record.scopeUnit)
+      .filter((unit): unit is string => !!unit)
+      .map(scopeName),
+    ...alive
+      .map((record) => record.unit)
+      .filter((unit): unit is string => !!unit)
+      .map(scopeName),
   ]);
   const items: SessionResourceItem[] = [
     ...portals.map(({ record }) => {
@@ -165,20 +255,25 @@ export async function stopSessionWorkloads(
   sessions: readonly SessionResourceOwner[],
   options: { stillIdle?: () => boolean } = {},
 ): Promise<{ stopped: number; interrupted: boolean }> {
+  if (runsElsewhere(session)) return { stopped: 0, interrupted: false };
   let interrupted = false;
   const shouldContinue = () => {
     if (!interrupted && options.stillIdle && !options.stillIdle())
       interrupted = true;
     return !interrupted;
   };
-  const portals = await stopSessionHostPortals(session, { shouldContinue });
-  const resources = shouldContinue()
-    ? await stopSessionOwnedResources(session, sessions, {
-        reason: "stopped",
-        shouldContinue,
-      })
-    : [];
-  return { stopped: portals + resources.length, interrupted };
+  try {
+    const portals = await stopSessionHostPortals(session, { shouldContinue });
+    const resources = shouldContinue()
+      ? await stopSessionOwnedResources(session, sessions, {
+          reason: "stopped",
+          shouldContinue,
+        })
+      : [];
+    return { stopped: portals + resources.length, interrupted };
+  } finally {
+    forgetSessionResourceView();
+  }
 }
 
 const LEFTOVER_LIMIT = 50;
@@ -205,14 +300,11 @@ export async function hostSessionResources(
           : "live"
         : "missing";
 
-  const labelled = await listLabelledResources();
-  const containerMemory = await containersMemory(
-    labelled.filter((resource) => resource.kind === "container"),
-  );
+  const { rows: labelled, containerMemory } = await labelledSnapshot();
   const records: SessionResource[] = [];
   for (const record of listSessionResources())
     if (await sessionResourceAlive(record)) records.push(record);
-  const recordMemory = await unitsMemory(
+  const recordMemory = await cachedUnitsMemory(
     records
       .map((record) => record.unit)
       .filter((unit): unit is string => !!unit)
