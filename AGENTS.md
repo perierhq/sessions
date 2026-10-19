@@ -14,8 +14,8 @@ disagree.
   [`NOTICE.md`](NOTICE.md).
 - **Keep the licences.** Never remove `LICENSE`, `NOTICE.md`,
   `THIRD-PARTY-NOTICES.md` or `THIRD-PARTY-LICENSES`.
-- **Private for now.** The repo is private, but treat it as if it will go
-  public: no secrets, client data or internal hostnames in commits.
+- **Public repo.** No secrets, client data or internal hostnames in commits,
+  PRs or issues (see "Public repository" below).
 - **Small PRs.** One cut or one change per PR, with build and tests passing.
 
 ## What we're building
