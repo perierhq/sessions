@@ -24,6 +24,7 @@
  * instance sharing the host user (a dev gateway) never reaps another
  * instance's containers as ownerless.
  */
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -128,48 +129,92 @@ export type OwnershipRuntime = {
   uptimeMs: () => Promise<number | undefined>;
 };
 
+/** The XDG_RUNTIME_DIR rootless podman keeps its run root under: the
+ * gateway's own, else the user manager's runtime dir when it exists. Every
+ * podman this module or a session runs must agree on it, or podman refuses
+ * with a database configuration mismatch. */
+export function containerRuntimeDir(): string | undefined {
+  if (process.env.XDG_RUNTIME_DIR) return process.env.XDG_RUNTIME_DIR;
+  return existsSync(SYSTEMD_USER_RUNTIME) ? SYSTEMD_USER_RUNTIME : undefined;
+}
+
 function containerCliEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env))
     if (value !== undefined) env[key] = value;
   // Rootless podman needs the user's runtime dir; a system service may not
   // have one in its environment.
-  if (!env.XDG_RUNTIME_DIR && existsSync(SYSTEMD_USER_RUNTIME))
-    env.XDG_RUNTIME_DIR = SYSTEMD_USER_RUNTIME;
+  const runtimeDir = containerRuntimeDir();
+  if (runtimeDir) env.XDG_RUNTIME_DIR = runtimeDir;
   return env;
 }
 
-async function runCommand(
+/**
+ * Run `argv` and collect its stdout, bounded by `timeoutMs` however the
+ * command behaves. It runs in its own process group, and the deadline kills
+ * the whole group and stops reading: a CLI that forked a helper still
+ * holding stdout (a wedged podman, a docker plugin) would otherwise keep the
+ * pipe open long after the CLI itself was killed. Never rejects; a timeout
+ * or a spawn failure resolves with `exitCode: null`.
+ */
+export function runBoundedCommand(
+  argv: string[],
+  options: { timeoutMs: number; env?: Record<string, string> },
+): Promise<CommandResult> {
+  return new Promise((resolveResult) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(argv[0]!, argv.slice(1), {
+        env: (options.env ?? containerCliEnv()) as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "ignore"],
+        detached: true,
+      });
+    } catch {
+      resolveResult({ exitCode: null, stdout: "" });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveResult({
+        exitCode,
+        stdout: Buffer.concat(chunks).toString("utf8"),
+      });
+    };
+    const timer = setTimeout(() => {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      // Stop reading: a grandchild outside the group could still hold it.
+      child.stdout?.destroy();
+      finish(null);
+    }, options.timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.once("error", () => finish(null));
+    // `close` waits for stdout to end as well as the exit.
+    child.once("close", (code, signal) => finish(signal ? null : code));
+  });
+}
+
+function runCommand(
   argv: string[],
   options: { timeoutMs: number },
 ): Promise<CommandResult> {
-  try {
-    const systemctl = argv[0] === "systemctl";
-    const proc = Bun.spawn(argv, {
-      env: systemctl
+  return runBoundedCommand(argv, {
+    timeoutMs: options.timeoutMs,
+    env:
+      argv[0] === "systemctl"
         ? { ...containerCliEnv(), ...systemdUserEnv() }
         : containerCliEnv(),
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    // A hung daemon (docker without its socket, a wedged podman) must not
-    // hold archive or the reaper.
-    const timer = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {}
-    }, options.timeoutMs);
-    try {
-      const stdout = await new Response(proc.stdout).text();
-      const exitCode = await proc.exited;
-      return { exitCode: proc.signalCode ? null : exitCode, stdout };
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return { exitCode: null, stdout: "" };
-  }
+  });
 }
 
 const defaultRuntime: OwnershipRuntime = {
@@ -201,6 +246,9 @@ export function __setOwnershipRuntimeForTest(
 ): void {
   runtime = next ? { ...defaultRuntime, ...next } : defaultRuntime;
   inventory = null;
+  cliTimedOutAt.clear();
+  listingFailureLoggedAt.clear();
+  stopsInFlight.clear();
 }
 
 const LIST_TIMEOUT_MS = 15_000;
@@ -371,48 +419,82 @@ export function parseUnitShow(
   return result;
 }
 
+/** A CLI whose listing timed out is skipped this long: a wedged daemon would
+ * otherwise cost every archive and reaper pass the full timeout again. */
+const TIMED_OUT_CLI_SKIP_MS = 5 * 60_000;
+/** How often the same listing failure is logged. */
+const LISTING_FAILURE_LOG_MS = 10 * 60_000;
+
+const cliTimedOutAt = new Map<string, number>();
+const listingFailureLoggedAt = new Map<string, number>();
+
+/** Log that `what` could not be listed, at most once per interval each: a
+ * failed listing reads as "nothing running", so it must not be silent. */
+function logListingFailure(what: string, exitCode: number | null): void {
+  const now = Date.now();
+  const last = listingFailureLoggedAt.get(what);
+  if (last !== undefined && now - last < LISTING_FAILURE_LOG_MS) return;
+  listingFailureLoggedAt.set(what, now);
+  console.warn(
+    exitCode === null
+      ? `[session-resources] listing ${what} timed out; skipping it for ${TIMED_OUT_CLI_SKIP_MS / 60_000} min`
+      : `[session-resources] listing ${what} failed (exit ${exitCode}); its labelled resources are not seen this pass`,
+  );
+}
+
+function cliSkipped(cli: string, now: number): boolean {
+  const at = cliTimedOutAt.get(cli);
+  if (at === undefined) return false;
+  if (now - at < TIMED_OUT_CLI_SKIP_MS) return true;
+  cliTimedOutAt.delete(cli);
+  return false;
+}
+
+async function listCliContainers(
+  cli: ContainerCli,
+): Promise<LabelledResource[]> {
+  const listArgv = (format: string) => [
+    cli,
+    "ps",
+    "--no-trunc",
+    "--filter",
+    `label=${SESSION_LABEL}`,
+    "--format",
+    format,
+  ];
+  const listed = await runtime.run(listArgv(CONTAINER_PS_FORMAT), {
+    timeoutMs: LIST_TIMEOUT_MS,
+  });
+  if (listed.exitCode === 0) return parseContainerRows(listed.stdout, cli);
+  if (listed.exitCode === null) {
+    // Hung, not refused: the JSON form would hang just as long.
+    cliTimedOutAt.set(cli, Date.now());
+    logListingFailure(cli, null);
+    return [];
+  }
+  // A CLI whose template support differs (an older podman, podman under the
+  // docker name) still answers the JSON form.
+  const json = await runtime.run(listArgv("json"), {
+    timeoutMs: LIST_TIMEOUT_MS,
+  });
+  if (json.exitCode === 0) return parseContainerJson(json.stdout, cli);
+  // Not running, no socket, or no podman machine: nothing seen there.
+  if (json.exitCode === null) cliTimedOutAt.set(cli, Date.now());
+  logListingFailure(cli, json.exitCode);
+  return [];
+}
+
 async function listContainers(): Promise<LabelledResource[]> {
+  const now = Date.now();
+  const clis = runtime.containerClis().filter((cli) => !cliSkipped(cli, now));
+  const listed = await Promise.all(clis.map(listCliContainers));
   const found: LabelledResource[] = [];
   const seen = new Set<string>();
-  for (const cli of runtime.containerClis()) {
-    const { exitCode, stdout } = await runtime.run(
-      [
-        cli,
-        "ps",
-        "--no-trunc",
-        "--filter",
-        `label=${SESSION_LABEL}`,
-        "--format",
-        CONTAINER_PS_FORMAT,
-      ],
-      { timeoutMs: LIST_TIMEOUT_MS },
-    );
-    let rows = exitCode === 0 ? parseContainerRows(stdout, cli) : null;
-    if (rows === null) {
-      // A CLI whose template support differs (an older podman, podman under
-      // the docker name) still answers the JSON form.
-      const json = await runtime.run(
-        [
-          cli,
-          "ps",
-          "--no-trunc",
-          "--filter",
-          `label=${SESSION_LABEL}`,
-          "--format",
-          "json",
-        ],
-        { timeoutMs: LIST_TIMEOUT_MS },
-      );
-      // Not running, no socket, or no podman machine: nothing to find there.
-      if (json.exitCode !== 0) continue;
-      rows = parseContainerJson(json.stdout, cli);
-    }
-    for (const row of rows) {
-      // `docker` may be podman under another name: one container, one row.
-      if (seen.has(row.handle)) continue;
-      seen.add(row.handle);
-      found.push(row);
-    }
+  for (const row of listed.flat()) {
+    // `docker` may be podman under another name: one container, one row.
+    if (seen.has(row.handle)) continue;
+    seen.add(row.handle);
+    found.push(row);
   }
   return found;
 }
@@ -433,7 +515,10 @@ async function listUnits(): Promise<LabelledResource[]> {
     ],
     { timeoutMs: LIST_TIMEOUT_MS },
   );
-  if (listed.exitCode !== 0) return [];
+  if (listed.exitCode !== 0) {
+    logListingFailure("user units", listed.exitCode);
+    return [];
+  }
   const units = parseUnitRows(listed.stdout).slice(0, 200);
   if (!units.length) return units;
   const shown = await runtime.run(
@@ -455,8 +540,10 @@ async function listUnits(): Promise<LabelledResource[]> {
   return units.map((unit) => ({ ...unit, ...details.get(unit.handle) }));
 }
 
-/** A listing shared by back-to-back callers (a batch of archives). */
-let inventory: { at: number; rows: Promise<LabelledResource[]> } | null = null;
+/** A listing shared by back-to-back callers (a batch of archives). `at` is
+ * when it finished; undefined while it runs, so a slow listing is shared
+ * by everyone who asks meanwhile and still fresh when it lands. */
+let inventory: { at?: number; rows: Promise<LabelledResource[]> } | null = null;
 const INVENTORY_TTL_MS = 3_000;
 
 /**
@@ -465,9 +552,15 @@ const INVENTORY_TTL_MS = 3_000;
  * have none. Never rejects.
  */
 export function listLabelledResources(): Promise<LabelledResource[]> {
-  const now = Date.now();
-  if (inventory && now - inventory.at < INVENTORY_TTL_MS) return inventory.rows;
-  const rows = (async () => {
+  if (
+    inventory &&
+    (inventory.at === undefined || Date.now() - inventory.at < INVENTORY_TTL_MS)
+  )
+    return inventory.rows;
+  const entry: { at?: number; rows: Promise<LabelledResource[]> } = {
+    rows: Promise.resolve([]),
+  };
+  entry.rows = (async () => {
     try {
       const [containers, units] = await Promise.all([
         listContainers(),
@@ -480,28 +573,39 @@ export function listLabelledResources(): Promise<LabelledResource[]> {
         error,
       );
       return [];
+    } finally {
+      entry.at = Date.now();
     }
   })();
-  inventory = { at: now, rows };
-  return rows;
+  inventory = entry;
+  return entry.rows;
 }
 
 function forgetListed(resource: LabelledResource): void {
   if (!inventory) return;
-  const previous = inventory.rows;
-  inventory = {
-    at: inventory.at,
-    rows: previous.then((rows) =>
+  const previous = inventory;
+  const next: { at?: number; rows: Promise<LabelledResource[]> } = {
+    rows: previous.rows.then((rows) =>
       rows.filter((row) => row.handle !== resource.handle),
     ),
   };
+  if (previous.at !== undefined) next.at = previous.at;
+  else void previous.rows.finally(() => (next.at = previous.at ?? Date.now()));
+  inventory = next;
 }
+
+/** Stops under way, by handle: archive teardown, the reaper and "Stop
+ * everything" may reach the same container at once; it is stopped once. */
+const stopsInFlight = new Map<string, Promise<boolean>>();
 
 /** Stop one labelled container or unit. Resolves whether the stop
  * succeeded; never rejects. */
-export async function stopLabelledResource(
+export function stopLabelledResource(
   resource: LabelledResource,
 ): Promise<boolean> {
+  const key = `${resource.kind}:${resource.handle}`;
+  const running = stopsInFlight.get(key);
+  if (running) return running;
   const argv =
     resource.kind === "container"
       ? [
@@ -512,9 +616,21 @@ export async function stopLabelledResource(
           resource.handle,
         ]
       : ["systemctl", "--user", "stop", resource.handle];
-  const { exitCode } = await runtime.run(argv, { timeoutMs: STOP_TIMEOUT_MS });
-  if (exitCode === 0) forgetListed(resource);
-  return exitCode === 0;
+  const stop = (async () => {
+    try {
+      const { exitCode } = await runtime.run(argv, {
+        timeoutMs: STOP_TIMEOUT_MS,
+      });
+      if (exitCode === 0) forgetListed(resource);
+      return exitCode === 0;
+    } catch {
+      return false;
+    } finally {
+      stopsInFlight.delete(key);
+    }
+  })();
+  stopsInFlight.set(key, stop);
+  return stop;
 }
 
 // ── Environment ──────────────────────────────────────────────────────────────
@@ -622,10 +738,11 @@ export function ensureContainerShims(path: string): string | null {
 }
 
 /**
- * What a local run, script, Portal or setup environment adds so the session
- * owns what it starts: `OPENSESSION_SESSION_ID`, `OPENSESSION_UNIT_LABEL`
- * for `systemd-run --description`, and PATH with the container shims first
- * (only when podman or docker is installed). Empty for an id that cannot be
+ * What a local run, script or Portal environment adds so the session owns
+ * what it starts: `OPENSESSION_SESSION_ID`, `OPENSESSION_UNIT_LABEL` for
+ * `systemd-run --description`, `XDG_RUNTIME_DIR` (containerRuntimeDir), and
+ * PATH with the container shims first (only when podman or docker is
+ * installed). Empty for an id that cannot be
  * labelled. `path` is the PATH the environment would otherwise get.
  * Shared shims, one id per environment: a shell outside a session never
  * has the variable, so the shim passes its commands through unchanged.
@@ -641,8 +758,14 @@ export function sessionOwnershipEnv(
     OPENSESSION_UNIT_LABEL: sessionUnitLabel(sessionId),
   };
   // A command that runs on another machine (a Sandbox) gets the id only:
-  // this host's shim path means nothing there.
+  // this host's shim path and runtime dir mean nothing there.
   if (options.shims === false) return env;
+  // The same runtime dir the gateway lists and stops containers with, so a
+  // session's rootless podman shares its run root (a minimal agent shell
+  // has none, and podman would refuse with a database configuration
+  // mismatch, or the gateway would not see what it started).
+  const runtimeDir = containerRuntimeDir();
+  if (runtimeDir) env.XDG_RUNTIME_DIR = runtimeDir;
   const basePath = path || "/usr/local/bin:/usr/bin:/bin";
   const shims = ensureContainerShims(basePath);
   if (shims)

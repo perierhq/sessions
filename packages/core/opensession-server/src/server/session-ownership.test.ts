@@ -4,6 +4,8 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
+  spyOn,
   test,
 } from "bun:test";
 import {
@@ -30,6 +32,7 @@ import {
   parseUnitRows,
   parseUnitShow,
   resourceInstanceId,
+  runBoundedCommand,
   sessionOwnershipEnv,
   sessionUnitDescription,
   stopLabelledResource,
@@ -46,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSystemTime();
   __setOwnershipRuntimeForTest(null);
   rmSync(state, { recursive: true, force: true });
   rmSync(bin, { recursive: true, force: true });
@@ -312,8 +316,112 @@ describe("listing and stopping", () => {
         return { exitCode: 1, stdout: "" };
       },
     });
-    expect(await listLabelledResources()).toEqual([]);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await listLabelledResources()).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
     expect(calls.map((argv) => argv[0])).toEqual(["docker", "docker"]);
+  });
+
+  test("a CLI that times out is not asked again for a while", async () => {
+    const start = Date.parse("2026-06-01T12:00:00Z");
+    setSystemTime(start);
+    const calls: string[][] = [];
+    let hang = true;
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman", "docker"],
+      systemdUser: () => false,
+      run: async (argv) => {
+        calls.push(argv);
+        if (argv[0] === "podman" && hang) return { exitCode: null, stdout: "" };
+        return {
+          exitCode: 0,
+          stdout: argv[0] === "docker" ? `${ID_B}\tos-2\t\t\tweb\tnginx\n` : "",
+        };
+      },
+    });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Timed out: no JSON retry, which would hang just as long.
+      expect((await listLabelledResources()).map((r) => r.handle)).toEqual([
+        ID_B,
+      ]);
+      expect(calls.map((argv) => [argv[0], argv.at(-1)])).toEqual([
+        ["podman", CONTAINER_PS_FORMAT],
+        ["docker", CONTAINER_PS_FORMAT],
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      // Skipped by later passes for five minutes, then tried again.
+      calls.length = 0;
+      setSystemTime(start + 60_000);
+      await listLabelledResources();
+      expect(calls.map((argv) => argv[0])).toEqual(["docker"]);
+      hang = false;
+      calls.length = 0;
+      setSystemTime(start + 6 * 60_000);
+      await listLabelledResources();
+      expect(calls.map((argv) => argv[0])).toEqual(["podman", "docker"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a listing that fails is logged once per CLI, not every pass", async () => {
+    const start = Date.parse("2026-06-01T12:00:00Z");
+    setSystemTime(start);
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["docker"],
+      systemdUser: () => true,
+      run: async () => ({ exitCode: 1, stdout: "" }),
+    });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await listLabelledResources();
+      // The template and the JSON form both failed: one line for docker,
+      // one for the user units.
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls.map((call) => String(call[0])).sort()).toEqual([
+        expect.stringContaining("listing docker failed (exit 1)"),
+        expect.stringContaining("listing user units failed (exit 1)"),
+      ]);
+      setSystemTime(start + 60_000);
+      await listLabelledResources();
+      expect(warn).toHaveBeenCalledTimes(2);
+      setSystemTime(start + 11 * 60_000);
+      await listLabelledResources();
+      expect(warn).toHaveBeenCalledTimes(4);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a listing stays fresh for its TTL from when it finished", async () => {
+    const start = Date.parse("2026-06-01T12:00:00Z");
+    setSystemTime(start);
+    let runs = 0;
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman"],
+      systemdUser: () => false,
+      run: async () => {
+        runs++;
+        // A slow listing: ten seconds pass while it runs.
+        setSystemTime(start + 10_000);
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    const first = listLabelledResources();
+    // Asked again while it runs: shares it.
+    const second = listLabelledResources();
+    await Promise.all([first, second]);
+    expect(runs).toBe(1);
+    setSystemTime(start + 11_000);
+    await listLabelledResources();
+    expect(runs).toBe(1);
+    setSystemTime(start + 14_000);
+    await listLabelledResources();
+    expect(runs).toBe(2);
   });
 
   test("a host without podman, docker or systemd runs nothing", async () => {
@@ -359,6 +467,104 @@ describe("listing and stopping", () => {
       ["docker", "stop", "--time", "10", ID_A],
       ["systemctl", "--user", "stop", "x.scope"],
     ]);
+  });
+
+  test("a resource being stopped is stopped once", async () => {
+    let runs = 0;
+    __setOwnershipRuntimeForTest({
+      run: async () => {
+        runs++;
+        await Bun.sleep(10);
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    const container = {
+      kind: "container" as const,
+      handle: ID_A,
+      runtime: "podman" as const,
+      sessionId: "os-1",
+      label: "pg",
+    };
+    expect(
+      await Promise.all([
+        stopLabelledResource(container),
+        stopLabelledResource(container),
+      ]),
+    ).toEqual([true, true]);
+    expect(runs).toBe(1);
+  });
+});
+
+describe("bounded commands", () => {
+  /** A CLI that forks a sleeping helper holding its stdout, records the
+   * helper's pid, and then hangs itself. The deadline leaves a slow CI
+   * shell time to get that far; the helper sleeps far longer. */
+  function hangingCli(helper: string): string {
+    const file = join(bin, "hanging-cli");
+    writeFileSync(
+      file,
+      `#!/bin/sh\necho started\n${helper} &\necho $! > ${join(bin, "helper.pid")}\nsleep 30\n`,
+    );
+    chmodSync(file, 0o755);
+    return file;
+  }
+
+  function helperPid(): number {
+    return Number(readFileSync(join(bin, "helper.pid"), "utf8").trim());
+  }
+
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("a timeout kills the whole group, helpers holding stdout included", async () => {
+    const cli = hangingCli("sleep 30");
+    const started = Date.now();
+    const result = await runBoundedCommand([cli], {
+      timeoutMs: 1_500,
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.exitCode).toBeNull();
+    const pid = helperPid();
+    // SIGKILL is delivered at once, but give the kernel a moment to reap.
+    for (let i = 0; i < 50 && alive(pid); i++) await Bun.sleep(20);
+    expect(alive(pid)).toBe(false);
+  });
+
+  test("the deadline holds even when a helper left the group with stdout", async () => {
+    // perl's setsid: a new session, out of reach of the group kill.
+    const cli = hangingCli(`perl -e 'use POSIX; POSIX::setsid(); sleep 30'`);
+    const started = Date.now();
+    try {
+      const result = await runBoundedCommand([cli], {
+        timeoutMs: 1_500,
+        env: { PATH: "/usr/bin:/bin" },
+      });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(result.exitCode).toBeNull();
+    } finally {
+      try {
+        process.kill(helperPid(), "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("a command that finishes returns its output and exit code", async () => {
+    expect(
+      await runBoundedCommand(["sh", "-c", "echo hi; exit 3"], {
+        timeoutMs: 5_000,
+        env: { PATH: "/usr/bin:/bin" },
+      }),
+    ).toEqual({ exitCode: 3, stdout: "hi\n" });
+    expect(
+      await runBoundedCommand([join(bin, "missing")], { timeoutMs: 5_000 }),
+    ).toEqual({ exitCode: null, stdout: "" });
   });
 });
 
@@ -443,6 +649,22 @@ describe("session environment and container shims", () => {
       "run",
       "x",
     ]);
+  });
+
+  test("a local environment shares the gateway's runtime dir; a remote one does not", () => {
+    const previous = process.env.XDG_RUNTIME_DIR;
+    process.env.XDG_RUNTIME_DIR = join(state, "runtime");
+    try {
+      expect(sessionOwnershipEnv("os-1", bin).XDG_RUNTIME_DIR).toBe(
+        join(state, "runtime"),
+      );
+      expect(
+        sessionOwnershipEnv("os-1", bin, { shims: false }).XDG_RUNTIME_DIR,
+      ).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = previous;
+    }
   });
 
   test("the shim never runs itself, even through a second PATH spelling", async () => {
