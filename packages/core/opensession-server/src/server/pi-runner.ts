@@ -1957,6 +1957,9 @@ interface PiAccountWalk {
   promptEntryId?: string;
   /** Resume completed messages and tool results instead of replaying the prompt. */
   continuation?: AgentSession["sessionManager"];
+  /** This turn already moved off an account over a native 429 that was not
+   *  the subscription's limit. Such a rotation happens at most once. */
+  throttleRotated?: boolean;
   cancelled?: boolean;
 }
 
@@ -2317,15 +2320,19 @@ async function* runPiAttempt(
 
   /** Take the rotation, or return false and let the caller surface the
    *  failure. Records the burn, audits the switch and closes this attempt's
-   *  audit; runPi resumes or replays the attempt on the next account. */
-  const takeAccountRotation = (errorText: string): boolean => {
+   *  audit; runPi resumes or replays the attempt on the next account. It
+   *  never sidelines: the caller decides that. */
+  const takeAccountRotation = (
+    errorText: string,
+    why = "usage limit",
+  ): boolean => {
     claudePoolRefusal = undefined;
     if (!pickedAccount || (sawStreamedOutput && !session?.sessionManager))
       return false;
     const next = nextPoolAccount();
     if (!next) return false;
     console.warn(
-      `[pi-runner] usage limit on ${pickedAccount.label} account "${pickedAccount.name}" ` +
+      `[pi-runner] ${why} on ${pickedAccount.label} account "${pickedAccount.name}" ` +
         `(${parsed.modelID}): retrying this turn on "${next.name}"`,
     );
     audit({
@@ -3872,6 +3879,25 @@ async function* runPiAttempt(
     // would only ever engage on pre-init failures. A mid-turn limit retains
     // the native session so the next account continues completed work.
     if (terminalUsageLimit && takeAccountRotation(String(terminal.content))) {
+      return;
+    }
+    // A native 429 that was not the subscription's limit (its unified status
+    // was not "rejected") went to pi's retry. When pi gave up on it, try the
+    // turn once on another account. The account is not benched: its limit
+    // is not spent, so other runs may still use it. Once per turn, so a
+    // throttle across the whole pool ends the turn instead of walking every
+    // account; a strict pin never rotates (nextPoolAccount).
+    if (
+      terminal.type === "error" &&
+      !terminalUsageLimit &&
+      !walk.throttleRotated &&
+      anthropicTransport === "native" &&
+      pickedAccount?.pool === "claude" &&
+      nativeLimit429() !== undefined &&
+      /\b429\b/.test(terminalMessage) &&
+      takeAccountRotation(String(terminal.content), "rate limit")
+    ) {
+      walk.throttleRotated = true;
       return;
     }
     // The walk asked the Claude pool for another account and it had none:

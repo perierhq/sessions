@@ -1964,6 +1964,7 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     { failure: "limit", streamed: false, strict: true },
     { failure: "limit-no-header", streamed: false, strict: false },
     { failure: "throttled", streamed: false, strict: false },
+    { failure: "throttled", streamed: false, strict: true },
     { failure: "overloaded", streamed: false, strict: false },
   ])("account walk %j", async ({ failure, streamed, strict }) => {
     const {
@@ -2004,11 +2005,29 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       ).toEqual({ system: [{ type: "text", text: to }] });
     }
 
+    if (failure === "throttled" && !strict) {
+      // A 429 whose unified status says it is not the subscription's limit
+      // went to pi's retry. Once pi gave up, the turn moves to another
+      // account, but the throttled one is not benched.
+      expect(usedTokens).toEqual([first.token, second.token]);
+      expect(errors).toHaveLength(0);
+      expect(events.find((event) => event.type === "done")).toMatchObject({
+        result: "ok",
+      });
+      expect(sidelines()[`${first.id}:${model}`]).toBeUndefined();
+      expect(
+        warnings.some((message) =>
+          message.startsWith(
+            `[pi-runner] rate limit on Claude account "${first.id}"`,
+          ),
+        ),
+      ).toBe(true);
+      return;
+    }
     if (failure === "overloaded" || failure === "throttled") {
-      // Transient overload, or a 429 whose unified status says it is not
-      // the subscription's limit: pi's retry owns it, so the account is
-      // neither sidelined nor rotated off, and the turn's failure does not
-      // read as exhaustion.
+      // Transient overload, or a throttle under a strict pin: neither
+      // sidelined nor rotated off, and the turn's failure does not read as
+      // exhaustion.
       expect(usedTokens).toEqual([first.token]);
       expect(errors).toHaveLength(1);
       expect(errors[0].usageLimitExhausted).toBeUndefined();
@@ -2156,6 +2175,27 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       accountAffinityKey: `other-${suffix}`,
     });
     expect(fake.usedTokens[3]).toBe(accounts[1].token);
+  });
+
+  test("a throttle moves a turn to another account at most once", async () => {
+    const {
+      suffix,
+      accounts: [a, b, c],
+    } = writePool(3);
+    const throttled = rateLimited("allowed_warning");
+    const fake = fakeNativeSdk((token) =>
+      token === c.token ? undefined : throttled,
+    );
+    const { errors } = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}`,
+      accountAffinityKey: `affinity-${suffix}`,
+    });
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].content).toBe(`pi: ${rateLimitBody}`);
+    expect(errors[0].usageLimitExhausted).toBeUndefined();
+    expect(sidelines()[`${a.id}:${model}`]).toBeUndefined();
+    expect(sidelines()[`${b.id}:${model}`]).toBeUndefined();
   });
 
   test("a remembered pool account yields to the user's own subscription once it resets", async () => {
