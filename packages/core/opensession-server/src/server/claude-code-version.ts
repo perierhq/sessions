@@ -1,12 +1,13 @@
 /**
  * Keep the installed Claude Code CLI at or above the version this release
- * needs.
+ * expects.
  *
- * The Anthropic provider paths run every Claude turn through the installed
- * `claude` binary (config `paths.claudeBin`), not a bundled copy. The installer
- * only puts it on the box once, so a server update that starts using a newer
- * Claude model can leave that binary behind; the API then rejects every turn
- * with "Claude Code <x> does not support this model". Bump
+ * Model turns no longer run through it (pi calls Anthropic directly on a pool
+ * token), but the installed `claude` binary (config `paths.claudeBin`) still
+ * mints pool tokens with `claude setup-token`, and tools a run spawns with
+ * claudeCliEnv (deepsec, for one) drive it with a pool token. The installer
+ * only puts it on the box once, so a CLI too old for a newer Claude model
+ * fails those tools with "Claude Code <x> does not support this model". Bump
  * MIN_CLAUDE_CODE_VERSION in the release that needs a newer CLI, and every
  * install upgrades on its next boot, whichever updater moved the code.
  *
@@ -141,12 +142,12 @@ export function startClaudeCodeUpgrade(): Promise<ClaudeCodeUpgradeResult | null
         break;
       case "missing":
         console.warn(
-          `[claude-code] CLI not runnable; Claude turns need >= ${MIN_CLAUDE_CODE_VERSION}: ${result.error}`,
+          `[claude-code] CLI not runnable; setup tokens and claudeCliEnv tools need >= ${MIN_CLAUDE_CODE_VERSION}: ${result.error}`,
         );
         break;
       case "failed":
         console.error(
-          `[claude-code] ${result.from} is older than ${MIN_CLAUDE_CODE_VERSION} and \`claude update\` did not fix it; newer Claude models will fail: ${result.error}`,
+          `[claude-code] ${result.from} is older than ${MIN_CLAUDE_CODE_VERSION} and \`claude update\` did not fix it; tools that drive it may fail on newer Claude models: ${result.error}`,
         );
         audit({ type: "claude_code_upgrade_failed", ...result });
         break;

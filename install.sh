@@ -624,8 +624,8 @@ fi
 # Pi is bundled with Open Session, while the subscription-backed provider paths
 # also use two external CLIs:
 #
-#   claude    the bundled Anthropic bridge execs it, and `claude setup-token`
-#             is how you mint an account token.
+#   claude    `claude setup-token` is how you mint an account token, and
+#             tools a run spawns with a pool token drive it.
 #   codex     `codex login --device-auth` backs the ChatGPT sign-in in the UI
 #             (codex-device-login.ts).
 #

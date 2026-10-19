@@ -5,11 +5,11 @@ The default simple-mode artefact centres on an executable built with
 all nine process roles from one argv and embeds the prebuilt frontend and
 the simulator Portal viewer. The
 release adds Worker and native sidecars beside that executable. It boots and
-serves the UI with no runtime interpreter on `PATH`; Anthropic turns still
-require the `claude` CLI, and the ChatGPT path requires `codex`. The Pi engine
-and its Anthropic bridge are compiled in and run in-process. The `--source` install (a
-git checkout + `bun install`) stays as the self-development and contributor
-path.
+serves the UI with no runtime interpreter on `PATH`; minting Claude account
+tokens needs the `claude` CLI, and the ChatGPT path requires `codex`. The Pi
+engine and its provider adapters are compiled in and run in-process. The
+`--source` install (a git checkout + `bun install`) stays as the
+self-development and contributor path.
 
 ## Build
 
@@ -103,19 +103,19 @@ transport sidecars prevent the service or gateway from becoming ready.
 session-kernel Workers, they are bundled JavaScript files beside the executable
 because `bun build --compile` does not embed Worker entrypoints.
 
-**External: the `claude` CLI.** The Anthropic bridge is the Claude Agent SDK
-running in-process (`src/server/anthropic-bridge.ts`), and the SDK shells out
-to the installed `claude` binary (`OPENSESSION_CLAUDE_BIN`, default `claude` on
-`PATH`) for every `pi/anthropic/*` turn. The binary is not embedded: the
-installer puts it on the box (`--no-engine` skips it) and `doctor` reports it
-when missing. The Pi engine and its provider adapters compile into the binary
-and resolve from the embedded graph, so no plugins sidecar ships beside it.
+**External: the `claude` CLI.** `pi/anthropic/*` turns call Anthropic directly
+through Pi's provider and never start the CLI. The installed `claude` binary
+(`OPENSESSION_CLAUDE_BIN`, default `claude` on `PATH`) mints Claude account
+tokens (`claude setup-token`) and backs tools a run spawns with a pool token
+(`claudeCliEnv`). The binary is not embedded: the installer puts it on the box
+(`--no-engine` skips it) and `doctor` reports it when missing. The Pi engine
+and its provider adapters compile into the binary and resolve from the
+embedded graph, so no plugins sidecar ships beside it.
 
-Other native addons in the dependency tree (`@libsql/*`, `@cbor-extract/*`,
-`@anthropic-ai/claude-agent-sdk` audio-capture, `@mariozechner/clipboard`,
-`@earendil-works/pi-tui`) are not on the server boot/serve path, so the binary
-boots and serves without them; features that reach one only need it when that
-feature runs. The build-only natives (`@tailwindcss/oxide`, `lightningcss`,
+Other native addons in the dependency tree (`@cbor-extract/*`,
+`@mariozechner/clipboard`, `@earendil-works/pi-tui`) are not on the server
+boot/serve path, so the binary boots and serves without them; features that
+reach one only need it when that feature runs. The build-only natives (`@tailwindcss/oxide`, `lightningcss`,
 `@parcel/watcher`) are never used in prebuilt-frontend mode.
 
 ## What doesn't work in this mode

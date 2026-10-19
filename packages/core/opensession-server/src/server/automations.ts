@@ -308,7 +308,7 @@ export interface Automation {
    * own `claude` CLI (the deepsec scans): the scan must run on Open Session's
    * account pool, never on the host CLI's own login (which logged out
    * 2026-08-08 and left every scan analyzing zero batches while recording
-   * ok). Same env-exposure class as a meridian-backed run.
+   * ok).
    */
   claudeCliEnv?: boolean;
   /**

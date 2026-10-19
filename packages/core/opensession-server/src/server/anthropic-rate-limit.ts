@@ -1,6 +1,6 @@
 /**
- * Anthropic's unified (subscription) rate-limit headers, for the "native"
- * anthropicTransport.
+ * Anthropic's unified (subscription) rate-limit headers, for pi/anthropic/*
+ * turns on a Claude pool token.
  *
  * On a Claude subscription token every response carries
  * `anthropic-ratelimit-unified-status` ("allowed", "allowed_warning" or

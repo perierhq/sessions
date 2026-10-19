@@ -15,8 +15,8 @@ supervised session kernel, and run processes provide:
   messages, Linear issues, Plain support tickets, GitHub activity, and Stripe
   disputes.
 - **One production engine**, Pi. Anthropic models use Claude subscription
-  accounts through the Claude Agent SDK and installed `claude` CLI; OpenAI
-  models use ChatGPT subscription accounts. Configured API-key providers also
+  accounts through Pi's own Anthropic provider; OpenAI models use ChatGPT
+  subscription accounts. Configured API-key providers also
   run through Pi ([engines.md](engines.md)).
 - **Automations**: stored prompts triggered by events or cron, with runner-level
   environment, tool, and credential controls ([plain.md](plain.md) documents a

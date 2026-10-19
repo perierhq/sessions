@@ -1,6 +1,6 @@
 /**
  * Prompt compatibility for pi's own Anthropic provider when it runs on a
- * Claude subscription token (the "native" anthropicTransport).
+ * Claude subscription token (every pi/anthropic/* turn).
  *
  * Subscription requests reword three lines of pi's built-in "Pi
  * documentation" prompt section. The rewrite is exact-match on whole lines

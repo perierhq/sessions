@@ -762,11 +762,10 @@ async function loadAgents(): Promise<AgentModule[]> {
 // any of it — the already-running agents/timers keep going untouched (only a
 // real restart reloads their code, and that restart is now graceful, below).
 if (!g.__opensessionBooted) {
-  // Pi runs Claude Max through the installed `claude` CLI (the Anthropic
-  // bridge hands the Agent SDK pathToClaudeCodeExecutable); nothing bundled
-  // stands in for it. Warn at boot, loudly, if it is not a usable executable,
-  // but keep serving: the operator fixes it by installing the CLI, not by
-  // restarting a dead server.
+  // Model turns no longer need the `claude` CLI: pi talks to Anthropic
+  // directly on a pool token. The CLI still mints those tokens
+  // (`claude setup-token`) and backs tools a run spawns with claudeCliEnv,
+  // so note at boot when it is missing, but keep serving.
   {
     const { configuredPaths } = await import("./src/server/config");
     const { existsSync } = await import("fs");
@@ -774,8 +773,8 @@ if (!g.__opensessionBooted) {
     const claudeBin =
       configured && configured !== "claude" ? configured : Bun.which("claude");
     if (!claudeBin || !existsSync(claudeBin)) {
-      console.error(
-        "[engine] the `claude` CLI is not installed — Anthropic turns cannot run.\n" +
+      console.warn(
+        "[engine] the `claude` CLI is not installed — `claude setup-token` and tools that use it will not work.\n" +
           "[engine] install it: curl -fsSL https://claude.ai/install.sh | bash",
       );
     } else {
@@ -903,8 +902,9 @@ if (!g.__opensessionBooted) {
     // Archive triage sessions when their Plain ticket is done.
     startPlainArchiveSweep();
 
-    // Claude turns run through the installed `claude` CLI; bring it up to the
-    // version this release needs (claude-code-version.ts). Background, async.
+    // Keep the installed `claude` CLI (setup tokens, claudeCliEnv tools) at
+    // the version this release expects (claude-code-version.ts). Background,
+    // async.
     void startClaudeCodeUpgrade();
 
     // Unattended installs stage a Claude token in the env or a file; import it

@@ -420,7 +420,7 @@ export async function onboard(opts: OnboardOptions = {}): Promise<number> {
     wrote(path, backedUp ? `(backed up to ${backedUp})` : undefined);
   }
 
-  // Engine on. This flag gates the Anthropic bridge and whether third-party
+  // Engine on. This flag gates the engine and whether third-party
   // provider models reach the picker, and nothing used to write it: a fresh
   // install booted "healthy" and then failed its first turn pointing at a file
   // no code path created. Only seeded when absent — an operator who turned the

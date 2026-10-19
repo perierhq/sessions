@@ -227,8 +227,7 @@ export interface RunAgentOpts {
    * CLI's own login (which scans must never depend on; it logged out
    * 2026-08-08 and every scan silently analyzed zero batches). Set by
    * security scans and pool-cli-flagged automations only; pi engine,
-   * per-session servers only (a meridian-backed run already carries the
-   * same-class token and wins).
+   * runs on this server only (never a Sandbox).
    */
   claudeCliEnv?: boolean;
   /**
