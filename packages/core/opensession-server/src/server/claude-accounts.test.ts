@@ -649,6 +649,8 @@ describe("a usage poll releases model-scoped sidelines it disproves", () => {
           blind("weekly-headroom"),
           blind("weekly-spent"),
           blind("fable-scoped"),
+          blind("no-weekly-window"),
+          blind("five-hour-missing"),
         ],
       }),
     );
@@ -669,6 +671,26 @@ describe("a usage poll releases model-scoped sidelines it disproves", () => {
     accounts.markExhausted("weekly-spent", sonnet, statedReset());
     accounts.__applyUsagePollForTest("weekly-spent", poll(100));
     expect(sidelinedFor("weekly-spent", sonnet)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
+  });
+
+  test("a plan with no 7-day window is released on 5-hour headroom alone", () => {
+    accounts.markExhausted("no-weekly-window", sonnet, statedReset());
+    accounts.__applyUsagePollForTest("no-weekly-window", {
+      ...poll(0),
+      sevenDay: null,
+    });
+    expect(sidelinedFor("no-weekly-window", sonnet)).toBeLessThan(1000);
+  });
+
+  test("a poll without a 5-hour window releases nothing", () => {
+    accounts.markExhausted("five-hour-missing", sonnet, statedReset());
+    accounts.__applyUsagePollForTest("five-hour-missing", {
+      ...poll(27),
+      fiveHour: null,
+    });
+    expect(sidelinedFor("five-hour-missing", sonnet)).toBeGreaterThan(
       40 * 60 * 60 * 1000,
     );
   });

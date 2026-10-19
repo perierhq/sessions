@@ -254,21 +254,25 @@ function releaseDisprovenSidelines(
       }
       continue;
     }
-    // Only release on windows the poll actually reported: a missing window
-    // is no evidence of headroom.
+    // Release only on evidence: the 5-hour window must be reported. A
+    // successful poll without a 7-day window means the plan has no weekly
+    // cap, so only the 5-hour window governs it; when the 7-day window is
+    // reported it must show headroom too.
     const reported = (w: UsageWindow | null | undefined) =>
       w?.utilization !== null && w?.utilization !== undefined;
-    if (!reported(usage.sevenDay) || !reported(usage.fiveHour)) continue;
-    const sevenDay = currentUtilization(usage.sevenDay);
+    if (!reported(usage.fiveHour)) continue;
     const fiveHour = currentUtilization(usage.fiveHour);
+    const sevenDay = reported(usage.sevenDay)
+      ? currentUtilization(usage.sevenDay)
+      : null;
     if (
-      sevenDay < WEEKLY_EXHAUSTED_UTILIZATION &&
+      (sevenDay === null || sevenDay < WEEKLY_EXHAUSTED_UTILIZATION) &&
       fiveHour < EXHAUSTED_UTILIZATION
     ) {
       map.delete(key);
       changed = true;
       console.log(
-        `[claude-accounts] ${account.name} usable again for ${model} (7d at ${sevenDay}%, 5h at ${fiveHour}%${via})`,
+        `[claude-accounts] ${account.name} usable again for ${model} (${sevenDay === null ? "no 7d window" : `7d at ${sevenDay}%`}, 5h at ${fiveHour}%${via})`,
       );
     }
   }
