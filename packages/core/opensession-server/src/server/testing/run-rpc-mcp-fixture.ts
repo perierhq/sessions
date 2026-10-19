@@ -2,20 +2,29 @@
  * A stand-in gateway for the run-rpc MCP path, for tests and the relay
  * process measurement (scripts/measure-mcp-relay.ts).
  *
- * Serves the production run-rpc handler on a private unix socket and a
- * minimal /rpc-ws bridge over the same dispatch core, with a fake set of
+ * Serves the production run-rpc handler on a private unix socket and the
+ * production /rpc-ws route (run-ws.ts: upgrade auth with a registered
+ * hostId + wsToken, frame dispatch, close handling), with a fake set of
  * opensession-* servers. Nothing binds until startFakeRunRpcGateway().
  */
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
 import {
-  dispatchRunRpc,
   handleRpc,
   registerInteractiveMcpBuilder,
   registerRunToken,
   unregisterRunToken,
 } from "../run-rpc";
+import {
+  handleSandboxWsUpgrade,
+  registerRunWsHost,
+  sandboxWsClose,
+  sandboxWsMessage,
+  sandboxWsOpen,
+  unregisterRunWsHost,
+} from "../run-ws";
 
 export interface FakeToolCall {
   server: string;
@@ -27,12 +36,30 @@ export interface FakeRunRpcGateway {
   readonly token: string;
   readonly socket: string;
   readonly wsUrl: string;
+  /** The run host id and wsToken the /rpc-ws upgrade accepts. */
+  readonly wsHost: string;
+  readonly wsAuth: string;
   /** Every tool call that reached a server, in order. */
   readonly calls: FakeToolCall[];
   /** Tools whose call saw its abort signal fire. */
   readonly aborted: string[];
   /** rpc-ws connections opened so far. */
   wsConnections(): number;
+  /** rpc-ws connections open right now. */
+  openWsConnections(): number;
+  /** Closes every rpc-ws connection from the gateway side, as a gateway
+   *  restart or a network drop would. */
+  dropWsConnections(): void;
+  /** Forget the run token, as a restarted gateway does until boot recovery
+   *  re-registers it; `restoreToken` registers it again. */
+  forgetToken(): void;
+  restoreToken(): void;
+  /** Keepalive pings received over rpc-ws so far. */
+  wsPings(): number;
+  /** Unbinds the unix socket, as a gateway that is restarting has;
+   *  `resumeSocket` binds it again. */
+  pauseSocket(): void;
+  resumeSocket(): void;
   /** Names bound for the run; drop one to simulate a policy unbinding it. */
   bound: Set<string>;
   stop(): Promise<void>;
@@ -47,8 +74,12 @@ export interface FakeRunRpcGateway {
 export async function startFakeRunRpcGateway(opts: {
   dir: string;
   names: readonly string[];
+  /** Where to bind run-rpc; default `<dir>/rpc.sock`. */
+  socket?: string;
 }): Promise<FakeRunRpcGateway> {
   const token = crypto.randomUUID();
+  const wsHost = `rh-fixture-${crypto.randomUUID()}`;
+  const wsAuth = crypto.randomUUID();
   const calls: FakeToolCall[] = [];
   const aborted: string[] = [];
   const bound = new Set(opts.names);
@@ -93,44 +124,42 @@ export async function startFakeRunRpcGateway(opts: {
     Object.fromEntries([...bound].map((name) => [name, build(name)])),
   );
 
-  const socket = join(opts.dir, "rpc.sock");
-  const unix = Bun.serve({
-    unix: socket,
-    idleTimeout: 0,
-    fetch: (req: Request) => handleRpc(req),
-  } as unknown as Parameters<typeof Bun.serve>[0]);
+  const socket = opts.socket ?? join(opts.dir, "rpc.sock");
+  const bindUnix = () =>
+    Bun.serve({
+      unix: socket,
+      idleTimeout: 0,
+      fetch: (req: Request) => handleRpc(req),
+    } as unknown as Parameters<typeof Bun.serve>[0]);
+  let unix: ReturnType<typeof Bun.serve> | undefined = bindUnix();
 
-  // Same frame protocol as run-ws.ts's rpc-ws handler.
+  // The gateway's own /rpc-ws route, wired the way opensession.ts wires it.
+  registerRunWsHost(wsHost, wsAuth);
   let wsOpened = 0;
-  const aborts = new Map<string, AbortController>();
-  const ws = Bun.serve<undefined, never>({
+  let pings = 0;
+  const live = new Set<{ close(): void }>();
+  const ws = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch(req, server) {
-      if (new URL(req.url).pathname !== "/rpc-ws")
-        return new Response("not found", { status: 404 });
-      return server.upgrade(req, { data: undefined })
-        ? undefined
-        : new Response("upgrade failed", { status: 400 });
+      return (
+        handleSandboxWsUpgrade(req, server, new URL(req.url).pathname) ??
+        undefined
+      );
     },
     websocket: {
-      open() {
+      open(sock) {
         wsOpened++;
+        live.add(sock);
+        sandboxWsOpen(sock);
       },
-      async message(sock, message) {
-        const frame = JSON.parse(String(message));
-        if (frame?.t === "ping") return void sock.send('{"t":"pong"}');
-        const id = String(frame?.id || "");
-        if (frame?.t === "cancel") return void aborts.get(id)?.abort();
-        const abort = new AbortController();
-        aborts.set(id, abort);
-        const d = await dispatchRunRpc(String(frame.path), frame, abort.signal);
-        const [status, body] =
-          d.kind === "immediate" ? [d.status, d.body] : [200, await d.done];
-        aborts.delete(id);
-        try {
-          sock.send(JSON.stringify({ id, status, body }));
-        } catch {}
+      message(sock, message) {
+        if (String(message) === '{"t":"ping"}') pings++;
+        sandboxWsMessage(sock, message as string | Buffer);
+      },
+      close(sock) {
+        live.delete(sock);
+        sandboxWsClose(sock);
       },
     },
   });
@@ -139,13 +168,31 @@ export async function startFakeRunRpcGateway(opts: {
     token,
     socket,
     wsUrl: `ws://127.0.0.1:${ws.port}/rpc-ws`,
+    wsHost,
+    wsAuth,
     calls,
     aborted,
     bound,
     wsConnections: () => wsOpened,
+    openWsConnections: () => live.size,
+    dropWsConnections() {
+      for (const sock of [...live]) sock.close();
+    },
+    forgetToken: () => unregisterRunToken(token),
+    restoreToken: () => registerRunToken(token, { sessionId: "relay-fixture" }),
+    wsPings: () => pings,
+    pauseSocket() {
+      unix?.stop(true);
+      unix = undefined;
+      rmSync(socket, { force: true });
+    },
+    resumeSocket() {
+      unix ??= bindUnix();
+    },
     async stop() {
-      unix.stop(true);
+      unix?.stop(true);
       ws.stop(true);
+      unregisterRunWsHost(wsHost);
       unregisterRunToken(token);
       registerInteractiveMcpBuilder(() => ({}));
     },

@@ -81,7 +81,12 @@ async function runtimeFor(
   const mounts = runRpcMcpMounts({
     names,
     target: opts.ws
-      ? { wsUrl: gw.wsUrl, wsHost: "host-1", wsAuth: "ws", token: gw.token }
+      ? {
+          wsUrl: gw.wsUrl,
+          wsHost: gw.wsHost,
+          wsAuth: gw.wsAuth,
+          token: gw.token,
+        }
       : { socket: gw.socket, token: gw.token },
     mode,
     proxyArgv: mcpProxyArgv(process.execPath, PROXY_ENTRY),
