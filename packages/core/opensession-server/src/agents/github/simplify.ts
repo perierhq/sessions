@@ -91,6 +91,7 @@ export async function runSimplify(
     const worktreeDir = await createWorktreeForPrBranch(
       pr.headRef,
       pr.ghRepo ? repoForFullName(pr.ghRepo)?.id : undefined,
+      { sessionId: bksId },
     );
     console.log(`[github] Simplifying PR #${pr.number}`);
 

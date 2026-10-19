@@ -158,7 +158,7 @@ export async function runIssueSession(
       (a) => a.eventKey === PR_EVENT_KEY,
     )?.model;
     const title = `Issue #${issueNumber} ${issue.title}`.slice(0, 100);
-    await announceGithubRun({
+    const bksId = await announceGithubRun({
       prNumber: issueNumber,
       ghRepo,
       kind: "issue",
@@ -206,6 +206,7 @@ export async function runIssueSession(
       branch,
       baseRef,
       repo.id,
+      { sessionId: bksId },
     );
     console.log(
       `[github] Issue #${issueNumber} session for @${args.author} on ${branch}`,

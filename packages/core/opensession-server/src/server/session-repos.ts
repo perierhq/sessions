@@ -877,11 +877,10 @@ export async function switchPrimaryRepo(
     const worktrees = await listWorktrees(target.id);
     wtPath =
       worktrees.find((w) => w.branch === branch)?.path ||
-      (await createWorktree(
-        branch,
-        target.id,
-        gitEnv ? { gitEnv } : undefined,
-      ));
+      (await createWorktree(branch, target.id, {
+        ...(gitEnv ? { gitEnv } : {}),
+        sessionId: session.id,
+      }));
   }
 
   // Drop the target from attached repos if it was attached — it's the primary now.

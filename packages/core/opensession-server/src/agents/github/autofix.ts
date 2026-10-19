@@ -295,6 +295,7 @@ export async function runAutoFix(
     const worktreeDir = await createWorktreeForPrBranch(
       pr.headRef,
       pr.ghRepo ? repoForFullName(pr.ghRepo)?.id : undefined,
+      { sessionId: bksId },
     );
 
     // Baseline to the CURRENT head so an iteration that pushes nothing compares

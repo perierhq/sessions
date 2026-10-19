@@ -98,6 +98,7 @@ export async function runAdversarial(
     const worktreeDir = await createWorktreeForPrBranch(
       details.headRefName,
       pr.ghRepo ? repoForFullName(pr.ghRepo)?.id : undefined,
+      { sessionId: bksId },
     );
     console.log(`[github] Adversarial review on PR #${pr.number}`);
 

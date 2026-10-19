@@ -155,6 +155,7 @@ import {
   indexedWorkspaceSessions,
 } from "../session-list-store";
 import { buildAtCurrentSessionListRevision } from "../session-list-response-revision";
+import { sessionSetupFailure } from "../worktree-setup-status";
 import {
   loadSidebarSessionScopeContext,
   parseSidebarSessionScope,
@@ -567,6 +568,9 @@ function enrichSession(
     // Terminal failure of the last run (credits/limits/API) — persisted
     // on opensession session files, in-memory for slack/linear sessions.
     lastRunError: runErrors.get(s.id) || s.lastRunError,
+    // Fresh-worktree setup failed or was stopped at its timeout, so the
+    // workspace may be missing dependencies.
+    setupFailure: sessionSetupFailure(s),
   };
 }
 
@@ -685,6 +689,7 @@ export function sessionListRow(
   if (!row.repoLess) delete row.repoLess;
   if (!row.titleOverridden) delete row.titleOverridden;
   if (!row.workspacePreparing) delete row.workspacePreparing;
+  if (!row.setupFailure) delete row.setupFailure;
   // Older hand-written/test session files can violate the current wire type.
   // Do not let one malformed automation id crash clients sorting the list.
   if (typeof row.automation !== "string" || !row.automation.trim())
@@ -2061,6 +2066,23 @@ export async function handleSessionsRoutes(
           (s) => s.id !== session.id && s.workspaceId === session.workspaceId,
         );
         if (ws && !ws.key && members.length === 0) await deleteWorkspace(ws.id);
+      }
+      // Setup still running for the session's worktree goes with it, unless
+      // a live sibling session still works in that tree.
+      try {
+        const { hasSessionOwnedResources, stopSessionOwnedResources } =
+          await import("../session-resources");
+        if (hasSessionOwnedResources())
+          await stopSessionOwnedResources(
+            session,
+            await getSessionListSnapshotAsync(),
+            { reason: "removed" },
+          );
+      } catch (error) {
+        console.warn(
+          `[session-resources] cleanup failed after deleting ${session.id}:`,
+          error,
+        );
       }
       if (cleanWorktree && session.worktreeDir && session.branch) {
         await removeWorktree(

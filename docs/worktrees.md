@@ -63,6 +63,19 @@ of that attempt but does not block the session. Interactive creation starts this
 work in the background, so the first turn may begin before dependencies finish
 installing.
 
+Setup has a time limit: 15 minutes for all of its steps together, or the repo's
+`worktreeSetupTimeoutMinutes` (at most 1440, a day). When the limit passes, Open Session stops the
+setup's whole process tree (its systemd scope on Linux, its process group
+elsewhere). A setup that failed or was stopped shows on the session's workspace
+summary until setup runs again for that worktree. Archiving or deleting the
+session also stops a setup still running in its worktree, unless another live
+session uses the same worktree. The lifecycle reaper, which runs every five
+minutes, stops setups whose worktree owners are all archived or gone, after a
+ten-minute grace for a session still being created; it never stops a setup the
+running gateway is still timing. On Linux with workload scoping, the gateway
+also stops setup scopes at startup that no record tracks and that have run
+longer than any repo's limit.
+
 Commit `.agents/setup` and `.agents/portals.json` to let each workspace
 provision itself and expose its app as a Portal on demand. This also lets an
 agent open its own change in a browser. See [repo-lifecycle.md](repo-lifecycle.md).

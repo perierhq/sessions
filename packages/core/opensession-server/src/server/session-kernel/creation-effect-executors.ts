@@ -143,12 +143,15 @@ type BranchExecutorDependencies = {
       base?: string;
       isolated?: boolean;
       gitEnv?: Record<string, string>;
+      /** The session being created: its worktree setup runs on its behalf. */
+      sessionId?: string;
     },
   ) => Promise<string>;
   createWorktreeForExistingBranch?: (
     branch: string,
     project: string,
     gitEnv?: Record<string, string>,
+    setup?: { sessionId?: string },
   ) => Promise<string>;
   resolveCredential?: (principal: string) => Promise<GithubCredential | null>;
   destinationExists?: (path: string) => boolean;
@@ -189,11 +192,13 @@ async function createExistingWorktree(
   branch: string,
   project: string,
   gitEnv?: Record<string, string>,
+  setup?: { sessionId?: string },
 ): Promise<string> {
   return (await import("../worktree")).createWorktreeForExistingBranch(
     branch,
     project,
     gitEnv,
+    setup,
   );
 }
 
@@ -276,11 +281,14 @@ export async function executeCreationBranchPrepare(
         ? await (
             dependencies.createWorktreeForExistingBranch ??
             createExistingWorktree
-          )(payload.branch, payload.project, credential?.env)
+          )(payload.branch, payload.project, credential?.env, {
+            sessionId: item.sessionId,
+          })
         : await dependencies.createWorktree(payload.branch, payload.project, {
             ...(payload.baseBranch ? { base: payload.baseBranch } : {}),
             ...(payload.isolated ? { isolated: true } : {}),
             ...(credential ? { gitEnv: credential.env } : {}),
+            sessionId: item.sessionId,
           }));
   if (acceptedPath !== payload.worktreePath)
     throw new CreationEffectIndeterminateError(

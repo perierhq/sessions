@@ -321,7 +321,7 @@ export async function executeScan(
       const worktrees = await listWorktrees(repo.id);
       const cwd =
         worktrees.find((w) => w.branch === branch)?.path ||
-        (await createWorktree(branch, repo.id));
+        (await createWorktree(branch, repo.id, { sessionId: bksId }));
 
       const prompt = buildScanPrompt(repo, profile, scan.instructions);
 

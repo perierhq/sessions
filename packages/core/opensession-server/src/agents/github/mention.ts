@@ -367,7 +367,7 @@ export async function runConversationalMention(
     )?.model;
     const link = `[📺 open session](${sessionUrl(prNumber, "mention", ghRepo)})`;
     const title = `Mention · PR #${prNumber} ${details.title}`.slice(0, 100);
-    await announceGithubRun({
+    const bksId = await announceGithubRun({
       prNumber,
       ghRepo,
       kind: "mention",
@@ -415,6 +415,7 @@ export async function runConversationalMention(
     const worktreeDir = await createWorktreeForPrBranch(
       headRef,
       ghRepo ? repoForFullName(ghRepo)?.id : undefined,
+      { sessionId: bksId },
     );
     console.log(
       `[github] Mention reply on PR #${prNumber} (${args.kind}) from @${args.author}`,
@@ -510,7 +511,7 @@ async function runFollowupMention(
     0,
     100,
   );
-  await announceGithubRun({
+  const bksId = await announceGithubRun({
     prNumber,
     ghRepo,
     kind: "followup",
@@ -533,6 +534,7 @@ async function runFollowupMention(
     branch,
     baseRef,
     ghRepo ? repoForFullName(ghRepo)?.id : undefined,
+    { sessionId: bksId },
   );
   console.log(
     `[github] Follow-up mention on ${stateLabel} PR #${prNumber} from @${args.author} → branch ${branch}`,
