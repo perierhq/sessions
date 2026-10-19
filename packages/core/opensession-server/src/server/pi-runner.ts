@@ -15,7 +15,6 @@ import { join, resolve, sep } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
-  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
@@ -46,13 +45,8 @@ import {
   assembleRunSystemPrompt,
   buildRunInstructions,
   buildSessionContext,
-  sessionLink,
 } from "./run-instructions";
-import { stampIncidentDeclaration } from "./incident-declarations";
-import {
-  guardStripeApprovalCall,
-  stripeApprovalsNote,
-} from "./stripe-approvals";
+import { stripeApprovalsNote } from "./stripe-approvals";
 import {
   logInjectedContext,
   logStandingContext,
@@ -87,22 +81,15 @@ import {
   prewarmPiSdk as prewarmPiSdkBinding,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
-import {
-  createMcpRuntime,
-  splitMcpMigrationBoundary,
-  type McpRuntime,
-} from "./mcp-runtime";
+import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
 import {
   expandSkillCommand,
   gatePstackSkills,
   skillSearchPaths,
 } from "./skill-paths";
 import {
-  makeRemoteGrepExecute,
-  makeRemoteToolOps,
   remoteAttachmentWriter,
   mirrorRemoteContext,
-  remoteCommandEnv,
   remoteWorkspaceForRun,
 } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
@@ -124,12 +111,6 @@ import {
   resolvePiRoutedModel,
 } from "./pi-model-routing";
 import {
-  makeGuardedGrepExecute,
-  makeGuardedToolOps,
-  shippedSkillRoots,
-} from "./pi-guarded-tools";
-import { makePiBashTool } from "./pi-bash-tool";
-import {
   aliasPiRun,
   claimPiRun,
   releasePiRun,
@@ -141,7 +122,6 @@ import {
   interruptPiThinkingForSteer,
   piCodemodeExtension,
   piResponseHasOutput,
-  piSteeringBoundaryTools,
   piToolNames,
 } from "./pi-steering";
 import { piGateReason } from "./pi-gate";
@@ -156,6 +136,13 @@ import {
 import { PiTurnLedger } from "./pi-turn-ledger";
 import { resolvePiRunAuthority } from "./pi-run-authority";
 import { buildPiBashEnv, piCliPoolEnv } from "./pi-run-env";
+import {
+  buildPiToolset,
+  piLocalToolNames,
+  piMcpRuntimeOptions,
+  piToolScopeRecord,
+  type PiSteerBoundary,
+} from "./pi-tools";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -213,6 +200,7 @@ export {
 export { piGateReason } from "./pi-gate";
 export { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
 export { piStreamEventRequiresAccountContinuation } from "./pi-account-walk";
+export { piLocalToolNames } from "./pi-tools";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -225,27 +213,6 @@ const PROVIDER = PI_PROVIDER;
  */
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
-}
-
-/**
- * The local workspace tools a run enables. Tool policy: ask mode is read-only
- * — no edit/write, and bash screened through ASK_BASH_PERMISSIONS
- * (askBashDenyReason), the same allowlist previous runner's ask agent enforces
- * engine-side. Shipping ask without bash at all was tried first and it blinded
- * every automation that assumed a shell for jq/git/gh reads (the
- * health-monitor incident, 2026-08-19). Code/scratch get the read set +
- * edit/write + the ungated custom bash. disableLocalWorkspaceTools
- * (engine-outside-sandbox) strips all local tools — pi has no sandbox mode,
- * but fail closed if a caller passes it.
- */
-export function piLocalToolNames(opts: {
-  isAsk: boolean;
-  disableLocalWorkspaceTools?: boolean;
-}): string[] {
-  if (opts.disableLocalWorkspaceTools) return [];
-  return opts.isAsk
-    ? ["read", "grep", "find", "ls", "bash"]
-    : ["read", "grep", "find", "ls", "edit", "write", "bash"];
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -616,147 +583,32 @@ async function* runPiAttempt(
     // turn. Pi only adapts its exact catalog into tool_search/tool_call. The
     // detached runner-host proxy shape remains solely at this named migration
     // boundary until Agent operation routing replaces it.
-    const mcpMounts = splitMcpMigrationBoundary(opts.inProcessMcp);
-    mcpRuntime = await createMcpRuntime({
-      mcpServers,
-      user,
-      mcpGrantUser: opts.mcpGrantUser,
-      sessionUrl: journal?.osSessionId
-        ? sessionLink(journal.osSessionId)
-        : undefined,
-      deniedToolIds: new Set(Object.keys(policy.disables)),
-      inProcessMcp: mcpMounts.sdk,
-      legacyProxyMcp: mcpMounts.legacyProxy,
-      // An incident this run declares names the session it came from, so the
-      // responder and the people in the channel can find the evidence.
-      rewriteArgs: (tool, args) => {
-        const link = journal?.osSessionId
-          ? sessionLink(journal.osSessionId)
-          : undefined;
-        const stamped = stampIncidentDeclaration(tool.name, args, link);
-        return stripeApprovals
-          ? guardStripeApprovalCall(tool, stamped, link)
-          : stamped;
-      },
-      onAudit: (e) =>
-        audit({
-          msg: "pi_mcp_call",
-          request_id: requestId,
-          session: journal?.osSessionId,
-          server: e.server,
-          tool: e.tool,
-          ok: e.ok,
-          ms: e.ms,
-        }),
-    });
+    mcpRuntime = await createMcpRuntime(
+      piMcpRuntimeOptions({ opts, policy, stripeApprovals, requestId }),
+    );
     mcpBridge = await createPiMcpBridge(mcpRuntime);
     const localTools = piLocalToolNames({
       isAsk,
       disableLocalWorkspaceTools: opts.disableLocalWorkspaceTools,
     });
-    // Every enabled name is derived from a custom definition below. Pi falls
-    // back to its in-process built-ins for a name without an override, so a
-    // separately maintained enabled-name list would be a containment escape.
-    const guardedOps = remote
-      ? makeRemoteToolOps(remote, shippedSkillRoots())
-      : makeGuardedToolOps(cwd);
-    const commandEnv = remote
-      ? remoteCommandEnv(
-          bashEnv,
-          remote,
-          runKey,
-          Boolean(opts.publicationPolicy),
-        )
-      : bashEnv;
-    let steeringBoundaryPending = false;
-    const baseCustomTools: ToolDefinition<any, any, any>[] = [
-      ...mcpBridge.discoveryTools,
-      ...mcpBridge.directTools,
-    ];
-    for (const name of localTools) {
-      switch (name) {
-        case "read":
-          baseCustomTools.push(
-            sdk.createReadToolDefinition(cwd, {
-              operations: guardedOps.read,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "grep": {
-          const base = sdk.createGrepToolDefinition(cwd);
-          baseCustomTools.push({
-            ...base,
-            execute: remote
-              ? makeRemoteGrepExecute(remote)
-              : makeGuardedGrepExecute(cwd, bashEnv, guardedOps.guard),
-          } as ToolDefinition<any, any, any>);
-          break;
-        }
-        case "find":
-          baseCustomTools.push(
-            sdk.createFindToolDefinition(cwd, {
-              operations: guardedOps.find,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "ls":
-          baseCustomTools.push(
-            sdk.createLsToolDefinition(cwd, {
-              operations: guardedOps.ls,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "edit":
-          baseCustomTools.push(
-            sdk.createEditToolDefinition(cwd, {
-              operations: guardedOps.edit,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "write":
-          baseCustomTools.push(
-            sdk.createWriteToolDefinition(cwd, {
-              operations: guardedOps.write,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "bash":
-          baseCustomTools.push(
-            makePiBashTool({
-              cwd,
-              env: commandEnv,
-              remote,
-              gated: bashGated,
-              askReadOnly: isAsk,
-              unattended: policy.unattended,
-              sessionId: journal?.osSessionId,
-              runKind: journal?.kind,
-              publicationPolicy: opts.publicationPolicy,
-              mergeGuard,
-              privateTermsGuard,
-              runSignal: abort.signal,
-              onAudit: (event) =>
-                audit({
-                  msg: `pi_command_${event.phase}`,
-                  request_id: requestId,
-                  run_key: runKey,
-                  session_id: journal?.osSessionId,
-                  run_kind: journal?.kind,
-                  model,
-                  ...event,
-                }),
-            }),
-          );
-          break;
-      }
-    }
-    const customTools = piSteeringBoundaryTools(
-      baseCustomTools,
-      () => steeringBoundaryPending,
-    );
-    // Codemode only orchestrates the tools above, so a run without any has
-    // nothing for a script to call.
-    const codemode = customTools.length > 0;
+    const boundary: PiSteerBoundary = { pending: false };
+    const { customTools, codemode } = buildPiToolset({
+      sdk,
+      opts,
+      remote,
+      bashEnv,
+      runKey,
+      requestId,
+      model,
+      localTools,
+      mcpBridge,
+      policy,
+      bashGated,
+      mergeGuard,
+      privateTermsGuard,
+      abort,
+      boundary,
+    });
 
     // What the loop reads from the checkout itself (AGENTS.md, local
     // instructions, the checkout's skills). A Sandbox checkout is mirrored
@@ -799,25 +651,7 @@ async function* runPiAttempt(
       sessionId: unifiedSessionId,
       turnId: opts.promptEntryId || opts.startToken,
       source: "mcp-servers",
-      value: {
-        engine: "pi",
-        // Same contract as the choke point's: a non-array scope reads as
-        // "all" and must never be spread.
-        mcpScope: Array.isArray(mcpServers)
-          ? [...mcpServers].sort()
-          : (mcpServers ?? "all"),
-        inProcess: Object.keys(opts.inProcessMcp || {}).sort(),
-        // Post-policy catalog: denied ids are dropped before a definition is
-        // ever built (pi-mcp-bridge), so these are the MCP tools the model
-        // can actually reach through the two discovery tools.
-        mcpTools: mcpBridge.tools.map((t) => t.name).sort(),
-        discovery: mcpBridge.discoveryTools.map((t) => t.name).sort(),
-        direct: mcpBridge.directTools.map((t) => t.name).sort(),
-        // Pi's local tools are enabled by name and every name is backed by a
-        // guarded custom definition (see the enabled-name list above).
-        local: [...localTools].sort(),
-        strip: Object.keys(policy.disables).sort(),
-      },
+      value: piToolScopeRecord({ opts, mcpBridge, localTools, policy }),
     });
     await logStandingContext({
       sessionId: unifiedSessionId,
@@ -855,7 +689,7 @@ async function* runPiAttempt(
       // codemode tool (piCodemodeExtension).
       noExtensions: true,
       extensionFactories: codemode
-        ? [piCodemodeExtension(sdk, () => steeringBoundaryPending)]
+        ? [piCodemodeExtension(sdk, () => boundary.pending)]
         : [],
       // Pi's own skill resolution stays off, like extensions and themes. A
       // turn loads the allowlist in skill-paths.ts: what this server ships,
@@ -1212,7 +1046,7 @@ async function* runPiAttempt(
         images,
         steerId,
       };
-      steeringBoundaryPending = true;
+      boundary.pending = true;
       pendingSteers.push(entry);
       onEngineQueue(async () => {
         // Attached images are staged into this run's scratch dir, in this
@@ -1246,7 +1080,7 @@ async function* runPiAttempt(
         // their original order while the selected id disappears. The entries
         // are read when the step runs, so one still being staged replays with
         // its final (noted) text.
-        steeringBoundaryPending = remaining.length > 0;
+        boundary.pending = remaining.length > 0;
         onEngineQueue(async () => {
           liveSession.clearQueue();
           for (const steer of remaining) {
@@ -1530,7 +1364,7 @@ async function* runPiAttempt(
                 if (idx === -1 && pendingSteers.length > 0) idx = 0;
                 if (idx !== -1) {
                   const steer = pendingSteers.splice(idx, 1)[0];
-                  steeringBoundaryPending = pendingSteers.length > 0;
+                  boundary.pending = pendingSteers.length > 0;
                   // Transcript parsing deliberately strips fenced system
                   // context. A background-wait steer can therefore be fully
                   // delivered yet leave no visible user entry for receipt
