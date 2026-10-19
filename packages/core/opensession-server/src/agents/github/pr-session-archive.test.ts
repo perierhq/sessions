@@ -234,6 +234,47 @@ describe("reopening or pushing to a PR", () => {
     expect(lookups).toBe(0);
   });
 
+  test("a reopen fired right after a close waits for it and restores", async () => {
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-review")]);
+    // The close is still writing its archive when the reopen arrives. Both
+    // webhooks are handled fire-and-forget, so neither awaits the other.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const archive = deps.archive;
+    deps.archive = async (s) => {
+      await gate;
+      await archive(s);
+    };
+
+    const closing = archiveClosedPrSessions(12, undefined, deps);
+    const reopening = unarchiveReopenedPrSessions(12, undefined, deps);
+    release();
+
+    expect((await closing).archived).toEqual(["bks-ghpr-12-review"]);
+    expect(await reopening).toEqual(["bks-ghpr-12-review"]);
+    expect(registry.has("bks-ghpr-12-review")).toBe(false);
+  });
+
+  test("a failed step does not stall the PR's later steps", async () => {
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-review")], {
+      archived: { "bks-ghpr-12-review": "auto" },
+    });
+    const failing = {
+      ...deps,
+      findSession: async () => {
+        throw new Error("index unavailable");
+      },
+    };
+
+    await expect(
+      unarchiveReopenedPrSessions(12, undefined, failing),
+    ).rejects.toThrow("index unavailable");
+    expect(await unarchiveReopenedPrSessions(12, undefined, deps)).toEqual([
+      "bks-ghpr-12-review",
+    ]);
+    expect(registry.size).toBe(0);
+  });
+
   test("a close then reopen round-trips", async () => {
     const { deps, registry } = fakeDeps([session("bks-ghpr-12-review")]);
     await archiveClosedPrSessions(12, undefined, deps);

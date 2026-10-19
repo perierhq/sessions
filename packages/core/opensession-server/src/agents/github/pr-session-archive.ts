@@ -17,6 +17,48 @@ import type { UnifiedSession } from "../../server/types";
 import { prKey } from "./constants";
 import { bksIdFor, type GithubRunKind } from "./run";
 
+// ── Per-PR ordering ──────────────────────────────────────────
+
+interface LifecycleState {
+  /** The tail of each PR's pending lifecycle work. An entry is dropped once
+   * its last task settles, so the map holds only PRs with work in flight. */
+  chains: Map<string, Promise<unknown>>;
+}
+
+const g = globalThis as { __osPrSessionLifecycle?: LifecycleState };
+const lifecycle: LifecycleState = (g.__osPrSessionLifecycle ??= {
+  chains: new Map(),
+});
+
+function lifecycleKey(prNumber: number, ghRepo?: string): string {
+  return prKey(prNumber, ghRepo);
+}
+
+/**
+ * Run one PR's lifecycle steps in the order they arrived. Close and reopen
+ * webhooks are handled fire-and-forget, so without this a reopen right after
+ * a close checked the registry while the close was still archiving, found
+ * nothing to restore, and the close then archived the sessions anyway.
+ */
+export function serialisePrLifecycle<T>(
+  prNumber: number,
+  ghRepo: string | undefined,
+  task: () => Promise<T>,
+): Promise<T> {
+  const key = lifecycleKey(prNumber, ghRepo);
+  const prior = lifecycle.chains.get(key) ?? Promise.resolve();
+  const run = prior.then(task);
+  const tail = run.then(
+    () => {},
+    () => {},
+  );
+  lifecycle.chains.set(key, tail);
+  void tail.then(() => {
+    if (lifecycle.chains.get(key) === tail) lifecycle.chains.delete(key);
+  });
+  return run;
+}
+
 /** Kinds whose session belongs to one open PR. Two kinds are excluded:
  *  - `issue`: its number is an issue's, and that session is a code session a
  *    person may keep using.
@@ -191,9 +233,9 @@ export async function archiveClosedPrSessions(
   ghRepo?: string,
   deps?: PrSessionArchiveDeps,
 ): Promise<PrSessionArchiveResult> {
-  return archiveIdleSessions(
-    prSessionIds(prNumber, ghRepo),
-    deps ?? (await defaultDeps()),
+  const resolved = deps ?? (await defaultDeps());
+  return serialisePrLifecycle(prNumber, ghRepo, () =>
+    archiveIdleSessions(prSessionIds(prNumber, ghRepo), resolved),
   );
 }
 
@@ -209,14 +251,19 @@ export async function unarchiveReopenedPrSessions(
   deps?: PrSessionArchiveDeps,
 ): Promise<string[]> {
   const resolved = deps ?? (await defaultDeps());
-  const restored: string[] = [];
-  for (const id of prSessionIds(prNumber, ghRepo)) {
-    if (!resolved.isArchivedId(id) || resolved.getArchiveReason(id) !== "auto")
-      continue;
-    const session = await resolved.findSession(id);
-    if (session && (await resolved.unarchive(session))) restored.push(id);
-  }
-  return restored;
+  return serialisePrLifecycle(prNumber, ghRepo, async () => {
+    const restored: string[] = [];
+    for (const id of prSessionIds(prNumber, ghRepo)) {
+      if (
+        !resolved.isArchivedId(id) ||
+        resolved.getArchiveReason(id) !== "auto"
+      )
+        continue;
+      const session = await resolved.findSession(id);
+      if (session && (await resolved.unarchive(session))) restored.push(id);
+    }
+    return restored;
+  });
 }
 
 // ── Backfill ─────────────────────────────────────────────────
