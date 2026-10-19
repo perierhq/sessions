@@ -142,7 +142,7 @@ import {
 } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
-import type { StreamEvent, ImageInput, TurnUsage } from "./run-events";
+import type { StreamEvent, ImageInput } from "./run-events";
 import { PI_PROVIDER, PI_STATE_DIR, nowIso, sanitizeId } from "./pi-common";
 import {
   assistantRenderableBlockCount,
@@ -197,6 +197,7 @@ import {
   type PiAccountWalk,
   type PoolAccountRef,
 } from "./pi-account-walk";
+import { PiTurnLedger } from "./pi-turn-ledger";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -486,59 +487,21 @@ async function* runPiAttempt(
     model,
     mode: mode || "code",
   };
-  // First-call-wins run closer + finally backstop (the bridgeRunEnd pattern).
-  let turnEnded = false;
-  const endTurn = (fields: Record<string, unknown>) => {
-    if (turnEnded) return;
-    turnEnded = true;
-    audit({
-      ...auditBase,
-      direction: "out",
-      duration_ms: Date.now() - started,
-      ...fields,
-    });
-  };
-
-  let piSessionId: string | undefined;
-  // Cumulative usage across every assistant request in this attempt. Keep it
-  // outside the run body so failures and cancellations retain the work they
-  // completed before their terminal path.
-  const usageTotal: TurnUsage = {
-    costUsd: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    contextTokens: 0,
-  };
-  let usageRequests = 0;
-  let sawUsage = false;
-  const usageAuditFields = () =>
-    sawUsage
-      ? {
-          input_tokens: usageTotal.inputTokens,
-          output_tokens: usageTotal.outputTokens,
-          cache_read_input_tokens: usageTotal.cacheReadTokens,
-          cache_creation_input_tokens: usageTotal.cacheCreationTokens,
-          total_cost_usd: usageTotal.costUsd,
-          steps: usageRequests,
-        }
-      : {};
+  const ledger = new PiTurnLedger(auditBase, started);
   // Utility callers such as oneShot deliberately have no unified session.
   // They still use Pi's native JSONL while alive, but must not emit degraded
   // transcript writes or create a ghost Open Session transcript.
   const persistRunEntries = (entries: TranscriptEntry[]) => {
-    if (unifiedSessionId) persistEntries(piSessionId, entries);
+    if (unifiedSessionId) persistEntries(ledger.piSessionId, entries);
   };
   const appendRunLines = (lines: Record<string, unknown>[]) => {
-    if (unifiedSessionId && piSessionId) piAppend(piSessionId, lines);
+    if (unifiedSessionId && ledger.piSessionId)
+      piAppend(ledger.piSessionId, lines);
   };
-  let reachedTerminal = false;
   let session: AgentSession | undefined;
   let mcpRuntime: McpRuntime | undefined;
   let mcpBridge: PiMcpBridge | undefined;
   let checkpointWriter: PiTurnCheckpointWriter | undefined;
-  let sawSettled = false;
   // Pool-backed providers only (pi/openai: Codex pool, pi/xai-oauth: SuperGrok
   // pool, pi/anthropic on the native transport: Claude pool): the picked
   // account — visible to the catch/terminal paths so the account walk can
@@ -567,13 +530,6 @@ async function* runPiAttempt(
       );
     else markXaiExhausted(account.id, parsed.modelID);
   };
-  // Has the reader seen replay-unsafe output yet? After text or tool activity
-  // escapes, rotation must continue the native session, not replay this prompt.
-  // `usage_snapshot` does NOT close the walk: Pi emits a zero-token snapshot
-  // with an in-band usage-limit terminal, and treating that bookkeeping event
-  // as model output strands the rest of the account pool. (The Anthropic side's
-  // equivalent gate is `partial.content.length === 0`.)
-  let sawStreamedOutput = false;
 
   /** Another account in the same pool that could serve this turn, or
    *  undefined when the pool is dry. Both ChatGPT OAuth and standard OpenAI
@@ -655,7 +611,10 @@ async function* runPiAttempt(
     why = "usage limit",
   ): boolean => {
     claudePoolRefusal = undefined;
-    if (!pickedAccount || (sawStreamedOutput && !session?.sessionManager))
+    if (
+      !pickedAccount ||
+      (ledger.sawStreamedOutput && !session?.sessionManager)
+    )
       return false;
     const next = nextPoolAccount();
     if (!next) return false;
@@ -670,7 +629,7 @@ async function* runPiAttempt(
       account: pickedAccount.masked,
       account_switch_to: next.masked,
     });
-    if (sawStreamedOutput && session)
+    if (ledger.sawStreamedOutput && session)
       walk.continuation = session.sessionManager;
     // The native Claude binding prefers the session's remembered account:
     // make that the one just announced, so the next attempt binds to it and
@@ -679,11 +638,11 @@ async function* runPiAttempt(
       rememberNativeClaudeAccount(accountUser, claudeSessionKey, next.id);
     walk.excluded.add(pickedAccount.id);
     walk.rotate = true;
-    reachedTerminal = true;
-    endTurn({
+    ledger.reachedTerminal = true;
+    ledger.end({
       ok: false,
-      pi_session_id: piSessionId,
-      ...usageAuditFields(),
+      pi_session_id: ledger.piSessionId,
+      ...ledger.usageAuditFields(),
       error: errorText,
     });
     return true;
@@ -1459,18 +1418,18 @@ async function* runPiAttempt(
     // previous runner appends every pending noReply steer before its next LLM step.
     // Match that behavior instead of Pi's one-message-per-step default.
     session.setSteeringMode("all");
-    piSessionId = session.sessionId;
+    ledger.piSessionId = session.sessionId;
     if (unifiedSessionId) {
       checkpointWriter = createPiTurnCheckpointWriter(
         checkpointPath,
-        piSessionId,
+        ledger.piSessionId,
       );
     }
 
     // Map pi→unified BEFORE any engine-keyed append (the W1 import-first gate
     // resolves through this map; unmapped appends are dropped + degraded).
     if (unifiedSessionId)
-      recordEngineSessionOwner(piSessionId, unifiedSessionId);
+      recordEngineSessionOwner(ledger.piSessionId, unifiedSessionId);
 
     // Journal upgrade: the record now carries the engine id (still no
     // serverKey — boot must take the continuation re-prompt path).
@@ -1479,7 +1438,7 @@ async function* runPiAttempt(
         buildRunJournalRecord(opts, {
           runKey,
           osSessionId: journal.osSessionId,
-          claudeSessionId: piSessionId,
+          claudeSessionId: ledger.piSessionId,
           prompt,
           promptEntryId: String(userLine.uuid),
           cwd,
@@ -1501,7 +1460,7 @@ async function* runPiAttempt(
     }
 
     // Register the engine-id alias + the steer surface on the shared handle.
-    aliasPiRun(registeredKeys, piSessionId, handle);
+    aliasPiRun(registeredKeys, ledger.piSessionId, handle);
     const liveSession = session;
     // Steer contract: accept = enqueue + receipt. The transcript user line is
     // written only when the queued message is actually DELIVERED (its user
@@ -1624,14 +1583,19 @@ async function* runPiAttempt(
     let wake: (() => void) | null = null;
     const push = (ev: StreamEvent) => {
       if (piStreamEventRequiresAccountContinuation(ev))
-        sawStreamedOutput = true;
+        ledger.sawStreamedOutput = true;
       queue.push(ev);
       const w = wake;
       wake = null;
       w?.();
     };
 
-    push({ type: "init", sessionId: piSessionId, provider: PROVIDER, model });
+    push({
+      type: "init",
+      sessionId: ledger.piSessionId,
+      provider: PROVIDER,
+      model,
+    });
     // Engine-keyed write of the turn's user line — same uuid as the early
     // store write, so the row upserts instead of duplicating the bubble.
     appendRunLines([userLine]);
@@ -1825,18 +1789,8 @@ async function* runPiAttempt(
                 msg.content,
               );
               const u = msg.usage;
-              if (u && typeof u.input === "number") {
-                sawUsage = true;
-                usageRequests++;
-                usageTotal.inputTokens += u.input || 0;
-                usageTotal.outputTokens += u.output || 0;
-                usageTotal.cacheReadTokens += u.cacheRead || 0;
-                usageTotal.cacheCreationTokens += u.cacheWrite || 0;
-                usageTotal.costUsd =
-                  (usageTotal.costUsd || 0) + (u.cost?.total || 0);
-                usageTotal.contextTokens =
-                  (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
-                push({ type: "usage_snapshot", usage: { ...usageTotal } });
+              if (ledger.foldAssistantUsage(u)) {
+                push({ type: "usage_snapshot", usage: ledger.snapshot() });
               }
               // Persist thinking, text, and tool calls now (messages have no
               // SDK id, while block ids are the model's and stay stable).
@@ -1941,16 +1895,8 @@ async function* runPiAttempt(
               // conversation context and the next assistant message_end
               // re-derives it post-compaction.
               const cu = ce.result.usage;
-              if (cu && typeof cu.input === "number") {
-                sawUsage = true;
-                usageRequests++;
-                usageTotal.inputTokens += cu.input || 0;
-                usageTotal.outputTokens += cu.output || 0;
-                usageTotal.cacheReadTokens += cu.cacheRead || 0;
-                usageTotal.cacheCreationTokens += cu.cacheWrite || 0;
-                usageTotal.costUsd =
-                  (usageTotal.costUsd || 0) + (cu.cost?.total || 0);
-                push({ type: "usage_snapshot", usage: { ...usageTotal } });
+              if (ledger.foldCompactionUsage(cu)) {
+                push({ type: "usage_snapshot", usage: ledger.snapshot() });
               }
             }
             break;
@@ -1988,7 +1934,7 @@ async function* runPiAttempt(
             break;
           }
           case "agent_settled":
-            sawSettled = true;
+            ledger.sawSettled = true;
             break;
         }
       } catch (err) {
@@ -2139,7 +2085,7 @@ async function* runPiAttempt(
       // notified its worker FAILED because a human pressed Stop. The finally
       // records the cancelled audit closer and clears the journal; the
       // already-fired session.abort() stopped the engine.
-      reachedTerminal = true;
+      ledger.reachedTerminal = true;
       return;
     }
     // Usage-limit terminal on a pi/openai run: sideline the picked codex
@@ -2165,7 +2111,7 @@ async function* runPiAttempt(
         content: piErrorContent(message, parsed.providerID),
         provider: PROVIDER,
         model,
-        ...(sawUsage ? { usage: { ...usageTotal } } : {}),
+        ...ledger.usageField(),
         ...(usageLimit ? { usageLimitExhausted: true } : {}),
       };
     } else if (lastStopReason === "error" || lastStopReason === "aborted") {
@@ -2180,17 +2126,17 @@ async function* runPiAttempt(
         content: piErrorContent(message, parsed.providerID),
         provider: PROVIDER,
         model,
-        ...(sawUsage ? { usage: { ...usageTotal } } : {}),
+        ...ledger.usageField(),
         ...(usageLimit ? { usageLimitExhausted: true } : {}),
       };
     } else {
       terminal = {
         type: "done",
-        sessionId: piSessionId,
+        sessionId: ledger.piSessionId,
         result: session.getLastAssistantText() || undefined,
         provider: PROVIDER,
         model,
-        ...(sawUsage ? { usage: { ...usageTotal } } : {}),
+        ...ledger.usageField(),
       };
     }
     // Rotate rather than end the turn. This is the COMMON half of the walk:
@@ -2247,12 +2193,12 @@ async function* runPiAttempt(
         ),
       };
     }
-    reachedTerminal = true;
-    endTurn({
+    ledger.reachedTerminal = true;
+    ledger.end({
       ok: terminal.type === "done",
-      pi_session_id: piSessionId,
-      saw_settled: sawSettled,
-      ...usageAuditFields(),
+      pi_session_id: ledger.piSessionId,
+      saw_settled: ledger.sawSettled,
+      ...ledger.usageAuditFields(),
       ...(terminal.type === "done" ? {} : { error: terminal.content }),
     });
     yield terminal;
@@ -2260,7 +2206,7 @@ async function* runPiAttempt(
     if (abort.signal.aborted) {
       // A cancel that surfaced as a throw (abort mid-setup) is still a user
       // cancel — same quiet end as the terminal branch above.
-      reachedTerminal = true;
+      ledger.reachedTerminal = true;
       return;
     }
     const message: string = e?.message || String(e);
@@ -2283,11 +2229,11 @@ async function* runPiAttempt(
     // throws from the run body (fs, journal, SDK init), and a stray
     // usage-limit shape in one of those must not burn a healthy account.
     if (e?.usageLimitExhausted === true && takeAccountRotation(message)) return;
-    reachedTerminal = true;
-    endTurn({
+    ledger.reachedTerminal = true;
+    ledger.end({
       ok: false,
-      pi_session_id: piSessionId,
-      ...usageAuditFields(),
+      pi_session_id: ledger.piSessionId,
+      ...ledger.usageAuditFields(),
       error: message,
     });
     yield {
@@ -2295,20 +2241,20 @@ async function* runPiAttempt(
       content: piErrorContent(message, parsed.providerID),
       provider: PROVIDER,
       model,
-      ...(sawUsage ? { usage: { ...usageTotal } } : {}),
+      ...ledger.usageField(),
       ...(usageLimit ? { usageLimitExhausted: true } : {}),
     };
   } finally {
-    endTurn({
+    ledger.end({
       ok: false,
-      pi_session_id: piSessionId,
-      ...usageAuditFields(),
+      pi_session_id: ledger.piSessionId,
+      ...ledger.usageAuditFields(),
       status: abort.signal.aborted ? "cancelled" : "abandoned",
     });
     // Consumer teardown without a terminal (hot-reload chaos, shutdown):
     // nothing survives a restart, so stop the orphaned in-process turn
     // instead of letting it burn tokens with no consumer.
-    if (!reachedTerminal && session) {
+    if (!ledger.reachedTerminal && session) {
       try {
         void session.abort();
       } catch {}
@@ -2316,7 +2262,7 @@ async function* runPiAttempt(
     // Mirrors the run journal below: only a turn torn down mid-run (or a
     // process that never reaches here) leaves a checkpoint to recover from.
     if (checkpointWriter) {
-      await (reachedTerminal || abort.signal.aborted
+      await (ledger.reachedTerminal || abort.signal.aborted
         ? checkpointWriter.discard()
         : checkpointWriter.flush());
     }
@@ -2334,7 +2280,10 @@ async function* runPiAttempt(
     releasePiRun(registeredKeys, handle);
     // Journal survives ONLY a mid-turn teardown (boot's continuation
     // re-prompt); a reached terminal or a user cancel clears it.
-    if (journal?.osSessionId && (reachedTerminal || abort.signal.aborted)) {
+    if (
+      journal?.osSessionId &&
+      (ledger.reachedTerminal || abort.signal.aborted)
+    ) {
       journalClear(runKey);
     }
   }
