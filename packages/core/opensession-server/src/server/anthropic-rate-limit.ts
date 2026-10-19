@@ -124,6 +124,13 @@ type StreamFunction = (
  * it back unchanged. Another provider's requests pass through untouched. A
  * caller-supplied fetch is kept and wrapped, and the global fetch is looked
  * up per request.
+ *
+ * Every request the agent makes passes through here, not only the turn's
+ * own: pi's compaction, branch summaries and prompt-cache warming also
+ * update the record. That is harmless only because the runner classifies a
+ * failure from the record right after the failing request, and keeps cache
+ * warming off (`cacheWarming: "off"` in pi-runner.ts). Turning warming on
+ * would let a warm-up response overwrite the 429 the classifier reads.
  */
 export function enableAnthropicRateLimitCapture(
   agent: { streamFunction?: StreamFunction },
