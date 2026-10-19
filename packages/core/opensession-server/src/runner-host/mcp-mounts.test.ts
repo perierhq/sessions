@@ -406,6 +406,10 @@ describe("in-process relay", () => {
 describe("per-server rollback", () => {
   test("starts one stdio proxy per server, as before", async () => {
     const names = ["opensession-a", "opensession-b", "opensession-c"];
+    // Proxies closed by earlier tests may still be exiting.
+    await waitUntil(
+      async () => (await descendantProcesses(PROXY_PROCESS)).length === 0,
+    );
     const gw = await start(names);
     const runtime = await runtimeFor(names, "per-server");
     expect(await runtime.catalog()).toHaveLength(names.length * 3);
