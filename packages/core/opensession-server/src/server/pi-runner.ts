@@ -15,16 +15,12 @@ import { join, resolve, sep } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
-  ExtensionFactory,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import {
   askBashDenyReason,
-  isClaudeSubscriptionError,
-  isClaudeUsageLimitError,
-  isCodexUsageLimitError,
   describeUsageLimitReset,
   usageLimitResetAt,
 } from "./runner-shared";
@@ -40,28 +36,23 @@ import {
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
+import { markCodexExhausted } from "./codex-accounts";
 import {
   markExhausted as markClaudeExhausted,
   pickAccount as pickClaudeCliAccount,
-  type ClaudeAccount,
 } from "./claude-accounts";
 import {
   bindXaiAccount,
   markXaiExhausted,
-  maskXaiAccount,
   pickXaiAccount,
   xaiSubscriptionModelEfforts,
-  type XaiAccount,
 } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
-import { xaiOutdatedClientHint } from "./xai-oauth";
 import { enableXaiProxyPayload } from "./xai-payload";
 import {
   enableOpenaiFastMode,
   pickOpenaiAccount,
   buildSeededOpenaiAuth,
-  maskOpenaiAccount,
 } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import {
@@ -129,8 +120,6 @@ import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
   rememberNativeClaudeAccount,
-  type PiRuntimeAccountEvidence,
-  type PiSdk,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
 import {
@@ -172,7 +161,6 @@ import {
 } from "./pi-github-env";
 import {
   buildPiThirdPartyProviderPlan,
-  parsePiModel,
   piModelResolutionError,
   resolvePiRoutedModel,
 } from "./pi-model-routing";
@@ -184,12 +172,31 @@ import {
 import { makePiBashTool, piBashHomeEnv } from "./pi-bash-tool";
 import {
   aliasPiRun,
-  cancelPiRun,
   claimPiRun,
   releasePiRun,
   retractPendingSteer,
   type PiRunHandle,
 } from "./pi-run-registry";
+import {
+  PI_CODEMODE_TOOL,
+  interruptPiThinkingForSteer,
+  piCodemodeExtension,
+  piResponseHasOutput,
+  piSteeringBoundaryTools,
+  piToolNames,
+} from "./pi-steering";
+import { piGateReason } from "./pi-gate";
+import { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
+import {
+  claudePoolRef,
+  codexPoolRef,
+  evidencePoolRef,
+  piStreamEventRequiresAccountContinuation,
+  runPiAccountWalk,
+  xaiPoolRef,
+  type PiAccountWalk,
+  type PoolAccountRef,
+} from "./pi-account-walk";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -233,6 +240,20 @@ export {
   retractPiSteer,
   steerPiRun,
 } from "./pi-run-registry";
+export {
+  PI_CODEMODE_TOOL,
+  PI_STEER_TOOL_SKIP,
+  interruptPiThinkingForSteer,
+  isPiNestedToolCall,
+  piCodemodeExtension,
+  piResponseHasOutput,
+  piSteeringBoundaryTools,
+  piToolNames,
+  type PiSteerInterruptTarget,
+} from "./pi-steering";
+export { piGateReason } from "./pi-gate";
+export { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
+export { piStreamEventRequiresAccountContinuation } from "./pi-account-walk";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -245,15 +266,6 @@ const PROVIDER = PI_PROVIDER;
  */
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
-}
-
-/** Activate exactly the tools backed by custom definitions. Pi falls back to
- * its unrestricted built-ins for enabled names without a custom override, so
- * the enabled-name list must never be maintained separately. */
-export function piToolNames(
-  customTools: readonly Pick<ToolDefinition<any, any, any>, "name">[],
-): string[] {
-  return customTools.map((tool) => tool.name);
 }
 
 /**
@@ -277,302 +289,7 @@ export function piLocalToolNames(opts: {
     : ["read", "grep", "find", "ls", "edit", "write", "bash"];
 }
 
-export const PI_STEER_TOOL_SKIP =
-  "Skipped because new steering instructions arrived. Read them before choosing the next tool.";
-
-/**
- * Pi polls its steer queue after an assistant message's whole tool batch. That
- * is too late for Open Session's step-boundary contract: a model can emit a
- * long batch, leaving a steer parked behind several not-yet-started tools.
- *
- * Force each batch to execute sequentially and turn every not-yet-started call
- * into a cheap result once a steer is waiting. Pi can then satisfy the model
- * protocol's one-result-per-call requirement and inject the steer without
- * starting stale work.
- */
-export function piSteeringBoundaryTools(
-  tools: readonly ToolDefinition<any, any, any>[],
-  steeringPending: () => boolean,
-): ToolDefinition<any, any, any>[] {
-  return tools.map((tool) => ({
-    ...tool,
-    executionMode: "sequential",
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      if (steeringPending()) {
-        // A codemode script's call (pi ids those `<parent>/<n>`) rejects
-        // instead, so the script stops rather than reading the notice as data.
-        if (isPiNestedToolCall(toolCallId)) throw new Error(PI_STEER_TOOL_SKIP);
-        return {
-          content: [{ type: "text", text: PI_STEER_TOOL_SKIP }],
-          details: {},
-        };
-      }
-      return tool.execute(toolCallId, params, signal, onUpdate, ctx);
-    },
-  }));
-}
-
-/** The part of pi's Agent a steer interrupt reads and drives. */
-export type PiSteerInterruptTarget = {
-  readonly state: {
-    readonly streamingMessage?: { role: string; content?: unknown };
-    readonly pendingToolCalls: ReadonlySet<string>;
-  };
-  hasQueuedMessages(): boolean;
-  abort(): void;
-};
-
-/** Whether an assistant message has started anything a person would lose:
- *  reply text or a tool call. Thinking alone does not count. */
-export function piResponseHasOutput(content: unknown): boolean {
-  if (!Array.isArray(content)) return false;
-  return content.some((raw) => {
-    const block = raw as { type?: string; text?: unknown } | null;
-    if (!block || typeof block !== "object") return false;
-    if (block.type === "toolCall") return true;
-    return (
-      block.type === "text" &&
-      typeof block.text === "string" &&
-      block.text.trim().length > 0
-    );
-  });
-}
-
-/**
- * Pi polls its steer queue only between model responses, so a steer sent
- * while the model is still thinking waits for that whole response. With high
- * effort that is often most of a minute, and the person's message sits
- * unread.
- *
- * While the response is still only thinking, cut it short: abort just the
- * agent's current model request, never the session. AgentSession's post-run
- * loop sees the queued steer and continues at once, so the model starts over
- * with the steer in view. Once the response has written reply text or a tool
- * call, it is left to finish, and the steer lands at the next step as before.
- * Running tools are never touched. Returns whether it aborted.
- */
-export function interruptPiThinkingForSteer(
-  agent: PiSteerInterruptTarget,
-): boolean {
-  const streaming = agent.state.streamingMessage;
-  if (streaming?.role !== "assistant") return false;
-  if (piResponseHasOutput(streaming.content)) return false;
-  if (agent.state.pendingToolCalls.size > 0) return false;
-  if (!agent.hasQueuedMessages()) return false;
-  agent.abort();
-  return true;
-}
-
-/** Pi assigns `<parent id>/<n>` to calls a tool makes through
- *  `ctx.executeTool()`, which is how codemode scripts call tools. */
-export function isPiNestedToolCall(toolCallId: string): boolean {
-  return toolCallId.includes("/");
-}
-
-export const PI_CODEMODE_TOOL = "codemode";
-
-/**
- * Pi's codemode tool: the model writes one JavaScript script that calls the
- * run's other tools, in parallel if it likes, and only the script's output
- * reaches the context. Scripts run in a QuickJS sandbox with no file system
- * or network, and can call only the run's active tools, so every call still
- * goes through our guarded definitions and their audit. Pi registers it
- * through an extension; intercept that registration to give it the same
- * steering boundary as every other tool. `models: false` keeps pi's model
- * catalog and classifier calls out of scripts.
- */
-export function piCodemodeExtension(
-  sdk: Pick<PiSdk, "createCodemodeExtension">,
-  steeringPending: () => boolean,
-): ExtensionFactory {
-  const register = sdk.createCodemodeExtension({ mode: "on", models: false });
-  return (pi) =>
-    register(
-      new Proxy(pi, {
-        get(target, key) {
-          if (key === "registerTool") {
-            return (tool: ToolDefinition<any, any, any>) =>
-              target.registerTool(
-                piSteeringBoundaryTools([tool], steeringPending)[0]!,
-              );
-          }
-          const value = Reflect.get(target, key);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      }),
-    );
-}
-
-// ── Gate ─────────────────────────────────────────────────────────────────────
-
-// Armed only inside runPiSmokeTurn (a counter, so overlapping smoke calls
-// can't disarm each other). The "pi-smoke" kind passes the gate only while
-// armed — request/automation data can name the kind but never arm the bypass.
-let smokeGateBypass = 0;
-
-/** Non-null = the reason this run may not use the pi engine. Same deny-by-
- *  default semantics as previous runnerGateReason: interactive + unattended journal
- *  kinds only, kind-less runs refused. */
-export function piGateReason(opts: {
-  journal?: { kind?: string };
-}): string | null {
-  const base = baseJournalKind(opts.journal?.kind);
-  if (base === "pi-smoke" && smokeGateBypass > 0) return null;
-  if (INTERACTIVE_KINDS.has(base) || isUnattendedKind(base)) return null;
-  return base
-    ? `The Pi engine is not available to "${base}" runs. Interactive sessions and automations only.`
-    : "The Pi engine requires an explicit run kind (journal.kind). Deny by " +
-        "default; interactive sessions and automations only.";
-}
-
 // ── Small helpers ────────────────────────────────────────────────────────────
-
-/** Raw codex error codes that can surface in a pi/openai error before pi's
- *  friendly "You have hit your ChatGPT usage limit…" message is built — cheap
- *  insurance on top of isCodexUsageLimitError's message matching. Quota
- *  shapes are provider-spelled (insufficient_quota / "exceeded your current
- *  quota"), never a bare `quota` alternation: this classifier also sees
- *  non-provider throws in the catch, and infrastructure errors like
- *  "EDQUOT: disk quota exceeded" must not read as account exhaustion. The
- *  placeholder-refresh failure ("OAuth refresh failed for openai-codex")
- *  is included: pi refreshes only inside the final 5 minutes of the access
- *  token, so that failure means "this account can't serve until the codex
- *  CLI refreshes it" — dry-pool semantics. */
-const CODEX_USAGE_LIMIT_CODE_SHAPES =
-  /usage_limit_reached|usage_not_included|rate_limit_exceeded|insufficient_quota|usage_quota|exceeded your current quota|GoUsageLimitError|FreeUsageLimitError|OAuth refresh failed for openai-codex/i;
-
-/** SuperGrok shapes: the cli-chat-proxy's quota and rate-limit answers, plus
- *  a rejected or unrefreshable token ("this account can't serve until someone
- *  signs in again" is dry-pool semantics for the walk). Never a bare `quota`:
- *  infrastructure errors like EDQUOT must not read as exhaustion. */
-const XAI_USAGE_LIMIT_SHAPES =
-  /\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|insufficient_quota|exceeded your (?:current )?quota|credits? (?:exhausted|depleted|limit)|out of credits|\b401\b|authentication rejected|invalid_grant|token refresh failed|no usable SuperGrok|no SuperGrok accounts|not currently usable/i;
-
-/** One pool account as the runner's walk sees it, whichever pool it came from. */
-interface PoolAccountRef {
-  id: string;
-  name: string;
-  masked: string;
-  pool: "openai" | typeof XAI_OAUTH_PROVIDER | "claude";
-  /** How the pool reads in logs: "codex", "SuperGrok" or "Claude". */
-  label: string;
-}
-
-function codexPoolRef(account: CodexAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: maskOpenaiAccount(account),
-    pool: "openai",
-    label: "codex",
-  };
-}
-
-function xaiPoolRef(account: XaiAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: maskXaiAccount(account),
-    pool: XAI_OAUTH_PROVIDER,
-    label: "SuperGrok",
-  };
-}
-
-/** A Claude pool account serving a native-transport pi/anthropic turn. */
-function claudePoolRef(account: ClaudeAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: `${account.name} (${account.id.slice(0, 8)}, claude)`,
-    pool: "claude",
-    label: "Claude",
-  };
-}
-
-/** The pool account a binding's evidence names, picked or sidelineable. */
-function evidencePoolRef(
-  evidence: PiRuntimeAccountEvidence,
-  which: "picked" | "sidelineable",
-): PoolAccountRef | undefined {
-  const openai =
-    which === "picked" ? evidence.pickedOpenai : evidence.sidelineableOpenai;
-  if (openai) return codexPoolRef(openai);
-  const xai =
-    which === "picked" ? evidence.pickedXai : evidence.sidelineableXai;
-  if (xai) return xaiPoolRef(xai);
-  const claude =
-    which === "picked" ? evidence.pickedClaude : evidence.sidelineableClaude;
-  return claude ? claudePoolRef(claude) : undefined;
-}
-
-/** Provider-aware usage-limit classification for terminal errors — "this
- *  model's pool can't serve right now", which is exactly what
- *  usageLimitExhausted tells agent-runner's fallback walk.
- *
- *  Anthropic runs talk to Anthropic directly through pi's own provider on a
- *  Claude pool token. They match the standard Claude limit messages, a 429,
- *  and the pool picker's exhaustion refusals (claude-account-pick.ts). 529 /
- *  overloaded_error is transient overload, not exhaustion: it goes through
- *  pi's own retry instead of sidelining a healthy account. A 429 is read
- *  through Anthropic's unified rate-limit header when one came with it
- *  (`anthropicUnifiedStatus`): only "rejected" is the subscription's own
- *  limit; any other status is a transient throttle for pi's retry. Without
- *  the header a 429 still counts as a limit.
- *
- *  OpenAI runs match the codex classifier shared with the previous runner
- *  engine (isCodexUsageLimitError) plus the raw code shapes, never the Claude
- *  pool's refusal wording. Third-party providers share the Anthropic shapes,
- *  except that an overload there still counts as exhaustion and moves the
- *  turn to the next model. Exported for the classifier tests. */
-export function isPiUsageLimitShape(
-  message: string,
-  providerID: string,
-  /** `anthropic-ratelimit-unified-status` of the 429 this message reports,
-   *  when the response carried one. */
-  anthropicUnifiedStatus?: string,
-): boolean {
-  if (providerID === "openai") {
-    return (
-      isCodexUsageLimitError(message) ||
-      CODEX_USAGE_LIMIT_CODE_SHAPES.test(message)
-    );
-  }
-  if (providerID === XAI_OAUTH_PROVIDER) {
-    return XAI_USAGE_LIMIT_SHAPES.test(message);
-  }
-  const anthropic = providerID === "anthropic";
-  if (
-    anthropic &&
-    anthropicUnifiedStatus !== undefined &&
-    anthropicUnifiedStatus !== "rejected" &&
-    /\b429\b/.test(message)
-  )
-    return false;
-  if (
-    isClaudeUsageLimitError(message, true) ||
-    isClaudeSubscriptionError(message)
-  )
-    return true;
-  const s = message.toLowerCase();
-  return (
-    (!anthropic && (s.includes("overloaded_error") || /\b529\b/.test(s))) ||
-    /\b429\b/.test(s) ||
-    // A dry designation (pickClaudeAccount).
-    s.includes("no designated bridge account") ||
-    // An exhausted pool (not the empty-pool config error, which deliberately
-    // says "no Claude accounts configured").
-    s.includes("no usable claude account")
-  );
-}
-
-/** Terminal error text for a pi run, with an actionable hint appended when
- *  the SuperGrok proxy rejected our pinned Grok client version. Exported for
- *  tests. */
-export function piErrorContent(message: string, providerID: string): string {
-  const hint =
-    providerID === XAI_OAUTH_PROVIDER ? xaiOutdatedClientHint(message) : null;
-  return hint ? `pi: ${message}\n\n${hint}` : `pi: ${message}`;
-}
 
 /** First jsonl line of a pi session file (the v3 header), bounded read. */
 function readSessionHeader(
@@ -620,34 +337,6 @@ function findPiSessionFile(
 
 const THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
-/** State carried ACROSS the attempts of one logical pi turn. */
-interface PiAccountWalk {
-  /** Provider account ids this turn has already burned, fed into the picker
-   *  so a replay lands somewhere new. The sideline alone cannot drive this:
-   *  it is shared cross-engine with previous runner, and some refusals deliberately
-   *  do not set it (local admission control that frees within the hour). */
-  excluded: Set<string>;
-  /** Set by an attempt that wants to be replayed on another account. */
-  rotate: boolean;
-  /** The first attempt's user-line uuid, reused by every replay so the
-   *  transcript row upserts instead of duplicating the person's message. */
-  promptEntryId?: string;
-  /** Resume completed messages and tool results instead of replaying the prompt. */
-  continuation?: AgentSession["sessionManager"];
-  /** This turn already moved off an account over a native 429 that was not
-   *  the subscription's limit. Such a rotation happens at most once. */
-  throttleRotated?: boolean;
-  cancelled?: boolean;
-}
-
-/** Bookkeeping can repeat, but output or tool activity requires continuing the
- * native conversation rather than replaying the original prompt. */
-export function piStreamEventRequiresAccountContinuation(
-  event: Pick<StreamEvent, "type">,
-): boolean {
-  return event.type !== "init" && event.type !== "usage_snapshot";
-}
-
 /**
  * One logical pi turn, across however many provider accounts it takes.
  *
@@ -670,37 +359,7 @@ export async function* runPi(
   opts: RunAgentOpts,
   model: string,
 ): AsyncGenerator<StreamEvent> {
-  const walk: PiAccountWalk = { excluded: new Set(), rotate: false };
-  let priorUsage: TurnUsage | undefined;
-  for (;;) {
-    walk.rotate = false;
-    let latestUsage = priorUsage;
-    for await (const event of runPiAttempt(opts, model, walk)) {
-      if (event.usage) {
-        const usage = event.usage;
-        latestUsage = {
-          ...usage,
-          inputTokens: (priorUsage?.inputTokens || 0) + usage.inputTokens,
-          outputTokens: (priorUsage?.outputTokens || 0) + usage.outputTokens,
-          cacheReadTokens:
-            (priorUsage?.cacheReadTokens || 0) + usage.cacheReadTokens,
-          cacheCreationTokens:
-            (priorUsage?.cacheCreationTokens || 0) + usage.cacheCreationTokens,
-          costUsd: (priorUsage?.costUsd || 0) + (usage.costUsd || 0),
-        };
-        yield { ...event, usage: latestUsage };
-      } else if (
-        priorUsage &&
-        (event.type === "error" || event.type === "done")
-      ) {
-        yield { ...event, usage: priorUsage };
-      } else {
-        yield event;
-      }
-    }
-    if (!walk.rotate || walk.cancelled) return;
-    priorUsage = latestUsage;
-  }
+  return yield* runPiAccountWalk((walk) => runPiAttempt(opts, model, walk));
 }
 
 async function* runPiAttempt(
@@ -2679,173 +2338,4 @@ async function* runPiAttempt(
       journalClear(runKey);
     }
   }
-}
-
-// ── Scripted smoke harness ───────────────────────────────────────────────────
-
-/** Cheap, and any Claude pool account can serve it. */
-const SMOKE_MODEL = "pi/anthropic/claude-sonnet-5-5";
-
-export interface PiSmokeResult {
-  /** True only for a real turn that reached `done` in time — or an explicit
-   *  dryRun probe with the engine enabled. */
-  ok: boolean;
-  reason?: string;
-  /** Throwaway unified session id (`os-test-pi-*`): never gets a session
-   *  file, so it can't appear in the UI session list. */
-  sessionId: string;
-  text: string;
-  usage?: TurnUsage;
-  durationMs: number;
-  enabled: boolean;
-  dryRun: boolean;
-  engineSessionId?: string;
-  model: string;
-  eventTypes: string[];
-  error?: string;
-  timedOut: boolean;
-  /** transcript_events rows for the throwaway session after the turn — proves
-   *  the store-write path end to end; 0 on dry runs. */
-  storeRows: number;
-}
-
-/**
- * One tiny scripted turn against a throwaway `os-test-pi-*` session id
- * (mirrors runClaudeDirectSmokeTurn). Config-gated on piEngineEnabled() — with
- * the engine disabled this is a pure dry run: runPi yields its config-gate
- * error before touching a provider or the SDK. The "pi-smoke" journal kind
- * passes the run gate only while the module-scoped bypass is armed here.
- * Never throws; real turns are wall-capped via cancelPiRun.
- */
-export async function runPiSmokeTurn(
-  opts: {
-    dryRun?: boolean;
-    timeoutMs?: number;
-    prompt?: string;
-    model?: string;
-  } = {},
-): Promise<PiSmokeResult> {
-  const prompt = opts.prompt || "Reply with exactly the single word: ok";
-  const timeoutMs = Math.max(
-    5_000,
-    Math.min(opts.timeoutMs ?? 120_000, 600_000),
-  );
-  // Optional model override so the smoke can exercise either provider path
-  // (pi/anthropic via the Claude pool, pi/openai via the codex pool). A provided
-  // id that doesn't parse is an explicit error, never a silent fallback —
-  // an operator probing pi/openai must not read a default-model turn as
-  // proof the openai path works.
-  if (opts.model && !parsePiModel(opts.model)) {
-    return {
-      ok: false,
-      enabled: piEngineEnabled(),
-      dryRun: !!opts.dryRun,
-      reason: `not a pi/<provider>/<model> id: ${opts.model}`,
-      sessionId: "",
-      model: opts.model,
-      eventTypes: [],
-      text: "",
-      timedOut: false,
-      durationMs: 0,
-      storeRows: 0,
-    };
-  }
-  const smokeModel = opts.model || SMOKE_MODEL;
-  const enabled = piEngineEnabled();
-  const sessionId = `os-test-pi-${Date.now().toString(36)}`;
-  const started = Date.now();
-  const storeRowsFor = async (id: string): Promise<number> => {
-    try {
-      return await transcript.getLastSeq(id);
-    } catch {
-      return 0;
-    }
-  };
-
-  if (enabled && opts.dryRun) {
-    return {
-      ok: true,
-      enabled,
-      dryRun: true,
-      reason:
-        "dry run requested — engine is enabled but no turn was executed (no provider call, no SDK)",
-      sessionId,
-      model: smokeModel,
-      eventTypes: [],
-      text: "",
-      timedOut: false,
-      durationMs: Date.now() - started,
-      storeRows: 0,
-    };
-  }
-
-  const cwd = `${PI_STATE_DIR}/smoke`;
-  if (enabled) {
-    try {
-      mkdirSync(cwd, { recursive: true });
-    } catch {}
-  }
-  const eventTypes: string[] = [];
-  let text = "";
-  let error: string | undefined;
-  let usage: TurnUsage | undefined;
-  let engineSessionId: string | undefined;
-  let done = false;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    cancelPiRun(sessionId);
-  }, timeoutMs);
-  smokeGateBypass++;
-  try {
-    for await (const ev of runPi(
-      {
-        prompt,
-        cwd,
-        mode: "ask",
-        mcpServers: [],
-        journal: { osSessionId: sessionId, kind: "pi-smoke" },
-      },
-      smokeModel,
-    )) {
-      eventTypes.push(ev.type);
-      if (ev.type === "init") engineSessionId = ev.sessionId;
-      if (ev.type === "text_chunk") text += ev.text || "";
-      if (ev.type === "error") error = ev.content;
-      if (ev.type === "done") {
-        usage = ev.usage;
-        done = true;
-      }
-    }
-  } catch (e) {
-    // runPi yields errors rather than throwing; belt-and-braces so the admin
-    // route can never blow up off this path.
-    error = String((e as Error)?.message || e);
-  } finally {
-    smokeGateBypass--;
-    clearTimeout(timer);
-  }
-  return {
-    ok: done && !timedOut && !error,
-    enabled,
-    dryRun: !enabled,
-    reason: !enabled
-      ? `The Pi engine is disabled (${piConfigPath()} missing or enabled:false). The gate error below is the expected dry-run result; no provider or SDK use happened`
-      : timedOut
-        ? `smoke turn exceeded the ${timeoutMs}ms wall cap and was cancelled`
-        : undefined,
-    sessionId,
-    engineSessionId,
-    model: smokeModel,
-    eventTypes,
-    text,
-    error,
-    usage,
-    timedOut,
-    durationMs: Date.now() - started,
-    // Store rows prove the write path for REAL turns only; the disabled dry
-    // path must not open the transcript store at all (a test/scratch process
-    // would otherwise cold-open the live DB just to read a zero).
-    storeRows: enabled ? await storeRowsFor(sessionId) : 0,
-  };
 }

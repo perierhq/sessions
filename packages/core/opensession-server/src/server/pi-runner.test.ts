@@ -49,9 +49,9 @@ import {
   resolvePiRoutedModel,
   retractPendingSteer,
   runPi,
-  runPiSmokeTurn,
   steerPiRun,
 } from "./pi-runner";
+import { runPiSmokeTurn } from "./pi-smoke";
 import type { PiBashAuditEvent } from "./pi-runner";
 import { createPiMcpBridge, DIRECT_MCP_TOOLS } from "./pi-mcp-bridge";
 import type { McpRuntime } from "./mcp-runtime";

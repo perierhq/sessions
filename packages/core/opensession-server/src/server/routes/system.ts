@@ -553,7 +553,7 @@ export async function handleSystemRoutes(
       // Dynamic import: the pi runner's module graph (pi-runner and
       // friends) stays out of this hot route file; the heavy pi SDK import
       // is itself dynamic inside the runner.
-      const { runPiSmokeTurn } = await import("../pi-runner");
+      const { runPiSmokeTurn } = await import("../pi-smoke");
       const result = await runPiSmokeTurn({
         dryRun,
         timeoutMs: 120_000,
