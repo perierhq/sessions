@@ -13,13 +13,17 @@ import {
   __resetPrSessionLifecycleForTest,
   archiveClosedPrSessions,
   backfillClosedPrSessions,
+  backfillLimit,
+  lookUpPullRequestState,
+  PR_SESSION_BACKFILL_DEFAULT_LIMIT,
+  PR_SESSION_BACKFILL_MAX_LIMIT,
   beginPrSessionRun,
   parsePrSessionId,
   prSessionIds,
   prSessionLifecycleAction,
   unarchiveReopenedPrSessions,
   type PrSessionBackfillDeps,
-  type PullRequestState,
+  type PullRequestLookup,
 } from "./pr-session-archive";
 
 const repos: Record<string, Repo> = {
@@ -68,7 +72,7 @@ function fakeDeps(
   options: {
     busy?: string[];
     archived?: Record<string, ArchiveReason>;
-    states?: Record<string, PullRequestState | null>;
+    states?: Record<string, PullRequestLookup>;
   } = {},
 ) {
   const byId = new Map(sessions.map((s) => [s.id, { ...s }]));
@@ -518,5 +522,124 @@ describe("backfill", () => {
     expect(report.checkedPrs).toBe(2);
     expect(report.remainingPrs).toBe(2);
     expect(calls.lookups).toEqual(["acme/app#1", "acme/app#2"]);
+  });
+
+  test("clamps the limit", () => {
+    expect(backfillLimit(undefined)).toBe(PR_SESSION_BACKFILL_DEFAULT_LIMIT);
+    expect(backfillLimit(0)).toBe(PR_SESSION_BACKFILL_DEFAULT_LIMIT);
+    expect(backfillLimit(-3)).toBe(PR_SESSION_BACKFILL_DEFAULT_LIMIT);
+    expect(backfillLimit(Number.NaN)).toBe(PR_SESSION_BACKFILL_DEFAULT_LIMIT);
+    expect(backfillLimit(2.7)).toBe(2);
+    expect(backfillLimit(0.5)).toBe(1);
+    expect(backfillLimit(10_000)).toBe(PR_SESSION_BACKFILL_MAX_LIMIT);
+    expect(PR_SESSION_BACKFILL_MAX_LIMIT).toBe(500);
+  });
+
+  /** One review session on each of PRs 1..count, all closed. */
+  function manyPrs(count: number) {
+    const sessions = Array.from({ length: count }, (_, i) =>
+      session(`bks-ghpr-${i + 1}-review`),
+    );
+    const states: Record<string, PullRequestLookup> = {};
+    for (let i = 1; i <= count; i++) states[`acme/app#${i}`] = "closed";
+    return { sessions, states };
+  }
+
+  test("looks PRs up four at a time", async () => {
+    const { sessions, states } = manyPrs(10);
+    const { deps } = fakeDeps(sessions, { states });
+    let inFlight = 0;
+    let peak = 0;
+    const lookup = deps.pullRequestState;
+    deps.pullRequestState = async (prNumber, ghRepo) => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      inFlight--;
+      return lookup(prNumber, ghRepo);
+    };
+
+    const report = await backfillClosedPrSessions({}, deps, repos);
+
+    expect(peak).toBe(4);
+    expect(report.checkedPrs).toBe(10);
+    // Reported in PR order whatever order the lookups finished in.
+    expect(report.candidates.map((c) => c.prNumber)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+  });
+
+  test("stops at the first rate-limited lookup and reports the rest", async () => {
+    const { sessions, states } = manyPrs(12);
+    states["acme/app#2"] = "rate_limited";
+    const { deps, calls, registry } = fakeDeps(sessions, { states });
+
+    const report = await backfillClosedPrSessions({ apply: true }, deps, repos);
+
+    expect(report.rateLimited).toBe(true);
+    expect(calls.lookups.length).toBeLessThan(12);
+    expect(calls.lookups).toContain("acme/app#2");
+    // Every PR is either checked or left for a later run, the throttled one too.
+    expect(report.checkedPrs + report.remainingPrs).toBe(12);
+    expect(report.remainingPrs).toBe(12 - calls.lookups.length + 1);
+    expect(report.unknownPrs).toEqual([]);
+    expect(report.candidates.map((c) => c.prNumber)).not.toContain(2);
+    expect(registry.has("bks-ghpr-2-review")).toBe(false);
+    expect(report.archived.length).toBe(report.checkedPrs);
+  });
+});
+
+describe("PR state lookup", () => {
+  type Request = NonNullable<Parameters<typeof lookUpPullRequestState>[2]>;
+  function request(result: {
+    ok: boolean;
+    status: number;
+    data?: unknown;
+    error?: string;
+  }) {
+    const seen: unknown[][] = [];
+    const fn = (async (...args: unknown[]) => {
+      seen.push(args);
+      return { data: null, ...result };
+    }) as unknown as Request;
+    return { fn, seen };
+  }
+
+  test("reads the pull with a read-only token", async () => {
+    const { fn, seen } = request({
+      ok: true,
+      status: 200,
+      data: { state: "closed" },
+    });
+
+    expect(await lookUpPullRequestState(7, "acme/docs", fn)).toBe("closed");
+    expect(seen).toEqual([
+      ["GET", "/repos/acme/docs/pulls/7", undefined, { mint: "read" }],
+    ]);
+  });
+
+  test("tells a rate limit apart from an unreadable PR", async () => {
+    const limited = request({
+      ok: false,
+      status: 403,
+      error: "API rate limit exceeded for installation",
+    });
+    const tooMany = request({ ok: false, status: 429, error: "slow down" });
+    const forbidden = request({
+      ok: false,
+      status: 403,
+      error: "Resource not accessible by integration",
+    });
+    const missing = request({ ok: false, status: 404, error: "Not Found" });
+
+    expect(await lookUpPullRequestState(7, "acme/app", limited.fn)).toBe(
+      "rate_limited",
+    );
+    expect(await lookUpPullRequestState(7, "acme/app", tooMany.fn)).toBe(
+      "rate_limited",
+    );
+    expect(
+      await lookUpPullRequestState(7, "acme/app", forbidden.fn),
+    ).toBeNull();
+    expect(await lookUpPullRequestState(7, "acme/app", missing.fn)).toBeNull();
   });
 });

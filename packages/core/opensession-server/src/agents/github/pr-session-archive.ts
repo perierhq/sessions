@@ -470,6 +470,10 @@ export async function beginPrSessionRun(
 
 export type PullRequestState = "open" | "closed";
 
+/** A PR state lookup: its state, `rate_limited` when GitHub refused for
+ * quota, or null when it could not be read for any other reason. */
+export type PullRequestLookup = PullRequestState | "rate_limited" | null;
+
 export interface BackfillPrSession {
   id: string;
   prNumber: number;
@@ -479,26 +483,32 @@ export interface BackfillPrSession {
 export interface PrSessionBackfillDeps extends PrSessionArchiveDeps {
   /** Live `bks-ghpr-*` rows from the session list projection. */
   liveSessions(): Promise<UnifiedSession[]>;
-  /** The PR's state on GitHub, or null when it could not be read. */
+  /** The PR's state on GitHub. */
   pullRequestState(
     prNumber: number,
     ghRepo: string,
-  ): Promise<PullRequestState | null>;
+  ): Promise<PullRequestLookup>;
 }
 
 export interface PrSessionBackfillOptions {
   /** Archive for real. Without it the backfill only reports. */
   apply?: boolean;
-  /** At most this many distinct PRs are looked up on GitHub. */
+  /** At most this many distinct PRs are looked up on GitHub (default
+   * PR_SESSION_BACKFILL_DEFAULT_LIMIT, clamped to PR_SESSION_BACKFILL_MAX_LIMIT). */
   limit?: number;
 }
 
 export interface PrSessionBackfillReport {
   dryRun: boolean;
+  /** The PR lookup limit applied, after clamping. */
+  limit: number;
   /** Distinct PRs whose state was looked up. */
   checkedPrs: number;
-  /** PRs past the limit, left for a later run. */
+  /** PRs not looked up (past the limit, or after a rate limit), left for a
+   * later run. */
   remainingPrs: number;
+  /** GitHub refused a lookup for quota; the backfill stopped there. */
+  rateLimited: boolean;
   /** Sessions whose PR is closed or merged. A dry run would archive these. */
   candidates: BackfillPrSession[];
   archived: string[];
@@ -508,28 +518,69 @@ export interface PrSessionBackfillReport {
 }
 
 export const PR_SESSION_BACKFILL_DEFAULT_LIMIT = 200;
+export const PR_SESSION_BACKFILL_MAX_LIMIT = 500;
+/** PR lookups in flight at once. */
+const BACKFILL_LOOKUP_CONCURRENCY = 4;
+
+type GithubRequest = typeof import("./github-rest").githubRequest;
+
+/**
+ * A PR's state, read with a read-only installation token: the backfill only
+ * reads, so it never spends the write token other automation shares.
+ */
+export async function lookUpPullRequestState(
+  prNumber: number,
+  ghRepo: string,
+  request?: GithubRequest,
+): Promise<PullRequestLookup> {
+  const [githubRequest, { isGhRateLimitMsg }] = await Promise.all([
+    request ?? import("./github-rest").then((m) => m.githubRequest),
+    import("../../server/github-limit"),
+  ]);
+  const r = await githubRequest<{ state?: unknown }>(
+    "GET",
+    `/repos/${ghRepo}/pulls/${prNumber}`,
+    undefined,
+    { mint: "read" },
+  );
+  if (
+    r.status === 429 ||
+    (r.status === 403 && isGhRateLimitMsg(String(r.error || "")))
+  )
+    return "rate_limited";
+  if (!r.ok) return null;
+  const state = r.data?.state;
+  return state === "open" || state === "closed" ? state : null;
+}
 
 async function defaultBackfillDeps(): Promise<PrSessionBackfillDeps> {
-  const [base, { getSessionListSnapshotAsync }, { getIssue }] =
-    await Promise.all([
-      defaultDeps(),
-      import("../../server/session-cache"),
-      import("./github-rest"),
-    ]);
+  const [base, { getSessionListSnapshotAsync }] = await Promise.all([
+    defaultDeps(),
+    import("../../server/session-cache"),
+  ]);
   return {
     ...base,
     liveSessions: () => getSessionListSnapshotAsync("exclude"),
-    pullRequestState: async (prNumber, ghRepo) => {
-      const issue = await getIssue(prNumber, ghRepo);
-      if (!issue || !issue.isPullRequest) return null;
-      return issue.state;
-    },
+    pullRequestState: (prNumber, ghRepo) =>
+      lookUpPullRequestState(prNumber, ghRepo),
   };
+}
+
+/** Clamp a requested PR lookup count to the backfill's bounds. */
+export function backfillLimit(requested?: number): number {
+  if (!requested || !Number.isFinite(requested) || requested <= 0)
+    return PR_SESSION_BACKFILL_DEFAULT_LIMIT;
+  return Math.min(
+    PR_SESSION_BACKFILL_MAX_LIMIT,
+    Math.max(1, Math.floor(requested)),
+  );
 }
 
 /**
  * Archive live PR automation sessions whose PR is no longer open. One GitHub
- * read per distinct PR; a PR whose state cannot be read is left alone.
+ * read per distinct PR, a few at a time; a PR whose state cannot be read is
+ * left alone. The first rate-limited read stops the lookups, and the PRs not
+ * looked up are reported in `remainingPrs`.
  */
 export async function backfillClosedPrSessions(
   options: PrSessionBackfillOptions = {},
@@ -537,10 +588,7 @@ export async function backfillClosedPrSessions(
   repos?: Record<string, Repo>,
 ): Promise<PrSessionBackfillReport> {
   const resolved = deps ?? (await defaultBackfillDeps());
-  const limit =
-    options.limit && options.limit > 0
-      ? Math.floor(options.limit)
-      : PR_SESSION_BACKFILL_DEFAULT_LIMIT;
+  const limit = backfillLimit(options.limit);
   const byPr = new Map<string, BackfillPrSession[]>();
   for (const session of await resolved.liveSessions()) {
     if (session.archived || !session.id.startsWith("bks-ghpr-")) continue;
@@ -556,20 +604,42 @@ export async function backfillClosedPrSessions(
     byPr.set(key, group);
   }
   const groups = [...byPr.values()];
+  const lookups = groups.slice(0, limit);
+  const states: Array<PullRequestLookup | undefined> = [];
+  let next = 0;
+  let rateLimited = false;
+  const lookUp = async () => {
+    while (!rateLimited && next < lookups.length) {
+      const index = next++;
+      const { prNumber, ghRepo } = lookups[index]![0]!;
+      const state = await resolved.pullRequestState(prNumber, ghRepo);
+      states[index] = state;
+      if (state === "rate_limited") rateLimited = true;
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(BACKFILL_LOOKUP_CONCURRENCY, lookups.length) },
+      lookUp,
+    ),
+  );
   const report: PrSessionBackfillReport = {
     dryRun: !options.apply,
+    limit,
     checkedPrs: 0,
-    remainingPrs: Math.max(0, groups.length - limit),
+    remainingPrs: 0,
+    rateLimited,
     candidates: [],
     archived: [],
     skippedRunning: [],
     unknownPrs: [],
   };
   const justArchived: UnifiedSession[] = [];
-  for (const group of groups.slice(0, limit)) {
+  for (const [index, group] of lookups.entries()) {
+    const state = states[index];
+    if (state === undefined || state === "rate_limited") continue;
     const { prNumber, ghRepo } = group[0]!;
     report.checkedPrs++;
-    const state = await resolved.pullRequestState(prNumber, ghRepo);
     if (state === null) {
       report.unknownPrs.push({ prNumber, ghRepo });
       continue;
@@ -577,15 +647,18 @@ export async function backfillClosedPrSessions(
     if (state === "open") continue;
     report.candidates.push(...group);
     if (!options.apply) continue;
-    const result = await archiveIdleSessions(
-      group.map((session) => session.id),
-      resolved,
-      justArchived,
-      false,
+    const result = await serialisePrLifecycle(prNumber, ghRepo, () =>
+      archiveIdleSessions(
+        group.map((session) => session.id),
+        resolved,
+        justArchived,
+        false,
+      ),
     );
     report.archived.push(...result.archived);
     report.skippedRunning.push(...result.skippedRunning);
   }
+  report.remainingPrs = groups.length - report.checkedPrs;
   if (justArchived.length) await resolved.afterArchive(justArchived);
   return report;
 }
