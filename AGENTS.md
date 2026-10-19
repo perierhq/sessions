@@ -1,3 +1,65 @@
+# Perier Sessions
+
+This repository is **Perier Sessions** (`perierhq/sessions`, sessions.pl), a hard
+fork of Open Session. Read this section first; the inherited Open Session
+instructions below still describe the code, and this section wins where they
+disagree.
+
+## Fork rules
+
+- **Upstream is read-only.** `upstream` (tellahq/opensession) has push disabled.
+  Never merge, rebase onto, or cherry-pick from it. To take an upstream feature
+  or fix, read its diff and reimplement it here; name the source in the commit
+  message as `Upstream: tellahq/opensession@<sha>`. The fork point is in
+  [`NOTICE.md`](NOTICE.md).
+- **Keep the licences.** Never remove `LICENSE`, `NOTICE.md`,
+  `THIRD-PARTY-NOTICES.md` or `THIRD-PARTY-LICENSES`.
+- **Private for now.** The repo is private, but treat it as if it will go
+  public: no secrets, client data or internal hostnames in commits.
+- **Small PRs.** One cut or one change per PR, with build and tests passing.
+
+## What we're building
+
+Kacper's own control room for pi coding agents on a Linux VPS, used from a
+MacBook and a phone equally. v1 is "how I work today, but remote":
+
+- project-grouped sidebar with one status mark per session
+- session transcript, with each subagent as one collapsed row
+- numbered question card (tap an option, or type your own)
+- composer: send, queue while running, stop, model and account, attach, dictate
+- new session: pick a project, type the goal
+- the phone is the same product, never a lite version
+
+## Order of work
+
+1. **Agent runner:** run pi with Kacper's extensions (no `noExtensions`), and
+   remove the Claude CLI bridge (`anthropic-bridge.ts`); providers come from
+   pi and its multi-account extension.
+2. **Strip audit:** a keep/cut list per feature, approved by Kacper before any
+   deletion.
+3. **Cuts,** one PR each.
+4. **Restyle** from the Paper designs ("Control room · directions", page
+   "v6 · Remote pi").
+
+## Code map
+
+- `packages/core/opensession-server/src/`
+  - `frontend/`: web UI and phone PWA (React 19, Base UI, Tailwind v4).
+    `styles/` and `ui/` hold the design system.
+  - `server/`: HTTP/API server
+  - `server/pi-runner.ts`, `pi-model-runtime.ts`, `runner-shared.ts`: how pi is
+    spawned (this is where `noExtensions` is set); `server/anthropic-bridge.ts`
+    is the Claude CLI bridge to remove
+  - `agents/`: integrations (GitHub, Linear, Slack, Stripe, Plain, Grafana)
+  - `session-kernel-*.ts`, `runner-*`, `executor/`, `script-host/`: session
+    and process execution
+  - `shared/`: types shared between server and frontend
+- `packages/core/protocol/`: wire protocol
+- `packages/clients/`: `ios/` (Swift), `mac/` (Electron), `chrome/`,
+  `website/`. Likely cut candidates; decide in the strip audit.
+
+---
+
 Default to Bun instead of Node.js.
 
 Keep instance-private operator instructions in an untracked `AGENTS.local.md` or
