@@ -31,7 +31,6 @@ import {
   formatAnthropicReset,
 } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { pickAccount as pickClaudeCliAccount } from "./claude-accounts";
 import { bindXaiAccount, xaiSubscriptionModelEfforts } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { enableXaiProxyPayload } from "./xai-payload";
@@ -42,13 +41,7 @@ import {
 } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import { openaiServiceTier } from "./openai-service-tier";
-import {
-  INTERACTIVE_KINDS,
-  isUnattendedKind,
-  baseJournalKind,
-  runToolPolicy,
-  readLocalInstructions,
-} from "./run-policy";
+import { readLocalInstructions } from "./run-policy";
 import {
   assembleRunSystemPrompt,
   buildRunInstructions,
@@ -58,7 +51,6 @@ import {
 import { stampIncidentDeclaration } from "./incident-declarations";
 import {
   guardStripeApprovalCall,
-  stripeApprovalsEnforced,
   stripeApprovalsNote,
 } from "./stripe-approvals";
 import {
@@ -78,13 +70,7 @@ import {
   type PiTurnRepair,
 } from "./pi-turn-checkpoint";
 import { stagePromptImages, withImagesNote } from "./prompt-attachments";
-import {
-  EMPTY_REPLY_RETRY_PROMPT,
-  githubCredentialUser,
-} from "./auto-continue";
-import type { PrivateTermsGuard } from "./command-policy";
-import { privateTerms } from "./config";
-import { treatRepoAsPublic } from "./repo-visibility";
+import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
   transcriptLineCompactionSummary,
@@ -93,9 +79,7 @@ import {
 } from "./transcript-persistence";
 import { transcript } from "./actor-transcript";
 import { transcriptForwarder } from "./transcript-forward";
-import { humanPrompter, providerAccountUser } from "./session-actors";
-import { githubRunOwnerLogin } from "./github-auth";
-import { ensureAgentAwsCredsFile } from "./aws-creds";
+import { providerAccountUser } from "./session-actors";
 import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
 import {
@@ -103,7 +87,6 @@ import {
   prewarmPiSdk as prewarmPiSdkBinding,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
-import { sessionOwnershipEnv } from "./session-ownership";
 import {
   createMcpRuntime,
   splitMcpMigrationBoundary,
@@ -134,13 +117,7 @@ import {
   piAssistantTranscriptEntries,
   piImages,
 } from "./pi-transcript";
-import {
-  GIT_COAUTHOR_ENV,
-  agentGitIdentityEnv,
-  runGithubEnv,
-  runGithubMergeGuard,
-  usesHostGithubLogin,
-} from "./pi-github-env";
+import { GIT_COAUTHOR_ENV } from "./pi-github-env";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
@@ -151,7 +128,7 @@ import {
   makeGuardedToolOps,
   shippedSkillRoots,
 } from "./pi-guarded-tools";
-import { makePiBashTool, piBashHomeEnv } from "./pi-bash-tool";
+import { makePiBashTool } from "./pi-bash-tool";
 import {
   aliasPiRun,
   claimPiRun,
@@ -177,6 +154,8 @@ import {
   type PiAccountWalk,
 } from "./pi-account-walk";
 import { PiTurnLedger } from "./pi-turn-ledger";
+import { resolvePiRunAuthority } from "./pi-run-authority";
+import { buildPiBashEnv, piCliPoolEnv } from "./pi-run-env";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -562,90 +541,19 @@ async function* runPiAttempt(
       });
     }
 
-    // Stripe two-party approvals hold refunds and cancellations, so every
-    // run keeps those tools; guardStripeApprovalCall narrows the raw writer.
-    const stripeApprovals =
-      stripeApprovalsEnforced() &&
-      (!Array.isArray(mcpServers) || mcpServers.includes("stripe"));
-    const policy = runToolPolicy({
-      deniedTools: opts.deniedTools,
-      confirmTools,
-      journalKind: journal?.kind,
+    const {
       stripeApprovals,
-    });
-    // Command-policy gate: kind-based like previous runner (NOT policy.unattended) —
-    // the trusted-human loops carry deniedTools but shouldn't trip the gate.
-    const bashGated =
-      isUnattendedKind(baseJournalKind(journal?.kind)) && !isAsk;
-    // The repo owning this run's cwd, or undefined for a repo-less one (a
-    // scratch dir, a repo-less ask session). Dynamic import to avoid a static
-    // module-init cycle through "./worktree".
-    const cwdRepo = await (async () => {
-      try {
-        const { getRepo, repoForPathOrNull } = await import("./worktree");
-        // A Sandbox checkout's path means nothing on this machine: the
-        // launcher names its repository instead.
-        if (remote)
-          return opts.remoteWorkspace?.repo
-            ? getRepo(opts.remoteWorkspace.repo)
-            : undefined;
-        return repoForPathOrNull(cwd);
-      } catch {
-        return undefined;
-      }
-    })();
-    // A run that can publish must know when the whole internet reads what it
-    // publishes. Fails closed: unconfirmed visibility counts as public.
-    const publicRepo =
-      !isAsk && !isScratch && (await treatRepoAsPublic(cwdRepo));
-    const configuredPrivateTerms = privateTerms();
-    const privateTermsGuard: PrivateTermsGuard | undefined =
-      publicRepo && configuredPrivateTerms.length > 0
-        ? { terms: configuredPrivateTerms }
-        : undefined;
-    // The person this turn acts for, if any: the sender, unless it is the
-    // synthetic auto-continue driver, in which case the author fallback
-    // names the session owner (#322). A machine sender (a review handoff, a
-    // worker report, an automation) is nobody. In code mode an owner turn
-    // puts their connected token in the shell (runGithubEnv) and describes
-    // PR authorship as theirs; every other run holds an App token.
-    const githubUser = githubCredentialUser(user, author?.name);
-    const ownerTurn =
-      !policy.unattended &&
-      INTERACTIVE_KINDS.has(baseJournalKind(journal?.kind)) &&
-      humanPrompter(githubUser) !== null;
-    // On a remote host this reads the launcher's projected marker, not the
-    // person store, so a sandboxed owner turn drops the guard exactly when
-    // a host run would.
-    const githubUserLogin = ownerTurn ? githubRunOwnerLogin(githubUser) : null;
-    // GitHub permissions and repository rulesets bound the chosen credential.
-    // Ask, unattended, and publication-policy command gates still apply.
-    const githubKindRun = baseJournalKind(journal?.kind).startsWith("github-");
-    const hostGithubLogin = await usesHostGithubLogin({
-      remote: Boolean(remote),
-      unattended: Boolean(policy.unattended),
-      isolatedHome: Boolean(opts.publicationPolicy),
-    });
-    const githubEnv = await runGithubEnv({
-      isCode: mode === "code",
-      ownerTurn,
-      user: githubUser,
-      githubKindRun,
-      launcherEnv: opts.githubEnv,
-      // Credentials are looked up by checkout; a Sandbox run's repository is
-      // found through its registered checkout on this machine.
-      cwd: remote ? cwdRepo?.repo || "" : cwd,
-      readRepos: opts.readRepos,
-      attachedRepos: opts.attachedRepos,
-      hostLogin: hostGithubLogin,
-    });
-    const agentGitEnv = await agentGitIdentityEnv(author);
-    const mergeGuard = runGithubMergeGuard({
-      isCode: mode === "code",
-      ownerTurn,
-      ownerLogin: githubUserLogin,
-      baseBranch: cwdRepo?.defaultBranch || "main",
-    });
+      policy,
+      bashGated,
+      cwdRepo,
+      publicRepo,
+      privateTermsGuard,
+      githubUserLogin,
+      hostGithubLogin,
+      githubEnv,
+      agentGitEnv,
+      mergeGuard,
+    } = await resolvePiRunAuthority(opts, remote);
     const binding = await createPiRuntimeBinding({
       providerID: parsed.providerID,
       modelID: parsed.modelID,
@@ -693,103 +601,16 @@ async function* runPiAttempt(
     });
     const { sdk, runtime, model: piModel } = binding;
 
-    // Optional pool credentials for tools the run itself spawns (currently
-    // deepsec's Claude Agent SDK and Codex CLI workers). These are explicit
-    // additions to the minimal environment, never inherited server secrets.
-    const cliEnv: Record<string, string> = {};
-    // Pool credentials never go into a Sandbox command.
-    if (opts.claudeCliEnv && !remote) {
-      const cliAccount = pickClaudeCliAccount(
-        undefined,
-        accountUser,
-        undefined,
-        opts.usageCredits,
-      );
-      if (cliAccount) {
-        const cliCfgDir = `${PI_STATE_DIR}/cli/claude/${cliAccount.id}`;
-        mkdirSync(cliCfgDir, { recursive: true, mode: 0o700 });
-        cliEnv.CLAUDE_CODE_OAUTH_TOKEN = cliAccount.token;
-        cliEnv.CLAUDE_CONFIG_DIR = cliCfgDir;
-        audit({
-          msg: "claude_cli_env_account",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          account: cliAccount.name,
-          account_id: cliAccount.id.slice(0, 8),
-          engine: "pi",
-        });
-      } else {
-        console.warn(
-          "[pi-runner] claudeCliEnv requested but no usable Claude account in the pool; run proceeds without it",
-        );
-      }
-    }
-    if (opts.codexCliEnv && !remote) {
-      const cfg = readModelProviderConfig();
-      const picked = pickOpenaiAccount(
-        "",
-        cfg?.openaiAccounts,
-        journal?.osSessionId || runKey,
-        undefined,
-        accountUser,
-      );
-      if ("error" in picked) {
-        console.warn(
-          `[pi-runner] codexCliEnv requested but no usable Codex account (${picked.error}); run proceeds without it`,
-        );
-      } else {
-        Object.assign(
-          cliEnv,
-          picked.kind === "home"
-            ? { CODEX_HOME: picked.value }
-            : { OPENAI_API_KEY: picked.value },
-        );
-        audit({
-          msg: "codex_cli_env_account",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          account: picked.name,
-          account_id: picked.id.slice(0, 8),
-          engine: "pi",
-        });
-      }
-    }
-
-    // Minimal bash env, the security invariant this engine hangs on. The
-    // server env is NEVER inherited; every entry is explicit.
-    // The AWS session file lives on this machine; a Sandbox never gets one.
-    const awsEnv = opts.aws && !remote ? await ensureAgentAwsCredsFile() : {};
-    const homeEnv = piBashHomeEnv({
+    const cliEnv = piCliPoolEnv({ opts, remote, accountUser, runKey });
+    const bashEnv = await buildPiBashEnv({
+      opts,
+      remote,
       runKey,
-      scratchDir: opts.scratchDir,
-      isolated: Boolean(opts.publicationPolicy),
-      hostHome: process.env.HOME,
       hostGithubLogin,
+      agentGitEnv,
+      githubEnv,
+      cliEnv,
     });
-    if (!remote && opts.publicationPolicy && homeEnv.HOME)
-      mkdirSync(homeEnv.HOME, { recursive: true, mode: 0o700 });
-    if (!remote && homeEnv.GH_CONFIG_DIR)
-      mkdirSync(homeEnv.GH_CONFIG_DIR, { recursive: true, mode: 0o700 });
-    const bashEnv: Record<string, string> = {
-      ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-      ...homeEnv,
-      ...(process.env.LANG ? { LANG: process.env.LANG } : {}),
-      // Session-scoped scratch (session-scratch.ts): temp files follow the
-      // session's lifecycle instead of accumulating in shared /tmp.
-      ...(opts.scratchDir
-        ? { TMPDIR: opts.scratchDir, OPENSESSION_SCRATCH: opts.scratchDir }
-        : {}),
-      ...agentGitEnv,
-      ...githubEnv,
-      ...awsEnv,
-      ...cliEnv,
-      // OPENSESSION_SESSION_ID, and the container shims first on PATH, so
-      // what the agent leaves running stops with the session
-      // (session-ownership.ts).
-      ...sessionOwnershipEnv(journal?.osSessionId, process.env.PATH, {
-        shims: !remote,
-      }),
-    };
 
     // One engine-neutral MCP runtime owns all connections for this logical
     // turn. Pi only adapts its exact catalog into tool_search/tool_call. The
