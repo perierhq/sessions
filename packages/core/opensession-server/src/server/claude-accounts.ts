@@ -40,6 +40,8 @@ function sidelineStatePath(): string {
 // Keep this conservative: the usage endpoint rate-limits per token with
 // ~hour-long lockouts (observed Retry-After of ~50m after 10-minute polling).
 const POLL_INTERVAL_MS = 60 * 60 * 1000;
+// Paid-credit headroom is judged only on a snapshot at most this old.
+const CREDIT_USAGE_MAX_AGE_MS = 2 * POLL_INTERVAL_MS;
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
@@ -700,9 +702,15 @@ function isModelExhausted(id: string, model?: string): boolean {
  * headroom — this gate exists to bound spend, so it fails closed.
  */
 function hasCreditHeadroom(a: ClaudeAccount): boolean {
-  const extra = usageCache.get(a.id)?.extraUsage;
+  const usage = usageCache.get(a.id);
+  const extra = usage?.extraUsage;
+  // The credit counter as last fetched. Once it is older than two polls
+  // (the gateway down, the endpoint failing), the spend since is unknown:
+  // no headroom. An unparsable fetchedAt fails the comparison the same way.
+  const age = usage ? Date.now() - Date.parse(usage.fetchedAt) : NaN;
   return (
     !!extra?.enabled &&
+    age <= CREDIT_USAGE_MAX_AGE_MS &&
     extra.monthlyLimit > 0 &&
     extra.usedCredits < extra.monthlyLimit
   );

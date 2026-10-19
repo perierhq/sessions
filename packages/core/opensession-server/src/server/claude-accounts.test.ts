@@ -97,6 +97,34 @@ describe("pickAccount usage-credits policy", () => {
     ).toBeUndefined();
   });
 
+  test("credit headroom needs a snapshot from the last two polls", () => {
+    const hour = 60 * 60 * 1000;
+    const credits = { enabled: true, usedCredits: 0, monthlyLimit: 100_000 };
+    const fetchedAgo = (ms: number) => ({
+      ...usage(100, credits),
+      fetchedAt: new Date(Date.now() - ms).toISOString(),
+    });
+    accounts.__setUsageCacheForTest("maxed", fetchedAgo(1.5 * hour));
+    expect(
+      accounts.pickAccount(new Set(["fresh"]), undefined, undefined, true)?.id,
+    ).toBe("maxed");
+    // The spend since a three-hour-old counter is unknown: fail closed.
+    accounts.__setUsageCacheForTest("maxed", fetchedAgo(3 * hour));
+    expect(
+      accounts.pickAccount(new Set(["fresh"]), undefined, undefined, true),
+    ).toBeUndefined();
+    expect(
+      accounts.getUsableAccountById("maxed", undefined, true),
+    ).toBeUndefined();
+    // The utilisation windows of that snapshot still count as before.
+    accounts.__setUsageCacheForTest("maxed", {
+      ...fetchedAgo(3 * hour),
+      fiveHour: { utilization: 10, resetsAt: null },
+    });
+    expect(accounts.pickAccount(new Set(["fresh"]))?.id).toBe("maxed");
+    accounts.__setUsageCacheForTest("maxed", usage(100, credits));
+  });
+
   test("getUsableAccountById honors allowExtraUsage the same way", () => {
     accounts.__setUsageCacheForTest(
       "maxed",
