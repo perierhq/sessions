@@ -16,13 +16,16 @@
  *         // Retired compatibility field. The picker has one shared model
  *         // catalog and the chosen engine is encoded only in the session id.
  *     "anthropicTransport": "inprocess"
- *         // Optional: how pi/anthropic/* turns reach the Claude Agent SDK.
+ *         // Optional: how pi/anthropic/* turns reach Anthropic.
  *         // "inprocess" (the default; absent normalizes to it) registers
- *         // the native in-process provider (pi-anthropic-provider.ts) —
+ *         // the Claude Agent SDK provider (pi-anthropic-provider.ts) —
  *         // token-level streaming, no loopback HTTP hop. "bridge" keeps the
- *         // pre-2026-08 loopback Anthropic bridge path as rollback. Only
- *         // the literal "bridge" survives normalization; anything else is
- *         // the default.
+ *         // pre-2026-08 loopback Anthropic bridge path as rollback.
+ *         // "native" uses pi's own Anthropic provider with a Claude pool
+ *         // account's token, picked once per attempt and rotated by the
+ *         // runner's account walk (no Claude CLI process). Only the
+ *         // literals "bridge" and "native" survive normalization; anything
+ *         // else is the default.
  *   }
  *
  * Read fresh per call (tiny file) so edits apply without a restart. The write
@@ -42,16 +45,25 @@ export function piConfigPath(): string {
   return process.env.OPENSESSION_PI_CONFIG || stateDir("pi.json");
 }
 
-/** Transport for pi/anthropic/* turns: the in-process native provider
- *  (default) or the loopback HTTP bridge (rollback). */
-export type PiAnthropicTransport = "inprocess" | "bridge";
+/** Transport for pi/anthropic/* turns: the in-process Claude Agent SDK
+ *  provider (default), the loopback HTTP bridge (rollback), or pi's own
+ *  Anthropic provider fed a Claude pool account's token ("native"). */
+export type PiAnthropicTransport = "inprocess" | "bridge" | "native";
+
+/** The transport values that survive normalization (the non-defaults). */
+function explicitAnthropicTransport(
+  value: unknown,
+): Exclude<PiAnthropicTransport, "inprocess"> | undefined {
+  return value === "bridge" || value === "native" ? value : undefined;
+}
 
 export interface PiEngineConfig {
   enabled: boolean;
   /** Retired compatibility field. Model selection is engine-neutral. */
   pickerModels: string[];
-  /** Present only as the non-default "bridge" (absent = "inprocess"). Read it
-   *  through piAnthropicTransport(), which resolves the default. */
+  /** Present only as a non-default "bridge" or "native" (absent =
+   *  "inprocess"). Read it through piAnthropicTransport(), which resolves
+   *  the default. */
   anthropicTransport?: PiAnthropicTransport;
 }
 
@@ -81,13 +93,12 @@ export function normalizePiConfig(raw: unknown): PiEngineConfig {
   const pickerModels = Array.isArray(r.pickerModels)
     ? r.pickerModels.filter(isPiModelId)
     : [];
+  const anthropicTransport = explicitAnthropicTransport(r.anthropicTransport);
   return {
     enabled: r.enabled === true,
     pickerModels,
-    // Only the literal non-default survives; junk/absent = "inprocess".
-    ...(r.anthropicTransport === "bridge"
-      ? { anthropicTransport: "bridge" as const }
-      : {}),
+    // Only the literal non-defaults survive; junk/absent = "inprocess".
+    ...(anthropicTransport ? { anthropicTransport } : {}),
   };
 }
 
@@ -115,12 +126,14 @@ export function piPickerModels(): string[] {
 }
 
 /** Resolved transport for pi/anthropic/* turns — "inprocess" unless the
- *  config explicitly says "bridge" (missing/disabled/malformed config all
- *  default; the engine-enabled gate is separate and comes first). */
+ *  config explicitly says "bridge" or "native" (missing/disabled/malformed
+ *  config all default; the engine-enabled gate is separate and comes
+ *  first). */
 export function piAnthropicTransport(): PiAnthropicTransport {
-  return readPiEngineConfig()?.anthropicTransport === "bridge"
-    ? "bridge"
-    : "inprocess";
+  return (
+    explicitAnthropicTransport(readPiEngineConfig()?.anthropicTransport) ??
+    "inprocess"
+  );
 }
 
 // ── Write path (Settings → Accounts "Pi engine" card) ───────────────────────

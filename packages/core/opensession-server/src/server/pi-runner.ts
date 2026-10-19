@@ -53,8 +53,19 @@ import {
   isClaudeSubscriptionError,
   isClaudeUsageLimitError,
   isCodexUsageLimitError,
+  describeUsageLimitReset,
+  usageLimitResetAt,
 } from "./runner-shared";
-import { ensureAnthropicBridge } from "./anthropic-bridge";
+import { ensureAnthropicBridge, pickBridgeAccount } from "./anthropic-bridge";
+import {
+  enableAnthropicPromptCompat,
+  rewriteAnthropicPromptText,
+} from "./anthropic-prompt-compat";
+import {
+  enableAnthropicRateLimitCapture,
+  formatAnthropicReset,
+  type AnthropicRateLimitSnapshot,
+} from "./anthropic-rate-limit";
 import {
   FALLBACK_CONTEXT_WINDOW,
   FALLBACK_MAX_TOKENS,
@@ -66,7 +77,11 @@ import {
   type PiProviderCatalog,
 } from "./model-providers";
 import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
-import { pickAccount as pickClaudeAccount } from "./claude-accounts";
+import {
+  markExhausted as markClaudeExhausted,
+  pickAccount as pickClaudeAccount,
+  type ClaudeAccount,
+} from "./claude-accounts";
 import {
   bindXaiAccount,
   markXaiExhausted,
@@ -166,12 +181,15 @@ import {
   piAnthropicTransport,
   piEngineEnabled,
   piConfigPath,
+  type PiAnthropicTransport,
 } from "./pi-config";
 import { assistantProseFields } from "./transcript-media";
 import { buildPiAnthropicProvider } from "./pi-anthropic-provider";
 import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
+  rememberNativeClaudeAccount,
+  type PiRuntimeAccountEvidence,
   type PiSdk,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
@@ -922,8 +940,8 @@ interface PoolAccountRef {
   id: string;
   name: string;
   masked: string;
-  pool: "openai" | typeof XAI_OAUTH_PROVIDER;
-  /** How the pool reads in logs: "codex" or "SuperGrok". */
+  pool: "openai" | typeof XAI_OAUTH_PROVIDER | "claude";
+  /** How the pool reads in logs: "codex", "SuperGrok" or "Claude". */
   label: string;
 }
 
@@ -947,18 +965,56 @@ function xaiPoolRef(account: XaiAccount): PoolAccountRef {
   };
 }
 
+/** A Claude pool account serving a native-transport pi/anthropic turn. */
+function claudePoolRef(account: ClaudeAccount): PoolAccountRef {
+  return {
+    id: account.id,
+    name: account.name,
+    masked: `${account.name} (${account.id.slice(0, 8)}, claude)`,
+    pool: "claude",
+    label: "Claude",
+  };
+}
+
+/** The pool account a binding's evidence names, picked or sidelineable. */
+function evidencePoolRef(
+  evidence: PiRuntimeAccountEvidence,
+  which: "picked" | "sidelineable",
+): PoolAccountRef | undefined {
+  const openai =
+    which === "picked" ? evidence.pickedOpenai : evidence.sidelineableOpenai;
+  if (openai) return codexPoolRef(openai);
+  const xai =
+    which === "picked" ? evidence.pickedXai : evidence.sidelineableXai;
+  if (xai) return xaiPoolRef(xai);
+  const claude =
+    which === "picked" ? evidence.pickedClaude : evidence.sidelineableClaude;
+  return claude ? claudePoolRef(claude) : undefined;
+}
+
 /** Provider-aware usage-limit classification for terminal errors — "this
  *  model's pool can't serve right now", which is exactly what
  *  usageLimitExhausted tells agent-runner's fallback walk. Anthropic runs see
  *  the loopback bridge's shapes: 429 (per-account hourly cap) and 529 (no
- *  usable designated account) plus the standard Claude limit messages. OpenAI
- *  runs match the codex classifier shared with the previous runner engine
+ *  usable designated account) plus the standard Claude limit messages. On the
+ *  "native" transport pi talks to Anthropic directly, where 529 /
+ *  overloaded_error is transient overload, not exhaustion: those go through
+ *  pi's own retry instead of sidelining a healthy account. A native 429 is
+ *  read the same way when Anthropic's unified rate-limit header came with it
+ *  (`anthropicUnifiedStatus`): only "rejected" is the subscription's own
+ *  limit; any other status is a transient throttle for pi's retry. Without
+ *  the header a 429 still counts as a limit. OpenAI runs match
+ *  the codex classifier shared with the previous runner engine
  *  (isCodexUsageLimitError) plus the raw code shapes above — never the
  *  bridge-only shapes (529/overload is transient there, not exhaustion).
  *  Exported for the classifier tests. */
 export function isPiUsageLimitShape(
   message: string,
   providerID: string,
+  anthropicTransport?: PiAnthropicTransport,
+  /** `anthropic-ratelimit-unified-status` of the native 429 this message
+   *  reports, when the response carried one. */
+  anthropicUnifiedStatus?: string,
 ): boolean {
   if (providerID === "openai") {
     return (
@@ -970,14 +1026,22 @@ export function isPiUsageLimitShape(
     return XAI_USAGE_LIMIT_SHAPES.test(message);
   }
   if (
+    anthropicTransport === "native" &&
+    anthropicUnifiedStatus !== undefined &&
+    anthropicUnifiedStatus !== "rejected" &&
+    /\b429\b/.test(message)
+  )
+    return false;
+  if (
     isClaudeUsageLimitError(message, true) ||
     isClaudeSubscriptionError(message)
   )
     return true;
   const s = message.toLowerCase();
+  const overloadIsExhaustion = anthropicTransport !== "native";
   return (
-    s.includes("overloaded_error") ||
-    /\b529\b/.test(s) ||
+    (overloadIsExhaustion &&
+      (s.includes("overloaded_error") || /\b529\b/.test(s))) ||
     /\b429\b/.test(s) ||
     s.includes("no designated bridge account") ||
     // Pool-mode pickBridgeAccount: exhausted pool (not the empty-pool config
@@ -1893,6 +1957,9 @@ interface PiAccountWalk {
   promptEntryId?: string;
   /** Resume completed messages and tool results instead of replaying the prompt. */
   continuation?: AgentSession["sessionManager"];
+  /** This turn already moved off an account over a native 429 that was not
+   *  the subscription's limit. Such a rotation happens at most once. */
+  throttleRotated?: boolean;
   cancelled?: boolean;
 }
 
@@ -1914,9 +1981,10 @@ export function piStreamEventRequiresAccountContinuation(
  * fallback to "none" rather than silently crossing into an previous runner fallback,
  * so one capped account was simply the end of the turn.
  *
- * The anthropic side runs the same walk one level down, inside
- * pi-anthropic-provider's stream, because it picks its account per REQUEST.
- * pi/openai picks once at bind time (the seeded credential is built before
+ * The anthropic side on the default in-process transport runs the same walk
+ * one level down, inside pi-anthropic-provider's stream, because it picks its
+ * account per REQUEST. pi/openai, pi/xai-oauth and pi/anthropic on the
+ * "native" transport pick once at bind time (the credential is seeded before
  * the SDK is even imported), so there is no per-request catch to rotate from
  * and the loop belongs here. Both sides share one contract: an exclusion set
  * threaded into the picker and a strict pin that refuses rather than moving
@@ -2013,6 +2081,26 @@ async function* runPiAttempt(
     };
     return;
   }
+
+  // Read once per attempt: the binding, the classifier and the account walk
+  // must all agree on how this turn reaches Anthropic.
+  const anthropicTransport =
+    parsed.providerID === "anthropic" ? piAnthropicTransport() : undefined;
+  // The latest Anthropic response's unified rate-limit headers, on the native
+  // transport (anthropic-rate-limit.ts). Kept per attempt: each attempt binds
+  // its own account.
+  let nativeRateLimit: AnthropicRateLimitSnapshot | undefined;
+  /** The rate-limit headers of the 429 that just failed, if that is what the
+   *  latest response was. */
+  const nativeLimit429 = () =>
+    nativeRateLimit?.httpStatus === 429 ? nativeRateLimit : undefined;
+  const usageLimitShape = (message: string) =>
+    isPiUsageLimitShape(
+      message,
+      parsed.providerID,
+      anthropicTransport,
+      nativeLimit429()?.unifiedStatus,
+    );
 
   const { prompt, cwd, mode, mcpServers, confirmTools, journal, user, author } =
     opts;
@@ -2124,10 +2212,11 @@ async function* runPiAttempt(
   let checkpointWriter: PiTurnCheckpointWriter | undefined;
   let sawSettled = false;
   // Pool-backed providers only (pi/openai: Codex pool, pi/xai-oauth: SuperGrok
-  // pool): the picked account — visible to the catch/terminal paths so the
-  // account walk can rotate off it. Set as soon as the pick succeeds, BEFORE
-  // the seed and refresh-window checks, because those two failures are exactly
-  // the ones worth trying another account for.
+  // pool, pi/anthropic on the native transport: Claude pool): the picked
+  // account — visible to the catch/terminal paths so the account walk can
+  // rotate off it. Set as soon as the pick succeeds, BEFORE the seed and
+  // refresh-window checks, because those two failures are exactly the ones
+  // worth trying another account for.
   let pickedAccount: PoolAccountRef | undefined;
   // The same account, but only once it is genuinely serving this turn. The
   // SIDELINE keys on this rather than on the pick: markCodexExhausted benches
@@ -2136,9 +2225,18 @@ async function* runPiAttempt(
   // fault of this box, not a verdict on the account's usage. Rotating off it
   // is right; benching it globally is not.
   let sidelineableAccount: PoolAccountRef | undefined;
-  const sidelineAccount = (account: PoolAccountRef) => {
+  const sidelineAccount = (account: PoolAccountRef, message: string) => {
     if (account.pool === "openai")
       markCodexExhausted(account.id, parsed.modelID);
+    else if (account.pool === "claude")
+      // Bench it until the reset the account named, when it named one (the
+      // in-process provider's discipline): Anthropic's unified reset header
+      // on the 429, else a reset in the limit message.
+      markClaudeExhausted(
+        account.id,
+        parsed.modelID,
+        nativeLimit429()?.resetAt ?? usageLimitResetAt(message),
+      );
     else markXaiExhausted(account.id, parsed.modelID);
   };
   // Has the reader seen replay-unsafe output yet? After text or tool activity
@@ -2156,11 +2254,42 @@ async function* runPiAttempt(
    *  the pool, which is the one thing a hard pin exists to prevent. */
   // Runs journaled before `speed` existed carry only fastMode.
   const speed = sessionSpeed(opts);
+  // Which session an account pick belongs to: HRW affinity on the Codex and
+  // SuperGrok pools.
+  const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
+  // The native Claude pool remembers an account per session, never per
+  // checkout: a run keyed only by its cwd (a one-shot, an automation) takes
+  // the plain pool pick, so parallel runs in one checkout keep spreading.
+  const claudeSessionKey =
+    opts.accountAffinityKey || journal?.osSessionId || undefined;
+  // Why the Claude pool had no other account, when the walk asked and it had
+  // none. Lets the terminal say the pool is dry instead of echoing one
+  // account's limit as if nothing else had been tried.
+  let claudePoolRefusal: string | undefined;
   const nextPoolAccount = (): PoolAccountRef | undefined => {
     if (!pickedAccount) return undefined;
     if (opts.accountStrict && opts.accountId) return undefined;
     const excluded = new Set([...walk.excluded, pickedAccount.id]);
-    const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
+    if (pickedAccount.pool === "claude") {
+      // A peek: this only asks whether another account can serve. Recording
+      // the pick here would spend the pool's round-robin turn, and the next
+      // attempt's own pick would then land on a different account than the
+      // one announced. takeAccountRotation hands the probed account to the
+      // next attempt instead.
+      const next = pickBridgeAccount(parsed.modelID, {
+        user: accountUser,
+        accountId: opts.accountId,
+        accountStrict: opts.accountStrict,
+        usageCredits: opts.usageCredits,
+        excludeIds: [...excluded],
+        peek: true,
+      });
+      if ("error" in next) {
+        claudePoolRefusal = next.error;
+        return undefined;
+      }
+      return claudePoolRef(next);
+    }
     if (pickedAccount.pool === "openai") {
       const next = pickOpenaiAccount(
         parsed.modelID,
@@ -2191,14 +2320,19 @@ async function* runPiAttempt(
 
   /** Take the rotation, or return false and let the caller surface the
    *  failure. Records the burn, audits the switch and closes this attempt's
-   *  audit; runPi resumes or replays the attempt on the next account. */
-  const takeAccountRotation = (errorText: string): boolean => {
+   *  audit; runPi resumes or replays the attempt on the next account. It
+   *  never sidelines: the caller decides that. */
+  const takeAccountRotation = (
+    errorText: string,
+    why = "usage limit",
+  ): boolean => {
+    claudePoolRefusal = undefined;
     if (!pickedAccount || (sawStreamedOutput && !session?.sessionManager))
       return false;
     const next = nextPoolAccount();
     if (!next) return false;
     console.warn(
-      `[pi-runner] usage limit on ${pickedAccount.label} account "${pickedAccount.name}" ` +
+      `[pi-runner] ${why} on ${pickedAccount.label} account "${pickedAccount.name}" ` +
         `(${parsed.modelID}): retrying this turn on "${next.name}"`,
     );
     audit({
@@ -2210,6 +2344,11 @@ async function* runPiAttempt(
     });
     if (sawStreamedOutput && session)
       walk.continuation = session.sessionManager;
+    // The native Claude binding prefers the session's remembered account:
+    // make that the one just announced, so the next attempt binds to it and
+    // the session stays there afterwards.
+    if (next.pool === "claude")
+      rememberNativeClaudeAccount(accountUser, claudeSessionKey, next.id);
     walk.excluded.add(pickedAccount.id);
     walk.rotate = true;
     reachedTerminal = true;
@@ -2357,7 +2496,8 @@ async function* runPiAttempt(
       providerID: parsed.providerID,
       modelID: parsed.modelID,
       configuredProvider,
-      affinityKey: opts.accountAffinityKey || journal?.osSessionId || cwd,
+      affinityKey: affinity,
+      claudeSessionKey,
       unifiedSessionId: unifiedSessionId || runKey,
       accountUser,
       accountId: opts.accountId,
@@ -2366,23 +2506,11 @@ async function* runPiAttempt(
       speed,
       excludedOpenaiAccountIds: walk.excluded,
       onAccountEvidence: (evidence) => {
-        pickedAccount = evidence.pickedOpenai
-          ? codexPoolRef(evidence.pickedOpenai)
-          : evidence.pickedXai
-            ? xaiPoolRef(evidence.pickedXai)
-            : undefined;
-        sidelineableAccount = evidence.sidelineableOpenai
-          ? codexPoolRef(evidence.sidelineableOpenai)
-          : evidence.sidelineableXai
-            ? xaiPoolRef(evidence.sidelineableXai)
-            : undefined;
+        pickedAccount = evidencePoolRef(evidence, "picked");
+        sidelineableAccount = evidencePoolRef(evidence, "sidelineable");
       },
       beforeRuntimeLoad: (evidence) => {
-        const picked = evidence.pickedOpenai
-          ? codexPoolRef(evidence.pickedOpenai)
-          : evidence.pickedXai
-            ? xaiPoolRef(evidence.pickedXai)
-            : undefined;
+        const picked = evidencePoolRef(evidence, "picked");
         audit({
           ...auditBase,
           direction: "in",
@@ -2391,7 +2519,9 @@ async function* runPiAttempt(
                 account: picked.masked,
                 account_id: picked.id.slice(0, 8),
                 pick_reason:
-                  evidence.openaiPickReason ?? evidence.xaiPickReason,
+                  evidence.openaiPickReason ??
+                  evidence.xaiPickReason ??
+                  evidence.claudePickReason,
               }
             : {}),
           ...(policy.unattended
@@ -2405,7 +2535,8 @@ async function* runPiAttempt(
         readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
         pickOpenaiAccount,
         buildSeededOpenaiAuth,
-        anthropicTransport: piAnthropicTransport,
+        anthropicTransport: () => anthropicTransport ?? piAnthropicTransport(),
+        pickClaudeAccount: pickBridgeAccount,
         buildAnthropicProvider: buildPiAnthropicProvider,
         ensureAnthropicBridge,
         buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
@@ -2806,8 +2937,18 @@ async function* runPiAttempt(
           })
           .map((f) => ({ ...f, path: context.toRemote(f.path) })),
       }),
-      systemPromptOverride: (base) =>
-        assembleRunSystemPrompt({ base, cwd, instructions }),
+      systemPromptOverride: (base) => {
+        const systemPrompt = assembleRunSystemPrompt({
+          base,
+          cwd,
+          instructions,
+        });
+        // Native Anthropic subscription turns: the same rewrite the request
+        // payload gets below, so the session's own prompt matches what is sent.
+        return binding.usesNativeAnthropic
+          ? rewriteAnthropicPromptText(systemPrompt)
+          : systemPrompt;
+      },
     });
     // What the system prompt leaves out so it stays byte-identical across
     // sessions (prompt-cache sharing): session link, requester, checkout path.
@@ -2946,6 +3087,19 @@ async function* runPiAttempt(
           engine: "pi",
         });
       }
+    }
+    // Native Anthropic subscription turns reword a few lines of pi's stock
+    // prompt in every request (anthropic-prompt-compat.ts). Same hook. pi's
+    // compaction and branch summaries bypass agent.onPayload; their prompts
+    // carry none of those lines (see enableAnthropicPromptCompat).
+    if (binding.usesNativeAnthropic) {
+      enableAnthropicPromptCompat(session.agent);
+      // pi's error text for a failed request drops the response headers, and
+      // its onResponse hook never sees a 429: read the limit status and reset
+      // off each response here instead.
+      enableAnthropicRateLimitCapture(session.agent, (snapshot) => {
+        nativeRateLimit = snapshot;
+      });
     }
     // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
     // Responses fields (xai-payload.ts). Same hook, no host extension.
@@ -3484,7 +3638,7 @@ async function* runPiAttempt(
           case "auto_retry_start": {
             const r = ev as any;
             const errText = String(r.errorMessage || "");
-            if (isPiUsageLimitShape(errText, parsed.providerID)) {
+            if (usageLimitShape(errText)) {
               // Usage-limit shapes mean the pool can't serve right now —
               // retrying only delays the fallback walk. abortRetry() cancels
               // the backoff sleep; the microtask matters: the SDK arms the
@@ -3672,18 +3826,20 @@ async function* runPiAttempt(
     // account BEFORE yielding, so the fallback walk's next hop (and every
     // other engine's pick) skips it — shared sideline state with previous runner,
     // same per-(account, model) key.
-    const sidelineOnUsageLimit = (usageLimit: boolean) => {
+    const sidelineOnUsageLimit = (usageLimit: boolean, message: string) => {
       if (usageLimit && sidelineableAccount) {
-        sidelineAccount(sidelineableAccount);
+        sidelineAccount(sidelineableAccount, message);
       }
     };
     let terminal: StreamEvent;
     let terminalUsageLimit = false;
+    let terminalMessage = "";
     if (!failed.ok) {
       const message = String((failed.error as Error)?.message || failed.error);
-      const usageLimit = isPiUsageLimitShape(message, parsed.providerID);
+      terminalMessage = message;
+      const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit);
+      sidelineOnUsageLimit(usageLimit, message);
       terminal = {
         type: "error",
         content: piErrorContent(message, parsed.providerID),
@@ -3695,9 +3851,10 @@ async function* runPiAttempt(
     } else if (lastStopReason === "error" || lastStopReason === "aborted") {
       const message =
         lastErrorMessage || `run ended with stopReason ${lastStopReason}`;
-      const usageLimit = isPiUsageLimitShape(message, parsed.providerID);
+      terminalMessage = message;
+      const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit);
+      sidelineOnUsageLimit(usageLimit, message);
       terminal = {
         type: "error",
         content: piErrorContent(message, parsed.providerID),
@@ -3724,6 +3881,53 @@ async function* runPiAttempt(
     if (terminalUsageLimit && takeAccountRotation(String(terminal.content))) {
       return;
     }
+    // A native 429 that was not the subscription's limit (its unified status
+    // was not "rejected") went to pi's retry. When pi gave up on it, try the
+    // turn once on another account. The account is not benched: its limit
+    // is not spent, so other runs may still use it. Once per turn, so a
+    // throttle across the whole pool ends the turn instead of walking every
+    // account; a strict pin never rotates (nextPoolAccount).
+    if (
+      terminal.type === "error" &&
+      !terminalUsageLimit &&
+      !walk.throttleRotated &&
+      anthropicTransport === "native" &&
+      pickedAccount?.pool === "claude" &&
+      nativeLimit429() !== undefined &&
+      /\b429\b/.test(terminalMessage) &&
+      takeAccountRotation(String(terminal.content), "rate limit")
+    ) {
+      walk.throttleRotated = true;
+      return;
+    }
+    // The walk asked the Claude pool for another account and it had none:
+    // say the whole pool is limited, as the in-process provider does. The
+    // account's own message stays inside the sentence, so the usage-limit
+    // classifiers downstream still match it. A strict pin never asks the
+    // pool, so its refusal keeps naming the account the person chose.
+    if (
+      terminalUsageLimit &&
+      claudePoolRefusal &&
+      pickedAccount?.pool === "claude"
+    ) {
+      console.warn(
+        `[pi-runner] usage limit on Claude account "${pickedAccount.name}" ` +
+          `(${parsed.modelID}) and no other account can serve it: ${claudePoolRefusal}`,
+      );
+      const resetAt = nativeLimit429()?.resetAt;
+      const reset =
+        describeUsageLimitReset(terminalMessage) ??
+        (resetAt !== undefined ? formatAnthropicReset(resetAt) : undefined);
+      terminal = {
+        ...terminal,
+        content: piErrorContent(
+          `every Claude account is usage-limited for ${parsed.modelID}` +
+            (reset ? `, the soonest resets ${reset}` : "") +
+            `. Last account tried ("${pickedAccount.name}") said: ${terminalMessage}`,
+          parsed.providerID,
+        ),
+      };
+    }
     reachedTerminal = true;
     endTurn({
       ok: terminal.type === "done",
@@ -3745,8 +3949,7 @@ async function* runPiAttempt(
     // distinctive text never matches the classifier — previous runner-runner's
     // catch parity.
     const usageLimit =
-      e?.usageLimitExhausted === true ||
-      isPiUsageLimitShape(message, parsed.providerID);
+      e?.usageLimitExhausted === true || usageLimitShape(message);
     // Sideline ONLY on provider-attributed exhaustion (the explicit flag).
     // A classifier match alone is not enough here: this catch also sees
     // non-provider throws from the run body (fs, journal, SDK init), and a
@@ -3754,7 +3957,7 @@ async function* runPiAttempt(
     // 60 min across both engines. The in-band terminal branches (provider
     // messages only) keep classifier-driven sidelines.
     if (e?.usageLimitExhausted === true && sidelineableAccount) {
-      sidelineAccount(sidelineableAccount);
+      sidelineAccount(sidelineableAccount, message);
     }
     // Rotate rather than end the turn. Gated on the explicit flag for the
     // same reason the sideline above is: this catch also sees non-provider

@@ -1,6 +1,8 @@
 import { buildPiAnthropicModels } from "./pi-anthropic-models";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ClaudeAccount, PickReason } from "./claude-accounts";
 import type { CodexAccount } from "./codex-accounts";
+import type { PiAnthropicTransport } from "./pi-config";
 import type { SeededOpenaiAuth } from "./openai-auth";
 import type { SessionSpeed } from "@tellahq/opensession-protocol/session";
 import {
@@ -48,6 +50,12 @@ export interface PiRuntimeAccountEvidence {
   pickedXai?: XaiAccount;
   sidelineableXai?: XaiAccount;
   xaiPickReason?: string;
+  /** The Claude pool account a native-transport Anthropic turn runs on. */
+  pickedClaude?: ClaudeAccount;
+  sidelineableClaude?: ClaudeAccount;
+  /** Which step of the Claude account policy chose it (pinned, sticky,
+   *  designated, personal, pool). */
+  claudePickReason?: string;
 }
 
 export interface PiRuntimeBinding extends PiRuntimeAccountEvidence {
@@ -59,6 +67,9 @@ export interface PiRuntimeBinding extends PiRuntimeAccountEvidence {
   openaiPlan?: string;
   /** A SuperGrok turn: requests need the cli-chat-proxy payload shaping. */
   usesXaiProxy: boolean;
+  /** An Anthropic turn on pi's own provider with a Claude pool token: its
+   *  requests need the subscription prompt compatibility rewrite. */
+  usesNativeAnthropic: boolean;
 }
 
 type ConfiguredProvider = ModelProviderConfig;
@@ -69,6 +80,130 @@ interface OpenaiPickOut {
 
 type OpenaiPick = CodexAccount | { error: string };
 type SeededAuthResult = { seeded: SeededOpenaiAuth } | { error: string };
+
+/** How a native-transport Anthropic turn asks the Claude pool for an
+ *  account: the same pin, owner and credit inputs as the in-process path. */
+export interface ClaudeAccountPick {
+  user?: string;
+  accountId?: string;
+  accountStrict?: boolean;
+  usageCredits?: boolean;
+  /** Accounts this turn's walk already burned. */
+  excludeIds?: readonly string[];
+  /** The account that last served this session, preferred while it is
+   *  usable (below a pin, above the pool pick). */
+  stickyId?: string;
+  /** Judge eligibility without consuming the pool's round-robin turn. */
+  peek?: boolean;
+}
+
+/**
+ * Which Claude account last served each session on the native transport.
+ * The binding picks once per turn, and the pool's least-used tiebreak
+ * round-robins equal accounts, so without this a session moved to another
+ * subscription on almost every turn: its prompt cache (kept per
+ * organization) went cold, and its signed thinking blocks were replayed
+ * under a different account. The in-process transport gets the same effect
+ * from the account holding the live SDK conversation (pi-model-runtime).
+ *
+ * Keyed by account user and session key, so two people who share a session
+ * key never inherit each other's account. A run without a session key (a
+ * one-shot, an automation keyed only by its checkout) is never remembered:
+ * parallel runs keep spreading over the pool.
+ *
+ * In memory only: after a restart the first turn picks afresh and the
+ * session sticks from there. Bounded, oldest key first out.
+ */
+const NATIVE_CLAUDE_AFFINITY_LIMIT = 4096;
+const nativeClaudeAffinity = new Map<string, string>();
+
+function nativeClaudeAffinityKey(
+  user: string | undefined,
+  sessionKey: string | undefined,
+): string | undefined {
+  if (!sessionKey) return undefined;
+  return `${user?.trim().toLowerCase() ?? ""}\0${sessionKey}`;
+}
+
+/** The Claude account that last served this user's session on the native
+ *  transport. */
+export function nativeClaudeStickyAccount(
+  user: string | undefined,
+  sessionKey: string | undefined,
+): string | undefined {
+  const key = nativeClaudeAffinityKey(user, sessionKey);
+  return key ? nativeClaudeAffinity.get(key) : undefined;
+}
+
+/** Record that `accountId` serves this user's session from now on. The
+ *  runner's account walk also calls this when it rotates, so the next
+ *  attempt binds to the account it announced and the session stays there
+ *  afterwards. No-op without a session key. */
+export function rememberNativeClaudeAccount(
+  user: string | undefined,
+  sessionKey: string | undefined,
+  accountId: string,
+): void {
+  const key = nativeClaudeAffinityKey(user, sessionKey);
+  if (!key) return;
+  nativeClaudeAffinity.delete(key);
+  nativeClaudeAffinity.set(key, accountId);
+  if (nativeClaudeAffinity.size > NATIVE_CLAUDE_AFFINITY_LIMIT) {
+    const oldest = nativeClaudeAffinity.keys().next().value;
+    if (oldest !== undefined) nativeClaudeAffinity.delete(oldest);
+  }
+}
+
+/**
+ * The remembered account, when the account policy still lets it serve this
+ * turn. Stickiness only breaks ties inside the pool. It must not override
+ * the two orderings selectAccount keeps on purpose:
+ * - Personal first: when the pick without it would land on the user's own
+ *   subscription (it has reset since, say), the session goes there.
+ * - Paid credits last: an account usable only through credit headroom is
+ *   no reason to stay while the pool has subscription capacity.
+ * Both checks are peeks, so they spend no round-robin turn.
+ */
+function honouredClaudeStickyAccount(
+  pickClaudeAccount: NonNullable<
+    PiRuntimeBindingDependencies["pickClaudeAccount"]
+  >,
+  modelID: string,
+  pick: ClaudeAccountPick,
+  remembered: string | undefined,
+): string | undefined {
+  if (!remembered) return undefined;
+  // Usable for this user on subscription capacity alone (credits off), not
+  // burned by this turn's walk, and designated when a designation is set.
+  const out: { reason?: PickReason } = {};
+  const sticky = pickClaudeAccount(
+    modelID,
+    {
+      user: pick.user,
+      excludeIds: pick.excludeIds,
+      stickyId: remembered,
+      peek: true,
+    },
+    out,
+  );
+  if ("error" in sticky || out.reason !== "sticky") return undefined;
+  // Already one of the user's own subscriptions.
+  if (sticky.owner) return remembered;
+  const fresh = pickClaudeAccount(modelID, { ...pick, peek: true });
+  return !("error" in fresh) && fresh.owner ? undefined : remembered;
+}
+
+/** Test seam: forget every remembered native Claude account. */
+export function __resetNativeClaudeAffinityForTest(): void {
+  nativeClaudeAffinity.clear();
+}
+
+/** The 1-hour prompt cache for native subscription turns. It rides on the
+ *  stored credential's provider env, so it is scoped to this runtime instead
+ *  of the server process environment. */
+const NATIVE_ANTHROPIC_PROVIDER_ENV = Object.freeze({
+  PI_CACHE_RETENTION: "long",
+});
 
 export interface PiRuntimeBindingDependencies {
   loadSdk?: () => Promise<PiSdk>;
@@ -87,7 +222,14 @@ export interface PiRuntimeBindingDependencies {
     preferPlan?: string,
   ) => OpenaiPick;
   buildSeededOpenaiAuth: (account: CodexAccount) => SeededAuthResult;
-  anthropicTransport: () => "inprocess" | "bridge";
+  anthropicTransport: () => PiAnthropicTransport;
+  /** Claude pool pick for the "native" transport (pickBridgeAccount in the
+   *  runner, so the refusal wording matches the other transports). */
+  pickClaudeAccount?: (
+    modelID: string,
+    pick: ClaudeAccountPick,
+    out?: { reason?: PickReason },
+  ) => ClaudeAccount | { error: string };
   buildAnthropicProvider: (input: {
     unifiedSessionId: string;
     user?: string;
@@ -115,6 +257,10 @@ export interface CreatePiRuntimeBindingInput {
   modelID: string;
   configuredProvider?: ConfiguredProvider;
   affinityKey: string;
+  /** The session the native Claude pool remembers an account for (account
+   *  affinity key or session id). Absent for runs keyed only by their
+   *  checkout, which take the plain pool pick. */
+  claudeSessionKey?: string;
   unifiedSessionId: string;
   accountUser?: string;
   accountId?: string;
@@ -122,7 +268,8 @@ export interface CreatePiRuntimeBindingInput {
   usageCredits?: boolean;
   /** Ultrafast turns prefer accounts on the plan that serves it. */
   speed?: SessionSpeed;
-  /** Accounts already burned by this turn's walk (Codex and SuperGrok pools). */
+  /** Accounts already burned by this turn's walk (Codex, SuperGrok and,
+   *  on the native Anthropic transport, Claude pools). */
   excludedOpenaiAccountIds: ReadonlySet<string>;
   /** Publishes evidence immediately so a later throw can still rotate safely. */
   onAccountEvidence?: (evidence: PiRuntimeAccountEvidence) => void;
@@ -182,6 +329,57 @@ export async function createPiRuntimeBinding(
   let xaiBinding:
     | Extract<Awaited<ReturnType<typeof bindXaiAccount>>, { access: string }>
     | undefined;
+  // Read once: the pick below and the provider branch must agree.
+  const anthropicTransport =
+    input.providerID === "anthropic" ? deps.anthropicTransport() : undefined;
+  const nativeAnthropic = anthropicTransport === "native";
+  let nativeAnthropicToken: string | undefined;
+
+  if (nativeAnthropic) {
+    if (!deps.pickClaudeAccount) {
+      throw new Error(
+        "pi/anthropic: the native transport has no Claude account picker",
+      );
+    }
+    const pick: ClaudeAccountPick = {
+      user: input.accountUser,
+      accountId: input.accountId,
+      accountStrict: input.accountStrict,
+      usageCredits: input.usageCredits,
+      excludeIds: input.excludedOpenaiAccountIds.size
+        ? [...input.excludedOpenaiAccountIds]
+        : undefined,
+    };
+    const pickOut: { reason?: PickReason } = {};
+    const picked = deps.pickClaudeAccount(
+      input.modelID,
+      {
+        ...pick,
+        // A pin still wins over this, and an exclusion (the walk rotating
+        // off a limited account) still overrides it: resolveAccount's order.
+        stickyId: honouredClaudeStickyAccount(
+          deps.pickClaudeAccount,
+          input.modelID,
+          pick,
+          nativeClaudeStickyAccount(input.accountUser, input.claudeSessionKey),
+        ),
+      },
+      pickOut,
+    );
+    // The picker's refusal is the exact text the other transports surface;
+    // isPiUsageLimitShape and the one-shot fallback key on its wording.
+    if ("error" in picked) throw new Error(picked.error);
+    rememberNativeClaudeAccount(
+      input.accountUser,
+      input.claudeSessionKey,
+      picked.id,
+    );
+    nativeAnthropicToken = picked.token;
+    evidence.pickedClaude = picked;
+    evidence.sidelineableClaude = picked;
+    evidence.claudePickReason = pickOut.reason;
+    input.onAccountEvidence?.({ ...evidence });
+  }
 
   if (input.providerID === XAI_OAUTH_PROVIDER) {
     const pickOut: OpenaiPickOut = {};
@@ -279,6 +477,17 @@ export async function createPiRuntimeBinding(
     const credential = seededOpenaiCredential;
     await credentials.modify("openai-codex", async () => credential);
   }
+  if (nativeAnthropic) {
+    // pi's builtin anthropic provider treats an sk-ant-oat key as a Claude
+    // subscription token (Bearer auth, Claude Code identity). A stored key
+    // also wins over any ANTHROPIC_* variable in the server environment.
+    const credential = {
+      type: "api_key" as const,
+      key: nativeAnthropicToken,
+      env: { ...NATIVE_ANTHROPIC_PROVIDER_ENV },
+    };
+    await credentials.modify("anthropic", async () => credential);
+  }
   const runtime = await sdk.ModelRuntime.create({
     credentials,
     modelsPath: null,
@@ -321,10 +530,32 @@ export async function createPiRuntimeBinding(
         `Unknown OpenAI model "${input.modelID}" (could not register it with pi)`,
       );
     }
-  } else if (
-    input.providerID === "anthropic" &&
-    deps.anthropicTransport() === "inprocess"
-  ) {
+  } else if (nativeAnthropic) {
+    model = runtime.getModel("anthropic", input.modelID);
+    // The same catalog the in-process provider serves: pi's builtin rows with
+    // newer published prices applied, plus release metadata or a zero-cost
+    // fallback for ids newer than the bundled catalog. pi-ai prices usage
+    // from the model's own cost table, so a stale row would misreport cost.
+    // Registered only when it differs, on pi's builtin provider (models
+    // only: its base URL, auth and streaming stay pi's own).
+    const catalog = buildPiAnthropicModels(
+      runtime.getModels("anthropic"),
+      input.modelID,
+    );
+    const wanted = catalog.find((candidate) => candidate.id === input.modelID);
+    if (
+      !model ||
+      (wanted && JSON.stringify(wanted.cost) !== JSON.stringify(model.cost))
+    ) {
+      runtime.registerProvider("anthropic", { models: catalog });
+      model = runtime.getModel("anthropic", input.modelID);
+    }
+    if (!model) {
+      throw new Error(
+        `Unknown Anthropic model "${input.modelID}" (could not register it with pi)`,
+      );
+    }
+  } else if (anthropicTransport === "inprocess") {
     const provider = deps.buildAnthropicProvider({
       unifiedSessionId: input.unifiedSessionId,
       user: input.accountUser,
@@ -395,5 +626,6 @@ export async function createPiRuntimeBinding(
     usesOpenaiOAuth: seededOpenaiCredential !== undefined,
     openaiPlan: chatgptPlanFromJwt(seededOpenaiCredential?.access),
     usesXaiProxy: xaiBinding !== undefined,
+    usesNativeAnthropic: nativeAnthropic,
   };
 }

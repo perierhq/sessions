@@ -307,7 +307,8 @@ export const ENGINE_NOTES: Record<
     gate: "`enabled` in `piConfigPath()` (normally `~/.opensession/pi.json`; an existing legacy `~/.opensession-pi.json` is still honored). A missing config disables Pi, while first-run onboarding creates it enabled.",
     note:
       "In-process engine. `pi/anthropic/*` turns reach the Claude Agent SDK through the native " +
-      'in-process provider by default (`anthropicTransport`, `"bridge"` for the loopback rollback).',
+      'in-process provider by default (`anthropicTransport`, `"bridge"` for the loopback rollback, ' +
+      '`"native"` for Pi\'s own Anthropic provider on a Claude pool account).',
   },
   fake: {
     title: "fake (tests only)",
