@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -52,6 +53,8 @@ import {
 } from "./pi-runner";
 import type { PiBashAuditEvent } from "./pi-runner";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
+import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
+import { usageLimitResetAt } from "./runner-shared";
 
 describe("acceptSteerOnce", () => {
   test("records only successful acceptance and deduplicates retries", () => {
@@ -625,6 +628,38 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
     expect(isPiUsageLimitShape("ordinary tool failure", "anthropic")).toBe(
       false,
     );
+  });
+
+  test("the native anthropic transport leaves overload to pi's retry", () => {
+    const overloaded =
+      '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+    expect(isPiUsageLimitShape(overloaded, "anthropic", "native")).toBe(false);
+    expect(
+      isPiUsageLimitShape("upstream returned 529", "anthropic", "native"),
+    ).toBe(false);
+    // The other transports keep treating it as exhaustion.
+    for (const transport of [undefined, "inprocess", "bridge"] as const) {
+      expect(isPiUsageLimitShape(overloaded, "anthropic", transport)).toBe(
+        true,
+      );
+    }
+    // Limits and the pool's refusals still classify on native.
+    for (const message of [
+      '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}',
+      "You've hit your limit · resets 3am (UTC)",
+      "no usable Claude account in the pool (all exhausted or sidelined)",
+      "no designated bridge account is currently usable (tried: a)",
+    ]) {
+      expect(isPiUsageLimitShape(message, "anthropic", "native")).toBe(true);
+    }
+    // An empty pool is a config problem on every transport.
+    expect(
+      isPiUsageLimitShape(
+        "no Claude accounts configured (add one in Settings → Providers)",
+        "anthropic",
+        "native",
+      ),
+    ).toBe(false);
   });
 
   test("openai runs match the shared codex classifier plus the raw code shapes", () => {
@@ -1587,6 +1622,294 @@ describe("runPi pi/openai account wiring (fake engine, no network)", () => {
     expect(isPiSessionBusy(firstRunKey)).toBe(false);
     expect(isPiSessionBusy(secondRunKey)).toBe(false);
     expect(isPiSessionBusy(transcriptSessionId)).toBe(false);
+  });
+});
+
+describe("runPi pi/anthropic native transport account walk (fake engine, no network)", () => {
+  // Enabled Pi config on the native transport + an isolated Claude pool.
+  // Accounts are usageScope "missing" without a credentials file, so
+  // markExhausted's background usage refresh never reaches the network.
+  const dir = mkdtempSync(join(tmpdir(), "pi-claude-native-"));
+  const cfgPath = join(dir, "pi.json");
+  const storePath = join(dir, "claude-accounts.json");
+  const sidelinePath = join(dir, "claude-accounts-state.json");
+  const model = "claude-haiku-5-5";
+  let prevCfg: string | undefined;
+  let prevStore: string | undefined;
+  beforeAll(() => {
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ enabled: true, anthropicTransport: "native" }),
+    );
+    prevCfg = process.env.OPENSESSION_PI_CONFIG;
+    process.env.OPENSESSION_PI_CONFIG = cfgPath;
+    prevStore = process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH;
+    process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH = storePath;
+  });
+  afterAll(() => {
+    if (prevCfg === undefined) delete process.env.OPENSESSION_PI_CONFIG;
+    else process.env.OPENSESSION_PI_CONFIG = prevCfg;
+    if (prevStore === undefined)
+      delete process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH;
+    else process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH = prevStore;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const sidelines = (): Record<string, number> =>
+    existsSync(sidelinePath)
+      ? JSON.parse(readFileSync(sidelinePath, "utf-8")).exhaustedUntil || {}
+      : {};
+
+  /** A limit message that names a reset three days out, the shape
+   *  usageLimitResetAt parses. */
+  const limitMessage = () => {
+    const at = new Date(Date.now() + 3 * 24 * 60 * 60_000);
+    const month = at.toLocaleString("en-US", {
+      month: "short",
+      timeZone: "UTC",
+    });
+    return `You've hit your limit · resets ${month} ${at.getUTCDate()}, 9am (UTC)`;
+  };
+  const overloaded =
+    '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+
+  test.each([
+    { failure: "limit", streamed: false, strict: false },
+    { failure: "limit", streamed: true, strict: false },
+    { failure: "limit", streamed: false, strict: true },
+    { failure: "overloaded", streamed: false, strict: false },
+  ])("account walk %j", async ({ failure, streamed, strict }) => {
+    const suffix = crypto.randomUUID();
+    const first = {
+      id: `claude-a-${suffix}`,
+      token: `sk-ant-oat01-a-${suffix}`,
+    };
+    const second = {
+      id: `claude-b-${suffix}`,
+      token: `sk-ant-oat01-b-${suffix}`,
+    };
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        accounts: [first, second].map((account) => ({
+          ...account,
+          name: account.id,
+          createdAt: new Date().toISOString(),
+          usageScope: "missing",
+        })),
+      }),
+    );
+    const failureMessage = failure === "limit" ? limitMessage() : overloaded;
+
+    const usedTokens: string[] = [];
+    const prompts: string[] = [];
+    const managers: unknown[] = [];
+    const payloadHooks: Array<
+      ((payload: unknown, model: unknown) => unknown) | undefined
+    > = [];
+    const fakeSdk = {
+      ModelRuntime: {
+        create: async ({ credentials }: any) => {
+          const stored = await credentials.read("anthropic");
+          return {
+            token: String(stored?.key || ""),
+            stored,
+            getModel: (provider: string, id: string) => ({
+              provider,
+              id,
+              name: id,
+            }),
+            registerProvider: () => {},
+            registerNativeProvider: () => {
+              throw new Error(
+                "native transport must not replace pi's provider",
+              );
+            },
+            setRuntimeApiKey: async () => {
+              throw new Error("native transport seeds the credential store");
+            },
+          };
+        },
+      },
+      SettingsManager: { inMemory: () => ({}) },
+      DefaultResourceLoader: class {
+        async reload() {}
+        getSkills() {
+          return { skills: [] };
+        }
+      },
+      SessionManager: {
+        create: () => ({ id: crypto.randomUUID() }),
+        open: () => ({ id: crypto.randomUUID() }),
+      },
+      createAgentSession: async ({ modelRuntime, sessionManager }: any) => {
+        expect(modelRuntime.stored?.env).toEqual({
+          PI_CACHE_RETENTION: "long",
+        });
+        const token = String(modelRuntime.token);
+        usedTokens.push(token);
+        managers.push(sessionManager);
+        const failing = token === first.token;
+        let listener: (event: any) => void = () => {};
+        const agent: Record<string, any> = { continue: async () => {} };
+        const session = {
+          sessionId: `fake-${token}`,
+          sessionManager,
+          pendingMessageCount: 0,
+          agent,
+          setSteeringMode: () => {},
+          subscribe: (fn: (event: any) => void) => {
+            listener = fn;
+            return () => {};
+          },
+          prompt: async (prompt: string) => {
+            payloadHooks.push(agent.onPayload);
+            prompts.push(prompt);
+            if (streamed && failing) {
+              listener({
+                type: "message_end",
+                message: {
+                  role: "assistant",
+                  stopReason: "toolUse",
+                  content: [{ type: "text", text: "Working on it" }],
+                  usage: {
+                    input: 2,
+                    output: 2,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    cost: { total: 0 },
+                  },
+                  timestamp: Date.now(),
+                },
+              });
+              listener({
+                type: "tool_execution_start",
+                toolCallId: "completed-action",
+                toolName: "bash",
+                args: { command: "do-once" },
+              });
+              listener({
+                type: "tool_execution_end",
+                toolCallId: "completed-action",
+                toolName: "bash",
+                result: { content: [{ type: "text", text: "done" }] },
+                isError: false,
+              });
+            }
+            listener({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                stopReason: failing ? "error" : "stop",
+                errorMessage: failing ? failureMessage : undefined,
+                usage: {
+                  input: failing ? 0 : 1,
+                  output: failing ? 0 : 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  cost: { total: 0 },
+                },
+                content: failing ? [] : [{ type: "text", text: "ok" }],
+                timestamp: Date.now(),
+              },
+            });
+            listener({ type: "agent_settled" });
+          },
+          getLastAssistantText: () => (failing ? "" : "ok"),
+          steer: async () => {},
+          abort: async () => {},
+          abortRetry: () => {},
+          dispose: () => {},
+        };
+        return { session };
+      },
+    };
+
+    const sdkState = globalThis as any;
+    const previousSdkPromise = sdkState.__piSdkPromise;
+    const sessionKey = `pi-claude-native-${suffix}`;
+    sdkState.__piSdkPromise = Promise.resolve(fakeSdk);
+    const warnings = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const events: Array<Record<string, unknown>> = [];
+      for await (const event of runPi(
+        {
+          prompt: "hi",
+          cwd: dir,
+          mode: "ask",
+          mcpServers: [],
+          journal: { kind: "prompt" },
+          sessionId: sessionKey,
+          accountId: first.id,
+          accountStrict: strict,
+          disableLocalWorkspaceTools: true,
+        },
+        `pi/anthropic/${model}`,
+      )) {
+        events.push(event as unknown as Record<string, unknown>);
+      }
+
+      // Every attempt's requests get the prompt compatibility rewrite.
+      const [[from, to]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
+      for (const hook of payloadHooks) {
+        expect(
+          await hook?.({ system: [{ text: from }] }, { provider: "anthropic" }),
+        ).toEqual({ system: [{ text: to }] });
+      }
+      const errors = events.filter((event) => event.type === "error");
+
+      if (failure === "overloaded") {
+        // Transient overload on the direct API: pi's retry owns it, so the
+        // account is neither sidelined nor rotated off, and the turn's
+        // failure does not read as exhaustion.
+        expect(usedTokens).toEqual([first.token]);
+        expect(errors).toHaveLength(1);
+        expect(errors[0].usageLimitExhausted).toBeUndefined();
+        expect(sidelines()[`${first.id}:${model}`]).toBeUndefined();
+        return;
+      }
+
+      // A limit benches the account until the reset its message named,
+      // which is later than the default one-hour sideline.
+      const statedReset = usageLimitResetAt(failureMessage)!;
+      expect(statedReset).toBeGreaterThan(Date.now() + 2 * 60 * 60_000);
+      expect(sidelines()[`${first.id}:${model}`]).toBe(statedReset);
+      if (strict) {
+        // A hard pin never moves onto an account the person did not pick.
+        expect(usedTokens).toEqual([first.token]);
+        expect(errors).toHaveLength(1);
+        expect(errors[0].usageLimitExhausted).toBe(true);
+        return;
+      }
+      expect(usedTokens).toEqual([first.token, second.token]);
+      expect(errors).toHaveLength(0);
+      expect(events.find((event) => event.type === "done")).toMatchObject({
+        model: `pi/anthropic/${model}`,
+        result: "ok",
+      });
+      expect(
+        warnings.mock.calls.some(([message]) =>
+          String(message).includes(
+            `[pi-runner] usage limit on Claude account "${first.id}"`,
+          ),
+        ),
+      ).toBe(true);
+      if (streamed) {
+        // Output escaped before the limit: continue the same native session.
+        expect(managers[1]).toBe(managers[0]);
+        expect(prompts[1]).toContain('source="auto-continue"');
+      } else {
+        expect(managers[1]).not.toBe(managers[0]);
+        expect(prompts[1]).toEndWith("\n\nhi");
+      }
+    } finally {
+      warnings.mockRestore();
+      sdkState.__piSdkPromise = previousSdkPromise;
+      rmSync(join(PI_STATE_DIR, "sessions", sessionKey), {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 });
 

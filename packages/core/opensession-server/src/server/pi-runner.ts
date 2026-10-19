@@ -53,8 +53,13 @@ import {
   isClaudeSubscriptionError,
   isClaudeUsageLimitError,
   isCodexUsageLimitError,
+  usageLimitResetAt,
 } from "./runner-shared";
-import { ensureAnthropicBridge } from "./anthropic-bridge";
+import { ensureAnthropicBridge, pickBridgeAccount } from "./anthropic-bridge";
+import {
+  enableAnthropicPromptCompat,
+  rewriteAnthropicPromptText,
+} from "./anthropic-prompt-compat";
 import {
   FALLBACK_CONTEXT_WINDOW,
   FALLBACK_MAX_TOKENS,
@@ -66,7 +71,11 @@ import {
   type PiProviderCatalog,
 } from "./model-providers";
 import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
-import { pickAccount as pickClaudeAccount } from "./claude-accounts";
+import {
+  markExhausted as markClaudeExhausted,
+  pickAccount as pickClaudeAccount,
+  type ClaudeAccount,
+} from "./claude-accounts";
 import {
   bindXaiAccount,
   markXaiExhausted,
@@ -166,12 +175,14 @@ import {
   piAnthropicTransport,
   piEngineEnabled,
   piConfigPath,
+  type PiAnthropicTransport,
 } from "./pi-config";
 import { assistantProseFields } from "./transcript-media";
 import { buildPiAnthropicProvider } from "./pi-anthropic-provider";
 import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
+  type PiRuntimeAccountEvidence,
   type PiSdk,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
@@ -922,8 +933,8 @@ interface PoolAccountRef {
   id: string;
   name: string;
   masked: string;
-  pool: "openai" | typeof XAI_OAUTH_PROVIDER;
-  /** How the pool reads in logs: "codex" or "SuperGrok". */
+  pool: "openai" | typeof XAI_OAUTH_PROVIDER | "claude";
+  /** How the pool reads in logs: "codex", "SuperGrok" or "Claude". */
   label: string;
 }
 
@@ -947,18 +958,49 @@ function xaiPoolRef(account: XaiAccount): PoolAccountRef {
   };
 }
 
+/** A Claude pool account serving a native-transport pi/anthropic turn. */
+function claudePoolRef(account: ClaudeAccount): PoolAccountRef {
+  return {
+    id: account.id,
+    name: account.name,
+    masked: `${account.name} (${account.id.slice(0, 8)}, claude)`,
+    pool: "claude",
+    label: "Claude",
+  };
+}
+
+/** The pool account a binding's evidence names, picked or sidelineable. */
+function evidencePoolRef(
+  evidence: PiRuntimeAccountEvidence,
+  which: "picked" | "sidelineable",
+): PoolAccountRef | undefined {
+  const openai =
+    which === "picked" ? evidence.pickedOpenai : evidence.sidelineableOpenai;
+  if (openai) return codexPoolRef(openai);
+  const xai =
+    which === "picked" ? evidence.pickedXai : evidence.sidelineableXai;
+  if (xai) return xaiPoolRef(xai);
+  const claude =
+    which === "picked" ? evidence.pickedClaude : evidence.sidelineableClaude;
+  return claude ? claudePoolRef(claude) : undefined;
+}
+
 /** Provider-aware usage-limit classification for terminal errors — "this
  *  model's pool can't serve right now", which is exactly what
  *  usageLimitExhausted tells agent-runner's fallback walk. Anthropic runs see
  *  the loopback bridge's shapes: 429 (per-account hourly cap) and 529 (no
- *  usable designated account) plus the standard Claude limit messages. OpenAI
- *  runs match the codex classifier shared with the previous runner engine
+ *  usable designated account) plus the standard Claude limit messages. On the
+ *  "native" transport pi talks to Anthropic directly, where 529 /
+ *  overloaded_error is transient overload, not exhaustion: those go through
+ *  pi's own retry instead of sidelining a healthy account. OpenAI runs match
+ *  the codex classifier shared with the previous runner engine
  *  (isCodexUsageLimitError) plus the raw code shapes above — never the
  *  bridge-only shapes (529/overload is transient there, not exhaustion).
  *  Exported for the classifier tests. */
 export function isPiUsageLimitShape(
   message: string,
   providerID: string,
+  anthropicTransport?: PiAnthropicTransport,
 ): boolean {
   if (providerID === "openai") {
     return (
@@ -975,9 +1017,10 @@ export function isPiUsageLimitShape(
   )
     return true;
   const s = message.toLowerCase();
+  const overloadIsExhaustion = anthropicTransport !== "native";
   return (
-    s.includes("overloaded_error") ||
-    /\b529\b/.test(s) ||
+    (overloadIsExhaustion &&
+      (s.includes("overloaded_error") || /\b529\b/.test(s))) ||
     /\b429\b/.test(s) ||
     s.includes("no designated bridge account") ||
     // Pool-mode pickBridgeAccount: exhausted pool (not the empty-pool config
@@ -1914,9 +1957,10 @@ export function piStreamEventRequiresAccountContinuation(
  * fallback to "none" rather than silently crossing into an previous runner fallback,
  * so one capped account was simply the end of the turn.
  *
- * The anthropic side runs the same walk one level down, inside
- * pi-anthropic-provider's stream, because it picks its account per REQUEST.
- * pi/openai picks once at bind time (the seeded credential is built before
+ * The anthropic side on the default in-process transport runs the same walk
+ * one level down, inside pi-anthropic-provider's stream, because it picks its
+ * account per REQUEST. pi/openai, pi/xai-oauth and pi/anthropic on the
+ * "native" transport pick once at bind time (the credential is seeded before
  * the SDK is even imported), so there is no per-request catch to rotate from
  * and the loop belongs here. Both sides share one contract: an exclusion set
  * threaded into the picker and a strict pin that refuses rather than moving
@@ -2013,6 +2057,13 @@ async function* runPiAttempt(
     };
     return;
   }
+
+  // Read once per attempt: the binding, the classifier and the account walk
+  // must all agree on how this turn reaches Anthropic.
+  const anthropicTransport =
+    parsed.providerID === "anthropic" ? piAnthropicTransport() : undefined;
+  const usageLimitShape = (message: string) =>
+    isPiUsageLimitShape(message, parsed.providerID, anthropicTransport);
 
   const { prompt, cwd, mode, mcpServers, confirmTools, journal, user, author } =
     opts;
@@ -2124,10 +2175,11 @@ async function* runPiAttempt(
   let checkpointWriter: PiTurnCheckpointWriter | undefined;
   let sawSettled = false;
   // Pool-backed providers only (pi/openai: Codex pool, pi/xai-oauth: SuperGrok
-  // pool): the picked account — visible to the catch/terminal paths so the
-  // account walk can rotate off it. Set as soon as the pick succeeds, BEFORE
-  // the seed and refresh-window checks, because those two failures are exactly
-  // the ones worth trying another account for.
+  // pool, pi/anthropic on the native transport: Claude pool): the picked
+  // account — visible to the catch/terminal paths so the account walk can
+  // rotate off it. Set as soon as the pick succeeds, BEFORE the seed and
+  // refresh-window checks, because those two failures are exactly the ones
+  // worth trying another account for.
   let pickedAccount: PoolAccountRef | undefined;
   // The same account, but only once it is genuinely serving this turn. The
   // SIDELINE keys on this rather than on the pick: markCodexExhausted benches
@@ -2136,9 +2188,17 @@ async function* runPiAttempt(
   // fault of this box, not a verdict on the account's usage. Rotating off it
   // is right; benching it globally is not.
   let sidelineableAccount: PoolAccountRef | undefined;
-  const sidelineAccount = (account: PoolAccountRef) => {
+  const sidelineAccount = (account: PoolAccountRef, message: string) => {
     if (account.pool === "openai")
       markCodexExhausted(account.id, parsed.modelID);
+    else if (account.pool === "claude")
+      // Bench it until the reset the limit message named, when it named one
+      // (the in-process provider's discipline).
+      markClaudeExhausted(
+        account.id,
+        parsed.modelID,
+        usageLimitResetAt(message),
+      );
     else markXaiExhausted(account.id, parsed.modelID);
   };
   // Has the reader seen replay-unsafe output yet? After text or tool activity
@@ -2161,6 +2221,16 @@ async function* runPiAttempt(
     if (opts.accountStrict && opts.accountId) return undefined;
     const excluded = new Set([...walk.excluded, pickedAccount.id]);
     const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
+    if (pickedAccount.pool === "claude") {
+      const next = pickBridgeAccount(parsed.modelID, {
+        user: accountUser,
+        accountId: opts.accountId,
+        accountStrict: opts.accountStrict,
+        usageCredits: opts.usageCredits,
+        excludeIds: [...excluded],
+      });
+      return "error" in next ? undefined : claudePoolRef(next);
+    }
     if (pickedAccount.pool === "openai") {
       const next = pickOpenaiAccount(
         parsed.modelID,
@@ -2366,23 +2436,11 @@ async function* runPiAttempt(
       speed,
       excludedOpenaiAccountIds: walk.excluded,
       onAccountEvidence: (evidence) => {
-        pickedAccount = evidence.pickedOpenai
-          ? codexPoolRef(evidence.pickedOpenai)
-          : evidence.pickedXai
-            ? xaiPoolRef(evidence.pickedXai)
-            : undefined;
-        sidelineableAccount = evidence.sidelineableOpenai
-          ? codexPoolRef(evidence.sidelineableOpenai)
-          : evidence.sidelineableXai
-            ? xaiPoolRef(evidence.sidelineableXai)
-            : undefined;
+        pickedAccount = evidencePoolRef(evidence, "picked");
+        sidelineableAccount = evidencePoolRef(evidence, "sidelineable");
       },
       beforeRuntimeLoad: (evidence) => {
-        const picked = evidence.pickedOpenai
-          ? codexPoolRef(evidence.pickedOpenai)
-          : evidence.pickedXai
-            ? xaiPoolRef(evidence.pickedXai)
-            : undefined;
+        const picked = evidencePoolRef(evidence, "picked");
         audit({
           ...auditBase,
           direction: "in",
@@ -2405,7 +2463,8 @@ async function* runPiAttempt(
         readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
         pickOpenaiAccount,
         buildSeededOpenaiAuth,
-        anthropicTransport: piAnthropicTransport,
+        anthropicTransport: () => anthropicTransport ?? piAnthropicTransport(),
+        pickClaudeAccount: pickBridgeAccount,
         buildAnthropicProvider: buildPiAnthropicProvider,
         ensureAnthropicBridge,
         buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
@@ -2806,8 +2865,18 @@ async function* runPiAttempt(
           })
           .map((f) => ({ ...f, path: context.toRemote(f.path) })),
       }),
-      systemPromptOverride: (base) =>
-        assembleRunSystemPrompt({ base, cwd, instructions }),
+      systemPromptOverride: (base) => {
+        const systemPrompt = assembleRunSystemPrompt({
+          base,
+          cwd,
+          instructions,
+        });
+        // Native Anthropic subscription turns: the same rewrite the request
+        // payload gets below, so the session's own prompt matches what is sent.
+        return binding.usesNativeAnthropic
+          ? rewriteAnthropicPromptText(systemPrompt)
+          : systemPrompt;
+      },
     });
     // What the system prompt leaves out so it stays byte-identical across
     // sessions (prompt-cache sharing): session link, requester, checkout path.
@@ -2947,6 +3016,9 @@ async function* runPiAttempt(
         });
       }
     }
+    // Native Anthropic subscription turns reword a few lines of pi's stock
+    // prompt in every request (anthropic-prompt-compat.ts). Same hook.
+    if (binding.usesNativeAnthropic) enableAnthropicPromptCompat(session.agent);
     // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
     // Responses fields (xai-payload.ts). Same hook, no host extension.
     if (binding.usesXaiProxy) {
@@ -3484,7 +3556,7 @@ async function* runPiAttempt(
           case "auto_retry_start": {
             const r = ev as any;
             const errText = String(r.errorMessage || "");
-            if (isPiUsageLimitShape(errText, parsed.providerID)) {
+            if (usageLimitShape(errText)) {
               // Usage-limit shapes mean the pool can't serve right now —
               // retrying only delays the fallback walk. abortRetry() cancels
               // the backoff sleep; the microtask matters: the SDK arms the
@@ -3672,18 +3744,18 @@ async function* runPiAttempt(
     // account BEFORE yielding, so the fallback walk's next hop (and every
     // other engine's pick) skips it — shared sideline state with previous runner,
     // same per-(account, model) key.
-    const sidelineOnUsageLimit = (usageLimit: boolean) => {
+    const sidelineOnUsageLimit = (usageLimit: boolean, message: string) => {
       if (usageLimit && sidelineableAccount) {
-        sidelineAccount(sidelineableAccount);
+        sidelineAccount(sidelineableAccount, message);
       }
     };
     let terminal: StreamEvent;
     let terminalUsageLimit = false;
     if (!failed.ok) {
       const message = String((failed.error as Error)?.message || failed.error);
-      const usageLimit = isPiUsageLimitShape(message, parsed.providerID);
+      const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit);
+      sidelineOnUsageLimit(usageLimit, message);
       terminal = {
         type: "error",
         content: piErrorContent(message, parsed.providerID),
@@ -3695,9 +3767,9 @@ async function* runPiAttempt(
     } else if (lastStopReason === "error" || lastStopReason === "aborted") {
       const message =
         lastErrorMessage || `run ended with stopReason ${lastStopReason}`;
-      const usageLimit = isPiUsageLimitShape(message, parsed.providerID);
+      const usageLimit = usageLimitShape(message);
       terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit);
+      sidelineOnUsageLimit(usageLimit, message);
       terminal = {
         type: "error",
         content: piErrorContent(message, parsed.providerID),
@@ -3745,8 +3817,7 @@ async function* runPiAttempt(
     // distinctive text never matches the classifier — previous runner-runner's
     // catch parity.
     const usageLimit =
-      e?.usageLimitExhausted === true ||
-      isPiUsageLimitShape(message, parsed.providerID);
+      e?.usageLimitExhausted === true || usageLimitShape(message);
     // Sideline ONLY on provider-attributed exhaustion (the explicit flag).
     // A classifier match alone is not enough here: this catch also sees
     // non-provider throws from the run body (fs, journal, SDK init), and a
@@ -3754,7 +3825,7 @@ async function* runPiAttempt(
     // 60 min across both engines. The in-band terminal branches (provider
     // messages only) keep classifier-driven sidelines.
     if (e?.usageLimitExhausted === true && sidelineableAccount) {
-      sidelineAccount(sidelineableAccount);
+      sidelineAccount(sidelineableAccount, message);
     }
     // Rotate rather than end the turn. Gated on the explicit flag for the
     // same reason the sideline above is: this catch also sees non-provider
