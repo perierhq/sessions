@@ -22,12 +22,10 @@ import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { pickOpenaiAccount, buildSeededOpenaiAuth } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import { logInjectedContext } from "./context-log";
-import { wrapContext } from "./prompt-context";
 import {
   createPiTurnCheckpointWriter,
   type PiTurnCheckpointWriter,
 } from "./pi-turn-checkpoint";
-import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
   transcriptLineUser,
@@ -47,7 +45,7 @@ import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
 import type { StreamEvent } from "./run-events";
 import { PI_PROVIDER } from "./pi-common";
-import { persistEntries, piAppend, piImages } from "./pi-transcript";
+import { persistEntries, piAppend } from "./pi-transcript";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
@@ -92,6 +90,7 @@ import {
   piSystemEntry,
   piTurnRepairEntries,
 } from "./pi-events";
+import { drivePiPrompt } from "./pi-prompt-loop";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -726,117 +725,21 @@ async function* runPiAttempt(
     });
     const unsubscribe = session.subscribe(events.handle);
 
-    // prompt() resolves after the full accepted run (steers + retries
-    // included) — the authoritative end; pre-flight failures reject. A cancel
-    // that landed before this point must not start the run at all —
-    // session.abort() only stops a run already in flight.
-    let promptOutcome: { ok: boolean; error?: unknown } | null = null;
-    const settlePrompt = (outcome: { ok: boolean; error?: unknown }) => {
-      promptOutcome = outcome;
-      // Same tick as the outcome, BEFORE the pump wakes: steers accepted from
-      // here on could only queue into a settling/soon-disposed session, so
-      // steerPiRun must return false and let run-session queue them for the
-      // next turn instead.
-      handle.steer = undefined;
-      pump.wake();
-    };
-    if (abort.signal.aborted) {
-      promptOutcome = { ok: true };
-      handle.steer = undefined;
-    } else {
-      void session
-        .prompt(promptForEngine, {
-          images: walk.continuation ? undefined : piImages(opts.images),
-          expandPromptTemplates: false,
-        })
-        .then(
-          () => settlePrompt({ ok: true }),
-          (e: unknown) => settlePrompt({ ok: false, error: e }),
-        );
-    }
-
-    // Tail-race drain budget: a steer accepted between the agent loop's final
-    // steering poll and settlePrompt sits in the in-memory queue that
-    // dispose() would discard — while steerPiRun already returned true and
-    // run-session dropped the message from its own queue. Drive it through a
-    // real continuation run (the same agent.continue() the SDK uses for
-    // agent_end-queued messages; the constructor-lifetime event subscription
-    // keeps streaming/persisting) instead of losing it.
-    let steerDrains = 0;
-    // One bounded continuation for an empty final completion (see
-    // lastAssistantRenderableBlocks). The nudge is fenced like every other
-    // injection, so the transcript never shows it as a user bubble.
-    let emptyFinishRetries = 0;
-    while (true) {
-      while (pump.size) yield pump.take()!;
-      if (promptOutcome) {
-        if (steering.engineQueueDepth > 0) {
-          // An accepted steer is still being staged, so pi's queue count is
-          // not final yet. steerPiRun already told the caller "accepted";
-          // finishing now would drop it silently. Wait for the chain, then
-          // re-read everything (more steers may have joined meanwhile).
-          await steering.engineQueue;
-          continue;
-        }
-        if (
-          promptOutcome.ok &&
-          !abort.signal.aborted &&
-          liveSession.pendingMessageCount > 0 &&
-          steerDrains < 2
-        ) {
-          steerDrains++;
-          promptOutcome = null;
-          void Promise.resolve()
-            .then(() => liveSession.agent.continue())
-            .then(
-              () => settlePrompt({ ok: true }),
-              (e: unknown) => settlePrompt({ ok: false, error: e }),
-            );
-          continue;
-        }
-        if (
-          promptOutcome.ok &&
-          !abort.signal.aborted &&
-          emptyFinishRetries < 1 &&
-          events.outcome.lastStopReason === "stop" &&
-          events.outcome.lastAssistantRenderableBlocks === 0
-        ) {
-          emptyFinishRetries++;
-          const notice =
-            "Model returned an empty response — asking it once more to finish its reply";
-          push({ type: "runner_notice", text: notice });
-          promptOutcome = null;
-          void session
-            .prompt(wrapContext(EMPTY_REPLY_RETRY_PROMPT, "auto-continue"), {
-              expandPromptTemplates: false,
-            })
-            .then(
-              () => settlePrompt({ ok: true }),
-              (e: unknown) => settlePrompt({ ok: false, error: e }),
-            );
-          continue;
-        }
-        break;
-      }
-      await pump.wait();
-    }
-    while (pump.size) yield pump.take()!;
-    unsubscribe();
-    if (steering.pendingCount > 0) {
-      // Accepted but never delivered (drain budget exhausted or the run
-      // failed): no transcript line was written, so on the failure paths the
-      // receipt survives as the recovery affordance; on a done terminal the
-      // loss is at least audited instead of silent.
-      audit({
-        ...auditBase,
-        direction: "out",
-        kind: "steer_undelivered",
-        count: steering.pendingCount,
-      });
-    }
+    const { result: failed, emptyFinishRetries } = yield* drivePiPrompt({
+      session,
+      pump,
+      handle,
+      signal: abort.signal,
+      steering,
+      outcome: events.outcome,
+      promptForEngine,
+      walk,
+      images: opts.images,
+      unsubscribe,
+      auditBase,
+    });
 
     // ── Terminal (at most one; user cancels end with none) ──────────────────
-    const failed: { ok: boolean; error?: unknown } = promptOutcome!;
     if (
       failed.ok &&
       events.outcome.lastStopReason === "stop" &&
