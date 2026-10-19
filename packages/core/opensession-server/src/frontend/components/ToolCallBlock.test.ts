@@ -308,13 +308,21 @@ test("pi's MCP dispatcher renders the call inside its envelope", () => {
     name: "opensession-workflows_workflow_status",
     arguments: { runId: "run-1" },
   };
-  expect(unwrapMcpDispatcher("mcp_call", dispatched)).toEqual({
-    toolName: "opensession-workflows_workflow_status",
-    input: { runId: "run-1" },
-  });
-  expect(toolSummary("mcp_call", dispatched, "Using mcp_call")).toBe(
-    "runId: run-1",
-  );
+  // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+  for (const name of ["tool_call", "mcp_call"]) {
+    expect(unwrapMcpDispatcher(name, dispatched)).toEqual({
+      toolName: "opensession-workflows_workflow_status",
+      input: { runId: "run-1" },
+    });
+    expect(toolSummary(name, dispatched, `Using ${name}`)).toBe("runId: run-1");
+  }
+});
+
+test("pi's MCP search reads the same under its current and its old name", () => {
+  for (const name of ["tool_search", "mcp_search"]) {
+    expect(parseMcpTool(name)).toEqual({ server: "mcp", tool: "search" });
+    expect(toolDisplayName(name)).toBe("MCP · Search");
+  }
 });
 
 test("an assets call reads as the file it names, not its contents", () => {
@@ -355,7 +363,7 @@ test("a sessions call names the session it is about", () => {
   ).toBe("os-3");
   // Through pi's dispatcher too, since the row reads the entry's own name.
   expect(
-    sessionToolId("mcp_call", {
+    sessionToolId("tool_call", {
       name: "opensession-sessions_send_to_session",
       arguments: { id: "os-4", message: "hi" },
     }),
@@ -462,7 +470,7 @@ test("a suggested task is read off the call in every spelling", async () => {
   ).toBe(input.title);
   // pi's dispatcher envelope.
   expect(
-    suggestedTaskOf("mcp_call", {
+    suggestedTaskOf("tool_call", {
       name: "opensession-sessions_suggest_task",
       arguments: input,
     })?.title,

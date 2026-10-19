@@ -1745,17 +1745,28 @@ final class ToolPresentationTests: XCTestCase {
     }
 
     func testPiMcpDispatcherUsesTheCallInsideItsEnvelope() {
-        let presentation = ToolPresentation.make(
-            toolName: "mcp_call",
-            input: .object([
-                "name": .string("opensession-workflows_workflow_status"),
-                "arguments": .object(["runId": .string("run-1")]),
-            ])
-        )
-        XCTAssertEqual(presentation.mcpServer, "opensession-workflows")
-        XCTAssertEqual(presentation.name, "workflow_status")
-        XCTAssertEqual(presentation.displayName, "Open Session · Workflows · Status")
-        XCTAssertEqual(presentation.summary, "runId: run-1")
+        // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+        for outer in ["tool_call", "mcp_call"] {
+            let presentation = ToolPresentation.make(
+                toolName: outer,
+                input: .object([
+                    "name": .string("opensession-workflows_workflow_status"),
+                    "arguments": .object(["runId": .string("run-1")]),
+                ])
+            )
+            XCTAssertEqual(presentation.mcpServer, "opensession-workflows", outer)
+            XCTAssertEqual(presentation.name, "workflow_status", outer)
+            XCTAssertEqual(presentation.displayName, "Open Session · Workflows · Status", outer)
+            XCTAssertEqual(presentation.summary, "runId: run-1", outer)
+        }
+    }
+
+    func testPiMcpSearchReadsTheSameUnderEitherName() {
+        for name in ["tool_search", "mcp_search"] {
+            let mcp = ToolPresentation.parseMcpTool(name)
+            XCTAssertEqual(mcp?.server, "mcp", name)
+            XCTAssertEqual(mcp?.tool, "search", name)
+        }
     }
 
     /// The generic MCP summary lists inputs alphabetically, which for an

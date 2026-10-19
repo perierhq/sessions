@@ -367,6 +367,7 @@ extension ToolPresentation {
         }
         guard !nativeTools.contains(name.lowercased()) else { return nil }
         guard aliases[name.lowercased()] == nil else { return nil }
+        if !explicit, let dispatcher = dispatcherParts[name] { return dispatcher }
         guard let underscore = name.firstIndex(of: "_") else {
             return explicit ? ("mcp", name) : nil
         }
@@ -383,13 +384,28 @@ extension ToolPresentation {
         aliases[raw.lowercased()] ?? raw
     }
 
-    /// Pi stores bridged MCP calls as an `mcp_call` envelope. Resolve the call
-    /// inside it so old servers and expanded native rows show the actual tool.
+    /// Pi's MCP dispatchers as the model sees them. Never `mcp_…`: Anthropic
+    /// rejects subscription requests whose tool list has a name starting
+    /// with `mcp_`. Older transcripts store `mcp_search` / `mcp_call`.
+    static let dispatcherParts: [String: (server: String, tool: String)] = [
+        "tool_search": ("mcp", "search"),
+        "tool_call": ("mcp", "call"),
+    ]
+
+    /// Pi's call dispatcher under its current or its pre-rename name.
+    static func isCallDispatcher(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower == "tool_call" || lower == "mcp_call"
+    }
+
+    /// Pi stores bridged MCP calls as a `tool_call` (formerly `mcp_call`)
+    /// envelope. Resolve the call inside it so old servers and expanded
+    /// native rows show the actual tool.
     static func resolveCall(
         toolName: String,
         input: JSONValue?
     ) -> (toolName: String, input: JSONValue?) {
-        guard toolName.lowercased() == "mcp_call",
+        guard isCallDispatcher(toolName),
               let inner = input?["name"]?.stringValue,
               !inner.isEmpty
         else { return (toolName, input) }

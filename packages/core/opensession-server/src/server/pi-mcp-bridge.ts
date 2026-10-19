@@ -1,11 +1,15 @@
 /** Thin Pi adapter over the engine-neutral, turn-scoped MCP runtime. */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  MCP_CALL_TOOL,
+  MCP_SEARCH_TOOL,
+} from "@tellahq/opensession-protocol/tool-presentation";
 import type { McpRuntime, McpRuntimeTool } from "./mcp-runtime";
 
 export interface PiMcpBridge {
   /** Mutable post-policy view retained for diagnostics and existing callers. */
   tools: ToolDefinition<any, any, any>[];
-  /** Exactly mcp_search and mcp_call when the runtime has any catalog source. */
+  /** Exactly tool_search and tool_call when the runtime has any catalog source. */
   discoveryTools: ToolDefinition<any, any, any>[];
   /** The few catalog tools also offered by name (DIRECT_MCP_TOOLS), only
    *  when this run's post-policy catalog carries them. */
@@ -14,7 +18,7 @@ export interface PiMcpBridge {
 
 /**
  * Catalog tools the model is handed directly, keyed by runtime id, valued by
- * the name it sees. Everything else stays behind mcp_search. A tool earns a
+ * the name it sees. Everything else stays behind tool_search. A tool earns a
  * place here only when the two-step search is itself what stops the model
  * from using it: `schedule_prompt` competes with a one-line `sleep`, and
  * searching for it first made the wrong choice the easy one. `wait_for`
@@ -75,10 +79,10 @@ export async function createPiMcpBridge(
   const describedWeight = (length: number) =>
     Math.min(1, 400 / Math.max(length, 400));
   const searchCatalog: ToolDefinition<any, any, any> = {
-    name: "mcp_search",
+    name: MCP_SEARCH_TOOL,
     label: "Search MCP tools",
     description:
-      "Search the available MCP tool catalog before calling mcp_call. " +
+      `Search the available MCP tool catalog before calling ${MCP_CALL_TOOL}. ` +
       "Prefix a required term with + to narrow results (e.g. +opensession-sessions list_sessions). " +
       "Use the returned tool name and argument schema exactly.",
     parameters: {
@@ -96,7 +100,7 @@ export async function createPiMcpBridge(
       const query = String((params as { query?: unknown })?.query ?? "")
         .trim()
         .toLowerCase();
-      if (!query) throw new Error("mcp_search requires a query");
+      if (!query) throw new Error(`${MCP_SEARCH_TOOL} requires a query`);
       await syncCatalog(true);
       const requested = Number((params as { limit?: unknown })?.limit);
       const limit = Number.isFinite(requested)
@@ -107,7 +111,7 @@ export async function createPiMcpBridge(
         required: term.startsWith("+"),
       }));
       if (terms.some((term) => !term.text))
-        throw new Error("mcp_search requires a term after +");
+        throw new Error(`${MCP_SEARCH_TOOL} requires a term after +`);
       const compact = terms
         .map((term) => term.text)
         .join("")
@@ -155,16 +159,15 @@ export async function createPiMcpBridge(
   };
 
   const callCatalog: ToolDefinition<any, any, any> = {
-    name: "mcp_call",
+    name: MCP_CALL_TOOL,
     label: "Call MCP tool",
-    description:
-      "Call a tool returned by mcp_search. Pass its exact name and an arguments object matching its schema.",
+    description: `Call a tool returned by ${MCP_SEARCH_TOOL}. Pass its exact name and an arguments object matching its schema.`,
     parameters: {
       type: "object",
       properties: {
         name: {
           type: "string",
-          description: "Exact tool name returned by mcp_search",
+          description: `Exact tool name returned by ${MCP_SEARCH_TOOL}`,
         },
         arguments: { type: "object", description: "Arguments for that tool" },
       },
@@ -174,7 +177,7 @@ export async function createPiMcpBridge(
       const name = String((params as { name?: unknown })?.name ?? "");
       const args = (params as { arguments?: unknown })?.arguments;
       if (!args || typeof args !== "object" || Array.isArray(args)) {
-        throw new Error("mcp_call arguments must be an object");
+        throw new Error(`${MCP_CALL_TOOL} arguments must be an object`);
       }
       const { content } = await runtime.callExact(
         name,

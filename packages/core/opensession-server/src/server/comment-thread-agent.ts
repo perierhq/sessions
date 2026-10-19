@@ -136,7 +136,7 @@ export function sideAnswerSystem(name: string, localTools: boolean): string {
     "",
     "How to answer:",
     "- You are answering on the side. The main session's run is separate and keeps going; your reply goes into the comment thread only.",
-    "- Read before you answer. The opensession-transcript server's search_transcript and read_transcript tools (call them through mcp_call) look through the main session's full conversation" +
+    "- Read before you answer. The opensession-transcript server's search_transcript and read_transcript tools (call them through tool_call) look through the main session's full conversation" +
       (localTools
         ? ", and the read-only workspace tools (read, grep, find, ls, bash for read-only commands) to check the code in the session's checkout."
         : ". You have no access to the session's files from here."),

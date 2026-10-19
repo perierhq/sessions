@@ -597,7 +597,7 @@ export async function* runAgent(
     try {
       for await (const event of runAgentInner(effectiveOpts)) {
         observe(event);
-        // Pi reports every bridged MCP call as the `mcp_call` dispatcher with
+        // Pi reports every bridged MCP call as the `tool_call` dispatcher with
         // the real tool inside its input, so the ledger is fed the unwrapped
         // call rather than the envelope (observeToolCall, turn-outcome.ts).
         // It also picks up a declared silence here, because on a hosted run

@@ -29,9 +29,10 @@ test("reads both engine dialects and dispatched sends without losing message tex
       to: args.id,
       content: args.message,
     });
-    expect(
-      outgoingAgentMessage(entry("mcp_call", { name, arguments: args })),
-    ).toEqual({ to: args.id, content: args.message });
+    for (const dispatcher of ["tool_call", "mcp_call"])
+      expect(
+        outgoingAgentMessage(entry(dispatcher, { name, arguments: args })),
+      ).toEqual({ to: args.id, content: args.message });
   }
 });
 

@@ -659,6 +659,27 @@ export function piToolNames(
   return customTools.map((tool) => tool.name);
 }
 
+/**
+ * The local workspace tools a run enables. Tool policy: ask mode is read-only
+ * — no edit/write, and bash screened through ASK_BASH_PERMISSIONS
+ * (askBashDenyReason), the same allowlist previous runner's ask agent enforces
+ * engine-side. Shipping ask without bash at all was tried first and it blinded
+ * every automation that assumed a shell for jq/git/gh reads (the
+ * health-monitor incident, 2026-08-19). Code/scratch get the read set +
+ * edit/write + the ungated custom bash. disableLocalWorkspaceTools
+ * (engine-outside-sandbox) strips all local tools — pi has no sandbox mode,
+ * but fail closed if a caller passes it.
+ */
+export function piLocalToolNames(opts: {
+  isAsk: boolean;
+  disableLocalWorkspaceTools?: boolean;
+}): string[] {
+  if (opts.disableLocalWorkspaceTools) return [];
+  return opts.isAsk
+    ? ["read", "grep", "find", "ls", "bash"]
+    : ["read", "grep", "find", "ls", "edit", "write", "bash"];
+}
+
 export const PI_STEER_TOOL_SKIP =
   "Skipped because new steering instructions arrived. Read them before choosing the next tool.";
 
@@ -2639,7 +2660,7 @@ async function* runPiAttempt(
     };
 
     // One engine-neutral MCP runtime owns all connections for this logical
-    // turn. Pi only adapts its exact catalog into mcp_search/mcp_call. The
+    // turn. Pi only adapts its exact catalog into tool_search/tool_call. The
     // detached runner-host proxy shape remains solely at this named migration
     // boundary until Agent operation routing replaces it.
     const mcpMounts = splitMcpMigrationBoundary(opts.inProcessMcp);
@@ -2676,19 +2697,10 @@ async function* runPiAttempt(
         }),
     });
     mcpBridge = await createPiMcpBridge(mcpRuntime);
-    // Tool policy: ask mode is read-only — no edit/write, and bash screened
-    // through ASK_BASH_PERMISSIONS (askBashDenyReason), the same allowlist
-    // previous runner's ask agent enforces engine-side. Shipping ask without bash at
-    // all was tried first and it blinded every automation that assumed a
-    // shell for jq/git/gh reads (the health-monitor incident, 2026-08-19).
-    // Code/scratch get the read set + edit/write + the ungated custom bash.
-    // disableLocalWorkspaceTools (engine-outside-sandbox) strips all local
-    // tools — pi has no sandbox mode, but fail closed if a caller passes it.
-    const localTools = opts.disableLocalWorkspaceTools
-      ? []
-      : isAsk
-        ? ["read", "grep", "find", "ls", "bash"]
-        : ["read", "grep", "find", "ls", "edit", "write", "bash"];
+    const localTools = piLocalToolNames({
+      isAsk,
+      disableLocalWorkspaceTools: opts.disableLocalWorkspaceTools,
+    });
     // Every enabled name is derived from a custom definition below. Pi falls
     // back to its in-process built-ins for a name without an override, so a
     // separately maintained enabled-name list would be a containment escape.

@@ -6,7 +6,7 @@
  * checks. Keeping the shared names and summaries here lets the prompt describe
  * the live capability set without pulling that factory graph into every run.
  *
- * Every MCP tool sits behind mcp_search, so a run can only find a tool it
+ * Every MCP tool sits behind tool_search, so a run can only find a tool it
  * already knows to look for. The guidance below is that knowledge: it is
  * rendered into the run prompt for each mounted server (see
  * renderInternalMcpCapabilities), and it is the one place a new tool has to
@@ -256,8 +256,8 @@ export function renderInternalMcpCapabilities(
     );
   if (!lines.length) return "";
   return (
-    "## Tools\nThese servers are in reach through `mcp_search` (find the exact tool and its " +
-    "schema) and `mcp_call`. What each is for:\n" +
+    "## Tools\nThese servers are in reach through `tool_search` (find the exact tool and its " +
+    "schema) and `tool_call`. What each is for:\n" +
     lines.join("\n")
   );
 }

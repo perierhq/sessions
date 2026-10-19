@@ -33,7 +33,7 @@ const outgoing: TranscriptEntry = {
   toolUseId: "send-1",
   timestamp,
   content: "",
-  toolName: "mcp_call",
+  toolName: "tool_call",
   toolInput: {
     name: "opensession-sessions_send_to_session",
     arguments: { id: "os-peer", message: "Please check **phone** too." },

@@ -97,7 +97,7 @@ Capture this as seed context (file paths, symbols, commits, PR numbers, linked t
 
 ### Discovery
 
-Before spawning investigators, use `mcp_search` to discover the policy-gated tools actually available in this Open Session run. Never inspect MCP configuration files, credentials, or host directories.
+Before spawning investigators, use `tool_search` to discover the policy-gated tools actually available in this Open Session run. Never inspect MCP configuration files, credentials, or host directories.
 
 Map each available MCP to one evidence category:
 

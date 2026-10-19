@@ -65,7 +65,8 @@ final class SuggestedTaskTests: XCTestCase {
     }
 
     func testUnwrapsTheMcpDispatcherEnvelope() {
-        for outer in ["mcp_call", "mcp__oc__mcp_call"] {
+        // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+        for outer in ["tool_call", "mcp__oc__tool_call", "mcp_call", "mcp__oc__mcp_call"] {
             let wrapped: JSONValue = .object([
                 "name": .string("opensession-sessions_suggest_task"),
                 "arguments": input,
@@ -90,6 +91,7 @@ final class SuggestedTaskTests: XCTestCase {
             toolName: "opensession-sessions_suggest_task",
             input: .object(["instructions": .string("No title")])
         ))
+        XCTAssertNil(SuggestedTask.from(toolName: "tool_call", input: .object([:])))
         XCTAssertNil(SuggestedTask.from(toolName: "mcp_call", input: .object([:])))
     }
 

@@ -22,13 +22,13 @@ struct SuggestedTask: Equatable, Sendable {
     /// The proposal a tool call carries, or nil when the call is anything
     /// other than a well-formed `suggest_task`. Accepts every name form a
     /// transcript stores: `mcp__opensession-sessions__suggest_task`, the flat
-    /// `opensession-sessions_suggest_task`, and either inside an `mcp_call`
-    /// dispatcher envelope.
+    /// `opensession-sessions_suggest_task`, and either inside a `tool_call`
+    /// (formerly `mcp_call`) dispatcher envelope.
     static func from(toolName rawName: String, input rawInput: JSONValue?) -> SuggestedTask? {
         var toolName = rawName
         var input = rawInput
         if isDispatcher(rawName) {
-            (toolName, input) = ToolPresentation.resolveCall(toolName: "mcp_call", input: rawInput)
+            (toolName, input) = ToolPresentation.resolveCall(toolName: "tool_call", input: rawInput)
         }
         guard let mcp = ToolPresentation.parseMcpTool(toolName),
               mcp.server == "opensession-sessions",
@@ -49,13 +49,14 @@ struct SuggestedTask: Equatable, Sendable {
         )
     }
 
-    /// `mcp_call` as Pi stores it, or behind a client's own MCP prefix.
+    /// `tool_call` (or the older `mcp_call`) as Pi stores it, or behind a
+    /// client's own MCP prefix.
     private static func isDispatcher(_ name: String) -> Bool {
         var bare = name.lowercased()
         for prefix in ["mcp__oc__", "mcp__"] where bare.hasPrefix(prefix) {
             bare = String(bare.dropFirst(prefix.count))
         }
-        return bare == "mcp_call"
+        return ToolPresentation.isCallDispatcher(bare)
     }
 
     /// The first non-empty string among `keys`, trimmed.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPiMcpBridge } from "./pi-mcp-bridge";
+import { createPiMcpBridge, DIRECT_MCP_TOOLS } from "./pi-mcp-bridge";
 import type { McpRuntime, McpRuntimeTool } from "./mcp-runtime";
 
 function fakeRuntime(catalog: McpRuntimeTool[]): McpRuntime & {
@@ -59,8 +59,8 @@ describe("Pi MCP adapter", () => {
       fakeRuntime([tool("alpha_echo", "Echo text")]),
     );
     expect(bridge.discoveryTools.map((item) => item.name)).toEqual([
-      "mcp_search",
-      "mcp_call",
+      "tool_search",
+      "tool_call",
     ]);
     expect(bridge.tools.map((item) => item.name)).toEqual(["alpha_echo"]);
     expect(bridge.tools[0]!.parameters).toEqual({
@@ -76,7 +76,7 @@ describe("Pi MCP adapter", () => {
     ]);
     const bridge = await createPiMcpBridge(runtime);
     const search = bridge.discoveryTools.find(
-      (item) => item.name === "mcp_search",
+      (item) => item.name === "tool_search",
     )!;
     const result = await exec(search, { query: "run workflow", limit: 1 });
     expect(result.content[0].text).toContain("zeta_run_workflow");
@@ -141,11 +141,11 @@ describe("Pi MCP adapter", () => {
     );
   });
 
-  test("mcp_call preserves exact identity, toolCallId, signal and Pi result shape", async () => {
+  test("tool_call preserves exact identity, toolCallId, signal and Pi result shape", async () => {
     const runtime = fakeRuntime([tool("alpha_echo", "Echo")]);
     const bridge = await createPiMcpBridge(runtime);
     const call = bridge.discoveryTools.find(
-      (item) => item.name === "mcp_call",
+      (item) => item.name === "tool_call",
     )!;
     const abort = new AbortController();
     const result = await exec(
@@ -172,7 +172,7 @@ describe("Pi MCP adapter", () => {
       fakeRuntime([tool("alpha_echo", "Echo")]),
     );
     const call = bridge.discoveryTools.find(
-      (item) => item.name === "mcp_call",
+      (item) => item.name === "tool_call",
     )!;
     await expect(
       exec(call, { name: "alpha_other", arguments: {} }),
@@ -233,6 +233,33 @@ describe("Pi MCP adapter", () => {
       fakeRuntime([tool("opensession-sessions_send_to_session", "Send")]),
     );
     expect(without.directTools).toEqual([]);
+  });
+
+  // Anthropic rejects subscription requests whose tool list contains a tool
+  // named `mcp_…` (one underscore); `mcp__server__tool` is accepted. Every
+  // name the bridge hands the model has to stay clear of that prefix.
+  test("never hands the model a tool name starting with mcp_", async () => {
+    const rejected = /^mcp_(?!_)/;
+    const bridge = await createPiMcpBridge(
+      fakeRuntime([
+        ...Object.keys(DIRECT_MCP_TOOLS).map((id) => tool(id, "Direct")),
+        // A catalog tool that would trip the prefix stays behind search.
+        tool("mcp_search", "Lookalike"),
+        tool("alpha_echo", "Echo text"),
+      ]),
+    );
+    const offered = [...bridge.discoveryTools, ...bridge.directTools].map(
+      (item) => item.name,
+    );
+    expect(offered).toEqual([
+      "tool_search",
+      "tool_call",
+      ...Object.values(DIRECT_MCP_TOOLS),
+    ]);
+    expect(offered.filter((name) => rejected.test(name))).toEqual([]);
+    expect(
+      Object.values(DIRECT_MCP_TOOLS).filter((name) => rejected.test(name)),
+    ).toEqual([]);
   });
 
   test("hydrates only the direct tools' servers before picking them", async () => {

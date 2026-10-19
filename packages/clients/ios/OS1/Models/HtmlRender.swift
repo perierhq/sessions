@@ -123,7 +123,7 @@ struct HtmlRenderReference: Equatable, Sendable {
         for prefix in ["mcp__oc__", "mcp__"] where bare.hasPrefix(prefix) {
             bare = String(bare.dropFirst(prefix.count))
         }
-        return bare == "mcp_call"
+        return ToolPresentation.isCallDispatcher(bare)
     }
 }
 

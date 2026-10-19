@@ -11,7 +11,11 @@
  * Apps JSON-RPC subset) a page and its client speak.
  */
 
-import { parseMcpTool, unwrapMcpDispatcher } from "./tool-presentation";
+import {
+  isMcpCallDispatcher,
+  parseMcpTool,
+  unwrapMcpDispatcher,
+} from "./tool-presentation";
 
 export const HTML_RENDER_SERVER = "opensession-html";
 export const HTML_RENDER_TOOL = "html_render";
@@ -114,9 +118,10 @@ export function readHtmlRenderReference(
 
 /**
  * Whether a tool call may be `html_render`: named so directly, or a call
- * through an `mcp_call` dispatcher. A dispatcher's inner name can be gone
- * from a large call's stored input, so a dispatcher call counts and its
- * result decides (htmlRenderFromResult only accepts a stored render's URL).
+ * through pi's `tool_call` dispatcher (`mcp_call` in older transcripts). A
+ * dispatcher's inner name can be gone from a large call's stored input, so a
+ * dispatcher call counts and its result decides (htmlRenderFromResult only
+ * accepts a stored render's URL).
  */
 export function mayBeHtmlRenderTool(
   rawName: string,
@@ -126,7 +131,10 @@ export function mayBeHtmlRenderTool(
   const mcp = parseMcpTool(toolName);
   if (mcp?.server === HTML_RENDER_SERVER && mcp.tool === HTML_RENDER_TOOL)
     return true;
-  return toolName.toLowerCase() === "mcp_call" || mcp?.tool === "mcp_call";
+  return (
+    isMcpCallDispatcher(toolName) ||
+    (mcp !== null && isMcpCallDispatcher(mcp.tool))
+  );
 }
 
 /** How every `html_render` answer starts: `JSON.stringify({ htmlRender, … })`.

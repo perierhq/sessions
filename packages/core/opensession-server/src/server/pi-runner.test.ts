@@ -44,6 +44,7 @@ import {
   piStreamEventRequiresAccountContinuation,
   piSteeringBoundaryTools,
   interruptPiThinkingForSteer,
+  piLocalToolNames,
   piToolNames,
   resolvePiRoutedModel,
   retractPendingSteer,
@@ -52,6 +53,8 @@ import {
   steerPiRun,
 } from "./pi-runner";
 import type { PiBashAuditEvent } from "./pi-runner";
+import { createPiMcpBridge, DIRECT_MCP_TOOLS } from "./pi-mcp-bridge";
+import type { McpRuntime } from "./mcp-runtime";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
 import { __setUsageCacheForTest } from "./claude-accounts";
 import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
@@ -601,12 +604,59 @@ describe("piToolNames", () => {
   test("activates only names backed by custom definitions", () => {
     const definitions = [
       { name: "read" },
-      { name: "mcp_search" },
+      { name: "tool_search" },
       { name: "oracle" },
     ];
 
-    expect(piToolNames(definitions)).toEqual(["read", "mcp_search", "oracle"]);
+    expect(piToolNames(definitions)).toEqual(["read", "tool_search", "oracle"]);
     expect(piToolNames(definitions.slice(1))).not.toContain("read");
+  });
+
+  // Anthropic rejects subscription requests whose tool list contains a tool
+  // named `mcp_…` (one underscore), so no name runPi enables may start that way.
+  test("no enabled tool name starts with mcp_ in any mode", async () => {
+    const rejected = /^mcp_(?!_)/;
+    const catalog = [...Object.keys(DIRECT_MCP_TOOLS), "alpha_echo"].map(
+      (id) => {
+        const split = id.indexOf("_");
+        return {
+          id,
+          server: id.slice(0, split),
+          name: id.slice(split + 1),
+          label: id,
+          description: id,
+          inputSchema: { type: "object", properties: {} },
+        };
+      },
+    );
+    const runtime: McpRuntime = {
+      hasCatalog: true,
+      async catalog() {
+        return catalog;
+      },
+      async callExact() {
+        return { content: [] };
+      },
+      async close() {},
+    };
+    const bridge = await createPiMcpBridge(runtime);
+    for (const isAsk of [false, true]) {
+      for (const disableLocalWorkspaceTools of [false, true]) {
+        const local = piLocalToolNames({ isAsk, disableLocalWorkspaceTools });
+        const customTools = piSteeringBoundaryTools(
+          [
+            ...bridge.discoveryTools,
+            ...bridge.directTools,
+            ...local.map((name) => ({ ...bridge.discoveryTools[0]!, name })),
+          ],
+          () => false,
+        );
+        const enabled = [...piToolNames(customTools), PI_CODEMODE_TOOL];
+        expect(enabled).toContain("tool_search");
+        expect(enabled).toContain("tool_call");
+        expect(enabled.filter((name) => rejected.test(name))).toEqual([]);
+      }
+    }
   });
 });
 
