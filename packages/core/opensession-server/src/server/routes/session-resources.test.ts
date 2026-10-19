@@ -31,7 +31,7 @@ function deps(
     }),
     stop: async (session) => {
       stopped.push(session.id);
-      return 2;
+      return { stopped: 2, interrupted: false };
     },
     host: async () => ({
       counts: { live: 1, archived: 0, missing: 0, unknown: 0 },
@@ -79,6 +79,31 @@ describe("session resource routes", () => {
     );
     expect(await done?.json()).toEqual({ stopped: 2 });
     expect(stopped).toEqual(["os-a"]);
+  });
+
+  test("asks again before each stop, and reports a run that started part-way", async () => {
+    let idle = true;
+    const asked: boolean[] = [];
+    __setSessionResourceRouteDepsForTest(
+      deps({
+        isIdle: () => idle,
+        stop: async (_session, _sessions, { stillIdle }) => {
+          asked.push(stillIdle());
+          // A run starts after the first stop.
+          idle = false;
+          asked.push(stillIdle());
+          return { stopped: 1, interrupted: true };
+        },
+      }),
+    );
+    const response = await handleSessionResourceRoutes(
+      ctx("/api/sessions/os-a/resources/stop", "POST"),
+    );
+    expect(asked).toEqual([true, false]);
+    expect(response?.status).toBe(409);
+    const body = await response?.json();
+    expect(body.stopped).toBe(1);
+    expect(body.error).toContain("A run started");
   });
 
   test("answers host health, and leaves other paths and methods alone", async () => {

@@ -1613,13 +1613,17 @@ export async function sessionHostPortals(
   return found;
 }
 
-/** Stop the host Portals sessionHostPortals lists; the number stopped. */
+/** Stop the host Portals sessionHostPortals lists; the number stopped.
+ * `shouldContinue` is asked before each one; once it says no, the rest
+ * keep running. */
 export async function stopSessionHostPortals(
   session: PortalOwnerSession &
     Partial<Pick<UnifiedSession, "runner" | "sandbox">>,
+  options: { shouldContinue?: () => boolean } = {},
 ): Promise<number> {
   let stopped = 0;
   for (const { worktreeDir, record } of await sessionHostPortals(session)) {
+    if (options.shouldContinue && !options.shouldContinue()) break;
     try {
       await stopPortalService({
         sessionId: session.id,

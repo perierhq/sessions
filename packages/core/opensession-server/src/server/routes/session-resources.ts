@@ -2,7 +2,8 @@
  * What a session still has running on this host, and stopping it.
  *
  *   GET  /api/sessions/:id/resources       -> SessionResourceList
- *   POST /api/sessions/:id/resources/stop  -> { stopped }; 409 while it runs
+ *   POST /api/sessions/:id/resources/stop  -> { stopped }; 409 while it runs,
+ *                                             or once a run starts part-way
  *   GET  /api/host/session-resources       -> HostSessionResources
  *
  * See session-resource-inventory.ts.
@@ -31,7 +32,8 @@ export type SessionResourceRouteDeps = {
   stop: (
     session: InventoryOwner,
     sessions: readonly SessionResourceOwner[],
-  ) => Promise<number>;
+    options: { stillIdle: () => boolean },
+  ) => Promise<{ stopped: number; interrupted: boolean }>;
   host: (
     sessions: readonly SessionResourceOwner[],
   ) => Promise<HostSessionResources>;
@@ -83,8 +85,19 @@ export async function handleSessionResourceRoutes(
   // break the turn; stop the run first.
   if (!deps.isIdle(session.id))
     return reply({ error: "The session is running. Stop the run first." }, 409);
-  const result: StopSessionResourcesResult = {
-    stopped: await deps.stop(session, sessions),
-  };
+  // Asked again before each stop: a run that starts part-way keeps what
+  // is still running (its dev server, its command scopes).
+  const { stopped, interrupted } = await deps.stop(session, sessions, {
+    stillIdle: () => deps.isIdle(session.id),
+  });
+  if (interrupted)
+    return reply(
+      {
+        error: `A run started, so the rest was left running (${stopped} stopped).`,
+        stopped,
+      },
+      409,
+    );
+  const result: StopSessionResourcesResult = { stopped };
   return reply(result);
 }

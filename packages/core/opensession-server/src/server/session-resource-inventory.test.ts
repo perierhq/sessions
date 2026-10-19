@@ -227,7 +227,10 @@ describe("a session's resource list", () => {
     ];
     install();
     const session = { id: "os-a", worktreeDir: worktree };
-    expect(await stopSessionWorkloads(session, [session])).toBe(4);
+    expect(await stopSessionWorkloads(session, [session])).toEqual({
+      stopped: 4,
+      interrupted: false,
+    });
     expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual([
       "stopped",
       "awake",
@@ -239,6 +242,43 @@ describe("a session's resource list", () => {
     ]);
     expect(fakes.map((f) => f.session)).toEqual(["os-b"]);
     expect((await runs[0])!.stopped).toBe("stopped");
+  });
+});
+
+describe("stopping part-way", () => {
+  test("a run that starts part-way keeps what is not stopped yet", async () => {
+    portals([{ sessionId: "os-a" }]);
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a" },
+      { kind: "unit", handle: "u1.scope", session: "os-a" },
+    ];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    // Idle for the Portal, busy by the time the labelled resources come up.
+    let checks = 0;
+    const result = await stopSessionWorkloads(session, [session], {
+      stillIdle: () => ++checks <= 1,
+    });
+    expect(result).toEqual({ stopped: 1, interrupted: true });
+    expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual([
+      "stopped",
+    ]);
+    expect(stops).toEqual([]);
+    expect(fakes.map((f) => f.handle)).toEqual([ID_A, "u1.scope"]);
+  });
+
+  test("busy from the start, nothing is stopped", async () => {
+    portals([{ sessionId: "os-a" }]);
+    fakes = [{ kind: "container", handle: ID_A, session: "os-a" }];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    expect(
+      await stopSessionWorkloads(session, [session], {
+        stillIdle: () => false,
+      }),
+    ).toEqual({ stopped: 0, interrupted: true });
+    expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual(["awake"]);
+    expect(stops).toEqual([]);
   });
 });
 

@@ -795,17 +795,19 @@ async function stopLabelled(
  * seconds to exit, and one session may hold several. */
 const LABELLED_STOP_CONCURRENCY = 4;
 
-/** Stop `resources` a few at a time; the ones that stopped. */
+/** Stop `resources` a few at a time; the ones that stopped. None is
+ * started once `shouldContinue` says no. */
 async function stopLabelledBatch(
   resources: ReadonlyArray<{
     resource: LabelledResource;
     reason: SessionResourceStopReason;
   }>,
+  shouldContinue: () => boolean = () => true,
 ): Promise<StoppedSessionResource[]> {
   const results: Array<StoppedSessionResource | null> = [];
   let next = 0;
   const worker = async () => {
-    while (next < resources.length) {
+    while (next < resources.length && shouldContinue()) {
       const index = next++;
       const { resource, reason } = resources[index]!;
       results[index] = await stopLabelled(resource, reason);
@@ -837,13 +839,17 @@ export function labelledResourceIsOurs(
 async function stopLabelledForSession(
   ids: ReadonlySet<string>,
   reason: SessionResourceStopReason,
+  shouldContinue?: () => boolean,
 ): Promise<StoppedSessionResource[]> {
   const instance = resourceInstanceId();
   const owned = (await listLabelledResources()).filter(
     (resource) =>
       ids.has(resource.sessionId) && labelledResourceIsOurs(resource, instance),
   );
-  return stopLabelledBatch(owned.map((resource) => ({ resource, reason })));
+  return stopLabelledBatch(
+    owned.map((resource) => ({ resource, reason })),
+    shouldContinue,
+  );
 }
 
 /**
@@ -887,16 +893,29 @@ export function labelledReapReason(
 export async function stopSessionOwnedResources(
   session: SessionResourceOwner,
   others: readonly SessionResourceOwner[],
-  options: { reason?: "archived" | "removed" | "stopped" } = {},
+  options: {
+    reason?: "archived" | "removed" | "stopped";
+    /** Asked before each stop; once it says no, nothing more is stopped
+     * ("Stop everything" when a run starts meanwhile). */
+    shouldContinue?: () => boolean;
+  } = {},
 ): Promise<StoppedSessionResource[]> {
   const reason = options.reason ?? "archived";
+  const shouldContinue = options.shouldContinue ?? (() => true);
   const stopped: StoppedSessionResource[] = [];
-  for (const record of await sessionOwnedRecords(session, others))
+  for (const record of await sessionOwnedRecords(session, others)) {
+    if (!shouldContinue()) return stopped;
     stopped.push(await stopResource(record, reason));
+  }
+  if (!shouldContinue()) return stopped;
   // A label names exactly one session, so a sibling in the same worktree
   // never keeps it.
   stopped.push(
-    ...(await stopLabelledForSession(new Set(ownerIds(session)), reason)),
+    ...(await stopLabelledForSession(
+      new Set(ownerIds(session)),
+      reason,
+      shouldContinue,
+    )),
   );
   return stopped;
 }

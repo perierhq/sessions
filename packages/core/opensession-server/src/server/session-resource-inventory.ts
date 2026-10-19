@@ -155,18 +155,30 @@ export async function sessionResourceList(
 
 /**
  * Stop everything `session` started here ("Stop everything"): its host
- * Portals, the setup it owns, and its labelled containers and units. The
- * caller checks the session is idle. Returns how many were stopped.
+ * Portals, the setup it owns, and its labelled containers and units.
+ * `stillIdle` is asked before each stop: a run that starts meanwhile keeps
+ * what has not been stopped yet (its dev server, its command scopes), and
+ * `interrupted` says so. Returns how many were stopped.
  */
 export async function stopSessionWorkloads(
   session: InventoryOwner,
   sessions: readonly SessionResourceOwner[],
-): Promise<number> {
-  const portals = await stopSessionHostPortals(session);
-  const resources = await stopSessionOwnedResources(session, sessions, {
-    reason: "stopped",
-  });
-  return portals + resources.length;
+  options: { stillIdle?: () => boolean } = {},
+): Promise<{ stopped: number; interrupted: boolean }> {
+  let interrupted = false;
+  const shouldContinue = () => {
+    if (!interrupted && options.stillIdle && !options.stillIdle())
+      interrupted = true;
+    return !interrupted;
+  };
+  const portals = await stopSessionHostPortals(session, { shouldContinue });
+  const resources = shouldContinue()
+    ? await stopSessionOwnedResources(session, sessions, {
+        reason: "stopped",
+        shouldContinue,
+      })
+    : [];
+  return { stopped: portals + resources.length, interrupted };
 }
 
 const LEFTOVER_LIMIT = 50;
