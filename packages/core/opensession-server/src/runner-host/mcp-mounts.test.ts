@@ -543,6 +543,91 @@ describe("the shared run-rpc client", () => {
     await Bun.sleep(100);
     expect(gw.calls).toEqual([]);
   });
+
+  for (const ws of [false, true]) {
+    const via = ws ? "rpc-ws" : "the unix socket";
+
+    test(`a slow call does not hold up another server over ${via}`, async () => {
+      const names = ["opensession-a", "opensession-b"];
+      const gw = await start(names);
+      const runtime = await runtimeFor(names, "in-process", { ws });
+      const abort = new AbortController();
+      const slow = call(runtime, "opensession-a_wait", {}, abort.signal);
+      slow.catch(() => {});
+      await waitUntil(() => gw.calls.some((c) => c.tool === "wait"));
+      const fast = await call(runtime, "opensession-b_echo", { value: 2 });
+      expect(fast.content).toEqual([
+        {
+          type: "text",
+          text: JSON.stringify({ server: "opensession-b", args: { value: 2 } }),
+        },
+      ]);
+      expect(gw.aborted).toEqual([]);
+      abort.abort();
+      await waitUntil(() => gw.aborted.includes("opensession-a_wait"));
+    });
+
+    test(`retries an unknown run token until recovery over ${via}`, async () => {
+      const gw = await start(["opensession-a"]);
+      const rpc = clientFor(targetOf(gw, ws));
+      gw.forgetToken();
+      const pending = rpc.call(
+        "/mcp/call",
+        "opensession-a",
+        { tool: "echo", args: { value: "late" } },
+        { timeoutMs: 5_000 },
+      );
+      await Bun.sleep(150);
+      expect(gw.calls).toEqual([]);
+      gw.restoreToken();
+      expect((await pending).result).toBeDefined();
+      expect(gw.calls).toEqual([
+        { server: "opensession-a", tool: "echo", args: { value: "late" } },
+      ]);
+    });
+  }
+
+  test("retries a call while the unix socket is gone, then runs it once", async () => {
+    const gw = await start(["opensession-a"]);
+    const rpc = clientFor(targetOf(gw));
+    gw.pauseSocket();
+    const pending = rpc.call(
+      "/mcp/call",
+      "opensession-a",
+      { tool: "echo", args: { value: "restart" } },
+      { timeoutMs: 5_000 },
+    );
+    await Bun.sleep(150);
+    gw.resumeSocket();
+    expect((await pending).result).toBeDefined();
+    expect(gw.calls).toHaveLength(1);
+  });
+
+  test("gives up on a socket that stays gone with a clear error", async () => {
+    const gw = await start(["opensession-a"]);
+    const rpc = clientFor(targetOf(gw));
+    gw.pauseSocket();
+    await expect(
+      rpc.call("/mcp/list", "opensession-a", {}, { timeoutMs: 100 }),
+    ).rejects.toThrow(/opensession unreachable at .*rpc\.sock for 0s/);
+  });
+
+  test("redials rpc-ws after a drop and re-sends a listing", async () => {
+    const gw = await start(["opensession-a"]);
+    const rpc = clientFor(targetOf(gw, true));
+    const list = () =>
+      rpc.call(
+        "/mcp/list",
+        "opensession-a",
+        {},
+        { idempotent: true, timeoutMs: 5_000 },
+      );
+    expect((await list()).tools).toHaveLength(3);
+    gw.dropWsConnections();
+    await waitUntil(() => gw.openWsConnections() === 0);
+    expect((await list()).tools).toHaveLength(3);
+    expect(gw.wsConnections()).toBe(2);
+  });
 });
 
 describe("per-server rollback", () => {
