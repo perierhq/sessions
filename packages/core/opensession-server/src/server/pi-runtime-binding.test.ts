@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
   __resetPiSdkCacheForTest,
   createPiRuntimeBinding,
@@ -157,6 +157,16 @@ function input(
     ...extra,
   };
 }
+
+// A few tests below load the real pi SDK. The first import of pi and its
+// providers can outlast bun's 5-second test timeout on a cold disk cache or
+// a busy CI runner, so pay it here under an explicit timeout. Bun keeps the
+// evaluated module, so those tests import it again quickly; the reset keeps
+// the binding's own SDK promise unset, as the import-inert test expects.
+beforeAll(async () => {
+  await prewarmPiSdk();
+  __resetPiSdkCacheForTest();
+}, 60_000);
 
 afterEach(() => {
   __resetPiSdkCacheForTest();
