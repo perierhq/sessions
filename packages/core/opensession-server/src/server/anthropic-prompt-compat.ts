@@ -136,3 +136,36 @@ export function enableAnthropicPromptCompat<TModel>(agent: {
     return rewritten === finalPayload ? transformed : rewritten;
   };
 }
+
+/**
+ * Diagnostics only: when `dir` is set, write each request body the agent is
+ * about to send (after every earlier onPayload hook) to `dir` as JSON, one
+ * file per request. Runs after the existing hook and returns its result
+ * unchanged. Failures to write are logged and never break the request.
+ */
+export function enableAnthropicPayloadCapture<TModel>(
+  agent: {
+    onPayload?: (payload: unknown, model: TModel) => unknown | Promise<unknown>;
+  },
+  dir: string | undefined,
+  label: string,
+): void {
+  if (!dir) return;
+  const previous = agent.onPayload;
+  let n = 0;
+  agent.onPayload = async (payload, model) => {
+    const next = previous ? await previous(payload, model) : payload;
+    try {
+      const { mkdirSync, writeFileSync } = await import("node:fs");
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const safe = label.replace(/[^A-Za-z0-9._-]/g, "_");
+      const file = `${dir}/${safe}-${Date.now()}-${n++}.json`;
+      writeFileSync(file, JSON.stringify(next ?? payload), { mode: 0o600 });
+    } catch (e) {
+      console.warn(
+        `[anthropic-payload-capture] not written: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    return next;
+  };
+}

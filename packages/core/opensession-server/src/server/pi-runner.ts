@@ -58,6 +58,7 @@ import {
 } from "./runner-shared";
 import { ensureAnthropicBridge, pickBridgeAccount } from "./anthropic-bridge";
 import {
+  enableAnthropicPayloadCapture,
   enableAnthropicPromptCompat,
   rewriteAnthropicPromptText,
 } from "./anthropic-prompt-compat";
@@ -3094,6 +3095,14 @@ async function* runPiAttempt(
     // carry none of those lines (see enableAnthropicPromptCompat).
     if (binding.usesNativeAnthropic) {
       enableAnthropicPromptCompat(session.agent);
+      // Opt-in diagnostics: OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR writes the
+      // final request body of each native Anthropic call to that directory
+      // (mode 0600). Request bodies carry no credentials; auth is a header.
+      enableAnthropicPayloadCapture(
+        session.agent,
+        process.env.OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR,
+        unifiedSessionId || runKey,
+      );
       // pi's error text for a failed request drops the response headers, and
       // its onResponse hook never sees a 429: read the limit status and reset
       // off each response here instead.

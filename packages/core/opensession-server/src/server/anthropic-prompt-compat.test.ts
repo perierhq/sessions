@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   ANTHROPIC_PROMPT_COMPAT_REWRITES,
+  enableAnthropicPayloadCapture,
   enableAnthropicPromptCompat,
   rewriteAnthropicPromptPayload,
   rewriteAnthropicPromptText,
@@ -197,5 +198,34 @@ describe("anthropic prompt compat rewrites", () => {
     expect(await bare.onPayload!({ system: from }, anthropic)).toEqual({
       system: to,
     });
+  });
+});
+
+describe("enableAnthropicPayloadCapture", () => {
+  test("is a no-op without a directory", () => {
+    const agent: { onPayload?: (p: unknown, m: unknown) => unknown } = {};
+    enableAnthropicPayloadCapture(agent, undefined, "s");
+    expect(agent.onPayload).toBeUndefined();
+  });
+
+  test("writes the final payload after earlier hooks and returns it", async () => {
+    const { mkdtempSync, readdirSync, readFileSync, statSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const dir = `${mkdtempSync(`${tmpdir()}/payload-capture-`)}/out`;
+    const agent: {
+      onPayload?: (p: unknown, m: unknown) => unknown | Promise<unknown>;
+    } = { onPayload: (p) => ({ ...(p as object), hooked: true }) };
+    enableAnthropicPayloadCapture(agent, dir, "os-1/../x");
+    const out = await agent.onPayload!({ system: "s" }, {});
+    expect(out).toEqual({ system: "s", hooked: true });
+    const files = readdirSync(dir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^os-1_\.\._x-\d+-0\.json$/);
+    expect(JSON.parse(readFileSync(`${dir}/${files[0]}`, "utf8"))).toEqual({
+      system: "s",
+      hooked: true,
+    });
+    expect(statSync(`${dir}/${files[0]}`).mode & 0o777).toBe(0o600);
   });
 });
