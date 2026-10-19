@@ -1,0 +1,30 @@
+name: Bun dependency submission
+
+# The dependency graph cannot parse bun.lock, so Dependabot alerts would only
+# cover direct dependencies (via package.json). This snapshot submission gives
+# alerts visibility into the full locked tree, transitives included.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/bun.lock"
+      - scripts/submit-bun-dependencies.mjs
+      - .github/workflows/bun-dependency-submission.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write # required by the dependency submission API
+
+jobs:
+  submit:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          sparse-checkout: |
+            bun.lock
+            packages/clients/mac/bun.lock
+            scripts/submit-bun-dependencies.mjs
+      - run: node scripts/submit-bun-dependencies.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

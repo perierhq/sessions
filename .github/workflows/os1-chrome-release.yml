@@ -1,0 +1,108 @@
+# Tella's client release pipeline — fork and rebrand (see packages/clients/chrome/README).
+name: Release OS¹ for Chrome
+
+# Packs and publishes the internal Chrome extension (packages/clients/chrome/) on every
+# main push that touches it. The signed .crx lands on a GitHub release
+# tagged os1-chrome-v<version>; the backstage server proxies it to Chrome's
+# extension updater via /api/packages/clients/chrome/updates.xml + /download/<tag>.crx
+# (src/server/routes/os1-update.ts). Releases are marked PRERELEASE on
+# purpose: the os1-mac Squirrel feed uses `releases/latest`, which skips
+# prereleases — that's what lets both release streams share this repo.
+#
+# Versioning is automatic: <major.minor from manifest.json>.<commit count on
+# packages/clients/chrome/>. Chrome only needs the version to increase for clients to
+# update, so merging to main IS the deploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/clients/chrome/**"
+      - ".github/workflows/os1-chrome-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: os1-chrome-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: vars.CHROME_RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          fetch-depth: 0 # full history — the version derives from commit count
+
+      - name: Compute version
+        id: v
+        run: |
+          COUNT=$(git rev-list --count HEAD -- packages/clients/chrome)
+          BASE=$(jq -r .version packages/clients/chrome/manifest.json | cut -d. -f1-2)
+          echo "version=$BASE.$COUNT" >> "$GITHUB_OUTPUT"
+          echo "tag=os1-chrome-v$BASE.$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing release
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              # Manual rerun clobbers (e.g. after a packing fix).
+              gh release delete "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            else
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Stamp version
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          jq --arg v "${{ steps.v.outputs.version }}" '.version = $v' packages/clients/chrome/manifest.json > /tmp/manifest.json
+          mv /tmp/manifest.json packages/clients/chrome/manifest.json
+          jq -r '"packing version " + .version' packages/clients/chrome/manifest.json
+
+      # The repository ships a portable default (localhost) so a fresh clone does
+      # not point at someone else's server. Release builds stamp the real one in.
+      # Set the OS1_SERVER_URL repository variable to override.
+      - name: Stamp deployment server
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev' }}
+        run: |
+          jq --arg s "$SERVER" '.defaultServer = $s' packages/clients/chrome/deployment.json > /tmp/dep.json
+          mv /tmp/dep.json packages/clients/chrome/deployment.json
+          jq -r '"default server: " + .defaultServer' packages/clients/chrome/deployment.json
+
+      - name: Pack signed CRX
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          OS1_CHROME_CRX_KEY: ${{ secrets.OS1_CHROME_CRX_KEY }}
+        run: |
+          test -n "$OS1_CHROME_CRX_KEY" || { echo '::error::OS1_CHROME_CRX_KEY secret is not set'; exit 1; }
+          printf '%s' "$OS1_CHROME_CRX_KEY" | base64 -d > /tmp/os1-chrome-key.pem
+          # The extension ID is derived from the key; assert it matches what the
+          # server (CHROME_EXTENSION_ID) and manifest ("key") pin, so a wrong
+          # secret fails the build instead of shipping an unupdatable ID.
+          ID=$(openssl rsa -in /tmp/os1-chrome-key.pem -pubout -outform DER 2>/dev/null | sha256sum | head -c 32 | tr '0123456789abcdef' 'abcdefghijklmnop')
+          echo "extension id: $ID"
+          test "$ID" = "paoolggkbjkobjblpjgncolaaikcmboe" || { echo '::error::Signing key does not match the pinned extension ID'; exit 1; }
+          npx -y crx3 -p /tmp/os1-chrome-key.pem -o "os1-chrome-${{ steps.v.outputs.version }}.crx" packages/clients/chrome
+          head -c 4 "os1-chrome-${{ steps.v.outputs.version }}.crx" | grep -q 'Cr24' || { echo '::error::Packed file is not a CRX'; exit 1; }
+          rm /tmp/os1-chrome-key.pem
+
+      - name: Publish GitHub release
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" \
+            "os1-chrome-${{ steps.v.outputs.version }}.crx" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "OS¹ for Chrome ${{ steps.v.outputs.version }}" \
+            --notes "Internal Chrome extension build from $GITHUB_SHA. Served to Chrome's updater via os.tella.dev/api/packages/clients/chrome/updates.xml."

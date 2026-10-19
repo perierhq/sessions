@@ -1,0 +1,93 @@
+name: Publish release
+
+on:
+  workflow_run:
+    workflows:
+      - Release
+      - Release Open Session for Mac
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish complete draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::notice::Ignoring non-release ref $TAG"; exit 0 ;;
+          esac
+
+          version="${TAG#v}"
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --branch "$TAG" --event push --limit 100 \
+            --json databaseId,workflowName,status,conclusion,headSha)"
+          for workflow in "Release" "Release Open Session for Mac"; do
+            state="$(jq -r --arg workflow "$workflow" --arg sha "$SHA" \
+              '[.[] | select(.workflowName == $workflow and .headSha == $sha)] | sort_by(.databaseId) | last | "\(.status // "missing") \(.conclusion // "")"' \
+              <<< "$runs")"
+            if [ "$state" != "completed success" ]; then
+              echo "::notice::$workflow is $state for $TAG; a later completion will retry publication."
+              exit 0
+            fi
+          done
+
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > "$RUNNER_TEMP/release.json"
+          jq -r '.assets[] | select(.state == "uploaded" and .size > 0) | .name' \
+            "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/assets"
+
+          require_exact() {
+            if ! grep -Fqx "$1" "$RUNNER_TEMP/assets"; then
+              echo "::error title=Release asset is missing::$1 is not ready on $TAG."
+              exit 1
+            fi
+          }
+          require_one() {
+            count="$(grep -Ec "$1" "$RUNNER_TEMP/assets" || true)"
+            if [ "$count" != "1" ]; then
+              echo "::error title=Release asset set is invalid::$1 matched $count assets on $TAG."
+              exit 1
+            fi
+          }
+
+          for os in linux darwin; do
+            for arch in x64 arm64; do
+              require_exact "opensession-$os-$arch.tar.gz"
+              require_exact "opensession-$os-$arch.tar.gz.sha256"
+              require_exact "opensession-$version-$os-$arch.tar.gz"
+              require_exact "opensession-$version-$os-$arch.tar.gz.sha256"
+            done
+          done
+          for ext in dmg zip; do
+            require_exact "OpenSession-arm64.$ext"
+            require_exact "OpenSession-arm64.$ext.sha256"
+            require_one "^OpenSession-$version-arm64\\.$ext$"
+            require_one "^OpenSession-$version-arm64\\.$ext\\.sha256$"
+          done
+          count="$(wc -l < "$RUNNER_TEMP/assets" | tr -d ' ')"
+          if [ "$count" != "24" ]; then
+            echo "::error title=Release asset set is invalid::Expected 24 uploaded assets on $TAG, found $count."
+            exit 1
+          fi
+
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = "true" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          else
+            echo "$TAG is already published"
+          fi

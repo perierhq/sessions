@@ -1,0 +1,258 @@
+# Tella's client release pipeline — fork and rebrand (see packages/clients/mac/README).
+name: Release Open Session for Mac
+
+# Builds, signs, notarizes and uploads the vendored Electron shell to the
+# shared draft. release-finalize.yml publishes after every producer succeeds.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: os1-mac-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: packages/clients/mac
+
+jobs:
+  release:
+    if: vars.MAC_RELEASE_ENABLED == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      - name: Prepare release draft
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [ "$is_draft" != "true" ]; then
+              echo "::error title=Release is already immutable::$TAG is already published. Push a new tag and let the release workflows publish it."
+              exit 1
+            fi
+          elif ! gh release create "$TAG" --verify-tag --draft --title "$TAG" --generate-notes; then
+            sleep 2
+            is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+            test "$is_draft" = "true"
+          fi
+
+      # SHA-pinned: this job runs with the Developer ID certificate and
+      # notarisation credentials present, so a moved tag on a third-party
+      # action would execute right next to them. (v2.2.0 at time of pinning.)
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Import Developer ID certificate
+        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATES_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATES_PASSWORD }}
+
+      - name: Install Developer ID provisioning profile
+        env:
+          PROFILE_BASE64: ${{ secrets.OS1_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          test -n "$PROFILE_BASE64"
+          printf '%s' "$PROFILE_BASE64" | base64 -D > build/os1.provisionprofile
+          security cms -D -i build/os1.provisionprofile > /tmp/os1-profile.plist
+          if ! DOMAINS=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' /tmp/os1-profile.plist); then
+            echo '::error::Provisioning profile does not include the Associated Domains entitlement'
+            exit 1
+          fi
+          printf '%s\n' "$DOMAINS"
+          grep -Eq '(^|[[:space:]])(\*|applinks:os\.tella\.dev)($|[[:space:]])' <<< "$DOMAINS" || { echo '::error::Provisioning profile does not authorize applinks:os.tella.dev'; exit 1; }
+
+      # The repository ships a portable default (localhost) so a fresh clone does
+      # not point at someone else's server. Release builds stamp the real one in.
+      # Set the OS1_SERVER_URL repository variable to override.
+      - name: Stamp release metadata
+        env:
+          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev/' }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(jq -r .version package.json)"
+          if [[ "$TAG" == v[0-9]* ]]; then version="${TAG#v}"; fi
+          jq --arg s "$SERVER" --arg v "$version" \
+            '.opensession.defaultServer = $s | .version = $v' package.json > /tmp/pkg.json
+          mv /tmp/pkg.json package.json
+          jq -r '"version: " + .version + ", default server: " + .opensession.defaultServer' package.json
+
+      - name: Generate license inventory and SBOM
+        run: |
+          rm -rf build/release-metadata
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bun ../../../scripts/generate-release-metadata.ts \
+            --lock bun.lock \
+            --node-modules node_modules \
+            --out build/release-metadata \
+            --name opensession-mac \
+            --version "$(jq -r .version package.json)" \
+            --include-dev
+
+      - name: Test native Keychain lookup with disposable data
+        run: |
+          xcrun swiftc -DKEYCHAIN_TESTING native/KeychainHelper.swift native/KeychainHelperTests.swift \
+            -parse-as-library -framework Security -o "$RUNNER_TEMP/keychain-tests"
+          "$RUNNER_TEMP/keychain-tests"
+
+      - name: Test native voice audio protocol and conversion
+        run: |
+          # Pure-computation tests: framing, device parsing, resampling and the
+          # playback queue. No microphone, speaker or AVAudioEngine is opened.
+          xcrun swiftc -DVOICE_AUDIO_TESTING -target "$(uname -m)-apple-macos12.0" \
+            native/VoiceAudioHelper.swift native/VoiceAudioHelperTests.swift \
+            -parse-as-library -framework AVFoundation -framework AudioToolbox -framework CoreAudio \
+            -o "$RUNNER_TEMP/voice-audio-tests"
+          "$RUNNER_TEMP/voice-audio-tests"
+
+      - name: Build, sign & notarize
+        run: |
+          # Only the top-level app carries the associated-domains entitlement
+          # (it's the one that embeds the provisioning profile). The Electron
+          # helpers inherit entitlements.mac.plist and have NO profile: macOS
+          # SIGKILLs any helper that claims a restricted entitlement it can't
+          # back with a profile, and Electron then aborts with
+          # "GPU process isn't usable. Goodbye." So entitlementsInherit must
+          # stay on the plain plist — see the "Verify universal-link signing"
+          # step, which guards this split.
+          bunx electron-builder --mac --publish never \
+            --config.mac.entitlements=build/entitlements.mac.applinks.plist \
+            --config.mac.entitlementsInherit=build/entitlements.mac.plist \
+            --config.mac.provisioningProfile=build/os1.provisionprofile
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || '6GUXT43C8B' }}
+
+      - name: Verify universal-link signing
+        run: |
+          APP="dist/mac-arm64/$(jq -r .productName package.json).app"
+          test -f "$APP/Contents/embedded.provisionprofile" || { echo '::error::Signed app has no embedded provisioning profile'; ls -la "$APP/Contents"; exit 1; }
+          codesign -d --entitlements :- "$APP" > /tmp/os1-entitlements.plist
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.associated-domains' /tmp/os1-entitlements.plist | grep -q 'applinks:os.tella.dev'
+          security cms -D -i "$APP/Contents/embedded.provisionprofile" > /tmp/os1-embedded-profile.plist
+          /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' /tmp/os1-embedded-profile.plist | grep -Eq '(^|[[:space:]])(\*|applinks:os\.tella\.dev)($|[[:space:]])'
+          # The Electron helpers inherit entitlements.mac.plist and have no
+          # provisioning profile, so none of them may claim associated-domains —
+          # macOS SIGKILLs a helper that does ("GPU process isn't usable.
+          # Goodbye."). This guards the entitlements/entitlementsInherit split
+          # in the build step against regressing across releases.
+          while IFS= read -r -d '' helper; do
+            if codesign -d --entitlements :- "$helper" 2>/dev/null | grep -q 'com.apple.developer.associated-domains'; then
+              echo "::error::Electron helper claims associated-domains without a provisioning profile: $helper"
+              exit 1
+            fi
+          done < <(find "$APP/Contents/Frameworks" -name '*.app' -print0)
+
+      - name: Verify packaged signature
+        run: |
+          APP="dist/mac-arm64/$(jq -r .productName package.json).app"
+          codesign --verify --deep --strict --verbose=2 "$APP" ||
+            { echo '::error::Packaged app failed deep signature verification'; exit 1; }
+          KEYCHAIN_HELPER="$APP/Contents/Resources/os-keychain"
+          test -x "$KEYCHAIN_HELPER" || { echo '::error::Keychain helper is missing'; exit 1; }
+          codesign --verify --strict --verbose=2 "$KEYCHAIN_HELPER" ||
+            { echo '::error::Keychain helper signature is invalid'; exit 1; }
+          otool -L "$KEYCHAIN_HELPER" | grep -F 'Security.framework'
+          VOICE_HELPER="$APP/Contents/Resources/os1-voice-audio"
+          test -x "$VOICE_HELPER" || { echo '::error::Voice audio helper is missing'; exit 1; }
+          codesign --verify --strict --verbose=2 "$VOICE_HELPER" ||
+            { echo '::error::Voice audio helper signature is invalid'; exit 1; }
+          codesign -d --entitlements :- "$VOICE_HELPER" | grep -q 'com.apple.security.device.audio-input' ||
+            { echo '::error::Voice audio helper lacks the audio-input entitlement'; exit 1; }
+          otool -L "$VOICE_HELPER" | grep -E 'AVFAudio\.framework|AVFoundation\.framework'
+
+      - name: Verify packaged locales and report size
+        run: |
+          APP="dist/mac-arm64/$(jq -r .productName package.json).app"
+          NON_ENGLISH_LOCALES=$(find "$APP/Contents" -type d -name '*.lproj' ! -name 'en.lproj' -print)
+          if [[ -n "$NON_ENGLISH_LOCALES" ]]; then
+            echo '::error::Non-English Electron locales were packaged:'
+            printf '%s\n' "$NON_ENGLISH_LOCALES"
+            exit 1
+          fi
+          du -sh "$APP"
+          du -sh "$APP/Contents/Frameworks/Electron Framework.framework"
+
+      - name: Notarize & staple DMG
+        run: |
+          xcrun notarytool submit dist/*.dmg --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple dist/*.dmg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || '6GUXT43C8B' }}
+
+      - name: Verify Gatekeeper acceptance
+        run: |
+          xcrun stapler validate dist/mac-arm64/*.app
+          spctl --assess --type open --context context:primary-signature -v dist/*.dmg
+
+      - name: Prepare stable aliases and checksums
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          for ext in dmg zip; do
+            versioned=(dist/OpenSession-*-arm64."$ext")
+            if [ "${#versioned[@]}" -ne 1 ]; then
+              echo "::error::Expected one versioned $ext, found ${#versioned[@]}"
+              exit 1
+            fi
+            cp "${versioned[0]}" "dist/OpenSession-arm64.$ext"
+          done
+          cd dist
+          for asset in *.dmg *.zip; do
+            hash="$(shasum -a 256 "$asset" | awk '{ print $1 }')"
+            printf '%s  %s\n' "$hash" "$asset" > "$asset.sha256"
+          done
+
+      - name: Attest release archives
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            packages/clients/mac/dist/*.dmg
+            packages/clients/mac/dist/*.zip
+
+      - name: Upload to release draft
+        if: github.ref_type == 'tag'
+        # Signing, notarisation, checksums and attestations finish before upload.
+        # Retry transient API failures, but keep the release mutable until every
+        # producer succeeds.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/*.sha256 --clobber; then
+              echo "uploaded assets to the $GITHUB_REF_NAME draft"
+              exit 0
+            fi
+            echo "::warning::uploading $GITHUB_REF_NAME failed (attempt $attempt/5), retrying"
+            sleep $((attempt * 30))
+          done
+          echo "::error::could not upload $GITHUB_REF_NAME after 5 attempts"
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload artifacts (manual run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OS1
+          path: |
+            packages/clients/mac/dist/*.dmg
+            packages/clients/mac/dist/*.zip

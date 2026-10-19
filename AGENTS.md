@@ -41,6 +41,20 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 4. **Restyle** from the Paper designs ("Control room · directions", page
    "v6 · Remote pi").
 
+## Release workflows
+
+Upstream's release workflows are kept. The signing ones run only when their
+repo variable is `true`; until then they skip cleanly.
+
+| Variable | Workflows | Needs first |
+|---|---|---|
+| `IOS_RELEASE_ENABLED` | `os1-ios-testflight` | ASC API key, iOS distribution cert, own bundle IDs and team in `packages/clients/ios/project.yml` |
+| `MAC_RELEASE_ENABLED` | `os1-mac-testflight`, `os1-mac-release` | Mac installer and Developer ID certs, provisioning profile, Apple ID, `APPLE_TEAM_ID`, own `appId` in `packages/clients/mac/electron-builder.yml` |
+| `CHROME_RELEASE_ENABLED` | `os1-chrome-release` | A new extension signing key and the extension ID pinned in the server |
+
+`release.yml` (server binaries on `v*` tags), `release-finalize.yml`,
+`bun-dependency-submission.yml` and `os1-native-ci.yml` need no secrets.
+
 ## Code map
 
 - `packages/core/opensession-server/src/`
