@@ -8,10 +8,9 @@
  * the Open Session process (tools close over live state: SessionControl,
  * pendingAsks, attachRepo…). Consumers:
  *  - run-rpc.ts connects `instance` over an InMemoryTransport pair and
- *    forwards tools/list + tools/call from the per-run stdio proxies
- *    (src/runner-host/mcp-proxy.ts) that pi runs receive.
- *  - pi-runner's proxyPiMcpConfigs turns the server names into
- *    those stdio proxy configs.
+ *    forwards tools/list + tools/call from the relays a run host mounts
+ *    for its pi run (src/runner-host/mcp-mounts.ts: in-process by default,
+ *    or one stdio proxy per server, src/runner-host/mcp-proxy.ts).
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";

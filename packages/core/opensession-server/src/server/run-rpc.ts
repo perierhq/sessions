@@ -4,10 +4,12 @@
  * -humans / -repos / -goal-self), which can only execute inside the opensession
  * process (they close over live state: SessionControl, pendingAsks, attachRepo…).
  *
- * A run host injects a stdio proxy (src/runner-host/mcp-proxy.ts) per server
- * into its run's MCP config; the proxy forwards tools/list + tools/call here.
- * Because the proxy reconnects with retry, these tools now SURVIVE a opensession
- * restart mid-run — with the old in-process wiring they died with the process.
+ * A run host mounts a relay per server in its run's MCP runtime (in-process by
+ * default, or a stdio proxy per server with OPENSESSION_MCP_PROXY_MODE=
+ * per-server; src/runner-host/mcp-mounts.ts); the relay forwards tools/list +
+ * tools/call here. Because the relay reconnects with retry, these tools now
+ * SURVIVE a opensession restart mid-run — with the old in-process wiring they
+ * died with the process.
  *
  * Auth: same-uid is the trust boundary on this box, but automation runs are
  * deliberately fail-closed — every request needs a per-run bearer token that
@@ -264,7 +266,9 @@ export async function dispatchRunRpc(
   }
 }
 
-async function handleRpc(req: Request): Promise<Response> {
+/** The unix-socket request handler. Exported for test fixtures, which serve
+ *  it on their own socket; production binds it in bindRunRpcSocket. */
+export async function handleRpc(req: Request): Promise<Response> {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
   const path = new URL(req.url).pathname;
   let body: any;

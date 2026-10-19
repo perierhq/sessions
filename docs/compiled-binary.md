@@ -48,7 +48,7 @@ to these source entrypoints:
 | `opensession server`                   | HTTP/WS gateway                       | `packages/core/opensession-server/opensession.ts`                         |
 | `opensession script-host <runDir>`     | one supervised script run             | `packages/core/opensession-server/src/script-host/main.ts`                |
 | `opensession runner-host <spec>`       | detached agent run                    | `packages/core/opensession-server/src/runner-host/host.ts`                |
-| `opensession mcp-proxy`                | stdio↔RPC MCP proxy                   | `packages/core/opensession-server/src/runner-host/mcp-proxy.ts`           |
+| `opensession mcp-proxy`                | stdio↔RPC MCP proxy (rollback only)   | `packages/core/opensession-server/src/runner-host/mcp-proxy.ts`           |
 | `opensession executor`                 | supervised executor launcher          | `packages/core/opensession-server/src/executor/main.ts`                   |
 | `opensession session-kernel-service`   | supervised session-kernel service     | `packages/core/opensession-server/src/session-kernel-service.ts`          |
 | `opensession transcript-search-worker` | read-only transcript search worker    | `packages/core/opensession-server/src/server/transcript-search-worker.ts` |
@@ -138,7 +138,9 @@ install/service/update, non-sandbox turns) works and is not listed here.
 - **Sandboxed agent runs launched from a compiled host** are untested: the
   sandbox re-exec sites run `bun run <host-entry>` inside a container that
   carries its own bun + checkout. Non-sandbox / local runs work (the dispatcher
-  self-execs the binary for `runner-host` and `mcp-proxy`).
+  self-execs the binary for `runner-host`, and for `mcp-proxy` when
+  `OPENSESSION_MCP_PROXY_MODE=per-server`. By default a run host serves its
+  `opensession-*` MCP servers in-process and starts no `mcp-proxy`).
 - **Stored transcript search.** The sessions route launches the TypeScript
   worker path directly instead of using the compiled
   `transcript-search-worker` subcommand, so compiled installs currently return
