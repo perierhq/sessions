@@ -28,6 +28,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.workflow_run.head_branch }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          MAC_RELEASE_ENABLED: ${{ vars.MAC_RELEASE_ENABLED }}
         run: |
           set -euo pipefail
           case "$TAG" in
@@ -38,7 +39,11 @@ jobs:
           version="${TAG#v}"
           runs="$(gh run list --repo "$GITHUB_REPOSITORY" --branch "$TAG" --event push --limit 100 \
             --json databaseId,workflowName,status,conclusion,headSha)"
-          for workflow in "Release" "Release Open Session for Mac"; do
+          workflows=("Release")
+          if [ "${MAC_RELEASE_ENABLED:-}" = "true" ]; then
+            workflows+=("Release Open Session for Mac")
+          fi
+          for workflow in "${workflows[@]}"; do
             state="$(jq -r --arg workflow "$workflow" --arg sha "$SHA" \
               '[.[] | select(.workflowName == $workflow and .headSha == $sha)] | sort_by(.databaseId) | last | "\(.status // "missing") \(.conclusion // "")"' \
               <<< "$runs")"
@@ -74,15 +79,19 @@ jobs:
               require_exact "opensession-$version-$os-$arch.tar.gz.sha256"
             done
           done
+          expected=16
+          if [ "${MAC_RELEASE_ENABLED:-}" = "true" ]; then
+            expected=24
           for ext in dmg zip; do
             require_exact "OpenSession-arm64.$ext"
             require_exact "OpenSession-arm64.$ext.sha256"
             require_one "^OpenSession-$version-arm64\\.$ext$"
             require_one "^OpenSession-$version-arm64\\.$ext\\.sha256$"
           done
+          fi
           count="$(wc -l < "$RUNNER_TEMP/assets" | tr -d ' ')"
-          if [ "$count" != "24" ]; then
-            echo "::error title=Release asset set is invalid::Expected 24 uploaded assets on $TAG, found $count."
+          if [ "$count" != "$expected" ]; then
+            echo "::error title=Release asset set is invalid::Expected $expected uploaded assets on $TAG, found $count."
             exit 1
           fi
 
