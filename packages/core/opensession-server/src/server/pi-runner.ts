@@ -31,7 +31,6 @@ import {
   interruptedReplyNote,
   type PiTurnCheckpointWriter,
 } from "./pi-turn-checkpoint";
-import { stagePromptImages, withImagesNote } from "./prompt-attachments";
 import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
@@ -48,13 +47,10 @@ import {
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
 import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
 import { expandSkillCommand } from "./skill-paths";
-import {
-  remoteAttachmentWriter,
-  remoteWorkspaceForRun,
-} from "./remote-workspace";
+import { remoteWorkspaceForRun } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
-import type { StreamEvent, ImageInput } from "./run-events";
+import type { StreamEvent } from "./run-events";
 import { PI_PROVIDER, nowIso } from "./pi-common";
 import {
   assistantRenderableBlockCount,
@@ -73,12 +69,10 @@ import {
   aliasPiRun,
   claimPiRun,
   releasePiRun,
-  retractPendingSteer,
   type PiRunHandle,
 } from "./pi-run-registry";
 import {
   PI_CODEMODE_TOOL,
-  interruptPiThinkingForSteer,
   piResponseHasOutput,
   piToolNames,
 } from "./pi-steering";
@@ -107,6 +101,7 @@ import {
   planPiResume,
   preparePiResources,
 } from "./pi-session-setup";
+import { PiSteerController } from "./pi-steer-controller";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -639,121 +634,21 @@ async function* runPiAttempt(
     // Register the engine-id alias + the steer surface on the shared handle.
     aliasPiRun(registeredKeys, ledger.piSessionId, handle);
     const liveSession = session;
-    // Steer contract: accept = enqueue + receipt. The transcript user line is
-    // written only when the queued message is actually DELIVERED (its user
-    // message_end below) — session.steer() resolves at enqueue time, so a
-    // .then() would confirm nothing, and an optimistically-persisted line
-    // marks an undelivered steer as said (queue-state reconciles receipts
-    // against transcript user texts, so it would never be requeued). An
-    // undelivered steer keeps its run-session receipt as the recovery
-    // affordance — previous runner's failed-POST semantics.
-    const pendingSteers: Array<{
-      text: string;
-      images?: ImageInput[];
-      steerId?: string;
-    }> = [];
-    // Every touch of pi's queue goes through this chain, in call order. The
-    // bookkeeping above it (pending entry, boundary flag, the caller's
-    // receipt) stays synchronous; only the engine enqueue waits, because
-    // staging an attachment is async and an in-process run shares the
-    // gateway's event loop. Ordering the retraction rebuild on the same
-    // chain means a steer still being staged is never enqueued twice, and a
-    // steer retracted mid-staging is never enqueued at all.
-    let engineQueue: Promise<void> = Promise.resolve();
-    // Steps still to run or running. The pump below reads it before trusting
-    // pi's pendingMessageCount: a steer accepted just before the prompt
-    // settled may not have reached pi's queue yet.
-    let engineQueueDepth = 0;
-    const onEngineQueue = (step: () => Promise<void>, what: string) => {
-      engineQueueDepth++;
-      engineQueue = engineQueue
-        .then(step)
-        .catch((e) => {
-          console.warn(`[pi-runner] ${what} failed:`, e);
-        })
-        .finally(() => {
-          engineQueueDepth--;
-        });
-    };
-    // Set when a steer cut the current response short while it was only
-    // thinking. Its message_end then persists nothing: the thinking was
-    // superseded, and the next response starts from the steer.
-    let steerCutResponse = false;
-    const interruptForSteer = () => {
-      if (abort.signal.aborted) return;
-      if (!interruptPiThinkingForSteer(liveSession.agent)) return;
-      steerCutResponse = true;
-      audit({
-        ...auditBase,
-        direction: "in",
-        kind: "steer_interrupted_response",
-      });
-    };
-    handle.steer = (text, images, steerId) => {
-      // Same skill expansion as the prompt path. The queue holds the expanded
-      // text so the delivery match stays exact; the audit line below still
-      // records what the person typed.
-      const entry = {
-        text: expandSkillCommand(text, loader.getSkills().skills),
-        images,
-        steerId,
-      };
-      boundary.pending = true;
-      pendingSteers.push(entry);
-      onEngineQueue(async () => {
-        // Attached images are staged into this run's scratch dir, in this
-        // process, so the note names paths the engine's tools can read (see
-        // prompt-attachments.ts). The pending entry holds the noted text
-        // before pi ever sees it: delivery matches pi's echo against it, and
-        // a retraction replays it verbatim.
-        entry.text = withImagesNote(
-          entry.text,
-          await stagePromptImages(
-            opts.scratchDir,
-            images,
-            remote ? remoteAttachmentWriter(remote) : undefined,
-          ),
-        );
-        if (!pendingSteers.includes(entry)) return; // retracted meanwhile
-        await liveSession.steer(entry.text, piImages(images));
-        interruptForSteer();
-      }, "steer");
-      audit({
-        ...auditBase,
-        direction: "in",
-        kind: "steer_queued",
-        ...summarizeText(text),
-      });
-    };
-    handle.retractSteer = (steerId) =>
-      retractPendingSteer(pendingSteers, steerId, (remaining) => {
-        // Pi exposes exact delivery identity only in our wrapper. Rebuild its
-        // whole queue from our richer copy so duplicate text and images keep
-        // their original order while the selected id disappears. The entries
-        // are read when the step runs, so one still being staged replays with
-        // its final (noted) text.
-        boundary.pending = remaining.length > 0;
-        onEngineQueue(async () => {
-          liveSession.clearQueue();
-          for (const steer of remaining) {
-            if (!pendingSteers.includes(steer)) continue; // delivered or retracted since
-            await liveSession.steer(steer.text, piImages(steer.images));
-          }
-        }, "steer replay");
-        audit({
-          ...auditBase,
-          direction: "in",
-          kind: "steer_retracted",
-          steer_id: steerId,
-        });
-      });
+    const steering = new PiSteerController({
+      session: liveSession,
+      skills: () => loader.getSkills().skills,
+      scratchDir: opts.scratchDir,
+      remote,
+      signal: abort.signal,
+      boundary,
+      auditBase,
+    });
+    handle.steer = (text, images, steerId) =>
+      steering.steer(text, images, steerId);
+    handle.retractSteer = (steerId) => steering.retractSteer(steerId);
 
     // Cancellation: our registry AbortController drives session.abort().
-    const onAbort = () => {
-      void liveSession.abort().catch(() => {});
-    };
-    if (abort.signal.aborted) onAbort();
-    else abort.signal.addEventListener("abort", onAbort, { once: true });
+    steering.listenForAbort();
 
     // ── Event pump: callback subscription → this generator's queue ──────────
     const queue: StreamEvent[] = [];
@@ -908,7 +803,8 @@ async function* runPiAttempt(
           case "message_start":
             // A steer queued while the request was in flight, before its
             // first token, cuts the response as soon as it starts.
-            if ((ev as any).message?.role === "assistant") interruptForSteer();
+            if ((ev as any).message?.role === "assistant")
+              steering.interruptForSteer();
             break;
           case "message_update": {
             const ame = (ev as any).assistantMessageEvent;
@@ -975,8 +871,7 @@ async function* runPiAttempt(
               // and the terminal error carries the failure text — persisting
               // each attempt would stack duplicate partial bubbles. Aborted
               // partials DO persist (parity with pi's own jsonl).
-              const cutBySteer = steerCutResponse;
-              steerCutResponse = false;
+              const cutBySteer = steering.consumeCut();
               if (
                 cutBySteer &&
                 msg.stopReason === "aborted" &&
@@ -1008,15 +903,8 @@ async function* runPiAttempt(
               // is skipped — it was persisted with its stable uuid up front).
               const { text, images } = contentToTextAndImages(msg.content);
               if (text && text !== promptForEngine && text !== prompt) {
-                let idx = pendingSteers.findIndex((s) => s.text === text);
-                // Skill/template expansion can rewrite a queued steer's text;
-                // any user message that isn't the prompt is a delivery, so
-                // fall back to the oldest pending steer but persist what was
-                // actually delivered.
-                if (idx === -1 && pendingSteers.length > 0) idx = 0;
-                if (idx !== -1) {
-                  const steer = pendingSteers.splice(idx, 1)[0];
-                  boundary.pending = pendingSteers.length > 0;
+                const steer = steering.takeDelivered(text);
+                if (steer) {
                   // Transcript parsing deliberately strips fenced system
                   // context. A background-wait steer can therefore be fully
                   // delivered yet leave no visible user entry for receipt
@@ -1165,12 +1053,12 @@ async function* runPiAttempt(
     while (true) {
       while (queue.length) yield queue.shift()!;
       if (promptOutcome) {
-        if (engineQueueDepth > 0) {
+        if (steering.engineQueueDepth > 0) {
           // An accepted steer is still being staged, so pi's queue count is
           // not final yet. steerPiRun already told the caller "accepted";
           // finishing now would drop it silently. Wait for the chain, then
           // re-read everything (more steers may have joined meanwhile).
-          await engineQueue;
+          await steering.engineQueue;
           continue;
         }
         if (
@@ -1219,7 +1107,7 @@ async function* runPiAttempt(
     }
     while (queue.length) yield queue.shift()!;
     unsubscribe();
-    if (pendingSteers.length > 0) {
+    if (steering.pendingCount > 0) {
       // Accepted but never delivered (drain budget exhausted or the run
       // failed): no transcript line was written, so on the failure paths the
       // receipt survives as the recovery affordance; on a done terminal the
@@ -1228,7 +1116,7 @@ async function* runPiAttempt(
         ...auditBase,
         direction: "out",
         kind: "steer_undelivered",
-        count: pendingSteers.length,
+        count: steering.pendingCount,
       });
     }
 
