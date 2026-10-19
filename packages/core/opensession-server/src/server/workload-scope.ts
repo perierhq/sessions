@@ -60,6 +60,15 @@ export function workloadArgv(
   options: { unit?: string } = {},
 ): string[] {
   if (!shouldScope()) return argv;
+  return workloadScopeArgv(argv, options.unit ?? workloadUnitName(kind));
+}
+
+/**
+ * The argv that runs `argv` in the workload scope `unit`, whether or not
+ * scoping is currently active. For callers that decided on scoping once
+ * (workloadScopingActive) and must not read the availability cache again.
+ */
+export function workloadScopeArgv(argv: string[], unit: string): string[] {
   return [
     "/usr/bin/env",
     `XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR || SYSTEMD_USER_RUNTIME}`,
@@ -68,7 +77,7 @@ export function workloadArgv(
     "--scope",
     "--collect",
     "--quiet",
-    `--unit=${options.unit ?? workloadUnitName(kind)}`,
+    `--unit=${unit}`,
     ...engineScopeSystemdArgs(),
     "--property=TimeoutStopSec=2",
     "--",

@@ -59,7 +59,10 @@ import {
   sessionScratchRoot,
 } from "./session-scratch";
 import type { Sandbox } from "./sandbox/provider";
-import { reapSessionResources } from "./session-resources";
+import {
+  reapSessionResources,
+  sweepUntrackedSetupScopes,
+} from "./session-resources";
 import { pruneWorktreeSetupFailures } from "./worktree-setup-status";
 import type { UnifiedSession } from "./types";
 
@@ -1665,6 +1668,7 @@ export async function migrateUnscopedPortalServices(
 
 let portalReapTimer: ReturnType<typeof setInterval> | null = null;
 let portalReconcileInFlight = false;
+let setupScopesSwept = false;
 
 /** Reconcile Portal process groups, and the other processes sessions own
  * (session-resources.ts), after boot and every five minutes. */
@@ -1683,6 +1687,15 @@ export function startPortalReaper(
       // Setup scopes and other session resources share the sweep: the
       // same owners decide whether they may keep running.
       try {
+        if (!setupScopesSwept) {
+          // Once per boot: setup scopes from before setups were tracked
+          // (or whose record was lost) that ran past any repo's limit.
+          setupScopesSwept = true;
+          const { longestWorktreeSetupTimeoutMs } = await import("./worktree");
+          await sweepUntrackedSetupScopes({
+            olderThanMs: longestWorktreeSetupTimeoutMs(),
+          });
+        }
         const resources = await reapSessionResources(sessions);
         if (resources.stopped.length)
           console.log(

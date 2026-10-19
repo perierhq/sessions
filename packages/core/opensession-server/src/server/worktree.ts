@@ -17,6 +17,7 @@ import {
   configuredRepos,
   configuredSelfDev,
   defaultRepo,
+  MAX_WORKTREE_SETUP_TIMEOUT_MINUTES,
   type Repo,
 } from "./config";
 import { stateDir } from "./paths";
@@ -24,6 +25,7 @@ import { workloadArgv } from "./workload-scope";
 import {
   runSessionResource,
   stopSessionResourcesInDir,
+  type RunSessionResourceResult,
 } from "./session-resources";
 import {
   clearWorktreeSetupFailure,
@@ -343,6 +345,7 @@ async function seedAndInstallWorktree(
   repo: Repo,
   wtPath: string,
   branchLabel: string,
+  setup: WorktreeSetupOwner = {},
 ): Promise<void> {
   try {
     const { seedWorktreeFromWarmTemplate } = await import("./warm-template");
@@ -353,8 +356,18 @@ async function seedAndInstallWorktree(
       e,
     );
   }
-  await installWorktreeDeps(repo, wtPath, branchLabel);
+  await installWorktreeDeps(
+    repo,
+    wtPath,
+    branchLabel,
+    setup.sessionId ? { sessionId: setup.sessionId } : {},
+  );
 }
+
+/** Who a new worktree's setup runs for. With a session id, archive and the
+ * lifecycle reaper treat that session as the setup's owner even before it
+ * records the worktree. */
+export type WorktreeSetupOwner = { sessionId?: string };
 
 /** Default bound on fresh-worktree setup; repos override it with
  * `worktreeSetupTimeoutMinutes`. */
@@ -363,13 +376,36 @@ export const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60_000;
 export function worktreeSetupTimeoutMs(repo: Repo): number {
   const minutes = repo.worktreeSetupTimeoutMinutes;
   return typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
-    ? Math.round(minutes * 60_000)
+    ? Math.round(Math.min(minutes, MAX_WORKTREE_SETUP_TIMEOUT_MINUTES) * 60_000)
     : DEFAULT_WORKTREE_SETUP_TIMEOUT_MS;
+}
+
+/** The longest any configured repo's setup may run (the startup sweep's
+ * bound for setup scopes nothing tracks). */
+export function longestWorktreeSetupTimeoutMs(): number {
+  return Math.max(
+    DEFAULT_WORKTREE_SETUP_TIMEOUT_MS,
+    ...Object.values(configuredRepos()).map(worktreeSetupTimeoutMs),
+  );
 }
 
 export type WorktreeSetupResult =
   | { ok: true }
-  | { ok: false; reason: "timed_out" | "failed"; message: string };
+  | {
+      ok: false;
+      reason: "timed_out" | "failed" | "stopped";
+      message: string;
+    };
+
+const STOPPED_BECAUSE: Record<
+  NonNullable<RunSessionResourceResult["stopped"]>,
+  string
+> = {
+  archived: "its session was archived",
+  removed: "its session or worktree was removed",
+  orphaned: "no session uses this worktree",
+  expired: "it ran past its deadline",
+};
 
 function formatSetupDuration(ms: number): string {
   if (ms >= 60_000 && ms % 60_000 === 0) {
@@ -417,9 +453,14 @@ export async function installWorktreeDeps(
     sessionOwned?: boolean;
     /** Overrides the repo's setup timeout. */
     timeoutMs?: number;
+    /** The session the setup runs for, when the caller knows it. */
+    sessionId?: string;
   } = {},
 ): Promise<WorktreeSetupResult> {
-  const timeoutMs = options.timeoutMs ?? worktreeSetupTimeoutMs(repo);
+  const timeoutMs = Math.min(
+    options.timeoutMs ?? worktreeSetupTimeoutMs(repo),
+    MAX_WORKTREE_SETUP_TIMEOUT_MINUTES * 60_000,
+  );
   const deadline = Date.now() + timeoutMs;
   let result: WorktreeSetupResult = { ok: true };
   try {
@@ -458,8 +499,17 @@ export async function installWorktreeDeps(
               sessionOwned: options.sessionOwned ?? true,
               timeoutMs: remaining,
               label: `${step.label} for ${branchLabel}`,
+              ...(options.sessionId ? { sessionId: options.sessionId } : {}),
             })
           : null;
+      if (run?.stopped) {
+        result = {
+          ok: false,
+          reason: "stopped",
+          message: `Setup was stopped (${step.label}) because ${STOPPED_BECAUSE[run.stopped]}.`,
+        };
+        break;
+      }
       if (!run || run.timedOut) {
         result = {
           ok: false,
@@ -499,7 +549,7 @@ export async function installWorktreeDeps(
   }
   if (!result.ok) {
     console.warn(
-      `[worktree] setup ${result.reason === "timed_out" ? "timed out" : "failed"} for ${branchLabel} (continuing): ${result.message}`,
+      `[worktree] setup ${result.reason === "timed_out" ? "timed out" : result.reason} for ${branchLabel} (continuing): ${result.message}`,
     );
     try {
       recordWorktreeSetupFailure(wtPath, {
@@ -951,6 +1001,7 @@ async function fetchBranchesWithTracking(
 export async function createWorktreeForPrBranch(
   headRef: string,
   repoId?: string,
+  setup: WorktreeSetupOwner = {},
 ): Promise<string> {
   const repo = getRepo(repoId);
   const wtPath = `${worktreesDir()}/${repo.wtPrefix}-${headRef}-os`;
@@ -973,7 +1024,7 @@ export async function createWorktreeForPrBranch(
   if (reused) return wtPath;
 
   // Best-effort dep install so checks/builds the agent runs have deps available.
-  await seedAndInstallWorktree(repo, wtPath, headRef);
+  await seedAndInstallWorktree(repo, wtPath, headRef, setup);
 
   return wtPath;
 }
@@ -1043,6 +1094,7 @@ export async function createWorktreeForFollowup(
   branch: string,
   baseRef: string,
   repoId?: string,
+  setup: WorktreeSetupOwner = {},
 ): Promise<string> {
   const repo = getRepo(repoId);
   const existing = (await listWorktrees(repo.id)).find(
@@ -1065,7 +1117,7 @@ export async function createWorktreeForFollowup(
   });
 
   // Best-effort dep install so the follow-up run can build/test, same as siblings.
-  await seedAndInstallWorktree(repo, wtPath, branch);
+  await seedAndInstallWorktree(repo, wtPath, branch, setup);
 
   return wtPath;
 }
@@ -1086,6 +1138,7 @@ export async function createWorktreeForExistingBranch(
   branch: string,
   repoId?: string,
   gitEnv?: Record<string, string>,
+  setup: WorktreeSetupOwner = {},
 ): Promise<string> {
   const repo = getRepo(repoId);
   const shell = gitEnv ? $.env({ ...process.env, ...gitEnv }) : $;
@@ -1112,7 +1165,7 @@ export async function createWorktreeForExistingBranch(
 
   // Best-effort seed + dep install, same as createWorktree — backgrounded so
   // the opening turn isn't held behind a ~20s bun install (interactive path).
-  void seedAndInstallWorktree(repo, wtPath, branch);
+  void seedAndInstallWorktree(repo, wtPath, branch, setup);
 
   return wtPath;
 }
@@ -1354,7 +1407,13 @@ export async function resolveUniqueBranch(
 export async function createWorktree(
   branch: string,
   repoId?: string,
-  opts?: { base?: string; isolated?: boolean; gitEnv?: Record<string, string> },
+  opts?: {
+    base?: string;
+    isolated?: boolean;
+    gitEnv?: Record<string, string>;
+    /** The session the worktree is for (see WorktreeSetupOwner). */
+    sessionId?: string;
+  },
 ): Promise<string> {
   const repo = getRepo(repoId);
   const shell = opts?.gitEnv ? $.env({ ...process.env, ...opts.gitEnv }) : $;
@@ -1429,7 +1488,12 @@ export async function createWorktree(
   // `bun install` themselves. Config `worktreeSetup` / `depsInstall` overrides.
   // Backgrounded (not awaited): the opening
   // turn shouldn't wait ~20s on a webapp bun install it usually doesn't need.
-  void seedAndInstallWorktree(repo, wtPath, branch);
+  void seedAndInstallWorktree(
+    repo,
+    wtPath,
+    branch,
+    opts?.sessionId ? { sessionId: opts.sessionId } : {},
+  );
 
   return wtPath;
 }

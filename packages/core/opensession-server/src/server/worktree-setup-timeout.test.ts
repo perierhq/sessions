@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Repo } from "./config";
-import { listSessionResources } from "./session-resources";
+import {
+  listSessionResources,
+  ORPHANED_RESOURCE_GRACE_MS,
+  reapSessionResources,
+  stopArchivedSessionResources,
+} from "./session-resources";
 import { __setWorkloadScopingForTest } from "./workload-scope";
 import {
   __setSetupOutcomePublisherForTest,
@@ -80,6 +85,64 @@ test("the setup timeout defaults to 15 minutes and follows the repo", () => {
   expect(worktreeSetupTimeoutMs(repo({ worktreeSetupTimeoutMinutes: 0 }))).toBe(
     15 * 60_000,
   );
+  // Clamped to a day: past ~35,792 minutes the timer would fire at once.
+  expect(
+    worktreeSetupTimeoutMs(repo({ worktreeSetupTimeoutMinutes: 40_000 })),
+  ).toBe(24 * 60 * 60_000);
+  expect(
+    worktreeSetupTimeoutMs(repo({ worktreeSetupTimeoutMinutes: 1e12 })),
+  ).toBe(24 * 60 * 60_000);
+});
+
+test("an absurd timeout neither kills setup at once nor breaks its record", async () => {
+  const result = await installWorktreeDeps(
+    repo({ worktreeSetup: "sleep 0.3", worktreeSetupTimeoutMinutes: 1e12 }),
+    worktree,
+    "feat-absurd",
+    { timeoutMs: 1e12 * 60_000 },
+  );
+  expect(result).toEqual({ ok: true });
+});
+
+test("setup for a session still being created is not reaped, and stops with that session", async () => {
+  // createWorktreeForPrBranch awaits setup before its session records the
+  // worktree: nothing lists the tree yet, and an archived session may still
+  // name a recreated path.
+  const setup = installWorktreeDeps(
+    repo({ worktreeSetup: "sleep 30" }),
+    worktree,
+    "feat-new",
+    { sessionId: "bks-new" },
+  );
+  expect(await waitFor(() => listSessionResources().length > 0)).toBe(true);
+  const [record] = listSessionResources();
+  expect(record?.sessionId).toBe("bks-new");
+  const later = Date.parse(record!.startedAt) + ORPHANED_RESOURCE_GRACE_MS;
+  const sweep = await reapSessionResources(
+    [
+      { id: "bks-new" },
+      { id: "bks-old", worktreeDir: worktree, archived: true },
+    ],
+    { now: later },
+  );
+  expect(sweep.stopped).toEqual([]);
+  expect(alive(record!.pid!)).toBe(true);
+
+  const stopped = await stopArchivedSessionResources("bks-new", {
+    listSessions: async () => [
+      { id: "bks-new", worktreeDir: worktree, archived: true },
+    ],
+    isArchived: () => true,
+  });
+  expect(stopped.map((s) => s.reason)).toEqual(["archived"]);
+  const result = await setup;
+  expect(result).toMatchObject({ ok: false, reason: "stopped" });
+  const failure = worktreeSetupFailure(worktree);
+  expect(failure?.reason).toBe("stopped");
+  expect(failure?.message).toBe(
+    "Setup was stopped (worktreeSetup) because its session was archived.",
+  );
+  expect(failure?.message).not.toContain("SIGTERM");
 });
 
 test("a hung setup is stopped at its timeout, children included, and recorded", async () => {

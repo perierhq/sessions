@@ -5,33 +5,41 @@
  * Each one is a *session resource*: a durable record naming the worktree it
  * belongs to, optionally the session that started it, and how to stop its
  * whole process tree (the transient systemd scope when workloads are scoped,
- * and always its process group). Records live in a small state file so a
+ * otherwise its process group). Records live in a small state file so a
  * gateway restart does not orphan them.
  *
- * Three paths stop a resource:
+ * Four paths stop a resource:
  *
  * - its own deadline (`runSessionResource`'s timeout, and the reaper for a
  *   deadline set by a previous gateway process);
  * - archiving or deleting the session that owns its worktree
  *   (`stopSessionOwnedResources`);
  * - the lifecycle reaper, for a worktree whose owners are all archived or
- *   gone (`reapSessionResources`).
+ *   gone (`reapSessionResources`), never while this process's own timer
+ *   still bounds it;
+ * - the startup sweep, for setup scopes older than any setup timeout that
+ *   no record knows about (`sweepUntrackedSetupScopes`).
  *
  * The record and the stop path are deliberately generic: a later kind (a
  * container, a user unit) adds a `kind` and, if needed, another stop handle,
  * and inherits archive teardown and the reaper sweep.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { audit } from "./audit";
 import { statePath } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
-import { stopUserScopeAndWait, userScopeActive } from "./systemd-scopes";
+import { withFileLock } from "./shared/file-lock";
 import {
-  workloadArgv,
+  stopUserScopeAndWait,
+  systemdUserEnv,
+  userScopeActive,
+} from "./systemd-scopes";
+import {
+  workloadScopeArgv,
   workloadScopingActive,
   workloadUnitName,
 } from "./workload-scope";
@@ -49,13 +57,18 @@ export interface SessionResource {
   /** False for directories no session owns outright (the shared Ask checkout,
    * warm templates): only the deadline stops those. */
   sessionOwned: boolean;
-  /** Transient systemd user scope, without the `.scope` suffix. */
+  /** Transient systemd user scope, without the `.scope` suffix. When set, the
+   * scope is the only stop handle once this process stops watching the
+   * leader: its process group is never signalled on a pid alone. */
   unit?: string;
   /** Process-group leader. */
   pid?: number;
   startedAt: string;
   /** Past this the resource is stopped, even by a later gateway process. */
   deadlineAt?: string;
+  /** When the leader exited and left processes behind (a daemon the setup
+   * meant to start). The owner checks count their grace from here. */
+  leaderExitedAt?: string;
   /** Human-readable description for logs. */
   label?: string;
 }
@@ -68,45 +81,238 @@ export type SessionResourceOwner = {
   archived?: boolean;
 };
 
+export type SessionResourceStopReason =
+  | "timeout"
+  | "expired"
+  | "archived"
+  | "orphaned"
+  | "removed";
+
 export type StoppedSessionResource = {
   id: string;
   kind: SessionResourceKind;
   worktreeDir: string;
-  reason: "timeout" | "expired" | "archived" | "orphaned" | "removed";
+  reason: SessionResourceStopReason;
 };
 
-/** A resource whose worktree has no owner yet may belong to a session that
- * is still being created; give it this long before treating it as orphaned. */
+/** A resource whose owners are missing or archived may belong to a session
+ * that is still being created (or a worktree recreated at a path an archived
+ * session still names); give it this long before stopping it for that. */
 export const ORPHANED_RESOURCE_GRACE_MS = 10 * 60_000;
+/** Longest timer a resource gets: setTimeout fires at once past 2^31-1 ms. */
+const MAX_RESOURCE_TIMEOUT_MS = 2 ** 31 - 1;
 /** How long a process group gets between SIGTERM and SIGKILL. */
 const GROUP_STOP_GRACE_MS = 2_000;
 /** Tolerance when matching a recorded start time against `ps` after restart. */
 const START_TIME_TOLERANCE_MS = 10_000;
+/** Unit name prefix of setup scopes (workloadUnitName("setup")). */
+export const SETUP_SCOPE_PREFIX = "opensession-setup-";
+
+// ── Host seam ────────────────────────────────────────────────────────────────
+
+export type SetupScopeInfo = {
+  /** Unit name without the `.scope` suffix. */
+  unit: string;
+  /** Run time of the scope's oldest process, when it could be read. */
+  ageMs?: number;
+};
+
+/** The system calls this module makes, replaceable in tests. */
+export type SessionResourceHost = {
+  spawn: (argv: string[], options: { cwd: string }) => ChildProcess;
+  scopeActive: (unit: string) => Promise<boolean>;
+  stopScope: (unit: string) => Promise<void>;
+  /** Active `opensession-setup-*` user scopes. */
+  listSetupScopes: () => Promise<SetupScopeInfo[]>;
+};
+
+async function commandOutput(argv: string[]): Promise<string> {
+  const proc = Bun.spawn(argv, {
+    env: { ...process.env, ...systemdUserEnv() },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return out;
+}
+
+/** Age of a scope: the oldest process in its cgroup (ps `etimes`). */
+async function scopeAgeMs(unit: string): Promise<number | undefined> {
+  const cgroup = (
+    await commandOutput([
+      "systemctl",
+      "--user",
+      "show",
+      "--property=ControlGroup",
+      "--value",
+      `${unit}.scope`,
+    ])
+  ).trim();
+  if (!cgroup.startsWith("/")) return undefined;
+  let pids: string[];
+  try {
+    pids = (await readFile(`/sys/fs/cgroup${cgroup}/cgroup.procs`, "utf8"))
+      .split("\n")
+      .filter((pid) => /^\d+$/.test(pid));
+  } catch {
+    return undefined;
+  }
+  if (!pids.length) return undefined;
+  const seconds = (
+    await commandOutput([
+      "ps",
+      "-o",
+      "etimes=",
+      "-p",
+      pids.slice(0, 200).join(","),
+    ])
+  )
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return seconds.length ? Math.max(...seconds) * 1000 : undefined;
+}
+
+const defaultHost: SessionResourceHost = {
+  spawn: (argv, options) =>
+    spawn(argv[0]!, argv.slice(1), {
+      cwd: options.cwd,
+      // A fresh process group, so a timeout or archive takes the children too.
+      detached: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    }),
+  scopeActive: userScopeActive,
+  stopScope: stopUserScopeAndWait,
+  listSetupScopes: async () => {
+    const out = await commandOutput([
+      "systemctl",
+      "--user",
+      "list-units",
+      "--type=scope",
+      "--state=active",
+      "--plain",
+      "--no-legend",
+      "--no-pager",
+      `${SETUP_SCOPE_PREFIX}*`,
+    ]);
+    const units = out
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/)[0] ?? "")
+      .filter((name) => name.startsWith(SETUP_SCOPE_PREFIX))
+      .map((name) => name.replace(/\.scope$/, ""));
+    const scopes: SetupScopeInfo[] = [];
+    for (const unit of units.slice(0, 100)) {
+      const ageMs = await scopeAgeMs(unit).catch(() => undefined);
+      scopes.push(ageMs === undefined ? { unit } : { unit, ageMs });
+    }
+    return scopes;
+  },
+};
+
+let host: SessionResourceHost = defaultHost;
+
+/** Test seam: replace spawning and the systemd calls, or `null` to restore. */
+export function __setSessionResourceHostForTest(
+  next: Partial<SessionResourceHost> | null,
+): void {
+  host = next ? { ...defaultHost, ...next } : defaultHost;
+}
+
+// ── Registry ─────────────────────────────────────────────────────────────────
 
 function registryPath(): string {
   return statePath(".opensession-session-resources.json");
 }
 
-function readRegistry(): SessionResource[] {
+type RegistryRead =
+  | { ok: true; records: SessionResource[] }
+  | { ok: false; error: string };
+
+function readRegistryFile(): RegistryRead {
   const path = registryPath();
   try {
-    if (!existsSync(path)) return [];
+    if (!existsSync(path)) return { ok: true, records: [] };
     const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(parsed)
-      ? parsed.filter(
-          (entry): entry is SessionResource =>
-            !!entry &&
-            typeof entry.id === "string" &&
-            typeof entry.worktreeDir === "string",
-        )
-      : [];
-  } catch {
-    return [];
+    if (!Array.isArray(parsed)) return { ok: false, error: "not a JSON array" };
+    return {
+      ok: true,
+      records: parsed.filter(
+        (entry): entry is SessionResource =>
+          !!entry &&
+          typeof entry.id === "string" &&
+          typeof entry.worktreeDir === "string",
+      ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
-function writeRegistry(records: SessionResource[]): void {
-  writeJsonAtomic(registryPath(), records);
+let lastRegistryError: string | undefined;
+
+function warnUnreadableRegistry(error: string): void {
+  // Once per distinct error: every list and sweep reads the file.
+  if (error === lastRegistryError) return;
+  lastRegistryError = error;
+  console.error(
+    `[session-resources] ${registryPath()} is unreadable (${error}); leaving it untouched, and setup started now is tracked in this process only`,
+  );
+}
+
+function readRegistry(): SessionResource[] {
+  const read = readRegistryFile();
+  if (read.ok) {
+    lastRegistryError = undefined;
+    return read.records;
+  }
+  warnUnreadableRegistry(read.error);
+  return [];
+}
+
+/**
+ * Read, change and write the registry under its cross-process lock, so a
+ * gateway overlapping this one during a restart never loses an update. An
+ * unreadable file is reported and left as it is rather than replaced with
+ * what this process knows. `change` returns null to skip the write.
+ */
+async function mutateRegistry(
+  change: (records: SessionResource[]) => SessionResource[] | null,
+): Promise<void> {
+  const path = registryPath();
+  await withFileLock(
+    path,
+    () => {
+      const read = readRegistryFile();
+      if (!read.ok) {
+        warnUnreadableRegistry(read.error);
+        throw new Error(
+          `session resource registry is unreadable: ${read.error}`,
+        );
+      }
+      const next = change(read.records);
+      if (next) writeJsonAtomic(path, next);
+    },
+    "Session resource registry",
+  );
+}
+
+/** Registry writes never fail the caller: the record is best-effort state. */
+async function mutateRegistryBestEffort(
+  what: string,
+  change: (records: SessionResource[]) => SessionResource[] | null,
+): Promise<void> {
+  try {
+    await mutateRegistry(change);
+  } catch (error) {
+    console.warn(
+      `[session-resources] could not ${what}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 export function listSessionResources(): SessionResource[] {
@@ -118,25 +324,34 @@ export function hasSessionOwnedResources(): boolean {
   return readRegistry().some((record) => record.sessionOwned);
 }
 
-export function registerSessionResource(record: SessionResource): void {
-  writeRegistry([...readRegistry().filter((r) => r.id !== record.id), record]);
+export async function registerSessionResource(
+  record: SessionResource,
+): Promise<void> {
+  await mutateRegistry((records) => [
+    ...records.filter((r) => r.id !== record.id),
+    record,
+  ]);
 }
 
 function updateSessionResource(
   id: string,
   patch: Partial<SessionResource>,
-): void {
-  const records = readRegistry();
-  const index = records.findIndex((r) => r.id === id);
-  if (index < 0) return;
-  records[index] = { ...records[index]!, ...patch };
-  writeRegistry(records);
+): Promise<void> {
+  return mutateRegistryBestEffort("update a session resource", (records) => {
+    const index = records.findIndex((r) => r.id === id);
+    if (index < 0) return null;
+    const next = [...records];
+    // An undefined field in `patch` clears it: JSON drops undefined values.
+    next[index] = { ...records[index]!, ...patch };
+    return next;
+  });
 }
 
-export function forgetSessionResource(id: string): void {
-  const records = readRegistry();
-  const next = records.filter((r) => r.id !== id);
-  if (next.length !== records.length) writeRegistry(next);
+export function forgetSessionResource(id: string): Promise<void> {
+  return mutateRegistryBestEffort("forget a session resource", (records) => {
+    const next = records.filter((r) => r.id !== id);
+    return next.length === records.length ? null : next;
+  });
 }
 
 export async function canonicalResourceDir(dir: string): Promise<string> {
@@ -147,8 +362,22 @@ export async function canonicalResourceDir(dir: string): Promise<string> {
   }
 }
 
-/** Resources started by this gateway process: their pids are known-good. */
-const startedHere = new Set<string>();
+// ── Process handles ──────────────────────────────────────────────────────────
+
+/**
+ * Resources whose leader this process started and is still waiting on. Their
+ * pid cannot have been recycled, and their own timer bounds them. A record
+ * leaves the set the moment its leader exits: any processes left behind are
+ * then checked like a previous gateway's.
+ */
+const watchedHere = new Set<string>();
+/** Resources a `runSessionResource` call in this process is still running,
+ * from spawn until it returns. The reaper leaves them to that call. */
+const runsHere = new Map<string, SessionResource>();
+/** Stops in flight, so the run that owns a resource can wait for them. */
+const stopsInFlight = new Map<string, Promise<void>>();
+/** Why each resource run here stopped, for the run that owns it. */
+const stopReasons = new Map<string, SessionResourceStopReason>();
 
 function groupAlive(pid: number): boolean {
   try {
@@ -178,34 +407,66 @@ export function parseElapsedTime(value: string): number | undefined {
   );
 }
 
+export type ProcessRow = { pid: number; pgid: number; elapsedSec: number };
+
+/** Rows of `ps -A -o pid=,pgid=,etime=`. */
+export function parseProcessRows(out: string): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  for (const line of out.split("\n")) {
+    const [pid, pgid, etime] = line.trim().split(/\s+/);
+    const elapsedSec = parseElapsedTime(etime ?? "");
+    if (!pid || !pgid || elapsedSec === undefined) continue;
+    rows.push({ pid: Number(pid), pgid: Number(pgid), elapsedSec });
+  }
+  return rows;
+}
+
 /**
- * Whether `pid` still leads the process group a previous gateway recorded.
- * Pids are recycled, so a record from before a restart is trusted only when
- * the process is still a group leader that started when the record says.
+ * Whether the processes in group `pgid` are the ones a record describes.
+ * Pids are recycled, so a live group leader must have started when the
+ * record says. A group whose leader is gone qualifies only if every member
+ * started after the record did (the leftovers of that setup); a recycled pid
+ * that leads a new group is always its leader, and is caught by the first
+ * rule.
+ */
+export function groupMatchesRecord(
+  rows: readonly ProcessRow[],
+  pgid: number,
+  startedAtMs: number,
+  nowMs: number,
+): boolean {
+  if (!Number.isFinite(startedAtMs)) return false;
+  const members = rows.filter((row) => row.pgid === pgid);
+  if (!members.length) return false;
+  const started = (row: ProcessRow) => nowMs - row.elapsedSec * 1000;
+  const leader = members.find((row) => row.pid === pgid);
+  if (leader)
+    return Math.abs(started(leader) - startedAtMs) <= START_TIME_TOLERANCE_MS;
+  return members.every(
+    (row) => started(row) >= startedAtMs - START_TIME_TOLERANCE_MS,
+  );
+}
+
+/**
+ * Whether the record's process group may be signalled. Only an unscoped
+ * record that `ps` confirms, or one whose leader this process still watches.
  */
 async function recordedGroupStillOurs(
   record: SessionResource,
 ): Promise<boolean> {
   const pid = record.pid;
   if (!pid || pid < 2 || !groupAlive(pid)) return false;
-  if (startedHere.has(record.id)) return true;
+  if (watchedHere.has(record.id)) return true;
+  // Scoped: the scope holds every process the setup started, with no pid to
+  // be confused about. Never signal a group on a pid alone.
+  if (record.unit) return false;
   try {
-    const proc = Bun.spawn(["ps", "-o", "pgid=,etime=", "-p", String(pid)], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const out = (await new Response(proc.stdout).text()).trim();
-    await proc.exited;
-    const [pgid, etime] = out.split(/\s+/);
-    if (Number(pgid) !== pid) return false;
-    const elapsed = parseElapsedTime(etime ?? "");
-    if (elapsed === undefined) return false;
-    const startedAt = Date.parse(record.startedAt);
-    return (
-      Number.isFinite(startedAt) &&
-      Math.abs(Date.now() - elapsed * 1000 - startedAt) <=
-        START_TIME_TOLERANCE_MS
+    const out = await commandOutput(["ps", "-A", "-o", "pid=,pgid=,etime="]);
+    return groupMatchesRecord(
+      parseProcessRows(out),
+      pid,
+      Date.parse(record.startedAt),
+      Date.now(),
     );
   } catch {
     return false;
@@ -216,42 +477,69 @@ async function recordedGroupStillOurs(
 export async function sessionResourceAlive(
   record: SessionResource,
 ): Promise<boolean> {
-  if (record.unit && (await userScopeActive(record.unit))) return true;
+  if (record.unit && (await host.scopeActive(record.unit))) return true;
   return recordedGroupStillOurs(record);
 }
 
 /**
  * Stop a resource's whole process tree and forget it. The scope stop takes
  * every process in the cgroup, including ones that left the process group;
- * the group kill covers hosts without systemd scopes (macOS, dev instances).
- * Never rejects.
+ * the group kill covers hosts without systemd scopes (macOS, dev instances)
+ * and a scoped leader this process still watches. Never rejects.
  */
-export async function stopSessionResource(
+async function stopResource(
   record: SessionResource,
-): Promise<void> {
-  try {
-    if (record.unit) await stopUserScopeAndWait(record.unit);
-    if (await recordedGroupStillOurs(record)) {
-      const pid = record.pid!;
-      signalGroup(pid, "SIGTERM");
-      const deadline = Date.now() + GROUP_STOP_GRACE_MS;
-      while (Date.now() < deadline && groupAlive(pid)) await Bun.sleep(100);
-      if (groupAlive(pid)) signalGroup(pid, "SIGKILL");
-    }
-  } catch (error) {
-    console.warn(
-      `[session-resources] could not stop ${record.label ?? record.kind} in ${record.worktreeDir}:`,
-      error,
-    );
-  } finally {
-    forgetSessionResource(record.id);
-    startedHere.delete(record.id);
+  reason: SessionResourceStopReason,
+): Promise<StoppedSessionResource> {
+  const running = stopsInFlight.get(record.id);
+  if (running) {
+    await running;
+    return describeStop(record, reason);
   }
+  if (runsHere.has(record.id)) stopReasons.set(record.id, reason);
+  const stopping = (async () => {
+    try {
+      if (record.unit) await host.stopScope(record.unit);
+      if (await recordedGroupStillOurs(record)) {
+        const pid = record.pid!;
+        signalGroup(pid, "SIGTERM");
+        const deadline = Date.now() + GROUP_STOP_GRACE_MS;
+        while (Date.now() < deadline && groupAlive(pid)) await Bun.sleep(100);
+        if (groupAlive(pid)) signalGroup(pid, "SIGKILL");
+      }
+    } catch (error) {
+      console.warn(
+        `[session-resources] could not stop ${record.label ?? record.kind} in ${record.worktreeDir}:`,
+        error,
+      );
+    } finally {
+      await forgetSessionResource(record.id);
+    }
+  })();
+  stopsInFlight.set(record.id, stopping);
+  try {
+    await stopping;
+  } finally {
+    stopsInFlight.delete(record.id);
+  }
+  return logStopped(record, reason);
+}
+
+function describeStop(
+  record: SessionResource,
+  reason: SessionResourceStopReason,
+): StoppedSessionResource {
+  return {
+    id: record.id,
+    kind: record.kind,
+    worktreeDir: record.worktreeDir,
+    reason,
+  };
 }
 
 function logStopped(
   record: SessionResource,
-  reason: StoppedSessionResource["reason"],
+  reason: SessionResourceStopReason,
 ): StoppedSessionResource {
   audit({
     msg: "session_resource_stopped",
@@ -260,13 +548,10 @@ function logStopped(
     worktree: record.worktreeDir,
     reason,
   });
-  return {
-    id: record.id,
-    kind: record.kind,
-    worktreeDir: record.worktreeDir,
-    reason,
-  };
+  return describeStop(record, reason);
 }
+
+// ── Running ──────────────────────────────────────────────────────────────────
 
 export type RunSessionResourceInput = {
   kind: SessionResourceKind;
@@ -284,6 +569,8 @@ export type RunSessionResourceResult = {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  /** Set when archive, delete, worktree removal or the reaper stopped it. */
+  stopped?: Exclude<SessionResourceStopReason, "timeout">;
   /** Last few KB of stderr. */
   stderr: string;
 };
@@ -299,17 +586,17 @@ const STDERR_TAIL_BYTES = 4096;
 export async function runSessionResource(
   input: RunSessionResourceInput,
 ): Promise<RunSessionResourceResult> {
+  // Decide on scoping once: the argv and the record must agree.
   const unit = workloadScopingActive()
     ? workloadUnitName(input.kind)
     : undefined;
-  const argv = workloadArgv(input.argv, input.kind, unit ? { unit } : {});
+  const argv = unit ? workloadScopeArgv(input.argv, unit) : input.argv;
+  const timeoutMs = Math.min(
+    Math.max(0, input.timeoutMs),
+    MAX_RESOURCE_TIMEOUT_MS,
+  );
   const startedAt = Date.now();
-  const child = spawn(argv[0]!, argv.slice(1), {
-    cwd: input.cwd,
-    // A fresh process group, so a timeout or archive takes the children too.
-    detached: true,
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const child = host.spawn(argv, { cwd: input.cwd });
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_BYTES);
@@ -333,39 +620,73 @@ export async function runSessionResource(
     sessionOwned: input.sessionOwned,
     pid: child.pid,
     startedAt: new Date(startedAt).toISOString(),
-    deadlineAt: new Date(startedAt + input.timeoutMs).toISOString(),
+    deadlineAt: new Date(startedAt + timeoutMs).toISOString(),
     ...(unit ? { unit } : {}),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     ...(input.label ? { label: input.label } : {}),
   };
-  startedHere.add(record.id);
-  registerSessionResource(record);
+  watchedHere.add(record.id);
+  runsHere.set(record.id, record);
+  let exitedYet = false;
+  void exited.then(() => {
+    exitedYet = true;
+    // The leader is gone: from here its pid could be recycled.
+    watchedHere.delete(record.id);
+  });
+  try {
+    await registerSessionResource(record);
+  } catch (error) {
+    // Still bounded by the timer below; only a restart loses track of it.
+    console.warn(
+      `[session-resources] could not record ${record.label ?? record.kind}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   let timedOut = false;
-  let stopping: Promise<void> | undefined;
   const timer = setTimeout(
     () => {
+      if (exitedYet) return;
       timedOut = true;
-      logStopped(record, "timeout");
-      stopping = stopSessionResource(record);
+      void stopResource(record, "timeout");
     },
-    Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+    Math.max(0, timeoutMs - (Date.now() - startedAt)),
   );
   const { code, signal } = await exited;
   clearTimeout(timer);
+  watchedHere.delete(record.id);
   child.stderr?.destroy();
+  const stopping = stopsInFlight.get(record.id);
   if (stopping) await stopping;
-  else if (groupAlive(child.pid)) {
-    // The leader finished but left processes behind (a daemon the setup
-    // meant to start). The setup itself is done, so its deadline no longer
-    // applies; archive and the reaper still own what is left.
-    updateSessionResource(record.id, { deadlineAt: undefined });
-  } else {
-    forgetSessionResource(record.id);
-    startedHere.delete(record.id);
+  const reason = stopReasons.get(record.id);
+  stopReasons.delete(record.id);
+  try {
+    if (!reason) {
+      // The leader finished. Processes it left behind (a daemon the setup
+      // meant to start) stay tracked: the setup itself is done, so its
+      // deadline no longer applies, but archive and the reaper still own them.
+      const leftovers = unit
+        ? await host.scopeActive(unit)
+        : groupAlive(child.pid);
+      if (leftovers)
+        await updateSessionResource(record.id, {
+          deadlineAt: undefined,
+          leaderExitedAt: new Date().toISOString(),
+        });
+      else await forgetSessionResource(record.id);
+    }
+  } finally {
+    runsHere.delete(record.id);
   }
-  return { exitCode: code, signal, timedOut, stderr };
+  return {
+    exitCode: code,
+    signal,
+    timedOut,
+    ...(reason && reason !== "timeout" ? { stopped: reason } : {}),
+    stderr,
+  };
 }
+
+// ── Ownership ────────────────────────────────────────────────────────────────
 
 function ownerIds(owner: SessionResourceOwner): string[] {
   return [owner.id, ...(owner.aliasIds ?? [])];
@@ -397,10 +718,14 @@ async function ownersByDir(
   return owners;
 }
 
+function hasLiveOwner(owners: Map<string, boolean> | undefined): boolean {
+  return !!owners && [...owners.values()].some((archived) => !archived);
+}
+
 /**
- * Stop the resources `session` owns, after it was archived or deleted. A
- * resource tagged with another session's id is left alone, and so is an
- * untagged one in a worktree some other live session still uses. `others`
+ * Stop the resources `session` owns, after it was archived or deleted: those
+ * tagged with its id (or an alias), and untagged ones in its worktrees. Either
+ * way, a worktree some other live session still uses keeps its setup. `others`
  * is the session list; the session itself and archived rows in it are
  * ignored.
  */
@@ -422,12 +747,9 @@ export async function stopSessionOwnedResources(
   const stopped: StoppedSessionResource[] = [];
   for (const record of readRegistry()) {
     if (!record.sessionOwned || !dirs.has(record.worktreeDir)) continue;
-    const owned = record.sessionId
-      ? ids.has(record.sessionId)
-      : !live.get(record.worktreeDir)?.size;
-    if (!owned) continue;
-    await stopSessionResource(record);
-    stopped.push(logStopped(record, options.reason ?? "archived"));
+    if (record.sessionId && !ids.has(record.sessionId)) continue;
+    if (live.get(record.worktreeDir)?.size) continue;
+    stopped.push(await stopResource(record, options.reason ?? "archived"));
   }
   return stopped;
 }
@@ -440,8 +762,7 @@ export async function stopSessionResourcesInDir(
   const stopped: StoppedSessionResource[] = [];
   for (const record of readRegistry()) {
     if (record.worktreeDir !== key) continue;
-    await stopSessionResource(record);
-    stopped.push(logStopped(record, "removed"));
+    stopped.push(await stopResource(record, "removed"));
   }
   return stopped;
 }
@@ -476,9 +797,41 @@ export async function stopArchivedSessionResources(
 }
 
 /**
- * The lifecycle reaper's pass: stop resources past their deadline and ones
- * whose worktree owners are all archived or gone, and forget records whose
- * processes already ended.
+ * Why the reaper would stop a session-owned record, or null to keep it.
+ *
+ * A worktree a live session uses always keeps its setup. Otherwise a record
+ * tagged with an archived session goes at once, and the rest (owner missing,
+ * or untagged in a worktree only archived sessions name) go once the grace
+ * has passed since the setup started or its leader exited: a session still
+ * being created does not list its worktree yet, and a worktree recreated at
+ * a path an archived session still names belongs to someone new.
+ */
+function reapReason(
+  record: SessionResource,
+  dirOwners: Map<string, boolean> | undefined,
+  taggedArchived: boolean | undefined,
+  now: number,
+): "archived" | "orphaned" | null {
+  if (hasLiveOwner(dirOwners)) return null;
+  if (record.sessionId) {
+    if (taggedArchived === false) return null;
+    if (taggedArchived === true) return "archived";
+  }
+  const since = Math.max(
+    Date.parse(record.startedAt),
+    record.leaderExitedAt ? Date.parse(record.leaderExitedAt) : -Infinity,
+  );
+  const settled =
+    !Number.isFinite(since) || now - since >= ORPHANED_RESOURCE_GRACE_MS;
+  if (!settled) return null;
+  return dirOwners?.size ? "archived" : "orphaned";
+}
+
+/**
+ * The lifecycle reaper's pass: stop resources past a deadline a previous
+ * gateway process set and ones whose owners are all archived or gone, and
+ * forget records whose processes already ended. A resource whose leader this
+ * process still watches is left to its own timer.
  */
 export async function reapSessionResources(
   sessions: readonly SessionResourceOwner[],
@@ -488,47 +841,96 @@ export async function reapSessionResources(
   const records = readRegistry();
   if (!records.length) return { stopped: [], forgotten: 0 };
   const owners = await ownersByDir(sessions);
+  const archivedById = new Map<string, boolean>();
+  for (const session of sessions)
+    for (const id of ownerIds(session))
+      archivedById.set(id, session.archived === true);
   const stopped: StoppedSessionResource[] = [];
   let forgotten = 0;
   for (const record of records) {
+    // Started here and still running: its in-process timer bounds it, and
+    // its session may not list the worktree yet.
+    if (runsHere.has(record.id) || stopsInFlight.has(record.id)) continue;
     if (!(await sessionResourceAlive(record))) {
-      forgetSessionResource(record.id);
-      startedHere.delete(record.id);
+      await forgetSessionResource(record.id);
       forgotten++;
       continue;
     }
     const deadline = record.deadlineAt ? Date.parse(record.deadlineAt) : NaN;
-    // A live timer in this process stops its own resource; the reaper only
-    // takes over a deadline a previous gateway process set.
-    if (
-      Number.isFinite(deadline) &&
-      now >= deadline &&
-      !startedHere.has(record.id)
-    ) {
-      await stopSessionResource(record);
-      stopped.push(logStopped(record, "expired"));
+    if (Number.isFinite(deadline) && now >= deadline) {
+      stopped.push(await stopResource(record, "expired"));
       continue;
     }
     if (!record.sessionOwned) continue;
-    const liveOwners = owners.get(record.worktreeDir) ?? new Map();
-    const orphaned = record.sessionId
-      ? !liveOwners.has(record.sessionId)
-      : liveOwners.size === 0;
-    const archived = record.sessionId
-      ? liveOwners.get(record.sessionId) === true
-      : liveOwners.size > 0 && [...liveOwners.values()].every(Boolean);
-    const startedAt = Date.parse(record.startedAt);
-    const settled =
-      !Number.isFinite(startedAt) ||
-      now - startedAt >= ORPHANED_RESOURCE_GRACE_MS;
-    const reason = archived
-      ? "archived"
-      : orphaned && settled
-        ? "orphaned"
-        : null;
-    if (!reason) continue;
-    await stopSessionResource(record);
-    stopped.push(logStopped(record, reason));
+    const reason = reapReason(
+      record,
+      owners.get(record.worktreeDir),
+      record.sessionId ? archivedById.get(record.sessionId) : undefined,
+      now,
+    );
+    if (reason) stopped.push(await stopResource(record, reason));
   }
   return { stopped, forgotten };
+}
+
+// ── Startup sweep ────────────────────────────────────────────────────────────
+
+/**
+ * Setup scopes the startup sweep stops: older than `olderThanMs` (the longest
+ * setup timeout) and unknown to the registry. A scope whose age cannot be
+ * read is left alone.
+ */
+export function selectUntrackedSetupScopes(
+  scopes: readonly SetupScopeInfo[],
+  trackedUnits: ReadonlySet<string>,
+  olderThanMs: number,
+): SetupScopeInfo[] {
+  return scopes.filter(
+    (scope) =>
+      scope.unit.startsWith(SETUP_SCOPE_PREFIX) &&
+      !trackedUnits.has(scope.unit) &&
+      scope.ageMs !== undefined &&
+      scope.ageMs >= olderThanMs,
+  );
+}
+
+/**
+ * Stop setup scopes left running from before setups were tracked (or whose
+ * record was lost), once they are older than any setup may run. Linux with
+ * workload scoping only. Never rejects.
+ */
+export async function sweepUntrackedSetupScopes(options: {
+  olderThanMs: number;
+}): Promise<string[]> {
+  try {
+    if (!workloadScopingActive()) return [];
+    const scopes = await host.listSetupScopes();
+    if (!scopes.length) return [];
+    const tracked = new Set(
+      [...readRegistry(), ...runsHere.values()]
+        .map((record) => record.unit)
+        .filter((unit): unit is string => !!unit),
+    );
+    const stale = selectUntrackedSetupScopes(
+      scopes,
+      tracked,
+      options.olderThanMs,
+    );
+    for (const scope of stale) {
+      console.log(
+        `[session-resources] stopping untracked setup scope ${scope.unit} (running ${Math.round((scope.ageMs ?? 0) / 60_000)} min)`,
+      );
+      await host.stopScope(scope.unit);
+      audit({
+        msg: "session_resource_stopped",
+        kind: "setup",
+        unit: scope.unit,
+        reason: "untracked",
+      });
+    }
+    return stale.map((scope) => scope.unit);
+  } catch (error) {
+    console.warn("[session-resources] setup scope sweep failed:", error);
+    return [];
+  }
 }

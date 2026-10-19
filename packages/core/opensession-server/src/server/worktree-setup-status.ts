@@ -13,7 +13,7 @@ import { statePath } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
 
 export type WorktreeSetupFailure = {
-  reason: "timed_out" | "failed";
+  reason: "timed_out" | "failed" | "stopped";
   message: string;
   at: string;
 };

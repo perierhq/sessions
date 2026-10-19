@@ -672,11 +672,12 @@ export interface UnifiedSession {
    */
   lastRunError?: { message: string; at: string };
   /**
-   * Fresh-worktree setup did not finish: it failed, or was stopped at the
-   * repo's setup timeout. Dependencies may be missing. Set by /api/sessions.
+   * Fresh-worktree setup did not finish: it failed, hit the repo's setup
+   * timeout, or was stopped with its session or worktree. Dependencies may
+   * be missing. Set by /api/sessions.
    */
   setupFailure?: {
-    reason: "timed_out" | "failed";
+    reason: "timed_out" | "failed" | "stopped";
     message: string;
     at: string;
   };

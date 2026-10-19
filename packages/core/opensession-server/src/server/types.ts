@@ -290,12 +290,13 @@ export interface UnifiedSession {
   lastRunError?: { message: string; at: string };
   /**
    * Fresh-worktree setup for this session's worktree (or an attached repo's)
-   * failed or was stopped at its timeout, so dependencies may be missing.
+   * failed, timed out, or was stopped (its session archived, its worktree
+   * removed), so dependencies may be missing.
    * Projected from worktree-setup-status.ts by the session payloads; cleared
    * when setup runs again for that worktree.
    */
   setupFailure?: {
-    reason: "timed_out" | "failed";
+    reason: "timed_out" | "failed" | "stopped";
     message: string;
     at: string;
   };
