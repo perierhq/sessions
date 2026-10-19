@@ -38,7 +38,7 @@ describe("oneShot", () => {
   });
 
   test("uses OpenAI for default name generation on Codex-only installs", () => {
-    // Exact refusal from anthropic-bridge when no Claude account was added.
+    // Exact refusal from pickClaudeAccount when no Claude account was added.
     const error =
       "no Claude accounts configured (add one in Settings → Providers)";
     const primary = oneShotModel("claude-haiku-5-5");

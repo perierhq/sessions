@@ -6,8 +6,8 @@
  * agent workloads 10:1 for CPU and shares the service's MemoryHigh with every
  * child. Model CLIs, stdio MCP servers, published apps, host terminals,
  * dependency installs and transcoders started straight from the gateway used
- * to inherit that cgroup: about 30 bridge `claude` processes (6 GB) sat next
- * to the event loop and competed with it for CPU and memory.
+ * to inherit that cgroup: at one point about 30 `claude` processes (6 GB) sat
+ * next to the event loop and competed with it for CPU and memory.
  *
  * `workloadArgv` wraps a command in a transient systemd user scope in the
  * agent workload slice. The scope execs the command in place, so the pid,
@@ -15,13 +15,8 @@
  * the control plane (tests, dev instances, macOS) the command is returned
  * as is.
  */
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type {
-  SpawnOptions as ClaudeSpawnOptions,
-  SpawnedProcess,
-} from "@anthropic-ai/claude-agent-sdk";
 import {
   SYSTEMD_USER_RUNTIME,
   engineScopeSystemdArgs,
@@ -94,29 +89,6 @@ export function workloadCommand(
 ): { command: string; args: string[] } {
   const [head, ...rest] = workloadArgv([command, ...args], kind);
   return { command: head!, args: rest };
-}
-
-/**
- * `spawnClaudeCodeProcess` for the Agent SDK: the SDK's own spawn, with the
- * Claude Code CLI (and the MCP servers it starts) in a workload scope.
- */
-export function spawnClaudeCodeInWorkload(
-  kind: string,
-): (options: ClaudeSpawnOptions) => SpawnedProcess {
-  return (options) => {
-    const { command, args } = workloadCommand(
-      options.command,
-      options.args,
-      kind,
-    );
-    return spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env as NodeJS.ProcessEnv,
-      signal: options.signal,
-      stdio: ["pipe", "pipe", "ignore"],
-      windowsHide: true,
-    });
-  };
 }
 
 /**

@@ -13,22 +13,12 @@
  *                        plus its .bundle-meta.json; the box only stitches
  *                        index.html at boot and never bundles or runs Tailwind
  *   node_modules/        `bun install --production --os --cpu` for the target,
- *                        pruned of foreign-platform and musl binaries, and of
- *                        the bundled Claude Code binaries (below)
+ *                        pruned of foreign-platform and musl binaries
  *   release.json         version, commit, target, bun version,
  *                        built-at; its presence puts the server in
  *                        prebuilt-frontend mode
  *
- * No bundled Claude Code. The Agent SDK and @anthropic-ai/claude-code (both
- * pulled in through @rynfar/meridian) carry a per-platform binary package
- * each, ~220-240 MB apiece, and Open Session never runs them: every SDK call
- * passes `pathToClaudeCodeExecutable` and Meridian gets MERIDIAN_CLAUDE_PATH,
- * both the installed `claude` CLI from config `paths.claudeBin` /
- * OPENSESSION_CLAUDE_BIN / PATH. The install script puts that CLI on the box;
- * engine-status.ts `claudeCliStatus` reports at boot, in doctor and on
- * /api/health when it is missing. Only the binary packages are pruned (plus
- * packages stay so their imports still resolve. The platform's own @img/sharp
- * native is kept — the server loads sharp at runtime (session social cards) —
+ * The platform's own @img/sharp native is kept — the server loads sharp at runtime (session social cards) —
  * while other platforms' sharp variants go with the foreign-platform prune.
  *
  * Runs on any host with Bun and git; cross-target is fine because nothing
@@ -210,43 +200,24 @@ function dirBytes(p: string): number {
 }
 let pruned = 0;
 let prunedBytes = 0;
-let prunedClaude = 0;
-let prunedClaudeBytes = 0;
 if (existsSync(store)) {
   for (const d of readdirSync(store)) {
     const foreign =
       /musl/.test(d) ||
       (os === "linux" && /darwin|win32/.test(d)) ||
       (os === "darwin" && /linux|win32/.test(d));
-    // Never executed: Open Session shells out to the installed `claude` CLI
-    // (config paths.claudeBin): the Agent SDK gets pathToClaudeCodeExecutable
-    // and Meridian gets MERIDIAN_CLAUDE_PATH, so the SDK's and claude-code's
-    // per-platform binary packages (~220-240 MB each) are dead weight. Only the
-    // binary packages go; the JS packages they hang off stay. Same for the
-    // The Agent SDK and claude-code carry a ~220-240 MB per-platform binary
-    // each that is never executed (every call runs the installed claude CLI).
     // sharp is NOT pruned here: the server loads it at runtime for session
     // social cards, and the foreign-platform check above already drops the
     // sharp variants for other platforms.
-    const bundledClaude =
-      /^@anthropic-ai\+claude-agent-sdk-|^@anthropic-ai\+claude-code-/.test(d);
-    if (!foreign && !bundledClaude) continue;
+    if (!foreign) continue;
     const bytes = dirBytes(join(store, d));
     rmSync(join(store, d), { recursive: true, force: true });
-    if (bundledClaude && !foreign) {
-      prunedClaude++;
-      prunedClaudeBytes += bytes;
-    } else {
-      pruned++;
-      prunedBytes += bytes;
-    }
+    pruned++;
+    prunedBytes += bytes;
   }
 }
 console.log(
   `pruned ${pruned} foreign-platform packages (${(prunedBytes / 1e6).toFixed(0)} MB)`,
-);
-console.log(
-  `pruned ${prunedClaude} bundled Claude Code binary packages (${(prunedClaudeBytes / 1e6).toFixed(0)} MB)`,
 );
 
 step(`bun ${BUN_VERSION} for ${os}/${arch}`);

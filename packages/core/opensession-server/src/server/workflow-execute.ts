@@ -227,8 +227,7 @@ export function extractLastFencedJson(text: string): string | null {
 }
 
 // ── Minimal JSON Schema subset validator ─────────────────────────────────────
-// (anthropic-bridge.ts's general jsonSchemaToZod isn't exported — only the
-// tool-shape helper — so this stays a tiny pure function here.)
+// A tiny pure function, so workflows need no schema library.
 
 function jsonTypeOf(value: unknown): string {
   if (value === null) return "null";

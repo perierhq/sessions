@@ -142,7 +142,7 @@ describe("pickClaudeAccount refusal wording", () => {
     seedAccounts(["reason-a", "reason-b"]);
     accounts.__setUsageCacheForTest("reason-a", freshUsage);
     accounts.__setUsageCacheForTest("reason-b", freshUsage);
-    const out: { reason?: string } = {};
+    const out: { reason?: accounts.PickReason } = {};
     expect((pickClaudeAccount("claude-sonnet-5", {}, out) as any).id).toBe(
       "reason-b",
     );
