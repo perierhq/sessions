@@ -397,7 +397,8 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     );
     // Lazy import: worktree.ts imports back into this module's consumers —
     // keep the static graph acyclic.
-    const { withGitLock, installWorktreeDeps } = await import("./worktree");
+    const { withGitLock, installWorktreeDeps, worktreeSetupTimeoutMs } =
+      await import("./worktree");
 
     // 1. Ensure the detached template worktree exists.
     if (!existsSync(dir)) {
@@ -471,8 +472,14 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     // 4. Deps + env seeding (same helper the session worktrees use). This is
     //    also the verification: a template whose install fails is never
     //    marked ok.
-    await step("install deps", 10 * 60_000, () =>
-      installWorktreeDeps(repo, dir, `warm-template:${repoId}`),
+    //    Its own timeout stops the install's process tree no later than
+    //    the watchdog gives up on it, so nothing keeps running detached.
+    const installMs = 10 * 60_000;
+    await step("install deps", installMs, () =>
+      installWorktreeDeps(repo, dir, `warm-template:${repoId}`, {
+        sessionOwned: false,
+        timeoutMs: Math.min(worktreeSetupTimeoutMs(repo), installMs),
+      }),
     );
 
     // 5. Capture the seedable manifest (only on success, so a failed refresh

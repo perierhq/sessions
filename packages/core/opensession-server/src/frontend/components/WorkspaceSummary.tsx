@@ -1224,6 +1224,17 @@ export function WorkspaceSummaryBody({
           : "contents"
       }
     >
+      {/* Setup ran in the background after the worktree was created; say so
+			    when it did not finish, since dependencies may be missing. */}
+      {session.setupFailure && !workspaceIsPreparing && (
+        <div
+          className="px-4 py-1 text-supporting text-red"
+          role="status"
+          title={session.setupFailure.at}
+        >
+          {session.setupFailure.message}
+        </div>
+      )}
       {/* These two group names are selector hooks: their DOM boxes disappear via
 			    `display: contents`, but they are the actual siblings around the PR band. */}
       <div

@@ -21,6 +21,14 @@ import {
 } from "./config";
 import { stateDir } from "./paths";
 import { workloadArgv } from "./workload-scope";
+import {
+  runSessionResource,
+  stopSessionResourcesInDir,
+} from "./session-resources";
+import {
+  clearWorktreeSetupFailure,
+  recordWorktreeSetupFailure,
+} from "./worktree-setup-status";
 
 // The Repo type + registry defaults live in config.ts now. Re-exported so existing
 // `import { type Repo } from "./worktree"` call sites keep working.
@@ -317,6 +325,12 @@ export interface WorktreeInfo {
  * agent-facing autofix/followup paths still await it because those runs build
  * immediately. All failure paths are caught + logged here, so a dropped
  * promise never surfaces as an unhandled rejection.
+ *
+ * Setup is bounded by the repo's `worktreeSetupTimeoutMinutes` (default 15)
+ * and each command runs as a tracked session resource (session-resources.ts),
+ * so a hung install is stopped with its whole process tree and archive or the
+ * lifecycle reaper can stop it early. A failure or timeout is recorded for
+ * the worktree (worktree-setup-status.ts) and shown on its sessions.
  */
 /**
  * Fresh-worktree setup: seed node_modules from the repo's warm template when
@@ -342,34 +356,166 @@ async function seedAndInstallWorktree(
   await installWorktreeDeps(repo, wtPath, branchLabel);
 }
 
+/** Default bound on fresh-worktree setup; repos override it with
+ * `worktreeSetupTimeoutMinutes`. */
+export const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60_000;
+
+export function worktreeSetupTimeoutMs(repo: Repo): number {
+  const minutes = repo.worktreeSetupTimeoutMinutes;
+  return typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
+    ? Math.round(minutes * 60_000)
+    : DEFAULT_WORKTREE_SETUP_TIMEOUT_MS;
+}
+
+export type WorktreeSetupResult =
+  | { ok: true }
+  | { ok: false; reason: "timed_out" | "failed"; message: string };
+
+function formatSetupDuration(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) {
+    const minutes = ms / 60_000;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+/** Tell the sessions working in `dir` that its setup outcome changed. */
+function publishSetupOutcome(dir: string): void {
+  if (setupOutcomePublisher) return setupOutcomePublisher(dir);
+  void import("./session-cache")
+    .then(async ({ getCachedSessionsAsync, publishSessionChange }) => {
+      const key = canonicalPath(dir);
+      for (const session of await getCachedSessionsAsync()) {
+        const dirs = [
+          session.worktreeDir,
+          ...(session.attachedRepos ?? []).map((repo) => repo.dir),
+        ];
+        if (dirs.some((d) => d && canonicalPath(d) === key))
+          void publishSessionChange(session.id);
+      }
+    })
+    .catch(() => {});
+}
+
+let setupOutcomePublisher: ((dir: string) => void) | null = null;
+
+/** Test seam: observe setup-outcome publishes instead of refreshing rows. */
+export function __setSetupOutcomePublisherForTest(
+  publish: ((dir: string) => void) | null,
+): void {
+  setupOutcomePublisher = publish;
+}
+
 export async function installWorktreeDeps(
   repo: Repo,
   wtPath: string,
   branchLabel: string,
-): Promise<void> {
+  options: {
+    /** False for trees no session owns outright (Ask checkout, warm
+     * templates): archive and the reaper leave their setup alone. */
+    sessionOwned?: boolean;
+    /** Overrides the repo's setup timeout. */
+    timeoutMs?: number;
+  } = {},
+): Promise<WorktreeSetupResult> {
+  const timeoutMs = options.timeoutMs ?? worktreeSetupTimeoutMs(repo);
+  const deadline = Date.now() + timeoutMs;
+  let result: WorktreeSetupResult = { ok: true };
+  try {
+    if (clearWorktreeSetupFailure(wtPath)) publishSetupOutcome(wtPath);
+  } catch {}
+  const steps: { label: string; argv: string[] }[] = [];
   try {
     // `.agents/setup` — the repo lifecycle provision hook (same dir preview.ts
     // resolves; docs/repo-lifecycle.md).
     const repoSetup = `${wtPath}/.agents/setup`;
-    if (existsSync(repoSetup)) {
-      await $`${workloadArgv(["bash", repoSetup], "setup")}`
-        .cwd(wtPath)
-        .quiet();
-    } else if (repo.worktreeSetup) {
-      await $`${workloadArgv(["sh", "-c", repo.worktreeSetup], "setup")}`
-        .cwd(wtPath)
-        .quiet();
-    }
-    if (repo.depsInstall) {
-      await $`${workloadArgv(["sh", "-c", repo.depsInstall], "setup")}`
-        .cwd(wtPath)
-        .quiet();
-    } else if (await Bun.file(`${wtPath}/package.json`).exists()) {
-      await $`${workloadArgv(["bun", "install"], "setup")}`.cwd(wtPath).quiet();
+    if (existsSync(repoSetup))
+      steps.push({ label: ".agents/setup", argv: ["bash", repoSetup] });
+    else if (repo.worktreeSetup)
+      steps.push({
+        label: "worktreeSetup",
+        argv: ["sh", "-c", repo.worktreeSetup],
+      });
+    if (repo.depsInstall)
+      steps.push({
+        label: "depsInstall",
+        argv: ["sh", "-c", repo.depsInstall],
+      });
+    else if (await Bun.file(`${wtPath}/package.json`).exists())
+      steps.push({ label: "bun install", argv: ["bun", "install"] });
+
+    for (const step of steps) {
+      // One budget for the whole setup: a slow hook leaves less for the
+      // install rather than each step getting the full timeout.
+      const remaining = deadline - Date.now();
+      const run =
+        remaining > 0
+          ? await runSessionResource({
+              kind: "setup",
+              argv: step.argv,
+              cwd: wtPath,
+              sessionOwned: options.sessionOwned ?? true,
+              timeoutMs: remaining,
+              label: `${step.label} for ${branchLabel}`,
+            })
+          : null;
+      if (!run || run.timedOut) {
+        result = {
+          ok: false,
+          reason: "timed_out",
+          message: `Setup did not finish within ${formatSetupDuration(timeoutMs)} and was stopped (${step.label}).`,
+        };
+        break;
+      }
+      if (run.exitCode !== 0) {
+        const detail = run.stderr.trim().split("\n").slice(-3).join("\n");
+        const status =
+          run.exitCode === null
+            ? `signal ${run.signal ?? "unknown"}`
+            : `exit ${run.exitCode}`;
+        result = {
+          ok: false,
+          reason: "failed",
+          message:
+            `Setup failed (${step.label}, ${status})${detail ? `: ${detail}` : "."}`.slice(
+              0,
+              500,
+            ),
+        };
+        break;
+      }
     }
   } catch (e) {
-    console.warn(`[worktree] setup failed for ${branchLabel} (continuing):`, e);
+    result = {
+      ok: false,
+      reason: "failed",
+      message:
+        `Setup failed: ${e instanceof Error ? e.message : String(e)}`.slice(
+          0,
+          500,
+        ),
+    };
   }
+  if (!result.ok) {
+    console.warn(
+      `[worktree] setup ${result.reason === "timed_out" ? "timed out" : "failed"} for ${branchLabel} (continuing): ${result.message}`,
+    );
+    try {
+      recordWorktreeSetupFailure(wtPath, {
+        reason: result.reason,
+        message: result.message,
+        at: new Date().toISOString(),
+      });
+      publishSetupOutcome(wtPath);
+    } catch (error) {
+      console.warn(
+        `[worktree] could not record the setup failure for ${branchLabel}:`,
+        error,
+      );
+    }
+  }
+  return result;
 }
 
 export async function listWorktrees(repoId?: string): Promise<WorktreeInfo[]> {
@@ -570,7 +716,9 @@ export async function ensureAskCheckout(repoId?: string): Promise<string> {
     }
     askCheckoutRefreshedAt.set(repo.id, Date.now());
     askCheckoutAppliedVersion.set(repo.id, requiredVersion);
-    void installWorktreeDeps(repo, dir, "ask-checkout");
+    void installWorktreeDeps(repo, dir, "ask-checkout", {
+      sessionOwned: false,
+    });
     return dir;
   });
 }
@@ -588,6 +736,11 @@ export async function removeWorktree(
         sessionId: "worktree-cleanup",
         worktreeDir: wtPath,
       });
+    } catch {}
+    // And any setup still running in it.
+    try {
+      await stopSessionResourcesInDir(wtPath);
+      clearWorktreeSetupFailure(wtPath);
     } catch {}
     await $`git -C ${repo.repo} worktree remove ${wtPath} --force`.quiet();
   } catch (e) {

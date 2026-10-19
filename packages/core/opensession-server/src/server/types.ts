@@ -289,6 +289,17 @@ export interface UnifiedSession {
    */
   lastRunError?: { message: string; at: string };
   /**
+   * Fresh-worktree setup for this session's worktree (or an attached repo's)
+   * failed or was stopped at its timeout, so dependencies may be missing.
+   * Projected from worktree-setup-status.ts by the session payloads; cleared
+   * when setup runs again for that worktree.
+   */
+  setupFailure?: {
+    reason: "timed_out" | "failed";
+    message: string;
+    at: string;
+  };
+  /**
    * Manual sidebar-lane override (Needs input / In progress / In review / Done /
    * Backlog). When set it wins over the derived lane in the sidebar, letting a
    * human pin a session where they want it. Set from the status-override

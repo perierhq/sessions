@@ -52,6 +52,7 @@
       "icon": "assets/widget-icon.png",
       "worktreeSetup": "git submodule update --init --depth 1",
       "depsInstall": "bun install",
+      "worktreeSetupTimeoutMinutes": 15,
       "previewCommand": "/srv/opensession/bin/start-widget-preview",
       "warmCachePaths": ["dist/generated-client.js"],
       "previewAwsProfile": "widget-dev",

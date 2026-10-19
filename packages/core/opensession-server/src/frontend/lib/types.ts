@@ -672,6 +672,15 @@ export interface UnifiedSession {
    */
   lastRunError?: { message: string; at: string };
   /**
+   * Fresh-worktree setup did not finish: it failed, or was stopped at the
+   * repo's setup timeout. Dependencies may be missing. Set by /api/sessions.
+   */
+  setupFailure?: {
+    reason: "timed_out" | "failed";
+    message: string;
+    at: string;
+  };
+  /**
    * Manual sidebar-lane override. When set it wins over the lane derived from
    * PR/run state, letting a human pin a session into any lane (e.g. Backlog).
    * Set server-side from the status-override registry; unset = derive as usual.

@@ -133,6 +133,9 @@ export interface RepoSection {
   /** One-time setup command run in a fresh worktree before depsInstall. */
   worktreeSetup?: string;
   depsInstall?: string;
+  /** Minutes fresh-worktree setup (`.agents/setup`, `worktreeSetup`, the
+   *  dependency install) may run before it is stopped. Unset = 15. */
+  worktreeSetupTimeoutMinutes?: number;
   /** Include this repo in the bulk PR cache (true by default when ghRepo exists). */
   prCache?: boolean;
   prCacheOpenLimit?: number;
@@ -306,6 +309,8 @@ export interface Repo {
   /** Shell command (run with cwd = the fresh worktree) that installs deps.
    *  Unset = `bun install` at the repo root when package.json exists. */
   depsInstall?: string;
+  /** See RepoSection.worktreeSetupTimeoutMinutes. */
+  worktreeSetupTimeoutMinutes?: number;
   prCache?: boolean;
   prCacheOpenLimit?: number;
   prCacheRecentLimit?: number;
@@ -371,6 +376,10 @@ const str = (v: unknown): string | undefined =>
   typeof v === "string" && v.trim() ? v.trim() : undefined;
 const num = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
+const positiveNum = (v: unknown): number | undefined => {
+  const n = num(v);
+  return n !== undefined && n > 0 ? n : undefined;
+};
 const bool = (v: unknown): boolean | undefined =>
   typeof v === "boolean" ? v : undefined;
 const obj = (v: unknown): Record<string, unknown> | undefined =>
@@ -423,6 +432,7 @@ function parseRepoSection(v: unknown): RepoSection | undefined {
     color: str(o.color),
     worktreeSetup: str(o.worktreeSetup),
     depsInstall: str(o.depsInstall),
+    worktreeSetupTimeoutMinutes: positiveNum(o.worktreeSetupTimeoutMinutes),
     prCache: bool(o.prCache),
     prCacheOpenLimit: num(o.prCacheOpenLimit),
     prCacheRecentLimit: num(o.prCacheRecentLimit),
@@ -912,6 +922,7 @@ function resolveConfiguredRepos(
           color: entry.color,
           worktreeSetup: entry.worktreeSetup,
           depsInstall: entry.depsInstall,
+          worktreeSetupTimeoutMinutes: entry.worktreeSetupTimeoutMinutes,
           prCache: entry.prCache,
           prCacheOpenLimit: entry.prCacheOpenLimit,
           prCacheRecentLimit: entry.prCacheRecentLimit,

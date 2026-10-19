@@ -196,6 +196,24 @@ describe("config loader", () => {
     expect(configuredPaths().worktreesDir).toBe("/srv/worktrees");
   });
 
+  test("worktree setup timeout is per repo and must be positive", async () => {
+    await withConfig(
+      JSON.stringify({
+        repos: {
+          slow: { repo: "/srv/slow", worktreeSetupTimeoutMinutes: 45 },
+          zero: { repo: "/srv/zero", worktreeSetupTimeoutMinutes: 0 },
+          text: { repo: "/srv/text", worktreeSetupTimeoutMinutes: "10" },
+          unset: { repo: "/srv/unset" },
+        },
+      }),
+    );
+    const repos = configuredRepos();
+    expect(repos.slow?.worktreeSetupTimeoutMinutes).toBe(45);
+    expect(repos.zero?.worktreeSetupTimeoutMinutes).toBeUndefined();
+    expect(repos.text?.worktreeSetupTimeoutMinutes).toBeUndefined();
+    expect(repos.unset?.worktreeSetupTimeoutMinutes).toBeUndefined();
+  });
+
   test("publication mode is per repo and independent of checkout isolation", async () => {
     await withConfig(
       JSON.stringify({
