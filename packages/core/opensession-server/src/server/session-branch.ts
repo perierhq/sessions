@@ -164,7 +164,10 @@ export async function moveSessionToBranch(
     (await suggestBranchName(session.title || "session")) ||
     `session-${sessionId.slice(4, 10)}`;
   const branch = await resolveUniqueBranch(suggested.trim(), repo.id);
-  const worktreeDir = await createWorktree(branch, repo.id, { isolated: true });
+  const worktreeDir = await createWorktree(branch, repo.id, {
+    isolated: true,
+    sessionId,
+  });
   await restoreSessionChanges(worktreeDir, snapshot);
 
   touchNativeSession(sessionId, {

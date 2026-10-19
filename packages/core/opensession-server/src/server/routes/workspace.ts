@@ -819,6 +819,7 @@ export async function handleWorkspaceRoutes(
         worktreeDir = await createWorktree(branch, repo.id, {
           base: src.branch,
           gitEnv: githubMutationCredential(ctx)?.env,
+          sessionId: bksId,
         });
         mode = "code";
         // Remember the layer underneath so this session's PR bases on it and
@@ -1025,6 +1026,7 @@ export async function handleWorkspaceRoutes(
       const oldCwd = current || repo.repo;
       worktreeDir = await createWorktree(branch, repo.id, {
         gitEnv: githubMutationCredential(ctx)?.env,
+        sessionId,
       });
       // Best-effort: copy the ask rollout into the new worktree's hash dir
       // so SDK resume (keyed by cwd) finds the prior conversation.
