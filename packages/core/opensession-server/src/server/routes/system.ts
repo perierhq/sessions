@@ -108,10 +108,10 @@ export function deadLettersSnapshot(
 }
 
 /**
- * Second lock on the memory diagnostics routes. The global gate in
+ * Second lock on the admin diagnostics routes (memory, PR session backfill). The global gate in
  * opensession.ts already refuses /api/* without a session when sign-in is on;
  * this repeats the check in the handler so a future gate exemption can never
- * expose process memory. With sign-in off every /api/* route is open to
+ * expose process memory or run an admin task. With sign-in off every /api/* route is open to
  * whoever reaches the port, exactly like the other /api/admin/* routes.
  */
 export function adminDiagnosticsDenied(
@@ -483,33 +483,35 @@ export async function handleSystemRoutes(
   // already merged or closed on GitHub (the `closed` webhook archives new
   // ones; this cleans up what built up before it did). Operator-run only,
   // never at boot. Team gated by the global auth layer like every /api/*
-  // route. Dry run unless the body says `apply: true`: the response lists
-  // what it would archive. Body: { apply?, limit? } (limit = PRs looked up
-  // on GitHub, one request each).
+  // route, and again in the handler. Dry run unless the body says
+  // `apply: true`: the response lists what it would archive. Body:
+  // { apply?, limit? } (limit = PRs looked up on GitHub, one read-only
+  // request each, clamped to 500).
   if (
     path === "/api/admin/github-pr-session-backfill" &&
     req.method === "POST"
   ) {
+    const denied = adminDiagnosticsDenied(ctx);
+    if (denied) return denied;
     let body: { apply?: unknown; limit?: unknown } = {};
     try {
       body = ((await req.json()) ?? {}) as typeof body;
     } catch {
       // empty/non-JSON body → defaults (dry run)
     }
+    const { backfillClosedPrSessions, backfillLimit } =
+      await import("../../agents/github/pr-session-archive");
     const opts = {
       apply: body.apply === true,
-      limit:
-        typeof body.limit === "number" && body.limit > 0
-          ? Math.floor(body.limit)
-          : undefined,
+      limit: backfillLimit(
+        typeof body.limit === "number" ? body.limit : undefined,
+      ),
     };
     const by = requestUser(ctx);
     console.log(
       `[github] PR session backfill${opts.apply ? "" : " (dry run)"}${by ? ` by ${by}` : ""}`,
     );
     try {
-      const { backfillClosedPrSessions } =
-        await import("../../agents/github/pr-session-archive");
       const report = await backfillClosedPrSessions(opts);
       if (report.archived.length)
         audit({
