@@ -877,6 +877,49 @@ describe("labelled containers and units", () => {
     expect(fakes.map((f) => f.session)).toEqual(["os-other"]);
   });
 
+  test("archive and the reaper leave another instance's labels alone", async () => {
+    const instance = resourceInstanceId();
+    fakes = [
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("a"),
+        session: "os-a",
+        instance,
+      },
+      // A dev gateway on the same host user, with a session of the same id.
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("b"),
+        session: "os-a",
+        instance: "000000000000",
+      },
+      // Labelled by hand, without an instance: still acted on.
+      { kind: "unit", handle: "run-x.service", session: "os-a" },
+      {
+        kind: "unit",
+        handle: "run-y.service",
+        session: "os-a",
+        instance: "000000000000",
+      },
+    ];
+    install();
+    const stopped = await stopArchivedSessionResources("os-a", {
+      listSessions: async () => [{ id: "os-a" }],
+      isArchived: () => true,
+    });
+    expect(stopped.map((s) => s.id)).toEqual([
+      `container:${hex("a")}`,
+      "unit:run-x.service",
+    ]);
+    install();
+    expect(
+      (await reapSessionResources([{ id: "os-a", archived: true }])).stopped,
+    ).toEqual([]);
+    expect(fakes.map((f) => f.handle)).toEqual([hex("b"), "run-y.service"]);
+  });
+
   test("stops run a few at a time, not one after another", async () => {
     const handles = ["0", "1", "2", "3", "4", "5"].map(hex);
     let active = 0;
@@ -1012,12 +1055,26 @@ describe("labelled containers and units", () => {
     expect(
       labelledReapReason(resource, { ...input, ownerArchived: false }),
     ).toBeNull();
+    // An archived owner: this instance's, or a label without an instance,
+    // goes at once; another instance's is never this one's to stop.
+    expect(
+      labelledReapReason(
+        { ...resource, startedAtMs: nowMs },
+        { ...input, ownerArchived: true },
+      ),
+    ).toBe("archived");
+    expect(
+      labelledReapReason(
+        { sessionId: "os-x" },
+        { ...input, ownerArchived: true },
+      ),
+    ).toBe("archived");
     expect(
       labelledReapReason(
         { ...resource, instance: "def", startedAtMs: nowMs },
         { ...input, ownerArchived: true },
       ),
-    ).toBe("archived");
+    ).toBeNull();
   });
 
   test("the reaper stops this instance's settled labels whose session is gone", async () => {

@@ -825,25 +825,39 @@ async function stopLabelledBatch(
   );
 }
 
-/** Stop every labelled container and unit whose label names one of `ids`. */
+/** Whether this installation may act on `resource`: its instance label is
+ * this one's, or it has none (labelled by hand). Another instance on the
+ * host (a dev gateway) owns its own, even for a session id both know. */
+export function labelledResourceIsOurs(
+  resource: Pick<LabelledResource, "instance">,
+  instance = resourceInstanceId(),
+): boolean {
+  return !resource.instance || resource.instance === instance;
+}
+
+/** Stop every labelled container and unit of this instance whose label
+ * names one of `ids`. */
 async function stopLabelledForSession(
   ids: ReadonlySet<string>,
   reason: SessionResourceStopReason,
 ): Promise<StoppedSessionResource[]> {
-  const owned = (await listLabelledResources()).filter((resource) =>
-    ids.has(resource.sessionId),
+  const instance = resourceInstanceId();
+  const owned = (await listLabelledResources()).filter(
+    (resource) =>
+      ids.has(resource.sessionId) && labelledResourceIsOurs(resource, instance),
   );
   return stopLabelledBatch(owned.map((resource) => ({ resource, reason })));
 }
 
 /**
  * Why the reaper would stop a labelled container or unit, or null to keep
- * it. A label naming an archived session goes at once. One naming a session
- * the list does not have goes only when the label is this installation's
- * (another instance on the host keeps its own), the session list is not
- * empty (an unavailable list is not a list of no one), and the grace has
- * passed since it started, for a session still being created. A start time
- * that cannot be read keeps it.
+ * it. Another instance's label is never this one's to stop. A label naming
+ * an archived session goes at once. One naming a session the list does not
+ * have goes only when the label is this installation's (one without an
+ * instance could be anyone's), the session list is not empty (an
+ * unavailable list is not a list of no one), and the grace has passed since
+ * it started, for a session still being created. A start time that cannot
+ * be read keeps it.
  */
 export function labelledReapReason(
   resource: Pick<LabelledResource, "sessionId" | "instance" | "startedAtMs">,
@@ -854,6 +868,7 @@ export function labelledReapReason(
     now: number;
   },
 ): "archived" | "orphaned" | null {
+  if (!labelledResourceIsOurs(resource, input.instance)) return null;
   if (input.ownerArchived === true) return "archived";
   if (input.ownerArchived === false) return null;
   if (!input.sessionsKnown || resource.instance !== input.instance) return null;
