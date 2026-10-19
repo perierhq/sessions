@@ -2,6 +2,7 @@
  * The turn loop owns it: it posts the card when a Slack-originated turn
  * starts, feeds it the same events it broadcasts to viewers, and closes it
  * when the turn settles, just before the reply is mirrored to the thread. */
+import { isMcpCallDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
 import type { StreamEvent } from "../../server/run-events";
 import type { SlackReplyTarget } from "../../server/types";
 import { configuredServer } from "../../server/config";
@@ -60,7 +61,7 @@ export function applyTurnEvent(progress: SlackProgress, e: StreamEvent): void {
     progress.setTodos(input?.todos);
   } else if (name === "TaskCreate") {
     progress.setAction(input?.activeForm || input?.subject || "Working…");
-  } else if (name === "mcp_call" && typeof input?.name === "string") {
+  } else if (isMcpCallDispatcher(name) && typeof input?.name === "string") {
     progress.setAction(`Using ${input.name}`);
   } else if (!isSilentTool(name)) {
     progress.setAction(

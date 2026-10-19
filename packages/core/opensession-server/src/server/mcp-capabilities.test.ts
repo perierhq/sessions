@@ -22,8 +22,8 @@ describe("renderInternalMcpCapabilities", () => {
     });
 
     expect(note).toStartWith("## Tools\n");
-    expect(note).toContain("`mcp_search`");
-    expect(note).toContain("`mcp_call`");
+    expect(note).toContain("`tool_search`");
+    expect(note).toContain("`tool_call`");
     expect(note).toContain(
       "- `opensession-runners`: " +
         INTERNAL_MCP_CAPABILITIES["opensession-runners"].guidance,

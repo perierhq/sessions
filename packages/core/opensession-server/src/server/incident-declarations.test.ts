@@ -79,18 +79,22 @@ describe("incidentKey / incidentsInEvent", () => {
 describe("createIncidentDeclarationScanner", () => {
   const created = `{"created_at":"2026-09-30T14:35:53Z","external_id":105,"id":"${ULID}","mode":"standard","name":"x","reference":"INC-105"}`;
 
-  test("records a create made through the mcp_call dispatcher", () => {
-    const scan = createIncidentDeclarationScanner();
-    scan({
-      type: "tool_use",
-      toolUseId: "t1",
-      toolName: "mcp_call",
-      toolInput: { name: "incident_incident_create", arguments: {} },
-    });
-    expect(
-      scan({ type: "tool_result", toolUseId: "t1", content: created }),
-    ).toEqual({ incidentId: ULID, reference: "INC-105" });
-  });
+  // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+  test.each(["tool_call", "mcp_call"])(
+    "records a create made through the %s dispatcher",
+    (toolName) => {
+      const scan = createIncidentDeclarationScanner();
+      scan({
+        type: "tool_use",
+        toolUseId: "t1",
+        toolName,
+        toolInput: { name: "incident_incident_create", arguments: {} },
+      });
+      expect(
+        scan({ type: "tool_result", toolUseId: "t1", content: created }),
+      ).toEqual({ incidentId: ULID, reference: "INC-105" });
+    },
+  );
 
   test("records a direct call too", () => {
     const scan = createIncidentDeclarationScanner();
@@ -105,7 +109,7 @@ describe("createIncidentDeclarationScanner", () => {
     scan({
       type: "tool_use",
       toolUseId: "r",
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: { name: "incident_incident_show" },
     });
     expect(

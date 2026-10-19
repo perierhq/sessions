@@ -36,6 +36,7 @@
  * ledger, and a dropped ledger just means no verdict for that run.
  */
 
+import { isMcpCallDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
 import { audit } from "./audit";
 
 export type TurnVerdict = "reached" | "declared" | "silent-drop";
@@ -115,9 +116,10 @@ export function silenceToolFor(
  * The tool a `tool_use` event is really about.
  *
  * Pi does not hand the model one tool per bridged MCP tool. The catalog is
- * kept server-side and reached through two dispatchers, `mcp_search` and
- * `mcp_call` (createPiMcpBridge, src/server/pi-mcp-bridge.ts) — so a Slack
- * post arrives as `mcp_call` with `{name:"slack_slack_post_message",
+ * kept server-side and reached through two dispatchers, `tool_search` and
+ * `tool_call` (createPiMcpBridge, src/server/pi-mcp-bridge.ts; older
+ * transcripts call them `mcp_search` and `mcp_call`) — so a Slack post
+ * arrives as `tool_call` with `{name:"slack_slack_post_message",
  * arguments:{…}}`, and the tool that was actually called is a level down.
  *
  * The ledger read the envelope. That was harmless until automations moved to
@@ -148,7 +150,7 @@ export function observedToolCall(event: {
   const outer = event.toolName;
   if (!outer) return undefined;
   const input = asRecord(event.toolInput);
-  if (outer.toLowerCase() !== "mcp_call") return { name: outer, args: input };
+  if (!isMcpCallDispatcher(outer)) return { name: outer, args: input };
   // A dispatcher call with no resolvable target names no tool at all — an
   // engine-side malformed call, not something the run reached anybody with.
   const inner = input.name;

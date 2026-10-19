@@ -12,6 +12,8 @@
  * `bun --hot` reload keeps it.
  */
 
+import { isMcpCallDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
+
 const g = globalThis as unknown as {
   __slackLinkThreadToSess?: Map<string, string>;
   __slackNativeConversations?: Map<string, string>;
@@ -74,7 +76,7 @@ export function linkThreadInIndex(
  * is confirmed, in two ways:
  *
  * - slack MCP calls (`…post_message`/`reply_to_thread`/`add_message`, called
- *   directly or through the `mcp_call` dispatcher): the
+ *   directly or through the `tool_call` dispatcher): the
  *   input is remembered at tool_use and the posted message's channel/ts read
  *   off the tool_result (raw chat.postMessage JSON — `ok`/`channel`/`ts` sit
  *   at the head, safely inside the stream event's 500-char truncation). A
@@ -139,8 +141,9 @@ export function createSlackPostScanner(): (event: {
 
 /**
  * The tool a tool_use event actually reached. Runs that discover tools lazily
- * call them through the `mcp_call` dispatcher, whose input names the real
- * tool and carries its arguments; unwrap that so those posts link too.
+ * call them through the `tool_call` dispatcher (`mcp_call` in older
+ * transcripts), whose input names the real tool and carries its arguments;
+ * unwrap that so those posts link too.
  * (turn-outcome.ts observedToolCall does the same; it is inlined here because
  * this module stays free of server imports.)
  */
@@ -154,7 +157,7 @@ function slackToolCall(event: {
       : {};
   const outer = event.toolName || "";
   const input = record(event.toolInput);
-  if (outer.toLowerCase() !== "mcp_call") return { name: outer, args: input };
+  if (!isMcpCallDispatcher(outer)) return { name: outer, args: input };
   return typeof input.name === "string"
     ? { name: input.name, args: record(input.arguments) }
     : undefined;

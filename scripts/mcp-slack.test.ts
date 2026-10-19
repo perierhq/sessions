@@ -369,7 +369,7 @@ describe("posting with images", () => {
     scan({
       type: "tool_use",
       toolUseId: "t1",
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "slack_slack_post_message",
         arguments: { channel_id: "C1", text: "Chart", images: [chart] },

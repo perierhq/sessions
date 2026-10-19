@@ -21,6 +21,8 @@
  * Importing this module has no live effects.
  */
 
+import { isMcpCallDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
+
 /** Line appended to a declared incident's summary. */
 export const INCIDENT_DECLARED_FROM = "Declared from Open Session:";
 
@@ -76,8 +78,9 @@ export interface IncidentDeclaration {
 /**
  * Stateful scanner over one run's event stream. Returns the incident a
  * successful `incident_create` just declared, called directly or through the
- * `mcp_call` dispatcher. A retry that returned an existing incident
- * (`already_existed`) and a failed call return nothing.
+ * `tool_call` dispatcher (`mcp_call` in older transcripts). A retry that
+ * returned an existing incident (`already_existed`) and a failed call return
+ * nothing.
  */
 export function createIncidentDeclarationScanner(): (event: {
   type: string;
@@ -91,10 +94,9 @@ export function createIncidentDeclarationScanner(): (event: {
   return (event) => {
     if (event.type === "tool_use" && event.toolUseId) {
       const outer = event.toolName || "";
-      const name =
-        outer.toLowerCase() === "mcp_call"
-          ? String(record(event.toolInput).name ?? "")
-          : outer;
+      const name = isMcpCallDispatcher(outer)
+        ? String(record(event.toolInput).name ?? "")
+        : outer;
       if (isIncidentCreateTool(name)) pending.add(event.toolUseId);
       return undefined;
     }

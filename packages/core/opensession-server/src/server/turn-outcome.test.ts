@@ -173,20 +173,24 @@ describe("ledger", () => {
 });
 
 describe("observedToolCall", () => {
-  test("unwraps pi's mcp_call dispatcher to the tool that was really called", () => {
-    expect(
-      observedToolCall({
-        toolName: "mcp_call",
-        toolInput: {
-          name: "slack_slack_post_message",
-          arguments: { channel_id: "C0AFQ7PV057", text: "hi" },
-        },
-      }),
-    ).toEqual({
-      name: "slack_slack_post_message",
-      args: { channel_id: "C0AFQ7PV057", text: "hi" },
-    });
-  });
+  // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+  test.each(["tool_call", "mcp_call"])(
+    "unwraps pi's %s dispatcher to the tool that was really called",
+    (toolName) => {
+      expect(
+        observedToolCall({
+          toolName,
+          toolInput: {
+            name: "slack_slack_post_message",
+            arguments: { channel_id: "C0AFQ7PV057", text: "hi" },
+          },
+        }),
+      ).toEqual({
+        name: "slack_slack_post_message",
+        args: { channel_id: "C0AFQ7PV057", text: "hi" },
+      });
+    },
+  );
 
   test("passes a directly-named tool through unchanged", () => {
     expect(
@@ -205,10 +209,10 @@ describe("observedToolCall", () => {
 
   test("a dispatcher call naming no tool names nothing", () => {
     expect(
-      observedToolCall({ toolName: "mcp_call", toolInput: {} }),
+      observedToolCall({ toolName: "tool_call", toolInput: {} }),
     ).toBeUndefined();
     expect(
-      observedToolCall({ toolName: "mcp_call", toolInput: { name: 42 } }),
+      observedToolCall({ toolName: "tool_call", toolInput: { name: 42 } }),
     ).toBeUndefined();
     expect(observedToolCall({ toolName: undefined })).toBeUndefined();
   });
@@ -224,7 +228,7 @@ describe("observedToolCall", () => {
     });
     expect(
       observedToolCall({
-        toolName: "mcp_call",
+        toolName: "tool_call",
         toolInput: { name: "x", arguments: 7 },
       }),
     ).toEqual({ name: "x", args: {} });
@@ -255,24 +259,28 @@ describe("silenceToolFor", () => {
 describe("observeToolCall — the cross-process, dispatcher-wrapped run", () => {
   // Both halves of the 2026-08-19 regression, in the exact event shapes a
   // hosted pi automation emits (measured from transcripts.db).
-  test("a Slack post made through mcp_call still counts as reaching someone", () => {
-    beginTurn({ key: "bks-wrapped-reach", kind: "automation" });
-    observeToolCall("bks-wrapped-reach", {
-      toolName: "mcp_call",
-      toolInput: {
-        name: "slack_slack_post_message",
-        arguments: { channel_id: "C0AFQ7PV057", text: "🌙 Dreaming" },
-      },
-    });
-    const outcome = endTurn("bks-wrapped-reach")!;
-    expect(outcome.verdict).toBe("reached");
-    expect(outcome.effects).toEqual(["slack_slack_post_message"]);
-  });
+  test.each(["tool_call", "mcp_call"])(
+    "a Slack post made through %s still counts as reaching someone",
+    (toolName) => {
+      const key = `bks-wrapped-reach-${toolName}`;
+      beginTurn({ key, kind: "automation" });
+      observeToolCall(key, {
+        toolName,
+        toolInput: {
+          name: "slack_slack_post_message",
+          arguments: { channel_id: "C0AFQ7PV057", text: "🌙 Dreaming" },
+        },
+      });
+      const outcome = endTurn(key)!;
+      expect(outcome.verdict).toBe("reached");
+      expect(outcome.effects).toEqual(["slack_slack_post_message"]);
+    },
+  );
 
-  test("finish_silently through mcp_call is recorded even though the tool body ran in another process", () => {
+  test("finish_silently through tool_call is recorded even though the tool body ran in another process", () => {
     beginTurn({ key: "bks-wrapped-declare", kind: "automation" });
     observeToolCall("bks-wrapped-declare", {
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "opensession-turn_finish_silently",
         arguments: { reason: "health check nominal" },
@@ -289,7 +297,7 @@ describe("observeToolCall — the cross-process, dispatcher-wrapped run", () => 
   test("a declaration with no reason still declares", () => {
     beginTurn({ key: "bks-wrapped-noreason", kind: "automation" });
     observeToolCall("bks-wrapped-noreason", {
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: { name: "opensession-turn_finish_silently", arguments: {} },
     });
     const outcome = endTurn("bks-wrapped-noreason")!;
@@ -311,7 +319,7 @@ describe("observeToolCall — the cross-process, dispatcher-wrapped run", () => 
   test("the in-process tool recording the same declaration is a harmless duplicate", () => {
     beginTurn({ key: "bks-both", kind: "automation" });
     observeToolCall("bks-both", {
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "opensession-turn_finish_silently",
         arguments: { reason: "quiet day" },
@@ -333,18 +341,18 @@ describe("observeToolCall — the cross-process, dispatcher-wrapped run", () => 
   test("reads and searches through the dispatcher are still not effects", () => {
     beginTurn({ key: "bks-wrapped-read", kind: "automation" });
     observeToolCall("bks-wrapped-read", {
-      toolName: "mcp_search",
+      toolName: "tool_search",
       toolInput: { query: "post a slack message" },
     });
     observeToolCall("bks-wrapped-read", {
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "slack_slack_get_channel_history",
         arguments: { channel_id: "C1" },
       },
     });
     observeToolCall("bks-wrapped-read", {
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: { name: "opensession-papercuts_log_papercut", arguments: {} },
     });
     expect(endTurn("bks-wrapped-read")!.verdict).toBe("silent-drop");
@@ -352,14 +360,17 @@ describe("observeToolCall — the cross-process, dispatcher-wrapped run", () => 
 
   test("a malformed dispatcher call cannot manufacture an effect", () => {
     beginTurn({ key: "bks-wrapped-bad", kind: "automation" });
-    observeToolCall("bks-wrapped-bad", { toolName: "mcp_call", toolInput: {} });
+    observeToolCall("bks-wrapped-bad", {
+      toolName: "tool_call",
+      toolInput: {},
+    });
     expect(endTurn("bks-wrapped-bad")!.verdict).toBe("silent-drop");
   });
 
   test("no key is no ledger — an unchecked kind records nothing", () => {
     expect(() =>
       observeToolCall(undefined, {
-        toolName: "mcp_call",
+        toolName: "tool_call",
         toolInput: { name: "slack_slack_post_message", arguments: {} },
       }),
     ).not.toThrow();

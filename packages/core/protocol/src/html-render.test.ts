@@ -129,15 +129,19 @@ describe("mayBeHtmlRenderTool", () => {
     expect(mayBeHtmlRenderTool("mcp__opensession-html__html_render")).toBe(
       true,
     );
-    expect(
-      mayBeHtmlRenderTool("mcp_call", {
-        name: "opensession-html_html_render",
-        arguments: {},
-      }),
-    ).toBe(true);
-    expect(mayBeHtmlRenderTool("mcp__oc__mcp_call", { keys: ["name"] })).toBe(
-      true,
-    );
+    // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+    for (const dispatcher of ["tool_call", "mcp_call"]) {
+      expect(
+        mayBeHtmlRenderTool(dispatcher, {
+          name: "opensession-html_html_render",
+          arguments: {},
+        }),
+      ).toBe(true);
+      expect(
+        mayBeHtmlRenderTool(`mcp__oc__${dispatcher}`, { keys: ["name"] }),
+      ).toBe(true);
+    }
+    expect(mayBeHtmlRenderTool("tool_search")).toBe(false);
   });
 
   test("not other tools", () => {

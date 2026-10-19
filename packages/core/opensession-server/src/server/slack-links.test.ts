@@ -20,28 +20,32 @@ describe("createSlackPostScanner", () => {
     ).toEqual({ channel: "C0TEST", threadTs: "1.100" });
   });
 
-  test("links a post made through the mcp_call dispatcher", () => {
-    const scan = createSlackPostScanner();
-    scan({
-      type: "tool_use",
-      toolUseId: "t2",
-      toolName: "mcp_call",
-      toolInput: {
-        name: "slack_slack_post_message",
-        arguments: { channel_id: "C0TEST", text: "hi" },
-      },
-    });
-    expect(
-      scan({ type: "tool_result", toolUseId: "t2", content: ok("2.200") }),
-    ).toEqual({ channel: "C0TEST", threadTs: "2.200" });
-  });
+  // tool_call is pi's dispatcher; mcp_call is what older transcripts store.
+  test.each(["tool_call", "mcp_call"])(
+    "links a post made through the %s dispatcher",
+    (toolName) => {
+      const scan = createSlackPostScanner();
+      scan({
+        type: "tool_use",
+        toolUseId: "t2",
+        toolName,
+        toolInput: {
+          name: "slack_slack_post_message",
+          arguments: { channel_id: "C0TEST", text: "hi" },
+        },
+      });
+      expect(
+        scan({ type: "tool_result", toolUseId: "t2", content: ok("2.200") }),
+      ).toEqual({ channel: "C0TEST", threadTs: "2.200" });
+    },
+  );
 
   test("a dispatched thread reply anchors to the thread it replied into", () => {
     const scan = createSlackPostScanner();
     scan({
       type: "tool_use",
       toolUseId: "t3",
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "slack_slack_reply_to_thread",
         arguments: { channel_id: "C0TEST", thread_ts: "2.200", text: "hi" },
@@ -57,7 +61,7 @@ describe("createSlackPostScanner", () => {
     scan({
       type: "tool_use",
       toolUseId: "t4",
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: { name: "grafana_query_loki_logs", arguments: {} },
     });
     expect(
@@ -66,7 +70,7 @@ describe("createSlackPostScanner", () => {
     scan({
       type: "tool_use",
       toolUseId: "t5",
-      toolName: "mcp_call",
+      toolName: "tool_call",
       toolInput: {
         name: "slack_slack_post_message",
         arguments: { channel_id: "C0TEST" },

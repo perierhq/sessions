@@ -229,7 +229,7 @@ export function toolSummary(
   roots: readonly PathRoot[] = [],
   agentName?: string,
 ): string {
-  // Pi routes every bridged MCP call through its `mcp_call` dispatcher, so the
+  // Pi routes every bridged MCP call through its `tool_call` dispatcher, so the
   // envelope is what a transcript stores. Summarize the call inside it.
   const outerInput = parseToolInput(rawInput);
   const unwrapped = unwrapMcpDispatcher(rawName, outerInput.value);

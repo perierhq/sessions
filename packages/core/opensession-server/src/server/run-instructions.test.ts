@@ -138,7 +138,7 @@ describe("buildRunInstructions", () => {
         "A PR URL renders as that reference, so write one, not both. " +
         "Name each PR by number once per reply, then by what it does.",
     );
-    // Every MCP tool hides behind mcp_search; the Tools section is the only
+    // Every MCP tool hides behind tool_search; the Tools section is the only
     // way a run learns a tool exists before it knows to search for it, and it
     // names only the servers this run carries.
     expect(prompt).toContain(
@@ -146,6 +146,9 @@ describe("buildRunInstructions", () => {
     );
     expect(prompt).toContain("`suggest_task` is only for a drive-by finding");
     expect(prompt).toContain("- `opensession-portals`: ");
+    expect(prompt).toContain("`tool_search`");
+    // The dispatchers' pre-rename names must never reach a prompt again.
+    expect(prompt).not.toMatch(/\bmcp_(search|call)\b/);
     expect(prompt).not.toContain("`opensession-memory`");
     expect(prompt).toContain("`tella-stage` `lease_editor_fixture`");
     expect(prompt).toContain("this Open Session id as `leaseKey`");
@@ -160,7 +163,7 @@ describe("buildRunInstructions", () => {
     expect(prompt).not.toContain("open_pull_request");
     // The Media section names every block form the transcript renders live,
     // and Tools names what each mounted server is for: the two things a run
-    // cannot learn from a skill or from mcp_search without already knowing
+    // cannot learn from a skill or from tool_search without already knowing
     // they exist. Two servers mounted here; a full interactive mount adds
     // roughly 150 chars per server on top. Waiting adds ~250: the one
     // behavioral rule every run needs that no tool description can carry.
@@ -178,8 +181,9 @@ describe("buildRunInstructions", () => {
     // timer. "Messages during a turn" adds ~170: without it, a reply to a
     // mid-turn message read as progress narration, or never came. The
     // name rule in "Finish your turns" adds ~110: models opened replies
-    // with the prompter's name, which reads as curt.
-    expect(prompt.length).toBeLessThan(4_250);
+    // with the prompter's name, which reads as curt. Renaming the MCP
+    // dispatchers to tool_search/tool_call adds 2.
+    expect(prompt.length).toBeLessThan(4_255);
   });
 
   test("asks for visual proof by default only where walkthroughs are mounted", () => {

@@ -210,7 +210,7 @@ export function buildRunInstructions(input: {
         : "For longer, report where things stand and end your turn."),
   );
   // One guidance line per mounted internal server. MCP tools hide
-  // behind mcp_search (bar DIRECT_MCP_TOOLS), so this is how a run learns which tools exist before
+  // behind tool_search (bar DIRECT_MCP_TOOLS), so this is how a run learns which tools exist before
   // it knows to search for them. The sections below add the standing rules
   // (Portals, Attachments, Media) that a one-line intention cannot carry.
   const tools = renderInternalMcpCapabilities(inproc);

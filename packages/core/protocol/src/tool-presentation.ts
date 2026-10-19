@@ -74,6 +74,37 @@ const NATIVE_TOOLS = new Set([
   "str_replace_editor",
 ]);
 
+/**
+ * pi's two MCP dispatchers, as the model is handed them (createPiMcpBridge).
+ * The bridged catalog stays server-side: the model finds a tool with
+ * `tool_search` and calls it through `tool_call`.
+ *
+ * Neither name may start with `mcp_`: Anthropic rejects subscription requests
+ * whose tool list contains a tool named that way. Transcripts written before
+ * the rename still hold the old `mcp_search` / `mcp_call` names, so readers
+ * accept both (isMcpCallDispatcher, parseMcpTool).
+ */
+export const MCP_SEARCH_TOOL = "tool_search";
+export const MCP_CALL_TOOL = "tool_call";
+
+/** The dispatcher names older transcripts store. Read-only: never offered to
+ *  a model again. */
+export const LEGACY_MCP_SEARCH_TOOL = "mcp_search";
+export const LEGACY_MCP_CALL_TOOL = "mcp_call";
+
+/** Whether a stored tool name is pi's call dispatcher, under either name. */
+export function isMcpCallDispatcher(toolName: string): boolean {
+  const name = toolName.toLowerCase();
+  return name === MCP_CALL_TOOL || name === LEGACY_MCP_CALL_TOOL;
+}
+
+/** Both dispatcher generations read as the MCP server's own tools, so a row
+ *  labels the same whichever name its transcript stores ("MCP · Search"). */
+const MCP_DISPATCHER_PARTS: Record<string, { server: string; tool: string }> = {
+  [MCP_SEARCH_TOOL]: { server: "mcp", tool: "search" },
+  [MCP_CALL_TOOL]: { server: "mcp", tool: "call" },
+};
+
 /** The name the renderers key on. Display still uses the raw engine id. */
 export function canonicalToolName(name?: string): string {
   if (!name) return "Tool";
@@ -93,6 +124,8 @@ export function parseMcpTool(
     return { server: parts[1], tool: parts.slice(2).join("__") };
   }
   if (TOOL_ALIASES[name] || NATIVE_TOOLS.has(name)) return null;
+  const dispatcher = MCP_DISPATCHER_PARTS[name];
+  if (dispatcher) return { ...dispatcher };
   const flat = name.match(/^([A-Za-z][A-Za-z0-9-]*)_(.+)$/);
   return flat ? { server: flat[1], tool: flat[2] } : null;
 }
@@ -201,9 +234,10 @@ export function toolDisplayName(name?: string): string {
  * The call a `tool_use` is really about, unwrapped from pi's dispatcher.
  *
  * Pi does not hand the model one tool per bridged MCP tool: the catalog stays
- * server-side and is reached through `mcp_call` (createPiMcpBridge), so a
- * workflow status arrives as `{name:"opensession-workflows_workflow_status",
- * arguments:{…}}` and the tool that was called is a level down. A row that
+ * server-side and is reached through `tool_call` (createPiMcpBridge; older
+ * transcripts store it as `mcp_call`), so a workflow status arrives as
+ * `{name:"opensession-workflows_workflow_status", arguments:{…}}` and the
+ * tool that was called is a level down. A row that
  * reads the envelope labels every MCP call in the transcript "MCP · Call" and
  * spends its one summary line on `name:` and `arguments:`, which is the same
  * row for a Slack post, a session lookup and a papercut.
@@ -217,7 +251,7 @@ export function unwrapMcpDispatcher(
   toolName: string,
   input: unknown,
 ): { toolName: string; input: unknown } {
-  if (toolName.toLowerCase() !== "mcp_call") return { toolName, input };
+  if (!isMcpCallDispatcher(toolName)) return { toolName, input };
   const outer =
     input && typeof input === "object" && !Array.isArray(input)
       ? (input as Record<string, unknown>)

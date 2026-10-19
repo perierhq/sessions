@@ -91,9 +91,9 @@ async function bridgeWithStaleCatalog(
   });
   const bridge = await createPiMcpBridge(runtime);
   const search = bridge.discoveryTools.find(
-    (tool) => tool.name === "mcp_search",
+    (tool) => tool.name === "tool_search",
   )!;
-  const call = bridge.discoveryTools.find((tool) => tool.name === "mcp_call")!;
+  const call = bridge.discoveryTools.find((tool) => tool.name === "tool_call")!;
   return {
     directTools: bridge.directTools.map((tool) => tool.name),
     search: (query: string) =>

@@ -28,8 +28,14 @@ test("engine tool names map onto the card's action line", () => {
   });
   applyTurnEvent(progress, {
     type: "tool_use",
-    toolName: "mcp_call",
+    toolName: "tool_call",
     toolInput: { name: "acme_search" },
+  });
+  // The dispatcher's pre-rename name, as older transcripts replay it.
+  applyTurnEvent(progress, {
+    type: "tool_use",
+    toolName: "mcp_call",
+    toolInput: { name: "acme_lookup" },
   });
   applyTurnEvent(progress, {
     type: "tool_use",
@@ -39,6 +45,7 @@ test("engine tool names map onto the card's action line", () => {
   expect(calls).toEqual([
     ["action", "Running bun test", "bun test"],
     ["action", "Using acme_search", undefined],
+    ["action", "Using acme_lookup", undefined],
     ["action", "Editing app.ts", undefined],
   ]);
 });

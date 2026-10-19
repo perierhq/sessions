@@ -18,6 +18,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "fs/promises";
+import {
+  LEGACY_MCP_SEARCH_TOOL,
+  MCP_SEARCH_TOOL,
+} from "@tellahq/opensession-protocol/tool-presentation";
 
 export const PI_TURN_CHECKPOINT_FILE = "turn-checkpoint.json";
 
@@ -27,13 +31,15 @@ const TOOL_OUTPUT_TAIL = 4_000;
 const REPLY_TAIL = 8_000;
 const WRITE_INTERVAL_MS = 1_000;
 
-/** Tools that only read, so running one again after a crash is harmless. */
+/** Tools that only read, so running one again after a crash is harmless.
+ *  The legacy search name stays for checkpoints written before the rename. */
 export const PI_REPLAY_SAFE_TOOLS: ReadonlySet<string> = new Set([
   "read",
   "grep",
   "find",
   "ls",
-  "mcp_search",
+  MCP_SEARCH_TOOL,
+  LEGACY_MCP_SEARCH_TOOL,
 ]);
 
 export interface PiTurnCheckpoint {
