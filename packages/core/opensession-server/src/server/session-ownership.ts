@@ -258,6 +258,60 @@ export function parseContainerRows(
   return rows;
 }
 
+/** `ps --format json`: podman's array (Labels a map, Created in seconds)
+ * or docker's object per line (Labels `k=v,…`, CreatedAt a date). */
+export function parseContainerJson(
+  out: string,
+  cli: ContainerCli,
+): LabelledResource[] {
+  let entries: unknown[] = [];
+  try {
+    const parsed = JSON.parse(out);
+    entries = Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    for (const line of out.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        entries.push(JSON.parse(line));
+      } catch {}
+    }
+  }
+  const rows: LabelledResource[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const id = String(e.Id ?? e.ID ?? "");
+    let labels: Record<string, string> = {};
+    if (e.Labels && typeof e.Labels === "object")
+      labels = e.Labels as Record<string, string>;
+    else if (typeof e.Labels === "string")
+      for (const pair of e.Labels.split(",")) {
+        const index = pair.indexOf("=");
+        if (index > 0) labels[pair.slice(0, index)] = pair.slice(index + 1);
+      }
+    const sessionId = labels[SESSION_LABEL];
+    const instance = labels[INSTANCE_LABEL];
+    const created =
+      typeof e.Created === "number"
+        ? e.Created * 1000
+        : parseContainerCreatedAt(String(e.CreatedAt ?? ""));
+    const names = Array.isArray(e.Names) ? e.Names.join(",") : e.Names;
+    const row = parseContainerRows(
+      [id, sessionId ?? "", instance ?? "", "", names ?? "", e.Image ?? ""]
+        .map(String)
+        .join("\t"),
+      cli,
+    )[0];
+    if (!row) continue;
+    rows.push(
+      created !== undefined && Number.isFinite(created)
+        ? { ...row, startedAtMs: created }
+        : row,
+    );
+  }
+  return rows;
+}
+
 /** Active units whose description carries a session label, from
  * `systemctl --user list-units --plain --no-legend` (UNIT LOAD ACTIVE SUB
  * DESCRIPTION). */
@@ -333,9 +387,27 @@ async function listContainers(): Promise<LabelledResource[]> {
       ],
       { timeoutMs: LIST_TIMEOUT_MS },
     );
-    // Not running, no socket, or no podman machine: nothing to find there.
-    if (exitCode !== 0) continue;
-    for (const row of parseContainerRows(stdout, cli)) {
+    let rows = exitCode === 0 ? parseContainerRows(stdout, cli) : null;
+    if (rows === null) {
+      // A CLI whose template support differs (an older podman, podman under
+      // the docker name) still answers the JSON form.
+      const json = await runtime.run(
+        [
+          cli,
+          "ps",
+          "--no-trunc",
+          "--filter",
+          `label=${SESSION_LABEL}`,
+          "--format",
+          "json",
+        ],
+        { timeoutMs: LIST_TIMEOUT_MS },
+      );
+      // Not running, no socket, or no podman machine: nothing to find there.
+      if (json.exitCode !== 0) continue;
+      rows = parseContainerJson(json.stdout, cli);
+    }
+    for (const row of rows) {
       // `docker` may be podman under another name: one container, one row.
       if (seen.has(row.handle)) continue;
       seen.add(row.handle);
@@ -355,6 +427,7 @@ async function listUnits(): Promise<LabelledResource[]> {
       "--type=service,scope",
       "--state=active",
       "--plain",
+      "--full",
       "--no-legend",
       "--no-pager",
     ],

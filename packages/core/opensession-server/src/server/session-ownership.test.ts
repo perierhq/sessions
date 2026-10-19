@@ -24,6 +24,7 @@ import {
   containerShimDir,
   listLabelledResources,
   parseContainerCreatedAt,
+  parseContainerJson,
   parseContainerRows,
   parseUnitLabels,
   parseUnitRows,
@@ -118,6 +119,53 @@ describe("parsing", () => {
         instance: "abc123",
         startedAtMs: Date.parse("2026-05-01T12:00:00Z"),
         label: "pg · postgres:16",
+      },
+    ]);
+  });
+
+  test("the JSON form from podman and docker", () => {
+    const podman = JSON.stringify([
+      {
+        Id: ID_A,
+        Labels: {
+          "opensession.session": "os-1",
+          "opensession.instance": "abc",
+        },
+        Created: 1_780_000_000,
+        Names: ["pg"],
+        Image: "postgres:16",
+      },
+      { Id: ID_B, Labels: { other: "x" }, Created: 1, Names: ["mine"] },
+    ]);
+    expect(parseContainerJson(podman, "podman")).toEqual([
+      {
+        kind: "container",
+        handle: ID_A,
+        runtime: "podman",
+        sessionId: "os-1",
+        instance: "abc",
+        startedAtMs: 1_780_000_000_000,
+        label: "pg · postgres:16",
+      },
+    ]);
+    const docker = [
+      JSON.stringify({
+        ID: ID_B,
+        Labels: "a=b,opensession.session=os-2",
+        CreatedAt: "2026-05-01 12:00:00 +0000 UTC",
+        Names: "redis",
+        Image: "redis",
+      }),
+      "not json",
+    ].join("\n");
+    expect(parseContainerJson(docker, "docker")).toEqual([
+      {
+        kind: "container",
+        handle: ID_B,
+        runtime: "docker",
+        sessionId: "os-2",
+        startedAtMs: Date.parse("2026-05-01T12:00:00Z"),
+        label: "redis · redis",
       },
     ]);
   });
@@ -228,6 +276,32 @@ describe("listing and stopping", () => {
     ]);
   });
 
+  test("falls back to the JSON form when the template fails", async () => {
+    const calls: string[][] = [];
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman"],
+      systemdUser: () => false,
+      run: async (argv) => {
+        calls.push(argv);
+        return argv.at(-1) === "json"
+          ? {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { Id: ID_A, Labels: { "opensession.session": "os-1" } },
+              ]),
+            }
+          : { exitCode: 125, stdout: "" };
+      },
+    });
+    expect((await listLabelledResources()).map((row) => row.handle)).toEqual([
+      ID_A,
+    ]);
+    expect(calls.map((argv) => argv.at(-1))).toEqual([
+      CONTAINER_PS_FORMAT,
+      "json",
+    ]);
+  });
+
   test("a CLI that fails and a host without a user manager list nothing", async () => {
     const calls: string[][] = [];
     __setOwnershipRuntimeForTest({
@@ -239,7 +313,7 @@ describe("listing and stopping", () => {
       },
     });
     expect(await listLabelledResources()).toEqual([]);
-    expect(calls.map((argv) => argv[0])).toEqual(["docker"]);
+    expect(calls.map((argv) => argv[0])).toEqual(["docker", "docker"]);
   });
 
   test("a host without podman, docker or systemd runs nothing", async () => {
