@@ -39,10 +39,16 @@ import {
   sessionKernelHealth,
   sessionKernelReadinessSnapshot,
 } from "../session-kernel";
-import { audit } from "../audit";
+import { audit, auditAsync } from "../audit";
 import { serviceReadiness } from "../service-readiness";
 import { runtimeGeneration } from "../runtime-generation";
 import { controlPlaneResidents } from "../workload-scope";
+import { webAuthRequired } from "../web-auth";
+import {
+  HeapSnapshotBusyError,
+  memoryReport,
+  writeHeapSnapshot,
+} from "../memory-diagnostics";
 
 // The listing is served from catalog state only. Keep a short-TTL snapshot with
 // single-flight refresh so repeated reliability-panel polling is cheap even
@@ -99,6 +105,21 @@ export function deadLettersSnapshot(
   entry.inFlight = inFlight;
   deadLettersCaches.set(key, entry);
   return inFlight;
+}
+
+/**
+ * Second lock on the memory diagnostics routes. The global gate in
+ * opensession.ts already refuses /api/* without a session when sign-in is on;
+ * this repeats the check in the handler so a future gate exemption can never
+ * expose process memory. With sign-in off every /api/* route is open to
+ * whoever reaches the port, exactly like the other /api/admin/* routes.
+ */
+export function adminDiagnosticsDenied(
+  ctx: RouteContext,
+  signInRequired: () => boolean = webAuthRequired,
+): Response | undefined {
+  if (!signInRequired() || ctx.authUser) return undefined;
+  return Response.json({ error: "Sign in required" }, { status: 401 });
 }
 
 export async function handleSystemRoutes(
@@ -492,6 +513,50 @@ export async function handleSystemRoutes(
       // Snippet, not the full turn output — this is a wiring probe.
       return Response.json({ ...result, text: result.text.slice(0, 400) });
     } catch (e) {
+      return Response.json(
+        { ok: false, error: String((e as Error)?.message || e) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Gateway memory diagnostics (memory-diagnostics.ts): process and JSC
+  // heap figures plus long-lived collection sizes. Team gated by the global
+  // auth layer like every /api/* route, and again in the handler.
+  if (path === "/api/admin/memory" && req.method === "GET") {
+    const denied = adminDiagnosticsDenied(ctx);
+    if (denied) return denied;
+    return Response.json(await memoryReport(), {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  // On-demand heap snapshot, written under <state>/diagnostics/ with mode
+  // 0600. Returns the path only; the file holds every secret in memory and
+  // is never served over HTTP. POST, so the cross-site gate applies too.
+  // Pauses the gateway while JSC walks the heap; one at a time.
+  if (path === "/api/admin/memory/heap-snapshot" && req.method === "POST") {
+    const denied = adminDiagnosticsDenied(ctx);
+    if (denied) return denied;
+    const by = requestUser(ctx);
+    console.log(`[memory] heap snapshot requested${by ? ` by ${by}` : ""}`);
+    try {
+      const result = await writeHeapSnapshot();
+      console.log(
+        `[memory] wrote heap snapshot ${result.path} (${result.bytes} bytes, ${result.durationMs} ms)`,
+      );
+      auditAsync({
+        msg: "memory_heap_snapshot_written",
+        user: by,
+        path: result.path,
+        bytes: result.bytes,
+      });
+      return Response.json({ ok: true, ...result });
+    } catch (e) {
+      if (e instanceof HeapSnapshotBusyError) {
+        return Response.json({ ok: false, error: e.message }, { status: 409 });
+      }
+      console.error("[memory] heap snapshot failed:", e);
       return Response.json(
         { ok: false, error: String((e as Error)?.message || e) },
         { status: 500 },

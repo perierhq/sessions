@@ -11,6 +11,7 @@
 // session's sandbox — required for volume-mode workspaces, which have no
 // host copy of the worktree. Omitted = the host path, unchanged.
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { $ } from "bun";
 import type { WorkspaceExec } from "./sandbox/workspace-exec";
 
@@ -19,6 +20,7 @@ const cache = new Map<
   string,
   { files: string[]; dirs: string[]; at: number }
 >();
+registerMemoryGauge("file-index.cache", () => cache.size);
 const loads = new Map<string, Promise<void>>();
 
 // Monotonic-ish clock without Date.now() (which is fine in server code, but a

@@ -5,6 +5,7 @@
  * transitions are aggregated per authenticated person into one Live Activity,
  * so a burst of workers never floods the Lock Screen with separate cards.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { chmodSync, existsSync, readFileSync } from "fs";
 import { connect } from "node:http2";
 import { importPkcs8Pem } from "./codestorage/auth";
@@ -73,6 +74,7 @@ const liveState = new Map<
   string,
   { isRunning: boolean; startedAt?: number; expiresAt: number }
 >();
+registerMemoryGauge("live-activities.liveState", () => liveState.size);
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 let listenerStarted = false;
 let jwtCache: { key: string; issuedAt: number; token: string } | null = null;

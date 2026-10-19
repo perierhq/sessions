@@ -1,3 +1,4 @@
+import { registerMemoryGauge } from "./memory-gauges";
 import {
   createReadStream,
   existsSync,
@@ -49,6 +50,7 @@ export const PI_USAGE_CUTOVER_MS = Date.parse("2026-08-19T13:35:30Z");
 const CUTOVER_DAY = "2026-08-19";
 const VOLATILE_TTL_MS = 60_000;
 const volatile = new Map<string, { at: number; day: PiUsageDay }>();
+registerMemoryGauge("pi-usage.volatile", () => volatile.size);
 let inflight: Promise<void> | null = null;
 
 function emptyMutable(): MutableUsage {

@@ -18,6 +18,7 @@
  * inputs; this only needs the paths. Keep the tool-name list in step with
  * TOOL_ALIASES in ToolCallBlock.tsx.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { isAbsolute, relative, resolve } from "path";
 import { mergedSessionTranscriptAsync } from "./sessions";
 import type { TranscriptEntry, UnifiedSession } from "./types";
@@ -84,6 +85,7 @@ interface CacheEntry {
 // all; a file this session writes during the window shows up on the next poll.
 const CACHE_TTL = 30_000;
 const cache = new Map<string, CacheEntry>();
+registerMemoryGauge("session-touched.cache", () => cache.size);
 
 /** What mergedSessionTranscriptAsync needs to find a session's entries. */
 export type TouchedSessionRef = Pick<UnifiedSession, "transcriptPath"> & {

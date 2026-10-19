@@ -4,6 +4,7 @@
  * project code, or calldiff's CLI. Both Changes and Review use this module so
  * host worktrees, remote sandboxes, GitHub and code.storage stay consistent.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { createHash, randomUUID } from "node:crypto";
 import { workerEntry } from "../runner-host/exe";
 import { constants } from "node:fs";
@@ -48,6 +49,7 @@ const MAX_CACHE = 50;
 
 const cache = new Map<string, CodeFlowResult>();
 const snapshotCache = new Map<string, CodeFlowResult>();
+registerMemoryGauge("code-flow.cache", () => cache.size + snapshotCache.size);
 const inflight = new Map<string, Promise<CodeFlowResult>>();
 const fetchLocks = new Map<string, Promise<void>>();
 let activeRequests = 0;

@@ -27,6 +27,7 @@
  * Kill switch: OPENSESSION_COMPOSER_AUTOCOMPLETE=0.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { z } from "zod";
 import { audit } from "./audit";
 import { closingExchange, styleSamples } from "./composer-prediction";
@@ -51,6 +52,7 @@ type CachedContext = { lastActivity: string; at: number; text: string };
 // Restart-fresh by design: a cold cache costs one transcript read, and the
 // rate window is a minute long.
 const contexts = new Map<string, CachedContext>();
+registerMemoryGauge("composer-autocomplete.contexts", () => contexts.size);
 const rate = new Map<string, number[]>();
 
 export function autocompleteDisabled(): boolean {

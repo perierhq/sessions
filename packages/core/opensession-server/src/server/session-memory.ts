@@ -24,6 +24,7 @@
  * context" every future run sees). Keep it that way.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { randomUUID } from "crypto";
 import { readdirSync } from "fs";
 import {
@@ -365,6 +366,7 @@ export function selectWithinBudget(
  * from other sessions land on the next session, not mid-turn.
  */
 const noteSnapshots = new Map<string, string>();
+registerMemoryGauge("session-memory.noteSnapshots", () => noteSnapshots.size);
 const MAX_SNAPSHOTS = 512;
 
 export async function snapshotMemoryNote(

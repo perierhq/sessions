@@ -37,6 +37,7 @@
  */
 
 import { isMcpCallDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
+import { registerMemoryGauge } from "./memory-gauges";
 import { audit } from "./audit";
 
 export type TurnVerdict = "reached" | "declared" | "silent-drop";
@@ -233,6 +234,7 @@ export interface TurnLedger {
 }
 
 const ledgers = new Map<string, TurnLedger>();
+registerMemoryGauge("turn-outcome.ledgers", () => ledgers.size);
 
 /**
  * Ledger key: the opensession session id, and only that.

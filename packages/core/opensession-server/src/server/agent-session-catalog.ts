@@ -30,6 +30,7 @@
  * rebuild that silently dropped every Slack thread would let the worktree
  * reaper treat their checkouts as finished work.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { randomUUID } from "node:crypto";
 import {
   agentSessionSourceKey,
@@ -227,6 +228,7 @@ const MIRROR_PUT_ATTEMPTS = 3;
 // Per-key write chains. Observations of one file from this process land in
 // order; the compare-and-set orders them against other writers.
 const mirrors = new Map<string, Promise<void>>();
+registerMemoryGauge("agent-session-catalog.mirrors", () => mirrors.size);
 
 /**
  * Record one observation of a source file. Throws when the catalog cannot

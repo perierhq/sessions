@@ -11,6 +11,7 @@
  * inode, and an in-place write changes mtime/ctime, so a write from this or
  * any other process is seen on the next read.
  */
+import { registerMemoryGauge } from "../memory-gauges";
 import { readFileSync, statSync, type Stats } from "fs";
 
 type Entry = {
@@ -23,6 +24,7 @@ type Entry = {
 };
 
 const entries = new Map<string, Entry>();
+registerMemoryGauge("json-file-cache.entries", () => entries.size);
 
 function sameFile(entry: Entry, stats: Stats): boolean {
   return (

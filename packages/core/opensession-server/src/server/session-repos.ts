@@ -5,6 +5,7 @@
  * operations behind the RepoBar + opensession-repos tools.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import {
   createWorktree,
   canonicalPath,
@@ -490,6 +491,7 @@ export async function retrievedMemoryNoteFor(
 /** Memory repositories checked out per session (other participants'
  *  personal memory included), for retrieval scopes. */
 const presentRepos = new Map<string, string[]>();
+registerMemoryGauge("session-repos.presentRepos", () => presentRepos.size);
 
 export function presentMemoryRepos(sessionId: string): string[] {
   return presentRepos.get(sessionId) ?? [];

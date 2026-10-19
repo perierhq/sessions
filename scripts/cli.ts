@@ -57,6 +57,7 @@ import {
   runnersRemove,
 } from "./lib/connect";
 import { sandbox } from "./lib/sandbox";
+import { memory } from "./lib/memory";
 import { configuredServerUrl } from "./lib/server-url";
 
 const argv = process.argv.slice(2);
@@ -94,6 +95,9 @@ ${bold("Running")}
   restart                  restart the service
   status                   is it running?
   logs [-f] [-n N]         tail the service journal
+  memory [--json]          the server's memory use and largest in-process
+                           collections
+  memory snapshot          write a heap snapshot under the state dir
 
 ${bold("Maintenance")}
   update [--channel <ref>] pull upstream (ff, or merge on a fork with local
@@ -419,6 +423,9 @@ async function main(): Promise<number> {
         flags.has("-f") || flags.has("--follow"),
         Number(flagValue("-n") ?? flagValue("--lines") ?? 100),
       );
+
+    case "memory":
+      return await memory(positional, { json: flags.has("--json") });
 
     case "service":
       if (positional[0] === "install") {

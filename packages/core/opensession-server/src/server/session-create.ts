@@ -1,3 +1,4 @@
+import { registerMemoryGauge } from "./memory-gauges";
 import {
   sessionSpeed,
   type SessionSpeed,
@@ -608,6 +609,10 @@ const activeOpeningCreates = new Map<
     done: Promise<void>;
   }
 >();
+registerMemoryGauge(
+  "session-create.activeOpeningCreates",
+  () => activeOpeningCreates.size,
+);
 
 // Bounds concurrent opening-turn startups (worktree materialization, repo
 // attach and the engine launch). A slot is released as soon as the opening run
