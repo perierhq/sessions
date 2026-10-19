@@ -36,9 +36,23 @@ catalog. It is still parsed, and valid entries can add picker rows when the
 matching provider credentials exist. New provider model lists are stored in
 `model-providers.json` instead.
 
-Anthropic turns use the native in-process provider by default. Setting
-`"anthropicTransport": "bridge"` selects the loopback bridge as a rollback;
-absent and unrecognized values use the in-process provider.
+Anthropic turns use the in-process Claude Agent SDK provider by default. The
+`anthropicTransport` field selects another path:
+
+- `"bridge"` selects the loopback bridge as a rollback.
+- `"native"` sends turns through Pi's own Anthropic provider with the token of
+  a Claude pool account. The account is picked when the turn starts, with the
+  same pin, owner and usage-credit rules as the default path. When it reaches
+  a usage limit, Open Session sidelines it and continues the turn on another
+  eligible account. Prompt caching uses the 1-hour retention, and an
+  overloaded (529) response is retried by Pi instead of switching accounts.
+
+Absent and unrecognized values use the in-process provider. To try the native
+provider:
+
+```json
+{ "enabled": true, "anthropicTransport": "native" }
+```
 
 ## Configure model access
 
