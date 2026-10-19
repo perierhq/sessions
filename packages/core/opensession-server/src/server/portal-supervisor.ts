@@ -61,6 +61,7 @@ import {
 import type { Sandbox } from "./sandbox/provider";
 import {
   reapSessionResources,
+  stopIdleSessionResources,
   sweepUntrackedSetupScopes,
 } from "./session-resources";
 import { sessionOwnershipEnv } from "./session-ownership";
@@ -1068,7 +1069,7 @@ export type PortalOwnerSession = Pick<
   UnifiedSession,
   "id" | "worktreeDir" | "attachedRepos" | "aliasIds"
 > &
-  Partial<Pick<UnifiedSession, "archived" | "isRunning">>;
+  Partial<Pick<UnifiedSession, "archived" | "isRunning" | "lastActivity">>;
 function portalOwnerIds(
   session: Pick<UnifiedSession, "id" | "aliasIds">,
 ): string[] {
@@ -1768,6 +1769,17 @@ export function startPortalReaper(
           console.log(
             `[session-resources] reaped ${resources.stopped.length} session resource(s)`,
           );
+        // Optional, off by default: live sessions idle past the limit.
+        const idleHours = configuredServer().idleWorkloadStopHours;
+        if (idleHours) {
+          const idle = await stopIdleSessionResources(sessions, {
+            idleMs: idleHours * 3_600_000,
+          });
+          if (idle.length)
+            console.log(
+              `[session-resources] stopped ${idle.length} resource(s) of sessions idle over ${idleHours}h`,
+            );
+        }
         pruneWorktreeSetupFailures();
       } catch (error) {
         console.error("[session-resources] reconciliation failed:", error);

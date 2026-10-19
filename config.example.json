@@ -6,6 +6,7 @@
     "External integrations and instance seed routines are opt-in (`enabled: true`).",
     "selfDev controls checkout isolation: 'shared' (default) = sessions edit the registered shared checkout; 'worktree' = isolated branch worktrees. It does not select publication policy.",
     "Each repo can set publicationMode: 'pull-request' (default) or 'direct' (interactive code sessions publish a checked fast-forward to the default branch without a PR). Explicit PR tasks and automation restrictions remain unchanged.",
+    "server.idleWorkloadStopHours stops a live session's background processes, containers and setup leftovers after that many hours idle (0 or absent: off). Archive always stops them; see docs/session-resources.md.",
     "Repos are GitHub-hosted by default. To host one on code.storage instead, set host: 'codestorage' and csRepo (the repo id/path) on the repo entry \u2014 see the 'widget-cs' example \u2014 and configure integrations.codestorage (org + PKCS8 private key that signs the customer-issued JWTs)."
   ],
   "onboardingCompleted": true,
@@ -15,7 +16,8 @@
     "port": 3850,
     "publicBaseUrl": "https://sessions.example.com",
     "previewHost": "preview.example.com",
-    "caddyAdmin": "http://localhost:2019"
+    "caddyAdmin": "http://localhost:2019",
+    "idleWorkloadStopHours": 0
   },
   "ingress": {
     "publicBaseUrl": "https://ingress.example.com",

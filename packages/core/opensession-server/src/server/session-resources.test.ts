@@ -31,6 +31,7 @@ import {
   selectUntrackedSetupScopes,
   stopArchivedSessionResources,
   stopSessionOwnedResources,
+  stopIdleSessionResources,
   stopSessionResourcesInDir,
   sweepUntrackedSetupScopes,
   type SessionResource,
@@ -1158,6 +1159,93 @@ describe("labelled containers and units", () => {
     ];
     install();
     expect((await reapSessionResources([])).stopped).toEqual([]);
+  });
+
+  test("the idle policy is off unless configured", async () => {
+    fakes = [
+      { kind: "container", cli: "podman", handle: hex("a"), session: "os-a" },
+    ];
+    install();
+    const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    expect(
+      await stopIdleSessionResources([{ id: "os-a", lastActivity: old }], {
+        idleMs: null,
+        isSettled: () => true,
+      }),
+    ).toEqual([]);
+    expect(stops).toEqual([]);
+  });
+
+  test("the idle policy stops only live, settled sessions idle past the limit", async () => {
+    fakes = [
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("a"),
+        session: "os-idle",
+      },
+      { kind: "unit", handle: "u-idle.scope", session: "os-idle" },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("b"),
+        session: "os-recent",
+      },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("c"),
+        session: "os-busy",
+      },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("d"),
+        session: "os-archived",
+      },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("e"),
+        session: "os-unknown",
+      },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("f"),
+        session: "os-flagged",
+      },
+    ];
+    install();
+    const now = Date.now();
+    const hoursAgo = (hours: number) =>
+      new Date(now - hours * 3_600_000).toISOString();
+    const stopped = await stopIdleSessionResources(
+      [
+        { id: "os-idle", lastActivity: hoursAgo(7) },
+        { id: "os-recent", lastActivity: hoursAgo(1) },
+        { id: "os-busy", lastActivity: hoursAgo(7) },
+        { id: "os-archived", lastActivity: hoursAgo(7), archived: true },
+        { id: "os-unknown", lastActivity: "not a date" },
+        { id: "os-flagged", lastActivity: hoursAgo(7), isRunning: true },
+      ],
+      {
+        idleMs: 6 * 3_600_000,
+        now,
+        isSettled: (id) => id !== "os-busy",
+      },
+    );
+    expect(stopped.map((s) => [s.kind, s.sessionId, s.reason])).toEqual([
+      ["container", "os-idle", "idle"],
+      ["unit", "os-idle", "idle"],
+    ]);
+    expect(fakes.map((f) => f.session).sort()).toEqual([
+      "os-archived",
+      "os-busy",
+      "os-flagged",
+      "os-recent",
+      "os-unknown",
+    ]);
   });
 
   test("labelled resources run nothing on hosts without the runtimes", async () => {

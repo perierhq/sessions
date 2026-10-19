@@ -29,6 +29,7 @@ const ENV_KEYS = [
   "OPENSESSION_UI_BASE",
   "OPENSESSION_INGRESS_BASE",
   "PREVIEW_HOST",
+  "OPENSESSION_IDLE_WORKLOAD_STOP_HOURS",
 ] as const;
 const saved: Record<string, string | undefined> = {};
 for (const k of ENV_KEYS) saved[k] = process.env[k];
@@ -158,6 +159,29 @@ describe("config loader", () => {
     expect(configuredServer().trustForwardedFor).toBe(true);
     await withConfig(JSON.stringify({ server: { trustForwardedFor: "yes" } }));
     expect(configuredServer().trustForwardedFor).toBe(false);
+  });
+
+  test("server.idleWorkloadStopHours is off by default, capped, and env-overridable", async () => {
+    delete process.env.OPENSESSION_IDLE_WORKLOAD_STOP_HOURS;
+    await withConfig(JSON.stringify({}));
+    expect(configuredServer().idleWorkloadStopHours).toBeNull();
+    await withConfig(JSON.stringify({ server: { idleWorkloadStopHours: 6 } }));
+    expect(configuredServer().idleWorkloadStopHours).toBe(6);
+    await withConfig(JSON.stringify({ server: { idleWorkloadStopHours: 0 } }));
+    expect(configuredServer().idleWorkloadStopHours).toBeNull();
+    await withConfig(
+      JSON.stringify({ server: { idleWorkloadStopHours: "six" } }),
+    );
+    expect(configuredServer().idleWorkloadStopHours).toBeNull();
+    await withConfig(
+      JSON.stringify({ server: { idleWorkloadStopHours: 1e9 } }),
+    );
+    expect(configuredServer().idleWorkloadStopHours).toBe(720);
+    await withConfig(JSON.stringify({ server: { idleWorkloadStopHours: 6 } }));
+    process.env.OPENSESSION_IDLE_WORKLOAD_STOP_HOURS = "0";
+    expect(configuredServer().idleWorkloadStopHours).toBeNull();
+    process.env.OPENSESSION_IDLE_WORKLOAD_STOP_HOURS = "2.5";
+    expect(configuredServer().idleWorkloadStopHours).toBe(2.5);
   });
 
   test("repos section is authoritative and applies id-derived defaults", async () => {
