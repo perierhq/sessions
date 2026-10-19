@@ -358,6 +358,29 @@ describe("SessionListStore", () => {
     );
   });
 
+  test("lists rows whose running column is set, newest first and bounded", () => {
+    const store = memoryStore();
+    store.upsertMany([
+      session("idle", "2026-08-22T12:00:00.000Z", { automation: "triage" }),
+      session("old", "2026-08-22T10:00:00.000Z", {
+        automation: "triage",
+        isRunning: true,
+      }),
+      session("new", "2026-08-22T11:00:00.000Z", {
+        automation: "triage",
+        isRunning: true,
+      }),
+    ]);
+
+    expect(store.listRunning(10).map((row) => row.id)).toEqual(["new", "old"]);
+    expect(store.listRunning(1).map((row) => row.id)).toEqual(["new"]);
+
+    // Rewriting the row with the run settled clears the column, and the
+    // automation row drops back out of the sidebar's running carve-out.
+    store.upsert({ ...store.get("old")!, isRunning: false });
+    expect(store.listRunning(10).map((row) => row.id)).toEqual(["new"]);
+  });
+
   test("includes an archived session when its direct route is selected", () => {
     const store = memoryStore();
     store.upsertMany([

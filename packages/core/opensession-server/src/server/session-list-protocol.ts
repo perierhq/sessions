@@ -28,6 +28,7 @@ export const SESSION_LIST_STORE_METHODS = [
   "listVisibilityGroup",
   "setArchived",
   "count",
+  "listRunning",
   "list",
   "listCovered",
   "listLiveByBranch",

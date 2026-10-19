@@ -31,6 +31,27 @@ let onJournalSet:
   | ((record: ActiveRunRecord) => void | Promise<void>)
   | undefined;
 
+let onJournalCleared: ((records: ActiveRunRecord[]) => void) | undefined;
+
+/** Register the observer told when records leave the journal (cleared,
+ * retired, or quarantined). The session list uses it to rewrite a row whose
+ * last write still saw the run journaled. Kept as a callback so this
+ * low-level journal stays independent of the list. */
+export function setJournalClearListener(
+  listener: ((records: ActiveRunRecord[]) => void) | undefined,
+): void {
+  onJournalCleared = listener;
+}
+
+function notifyJournalCleared(records: ActiveRunRecord[]): void {
+  if (!records.length || !onJournalCleared) return;
+  try {
+    onJournalCleared(records);
+  } catch (e) {
+    console.error("[runner] Run journal clear listener failed:", e);
+  }
+}
+
 /** Register the in-process acknowledgement for a prompt intake record. Kept as
  * a callback so this low-level journal stays independent of queue state. */
 export function setJournalSetListener(
@@ -359,11 +380,12 @@ export function journalQuarantine(entries: QuarantinedRun[]): void {
     }
   } catch {}
   const quarantinedAt = new Date().toISOString();
-  let changed = false;
+  const removed: ActiveRunRecord[] = [];
   for (const [index, entry] of entries.entries()) {
-    if (journal[entry.run.runKey]) {
+    const current = journal[entry.run.runKey];
+    if (current) {
       delete journal[entry.run.runKey];
-      changed = true;
+      removed.push(current);
     }
     quarantine[`${quarantinedAt}:${index}:${entry.run.runKey}`] = {
       ...entry.run,
@@ -371,9 +393,10 @@ export function journalQuarantine(entries: QuarantinedRun[]): void {
       quarantineReason: entry.reason,
     };
   }
-  if (!changed) return;
+  if (!removed.length) return;
   writeJsonAtomic(quarantinePath, quarantine);
   writeRunJournal(journal);
+  notifyJournalCleared(removed);
 }
 
 /** Persist the recovery lineage immediately before a queued recovery task
@@ -502,9 +525,11 @@ export function journalRetireCancelledAbnormalAfterSettlement(
 
 export function journalClear(runKey: string): void {
   const journal = readRunJournal();
-  if (runKey in journal) {
+  const record = journal[runKey];
+  if (record) {
     delete journal[runKey];
     writeRunJournal(journal);
+    notifyJournalCleared([record]);
   }
 }
 
@@ -525,6 +550,7 @@ export function journalClearIfLineage(record: ActiveRunRecord): boolean {
   }
   delete journal[record.runKey];
   writeRunJournal(journal);
+  notifyJournalCleared([current]);
   return true;
 }
 

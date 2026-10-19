@@ -479,6 +479,53 @@ export async function handleSystemRoutes(
     return Response.json({ ok: true, started: true, ...opts }, { status: 202 });
   }
 
+  // PR session backfill: archive live `bks-ghpr-*` sessions whose PR is
+  // already merged or closed on GitHub (the `closed` webhook archives new
+  // ones; this cleans up what built up before it did). Operator-run only,
+  // never at boot. Team gated by the global auth layer like every /api/*
+  // route. Dry run unless the body says `apply: true`: the response lists
+  // what it would archive. Body: { apply?, limit? } (limit = PRs looked up
+  // on GitHub, one request each).
+  if (
+    path === "/api/admin/github-pr-session-backfill" &&
+    req.method === "POST"
+  ) {
+    let body: { apply?: unknown; limit?: unknown } = {};
+    try {
+      body = ((await req.json()) ?? {}) as typeof body;
+    } catch {
+      // empty/non-JSON body → defaults (dry run)
+    }
+    const opts = {
+      apply: body.apply === true,
+      limit:
+        typeof body.limit === "number" && body.limit > 0
+          ? Math.floor(body.limit)
+          : undefined,
+    };
+    const by = requestUser(ctx);
+    console.log(
+      `[github] PR session backfill${opts.apply ? "" : " (dry run)"}${by ? ` by ${by}` : ""}`,
+    );
+    try {
+      const { backfillClosedPrSessions } =
+        await import("../../agents/github/pr-session-archive");
+      const report = await backfillClosedPrSessions(opts);
+      if (report.archived.length)
+        audit({
+          msg: "github_pr_session_backfill",
+          by: by || undefined,
+          session_ids: report.archived,
+        });
+      return Response.json({ ok: true, ...report });
+    } catch (e) {
+      return Response.json(
+        { ok: false, error: String((e as Error)?.message || e) },
+        { status: 500 },
+      );
+    }
+  }
+
   // Pi engine smoke turn: one scripted turn against a throwaway
   // `os-test-pi-*` session through the in-process pi SDK runner, for
   // post-restart verification (SDK turn → bridge → transcripts.db rows).

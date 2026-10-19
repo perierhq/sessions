@@ -126,6 +126,7 @@ import {
   primeSessionListIndex,
   publishSessionChange,
   reconcileSessionMetadataExports,
+  reconcileStaleRunningRows,
   stopSessionOwnershipWatchdog,
 } from "./src/server/session-cache";
 import { getSessionControl } from "./src/server/session-control";
@@ -1198,6 +1199,23 @@ if (!g.__opensessionBooted) {
           if (staleKernelOwners.length)
             console.warn(
               `[session-kernel] Settled ${staleKernelOwners.length} session(s) without a recoverable run owner`,
+            );
+          // Recovery has now claimed or settled every journaled run, so a
+          // list row still marked running with no owner is left over from
+          // the previous process. Clear it, or the sidebar keeps it forever.
+          // A failure here costs only the stale marks, never recovery.
+          await reconcileStaleRunningRows()
+            .then((cleared) => {
+              if (cleared.length)
+                console.warn(
+                  `[session-list] Cleared a stale running mark on ${cleared.length} session row(s)`,
+                );
+            })
+            .catch((error) =>
+              console.warn(
+                "[session-list] stale running reconciliation failed:",
+                error instanceof Error ? error.message : error,
+              ),
             );
         } catch (error) {
           throw error;

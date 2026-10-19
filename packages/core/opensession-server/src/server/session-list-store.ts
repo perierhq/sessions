@@ -396,6 +396,13 @@ export function indexedWorkspaceMembers(
   return callIndex("listWorkspaceMembers", workspaceId).then(shared);
 }
 
+/** Rows the index still marks running, at most `limit`. */
+export function indexedRunningSessions(
+  limit: number,
+): Promise<UnifiedSession[]> {
+  return callIndex("listRunning", limit);
+}
+
 export function indexedSidebarSessions(
   selectedSessionId?: string,
 ): Promise<UnifiedSession[] | null> {
