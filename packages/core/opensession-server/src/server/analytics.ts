@@ -205,6 +205,7 @@ export function rollupAuditContents(date: string, contents: string): DayRollup {
       line.includes('"msg":"pi_turn"') ||
       line.includes('"msg":"pi_oneshot"') ||
       line.includes('"msg":"opencode_oneshot"') ||
+      // Legacy names from older engines, read so old audit files still count.
       line.includes('"msg":"opencode_meridian_run"') ||
       line.includes('"msg":"opencode_openai_run"') ||
       line.includes('"msg":"review_');

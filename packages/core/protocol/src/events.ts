@@ -50,17 +50,16 @@ export interface StepPromptUsage {
  * Did the layer BELOW pi silently rebuild this conversation's context
  * between two steps of the same turn?
  *
- * Anthropic models run through the bundled Meridian bridge onto Claude Agent
- * SDK sessions, and two things down there can replace the conversation without
- * pi (or us) ever seeing it: the SDK auto-compacting its session near the
- * context limit, and Meridian classifying a request as diverged and replaying
- * the history into a fresh SDK session. Both look identical from here — the
- * next step reads NOTHING from the prompt cache and writes a new prefix, after
- * the previous step read a large one. The model gets handed a rewritten
- * conversation mid-task, which is a decent way to end up re-orienting and
- * stopping (2026-08-03 incident: 262k → 94k between step 5 and 6, then the
- * turn ended on "Let me examine that commit."; 32 rebuilds across 6.4k steps in
- * the three days before that).
+ * Pi now calls Anthropic directly, so nothing between pi and the provider
+ * rewrites the conversation any more. The check dates from an earlier Claude
+ * bridge whose SDK sessions could auto-compact or replay history without pi
+ * (or us) seeing it, and it stays as a cheap guard for any such rebuild. From
+ * here it looks like this: the next step reads NOTHING from the prompt cache
+ * and writes a new prefix, after the previous step read a large one. The model
+ * gets handed a rewritten conversation mid-task, which is a decent way to end
+ * up re-orienting and stopping (2026-08-03 incident under that bridge: 262k →
+ * 94k between step 5 and 6, then the turn ended on "Let me examine that
+ * commit."; 32 rebuilds across 6.4k steps in the three days before that).
  *
  * Deliberately conservative — a cold cache on a turn's FIRST step is ordinary
  * (expiry, a rotation to another account, a fresh server), so this only fires

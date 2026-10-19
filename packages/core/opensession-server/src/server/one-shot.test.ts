@@ -37,6 +37,21 @@ describe("oneShot", () => {
     ).toBe("pi/openai/gpt-6-luna");
   });
 
+  test("falls over when every designated Claude account is dry", () => {
+    // Exact refusal from pickClaudeAccount when the designated set is dry.
+    const error =
+      "no designated bridge account is currently usable (tried: acme-a)";
+    expect(haikuOneShotShouldFallOver(error)).toBe(true);
+    expect(
+      haikuOneShotFallbackModel("pi/anthropic/claude-haiku-5-5", error),
+    ).toBe("pi/openai/gpt-6-luna");
+    expect(
+      oneShotFallbackModels("pi/anthropic/claude-opus-5-5", error, [
+        "pi/openai/gpt-6-luna",
+      ]),
+    ).toEqual(["pi/openai/gpt-6-luna"]);
+  });
+
   test("uses OpenAI for default name generation on Codex-only installs", () => {
     // Exact refusal from pickClaudeAccount when no Claude account was added.
     const error =

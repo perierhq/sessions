@@ -516,8 +516,8 @@ Exit gate:
 - differential, transcript snapshot, provider conformance, security, and fault
   suites pass;
 - the run host starts with no Bun/Node executable or `node_modules` available;
-- Pi, Meridian, the Anthropic JavaScript SDK, and all other backend JavaScript
-  SDK dependencies are absent from the runtime artifact.
+- Pi, the Anthropic JavaScript SDK, and all other backend JavaScript SDK
+  dependencies are absent from the runtime artifact.
 
 ### Phase 8: remove the legacy backend and simplify
 
@@ -698,7 +698,7 @@ Completion requires all of the following:
 - Deployment, schema compatibility, canary, and rollback procedures are tested
   and documented.
 - The production backend artifact and service definitions contain no Bun,
-  Node.js, `node_modules`, backend JavaScript, Pi, Meridian, JavaScript SDK, or
+  Node.js, `node_modules`, backend JavaScript, Pi, JavaScript SDK, or
   executable JavaScript fallback. CI enforces this inventory.
 - The prebuilt browser bundle is the only shipped JavaScript and is never
   executed by the backend.

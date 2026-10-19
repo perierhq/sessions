@@ -445,6 +445,8 @@ export function buildAuditDigestFromLines(
       if (e.status && e.status !== "ok") oneshots.failed++;
       continue;
     }
+    // Legacy event names: nothing emits these now, but older audit files
+    // still carry them and their retries still count.
     if (e.msg === "pi_meridian_run" || e.msg === "pi_openai_run") {
       if (e.retry_attempt) engineRetries++;
       continue;

@@ -2614,10 +2614,10 @@ export const RESUME_CONTINUATION_PROMPT =
   "If the work was actually complete, just post the final summary/answer.";
 
 /**
- * Meridian can very occasionally close a post-restart turn with either no
- * final text or its internal tool-result envelope as assistant text (the
- * observed shape starts `[your bash …]:`) while still reporting a successful
- * `finish: stop`. Accepting either strands partial work without a conclusion.
+ * A post-restart turn can very occasionally close with either no final text
+ * or a tool-result envelope as assistant text (the observed shape, from the
+ * earlier Claude bridge, starts `[your bash …]:`) while still reporting a
+ * successful `finish: stop`. Accepting either strands partial work without a conclusion.
  * Keep this deliberately narrow and bounded to one repair continuation.
  * The envelope shape lives in runner-shared (TOOL_RESULT_ENVELOPE_RE) and
  * covers any tool id — MCP tools included — not just the builtin set.

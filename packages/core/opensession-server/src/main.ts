@@ -50,9 +50,11 @@ export {}; // module marker so top-level await is allowed
 
 // The source install runs through a bash shim that puts the `claude` CLI on
 // PATH before handing off; the compiled binary has no such shim, so do it here.
-// Without this a thin PATH (a non-login shell, cron, the service unit if it
-// ever loses its Environment=) resolves no `claude`, and Anthropic turns find
-// nothing to exec. Only this binary imports main.ts.
+// Model turns do not need it (pi calls Anthropic directly), but `claude
+// setup-token` and tools a run spawns (deepsec's Claude workers) do, and a thin
+// PATH (a non-login shell, cron, the service unit if it ever loses its
+// Environment=) would resolve no `claude` for them. Only this binary imports
+// main.ts.
 {
   const { homedir } = await import("os");
   const { join } = await import("path");

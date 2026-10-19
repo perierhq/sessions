@@ -480,51 +480,27 @@ describe("createPiRuntimeBinding", () => {
     );
   });
 
-  test("Anthropic applies newer published price corrections to a builtin row", async () => {
+  test("Anthropic uses pi's builtin row as-is when no price correction applies", async () => {
     const h = harness();
-    const stale = {
+    const builtin = {
       provider: "anthropic",
       id: "claude-sonnet-5-5",
       api: "anthropic-messages",
-      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
     };
-    // Serve the stale builtin row the way pi's catalog ships it, and the
-    // registered catalog once there is one.
     const getModels = h.runtime.getModels.bind(h.runtime);
     const getModel = h.runtime.getModel.bind(h.runtime);
-    let registered: any[] | undefined;
     h.runtime.getModels = (provider: string) =>
-      registered ??
-      (provider === "anthropic" ? [...getModels(provider), stale] : []);
+      provider === "anthropic" ? [...getModels(provider), builtin] : [];
     h.runtime.getModel = (provider: string, id: string) =>
-      registered?.find((model) => model.id === id) ??
-      (id === stale.id ? stale : getModel(provider, id));
-    const register = h.runtime.registerProvider;
-    h.runtime.registerProvider = (provider: string, config: any) => {
-      register(provider, config);
-      registered = config.models;
-    };
+      id === builtin.id ? builtin : getModel(provider, id);
 
     const binding = await createPiRuntimeBinding(
       input("anthropic", "claude-sonnet-5-5", h),
     );
-    // Sonnet 5.5 cache reads are $0.10/MTok, not the catalog's $0.20.
-    expect(binding.model.cost).toEqual({
-      input: 2,
-      output: 10,
-      cacheRead: 0.1,
-      cacheWrite: 2.5,
-    });
-    const registrations = h.calls.filter(
-      ([name]) => name === "registerProvider",
-    );
-    expect(registrations).toHaveLength(1);
-    expect(Object.keys(registrations[0][2])).toEqual(["models"]);
-    // The rest of the catalog is passed through unchanged.
-    expect(registrations[0][2].models.map((model: any) => model.id)).toEqual([
-      "claude-test",
-      "claude-sonnet-5-5",
-    ]);
+    expect(binding.model.cost).toEqual(builtin.cost);
+    // Nothing differs from pi's catalog, so nothing is re-registered.
+    expect(h.calls.some(([name]) => name === "registerProvider")).toBe(false);
   });
 
   test("Anthropic requests reach pi's provider with the pool token and a 1h cache", async () => {

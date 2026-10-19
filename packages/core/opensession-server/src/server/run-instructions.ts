@@ -40,7 +40,7 @@ export const MONITORING_GUIDANCE =
 /**
  * Minimal per-run context appended to the engine system prompt.
  *
- * Nothing here may vary per session. The Claude Agent SDK sends the whole
+ * Nothing here may vary per session. Pi's Anthropic provider sends the whole
  * system prompt as ONE prompt-cache block, so a single session-specific byte
  * (session id, requester, checkout path) costs every new session a full cache
  * write of the ~25k-token prefix instead of a read. Per-session facts ride the

@@ -61,13 +61,15 @@ describe("buildPiAnthropicModels", () => {
     });
   });
 
-  test("applies the halved Sonnet 5.5 cache-read price over the builtin row", () => {
+  test("applies a price correction over the builtin row without mutating it", () => {
     const builtin = {
       ...model,
       id: "claude-sonnet-5-5",
       cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
     } as PiCatalogModel;
-    const [sonnet] = buildPiAnthropicModels([builtin], "claude-sonnet-5-5");
+    const [sonnet] = buildPiAnthropicModels([builtin], "claude-sonnet-5-5", {
+      "claude-sonnet-5-5": { cacheRead: 0.1 },
+    });
     expect(sonnet!.cost).toEqual({
       input: 2,
       output: 10,

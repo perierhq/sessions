@@ -252,8 +252,8 @@ export function isClaudeSubscriptionError(message: string): boolean {
 }
 
 /**
- * The Meridian bridge could not start Claude Code for a run at all — the agent
- * SDK spawns the native binary and it either exited immediately ("Claude Code
+ * The earlier Claude bridge (Meridian) could not start Claude Code for a run
+ * at all — the agent SDK spawned the native binary and it either exited immediately ("Claude Code
  * native binary at <path> exists but failed to launch.") or was missing.
  *
  * This is a spawn-time failure on THIS box, not a verdict on the account: the
@@ -274,7 +274,8 @@ export function isClaudeBridgeLaunchError(message: string): boolean {
 }
 
 /**
- * Meridian's idle guard killed an upstream stream that produced zero bytes
+ * The earlier Claude bridge's (Meridian's) idle guard killed an upstream
+ * stream that produced zero bytes
  * ("Upstream stalled: no data for <n>ms") — the SDK daemon behind the proxy
  * accepted the request and went silent. Unlike an ordinary provider error,
  * every one of these already represents 90s+ of measured dead air on a FRESH
@@ -342,7 +343,7 @@ export function isTransientRunError(
     s.includes("connection error") ||
     s.includes("connection closed") ||
     s.includes("connection refused") ||
-    // Liveness wedge — the Meridian proxy stopped returning bytes mid-run
+    // Liveness wedge from the earlier Claude bridge: it stopped returning bytes
     s.includes("produced no output within") ||
     // Server death / boot failure
     s.includes("server exited") ||
@@ -400,9 +401,9 @@ export function isProviderOverloadError(
 }
 
 /**
- * Meridian's internal tool-result envelope shape — `[your <tool> …]: <output>`.
- * That envelope is how the bridge represents tool results in the model's
- * context, so assistant TEXT should never open with it: when it does, the
+ * The tool-result envelope shape of the earlier Claude bridge (Meridian) —
+ * `[your <tool> …]: <output>`. That envelope was how the bridge represented
+ * tool results in the model's context, so assistant TEXT should never open with it: when it does, the
  * model is reciting tool results it invented, and every value inside is
  * fabricated (2026-07-29: a dial/opus-fable turn wrote four fake
  * `acme_create_source` results — wrong bucket, wrong ids, a signature reading
@@ -423,9 +424,9 @@ export const TOOL_RESULT_ENVELOPE_RE =
  * (`– 5s` on its own line, en-dash exactly as the session view renders it,
  * likely copied from a screenshot in context) plus todowrite's canonical
  * result string — for tools it never called, including an invented
- * explore-subagent report the session later had to debunk itself. Meridian's
- * async-tool protocol trains the model that results arrive as in-band text
- * ("The result will be delivered in a future turn"), which makes
+ * explore-subagent report the session later had to debunk itself. The earlier
+ * bridge's async-tool protocol taught the model that results arrive as
+ * in-band text ("The result will be delivered in a future turn"), which made
  * "write them yourself" a short hop.
  *
  * Markers are chosen for precision over recall: the en-dash chip immediately
