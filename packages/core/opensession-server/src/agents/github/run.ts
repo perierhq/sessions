@@ -375,6 +375,21 @@ export async function discardRecoverableGithubRun(
 export async function runGithubAgent(
   opts: GithubRunOpts,
 ): Promise<GithubRunResult> {
+  // Closing the PR archives its idle sessions. Mark this one in flight before
+  // the setup below (the run journal sees it only once the engine starts),
+  // and bring it back if closing already archived it.
+  const { beginPrSessionRun } = await import("./pr-session-archive");
+  const endRun = await beginPrSessionRun(opts.prNumber, opts.kind, opts.ghRepo);
+  try {
+    return await runGithubAgentTurn(opts);
+  } finally {
+    endRun();
+  }
+}
+
+async function runGithubAgentTurn(
+  opts: GithubRunOpts,
+): Promise<GithubRunResult> {
   const bksId = bksIdFor(opts.prNumber, opts.kind, opts.ghRepo);
   const startedAt = new Date();
 

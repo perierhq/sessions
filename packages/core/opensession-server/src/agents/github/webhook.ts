@@ -39,6 +39,11 @@ import {
   type ReviewResult,
 } from "./review";
 import { preflightSkipRule } from "./review-rules";
+import {
+  archiveClosedPrSessions,
+  prSessionLifecycleAction,
+  unarchiveReopenedPrSessions,
+} from "./pr-session-archive";
 import { clearHandoff, isHandoffActive, maybeHandoffFindings } from "./handoff";
 import {
   isLockHeld,
@@ -108,6 +113,60 @@ function prRef(pr: PrPayload, ghRepo?: string): PrRef | null {
     title: pr.title || `PR #${pr.number}`,
     ...(ghRepo ? { ghRepo } : {}),
   };
+}
+
+/** Archive or restore the PR's own sessions (pr-session-archive.ts). */
+function routePrSessionLifecycle(
+  action: string,
+  prNumber: number,
+  ghRepo?: string,
+): void {
+  const lifecycle = prSessionLifecycleAction(action);
+  if (lifecycle === "archive") {
+    void archiveClosedPrSessions(prNumber, ghRepo)
+      .then(({ archived, skippedRunning }) => {
+        if (archived.length || skippedRunning.length)
+          console.log(
+            `[github] PR #${prNumber} closed: archived ${archived.length} session(s)` +
+              (skippedRunning.length
+                ? `, left ${skippedRunning.length} with a run in flight`
+                : ""),
+          );
+        if (archived.length)
+          audit({
+            msg: "github_pr_sessions_archived",
+            pr_number: prNumber,
+            repo: ghRepo,
+            session_ids: archived,
+          });
+      })
+      .catch((e) =>
+        console.error(
+          `[github] archiving sessions for closed PR #${prNumber} failed:`,
+          e,
+        ),
+      );
+  } else if (lifecycle === "unarchive") {
+    void unarchiveReopenedPrSessions(prNumber, ghRepo)
+      .then((restored) => {
+        if (!restored.length) return;
+        console.log(
+          `[github] PR #${prNumber} ${action}: unarchived ${restored.length} session(s)`,
+        );
+        audit({
+          msg: "github_pr_sessions_unarchived",
+          pr_number: prNumber,
+          repo: ghRepo,
+          session_ids: restored,
+        });
+      })
+      .catch((e) =>
+        console.error(
+          `[github] unarchiving sessions for PR #${prNumber} failed:`,
+          e,
+        ),
+      );
+  }
 }
 
 /** Collect a failed CI report for the owning session's notice (ci-failure.ts). */
@@ -354,6 +413,11 @@ export async function handleGithubPrEvent(
       desiredReviews.cancel(ref);
       clearHandoff(pr.number, ghRepo);
     }
+
+    // The PR's own review/mention/auto-fix sessions are done once it closes,
+    // merged or not; a reopen or new push brings them back. Any sender: the
+    // PR's state is what it is, and archiving is reversible.
+    routePrSessionLifecycle(action, pr.number, ghRepo);
 
     // ── Merge → notify linked sessions + fire configured docs-sync ──
     if (action === "closed" && pr.merged) {

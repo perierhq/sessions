@@ -37,6 +37,8 @@ import {
   indexedActiveWorkspaceIds,
   indexedCoverage,
   indexedLiveSessionsByBranch,
+  indexedRunningSessions,
+  indexedSession,
   indexedSessions,
   indexedWorkspaceMembers,
   rebuildSessionListIndex,
@@ -172,6 +174,59 @@ export function publishSessionChange(sessionId: string): Promise<void> {
       error instanceof Error ? error.message : error,
     );
   });
+}
+
+/** Rows a boot reconciliation re-derives at most. Rows the index marks
+ * running are bounded by the runs that were live at some point, not by the
+ * session count; anything past this is picked up by the next boot. */
+export const STALE_RUNNING_RECONCILE_LIMIT = 2000;
+
+/**
+ * Clear `isRunning` on list rows that no live run owns any more.
+ *
+ * A row's `is_running` column is whatever the last write saw. A run that
+ * ended across a restart, or whose journal entry was cleared after the
+ * turn-end row write, leaves it set, and the sidebar keeps every automation
+ * row with the column set regardless of its tail cap. The column is
+ * re-derived here from the same runtime state the list overlays on reads
+ * (run journal, engines, run state, holds), so only rows that read as idle
+ * are rewritten. Each rewrite holds the row's mutation lock and re-reads the
+ * indexed row, so a concurrent projection is never overwritten with an older
+ * payload. Reads only the list index: no session files, no actor fan-out.
+ */
+export async function reconcileStaleRunningRows(
+  limit = STALE_RUNNING_RECONCILE_LIMIT,
+): Promise<string[]> {
+  const candidates = await indexedRunningSessions(limit);
+  if (!candidates.length) return [];
+  const snapshot = sessionRuntimeSnapshot();
+  const idle = candidates.filter(
+    (row) => !enrichSessionRuntime([{ ...row }], snapshot)[0]!.isRunning,
+  );
+  const cleared: string[] = [];
+  for (const { id } of idle) {
+    await withSessionMutationLock(id, async () => {
+      // The candidate came from the is_running column; the payload's own
+      // isRunning may already disagree with it, so it is no reason to skip.
+      // Rewrite whenever the runtime says idle.
+      const row = await indexedSession(id);
+      if (!row) return;
+      enrichSessionRuntime([row]);
+      if (row.isRunning) return;
+      await upsertIndexedSession(row);
+      cleared.push(id);
+    }).catch((error) =>
+      console.warn(
+        `[session-cache] stale running row repair failed for ${id}:`,
+        error instanceof Error ? error.message : error,
+      ),
+    );
+  }
+  if (cleared.length) {
+    markSessionListStale();
+    for (const id of cleared) publishSessionRow(id);
+  }
+  return cleared;
 }
 
 /**

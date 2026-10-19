@@ -391,6 +391,20 @@ export class SessionListStore {
     }
   }
 
+  /** Rows whose materialized `is_running` column is set, newest first, at
+   * most `limit`. Boot reconciliation re-derives these against the run
+   * journal: a row written mid-run keeps the column set until something
+   * rewrites it, and the sidebar keeps every such automation row. */
+  listRunning(limit: number): UnifiedSession[] {
+    const rows = this.db
+      .query(
+        `SELECT payload FROM session_list WHERE is_running = 1
+         ORDER BY last_activity_ms DESC, id LIMIT ?`,
+      )
+      .all(Math.max(0, Math.floor(limit))) as StoredRow[];
+    return decodeRows(rows);
+  }
+
   count(): number {
     const row = this.db
       .query("SELECT count(*) AS n FROM session_list")
