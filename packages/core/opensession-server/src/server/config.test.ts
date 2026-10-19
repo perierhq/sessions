@@ -196,11 +196,15 @@ describe("config loader", () => {
     expect(configuredPaths().worktreesDir).toBe("/srv/worktrees");
   });
 
-  test("worktree setup timeout is per repo and must be positive", async () => {
+  test("worktree setup timeout is per repo, positive, and at most a day", async () => {
     await withConfig(
       JSON.stringify({
         repos: {
           slow: { repo: "/srv/slow", worktreeSetupTimeoutMinutes: 45 },
+          // Past ~35,792 minutes the setup timer would fire at once, and
+          // 1e12 minutes is not a valid date at all.
+          huge: { repo: "/srv/huge", worktreeSetupTimeoutMinutes: 40_000 },
+          absurd: { repo: "/srv/absurd", worktreeSetupTimeoutMinutes: 1e12 },
           zero: { repo: "/srv/zero", worktreeSetupTimeoutMinutes: 0 },
           text: { repo: "/srv/text", worktreeSetupTimeoutMinutes: "10" },
           unset: { repo: "/srv/unset" },
@@ -209,6 +213,8 @@ describe("config loader", () => {
     );
     const repos = configuredRepos();
     expect(repos.slow?.worktreeSetupTimeoutMinutes).toBe(45);
+    expect(repos.huge?.worktreeSetupTimeoutMinutes).toBe(1440);
+    expect(repos.absurd?.worktreeSetupTimeoutMinutes).toBe(1440);
     expect(repos.zero?.worktreeSetupTimeoutMinutes).toBeUndefined();
     expect(repos.text?.worktreeSetupTimeoutMinutes).toBeUndefined();
     expect(repos.unset?.worktreeSetupTimeoutMinutes).toBeUndefined();
