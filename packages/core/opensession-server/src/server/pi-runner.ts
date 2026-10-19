@@ -36,19 +36,16 @@ import {
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
+import { markCodexExhausted } from "./codex-accounts";
 import {
   markExhausted as markClaudeExhausted,
   pickAccount as pickClaudeCliAccount,
-  type ClaudeAccount,
 } from "./claude-accounts";
 import {
   bindXaiAccount,
   markXaiExhausted,
-  maskXaiAccount,
   pickXaiAccount,
   xaiSubscriptionModelEfforts,
-  type XaiAccount,
 } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { enableXaiProxyPayload } from "./xai-payload";
@@ -56,7 +53,6 @@ import {
   enableOpenaiFastMode,
   pickOpenaiAccount,
   buildSeededOpenaiAuth,
-  maskOpenaiAccount,
 } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import {
@@ -124,7 +120,6 @@ import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
   rememberNativeClaudeAccount,
-  type PiRuntimeAccountEvidence,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
 import {
@@ -192,6 +187,16 @@ import {
 } from "./pi-steering";
 import { piGateReason } from "./pi-gate";
 import { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
+import {
+  claudePoolRef,
+  codexPoolRef,
+  evidencePoolRef,
+  piStreamEventRequiresAccountContinuation,
+  runPiAccountWalk,
+  xaiPoolRef,
+  type PiAccountWalk,
+  type PoolAccountRef,
+} from "./pi-account-walk";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -248,6 +253,7 @@ export {
 } from "./pi-steering";
 export { piGateReason } from "./pi-gate";
 export { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
+export { piStreamEventRequiresAccountContinuation } from "./pi-account-walk";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -284,63 +290,6 @@ export function piLocalToolNames(opts: {
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────
-
-/** One pool account as the runner's walk sees it, whichever pool it came from. */
-interface PoolAccountRef {
-  id: string;
-  name: string;
-  masked: string;
-  pool: "openai" | typeof XAI_OAUTH_PROVIDER | "claude";
-  /** How the pool reads in logs: "codex", "SuperGrok" or "Claude". */
-  label: string;
-}
-
-function codexPoolRef(account: CodexAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: maskOpenaiAccount(account),
-    pool: "openai",
-    label: "codex",
-  };
-}
-
-function xaiPoolRef(account: XaiAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: maskXaiAccount(account),
-    pool: XAI_OAUTH_PROVIDER,
-    label: "SuperGrok",
-  };
-}
-
-/** A Claude pool account serving a native-transport pi/anthropic turn. */
-function claudePoolRef(account: ClaudeAccount): PoolAccountRef {
-  return {
-    id: account.id,
-    name: account.name,
-    masked: `${account.name} (${account.id.slice(0, 8)}, claude)`,
-    pool: "claude",
-    label: "Claude",
-  };
-}
-
-/** The pool account a binding's evidence names, picked or sidelineable. */
-function evidencePoolRef(
-  evidence: PiRuntimeAccountEvidence,
-  which: "picked" | "sidelineable",
-): PoolAccountRef | undefined {
-  const openai =
-    which === "picked" ? evidence.pickedOpenai : evidence.sidelineableOpenai;
-  if (openai) return codexPoolRef(openai);
-  const xai =
-    which === "picked" ? evidence.pickedXai : evidence.sidelineableXai;
-  if (xai) return xaiPoolRef(xai);
-  const claude =
-    which === "picked" ? evidence.pickedClaude : evidence.sidelineableClaude;
-  return claude ? claudePoolRef(claude) : undefined;
-}
 
 /** First jsonl line of a pi session file (the v3 header), bounded read. */
 function readSessionHeader(
@@ -388,34 +337,6 @@ function findPiSessionFile(
 
 const THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
-/** State carried ACROSS the attempts of one logical pi turn. */
-interface PiAccountWalk {
-  /** Provider account ids this turn has already burned, fed into the picker
-   *  so a replay lands somewhere new. The sideline alone cannot drive this:
-   *  it is shared cross-engine with previous runner, and some refusals deliberately
-   *  do not set it (local admission control that frees within the hour). */
-  excluded: Set<string>;
-  /** Set by an attempt that wants to be replayed on another account. */
-  rotate: boolean;
-  /** The first attempt's user-line uuid, reused by every replay so the
-   *  transcript row upserts instead of duplicating the person's message. */
-  promptEntryId?: string;
-  /** Resume completed messages and tool results instead of replaying the prompt. */
-  continuation?: AgentSession["sessionManager"];
-  /** This turn already moved off an account over a native 429 that was not
-   *  the subscription's limit. Such a rotation happens at most once. */
-  throttleRotated?: boolean;
-  cancelled?: boolean;
-}
-
-/** Bookkeeping can repeat, but output or tool activity requires continuing the
- * native conversation rather than replaying the original prompt. */
-export function piStreamEventRequiresAccountContinuation(
-  event: Pick<StreamEvent, "type">,
-): boolean {
-  return event.type !== "init" && event.type !== "usage_snapshot";
-}
-
 /**
  * One logical pi turn, across however many provider accounts it takes.
  *
@@ -438,37 +359,7 @@ export async function* runPi(
   opts: RunAgentOpts,
   model: string,
 ): AsyncGenerator<StreamEvent> {
-  const walk: PiAccountWalk = { excluded: new Set(), rotate: false };
-  let priorUsage: TurnUsage | undefined;
-  for (;;) {
-    walk.rotate = false;
-    let latestUsage = priorUsage;
-    for await (const event of runPiAttempt(opts, model, walk)) {
-      if (event.usage) {
-        const usage = event.usage;
-        latestUsage = {
-          ...usage,
-          inputTokens: (priorUsage?.inputTokens || 0) + usage.inputTokens,
-          outputTokens: (priorUsage?.outputTokens || 0) + usage.outputTokens,
-          cacheReadTokens:
-            (priorUsage?.cacheReadTokens || 0) + usage.cacheReadTokens,
-          cacheCreationTokens:
-            (priorUsage?.cacheCreationTokens || 0) + usage.cacheCreationTokens,
-          costUsd: (priorUsage?.costUsd || 0) + (usage.costUsd || 0),
-        };
-        yield { ...event, usage: latestUsage };
-      } else if (
-        priorUsage &&
-        (event.type === "error" || event.type === "done")
-      ) {
-        yield { ...event, usage: priorUsage };
-      } else {
-        yield event;
-      }
-    }
-    if (!walk.rotate || walk.cancelled) return;
-    priorUsage = latestUsage;
-  }
+  return yield* runPiAccountWalk((walk) => runPiAttempt(opts, model, walk));
 }
 
 async function* runPiAttempt(
