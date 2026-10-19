@@ -17,6 +17,9 @@ disagree.
 - **Public repo.** No secrets, client data or internal hostnames in commits,
   PRs or issues (see "Public repository" below).
 - **Small PRs.** One cut or one change per PR, with build and tests passing.
+- **Clean up after every task.** Once a PR merges, remove its worktree, delete
+  its branch locally and on origin, stop its background jobs, and delete scratch
+  files it left in `/tmp`.
 
 ## What we're building
 
