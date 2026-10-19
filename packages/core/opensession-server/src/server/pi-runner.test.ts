@@ -1660,38 +1660,20 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       ? JSON.parse(readFileSync(sidelinePath, "utf-8")).exhaustedUntil || {}
       : {};
 
-  /** A limit message that names a reset three days out, the shape
-   *  usageLimitResetAt parses. */
-  const limitMessage = () => {
-    const at = new Date(Date.now() + 3 * 24 * 60 * 60_000);
-    const month = at.toLocaleString("en-US", {
-      month: "short",
-      timeZone: "UTC",
-    });
-    return `You've hit your limit · resets ${month} ${at.getUTCDate()}, 9am (UTC)`;
-  };
-  const overloaded =
-    '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
-
-  test.each([
-    { failure: "limit", streamed: false, strict: false },
-    { failure: "limit", streamed: true, strict: false },
-    { failure: "limit", streamed: false, strict: true },
-    { failure: "overloaded", streamed: false, strict: false },
-  ])("account walk %j", async ({ failure, streamed, strict }) => {
+  /** A fresh pool of `count` same-band accounts, in store order. */
+  const writePool = (count: number) => {
     const suffix = crypto.randomUUID();
-    const first = {
-      id: `claude-a-${suffix}`,
-      token: `sk-ant-oat01-a-${suffix}`,
-    };
-    const second = {
-      id: `claude-b-${suffix}`,
-      token: `sk-ant-oat01-b-${suffix}`,
-    };
+    const accounts = Array.from({ length: count }, (_, index) => {
+      const letter = String.fromCharCode(97 + index);
+      return {
+        id: `claude-${letter}-${suffix}`,
+        token: `sk-ant-oat01-${letter}-${suffix}`,
+      };
+    });
     writeFileSync(
       storePath,
       JSON.stringify({
-        accounts: [first, second].map((account) => ({
+        accounts: accounts.map((account) => ({
           ...account,
           name: account.id,
           createdAt: new Date().toISOString(),
@@ -1699,15 +1681,30 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
         })),
       }),
     );
-    const failureMessage = failure === "limit" ? limitMessage() : overloaded;
+    return { suffix, accounts };
+  };
 
+  /** How one fake provider request ends for a given pool token. */
+  interface FakeOutcome {
+    /** The in-band terminal error; absent means the turn succeeds. */
+    error?: string;
+    /** The HTTP response pi's Anthropic client saw for the failing request. */
+    response?: { status: number; headers: Record<string, string> };
+    /** Text and a completed tool call escape before the failure. */
+    streamed?: boolean;
+  }
+
+  /** A fake pi SDK. `outcome` decides each attempt from its seeded token. */
+  const fakeNativeSdk = (
+    outcome: (token: string) => FakeOutcome | undefined,
+  ) => {
     const usedTokens: string[] = [];
     const prompts: string[] = [];
     const managers: unknown[] = [];
     const payloadHooks: Array<
       ((payload: unknown, model: unknown) => unknown) | undefined
     > = [];
-    const fakeSdk = {
+    const sdk = {
       ModelRuntime: {
         create: async ({ credentials }: any) => {
           const stored = await credentials.read("anthropic");
@@ -1750,9 +1747,23 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
         const token = String(modelRuntime.token);
         usedTokens.push(token);
         managers.push(sessionManager);
-        const failing = token === first.token;
+        const result = outcome(token);
+        const failing = result?.error !== undefined;
         let listener: (event: any) => void = () => {};
-        const agent: Record<string, any> = { continue: async () => {} };
+        // pi's agent: its stream function hands the request options (and
+        // with them `fetch`) to the provider's Anthropic client.
+        const agent: Record<string, any> = {
+          continue: async () => {},
+          streamFunction: async (
+            _model: unknown,
+            _context: unknown,
+            options: any,
+          ) => {
+            await options?.fetch?.("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+            });
+          },
+        };
         const session = {
           sessionId: `fake-${token}`,
           sessionManager,
@@ -1766,7 +1777,7 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
           prompt: async (prompt: string) => {
             payloadHooks.push(agent.onPayload);
             prompts.push(prompt);
-            if (streamed && failing) {
+            if (result?.streamed && failing) {
               listener({
                 type: "message_end",
                 message: {
@@ -1797,12 +1808,29 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
                 isError: false,
               });
             }
+            const response = result?.response ?? {
+              status: 200,
+              headers: {
+                "anthropic-ratelimit-unified-status": "allowed",
+              },
+            };
+            await agent.streamFunction(
+              { provider: "anthropic", id: model },
+              { messages: [] },
+              {
+                fetch: async () =>
+                  new Response(failing ? (result?.error ?? "") : "{}", {
+                    status: response.status,
+                    headers: response.headers,
+                  }),
+              },
+            );
             listener({
               type: "message_end",
               message: {
                 role: "assistant",
                 stopReason: failing ? "error" : "stop",
-                errorMessage: failing ? failureMessage : undefined,
+                errorMessage: failing ? result?.error : undefined,
                 usage: {
                   input: failing ? 0 : 1,
                   output: failing ? 0 : 1,
@@ -1825,11 +1853,17 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
         return { session };
       },
     };
+    return { sdk, usedTokens, prompts, managers, payloadHooks };
+  };
 
+  /** One runPi turn against the fake SDK. */
+  const runNativeTurn = async (
+    sdk: unknown,
+    opts: Partial<Parameters<typeof runPi>[0]> & { sessionId: string },
+  ) => {
     const sdkState = globalThis as any;
     const previousSdkPromise = sdkState.__piSdkPromise;
-    const sessionKey = `pi-claude-native-${suffix}`;
-    sdkState.__piSdkPromise = Promise.resolve(fakeSdk);
+    sdkState.__piSdkPromise = Promise.resolve(sdk);
     const warnings = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const events: Array<Record<string, unknown>> = [];
@@ -1840,80 +1874,143 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
           mode: "ask",
           mcpServers: [],
           journal: { kind: "prompt" },
-          sessionId: sessionKey,
-          accountId: first.id,
-          accountStrict: strict,
           disableLocalWorkspaceTools: true,
+          ...opts,
         },
         `pi/anthropic/${model}`,
       )) {
         events.push(event as unknown as Record<string, unknown>);
       }
-
-      // Every attempt's requests get the prompt compatibility rewrite.
-      const [[from, to]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
-      for (const hook of payloadHooks) {
-        expect(
-          await hook?.(
-            { system: [{ type: "text", text: from }] },
-            { provider: "anthropic" },
-          ),
-        ).toEqual({ system: [{ type: "text", text: to }] });
-      }
-      const errors = events.filter((event) => event.type === "error");
-
-      if (failure === "overloaded") {
-        // Transient overload on the direct API: pi's retry owns it, so the
-        // account is neither sidelined nor rotated off, and the turn's
-        // failure does not read as exhaustion.
-        expect(usedTokens).toEqual([first.token]);
-        expect(errors).toHaveLength(1);
-        expect(errors[0].usageLimitExhausted).toBeUndefined();
-        expect(sidelines()[`${first.id}:${model}`]).toBeUndefined();
-        return;
-      }
-
-      // A limit benches the account until the reset its message named,
-      // which is later than the default one-hour sideline.
-      const statedReset = usageLimitResetAt(failureMessage)!;
-      expect(statedReset).toBeGreaterThan(Date.now() + 2 * 60 * 60_000);
-      expect(sidelines()[`${first.id}:${model}`]).toBe(statedReset);
-      if (strict) {
-        // A hard pin never moves onto an account the person did not pick.
-        expect(usedTokens).toEqual([first.token]);
-        expect(errors).toHaveLength(1);
-        expect(errors[0].usageLimitExhausted).toBe(true);
-        return;
-      }
-      expect(usedTokens).toEqual([first.token, second.token]);
-      expect(errors).toHaveLength(0);
-      expect(events.find((event) => event.type === "done")).toMatchObject({
-        model: `pi/anthropic/${model}`,
-        result: "ok",
-      });
-      expect(
-        warnings.mock.calls.some(([message]) =>
-          String(message).includes(
-            `[pi-runner] usage limit on Claude account "${first.id}"`,
-          ),
-        ),
-      ).toBe(true);
-      if (streamed) {
-        // Output escaped before the limit: continue the same native session.
-        expect(managers[1]).toBe(managers[0]);
-        expect(prompts[1]).toContain('source="auto-continue"');
-      } else {
-        expect(managers[1]).not.toBe(managers[0]);
-        expect(prompts[1]).toEndWith("\n\nhi");
-      }
+      return {
+        events,
+        errors: events.filter((event) => event.type === "error"),
+        warnings: warnings.mock.calls.map(([message]) => String(message)),
+      };
     } finally {
       warnings.mockRestore();
       sdkState.__piSdkPromise = previousSdkPromise;
-      rmSync(join(PI_STATE_DIR, "sessions", sessionKey), {
+      rmSync(join(PI_STATE_DIR, "sessions", opts.sessionId), {
         recursive: true,
         force: true,
       });
     }
+  };
+
+  /** A limit message that names a reset three days out, the shape
+   *  usageLimitResetAt parses. */
+  const limitMessage = () => {
+    const at = new Date(Date.now() + 3 * 24 * 60 * 60_000);
+    const month = at.toLocaleString("en-US", {
+      month: "short",
+      timeZone: "UTC",
+    });
+    return `You've hit your limit · resets ${month} ${at.getUTCDate()}, 9am (UTC)`;
+  };
+  const overloaded =
+    '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+
+  test.each([
+    { failure: "limit", streamed: false, strict: false },
+    { failure: "limit", streamed: true, strict: false },
+    { failure: "limit", streamed: false, strict: true },
+    { failure: "overloaded", streamed: false, strict: false },
+  ])("account walk %j", async ({ failure, streamed, strict }) => {
+    const {
+      suffix,
+      accounts: [first, second],
+    } = writePool(2);
+    const failureMessage = failure === "limit" ? limitMessage() : overloaded;
+    const fake = fakeNativeSdk((token) =>
+      token === first.token ? { error: failureMessage, streamed } : undefined,
+    );
+    const { events, errors, warnings } = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}`,
+      accountAffinityKey: `affinity-${suffix}`,
+      accountId: first.id,
+      accountStrict: strict,
+    });
+    const { usedTokens, prompts, managers, payloadHooks } = fake;
+
+    // Every attempt's requests get the prompt compatibility rewrite.
+    const [[from, to]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
+    for (const hook of payloadHooks) {
+      expect(
+        await hook?.(
+          { system: [{ type: "text", text: from }] },
+          { provider: "anthropic" },
+        ),
+      ).toEqual({ system: [{ type: "text", text: to }] });
+    }
+
+    if (failure === "overloaded") {
+      // Transient overload on the direct API: pi's retry owns it, so the
+      // account is neither sidelined nor rotated off, and the turn's
+      // failure does not read as exhaustion.
+      expect(usedTokens).toEqual([first.token]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].usageLimitExhausted).toBeUndefined();
+      expect(sidelines()[`${first.id}:${model}`]).toBeUndefined();
+      return;
+    }
+
+    // A limit benches the account until the reset its message named,
+    // which is later than the default one-hour sideline.
+    const statedReset = usageLimitResetAt(failureMessage)!;
+    expect(statedReset).toBeGreaterThan(Date.now() + 2 * 60 * 60_000);
+    expect(sidelines()[`${first.id}:${model}`]).toBe(statedReset);
+    if (strict) {
+      // A hard pin never moves onto an account the person did not pick.
+      expect(usedTokens).toEqual([first.token]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].usageLimitExhausted).toBe(true);
+      return;
+    }
+    expect(usedTokens).toEqual([first.token, second.token]);
+    expect(errors).toHaveLength(0);
+    expect(events.find((event) => event.type === "done")).toMatchObject({
+      model: `pi/anthropic/${model}`,
+      result: "ok",
+    });
+    expect(
+      warnings.some((message) =>
+        message.includes(
+          `[pi-runner] usage limit on Claude account "${first.id}"`,
+        ),
+      ),
+    ).toBe(true);
+    if (streamed) {
+      // Output escaped before the limit: continue the same native session.
+      expect(managers[1]).toBe(managers[0]);
+      expect(prompts[1]).toContain('source="auto-continue"');
+    } else {
+      expect(managers[1]).not.toBe(managers[0]);
+      expect(prompts[1]).toEndWith("\n\nhi");
+    }
+  });
+
+  test("a session keeps its account from turn to turn", async () => {
+    const { suffix, accounts } = writePool(2);
+    const fake = fakeNativeSdk(() => undefined);
+    const affinity = `affinity-${suffix}`;
+    for (let turn = 0; turn < 3; turn++) {
+      const { errors } = await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${turn}`,
+        accountAffinityKey: affinity,
+      });
+      expect(errors).toHaveLength(0);
+    }
+    // Same band, so the pool alone would round-robin between the two.
+    expect(fake.usedTokens).toEqual([
+      accounts[0].token,
+      accounts[0].token,
+      accounts[0].token,
+    ]);
+    // Another session is free to land elsewhere.
+    await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}-other`,
+      accountAffinityKey: `other-${suffix}`,
+    });
+    expect(fake.usedTokens[3]).toBe(accounts[1].token);
   });
 });
 

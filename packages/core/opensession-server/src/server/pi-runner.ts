@@ -2216,11 +2216,13 @@ async function* runPiAttempt(
    *  the pool, which is the one thing a hard pin exists to prevent. */
   // Runs journaled before `speed` existed carry only fastMode.
   const speed = sessionSpeed(opts);
+  // Which session an account pick belongs to: HRW affinity on the Codex and
+  // SuperGrok pools, the remembered account on the native Claude pool.
+  const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
   const nextPoolAccount = (): PoolAccountRef | undefined => {
     if (!pickedAccount) return undefined;
     if (opts.accountStrict && opts.accountId) return undefined;
     const excluded = new Set([...walk.excluded, pickedAccount.id]);
-    const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
     if (pickedAccount.pool === "claude") {
       const next = pickBridgeAccount(parsed.modelID, {
         user: accountUser,
@@ -2427,7 +2429,7 @@ async function* runPiAttempt(
       providerID: parsed.providerID,
       modelID: parsed.modelID,
       configuredProvider,
-      affinityKey: opts.accountAffinityKey || journal?.osSessionId || cwd,
+      affinityKey: affinity,
       unifiedSessionId: unifiedSessionId || runKey,
       accountUser,
       accountId: opts.accountId,
@@ -2449,7 +2451,9 @@ async function* runPiAttempt(
                 account: picked.masked,
                 account_id: picked.id.slice(0, 8),
                 pick_reason:
-                  evidence.openaiPickReason ?? evidence.xaiPickReason,
+                  evidence.openaiPickReason ??
+                  evidence.xaiPickReason ??
+                  evidence.claudePickReason,
               }
             : {}),
           ...(policy.unattended

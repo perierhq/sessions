@@ -1,6 +1,6 @@
 import { buildPiAnthropicModels } from "./pi-anthropic-models";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ClaudeAccount } from "./claude-accounts";
+import type { ClaudeAccount, PickReason } from "./claude-accounts";
 import type { CodexAccount } from "./codex-accounts";
 import type { PiAnthropicTransport } from "./pi-config";
 import type { SeededOpenaiAuth } from "./openai-auth";
@@ -53,6 +53,9 @@ export interface PiRuntimeAccountEvidence {
   /** The Claude pool account a native-transport Anthropic turn runs on. */
   pickedClaude?: ClaudeAccount;
   sidelineableClaude?: ClaudeAccount;
+  /** Which step of the Claude account policy chose it (pinned, sticky,
+   *  designated, personal, pool). */
+  claudePickReason?: string;
 }
 
 export interface PiRuntimeBinding extends PiRuntimeAccountEvidence {
@@ -87,6 +90,50 @@ export interface ClaudeAccountPick {
   usageCredits?: boolean;
   /** Accounts this turn's walk already burned. */
   excludeIds?: readonly string[];
+  /** The account that last served this affinity key, preferred while it is
+   *  usable (below a pin, above the pool pick). */
+  stickyId?: string;
+}
+
+/**
+ * Which Claude account last served each account-affinity key on the native
+ * transport. The binding picks once per turn, and the pool's least-used
+ * tiebreak round-robins equal accounts, so without this a session moved to
+ * another subscription on almost every turn: its prompt cache (kept per
+ * organization) went cold, and its signed thinking blocks were replayed
+ * under a different account. The in-process transport gets the same effect
+ * from the account holding the live SDK conversation (pi-model-runtime).
+ *
+ * In memory only: after a restart the first turn picks afresh and the
+ * session sticks from there. Bounded, oldest key first out.
+ */
+const NATIVE_CLAUDE_AFFINITY_LIMIT = 4096;
+const nativeClaudeAffinity = new Map<string, string>();
+
+/** The Claude account that last served `key` on the native transport. */
+export function nativeClaudeStickyAccount(key: string): string | undefined {
+  return key ? nativeClaudeAffinity.get(key) : undefined;
+}
+
+/** Record that `accountId` serves `key` from now on. The runner's account
+ *  walk also calls this when it rotates, so the next attempt binds to the
+ *  account it announced and the session stays there afterwards. */
+export function rememberNativeClaudeAccount(
+  key: string,
+  accountId: string,
+): void {
+  if (!key) return;
+  nativeClaudeAffinity.delete(key);
+  nativeClaudeAffinity.set(key, accountId);
+  if (nativeClaudeAffinity.size > NATIVE_CLAUDE_AFFINITY_LIMIT) {
+    const oldest = nativeClaudeAffinity.keys().next().value;
+    if (oldest !== undefined) nativeClaudeAffinity.delete(oldest);
+  }
+}
+
+/** Test seam: forget every remembered native Claude account. */
+export function __resetNativeClaudeAffinityForTest(): void {
+  nativeClaudeAffinity.clear();
 }
 
 /** The 1-hour prompt cache for native subscription turns. It rides on the
@@ -119,6 +166,7 @@ export interface PiRuntimeBindingDependencies {
   pickClaudeAccount?: (
     modelID: string,
     pick: ClaudeAccountPick,
+    out?: { reason?: PickReason },
   ) => ClaudeAccount | { error: string };
   buildAnthropicProvider: (input: {
     unifiedSessionId: string;
@@ -227,21 +275,31 @@ export async function createPiRuntimeBinding(
         "pi/anthropic: the native transport has no Claude account picker",
       );
     }
-    const picked = deps.pickClaudeAccount(input.modelID, {
-      user: input.accountUser,
-      accountId: input.accountId,
-      accountStrict: input.accountStrict,
-      usageCredits: input.usageCredits,
-      excludeIds: input.excludedOpenaiAccountIds.size
-        ? [...input.excludedOpenaiAccountIds]
-        : undefined,
-    });
+    const pickOut: { reason?: PickReason } = {};
+    const picked = deps.pickClaudeAccount(
+      input.modelID,
+      {
+        user: input.accountUser,
+        accountId: input.accountId,
+        accountStrict: input.accountStrict,
+        usageCredits: input.usageCredits,
+        excludeIds: input.excludedOpenaiAccountIds.size
+          ? [...input.excludedOpenaiAccountIds]
+          : undefined,
+        // A pin still wins over this, and an exclusion (the walk rotating
+        // off a limited account) still overrides it: resolveAccount's order.
+        stickyId: nativeClaudeStickyAccount(input.affinityKey),
+      },
+      pickOut,
+    );
     // The picker's refusal is the exact text the other transports surface;
     // isPiUsageLimitShape and the one-shot fallback key on its wording.
     if ("error" in picked) throw new Error(picked.error);
+    rememberNativeClaudeAccount(input.affinityKey, picked.id);
     nativeAnthropicToken = picked.token;
     evidence.pickedClaude = picked;
     evidence.sidelineableClaude = picked;
+    evidence.claudePickReason = pickOut.reason;
     input.onAccountEvidence?.({ ...evidence });
   }
 

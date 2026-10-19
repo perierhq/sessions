@@ -83,6 +83,7 @@ import { audit, summarizeText } from "./audit";
 import {
   hasAccounts,
   resolveAccount,
+  type PickReason,
   type ClaudeAccount,
 } from "./claude-accounts";
 import { cacheCreationUsage } from "./claude-cache-writes";
@@ -208,6 +209,10 @@ export interface BridgeAccountPin {
    *  a session keeps its SDK resume and prompt cache instead of replaying the
    *  whole context onto a different subscription every request. */
   stickyId?: string;
+  /** Judge eligibility without consuming the pool's round-robin turn: the
+   *  account walk's probe for "is there another account", so the turn that
+   *  then binds lands on the account the probe announced. */
+  peek?: boolean;
 }
 
 /** Pick the account to serve a bridge/pi request (utilization-gated).
@@ -232,6 +237,8 @@ export interface BridgeAccountPin {
 export function pickBridgeAccount(
   model: string | undefined,
   pin?: BridgeAccountPin,
+  /** Receives which step of the policy produced the account, for audits. */
+  out?: { reason?: PickReason },
 ): ClaudeAccount | { error: string } {
   const cfg = readModelProviderConfig();
   const ids = cfg?.enabled ? cfg.bridgeAccountIds || [] : [];
@@ -244,8 +251,12 @@ export function pickBridgeAccount(
     designatedIds: ids,
     allowExtraUsage: pin?.usageCredits,
     excludeIds: pin?.excludeIds,
+    recordPick: !pin?.peek,
   });
-  if ("account" in resolved) return resolved.account;
+  if ("account" in resolved) {
+    if (out) out.reason = resolved.reason;
+    return resolved.account;
+  }
   const refusal = resolved.refusal;
   if (refusal.kind === "pin-not-designated") {
     // Config error, deliberately NOT exhaustion-shaped — hopping models would

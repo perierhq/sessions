@@ -3,6 +3,7 @@ import {
   __resetPiSdkCacheForTest,
   createPiRuntimeBinding,
   prewarmPiSdk,
+  __resetNativeClaudeAffinityForTest,
   type CreatePiRuntimeBindingInput,
 } from "./pi-runtime-binding";
 import type { ClaudeAccount } from "./claude-accounts";
@@ -107,9 +108,17 @@ function harness(
       },
     }),
     anthropicTransport: () => options.transport || ("inprocess" as const),
-    pickClaudeAccount: (modelID: string, pick: any) => {
+    pickClaudeAccount: (
+      modelID: string,
+      pick: any,
+      out?: { reason?: string },
+    ) => {
       calls.push(["pickClaudeAccount", modelID, pick]);
-      return options.claudePick ?? claude;
+      const picked = options.claudePick ?? claude;
+      if (out && !("error" in picked)) {
+        out.reason = pick.stickyId === picked.id ? "sticky" : "pool";
+      }
+      return picked;
     },
     buildAnthropicProvider: (input: any) => {
       calls.push(["buildAnthropicProvider", input]);
@@ -145,7 +154,10 @@ function input(
   };
 }
 
-afterEach(() => __resetPiSdkCacheForTest());
+afterEach(() => {
+  __resetPiSdkCacheForTest();
+  __resetNativeClaudeAffinityForTest();
+});
 
 describe("createPiRuntimeBinding", () => {
   test("is import-inert and invokes no injected SDK, config, or account effects before factory call", () => {
@@ -350,13 +362,22 @@ describe("createPiRuntimeBinding", () => {
         accountStrict: true,
         usageCredits: true,
         excludeIds: undefined,
+        stickyId: undefined,
       },
     ]);
     expect(evidence).toEqual([
-      { pickedClaude: claude, sidelineableClaude: claude },
+      {
+        pickedClaude: claude,
+        sidelineableClaude: claude,
+        claudePickReason: "pool",
+      },
     ]);
     expect(loaded).toEqual([
-      { pickedClaude: claude, sidelineableClaude: claude },
+      {
+        pickedClaude: claude,
+        sidelineableClaude: claude,
+        claudePickReason: "pool",
+      },
     ]);
     // pi's builtin provider and catalog: no SDK provider, no bridge, no
     // process-wide runtime key.
@@ -373,6 +394,28 @@ describe("createPiRuntimeBinding", () => {
       env: { PI_CACHE_RETENTION: "long" },
     });
     expect(create[1].modelsPath).toBeNull();
+  });
+
+  test("native Anthropic prefers the account that last served the same affinity key", async () => {
+    const h = harness({ transport: "native" });
+    const first = await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, { affinityKey: "session-a" }),
+    );
+    expect(first.claudePickReason).toBe("pool");
+    const second = await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, { affinityKey: "session-a" }),
+    );
+    // Another session has no remembered account.
+    await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, { affinityKey: "session-b" }),
+    );
+    const picks = h.calls.filter(([name]) => name === "pickClaudeAccount");
+    expect(picks.map(([, , pick]) => pick.stickyId)).toEqual([
+      undefined,
+      claude.id,
+      undefined,
+    ]);
+    expect(second.claudePickReason).toBe("sticky");
   });
 
   test("native Anthropic skips accounts this turn's walk already burned", async () => {
