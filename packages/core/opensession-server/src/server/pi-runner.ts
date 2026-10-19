@@ -182,6 +182,7 @@ import { buildPiAnthropicProvider } from "./pi-anthropic-provider";
 import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
+  rememberNativeClaudeAccount,
   type PiRuntimeAccountEvidence,
   type PiSdk,
 } from "./pi-runtime-binding";
@@ -2224,12 +2225,18 @@ async function* runPiAttempt(
     if (opts.accountStrict && opts.accountId) return undefined;
     const excluded = new Set([...walk.excluded, pickedAccount.id]);
     if (pickedAccount.pool === "claude") {
+      // A peek: this only asks whether another account can serve. Recording
+      // the pick here would spend the pool's round-robin turn, and the next
+      // attempt's own pick would then land on a different account than the
+      // one announced. takeAccountRotation hands the probed account to the
+      // next attempt instead.
       const next = pickBridgeAccount(parsed.modelID, {
         user: accountUser,
         accountId: opts.accountId,
         accountStrict: opts.accountStrict,
         usageCredits: opts.usageCredits,
         excludeIds: [...excluded],
+        peek: true,
       });
       return "error" in next ? undefined : claudePoolRef(next);
     }
@@ -2282,6 +2289,10 @@ async function* runPiAttempt(
     });
     if (sawStreamedOutput && session)
       walk.continuation = session.sessionManager;
+    // The native Claude binding prefers the session's remembered account:
+    // make that the one just announced, so the next attempt binds to it and
+    // the session stays there afterwards.
+    if (next.pool === "claude") rememberNativeClaudeAccount(affinity, next.id);
     walk.excluded.add(pickedAccount.id);
     walk.rotate = true;
     reachedTerminal = true;

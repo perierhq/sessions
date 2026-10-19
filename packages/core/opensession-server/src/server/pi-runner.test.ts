@@ -1988,6 +1988,46 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     }
   });
 
+  test("a rotation binds the account it announced, and the session stays there", async () => {
+    // Three same-band accounts. The probe for "is there another account"
+    // must not spend the round-robin turn, or the next attempt's pick lands
+    // on c while the walk announced b.
+    const {
+      suffix,
+      accounts: [a, b, c],
+    } = writePool(3);
+    const fake = fakeNativeSdk((token) =>
+      token === a.token ? { error: limitMessage() } : undefined,
+    );
+    const affinity = `affinity-${suffix}`;
+    const first = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}-1`,
+      accountAffinityKey: affinity,
+    });
+    expect(first.errors).toHaveLength(0);
+    expect(
+      first.warnings.filter((message) =>
+        message.startsWith("[pi-runner] usage limit on Claude account"),
+      ),
+    ).toEqual([
+      `[pi-runner] usage limit on Claude account "${a.id}" (${model}): ` +
+        `retrying this turn on "${b.id}"`,
+    ]);
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+
+    // The next turns of the session stay on b, though c is now the
+    // least recently picked account in the band.
+    for (const turn of [2, 3]) {
+      const { errors } = await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${turn}`,
+        accountAffinityKey: affinity,
+      });
+      expect(errors).toHaveLength(0);
+    }
+    expect(fake.usedTokens).toEqual([a.token, b.token, b.token, b.token]);
+    expect(fake.usedTokens).not.toContain(c.token);
+  });
+
   test("a session keeps its account from turn to turn", async () => {
     const { suffix, accounts } = writePool(2);
     const fake = fakeNativeSdk(() => undefined);
