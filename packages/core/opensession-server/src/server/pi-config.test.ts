@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -6,13 +6,14 @@ import {
   addPiPickerModel,
   isPiModelId,
   normalizePiConfig,
-  piAnthropicTransport,
+  noteObsoletePiFields,
   piConfigPath,
   piEngineEnabled,
   piPickerModels,
   readPiEngineConfig,
   removePiPickerModel,
   setPiEnabled,
+  __resetObsoletePiFieldWarningForTest,
 } from "./pi-config";
 
 const savedConfig = process.env.OPENSESSION_PI_CONFIG;
@@ -79,35 +80,11 @@ describe("normalizePiConfig", () => {
     expect(cfg).toEqual({ enabled: true, pickerModels: [] });
   });
 
-  it('keeps anthropicTransport only as the literal non-defaults "bridge" and "native"', () => {
-    // Absent = the "inprocess" default; only the exact non-default values
-    // survive normalization (present-implies-non-default).
-    expect(
-      normalizePiConfig({ enabled: true }).anthropicTransport,
-    ).toBeUndefined();
-    expect(
-      normalizePiConfig({ enabled: true, anthropicTransport: "bridge" })
-        .anthropicTransport,
-    ).toBe("bridge");
-    expect(
-      normalizePiConfig({ enabled: true, anthropicTransport: "native" })
-        .anthropicTransport,
-    ).toBe("native");
-    for (const junk of [
-      "inprocess",
-      "Bridge",
-      "Native",
-      " native",
-      "loopback",
-      42,
-      null,
-      true,
-      {},
-    ]) {
+  it("accepts and drops the retired anthropicTransport field", () => {
+    for (const value of ["inprocess", "bridge", "native", "junk", 42, null]) {
       expect(
-        normalizePiConfig({ enabled: true, anthropicTransport: junk })
-          .anthropicTransport,
-      ).toBeUndefined();
+        normalizePiConfig({ enabled: true, anthropicTransport: value }),
+      ).toEqual({ enabled: true, pickerModels: [] });
     }
   });
 });
@@ -182,36 +159,34 @@ describe("readPiEngineConfig", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('resolves piAnthropicTransport to "inprocess" unless the file says "bridge" or "native"', () => {
-    // Missing file → default.
-    const dir = withConfigFile();
-    expect(piAnthropicTransport()).toBe("inprocess");
-    // Explicit rollback value.
-    writeFileSync(
-      join(dir, "pi.json"),
-      JSON.stringify({ enabled: true, anthropicTransport: "bridge" }),
-    );
-    expect(piAnthropicTransport()).toBe("bridge");
-    // Opt-in pi-native provider.
-    writeFileSync(
-      join(dir, "pi.json"),
-      JSON.stringify({ enabled: true, anthropicTransport: "native" }),
-    );
-    expect(piAnthropicTransport()).toBe("native");
-    // Junk values fall back to the default.
-    writeFileSync(
-      join(dir, "pi.json"),
-      JSON.stringify({ enabled: true, anthropicTransport: "meridian" }),
-    );
-    expect(piAnthropicTransport()).toBe("inprocess");
-    // The transport is read independently of the enabled gate (the runner
-    // checks enabled first) — a disabled config keeps its explicit choice.
-    writeFileSync(
-      join(dir, "pi.json"),
-      JSON.stringify({ enabled: false, anthropicTransport: "bridge" }),
-    );
-    expect(piAnthropicTransport()).toBe("bridge");
-    rmSync(dir, { recursive: true, force: true });
+  it("still loads a file that sets the retired anthropicTransport field", () => {
+    for (const value of ["inprocess", "bridge", "native"]) {
+      const dir = withConfigFile({ enabled: true, anthropicTransport: value });
+      expect(readPiEngineConfig()).toEqual({ enabled: true, pickerModels: [] });
+      expect(piEngineEnabled()).toBe(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns once per process about the retired anthropicTransport field", () => {
+    __resetObsoletePiFieldWarningForTest();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(noteObsoletePiFields({ enabled: true }, "pi.json")).toBe(false);
+      expect(
+        noteObsoletePiFields({ anthropicTransport: "bridge" }, "pi.json"),
+      ).toBe(true);
+      expect(
+        noteObsoletePiFields({ anthropicTransport: "native" }, "pi.json"),
+      ).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        '"anthropicTransport" is obsolete',
+      );
+    } finally {
+      warn.mockRestore();
+      __resetObsoletePiFieldWarningForTest();
+    }
   });
 });
 

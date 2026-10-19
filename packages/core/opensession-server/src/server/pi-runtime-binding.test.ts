@@ -37,7 +37,6 @@ const claude: ClaudeAccount = {
 function harness(
   options: {
     account?: CodexAccount;
-    transport?: "inprocess" | "bridge" | "native";
     refuseModels?: boolean;
     claudePick?: ClaudeAccount | { error: string };
   } = {},
@@ -63,12 +62,6 @@ function harness(
       calls.push(["registerProvider", provider, config]);
       if (!options.refuseModels)
         for (const model of config.models || []) builtin(provider, model.id);
-    },
-    registerNativeProvider(provider: any) {
-      calls.push(["registerNativeProvider", provider]);
-      if (!options.refuseModels)
-        for (const model of provider.models || [])
-          builtin("anthropic", model.id);
     },
     async setRuntimeApiKey(provider: string, key: string) {
       calls.push(["setRuntimeApiKey", provider, key]);
@@ -111,7 +104,6 @@ function harness(
         },
       },
     }),
-    anthropicTransport: () => options.transport || ("inprocess" as const),
     pickClaudeAccount: (
       modelID: string,
       pick: any,
@@ -123,14 +115,6 @@ function harness(
         out.reason = pick.stickyId === picked.id ? "sticky" : "pool";
       }
       return picked;
-    },
-    buildAnthropicProvider: (input: any) => {
-      calls.push(["buildAnthropicProvider", input]);
-      return { id: "anthropic", models: input.builtinModels as any };
-    },
-    ensureAnthropicBridge: () => {
-      calls.push(["ensureAnthropicBridge"]);
-      return { url: "http://bridge", key: "bridge-key" };
     },
     buildThirdPartyProviderPlan: (input: any) => {
       calls.push(["buildThirdPartyProviderPlan", input]);
@@ -299,53 +283,8 @@ describe("createPiRuntimeBinding", () => {
     }
   });
 
-  test("registers Anthropic in-process before looking up the model", async () => {
-    const h = harness({ transport: "inprocess" });
-    await createPiRuntimeBinding(input("anthropic", "claude-test", h));
-    expect(h.calls.map(([name]) => name)).toEqual([
-      "loadSdk",
-      "create",
-      "buildAnthropicProvider",
-      "registerNativeProvider",
-    ]);
-  });
-
-  test("registers Anthropic bridge routing and key in current order", async () => {
-    const h = harness({ transport: "bridge" });
-    await createPiRuntimeBinding(input("anthropic", "claude-test", h));
-    expect(h.calls.map(([name]) => name)).toEqual([
-      "loadSdk",
-      "create",
-      "ensureAnthropicBridge",
-      "registerProvider",
-      "setRuntimeApiKey",
-    ]);
-    expect(h.calls.at(-1)).toEqual([
-      "setRuntimeApiKey",
-      "anthropic",
-      "bridge-key",
-    ]);
-  });
-
-  test("registers Opus 5.5 metadata on the HTTP bridge without bypassing it", async () => {
-    const h = harness({ transport: "bridge" });
-    await createPiRuntimeBinding(input("anthropic", "claude-opus-5-5", h));
-    const registration = h.calls.find(
-      ([name, , config]) => name === "registerProvider" && config.models,
-    );
-    expect(registration?.[2].models).toEqual([
-      expect.objectContaining({
-        id: "claude-opus-5-5",
-        baseUrl: "http://bridge",
-        contextWindow: 1_000_000,
-        maxTokens: 128_000,
-        cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-      }),
-    ]);
-  });
-
-  test("native Anthropic picks a pool account before the runtime and seeds its token", async () => {
-    const h = harness({ transport: "native" });
+  test("Anthropic picks a pool account before the runtime and seeds its token", async () => {
+    const h = harness();
     const evidence: any[] = [];
     const loaded: any[] = [];
     const binding = await createPiRuntimeBinding(
@@ -393,8 +332,7 @@ describe("createPiRuntimeBinding", () => {
         claudePickReason: "pool",
       },
     ]);
-    // pi's builtin provider and catalog: no SDK provider, no bridge, no
-    // process-wide runtime key.
+    // pi's builtin provider and catalog, and no process-wide runtime key.
     expect(binding.model as unknown).toEqual({
       provider: "anthropic",
       id: "claude-test",
@@ -410,8 +348,8 @@ describe("createPiRuntimeBinding", () => {
     expect(create[1].modelsPath).toBeNull();
   });
 
-  test("native Anthropic prefers the account that last served the same session", async () => {
-    const h = harness({ transport: "native" });
+  test("Anthropic prefers the account that last served the same session", async () => {
+    const h = harness();
     const bind = (extra: Partial<CreatePiRuntimeBindingInput>) =>
       createPiRuntimeBinding(input("anthropic", "claude-test", h, extra));
     const first = await bind({ accountUser: "ada", claudeSessionKey: "s-a" });
@@ -438,9 +376,9 @@ describe("createPiRuntimeBinding", () => {
     expect(second.claudePickReason).toBe("sticky");
   });
 
-  test("native Anthropic drops a remembered pool account when the user's own subscription can serve", async () => {
+  test("Anthropic drops a remembered pool account when the user's own subscription can serve", async () => {
     const personal = { ...claude, id: "claude-personal", owner: "ada" };
-    const h = harness({ transport: "native" });
+    const h = harness();
     await createPiRuntimeBinding(
       input("anthropic", "claude-test", h, {
         accountUser: "ada",
@@ -477,8 +415,8 @@ describe("createPiRuntimeBinding", () => {
     expect(binding.pickedClaude).toBe(personal);
   });
 
-  test("native Anthropic skips accounts this turn's walk already burned", async () => {
-    const h = harness({ transport: "native" });
+  test("Anthropic skips accounts this turn's walk already burned", async () => {
+    const h = harness();
     await createPiRuntimeBinding(
       input("anthropic", "claude-test", h, {
         excludedOpenaiAccountIds: new Set(["claude-0"]),
@@ -487,10 +425,10 @@ describe("createPiRuntimeBinding", () => {
     expect(h.calls[0][2].excludeIds).toEqual(["claude-0"]);
   });
 
-  test("native Anthropic surfaces the pool refusal verbatim before loading pi", async () => {
+  test("Anthropic surfaces the pool refusal verbatim before loading pi", async () => {
     const refusal =
       "no usable Claude account in the pool (all exhausted or sidelined)";
-    const h = harness({ transport: "native", claudePick: { error: refusal } });
+    const h = harness({ claudePick: { error: refusal } });
     const evidence: any[] = [];
     let thrown: any;
     try {
@@ -510,8 +448,8 @@ describe("createPiRuntimeBinding", () => {
     expect(h.calls.map(([name]) => name)).toEqual(["pickClaudeAccount"]);
   });
 
-  test("native Anthropic registers release metadata only for a model pi does not know", async () => {
-    const h = harness({ transport: "native" });
+  test("Anthropic registers release metadata only for a model pi does not know", async () => {
+    const h = harness();
     const binding = await createPiRuntimeBinding(
       input("anthropic", "claude-opus-5-5", h),
     );
@@ -537,8 +475,8 @@ describe("createPiRuntimeBinding", () => {
     );
   });
 
-  test("native Anthropic applies the in-process path's price corrections to a builtin row", async () => {
-    const h = harness({ transport: "native" });
+  test("Anthropic applies newer published price corrections to a builtin row", async () => {
+    const h = harness();
     const stale = {
       provider: "anthropic",
       id: "claude-sonnet-5-5",
@@ -584,7 +522,7 @@ describe("createPiRuntimeBinding", () => {
     ]);
   });
 
-  test("native Anthropic requests reach pi's provider with the pool token and a 1h cache", async () => {
+  test("Anthropic requests reach pi's provider with the pool token and a 1h cache", async () => {
     // The real pi SDK, with fetch captured: no network.
     const previousEnvKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-ant-api03-from-the-environment";
@@ -594,7 +532,7 @@ describe("createPiRuntimeBinding", () => {
         "claude-sonnet-5-5",
         "claude-future-9",
       ]) {
-        const h = harness({ transport: "native" });
+        const h = harness();
         h.deps.loadSdk = prewarmPiSdk;
         const binding = await createPiRuntimeBinding(
           input("anthropic", modelID, h),
@@ -651,10 +589,10 @@ describe("createPiRuntimeBinding", () => {
     }
   });
 
-  test("a native 429's rate-limit headers reach the runner only through the request fetch", async () => {
+  test("an Anthropic 429's rate-limit headers reach the runner only through the request fetch", async () => {
     // The real pi SDK, with fetch captured: no network. pi's error text and
     // its onResponse hook both lose the headers of a failed request.
-    const h = harness({ transport: "native" });
+    const h = harness();
     h.deps.loadSdk = prewarmPiSdk;
     const binding = await createPiRuntimeBinding(
       input("anthropic", "claude-haiku-5-5", h),
