@@ -88,6 +88,7 @@ import {
   type HostToClientMsg,
   type ClientToHostMsg,
 } from "../runner-host/protocol";
+import { launchMcpProxyMode } from "../runner-host/mcp-proxy-mode";
 import {
   ExecutorProtocolError,
   launchHostViaExecutor,
@@ -681,6 +682,8 @@ async function spawnHostRun(
     resumeSessionAt: opts.resumeSessionAt,
     mcpServers: opts.mcpServers ?? "all",
     proxyMcpServers: opts.proxyMcpServers,
+    // Decided here, not in the host's env, so every launcher's hosts get it.
+    mcpProxyMode: launchMcpProxyMode(opts.proxyMcpServers),
     rpcToken,
     remoteWorkspace: opts.remoteWorkspace,
     reposNote: opts.reposNote,

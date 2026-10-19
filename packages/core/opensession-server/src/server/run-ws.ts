@@ -412,7 +412,16 @@ function wsClose(ws: any): boolean {
     }
     return true;
   }
-  return data?.sandboxWs === "rpc";
+  if (data?.sandboxWs === "rpc") {
+    // Nobody can receive these answers any more: cancel the connection's
+    // in-flight tool calls instead of letting them finish unobserved. The
+    // client fails them rather than re-sending (run-rpc-client.ts).
+    const aborts = rpcFrameAborts(ws);
+    for (const abort of aborts.values()) abort.abort();
+    aborts.clear();
+    return true;
+  }
+  return false;
 }
 
 /** In-flight rpc frames on one proxy connection, by frame id. */

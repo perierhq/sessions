@@ -82,9 +82,25 @@ export interface LegacyProxyMcpBoundary {
   readonly configs: Record<string, unknown>;
 }
 
+/**
+ * A run-rpc relay for one opensession-* server, served inside this process
+ * instead of by a stdio proxy child (src/runner-host/mcp-mounts.ts). It sits
+ * at the proxy boundary and behaves like a proxy config there: same server
+ * name, deferred listing, and Open Session's own call timeout. Only the
+ * transport differs.
+ */
+export interface InProcessRelayMcpConfig {
+  readonly type: "run-rpc-relay";
+  /** A fresh MCP server for one connection. */
+  readonly createServer: () => {
+    connect(transport: Transport): Promise<void>;
+    close(): Promise<void>;
+  };
+}
+
 interface ServerConn {
   client: Client;
-  instance?: InProcessMcpServer["instance"];
+  instance?: { close(): Promise<void> };
 }
 interface Entry {
   name: string;
@@ -121,6 +137,16 @@ function isProxyMcpConfig(value: unknown): value is Record<string, unknown> {
   const cfg = value as { command?: unknown; url?: unknown };
   return typeof cfg.command === "string" || typeof cfg.url === "string";
 }
+export function isInProcessRelayMcpConfig(
+  value: unknown,
+): value is InProcessRelayMcpConfig {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as { type?: unknown }).type === "run-rpc-relay" &&
+    typeof (value as { createServer?: unknown }).createServer === "function"
+  );
+}
 
 /** Separates SDK instances from the legacy proxy config compatibility shape. */
 export function splitMcpMigrationBoundary(
@@ -133,7 +159,8 @@ export function splitMcpMigrationBoundary(
   const configs: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(inProcessMcp ?? {})) {
     if (isInProcessServer(value)) sdk[name] = value;
-    else if (isProxyMcpConfig(value)) configs[name] = value;
+    else if (isProxyMcpConfig(value) || isInProcessRelayMcpConfig(value))
+      configs[name] = value;
   }
   return {
     sdk,
@@ -384,6 +411,22 @@ export async function createMcpRuntime(opts: {
     await client.connect(clientTransport);
     return record;
   };
+  const connectRelay = async (
+    relay: InProcessRelayMcpConfig,
+  ): Promise<ServerConn> => {
+    const client = new Client({
+      name: "opensession-mcp-runtime",
+      version: "1.0.0",
+    });
+    const instance = relay.createServer();
+    const record: ServerConn = { client, instance };
+    live.add(record);
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await instance.connect(serverTransport);
+    await client.connect(clientTransport);
+    return record;
+  };
   const ensure = (entry: Entry) => {
     let promise = conns.get(entry.name);
     if (!promise) {
@@ -434,10 +477,15 @@ export async function createMcpRuntime(opts: {
   for (const [name, value] of Object.entries(
     opts.legacyProxyMcp?.configs ?? {},
   )) {
-    if (taken.has(name) || !isProxyMcpConfig(value)) continue;
+    if (taken.has(name)) continue;
+    let factory: Entry["factory"];
+    if (isInProcessRelayMcpConfig(value)) factory = () => connectRelay(value);
+    else if (isProxyMcpConfig(value))
+      factory = () => connectExternal(name, value);
+    else continue;
     entries.push({
       name,
-      factory: () => connectExternal(name, value),
+      factory,
       callTimeoutMs: ownTimeoutMs,
       // A proxy lists the current run's scoped server, not a shared catalog.
       // Never reuse another run's listing, even with identical proxy config.

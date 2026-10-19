@@ -88,6 +88,8 @@ const {
   rpcSocketPath,
 } = await import("./protocol");
 const { WsFrameBuffer, replayStartFor } = await import("./ws-buffer");
+const { runRpcMcpMounts } = await import("./mcp-mounts");
+const { hostMcpProxyMode } = await import("./mcp-proxy-mode");
 const { OPENSESSION_SESSIONS_DIR } = await import("../server/paths");
 
 type RunHostSpec = import("./protocol").RunHostSpec;
@@ -516,47 +518,41 @@ function onAskUser(input: Record<string, unknown>): Promise<AskResult> {
   });
 }
 
-// ── mcp-proxy config for the opensession-* servers ───────────────────────────────
-// Each named server becomes a stdio MCP proxy that forwards tools/list +
-// tools/call to opensession over its RPC socket — so session-control/self-admin
-// tools keep working across opensession restarts (calls retry while it's down).
-function proxyMcpConfigs(): Record<string, unknown> | undefined {
-  const names = spec.proxyMcpServers || [];
-  if (!names.length || !spec.rpcToken) return undefined;
-  // WS transport: the proxies dial opensession's /rpc-ws route instead
-  // of the unix RPC socket (which isn't shareable across a remote boundary).
-  // The upgrade there authenticates with THIS run's hostId + wsToken (only
-  // ws-transport launches register one server-side); the per-frame rpc token
-  // stays what dispatchRunRpc resolves to the run's session/user.
+// ── opensession-* MCP servers ─────────────────────────────────────────────────
+// Each named server forwards tools/list + tools/call to opensession over its
+// RPC socket, so session-control/self-admin tools keep working across
+// opensession restarts (calls retry while it's down). By default they are
+// relays inside this process over one shared run-rpc client; the per-server
+// stdio proxies remain behind spec.mcpProxyMode = "per-server", which the
+// gateway sets from OPENSESSION_MCP_PROXY_MODE (mcp-mounts.ts).
+function proxyMcpConfigs(): ReturnType<typeof runRpcMcpMounts> {
+  // WS transport: dial opensession's /rpc-ws route instead of the unix RPC
+  // socket (which isn't shareable across a remote boundary). The upgrade there
+  // authenticates with THIS run's hostId + wsToken (only ws-transport launches
+  // register one server-side); the per-frame rpc token stays what
+  // dispatchRunRpc resolves to the run's session/user.
   const rpcWsUrl = process.env.OPENSESSION_RPC_WS_URL || "";
-  const transportEnv = rpcWsUrl
-    ? {
-        OPENSESSION_RPC_WS_URL: rpcWsUrl,
-        OPENSESSION_RPC_WS_HOST: spec.hostId,
-        OPENSESSION_RPC_WS_AUTH: RUN_WS_TOKEN,
-      }
-    : { OPENSESSION_RPC_SOCKET: rpcSocketPath(OPENSESSION_SESSIONS_DIR) };
-  const out: Record<string, unknown> = {};
-  // The interpreter running THIS process re-launches the proxy: from source
-  // that is `bun run <mcp-proxy.ts>` (process.execPath is bun — resolves both
-  // on the host and inside a sandbox container where protocol.ts's BUN_BIN host
-  // path doesn't exist); as a compiled binary it is `<exe> mcp-proxy`.
-  const [proxyCommand, ...proxyArgs] = mcpProxyArgv(
-    process.execPath,
-    MCP_PROXY_ENTRY,
-  );
-  for (const name of names) {
-    out[name] = {
-      command: proxyCommand,
-      args: proxyArgs,
-      env: {
-        ...transportEnv,
-        OPENSESSION_RPC_TOKEN: spec.rpcToken,
-        OPENSESSION_MCP_SERVER: name,
-      },
-    };
-  }
-  return out;
+  const token = spec.rpcToken || "";
+  // The gateway recorded the mode at launch; older specs fall back to env.
+  const mode = hostMcpProxyMode(spec.mcpProxyMode);
+  const mounts = runRpcMcpMounts({
+    names: spec.proxyMcpServers || [],
+    target: rpcWsUrl
+      ? { wsUrl: rpcWsUrl, wsHost: spec.hostId, wsAuth: RUN_WS_TOKEN, token }
+      : { socket: rpcSocketPath(OPENSESSION_SESSIONS_DIR), token },
+    mode,
+    // The interpreter running THIS process re-launches the proxy: from source
+    // that is `bun run <mcp-proxy.ts>` (process.execPath is bun — resolves
+    // both on the host and inside a sandbox container where protocol.ts's
+    // BUN_BIN host path doesn't exist); as a compiled binary it is
+    // `<exe> mcp-proxy`.
+    proxyArgv: mcpProxyArgv(process.execPath, MCP_PROXY_ENTRY),
+  });
+  if (mounts)
+    log(
+      `opensession MCP: ${Object.keys(mounts.mounts).length} server(s), ${mode === "per-server" ? "one stdio proxy each" : "in-process relay"}`,
+    );
+  return mounts;
 }
 
 // ── Drive the run ─────────────────────────────────────────────────────────────
@@ -568,7 +564,9 @@ process.on("SIGTERM", () => {
   process.exit(143);
 });
 
+let opensessionMcp: ReturnType<typeof proxyMcpConfigs>;
 try {
+  opensessionMcp = proxyMcpConfigs();
   for await (const event of runAgent({
     prompt: spec.prompt,
     promptEntryId: spec.promptEntryId,
@@ -588,7 +586,7 @@ try {
     forkSession: spec.forkSession,
     resumeSessionAt: spec.resumeSessionAt,
     mcpServers: spec.mcpServers ?? "all",
-    inProcessMcp: proxyMcpConfigs(),
+    inProcessMcp: opensessionMcp?.mounts,
     reposNote: spec.reposNote,
     deniedTools: spec.deniedTools,
     publicationPolicy: spec.publicationPolicy,
@@ -641,6 +639,9 @@ try {
   terminal = { type: "error", content: e?.message || String(e) };
   send({ t: "event", event: terminal });
 }
+// The run's MCP runtime is closed by now; release the run-rpc client its
+// relays shared (the rpc-ws connection and its keepalive) before lingering.
+opensessionMcp?.close();
 
 ended = true;
 meta.done = terminal ?? {
