@@ -20,6 +20,7 @@ import {
   __setSessionResourceHostForTest,
   groupMatchesRecord,
   labelledReapReason,
+  lastSessionResourceSweep,
   listSessionResources,
   ORPHANED_RESOURCE_GRACE_MS,
   parseElapsedTime,
@@ -1019,6 +1020,12 @@ describe("labelled containers and units", () => {
       ["unit", "os-archived", "archived"],
     ]);
     expect(fakes.map((f) => f.session)).toEqual(["os-live", "os-live"]);
+    // Host health reads the pass without listing anything itself.
+    expect(lastSessionResourceSweep()).toMatchObject({
+      recorded: 0,
+      labelled: 4,
+      stopped: 2,
+    });
   });
 
   test("labelledReapReason: a missing owner goes only when it is ours, settled and the list is known", () => {

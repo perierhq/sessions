@@ -1579,6 +1579,69 @@ export async function stopArchivedSessionPortals(
   }
 }
 
+/** States in which a host Portal holds a process tree. */
+const PORTAL_PROCESS_STATES: ReadonlySet<PortalState> = new Set([
+  "starting",
+  "awake",
+  "waking",
+]);
+
+/**
+ * The host Portals `session` (or an alias) owns that hold a process: the
+ * records "Stop everything" stops and the session's resource list shows.
+ * Runner and Sandbox Portals run elsewhere and are not listed.
+ */
+export async function sessionHostPortals(
+  session: PortalOwnerSession &
+    Partial<Pick<UnifiedSession, "runner" | "sandbox">>,
+): Promise<Array<{ worktreeDir: string; record: PortalRecord }>> {
+  if (session.runner || session.sandbox?.sandboxId) return [];
+  const ownerIds = new Set(portalOwnerIds(session));
+  const dirs = new Set([
+    session.worktreeDir,
+    ...(session.attachedRepos ?? []).map((repo) => repo.dir),
+  ]);
+  const found: Array<{ worktreeDir: string; record: PortalRecord }> = [];
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const record of await readHostPortalRegistry(dir)) {
+      if (!record.sessionId || !ownerIds.has(record.sessionId)) continue;
+      if (!PORTAL_PROCESS_STATES.has(record.state)) continue;
+      found.push({ worktreeDir: dir, record });
+    }
+  }
+  return found;
+}
+
+/** Stop the host Portals sessionHostPortals lists; the number stopped.
+ * `shouldContinue` is asked before each one; once it says no, the rest
+ * keep running. */
+export async function stopSessionHostPortals(
+  session: PortalOwnerSession &
+    Partial<Pick<UnifiedSession, "runner" | "sandbox">>,
+  options: { shouldContinue?: () => boolean } = {},
+): Promise<number> {
+  let stopped = 0;
+  for (const { worktreeDir, record } of await sessionHostPortals(session)) {
+    if (options.shouldContinue && !options.shouldContinue()) break;
+    try {
+      await stopPortalService({
+        sessionId: session.id,
+        worktreeDir,
+        name: record.name,
+        expectedGeneration: portalGeneration(record),
+      });
+      stopped++;
+    } catch (error) {
+      console.warn(
+        `[portals] could not stop ${record.name} for ${session.id}:`,
+        error,
+      );
+    }
+  }
+  return stopped;
+}
+
 type ArchivedPortalOwner = Pick<
   UnifiedSession,
   | "id"

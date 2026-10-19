@@ -1,0 +1,409 @@
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { readPortalRegistry, type PortalRecord } from "./portal-supervisor";
+import {
+  forgetSessionResourceView,
+  hostSessionResources,
+  sessionResourceList,
+  stopSessionWorkloads,
+} from "./session-resource-inventory";
+import {
+  __setOwnershipRuntimeForTest,
+  resourceInstanceId,
+} from "./session-ownership";
+import {
+  listSessionResources,
+  runSessionResource,
+  type RunSessionResourceResult,
+} from "./session-resources";
+import { __setWorkloadScopingForTest } from "./workload-scope";
+
+const previousStateDir = process.env.OPENSESSION_STATE_DIR;
+let state = "";
+let worktree = "";
+const ID_A = "a".repeat(64);
+const ID_B = "b".repeat(64);
+
+type Fake = {
+  kind: "container" | "unit";
+  handle: string;
+  session: string;
+  memory?: number;
+  /** A unit's instance label; this instance's when unset. */
+  instance?: string;
+  /** A container labelled with this instance (containers have none
+   * otherwise). */
+  ours?: boolean;
+};
+let fakes: Fake[] = [];
+let stops: string[][] = [];
+/** Every listing and stats call, by its first two words. */
+let reads: string[] = [];
+
+function install(): void {
+  forgetSessionResourceView();
+  __setOwnershipRuntimeForTest({
+    containerClis: () => ["podman"],
+    systemdUser: () => true,
+    uptimeMs: async () => 86_400_000,
+    run: async (argv) => {
+      if (!argv.includes("stop")) reads.push(argv.slice(0, 3).join(" "));
+      if (argv[0] === "podman" && argv[1] === "ps")
+        return {
+          exitCode: 0,
+          stdout: fakes
+            .filter((f) => f.kind === "container")
+            .map(
+              (f) =>
+                `${f.handle}\t${f.session}\t${f.ours ? resourceInstanceId() : ""}\t2026-05-01 12:00:00 +0000 UTC\tpg\tpostgres:16`,
+            )
+            .join("\n"),
+        };
+      if (argv[0] === "podman" && argv[1] === "stats")
+        return {
+          exitCode: 0,
+          // podman and docker print the short id here.
+          stdout: fakes
+            .filter((f) => f.kind === "container" && argv.includes(f.handle))
+            .map((f) => `${f.handle.slice(0, 12)}\t${f.memory}MiB / 7.6GiB`)
+            .join("\n"),
+        };
+      if (argv[2] === "list-units")
+        return {
+          exitCode: 0,
+          stdout: fakes
+            .filter((f) => f.kind === "unit")
+            .map(
+              (f) =>
+                `${f.handle} loaded active running opensession.session=${f.session} opensession.instance=${f.instance ?? resourceInstanceId()} agent command`,
+            )
+            .join("\n"),
+        };
+      if (argv[2] === "show")
+        return {
+          exitCode: 0,
+          stdout: argv
+            .slice(4)
+            .map((unit) => {
+              const fake = fakes.find((f) => f.handle === unit);
+              const memory =
+                fake?.memory ?? (unit.includes("portal") ? 3 : undefined);
+              return [
+                `Id=${unit}`,
+                `MemoryCurrent=${memory === undefined ? "[not set]" : memory * 1024 * 1024}`,
+              ].join("\n");
+            })
+            .join("\n\n"),
+        };
+      if (argv[1] === "stop" || argv[2] === "stop") {
+        stops.push(argv);
+        const handle = argv[argv.length - 1];
+        fakes = fakes.filter((f) => f.handle !== handle);
+        return { exitCode: 0, stdout: "" };
+      }
+      return { exitCode: 1, stdout: "" };
+    },
+  });
+}
+
+function portals(records: Partial<PortalRecord>[]): void {
+  writeFileSync(
+    join(worktree, ".ports.conf"),
+    records
+      .map(
+        (record, index) =>
+          `# opensession-portal ${JSON.stringify({
+            name: `web${index}`,
+            key: `WEB${index}_PORT`,
+            command: "serve",
+            port: 18_100 + index,
+            state: "awake",
+            ...record,
+          })}`,
+      )
+      .join("\n"),
+  );
+}
+
+const runs: Promise<RunSessionResourceResult>[] = [];
+
+/** A setup still running for os-a. */
+async function runningSetup(): Promise<void> {
+  runs.push(
+    runSessionResource({
+      kind: "setup",
+      argv: ["sh", "-c", "sleep 30 & wait"],
+      cwd: worktree,
+      sessionId: "os-a",
+      sessionOwned: true,
+      timeoutMs: 30_000,
+      label: "bun install",
+    }),
+  );
+  const deadline = Date.now() + 5_000;
+  while (!listSessionResources().length && Date.now() < deadline)
+    await Bun.sleep(20);
+  expect(listSessionResources()).toHaveLength(1);
+}
+
+beforeEach(() => {
+  state = mkdtempSync(join(tmpdir(), "os-inventory-state-"));
+  worktree = realpathSync(mkdtempSync(join(tmpdir(), "os-inventory-wt-")));
+  process.env.OPENSESSION_STATE_DIR = state;
+  __setWorkloadScopingForTest(false);
+  fakes = [];
+  stops = [];
+  reads = [];
+  install();
+});
+
+afterEach(async () => {
+  for (const record of listSessionResources())
+    try {
+      process.kill(-record.pid!, "SIGKILL");
+    } catch {}
+  await Promise.allSettled(runs.splice(0));
+  __setOwnershipRuntimeForTest(null);
+  rmSync(state, { recursive: true, force: true });
+  rmSync(worktree, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  __setWorkloadScopingForTest(null);
+  if (previousStateDir == null) delete process.env.OPENSESSION_STATE_DIR;
+  else process.env.OPENSESSION_STATE_DIR = previousStateDir;
+});
+
+describe("a session's resource list", () => {
+  test("lists its Portals, setup, containers and units with memory", async () => {
+    portals([
+      { sessionId: "os-a", scopeUnit: "opensession-preview-portal1" },
+      { sessionId: "os-a", state: "sleeping" },
+      { sessionId: "os-b" },
+      { sessionId: "os-a", state: "stopped" },
+    ]);
+    await runningSetup();
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a", memory: 64 },
+      { kind: "container", handle: ID_B, session: "os-b", memory: 32 },
+      { kind: "unit", handle: "u1.scope", session: "os-a", memory: 10 },
+    ];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    const list = await sessionResourceList(session, [session]);
+    expect(
+      list.items.map((item) => [item.kind, item.label, item.memoryBytes]),
+    ).toEqual([
+      ["portal", "web0", 3 * 1024 * 1024],
+      ["setup", "bun install", undefined],
+      ["container", "pg · postgres:16", 64 * 1024 * 1024],
+      ["unit", "agent command · u1.scope", 10 * 1024 * 1024],
+    ]);
+    expect(list.memoryBytes).toBe(77 * 1024 * 1024);
+  });
+
+  test("a setup tagged with another session is not on the list", async () => {
+    const session = { id: "os-c", worktreeDir: worktree };
+    await runningSetup();
+    // The setup is tagged os-a: not os-c's.
+    expect((await sessionResourceList(session, [session])).items).toEqual([]);
+  });
+
+  test("Runner and Sandbox sessions list no host Portals", async () => {
+    portals([{ sessionId: "os-a" }]);
+    const session = {
+      id: "os-a",
+      worktreeDir: worktree,
+      sandbox: { sandboxId: "sbx-1" } as never,
+    };
+    expect((await sessionResourceList(session, [session])).items).toEqual([]);
+  });
+
+  test("stop everything stops its Portals, setup and labelled resources only", async () => {
+    portals([{ sessionId: "os-a" }, { sessionId: "os-b" }]);
+    await runningSetup();
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a" },
+      { kind: "container", handle: ID_B, session: "os-b" },
+      { kind: "unit", handle: "u1.scope", session: "os-a" },
+    ];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    expect(await stopSessionWorkloads(session, [session])).toEqual({
+      stopped: 4,
+      interrupted: false,
+    });
+    expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual([
+      "stopped",
+      "awake",
+    ]);
+    expect(listSessionResources()).toEqual([]);
+    expect(stops).toEqual([
+      ["podman", "stop", "--time", "10", ID_A],
+      ["systemctl", "--user", "stop", "u1.scope"],
+    ]);
+    expect(fakes.map((f) => f.session)).toEqual(["os-b"]);
+    expect((await runs[0])!.stopped).toBe("stopped");
+  });
+});
+
+describe("stopping part-way", () => {
+  test("a run that starts part-way keeps what is not stopped yet", async () => {
+    portals([{ sessionId: "os-a" }]);
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a" },
+      { kind: "unit", handle: "u1.scope", session: "os-a" },
+    ];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    // Idle for the Portal, busy by the time the labelled resources come up.
+    let checks = 0;
+    const result = await stopSessionWorkloads(session, [session], {
+      stillIdle: () => ++checks <= 1,
+    });
+    expect(result).toEqual({ stopped: 1, interrupted: true });
+    expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual([
+      "stopped",
+    ]);
+    expect(stops).toEqual([]);
+    expect(fakes.map((f) => f.handle)).toEqual([ID_A, "u1.scope"]);
+  });
+
+  test("busy from the start, nothing is stopped", async () => {
+    portals([{ sessionId: "os-a" }]);
+    fakes = [{ kind: "container", handle: ID_A, session: "os-a" }];
+    install();
+    const session = { id: "os-a", worktreeDir: worktree };
+    expect(
+      await stopSessionWorkloads(session, [session], {
+        stillIdle: () => false,
+      }),
+    ).toEqual({ stopped: 0, interrupted: true });
+    expect(readPortalRegistry(worktree).map((p) => p.state)).toEqual(["awake"]);
+    expect(stops).toEqual([]);
+  });
+});
+
+describe("shared host listing", () => {
+  test("views share one listing and memory read for a while; a stop refreshes it", async () => {
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a", memory: 64 },
+      { kind: "container", handle: ID_B, session: "os-b", memory: 32 },
+    ];
+    install();
+    const a = { id: "os-a", worktreeDir: worktree };
+    const b = { id: "os-b", worktreeDir: null };
+    await sessionResourceList(a, [a, b]);
+    await sessionResourceList(b, [a, b]);
+    await hostSessionResources([a, b]);
+    expect(reads.filter((read) => read.startsWith("podman"))).toEqual([
+      "podman ps --no-trunc",
+      "podman stats --no-stream",
+    ]);
+    // Stopping marks it stale: the next view reads again (the listing
+    // itself comes from the short-lived one the stop just used, minus
+    // what it stopped).
+    reads = [];
+    await stopSessionWorkloads(a, [a, b]);
+    const after = await sessionResourceList(b, [a, b]);
+    expect(after.items.map((item) => item.id)).toEqual([`container:${ID_B}`]);
+    expect(reads).toContain("podman stats --no-stream");
+  });
+
+  test("Runner and Sandbox sessions run no host listing", async () => {
+    fakes = [{ kind: "container", handle: ID_A, session: "os-a" }];
+    install();
+    for (const session of [
+      { id: "os-a", worktreeDir: worktree, runner: "runner-1" as never },
+      {
+        id: "os-a",
+        worktreeDir: worktree,
+        sandbox: { sandboxId: "sbx-1" } as never,
+      },
+    ]) {
+      expect((await sessionResourceList(session, [session])).items).toEqual([]);
+      expect(await stopSessionWorkloads(session, [session])).toEqual({
+        stopped: 0,
+        interrupted: false,
+      });
+    }
+    expect(reads).toEqual([]);
+    expect(stops).toEqual([]);
+  });
+});
+
+describe("host session workloads", () => {
+  test("counts by owner state and lists archived and missing leftovers", async () => {
+    await runningSetup();
+    fakes = [
+      { kind: "container", handle: ID_A, session: "os-a", memory: 64 },
+      { kind: "container", handle: ID_B, session: "os-archived", memory: 32 },
+      { kind: "unit", handle: "u1.scope", session: "os-gone", memory: 8 },
+    ];
+    install();
+    const host = await hostSessionResources([
+      { id: "os-a" },
+      { id: "os-archived", archived: true },
+    ]);
+    expect(host.counts).toEqual({
+      live: 2,
+      archived: 1,
+      missing: 1,
+      unknown: 0,
+    });
+    expect(host.byKind).toEqual({ setup: 1, container: 2, unit: 1 });
+    expect(host.memoryBytes).toBe(104 * 1024 * 1024);
+    expect(host.leftoverMemoryBytes).toBe(40 * 1024 * 1024);
+    expect(
+      host.leftovers.map((item) => [
+        item.kind,
+        item.sessionId,
+        item.owner,
+        item.reaped,
+      ]),
+    ).toEqual([
+      ["container", "os-archived", "archived", true],
+      // Missing, but no readable start time: the reaper keeps it.
+      ["unit", "os-gone", "missing", false],
+    ]);
+    expect(host.leftoverReach).toEqual({ reaper: 1, manual: 1 });
+  });
+
+  test("leftovers the reaper leaves alone are counted apart", async () => {
+    fakes = [
+      // Another instance's, for an archived session.
+      {
+        kind: "unit",
+        handle: "u-foreign.scope",
+        session: "os-archived",
+        instance: "000000000000",
+      },
+      // A missing session's container labelled by hand, without an instance.
+      { kind: "container", handle: ID_A, session: "os-gone" },
+      // A missing session's container of this instance, with a start time.
+      { kind: "container", handle: ID_B, session: "os-gone", ours: true },
+    ];
+    install();
+    const host = await hostSessionResources([
+      { id: "os-live" },
+      { id: "os-archived", archived: true },
+    ]);
+    expect(host.leftovers.map((item) => [item.id, item.reaped]).sort()).toEqual(
+      [
+        [`container:${ID_A}`, false],
+        [`container:${ID_B}`, true],
+        ["unit:u-foreign.scope", false],
+      ].sort(),
+    );
+    expect(host.leftoverReach).toEqual({ reaper: 1, manual: 2 });
+  });
+});

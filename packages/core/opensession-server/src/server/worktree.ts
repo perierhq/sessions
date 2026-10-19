@@ -405,6 +405,7 @@ const STOPPED_BECAUSE: Record<
   removed: "its session or worktree was removed",
   orphaned: "no session uses this worktree",
   expired: "it ran past its deadline",
+  stopped: "everything the session started was stopped",
 };
 
 function formatSetupDuration(ms: number): string {

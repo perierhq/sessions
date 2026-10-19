@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ServerResourceSample } from "../../shared/server-resources";
 import { useServerResources } from "../hooks/useServerResources";
+import { useHostSessionResourcesResource } from "../hooks/useApiResources";
+import { formatBytes } from "../lib/images";
 import {
   formatResourceBytes,
   formatResourcePercent,
@@ -53,6 +55,80 @@ function ResourceGraph({
       />
       {last && <circle cx={last.x} cy={last.y} r="0.9" fill="currentColor" />}
     </svg>
+  );
+}
+
+/** Why the lifecycle reaper leaves a leftover running. */
+const KEPT_BECAUSE =
+  "another instance's, or without this instance's label or a readable start time";
+
+/** What happens to the leftovers: the reaper stops some by itself, and the
+ * rest wait for someone to stop them. */
+export function leftoverReachText(reach: {
+  reaper: number;
+  manual: number;
+}): string {
+  if (!reach.manual) return "The lifecycle reaper stops these within minutes.";
+  const them = reach.manual === 1 ? "it" : "them";
+  if (!reach.reaper)
+    return `The lifecycle reaper leaves ${them} running (${KEPT_BECAUSE}); stop ${them} by hand.`;
+  return `The lifecycle reaper stops ${reach.reaper} within minutes. It leaves ${reach.manual} running (${KEPT_BECAUSE}); stop ${reach.manual === 1 ? "that one" : "those"} by hand.`;
+}
+
+/** Containers, background processes and setup that sessions started, and
+ * what archived or deleted sessions left running. Mounted only while the
+ * popup is open, so it never polls in the background. */
+function SessionWorkloads() {
+  const { data, error } = useHostSessionResourcesResource({
+    refreshInterval: 60_000,
+  });
+  if (error) return null;
+  if (!data)
+    return (
+      <p className="m-0 mt-4 text-meta text-dim" role="status">
+        Checking session workloads…
+      </p>
+    );
+  const running = data.byKind.container + data.byKind.unit + data.byKind.setup;
+  const leftovers = data.counts.archived + data.counts.missing;
+  // Older servers did not split the leftovers: say nothing about the reaper.
+  const reach = data.leftoverReach;
+  return (
+    <section aria-label="Session workloads" className="mt-4">
+      <div className="flex items-baseline justify-between text-supporting">
+        <h3 className="m-0 text-supporting font-medium text-fg">
+          Session workloads
+        </h3>
+        <span className="tabular-nums text-fg">
+          {data.memoryBytes ? formatBytes(data.memoryBytes) : running}
+        </span>
+      </div>
+      <p className="m-0 mt-1 text-meta text-dim">
+        {running
+          ? `${data.byKind.container} container${data.byKind.container === 1 ? "" : "s"} · ${data.byKind.unit} background process${data.byKind.unit === 1 ? "" : "es"} · ${data.byKind.setup} setup${data.byKind.setup === 1 ? "" : "s"}`
+          : "Nothing running for sessions"}
+      </p>
+      {leftovers > 0 && (
+        <>
+          <p className="m-0 mt-2 text-meta text-yellow">
+            {leftovers} left by archived or deleted sessions
+            {data.leftoverMemoryBytes
+              ? ` · ${formatBytes(data.leftoverMemoryBytes)}`
+              : ""}
+            .{reach ? ` ${leftoverReachText(reach)}` : ""}
+          </p>
+          <ul className="m-0 mt-1 list-none space-y-0.5 p-0 text-meta text-dim">
+            {data.leftovers.slice(0, 5).map((item) => (
+              <li key={item.id} className="truncate" title={item.label}>
+                {item.label}
+                {item.memoryBytes ? ` · ${formatBytes(item.memoryBytes)}` : ""}
+                {item.reaped === false ? " · stop by hand" : ""}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -191,6 +267,7 @@ function ServerHealthPopover() {
         <p className="m-0 mt-2 text-meta text-faint">
           Host resources, not this browser.
         </p>
+        <SessionWorkloads />
       </Popover.Popup>
     </Popover.Root>
   );

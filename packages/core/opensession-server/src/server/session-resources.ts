@@ -99,7 +99,9 @@ export type SessionResourceStopReason =
   | "expired"
   | "archived"
   | "orphaned"
-  | "removed";
+  | "removed"
+  /** Someone stopped everything from the session ("Stop everything"). */
+  | "stopped";
 
 export type StoppedSessionResource = {
   id: string;
@@ -793,17 +795,19 @@ async function stopLabelled(
  * seconds to exit, and one session may hold several. */
 const LABELLED_STOP_CONCURRENCY = 4;
 
-/** Stop `resources` a few at a time; the ones that stopped. */
+/** Stop `resources` a few at a time; the ones that stopped. None is
+ * started once `shouldContinue` says no. */
 async function stopLabelledBatch(
   resources: ReadonlyArray<{
     resource: LabelledResource;
     reason: SessionResourceStopReason;
   }>,
+  shouldContinue: () => boolean = () => true,
 ): Promise<StoppedSessionResource[]> {
   const results: Array<StoppedSessionResource | null> = [];
   let next = 0;
   const worker = async () => {
-    while (next < resources.length) {
+    while (next < resources.length && shouldContinue()) {
       const index = next++;
       const { resource, reason } = resources[index]!;
       results[index] = await stopLabelled(resource, reason);
@@ -835,13 +839,17 @@ export function labelledResourceIsOurs(
 async function stopLabelledForSession(
   ids: ReadonlySet<string>,
   reason: SessionResourceStopReason,
+  shouldContinue?: () => boolean,
 ): Promise<StoppedSessionResource[]> {
   const instance = resourceInstanceId();
   const owned = (await listLabelledResources()).filter(
     (resource) =>
       ids.has(resource.sessionId) && labelledResourceIsOurs(resource, instance),
   );
-  return stopLabelledBatch(owned.map((resource) => ({ resource, reason })));
+  return stopLabelledBatch(
+    owned.map((resource) => ({ resource, reason })),
+    shouldContinue,
+  );
 }
 
 /**
@@ -885,32 +893,66 @@ export function labelledReapReason(
 export async function stopSessionOwnedResources(
   session: SessionResourceOwner,
   others: readonly SessionResourceOwner[],
-  options: { reason?: "archived" | "removed" } = {},
+  options: {
+    reason?: "archived" | "removed" | "stopped";
+    /** Asked before each stop; once it says no, nothing more is stopped
+     * ("Stop everything" when a run starts meanwhile). */
+    shouldContinue?: () => boolean;
+  } = {},
 ): Promise<StoppedSessionResource[]> {
   const reason = options.reason ?? "archived";
+  const shouldContinue = options.shouldContinue ?? (() => true);
+  const stopped: StoppedSessionResource[] = [];
+  for (const record of await sessionOwnedRecords(session, others)) {
+    if (!shouldContinue()) return stopped;
+    stopped.push(await stopResource(record, reason));
+  }
+  if (!shouldContinue()) return stopped;
+  // A label names exactly one session, so a sibling in the same worktree
+  // never keeps it.
+  stopped.push(
+    ...(await stopLabelledForSession(
+      new Set(ownerIds(session)),
+      reason,
+      shouldContinue,
+    )),
+  );
+  return stopped;
+}
+
+/**
+ * The recorded resources stopping `session` would stop: those tagged with
+ * its id (or an alias), and untagged ones in its worktrees, unless some
+ * other live session in `others` still uses that worktree.
+ */
+export async function sessionOwnedRecords(
+  session: SessionResourceOwner,
+  others: readonly SessionResourceOwner[],
+): Promise<SessionResource[]> {
   const ids = new Set(ownerIds(session));
   const dirs = new Set(
     await Promise.all(ownerDirs(session).map(canonicalResourceDir)),
   );
-  const stopped: StoppedSessionResource[] = [];
-  if (dirs.size) {
-    const live = await ownersByDir(
-      others.filter(
-        (other) =>
-          !other.archived && !ownerIds(other).some((id) => ids.has(id)),
-      ),
-    );
-    for (const record of readRegistry()) {
-      if (!record.sessionOwned || !dirs.has(record.worktreeDir)) continue;
-      if (record.sessionId && !ids.has(record.sessionId)) continue;
-      if (live.get(record.worktreeDir)?.size) continue;
-      stopped.push(await stopResource(record, reason));
-    }
-  }
-  // A label names exactly one session, so a sibling in the same worktree
-  // never keeps it.
-  stopped.push(...(await stopLabelledForSession(ids, reason)));
-  return stopped;
+  if (!dirs.size) return [];
+  const live = await ownersByDir(
+    others.filter(
+      (other) => !other.archived && !ownerIds(other).some((id) => ids.has(id)),
+    ),
+  );
+  return readRegistry().filter(
+    (record) =>
+      record.sessionOwned &&
+      dirs.has(record.worktreeDir) &&
+      (!record.sessionId || ids.has(record.sessionId)) &&
+      !live.get(record.worktreeDir)?.size,
+  );
+}
+
+/** Every id a resource of `session` may carry: its own and its aliases. */
+export function sessionResourceOwnerIds(
+  session: Pick<SessionResourceOwner, "id" | "aliasIds">,
+): string[] {
+  return ownerIds(session);
 }
 
 /** Stop every resource in `dir`, whoever owns it (the worktree is going away). */
@@ -1045,7 +1087,14 @@ export async function reapSessionResources(
     resource: LabelledResource;
     reason: SessionResourceStopReason;
   }> = [];
-  for (const resource of await listLabelledResources()) {
+  const labelled = await listLabelledResources();
+  lastSweep = {
+    at: new Date(now).toISOString(),
+    recorded: records.length,
+    labelled: labelled.length,
+    stopped: 0,
+  };
+  for (const resource of labelled) {
     let reason = labelledReapReason(resource, {
       ownerArchived: archivedById.get(resource.sessionId),
       sessionsKnown: sessions.length > 0,
@@ -1059,7 +1108,23 @@ export async function reapSessionResources(
     if (reason) reap.push({ resource, reason });
   }
   stopped.push(...(await stopLabelledBatch(reap)));
+  lastSweep.stopped = stopped.length;
   return { stopped, forgotten };
+}
+
+export type SessionResourceSweep = {
+  at: string;
+  /** Recorded resources (setup) and labelled containers and units seen. */
+  recorded: number;
+  labelled: number;
+  stopped: number;
+};
+
+let lastSweep: SessionResourceSweep | null = null;
+
+/** What the last reaper pass saw and stopped, for /api/health. */
+export function lastSessionResourceSweep(): SessionResourceSweep | null {
+  return lastSweep;
 }
 
 async function confirmOrphaned(

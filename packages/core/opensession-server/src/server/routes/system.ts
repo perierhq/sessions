@@ -24,6 +24,7 @@ import { getSessionControl } from "../session-control";
 import { MAX_UPLOAD_BYTES, stageHttpUpload } from "../uploads";
 import { systemStats } from "../system-stats";
 import { serverResourceSnapshot } from "../server-resources";
+import { lastSessionResourceSweep } from "../session-resources";
 import { BOOT_ID, broadcastToAll, broadcastToSession } from "../ws-hub";
 import {
   executorClientHealth,
@@ -309,6 +310,9 @@ export async function handleSystemRoutes(
       // Should stay near zero: work the gateway starts runs in a workload
       // scope, not beside the event loop (workload-scope.ts).
       controlPlaneResidents: await controlPlaneResidents(),
+      // The lifecycle reaper's last pass over session-owned setup,
+      // containers and units (session-resources.ts). Cheap: no listing here.
+      sessionResources: lastSessionResourceSweep(),
     });
   }
 
