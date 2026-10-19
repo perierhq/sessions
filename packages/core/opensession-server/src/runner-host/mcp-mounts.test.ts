@@ -381,6 +381,17 @@ describe("in-process relay", () => {
     expect((await call(runtime, "opensession-a_echo")).content).toHaveLength(1);
   });
 
+  test("closing the run's runtime cancels its in-flight calls", async () => {
+    const gw = await start(["opensession-a"]);
+    const runtime = await runtimeFor(["opensession-a"], "in-process");
+    const pending = call(runtime, "opensession-a_wait");
+    pending.catch(() => {});
+    await waitUntil(() => gw.calls.some((c) => c.tool === "wait"));
+    await runtime.close();
+    await expect(pending).rejects.toThrow();
+    await waitUntil(() => gw.aborted.includes("opensession-a_wait"));
+  });
+
   test("shares one rpc-ws connection across all servers", async () => {
     const names = BUILT_IN.slice(0, 5);
     const gw = await start(names);
