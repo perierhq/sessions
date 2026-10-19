@@ -17,15 +17,19 @@ import type { UnifiedSession } from "../../server/types";
 import { prKey } from "./constants";
 import { bksIdFor, type GithubRunKind } from "./run";
 
-/** Kinds whose session belongs to one PR. `issue` is excluded: its number is
- *  an issue's, and that session is a code session a person may keep using. */
+/** Kinds whose session belongs to one open PR. Two kinds are excluded:
+ *  - `issue`: its number is an issue's, and that session is a code session a
+ *    person may keep using.
+ *  - `followup`: a mention on a PR that is already closed starts it (see
+ *    runConversationalMention), on a fresh branch that opens a new PR. Its
+ *    PR is always closed, so closing or the backfill would archive it while
+ *    it is still in use. */
 export const PR_SESSION_KINDS = [
   "review",
   "autofix",
   "simplify",
   "mention",
   "adversarial",
-  "followup",
 ] as const satisfies readonly GithubRunKind[];
 
 export type PrSessionKind = (typeof PR_SESSION_KINDS)[number];

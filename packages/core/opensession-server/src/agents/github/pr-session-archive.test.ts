@@ -112,14 +112,13 @@ function fakeDeps(
 }
 
 describe("PR session ids", () => {
-  test("covers every PR-owned kind and leaves the issue session out", () => {
+  test("covers every PR-owned kind and leaves issue and follow-up sessions out", () => {
     expect(prSessionIds(12)).toEqual([
       "bks-ghpr-12-review",
       "bks-ghpr-12-autofix",
       "bks-ghpr-12-simplify",
       "bks-ghpr-12-mention",
       "bks-ghpr-12-adversarial",
-      "bks-ghpr-12-followup",
     ]);
     expect(prSessionIds(12, "acme/docs", repos)[0]).toBe(
       "bks-ghpr-docs-12-review",
@@ -138,6 +137,7 @@ describe("PR session ids", () => {
       kind: "mention",
     });
     expect(parsePrSessionId("bks-ghpr-12-issue", repos)).toBeNull();
+    expect(parsePrSessionId("bks-ghpr-12-followup", repos)).toBeNull();
     expect(parsePrSessionId("bks-ghpr-gone-3-review", repos)).toBeNull();
     expect(parsePrSessionId("os-12-review", repos)).toBeNull();
   });
@@ -175,6 +175,18 @@ describe("closing a PR", () => {
     expect(calls.settled).toEqual([
       ["bks-ghpr-12-review", "bks-ghpr-12-mention"],
     ]);
+  });
+
+  test("leaves the follow-up session alone: its PR is always closed", async () => {
+    const { deps, registry } = fakeDeps([
+      session("bks-ghpr-12-review"),
+      session("bks-ghpr-12-followup"),
+    ]);
+
+    const result = await archiveClosedPrSessions(12, undefined, deps);
+
+    expect(result.archived).toEqual(["bks-ghpr-12-review"]);
+    expect(registry.has("bks-ghpr-12-followup")).toBe(false);
   });
 
   test("leaves an already archived session and its reason alone", async () => {
@@ -239,6 +251,7 @@ describe("backfill", () => {
     session("bks-ghpr-3-review"),
     session("bks-ghpr-docs-4-autofix"),
     session("bks-ghpr-5-issue"),
+    session("bks-ghpr-1-followup"),
     session("os-human"),
   ];
   const states = {
