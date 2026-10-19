@@ -206,8 +206,11 @@ export async function reconcileStaleRunningRows(
   const cleared: string[] = [];
   for (const { id } of idle) {
     await withSessionMutationLock(id, async () => {
+      // The candidate came from the is_running column; the payload's own
+      // isRunning may already disagree with it, so it is no reason to skip.
+      // Rewrite whenever the runtime says idle.
       const row = await indexedSession(id);
-      if (!row?.isRunning) return;
+      if (!row) return;
       enrichSessionRuntime([row]);
       if (row.isRunning) return;
       await upsertIndexedSession(row);

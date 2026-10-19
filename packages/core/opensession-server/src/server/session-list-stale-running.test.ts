@@ -145,6 +145,21 @@ test("rewrites at most the bounded candidate set", async () => {
   ]);
 });
 
+test("clears the column when the payload already reads idle", async () => {
+  await index.upsertIndexedSessions([row("bks-ghpr-6-review")], "include");
+  // A column left set under a payload that says idle.
+  (store as unknown as { db: import("bun:sqlite").Database }).db.run(
+    "UPDATE session_list SET is_running = 1 WHERE id = ?",
+    ["bks-ghpr-6-review"],
+  );
+  expect(store.listRunning(10).map((r) => r.id)).toEqual(["bks-ghpr-6-review"]);
+
+  expect(await cache.reconcileStaleRunningRows()).toEqual([
+    "bks-ghpr-6-review",
+  ]);
+  expect(store.listRunning(10)).toEqual([]);
+});
+
 test("does nothing when no row is marked running", async () => {
   expect(await cache.reconcileStaleRunningRows()).toEqual([]);
   expect(rows.__scheduledSessionRowsForTest()).toEqual([]);
