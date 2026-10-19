@@ -64,6 +64,8 @@ async function turn(
       ...process.env,
       OPENSESSION_CLAUDE_ACCOUNTS_PATH: accountsFile,
       OPENSESSION_MODEL_PROVIDERS_CONFIG: join(dir, "model-providers.json"),
+      // What makes a process a run host (its own run journal).
+      OPENSESSION_RUN_JOURNAL: join(dir, `journal-${crypto.randomUUID()}.json`),
     },
     stdout: "pipe",
     stderr: "pipe",

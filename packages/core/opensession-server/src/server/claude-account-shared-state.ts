@@ -15,16 +15,27 @@
  *
  * This keeps that state in files beside the account store, as the sidelines
  * already live in claude-accounts-state.json: paths resolve per call, writes
- * are atomic renames with mode 0600, and reads go through the stat-keyed
- * JSON cache, so an unchanged file costs one stat. Read-modify-write updates
- * hold a short exclusive lock, so two processes picking at once see each
- * other's turn instead of both taking the same account.
+ * are atomic renames with mode 0600, and plain reads go through the
+ * stat-keyed JSON cache, so an unchanged file costs one stat. Read-modify-
+ * write updates hold a short exclusive lock and read the file itself, so two
+ * processes picking at once see each other's turn instead of both taking the
+ * same account.
  *
  * Nothing here holds a credential: usage windows, account ids, timestamps,
  * and session keys hashed together with their user.
  */
-import { createHash } from "crypto";
-import { closeSync, mkdirSync, openSync, rmSync, statSync } from "fs";
+import { createHash, randomUUID } from "crypto";
+import {
+  closeSync,
+  fstatSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { dirname } from "path";
 import type { AccountUsage } from "./claude-accounts";
 import { stateDir } from "./paths";
@@ -55,51 +66,191 @@ const sessionsPath = () => siblingPath("sessions");
 // ── Locked read-modify-write ─────────────────────────────────────────────────
 // A lock is held for one read, one small decision and one write: well under
 // a millisecond. A holder that died leaves its lock file behind, so a lock
-// older than LOCK_STALE_MS is broken. A pick never waits long for one: past
-// LOCK_WAIT_MS it goes ahead unlocked, because this is load spreading, never
-// an access decision (the pin, owner gate and sidelines do not read it).
-const LOCK_WAIT_MS = 250;
+// older than LOCK_STALE_MS is broken. A caller never waits long for one: past
+// its budget it goes ahead unlocked, because this is load spreading, never an
+// access decision (the pin, owner gate and sidelines do not read it).
+//
+// Each lock file holds a random token written by the process that created
+// it. Breaking a stale lock and releasing one both rename the lock aside
+// first, which only one process can do to a given file, then check the
+// token of the file they moved: a lock that turns out to be someone else's
+// is put back instead of deleted.
 const LOCK_STALE_MS = 2_000;
+// A run host owns one turn and has nothing else to do while it waits.
+const RUN_HOST_LOCK_WAIT_MS = 250;
+// The gateway's event loop serves every session, so its synchronous callers
+// (one-shot picks, account edits) give up almost at once.
+const GATEWAY_SYNC_LOCK_WAIT_MS = 5;
 
-function withFileLock<T>(path: string, fn: () => T): T {
-  const lock = `${path}.lock`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  let held = false;
-  while (!held) {
+/** Run hosts point the run journal at a file of their own; the gateway
+ *  never sets it. The same signal run-state.ts uses for detachedRunHost. */
+function inRunHost(): boolean {
+  return !!process.env.OPENSESSION_RUN_JOURNAL;
+}
+
+function syncLockWaitMs(): number {
+  return inRunHost() ? RUN_HOST_LOCK_WAIT_MS : GATEWAY_SYNC_LOCK_WAIT_MS;
+}
+
+interface LockHandle {
+  lock: string;
+  token: string;
+}
+
+interface LockSeen {
+  token: string;
+  mtimeMs: number;
+}
+
+/** The token and age of a lock file, read through one descriptor so both
+ *  describe the same file. */
+function readLock(lock: string): LockSeen | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(lock, "r");
+    const { mtimeMs } = fstatSync(fd);
+    return { token: readFileSync(fd, "utf8"), mtimeMs };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined)
+      try {
+        closeSync(fd);
+      } catch {}
+  }
+}
+
+function asidePath(lock: string, why: string): string {
+  return `${lock}.${why}.${process.pid}.${randomUUID()}`;
+}
+
+/** Move `lock` aside and delete it only when `isTheOne` accepts the moved
+ *  file; otherwise put it back. True when the lock was removed. */
+function removeLockIf(
+  lock: string,
+  why: string,
+  isTheOne: (moved: LockSeen | undefined) => boolean,
+): boolean {
+  const aside = asidePath(lock, why);
+  try {
+    renameSync(lock, aside);
+  } catch {
+    return false;
+  }
+  const removed = isTheOne(readLock(aside));
+  if (!removed) {
+    // Fails only when yet another process created a lock in the moment it
+    // was away; that holder keeps it.
     try {
-      closeSync(openSync(lock, "wx", 0o600));
-      held = true;
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | null)?.code;
-      if (code === "ENOENT") {
-        try {
-          mkdirSync(dirname(lock), { recursive: true });
-        } catch {}
-      } else if (code === "EEXIST") {
-        try {
-          if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS)
-            rmSync(lock, { force: true });
-        } catch {}
-      } else {
-        break;
-      }
+      linkSync(aside, lock);
+    } catch {}
+  }
+  try {
+    rmSync(aside, { force: true });
+  } catch {}
+  return removed;
+}
+
+/** Break the lock `seen` described, if it is stale and still the file at
+ *  `lock`. Two contenders that both saw the same stale lock cannot both
+ *  break it: the second one moves the first one's fresh lock, finds a
+ *  different token, and puts it back. */
+function breakStaleLock(lock: string, seen: LockSeen | undefined): boolean {
+  if (!seen || Date.now() - seen.mtimeMs <= LOCK_STALE_MS) return false;
+  return removeLockIf(
+    lock,
+    "stale",
+    (moved) => moved?.token === seen.token && moved.mtimeMs === seen.mtimeMs,
+  );
+}
+
+/** Release a lock this process holds. Never throws: a pick that already
+ *  succeeded must not fail on its cleanup. A lock that is no longer ours
+ *  (broken as stale while held) is left to its new holder. */
+function releaseLock(handle: LockHandle): void {
+  try {
+    removeLockIf(
+      handle.lock,
+      "release",
+      (moved) => moved?.token === handle.token,
+    );
+  } catch {}
+}
+
+type AcquireStep = LockHandle | "retry" | "give-up";
+
+function tryAcquire(lock: string): AcquireStep {
+  let fd: number;
+  try {
+    fd = openSync(lock, "wx", 0o600);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") {
+      try {
+        mkdirSync(dirname(lock), { recursive: true });
+      } catch {}
+      return "retry";
     }
-    if (Date.now() >= deadline) break;
+    if (code === "EEXIST") {
+      breakStaleLock(lock, readLock(lock));
+      return "retry";
+    }
+    return "give-up";
+  }
+  const token = `${process.pid}.${randomUUID()}`;
+  try {
+    writeFileSync(fd, token);
+  } catch {
+    // A lock nobody can identify would only ever be broken as stale.
+    try {
+      closeSync(fd);
+      rmSync(lock, { force: true });
+    } catch {}
+    return "give-up";
+  }
+  try {
+    closeSync(fd);
+  } catch {}
+  return { lock, token };
+}
+
+function acquireLockSync(lock: string, waitMs: number): LockHandle | undefined {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const step = tryAcquire(lock);
+    if (typeof step === "object") return step;
+    if (step === "give-up" || Date.now() >= deadline) return undefined;
     Bun.sleepSync(1);
   }
+}
+
+function runLocked<T>(handle: LockHandle | undefined, fn: () => T): T {
   try {
     return fn();
   } finally {
-    if (held) rmSync(lock, { force: true });
+    if (handle) releaseLock(handle);
   }
 }
+
+const lockPath = (path: string) => `${path}.lock`;
 
 // When a write fails (a read-only or full disk), this process keeps its own
 // copy so its picks still rotate and stick, as they did before the files.
 const fallback = new Map<string, unknown>();
 const unwritable = new Set<string>();
 
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function fallbackCopy<T extends object>(path: string): T | undefined {
+  const value = fallback.get(path) as T | undefined;
+  return value === undefined ? undefined : structuredClone(value);
+}
+
+/** Unlocked reads: the stat-keyed cache, or this process's own copy while
+ *  the file cannot be written. The value is shared: never mutate it. */
 function readShared<T extends object>(path: string, empty: () => T): T {
   if (unwritable.has(path)) return (fallback.get(path) as T) ?? empty();
   try {
@@ -111,25 +262,52 @@ function readShared<T extends object>(path: string, empty: () => T): T {
   }
 }
 
+/** The read inside a locked update. Always the file itself, never the
+ *  stat-keyed cache: a replaced file can, rarely, match a cached stat (an
+ *  inode reused within one timestamp tick at the same size), and an update
+ *  built on that stale parse would drop other processes' writes. Also read
+ *  after a failed write, so a write that succeeds again starts from what
+ *  the others wrote meanwhile instead of this process's own copy. */
+function readForUpdate<T extends object>(path: string, empty: () => T): T {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (value && typeof value === "object") return value as T;
+  } catch (error) {
+    // Missing: nothing was ever written, or it was removed. This process's
+    // own copy only stands in while it cannot write the file itself.
+    if (isMissing(error))
+      return (unwritable.has(path) && fallbackCopy<T>(path)) || empty();
+  }
+  // Unparsable: start from this process's copy; the write replaces it whole.
+  return fallbackCopy<T>(path) ?? empty();
+}
+
+function applyUpdate<T extends object, R>(
+  path: string,
+  empty: () => T,
+  fn: (draft: T) => R,
+): R {
+  const draft = readForUpdate(path, empty);
+  const result = fn(draft);
+  fallback.set(path, draft);
+  try {
+    writeFileAtomic(path, JSON.stringify(draft) + "\n", 0o600);
+    unwritable.delete(path);
+  } catch (error) {
+    if (!unwritable.has(path))
+      console.warn(`[claude-accounts] could not persist ${path}:`, error);
+    unwritable.add(path);
+  }
+  return result;
+}
+
 function updateShared<T extends object, R>(
   path: string,
   empty: () => T,
   fn: (draft: T) => R,
 ): R {
-  return withFileLock(path, () => {
-    const draft = structuredClone(readShared(path, empty));
-    const result = fn(draft);
-    fallback.set(path, draft);
-    try {
-      writeFileAtomic(path, JSON.stringify(draft) + "\n", 0o600);
-      unwritable.delete(path);
-    } catch (error) {
-      if (!unwritable.has(path))
-        console.warn(`[claude-accounts] could not persist ${path}:`, error);
-      unwritable.add(path);
-    }
-    return result;
-  });
+  const handle = acquireLockSync(lockPath(path), syncLockWaitMs());
+  return runLocked(handle, () => applyUpdate(path, empty, fn));
 }
 
 // ── Usage snapshots ──────────────────────────────────────────────────────────
@@ -284,3 +462,17 @@ export function __resetSharedPickStateForTest(): void {
   for (const path of [turnsPath(), sessionsPath(), usagePath()])
     rmSync(path, { force: true });
 }
+
+/** Test seam: the lock primitives, to drive their races step by step. */
+export const __lockForTest = {
+  path: lockPath,
+  read: readLock,
+  acquire: (lock: string) => acquireLockSync(lock, 0),
+  release: releaseLock,
+  breakStale: breakStaleLock,
+  staleMs: LOCK_STALE_MS,
+  syncWaitMs: syncLockWaitMs,
+  usagePath: () => usagePath(),
+  turnsPath: () => turnsPath(),
+  sessionsPath: () => sessionsPath(),
+};
