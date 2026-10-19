@@ -10,43 +10,16 @@
  *    Open Session's owned stores and detached run-host protocol.
  */
 
-import {
-  mkdirSync,
-  readdirSync,
-  openSync,
-  readSync,
-  closeSync,
-  realpathSync,
-  constants as fsConstants,
-} from "fs";
-import {
-  access as fsAccess,
-  mkdir as fsMkdir,
-  readFile as fsReadFile,
-  readdir as fsReaddir,
-  stat as fsStat,
-  writeFile as fsWriteFile,
-} from "fs/promises";
-import { createHash } from "node:crypto";
-import { basename, dirname, join, resolve, sep } from "path";
+import { mkdirSync, readdirSync, openSync, readSync, closeSync } from "fs";
+import { join, resolve, sep } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
   ExtensionFactory,
-  ModelRuntime,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-
-/** The extension-registration config shape ModelRuntime.registerProvider
- *  accepts (ProviderConfigInput — not re-exported by the package index). */
-type PiProviderConfigInput = Parameters<ModelRuntime["registerProvider"]>[1];
 import { audit, summarizeText } from "./audit";
-import {
-  journalSet,
-  buildRunJournalRecord,
-  journalClear,
-  registerActiveRunProbe,
-} from "./run-journal";
+import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import {
   askBashDenyReason,
   isClaudeSubscriptionError,
@@ -66,16 +39,7 @@ import {
   formatAnthropicReset,
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
-import {
-  FALLBACK_CONTEXT_WINDOW,
-  FALLBACK_MAX_TOKENS,
-  configuredProviderCatalog,
-  modelProviders,
-  piProviderCatalog,
-  readModelProviderConfig,
-  type ModelProviderConfig,
-  type PiProviderCatalog,
-} from "./model-providers";
+import { modelProviders, readModelProviderConfig } from "./model-providers";
 import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
 import {
   markExhausted as markClaudeExhausted,
@@ -145,15 +109,7 @@ import {
   EMPTY_REPLY_RETRY_PROMPT,
   githubCredentialUser,
 } from "./auto-continue";
-import {
-  bashAskPolicyReply,
-  mergeGuardDenyReason,
-  privateTermsDenyReason,
-  publicationPolicyDenyReason,
-  type MergeGuard,
-  type PrivateTermsGuard,
-  type PublicationPolicy,
-} from "./command-policy";
+import type { PrivateTermsGuard } from "./command-policy";
 import { privateTerms } from "./config";
 import { treatRepoAsPublic } from "./repo-visibility";
 import {
@@ -164,14 +120,8 @@ import {
 } from "./transcript-persistence";
 import { transcript } from "./actor-transcript";
 import { transcriptForwarder } from "./transcript-forward";
-import { gitIdentityEnv, type GitIdentity } from "./shared/user-mappings";
 import { humanPrompter, providerAccountUser } from "./session-actors";
-import {
-  GITHUB_RUN_AUTH_FILE_ENV,
-  githubRunOwnerLogin,
-  githubUserRunEnv,
-  projectedGithubRunEnv,
-} from "./github-auth";
+import { githubRunOwnerLogin } from "./github-auth";
 import { ensureAgentAwsCredsFile } from "./aws-creds";
 import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
@@ -183,17 +133,14 @@ import {
   type PiSdk,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
-import { controlPlaneWorkloadCommand, stopUserScope } from "./systemd-scopes";
 import {
   createMcpRuntime,
   splitMcpMigrationBoundary,
   type McpRuntime,
 } from "./mcp-runtime";
-import { toPiModel } from "./models";
 import {
   expandSkillCommand,
   gatePstackSkills,
-  SHIPPED_SKILLS_DIR,
   skillSearchPaths,
 } from "./skill-paths";
 import {
@@ -203,8 +150,6 @@ import {
   mirrorRemoteContext,
   remoteCommandEnv,
   remoteWorkspaceForRun,
-  runRemoteCommand,
-  type RemoteWorkspace,
 } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
@@ -218,313 +163,78 @@ import {
   piAssistantTranscriptEntries,
   piImages,
 } from "./pi-transcript";
+import {
+  GIT_COAUTHOR_ENV,
+  agentGitIdentityEnv,
+  runGithubEnv,
+  runGithubMergeGuard,
+  usesHostGithubLogin,
+} from "./pi-github-env";
+import {
+  buildPiThirdPartyProviderPlan,
+  parsePiModel,
+  piModelResolutionError,
+  resolvePiRoutedModel,
+} from "./pi-model-routing";
+import {
+  makeGuardedGrepExecute,
+  makeGuardedToolOps,
+  shippedSkillRoots,
+} from "./pi-guarded-tools";
+import { makePiBashTool, piBashHomeEnv } from "./pi-bash-tool";
+import {
+  aliasPiRun,
+  cancelPiRun,
+  claimPiRun,
+  releasePiRun,
+  retractPendingSteer,
+  type PiRunHandle,
+} from "./pi-run-registry";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
   assistantRenderableBlockCount,
   piAssistantTranscriptEntries,
 } from "./pi-transcript";
-
-const g = globalThis as any;
+export {
+  GIT_COAUTHOR_ENV,
+  agentGitIdentityEnv,
+  githubCodeRunEnv,
+  githubReadReposRunEnv,
+  githubReadRunEnv,
+  runGithubEnv,
+  runGithubMergeGuard,
+  usesHostGithubLogin,
+} from "./pi-github-env";
+export {
+  PI_MODEL_PREFIX,
+  buildPiThirdPartyProviderPlan,
+  parsePiModel,
+  piModelResolutionError,
+  resolvePiRoutedModel,
+  type PiResolvedModel,
+} from "./pi-model-routing";
+export {
+  assertContainedPiPath,
+  makeGuardedGrepExecute,
+  makeGuardedToolOps,
+} from "./pi-guarded-tools";
+export {
+  makePiBashTool,
+  piBashHomeEnv,
+  type PiBashAuditEvent,
+} from "./pi-bash-tool";
+export {
+  acceptSteerOnce,
+  activePiRunCount,
+  cancelPiRun,
+  isPiSessionBusy,
+  retractPendingSteer,
+  retractPiSteer,
+  steerPiRun,
+} from "./pi-run-registry";
 
 const PROVIDER = PI_PROVIDER;
-export const PI_MODEL_PREFIX = "pi/";
-
-/** Fresh authority for an unattended GitHub code run. Host recovery resolves
- * the selected service credential from the registered cwd; remote runners can
- * consume only the private run-scoped file projected by their launcher. */
-export async function githubCodeRunEnv(
-  cwd: string,
-  attachedRepos?: readonly string[],
-): Promise<Record<string, string>> {
-  if (process.env[GITHUB_RUN_AUTH_FILE_ENV]) return projectedGithubRunEnv();
-  const { repoForPathOrNull } = await import("./worktree");
-  const repo = repoForPathOrNull(cwd);
-  if (!repo || repo.host === "codestorage" || !repo.ghRepo) return {};
-  const { githubServiceCredentialEnv } = await import("./github-app");
-  return githubServiceCredentialEnv(repo.ghRepo, attachedRepos);
-}
-
-/** Read-only authority for an unattended GitHub ask run (the review
- * workflows): they read PR threads, checks, and Actions logs through `gh`
- * while processing untrusted repository content, so their token is the
- * repository-scoped read set — visibility with no write capability. Same
- * fail-closed resolution as githubCodeRunEnv. */
-export async function githubReadRunEnv(
-  cwd: string,
-  attachedRepos?: readonly string[],
-): Promise<Record<string, string>> {
-  if (process.env[GITHUB_RUN_AUTH_FILE_ENV]) return projectedGithubRunEnv();
-  const { repoForPathOrNull } = await import("./worktree");
-  const repo = repoForPathOrNull(cwd);
-  if (!repo || repo.host === "codestorage" || !repo.ghRepo) return {};
-  const { githubServiceReadOnlyEnv } = await import("./github-app");
-  return githubServiceReadOnlyEnv(repo.ghRepo, attachedRepos);
-}
-
-/** The read-only sibling-repository token an automation run holds beside
- * its primary credential (Automation.readRepos): `GH_READ_TOKEN`, minted for
- * the run's own repository plus the listed ones with the read set. Empty when
- * nothing is listed, when the mint is refused (the App is not installed on
- * one of them; github-app.ts warns), or on a remote host, whose launcher
- * already projected it into the run-scoped auth file. */
-export async function githubReadReposRunEnv(
-  cwd: string,
-  readRepos: string[] | undefined,
-): Promise<Record<string, string>> {
-  if (!readRepos?.length) return {};
-  if (process.env[GITHUB_RUN_AUTH_FILE_ENV]) return {};
-  const { repoForPathOrNull } = await import("./worktree");
-  const repo = repoForPathOrNull(cwd);
-  if (!repo || repo.host === "codestorage" || !repo.ghRepo) return {};
-  const { githubServiceReadReposEnv } = await import("./github-app");
-  return githubServiceReadReposEnv(repo.ghRepo, readRepos);
-}
-
-/** The GitHub credential one run's shell holds (docs/setup/github.md, "Who
- * holds which credential").
- *
- * - A code turn a connected person started (`ownerTurn`) acts as them: their
- *   token for gh and HTTPS git, so the push and the PR carry their identity.
- * - Every other code run, including an owner turn whose person is not
- *   connected, an automation, and a review handoff or worker report (a
- *   machine sender is nobody), holds the repository-scoped App code set. A
- *   launcher may hand a `github-*` code run its own token.
- * - Every ask run holds the App read set: the review workflows chew on
- *   untrusted PR content and can print their environment, so ask mode never
- *   sees a person's token and ignores any launcher-supplied one.
- *
- * A remote host never consults the person store: its launcher already
- * projected the run's credential (githubUserRunEnv is empty there).
- *
- * An App token covers the session's attached repositories (`attachedRepos`)
- * beside the checkout's own, with the same permission set: a machine-started
- * turn can work in every repository the session spans, exactly as an owner
- * turn can with the person's token.
- *
- * An automation that lists sibling repositories to read (`readRepos`) also
- * gets `GH_READ_TOKEN` (githubReadReposRunEnv) beside whichever primary
- * credential the rules above selected; the primary is never widened. */
-export async function runGithubEnv(input: {
-  isCode: boolean;
-  ownerTurn: boolean;
-  /** The person the turn acts for (githubCredentialUser). */
-  user?: string | null;
-  githubKindRun: boolean;
-  launcherEnv?: Record<string, string>;
-  cwd: string;
-  /** Automation.readRepos; only automation runs carry it. */
-  readRepos?: string[];
-  /** `owner/name` of the session's attached repositories: the App token
-   *  reaches them too (githubAppRepositoryToken). */
-  attachedRepos?: string[];
-  /** No GitHub App is configured and the run shares the host's HOME (see
-   *  usesHostGithubLogin): inject no credential so gh and git use the
-   *  host's own login. */
-  hostLogin?: boolean;
-}): Promise<Record<string, string>> {
-  const primary = await runPrimaryGithubEnv(input);
-  if (!input.readRepos?.length) return primary;
-  return {
-    ...primary,
-    ...(await githubReadReposRunEnv(input.cwd, input.readRepos)),
-  };
-}
-
-async function runPrimaryGithubEnv(input: {
-  isCode: boolean;
-  ownerTurn: boolean;
-  user?: string | null;
-  githubKindRun: boolean;
-  launcherEnv?: Record<string, string>;
-  cwd: string;
-  attachedRepos?: string[];
-  hostLogin?: boolean;
-}): Promise<Record<string, string>> {
-  if (!input.isCode)
-    return input.hostLogin
-      ? {}
-      : githubReadRunEnv(input.cwd, input.attachedRepos);
-  const person = input.ownerTurn ? githubUserRunEnv(input.user) : {};
-  if (person.GH_TOKEN) return person;
-  if (input.githubKindRun && input.launcherEnv?.GH_TOKEN)
-    return input.launcherEnv;
-  if (input.hostLogin) return {};
-  return githubCodeRunEnv(input.cwd, input.attachedRepos);
-}
-
-/** Whether a run's `gh` and git use the host's own GitHub login instead of
- * an injected credential. Only when no GitHub App is configured: without one
- * there is no App token to inject, so the run-scoped empty credential would
- * leave gh "not logged in" even for the operator's own sessions. Remote,
- * unattended, and automation runs never qualify; they stay fail-closed. */
-export async function usesHostGithubLogin(input: {
-  remote: boolean;
-  unattended: boolean;
-  isolatedHome: boolean;
-}): Promise<boolean> {
-  if (input.remote || input.unattended || input.isolatedHome) return false;
-  if (process.env[GITHUB_RUN_AUTH_FILE_ENV]) return false;
-  const { githubAppConfigured } = await import("./github-app");
-  return !githubAppConfigured();
-}
-
-/** Person-started code turns follow the repository's publication workflow:
- * they may push the base branch and merge PRs in either checkout mode, and
- * GitHub rulesets bound what lands. Without personal GitHub authority they
- * still cannot approve PRs. Ask, unattended, and machine-authored runs retain
- * the full guard. */
-export function runGithubMergeGuard(input: {
-  isCode: boolean;
-  ownerTurn: boolean;
-  ownerLogin: string | null;
-  baseBranch: string;
-}): MergeGuard | undefined {
-  if (input.isCode && input.ownerTurn)
-    return input.ownerLogin ? undefined : { allowMerge: true };
-  return { baseBranch: input.baseBranch };
-}
-
-/** Child-env name carrying the `Co-authored-by` trailer an agent run must put
- * on every commit. The value is `Name <email>`, the person behind the run. */
-export const GIT_COAUTHOR_ENV = "OPENSESSION_GIT_COAUTHOR";
-
-/** Git identity for an agent run: the App's bot user as author and
- * committer, with the person behind the run as `Co-authored-by`. No run
- * carries a person's git identity, so nothing an agent commits can be taken
- * for something the person typed (docs/github-authority.md, "Attribution").
- * Without a configured App, git's own config decides the author. */
-export async function agentGitIdentityEnv(
-  author?: GitIdentity | null,
-): Promise<Record<string, string>> {
-  const bot = await import("./github-app")
-    .then((m) => m.githubBotGitIdentity())
-    .catch(() => null);
-  const coauthor =
-    author?.name && author.email ? `${author.name} <${author.email}>` : "";
-  return {
-    ...(bot ? gitIdentityEnv(bot) : {}),
-    ...(coauthor ? { [GIT_COAUTHOR_ENV]: coauthor } : {}),
-  };
-}
-
-/** Split `pi/<provider>/<model>` (model may itself contain slashes). */
-export function parsePiModel(
-  model: string,
-): { providerID: string; modelID: string } | null {
-  if (!model.startsWith(PI_MODEL_PREFIX)) return null;
-  const rest = model.slice(PI_MODEL_PREFIX.length);
-  const sep = rest.indexOf("/");
-  if (sep <= 0 || sep === rest.length - 1) return null;
-  return { providerID: rest.slice(0, sep), modelID: rest.slice(sep + 1) };
-}
-
-/** Resolve a Pi model id (or a legacy id) to the provider/model pair that
- * executes the turn. */
-export function resolvePiRoutedModel(model: string): PiResolvedModel | null {
-  const concrete = toPiModel(model);
-  return concrete ? parsePiModel(concrete) : null;
-}
-
-/** Explain why a model id could not be resolved to a Pi model. */
-export function piModelResolutionError(model: string): string {
-  return `Not a pi model id: "${model}" (expected pi/<provider>/<model>)`;
-}
-
-export interface PiResolvedModel {
-  providerID: string;
-  modelID: string;
-}
-
-/**
- * Registration plan for a third-party (non-anthropic/openai) provider — the
- * pure half of the runner's provider branch, exported for tests.
- *
- * Model metadata comes from Pi's built-in provider catalog when Pi knows the
- * provider (Cerebras, Moonshot, xAI, and others). piProviderCatalog supplies a
- * provider Pi does not know (Wafer) and models newer than its bundled snapshot
- * (GLM-5.3 on OpenRouter). The operator's config adds a third layer: a
- * declared `api` makes a slug unknown to both catalogs runnable as a plain
- * OpenAI-compatible provider at its `baseURL`, and its catalog rows (inline,
- * file, or discovered) override the other layers per model id. A provider in
- * no catalog fails clearly rather than guessing a protocol. A model id in none
- * of them gets a conservative fallback entry: zero cost because unknown
- * pricing must under-report, plus safe window and output floors. It inherits
- * the provider's API and base URL, so catalog lag never blocks a run.
- */
-export function buildPiThirdPartyProviderPlan(input: {
-  providerID: string;
-  modelID: string;
-  apiKey: string;
-  baseURL?: string;
-  /** The provider's stored config beyond the key and base URL. */
-  configured?: ModelProviderConfig;
-  /** Model ids pi's built-in catalog holds for this provider (may be empty). */
-  builtinModelIds: readonly string[];
-}): { config: PiProviderConfigInput } | { error: string } {
-  const ours = piProviderCatalog(input.providerID);
-  const custom = configuredProviderCatalog(input.providerID, input.configured);
-  const builtin = new Set(input.builtinModelIds);
-  const declared = !!input.configured?.api;
-  if (!ours && !builtin.size && !declared) {
-    return {
-      error:
-        `Provider "${input.providerID}" is in neither Pi's built-in catalog nor ours, ` +
-        "so the Pi engine cannot guess its protocol. Set its api to openai-completions " +
-        "with a base URL, or configure a supported provider for this model.",
-    };
-  }
-  if (declared && !input.baseURL) {
-    return {
-      error: `Provider "${input.providerID}" declares an api but no base URL. Set its base URL first.`,
-    };
-  }
-  const configuredRow = custom?.models.find((m) => m.id === input.modelID);
-  const builtinKnown = builtin.has(input.modelID) && !configuredRow;
-  const catalogKnown =
-    !!configuredRow || !!ours?.models.some((m) => m.id === input.modelID);
-  // Registering `models` REPLACES the provider's model list in Pi's extension
-  // layer. Preserve Pi's full built-in list when it already knows the selected
-  // model and the operator pinned nothing for it. Otherwise the table carries
-  // our rows, the configured rows on top (same id wins), and a conservative
-  // fallback row when the selected model is in none of them.
-  const table = new Map<string, PiProviderCatalog["models"][number]>();
-  for (const m of ours?.models ?? []) table.set(m.id, m);
-  for (const m of custom?.models ?? []) table.set(m.id, m);
-  const models = builtinKnown
-    ? []
-    : [
-        ...table.values(),
-        ...(catalogKnown
-          ? []
-          : [
-              {
-                id: input.modelID,
-                name: input.modelID,
-                reasoning: true,
-                input: ["text"] as Array<"text" | "image">,
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: FALLBACK_CONTEXT_WINDOW,
-                maxTokens: FALLBACK_MAX_TOKENS,
-              },
-            ]),
-      ];
-  const api = custom?.api ?? ours?.api;
-  const name = input.configured?.name || ours?.name;
-  return {
-    config: {
-      apiKey: input.apiKey,
-      ...(api && (declared || ours) ? { api } : {}),
-      ...(name && (declared || ours) ? { name } : {}),
-      ...(input.baseURL
-        ? { baseUrl: input.baseURL }
-        : ours
-          ? { baseUrl: ours.baseUrl }
-          : {}),
-      ...(models.length ? { models } : {}),
-    },
-  };
-}
 
 // ── SDK loading ──────────────────────────────────────────────────────────────
 
@@ -535,32 +245,6 @@ export function buildPiThirdPartyProviderPlan(input: {
  */
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
-}
-
-// ── Live-run registry ────────────────────────────────────────────────────────
-
-interface PiRunHandle {
-  abort: AbortController;
-  /** Distinct-run identity: every alias key maps to the same handle object. */
-
-  steer?: (text: string, images?: ImageInput[], steerId?: string) => void;
-  retractSteer?: (steerId: string) => boolean;
-  acceptedSteerIds?: Set<string>;
-}
-
-// Alias keys (runKey, unified session id, pi session id) → shared handle,
-// parked on globalThis so hot reloads keep cancel/steer/isBusy working for
-// in-flight turns — same pattern as the previous runner runner's activeRuns.
-const activeRuns: Map<string, PiRunHandle> = (g.__piActiveRuns ??= new Map());
-
-registerActiveRunProbe((runKey) => activeRuns.has(runKey));
-
-export function isPiSessionBusy(id: string): boolean {
-  return activeRuns.has(id);
-}
-
-export function activePiRunCount(): number {
-  return new Set(activeRuns.values()).size;
 }
 
 /** Activate exactly the tools backed by custom definitions. Pi falls back to
@@ -717,69 +401,6 @@ export function piCodemodeExtension(
         },
       }),
     );
-}
-
-export function cancelPiRun(id: string): boolean {
-  const handle = activeRuns.get(id);
-  if (!handle) return false;
-  handle.abort.abort();
-  return true;
-}
-
-/** Native mid-turn steer: session.steer() queues the text for delivery at the
- *  next completed tool or assistant-message boundary, before the next LLM
- *  call. True = a live run accepted it; false = nothing steerable (caller
- *  queues for the next turn instead). */
-export function acceptSteerOnce(
-  accepted: Set<string>,
-  steerId: string,
-  accept: () => void,
-): boolean {
-  if (accepted.has(steerId)) return true;
-  accept();
-  accepted.add(steerId);
-  return true;
-}
-
-export function steerPiRun(
-  id: string,
-  text: string,
-  images?: ImageInput[],
-  steerId?: string,
-): boolean {
-  const handle = activeRuns.get(id);
-  if (!handle?.steer) return false;
-  if (!steerId) {
-    handle.steer(text, images);
-    return true;
-  }
-  return acceptSteerOnce((handle.acceptedSteerIds ??= new Set()), steerId, () =>
-    handle.steer!(text, images, steerId),
-  );
-}
-
-export function retractPiSteer(id: string, steerId: string): boolean {
-  const handle = activeRuns.get(id);
-  const retracted = handle?.retractSteer?.(steerId) === true;
-  if (retracted) handle?.acceptedSteerIds?.delete(steerId);
-  return retracted;
-}
-
-/** Remove one exact pending steer, then let the caller rebuild the engine queue.
- * The synchronous mutation is the race boundary: delivery either removed the
- * item first, or retraction does, never both. */
-export function retractPendingSteer<T extends { steerId?: string }>(
-  pending: T[],
-  steerId: string,
-  replay: (remaining: readonly T[]) => void,
-): boolean {
-  const index = pending.findIndex((item) => item.steerId === steerId);
-  if (index < 0) return false;
-  const remaining = pending.filter((_, candidate) => candidate !== index);
-  pending.splice(0, pending.length, ...remaining);
-  replay(remaining);
-
-  return true;
 }
 
 // ── Gate ─────────────────────────────────────────────────────────────────────
@@ -995,797 +616,6 @@ function findPiSessionFile(
   return null;
 }
 
-// ── Guarded local tools (the containment invariant) ──────────────────────────
-//
-// Pi's built-in fs tools run in-process with no path containment and their
-// rg/fd children inherit process.env (the server env). We never activate the
-// built-ins; the model gets same-name customTools overrides instead: pi's own
-// tool factories (createReadToolDefinition & co) wrapped with the guarded
-// operations below — identical schema/description/truncation behavior, ours
-// only where the filesystem or a subprocess is touched.
-
-/** Directory roots no tool may touch even when a symlink or bind mount would
- *  bring them under the workspace realpath check. /proc/self/environ is the
- *  server-env exfiltration vector that motivated the guard. */
-const BLOCKED_PATH_ROOTS = ["/proc", "/sys", "/dev"];
-
-/**
- * Realpath-based workspace containment: resolve `rawPath`, symlink-resolve it
- * through its nearest EXISTING ancestor (so not-yet-created write targets are
- * checked too — a symlinked parent can't smuggle them out), and require the
- * result to sit under `realRoot`. Throws with a model-facing message on
- * escape. Returns the fully-resolved path it validated.
- */
-export function assertContainedPiPath(
-  rawPath: string,
-  realRoot: string,
-): string {
-  const resolved = resolve(rawPath);
-  let probe = resolved;
-  const pendingSuffix: string[] = [];
-  let real: string;
-  for (;;) {
-    try {
-      real = realpathSync(probe);
-      break;
-    } catch {
-      const parent = dirname(probe);
-      if (parent === probe) {
-        real = probe;
-        break;
-      }
-      pendingSuffix.unshift(basename(probe));
-      probe = parent;
-    }
-  }
-  const full = pendingSuffix.length ? join(real, ...pendingSuffix) : real;
-  for (const blocked of BLOCKED_PATH_ROOTS) {
-    if (full === blocked || full.startsWith(blocked + sep)) {
-      throw new Error(`Path is not accessible to this session: ${rawPath}`);
-    }
-  }
-  if (full !== realRoot && !full.startsWith(realRoot + sep)) {
-    throw new Error(
-      `Path is outside the session workspace (${rawPath}). ` +
-        "Local file tools are contained to the session's working directory.",
-    );
-  }
-  return full;
-}
-
-/** Magic-byte image sniff for the guarded read tool (pi's default detector is
- *  not importable standalone; same formats: png/jpeg/gif/webp/bmp). */
-function sniffImageMime(path: string): string | undefined {
-  try {
-    const fd = openSync(path, "r");
-    try {
-      const buf = Buffer.alloc(16);
-      const n = readSync(fd, buf, 0, 16, 0);
-      if (n < 4) return undefined;
-      if (
-        buf[0] === 0x89 &&
-        buf[1] === 0x50 &&
-        buf[2] === 0x4e &&
-        buf[3] === 0x47
-      )
-        return "image/png";
-      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
-        return "image/jpeg";
-      if (buf.toString("ascii", 0, 4) === "GIF8") return "image/gif";
-      if (
-        n >= 12 &&
-        buf.toString("ascii", 0, 4) === "RIFF" &&
-        buf.toString("ascii", 8, 12) === "WEBP"
-      )
-        return "image/webp";
-      if (buf[0] === 0x42 && buf[1] === 0x4d) return "image/bmp";
-      return undefined;
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The guarded operations pi's read/ls/find/edit/write factories accept —
- * every path realpath-contained to `cwd` before any fs call. `find.glob`
- * replaces the factory's default fd SUBPROCESS entirely (pi only uses fd when
- * no custom glob is provided), walking with Bun.Glob in-process instead:
- * no child, no env, `followSymlinks: false` so a symlinked dir can't be
- * traversed out of. Exported for the containment unit tests.
- */
-export function makeGuardedToolOps(cwd: string) {
-  let realRoot: string;
-  try {
-    realRoot = realpathSync(cwd);
-  } catch {
-    realRoot = resolve(cwd);
-  }
-  const guard = (p: string) => assertContainedPiPath(p, realRoot);
-  const exists = async (p: string) => {
-    guard(p);
-    try {
-      await fsAccess(p, fsConstants.F_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  return {
-    guard,
-    read: {
-      readFile: async (p: string) => {
-        guard(p);
-        return fsReadFile(p);
-      },
-      access: async (p: string) => {
-        guard(p);
-        await fsAccess(p, fsConstants.R_OK);
-      },
-      detectImageMimeType: async (p: string) => {
-        guard(p);
-        return sniffImageMime(p);
-      },
-    },
-    ls: {
-      exists,
-      stat: async (p: string) => {
-        guard(p);
-        return fsStat(p);
-      },
-      readdir: async (p: string) => {
-        guard(p);
-        return fsReaddir(p);
-      },
-    },
-    find: {
-      exists,
-      glob: async (
-        pattern: string,
-        searchPath: string,
-        options: { ignore: string[]; limit: number },
-      ): Promise<string[]> => {
-        guard(searchPath);
-        // fd (pi's default) matches bare patterns against basenames while
-        // globbing relative paths — mirror that with a `**/` prefix.
-        const effective = pattern.includes("/") ? pattern : `**/${pattern}`;
-        const limit = Math.max(1, options.limit || 1000);
-        const ignore = (options.ignore || []).map((ig) => new Bun.Glob(ig));
-        const out: string[] = [];
-        const scanner = new Bun.Glob(effective);
-        for await (const rel of scanner.scan({
-          cwd: searchPath,
-          dot: true,
-          onlyFiles: false,
-          followSymlinks: false,
-        })) {
-          if (ignore.some((ig) => ig.match(rel))) continue;
-          out.push(join(searchPath, rel));
-          if (out.length >= limit) break;
-        }
-        return out.sort();
-      },
-    },
-    edit: {
-      readFile: async (p: string) => {
-        guard(p);
-        return fsReadFile(p);
-      },
-      writeFile: async (p: string, content: string) => {
-        guard(p);
-        await fsWriteFile(p, content, "utf-8");
-      },
-      access: async (p: string) => {
-        guard(p);
-        await fsAccess(p, fsConstants.R_OK | fsConstants.W_OK);
-      },
-    },
-    write: {
-      writeFile: async (p: string, content: string) => {
-        guard(p);
-        await fsWriteFile(p, content, "utf-8");
-      },
-      mkdir: async (dir: string) => {
-        guard(dir);
-        await fsMkdir(dir, { recursive: true });
-      },
-    },
-  };
-}
-
-/** The skills this server ships, which a Sandbox run may read from here
- *  (they exist nowhere else; remote-workspace.ts). */
-function shippedSkillRoots(): string[] {
-  const roots = [resolve(SHIPPED_SKILLS_DIR)];
-  try {
-    roots.push(realpathSync(SHIPPED_SKILLS_DIR));
-  } catch {}
-  return [...new Set(roots)];
-}
-
-const GREP_DEFAULT_LIMIT = 100;
-const GREP_OUTPUT_CAP = 50 * 1024;
-
-/**
- * Guarded grep execute: pi's grep factory hard-codes an rg spawn that
- * inherits process.env and takes an uncontained search path, so unlike the
- * other fs tools its execute is replaced wholesale (the tool keeps pi's
- * name/schema/description via the factory's definition). rg runs with the
- * run's minimal env, cwd-contained, match-capped, byte-capped. Exported for
- * the containment unit tests.
- */
-export function makeGuardedGrepExecute(
-  cwd: string,
-  env: Record<string, string>,
-  guard: (p: string) => string,
-) {
-  return async function execute(
-    _toolCallId: string,
-    params: {
-      pattern?: unknown;
-      path?: unknown;
-      glob?: unknown;
-      ignoreCase?: unknown;
-      literal?: unknown;
-      context?: unknown;
-      limit?: unknown;
-    },
-    signal?: AbortSignal,
-  ): Promise<{
-    content: Array<{ type: "text"; text: string }>;
-    details: undefined;
-  }> {
-    const pattern = String(params?.pattern ?? "");
-    if (!pattern) throw new Error("grep: pattern is required");
-    if (signal?.aborted) throw new Error("Operation aborted");
-    const rawPath =
-      typeof params?.path === "string" && params.path ? params.path : ".";
-    const searchPath = resolve(cwd, rawPath);
-    guard(searchPath);
-    const rgPath = Bun.which("rg");
-    if (!rgPath) throw new Error("ripgrep (rg) is not available on this host");
-    const st = await fsStat(searchPath).catch(() => null);
-    if (!st) throw new Error(`Path not found: ${searchPath}`);
-    const isDir = st.isDirectory();
-
-    const args = [
-      "--line-number",
-      "--color=never",
-      "--hidden",
-      "--with-filename",
-    ];
-    if (params?.ignoreCase) args.push("--ignore-case");
-    if (params?.literal) args.push("--fixed-strings");
-    if (typeof params?.glob === "string" && params.glob)
-      args.push("--glob", params.glob);
-    const ctxN = Number(params?.context);
-    if (Number.isFinite(ctxN) && ctxN > 0)
-      args.push("--context", String(Math.floor(ctxN)));
-    const limit = Math.max(1, Number(params?.limit) || GREP_DEFAULT_LIMIT);
-    // Directory searches run from the search root with "." so rg prints
-    // workspace-relative paths (pi's output shape); file targets run from the
-    // file's dir with its basename for the same reason.
-    args.push("--", pattern, isDir ? "." : basename(searchPath));
-
-    const proc = Bun.spawn([rgPath, ...args], {
-      cwd: isDir ? searchPath : dirname(searchPath),
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const onAbort = () => {
-      try {
-        proc.kill();
-      } catch {}
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    let out = "";
-    let stderr = "";
-    let matches = 0;
-    let matchLimitReached = false;
-    try {
-      const dec = new TextDecoder();
-      // stderr drains concurrently: a stderr flood (permission errors on a
-      // big tree) must not fill its pipe and block rg while stdout is open.
-      const errDrain = (async () => {
-        const errReader = proc.stderr.getReader();
-        try {
-          while (true) {
-            const { done, value } = await errReader.read();
-            if (done) break;
-            if (value && stderr.length < 8_192) {
-              stderr += dec.decode(value, { stream: true });
-            }
-          }
-        } finally {
-          errReader.releaseLock();
-        }
-      })();
-      const reader = proc.stdout.getReader();
-      try {
-        let buffered = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffered += dec.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buffered.indexOf("\n")) !== -1) {
-            const line = buffered.slice(0, nl);
-            buffered = buffered.slice(nl + 1);
-            if (/^(.+?):(\d+):/.test(line)) {
-              if (matches >= limit) continue;
-              matches++;
-              if (matches >= limit) matchLimitReached = true;
-            } else if (matches >= limit) {
-              continue;
-            }
-            out += `${line}\n`;
-            if (matchLimitReached || out.length > GREP_OUTPUT_CAP * 2) {
-              try {
-                proc.kill();
-              } catch {}
-            }
-          }
-        }
-        if (buffered && matches < limit) out += buffered;
-      } finally {
-        reader.releaseLock();
-      }
-      await errDrain;
-      const code = await proc.exited;
-      if (signal?.aborted) throw new Error("Operation aborted");
-      if (code !== 0 && code !== 1 && !matchLimitReached && !matches) {
-        throw new Error(stderr.trim() || `ripgrep exited with code ${code}`);
-      }
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-    }
-
-    let text = out.trimEnd();
-    if (!text)
-      return {
-        content: [{ type: "text", text: "No matches found" }],
-        details: undefined,
-      };
-    if (text.length > GREP_OUTPUT_CAP) {
-      text = `${text.slice(0, GREP_OUTPUT_CAP)}\n\n[Truncated: 50KB limit reached]`;
-    }
-    if (matchLimitReached) {
-      text += `\n\n[${limit} matches limit reached. Use limit=${limit * 2} for more, or refine pattern]`;
-    }
-    return { content: [{ type: "text", text }], details: undefined };
-  };
-}
-
-// ── Custom bash tool (the env-hygiene invariant) ─────────────────────────────
-
-const BASH_OUTPUT_CAP = 40_000;
-const BASH_DEFAULT_TIMEOUT_S = 120;
-const BASH_MAX_TIMEOUT_S = 600;
-
-/** A non-sensitive command shape for audit events. Command text never belongs
- * in the audit log: it commonly contains bearer tokens, customer data, and
- * shell-expanded credentials. The hash still joins a start to its finish and
- * lets an authorized investigator correlate a command with its source. */
-export interface PiBashAuditEvent {
-  phase: "start" | "finish";
-  command_sha256: string;
-  command_bytes: number;
-  command_kind: string;
-  sleep_calls?: number;
-  sleep_seconds?: number;
-  /** The sleep sits in a while/until loop: a capped poll, not a fixed wait.
-   *  Separates the pattern the Waiting prompt asks for from the one it bans. */
-  sleep_in_loop?: boolean;
-  timeout_s: number;
-  duration_ms?: number;
-  exit_code?: number | null;
-  timed_out?: boolean;
-  cancelled?: boolean;
-  outcome?: "ok" | "failed" | "timed_out" | "cancelled";
-}
-
-const AUDITED_COMMAND_KINDS = new Set([
-  "bun",
-  "cat",
-  "cd",
-  "curl",
-  "echo",
-  "find",
-  "git",
-  "gh",
-  "ls",
-  "printf",
-  "rg",
-  "sed",
-  "sleep",
-]);
-
-const SLEEP_IN_LOOP = /\b(?:while|until)\b[\s\S]*?\bdo\b[\s\S]*?\bsleep\s/;
-
-/** Keep command observability useful without recording arguments or text. */
-function summarizeBashAuditCommand(
-  command: string,
-): Omit<
-  PiBashAuditEvent,
-  | "phase"
-  | "timeout_s"
-  | "duration_ms"
-  | "exit_code"
-  | "timed_out"
-  | "cancelled"
-  | "outcome"
-> {
-  const firstWord = command
-    .trim()
-    .match(/^(?:[A-Za-z_]\w*=[^\s]+\s+)*([A-Za-z][\w.-]*)/)?.[1];
-  const commandKind =
-    firstWord && AUDITED_COMMAND_KINDS.has(firstWord) ? firstWord : "shell";
-  let sleepCalls = 0;
-  let sleepSeconds = 0;
-  for (const match of command.matchAll(
-    /(?:^|[;&|(]\s*|\n\s*|\b(?:do|then|else)\s+)sleep\s+(\d+(?:\.\d+)?)([smhd]?)(?=\s|[;&|)]|$)/g,
-  )) {
-    sleepCalls++;
-    const factor = { s: 1, m: 60, h: 3_600, d: 86_400 }[match[2] || "s"] ?? 1;
-    sleepSeconds += Number(match[1]) * factor;
-  }
-  return {
-    command_sha256: createHash("sha256").update(command).digest("hex"),
-    command_bytes: new TextEncoder().encode(command).byteLength,
-    command_kind: commandKind,
-    ...(sleepCalls > 0
-      ? {
-          sleep_calls: sleepCalls,
-          sleep_seconds: sleepSeconds,
-          sleep_in_loop: SLEEP_IN_LOOP.test(command),
-        }
-      : {}),
-  };
-}
-
-export function piBashHomeEnv(input: {
-  runKey: string;
-  scratchDir?: string;
-  isolated: boolean;
-  hostHome?: string;
-  /** usesHostGithubLogin: keep the host's gh config, and with it its login. */
-  hostGithubLogin?: boolean;
-}): Record<string, string> {
-  const key = input.runKey.replace(/[^A-Za-z0-9_-]/g, "_");
-  if (!input.isolated && input.hostGithubLogin)
-    return input.hostHome ? { HOME: input.hostHome } : {};
-  if (!input.isolated)
-    return {
-      ...(input.hostHome ? { HOME: input.hostHome } : {}),
-      // Without GH_TOKEN in its env, gh resolves whatever identity the host's
-      // ~/.config/gh/hosts.yml holds. A run must never inherit that ambient
-      // login: a run-scoped config dir makes a credential-free run fail with
-      // a clear "not logged in" instead of silently acting as the host
-      // operator — the same fail-closed posture server-owned gh calls have.
-      GH_CONFIG_DIR: `${input.scratchDir || "/tmp"}/gh-config-${key}`,
-    };
-  const home = `${input.scratchDir || "/tmp"}/automation-home-${key}`;
-  return {
-    HOME: home,
-    XDG_CONFIG_HOME: `${home}/.config`,
-    AWS_CONFIG_FILE: `${home}/.aws/config`,
-    AWS_SHARED_CREDENTIALS_FILE: `${home}/.aws/credentials`,
-    GH_CONFIG_DIR: `${home}/.config/gh`,
-  };
-}
-
-/** The custom `bash` tool: same name/schema surface as pi's built-in (so the
- *  model needs no new habits) but execution is ours — Bun.spawn with the
- *  MINIMAL env only, never the server process env. `gated` additionally
- *  screens every command through the org command policy (unattended code
- *  mode), throwing the policy message on a block. Completion is EXIT-gated,
- *  not drain-gated: a backgrounded grandchild inheriting the stdout pipe
- *  (`bun run dev &`) must never hold the tool — and with it the whole agent
- *  loop, prompt(), and cancel — open forever, so after exit the drains get a
- *  short grace and are then cancelled. The command runs in its own process
- *  group (setsid) so timeout/abort can kill the whole tree, not just bash.
- *  Exported for the wedge-regression tests. */
-export function makePiBashTool(input: {
-  cwd: string;
-  env: Record<string, string>;
-  /** Run commands in this Sandbox workspace instead of on this machine. */
-  remote?: RemoteWorkspace;
-  gated: boolean;
-  /** Ask mode: every command must pass the read-only allowlist
-   *  (askBashDenyReason over ASK_BASH_PERMISSIONS, runner-shared.ts). */
-  askReadOnly?: boolean;
-  unattended: boolean;
-  sessionId?: string;
-  runKind?: string;
-  publicationPolicy?: PublicationPolicy;
-  /** Runs without a connected person's code authority cannot merge or approve. */
-  mergeGuard?: MergeGuard;
-  /** Public primary repo: publishing commands may not carry configured
-   *  private organization terms (privateTermsDenyReason). */
-  privateTermsGuard?: PrivateTermsGuard;
-  /** Immutable Open Session run cancellation. Kept separate from Pi's tool
-   * signal because AgentSession.abort() can leave an active tool signal live. */
-  runSignal?: AbortSignal;
-  onAudit?: (event: PiBashAuditEvent) => void;
-}): ToolDefinition<any, any, any> {
-  return {
-    name: "bash",
-    label: "bash",
-    description:
-      "Execute a bash command in the session workspace. Output is merged stdout+stderr, " +
-      `tail-truncated at ${BASH_OUTPUT_CAP} characters.`,
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Bash command to execute" },
-        timeout: {
-          type: "number",
-          description: `Timeout in seconds (default ${BASH_DEFAULT_TIMEOUT_S}, max ${BASH_MAX_TIMEOUT_S})`,
-        },
-      },
-      required: ["command"],
-    } as any,
-    async execute(_toolCallId, params, signal, onUpdate) {
-      const command = String((params as { command?: unknown })?.command ?? "");
-      if (!command.trim()) throw new Error("Empty command");
-      if (input.askReadOnly) {
-        const reason = askBashDenyReason(command);
-        if (reason) throw new Error(reason);
-      }
-      const mergeDenial = input.mergeGuard
-        ? mergeGuardDenyReason(command, input.mergeGuard)
-        : undefined;
-      if (mergeDenial) throw new Error(mergeDenial);
-      const publicationDenial = input.publicationPolicy
-        ? publicationPolicyDenyReason(command, input.publicationPolicy)
-        : undefined;
-      if (publicationDenial) throw new Error(publicationDenial);
-      const privateTermsDenial = input.privateTermsGuard
-        ? privateTermsDenyReason(command, input.privateTermsGuard)
-        : undefined;
-      if (privateTermsDenial) throw new Error(privateTermsDenial);
-      if (input.gated) {
-        const reply = bashAskPolicyReply(
-          { permission: "bash", metadata: { command } },
-          {
-            unattended: input.unattended,
-            gated: true,
-            sessionId: input.sessionId,
-            runKind: input.runKind,
-          },
-        );
-        if (reply !== "once") {
-          throw new Error(
-            "This command was blocked by the org command policy for unattended runs. " +
-              "Propose the exact command in your note or summary and let a human run it.",
-          );
-        }
-      }
-      const rawTimeout = Number((params as { timeout?: unknown })?.timeout);
-      const timeoutS =
-        Number.isFinite(rawTimeout) && rawTimeout > 0
-          ? Math.min(rawTimeout, BASH_MAX_TIMEOUT_S)
-          : BASH_DEFAULT_TIMEOUT_S;
-
-      const aborted = () =>
-        Boolean(signal?.aborted || input.runSignal?.aborted);
-      if (aborted()) throw new Error("Command aborted");
-      const commandAudit = summarizeBashAuditCommand(command);
-      const commandStartedAt = Date.now();
-      input.onAudit?.({ phase: "start", ...commandAudit, timeout_s: timeoutS });
-      if (input.remote) {
-        let exitCode: number | null = null;
-        let timedOut = false;
-        try {
-          const result = await runRemoteCommand(input.remote, {
-            command,
-            timeoutS,
-            outputCap: BASH_OUTPUT_CAP,
-            env: input.env,
-            signals: [signal, input.runSignal].filter(
-              (candidate): candidate is AbortSignal => !!candidate,
-            ),
-          });
-          exitCode = result.exitCode;
-          timedOut = result.timedOut;
-          const text =
-            (result.droppedChars > 0
-              ? `[output truncated: first ${result.droppedChars} characters dropped]\n`
-              : "") + result.output;
-          if (aborted() || result.cancelled) throw new Error("Command aborted");
-          if (timedOut)
-            throw new Error(
-              `${text}\nCommand timed out after ${timeoutS}s`.trim(),
-            );
-          if (exitCode !== 0)
-            throw new Error(
-              `${text}\nCommand exited with code ${exitCode}`.trim(),
-            );
-          return {
-            content: [{ type: "text", text: text || "(no output)" }],
-            details: {
-              exitCode,
-              truncatedChars: result.droppedChars || undefined,
-            },
-          };
-        } finally {
-          const cancelled = aborted();
-          input.onAudit?.({
-            phase: "finish",
-            ...commandAudit,
-            timeout_s: timeoutS,
-            duration_ms: Date.now() - commandStartedAt,
-            exit_code: exitCode,
-            timed_out: timedOut,
-            cancelled,
-            outcome: cancelled
-              ? "cancelled"
-              : timedOut
-                ? "timed_out"
-                : exitCode === 0
-                  ? "ok"
-                  : "failed",
-          });
-        }
-      }
-      // setsid makes bash a process-group leader, so kill(-pid) reaches the
-      // grandchildren a plain proc.kill() misses (bash may already be gone
-      // when the timeout fires). Absent setsid (macOS), degrade to the
-      // direct-child kill.
-      const setsidPath = Bun.which("setsid");
-      const directCommand = setsidPath
-        ? [setsidPath, "/bin/bash", "-c", command]
-        : ["/bin/bash", "-c", command];
-      const scoped = controlPlaneWorkloadCommand(
-        directCommand,
-        `opensession-agent-cmd-${crypto.randomUUID().slice(0, 13)}`,
-        { env: input.env },
-      );
-      let timedOut = false;
-      let exitCode: number | null = null;
-      try {
-        const proc = Bun.spawn(scoped.command, {
-          cwd: input.cwd,
-          env: scoped.env,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const killTree = () => {
-          if (scoped.unit) stopUserScope(scoped.unit);
-          const killGroup = (sig: "SIGTERM" | "SIGKILL") => {
-            try {
-              if (!scoped.unit && setsidPath) process.kill(-proc.pid, sig);
-              else proc.kill(sig);
-            } catch {}
-          };
-          killGroup("SIGTERM");
-          // Escalate for SIGTERM-ignorers; unref'd so a dead group never holds
-          // the process (or this tool's return) open.
-          const escalate = setTimeout(() => killGroup("SIGKILL"), 1_500);
-          (escalate as unknown as { unref?: () => void }).unref?.();
-        };
-
-        let out = "";
-        let droppedChars = 0;
-        let lastUpdate = 0;
-        const emitPartial = () => {
-          const now = Date.now();
-          if (now - lastUpdate < 250) return;
-          lastUpdate = now;
-          onUpdate?.({ content: [{ type: "text", text: out }], details: {} });
-        };
-        const append = (chunk: string) => {
-          out += chunk;
-          if (out.length > BASH_OUTPUT_CAP) {
-            droppedChars += out.length - BASH_OUTPUT_CAP;
-            out = out.slice(out.length - BASH_OUTPUT_CAP);
-          }
-          emitPartial();
-        };
-        const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
-        const drain = async (stream: ReadableStream<Uint8Array> | null) => {
-          if (!stream) return;
-          const dec = new TextDecoder();
-          const reader = stream.getReader();
-          readers.push(reader);
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) append(dec.decode(value, { stream: true }));
-            }
-          } catch {
-            // reader.cancel() below lands here — captured output stands.
-          } finally {
-            try {
-              reader.releaseLock();
-            } catch {}
-          }
-        };
-
-        const timer = setTimeout(() => {
-          timedOut = true;
-          killTree();
-        }, timeoutS * 1000);
-        const onAbort = () => killTree();
-        const abortSignals = [
-          ...new Set(
-            [signal, input.runSignal].filter(
-              (candidate): candidate is AbortSignal => !!candidate,
-            ),
-          ),
-        ];
-        for (const abortSignal of abortSignals)
-          abortSignal.addEventListener("abort", onAbort, { once: true });
-        // addEventListener does not replay an abort that raced spawn/listener
-        // installation, so close that window before awaiting process exit.
-        if (aborted()) killTree();
-        try {
-          // Exit-gated completion: the drains alone can outlive bash forever
-          // when a backgrounded child inherited the pipes, so wait for exit
-          // first, then give the drains a short grace to flush and cut them.
-          const drains = Promise.all([drain(proc.stdout), drain(proc.stderr)]);
-          exitCode = await proc.exited;
-          await Promise.race([drains, Bun.sleep(250)]);
-        } finally {
-          clearTimeout(timer);
-          for (const abortSignal of abortSignals)
-            abortSignal.removeEventListener("abort", onAbort);
-          for (const reader of readers) {
-            // cancel() rejects (async) when the drain already released the
-            // reader — swallow both the sync throw and the rejection.
-            try {
-              reader.cancel().catch(() => {});
-            } catch {}
-          }
-        }
-
-        const text =
-          (droppedChars > 0
-            ? `[output truncated: first ${droppedChars} characters dropped]\n`
-            : "") + out;
-        if (aborted()) throw new Error("Command aborted");
-        if (timedOut)
-          throw new Error(
-            `${text}\nCommand timed out after ${timeoutS}s`.trim(),
-          );
-        if (exitCode !== 0)
-          throw new Error(
-            `${text}\nCommand exited with code ${exitCode}`.trim(),
-          );
-        return {
-          content: [{ type: "text", text: text || "(no output)" }],
-          details: { exitCode, truncatedChars: droppedChars || undefined },
-        };
-      } finally {
-        const cancelled = Boolean(signal?.aborted || input.runSignal?.aborted);
-        input.onAudit?.({
-          phase: "finish",
-          ...commandAudit,
-          timeout_s: timeoutS,
-          duration_ms: Date.now() - commandStartedAt,
-          exit_code: exitCode,
-          timed_out: timedOut,
-          cancelled,
-          outcome: cancelled
-            ? "cancelled"
-            : timedOut
-              ? "timed_out"
-              : exitCode === 0
-                ? "ok"
-                : "failed",
-        });
-      }
-    },
-  };
-}
-
 // ── The turn ─────────────────────────────────────────────────────────────────
 
 const THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -1974,13 +804,12 @@ async function* runPiAttempt(
   if (opts.sessionId) registeredKeys.add(opts.sessionId);
   if (journal?.osSessionId) registeredKeys.add(journal.osSessionId);
   if (opts.transcriptSessionId) registeredKeys.add(opts.transcriptSessionId);
-  if ([...registeredKeys].some((key) => activeRuns.has(key))) {
+  const abort = new AbortController();
+  const handle: PiRunHandle = { abort };
+  if (!claimPiRun(registeredKeys, handle)) {
     yield { type: "error", content: "Session is busy" };
     return;
   }
-  const abort = new AbortController();
-  const handle: PiRunHandle = { abort };
-  for (const key of registeredKeys) activeRuns.set(key, handle);
 
   // The unified session id every transcript row keys on; kind-only loop runs
   // may pass transcriptSessionId instead (map-only, never journaled).
@@ -3013,10 +1842,7 @@ async function* runPiAttempt(
     }
 
     // Register the engine-id alias + the steer surface on the shared handle.
-    if (!registeredKeys.has(piSessionId)) {
-      registeredKeys.add(piSessionId);
-      activeRuns.set(piSessionId, handle);
-    }
+    aliasPiRun(registeredKeys, piSessionId, handle);
     const liveSession = session;
     // Steer contract: accept = enqueue + receipt. The transcript user line is
     // written only when the queued message is actually DELIVERED (its user
@@ -3846,9 +2672,7 @@ async function* runPiAttempt(
       } catch {}
     }
     walk.cancelled ||= abort.signal.aborted;
-    for (const key of registeredKeys) {
-      if (activeRuns.get(key) === handle) activeRuns.delete(key);
-    }
+    releasePiRun(registeredKeys, handle);
     // Journal survives ONLY a mid-turn teardown (boot's continuation
     // re-prompt); a reached terminal or a user cancel clears it.
     if (journal?.osSessionId && (reachedTerminal || abort.signal.aborted)) {
