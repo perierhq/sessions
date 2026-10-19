@@ -12,6 +12,7 @@ import type { UnifiedSession } from "../../server/types";
 import {
   archiveClosedPrSessions,
   backfillClosedPrSessions,
+  beginPrSessionRun,
   parsePrSessionId,
   prSessionIds,
   prSessionLifecycleAction,
@@ -281,6 +282,57 @@ describe("reopening or pushing to a PR", () => {
     expect(registry.get("bks-ghpr-12-review")).toBe("auto");
     await unarchiveReopenedPrSessions(12, undefined, deps);
     expect(registry.has("bks-ghpr-12-review")).toBe(false);
+  });
+});
+
+describe("a GitHub run starting", () => {
+  test("restores a session closing archived before the run shows up", async () => {
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-mention")], {
+      archived: { "bks-ghpr-12-mention": "auto" },
+    });
+
+    const end = await beginPrSessionRun(12, "mention", undefined, deps);
+    end();
+
+    expect(registry.has("bks-ghpr-12-mention")).toBe(false);
+  });
+
+  test("leaves a manual archive alone", async () => {
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-review")], {
+      archived: { "bks-ghpr-12-review": "manual" },
+    });
+
+    (await beginPrSessionRun(12, "review", undefined, deps))();
+
+    expect(registry.get("bks-ghpr-12-review")).toBe("manual");
+  });
+
+  test("keeps closing away from the session until the run ends", async () => {
+    // The journal does not see the run yet: it is still minting credentials
+    // and preparing its worktree.
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-review")]);
+
+    const end = await beginPrSessionRun(12, "review", undefined, deps);
+    const during = await archiveClosedPrSessions(12, undefined, deps);
+    end();
+    const after = await archiveClosedPrSessions(12, undefined, deps);
+
+    expect(during).toEqual({
+      archived: [],
+      skippedRunning: ["bks-ghpr-12-review"],
+    });
+    expect(after.archived).toEqual(["bks-ghpr-12-review"]);
+    expect(registry.get("bks-ghpr-12-review")).toBe("auto");
+  });
+
+  test("ignores kinds the archive never touches", async () => {
+    const { deps, registry } = fakeDeps([session("bks-ghpr-12-followup")], {
+      archived: { "bks-ghpr-12-followup": "auto" },
+    });
+
+    (await beginPrSessionRun(12, "followup", undefined, deps))();
+
+    expect(registry.get("bks-ghpr-12-followup")).toBe("auto");
   });
 });
 

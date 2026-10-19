@@ -23,12 +23,17 @@ interface LifecycleState {
   /** The tail of each PR's pending lifecycle work. An entry is dropped once
    * its last task settles, so the map holds only PRs with work in flight. */
   chains: Map<string, Promise<unknown>>;
+  /** GitHub runs between runGithubAgent's start and end, per session id. */
+  runsInFlight: Map<string, number>;
 }
 
 const g = globalThis as { __osPrSessionLifecycle?: LifecycleState };
 const lifecycle: LifecycleState = (g.__osPrSessionLifecycle ??= {
   chains: new Map(),
+  runsInFlight: new Map(),
 });
+// A state object parked by an older build may predate later fields.
+lifecycle.runsInFlight ??= new Map();
 
 function lifecycleKey(prNumber: number, ghRepo?: string): string {
   return prKey(prNumber, ghRepo);
@@ -215,7 +220,7 @@ async function archiveIdleSessions(
   for (const id of ids) {
     const session = await deps.findSession(id);
     if (!session || session.archived || deps.isArchivedId(session.id)) continue;
-    if (deps.isRunBusy(session)) {
+    if (lifecycle.runsInFlight.has(session.id) || deps.isRunBusy(session)) {
       result.skippedRunning.push(session.id);
       continue;
     }
@@ -264,6 +269,50 @@ export async function unarchiveReopenedPrSessions(
     }
     return restored;
   });
+}
+
+// ── GitHub runs ──────────────────────────────────────────────
+
+/**
+ * A GitHub run for this PR session is starting. Marks it in flight until the
+ * returned function is called, so closing the PR leaves it alone: the run
+ * journal only sees a GitHub run once its engine starts, after the
+ * credential, worktree and workspace steps. A session that closing already
+ * archived is restored first, the way a human turn restores one, so the run
+ * never happens out of sight. Only `auto` archives are restored.
+ */
+export async function beginPrSessionRun(
+  prNumber: number,
+  kind: GithubRunKind,
+  ghRepo?: string,
+  deps?: PrSessionArchiveDeps,
+): Promise<() => void> {
+  if (!(PR_SESSION_KINDS as readonly GithubRunKind[]).includes(kind))
+    return () => {};
+  const id = bksIdFor(prNumber, kind, ghRepo);
+  const runs = lifecycle.runsInFlight;
+  runs.set(id, (runs.get(id) ?? 0) + 1);
+  let ended = false;
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    const left = (runs.get(id) ?? 1) - 1;
+    if (left > 0) runs.set(id, left);
+    else runs.delete(id);
+  };
+  try {
+    const resolved = deps ?? (await defaultDeps());
+    // On the PR's chain, so an archive still being written is seen.
+    await serialisePrLifecycle(prNumber, ghRepo, async () => {
+      if (resolved.getArchiveReason(id) !== "auto") return;
+      const session = await resolved.findSession(id);
+      if (session && (await resolved.unarchive(session)))
+        console.log(`[github] ${id} is running again: unarchived it`);
+    });
+  } catch (e) {
+    console.warn(`[github] restoring ${id} for its run failed:`, e);
+  }
+  return end;
 }
 
 // ── Backfill ─────────────────────────────────────────────────
