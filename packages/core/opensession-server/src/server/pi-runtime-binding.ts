@@ -1,6 +1,11 @@
 import { buildPiAnthropicModels } from "./pi-anthropic-models";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ClaudeAccount, PickReason } from "./claude-accounts";
+import {
+  __forgetSessionAccountsForTest,
+  rememberSessionAccount,
+  rememberedSessionAccount,
+} from "./claude-account-shared-state";
 import type { CodexAccount } from "./codex-accounts";
 import type { SeededOpenaiAuth } from "./openai-auth";
 import type { SessionSpeed } from "@tellahq/opensession-protocol/session";
@@ -109,27 +114,16 @@ export interface ClaudeAccountPick {
  * one-shot, an automation keyed only by its checkout) is never remembered:
  * parallel runs keep spreading over the pool.
  *
- * In memory only: after a restart the first turn picks afresh and the
- * session sticks from there. Bounded, oldest key first out.
+ * Kept in a file beside the account store (claude-account-shared-state.ts),
+ * not in memory: each hosted turn binds in its own run-host process, so an
+ * in-memory map started empty on every turn and no session ever stuck.
+ * Bounded by age and size, least recently used first out.
  */
-const NATIVE_CLAUDE_AFFINITY_LIMIT = 4096;
-const nativeClaudeAffinity = new Map<string, string>();
-
-function nativeClaudeAffinityKey(
-  user: string | undefined,
-  sessionKey: string | undefined,
-): string | undefined {
-  if (!sessionKey) return undefined;
-  return `${user?.trim().toLowerCase() ?? ""}\0${sessionKey}`;
-}
-
-/** The Claude account that last served this user's session. */
 export function nativeClaudeStickyAccount(
   user: string | undefined,
   sessionKey: string | undefined,
 ): string | undefined {
-  const key = nativeClaudeAffinityKey(user, sessionKey);
-  return key ? nativeClaudeAffinity.get(key) : undefined;
+  return sessionKey ? rememberedSessionAccount(user, sessionKey) : undefined;
 }
 
 /** Record that `accountId` serves this user's session from now on. The
@@ -141,14 +135,7 @@ export function rememberNativeClaudeAccount(
   sessionKey: string | undefined,
   accountId: string,
 ): void {
-  const key = nativeClaudeAffinityKey(user, sessionKey);
-  if (!key) return;
-  nativeClaudeAffinity.delete(key);
-  nativeClaudeAffinity.set(key, accountId);
-  if (nativeClaudeAffinity.size > NATIVE_CLAUDE_AFFINITY_LIMIT) {
-    const oldest = nativeClaudeAffinity.keys().next().value;
-    if (oldest !== undefined) nativeClaudeAffinity.delete(oldest);
-  }
+  if (sessionKey) rememberSessionAccount(user, sessionKey, accountId);
 }
 
 /**
@@ -192,7 +179,7 @@ function honouredClaudeStickyAccount(
 
 /** Test seam: forget every remembered Claude account. */
 export function __resetNativeClaudeAffinityForTest(): void {
-  nativeClaudeAffinity.clear();
+  __forgetSessionAccountsForTest();
 }
 
 /** The 1-hour prompt cache for Claude subscription turns. It rides on the
