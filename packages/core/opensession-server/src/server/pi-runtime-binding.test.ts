@@ -5,6 +5,7 @@ import {
   prewarmPiSdk,
   type CreatePiRuntimeBindingInput,
 } from "./pi-runtime-binding";
+import type { ClaudeAccount } from "./claude-accounts";
 import type { CodexAccount } from "./codex-accounts";
 
 const oauth: CodexAccount = {
@@ -21,12 +22,19 @@ const apiKey: CodexAccount = {
   kind: "api_key",
   value: "sk-test",
 };
+const claude: ClaudeAccount = {
+  id: "claude-1",
+  name: "Claude one",
+  token: "sk-ant-oat01-test-token",
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
 
 function harness(
   options: {
     account?: CodexAccount;
-    transport?: "inprocess" | "bridge";
+    transport?: "inprocess" | "bridge" | "native";
     refuseModels?: boolean;
+    claudePick?: ClaudeAccount | { error: string };
   } = {},
 ) {
   const calls: Array<[string, ...any[]]> = [];
@@ -99,6 +107,10 @@ function harness(
       },
     }),
     anthropicTransport: () => options.transport || ("inprocess" as const),
+    pickClaudeAccount: (modelID: string, pick: any) => {
+      calls.push(["pickClaudeAccount", modelID, pick]);
+      return options.claudePick ?? claude;
+    },
     buildAnthropicProvider: (input: any) => {
       calls.push(["buildAnthropicProvider", input]);
       return { id: "anthropic", models: input.builtinModels as any };
@@ -304,6 +316,177 @@ describe("createPiRuntimeBinding", () => {
         cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
       }),
     ]);
+  });
+
+  test("native Anthropic picks a pool account before the runtime and seeds its token", async () => {
+    const h = harness({ transport: "native" });
+    const evidence: any[] = [];
+    const loaded: any[] = [];
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, {
+        accountUser: "ada",
+        accountId: claude.id,
+        accountStrict: true,
+        usageCredits: true,
+        onAccountEvidence: (value) => evidence.push(value),
+        beforeRuntimeLoad: (value) => {
+          loaded.push(value);
+        },
+      }),
+    );
+    // The pick (and its evidence) lands before pi is imported, so a failure
+    // anywhere later can still rotate off the account.
+    expect(h.calls.map(([name]) => name)).toEqual([
+      "pickClaudeAccount",
+      "loadSdk",
+      "create",
+    ]);
+    expect(h.calls[0]).toEqual([
+      "pickClaudeAccount",
+      "claude-test",
+      {
+        user: "ada",
+        accountId: claude.id,
+        accountStrict: true,
+        usageCredits: true,
+        excludeIds: undefined,
+      },
+    ]);
+    expect(evidence).toEqual([
+      { pickedClaude: claude, sidelineableClaude: claude },
+    ]);
+    expect(loaded).toEqual([
+      { pickedClaude: claude, sidelineableClaude: claude },
+    ]);
+    // pi's builtin provider and catalog: no SDK provider, no bridge, no
+    // process-wide runtime key.
+    expect(binding.model as unknown).toEqual({
+      provider: "anthropic",
+      id: "claude-test",
+    });
+    expect(binding.usesNativeAnthropic).toBe(true);
+    expect(binding.pickedClaude).toBe(claude);
+    const create = h.calls.find(([name]) => name === "create")!;
+    expect(await create[1].credentials.read("anthropic")).toEqual({
+      type: "api_key",
+      key: claude.token,
+      env: { PI_CACHE_RETENTION: "long" },
+    });
+    expect(create[1].modelsPath).toBeNull();
+  });
+
+  test("native Anthropic skips accounts this turn's walk already burned", async () => {
+    const h = harness({ transport: "native" });
+    await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, {
+        excludedOpenaiAccountIds: new Set(["claude-0"]),
+      }),
+    );
+    expect(h.calls[0][2].excludeIds).toEqual(["claude-0"]);
+  });
+
+  test("native Anthropic surfaces the pool refusal verbatim before loading pi", async () => {
+    const refusal =
+      "no usable Claude account in the pool (all exhausted or sidelined)";
+    const h = harness({ transport: "native", claudePick: { error: refusal } });
+    const evidence: any[] = [];
+    let thrown: any;
+    try {
+      await createPiRuntimeBinding(
+        input("anthropic", "claude-test", h, {
+          onAccountEvidence: (value) => evidence.push(value),
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.message).toBe(refusal);
+    // No provider flag: the runner's classifier decides from the wording
+    // (an empty pool is a config error, not exhaustion).
+    expect(thrown?.usageLimitExhausted).toBeUndefined();
+    expect(evidence).toEqual([]);
+    expect(h.calls.map(([name]) => name)).toEqual(["pickClaudeAccount"]);
+  });
+
+  test("native Anthropic registers release metadata only for a model pi does not know", async () => {
+    const h = harness({ transport: "native" });
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-opus-5-5", h),
+    );
+    expect(binding.model.id).toBe("claude-opus-5-5");
+    const registration = h.calls.find(([name]) => name === "registerProvider");
+    expect(registration?.[1]).toBe("anthropic");
+    // pi's builtin provider keeps its own base URL and auth: only models.
+    expect(Object.keys(registration?.[2])).toEqual(["models"]);
+    expect(registration?.[2].models).toEqual([
+      expect.objectContaining({
+        id: "claude-opus-5-5",
+        api: "anthropic-messages",
+        baseUrl: "https://api.anthropic.com",
+        contextWindow: 1_000_000,
+        cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+      }),
+    ]);
+    expect(h.calls.some(([name]) => name === "setRuntimeApiKey")).toBe(false);
+    expect(h.calls.some(([name]) => name === "registerNativeProvider")).toBe(
+      false,
+    );
+  });
+
+  test("native Anthropic requests reach pi's provider with the pool token and a 1h cache", async () => {
+    // The real pi SDK, with fetch captured: no network.
+    const previousEnvKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-from-the-environment";
+    try {
+      for (const modelID of ["claude-haiku-5-5", "claude-future-9"]) {
+        const h = harness({ transport: "native" });
+        h.deps.loadSdk = prewarmPiSdk;
+        const binding = await createPiRuntimeBinding(
+          input("anthropic", modelID, h),
+        );
+        expect(binding.model.provider).toBe("anthropic");
+        expect(binding.model.api).toBe("anthropic-messages");
+        const requests: Array<{ headers: Headers; body: any }> = [];
+        const fetch = async (_url: unknown, init: any) => {
+          requests.push({
+            headers: new Headers(init.headers),
+            body: JSON.parse(init.body),
+          });
+          return new Response(
+            JSON.stringify({
+              type: "error",
+              error: { type: "invalid_request_error", message: "captured" },
+            }),
+            { status: 400, headers: { "content-type": "application/json" } },
+          );
+        };
+        const result = await binding.runtime
+          .streamSimple(
+            binding.model,
+            {
+              systemPrompt: "Run instructions",
+              messages: [{ role: "user", content: "hi", timestamp: 1 }],
+            } as any,
+            { fetch, sessionId: "pi-session" } as any,
+          )
+          .result();
+        expect(result.stopReason).toBe("error");
+        expect(requests).toHaveLength(1);
+        const [{ headers, body }] = requests;
+        expect(headers.get("authorization")).toBe(`Bearer ${claude.token}`);
+        expect(headers.get("x-api-key")).toBeNull();
+        expect(headers.get("anthropic-beta")).toContain("oauth-2025-04-20");
+        expect(body.model).toBe(modelID);
+        expect(body.system.at(-1)).toEqual({
+          type: "text",
+          text: "Run instructions",
+          cache_control: { type: "ephemeral", ttl: "1h" },
+        });
+      }
+    } finally {
+      if (previousEnvKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousEnvKey;
+    }
   });
 
   test("binds a configured third-party provider plan then its key", async () => {
