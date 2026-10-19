@@ -291,7 +291,10 @@ describe("searchSkills", () => {
     }
 
     expect(files.some((file) => file.includes("/extensions/"))).toBe(false);
-    const runner = readFileSync(join(import.meta.dir, "pi-runner.ts"), "utf8");
+    const runner = readFileSync(
+      join(import.meta.dir, "pi-session-setup.ts"),
+      "utf8",
+    );
     expect(runner).toContain("noExtensions: true");
     expect(runner).toContain("noSkills: true");
   });
