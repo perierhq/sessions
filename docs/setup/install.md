@@ -424,7 +424,7 @@ for runner-host and MCP-proxy subprocesses.
 Agent subprocesses do **not** inherit this env file. Runs receive a minimal,
 explicit environment; only the run-scoped git identity and credentials that
 policy allows are added. MCP servers carry their own credentials
-(`packages/core/opensession-server/src/server/pi-runner.ts`).
+(`packages/core/opensession-server/src/server/pi-run-env.ts`).
 
 ## 5. `~/.opensession/config.json`
 

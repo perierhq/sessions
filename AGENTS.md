@@ -71,9 +71,45 @@ repo variable is `true`; until then they skip cleanly.
     `styles/` and `ui/` hold the design system.
   - `server/`: HTTP/API server
   - `server/pi-runner.ts`, `pi-runtime-binding.ts`, `runner-shared.ts`: how
-    pi is spawned (this is where `noExtensions` is set) and how each turn binds
-    a provider account; `server/claude-account-pick.ts` picks the Claude pool
-    account for `pi/anthropic/*` turns
+    a pi turn runs and how each turn binds a provider account;
+    `server/claude-account-pick.ts` picks the Claude pool account for
+    `pi/anthropic/*` turns. `pi-runner.ts` holds `runPi` (the account walk
+    entry), the `runPiAttempt` orchestrator and re-exports; the turn's parts
+    live in `server/pi-*.ts`:
+    - `pi-common.ts`: provider id, state dir and small shared helpers
+    - `pi-config.ts`: the `pi.json` engine config and its on/off gate
+    - `pi-gate.ts`: which run kinds may use pi, and the smoke-test bypass
+    - `pi-model-routing.ts`: `pi/<provider>/<model>` parsing and third-party
+      provider plans
+    - `pi-account-walk.ts`: the outer account walk and per-attempt account
+      state (`PiAttemptAccounts`)
+    - `pi-usage-limit.ts`: usage-limit classification and error text
+    - `pi-turn-ledger.ts`: per-attempt usage, audit closer and terminal flags
+    - `pi-run-registry.ts`: live runs by key, cancel and steer entry points
+    - `pi-run-authority.ts`: policy, GitHub identity and approvals for a run
+    - `pi-run-env.ts`: the minimal CLI and bash environments
+    - `pi-github-env.ts`: run-scoped GitHub tokens and git identity
+    - `pi-guarded-tools.ts`: cwd-contained file and grep tool overrides
+    - `pi-bash-tool.ts`: the guarded bash tool
+    - `pi-tools.ts`: the turn's toolset, MCP runtime options and steer boundary
+    - `pi-mcp-bridge.ts`: pi's `tool_search`/`tool_call` over the MCP runtime
+    - `pi-session-setup.ts`: resources and loader (`noExtensions` is set
+      here), resume plan, payload hooks, session-start log
+    - `pi-runtime-binding.ts`: SDK loading and per-turn account binding
+    - `pi-anthropic-models.ts`: Anthropic model metadata newer than pi's
+      catalog
+    - `pi-steering.ts`: steer boundary tools, codemode and thinking cut helpers
+    - `pi-steer-controller.ts`: mid-turn steers, their queue and cancellation
+    - `pi-events.ts`: the event pump, session event mapping and prompt
+      builders
+    - `pi-prompt-loop.ts`: drives the prompt, steer drains and empty-finish
+      retry
+    - `pi-terminal.ts`: the terminal event a turn ends with
+    - `pi-transcript.ts`: transcript rows and appends from pi messages
+    - `pi-turn-checkpoint.ts`: mid-turn checkpoint and interrupted-turn repair
+    - `pi-native-transcript.ts`: reads pi's native session files
+    - `pi-usage.ts`: daily pi usage totals
+    - `pi-smoke.ts`: the admin smoke turn (imports `runPi`, never the reverse)
   - `agents/`: integrations (GitHub, Linear, Slack, Stripe, Plain, Grafana)
   - `session-kernel-*.ts`, `runner-*`, `executor/`, `script-host/`: session
     and process execution

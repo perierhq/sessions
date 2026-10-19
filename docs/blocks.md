@@ -311,7 +311,7 @@ Marker-shaped blocks (`OPENSESSION_*:` lines) are read on the server by
 `server/transcript-media.ts` and rendered by `lib/markdown.ts`. Every
 constructor of an assistant entry spreads `assistantProseFields(prose)` into
 it: the claude and codex JSONL parsers, the live pi stream
-(`pi-runner.ts`) and the pi native transcript reader. A new engine that
+(`pi-transcript.ts`) and the pi native transcript reader. A new engine that
 builds its own assistant rows must do the same or its markers stay raw.
 
 Whatever the form, the agent has to know it exists: the model prompt

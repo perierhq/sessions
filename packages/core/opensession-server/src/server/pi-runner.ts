@@ -8,33 +8,29 @@
  *  - third-party providers receive only their configured API key;
  *  - sessions, transcript writes, steering, cancellation, retries and audit events all use
  *    Open Session's owned stores and detached run-host protocol.
+ *
+ * This file is the entry point (`runPi`), the per-attempt orchestrator
+ * (`runPiAttempt`) and re-exports. The parts of a turn live in the pi-*.ts
+ * modules (AGENTS.md lists them). None of them imports this file except
+ * pi-smoke.ts, which runs a turn through runPi and is never re-exported here.
  */
 
-import type {
-  AgentSession,
-  AgentSessionEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
-import { askBashDenyReason, describeUsageLimitReset } from "./runner-shared";
 import { pickClaudeAccount } from "./claude-account-pick";
-import { formatAnthropicReset } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
 import { bindXaiAccount } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { pickOpenaiAccount, buildSeededOpenaiAuth } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import { logInjectedContext } from "./context-log";
-import { wrapContext } from "./prompt-context";
 import {
   createPiTurnCheckpointWriter,
-  interruptedReplyNote,
   type PiTurnCheckpointWriter,
 } from "./pi-turn-checkpoint";
-import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
-  transcriptLineCompactionSummary,
   transcriptLineUser,
   storeAppendUserLineEarly,
 } from "./transcript-persistence";
@@ -51,15 +47,8 @@ import { remoteWorkspaceForRun } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
 import type { StreamEvent } from "./run-events";
-import { PI_PROVIDER, nowIso } from "./pi-common";
-import {
-  assistantRenderableBlockCount,
-  contentToTextAndImages,
-  persistEntries,
-  piAppend,
-  piAssistantTranscriptEntries,
-  piImages,
-} from "./pi-transcript";
+import { PI_PROVIDER } from "./pi-common";
+import { persistEntries, piAppend } from "./pi-transcript";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
@@ -71,17 +60,11 @@ import {
   releasePiRun,
   type PiRunHandle,
 } from "./pi-run-registry";
-import {
-  PI_CODEMODE_TOOL,
-  piResponseHasOutput,
-  piToolNames,
-} from "./pi-steering";
+import { PI_CODEMODE_TOOL, piToolNames } from "./pi-steering";
 import { piGateReason } from "./pi-gate";
-import { piErrorContent } from "./pi-usage-limit";
 import {
   PiAttemptAccounts,
   evidencePoolRef,
-  piStreamEventRequiresAccountContinuation,
   runPiAccountWalk,
   type PiAccountWalk,
 } from "./pi-account-walk";
@@ -102,6 +85,20 @@ import {
   preparePiResources,
 } from "./pi-session-setup";
 import { PiSteerController } from "./pi-steer-controller";
+import {
+  PiEventPump,
+  buildPiPromptForEngine,
+  createPiEventMapper,
+  piSystemEntry,
+  piTurnRepairEntries,
+} from "./pi-events";
+import { drivePiPrompt } from "./pi-prompt-loop";
+import {
+  piCaughtTerminal,
+  piEmptyReplyEntry,
+  piOutcomeTerminal,
+  piPoolDryTerminal,
+} from "./pi-terminal";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -651,16 +648,8 @@ async function* runPiAttempt(
     steering.listenForAbort();
 
     // ── Event pump: callback subscription → this generator's queue ──────────
-    const queue: StreamEvent[] = [];
-    let wake: (() => void) | null = null;
-    const push = (ev: StreamEvent) => {
-      if (piStreamEventRequiresAccountContinuation(ev))
-        ledger.sawStreamedOutput = true;
-      queue.push(ev);
-      const w = wake;
-      wake = null;
-      w?.();
-    };
+    const pump = new PiEventPump(ledger);
+    const push = (ev: StreamEvent) => pump.push(ev);
 
     push({
       type: "init",
@@ -673,43 +662,11 @@ async function* runPiAttempt(
     appendRunLines([userLine]);
 
     if (turnRepair && (turnRepair.reply || turnRepair.toolResults.length)) {
-      const recovered: TranscriptEntry[] = [];
-      if (turnRepair.reply) {
-        recovered.push(
-          ...piAssistantTranscriptEntries(
-            [{ type: "text", text: turnRepair.reply.text }],
-            turnRepair.reply.startedAt,
-            parsed.modelID,
-            turnRepair.reply.id,
-          ),
-        );
-      }
-      for (const result of turnRepair.toolResults) {
-        recovered.push({
-          id: `${result.toolCallId}-result`,
-          type: "tool_result",
-          content: result.text,
-          timestamp: nowIso(),
-          toolUseId: result.toolCallId,
-          isError: true,
-        });
-      }
-      const calls = turnRepair.toolResults.length;
-      const notice = [
-        "The previous turn stopped unexpectedly.",
-        turnRepair.reply ? "Its unfinished reply is kept above." : "",
-        calls
-          ? `${calls === 1 ? "1 tool call" : `${calls} tool calls`} it was running ${calls === 1 ? "is" : "are"} marked as interrupted.`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      recovered.push({
-        id: crypto.randomUUID(),
-        type: "system",
-        content: notice,
-        timestamp: nowIso(),
-      });
+      const {
+        entries: recovered,
+        notice,
+        calls,
+      } = piTurnRepairEntries(turnRepair, parsed.modelID);
       persistRunEntries(recovered);
       push({ type: "runner_notice", text: notice });
       audit({
@@ -725,14 +682,7 @@ async function* runPiAttempt(
         "Pi couldn't resume the previous engine session. " +
         "Continuing in a fresh one with the recent transcript.";
       push({ type: "runner_notice", text: notice });
-      persistRunEntries([
-        {
-          id: crypto.randomUUID(),
-          type: "system",
-          content: notice,
-          timestamp: nowIso(),
-        },
-      ]);
+      persistRunEntries([piSystemEntry(notice)]);
     }
     // What the ENGINE receives; journal/store keep the raw prompt. Fenced the
     // way every other injection is (prompt-context.ts): the fence is what
@@ -742,29 +692,18 @@ async function* runPiAttempt(
     // it. Expanded here rather than by pi for two reasons: a bare "/name"
     // works, which is what the composer's "/" menu inserts, and this text
     // stays identical to the user message pi echoes back, which the
-    // steer-delivery check below compares against.
+    // steer-delivery check in createPiEventMapper compares against.
     const promptWithSkill = expandSkillCommand(
       prompt,
       loader.getSkills().skills,
     );
-    const promptForEngine = [
-      wrapContext(sessionContext, "session"),
-      ...(resumeMissNote ? [wrapContext(resumeMissNote, "handoff")] : []),
-      ...(turnRepair?.reply
-        ? [
-            wrapContext(
-              interruptedReplyNote(turnRepair.reply.text),
-              "restart-recovery",
-            ),
-          ]
-        : []),
-      walk.continuation
-        ? wrapContext(
-            "The previous account reached its usage limit. Continue the unfinished task from the existing conversation and completed tool results. Do not restart the task or repeat completed actions. Finish with a reply to the user.",
-            "auto-continue",
-          )
-        : promptWithSkill,
-    ].join("\n\n");
+    const promptForEngine = buildPiPromptForEngine({
+      sessionContext,
+      resumeMissNote,
+      turnRepair,
+      continuation: Boolean(walk.continuation),
+      promptWithSkill,
+    });
     // Injected BELOW runOnModel's choke point, so that call never saw this
     // payload — log it here, exactly as the previous runner runner does for its own
     // same-engine-restart handoff. Re-logging is free: entry ids are
@@ -778,369 +717,45 @@ async function* runPiAttempt(
       });
     }
 
-    // Final assistant outcome (stopReason error/aborted → terminal error).
-    let lastStopReason: string | undefined;
-    let lastErrorMessage: string | undefined;
-    // Renderable content blocks (real text or tool calls) of the LATEST
-    // assistant message; -1 = none seen yet. Providers occasionally return a
-    // well-formed completion with ZERO content blocks and stopReason "stop"
-    // (2026-08-21 os-01a02486: GLM-5.3's pre-release OpenRouter route ended a
-    // 10-minute turn on content:[] with all-zero usage). pi settles that as a
-    // clean turn, so the session goes idle with no summary and the user has
-    // to ask "done?". The pump loop retries such finishes once.
-    let lastAssistantRenderableBlocks = -1;
+    const events = createPiEventMapper({
+      push,
+      ledger,
+      persist: persistRunEntries,
+      appendLines: appendRunLines,
+      steering,
+      checkpointWriter: () => checkpointWriter,
+      prompt,
+      promptForEngine,
+      modelID: parsed.modelID,
+      isUsageLimit: (message) => accounts.isUsageLimit(message),
+      abortRetry: () => liveSession.abortRetry(),
+      auditBase,
+    });
+    const unsubscribe = session.subscribe(events.handle);
 
-    // Content persistence rides message_end/compaction_end. entry_appended is
-    // deliberately unhandled: it fires ONLY for extension custom entries
-    // (dist agent-session.js emits it solely from the extension runtime's
-    // appendEntry helper), never for messages or compactions. The one
-    // extension here is codemode, whose `codemode-store` entries are script
-    // state for pi's own session file, not transcript content.
-    const unsubscribe = session.subscribe((ev: AgentSessionEvent) => {
-      try {
-        checkpointWriter?.observe(ev);
-        switch (ev.type) {
-          case "message_start":
-            // A steer queued while the request was in flight, before its
-            // first token, cuts the response as soon as it starts.
-            if ((ev as any).message?.role === "assistant")
-              steering.interruptForSteer();
-            break;
-          case "message_update": {
-            const ame = (ev as any).assistantMessageEvent;
-            if (
-              (ame?.type === "text_delta" || ame?.type === "thinking_delta") &&
-              typeof ame.delta === "string"
-            ) {
-              // The live transcript has one prose stream. Thinking and ordinary
-              // model output both ride it rather than leaving reasoning blank
-              // until message_end persists the provider's separate blocks.
-              push({ type: "text_chunk", text: ame.delta });
-            }
-            break;
-          }
-          case "tool_execution_start": {
-            const t = ev as any;
-            // A codemode script's own calls never reach pi's transcript, so
-            // a live card for one would vanish on reload. The codemode
-            // call's card stands for them.
-            if (t.parentToolCallId) break;
-            push({
-              type: "tool_use",
-              toolName: String(t.toolName || "tool"),
-              toolInput: t.args ?? {},
-              toolUseId: String(t.toolCallId),
-            });
-            break;
-          }
-          case "tool_execution_end": {
-            const t = ev as any;
-            if (t.parentToolCallId) break;
-            const { text, images } = contentToTextAndImages(t.result?.content);
-            // `content`, not `result`: stream consumers read event.content
-            // (run-session's stream_tool_result). 500-char preview like
-            // previous runner — the full text reaches the store via the toolResult
-            // message_end below and upserts over the streamed copy.
-            push({
-              type: "tool_result",
-              toolUseId: String(t.toolCallId),
-              content: text.length > 500 ? `${text.slice(0, 500)}...` : text,
-              ...(images.length ? { images } : {}),
-            });
-            break;
-          }
-          case "message_end": {
-            const msg = (ev as any).message;
-            if (!msg) break;
-            const ts = new Date(
-              typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
-            ).toISOString();
-            if (msg.role === "assistant") {
-              lastStopReason = msg.stopReason;
-              lastErrorMessage = msg.errorMessage;
-              lastAssistantRenderableBlocks = assistantRenderableBlockCount(
-                msg.content,
-              );
-              const u = msg.usage;
-              if (ledger.foldAssistantUsage(u)) {
-                push({ type: "usage_snapshot", usage: ledger.snapshot() });
-              }
-              // Persist thinking, text, and tool calls now (messages have no
-              // SDK id, while block ids are the model's and stay stable).
-              // Error-stopped attempts are skipped: auto-retry replays them
-              // and the terminal error carries the failure text — persisting
-              // each attempt would stack duplicate partial bubbles. Aborted
-              // partials DO persist (parity with pi's own jsonl).
-              const cutBySteer = steering.consumeCut();
-              if (
-                cutBySteer &&
-                msg.stopReason === "aborted" &&
-                !piResponseHasOutput(msg.content)
-              ) {
-                // Superseded thinking: keep it out of the transcript.
-              } else if (msg.stopReason !== "error") {
-                persistRunEntries(
-                  piAssistantTranscriptEntries(msg.content, ts, parsed.modelID),
-                );
-              }
-            } else if (msg.role === "toolResult" && msg.toolCallId) {
-              const { text, images } = contentToTextAndImages(msg.content);
-              persistRunEntries([
-                {
-                  id: `${msg.toolCallId}-result`,
-                  type: "tool_result",
-                  content: text,
-                  timestamp: ts,
-                  toolUseId: String(msg.toolCallId),
-                  ...(msg.isError ? { isError: true } : {}),
-                  ...(images.length ? { images } : {}),
-                },
-              ]);
-            } else if (msg.role === "user") {
-              // A user message_end is the DELIVERY signal for a steer (the
-              // agent loop emits message_start/end when it injects a queued
-              // steering message; the turn's own prompt also lands here and
-              // is skipped — it was persisted with its stable uuid up front).
-              const { text, images } = contentToTextAndImages(msg.content);
-              if (text && text !== promptForEngine && text !== prompt) {
-                const steer = steering.takeDelivered(text);
-                if (steer) {
-                  // Transcript parsing deliberately strips fenced system
-                  // context. A background-wait steer can therefore be fully
-                  // delivered yet leave no visible user entry for receipt
-                  // reconciliation. Acknowledge the exact queue id at the
-                  // engine boundary instead of making UI state infer delivery
-                  // from display-sanitized transcript text.
-                  if (steer.steerId) {
-                    push({ type: "steer_delivered", steerId: steer.steerId });
-                  }
-                  audit({
-                    ...auditBase,
-                    direction: "in",
-                    kind: "steer_injected",
-                    ...summarizeText(text),
-                  });
-                  const srcs = images.length
-                    ? images
-                    : (steer.images || []).map(
-                        (im) => `data:${im.mediaType};base64,${im.data}`,
-                      );
-                  persistRunEntries([
-                    {
-                      // Steering admission already wrote the visible user row.
-                      // Reuse its id so engine delivery upserts that bubble
-                      // instead of appending a duplicate.
-                      id: steer.steerId || crypto.randomUUID(),
-                      type: "user",
-                      content: text,
-                      timestamp: ts,
-                      ...(srcs.length ? { images: srcs } : {}),
-                    },
-                  ]);
-                }
-              }
-            }
-            break;
-          }
-          case "compaction_end": {
-            const ce = ev as any;
-            if (!ce.aborted && ce.result?.summary) {
-              try {
-                appendRunLines([
-                  transcriptLineCompactionSummary(
-                    String(ce.result.summary),
-                    crypto.randomUUID(),
-                    nowIso(),
-                  ),
-                ]);
-              } catch {}
-              // The summarization LLM call is billed like any other — fold it
-              // so usage_snapshot/done don't under-report on exactly the most
-              // expensive turns. contextTokens is left alone: it tracks live
-              // conversation context and the next assistant message_end
-              // re-derives it post-compaction.
-              const cu = ce.result.usage;
-              if (ledger.foldCompactionUsage(cu)) {
-                push({ type: "usage_snapshot", usage: ledger.snapshot() });
-              }
-            }
-            break;
-          }
-          case "auto_retry_start": {
-            const r = ev as any;
-            const errText = String(r.errorMessage || "");
-            if (accounts.isUsageLimit(errText)) {
-              // Usage-limit shapes mean the pool can't serve right now —
-              // retrying only delays the fallback walk. abortRetry() cancels
-              // the backoff sleep; the microtask matters: the SDK arms the
-              // retry AbortController right AFTER emitting this event, so a
-              // synchronous call would find nothing to abort.
-              queueMicrotask(() => {
-                try {
-                  liveSession.abortRetry();
-                } catch {}
-              });
-            } else {
-              // Make the silent wait visible — pi retries transient provider
-              // errors (3x, exponential from 2s) with no output in between.
-              const notice = `pi auto-retry ${r.attempt}/${r.maxAttempts} in ${Math.round(
-                (r.delayMs || 0) / 1000,
-              )}s — ${errText.slice(0, 300)}`;
-              push({ type: "runner_notice", text: notice });
-              persistRunEntries([
-                {
-                  id: crypto.randomUUID(),
-                  type: "system",
-                  content: notice,
-                  timestamp: nowIso(),
-                },
-              ]);
-            }
-            break;
-          }
-          case "agent_settled":
-            ledger.sawSettled = true;
-            break;
-        }
-      } catch (err) {
-        console.warn("[pi-runner] event mapping failed:", err);
-      }
+    const { result: failed, emptyFinishRetries } = yield* drivePiPrompt({
+      session,
+      pump,
+      handle,
+      signal: abort.signal,
+      steering,
+      outcome: events.outcome,
+      promptForEngine,
+      walk,
+      images: opts.images,
+      unsubscribe,
+      auditBase,
     });
 
-    // prompt() resolves after the full accepted run (steers + retries
-    // included) — the authoritative end; pre-flight failures reject. A cancel
-    // that landed before this point must not start the run at all —
-    // session.abort() only stops a run already in flight.
-    let promptOutcome: { ok: boolean; error?: unknown } | null = null;
-    const settlePrompt = (outcome: { ok: boolean; error?: unknown }) => {
-      promptOutcome = outcome;
-      // Same tick as the outcome, BEFORE the pump wakes: steers accepted from
-      // here on could only queue into a settling/soon-disposed session, so
-      // steerPiRun must return false and let run-session queue them for the
-      // next turn instead.
-      handle.steer = undefined;
-      const w = wake;
-      wake = null;
-      w?.();
-    };
-    if (abort.signal.aborted) {
-      promptOutcome = { ok: true };
-      handle.steer = undefined;
-    } else {
-      void session
-        .prompt(promptForEngine, {
-          images: walk.continuation ? undefined : piImages(opts.images),
-          expandPromptTemplates: false,
-        })
-        .then(
-          () => settlePrompt({ ok: true }),
-          (e: unknown) => settlePrompt({ ok: false, error: e }),
-        );
-    }
-
-    // Tail-race drain budget: a steer accepted between the agent loop's final
-    // steering poll and settlePrompt sits in the in-memory queue that
-    // dispose() would discard — while steerPiRun already returned true and
-    // run-session dropped the message from its own queue. Drive it through a
-    // real continuation run (the same agent.continue() the SDK uses for
-    // agent_end-queued messages; the constructor-lifetime event subscription
-    // keeps streaming/persisting) instead of losing it.
-    let steerDrains = 0;
-    // One bounded continuation for an empty final completion (see
-    // lastAssistantRenderableBlocks). The nudge is fenced like every other
-    // injection, so the transcript never shows it as a user bubble.
-    let emptyFinishRetries = 0;
-    while (true) {
-      while (queue.length) yield queue.shift()!;
-      if (promptOutcome) {
-        if (steering.engineQueueDepth > 0) {
-          // An accepted steer is still being staged, so pi's queue count is
-          // not final yet. steerPiRun already told the caller "accepted";
-          // finishing now would drop it silently. Wait for the chain, then
-          // re-read everything (more steers may have joined meanwhile).
-          await steering.engineQueue;
-          continue;
-        }
-        if (
-          promptOutcome.ok &&
-          !abort.signal.aborted &&
-          liveSession.pendingMessageCount > 0 &&
-          steerDrains < 2
-        ) {
-          steerDrains++;
-          promptOutcome = null;
-          void Promise.resolve()
-            .then(() => liveSession.agent.continue())
-            .then(
-              () => settlePrompt({ ok: true }),
-              (e: unknown) => settlePrompt({ ok: false, error: e }),
-            );
-          continue;
-        }
-        if (
-          promptOutcome.ok &&
-          !abort.signal.aborted &&
-          emptyFinishRetries < 1 &&
-          lastStopReason === "stop" &&
-          lastAssistantRenderableBlocks === 0
-        ) {
-          emptyFinishRetries++;
-          const notice =
-            "Model returned an empty response — asking it once more to finish its reply";
-          push({ type: "runner_notice", text: notice });
-          promptOutcome = null;
-          void session
-            .prompt(wrapContext(EMPTY_REPLY_RETRY_PROMPT, "auto-continue"), {
-              expandPromptTemplates: false,
-            })
-            .then(
-              () => settlePrompt({ ok: true }),
-              (e: unknown) => settlePrompt({ ok: false, error: e }),
-            );
-          continue;
-        }
-        break;
-      }
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
-    }
-    while (queue.length) yield queue.shift()!;
-    unsubscribe();
-    if (steering.pendingCount > 0) {
-      // Accepted but never delivered (drain budget exhausted or the run
-      // failed): no transcript line was written, so on the failure paths the
-      // receipt survives as the recovery affordance; on a done terminal the
-      // loss is at least audited instead of silent.
-      audit({
-        ...auditBase,
-        direction: "out",
-        kind: "steer_undelivered",
-        count: steering.pendingCount,
-      });
-    }
-
     // ── Terminal (at most one; user cancels end with none) ──────────────────
-    const failed: { ok: boolean; error?: unknown } = promptOutcome!;
     if (
       failed.ok &&
-      lastStopReason === "stop" &&
-      lastAssistantRenderableBlocks === 0
+      events.outcome.lastStopReason === "stop" &&
+      events.outcome.lastAssistantRenderableBlocks === 0
     ) {
       // The retry (if it ran) also came back empty — never end silently on a
       // provider glitch; leave a visible chip explaining the missing reply.
-      persistRunEntries([
-        {
-          id: crypto.randomUUID(),
-          type: "system",
-          content:
-            "The model ended this turn with an empty response (no text or tool calls)" +
-            (emptyFinishRetries > 0
-              ? " and an automatic retry produced nothing too. Send another message to continue."
-              : "."),
-          timestamp: nowIso(),
-        },
-      ]);
+      persistRunEntries([piEmptyReplyEntry(emptyFinishRetries)]);
     }
     if (abort.signal.aborted) {
       // User cancel ends QUIETLY — no terminal event, the generator just
@@ -1153,56 +768,24 @@ async function* runPiAttempt(
       ledger.reachedTerminal = true;
       return;
     }
+    const settled = piOutcomeTerminal({
+      result: failed,
+      outcome: events.outcome,
+      isUsageLimit: (message) => accounts.isUsageLimit(message),
+      providerID: parsed.providerID,
+      model,
+      ledger,
+      session,
+    });
+    let terminal = settled.terminal;
+    const terminalUsageLimit = settled.usageLimit;
+    const terminalMessage = settled.message;
     // Usage-limit terminal on a pi/openai run: sideline the picked codex
     // account BEFORE yielding, so the fallback walk's next hop (and every
     // other engine's pick) skips it — shared sideline state with previous runner,
     // same per-(account, model) key.
-    const sidelineOnUsageLimit = (usageLimit: boolean, message: string) => {
-      if (usageLimit) {
-        accounts.sideline(message);
-      }
-    };
-    let terminal: StreamEvent;
-    let terminalUsageLimit = false;
-    let terminalMessage = "";
-    if (!failed.ok) {
-      const message = String((failed.error as Error)?.message || failed.error);
-      terminalMessage = message;
-      const usageLimit = accounts.isUsageLimit(message);
-      terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit, message);
-      terminal = {
-        type: "error",
-        content: piErrorContent(message, parsed.providerID),
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-        ...(usageLimit ? { usageLimitExhausted: true } : {}),
-      };
-    } else if (lastStopReason === "error" || lastStopReason === "aborted") {
-      const message =
-        lastErrorMessage || `run ended with stopReason ${lastStopReason}`;
-      terminalMessage = message;
-      const usageLimit = accounts.isUsageLimit(message);
-      terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit, message);
-      terminal = {
-        type: "error",
-        content: piErrorContent(message, parsed.providerID),
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-        ...(usageLimit ? { usageLimitExhausted: true } : {}),
-      };
-    } else {
-      terminal = {
-        type: "done",
-        sessionId: ledger.piSessionId,
-        result: session.getLastAssistantText() || undefined,
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-      };
+    if (terminalUsageLimit) {
+      accounts.sideline(terminalMessage);
     }
     // Rotate rather than end the turn. This is the COMMON half of the walk:
     // a provider usage limit normally arrives as an in-band terminal (pi's
@@ -1240,23 +823,15 @@ async function* runPiAttempt(
       accounts.claudePoolRefusal &&
       accounts.pickedAccount?.pool === "claude"
     ) {
-      console.warn(
-        `[pi-runner] usage limit on Claude account "${accounts.pickedAccount.name}" ` +
-          `(${parsed.modelID}) and no other account can serve it: ${accounts.claudePoolRefusal}`,
-      );
-      const resetAt = accounts.limit429()?.resetAt;
-      const reset =
-        describeUsageLimitReset(terminalMessage) ??
-        (resetAt !== undefined ? formatAnthropicReset(resetAt) : undefined);
-      terminal = {
-        ...terminal,
-        content: piErrorContent(
-          `every Claude account is usage-limited for ${parsed.modelID}` +
-            (reset ? `, the soonest resets ${reset}` : "") +
-            `. Last account tried ("${accounts.pickedAccount.name}") said: ${terminalMessage}`,
-          parsed.providerID,
-        ),
-      };
+      terminal = piPoolDryTerminal({
+        terminal,
+        accountName: accounts.pickedAccount.name,
+        refusal: accounts.claudePoolRefusal,
+        resetAt: accounts.limit429()?.resetAt,
+        terminalMessage,
+        modelID: parsed.modelID,
+        providerID: parsed.providerID,
+      });
     }
     ledger.reachedTerminal = true;
     ledger.end({
@@ -1301,14 +876,13 @@ async function* runPiAttempt(
       ...ledger.usageAuditFields(),
       error: message,
     });
-    yield {
-      type: "error",
-      content: piErrorContent(message, parsed.providerID),
-      provider: PROVIDER,
+    yield piCaughtTerminal({
+      message,
+      usageLimit,
+      providerID: parsed.providerID,
       model,
-      ...ledger.usageField(),
-      ...(usageLimit ? { usageLimitExhausted: true } : {}),
-    };
+      ledger,
+    });
   } finally {
     ledger.end({
       ok: false,
