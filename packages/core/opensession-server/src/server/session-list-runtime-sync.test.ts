@@ -16,6 +16,7 @@ import {
 } from "./run-journal";
 import { emitSessionStateChange } from "./session-state-events";
 import {
+  SESSION_ROW_SETTLE_CHECKS,
   startSessionListRuntimeSync,
   stopSessionListRuntimeSync,
 } from "./session-list-runtime-sync";
@@ -124,8 +125,67 @@ describe("session list runtime sync", () => {
     await Promise.resolve();
     expect(published).toEqual(["stale", "settled"]);
 
+    await tick(15);
+    expect(published.slice(0, 3)).toEqual(["stale", "settled", "stale"]);
+    expect(published.filter((id) => id === "settled")).toEqual(["settled"]);
+  });
+
+  test("re-arms the check while the row keeps reading running, a bounded number of times", async () => {
+    const published: string[] = [];
+    let checks = 0;
+    startSessionListRuntimeSync((id) => published.push(id), {
+      settleDelayMs: 2,
+      // Teardown outlasts every check: the runtime still reports it busy.
+      rowRunning: async () => {
+        checks++;
+        return true;
+      },
+    });
+
+    emitSessionStateChange({ sessionId: "slow", isRunning: false, at: 1 });
+    await tick(60);
+
+    expect(checks).toBe(SESSION_ROW_SETTLE_CHECKS);
+    expect(published).toEqual(
+      Array(1 + SESSION_ROW_SETTLE_CHECKS).fill("slow"),
+    );
+  });
+
+  test("a turn starting while a check reads the row cancels the re-arm", async () => {
+    const published: string[] = [];
+    let checks = 0;
+    startSessionListRuntimeSync((id) => published.push(id), {
+      settleDelayMs: 2,
+      rowRunning: async () => {
+        checks++;
+        // The next turn starts while this check is reading the row.
+        emitSessionStateChange({ sessionId: "next", isRunning: true, at: 2 });
+        return true;
+      },
+    });
+
+    emitSessionStateChange({ sessionId: "next", isRunning: false, at: 1 });
     await tick(30);
-    expect(published).toEqual(["stale", "settled", "stale"]);
+
+    expect(checks).toBe(1);
+    // The turn end and the turn start; the stale check publishes nothing.
+    expect(published).toEqual(["next", "next"]);
+  });
+
+  test("stops re-checking once the row reads idle", async () => {
+    const published: string[] = [];
+    let checks = 0;
+    startSessionListRuntimeSync((id) => published.push(id), {
+      settleDelayMs: 2,
+      // Busy at the first check, idle after its republish.
+      rowRunning: async () => ++checks === 1,
+    });
+
+    emitSessionStateChange({ sessionId: "late", isRunning: false, at: 1 });
+    await tick(60);
+
+    expect(checks).toBe(2);
+    expect(published).toEqual(["late", "late"]);
   });
 
   test("a new turn cancels the pending re-check", async () => {

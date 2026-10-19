@@ -25,6 +25,11 @@ state.settleTimers ??= new Map();
  * write, which then still saw the run as live. */
 export const SESSION_ROW_SETTLE_DELAY_MS = 5_000;
 
+/** Settle checks after one turn end at most. A row republished while the
+ * runtime still reported the run busy reads running again, so it is checked
+ * again after another delay, up to this many times in all. */
+export const SESSION_ROW_SETTLE_CHECKS = 3;
+
 export interface SessionListRuntimeSyncOptions {
   settleDelayMs?: number;
   /** Whether the index row still reads as running. */
@@ -51,7 +56,8 @@ const indexedRowRunning = async (sessionId: string) =>
  * run as live, because its journal entry and engine handle are released
  * during teardown after `stream_done`. So a journal clear republishes the
  * row too, and a row still marked running a few seconds after its turn
- * ended is republished once more.
+ * ended is republished, and checked again a couple of times while it keeps
+ * reading running.
  */
 export function startSessionListRuntimeSync(
   publish: (sessionId: string) => void = publishSessionChange,
@@ -73,16 +79,26 @@ export function startSessionListRuntimeSync(
     });
   };
 
-  const scheduleSettle = (sessionId: string) => {
+  const scheduleSettle = (sessionId: string, check = 1) => {
     const prior = state.settleTimers.get(sessionId);
     if (prior) clearTimeout(prior);
     const timer = setTimeout(() => {
-      state.settleTimers.delete(sessionId);
+      // The entry stays until the check settles, so a turn that starts or
+      // ends meanwhile (which replaces or drops it) supersedes this check.
+      const current = () => state.settleTimers.get(sessionId) === timer;
       void rowRunning(sessionId)
         .then((running) => {
-          if (running) queue(sessionId);
+          if (!current()) return;
+          state.settleTimers.delete(sessionId);
+          if (!running) return;
+          queue(sessionId);
+          // Teardown may still hold the run, so the republish can read
+          // running again. Look again after another delay.
+          if (check < SESSION_ROW_SETTLE_CHECKS)
+            scheduleSettle(sessionId, check + 1);
         })
         .catch(() => {
+          if (current()) state.settleTimers.delete(sessionId);
           // The index is unavailable; the boot reconciliation repairs it.
         });
     }, settleDelayMs);
