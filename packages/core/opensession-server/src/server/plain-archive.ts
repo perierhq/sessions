@@ -121,9 +121,17 @@ export async function archivePlainSessionCandidates(
         await import("./portal-supervisor");
       await stopArchivedSessionPortals(sessionId);
     } finally {
-      const { stopArchivedSessionResources } =
-        await import("./session-resources");
-      await stopArchivedSessionResources(sessionId);
+      // In the background, as archive.ts does: the reaper retries a miss.
+      void import("./session-resources")
+        .then(({ stopArchivedSessionResources }) =>
+          stopArchivedSessionResources(sessionId),
+        )
+        .catch((error) =>
+          console.error(
+            `[session-resources] archive cleanup failed for ${sessionId}:`,
+            error,
+          ),
+        );
     }
   },
 ): Promise<number> {

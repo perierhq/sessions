@@ -794,18 +794,46 @@ async function stopLabelled(
   };
 }
 
+/** Labelled stops run this many at a time: a container gets up to ten
+ * seconds to exit, and one session may hold several. */
+const LABELLED_STOP_CONCURRENCY = 4;
+
+/** Stop `resources` a few at a time; the ones that stopped. */
+async function stopLabelledBatch(
+  resources: ReadonlyArray<{
+    resource: LabelledResource;
+    reason: SessionResourceStopReason;
+  }>,
+): Promise<StoppedSessionResource[]> {
+  const results: Array<StoppedSessionResource | null> = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < resources.length) {
+      const index = next++;
+      const { resource, reason } = resources[index]!;
+      results[index] = await stopLabelled(resource, reason);
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(LABELLED_STOP_CONCURRENCY, resources.length) },
+      worker,
+    ),
+  );
+  return results.filter(
+    (result): result is StoppedSessionResource => result !== null,
+  );
+}
+
 /** Stop every labelled container and unit whose label names one of `ids`. */
 async function stopLabelledForSession(
   ids: ReadonlySet<string>,
   reason: SessionResourceStopReason,
 ): Promise<StoppedSessionResource[]> {
-  const stopped: StoppedSessionResource[] = [];
-  for (const resource of await listLabelledResources()) {
-    if (!ids.has(resource.sessionId)) continue;
-    const result = await stopLabelled(resource, reason);
-    if (result) stopped.push(result);
-  }
-  return stopped;
+  const owned = (await listLabelledResources()).filter((resource) =>
+    ids.has(resource.sessionId),
+  );
+  return stopLabelledBatch(owned.map((resource) => ({ resource, reason })));
 }
 
 /**
@@ -1003,6 +1031,10 @@ export async function reapSessionResources(
     if (reason) stopped.push(await stopResource(record, reason));
   }
   const instance = resourceInstanceId();
+  const reap: Array<{
+    resource: LabelledResource;
+    reason: SessionResourceStopReason;
+  }> = [];
   for (const resource of await listLabelledResources()) {
     let reason = labelledReapReason(resource, {
       ownerArchived: archivedById.get(resource.sessionId),
@@ -1014,10 +1046,9 @@ export async function reapSessionResources(
     // projected still answers a direct lookup.
     if (reason === "orphaned")
       reason = await confirmOrphaned(resource, options);
-    if (!reason) continue;
-    const result = await stopLabelled(resource, reason);
-    if (result) stopped.push(result);
+    if (reason) reap.push({ resource, reason });
   }
+  stopped.push(...(await stopLabelledBatch(reap)));
   return { stopped, forgotten };
 }
 

@@ -877,6 +877,31 @@ describe("labelled containers and units", () => {
     expect(fakes.map((f) => f.session)).toEqual(["os-other"]);
   });
 
+  test("stops run a few at a time, not one after another", async () => {
+    const handles = ["0", "1", "2", "3", "4", "5"].map(hex);
+    let active = 0;
+    let peak = 0;
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman"],
+      systemdUser: () => false,
+      run: async (argv) => {
+        if (argv[1] === "ps")
+          return {
+            exitCode: 0,
+            stdout: handles.map((h) => `${h}\tos-a\t\t\tdb\tpg`).join("\n"),
+          };
+        active++;
+        peak = Math.max(peak, active);
+        await Bun.sleep(20);
+        active--;
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    const stopped = await stopSessionOwnedResources({ id: "os-a" }, []);
+    expect(stopped).toHaveLength(6);
+    expect(peak).toBe(4);
+  });
+
   test("a live sibling in the same worktree does not keep a labelled container", async () => {
     fakes = [
       { kind: "container", cli: "podman", handle: hex("a"), session: "os-a" },
