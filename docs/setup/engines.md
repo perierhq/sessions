@@ -42,10 +42,13 @@ Anthropic turns use the in-process Claude Agent SDK provider by default. The
 - `"bridge"` selects the loopback bridge as a rollback.
 - `"native"` sends turns through Pi's own Anthropic provider with the token of
   a Claude pool account. The account is picked when the turn starts, with the
-  same pin, owner and usage-credit rules as the default path. When it reaches
-  a usage limit, Open Session sidelines it and continues the turn on another
-  eligible account. Prompt caching uses the 1-hour retention, and an
-  overloaded (529) response is retried by Pi instead of switching accounts.
+  same pin, owner and usage-credit rules as the default path, and a session
+  stays on the same account from turn to turn while it is usable. When it
+  reaches a usage limit, Open Session sidelines it until the reset Anthropic
+  reported and continues the turn on another eligible account. Prompt caching
+  uses the 1-hour retention. An overloaded (529) response, or a 429 that
+  Anthropic does not mark as the subscription's limit, is retried by Pi
+  instead of switching accounts.
 
 Absent and unrecognized values use the in-process provider. To try the native
 provider:
