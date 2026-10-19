@@ -53,6 +53,7 @@ import {
 } from "./pi-runner";
 import type { PiBashAuditEvent } from "./pi-runner";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
+import { __setUsageCacheForTest } from "./claude-accounts";
 import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
 import { formatAnthropicReset } from "./anthropic-rate-limit";
 
@@ -1690,14 +1691,16 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       ? JSON.parse(readFileSync(sidelinePath, "utf-8")).exhaustedUntil || {}
       : {};
 
-  /** A fresh pool of `count` same-band accounts, in store order. */
-  const writePool = (count: number) => {
+  /** A fresh pool of `count` same-band accounts, in store order. `owners`
+   *  makes the account at that index a personal subscription. */
+  const writePool = (count: number, owners: Record<number, string> = {}) => {
     const suffix = crypto.randomUUID();
     const accounts = Array.from({ length: count }, (_, index) => {
       const letter = String.fromCharCode(97 + index);
       return {
         id: `claude-${letter}-${suffix}`,
         token: `sk-ant-oat01-${letter}-${suffix}`,
+        ...(owners[index] ? { owner: owners[index] } : {}),
       };
     });
     writeFileSync(
@@ -2154,6 +2157,83 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     });
     expect(fake.usedTokens[3]).toBe(accounts[1].token);
   });
+
+  test("a remembered pool account yields to the user's own subscription once it resets", async () => {
+    const user = `ada-${crypto.randomUUID()}`;
+    const {
+      suffix,
+      accounts: [personal, pool],
+    } = writePool(2, { 0: user });
+    const usage = (utilization: number) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: {
+        utilization,
+        resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      },
+      sevenDay: null,
+    });
+    const fake = fakeNativeSdk(() => undefined);
+    const turn = (n: number) =>
+      runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${n}`,
+        accountAffinityKey: `affinity-${suffix}`,
+        accountUser: user,
+      });
+    // The personal subscription is at its limit: the pool serves.
+    __setUsageCacheForTest(personal.id, usage(100));
+    await turn(1);
+    await turn(2);
+    // It reset: the session goes back to it instead of staying on the pool.
+    __setUsageCacheForTest(personal.id, usage(0));
+    await turn(3);
+    expect(fake.usedTokens).toEqual([pool.token, pool.token, personal.token]);
+  });
+
+  test("a remembered account is never inherited by another user on the same key", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const fake = fakeNativeSdk(() => undefined);
+    for (const accountUser of ["ada", "bob"]) {
+      await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${accountUser}`,
+        accountAffinityKey: `shared-${suffix}`,
+        accountUser,
+      });
+    }
+    // bob takes the pool's own pick, not the account ada's turn left behind.
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+  });
+
+  test("a remembered account usable only on paid credits is dropped", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const fake = fakeNativeSdk(() => undefined);
+    const turn = (n: number) =>
+      runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${n}`,
+        accountAffinityKey: `affinity-${suffix}`,
+        usageCredits: true,
+      });
+    await turn(1);
+    // a is now past its 5-hour limit and usable only through credit
+    // headroom; b still has subscription capacity.
+    __setUsageCacheForTest(a.id, {
+      fetchedAt: new Date().toISOString(),
+      fiveHour: {
+        utilization: 100,
+        resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      },
+      sevenDay: null,
+      extraUsage: { enabled: true, usedCredits: 0, monthlyLimit: 100 },
+    });
+    await turn(2);
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+  });
+
 });
 
 describe("local-tool path containment", () => {

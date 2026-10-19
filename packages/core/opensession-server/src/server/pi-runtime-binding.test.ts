@@ -400,26 +400,71 @@ describe("createPiRuntimeBinding", () => {
     expect(create[1].modelsPath).toBeNull();
   });
 
-  test("native Anthropic prefers the account that last served the same affinity key", async () => {
+  test("native Anthropic prefers the account that last served the same session", async () => {
     const h = harness({ transport: "native" });
-    const first = await createPiRuntimeBinding(
-      input("anthropic", "claude-test", h, { affinityKey: "session-a" }),
-    );
+    const bind = (extra: Partial<CreatePiRuntimeBindingInput>) =>
+      createPiRuntimeBinding(input("anthropic", "claude-test", h, extra));
+    const first = await bind({ accountUser: "ada", claudeSessionKey: "s-a" });
     expect(first.claudePickReason).toBe("pool");
-    const second = await createPiRuntimeBinding(
-      input("anthropic", "claude-test", h, { affinityKey: "session-a" }),
-    );
+    const second = await bind({ accountUser: "ada", claudeSessionKey: "s-a" });
     // Another session has no remembered account.
-    await createPiRuntimeBinding(
-      input("anthropic", "claude-test", h, { affinityKey: "session-b" }),
+    await bind({ accountUser: "ada", claudeSessionKey: "s-b" });
+    // Nor does another person on the same session key.
+    await bind({ accountUser: "bob", claudeSessionKey: "s-a" });
+    // Nor a run keyed only by its checkout: nothing is remembered for it.
+    await bind({ accountUser: "ada" });
+    await bind({ accountUser: "ada" });
+    const binds = h.calls.filter(
+      ([name, , pick]) => name === "pickClaudeAccount" && !pick.peek,
     );
-    const picks = h.calls.filter(([name]) => name === "pickClaudeAccount");
-    expect(picks.map(([, , pick]) => pick.stickyId)).toEqual([
+    expect(binds.map(([, , pick]) => pick.stickyId)).toEqual([
       undefined,
       claude.id,
       undefined,
+      undefined,
+      undefined,
+      undefined,
     ]);
     expect(second.claudePickReason).toBe("sticky");
+  });
+
+  test("native Anthropic drops a remembered pool account when the user's own subscription can serve", async () => {
+    const personal = { ...claude, id: "claude-personal", owner: "ada" };
+    const h = harness({ transport: "native" });
+    await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, {
+        accountUser: "ada",
+        claudeSessionKey: "s",
+      }),
+    );
+    // The personal subscription is back: a fresh pick would land on it.
+    const picks: any[] = [];
+    (h.deps as any).pickClaudeAccount = (
+      _modelID: string,
+      pick: any,
+      out?: { reason?: string },
+    ) => {
+      picks.push(pick);
+      if (!pick.stickyId) {
+        if (out) out.reason = "personal";
+        return personal;
+      }
+      if (out) out.reason = "sticky";
+      return claude;
+    };
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-test", h, {
+        accountUser: "ada",
+        claudeSessionKey: "s",
+      }),
+    );
+    expect(picks).toEqual([
+      { user: "ada", excludeIds: undefined, stickyId: claude.id, peek: true },
+      expect.objectContaining({ user: "ada", peek: true }),
+      expect.objectContaining({ user: "ada", stickyId: undefined }),
+    ]);
+    expect(picks[2].peek).toBeUndefined();
+    expect(binding.pickedClaude).toBe(personal);
   });
 
   test("native Anthropic skips accounts this turn's walk already burned", async () => {

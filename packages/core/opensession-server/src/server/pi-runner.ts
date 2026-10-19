@@ -2254,6 +2254,7 @@ async function* runPiAttempt(
   // Which session an account pick belongs to: HRW affinity on the Codex and
   // SuperGrok pools, the remembered account on the native Claude pool.
   const affinity = opts.accountAffinityKey || journal?.osSessionId || cwd;
+  const claudeSessionKey = affinity;
   // Why the Claude pool had no other account, when the walk asked and it had
   // none. Lets the terminal say the pool is dry instead of echoing one
   // account's limit as if nothing else had been tried.
@@ -2335,7 +2336,8 @@ async function* runPiAttempt(
     // The native Claude binding prefers the session's remembered account:
     // make that the one just announced, so the next attempt binds to it and
     // the session stays there afterwards.
-    if (next.pool === "claude") rememberNativeClaudeAccount(affinity, next.id);
+    if (next.pool === "claude")
+      rememberNativeClaudeAccount(accountUser, claudeSessionKey, next.id);
     walk.excluded.add(pickedAccount.id);
     walk.rotate = true;
     reachedTerminal = true;
@@ -2484,6 +2486,7 @@ async function* runPiAttempt(
       modelID: parsed.modelID,
       configuredProvider,
       affinityKey: affinity,
+      claudeSessionKey,
       unifiedSessionId: unifiedSessionId || runKey,
       accountUser,
       accountId: opts.accountId,

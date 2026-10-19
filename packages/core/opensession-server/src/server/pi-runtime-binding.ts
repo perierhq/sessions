@@ -90,19 +90,26 @@ export interface ClaudeAccountPick {
   usageCredits?: boolean;
   /** Accounts this turn's walk already burned. */
   excludeIds?: readonly string[];
-  /** The account that last served this affinity key, preferred while it is
+  /** The account that last served this session, preferred while it is
    *  usable (below a pin, above the pool pick). */
   stickyId?: string;
+  /** Judge eligibility without consuming the pool's round-robin turn. */
+  peek?: boolean;
 }
 
 /**
- * Which Claude account last served each account-affinity key on the native
- * transport. The binding picks once per turn, and the pool's least-used
- * tiebreak round-robins equal accounts, so without this a session moved to
- * another subscription on almost every turn: its prompt cache (kept per
+ * Which Claude account last served each session on the native transport.
+ * The binding picks once per turn, and the pool's least-used tiebreak
+ * round-robins equal accounts, so without this a session moved to another
+ * subscription on almost every turn: its prompt cache (kept per
  * organization) went cold, and its signed thinking blocks were replayed
  * under a different account. The in-process transport gets the same effect
  * from the account holding the live SDK conversation (pi-model-runtime).
+ *
+ * Keyed by account user and session key, so two people who share a session
+ * key never inherit each other's account. A run without a session key (a
+ * one-shot, an automation keyed only by its checkout) is never remembered:
+ * parallel runs keep spreading over the pool.
  *
  * In memory only: after a restart the first turn picks afresh and the
  * session sticks from there. Bounded, oldest key first out.
@@ -110,18 +117,34 @@ export interface ClaudeAccountPick {
 const NATIVE_CLAUDE_AFFINITY_LIMIT = 4096;
 const nativeClaudeAffinity = new Map<string, string>();
 
-/** The Claude account that last served `key` on the native transport. */
-export function nativeClaudeStickyAccount(key: string): string | undefined {
+function nativeClaudeAffinityKey(
+  user: string | undefined,
+  sessionKey: string | undefined,
+): string | undefined {
+  if (!sessionKey) return undefined;
+  return `${user?.trim().toLowerCase() ?? ""}\0${sessionKey}`;
+}
+
+/** The Claude account that last served this user's session on the native
+ *  transport. */
+export function nativeClaudeStickyAccount(
+  user: string | undefined,
+  sessionKey: string | undefined,
+): string | undefined {
+  const key = nativeClaudeAffinityKey(user, sessionKey);
   return key ? nativeClaudeAffinity.get(key) : undefined;
 }
 
-/** Record that `accountId` serves `key` from now on. The runner's account
- *  walk also calls this when it rotates, so the next attempt binds to the
- *  account it announced and the session stays there afterwards. */
+/** Record that `accountId` serves this user's session from now on. The
+ *  runner's account walk also calls this when it rotates, so the next
+ *  attempt binds to the account it announced and the session stays there
+ *  afterwards. No-op without a session key. */
 export function rememberNativeClaudeAccount(
-  key: string,
+  user: string | undefined,
+  sessionKey: string | undefined,
   accountId: string,
 ): void {
+  const key = nativeClaudeAffinityKey(user, sessionKey);
   if (!key) return;
   nativeClaudeAffinity.delete(key);
   nativeClaudeAffinity.set(key, accountId);
@@ -129,6 +152,45 @@ export function rememberNativeClaudeAccount(
     const oldest = nativeClaudeAffinity.keys().next().value;
     if (oldest !== undefined) nativeClaudeAffinity.delete(oldest);
   }
+}
+
+/**
+ * The remembered account, when the account policy still lets it serve this
+ * turn. Stickiness only breaks ties inside the pool. It must not override
+ * the two orderings selectAccount keeps on purpose:
+ * - Personal first: when the pick without it would land on the user's own
+ *   subscription (it has reset since, say), the session goes there.
+ * - Paid credits last: an account usable only through credit headroom is
+ *   no reason to stay while the pool has subscription capacity.
+ * Both checks are peeks, so they spend no round-robin turn.
+ */
+function honouredClaudeStickyAccount(
+  pickClaudeAccount: NonNullable<
+    PiRuntimeBindingDependencies["pickClaudeAccount"]
+  >,
+  modelID: string,
+  pick: ClaudeAccountPick,
+  remembered: string | undefined,
+): string | undefined {
+  if (!remembered) return undefined;
+  // Usable for this user on subscription capacity alone (credits off), not
+  // burned by this turn's walk, and designated when a designation is set.
+  const out: { reason?: PickReason } = {};
+  const sticky = pickClaudeAccount(
+    modelID,
+    {
+      user: pick.user,
+      excludeIds: pick.excludeIds,
+      stickyId: remembered,
+      peek: true,
+    },
+    out,
+  );
+  if ("error" in sticky || out.reason !== "sticky") return undefined;
+  // Already one of the user's own subscriptions.
+  if (sticky.owner) return remembered;
+  const fresh = pickClaudeAccount(modelID, { ...pick, peek: true });
+  return !("error" in fresh) && fresh.owner ? undefined : remembered;
 }
 
 /** Test seam: forget every remembered native Claude account. */
@@ -195,6 +257,10 @@ export interface CreatePiRuntimeBindingInput {
   modelID: string;
   configuredProvider?: ConfiguredProvider;
   affinityKey: string;
+  /** The session the native Claude pool remembers an account for (account
+   *  affinity key or session id). Absent for runs keyed only by their
+   *  checkout, which take the plain pool pick. */
+  claudeSessionKey?: string;
   unifiedSessionId: string;
   accountUser?: string;
   accountId?: string;
@@ -275,27 +341,39 @@ export async function createPiRuntimeBinding(
         "pi/anthropic: the native transport has no Claude account picker",
       );
     }
+    const pick: ClaudeAccountPick = {
+      user: input.accountUser,
+      accountId: input.accountId,
+      accountStrict: input.accountStrict,
+      usageCredits: input.usageCredits,
+      excludeIds: input.excludedOpenaiAccountIds.size
+        ? [...input.excludedOpenaiAccountIds]
+        : undefined,
+    };
     const pickOut: { reason?: PickReason } = {};
     const picked = deps.pickClaudeAccount(
       input.modelID,
       {
-        user: input.accountUser,
-        accountId: input.accountId,
-        accountStrict: input.accountStrict,
-        usageCredits: input.usageCredits,
-        excludeIds: input.excludedOpenaiAccountIds.size
-          ? [...input.excludedOpenaiAccountIds]
-          : undefined,
+        ...pick,
         // A pin still wins over this, and an exclusion (the walk rotating
         // off a limited account) still overrides it: resolveAccount's order.
-        stickyId: nativeClaudeStickyAccount(input.affinityKey),
+        stickyId: honouredClaudeStickyAccount(
+          deps.pickClaudeAccount,
+          input.modelID,
+          pick,
+          nativeClaudeStickyAccount(input.accountUser, input.claudeSessionKey),
+        ),
       },
       pickOut,
     );
     // The picker's refusal is the exact text the other transports surface;
     // isPiUsageLimitShape and the one-shot fallback key on its wording.
     if ("error" in picked) throw new Error(picked.error);
-    rememberNativeClaudeAccount(input.affinityKey, picked.id);
+    rememberNativeClaudeAccount(
+      input.accountUser,
+      input.claudeSessionKey,
+      picked.id,
+    );
     nativeAnthropicToken = picked.token;
     evidence.pickedClaude = picked;
     evidence.sidelineableClaude = picked;
