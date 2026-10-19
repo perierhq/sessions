@@ -40,7 +40,6 @@ import type {
 /** The extension-registration config shape ModelRuntime.registerProvider
  *  accepts (ProviderConfigInput — not re-exported by the package index). */
 type PiProviderConfigInput = Parameters<ModelRuntime["registerProvider"]>[1];
-import { stateDir } from "./paths";
 import { audit, summarizeText } from "./audit";
 import {
   journalSet,
@@ -158,10 +157,7 @@ import {
 import { privateTerms } from "./config";
 import { treatRepoAsPublic } from "./repo-visibility";
 import {
-  appendTranscriptEntries,
   recordEngineSessionOwner,
-  transcriptLineForEntry,
-  transcriptLineRunnerNotice,
   transcriptLineCompactionSummary,
   transcriptLineUser,
   storeAppendUserLineEarly,
@@ -179,7 +175,6 @@ import {
 import { ensureAgentAwsCredsFile } from "./aws-creds";
 import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
-import { assistantProseFields } from "./transcript-media";
 import {
   createPiRuntimeBinding,
   prewarmPiSdk as prewarmPiSdkBinding,
@@ -214,10 +209,25 @@ import {
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
 import type { StreamEvent, ImageInput, TurnUsage } from "./run-events";
+import { PI_PROVIDER, PI_STATE_DIR, nowIso, sanitizeId } from "./pi-common";
+import {
+  assistantRenderableBlockCount,
+  contentToTextAndImages,
+  persistEntries,
+  piAppend,
+  piAssistantTranscriptEntries,
+  piImages,
+} from "./pi-transcript";
+
+export { PI_STATE_DIR } from "./pi-common";
+export {
+  assistantRenderableBlockCount,
+  piAssistantTranscriptEntries,
+} from "./pi-transcript";
 
 const g = globalThis as any;
 
-const PROVIDER = "pi" as const;
+const PROVIDER = PI_PROVIDER;
 export const PI_MODEL_PREFIX = "pi/";
 
 /** Fresh authority for an unattended GitHub code run. Host recovery resolves
@@ -396,97 +406,6 @@ export async function agentGitIdentityEnv(
     ...(bot ? gitIdentityEnv(bot) : {}),
     ...(coauthor ? { [GIT_COAUTHOR_ENV]: coauthor } : {}),
   };
-}
-
-/** State root: server-owned agentDir, per-unified-session pi session dirs,
- *  and the smoke-turn scratch cwd. Never ~/.pi. */
-export const PI_STATE_DIR = stateDir("pi");
-
-/** How many content blocks of an assistant message a reader could actually
- *  see: non-empty text or thinking blocks and tool calls. Truly empty content
- *  counts zero — that is the empty-completion shape the pump loop retries. */
-export function assistantRenderableBlockCount(content: unknown): number {
-  if (!Array.isArray(content)) return 0;
-  let n = 0;
-  for (const b of content) {
-    if (!b || typeof b !== "object") continue;
-    const block = b as {
-      type?: string;
-      text?: unknown;
-      thinking?: unknown;
-      id?: unknown;
-    };
-    if (
-      block.type === "text" &&
-      typeof block.text === "string" &&
-      block.text.trim()
-    )
-      n++;
-    else if (
-      block.type === "thinking" &&
-      typeof block.thinking === "string" &&
-      block.thinking.trim()
-    )
-      n++;
-    else if (block.type === "toolCall" && block.id) n++;
-  }
-  return n;
-}
-
-/** Preserve every model-authored prose block in provider order. Pi exposes
- * reasoning as `thinking` blocks and ordinary output as `text`; both become
- * visible assistant transcript entries, while tool calls keep their own rows. */
-export function piAssistantTranscriptEntries(
-  content: unknown,
-  timestamp: string,
-  model: string,
-  messageId: string = crypto.randomUUID(),
-): TranscriptEntry[] {
-  if (!Array.isArray(content)) return [];
-  const entries: TranscriptEntry[] = [];
-  let proseIndex = 0;
-  for (const raw of content) {
-    if (!raw || typeof raw !== "object") continue;
-    const block = raw as {
-      type?: string;
-      text?: unknown;
-      thinking?: unknown;
-      id?: unknown;
-      name?: unknown;
-      arguments?: unknown;
-    };
-    const reasoning =
-      block.type === "thinking" && typeof block.thinking === "string"
-        ? block.thinking
-        : "";
-    const isReasoning = reasoning.length > 0;
-    const prose =
-      block.type === "text" && typeof block.text === "string"
-        ? block.text
-        : reasoning;
-    if (prose.trim()) {
-      entries.push({
-        id: proseIndex === 0 ? messageId : `${messageId}-b${proseIndex}`,
-        type: "assistant",
-        timestamp,
-        model,
-        ...(isReasoning ? { isReasoning: true } : {}),
-        ...assistantProseFields(prose),
-      });
-      proseIndex++;
-    } else if (block.type === "toolCall" && block.id) {
-      entries.push({
-        id: String(block.id),
-        type: "tool_use",
-        content: "",
-        timestamp,
-        toolName: String(block.name || "tool"),
-        toolInput: block.arguments ?? {},
-        toolUseId: String(block.id),
-      });
-    }
-  }
-  return entries;
 }
 
 /** Split `pi/<provider>/<model>` (model may itself contain slashes). */
@@ -887,49 +806,6 @@ export function piGateReason(opts: {
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function sanitizeId(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-/** Pi ImageContent from our wire shape. */
-function piImages(
-  images?: ImageInput[],
-): Array<{ type: "image"; data: string; mimeType: string }> | undefined {
-  if (!images?.length) return undefined;
-  return images.map((im) => ({
-    type: "image" as const,
-    data: im.data,
-    mimeType: im.mediaType,
-  }));
-}
-
-/** Flatten pi tool-result content to text + renderable image srcs. */
-function contentToTextAndImages(content: unknown): {
-  text: string;
-  images: string[];
-} {
-  const texts: string[] = [];
-  const images: string[] = [];
-  if (Array.isArray(content)) {
-    for (const b of content as Array<Record<string, unknown>>) {
-      if (!b || typeof b !== "object") continue;
-      if (b.type === "text" && typeof b.text === "string") texts.push(b.text);
-      else if (b.type === "image" && typeof b.data === "string") {
-        images.push(
-          `data:${String(b.mimeType || "image/png")};base64,${b.data}`,
-        );
-      }
-    }
-  } else if (typeof content === "string") {
-    texts.push(content);
-  }
-  return { text: texts.join("\n"), images };
-}
-
 /** Raw codex error codes that can surface in a pi/openai error before pi's
  *  friendly "You have hit your ChatGPT usage limit…" message is built — cheap
  *  insurance on top of isCodexUsageLimitError's message matching. Quota
@@ -1117,53 +993,6 @@ function findPiSessionFile(
     }
   } catch {}
   return null;
-}
-
-// ── Transcript integration (the claude-direct recipe) ────────────────────────
-
-/** One transcript append, routed. In the server process this writes the
- *  store directly (appendTranscriptEntries). Inside a run host a forwarder
- *  is registered (transcript-forward.ts): the batch is relayed to the server
- *  over the run-host protocol instead, keeping transcripts.db single-writer
- *  and giving sandboxed/detached pi runs host-side persistence. */
-function piAppend(
-  engineSessionId: string,
-  lines: Record<string, unknown>[],
-): void {
-  const forward = transcriptForwarder();
-  if (forward) {
-    forward(engineSessionId, lines);
-    return;
-  }
-  void appendTranscriptEntries(engineSessionId, lines).catch((error) => {
-    console.error(
-      `[pi] Transcript append failed for ${engineSessionId}:`,
-      error,
-    );
-  });
-}
-
-/** Store one batch of normalized entries under the pi session id. Requires
- *  recordEngineSessionOwner to have mapped pi→unified first (see runPi); system
- *  entries ride runner-notice lines. Best-effort — a transcript write must
- *  never take the run down. */
-function persistEntries(
-  engineSessionId: string | undefined,
-  entries: TranscriptEntry[],
-): void {
-  if (!entries.length || !engineSessionId) return;
-  try {
-    const lines = entries
-      .map((e) =>
-        e.type === "system"
-          ? transcriptLineRunnerNotice(e.content, e.id, e.timestamp)
-          : transcriptLineForEntry(e),
-      )
-      .filter((l): l is Record<string, unknown> => !!l);
-    piAppend(engineSessionId, lines);
-  } catch (e) {
-    console.warn("[pi-runner] transcript persist failed:", e);
-  }
 }
 
 // ── Guarded local tools (the containment invariant) ──────────────────────────
