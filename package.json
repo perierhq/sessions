@@ -68,7 +68,7 @@
     "motion": "^12.42.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "shiki": "3.23.0",
     "swr": "^2.3.6",
     "tailwind-merge": "^3.6.0",
@@ -88,6 +88,9 @@
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "tailwindcss": "^4.3.2"
+  },
+  "overrides": {
+    "tinypool": "2.1.2"
   },
   "packageManager": "bun@1.4.0",
   "patchedDependencies": {
