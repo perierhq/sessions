@@ -88,7 +88,8 @@ const {
   rpcSocketPath,
 } = await import("./protocol");
 const { WsFrameBuffer, replayStartFor } = await import("./ws-buffer");
-const { mcpProxyMode, runRpcMcpMounts } = await import("./mcp-mounts");
+const { runRpcMcpMounts } = await import("./mcp-mounts");
+const { hostMcpProxyMode } = await import("./mcp-proxy-mode");
 const { OPENSESSION_SESSIONS_DIR } = await import("../server/paths");
 
 type RunHostSpec = import("./protocol").RunHostSpec;
@@ -522,8 +523,8 @@ function onAskUser(input: Record<string, unknown>): Promise<AskResult> {
 // RPC socket, so session-control/self-admin tools keep working across
 // opensession restarts (calls retry while it's down). By default they are
 // relays inside this process over one shared run-rpc client; the per-server
-// stdio proxies remain behind OPENSESSION_MCP_PROXY_MODE=per-server
-// (mcp-mounts.ts).
+// stdio proxies remain behind spec.mcpProxyMode = "per-server", which the
+// gateway sets from OPENSESSION_MCP_PROXY_MODE (mcp-mounts.ts).
 function proxyMcpConfigs(): Record<string, unknown> | undefined {
   // WS transport: dial opensession's /rpc-ws route instead of the unix RPC
   // socket (which isn't shareable across a remote boundary). The upgrade there
@@ -532,7 +533,8 @@ function proxyMcpConfigs(): Record<string, unknown> | undefined {
   // dispatchRunRpc resolves to the run's session/user.
   const rpcWsUrl = process.env.OPENSESSION_RPC_WS_URL || "";
   const token = spec.rpcToken || "";
-  const mode = mcpProxyMode();
+  // The gateway recorded the mode at launch; older specs fall back to env.
+  const mode = hostMcpProxyMode(spec.mcpProxyMode);
   const mounts = runRpcMcpMounts({
     names: spec.proxyMcpServers || [],
     target: rpcWsUrl

@@ -7,9 +7,10 @@
  * relay connected in-process, and all of them share one run-rpc client: no
  * child process, and one /rpc-ws connection instead of one per server.
  *
- * OPENSESSION_MCP_PROXY_MODE=per-server restores the previous shape, one
- * `opensession mcp-proxy` stdio process per server (about 90 MB RSS each),
- * for rollback. The run host reads it from the gateway's environment file.
+ * `per-server` mode (RunHostSpec.mcpProxyMode, set by the gateway from
+ * OPENSESSION_MCP_PROXY_MODE; mcp-proxy-mode.ts) restores the previous shape,
+ * one `opensession mcp-proxy` stdio process per server (about 90 MB RSS
+ * each), for rollback.
  *
  * Either way each server keeps its name, its deferred listing and its call
  * timeout, so tool ids, policies, tool_search and scope filters see the same
@@ -17,21 +18,15 @@
  */
 
 import type { InProcessRelayMcpConfig } from "../server/mcp-runtime";
+import type { McpProxyMode } from "./mcp-proxy-mode";
 import { createRunRpcClient, type RunRpcTarget } from "./run-rpc-client";
 import { createRunRpcMcpServer } from "./run-rpc-mcp-server";
 
-export type McpProxyMode = "in-process" | "per-server";
-
-export const MCP_PROXY_MODE_ENV = "OPENSESSION_MCP_PROXY_MODE";
-
-/** The configured mode. Anything but `per-server` means the default. */
-export function mcpProxyMode(
-  env: Record<string, string | undefined> = process.env,
-): McpProxyMode {
-  return env[MCP_PROXY_MODE_ENV]?.trim().toLowerCase() === "per-server"
-    ? "per-server"
-    : "in-process";
-}
+export {
+  MCP_PROXY_MODE_ENV,
+  mcpProxyMode,
+  type McpProxyMode,
+} from "./mcp-proxy-mode";
 
 /** The per-run env a stdio proxy needs to reach run-rpc. */
 function proxyEnv(target: RunRpcTarget): Record<string, string> {

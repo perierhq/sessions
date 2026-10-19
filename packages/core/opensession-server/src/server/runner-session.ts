@@ -20,6 +20,7 @@ import {
   runHostsDir,
   type RunHostSpec,
 } from "../runner-host/protocol";
+import { launchMcpProxyMode } from "../runner-host/mcp-proxy-mode";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
 import { registerRunToken, unregisterRunToken } from "./run-rpc";
 import {
@@ -205,6 +206,13 @@ export async function maybeLaunchRunnerRun(
     journalKind: runInputs.isAutomationSession ? "automation" : "prompt",
     trustProfile: runInputs.isAutomationSession ? "automation" : "interactive",
   };
+  if (!priorSpec) {
+    // Decided here, not in the host's env: a Runner starts its hosts with a
+    // fixed env allowlist, so the gateway's OPENSESSION_MCP_PROXY_MODE would
+    // never reach them. A resumed run keeps its spec, and with it its mode.
+    const mode = launchMcpProxyMode(spec.proxyMcpServers);
+    if (mode) spec.mcpProxyMode = mode;
+  }
   if (!spec.rpcToken || !spec.wsToken)
     throw new Error(
       `Runner host ${hostId} is missing its durable connection fence`,

@@ -44,6 +44,14 @@ import type { TranscriptEntry } from "./session";
 export type McpScope = "all" | string[];
 
 /**
+ * How a run host serves the opensession-* servers in `proxyMcpServers`:
+ * `in-process` relays inside the host over one shared run-rpc client, or
+ * `per-server` stdio proxies (one `opensession mcp-proxy` process each, the
+ * rollback shape).
+ */
+export type McpProxyMode = "in-process" | "per-server";
+
+/**
  * The workspace a run's file and shell tools act on when it is not on the
  * machine hosting the engine: a Sandbox. The engine and its loop stay on the
  * server; every tool call becomes a command in the Sandbox, sent through the
@@ -111,6 +119,11 @@ export interface RunHostSpec {
    * deliberately registered report/workflow/self-improvement tools.
    */
   proxyMcpServers?: string[];
+  /** How the host serves `proxyMcpServers`. The gateway resolves it at
+   *  launch (OPENSESSION_MCP_PROXY_MODE in its own environment), so every
+   *  launcher's hosts get it and the run keeps the mode it started with.
+   *  Absent in specs written before the field: the host reads its own env. */
+  mcpProxyMode?: McpProxyMode;
   /** Per-run bearer for the RPC socket; maps to {sessionId, user} on the server side. */
   rpcToken?: string;
   /** Present when the run's tools act on a Sandbox instead of this machine.
