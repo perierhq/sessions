@@ -21,7 +21,7 @@ const reply = (data: object, status = 200) =>
 
 /** The seams the routes use, replaceable in tests. */
 export type SessionResourceRouteDeps = {
-  findSession: (id: string) => Promise<InventoryOwner | undefined>;
+  lookupSession: (id: string) => Promise<InventoryOwner | undefined>;
   listSessions: () => Promise<readonly SessionResourceOwner[]>;
   isIdle: (id: string) => boolean;
   list: (
@@ -43,7 +43,7 @@ async function defaultDeps(): Promise<SessionResourceRouteDeps> {
     import("../session-resource-inventory"),
   ]);
   return {
-    findSession: cache.findSessionAsync,
+    lookupSession: cache.findSessionAsync,
     listSessions: () => cache.getSessionListSnapshotAsync(),
     isIdle: cache.isRunSettled,
     list: inventory.sessionResourceList,
@@ -75,7 +75,7 @@ export async function handleSessionResourceRoutes(
   const stop = !!match[2];
   if (req.method !== (stop ? "POST" : "GET")) return undefined;
   const deps = depsOverride ?? (await defaultDeps());
-  const session = await deps.findSession(decodeURIComponent(match[1]!));
+  const session = await deps.lookupSession(decodeURIComponent(match[1]!));
   if (!session) return reply({ error: "Session not found" }, 404);
   const sessions = await deps.listSessions();
   if (!stop) return reply(await deps.list(session, sessions));

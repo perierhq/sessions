@@ -22,7 +22,7 @@ function deps(
   overrides: Partial<SessionResourceRouteDeps> = {},
 ): SessionResourceRouteDeps {
   return {
-    findSession: async (id) =>
+    lookupSession: async (id) =>
       id === "os-a" ? { id, worktreeDir: "/tmp/wt" } : undefined,
     listSessions: async () => [{ id: "os-a" }],
     isIdle: () => true,
