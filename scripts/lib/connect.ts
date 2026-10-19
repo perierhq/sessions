@@ -2496,7 +2496,7 @@ export async function runnerStatus(): Promise<number> {
 // ── server side: managing attached Runners ───────────────────────────────────
 
 /** The local server's own address, from the config this CLI can read. */
-async function localApi(): Promise<string> {
+async function localServer(): Promise<string> {
   const { CONFIG_PATH } = await import("./paths");
   let host = "127.0.0.1";
   let port = 3850;
@@ -2511,7 +2511,11 @@ async function localApi(): Promise<string> {
       // fall through to defaults
     }
   }
-  return `http://${host}:${port}/api/runners`;
+  return `http://${host}:${port}`;
+}
+
+async function localApi(): Promise<string> {
+  return `${await localServer()}/api/runners`;
 }
 
 /**
@@ -2536,7 +2540,19 @@ async function apiCall(
   path: string,
   init?: RequestInit,
 ): Promise<any | undefined> {
-  const base = await localApi();
+  return await localServerCall(`/api/runners${path}`, init);
+}
+
+/**
+ * Call the local server's API as the operator (see operatorToken) and return
+ * the parsed JSON body, or undefined after printing why it failed.
+ */
+export async function localServerCall(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = 10_000,
+): Promise<any | undefined> {
+  const base = await localServer();
   const token = await operatorToken();
   try {
     const response = await fetch(`${base}${path}`, {
@@ -2545,7 +2561,7 @@ async function apiCall(
         ...(init?.headers ?? {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}) as any);

@@ -22,6 +22,7 @@
  * exist only here (see `hostReadableRoots`).
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, posix, resolve as resolveLocal, sep } from "node:path";
@@ -471,6 +472,7 @@ export function shellWord(word: string): string {
 }
 
 const runWorkspaces = new Map<string, RemoteWorkspace>();
+registerMemoryGauge("remote-workspace.runWorkspaces", () => runWorkspaces.size);
 
 /**
  * The run's workspace client, shared by everything in this process that acts

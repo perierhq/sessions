@@ -1,3 +1,4 @@
+import { registerMemoryGauge } from "./memory-gauges";
 import { executeSessionProjection } from "./session-projection-executor";
 import { readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { opendir, readFile, stat } from "fs/promises";
@@ -562,6 +563,10 @@ function findTranscriptPath(
 // resolve through their direct path without waiting for this index.
 let transcriptIndexCache: { map: Map<string, string>; ts: number } | null =
   null;
+registerMemoryGauge(
+  "sessions.transcriptIndexCache",
+  () => transcriptIndexCache?.map.size ?? 0,
+);
 let transcriptIndexRefresh: Promise<void> | null = null;
 const EMPTY_TRANSCRIPT_INDEX = new Map<string, string>();
 const TRANSCRIPT_INDEX_TTL = 5 * 60_000;

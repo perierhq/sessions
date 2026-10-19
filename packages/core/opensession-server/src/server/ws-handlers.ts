@@ -1,3 +1,4 @@
+import { registerMemoryGauge } from "./memory-gauges";
 import { localFolderWsClose, localFolderWsMessage } from "./local-folders";
 import { getConfigAsync } from "./config";
 /**
@@ -573,6 +574,13 @@ async function serveTranscriptV2(
 const kernelDispatchTokens = new Set<string>();
 const kernelDispatchResults = new Map<string, unknown>();
 const kernelDispatchErrors = new Map<string, Error>();
+registerMemoryGauge(
+  "ws-handlers.kernelDispatch",
+  () =>
+    kernelDispatchTokens.size +
+    kernelDispatchResults.size +
+    kernelDispatchErrors.size,
+);
 
 export const websocketHandlers: WebSocketHandler<WSClientData> = {
   // One shared compressor keeps connection memory bounded. Only large

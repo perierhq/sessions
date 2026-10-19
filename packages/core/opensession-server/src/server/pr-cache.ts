@@ -10,6 +10,7 @@
  * Live state parks on globalThis (same keys as before the extraction) so hot
  * reloads keep it.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { chmodSync, readFileSync } from "fs";
 import { statePath } from "./paths";
 import { githubLoginToPersonKey, githubLoginFor } from "./shared/user-mappings";
@@ -849,6 +850,10 @@ export function footerPrsFor(
 
 // ghRepo \0 branch → a CI webhook reported activity since the last counts.
 const staleCheckBranches = new Set<string>();
+registerMemoryGauge(
+  "pr-cache.staleCheckBranches",
+  () => staleCheckBranches.size,
+);
 
 /** A CI delivery for this branch: re-ask its check counts on the next sweep,
  *  even if they looked settled (a re-run keeps the same head). */
@@ -1324,6 +1329,7 @@ export function getRecentPrs(): RecentPrEntry[] {
 }
 
 const personPrCache = new Map<string, { data: RecentPrEntry[]; ts: number }>();
+registerMemoryGauge("pr-cache.personPrCache", () => personPrCache.size);
 const PERSON_PR_CACHE_TTL = 10 * 60_000;
 
 /** Complete PR history for one teammate, fetched on demand for Home's person view. */

@@ -8,6 +8,7 @@
  * events to the server and never write the session kernel database.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { audit } from "./audit";
 import {
   clearSessionKernel,
@@ -46,6 +47,10 @@ export function isRunStateUnsettled(state: RunState): boolean {
 }
 
 const detachedHostStates = new Map<string, RunStateEntry>();
+registerMemoryGauge(
+  "run-state.detachedHostStates",
+  () => detachedHostStates.size,
+);
 const detachedRunHost = () => !!process.env.OPENSESSION_RUN_JOURNAL;
 
 export const runStates = {

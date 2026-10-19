@@ -1,3 +1,4 @@
+import { registerMemoryGauge } from "./memory-gauges";
 import { readFileSync, statSync } from "fs";
 import { openSync, readSync, closeSync, fstatSync } from "fs";
 import { existsSync } from "fs";
@@ -948,6 +949,7 @@ interface ParseCacheEntry {
   entries: TranscriptEntry[];
 }
 const parseCache = new Map<string, ParseCacheEntry>();
+registerMemoryGauge("jsonl-parser.parseCache", () => parseCache.size);
 const PARSE_CACHE_MAX = 24;
 // Entry count alone is a poor bound — parsed entries keep base64 screenshot
 // data-URLs, so 24 fat transcripts could pin hundreds of MB on a swapless box.

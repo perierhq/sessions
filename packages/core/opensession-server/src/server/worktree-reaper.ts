@@ -62,6 +62,7 @@
  * one-shot run checkouts stand at ~2-3G each.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import {
   type Dirent,
   existsSync,
@@ -369,6 +370,7 @@ function worktreesWithProcesses(root: string): Set<string> | null {
  *  ~hundreds of them — without this every sweep re-asks GitHub about every
  *  parked branch. Positive results act immediately and skip the cache. */
 const noPrCache = new Map<string, number>();
+registerMemoryGauge("worktree-reaper.noPrCache", () => noPrCache.size);
 const NO_PR_TTL_MS = 6 * 60 * 60_000;
 
 /** PR state fallback for squash-merged branches (tip never becomes an

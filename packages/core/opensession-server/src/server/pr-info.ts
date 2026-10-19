@@ -5,6 +5,7 @@
  * data; and wired into the shared rate-limit gate (github-limit.ts) so a
  * throttled quota serves stale snapshots instead of errors.
  */
+import { registerMemoryGauge } from "./memory-gauges";
 import { homeDir } from "./paths";
 import { statePath } from "./paths";
 import {
@@ -312,6 +313,7 @@ const embedCache = new Map<
   string,
   { ok: boolean; live: boolean; ts: number }
 >();
+registerMemoryGauge("pr-info.embedCache", () => embedCache.size);
 const embedInflight = new Map<string, Promise<void>>();
 
 function probeEmbeddable(url: string): Promise<void> {
@@ -492,6 +494,7 @@ function buildReviewers(
 
 const DEFAULT_REPO = () => defaultRepo().ghRepo;
 const cache = new Map<string, { data: PrDetails | null; ts: number }>();
+registerMemoryGauge("pr-info.cache", () => cache.size);
 // 5 min: the detail pane and staging/status pollers tolerate that staleness,
 // and each open session tab runs several independent /pr pollers — a short
 // TTL made nearly every tick spawn a real `gh pr view` into the shared
@@ -647,6 +650,7 @@ function schedulePersist() {
 const cacheKey = (repo: string, branch: string) => `${repo}\u0000${branch}`;
 
 const diffCache = new Map<string, { data: PrDiffData | null; ts: number }>();
+registerMemoryGauge("pr-info.diffCache", () => diffCache.size);
 
 /**
  * Pin a PR patch into the diff cache. For the demo dataset only: its PR does

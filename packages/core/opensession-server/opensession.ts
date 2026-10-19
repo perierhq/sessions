@@ -103,6 +103,7 @@ import { startGoalTicker } from "./src/server/goal-runner";
 import { startSessionHistoryIndexing } from "./src/server/session-index";
 import { startEventLoopLagMonitor } from "./src/server/system-stats";
 import { startGatewayProfilerSignal } from "./src/server/gateway-profiler";
+import { startMemoryDiagnosticsLog } from "./src/server/memory-diagnostics";
 import { startDerivedCatalogRepair } from "./src/server/catalog-documents";
 import { ensureWarmTemplateScheduler } from "./src/server/warm-template";
 import { handleRunnerWsUpgrade } from "./src/server/runner-ws";
@@ -967,6 +968,9 @@ if (!g.__opensessionBooted) {
     startEventLoopLagMonitor();
     // `kill -USR1` samples this thread and writes what blocked it.
     startGatewayProfilerSignal();
+    // One `[memory]` line every ten minutes (rss, heap, largest in-process
+    // collections) so slow growth can be read from the journal afterwards.
+    startMemoryDiagnosticsLog();
 
     // Catalog projections imported by this boot get a one-time repair once
     // the previous gateway has drained (catalog-documents.ts).

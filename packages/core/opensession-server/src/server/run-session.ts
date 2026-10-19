@@ -8,6 +8,7 @@
  * cache in session-cache.ts.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
 import { ownedWorktreeHeadBranch } from "./session-branch-ownership";
@@ -1109,6 +1110,10 @@ const recoveredIncidentRecorders = new Map<
   string,
   ReturnType<typeof createIncidentDeclarationRecorder>
 >();
+registerMemoryGauge(
+  "run-session.recoveredRecorders",
+  () => recoveredSlackScanners.size + recoveredIncidentRecorders.size,
+);
 const recoveredFeedStarted: Set<string> = (g.__recoveredFeedStarted ??=
   new Set());
 
