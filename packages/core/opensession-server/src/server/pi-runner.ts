@@ -15,7 +15,6 @@ import { join, resolve, sep } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
-  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
@@ -31,7 +30,6 @@ import {
   formatAnthropicReset,
 } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { pickAccount as pickClaudeCliAccount } from "./claude-accounts";
 import { bindXaiAccount, xaiSubscriptionModelEfforts } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { enableXaiProxyPayload } from "./xai-payload";
@@ -42,25 +40,13 @@ import {
 } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import { openaiServiceTier } from "./openai-service-tier";
-import {
-  INTERACTIVE_KINDS,
-  isUnattendedKind,
-  baseJournalKind,
-  runToolPolicy,
-  readLocalInstructions,
-} from "./run-policy";
+import { readLocalInstructions } from "./run-policy";
 import {
   assembleRunSystemPrompt,
   buildRunInstructions,
   buildSessionContext,
-  sessionLink,
 } from "./run-instructions";
-import { stampIncidentDeclaration } from "./incident-declarations";
-import {
-  guardStripeApprovalCall,
-  stripeApprovalsEnforced,
-  stripeApprovalsNote,
-} from "./stripe-approvals";
+import { stripeApprovalsNote } from "./stripe-approvals";
 import {
   logInjectedContext,
   logStandingContext,
@@ -78,13 +64,7 @@ import {
   type PiTurnRepair,
 } from "./pi-turn-checkpoint";
 import { stagePromptImages, withImagesNote } from "./prompt-attachments";
-import {
-  EMPTY_REPLY_RETRY_PROMPT,
-  githubCredentialUser,
-} from "./auto-continue";
-import type { PrivateTermsGuard } from "./command-policy";
-import { privateTerms } from "./config";
-import { treatRepoAsPublic } from "./repo-visibility";
+import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
   transcriptLineCompactionSummary,
@@ -93,9 +73,7 @@ import {
 } from "./transcript-persistence";
 import { transcript } from "./actor-transcript";
 import { transcriptForwarder } from "./transcript-forward";
-import { humanPrompter, providerAccountUser } from "./session-actors";
-import { githubRunOwnerLogin } from "./github-auth";
-import { ensureAgentAwsCredsFile } from "./aws-creds";
+import { providerAccountUser } from "./session-actors";
 import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
 import {
@@ -103,23 +81,15 @@ import {
   prewarmPiSdk as prewarmPiSdkBinding,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
-import { sessionOwnershipEnv } from "./session-ownership";
-import {
-  createMcpRuntime,
-  splitMcpMigrationBoundary,
-  type McpRuntime,
-} from "./mcp-runtime";
+import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
 import {
   expandSkillCommand,
   gatePstackSkills,
   skillSearchPaths,
 } from "./skill-paths";
 import {
-  makeRemoteGrepExecute,
-  makeRemoteToolOps,
   remoteAttachmentWriter,
   mirrorRemoteContext,
-  remoteCommandEnv,
   remoteWorkspaceForRun,
 } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
@@ -134,24 +104,12 @@ import {
   piAssistantTranscriptEntries,
   piImages,
 } from "./pi-transcript";
-import {
-  GIT_COAUTHOR_ENV,
-  agentGitIdentityEnv,
-  runGithubEnv,
-  runGithubMergeGuard,
-  usesHostGithubLogin,
-} from "./pi-github-env";
+import { GIT_COAUTHOR_ENV } from "./pi-github-env";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
   resolvePiRoutedModel,
 } from "./pi-model-routing";
-import {
-  makeGuardedGrepExecute,
-  makeGuardedToolOps,
-  shippedSkillRoots,
-} from "./pi-guarded-tools";
-import { makePiBashTool, piBashHomeEnv } from "./pi-bash-tool";
 import {
   aliasPiRun,
   claimPiRun,
@@ -164,7 +122,6 @@ import {
   interruptPiThinkingForSteer,
   piCodemodeExtension,
   piResponseHasOutput,
-  piSteeringBoundaryTools,
   piToolNames,
 } from "./pi-steering";
 import { piGateReason } from "./pi-gate";
@@ -177,6 +134,15 @@ import {
   type PiAccountWalk,
 } from "./pi-account-walk";
 import { PiTurnLedger } from "./pi-turn-ledger";
+import { resolvePiRunAuthority } from "./pi-run-authority";
+import { buildPiBashEnv, piCliPoolEnv } from "./pi-run-env";
+import {
+  buildPiToolset,
+  piLocalToolNames,
+  piMcpRuntimeOptions,
+  piToolScopeRecord,
+  type PiSteerBoundary,
+} from "./pi-tools";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -234,6 +200,7 @@ export {
 export { piGateReason } from "./pi-gate";
 export { isPiUsageLimitShape, piErrorContent } from "./pi-usage-limit";
 export { piStreamEventRequiresAccountContinuation } from "./pi-account-walk";
+export { piLocalToolNames } from "./pi-tools";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -246,27 +213,6 @@ const PROVIDER = PI_PROVIDER;
  */
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
-}
-
-/**
- * The local workspace tools a run enables. Tool policy: ask mode is read-only
- * — no edit/write, and bash screened through ASK_BASH_PERMISSIONS
- * (askBashDenyReason), the same allowlist previous runner's ask agent enforces
- * engine-side. Shipping ask without bash at all was tried first and it blinded
- * every automation that assumed a shell for jq/git/gh reads (the
- * health-monitor incident, 2026-08-19). Code/scratch get the read set +
- * edit/write + the ungated custom bash. disableLocalWorkspaceTools
- * (engine-outside-sandbox) strips all local tools — pi has no sandbox mode,
- * but fail closed if a caller passes it.
- */
-export function piLocalToolNames(opts: {
-  isAsk: boolean;
-  disableLocalWorkspaceTools?: boolean;
-}): string[] {
-  if (opts.disableLocalWorkspaceTools) return [];
-  return opts.isAsk
-    ? ["read", "grep", "find", "ls", "bash"]
-    : ["read", "grep", "find", "ls", "edit", "write", "bash"];
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -562,90 +508,19 @@ async function* runPiAttempt(
       });
     }
 
-    // Stripe two-party approvals hold refunds and cancellations, so every
-    // run keeps those tools; guardStripeApprovalCall narrows the raw writer.
-    const stripeApprovals =
-      stripeApprovalsEnforced() &&
-      (!Array.isArray(mcpServers) || mcpServers.includes("stripe"));
-    const policy = runToolPolicy({
-      deniedTools: opts.deniedTools,
-      confirmTools,
-      journalKind: journal?.kind,
+    const {
       stripeApprovals,
-    });
-    // Command-policy gate: kind-based like previous runner (NOT policy.unattended) —
-    // the trusted-human loops carry deniedTools but shouldn't trip the gate.
-    const bashGated =
-      isUnattendedKind(baseJournalKind(journal?.kind)) && !isAsk;
-    // The repo owning this run's cwd, or undefined for a repo-less one (a
-    // scratch dir, a repo-less ask session). Dynamic import to avoid a static
-    // module-init cycle through "./worktree".
-    const cwdRepo = await (async () => {
-      try {
-        const { getRepo, repoForPathOrNull } = await import("./worktree");
-        // A Sandbox checkout's path means nothing on this machine: the
-        // launcher names its repository instead.
-        if (remote)
-          return opts.remoteWorkspace?.repo
-            ? getRepo(opts.remoteWorkspace.repo)
-            : undefined;
-        return repoForPathOrNull(cwd);
-      } catch {
-        return undefined;
-      }
-    })();
-    // A run that can publish must know when the whole internet reads what it
-    // publishes. Fails closed: unconfirmed visibility counts as public.
-    const publicRepo =
-      !isAsk && !isScratch && (await treatRepoAsPublic(cwdRepo));
-    const configuredPrivateTerms = privateTerms();
-    const privateTermsGuard: PrivateTermsGuard | undefined =
-      publicRepo && configuredPrivateTerms.length > 0
-        ? { terms: configuredPrivateTerms }
-        : undefined;
-    // The person this turn acts for, if any: the sender, unless it is the
-    // synthetic auto-continue driver, in which case the author fallback
-    // names the session owner (#322). A machine sender (a review handoff, a
-    // worker report, an automation) is nobody. In code mode an owner turn
-    // puts their connected token in the shell (runGithubEnv) and describes
-    // PR authorship as theirs; every other run holds an App token.
-    const githubUser = githubCredentialUser(user, author?.name);
-    const ownerTurn =
-      !policy.unattended &&
-      INTERACTIVE_KINDS.has(baseJournalKind(journal?.kind)) &&
-      humanPrompter(githubUser) !== null;
-    // On a remote host this reads the launcher's projected marker, not the
-    // person store, so a sandboxed owner turn drops the guard exactly when
-    // a host run would.
-    const githubUserLogin = ownerTurn ? githubRunOwnerLogin(githubUser) : null;
-    // GitHub permissions and repository rulesets bound the chosen credential.
-    // Ask, unattended, and publication-policy command gates still apply.
-    const githubKindRun = baseJournalKind(journal?.kind).startsWith("github-");
-    const hostGithubLogin = await usesHostGithubLogin({
-      remote: Boolean(remote),
-      unattended: Boolean(policy.unattended),
-      isolatedHome: Boolean(opts.publicationPolicy),
-    });
-    const githubEnv = await runGithubEnv({
-      isCode: mode === "code",
-      ownerTurn,
-      user: githubUser,
-      githubKindRun,
-      launcherEnv: opts.githubEnv,
-      // Credentials are looked up by checkout; a Sandbox run's repository is
-      // found through its registered checkout on this machine.
-      cwd: remote ? cwdRepo?.repo || "" : cwd,
-      readRepos: opts.readRepos,
-      attachedRepos: opts.attachedRepos,
-      hostLogin: hostGithubLogin,
-    });
-    const agentGitEnv = await agentGitIdentityEnv(author);
-    const mergeGuard = runGithubMergeGuard({
-      isCode: mode === "code",
-      ownerTurn,
-      ownerLogin: githubUserLogin,
-      baseBranch: cwdRepo?.defaultBranch || "main",
-    });
+      policy,
+      bashGated,
+      cwdRepo,
+      publicRepo,
+      privateTermsGuard,
+      githubUserLogin,
+      hostGithubLogin,
+      githubEnv,
+      agentGitEnv,
+      mergeGuard,
+    } = await resolvePiRunAuthority(opts, remote);
     const binding = await createPiRuntimeBinding({
       providerID: parsed.providerID,
       modelID: parsed.modelID,
@@ -693,249 +568,47 @@ async function* runPiAttempt(
     });
     const { sdk, runtime, model: piModel } = binding;
 
-    // Optional pool credentials for tools the run itself spawns (currently
-    // deepsec's Claude Agent SDK and Codex CLI workers). These are explicit
-    // additions to the minimal environment, never inherited server secrets.
-    const cliEnv: Record<string, string> = {};
-    // Pool credentials never go into a Sandbox command.
-    if (opts.claudeCliEnv && !remote) {
-      const cliAccount = pickClaudeCliAccount(
-        undefined,
-        accountUser,
-        undefined,
-        opts.usageCredits,
-      );
-      if (cliAccount) {
-        const cliCfgDir = `${PI_STATE_DIR}/cli/claude/${cliAccount.id}`;
-        mkdirSync(cliCfgDir, { recursive: true, mode: 0o700 });
-        cliEnv.CLAUDE_CODE_OAUTH_TOKEN = cliAccount.token;
-        cliEnv.CLAUDE_CONFIG_DIR = cliCfgDir;
-        audit({
-          msg: "claude_cli_env_account",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          account: cliAccount.name,
-          account_id: cliAccount.id.slice(0, 8),
-          engine: "pi",
-        });
-      } else {
-        console.warn(
-          "[pi-runner] claudeCliEnv requested but no usable Claude account in the pool; run proceeds without it",
-        );
-      }
-    }
-    if (opts.codexCliEnv && !remote) {
-      const cfg = readModelProviderConfig();
-      const picked = pickOpenaiAccount(
-        "",
-        cfg?.openaiAccounts,
-        journal?.osSessionId || runKey,
-        undefined,
-        accountUser,
-      );
-      if ("error" in picked) {
-        console.warn(
-          `[pi-runner] codexCliEnv requested but no usable Codex account (${picked.error}); run proceeds without it`,
-        );
-      } else {
-        Object.assign(
-          cliEnv,
-          picked.kind === "home"
-            ? { CODEX_HOME: picked.value }
-            : { OPENAI_API_KEY: picked.value },
-        );
-        audit({
-          msg: "codex_cli_env_account",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          account: picked.name,
-          account_id: picked.id.slice(0, 8),
-          engine: "pi",
-        });
-      }
-    }
-
-    // Minimal bash env, the security invariant this engine hangs on. The
-    // server env is NEVER inherited; every entry is explicit.
-    // The AWS session file lives on this machine; a Sandbox never gets one.
-    const awsEnv = opts.aws && !remote ? await ensureAgentAwsCredsFile() : {};
-    const homeEnv = piBashHomeEnv({
+    const cliEnv = piCliPoolEnv({ opts, remote, accountUser, runKey });
+    const bashEnv = await buildPiBashEnv({
+      opts,
+      remote,
       runKey,
-      scratchDir: opts.scratchDir,
-      isolated: Boolean(opts.publicationPolicy),
-      hostHome: process.env.HOME,
       hostGithubLogin,
+      agentGitEnv,
+      githubEnv,
+      cliEnv,
     });
-    if (!remote && opts.publicationPolicy && homeEnv.HOME)
-      mkdirSync(homeEnv.HOME, { recursive: true, mode: 0o700 });
-    if (!remote && homeEnv.GH_CONFIG_DIR)
-      mkdirSync(homeEnv.GH_CONFIG_DIR, { recursive: true, mode: 0o700 });
-    const bashEnv: Record<string, string> = {
-      ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-      ...homeEnv,
-      ...(process.env.LANG ? { LANG: process.env.LANG } : {}),
-      // Session-scoped scratch (session-scratch.ts): temp files follow the
-      // session's lifecycle instead of accumulating in shared /tmp.
-      ...(opts.scratchDir
-        ? { TMPDIR: opts.scratchDir, OPENSESSION_SCRATCH: opts.scratchDir }
-        : {}),
-      ...agentGitEnv,
-      ...githubEnv,
-      ...awsEnv,
-      ...cliEnv,
-      // OPENSESSION_SESSION_ID, and the container shims first on PATH, so
-      // what the agent leaves running stops with the session
-      // (session-ownership.ts).
-      ...sessionOwnershipEnv(journal?.osSessionId, process.env.PATH, {
-        shims: !remote,
-      }),
-    };
 
     // One engine-neutral MCP runtime owns all connections for this logical
     // turn. Pi only adapts its exact catalog into tool_search/tool_call. The
     // detached runner-host proxy shape remains solely at this named migration
     // boundary until Agent operation routing replaces it.
-    const mcpMounts = splitMcpMigrationBoundary(opts.inProcessMcp);
-    mcpRuntime = await createMcpRuntime({
-      mcpServers,
-      user,
-      mcpGrantUser: opts.mcpGrantUser,
-      sessionUrl: journal?.osSessionId
-        ? sessionLink(journal.osSessionId)
-        : undefined,
-      deniedToolIds: new Set(Object.keys(policy.disables)),
-      inProcessMcp: mcpMounts.sdk,
-      legacyProxyMcp: mcpMounts.legacyProxy,
-      // An incident this run declares names the session it came from, so the
-      // responder and the people in the channel can find the evidence.
-      rewriteArgs: (tool, args) => {
-        const link = journal?.osSessionId
-          ? sessionLink(journal.osSessionId)
-          : undefined;
-        const stamped = stampIncidentDeclaration(tool.name, args, link);
-        return stripeApprovals
-          ? guardStripeApprovalCall(tool, stamped, link)
-          : stamped;
-      },
-      onAudit: (e) =>
-        audit({
-          msg: "pi_mcp_call",
-          request_id: requestId,
-          session: journal?.osSessionId,
-          server: e.server,
-          tool: e.tool,
-          ok: e.ok,
-          ms: e.ms,
-        }),
-    });
+    mcpRuntime = await createMcpRuntime(
+      piMcpRuntimeOptions({ opts, policy, stripeApprovals, requestId }),
+    );
     mcpBridge = await createPiMcpBridge(mcpRuntime);
     const localTools = piLocalToolNames({
       isAsk,
       disableLocalWorkspaceTools: opts.disableLocalWorkspaceTools,
     });
-    // Every enabled name is derived from a custom definition below. Pi falls
-    // back to its in-process built-ins for a name without an override, so a
-    // separately maintained enabled-name list would be a containment escape.
-    const guardedOps = remote
-      ? makeRemoteToolOps(remote, shippedSkillRoots())
-      : makeGuardedToolOps(cwd);
-    const commandEnv = remote
-      ? remoteCommandEnv(
-          bashEnv,
-          remote,
-          runKey,
-          Boolean(opts.publicationPolicy),
-        )
-      : bashEnv;
-    let steeringBoundaryPending = false;
-    const baseCustomTools: ToolDefinition<any, any, any>[] = [
-      ...mcpBridge.discoveryTools,
-      ...mcpBridge.directTools,
-    ];
-    for (const name of localTools) {
-      switch (name) {
-        case "read":
-          baseCustomTools.push(
-            sdk.createReadToolDefinition(cwd, {
-              operations: guardedOps.read,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "grep": {
-          const base = sdk.createGrepToolDefinition(cwd);
-          baseCustomTools.push({
-            ...base,
-            execute: remote
-              ? makeRemoteGrepExecute(remote)
-              : makeGuardedGrepExecute(cwd, bashEnv, guardedOps.guard),
-          } as ToolDefinition<any, any, any>);
-          break;
-        }
-        case "find":
-          baseCustomTools.push(
-            sdk.createFindToolDefinition(cwd, {
-              operations: guardedOps.find,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "ls":
-          baseCustomTools.push(
-            sdk.createLsToolDefinition(cwd, {
-              operations: guardedOps.ls,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "edit":
-          baseCustomTools.push(
-            sdk.createEditToolDefinition(cwd, {
-              operations: guardedOps.edit,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "write":
-          baseCustomTools.push(
-            sdk.createWriteToolDefinition(cwd, {
-              operations: guardedOps.write,
-            }) as ToolDefinition<any, any, any>,
-          );
-          break;
-        case "bash":
-          baseCustomTools.push(
-            makePiBashTool({
-              cwd,
-              env: commandEnv,
-              remote,
-              gated: bashGated,
-              askReadOnly: isAsk,
-              unattended: policy.unattended,
-              sessionId: journal?.osSessionId,
-              runKind: journal?.kind,
-              publicationPolicy: opts.publicationPolicy,
-              mergeGuard,
-              privateTermsGuard,
-              runSignal: abort.signal,
-              onAudit: (event) =>
-                audit({
-                  msg: `pi_command_${event.phase}`,
-                  request_id: requestId,
-                  run_key: runKey,
-                  session_id: journal?.osSessionId,
-                  run_kind: journal?.kind,
-                  model,
-                  ...event,
-                }),
-            }),
-          );
-          break;
-      }
-    }
-    const customTools = piSteeringBoundaryTools(
-      baseCustomTools,
-      () => steeringBoundaryPending,
-    );
-    // Codemode only orchestrates the tools above, so a run without any has
-    // nothing for a script to call.
-    const codemode = customTools.length > 0;
+    const boundary: PiSteerBoundary = { pending: false };
+    const { customTools, codemode } = buildPiToolset({
+      sdk,
+      opts,
+      remote,
+      bashEnv,
+      runKey,
+      requestId,
+      model,
+      localTools,
+      mcpBridge,
+      policy,
+      bashGated,
+      mergeGuard,
+      privateTermsGuard,
+      abort,
+      boundary,
+    });
 
     // What the loop reads from the checkout itself (AGENTS.md, local
     // instructions, the checkout's skills). A Sandbox checkout is mirrored
@@ -978,25 +651,7 @@ async function* runPiAttempt(
       sessionId: unifiedSessionId,
       turnId: opts.promptEntryId || opts.startToken,
       source: "mcp-servers",
-      value: {
-        engine: "pi",
-        // Same contract as the choke point's: a non-array scope reads as
-        // "all" and must never be spread.
-        mcpScope: Array.isArray(mcpServers)
-          ? [...mcpServers].sort()
-          : (mcpServers ?? "all"),
-        inProcess: Object.keys(opts.inProcessMcp || {}).sort(),
-        // Post-policy catalog: denied ids are dropped before a definition is
-        // ever built (pi-mcp-bridge), so these are the MCP tools the model
-        // can actually reach through the two discovery tools.
-        mcpTools: mcpBridge.tools.map((t) => t.name).sort(),
-        discovery: mcpBridge.discoveryTools.map((t) => t.name).sort(),
-        direct: mcpBridge.directTools.map((t) => t.name).sort(),
-        // Pi's local tools are enabled by name and every name is backed by a
-        // guarded custom definition (see the enabled-name list above).
-        local: [...localTools].sort(),
-        strip: Object.keys(policy.disables).sort(),
-      },
+      value: piToolScopeRecord({ opts, mcpBridge, localTools, policy }),
     });
     await logStandingContext({
       sessionId: unifiedSessionId,
@@ -1034,7 +689,7 @@ async function* runPiAttempt(
       // codemode tool (piCodemodeExtension).
       noExtensions: true,
       extensionFactories: codemode
-        ? [piCodemodeExtension(sdk, () => steeringBoundaryPending)]
+        ? [piCodemodeExtension(sdk, () => boundary.pending)]
         : [],
       // Pi's own skill resolution stays off, like extensions and themes. A
       // turn loads the allowlist in skill-paths.ts: what this server ships,
@@ -1391,7 +1046,7 @@ async function* runPiAttempt(
         images,
         steerId,
       };
-      steeringBoundaryPending = true;
+      boundary.pending = true;
       pendingSteers.push(entry);
       onEngineQueue(async () => {
         // Attached images are staged into this run's scratch dir, in this
@@ -1425,7 +1080,7 @@ async function* runPiAttempt(
         // their original order while the selected id disappears. The entries
         // are read when the step runs, so one still being staged replays with
         // its final (noted) text.
-        steeringBoundaryPending = remaining.length > 0;
+        boundary.pending = remaining.length > 0;
         onEngineQueue(async () => {
           liveSession.clearQueue();
           for (const steer of remaining) {
@@ -1709,7 +1364,7 @@ async function* runPiAttempt(
                 if (idx === -1 && pendingSteers.length > 0) idx = 0;
                 if (idx !== -1) {
                   const steer = pendingSteers.splice(idx, 1)[0];
-                  steeringBoundaryPending = pendingSteers.length > 0;
+                  boundary.pending = pendingSteers.length > 0;
                   // Transcript parsing deliberately strips fenced system
                   // context. A background-wait steer can therefore be fully
                   // delivered yet leave no visible user entry for receipt

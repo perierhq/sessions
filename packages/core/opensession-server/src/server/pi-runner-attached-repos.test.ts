@@ -107,7 +107,7 @@ test("run options carry attached repositories to the credential selector", async
   ).text();
   expect(host).toContain("attachedRepos: spec.attachedRepos,");
   const runner = await Bun.file(
-    new URL("./pi-runner.ts", import.meta.url),
+    new URL("./pi-run-authority.ts", import.meta.url),
   ).text();
   expect(runner).toContain("attachedRepos: opts.attachedRepos,");
 });

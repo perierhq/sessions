@@ -101,7 +101,7 @@ test("continuation and detached host forward mode to the credential selector", a
   ).text();
   expect(host).toContain("mode: spec.mode,");
   const runner = await Bun.file(
-    new URL("./pi-runner.ts", import.meta.url),
+    new URL("./pi-run-authority.ts", import.meta.url),
   ).text();
   expect(runner).toMatch(/runGithubEnv\(\{\s*isCode: mode === "code",/);
 });
