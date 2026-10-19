@@ -103,6 +103,7 @@ import {
   prewarmPiSdk as prewarmPiSdkBinding,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
+import { sessionOwnershipEnv } from "./session-ownership";
 import {
   createMcpRuntime,
   splitMcpMigrationBoundary,
@@ -782,6 +783,12 @@ async function* runPiAttempt(
       ...githubEnv,
       ...awsEnv,
       ...cliEnv,
+      // OPENSESSION_SESSION_ID, and the container shims first on PATH, so
+      // what the agent leaves running stops with the session
+      // (session-ownership.ts).
+      ...sessionOwnershipEnv(journal?.osSessionId, process.env.PATH, {
+        shims: !remote,
+      }),
     };
 
     // One engine-neutral MCP runtime owns all connections for this logical

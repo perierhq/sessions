@@ -99,6 +99,9 @@ export function controlPlaneWorkloadCommand(
     env?: LimitEnv;
     cgroup?: string;
     scopesAvailable?: boolean;
+    /** Unit Description; session-owned scopes carry their labels here
+     * (session-ownership.ts). */
+    description?: string;
   } = {},
 ): { command: string[]; env: Record<string, string>; unit?: string } {
   const env = options.env ?? process.env;
@@ -114,6 +117,7 @@ export function controlPlaneWorkloadCommand(
       "--collect",
       "--quiet",
       `--unit=${unit}`,
+      ...(options.description ? [`--description=${options.description}`] : []),
       ...engineScopeSystemdArgs(env),
       "--property=TimeoutStopSec=2",
       "--",

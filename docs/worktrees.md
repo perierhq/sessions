@@ -74,7 +74,8 @@ minutes, stops setups whose worktree owners are all archived or gone, after a
 ten-minute grace for a session still being created; it never stops a setup the
 running gateway is still timing. On Linux with workload scoping, the gateway
 also stops setup scopes at startup that no record tracks and that have run
-longer than any repo's limit.
+longer than any repo's limit. Containers and units a session starts are
+stopped with it as well; see [session-resources.md](session-resources.md).
 
 Commit `.agents/setup` and `.agents/portals.json` to let each workspace
 provision itself and expose its app as a Portal on demand. This also lets an

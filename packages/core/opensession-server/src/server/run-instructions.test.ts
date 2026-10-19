@@ -126,6 +126,7 @@ describe("buildRunInstructions", () => {
       "## Pull requests",
       "## Waiting",
       "## Tools",
+      "## Background work",
       "## Portals",
       "## Media",
     ]);
@@ -182,8 +183,23 @@ describe("buildRunInstructions", () => {
     // mid-turn message read as progress narration, or never came. The
     // name rule in "Finish your turns" adds ~110: models opened replies
     // with the prompter's name, which reads as curt. Renaming the MCP
-    // dispatchers to tool_search/tool_call adds 2.
-    expect(prompt.length).toBeLessThan(4_255);
+    // dispatchers to tool_search/tool_call adds 2. "Background work" adds
+    // ~330: archive stops only what carries the session's label, and agents
+    // cannot learn the label for compose or systemd-run any other way.
+    expect(prompt.length).toBeLessThan(4_600);
+  });
+
+  test("names the ownership label only where archive can act on it", () => {
+    const local = buildRunInstructions({ isAsk: false, hasSession: true });
+    expect(local).toContain("## Background work");
+    expect(local).toContain("`opensession.session=$OPENSESSION_SESSION_ID`");
+    expect(local).toContain('`--description="$OPENSESSION_UNIT_LABEL"`');
+    for (const prompt of [
+      buildRunInstructions({ isAsk: true, hasSession: true }),
+      buildRunInstructions({ isAsk: false, hasSession: true, sandboxed: true }),
+      buildRunInstructions({ isAsk: false, hasSession: false }),
+    ])
+      expect(prompt).not.toContain("## Background work");
   });
 
   test("asks for visual proof by default only where walkthroughs are mounted", () => {

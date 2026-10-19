@@ -225,6 +225,18 @@ export function buildRunInstructions(input: {
         "session. Push your branch before ending: only pushed work leaves the Sandbox.",
     );
   }
+  // Archive stops what a session started only when it carries the
+  // session's label (session-ownership.ts). Local runs get the variables and
+  // the container shims; a Sandbox is its own machine and sleeps instead.
+  if (!input.isAsk && !input.sandboxed && input.hasSession) {
+    parts.push(
+      "## Background work\nArchiving this session stops the containers and units that carry its " +
+        "label. `podman run` and `docker run` add it; elsewhere (compose) add the label " +
+        "`opensession.session=$OPENSESSION_SESSION_ID`, or " +
+        '`--description="$OPENSESSION_UNIT_LABEL"` to `systemd-run --user`. ' +
+        "Never stop ones you did not start.",
+    );
+  }
   if (!input.isAsk && inproc["opensession-portals"]) {
     parts.push(
       "## Portals\nStart a Portal (`start_declared_portal` for one the repository declares, else " +

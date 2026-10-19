@@ -2068,11 +2068,12 @@ export async function handleSessionsRoutes(
         if (ws && !ws.key && members.length === 0) await deleteWorkspace(ws.id);
       }
       // Setup still running for the session's worktree goes with it, unless
-      // a live sibling session still works in that tree.
+      // a live sibling session still works in that tree, and so do the
+      // containers and units labelled with its id.
       try {
-        const { hasSessionOwnedResources, stopSessionOwnedResources } =
+        const { mayHaveSessionOwnedResources, stopSessionOwnedResources } =
           await import("../session-resources");
-        if (hasSessionOwnedResources())
+        if (await mayHaveSessionOwnedResources())
           await stopSessionOwnedResources(
             session,
             await getSessionListSnapshotAsync(),

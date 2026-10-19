@@ -114,8 +114,17 @@ export async function archivePlainSessionCandidates(
   releaseLease: (sessionId: string) => void = releasePreviewPathLease,
   resolveSessionDiscussion: DiscussionResolver = resolvePlainDiscussion,
   stopPortals: (sessionId: string) => Promise<void> = async (sessionId) => {
-    const { stopArchivedSessionPortals } = await import("./portal-supervisor");
-    await stopArchivedSessionPortals(sessionId);
+    // Portals, then everything else the session started (setup, labelled
+    // containers and units; session-resources.ts).
+    try {
+      const { stopArchivedSessionPortals } =
+        await import("./portal-supervisor");
+      await stopArchivedSessionPortals(sessionId);
+    } finally {
+      const { stopArchivedSessionResources } =
+        await import("./session-resources");
+      await stopArchivedSessionResources(sessionId);
+    }
   },
 ): Promise<number> {
   let archived = 0;
