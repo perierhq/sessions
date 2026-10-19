@@ -7,12 +7,17 @@
  * the automatic `auto` reason, and a reopen or new push brings back the ones
  * that close archived. A session someone archived by hand stays archived.
  *
+ * A session a run still owns at close is left alone, and archived once that
+ * run ends if the PR is still closed. Which PRs are closed is known only in
+ * memory, so a session whose run ends after a restart is left to the backfill.
+ *
  * `backfillClosedPrSessions` is the explicit, operator-run cleanup for
  * instances that accumulated these sessions before the webhook did this. It
  * is dry-run unless asked to apply and is never run automatically.
  */
 import { configuredRepos, type Repo } from "../../server/config";
 import type { ArchiveReason } from "../../server/archive";
+import { audit } from "../../server/audit";
 import type { UnifiedSession } from "../../server/types";
 import { prKey } from "./constants";
 import { bksIdFor, type GithubRunKind } from "./run";
@@ -25,15 +30,53 @@ interface LifecycleState {
   chains: Map<string, Promise<unknown>>;
   /** GitHub runs between runGithubAgent's start and end, per session id. */
   runsInFlight: Map<string, number>;
+  /** PRs this process saw close and not reopen since, oldest first. */
+  closedPrs: Set<string>;
+  /** Sessions closing left alone because a run owned them, by session id. */
+  watches: Map<string, RunEndWatch>;
+}
+
+interface RunEndWatch {
+  prNumber: number;
+  ghRepo?: string;
+  key: string;
+  deps: PrSessionArchiveDeps;
+  stop: () => void;
+  timer?: ReturnType<typeof setTimeout>;
+  /** Checks since the run last ended that still found it busy. */
+  checks: number;
 }
 
 const g = globalThis as { __osPrSessionLifecycle?: LifecycleState };
 const lifecycle: LifecycleState = (g.__osPrSessionLifecycle ??= {
   chains: new Map(),
   runsInFlight: new Map(),
+  closedPrs: new Set(),
+  watches: new Map(),
 });
 // A state object parked by an older build may predate later fields.
 lifecycle.runsInFlight ??= new Map();
+lifecycle.closedPrs ??= new Set();
+lifecycle.watches ??= new Map();
+
+/** Closed PRs remembered at most. Only sessions still owned by a run at
+ * close consult this; the oldest falls off first. */
+const CLOSED_PRS_MAX = 2000;
+/** Sessions waiting for their run to end at most; past it, the backfill. */
+const RUN_END_WATCHES_MAX = 500;
+/** How long after a run ends its session is checked again. Teardown (engine
+ * release, run state, journal clear) can finish after the turn-end event. */
+export const PR_SESSION_RECHECK_DELAY_MS = 5_000;
+/** Checks after one run end before waiting for the next one. */
+const RECHECKS_PER_RUN_END = 3;
+
+/** Forget all lifecycle state. Tests only. */
+export function __resetPrSessionLifecycleForTest(): void {
+  for (const id of [...lifecycle.watches.keys()]) dropWatch(id);
+  lifecycle.chains.clear();
+  lifecycle.runsInFlight.clear();
+  lifecycle.closedPrs.clear();
+}
 
 function lifecycleKey(prNumber: number, ghRepo?: string): string {
   return prKey(prNumber, ghRepo);
@@ -148,6 +191,11 @@ export interface PrSessionArchiveDeps {
   unarchive(session: UnifiedSession): Promise<boolean>;
   /** Drop pins made stale by a batch that was just archived. */
   afterArchive(sessions: UnifiedSession[]): Promise<void>;
+  /** Call `onEnd` each time the session's run ends; returns the unsubscribe.
+   * Without it a session busy at close is left to the backfill. */
+  watchRunEnd?(sessionId: string, onEnd: () => void): () => void;
+  /** Overrides PR_SESSION_RECHECK_DELAY_MS. */
+  recheckDelayMs?: number;
 }
 
 async function defaultDeps(): Promise<PrSessionArchiveDeps> {
@@ -158,6 +206,7 @@ async function defaultDeps(): Promise<PrSessionArchiveDeps> {
     { isAgentSessionBusy },
     { executeArchiveOverrideProjection },
     { unarchiveForHumanTurn },
+    { onSessionStateChange },
   ] = await Promise.all([
     import("../../server/archive"),
     import("../../server/session-cache"),
@@ -165,6 +214,7 @@ async function defaultDeps(): Promise<PrSessionArchiveDeps> {
     import("../../server/agent-runner"),
     import("../../server/session-projection-executor"),
     import("../../server/session-unarchive"),
+    import("../../server/session-state-events"),
   ]);
   return {
     findSession: findSessionAsync,
@@ -185,6 +235,10 @@ async function defaultDeps(): Promise<PrSessionArchiveDeps> {
       await publishSessionChange(session.id);
     },
     unarchive: (session) => unarchiveForHumanTurn(session),
+    watchRunEnd: (sessionId, onEnd) =>
+      onSessionStateChange((event) => {
+        if (event.sessionId === sessionId && !event.isRunning) onEnd();
+      }),
     // Workspace pins need the workspace's other members only, so read just
     // those rows instead of the whole session list.
     afterArchive: async (sessions) => {
@@ -239,9 +293,16 @@ export async function archiveClosedPrSessions(
   deps?: PrSessionArchiveDeps,
 ): Promise<PrSessionArchiveResult> {
   const resolved = deps ?? (await defaultDeps());
-  return serialisePrLifecycle(prNumber, ghRepo, () =>
-    archiveIdleSessions(prSessionIds(prNumber, ghRepo), resolved),
-  );
+  return serialisePrLifecycle(prNumber, ghRepo, async () => {
+    markPrClosed(lifecycleKey(prNumber, ghRepo));
+    const result = await archiveIdleSessions(
+      prSessionIds(prNumber, ghRepo),
+      resolved,
+    );
+    for (const id of result.skippedRunning)
+      watchUntilRunEnds(id, prNumber, ghRepo, resolved);
+    return result;
+  });
 }
 
 /**
@@ -257,6 +318,7 @@ export async function unarchiveReopenedPrSessions(
 ): Promise<string[]> {
   const resolved = deps ?? (await defaultDeps());
   return serialisePrLifecycle(prNumber, ghRepo, async () => {
+    markPrOpen(lifecycleKey(prNumber, ghRepo));
     const restored: string[] = [];
     for (const id of prSessionIds(prNumber, ghRepo)) {
       if (
@@ -269,6 +331,91 @@ export async function unarchiveReopenedPrSessions(
     }
     return restored;
   });
+}
+
+// ── Sessions a run owned at close ────────────────────────────
+
+function markPrClosed(key: string): void {
+  const closed = lifecycle.closedPrs;
+  closed.delete(key);
+  closed.add(key);
+  if (closed.size > CLOSED_PRS_MAX)
+    closed.delete(closed.values().next().value!);
+}
+
+function markPrOpen(key: string): void {
+  lifecycle.closedPrs.delete(key);
+  for (const [id, watch] of lifecycle.watches)
+    if (watch.key === key) dropWatch(id);
+}
+
+function dropWatch(id: string): void {
+  const watch = lifecycle.watches.get(id);
+  if (!watch) return;
+  lifecycle.watches.delete(id);
+  if (watch.timer) clearTimeout(watch.timer);
+  watch.stop();
+}
+
+/** Archive the session once its run ends, if the PR is still closed then. */
+function watchUntilRunEnds(
+  id: string,
+  prNumber: number,
+  ghRepo: string | undefined,
+  deps: PrSessionArchiveDeps,
+): void {
+  if (lifecycle.watches.has(id) || !deps.watchRunEnd) return;
+  if (lifecycle.watches.size >= RUN_END_WATCHES_MAX) return;
+  const watch: RunEndWatch = {
+    prNumber,
+    ghRepo,
+    key: lifecycleKey(prNumber, ghRepo),
+    deps,
+    stop: () => {},
+    checks: 0,
+  };
+  lifecycle.watches.set(id, watch);
+  watch.stop = deps.watchRunEnd(id, () => runEnded(id));
+}
+
+function runEnded(id: string): void {
+  const watch = lifecycle.watches.get(id);
+  if (!watch) return;
+  watch.checks = 0;
+  scheduleRecheck(id, watch);
+}
+
+function scheduleRecheck(id: string, watch: RunEndWatch): void {
+  if (watch.timer) clearTimeout(watch.timer);
+  const timer = setTimeout(() => {
+    watch.timer = undefined;
+    void serialisePrLifecycle(watch.prNumber, watch.ghRepo, async () => {
+      if (lifecycle.watches.get(id) !== watch) return;
+      if (!lifecycle.closedPrs.has(watch.key)) return dropWatch(id);
+      const result = await archiveIdleSessions([id], watch.deps);
+      if (result.skippedRunning.length) {
+        // Still tearing down, or a new run started. Look again a few times,
+        // then wait for the next run end.
+        if (++watch.checks < RECHECKS_PER_RUN_END) scheduleRecheck(id, watch);
+        return;
+      }
+      dropWatch(id);
+      if (!result.archived.length) return;
+      console.log(
+        `[github] PR #${watch.prNumber} is closed: archived ${id} after its run ended`,
+      );
+      audit({
+        msg: "github_pr_sessions_archived",
+        pr_number: watch.prNumber,
+        repo: watch.ghRepo,
+        session_ids: result.archived,
+      });
+    }).catch((e) =>
+      console.warn(`[github] archiving ${id} after its run failed:`, e),
+    );
+  }, watch.deps.recheckDelayMs ?? PR_SESSION_RECHECK_DELAY_MS);
+  (timer as { unref?: () => void }).unref?.();
+  watch.timer = timer;
 }
 
 // ── GitHub runs ──────────────────────────────────────────────
@@ -299,6 +446,7 @@ export async function beginPrSessionRun(
     const left = (runs.get(id) ?? 1) - 1;
     if (left > 0) runs.set(id, left);
     else runs.delete(id);
+    runEnded(id);
   };
   try {
     const resolved = deps ?? (await defaultDeps());
@@ -306,8 +454,11 @@ export async function beginPrSessionRun(
     await serialisePrLifecycle(prNumber, ghRepo, async () => {
       if (resolved.getArchiveReason(id) !== "auto") return;
       const session = await resolved.findSession(id);
-      if (session && (await resolved.unarchive(session)))
-        console.log(`[github] ${id} is running again: unarchived it`);
+      if (!session || !(await resolved.unarchive(session))) return;
+      console.log(`[github] ${id} is running again: unarchived it`);
+      // Still closed: archive it again once this run is done.
+      if (lifecycle.closedPrs.has(lifecycleKey(prNumber, ghRepo)))
+        watchUntilRunEnds(id, prNumber, ghRepo, resolved);
     });
   } catch (e) {
     console.warn(`[github] restoring ${id} for its run failed:`, e);

@@ -5,11 +5,12 @@
  * reason, a reopen or push restores what closing archived, and an explicit
  * backfill cleans up sessions whose PR closed before this existed.
  */
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { Repo } from "../../server/config";
 import type { ArchiveReason } from "../../server/archive";
 import type { UnifiedSession } from "../../server/types";
 import {
+  __resetPrSessionLifecycleForTest,
   archiveClosedPrSessions,
   backfillClosedPrSessions,
   beginPrSessionRun,
@@ -109,8 +110,36 @@ function fakeDeps(
       return options.states?.[key] ?? null;
     },
   };
-  return { deps, registry, calls };
+  return { deps, registry, calls, busy };
 }
+
+/** fakeDeps plus run-end events the test fires by hand, rechecked at once. */
+function watchedDeps(...args: Parameters<typeof fakeDeps>) {
+  const fake = fakeDeps(...args);
+  const listeners = new Map<string, Set<() => void>>();
+  fake.deps.recheckDelayMs = 0;
+  fake.deps.watchRunEnd = (id, onEnd) => {
+    const set = listeners.get(id) ?? new Set();
+    set.add(onEnd);
+    listeners.set(id, set);
+    return () => set.delete(onEnd);
+  };
+  return {
+    ...fake,
+    endRun: (id: string) => {
+      fake.busy.delete(id);
+      for (const onEnd of listeners.get(id) ?? []) onEnd();
+    },
+    watching: (id: string) => listeners.get(id)?.size ?? 0,
+  };
+}
+
+/** Let rechecks scheduled with a zero delay run. */
+const settle = async () => {
+  for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 1));
+};
+
+beforeEach(() => __resetPrSessionLifecycleForTest());
 
 describe("PR session ids", () => {
   test("covers every PR-owned kind and leaves issue and follow-up sessions out", () => {
@@ -282,6 +311,85 @@ describe("reopening or pushing to a PR", () => {
     expect(registry.get("bks-ghpr-12-review")).toBe("auto");
     await unarchiveReopenedPrSessions(12, undefined, deps);
     expect(registry.has("bks-ghpr-12-review")).toBe(false);
+  });
+});
+
+describe("a session a run owned at close", () => {
+  test("is archived once its run ends", async () => {
+    const { deps, registry, endRun, watching } = watchedDeps(
+      [session("bks-ghpr-12-autofix")],
+      { busy: ["bks-ghpr-12-autofix"] },
+    );
+
+    await archiveClosedPrSessions(12, undefined, deps);
+    expect(registry.has("bks-ghpr-12-autofix")).toBe(false);
+
+    endRun("bks-ghpr-12-autofix");
+    await settle();
+
+    expect(registry.get("bks-ghpr-12-autofix")).toBe("auto");
+    expect(watching("bks-ghpr-12-autofix")).toBe(0);
+  });
+
+  test("stays live when the PR reopened before its run ended", async () => {
+    const { deps, registry, endRun, watching } = watchedDeps(
+      [session("bks-ghpr-12-autofix")],
+      { busy: ["bks-ghpr-12-autofix"] },
+    );
+
+    await archiveClosedPrSessions(12, undefined, deps);
+    await unarchiveReopenedPrSessions(12, undefined, deps);
+    expect(watching("bks-ghpr-12-autofix")).toBe(0);
+
+    endRun("bks-ghpr-12-autofix");
+    await settle();
+
+    expect(registry.has("bks-ghpr-12-autofix")).toBe(false);
+  });
+
+  test("keeps waiting while a new run owns it", async () => {
+    const { deps, registry, busy, endRun, watching } = watchedDeps(
+      [session("bks-ghpr-12-autofix")],
+      { busy: ["bks-ghpr-12-autofix"] },
+    );
+
+    await archiveClosedPrSessions(12, undefined, deps);
+    // The run-end event arrives, but the session is busy again.
+    endRun("bks-ghpr-12-autofix");
+    busy.add("bks-ghpr-12-autofix");
+    await settle();
+    expect(registry.has("bks-ghpr-12-autofix")).toBe(false);
+    expect(watching("bks-ghpr-12-autofix")).toBe(1);
+
+    endRun("bks-ghpr-12-autofix");
+    await settle();
+    expect(registry.get("bks-ghpr-12-autofix")).toBe("auto");
+  });
+
+  test("a GitHub run's own end triggers the check", async () => {
+    const { deps, registry } = watchedDeps([session("bks-ghpr-12-review")]);
+
+    const end = await beginPrSessionRun(12, "review", undefined, deps);
+    await archiveClosedPrSessions(12, undefined, deps);
+    expect(registry.has("bks-ghpr-12-review")).toBe(false);
+
+    end();
+    await settle();
+
+    expect(registry.get("bks-ghpr-12-review")).toBe("auto");
+  });
+
+  test("a run restored on a closed PR is archived again after it", async () => {
+    const { deps, registry } = watchedDeps([session("bks-ghpr-12-review")]);
+    await archiveClosedPrSessions(12, undefined, deps);
+    expect(registry.get("bks-ghpr-12-review")).toBe("auto");
+
+    const end = await beginPrSessionRun(12, "review", undefined, deps);
+    expect(registry.has("bks-ghpr-12-review")).toBe(false);
+    end();
+    await settle();
+
+    expect(registry.get("bks-ghpr-12-review")).toBe("auto");
   });
 });
 
