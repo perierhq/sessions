@@ -13,9 +13,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
-import { askBashDenyReason, describeUsageLimitReset } from "./runner-shared";
 import { pickClaudeAccount } from "./claude-account-pick";
-import { formatAnthropicReset } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
 import { bindXaiAccount } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
@@ -59,7 +57,6 @@ import {
 } from "./pi-run-registry";
 import { PI_CODEMODE_TOOL, piToolNames } from "./pi-steering";
 import { piGateReason } from "./pi-gate";
-import { piErrorContent } from "./pi-usage-limit";
 import {
   PiAttemptAccounts,
   evidencePoolRef,
@@ -91,6 +88,12 @@ import {
   piTurnRepairEntries,
 } from "./pi-events";
 import { drivePiPrompt } from "./pi-prompt-loop";
+import {
+  piCaughtTerminal,
+  piEmptyReplyEntry,
+  piOutcomeTerminal,
+  piPoolDryTerminal,
+} from "./pi-terminal";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -747,14 +750,7 @@ async function* runPiAttempt(
     ) {
       // The retry (if it ran) also came back empty — never end silently on a
       // provider glitch; leave a visible chip explaining the missing reply.
-      persistRunEntries([
-        piSystemEntry(
-          "The model ended this turn with an empty response (no text or tool calls)" +
-            (emptyFinishRetries > 0
-              ? " and an automatic retry produced nothing too. Send another message to continue."
-              : "."),
-        ),
-      ]);
+      persistRunEntries([piEmptyReplyEntry(emptyFinishRetries)]);
     }
     if (abort.signal.aborted) {
       // User cancel ends QUIETLY — no terminal event, the generator just
@@ -767,60 +763,24 @@ async function* runPiAttempt(
       ledger.reachedTerminal = true;
       return;
     }
+    const settled = piOutcomeTerminal({
+      result: failed,
+      outcome: events.outcome,
+      isUsageLimit: (message) => accounts.isUsageLimit(message),
+      providerID: parsed.providerID,
+      model,
+      ledger,
+      session,
+    });
+    let terminal = settled.terminal;
+    const terminalUsageLimit = settled.usageLimit;
+    const terminalMessage = settled.message;
     // Usage-limit terminal on a pi/openai run: sideline the picked codex
     // account BEFORE yielding, so the fallback walk's next hop (and every
     // other engine's pick) skips it — shared sideline state with previous runner,
     // same per-(account, model) key.
-    const sidelineOnUsageLimit = (usageLimit: boolean, message: string) => {
-      if (usageLimit) {
-        accounts.sideline(message);
-      }
-    };
-    let terminal: StreamEvent;
-    let terminalUsageLimit = false;
-    let terminalMessage = "";
-    if (!failed.ok) {
-      const message = String((failed.error as Error)?.message || failed.error);
-      terminalMessage = message;
-      const usageLimit = accounts.isUsageLimit(message);
-      terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit, message);
-      terminal = {
-        type: "error",
-        content: piErrorContent(message, parsed.providerID),
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-        ...(usageLimit ? { usageLimitExhausted: true } : {}),
-      };
-    } else if (
-      events.outcome.lastStopReason === "error" ||
-      events.outcome.lastStopReason === "aborted"
-    ) {
-      const message =
-        events.outcome.lastErrorMessage ||
-        `run ended with stopReason ${events.outcome.lastStopReason}`;
-      terminalMessage = message;
-      const usageLimit = accounts.isUsageLimit(message);
-      terminalUsageLimit = usageLimit;
-      sidelineOnUsageLimit(usageLimit, message);
-      terminal = {
-        type: "error",
-        content: piErrorContent(message, parsed.providerID),
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-        ...(usageLimit ? { usageLimitExhausted: true } : {}),
-      };
-    } else {
-      terminal = {
-        type: "done",
-        sessionId: ledger.piSessionId,
-        result: session.getLastAssistantText() || undefined,
-        provider: PROVIDER,
-        model,
-        ...ledger.usageField(),
-      };
+    if (terminalUsageLimit) {
+      accounts.sideline(terminalMessage);
     }
     // Rotate rather than end the turn. This is the COMMON half of the walk:
     // a provider usage limit normally arrives as an in-band terminal (pi's
@@ -858,23 +818,15 @@ async function* runPiAttempt(
       accounts.claudePoolRefusal &&
       accounts.pickedAccount?.pool === "claude"
     ) {
-      console.warn(
-        `[pi-runner] usage limit on Claude account "${accounts.pickedAccount.name}" ` +
-          `(${parsed.modelID}) and no other account can serve it: ${accounts.claudePoolRefusal}`,
-      );
-      const resetAt = accounts.limit429()?.resetAt;
-      const reset =
-        describeUsageLimitReset(terminalMessage) ??
-        (resetAt !== undefined ? formatAnthropicReset(resetAt) : undefined);
-      terminal = {
-        ...terminal,
-        content: piErrorContent(
-          `every Claude account is usage-limited for ${parsed.modelID}` +
-            (reset ? `, the soonest resets ${reset}` : "") +
-            `. Last account tried ("${accounts.pickedAccount.name}") said: ${terminalMessage}`,
-          parsed.providerID,
-        ),
-      };
+      terminal = piPoolDryTerminal({
+        terminal,
+        accountName: accounts.pickedAccount.name,
+        refusal: accounts.claudePoolRefusal,
+        resetAt: accounts.limit429()?.resetAt,
+        terminalMessage,
+        modelID: parsed.modelID,
+        providerID: parsed.providerID,
+      });
     }
     ledger.reachedTerminal = true;
     ledger.end({
@@ -919,14 +871,13 @@ async function* runPiAttempt(
       ...ledger.usageAuditFields(),
       error: message,
     });
-    yield {
-      type: "error",
-      content: piErrorContent(message, parsed.providerID),
-      provider: PROVIDER,
+    yield piCaughtTerminal({
+      message,
+      usageLimit,
+      providerID: parsed.providerID,
       model,
-      ...ledger.usageField(),
-      ...(usageLimit ? { usageLimitExhausted: true } : {}),
-    };
+      ledger,
+    });
   } finally {
     ledger.end({
       ok: false,
