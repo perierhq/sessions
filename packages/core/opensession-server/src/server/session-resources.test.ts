@@ -1176,7 +1176,10 @@ describe("labelled containers and units", () => {
 });
 
 describe("setup environment", () => {
-  test("a session-tagged setup names its session; an untagged one does not", async () => {
+  test("setup never carries a session's ownership, tagged or not", async () => {
+    // Setup belongs to the worktree, which a live sibling session may
+    // share: a container it starts must not be labelled as the creating
+    // session's, or archiving that session would stop it under the sibling.
     const out = join(worktree, "owner.txt");
     const script = `printf '%s' "\${OPENSESSION_SESSION_ID:-none}" > ${out}`;
     await runSessionResource({
@@ -1187,7 +1190,7 @@ describe("setup environment", () => {
       sessionOwned: true,
       timeoutMs: 10_000,
     });
-    expect(readFileSync(out, "utf8")).toBe("os-setup-1");
+    expect(readFileSync(out, "utf8")).toBe("none");
     await runSessionResource({
       kind: "setup",
       argv: ["sh", "-c", script],

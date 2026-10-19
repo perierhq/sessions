@@ -42,7 +42,6 @@ import { withFileLock } from "./shared/file-lock";
 import {
   listLabelledResources,
   resourceInstanceId,
-  sessionOwnershipEnv,
   stopLabelledResource,
   type LabelledResource,
 } from "./session-ownership";
@@ -626,15 +625,11 @@ export async function runSessionResource(
     MAX_RESOURCE_TIMEOUT_MS,
   );
   const startedAt = Date.now();
-  // A session-tagged setup labels what it starts (a dev database) as the
-  // session's, so archive stops that too.
-  const ownership = sessionOwnershipEnv(input.sessionId, process.env.PATH);
-  const child = host.spawn(argv, {
-    cwd: input.cwd,
-    ...(Object.keys(ownership).length
-      ? { env: { ...process.env, ...ownership } }
-      : {}),
-  });
+  // No session ownership env: setup belongs to its worktree, which sibling
+  // sessions may share. A container it starts carries no session label, so
+  // archiving the session that created the worktree never stops what a
+  // live sibling still uses (session-ownership.ts).
+  const child = host.spawn(argv, { cwd: input.cwd });
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_BYTES);
