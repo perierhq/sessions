@@ -615,3 +615,95 @@ describe("sidelines survive a restart", () => {
     expect((otherModel as number) - Date.now()).toBeLessThan(1000);
   });
 });
+
+describe("a usage poll releases model-scoped sidelines it disproves", () => {
+  // Blind accounts (usageScope "missing", no credentials file): markExhausted's
+  // background usage refresh returns before any network call.
+  const blind = (id: string) => ({
+    ...mkAccount(id),
+    usageScope: "missing" as const,
+  });
+  const originalStore = readFileSync(storePath, "utf-8");
+  const statedReset = () => Date.now() + 44 * 60 * 60 * 1000;
+  const sonnet = "claude-sonnet-5-5";
+  const fable = "claude-fable-5-1";
+  // The shape the OAuth usage endpoint reports after an early weekly reset:
+  // account-wide windows with headroom and a scoped entry only for Fable.
+  const poll = (sevenDayPct: number, fablePct = 0) => ({
+    fetchedAt: new Date().toISOString(),
+    fiveHour: { utilization: 17, resetsAt: null },
+    sevenDay: { utilization: sevenDayPct, resetsAt: null },
+    scopedLimits: [{ label: "Fable", utilization: fablePct, resetsAt: null }],
+    extraUsage: null,
+  });
+  const sidelinedFor = (id: string, model: string) =>
+    (accounts.earliestPoolReset(undefined, model, id) as number) - Date.now();
+
+  beforeAll(() => {
+    const parsed = JSON.parse(originalStore);
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        accounts: [
+          ...parsed.accounts,
+          blind("weekly-headroom"),
+          blind("weekly-spent"),
+          blind("fable-scoped"),
+          blind("no-weekly-window"),
+          blind("five-hour-missing"),
+        ],
+      }),
+    );
+  });
+
+  afterAll(() => writeFileSync(storePath, originalStore));
+
+  test("a model without a scoped limit is released when the account-wide windows have headroom", () => {
+    accounts.markExhausted("weekly-headroom", sonnet, statedReset());
+    expect(sidelinedFor("weekly-headroom", sonnet)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
+    accounts.__applyUsagePollForTest("weekly-headroom", poll(27));
+    expect(sidelinedFor("weekly-headroom", sonnet)).toBeLessThan(1000);
+  });
+
+  test("a model without a scoped limit stays sidelined while the 7-day window is full", () => {
+    accounts.markExhausted("weekly-spent", sonnet, statedReset());
+    accounts.__applyUsagePollForTest("weekly-spent", poll(100));
+    expect(sidelinedFor("weekly-spent", sonnet)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
+  });
+
+  test("a plan with no 7-day window is released on 5-hour headroom alone", () => {
+    accounts.markExhausted("no-weekly-window", sonnet, statedReset());
+    accounts.__applyUsagePollForTest("no-weekly-window", {
+      ...poll(0),
+      sevenDay: null,
+    });
+    expect(sidelinedFor("no-weekly-window", sonnet)).toBeLessThan(1000);
+  });
+
+  test("a poll without a 5-hour window releases nothing", () => {
+    accounts.markExhausted("five-hour-missing", sonnet, statedReset());
+    accounts.__applyUsagePollForTest("five-hour-missing", {
+      ...poll(27),
+      fiveHour: null,
+    });
+    expect(sidelinedFor("five-hour-missing", sonnet)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
+  });
+
+  test("a model with a scoped limit still answers to that limit alone", () => {
+    accounts.markExhausted("fable-scoped", fable, statedReset());
+    // Account-wide headroom does not release a spent Fable week.
+    accounts.__applyUsagePollForTest("fable-scoped", poll(27, 100));
+    expect(sidelinedFor("fable-scoped", fable)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
+    // Fable headroom releases it even with the 7-day window full.
+    accounts.__applyUsagePollForTest("fable-scoped", poll(100, 40));
+    expect(sidelinedFor("fable-scoped", fable)).toBeLessThan(1000);
+  });
+});
