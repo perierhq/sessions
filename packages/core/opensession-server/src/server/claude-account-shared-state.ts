@@ -45,7 +45,12 @@ function siblingPath(suffix: string): string {
 }
 
 const usagePath = () => siblingPath("usage");
-const picksPath = () => siblingPath("picks");
+// Round-robin turns and session memory are separate files: every pick
+// rewrites the turns, a handful of timestamps, under the lock; the session
+// map (up to SESSION_PICK_LIMIT entries) is rewritten only when a session
+// changes account or its entry needs restamping.
+const turnsPath = () => siblingPath("turns");
+const sessionsPath = () => siblingPath("sessions");
 
 // ── Locked read-modify-write ─────────────────────────────────────────────────
 // A lock is held for one read, one small decision and one write: well under
@@ -163,18 +168,22 @@ interface SessionPick {
   at: number;
 }
 
-interface PicksFile {
+interface TurnsFile {
   /** When each account was last handed a turn, for the bucket tiebreak. */
   lastPickedAt?: Record<string, number>;
+}
+
+interface SessionsFile {
   /** Which account last served a session, keyed by sessionPickKey. */
   sessions?: Record<string, SessionPick>;
 }
 
-const emptyPicks = (): PicksFile => ({ lastPickedAt: {}, sessions: {} });
+const emptyTurns = (): TurnsFile => ({ lastPickedAt: {} });
+const emptySessions = (): SessionsFile => ({ sessions: {} });
 
 /** When each account was last picked (0 when never). Read-only view. */
 export function lastPickedTimes(): Readonly<Record<string, number>> {
-  return readShared(picksPath(), emptyPicks).lastPickedAt ?? {};
+  return readShared(turnsPath(), emptyTurns).lastPickedAt ?? {};
 }
 
 /**
@@ -187,7 +196,7 @@ export function recordPick<T extends { id: string }>(
   knownIds: readonly string[],
   choose: (lastPickedAt: Readonly<Record<string, number>>) => T | undefined,
 ): T | undefined {
-  return updateShared(picksPath(), emptyPicks, (draft) => {
+  return updateShared(turnsPath(), emptyTurns, (draft) => {
     const times = (draft.lastPickedAt ??= {});
     const picked = choose(times);
     if (!picked) return undefined;
@@ -219,7 +228,7 @@ function sessionPickKey(user: string | undefined, sessionKey: string): string {
 const SESSION_PICK_RESTAMP_MS = 60_000;
 
 function sessionEntry(key: string): SessionPick | undefined {
-  const sessions = readShared(picksPath(), emptyPicks).sessions;
+  const sessions = readShared(sessionsPath(), emptySessions).sessions;
   const entry =
     sessions && Object.hasOwn(sessions, key) ? sessions[key] : undefined;
   if (!entry || typeof entry.id !== "string") return undefined;
@@ -245,7 +254,7 @@ export function rememberSessionAccount(
   const current = sessionEntry(key);
   if (current?.id === accountId && now - current.at < SESSION_PICK_RESTAMP_MS)
     return;
-  updateShared(picksPath(), emptyPicks, (draft) => {
+  updateShared(sessionsPath(), emptySessions, (draft) => {
     const sessions = (draft.sessions ??= {});
     sessions[key] = { id: accountId, at: now };
     const live = Object.entries(sessions).filter(
@@ -263,7 +272,7 @@ export function rememberSessionAccount(
 
 /** Test seam: forget every remembered session account. */
 export function __forgetSessionAccountsForTest(): void {
-  updateShared(picksPath(), emptyPicks, (draft) => {
+  updateShared(sessionsPath(), emptySessions, (draft) => {
     draft.sessions = {};
   });
 }
@@ -272,6 +281,6 @@ export function __forgetSessionAccountsForTest(): void {
 export function __resetSharedPickStateForTest(): void {
   fallback.clear();
   unwritable.clear();
-  rmSync(picksPath(), { force: true });
-  rmSync(usagePath(), { force: true });
+  for (const path of [turnsPath(), sessionsPath(), usagePath()])
+    rmSync(path, { force: true });
 }
