@@ -272,7 +272,12 @@ describe("createPiRuntimeBinding", () => {
             ? "openai-codex-responses"
             : "openai-responses",
         );
-        expect(binding.model.contextWindow).toBe(272_000);
+        // Codex serves GPT-6.1 Sol with a 500K window; the API keeps 272K.
+        expect(binding.model.contextWindow).toBe(
+          account.kind === "home" && modelID === "gpt-6.1-sol"
+            ? 500_000
+            : 272_000,
+        );
         expect(binding.model.maxTokens).toBe(128_000);
         expect(binding.model.thinkingLevelMap?.max).toBe("max");
         expect(binding.model.cost.input).toBe(
