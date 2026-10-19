@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { sessionResourceSummary } from "./SessionResources";
+import {
+  sessionResourceSummary,
+  stopConfirmQuestion,
+} from "./SessionResources";
 
 test("summarises what runs in a fixed order with counted nouns", () => {
   expect(
@@ -12,4 +15,9 @@ test("summarises what runs in a fixed order with counted nouns", () => {
     ]),
   ).toBe("1 Portal · 2 containers · 1 background process · 1 setup");
   expect(sessionResourceSummary([])).toBe("");
+});
+
+test("Stop everything asks with the item count", () => {
+  expect(stopConfirmQuestion(1)).toBe("Stop 1 item?");
+  expect(stopConfirmQuestion(5)).toBe("Stop 5 items?");
 });

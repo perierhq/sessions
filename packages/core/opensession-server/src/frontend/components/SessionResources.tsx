@@ -3,6 +3,7 @@ import { stopSessionResources } from "../lib/api";
 import { useSessionResourcesResource } from "../hooks/useApiResources";
 import { errorMessage } from "../lib/error-message";
 import { formatBytes } from "../lib/images";
+import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import type {
   SessionResourceItem,
@@ -20,10 +21,16 @@ import {
 } from "../lib/workspace-summary-classes";
 import { IconBox, IconGlobe, IconTerminal, IconWrench } from "./icons";
 
-/** How often the list refreshes while it is on screen. */
-const RESOURCES_REFRESH_MS = 30_000;
+/** How often the list refreshes while it is on screen. SWR skips the poll
+ * while the tab is hidden and revalidates on focus; the server reuses its
+ * host listing for 20s on top of that. */
+const RESOURCES_REFRESH_MS = 60_000;
 /** Rows before the rest fold into one "+N more" line. */
 const VISIBLE_ROWS = 4;
+
+/** The band's text actions (Stop everything, Confirm, Cancel): ghost
+ * Buttons in the summary's action type, as quiet as the rows above. */
+const STOP_ACTION = cn(WS_SUMMARY_ACTION, "shrink-0 rounded-row px-2");
 
 const KIND_ICON: Record<SessionResourceItemKind, typeof IconBox> = {
   portal: IconGlobe,
@@ -72,6 +79,11 @@ export function sessionResourceSummary(
     .join(" · ");
 }
 
+/** Stop everything's inline question. */
+export function stopConfirmQuestion(count: number): string {
+  return `Stop ${count} item${count === 1 ? "" : "s"}?`;
+}
+
 /**
  * The workspace summary's "Running" band: what this session still has
  * running on the host (Portals, setup, containers, background processes),
@@ -96,14 +108,25 @@ export function SessionResourcesSection({
     revision: `${running ? 1 : 0}\0${archived ? 1 : 0}\0${refreshTick ?? 0}`,
   });
   const [stopping, setStopping] = useState(false);
+  // Stop everything is two steps: the first click asks, inline. A run
+  // starting or ending drops the question rather than leaving it to
+  // reappear later.
+  const [confirming, setConfirming] = useState(false);
+  const [seenRunning, setSeenRunning] = useState(running);
+  if (seenRunning !== running) {
+    setSeenRunning(running);
+    setConfirming(false);
+  }
   const [error, setError] = useState<string | null>(null);
   const items = resource.data?.items ?? [];
   if (!items.length) return null;
   const memory = resource.data?.memoryBytes;
   const visible = items.slice(0, VISIBLE_ROWS);
   const hidden = items.length - visible.length;
+  const asking = confirming && !running && !stopping;
 
   async function stopEverything() {
+    setConfirming(false);
     setStopping(true);
     setError(null);
     const failure = await stopSessionResources(sessionId).then(
@@ -164,28 +187,67 @@ export function SessionResourcesSection({
           <span className={WS_SUMMARY_LABEL}>+{hidden} more</span>
         </div>
       )}
-      <div className="mx-2 flex min-w-0 items-center justify-between gap-2 px-2 py-1">
-        <span className="min-w-0 truncate text-meta text-faint">
-          {running
-            ? "Stops are available once the run ends"
-            : sessionResourceSummary(items)}
-        </span>
-        <button
-          type="button"
-          className={cn(
-            WS_SUMMARY_ACTION,
-            "focus-ring shrink-0 cursor-pointer rounded-row border-none bg-transparent px-2 hover:bg-hover hover:text-red disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-inherit",
-          )}
-          onClick={() => void stopEverything()}
-          disabled={running || stopping}
-          title={
-            running
-              ? "The session is running. Stop the run first."
-              : "Stop the Portals, setup, containers and background processes this session started"
+      <div
+        className="mx-2 flex min-w-0 items-center justify-between gap-2 px-2 py-1"
+        onKeyDown={(event) => {
+          if (asking && event.key === "Escape") {
+            event.stopPropagation();
+            setConfirming(false);
           }
+        }}
+      >
+        <span
+          className={cn(
+            "min-w-0 truncate text-meta",
+            asking ? "font-medium text-fg" : "text-faint",
+          )}
+          role={asking ? "status" : undefined}
         >
-          {stopping ? "Stopping…" : "Stop everything"}
-        </button>
+          {asking
+            ? stopConfirmQuestion(items.length)
+            : running
+              ? "Stops are available once the run ends"
+              : sessionResourceSummary(items)}
+        </span>
+        {asking ? (
+          <span className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(STOP_ACTION, "text-red hover:text-red")}
+              onClick={() => void stopEverything()}
+              autoFocus
+            >
+              Confirm
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={STOP_ACTION}
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </Button>
+          </span>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(STOP_ACTION, "hover:text-red")}
+            onClick={() => {
+              setError(null);
+              setConfirming(true);
+            }}
+            disabled={running || stopping}
+            title={
+              running
+                ? "The session is running. Stop the run first."
+                : "Stop the Portals, setup, containers and background processes this session started"
+            }
+          >
+            {stopping ? "Stopping…" : "Stop everything"}
+          </Button>
+        )}
       </div>
       {error && (
         <div className="px-4 py-1 text-meta font-medium text-red" role="alert">
