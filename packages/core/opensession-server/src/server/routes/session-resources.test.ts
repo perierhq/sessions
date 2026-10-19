@@ -38,6 +38,7 @@ function deps(
       byKind: { setup: 0, container: 1, unit: 0 },
       memoryBytes: 0,
       leftoverMemoryBytes: 0,
+      leftoverReach: { reaper: 0, manual: 0 },
       leftovers: [],
     }),
     ...overrides,

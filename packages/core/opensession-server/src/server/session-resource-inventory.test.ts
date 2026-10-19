@@ -38,6 +38,11 @@ type Fake = {
   handle: string;
   session: string;
   memory?: number;
+  /** A unit's instance label; this instance's when unset. */
+  instance?: string;
+  /** A container labelled with this instance (containers have none
+   * otherwise). */
+  ours?: boolean;
 };
 let fakes: Fake[] = [];
 let stops: string[][] = [];
@@ -59,7 +64,7 @@ function install(): void {
             .filter((f) => f.kind === "container")
             .map(
               (f) =>
-                `${f.handle}\t${f.session}\t\t2026-05-01 12:00:00 +0000 UTC\tpg\tpostgres:16`,
+                `${f.handle}\t${f.session}\t${f.ours ? resourceInstanceId() : ""}\t2026-05-01 12:00:00 +0000 UTC\tpg\tpostgres:16`,
             )
             .join("\n"),
         };
@@ -79,7 +84,7 @@ function install(): void {
             .filter((f) => f.kind === "unit")
             .map(
               (f) =>
-                `${f.handle} loaded active running opensession.session=${f.session} opensession.instance=${resourceInstanceId()} agent command`,
+                `${f.handle} loaded active running opensession.session=${f.session} opensession.instance=${f.instance ?? resourceInstanceId()} agent command`,
             )
             .join("\n"),
         };
@@ -359,10 +364,46 @@ describe("host session workloads", () => {
     expect(host.memoryBytes).toBe(104 * 1024 * 1024);
     expect(host.leftoverMemoryBytes).toBe(40 * 1024 * 1024);
     expect(
-      host.leftovers.map((item) => [item.kind, item.sessionId, item.owner]),
+      host.leftovers.map((item) => [
+        item.kind,
+        item.sessionId,
+        item.owner,
+        item.reaped,
+      ]),
     ).toEqual([
-      ["container", "os-archived", "archived"],
-      ["unit", "os-gone", "missing"],
+      ["container", "os-archived", "archived", true],
+      // Missing, but no readable start time: the reaper keeps it.
+      ["unit", "os-gone", "missing", false],
     ]);
+    expect(host.leftoverReach).toEqual({ reaper: 1, manual: 1 });
+  });
+
+  test("leftovers the reaper leaves alone are counted apart", async () => {
+    fakes = [
+      // Another instance's, for an archived session.
+      {
+        kind: "unit",
+        handle: "u-foreign.scope",
+        session: "os-archived",
+        instance: "000000000000",
+      },
+      // A missing session's container labelled by hand, without an instance.
+      { kind: "container", handle: ID_A, session: "os-gone" },
+      // A missing session's container of this instance, with a start time.
+      { kind: "container", handle: ID_B, session: "os-gone", ours: true },
+    ];
+    install();
+    const host = await hostSessionResources([
+      { id: "os-live" },
+      { id: "os-archived", archived: true },
+    ]);
+    expect(host.leftovers.map((item) => [item.id, item.reaped]).sort()).toEqual(
+      [
+        [`container:${ID_A}`, false],
+        [`container:${ID_B}`, true],
+        ["unit:u-foreign.scope", false],
+      ].sort(),
+    );
+    expect(host.leftoverReach).toEqual({ reaper: 1, manual: 2 });
   });
 });

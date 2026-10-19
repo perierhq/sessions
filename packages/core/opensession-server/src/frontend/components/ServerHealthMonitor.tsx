@@ -58,12 +58,29 @@ function ResourceGraph({
   );
 }
 
+/** Why the lifecycle reaper leaves a leftover running. */
+const KEPT_BECAUSE =
+  "another instance's, or without this instance's label or a readable start time";
+
+/** What happens to the leftovers: the reaper stops some by itself, and the
+ * rest wait for someone to stop them. */
+export function leftoverReachText(reach: {
+  reaper: number;
+  manual: number;
+}): string {
+  if (!reach.manual) return "The lifecycle reaper stops these within minutes.";
+  const them = reach.manual === 1 ? "it" : "them";
+  if (!reach.reaper)
+    return `The lifecycle reaper leaves ${them} running (${KEPT_BECAUSE}); stop ${them} by hand.`;
+  return `The lifecycle reaper stops ${reach.reaper} within minutes. It leaves ${reach.manual} running (${KEPT_BECAUSE}); stop ${reach.manual === 1 ? "that one" : "those"} by hand.`;
+}
+
 /** Containers, background processes and setup that sessions started, and
  * what archived or deleted sessions left running. Mounted only while the
  * popup is open, so it never polls in the background. */
 function SessionWorkloads() {
   const { data, error } = useHostSessionResourcesResource({
-    refreshInterval: 30_000,
+    refreshInterval: 60_000,
   });
   if (error) return null;
   if (!data)
@@ -74,6 +91,8 @@ function SessionWorkloads() {
     );
   const running = data.byKind.container + data.byKind.unit + data.byKind.setup;
   const leftovers = data.counts.archived + data.counts.missing;
+  // Older servers did not split the leftovers: say nothing about the reaper.
+  const reach = data.leftoverReach;
   return (
     <section aria-label="Session workloads" className="mt-4">
       <div className="flex items-baseline justify-between text-supporting">
@@ -96,13 +115,14 @@ function SessionWorkloads() {
             {data.leftoverMemoryBytes
               ? ` · ${formatBytes(data.leftoverMemoryBytes)}`
               : ""}
-            . The lifecycle reaper stops these within minutes.
+            .{reach ? ` ${leftoverReachText(reach)}` : ""}
           </p>
           <ul className="m-0 mt-1 list-none space-y-0.5 p-0 text-meta text-dim">
             {data.leftovers.slice(0, 5).map((item) => (
               <li key={item.id} className="truncate" title={item.label}>
                 {item.label}
                 {item.memoryBytes ? ` · ${formatBytes(item.memoryBytes)}` : ""}
+                {item.reaped === false ? " · stop by hand" : ""}
               </li>
             ))}
           </ul>

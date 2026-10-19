@@ -28,10 +28,12 @@ import {
   containersMemory,
   labelledStopGeneration,
   listLabelledResources,
+  resourceInstanceId,
   unitsMemory,
   type LabelledResource,
 } from "./session-ownership";
 import {
+  labelledReapReason,
   listSessionResources,
   sessionOwnedRecords,
   sessionResourceAlive,
@@ -314,11 +316,13 @@ export async function hostSessionResources(
   const counts = { live: 0, archived: 0, missing: 0, unknown: 0 };
   const byKind = { setup: 0, container: 0, unit: 0 };
   const leftovers: HostSessionResources["leftovers"] = [];
+  const leftoverReach = { reaper: 0, manual: 0 };
   let memoryBytes = 0;
   let leftoverMemoryBytes = 0;
   const add = (
     item: SessionResourceItem,
     sessionId: string | undefined,
+    reaped: boolean,
   ): void => {
     const owner = state(sessionId);
     counts[owner]++;
@@ -326,23 +330,40 @@ export async function hostSessionResources(
     memoryBytes += item.memoryBytes ?? 0;
     if (owner === "archived" || owner === "missing") {
       leftoverMemoryBytes += item.memoryBytes ?? 0;
+      leftoverReach[reaped ? "reaper" : "manual"]++;
       if (leftovers.length < LEFTOVER_LIMIT)
         leftovers.push({
           ...item,
           ...(sessionId ? { sessionId } : {}),
           owner,
+          reaped,
         });
     }
   };
+  const instance = resourceInstanceId();
   for (const resource of labelled)
-    add(labelledItem(resource, containerMemory), resource.sessionId);
+    add(
+      labelledItem(resource, containerMemory),
+      resource.sessionId,
+      // Whether the reaper would stop it once its grace has passed: not
+      // another instance's, nor a missing session's without this
+      // instance's label or a readable start time.
+      labelledReapReason(resource, {
+        ownerArchived: archivedById.get(resource.sessionId),
+        sessionsKnown: sessions.length > 0,
+        instance,
+        now: Number.POSITIVE_INFINITY,
+      }) !== null,
+    );
+  // The reaper stops setup whose owners are all archived or gone.
   for (const record of records)
-    add(recordItem(record, recordMemory), record.sessionId);
+    add(recordItem(record, recordMemory), record.sessionId, true);
   return {
     counts,
     byKind,
     memoryBytes,
     leftoverMemoryBytes,
+    leftoverReach,
     leftovers,
   };
 }

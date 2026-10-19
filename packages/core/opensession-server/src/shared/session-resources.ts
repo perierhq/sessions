@@ -25,7 +25,8 @@ export type SessionResourceList = {
   memoryBytes?: number;
 };
 
-/** POST /api/sessions/:id/resources/stop */
+/** POST /api/sessions/:id/resources/stop. A 409 carries the same count
+ * when a run started part-way through and the rest was left running. */
 export type StopSessionResourcesResult = { stopped: number };
 
 /** Live, archived, missing from the session list, or untagged. */
@@ -43,11 +44,17 @@ export type HostSessionResources = {
   memoryBytes: number;
   /** Memory held by archived and missing sessions' workloads. */
   leftoverMemoryBytes: number;
+  /** Of those leftovers, how many the lifecycle reaper stops by itself, and
+   * how many it leaves alone: another instance's, a missing session's
+   * without this instance's label, or one whose start time is unreadable. */
+  leftoverReach: { reaper: number; manual: number };
   /** Archived and missing sessions' workloads, at most 50. */
   leftovers: Array<
     SessionResourceItem & {
       sessionId?: string;
       owner: Extract<SessionResourceOwnerState, "archived" | "missing">;
+      /** The lifecycle reaper stops it (see leftoverReach). */
+      reaped: boolean;
     }
   >;
 };
