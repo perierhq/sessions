@@ -63,6 +63,7 @@ import {
   reapSessionResources,
   sweepUntrackedSetupScopes,
 } from "./session-resources";
+import { sessionOwnershipEnv } from "./session-ownership";
 import { pruneWorktreeSetupFailures } from "./worktree-setup-status";
 import type { UnifiedSession } from "./types";
 
@@ -917,9 +918,12 @@ async function startHostPortal(
         await mkdir(logDir, { recursive: true });
         const log = await open(logPath, "w");
         const directCommand = portalHostCommand(command);
+        const portalPath = process.env.PATH || "/usr/local/bin:/usr/bin:/bin";
         const portalEnv = {
-          PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+          PATH: portalPath,
           HOME: process.env.HOME || "/tmp",
+          // A container the Portal command starts belongs to its session.
+          ...sessionOwnershipEnv(input.sessionId, portalPath),
           ...awsEnv,
           ...input.env,
           PORT: String(port),

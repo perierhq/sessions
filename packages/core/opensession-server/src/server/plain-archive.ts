@@ -114,8 +114,25 @@ export async function archivePlainSessionCandidates(
   releaseLease: (sessionId: string) => void = releasePreviewPathLease,
   resolveSessionDiscussion: DiscussionResolver = resolvePlainDiscussion,
   stopPortals: (sessionId: string) => Promise<void> = async (sessionId) => {
-    const { stopArchivedSessionPortals } = await import("./portal-supervisor");
-    await stopArchivedSessionPortals(sessionId);
+    // Portals, then everything else the session started (setup, labelled
+    // containers and units; session-resources.ts).
+    try {
+      const { stopArchivedSessionPortals } =
+        await import("./portal-supervisor");
+      await stopArchivedSessionPortals(sessionId);
+    } finally {
+      // In the background, as archive.ts does: the reaper retries a miss.
+      void import("./session-resources")
+        .then(({ stopArchivedSessionResources }) =>
+          stopArchivedSessionResources(sessionId),
+        )
+        .catch((error) =>
+          console.error(
+            `[session-resources] archive cleanup failed for ${sessionId}:`,
+            error,
+          ),
+        );
+    }
   },
 ): Promise<number> {
   let archived = 0;

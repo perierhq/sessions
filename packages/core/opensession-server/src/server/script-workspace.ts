@@ -5,6 +5,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { findSession } from "./session-cache";
+import { sessionOwnershipEnv } from "./session-ownership";
 import { hostSessionScratchDir } from "./session-scratch";
 import type { UnifiedSession } from "./types";
 
@@ -49,6 +50,8 @@ export function scriptEnv(sessionId: string): Record<string, string> {
   };
   for (const name of ["USER", "LOGNAME", "SHELL"])
     if (process.env[name]) env[name] = process.env[name]!;
+  // The session owns containers and units the script starts.
+  Object.assign(env, sessionOwnershipEnv(sessionId, env.PATH));
   return env;
 }
 

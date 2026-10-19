@@ -2068,22 +2068,26 @@ export async function handleSessionsRoutes(
         if (ws && !ws.key && members.length === 0) await deleteWorkspace(ws.id);
       }
       // Setup still running for the session's worktree goes with it, unless
-      // a live sibling session still works in that tree.
-      try {
-        const { hasSessionOwnedResources, stopSessionOwnedResources } =
+      // a live sibling session still works in that tree, and so do the
+      // containers and units labelled with its id. Detached: stopping a
+      // container takes seconds and must not hold the session lock; the
+      // worktree removal below stops setup in the tree itself, and the
+      // reaper retries anything this misses.
+      void (async () => {
+        const { mayHaveSessionOwnedResources, stopSessionOwnedResources } =
           await import("../session-resources");
-        if (hasSessionOwnedResources())
+        if (await mayHaveSessionOwnedResources())
           await stopSessionOwnedResources(
             session,
             await getSessionListSnapshotAsync(),
             { reason: "removed" },
           );
-      } catch (error) {
+      })().catch((error) => {
         console.warn(
           `[session-resources] cleanup failed after deleting ${session.id}:`,
           error,
         );
-      }
+      });
       if (cleanWorktree && session.worktreeDir && session.branch) {
         await removeWorktree(
           session.branch,

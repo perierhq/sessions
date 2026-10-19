@@ -76,20 +76,21 @@ async function stopArchivedPortals(sessionId: string): Promise<void> {
   }
 }
 
-/** Stop setup (and any other session resource) still running for the
- * archived session's worktree. */
-async function stopArchivedResources(sessionId: string): Promise<void> {
-  try {
+/** Stop setup, containers and units still running for the archived
+ * session, in the background: a container gets seconds to exit, and the
+ * archive (or a batch of idle archives) must not wait on it. */
+function stopArchivedResources(sessionId: string): void {
+  void (async () => {
     const { stopArchivedSessionResources } =
       await import("./session-resources");
     await stopArchivedSessionResources(sessionId);
-  } catch (error) {
+  })().catch((error) => {
     // Archiving remains committed. The periodic lifecycle reaper retries.
     console.error(
       `[session-resources] archive cleanup failed for ${sessionId}:`,
       error,
     );
-  }
+  });
 }
 
 function toEntry(raw: RawEntry): Entry {
@@ -178,7 +179,7 @@ export async function setArchived(
     releasePreviewLease(id);
     await unpinEverywhere([id]);
     await stopArchivedPortals(id);
-    await stopArchivedResources(id);
+    stopArchivedResources(id);
   }
 }
 
@@ -209,7 +210,7 @@ export async function archiveOlderThan(
       await setIndexedSessionArchived(session.id, true, "idle");
       publishSessionRow(session.id);
       await stopArchivedPortals(session.id);
-      await stopArchivedResources(session.id);
+      stopArchivedResources(session.id);
     }
     // Registry is written, so isArchivedId now reflects this batch — drop the
     // stale session/alias pins and any workspace pin whose last session just went.

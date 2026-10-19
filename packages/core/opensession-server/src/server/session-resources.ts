@@ -1,28 +1,34 @@
 /**
- * Processes the gateway starts on a session's behalf that must not outlive
- * the session: today, fresh-worktree setup commands.
+ * Processes and containers a session starts that must not outlive the
+ * session.
  *
- * Each one is a *session resource*: a durable record naming the worktree it
- * belongs to, optionally the session that started it, and how to stop its
- * whole process tree (the transient systemd scope when workloads are scoped,
- * otherwise its process group). Records live in a small state file so a
- * gateway restart does not orphan them.
+ * Two kinds of *session resource* share the stop paths below:
+ *
+ * - Recorded (`setup`): fresh-worktree setup commands the gateway starts. A
+ *   durable record names the worktree, optionally the session that started
+ *   it, and how to stop its whole process tree (the transient systemd scope
+ *   when workloads are scoped, otherwise its process group). Records live in
+ *   a small state file so a gateway restart does not orphan them.
+ * - Labelled (`container`, `unit`): containers and systemd user units that
+ *   carry the session's ownership label (session-ownership.ts). The label is
+ *   the record; nothing without it is ever stopped.
  *
  * Four paths stop a resource:
  *
  * - its own deadline (`runSessionResource`'s timeout, and the reaper for a
  *   deadline set by a previous gateway process);
- * - archiving or deleting the session that owns its worktree
- *   (`stopSessionOwnedResources`);
+ * - archiving or deleting the session that owns its worktree, or whose id
+ *   a label carries (`stopSessionOwnedResources`);
  * - the lifecycle reaper, for a worktree whose owners are all archived or
- *   gone (`reapSessionResources`), never while this process's own timer
- *   still bounds it;
+ *   gone, and for labels naming an archived or missing session
+ *   (`reapSessionResources`), never while this process's own timer still
+ *   bounds a setup;
  * - the startup sweep, for setup scopes older than any setup timeout that
  *   no record knows about (`sweepUntrackedSetupScopes`).
  *
- * The record and the stop path are deliberately generic: a later kind (a
- * container, a user unit) adds a `kind` and, if needed, another stop handle,
- * and inherits archive teardown and the reaper sweep.
+ * The record and the stop path are deliberately generic: a later kind adds
+ * a `kind` and, if needed, another stop handle, and inherits archive
+ * teardown and the reaper sweep.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -34,6 +40,12 @@ import { statePath } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
 import { withFileLock } from "./shared/file-lock";
 import {
+  listLabelledResources,
+  resourceInstanceId,
+  stopLabelledResource,
+  type LabelledResource,
+} from "./session-ownership";
+import {
   stopUserScopeAndWait,
   systemdUserEnv,
   userScopeActive,
@@ -44,7 +56,8 @@ import {
   workloadUnitName,
 } from "./workload-scope";
 
-export type SessionResourceKind = "setup";
+/** `setup` is recorded; `container` and `unit` are found by their label. */
+export type SessionResourceKind = "setup" | "container" | "unit";
 
 export interface SessionResource {
   id: string;
@@ -91,7 +104,10 @@ export type SessionResourceStopReason =
 export type StoppedSessionResource = {
   id: string;
   kind: SessionResourceKind;
-  worktreeDir: string;
+  /** The worktree of a recorded resource; labelled ones have none. */
+  worktreeDir?: string;
+  /** The owning session a label or record names. */
+  sessionId?: string;
   reason: SessionResourceStopReason;
 };
 
@@ -119,7 +135,10 @@ export type SetupScopeInfo = {
 
 /** The system calls this module makes, replaceable in tests. */
 export type SessionResourceHost = {
-  spawn: (argv: string[], options: { cwd: string }) => ChildProcess;
+  spawn: (
+    argv: string[],
+    options: { cwd: string; env?: NodeJS.ProcessEnv },
+  ) => ChildProcess;
   scopeActive: (unit: string) => Promise<boolean>;
   stopScope: (unit: string) => Promise<void>;
   /** Active `opensession-setup-*` user scopes. */
@@ -179,6 +198,7 @@ const defaultHost: SessionResourceHost = {
   spawn: (argv, options) =>
     spawn(argv[0]!, argv.slice(1), {
       cwd: options.cwd,
+      ...(options.env ? { env: options.env } : {}),
       // A fresh process group, so a timeout or archive takes the children too.
       detached: true,
       stdio: ["ignore", "ignore", "pipe"],
@@ -322,6 +342,14 @@ export function listSessionResources(): SessionResource[] {
 /** Whether anything archive or delete teardown could stop is recorded. */
 export function hasSessionOwnedResources(): boolean {
   return readRegistry().some((record) => record.sessionOwned);
+}
+
+/** Whether archive or delete teardown could find anything to stop, recorded
+ * or labelled; callers skip loading the session list when not. */
+export async function mayHaveSessionOwnedResources(): Promise<boolean> {
+  return (
+    hasSessionOwnedResources() || (await listLabelledResources()).length > 0
+  );
 }
 
 export async function registerSessionResource(
@@ -533,6 +561,7 @@ function describeStop(
     id: record.id,
     kind: record.kind,
     worktreeDir: record.worktreeDir,
+    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
     reason,
   };
 }
@@ -596,6 +625,10 @@ export async function runSessionResource(
     MAX_RESOURCE_TIMEOUT_MS,
   );
   const startedAt = Date.now();
+  // No session ownership env: setup belongs to its worktree, which sibling
+  // sessions may share. A container it starts carries no session label, so
+  // archiving the session that created the worktree never stops what a
+  // live sibling still uses (session-ownership.ts).
   const child = host.spawn(argv, { cwd: input.cwd });
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
@@ -722,35 +755,161 @@ function hasLiveOwner(owners: Map<string, boolean> | undefined): boolean {
   return !!owners && [...owners.values()].some((archived) => !archived);
 }
 
+// ── Labelled resources ───────────────────────────────────────────────────────
+
+function labelledResourceId(resource: LabelledResource): string {
+  return `${resource.kind}:${resource.handle}`;
+}
+
+/** Stop one labelled container or unit and log it; null when the stop
+ * failed (the label stays, so the reaper tries again). */
+async function stopLabelled(
+  resource: LabelledResource,
+  reason: SessionResourceStopReason,
+): Promise<StoppedSessionResource | null> {
+  if (!(await stopLabelledResource(resource))) {
+    console.warn(
+      `[session-resources] could not stop ${resource.kind} ${resource.handle} (${resource.label}) of ${resource.sessionId}; the reaper retries`,
+    );
+    return null;
+  }
+  audit({
+    msg: "session_resource_stopped",
+    session_id: resource.sessionId,
+    kind: resource.kind,
+    handle: resource.handle,
+    ...(resource.runtime ? { runtime: resource.runtime } : {}),
+    reason,
+  });
+  return {
+    id: labelledResourceId(resource),
+    kind: resource.kind,
+    sessionId: resource.sessionId,
+    reason,
+  };
+}
+
+/** Labelled stops run this many at a time: a container gets up to ten
+ * seconds to exit, and one session may hold several. */
+const LABELLED_STOP_CONCURRENCY = 4;
+
+/** Stop `resources` a few at a time; the ones that stopped. */
+async function stopLabelledBatch(
+  resources: ReadonlyArray<{
+    resource: LabelledResource;
+    reason: SessionResourceStopReason;
+  }>,
+): Promise<StoppedSessionResource[]> {
+  const results: Array<StoppedSessionResource | null> = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < resources.length) {
+      const index = next++;
+      const { resource, reason } = resources[index]!;
+      results[index] = await stopLabelled(resource, reason);
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(LABELLED_STOP_CONCURRENCY, resources.length) },
+      worker,
+    ),
+  );
+  return results.filter(
+    (result): result is StoppedSessionResource => result !== null,
+  );
+}
+
+/** Whether this installation may act on `resource`: its instance label is
+ * this one's, or it has none (labelled by hand). Another instance on the
+ * host (a dev gateway) owns its own, even for a session id both know. */
+export function labelledResourceIsOurs(
+  resource: Pick<LabelledResource, "instance">,
+  instance = resourceInstanceId(),
+): boolean {
+  return !resource.instance || resource.instance === instance;
+}
+
+/** Stop every labelled container and unit of this instance whose label
+ * names one of `ids`. */
+async function stopLabelledForSession(
+  ids: ReadonlySet<string>,
+  reason: SessionResourceStopReason,
+): Promise<StoppedSessionResource[]> {
+  const instance = resourceInstanceId();
+  const owned = (await listLabelledResources()).filter(
+    (resource) =>
+      ids.has(resource.sessionId) && labelledResourceIsOurs(resource, instance),
+  );
+  return stopLabelledBatch(owned.map((resource) => ({ resource, reason })));
+}
+
 /**
- * Stop the resources `session` owns, after it was archived or deleted: those
- * tagged with its id (or an alias), and untagged ones in its worktrees. Either
- * way, a worktree some other live session still uses keeps its setup. `others`
- * is the session list; the session itself and archived rows in it are
- * ignored.
+ * Why the reaper would stop a labelled container or unit, or null to keep
+ * it. Another instance's label is never this one's to stop. A label naming
+ * an archived session goes at once. One naming a session the list does not
+ * have goes only when the label is this installation's (one without an
+ * instance could be anyone's), the session list is not empty (an
+ * unavailable list is not a list of no one), and the grace has passed since
+ * it started, for a session still being created. A start time that cannot
+ * be read keeps it.
+ */
+export function labelledReapReason(
+  resource: Pick<LabelledResource, "sessionId" | "instance" | "startedAtMs">,
+  input: {
+    ownerArchived: boolean | undefined;
+    sessionsKnown: boolean;
+    instance: string;
+    now: number;
+  },
+): "archived" | "orphaned" | null {
+  if (!labelledResourceIsOurs(resource, input.instance)) return null;
+  if (input.ownerArchived === true) return "archived";
+  if (input.ownerArchived === false) return null;
+  if (!input.sessionsKnown || resource.instance !== input.instance) return null;
+  if (resource.startedAtMs === undefined) return null;
+  return input.now - resource.startedAtMs >= ORPHANED_RESOURCE_GRACE_MS
+    ? "orphaned"
+    : null;
+}
+
+// ── Teardown ─────────────────────────────────────────────────────────────────
+
+/**
+ * Stop the resources `session` owns, after it was archived or deleted:
+ * recorded ones tagged with its id (or an alias) and untagged ones in its
+ * worktrees, unless some other live session still uses that worktree; and
+ * every container and unit whose label names it. `others` is the session
+ * list; the session itself and archived rows in it are ignored.
  */
 export async function stopSessionOwnedResources(
   session: SessionResourceOwner,
   others: readonly SessionResourceOwner[],
   options: { reason?: "archived" | "removed" } = {},
 ): Promise<StoppedSessionResource[]> {
+  const reason = options.reason ?? "archived";
   const ids = new Set(ownerIds(session));
   const dirs = new Set(
     await Promise.all(ownerDirs(session).map(canonicalResourceDir)),
   );
-  if (!dirs.size) return [];
-  const live = await ownersByDir(
-    others.filter(
-      (other) => !other.archived && !ownerIds(other).some((id) => ids.has(id)),
-    ),
-  );
   const stopped: StoppedSessionResource[] = [];
-  for (const record of readRegistry()) {
-    if (!record.sessionOwned || !dirs.has(record.worktreeDir)) continue;
-    if (record.sessionId && !ids.has(record.sessionId)) continue;
-    if (live.get(record.worktreeDir)?.size) continue;
-    stopped.push(await stopResource(record, options.reason ?? "archived"));
+  if (dirs.size) {
+    const live = await ownersByDir(
+      others.filter(
+        (other) =>
+          !other.archived && !ownerIds(other).some((id) => ids.has(id)),
+      ),
+    );
+    for (const record of readRegistry()) {
+      if (!record.sessionOwned || !dirs.has(record.worktreeDir)) continue;
+      if (record.sessionId && !ids.has(record.sessionId)) continue;
+      if (live.get(record.worktreeDir)?.size) continue;
+      stopped.push(await stopResource(record, reason));
+    }
   }
+  // A label names exactly one session, so a sibling in the same worktree
+  // never keeps it.
+  stopped.push(...(await stopLabelledForSession(ids, reason)));
   return stopped;
 }
 
@@ -779,7 +938,7 @@ export async function stopArchivedSessionResources(
     isArchived?: (id: string) => boolean;
   } = {},
 ): Promise<StoppedSessionResource[]> {
-  if (!hasSessionOwnedResources()) return [];
+  if (!(await mayHaveSessionOwnedResources())) return [];
   const listSessions =
     options.listSessions ??
     (async () => (await import("./session-cache")).getCachedSessionsAsync());
@@ -789,12 +948,15 @@ export async function stopArchivedSessionResources(
   const session = sessions.find(
     (s) => s.id === sessionId || s.aliasIds?.includes(sessionId),
   );
-  if (!session) return [];
+  // Not listed yet or any more: its labels still name it.
+  if (!session) return stopLabelledForSession(new Set([sessionId]), "archived");
   return stopSessionOwnedResources(
     session,
     sessions.map((s) => (isArchived(s.id) ? { ...s, archived: true } : s)),
   );
 }
+
+// ── Reaper ───────────────────────────────────────────────────────────────────
 
 /**
  * Why the reaper would stop a session-owned record, or null to keep it.
@@ -828,25 +990,33 @@ function reapReason(
 }
 
 /**
- * The lifecycle reaper's pass: stop resources past a deadline a previous
- * gateway process set and ones whose owners are all archived or gone, and
- * forget records whose processes already ended. A resource whose leader this
- * process still watches is left to its own timer.
+ * The lifecycle reaper's pass: stop recorded resources past a deadline a
+ * previous gateway process set and ones whose owners are all archived or
+ * gone, forget records whose processes already ended, and stop labelled
+ * containers and units whose session is archived or gone
+ * (labelledReapReason). A resource whose leader this process still watches
+ * is left to its own timer.
  */
 export async function reapSessionResources(
   sessions: readonly SessionResourceOwner[],
-  options: { now?: number } = {},
+  options: {
+    now?: number;
+    /** Direct lookup of a labelled resource's session the list lacks;
+     * undefined means the session no longer exists. */
+    findOwner?: (
+      id: string,
+    ) => Promise<{ id: string; archived?: boolean } | undefined>;
+  } = {},
 ): Promise<{ stopped: StoppedSessionResource[]; forgotten: number }> {
   const now = options.now ?? Date.now();
-  const records = readRegistry();
-  if (!records.length) return { stopped: [], forgotten: 0 };
-  const owners = await ownersByDir(sessions);
   const archivedById = new Map<string, boolean>();
   for (const session of sessions)
     for (const id of ownerIds(session))
       archivedById.set(id, session.archived === true);
   const stopped: StoppedSessionResource[] = [];
   let forgotten = 0;
+  const records = readRegistry();
+  const owners = records.length ? await ownersByDir(sessions) : new Map();
   for (const record of records) {
     // Started here and still running: its in-process timer bounds it, and
     // its session may not list the worktree yet.
@@ -870,7 +1040,56 @@ export async function reapSessionResources(
     );
     if (reason) stopped.push(await stopResource(record, reason));
   }
+  const instance = resourceInstanceId();
+  const reap: Array<{
+    resource: LabelledResource;
+    reason: SessionResourceStopReason;
+  }> = [];
+  for (const resource of await listLabelledResources()) {
+    let reason = labelledReapReason(resource, {
+      ownerArchived: archivedById.get(resource.sessionId),
+      sessionsKnown: sessions.length > 0,
+      instance,
+      now,
+    });
+    // Missing from the list is not yet gone: a session the list has not
+    // projected still answers a direct lookup.
+    if (reason === "orphaned")
+      reason = await confirmOrphaned(resource, options);
+    if (reason) reap.push({ resource, reason });
+  }
+  stopped.push(...(await stopLabelledBatch(reap)));
   return { stopped, forgotten };
+}
+
+async function confirmOrphaned(
+  resource: LabelledResource,
+  options: {
+    findOwner?: (
+      id: string,
+    ) => Promise<{ id: string; archived?: boolean } | undefined>;
+  },
+): Promise<"archived" | "orphaned" | null> {
+  try {
+    const findOwner =
+      options.findOwner ??
+      (async (id: string) => {
+        const [{ findSessionAsync }, { isArchivedId }] = await Promise.all([
+          import("./session-cache"),
+          import("./archive"),
+        ]);
+        const found = await findSessionAsync(id);
+        return found
+          ? { id: found.id, archived: found.archived || isArchivedId(found.id) }
+          : undefined;
+      });
+    const owner = await findOwner(resource.sessionId);
+    if (!owner) return "orphaned";
+    return owner.archived ? "archived" : null;
+  } catch {
+    // A lookup that failed proves nothing: keep it for the next pass.
+    return null;
+  }
 }
 
 // ── Startup sweep ────────────────────────────────────────────────────────────

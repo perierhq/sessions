@@ -11,6 +11,7 @@ import {
   type PublicationPolicy,
 } from "./command-policy";
 import { controlPlaneWorkloadCommand, stopUserScope } from "./systemd-scopes";
+import { sessionUnitDescription } from "./session-ownership";
 import { runRemoteCommand, type RemoteWorkspace } from "./remote-workspace";
 
 // ── Custom bash tool (the env-hygiene invariant) ─────────────────────────────
@@ -293,10 +294,16 @@ export function makePiBashTool(input: {
       const directCommand = setsidPath
         ? [setsidPath, "/bin/bash", "-c", command]
         : ["/bin/bash", "-c", command];
+      // A scope outlives the command while anything it backgrounded (a dev
+      // server) still runs; its labelled description lets archive stop it.
+      const description = sessionUnitDescription(
+        input.sessionId,
+        "agent command",
+      );
       const scoped = controlPlaneWorkloadCommand(
         directCommand,
         `opensession-agent-cmd-${crypto.randomUUID().slice(0, 13)}`,
-        { env: input.env },
+        { env: input.env, ...(description ? { description } : {}) },
       );
       let timedOut = false;
       let exitCode: number | null = null;

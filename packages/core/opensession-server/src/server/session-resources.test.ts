@@ -19,6 +19,7 @@ import { join } from "path";
 import {
   __setSessionResourceHostForTest,
   groupMatchesRecord,
+  labelledReapReason,
   listSessionResources,
   ORPHANED_RESOURCE_GRACE_MS,
   parseElapsedTime,
@@ -33,6 +34,10 @@ import {
   sweepUntrackedSetupScopes,
   type SessionResource,
 } from "./session-resources";
+import {
+  __setOwnershipRuntimeForTest,
+  resourceInstanceId,
+} from "./session-ownership";
 import { __setWorkloadScopingForTest } from "./workload-scope";
 
 const previousStateDir = process.env.OPENSESSION_STATE_DIR;
@@ -689,5 +694,510 @@ describe("startup sweep of untracked setup scopes", () => {
       "opensession-setup-old",
     ]);
     expect(stoppedUnits).toEqual(["opensession-setup-old"]);
+  });
+});
+
+describe("labelled containers and units", () => {
+  type Fake = {
+    kind: "container" | "unit";
+    cli?: "podman" | "docker";
+    handle: string;
+    session: string;
+    instance?: string;
+    /** Minutes since it started. */
+    ageMin?: number;
+  };
+  let fakes: Fake[] = [];
+  let stops: string[][] = [];
+  let failStops = false;
+  const now = Date.parse("2026-06-01T12:00:00Z");
+
+  function createdAt(ageMin: number | undefined): string {
+    if (ageMin === undefined) return "";
+    const date = new Date(now - ageMin * 60_000);
+    return `${date.toISOString().slice(0, 19).replace("T", " ")} +0000 UTC`;
+  }
+
+  function install(): void {
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman", "docker"],
+      systemdUser: () => true,
+      uptimeMs: async () => 10 * 86_400_000,
+      run: async (argv) => {
+        const [cmd, sub] = argv;
+        if ((cmd === "podman" || cmd === "docker") && sub === "ps")
+          return {
+            exitCode: 0,
+            stdout: fakes
+              .filter((f) => f.kind === "container" && f.cli === cmd)
+              .map(
+                (f) =>
+                  `${f.handle}\t${f.session}\t${f.instance ?? ""}\t${createdAt(f.ageMin)}\tdb\tpostgres`,
+              )
+              .join("\n"),
+          };
+        if (cmd === "systemctl" && argv[2] === "list-units")
+          return {
+            exitCode: 0,
+            stdout: [
+              "unrelated.service loaded active running Something else",
+              ...fakes
+                .filter((f) => f.kind === "unit")
+                .map(
+                  (f) =>
+                    `${f.handle} loaded active running opensession.session=${f.session}${f.instance ? ` opensession.instance=${f.instance}` : ""} agent command`,
+                ),
+            ].join("\n"),
+          };
+        if (cmd === "systemctl" && argv[2] === "show")
+          return {
+            exitCode: 0,
+            stdout: fakes
+              .filter((f) => f.kind === "unit" && argv.includes(f.handle))
+              .map((f) =>
+                [
+                  `Id=${f.handle}`,
+                  // Ten days up; the clock is Date.now(), so ages are
+                  // relative to the real now here.
+                  `ActiveEnterTimestampMonotonic=${f.ageMin === undefined ? 0 : (10 * 86_400_000 - f.ageMin * 60_000) * 1000}`,
+                ].join("\n"),
+              )
+              .join("\n\n"),
+          };
+        if (sub === "stop" || argv[2] === "stop") {
+          stops.push(argv);
+          if (failStops) return { exitCode: 1, stdout: "" };
+          const handle = argv[argv.length - 1];
+          fakes = fakes.filter((f) => f.handle !== handle);
+          return { exitCode: 0, stdout: "" };
+        }
+        return { exitCode: 1, stdout: "" };
+      },
+    });
+  }
+
+  const hex = (c: string) => c.repeat(64);
+
+  beforeEach(() => {
+    fakes = [];
+    stops = [];
+    failStops = false;
+    install();
+  });
+
+  afterEach(() => {
+    __setOwnershipRuntimeForTest(null);
+  });
+
+  test("archive stops only what carries the session's label, through each CLI", async () => {
+    const instance = resourceInstanceId();
+    fakes = [
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("a"),
+        session: "os-a",
+        instance,
+      },
+      { kind: "container", cli: "docker", handle: hex("b"), session: "os-a" },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("c"),
+        session: "os-b",
+        instance,
+      },
+      {
+        kind: "unit",
+        handle: "opensession-agent-cmd-1.scope",
+        session: "os-a",
+        instance,
+      },
+      {
+        kind: "unit",
+        handle: "opensession-agent-cmd-2.scope",
+        session: "os-b",
+        instance,
+      },
+    ];
+    install();
+    const stopped = await stopArchivedSessionResources("os-a", {
+      listSessions: async () => [
+        { id: "os-a" },
+        { id: "os-b", worktreeDir: worktree },
+      ],
+      isArchived: (id) => id === "os-a",
+    });
+    expect(stopped.map((s) => [s.kind, s.sessionId, s.reason])).toEqual([
+      ["container", "os-a", "archived"],
+      ["container", "os-a", "archived"],
+      ["unit", "os-a", "archived"],
+    ]);
+    expect(stops).toEqual([
+      ["podman", "stop", "--time", "10", hex("a")],
+      ["docker", "stop", "--time", "10", hex("b")],
+      ["systemctl", "--user", "stop", "opensession-agent-cmd-1.scope"],
+    ]);
+    expect(fakes.map((f) => f.session)).toEqual(["os-b", "os-b"]);
+  });
+
+  test("an alias of the session archives its labelled resources too", async () => {
+    fakes = [
+      { kind: "container", cli: "podman", handle: hex("a"), session: "os-old" },
+    ];
+    install();
+    const stopped = await stopArchivedSessionResources("os-new", {
+      listSessions: async () => [{ id: "os-new", aliasIds: ["os-old"] }],
+      isArchived: () => true,
+    });
+    expect(stopped.map((s) => s.sessionId)).toEqual(["os-old"]);
+  });
+
+  test("a session the list no longer has is still matched by its id", async () => {
+    fakes = [
+      {
+        kind: "container",
+        cli: "docker",
+        handle: hex("a"),
+        session: "os-gone",
+      },
+      {
+        kind: "container",
+        cli: "docker",
+        handle: hex("b"),
+        session: "os-other",
+      },
+    ];
+    install();
+    const stopped = await stopArchivedSessionResources("os-gone", {
+      listSessions: async () => [],
+      isArchived: () => false,
+    });
+    expect(stopped.map((s) => s.sessionId)).toEqual(["os-gone"]);
+    expect(fakes.map((f) => f.session)).toEqual(["os-other"]);
+  });
+
+  test("archive and the reaper leave another instance's labels alone", async () => {
+    const instance = resourceInstanceId();
+    fakes = [
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("a"),
+        session: "os-a",
+        instance,
+      },
+      // A dev gateway on the same host user, with a session of the same id.
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("b"),
+        session: "os-a",
+        instance: "000000000000",
+      },
+      // Labelled by hand, without an instance: still acted on.
+      { kind: "unit", handle: "run-x.service", session: "os-a" },
+      {
+        kind: "unit",
+        handle: "run-y.service",
+        session: "os-a",
+        instance: "000000000000",
+      },
+    ];
+    install();
+    const stopped = await stopArchivedSessionResources("os-a", {
+      listSessions: async () => [{ id: "os-a" }],
+      isArchived: () => true,
+    });
+    expect(stopped.map((s) => s.id)).toEqual([
+      `container:${hex("a")}`,
+      "unit:run-x.service",
+    ]);
+    install();
+    expect(
+      (await reapSessionResources([{ id: "os-a", archived: true }])).stopped,
+    ).toEqual([]);
+    expect(fakes.map((f) => f.handle)).toEqual([hex("b"), "run-y.service"]);
+  });
+
+  test("stops run a few at a time, not one after another", async () => {
+    const handles = ["0", "1", "2", "3", "4", "5"].map(hex);
+    let active = 0;
+    let peak = 0;
+    __setOwnershipRuntimeForTest({
+      containerClis: () => ["podman"],
+      systemdUser: () => false,
+      run: async (argv) => {
+        if (argv[1] === "ps")
+          return {
+            exitCode: 0,
+            stdout: handles.map((h) => `${h}\tos-a\t\t\tdb\tpg`).join("\n"),
+          };
+        active++;
+        peak = Math.max(peak, active);
+        await Bun.sleep(20);
+        active--;
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    const stopped = await stopSessionOwnedResources({ id: "os-a" }, []);
+    expect(stopped).toHaveLength(6);
+    expect(peak).toBe(4);
+  });
+
+  test("a live sibling in the same worktree does not keep a labelled container", async () => {
+    fakes = [
+      { kind: "container", cli: "podman", handle: hex("a"), session: "os-a" },
+    ];
+    install();
+    const stopped = await stopSessionOwnedResources(
+      { id: "os-a", worktreeDir: worktree },
+      [{ id: "os-b", worktreeDir: worktree }],
+    );
+    expect(stopped.map((s) => s.kind)).toEqual(["container"]);
+  });
+
+  test("deleting the session stops them with reason removed", async () => {
+    fakes = [{ kind: "unit", handle: "run-x.service", session: "os-a" }];
+    install();
+    const stopped = await stopSessionOwnedResources({ id: "os-a" }, [], {
+      reason: "removed",
+    });
+    expect(stopped.map((s) => [s.kind, s.reason])).toEqual([
+      ["unit", "removed"],
+    ]);
+  });
+
+  test("a failed stop is not reported, and the reaper tries again", async () => {
+    fakes = [
+      { kind: "container", cli: "podman", handle: hex("a"), session: "os-a" },
+    ];
+    install();
+    failStops = true;
+    const sessions = [{ id: "os-a", archived: true }];
+    expect(await stopSessionOwnedResources(sessions[0]!, sessions)).toEqual([]);
+    failStops = false;
+    install();
+    const { stopped } = await reapSessionResources(sessions);
+    expect(stopped.map((s) => [s.kind, s.reason])).toEqual([
+      ["container", "archived"],
+    ]);
+    expect(stops).toHaveLength(2);
+  });
+
+  test("the reaper stops labels of archived sessions and keeps live ones", async () => {
+    fakes = [
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("a"),
+        session: "os-archived",
+        ageMin: 1,
+      },
+      {
+        kind: "unit",
+        handle: "u-archived.scope",
+        session: "os-archived",
+        ageMin: 1,
+      },
+      {
+        kind: "container",
+        cli: "podman",
+        handle: hex("b"),
+        session: "os-live",
+        ageMin: 600,
+      },
+      { kind: "unit", handle: "u-live.scope", session: "os-live", ageMin: 600 },
+    ];
+    install();
+    const { stopped } = await reapSessionResources([
+      { id: "os-archived", archived: true },
+      { id: "os-live" },
+    ]);
+    expect(stopped.map((s) => [s.kind, s.sessionId, s.reason])).toEqual([
+      ["container", "os-archived", "archived"],
+      ["unit", "os-archived", "archived"],
+    ]);
+    expect(fakes.map((f) => f.session)).toEqual(["os-live", "os-live"]);
+  });
+
+  test("labelledReapReason: a missing owner goes only when it is ours, settled and the list is known", () => {
+    const instance = "abc";
+    const nowMs = Date.now();
+    const old = nowMs - ORPHANED_RESOURCE_GRACE_MS - 1;
+    const input = {
+      ownerArchived: undefined,
+      sessionsKnown: true,
+      instance,
+      now: nowMs,
+    };
+    const resource = { sessionId: "os-x", instance, startedAtMs: old };
+    expect(labelledReapReason(resource, input)).toBe("orphaned");
+    // Created moments ago: its session may still be being created.
+    expect(
+      labelledReapReason({ ...resource, startedAtMs: nowMs - 60_000 }, input),
+    ).toBeNull();
+    // Another instance on this host, or a label without an instance.
+    expect(
+      labelledReapReason({ ...resource, instance: "def" }, input),
+    ).toBeNull();
+    expect(
+      labelledReapReason({ sessionId: "os-x", startedAtMs: old }, input),
+    ).toBeNull();
+    // An empty session list is not proof that nobody owns it.
+    expect(
+      labelledReapReason(resource, { ...input, sessionsKnown: false }),
+    ).toBeNull();
+    // No readable start time: kept.
+    expect(
+      labelledReapReason({ sessionId: "os-x", instance }, input),
+    ).toBeNull();
+    expect(
+      labelledReapReason(resource, { ...input, ownerArchived: false }),
+    ).toBeNull();
+    // An archived owner: this instance's, or a label without an instance,
+    // goes at once; another instance's is never this one's to stop.
+    expect(
+      labelledReapReason(
+        { ...resource, startedAtMs: nowMs },
+        { ...input, ownerArchived: true },
+      ),
+    ).toBe("archived");
+    expect(
+      labelledReapReason(
+        { sessionId: "os-x" },
+        { ...input, ownerArchived: true },
+      ),
+    ).toBe("archived");
+    expect(
+      labelledReapReason(
+        { ...resource, instance: "def", startedAtMs: nowMs },
+        { ...input, ownerArchived: true },
+      ),
+    ).toBeNull();
+  });
+
+  test("the reaper stops this instance's settled labels whose session is gone", async () => {
+    const instance = resourceInstanceId();
+    const realAge = (ms: number) => Math.ceil(ms / 60_000);
+    fakes = [
+      // Units age against the real clock (uptime minus monotonic start).
+      {
+        kind: "unit",
+        handle: "u-old.scope",
+        session: "os-gone",
+        instance,
+        ageMin: realAge(ORPHANED_RESOURCE_GRACE_MS) + 5,
+      },
+      {
+        kind: "unit",
+        handle: "u-new.scope",
+        session: "os-gone",
+        instance,
+        ageMin: 1,
+      },
+      {
+        kind: "unit",
+        handle: "u-foreign.scope",
+        session: "os-gone",
+        instance: "000000000000",
+        ageMin: 600,
+      },
+    ];
+    install();
+    const { stopped } = await reapSessionResources([{ id: "os-live" }], {
+      findOwner: async () => undefined,
+    });
+    expect(stopped.map((s) => s.id)).toEqual(["unit:u-old.scope"]);
+    expect(stopped[0]!.reason).toBe("orphaned");
+
+    // A session the list lacks but a direct lookup still finds keeps it.
+    fakes = [
+      {
+        kind: "unit",
+        handle: "u-old.scope",
+        session: "os-unlisted",
+        instance,
+        ageMin: 600,
+      },
+    ];
+    install();
+    expect(
+      (
+        await reapSessionResources([{ id: "os-live" }], {
+          findOwner: async (id) => ({ id }),
+        })
+      ).stopped,
+    ).toEqual([]);
+    expect(
+      (
+        await reapSessionResources([{ id: "os-live" }], {
+          findOwner: async () => {
+            throw new Error("catalog unavailable");
+          },
+        })
+      ).stopped,
+    ).toEqual([]);
+
+    // With no session list at all, nothing is ownerless.
+    fakes = [
+      {
+        kind: "unit",
+        handle: "u-old.scope",
+        session: "os-gone",
+        instance,
+        ageMin: 600,
+      },
+    ];
+    install();
+    expect((await reapSessionResources([])).stopped).toEqual([]);
+  });
+
+  test("labelled resources run nothing on hosts without the runtimes", async () => {
+    const calls: string[][] = [];
+    __setOwnershipRuntimeForTest({
+      containerClis: () => [],
+      systemdUser: () => false,
+      run: async (argv) => {
+        calls.push(argv);
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    expect(
+      await stopArchivedSessionResources("os-a", {
+        listSessions: async () => {
+          throw new Error("the list is not needed");
+        },
+      }),
+    ).toEqual([]);
+    expect((await reapSessionResources([{ id: "os-a" }])).stopped).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("setup environment", () => {
+  test("setup never carries a session's ownership, tagged or not", async () => {
+    // Setup belongs to the worktree, which a live sibling session may
+    // share: a container it starts must not be labelled as the creating
+    // session's, or archiving that session would stop it under the sibling.
+    const out = join(worktree, "owner.txt");
+    const script = `printf '%s' "\${OPENSESSION_SESSION_ID:-none}" > ${out}`;
+    await runSessionResource({
+      kind: "setup",
+      argv: ["sh", "-c", script],
+      cwd: worktree,
+      sessionId: "os-setup-1",
+      sessionOwned: true,
+      timeoutMs: 10_000,
+    });
+    expect(readFileSync(out, "utf8")).toBe("none");
+    await runSessionResource({
+      kind: "setup",
+      argv: ["sh", "-c", script],
+      cwd: worktree,
+      sessionOwned: false,
+      timeoutMs: 10_000,
+    });
+    expect(readFileSync(out, "utf8")).toBe("none");
   });
 });

@@ -89,6 +89,25 @@ describe("systemd scope resource controls", () => {
     ]);
   });
 
+  test("a session-owned command scope carries its labels in the description", () => {
+    const scoped = controlPlaneWorkloadCommand(
+      ["/bin/bash", "-c", "bun run dev &"],
+      "opensession-agent-cmd-test",
+      {
+        env: { PATH: "/bin" },
+        cgroup:
+          "0::/opensession.slice/opensession-control.slice/opensession.service",
+        scopesAvailable: true,
+        description:
+          "opensession.session=os-1 opensession.instance=abc agent command",
+      },
+    );
+    expect(scoped.command.slice(5, 7)).toEqual([
+      "--unit=opensession-agent-cmd-test",
+      "--description=opensession.session=os-1 opensession.instance=abc agent command",
+    ]);
+  });
+
   test("commands already owned by a run host stay in its system workload unit", () => {
     const command = ["/bin/bash", "-c", "cargo test"];
     expect(
