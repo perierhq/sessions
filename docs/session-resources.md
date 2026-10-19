@@ -117,20 +117,32 @@ should outlive the session it was started from.
 The workspace summary (the session header's card) has a **Running** band
 whenever the session still has something on the host: its Portals, worktree
 setup, labelled containers and background processes, with memory where
-systemd or the container CLI reports it. **Stop everything** stops all of
-them once the session is idle (the server refuses while a run is active).
-Nothing outside that list is stopped.
+systemd or the container CLI reports it. **Stop everything** asks first
+("Stop N items?", Confirm or Cancel) and stops all of them once the session
+is idle. The server refuses while a run is active, and asks again before
+each stop: a run that starts part-way keeps what has not been stopped yet,
+and the request answers 409 with the count stopped so far. Nothing outside
+that list is stopped. Runner and Sandbox sessions run on other machines and
+list nothing here.
+
+The band refreshes every minute while it is on screen and not while the tab
+is hidden. The server reuses one host-wide container and unit listing, with
+the `stats --no-stream` memory figures, for 20 seconds across every
+session's band and host health, and reads it again after any stop.
 
 Host health (the server health popover, enabled in Preferences > Debug)
 shows session workloads across the host, and lists what archived or deleted
-sessions still have running, usually only until the next reaper pass.
+sessions still have running. It says how many of those the lifecycle reaper
+stops by itself and how many it leaves running: another instance's, a
+missing session's without this instance's label, or one whose start time
+cannot be read. Those need stopping by hand.
 
-| Endpoint                                | Returns                                                       |
-| --------------------------------------- | ------------------------------------------------------------- |
-| `GET /api/sessions/:id/resources`       | The session's items (`portal`, `setup`, `container`, `unit`)  |
-| `POST /api/sessions/:id/resources/stop` | `{ stopped }`, or 409 while the session runs                  |
-| `GET /api/host/session-resources`       | Counts by owner state (live, archived, missing) and leftovers |
-| `GET /api/health`                       | `sessionResources`: what the last reaper pass saw and stopped |
+| Endpoint                                | Returns                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `GET /api/sessions/:id/resources`       | The session's items (`portal`, `setup`, `container`, `unit`)                          |
+| `POST /api/sessions/:id/resources/stop` | `{ stopped }`, or 409 while the session runs or once a run starts                     |
+| `GET /api/host/session-resources`       | Counts by owner state (live, archived, missing), leftovers and which the reaper stops |
+| `GET /api/health`                       | `sessionResources`: what the last reaper pass saw and stopped                         |
 
 ## Hosts
 
