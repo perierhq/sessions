@@ -396,12 +396,22 @@ export async function createPiRuntimeBinding(
     }
   } else if (nativeAnthropic) {
     model = runtime.getModel("anthropic", input.modelID);
-    if (!model) {
-      // Newer than the bundled catalog: release metadata or a zero-cost
-      // fallback, on pi's builtin provider (no baseUrl override).
-      runtime.registerProvider("anthropic", {
-        models: buildPiAnthropicModels([], input.modelID),
-      });
+    // The same catalog the in-process provider serves: pi's builtin rows with
+    // newer published prices applied, plus release metadata or a zero-cost
+    // fallback for ids newer than the bundled catalog. pi-ai prices usage
+    // from the model's own cost table, so a stale row would misreport cost.
+    // Registered only when it differs, on pi's builtin provider (models
+    // only: its base URL, auth and streaming stay pi's own).
+    const catalog = buildPiAnthropicModels(
+      runtime.getModels("anthropic"),
+      input.modelID,
+    );
+    const wanted = catalog.find((candidate) => candidate.id === input.modelID);
+    if (
+      !model ||
+      (wanted && JSON.stringify(wanted.cost) !== JSON.stringify(model.cost))
+    ) {
+      runtime.registerProvider("anthropic", { models: catalog });
       model = runtime.getModel("anthropic", input.modelID);
     }
     if (!model) {

@@ -1719,6 +1719,7 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
               id,
               name: id,
             }),
+            getModels: () => [],
             registerProvider: () => {},
             registerNativeProvider: () => {
               throw new Error(

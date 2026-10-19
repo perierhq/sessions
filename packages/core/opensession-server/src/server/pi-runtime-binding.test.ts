@@ -418,7 +418,9 @@ describe("createPiRuntimeBinding", () => {
     expect(registration?.[1]).toBe("anthropic");
     // pi's builtin provider keeps its own base URL and auth: only models.
     expect(Object.keys(registration?.[2])).toEqual(["models"]);
+    // The builtin catalog rides along, with the new id appended.
     expect(registration?.[2].models).toEqual([
+      { provider: "anthropic", id: "claude-test" },
       expect.objectContaining({
         id: "claude-opus-5-5",
         api: "anthropic-messages",
@@ -433,12 +435,63 @@ describe("createPiRuntimeBinding", () => {
     );
   });
 
+  test("native Anthropic applies the in-process path's price corrections to a builtin row", async () => {
+    const h = harness({ transport: "native" });
+    const stale = {
+      provider: "anthropic",
+      id: "claude-sonnet-5-5",
+      api: "anthropic-messages",
+      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+    };
+    // Serve the stale builtin row the way pi's catalog ships it, and the
+    // registered catalog once there is one.
+    const getModels = h.runtime.getModels.bind(h.runtime);
+    const getModel = h.runtime.getModel.bind(h.runtime);
+    let registered: any[] | undefined;
+    h.runtime.getModels = (provider: string) =>
+      registered ??
+      (provider === "anthropic" ? [...getModels(provider), stale] : []);
+    h.runtime.getModel = (provider: string, id: string) =>
+      registered?.find((model) => model.id === id) ??
+      (id === stale.id ? stale : getModel(provider, id));
+    const register = h.runtime.registerProvider;
+    h.runtime.registerProvider = (provider: string, config: any) => {
+      register(provider, config);
+      registered = config.models;
+    };
+
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-sonnet-5-5", h),
+    );
+    // Sonnet 5.5 cache reads are $0.10/MTok, not the catalog's $0.20.
+    expect(binding.model.cost).toEqual({
+      input: 2,
+      output: 10,
+      cacheRead: 0.1,
+      cacheWrite: 2.5,
+    });
+    const registrations = h.calls.filter(
+      ([name]) => name === "registerProvider",
+    );
+    expect(registrations).toHaveLength(1);
+    expect(Object.keys(registrations[0][2])).toEqual(["models"]);
+    // The rest of the catalog is passed through unchanged.
+    expect(registrations[0][2].models.map((model: any) => model.id)).toEqual([
+      "claude-test",
+      "claude-sonnet-5-5",
+    ]);
+  });
+
   test("native Anthropic requests reach pi's provider with the pool token and a 1h cache", async () => {
     // The real pi SDK, with fetch captured: no network.
     const previousEnvKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-ant-api03-from-the-environment";
     try {
-      for (const modelID of ["claude-haiku-5-5", "claude-future-9"]) {
+      for (const modelID of [
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "claude-future-9",
+      ]) {
         const h = harness({ transport: "native" });
         h.deps.loadSdk = prewarmPiSdk;
         const binding = await createPiRuntimeBinding(
@@ -446,6 +499,13 @@ describe("createPiRuntimeBinding", () => {
         );
         expect(binding.model.provider).toBe("anthropic");
         expect(binding.model.api).toBe("anthropic-messages");
+        if (modelID === "claude-sonnet-5-5") {
+          // The corrected price reaches the model pi-ai prices usage from.
+          expect(binding.model.cost.cacheRead).toBe(0.1);
+          expect(
+            binding.runtime.getModel("anthropic", modelID)?.cost.cacheRead,
+          ).toBe(0.1);
+        }
         const requests: Array<{ headers: Headers; body: any }> = [];
         const fetch = async (_url: unknown, init: any) => {
           requests.push({
