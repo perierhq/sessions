@@ -101,7 +101,9 @@ export type SessionResourceStopReason =
   | "orphaned"
   | "removed"
   /** Someone stopped everything from the session ("Stop everything"). */
-  | "stopped";
+  | "stopped"
+  /** The session sat idle past `server.idleWorkloadStopHours`. */
+  | "idle";
 
 export type StoppedSessionResource = {
   id: string;
@@ -894,7 +896,7 @@ export async function stopSessionOwnedResources(
   session: SessionResourceOwner,
   others: readonly SessionResourceOwner[],
   options: {
-    reason?: "archived" | "removed" | "stopped";
+    reason?: "archived" | "removed" | "stopped" | "idle";
     /** Asked before each stop; once it says no, nothing more is stopped
      * ("Stop everything" when a run starts meanwhile). */
     shouldContinue?: () => boolean;
@@ -1155,6 +1157,58 @@ async function confirmOrphaned(
     // A lookup that failed proves nothing: keep it for the next pass.
     return null;
   }
+}
+
+// ── Idle policy ──────────────────────────────────────────────────────────────
+
+export type IdleSessionResourceOwner = SessionResourceOwner & {
+  lastActivity?: string | null;
+  isRunning?: boolean;
+};
+
+/**
+ * The optional idle policy (`server.idleWorkloadStopHours`, off by default):
+ * stop what a live session started (its labelled containers and units, and
+ * the setup it owns) once it has been idle `idleMs`. Archived sessions are
+ * the reaper's; a session whose last activity cannot be read, or that is
+ * running or has a run pending, keeps everything. Portals are left to their
+ * own idle sleep.
+ */
+export async function stopIdleSessionResources(
+  sessions: readonly IdleSessionResourceOwner[],
+  options: {
+    idleMs: number | null;
+    now?: number;
+    /** Nothing runs or waits to run for this session. */
+    isSettled?: (id: string) => boolean;
+  },
+): Promise<StoppedSessionResource[]> {
+  const idleMs = options.idleMs;
+  if (!idleMs || idleMs <= 0) return [];
+  const now = options.now ?? Date.now();
+  const labelledOwners = new Set(
+    (await listLabelledResources()).map((resource) => resource.sessionId),
+  );
+  const recorded = hasSessionOwnedResources();
+  if (!labelledOwners.size && !recorded) return [];
+  const isSettled =
+    options.isSettled ?? (await import("./session-cache")).isRunSettled;
+  const stopped: StoppedSessionResource[] = [];
+  for (const session of sessions) {
+    if (session.archived || session.isRunning) continue;
+    const last = Date.parse(session.lastActivity ?? "");
+    if (!Number.isFinite(last) || now - last < idleMs) continue;
+    const owns =
+      ownerIds(session).some((id) => labelledOwners.has(id)) ||
+      (recorded && (await sessionOwnedRecords(session, sessions)).length > 0);
+    if (!owns || !isSettled(session.id)) continue;
+    stopped.push(
+      ...(await stopSessionOwnedResources(session, sessions, {
+        reason: "idle",
+      })),
+    );
+  }
+  return stopped;
 }
 
 // ── Startup sweep ────────────────────────────────────────────────────────────

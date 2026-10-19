@@ -112,6 +112,24 @@ should outlive the session it was started from.
   get while a session is being created). A start time that cannot be read
   keeps it.
 
+## Idle policy (off by default)
+
+Set `server.idleWorkloadStopHours` in `config.json` (or
+`OPENSESSION_IDLE_WORKLOAD_STOP_HOURS` in the environment, which wins; `0`
+turns it off) to stop what a session started once it has been idle that many
+hours, without archiving it:
+
+```json
+{ "server": { "idleWorkloadStopHours": 12 } }
+```
+
+The lifecycle reaper applies it on each pass. It stops the session's labelled
+containers and units and the setup it owns, with reason `idle`. It skips
+archived sessions (archive already stopped them), sessions that are running
+or have a queued prompt, and sessions whose last activity cannot be read.
+Portals keep their own idle sleep (`OPENSESSION_PORTAL_IDLE_MS`). Values above
+720 hours (30 days) are capped.
+
 ## Seeing what runs
 
 The workspace summary (the session header's card) has a **Running** band

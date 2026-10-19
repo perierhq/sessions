@@ -50,6 +50,11 @@ export interface ServerSection {
    * Read only for the Runner tailnet gate. Leave off for SSH forwards and
    * raw tunnels, where the client chooses that header. */
   trustForwardedFor?: boolean;
+  /** Stop a non-archived session's background processes, containers and
+   * setup leftovers once it has been idle this many hours
+   * (session-resources.ts). Absent or 0: off. Portals have their own idle
+   * sleep. Env: OPENSESSION_IDLE_WORKLOAD_STOP_HOURS. */
+  idleWorkloadStopHours?: number;
 }
 
 export interface PathsSection {
@@ -328,6 +333,8 @@ export interface ResolvedServer {
   previewHost: string;
   caddyAdmin: string;
   trustForwardedFor: boolean;
+  /** Hours idle before a session's workloads stop; null when off. */
+  idleWorkloadStopHours: number | null;
 }
 
 export interface ResolvedIngress {
@@ -390,6 +397,14 @@ const setupTimeoutMinutes = (v: unknown): number | undefined => {
   return n === undefined
     ? undefined
     : Math.min(n, MAX_WORKTREE_SETUP_TIMEOUT_MINUTES);
+};
+/** Upper bound on `idleWorkloadStopHours`: thirty days. */
+export const MAX_IDLE_WORKLOAD_STOP_HOURS = 30 * 24;
+const idleStopHours = (v: unknown): number | undefined => {
+  const n = positiveNum(v);
+  return n === undefined
+    ? undefined
+    : Math.min(n, MAX_IDLE_WORKLOAD_STOP_HOURS);
 };
 const bool = (v: unknown): boolean | undefined =>
   typeof v === "boolean" ? v : undefined;
@@ -510,6 +525,7 @@ function parseConfig(text: string): OpenSessionConfig {
         previewHost: str(server.previewHost),
         caddyAdmin: str(server.caddyAdmin),
         trustForwardedFor: bool(server.trustForwardedFor),
+        idleWorkloadStopHours: idleStopHours(server.idleWorkloadStopHours),
       });
     }
 
@@ -776,6 +792,13 @@ export function configuredServer(): ResolvedServer {
     trustForwardedFor:
       process.env.OPENSESSION_TRUST_FORWARDED_FOR === "1" ||
       s.trustForwardedFor === true,
+    // Off unless set. The environment wins, and "0" there turns it off.
+    idleWorkloadStopHours:
+      (process.env.OPENSESSION_IDLE_WORKLOAD_STOP_HOURS !== undefined
+        ? idleStopHours(
+            Number(process.env.OPENSESSION_IDLE_WORKLOAD_STOP_HOURS),
+          )
+        : idleStopHours(s.idleWorkloadStopHours)) ?? null,
   };
 }
 
