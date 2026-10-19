@@ -16,6 +16,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { AccountUsage } from "./claude-accounts";
 import * as realCache from "./shared/json-file-cache";
 import * as realAtomic from "./shared/atomic-write";
 
@@ -203,5 +204,66 @@ describe("locked updates", () => {
     lock.release(held);
     process.env.OPENSESSION_RUN_JOURNAL = join(dir, "journal.json");
     expect(lock.syncWaitMs()).toBe(250);
+  });
+});
+
+describe("usage offers", () => {
+  const at = Date.parse("2026-07-01T12:00:00.000Z");
+  const snapshot = (minutes: number, pct: number | null): AccountUsage => ({
+    fetchedAt: new Date(at + minutes * 60_000).toISOString(),
+    fiveHour: { utilization: pct, resetsAt: null },
+    sevenDay: null,
+    extraUsage: null,
+  });
+  const failed = (minutes: number, error: string): AccountUsage => ({
+    ...snapshot(minutes, null),
+    fiveHour: null,
+    error,
+  });
+
+  test("an error does not replace a good snapshot", async () => {
+    const good = snapshot(0, 40);
+    expect(await shared.sharedUsageCache.offer("a", good)).toEqual(good);
+    const err = failed(5, "usage endpoint returned 503");
+    expect(await shared.sharedUsageCache.offer("a", err)).toEqual(good);
+    expect(shared.sharedUsageCache.get("a")).toEqual(good);
+    // Unless the error is what readers must see.
+    const broken = failed(6, "Couldn't read OAuth credentials");
+    expect(
+      await shared.sharedUsageCache.offer("a", broken, { replaceGood: true }),
+    ).toEqual(broken);
+    // A later good snapshot replaces an error.
+    const later = snapshot(7, 10);
+    expect(await shared.sharedUsageCache.offer("a", later)).toEqual(later);
+  });
+
+  test("an older snapshot does not replace a newer one", async () => {
+    const newer = snapshot(10, 80);
+    await shared.sharedUsageCache.offer("a", newer);
+    expect(await shared.sharedUsageCache.offer("a", snapshot(5, 20))).toEqual(
+      newer,
+    );
+    expect(
+      await shared.sharedUsageCache.offer("a", failed(5, "timeout"), {
+        replaceGood: true,
+      }),
+    ).toEqual(newer);
+    expect(shared.sharedUsageCache.get("a")).toEqual(newer);
+  });
+
+  test("an offer waits for the lock without blocking the event loop", async () => {
+    const held = lock.acquire(lock.path(lock.usagePath()))!;
+    const value = snapshot(0, 30);
+    const started = performance.now();
+    const offered = shared.sharedUsageCache.offer("a", value);
+    expect(performance.now() - started).toBeLessThan(20);
+    let ticked = false;
+    setTimeout(() => (ticked = true), 1);
+    await Bun.sleep(30);
+    expect(ticked).toBe(true);
+    expect(shared.sharedUsageCache.get("a")).toBeUndefined();
+    lock.release(held);
+    expect(await offered).toEqual(value);
+    expect(shared.sharedUsageCache.get("a")).toEqual(value);
   });
 });

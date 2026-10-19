@@ -624,18 +624,19 @@ async function refreshAccountUsage(
   const tok = await usageToken(account, signal);
   if (!tok) return null;
   if ("error" in tok) {
-    // Broken usage credentials: keep the actionable error (the account-health
-    // monitor's owner DMs key off it).
-    const usage = {
-      fetchedAt: new Date().toISOString(),
-      fiveHour: null,
-      sevenDay: null,
-      error: tok.error,
-    };
-    usageCache.set(account.id, usage);
-    return usage;
+    // Broken usage credentials: keep the actionable error, even over a good
+    // snapshot (the account-health monitor's owner DMs key off it).
+    return usageCache.offer(
+      account.id,
+      {
+        fetchedAt: new Date().toISOString(),
+        fiveHour: null,
+        sevenDay: null,
+        error: tok.error,
+      },
+      { replaceGood: true },
+    );
   }
-  const cached = usageCache.get(account.id);
 
   const usage = await fetchUsage(tok.token, account.id, signal);
   if (usage.errorStatus === 403) {
@@ -647,13 +648,14 @@ async function refreshAccountUsage(
       return null;
     }
   }
-  // On a transient failure (rate limit, 5xx, timeout), keep showing the last
-  // good snapshot instead of blanking it with an error.
-  if (usage.error && cached && !cached.error) return cached;
-  usageCache.set(account.id, usage);
-
-  if (!usage.error) releaseDisprovenSidelines(account, usage);
-  return usage;
+  // Decided under the shared lock, against what is stored by then: on a
+  // transient failure (rate limit, 5xx, timeout) the last good snapshot
+  // keeps showing instead of an error, and a snapshot another process
+  // fetched after this one stays.
+  const stored = await usageCache.offer(account.id, usage);
+  if (stored === usage && !usage.error)
+    releaseDisprovenSidelines(account, usage);
+  return stored;
 }
 
 export async function refreshAllUsage(): Promise<void> {

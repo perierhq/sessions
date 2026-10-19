@@ -79,8 +79,10 @@ const LOCK_STALE_MS = 2_000;
 // A run host owns one turn and has nothing else to do while it waits.
 const RUN_HOST_LOCK_WAIT_MS = 250;
 // The gateway's event loop serves every session, so its synchronous callers
-// (one-shot picks, account edits) give up almost at once.
+// (one-shot picks, account edits) give up almost at once. The usage poller
+// and refresh wait off the loop instead (updateSharedAsync).
 const GATEWAY_SYNC_LOCK_WAIT_MS = 5;
+const ASYNC_LOCK_MAX_BACKOFF_MS = 16;
 
 /** Run hosts point the run journal at a file of their own; the gateway
  *  never sets it. The same signal run-state.ts uses for detachedRunHost. */
@@ -224,6 +226,21 @@ function acquireLockSync(lock: string, waitMs: number): LockHandle | undefined {
   }
 }
 
+async function acquireLockAsync(
+  lock: string,
+  waitMs: number,
+): Promise<LockHandle | undefined> {
+  const deadline = Date.now() + waitMs;
+  let backoff = 1;
+  for (;;) {
+    const step = tryAcquire(lock);
+    if (typeof step === "object") return step;
+    if (step === "give-up" || Date.now() >= deadline) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, backoff));
+    backoff = Math.min(backoff * 2, ASYNC_LOCK_MAX_BACKOFF_MS);
+  }
+}
+
 function runLocked<T>(handle: LockHandle | undefined, fn: () => T): T {
   try {
     return fn();
@@ -310,6 +327,17 @@ function updateShared<T extends object, R>(
   return runLocked(handle, () => applyUpdate(path, empty, fn));
 }
 
+/** updateShared for callers that can wait off the event loop. The update
+ *  itself still runs in one synchronous step once the lock is held. */
+async function updateSharedAsync<T extends object, R>(
+  path: string,
+  empty: () => T,
+  fn: (draft: T) => R,
+): Promise<R> {
+  const handle = await acquireLockAsync(lockPath(path), RUN_HOST_LOCK_WAIT_MS);
+  return runLocked(handle, () => applyUpdate(path, empty, fn));
+}
+
 // ── Usage snapshots ──────────────────────────────────────────────────────────
 // Written by whichever process fetched them (the gateway's poller, a run's
 // post-limit refresh), read by every pick.
@@ -320,15 +348,53 @@ interface UsageFile {
 
 const emptyUsage = (): UsageFile => ({ usage: {} });
 
+/**
+ * Whether a freshly fetched snapshot should replace the stored one. A
+ * snapshot fetched before the stored one never does: another process got
+ * there later. An error never replaces a good snapshot unless the caller
+ * says it must (the error itself is what a reader needs to see).
+ */
+function supersedes(
+  next: AccountUsage,
+  stored: AccountUsage,
+  replaceGood: boolean,
+): boolean {
+  if (Date.parse(next.fetchedAt) < Date.parse(stored.fetchedAt)) return false;
+  return !next.error || !!stored.error || replaceGood;
+}
+
 /** The usage snapshot map's interface, backed by the shared file. */
 export const sharedUsageCache = {
   get(id: string): AccountUsage | undefined {
     const usage = readShared(usagePath(), emptyUsage).usage;
     return usage && Object.hasOwn(usage, id) ? usage[id] : undefined;
   },
+  /** Store a snapshot as is (account setup, tests). */
   set(id: string, value: AccountUsage): void {
     updateShared(usagePath(), emptyUsage, (draft) => {
       (draft.usage ??= {})[id] = value;
+    });
+  },
+  /**
+   * Offer a snapshot this process just fetched. Under the lock, it is kept
+   * only when it supersedes the stored one (see supersedes): a poll that
+   * failed after another process stored a good snapshot, or one that
+   * finished after a later one, leaves the stored snapshot alone. Resolves
+   * to the snapshot stored now. Waits for the lock off the event loop, so
+   * the gateway's poller never blocks it.
+   */
+  offer(
+    id: string,
+    value: AccountUsage,
+    opts?: { replaceGood?: boolean },
+  ): Promise<AccountUsage> {
+    return updateSharedAsync(usagePath(), emptyUsage, (draft) => {
+      const usage = (draft.usage ??= {});
+      const stored = Object.hasOwn(usage, id) ? usage[id] : undefined;
+      if (stored && !supersedes(value, stored, !!opts?.replaceGood))
+        return stored;
+      usage[id] = value;
+      return value;
     });
   },
   delete(id: string): void {
