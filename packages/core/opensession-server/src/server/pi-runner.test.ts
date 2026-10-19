@@ -54,7 +54,6 @@ import {
 import type { PiBashAuditEvent } from "./pi-runner";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
 import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
-import { usageLimitResetAt } from "./runner-shared";
 
 describe("acceptSteerOnce", () => {
   test("records only successful acceptance and deduplicates retries", () => {
@@ -660,6 +659,36 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
         "native",
       ),
     ).toBe(false);
+  });
+
+  test("a native 429 counts as a limit only when its unified status is rejected", () => {
+    const raw =
+      '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}';
+    expect(isPiUsageLimitShape(raw, "anthropic", "native", "rejected")).toBe(
+      true,
+    );
+    for (const status of ["allowed", "allowed_warning"]) {
+      expect(isPiUsageLimitShape(raw, "anthropic", "native", status)).toBe(
+        false,
+      );
+    }
+    // No header: the current shape match stands.
+    expect(isPiUsageLimitShape(raw, "anthropic", "native", undefined)).toBe(
+      true,
+    );
+    // The header is only read on the native transport.
+    expect(isPiUsageLimitShape(raw, "anthropic", "inprocess", "allowed")).toBe(
+      true,
+    );
+    // A pool refusal is not a 429 and still classifies.
+    expect(
+      isPiUsageLimitShape(
+        "no usable Claude account in the pool (all exhausted or sidelined)",
+        "anthropic",
+        "native",
+        "allowed",
+      ),
+    ).toBe(true);
   });
 
   test("openai runs match the shared codex classifier plus the raw code shapes", () => {
@@ -1896,15 +1925,31 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     }
   };
 
-  /** A limit message that names a reset three days out, the shape
-   *  usageLimitResetAt parses. */
-  const limitMessage = () => {
-    const at = new Date(Date.now() + 3 * 24 * 60 * 60_000);
-    const month = at.toLocaleString("en-US", {
-      month: "short",
-      timeZone: "UTC",
-    });
-    return `You've hit your limit · resets ${month} ${at.getUTCDate()}, 9am (UTC)`;
+  /** The raw error pi reports for a 429 from Anthropic: status and body,
+   *  without the response headers. */
+  const rateLimitBody =
+    '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}';
+  /** A native 429 as the provider saw it. `status` is the unified
+   *  rate-limit status header (omitted when undefined); the reset is three
+   *  days out, later than the default one-hour sideline. */
+  const rateLimited = (status?: string) => {
+    const resetSeconds = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
+    return {
+      error: rateLimitBody,
+      resetAt: resetSeconds * 1000,
+      response: {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          ...(status
+            ? {
+                "anthropic-ratelimit-unified-status": status,
+                "anthropic-ratelimit-unified-reset": String(resetSeconds),
+              }
+            : {}),
+        },
+      },
+    };
   };
   const overloaded =
     '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
@@ -1913,16 +1958,29 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     { failure: "limit", streamed: false, strict: false },
     { failure: "limit", streamed: true, strict: false },
     { failure: "limit", streamed: false, strict: true },
+    { failure: "limit-no-header", streamed: false, strict: false },
+    { failure: "throttled", streamed: false, strict: false },
     { failure: "overloaded", streamed: false, strict: false },
   ])("account walk %j", async ({ failure, streamed, strict }) => {
     const {
       suffix,
       accounts: [first, second],
     } = writePool(2);
-    const failureMessage = failure === "limit" ? limitMessage() : overloaded;
-    const fake = fakeNativeSdk((token) =>
-      token === first.token ? { error: failureMessage, streamed } : undefined,
+    const limit = rateLimited(
+      failure === "limit"
+        ? "rejected"
+        : failure === "throttled"
+          ? "allowed_warning"
+          : undefined,
     );
+    const failing =
+      failure === "overloaded"
+        ? { error: overloaded, streamed }
+        : { error: limit.error, response: limit.response, streamed };
+    const fake = fakeNativeSdk((token) =>
+      token === first.token ? failing : undefined,
+    );
+    const started = Date.now();
     const { events, errors, warnings } = await runNativeTurn(fake.sdk, {
       sessionId: `pi-claude-native-${suffix}`,
       accountAffinityKey: `affinity-${suffix}`,
@@ -1942,10 +2000,11 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       ).toEqual({ system: [{ type: "text", text: to }] });
     }
 
-    if (failure === "overloaded") {
-      // Transient overload on the direct API: pi's retry owns it, so the
-      // account is neither sidelined nor rotated off, and the turn's
-      // failure does not read as exhaustion.
+    if (failure === "overloaded" || failure === "throttled") {
+      // Transient overload, or a 429 whose unified status says it is not
+      // the subscription's limit: pi's retry owns it, so the account is
+      // neither sidelined nor rotated off, and the turn's failure does not
+      // read as exhaustion.
       expect(usedTokens).toEqual([first.token]);
       expect(errors).toHaveLength(1);
       expect(errors[0].usageLimitExhausted).toBeUndefined();
@@ -1953,11 +2012,16 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       return;
     }
 
-    // A limit benches the account until the reset its message named,
-    // which is later than the default one-hour sideline.
-    const statedReset = usageLimitResetAt(failureMessage)!;
-    expect(statedReset).toBeGreaterThan(Date.now() + 2 * 60 * 60_000);
-    expect(sidelines()[`${first.id}:${model}`]).toBe(statedReset);
+    const sidelinedUntil = sidelines()[`${first.id}:${model}`];
+    if (failure === "limit") {
+      // A rejected 429 benches the account until the reset its unified
+      // rate-limit header named, though pi's error text carries no reset.
+      expect(sidelinedUntil).toBe(limit.resetAt);
+    } else {
+      // No header: still a limit, benched for the default hour.
+      expect(sidelinedUntil).toBeGreaterThanOrEqual(started + 60 * 60_000);
+      expect(sidelinedUntil).toBeLessThan(started + 2 * 60 * 60_000);
+    }
     if (strict) {
       // A hard pin never moves onto an account the person did not pick.
       expect(usedTokens).toEqual([first.token]);
@@ -1997,7 +2061,7 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       accounts: [a, b, c],
     } = writePool(3);
     const fake = fakeNativeSdk((token) =>
-      token === a.token ? { error: limitMessage() } : undefined,
+      token === a.token ? rateLimited("rejected") : undefined,
     );
     const affinity = `affinity-${suffix}`;
     const first = await runNativeTurn(fake.sdk, {

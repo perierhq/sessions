@@ -7,6 +7,10 @@ import {
   type CreatePiRuntimeBindingInput,
 } from "./pi-runtime-binding";
 import type { ClaudeAccount } from "./claude-accounts";
+import {
+  enableAnthropicRateLimitCapture,
+  type AnthropicRateLimitSnapshot,
+} from "./anthropic-rate-limit";
 import type { CodexAccount } from "./codex-accounts";
 
 const oauth: CodexAccount = {
@@ -590,6 +594,62 @@ describe("createPiRuntimeBinding", () => {
       if (previousEnvKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = previousEnvKey;
     }
+  });
+
+  test("a native 429's rate-limit headers reach the runner only through the request fetch", async () => {
+    // The real pi SDK, with fetch captured: no network. pi's error text and
+    // its onResponse hook both lose the headers of a failed request.
+    const h = harness({ transport: "native" });
+    h.deps.loadSdk = prewarmPiSdk;
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-haiku-5-5", h),
+    );
+    const resetSeconds = Math.floor(Date.now() / 1000) + 3 * 60 * 60;
+    const body = JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error", message: "Rate limited" },
+    });
+    const fetch = async () =>
+      new Response(body, {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-reset": String(resetSeconds),
+          "x-should-retry": "false",
+        },
+      });
+    const seen: AnthropicRateLimitSnapshot[] = [];
+    const responses: unknown[] = [];
+    const agent = {
+      streamFunction: (model: any, context: any, options: any) =>
+        binding.runtime.streamSimple(model, context, options),
+    };
+    enableAnthropicRateLimitCapture(agent, (snapshot) => seen.push(snapshot));
+    const stream = (await agent.streamFunction(
+      binding.model,
+      {
+        systemPrompt: "Run instructions",
+        messages: [{ role: "user", content: "hi", timestamp: 1 }],
+      },
+      {
+        fetch,
+        sessionId: "pi-session",
+        onResponse: (response: unknown) => responses.push(response),
+      },
+    )) as ReturnType<typeof binding.runtime.streamSimple>;
+    const result = await stream.result();
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toStartWith("429 ");
+    expect(result.errorMessage).not.toContain("anthropic-ratelimit");
+    expect(responses).toEqual([]);
+    expect(seen).toEqual([
+      {
+        httpStatus: 429,
+        unifiedStatus: "rejected",
+        resetAt: resetSeconds * 1000,
+      },
+    ]);
   });
 
   test("binds a configured third-party provider plan then its key", async () => {

@@ -61,6 +61,10 @@ import {
   rewriteAnthropicPromptText,
 } from "./anthropic-prompt-compat";
 import {
+  enableAnthropicRateLimitCapture,
+  type AnthropicRateLimitSnapshot,
+} from "./anthropic-rate-limit";
+import {
   FALLBACK_CONTEXT_WINDOW,
   FALLBACK_MAX_TOKENS,
   configuredProviderCatalog,
@@ -993,7 +997,11 @@ function evidencePoolRef(
  *  usable designated account) plus the standard Claude limit messages. On the
  *  "native" transport pi talks to Anthropic directly, where 529 /
  *  overloaded_error is transient overload, not exhaustion: those go through
- *  pi's own retry instead of sidelining a healthy account. OpenAI runs match
+ *  pi's own retry instead of sidelining a healthy account. A native 429 is
+ *  read the same way when Anthropic's unified rate-limit header came with it
+ *  (`anthropicUnifiedStatus`): only "rejected" is the subscription's own
+ *  limit; any other status is a transient throttle for pi's retry. Without
+ *  the header a 429 still counts as a limit. OpenAI runs match
  *  the codex classifier shared with the previous runner engine
  *  (isCodexUsageLimitError) plus the raw code shapes above — never the
  *  bridge-only shapes (529/overload is transient there, not exhaustion).
@@ -1002,6 +1010,9 @@ export function isPiUsageLimitShape(
   message: string,
   providerID: string,
   anthropicTransport?: PiAnthropicTransport,
+  /** `anthropic-ratelimit-unified-status` of the native 429 this message
+   *  reports, when the response carried one. */
+  anthropicUnifiedStatus?: string,
 ): boolean {
   if (providerID === "openai") {
     return (
@@ -1012,6 +1023,13 @@ export function isPiUsageLimitShape(
   if (providerID === XAI_OAUTH_PROVIDER) {
     return XAI_USAGE_LIMIT_SHAPES.test(message);
   }
+  if (
+    anthropicTransport === "native" &&
+    anthropicUnifiedStatus !== undefined &&
+    anthropicUnifiedStatus !== "rejected" &&
+    /\b429\b/.test(message)
+  )
+    return false;
   if (
     isClaudeUsageLimitError(message, true) ||
     isClaudeSubscriptionError(message)
@@ -2063,8 +2081,21 @@ async function* runPiAttempt(
   // must all agree on how this turn reaches Anthropic.
   const anthropicTransport =
     parsed.providerID === "anthropic" ? piAnthropicTransport() : undefined;
+  // The latest Anthropic response's unified rate-limit headers, on the native
+  // transport (anthropic-rate-limit.ts). Kept per attempt: each attempt binds
+  // its own account.
+  let nativeRateLimit: AnthropicRateLimitSnapshot | undefined;
+  /** The rate-limit headers of the 429 that just failed, if that is what the
+   *  latest response was. */
+  const nativeLimit429 = () =>
+    nativeRateLimit?.httpStatus === 429 ? nativeRateLimit : undefined;
   const usageLimitShape = (message: string) =>
-    isPiUsageLimitShape(message, parsed.providerID, anthropicTransport);
+    isPiUsageLimitShape(
+      message,
+      parsed.providerID,
+      anthropicTransport,
+      nativeLimit429()?.unifiedStatus,
+    );
 
   const { prompt, cwd, mode, mcpServers, confirmTools, journal, user, author } =
     opts;
@@ -2193,12 +2224,13 @@ async function* runPiAttempt(
     if (account.pool === "openai")
       markCodexExhausted(account.id, parsed.modelID);
     else if (account.pool === "claude")
-      // Bench it until the reset the limit message named, when it named one
-      // (the in-process provider's discipline).
+      // Bench it until the reset the account named, when it named one (the
+      // in-process provider's discipline): Anthropic's unified reset header
+      // on the 429, else a reset in the limit message.
       markClaudeExhausted(
         account.id,
         parsed.modelID,
-        usageLimitResetAt(message),
+        nativeLimit429()?.resetAt ?? usageLimitResetAt(message),
       );
     else markXaiExhausted(account.id, parsed.modelID);
   };
@@ -3035,7 +3067,15 @@ async function* runPiAttempt(
     // prompt in every request (anthropic-prompt-compat.ts). Same hook. pi's
     // compaction and branch summaries bypass agent.onPayload; their prompts
     // carry none of those lines (see enableAnthropicPromptCompat).
-    if (binding.usesNativeAnthropic) enableAnthropicPromptCompat(session.agent);
+    if (binding.usesNativeAnthropic) {
+      enableAnthropicPromptCompat(session.agent);
+      // pi's error text for a failed request drops the response headers, and
+      // its onResponse hook never sees a 429: read the limit status and reset
+      // off each response here instead.
+      enableAnthropicRateLimitCapture(session.agent, (snapshot) => {
+        nativeRateLimit = snapshot;
+      });
+    }
     // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
     // Responses fields (xai-payload.ts). Same hook, no host extension.
     if (binding.usesXaiProxy) {
