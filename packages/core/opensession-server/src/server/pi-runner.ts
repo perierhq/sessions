@@ -10,8 +10,6 @@
  *    Open Session's owned stores and detached run-host protocol.
  */
 
-import { mkdirSync, readdirSync, openSync, readSync, closeSync } from "fs";
-import { join, resolve, sep } from "path";
 import type {
   AgentSession,
   AgentSessionEvent,
@@ -20,50 +18,19 @@ import { audit, summarizeText } from "./audit";
 import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import { askBashDenyReason, describeUsageLimitReset } from "./runner-shared";
 import { pickClaudeAccount } from "./claude-account-pick";
-import {
-  enableAnthropicPayloadCapture,
-  enableAnthropicPromptCompat,
-  rewriteAnthropicPromptText,
-} from "./anthropic-prompt-compat";
-import {
-  enableAnthropicRateLimitCapture,
-  formatAnthropicReset,
-} from "./anthropic-rate-limit";
+import { formatAnthropicReset } from "./anthropic-rate-limit";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
-import { bindXaiAccount, xaiSubscriptionModelEfforts } from "./xai-accounts";
+import { bindXaiAccount } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
-import { enableXaiProxyPayload } from "./xai-payload";
-import {
-  enableOpenaiFastMode,
-  pickOpenaiAccount,
-  buildSeededOpenaiAuth,
-} from "./openai-auth";
+import { pickOpenaiAccount, buildSeededOpenaiAuth } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
-import { openaiServiceTier } from "./openai-service-tier";
-import { readLocalInstructions } from "./run-policy";
-import {
-  assembleRunSystemPrompt,
-  buildRunInstructions,
-  buildSessionContext,
-} from "./run-instructions";
-import { stripeApprovalsNote } from "./stripe-approvals";
-import {
-  logInjectedContext,
-  logStandingContext,
-  logStandingJson,
-  sessionStartContext,
-} from "./context-log";
+import { logInjectedContext } from "./context-log";
 import { wrapContext } from "./prompt-context";
 import {
-  PI_TURN_CHECKPOINT_FILE,
   createPiTurnCheckpointWriter,
   interruptedReplyNote,
-  repairInterruptedPiTurn,
-  takePiTurnCheckpoint,
   type PiTurnCheckpointWriter,
-  type PiTurnRepair,
 } from "./pi-turn-checkpoint";
-import { stagePromptImages, withImagesNote } from "./prompt-attachments";
 import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
 import {
   recordEngineSessionOwner,
@@ -71,10 +38,7 @@ import {
   transcriptLineUser,
   storeAppendUserLineEarly,
 } from "./transcript-persistence";
-import { transcript } from "./actor-transcript";
-import { transcriptForwarder } from "./transcript-forward";
 import { providerAccountUser } from "./session-actors";
-import { buildEngineSwitchHandoffNote } from "./fork-handoff";
 import { piEngineEnabled, piConfigPath } from "./pi-config";
 import {
   createPiRuntimeBinding,
@@ -82,20 +46,12 @@ import {
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
 import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
-import {
-  expandSkillCommand,
-  gatePstackSkills,
-  skillSearchPaths,
-} from "./skill-paths";
-import {
-  remoteAttachmentWriter,
-  mirrorRemoteContext,
-  remoteWorkspaceForRun,
-} from "./remote-workspace";
+import { expandSkillCommand } from "./skill-paths";
+import { remoteWorkspaceForRun } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
 import type { RunAgentOpts } from "./agent-runner";
-import type { StreamEvent, ImageInput } from "./run-events";
-import { PI_PROVIDER, PI_STATE_DIR, nowIso, sanitizeId } from "./pi-common";
+import type { StreamEvent } from "./run-events";
+import { PI_PROVIDER, nowIso } from "./pi-common";
 import {
   assistantRenderableBlockCount,
   contentToTextAndImages,
@@ -104,7 +60,6 @@ import {
   piAssistantTranscriptEntries,
   piImages,
 } from "./pi-transcript";
-import { GIT_COAUTHOR_ENV } from "./pi-github-env";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
@@ -114,13 +69,10 @@ import {
   aliasPiRun,
   claimPiRun,
   releasePiRun,
-  retractPendingSteer,
   type PiRunHandle,
 } from "./pi-run-registry";
 import {
   PI_CODEMODE_TOOL,
-  interruptPiThinkingForSteer,
-  piCodemodeExtension,
   piResponseHasOutput,
   piToolNames,
 } from "./pi-steering";
@@ -140,9 +92,16 @@ import {
   buildPiToolset,
   piLocalToolNames,
   piMcpRuntimeOptions,
-  piToolScopeRecord,
   type PiSteerBoundary,
 } from "./pi-tools";
+import {
+  installPiPayloadHooks,
+  logPiSessionStart,
+  piThinkingLevel,
+  planPiResume,
+  preparePiResources,
+} from "./pi-session-setup";
+import { PiSteerController } from "./pi-steer-controller";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -215,53 +174,7 @@ export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
 }
 
-// ── Small helpers ────────────────────────────────────────────────────────────
-
-/** First jsonl line of a pi session file (the v3 header), bounded read. */
-function readSessionHeader(
-  path: string,
-): { type?: string; id?: string } | null {
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, "r");
-    const buf = Buffer.alloc(4096);
-    const n = readSync(fd, buf, 0, buf.length, 0);
-    const firstLine = buf.toString("utf-8", 0, n).split("\n")[0];
-    if (!firstLine) return null;
-    return JSON.parse(firstLine);
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {}
-    }
-  }
-}
-
-/** Find the session jsonl whose header id matches — resume-by-piSessionId. */
-function findPiSessionFile(
-  sessionDir: string,
-  piSessionId: string,
-): string | null {
-  try {
-    const names = readdirSync(sessionDir)
-      .filter((n) => n.endsWith(".jsonl"))
-      .sort()
-      .reverse();
-    for (const name of names) {
-      const path = join(sessionDir, name);
-      const header = readSessionHeader(path);
-      if (header?.type === "session" && header.id === piSessionId) return path;
-    }
-  } catch {}
-  return null;
-}
-
 // ── The turn ─────────────────────────────────────────────────────────────────
-
-const THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 /**
  * One logical pi turn, across however many provider accounts it takes.
@@ -342,8 +255,7 @@ async function* runPiAttempt(
     return;
   }
 
-  const { prompt, cwd, mode, mcpServers, confirmTools, journal, user, author } =
-    opts;
+  const { prompt, cwd, mode, mcpServers, confirmTools, journal, user } = opts;
   // `user` remains the exact prompt sender for MCP/GitHub policy and audit.
   // Provider accounts are different: synthetic continuation senders inherit
   // the interactive session owner's personal subscription, and a person who
@@ -610,238 +522,42 @@ async function* runPiAttempt(
       boundary,
     });
 
-    // What the loop reads from the checkout itself (AGENTS.md, local
-    // instructions, the checkout's skills). A Sandbox checkout is mirrored
-    // here first, and every path the model sees maps back to the Sandbox.
-    const context = remote
-      ? await mirrorRemoteContext(
-          remote,
-          `${PI_STATE_DIR}/remote-context/${sanitizeId(unifiedSessionId || runKey)}`,
-        )
-      : { dir: cwd, toRemote: (path: string) => path };
-    const instructions = buildRunInstructions({
-      isAsk,
-      isScratch,
-      isRepoLess: !cwdRepo,
-      reposNote: opts.reposNote,
-      prReviewer: opts.prReviewer,
-      // Only tell the run about a read token it actually holds; a refused
-      // mint already warned in the server log.
-      readRepos: githubEnv.GH_READ_TOKEN ? opts.readRepos : undefined,
-      // Same host-awareness as the previous runner runner: code.storage repos get
-      // push-the-branch instructions instead of `gh pr create`.
-      repoHost: isScratch ? undefined : cwdRepo?.host,
-      publicRepo,
-      localInstructions: readLocalInstructions(context.dir),
-      stripeApprovalsNote: stripeApprovals
-        ? stripeApprovalsNote(policy.unattended)
-        : undefined,
-      inProcessMcp: opts.inProcessMcp,
-      sandboxed: !!remote || process.env.OPENSESSION_SANDBOX === "1",
-      hasSession: !!journal?.osSessionId,
-    });
+    const { agentDir, sessionDir, settingsManager, loader, sessionContext } =
+      await preparePiResources({
+        opts,
+        remote,
+        runKey,
+        unifiedSessionId,
+        isAsk,
+        isScratch,
+        authority: {
+          stripeApprovals,
+          policy,
+          cwdRepo,
+          publicRepo,
+          githubUserLogin,
+          githubEnv,
+          agentGitEnv,
+        },
+        binding,
+        mcpBridge,
+        localTools,
+        codemode,
+        boundary,
+      });
 
-    // The resolution of the `tools` scope runOnModel already logged: what
-    // this engine actually put in front of the model. Pi assembles its tool
-    // list in-process rather than declaring it in an engine config, so this
-    // record is the only account of it (previous runner's equivalent can be read
-    // back from its config file). Recorded once per session, then again only
-    // when the content hash moves.
-    await logStandingJson({
-      sessionId: unifiedSessionId,
-      turnId: opts.promptEntryId || opts.startToken,
-      source: "mcp-servers",
-      value: piToolScopeRecord({ opts, mcpBridge, localTools, policy }),
-    });
-    await logStandingContext({
-      sessionId: unifiedSessionId,
-      turnId: opts.promptEntryId || opts.startToken,
-      source: "instructions",
-      content: instructions,
-    });
+    const { resumeMissNote, sessionManager, checkpointPath, turnRepair } =
+      await planPiResume({
+        sdk,
+        opts,
+        walk,
+        model,
+        sessionDir,
+        unifiedSessionId,
+        userLine,
+      });
 
-    const agentDir = `${PI_STATE_DIR}/agent`;
-    const sessionDir = `${PI_STATE_DIR}/sessions/${sanitizeId(unifiedSessionId || runKey)}`;
-    mkdirSync(agentDir, { recursive: true });
-    mkdirSync(sessionDir, { recursive: true });
-
-    // Pi's `auto` transport tries the experimental ChatGPT WebSocket first.
-    // A mid-response 1006 cannot safely fall back in-place after output has
-    // streamed, so Pi has to replay the whole LLM step through its visible
-    // auto-retry path. Start subscription-backed Codex turns on SSE instead:
-    // it keeps the same session prompt-cache key without the fragile persistent
-    // socket. Raw OpenAI API keys use Pi's ordinary provider and retain its
-    // default transport selection.
-    //
-    // Pi's prompt-cache warming (on by default since 0.86) replays the last
-    // request with a one-token cap during long tool runs. Keep it off:
-    // subscription accounts would spend quota on every replay.
-    const settingsManager = sdk.SettingsManager.inMemory({
-      cacheWarming: "off",
-      ...(binding.usesOpenaiOAuth ? { transport: "sse" as const } : {}),
-    });
-    const workspaceRoot = resolve(context.dir);
-    const loader = new sdk.DefaultResourceLoader({
-      cwd: context.dir,
-      agentDir,
-      settingsManager,
-      // No discovered or built-in extensions. The one inline factory is pi's
-      // codemode tool (piCodemodeExtension).
-      noExtensions: true,
-      extensionFactories: codemode
-        ? [piCodemodeExtension(sdk, () => boundary.pending)]
-        : [],
-      // Pi's own skill resolution stays off, like extensions and themes. A
-      // turn loads the allowlist in skill-paths.ts: what this server ships,
-      // plus the session checkout's own skills, never whatever the host
-      // account has enabled. The paths are what make it non-empty. noSkills
-      // with no additionalSkillPaths loaded nothing at all, which left every
-      // shipped skill dead in the product.
-      noSkills: true,
-      additionalSkillPaths: skillSearchPaths(context.dir),
-      // The pstack family stays loaded but invisible to the model until the
-      // session turns pstack mode on (composer toggle or /pstack). A mirrored
-      // Sandbox skill is presented at its Sandbox path; its local copy only
-      // serves a "/name" expansion (mirrorPath).
-      skillsOverride: (base) => ({
-        ...base,
-        skills: gatePstackSkills(
-          remote
-            ? base.skills.map((skill) => {
-                const filePath = context.toRemote(skill.filePath);
-                return filePath === skill.filePath
-                  ? skill
-                  : {
-                      ...skill,
-                      filePath,
-                      baseDir: context.toRemote(skill.baseDir),
-                      mirrorPath: skill.filePath,
-                    };
-              })
-            : base.skills,
-          opts.pstackMode,
-        ),
-      }),
-      noPromptTemplates: true,
-      noThemes: true,
-      // Pi's context-file discovery walks every ancestor of cwd up to /
-      // (plus the agentDir global) — an AGENTS.md dropped in /home/ubuntu
-      // would silently join every pi system prompt on the box. Bound it to
-      // the workspace: keep only cwd-level files (previous runner parity).
-      agentsFilesOverride: ({ agentsFiles }) => ({
-        agentsFiles: agentsFiles
-          .filter((f) => {
-            const p = resolve(f.path);
-            return p === workspaceRoot || p.startsWith(workspaceRoot + sep);
-          })
-          .map((f) => ({ ...f, path: context.toRemote(f.path) })),
-      }),
-      systemPromptOverride: (base) => {
-        const systemPrompt = assembleRunSystemPrompt({
-          base,
-          cwd,
-          instructions,
-        });
-        // Native Anthropic subscription turns: the same rewrite the request
-        // payload gets below, so the session's own prompt matches what is sent.
-        return binding.usesNativeAnthropic
-          ? rewriteAnthropicPromptText(systemPrompt)
-          : systemPrompt;
-      },
-    });
-    // What the system prompt leaves out so it stays byte-identical across
-    // sessions (prompt-cache sharing): session link, requester, checkout path.
-    const sessionContext = buildSessionContext({
-      osSessionId: journal?.osSessionId,
-      cwd,
-      isAsk,
-      isScratch,
-      repoHost: isScratch ? undefined : cwdRepo?.host,
-      user,
-      author,
-      githubUserLogin,
-      coAuthor: agentGitEnv[GIT_COAUTHOR_ENV],
-    });
-    await loader.reload();
-
-    // Resume: the journaled engine id is pi's session-header uuid — find its
-    // jsonl in this unified session's dir. Not found (rotated dir, pruned
-    // file) → fresh session; the store already holds the unified history and
-    // Cross-engine handoff notes ride the prompt. A detached host also gets a
-    // server-read seed snapshot for the resume-miss case because it must never
-    // open transcripts.db itself.
-    const resumePath =
-      !walk.continuation && opts.sessionId
-        ? findPiSessionFile(sessionDir, opts.sessionId)
-        : null;
-    // Resume-miss bridge: pi's SessionManager buffers a session's jsonl until
-    // its first ASSISTANT message, so a turn that died before any assistant
-    // output (bridge 429 pre-token, instant cancel) journaled a piSessionId
-    // that has NO file. Same engine ⇒ run-session builds no handoff note, and
-    // a silently-fresh session would drop the model's context while the store
-    // still shows the turns. Bridge it from the store ourselves.
-    let resumeMissNote: string | null = null;
-    if (
-      !walk.continuation &&
-      opts.sessionId &&
-      !resumePath &&
-      unifiedSessionId
-    ) {
-      try {
-        const tail = (
-          transcriptForwarder()
-            ? opts.seedTranscriptEntries || []
-            : (await transcript.readTail(unifiedSessionId, 200)).entries
-        )
-          // This turn's own prompt was already early-persisted — the model
-          // gets it as the actual prompt, not as history.
-          .filter((e) => e.id !== String(userLine.uuid));
-        if (tail.length) {
-          resumeMissNote = buildEngineSwitchHandoffNote({
-            fromModel: model,
-            fromProvider: PROVIDER,
-            toProvider: PROVIDER,
-            sameEngineRestart: true,
-            entries: tail,
-            maxEntries: 200,
-            maxChars: 60_000,
-          });
-        }
-      } catch (e) {
-        console.warn("[pi-runner] resume-miss handoff build failed:", e);
-      }
-    }
-    const sessionManager =
-      walk.continuation ??
-      (resumePath
-        ? sdk.SessionManager.open(resumePath, sessionDir)
-        : sdk.SessionManager.create(cwd, sessionDir));
-    // A previous turn on this Pi session that died with its process left
-    // tool calls without results and lost the reply it was streaming
-    // (pi-turn-checkpoint.ts). Close those calls before the model sees the
-    // session, and keep the reply for the prompt below.
-    const checkpointPath = join(sessionDir, PI_TURN_CHECKPOINT_FILE);
-    let turnRepair: PiTurnRepair | null = null;
-    if (!walk.continuation && opts.sessionId && unifiedSessionId) {
-      try {
-        turnRepair = repairInterruptedPiTurn(
-          resumePath ? sessionManager : null,
-          await takePiTurnCheckpoint(checkpointPath, opts.sessionId),
-        );
-      } catch (e) {
-        console.warn("[pi-runner] interrupted-turn repair failed:", e);
-      }
-    }
-
-    const selectedEffort = opts.effort;
-    // "none" means no reasoning at all. Left unset, Pi falls back to its
-    // default thinking level, which costs a small one-shot tens of seconds.
-    const thinkingLevel =
-      selectedEffort === "none"
-        ? ("off" as const)
-        : selectedEffort && THINKING_LEVELS.has(selectedEffort)
-          ? (selectedEffort as "low" | "medium" | "high" | "xhigh" | "max")
-          : undefined;
+    const thinkingLevel = piThinkingLevel(opts.effort);
 
     const created = await sdk.createAgentSession({
       cwd,
@@ -859,87 +575,18 @@ async function* runPiAttempt(
       settingsManager,
     });
     session = created.session;
-    // Pi's provider supports `service_tier`, but its simple-stream adapter
-    // drops that option before building the Codex request. Patch the final
-    // payload instead. Restrict this to seeded ChatGPT OAuth credentials: API
-    // key accounts use ordinary OpenAI billing and are not the subscription
-    // fast mode exposed by the clients.
-    // Ultrafast additionally needs GPT-6 Astra and a Pro $500 login; any
-    // other account the picker had to fall back to still runs at Fast.
-    const serviceTier = binding.usesOpenaiOAuth
-      ? openaiServiceTier({
-          speed,
-          model: parsed.modelID,
-          plan: binding.openaiPlan,
-        })
-      : undefined;
-    if (serviceTier) {
-      enableOpenaiFastMode(session.agent, serviceTier);
-      if (speed === "ultrafast") {
-        audit({
-          msg: "openai_service_tier",
-          run_kind: journal?.kind,
-          session_id: journal?.osSessionId,
-          model: parsed.modelID,
-          service_tier: serviceTier,
-          plan: binding.openaiPlan,
-          engine: "pi",
-        });
-      }
-    }
-    // Native Anthropic subscription turns reword a few lines of pi's stock
-    // prompt in every request (anthropic-prompt-compat.ts). Same hook. pi's
-    // compaction and branch summaries bypass agent.onPayload; their prompts
-    // carry none of those lines (see enableAnthropicPromptCompat).
-    if (binding.usesNativeAnthropic) {
-      enableAnthropicPromptCompat(session.agent);
-      // Opt-in diagnostics: OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR writes the
-      // final request body of each native Anthropic call to that directory
-      // (mode 0600). Request bodies carry no credentials; auth is a header.
-      enableAnthropicPayloadCapture(
-        session.agent,
-        process.env.OPENSESSION_DEBUG_ANTHROPIC_PAYLOAD_DIR,
-        unifiedSessionId || runKey,
-      );
-      // pi's error text for a failed request drops the response headers, and
-      // its onResponse hook never sees a 429: read the limit status and reset
-      // off each response here instead.
-      enableAnthropicRateLimitCapture(session.agent, (snapshot) => {
+    installPiPayloadHooks(session, {
+      binding,
+      parsed,
+      speed,
+      journal,
+      unifiedSessionId,
+      runKey,
+      onRateLimit: (snapshot) => {
         accounts.rateLimit = snapshot;
-      });
-    }
-    // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
-    // Responses fields (xai-payload.ts). Same hook, no host extension.
-    if (binding.usesXaiProxy) {
-      enableXaiProxyPayload(session.agent, {
-        modelId: parsed.modelID,
-        sessionId: unifiedSessionId || runKey,
-        reasoning: piModel.reasoning,
-        effortCapable: xaiSubscriptionModelEfforts(parsed.modelID).length > 0,
-      });
-    }
-    // The first complete provider input only exists after Pi has combined its
-    // base prompt with Open Session instructions, AGENTS.md, skills and active
-    // tool guidance. Record it once for the collapsed transcript-start audit
-    // row. Later turns can change ambient memory, but this row deliberately
-    // answers what preceded the session's initial message.
-    // The agent's tools are the declarations as sent, after codemode adds
-    // itself and appends each tool's script signature to its description.
-    if (!opts.sessionId && !walk.continuation) {
-      await logStandingContext({
-        sessionId: unifiedSessionId,
-        turnId: opts.promptEntryId || opts.startToken,
-        source: "session-start",
-        content: sessionStartContext(
-          session.systemPrompt,
-          session.state.tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          })),
-        ),
-      });
-    }
+      },
+    });
+    await logPiSessionStart(session, { opts, walk, unifiedSessionId });
     // previous runner appends every pending noReply steer before its next LLM step.
     // Match that behavior instead of Pi's one-message-per-step default.
     session.setSteeringMode("all");
@@ -987,121 +634,21 @@ async function* runPiAttempt(
     // Register the engine-id alias + the steer surface on the shared handle.
     aliasPiRun(registeredKeys, ledger.piSessionId, handle);
     const liveSession = session;
-    // Steer contract: accept = enqueue + receipt. The transcript user line is
-    // written only when the queued message is actually DELIVERED (its user
-    // message_end below) — session.steer() resolves at enqueue time, so a
-    // .then() would confirm nothing, and an optimistically-persisted line
-    // marks an undelivered steer as said (queue-state reconciles receipts
-    // against transcript user texts, so it would never be requeued). An
-    // undelivered steer keeps its run-session receipt as the recovery
-    // affordance — previous runner's failed-POST semantics.
-    const pendingSteers: Array<{
-      text: string;
-      images?: ImageInput[];
-      steerId?: string;
-    }> = [];
-    // Every touch of pi's queue goes through this chain, in call order. The
-    // bookkeeping above it (pending entry, boundary flag, the caller's
-    // receipt) stays synchronous; only the engine enqueue waits, because
-    // staging an attachment is async and an in-process run shares the
-    // gateway's event loop. Ordering the retraction rebuild on the same
-    // chain means a steer still being staged is never enqueued twice, and a
-    // steer retracted mid-staging is never enqueued at all.
-    let engineQueue: Promise<void> = Promise.resolve();
-    // Steps still to run or running. The pump below reads it before trusting
-    // pi's pendingMessageCount: a steer accepted just before the prompt
-    // settled may not have reached pi's queue yet.
-    let engineQueueDepth = 0;
-    const onEngineQueue = (step: () => Promise<void>, what: string) => {
-      engineQueueDepth++;
-      engineQueue = engineQueue
-        .then(step)
-        .catch((e) => {
-          console.warn(`[pi-runner] ${what} failed:`, e);
-        })
-        .finally(() => {
-          engineQueueDepth--;
-        });
-    };
-    // Set when a steer cut the current response short while it was only
-    // thinking. Its message_end then persists nothing: the thinking was
-    // superseded, and the next response starts from the steer.
-    let steerCutResponse = false;
-    const interruptForSteer = () => {
-      if (abort.signal.aborted) return;
-      if (!interruptPiThinkingForSteer(liveSession.agent)) return;
-      steerCutResponse = true;
-      audit({
-        ...auditBase,
-        direction: "in",
-        kind: "steer_interrupted_response",
-      });
-    };
-    handle.steer = (text, images, steerId) => {
-      // Same skill expansion as the prompt path. The queue holds the expanded
-      // text so the delivery match stays exact; the audit line below still
-      // records what the person typed.
-      const entry = {
-        text: expandSkillCommand(text, loader.getSkills().skills),
-        images,
-        steerId,
-      };
-      boundary.pending = true;
-      pendingSteers.push(entry);
-      onEngineQueue(async () => {
-        // Attached images are staged into this run's scratch dir, in this
-        // process, so the note names paths the engine's tools can read (see
-        // prompt-attachments.ts). The pending entry holds the noted text
-        // before pi ever sees it: delivery matches pi's echo against it, and
-        // a retraction replays it verbatim.
-        entry.text = withImagesNote(
-          entry.text,
-          await stagePromptImages(
-            opts.scratchDir,
-            images,
-            remote ? remoteAttachmentWriter(remote) : undefined,
-          ),
-        );
-        if (!pendingSteers.includes(entry)) return; // retracted meanwhile
-        await liveSession.steer(entry.text, piImages(images));
-        interruptForSteer();
-      }, "steer");
-      audit({
-        ...auditBase,
-        direction: "in",
-        kind: "steer_queued",
-        ...summarizeText(text),
-      });
-    };
-    handle.retractSteer = (steerId) =>
-      retractPendingSteer(pendingSteers, steerId, (remaining) => {
-        // Pi exposes exact delivery identity only in our wrapper. Rebuild its
-        // whole queue from our richer copy so duplicate text and images keep
-        // their original order while the selected id disappears. The entries
-        // are read when the step runs, so one still being staged replays with
-        // its final (noted) text.
-        boundary.pending = remaining.length > 0;
-        onEngineQueue(async () => {
-          liveSession.clearQueue();
-          for (const steer of remaining) {
-            if (!pendingSteers.includes(steer)) continue; // delivered or retracted since
-            await liveSession.steer(steer.text, piImages(steer.images));
-          }
-        }, "steer replay");
-        audit({
-          ...auditBase,
-          direction: "in",
-          kind: "steer_retracted",
-          steer_id: steerId,
-        });
-      });
+    const steering = new PiSteerController({
+      session: liveSession,
+      skills: () => loader.getSkills().skills,
+      scratchDir: opts.scratchDir,
+      remote,
+      signal: abort.signal,
+      boundary,
+      auditBase,
+    });
+    handle.steer = (text, images, steerId) =>
+      steering.steer(text, images, steerId);
+    handle.retractSteer = (steerId) => steering.retractSteer(steerId);
 
     // Cancellation: our registry AbortController drives session.abort().
-    const onAbort = () => {
-      void liveSession.abort().catch(() => {});
-    };
-    if (abort.signal.aborted) onAbort();
-    else abort.signal.addEventListener("abort", onAbort, { once: true });
+    steering.listenForAbort();
 
     // ── Event pump: callback subscription → this generator's queue ──────────
     const queue: StreamEvent[] = [];
@@ -1256,7 +803,8 @@ async function* runPiAttempt(
           case "message_start":
             // A steer queued while the request was in flight, before its
             // first token, cuts the response as soon as it starts.
-            if ((ev as any).message?.role === "assistant") interruptForSteer();
+            if ((ev as any).message?.role === "assistant")
+              steering.interruptForSteer();
             break;
           case "message_update": {
             const ame = (ev as any).assistantMessageEvent;
@@ -1323,8 +871,7 @@ async function* runPiAttempt(
               // and the terminal error carries the failure text — persisting
               // each attempt would stack duplicate partial bubbles. Aborted
               // partials DO persist (parity with pi's own jsonl).
-              const cutBySteer = steerCutResponse;
-              steerCutResponse = false;
+              const cutBySteer = steering.consumeCut();
               if (
                 cutBySteer &&
                 msg.stopReason === "aborted" &&
@@ -1356,15 +903,8 @@ async function* runPiAttempt(
               // is skipped — it was persisted with its stable uuid up front).
               const { text, images } = contentToTextAndImages(msg.content);
               if (text && text !== promptForEngine && text !== prompt) {
-                let idx = pendingSteers.findIndex((s) => s.text === text);
-                // Skill/template expansion can rewrite a queued steer's text;
-                // any user message that isn't the prompt is a delivery, so
-                // fall back to the oldest pending steer but persist what was
-                // actually delivered.
-                if (idx === -1 && pendingSteers.length > 0) idx = 0;
-                if (idx !== -1) {
-                  const steer = pendingSteers.splice(idx, 1)[0];
-                  boundary.pending = pendingSteers.length > 0;
+                const steer = steering.takeDelivered(text);
+                if (steer) {
                   // Transcript parsing deliberately strips fenced system
                   // context. A background-wait steer can therefore be fully
                   // delivered yet leave no visible user entry for receipt
@@ -1513,12 +1053,12 @@ async function* runPiAttempt(
     while (true) {
       while (queue.length) yield queue.shift()!;
       if (promptOutcome) {
-        if (engineQueueDepth > 0) {
+        if (steering.engineQueueDepth > 0) {
           // An accepted steer is still being staged, so pi's queue count is
           // not final yet. steerPiRun already told the caller "accepted";
           // finishing now would drop it silently. Wait for the chain, then
           // re-read everything (more steers may have joined meanwhile).
-          await engineQueue;
+          await steering.engineQueue;
           continue;
         }
         if (
@@ -1567,7 +1107,7 @@ async function* runPiAttempt(
     }
     while (queue.length) yield queue.shift()!;
     unsubscribe();
-    if (pendingSteers.length > 0) {
+    if (steering.pendingCount > 0) {
       // Accepted but never delivered (drain budget exhausted or the run
       // failed): no transcript line was written, so on the failure paths the
       // receipt survives as the recovery affordance; on a done terminal the
@@ -1576,7 +1116,7 @@ async function* runPiAttempt(
         ...auditBase,
         direction: "out",
         kind: "steer_undelivered",
-        count: pendingSteers.length,
+        count: steering.pendingCount,
       });
     }
 
