@@ -43,6 +43,16 @@ function proxyEnv(target: RunRpcTarget): Record<string, string> {
       };
 }
 
+/** A run's opensession-* mounts and what releases them. */
+export interface RunRpcMcpMounts {
+  /** The run's `inProcessMcp` entries. */
+  mounts: Record<string, unknown>;
+  /** Closes the shared run-rpc client (its WS connection and keepalive).
+   *  Call once the run is over: the MCP runtime closes each server's
+   *  transport, but the client they share outlives them. */
+  close(): void;
+}
+
 /**
  * The run's `inProcessMcp` entries for `names`, or undefined when there is
  * nothing to mount. `proxyArgv` launches the stdio proxy and is used only in
@@ -53,28 +63,37 @@ export function runRpcMcpMounts(opts: {
   target: RunRpcTarget;
   mode: McpProxyMode;
   proxyArgv: readonly string[];
-}): Record<string, unknown> | undefined {
+  /** Overrides for the shared client (tests). */
+  client?: Parameters<typeof createRunRpcClient>[1];
+}): RunRpcMcpMounts | undefined {
   if (!opts.names.length || !opts.target.token) return undefined;
-  const out: Record<string, unknown> = {};
+  const mounts: Record<string, unknown> = {};
   if (opts.mode === "per-server") {
     const [command, ...args] = opts.proxyArgv;
     const env = proxyEnv(opts.target);
     for (const name of opts.names)
-      out[name] = {
+      mounts[name] = {
         command,
         args,
         env: { ...env, OPENSESSION_MCP_SERVER: name },
       };
-    return out;
+    // Each proxy owns its own client and exits with its stdio.
+    return { mounts, close: () => {} };
   }
   // Opens nothing yet: the socket or WS is reached on the first request.
-  const rpc = createRunRpcClient(opts.target);
+  //
+  // Over the unix socket every call is a fetch from this process, so relay
+  // calls now share the run host's fetch concurrency limit
+  // (BUN_CONFIG_MAX_HTTP_REQUESTS, Bun's default when unset) with the
+  // model's streaming requests; each per-server proxy had its own. rpc-ws
+  // carries every call on one WebSocket instead of a fetch per call.
+  const rpc = createRunRpcClient(opts.target, opts.client);
   for (const name of opts.names) {
     const relay: InProcessRelayMcpConfig = {
       type: "run-rpc-relay",
       createServer: () => createRunRpcMcpServer(name, rpc),
     };
-    out[name] = relay;
+    mounts[name] = relay;
   }
-  return out;
+  return { mounts, close: () => rpc.close() };
 }

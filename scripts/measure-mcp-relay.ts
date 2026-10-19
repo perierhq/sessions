@@ -3,7 +3,7 @@
  * `bun scripts/measure-mcp-relay.ts [servers]`.
  *
  * Mounts N fake built-in servers (default 25) the way a run host does, in
- * both OPENSESSION_MCP_PROXY_MODE settings, lists every server and calls one
+ * both MCP proxy modes, lists every server and calls one
  * tool on each, then counts the relay processes the run started and their
  * RSS. In-process mode also reports how much this process grew, which is
  * what those relays cost instead.
@@ -47,17 +47,16 @@ async function measure(mode: McpProxyMode) {
   const gateway = await startFakeRunRpcGateway({ dir, names });
   Bun.gc(true);
   const before = process.memoryUsage().rss;
+  const mounts = runRpcMcpMounts({
+    names,
+    target: { socket: gateway.socket, token: gateway.token },
+    mode,
+    proxyArgv: mcpProxyArgv(process.execPath, proxyEntry),
+  });
   const runtime = await createMcpRuntime({
     mcpServers: [],
     deniedToolIds: new Set(),
-    legacyProxyMcp: splitMcpMigrationBoundary(
-      runRpcMcpMounts({
-        names,
-        target: { socket: gateway.socket, token: gateway.token },
-        mode,
-        proxyArgv: mcpProxyArgv(process.execPath, proxyEntry),
-      }),
-    ).legacyProxy,
+    legacyProxyMcp: splitMcpMigrationBoundary(mounts?.mounts).legacyProxy,
   });
   try {
     const tools = await runtime.catalog();
@@ -79,6 +78,7 @@ async function measure(mode: McpProxyMode) {
     };
   } finally {
     await runtime.close();
+    mounts?.close();
     await gateway.stop();
     rmSync(dir, { recursive: true, force: true });
   }

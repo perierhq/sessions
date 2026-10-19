@@ -525,7 +525,7 @@ function onAskUser(input: Record<string, unknown>): Promise<AskResult> {
 // relays inside this process over one shared run-rpc client; the per-server
 // stdio proxies remain behind spec.mcpProxyMode = "per-server", which the
 // gateway sets from OPENSESSION_MCP_PROXY_MODE (mcp-mounts.ts).
-function proxyMcpConfigs(): Record<string, unknown> | undefined {
+function proxyMcpConfigs(): ReturnType<typeof runRpcMcpMounts> {
   // WS transport: dial opensession's /rpc-ws route instead of the unix RPC
   // socket (which isn't shareable across a remote boundary). The upgrade there
   // authenticates with THIS run's hostId + wsToken (only ws-transport launches
@@ -550,7 +550,7 @@ function proxyMcpConfigs(): Record<string, unknown> | undefined {
   });
   if (mounts)
     log(
-      `opensession MCP: ${Object.keys(mounts).length} server(s), ${mode === "per-server" ? "one stdio proxy each" : "in-process relay"}`,
+      `opensession MCP: ${Object.keys(mounts.mounts).length} server(s), ${mode === "per-server" ? "one stdio proxy each" : "in-process relay"}`,
     );
   return mounts;
 }
@@ -564,7 +564,9 @@ process.on("SIGTERM", () => {
   process.exit(143);
 });
 
+let opensessionMcp: ReturnType<typeof proxyMcpConfigs>;
 try {
+  opensessionMcp = proxyMcpConfigs();
   for await (const event of runAgent({
     prompt: spec.prompt,
     promptEntryId: spec.promptEntryId,
@@ -584,7 +586,7 @@ try {
     forkSession: spec.forkSession,
     resumeSessionAt: spec.resumeSessionAt,
     mcpServers: spec.mcpServers ?? "all",
-    inProcessMcp: proxyMcpConfigs(),
+    inProcessMcp: opensessionMcp?.mounts,
     reposNote: spec.reposNote,
     deniedTools: spec.deniedTools,
     publicationPolicy: spec.publicationPolicy,
@@ -637,6 +639,9 @@ try {
   terminal = { type: "error", content: e?.message || String(e) };
   send({ t: "event", event: terminal });
 }
+// The run's MCP runtime is closed by now; release the run-rpc client its
+// relays shared (the rpc-ws connection and its keepalive) before lingering.
+opensessionMcp?.close();
 
 ended = true;
 meta.done = terminal ?? {

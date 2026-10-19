@@ -13,7 +13,13 @@ import {
   type FakeRunRpcGateway,
 } from "../server/testing/run-rpc-mcp-fixture";
 import { mcpProxyArgv } from "./exe";
-import { mcpProxyMode, runRpcMcpMounts, type McpProxyMode } from "./mcp-mounts";
+import {
+  mcpProxyMode,
+  runRpcMcpMounts,
+  type McpProxyMode,
+  type RunRpcMcpMounts,
+} from "./mcp-mounts";
+import { createRunRpcClient, type RunRpcTarget } from "./run-rpc-client";
 
 const PROXY_ENTRY = join(import.meta.dir, "mcp-proxy.ts");
 const PROXY_PROCESS = /mcp-proxy/;
@@ -49,6 +55,7 @@ const BUILT_IN = [
 let dir: string;
 let gateway: FakeRunRpcGateway | undefined;
 const runtimes: McpRuntime[] = [];
+const mountSets: RunRpcMcpMounts[] = [];
 let previousState: string | undefined;
 
 beforeEach(() => {
@@ -59,6 +66,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.close();
+  for (const mounts of mountSets.splice(0)) mounts.close();
   await gateway?.stop();
   gateway = undefined;
   if (previousState === undefined) delete process.env.OPENSESSION_STATE_DIR;
@@ -71,27 +79,46 @@ async function start(names: readonly string[]) {
   return gateway;
 }
 
+/** Where the fake gateway's run-rpc is, over either transport. */
+function targetOf(gw: FakeRunRpcGateway, ws = false): RunRpcTarget {
+  return ws
+    ? { wsUrl: gw.wsUrl, wsHost: gw.wsHost, wsAuth: gw.wsAuth, token: gw.token }
+    : { socket: gw.socket, token: gw.token };
+}
+
+/** The run's mounts, closed after the test. */
+function mountsFor(
+  names: readonly string[],
+  mode: McpProxyMode,
+  target: RunRpcTarget,
+  client?: Parameters<typeof createRunRpcClient>[1],
+) {
+  const mounts = runRpcMcpMounts({
+    names,
+    target,
+    mode,
+    proxyArgv: mcpProxyArgv(process.execPath, PROXY_ENTRY),
+    client,
+  })!;
+  mountSets.push(mounts);
+  return mounts;
+}
+
 /** The run's MCP runtime, wired the way pi-runner wires a run host's. */
 async function runtimeFor(
   names: readonly string[],
   mode: McpProxyMode,
-  opts: { ws?: boolean; deniedToolIds?: string[] } = {},
+  opts: {
+    ws?: boolean;
+    deniedToolIds?: string[];
+    client?: Parameters<typeof createRunRpcClient>[1];
+  } = {},
 ) {
-  const gw = gateway!;
-  const mounts = runRpcMcpMounts({
-    names,
-    target: opts.ws
-      ? {
-          wsUrl: gw.wsUrl,
-          wsHost: gw.wsHost,
-          wsAuth: gw.wsAuth,
-          token: gw.token,
-        }
-      : { socket: gw.socket, token: gw.token },
-    mode,
-    proxyArgv: mcpProxyArgv(process.execPath, PROXY_ENTRY),
+  const mounts = mountsFor(names, mode, targetOf(gateway!, opts.ws), {
+    retryDelayMs: 20,
+    ...opts.client,
   });
-  const split = splitMcpMigrationBoundary(mounts);
+  const split = splitMcpMigrationBoundary(mounts.mounts);
   expect(Object.keys(split.sdk)).toEqual([]);
   const runtime = await createMcpRuntime({
     mcpServers: [],
@@ -101,7 +128,7 @@ async function runtimeFor(
     callTimeoutMs: 20_000,
   });
   runtimes.push(runtime);
-  return runtime;
+  return Object.assign(runtime, { mounts });
 }
 
 const call = (
@@ -163,7 +190,7 @@ describe("runRpcMcpMounts", () => {
   });
 
   test("in-process mode mounts one relay per server and no command", () => {
-    const mounts = runRpcMcpMounts({
+    const { mounts } = runRpcMcpMounts({
       names: BUILT_IN,
       target: socketTarget,
       mode: "in-process",
@@ -183,7 +210,7 @@ describe("runRpcMcpMounts", () => {
         target: socketTarget,
         mode: "per-server",
         proxyArgv: ["bun", "run", "proxy.ts"],
-      }),
+      })?.mounts,
     ).toEqual({
       "opensession-a": {
         command: "bun",
@@ -215,7 +242,7 @@ describe("runRpcMcpMounts", () => {
         },
         mode: "per-server",
         proxyArgv: ["opensession", "mcp-proxy"],
-      }),
+      })?.mounts,
     ).toEqual({
       "opensession-a": {
         command: "opensession",
@@ -349,16 +376,14 @@ describe("in-process relay", () => {
       },
     });
     try {
-      const mounts = runRpcMcpMounts({
-        names: ["opensession-a"],
-        target: { socket: join(dir, "cut.sock"), token: "t" },
-        mode: "in-process",
-        proxyArgv: [],
+      const mounts = mountsFor(["opensession-a"], "in-process", {
+        socket: join(dir, "cut.sock"),
+        token: "t",
       });
       const runtime = await createMcpRuntime({
         mcpServers: [],
         deniedToolIds: new Set(),
-        legacyProxyMcp: splitMcpMigrationBoundary(mounts).legacyProxy,
+        legacyProxyMcp: splitMcpMigrationBoundary(mounts.mounts).legacyProxy,
       });
       runtimes.push(runtime);
       await expect(call(runtime, "opensession-a_echo")).rejects.toThrow(
@@ -415,6 +440,29 @@ describe("in-process relay", () => {
     abort.abort();
     await expect(pending).rejects.toThrow();
     await waitUntil(() => gw.aborted.includes(`${names[1]}_wait`));
+    expect(gw.wsConnections()).toBe(1);
+  });
+});
+
+describe("the shared run-rpc client", () => {
+  test("closing the mounts closes the rpc-ws connection and its keepalive", async () => {
+    const names = ["opensession-a", "opensession-b"];
+    const gw = await start(names);
+    const runtime = await runtimeFor(names, "in-process", {
+      ws: true,
+      client: { keepaliveMs: 20 },
+    });
+    await call(runtime, "opensession-a_echo");
+    await waitUntil(() => gw.wsPings() > 0);
+    // Closing the runtime closes each server, not the client they share.
+    await runtime.close();
+    runtimes.splice(runtimes.indexOf(runtime), 1);
+    expect(gw.openWsConnections()).toBe(1);
+    runtime.mounts.close();
+    await waitUntil(() => gw.openWsConnections() === 0);
+    const pings = gw.wsPings();
+    await Bun.sleep(150);
+    expect(gw.wsPings()).toBe(pings);
     expect(gw.wsConnections()).toBe(1);
   });
 });
