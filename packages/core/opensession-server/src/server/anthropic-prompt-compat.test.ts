@@ -73,8 +73,9 @@ describe("anthropic prompt compat rewrites", () => {
     );
   });
 
-  test("rewrites every string in a provider payload and keeps untouched payloads", () => {
-    const [[from0, to0], [from1, to1]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
+  test("rewrites the system blocks and system-role messages of a payload", () => {
+    const [[from0, to0], [from1, to1], [from2, to2]] =
+      ANTHROPIC_PROMPT_COMPAT_REWRITES;
     const payload = {
       model: "claude-test",
       max_tokens: 1024,
@@ -83,21 +84,83 @@ describe("anthropic prompt compat rewrites", () => {
         { type: "text", text: `head\n${from0}\ntail`, cache_control: {} },
       ],
       messages: [
-        { role: "user", content: [{ type: "text", text: from1 }] },
-        { role: "assistant", content: "unchanged" },
+        { role: "user", content: "unchanged" },
+        {
+          role: "system",
+          content: [
+            { type: "text", text: from1 },
+            { type: "tool_addition", tool: { name: from2 } },
+          ],
+        },
+        { role: "system", content: from2 },
       ],
     };
-    const out = rewriteAnthropicPromptPayload(payload) as typeof payload;
+    const out = rewriteAnthropicPromptPayload(payload) as any;
     expect(out).not.toBe(payload);
-    expect(out.system[1].text).toBe(`head\n${to0}\ntail`);
-    expect((out.messages[0].content as any)[0].text).toBe(to1);
-    expect(out.messages[1].content).toBe("unchanged");
+    expect(out.system[1]).toEqual({
+      type: "text",
+      text: `head\n${to0}\ntail`,
+      cache_control: {},
+    });
+    expect(out.system[0]).toBe(payload.system[0]);
+    expect(out.messages[0]).toBe(payload.messages[0]);
+    expect(out.messages[1].content[0]).toEqual({ type: "text", text: to1 });
+    // Only text blocks carry prompt text.
+    expect(out.messages[1].content[1]).toBe(payload.messages[1].content[1]);
+    expect(out.messages[2].content).toBe(to2);
     expect(out.max_tokens).toBe(1024);
     // The input is not mutated.
     expect(payload.system[1].text).toBe(`head\n${from0}\ntail`);
+    expect((payload.messages[1].content as any)[0].text).toBe(from1);
 
     const clean = { system: [{ type: "text", text: "nothing to do" }] };
     expect(rewriteAnthropicPromptPayload(clean)).toBe(clean);
+    expect(rewriteAnthropicPromptPayload({ system: from0 })).toEqual({
+      system: to0,
+    });
+  });
+
+  test("leaves conversation content alone, even when it quotes a FROM line", () => {
+    const [[from0], [from1], [from2]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
+    const image = {
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: from0 },
+    };
+    const payload = {
+      system: [{ type: "text", text: "Run instructions" }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: from0 },
+            image,
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [{ type: "text", text: from1 }],
+            },
+            { type: "tool_result", tool_use_id: "toolu_2", content: from2 },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: from1, signature: "sig" },
+            { type: "text", text: from2 },
+            {
+              type: "tool_use",
+              id: "toolu_3",
+              name: "bash",
+              input: { command: from0, nested: [from1] },
+            },
+          ],
+        },
+        { role: "user", content: from2 },
+      ],
+    };
+    const snapshot = structuredClone(payload);
+    expect(rewriteAnthropicPromptPayload(payload)).toBe(payload);
+    expect(payload).toEqual(snapshot);
   });
 
   test("the agent hook runs after the existing hook and only for anthropic", async () => {

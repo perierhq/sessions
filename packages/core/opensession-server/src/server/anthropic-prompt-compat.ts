@@ -40,36 +40,68 @@ export function rewriteAnthropicPromptText(text: string): string {
   return out;
 }
 
-function rewriteDeep(value: unknown): unknown {
-  if (typeof value === "string") return rewriteAnthropicPromptText(value);
-  if (Array.isArray(value)) return value.map(rewriteDeep);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value))
-      out[key] = rewriteDeep(item);
-    return out;
-  }
-  return value;
+/** Rewrite the text blocks of a system prompt or system-message body.
+ *  Accepts the string and the block-array shapes; returns the input when
+ *  nothing changed. Only `type: "text"` blocks are read: tool additions and
+ *  removals in a mid-conversation system message carry no prompt text. */
+function rewriteSystemContent(content: unknown): unknown {
+  if (typeof content === "string") return rewriteAnthropicPromptText(content);
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const out = content.map((block) => {
+    if (
+      !block ||
+      typeof block !== "object" ||
+      (block as { type?: unknown }).type !== "text" ||
+      typeof (block as { text?: unknown }).text !== "string"
+    )
+      return block;
+    const text = (block as { text: string }).text;
+    const next = rewriteAnthropicPromptText(text);
+    if (next === text) return block;
+    changed = true;
+    return { ...(block as object), text: next };
+  });
+  return changed ? out : content;
 }
 
-/** Rewrite every string in a provider request payload (system blocks,
- *  mid-conversation system messages, message text). Returns the same object
- *  when no rewrite applies, so an untouched request is passed through as is. */
+/**
+ * Rewrite a provider request payload. Only the prompt carries pi's stock
+ * text, so only the request's `system` field and system-role messages (pi's
+ * mid-conversation system updates) are read. User and assistant turns are
+ * never touched: signed thinking blocks, tool_use input, tool_result content
+ * and images must reach Anthropic byte for byte, and are not scanned either.
+ * Returns the same object when no rewrite applies, so an untouched request is
+ * passed through as is.
+ */
 export function rewriteAnthropicPromptPayload(payload: unknown): unknown {
-  if (!payload || typeof payload !== "object") {
-    return typeof payload === "string"
-      ? rewriteAnthropicPromptText(payload)
-      : payload;
-  }
-  let raw: string;
-  try {
-    raw = JSON.stringify(payload);
-  } catch {
+  if (typeof payload === "string") return rewriteAnthropicPromptText(payload);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
     return payload;
+  const request = payload as { system?: unknown; messages?: unknown };
+  let out: Record<string, unknown> | undefined;
+  if (request.system !== undefined) {
+    const system = rewriteSystemContent(request.system);
+    if (system !== request.system) out = { ...request, system };
   }
-  if (!ANTHROPIC_PROMPT_COMPAT_REWRITES.some(([from]) => raw.includes(from)))
-    return payload;
-  return rewriteDeep(payload);
+  if (Array.isArray(request.messages)) {
+    let changed = false;
+    const messages = request.messages.map((message) => {
+      if (
+        !message ||
+        typeof message !== "object" ||
+        (message as { role?: unknown }).role !== "system"
+      )
+        return message;
+      const content = (message as { content?: unknown }).content;
+      const next = rewriteSystemContent(content);
+      if (next === content) return message;
+      changed = true;
+      return { ...(message as object), content: next };
+    });
+    if (changed) out = { ...(out ?? request), messages };
+  }
+  return out ?? payload;
 }
 
 /** Whether a pi provider id is the Anthropic provider this applies to. */
@@ -81,6 +113,15 @@ function isAnthropicProvider(provider: unknown): boolean {
  * Install the payload rewrite on a pi agent's provider-request hook, after
  * whatever hook is already there (pi's own extension hook, other runner
  * patches). Same seam as enableOpenaiFastMode and enableXaiProxyPayload.
+ *
+ * pi's compaction and branch-summary calls do not pass through this hook:
+ * they call the agent's stream function directly, without agent.onPayload
+ * (pi-coding-agent core/agent-session.js, _runDefaultCompaction). That is
+ * acceptable because those requests carry none of the rewritten lines. Their
+ * system prompt is pi's own SUMMARIZATION_SYSTEM_PROMPT, and the conversation
+ * reaches them as serialized user, assistant and tool-result text, with the
+ * session's system prompt and system messages left out
+ * (core/compaction/utils.js, serializeConversation).
  */
 export function enableAnthropicPromptCompat<TModel>(agent: {
   onPayload?: (payload: unknown, model: TModel) => unknown | Promise<unknown>;

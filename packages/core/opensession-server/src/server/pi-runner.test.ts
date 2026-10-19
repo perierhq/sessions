@@ -1853,8 +1853,11 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
       const [[from, to]] = ANTHROPIC_PROMPT_COMPAT_REWRITES;
       for (const hook of payloadHooks) {
         expect(
-          await hook?.({ system: [{ text: from }] }, { provider: "anthropic" }),
-        ).toEqual({ system: [{ text: to }] });
+          await hook?.(
+            { system: [{ type: "text", text: from }] },
+            { provider: "anthropic" },
+          ),
+        ).toEqual({ system: [{ type: "text", text: to }] });
       }
       const errors = events.filter((event) => event.type === "error");
 

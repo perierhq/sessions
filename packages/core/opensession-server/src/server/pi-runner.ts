@@ -3017,7 +3017,9 @@ async function* runPiAttempt(
       }
     }
     // Native Anthropic subscription turns reword a few lines of pi's stock
-    // prompt in every request (anthropic-prompt-compat.ts). Same hook.
+    // prompt in every request (anthropic-prompt-compat.ts). Same hook. pi's
+    // compaction and branch summaries bypass agent.onPayload; their prompts
+    // carry none of those lines (see enableAnthropicPromptCompat).
     if (binding.usesNativeAnthropic) enableAnthropicPromptCompat(session.agent);
     // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
     // Responses fields (xai-payload.ts). Same hook, no host extension.
