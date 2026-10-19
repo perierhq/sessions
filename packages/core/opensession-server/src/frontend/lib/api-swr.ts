@@ -44,6 +44,9 @@ export const apiSWRKey = {
     ["api", "session-git", sessionId, repo || ""] as const,
   sessionAssets: (sessionId: string) =>
     ["api", "session-assets", sessionId] as const,
+  sessionResources: (sessionId: string) =>
+    ["api", "session-resources", sessionId] as const,
+  hostSessionResources: () => ["api", "host-session-resources"] as const,
   previewPr: (repo: string, branch: string) =>
     ["api", "preview-pr", repo, branch] as const,
   previewPrDiff: (repo: string, branch: string) =>

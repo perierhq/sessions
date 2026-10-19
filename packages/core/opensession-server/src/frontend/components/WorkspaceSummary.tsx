@@ -38,6 +38,7 @@ import { sessionHasConnectedPr } from "../lib/session-prs";
 import { getCurrentUser } from "./UserPicker";
 import { PR_WEBHOOK_FALLBACK_POLL_MS } from "../lib/poll";
 import { PrStatusBar } from "./PrStatusBar";
+import { SessionResourcesSection } from "./SessionResources";
 import { StagingLink } from "./StagingLink";
 import { UserAvatar } from "./UserAvatar";
 import { WorkspaceSummaryCollaborators } from "./WorkspaceCollaborators";
@@ -1681,6 +1682,16 @@ export function WorkspaceSummaryBody({
           </div>
         </div>
       )}
+
+      {/* What the session still has running on the host, and the way to
+			    stop it once the session is idle. Absent while nothing runs. */}
+      <SessionResourcesSection
+        sessionId={session.id}
+        running={Boolean(running)}
+        archived={session.archived}
+        groupClass={groupClass}
+        refreshTick={refreshTick}
+      />
 
       {media.length > 0 && (
         <div className={groupClass}>

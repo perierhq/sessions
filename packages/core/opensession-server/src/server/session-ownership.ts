@@ -637,6 +637,85 @@ export function stopLabelledResource(
   return stop;
 }
 
+// ── Memory ───────────────────────────────────────────────────────────────────
+
+const MEMORY_UNITS: Record<string, number> = {
+  b: 1,
+  kb: 1e3,
+  kib: 1024,
+  mb: 1e6,
+  mib: 1024 ** 2,
+  gb: 1e9,
+  gib: 1024 ** 3,
+  tb: 1e12,
+  tib: 1024 ** 4,
+};
+
+/** The used half of a `stats` MemUsage cell, `12.5MiB / 7.6GiB`, in bytes. */
+export function parseMemUsage(value: string): number | undefined {
+  const match = value.trim().match(/^([\d.]+)\s*([kmgt]?i?b)\b/i);
+  if (!match) return undefined;
+  const scale = MEMORY_UNITS[match[2]!.toLowerCase()];
+  const amount = Number(match[1]);
+  return scale && Number.isFinite(amount)
+    ? Math.round(amount * scale)
+    : undefined;
+}
+
+/** Memory in use by each container, from one `stats --no-stream` per CLI.
+ * Containers it cannot read are left out. Never rejects. */
+export async function containersMemory(
+  containers: readonly LabelledResource[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  const byCli = new Map<ContainerCli, string[]>();
+  for (const container of containers) {
+    if (container.kind !== "container" || !container.runtime) continue;
+    byCli.set(container.runtime, [
+      ...(byCli.get(container.runtime) ?? []),
+      container.handle,
+    ]);
+  }
+  for (const [cli, ids] of byCli) {
+    const { exitCode, stdout } = await runtime.run(
+      [
+        cli,
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.ID}}\t{{.MemUsage}}",
+        ...ids,
+      ],
+      { timeoutMs: LIST_TIMEOUT_MS },
+    );
+    if (exitCode !== 0) continue;
+    for (const line of stdout.split("\n")) {
+      const [id, usage] = line.split("\t");
+      const bytes = parseMemUsage(usage ?? "");
+      // docker prints the short id.
+      const full = id?.trim() && ids.find((each) => each.startsWith(id.trim()));
+      if (full && bytes !== undefined) result.set(full, bytes);
+    }
+  }
+  return result;
+}
+
+/** MemoryCurrent of each active user unit (full names). Never rejects. */
+export async function unitsMemory(
+  units: readonly string[],
+): Promise<Map<string, number>> {
+  if (!units.length || !runtime.systemdUser()) return new Map();
+  const { exitCode, stdout } = await runtime.run(
+    ["systemctl", "--user", "show", "--property=Id,MemoryCurrent", ...units],
+    { timeoutMs: LIST_TIMEOUT_MS },
+  );
+  const result = new Map<string, number>();
+  if (exitCode !== 0) return result;
+  for (const [unit, entry] of parseUnitShow(stdout, undefined, Date.now()))
+    if (entry.memoryBytes !== undefined) result.set(unit, entry.memoryBytes);
+  return result;
+}
+
 // ── Environment ──────────────────────────────────────────────────────────────
 
 /** A file in every shim dir, so one shim never runs another's (see the

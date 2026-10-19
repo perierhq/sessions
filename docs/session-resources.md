@@ -112,6 +112,26 @@ should outlive the session it was started from.
   get while a session is being created). A start time that cannot be read
   keeps it.
 
+## Seeing what runs
+
+The workspace summary (the session header's card) has a **Running** band
+whenever the session still has something on the host: its Portals, worktree
+setup, labelled containers and background processes, with memory where
+systemd or the container CLI reports it. **Stop everything** stops all of
+them once the session is idle (the server refuses while a run is active).
+Nothing outside that list is stopped.
+
+Host health (the server health popover, enabled in Preferences > Debug)
+shows session workloads across the host, and lists what archived or deleted
+sessions still have running, usually only until the next reaper pass.
+
+| Endpoint                                | Returns                                                       |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `GET /api/sessions/:id/resources`       | The session's items (`portal`, `setup`, `container`, `unit`)  |
+| `POST /api/sessions/:id/resources/stop` | `{ stopped }`, or 409 while the session runs                  |
+| `GET /api/host/session-resources`       | Counts by owner state (live, archived, missing) and leftovers |
+| `GET /api/health`                       | `sessionResources`: what the last reaper pass saw and stopped |
+
 ## Hosts
 
 The labels need nothing from the host. Discovery checks what is there: podman

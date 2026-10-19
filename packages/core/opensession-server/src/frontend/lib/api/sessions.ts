@@ -1,6 +1,11 @@
 import type { SessionSpeed } from "@tellahq/opensession-protocol/session";
 import { ApiError, BASE, request } from "./request";
 import type { TranscriptEntry, UnifiedSession } from "../types";
+import type {
+  HostSessionResources,
+  SessionResourceList,
+  StopSessionResourcesResult,
+} from "../../../shared/session-resources";
 import { resolveAnonymousUserPath } from "../auth-ready";
 import { preparePromptImages } from "../images";
 
@@ -504,5 +509,34 @@ export async function acceptReviewApi(
     method: "PUT",
     body: { accept, by },
     label: "Failed to update review",
+  });
+}
+
+/** What the session still has running on the host: Portals, setup,
+ *  containers and background processes, with memory where known. */
+export async function fetchSessionResources(
+  sessionId: string,
+): Promise<SessionResourceList> {
+  return request<SessionResourceList>(
+    `/sessions/${encodeURIComponent(sessionId)}/resources`,
+    { label: "Failed to load what the session is running" },
+  );
+}
+
+/** Stop everything an idle session still has running. */
+export async function stopSessionResources(
+  sessionId: string,
+): Promise<StopSessionResourcesResult> {
+  return request<StopSessionResourcesResult>(
+    `/sessions/${encodeURIComponent(sessionId)}/resources/stop`,
+    { method: "POST", body: {}, label: "Could not stop the session's work" },
+  );
+}
+
+/** Session workloads across the host, and what archived or deleted
+ *  sessions left running. */
+export async function fetchHostSessionResources(): Promise<HostSessionResources> {
+  return request<HostSessionResources>("/host/session-resources", {
+    label: "Failed to load session workloads",
   });
 }

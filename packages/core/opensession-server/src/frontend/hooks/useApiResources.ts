@@ -5,11 +5,17 @@ import {
   fetchGitStatus,
   fetchPr,
   fetchPrDiff,
+  fetchHostSessionResources,
   fetchSessionAssets,
+  fetchSessionResources,
   type SessionAssetFile,
   type WorkspaceOverview,
 } from "../lib/api";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
+import type {
+  HostSessionResources,
+  SessionResourceList,
+} from "../../shared/session-resources";
 import type {
   GitStatusInfo,
   PrDetails,
@@ -124,6 +130,34 @@ export function useSessionAssetsResource(
   );
   useRevisionRevalidation(revision, resource.mutate);
   return resource;
+}
+
+/** What the session still has running on the host (Portals, setup,
+ * containers, background processes). */
+export function useSessionResourcesResource(
+  sessionId: string,
+  options: ApiResourceOptions<SessionResourceList> = {},
+): SWRResponse<SessionResourceList> {
+  const { enabled = true, refreshInterval = 0, revision, compare } = options;
+  const resource = useSWR<SessionResourceList>(
+    enabled ? apiSWRKey.sessionResources(sessionId) : null,
+    () => fetchSessionResources(sessionId),
+    apiResourceSWRConfig(refreshInterval, compare),
+  );
+  useRevisionRevalidation(revision, resource.mutate);
+  return resource;
+}
+
+/** Session workloads across the host, for host health. */
+export function useHostSessionResourcesResource(
+  options: ApiResourceOptions<HostSessionResources> = {},
+): SWRResponse<HostSessionResources> {
+  const { enabled = true, refreshInterval = 0, compare } = options;
+  return useSWR<HostSessionResources>(
+    enabled ? apiSWRKey.hostSessionResources() : null,
+    fetchHostSessionResources,
+    apiResourceSWRConfig(refreshInterval, compare),
+  );
 }
 
 /**
