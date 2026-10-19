@@ -62,6 +62,26 @@ describe("readAnthropicRateLimit", () => {
       httpStatus: 500,
     });
   });
+
+  test("falls back to retry-after when the unified reset is out of range", () => {
+    for (const reset of [NOW - HOUR, NOW + 15 * 24 * HOUR]) {
+      expect(
+        readAnthropicRateLimit(
+          429,
+          new Headers({
+            "anthropic-ratelimit-unified-status": "rejected",
+            "anthropic-ratelimit-unified-reset": String(reset / 1000),
+            "retry-after": "90",
+          }),
+          NOW,
+        ),
+      ).toEqual({
+        httpStatus: 429,
+        unifiedStatus: "rejected",
+        resetAt: NOW + 90_000,
+      });
+    }
+  });
 });
 
 test("formatAnthropicReset reads back through the limit-message parsers", () => {

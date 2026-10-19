@@ -78,13 +78,16 @@ export function readAnthropicRateLimit(
     header(headers, "anthropic-ratelimit-unified-status")
       ?.trim()
       .toLowerCase() || undefined;
-  const reset =
-    parseResetHeader(header(headers, "anthropic-ratelimit-unified-reset")) ??
-    parseRetryAfter(header(headers, "retry-after"), now);
-  const resetAt =
-    reset !== undefined && reset > now && reset - now <= MAX_RESET_AHEAD_MS
-      ? reset
+  // Range-check each candidate on its own, so an unusable unified reset
+  // (past, or too far out) still falls back to retry-after.
+  const inRange = (at: number | undefined) =>
+    at !== undefined && at > now && at - now <= MAX_RESET_AHEAD_MS
+      ? at
       : undefined;
+  const resetAt =
+    inRange(
+      parseResetHeader(header(headers, "anthropic-ratelimit-unified-reset")),
+    ) ?? inRange(parseRetryAfter(header(headers, "retry-after"), now));
   return {
     httpStatus,
     ...(unifiedStatus ? { unifiedStatus } : {}),
