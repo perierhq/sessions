@@ -301,23 +301,25 @@ export function piProviderCatalog(id: string): PiProviderCatalog | undefined {
 /** Valid provider ids — matches model provider's own provider slugs. */
 export const PROVIDER_ID_RE = /^[a-z0-9-]+$/;
 
-/** Providers served by the subscription bridges — never raw API keys here. */
+/** Providers served by the subscription account pools — never raw API keys
+ *  here. */
 export const BRIDGE_PROVIDER_IDS = new Set(["anthropic", "openai"]);
 
 export interface ModelProviderSettings {
+  /** Gates the Claude account designation below. */
   enabled: boolean;
-  /** Account restriction, normalized from bridge.accounts (falling back to the
-   *  legacy top-level bridgeAccountIds). Semantics differ by mode — meridian:
-   *  optional restriction; native: required designated set (never the pool). */
+  /** The Claude pool accounts allowed to serve pi/anthropic/* turns, in
+   *  preference order, normalized from bridge.accounts (falling back to the
+   *  legacy top-level bridgeAccountIds). Applies only while `enabled`;
+   *  absent means the whole pool serves (claude-account-pick.ts). The key
+   *  names are historical and kept for existing config files. */
   bridgeAccountIds?: string[];
-  /** Loopback port for the native bridge (default 3456). */
-  port?: number;
   /** Model ids (model provider/<provider>/<model>) to show in the UI picker. */
   pickerModels?: string[];
   /** Optional restriction of which codex accounts (codex-accounts.ts ids) serve
    *  model provider/openai/* runs, in preference order (read from bridge.openaiAccounts).
    *  Absent = the normal codex pool pick. Independent of `enabled` (that flag
-   *  only gates the Anthropic bridge); model provider/openai auth keys off the codex
+   *  only gates the Claude designation); model provider/openai auth keys off the codex
    *  accounts pool, not this file — see model provider-openai-auth.ts. */
   openaiAccounts?: string[];
   /** The SuperGrok sibling: which xai-accounts.ts ids serve
@@ -326,7 +328,7 @@ export interface ModelProviderSettings {
   xaiAccounts?: string[];
   /** Third-party providers (id → apiKey/baseURL), injected into model provider
    *  config as provider.<id>.options. Independent of `enabled` (that flag only
-   *  gates the Anthropic bridge). anthropic/openai never live here. */
+   *  gates the Claude designation). anthropic/openai never live here. */
   providers?: Record<string, ModelProviderConfig>;
 }
 
@@ -563,7 +565,6 @@ export function normalizeModelProviderConfig(
     enabled,
     bridgeAccountIds:
       stringArray(bridge?.accounts) ?? stringArray(r.bridgeAccountIds),
-    port: typeof r.port === "number" && r.port > 0 ? r.port : undefined,
     pickerModels: canonicalPickerModels(r.pickerModels),
     openaiAccounts: stringArray(bridge?.openaiAccounts),
     xaiAccounts: stringArray(bridge?.xaiAccounts),
@@ -641,12 +642,6 @@ export function readModelProviderConfig(): ModelProviderSettings | null {
     console.warn(`[model-providers] Failed to parse ${path}:`, e);
     return null;
   }
-}
-
-export const DEFAULT_BRIDGE_PORT = 3456;
-
-export function bridgePort(): number {
-  return readModelProviderConfig()?.port || DEFAULT_BRIDGE_PORT;
 }
 
 /** Configured Pi model ids to surface in the picker. */
@@ -736,7 +731,7 @@ export function setModelProvider(
   }
   if (BRIDGE_PROVIDER_IDS.has(id)) {
     throw new Error(
-      `"${id}" runs on the subscription bridge, not a raw API key`,
+      `"${id}" runs on a subscription account pool, not a raw API key`,
     );
   }
   const raw = readRawModelProviderConfig();

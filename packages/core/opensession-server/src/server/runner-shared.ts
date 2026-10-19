@@ -8,7 +8,6 @@
  *   in interactive runs, denied/stripped in unattended ones).
  * - isClaudeUsageLimitError / isCodexUsageLimitError: provider usage-limit
  *   detection driving account rotation and model fallback.
- * - CLAUDE_CODE_BIN: the Claude Code CLI path (the Meridian bridge's motor).
  */
 import {
   hasValidRequiredAllowedUsers,
@@ -17,11 +16,6 @@ import {
   withDynamicCredentials,
 } from "./connections";
 import { userMatchesAny } from "./shared/user-mappings";
-import { configuredPaths } from "./config";
-
-/** Claude Code CLI binary the Meridian bridge / anthropic-bridge spawn.
- *  OPENSESSION_CLAUDE_BIN env → config `paths.claudeBin` → this VPS's path. */
-export const CLAUDE_CODE_BIN = configuredPaths().claudeBin;
 
 /** Moved to the protocol package; re-exported for existing import sites. */
 export type { McpScope } from "@tellahq/opensession-protocol/runner";

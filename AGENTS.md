@@ -70,9 +70,10 @@ repo variable is `true`; until then they skip cleanly.
   - `frontend/`: web UI and phone PWA (React 19, Base UI, Tailwind v4).
     `styles/` and `ui/` hold the design system.
   - `server/`: HTTP/API server
-  - `server/pi-runner.ts`, `pi-model-runtime.ts`, `runner-shared.ts`: how pi is
-    spawned (this is where `noExtensions` is set); `server/anthropic-bridge.ts`
-    is the Claude CLI bridge to remove
+  - `server/pi-runner.ts`, `pi-runtime-binding.ts`, `runner-shared.ts`: how
+    pi is spawned (this is where `noExtensions` is set) and how each turn binds
+    a provider account; `server/claude-account-pick.ts` picks the Claude pool
+    account for `pi/anthropic/*` turns
   - `agents/`: integrations (GitHub, Linear, Slack, Stripe, Plain, Grafana)
   - `session-kernel-*.ts`, `runner-*`, `executor/`, `script-host/`: session
     and process execution

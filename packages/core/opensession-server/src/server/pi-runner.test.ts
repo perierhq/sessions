@@ -6,7 +6,7 @@
  * regression), and pi/openai account wiring against an isolated Codex store
  * plus a fake SDK for the in-band terminal path. No test reaches the network.
  * A real engine turn is covered by the smoke harness
- * (POST /api/admin/pi-smoke) against a live bridge, not unit tests.
+ * (POST /api/admin/pi-smoke) against a live provider, not unit tests.
  */
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import {
@@ -661,12 +661,10 @@ describe("piToolNames", () => {
 });
 
 describe("isPiUsageLimitShape (provider-aware)", () => {
-  test("anthropic runs match the loopback bridge's shapes", () => {
-    expect(isPiUsageLimitShape("HTTP 429 from bridge", "anthropic")).toBe(true);
-    expect(isPiUsageLimitShape("upstream returned 529", "anthropic")).toBe(
+  test("anthropic runs match limits, 429s and the pool's exhaustion refusals", () => {
+    expect(isPiUsageLimitShape("HTTP 429 from upstream", "anthropic")).toBe(
       true,
     );
-    expect(isPiUsageLimitShape("overloaded_error", "anthropic")).toBe(true);
     expect(
       isPiUsageLimitShape("no designated bridge account", "anthropic"),
     ).toBe(true);
@@ -676,68 +674,53 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
         "anthropic",
       ),
     ).toBe(true);
-    expect(isPiUsageLimitShape("ordinary tool failure", "anthropic")).toBe(
-      false,
-    );
-  });
-
-  test("the native anthropic transport leaves overload to pi's retry", () => {
-    const overloaded =
-      '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
-    expect(isPiUsageLimitShape(overloaded, "anthropic", "native")).toBe(false);
-    expect(
-      isPiUsageLimitShape("upstream returned 529", "anthropic", "native"),
-    ).toBe(false);
-    // The other transports keep treating it as exhaustion.
-    for (const transport of [undefined, "inprocess", "bridge"] as const) {
-      expect(isPiUsageLimitShape(overloaded, "anthropic", transport)).toBe(
-        true,
-      );
-    }
-    // Limits and the pool's refusals still classify on native.
     for (const message of [
       '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}',
       "You've hit your limit · resets 3am (UTC)",
       "no usable Claude account in the pool (all exhausted or sidelined)",
       "no designated bridge account is currently usable (tried: a)",
     ]) {
-      expect(isPiUsageLimitShape(message, "anthropic", "native")).toBe(true);
+      expect(isPiUsageLimitShape(message, "anthropic")).toBe(true);
     }
-    // An empty pool is a config problem on every transport.
+    expect(isPiUsageLimitShape("ordinary tool failure", "anthropic")).toBe(
+      false,
+    );
+    // An empty pool is a config problem, not exhaustion.
     expect(
       isPiUsageLimitShape(
         "no Claude accounts configured (add one in Settings → Providers)",
         "anthropic",
-        "native",
       ),
     ).toBe(false);
   });
 
-  test("a native 429 counts as a limit only when its unified status is rejected", () => {
+  test("anthropic overload is left to pi's retry", () => {
+    const overloaded =
+      '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+    expect(isPiUsageLimitShape(overloaded, "anthropic")).toBe(false);
+    expect(isPiUsageLimitShape("upstream returned 529", "anthropic")).toBe(
+      false,
+    );
+    expect(isPiUsageLimitShape("overloaded_error", "anthropic")).toBe(false);
+    // A third-party provider's overload still moves the turn to the next
+    // model.
+    expect(isPiUsageLimitShape(overloaded, "wafer")).toBe(true);
+  });
+
+  test("an anthropic 429 counts as a limit only when its unified status is rejected", () => {
     const raw =
       '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}';
-    expect(isPiUsageLimitShape(raw, "anthropic", "native", "rejected")).toBe(
-      true,
-    );
+    expect(isPiUsageLimitShape(raw, "anthropic", "rejected")).toBe(true);
     for (const status of ["allowed", "allowed_warning"]) {
-      expect(isPiUsageLimitShape(raw, "anthropic", "native", status)).toBe(
-        false,
-      );
+      expect(isPiUsageLimitShape(raw, "anthropic", status)).toBe(false);
     }
-    // No header: the current shape match stands.
-    expect(isPiUsageLimitShape(raw, "anthropic", "native", undefined)).toBe(
-      true,
-    );
-    // The header is only read on the native transport.
-    expect(isPiUsageLimitShape(raw, "anthropic", "inprocess", "allowed")).toBe(
-      true,
-    );
+    // No header: the shape match stands.
+    expect(isPiUsageLimitShape(raw, "anthropic", undefined)).toBe(true);
     // A pool refusal is not a 429 and still classifies.
     expect(
       isPiUsageLimitShape(
         "no usable Claude account in the pool (all exhausted or sidelined)",
         "anthropic",
-        "native",
         "allowed",
       ),
     ).toBe(true);
@@ -756,8 +739,8 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
     expect(isPiUsageLimitShape("insufficient_quota", "openai")).toBe(true);
     expect(isPiUsageLimitShape("Too Many Requests", "openai")).toBe(true);
     expect(isPiUsageLimitShape("status 429", "openai")).toBe(true);
-    // Bridge-only shapes must NOT flag openai runs (overload/529 is transient
-    // there, not exhaustion).
+    // The Claude pool's refusals and overload must NOT flag openai runs
+    // (overload/529 is transient there, not exhaustion).
     expect(isPiUsageLimitShape("no designated bridge account", "openai")).toBe(
       false,
     );
@@ -1706,8 +1689,8 @@ describe("runPi pi/openai account wiring (fake engine, no network)", () => {
   });
 });
 
-describe("runPi pi/anthropic native transport account walk (fake engine, no network)", () => {
-  // Enabled Pi config on the native transport + an isolated Claude pool.
+describe("runPi pi/anthropic account walk (fake engine, no network)", () => {
+  // Enabled Pi config + an isolated Claude pool.
   // Accounts are usageScope "missing" without a credentials file, so
   // markExhausted's background usage refresh never reaches the network.
   const dir = mkdtempSync(join(tmpdir(), "pi-claude-native-"));
@@ -1718,10 +1701,7 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
   let prevCfg: string | undefined;
   let prevStore: string | undefined;
   beforeAll(() => {
-    writeFileSync(
-      cfgPath,
-      JSON.stringify({ enabled: true, anthropicTransport: "native" }),
-    );
+    writeFileSync(cfgPath, JSON.stringify({ enabled: true }));
     prevCfg = process.env.OPENSESSION_PI_CONFIG;
     process.env.OPENSESSION_PI_CONFIG = cfgPath;
     prevStore = process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH;
@@ -1802,12 +1782,10 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
             getModels: () => [],
             registerProvider: () => {},
             registerNativeProvider: () => {
-              throw new Error(
-                "native transport must not replace pi's provider",
-              );
+              throw new Error("Anthropic turns must not replace pi's provider");
             },
             setRuntimeApiKey: async () => {
-              throw new Error("native transport seeds the credential store");
+              throw new Error("Anthropic turns seed the credential store");
             },
           };
         },
@@ -2190,9 +2168,9 @@ describe("runPi pi/anthropic native transport account walk (fake engine, no netw
     );
     expect(errors[0].usageLimitExhausted).toBe(true);
     // Still a usage limit to every classifier downstream.
-    expect(
-      isPiUsageLimitShape(String(errors[0].content), "anthropic", "native"),
-    ).toBe(true);
+    expect(isPiUsageLimitShape(String(errors[0].content), "anthropic")).toBe(
+      true,
+    );
     expect(
       warnings.some((message) =>
         message.includes(
@@ -2745,7 +2723,7 @@ describe("makePiBashTool exit-gated completion", () => {
 });
 
 describe("runPiSmokeTurn with the engine disabled", () => {
-  test("pure dry run: config-gate error only, no bridge/SDK/store rows", async () => {
+  test("pure dry run: config-gate error only, no provider/SDK/store rows", async () => {
     // Force-disable regardless of the instance's real ~/.opensession-pi.json —
     // this test must never execute a live turn (OPENSESSION_PI_CONFIG is the
     // documented test seam and pi-config reads it fresh per call).

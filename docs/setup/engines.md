@@ -28,38 +28,36 @@ chmod 600 ~/.opensession/pi.json
 
 An existing legacy `~/.opensession-pi.json` remains in use while the grouped
 path does not exist. You can also enable a disabled engine from **Settings →
-Setup**. The gate and transport settings are read for each turn, so these edits
-do not require a restart.
+Setup**. The gate is read for each turn, so these edits do not require a
+restart.
 
 The legacy `pickerModels` field is not required for the built-in subscription
 catalog. It is still parsed, and valid entries can add picker rows when the
 matching provider credentials exist. New provider model lists are stored in
 `model-providers.json` instead.
 
-Anthropic turns use the in-process Claude Agent SDK provider by default. The
-`anthropicTransport` field selects another path:
+Anthropic turns go through Pi's own Anthropic provider with the token of a
+Claude pool account. The account is picked when the turn starts, following the
+session's pin, owner and usage-credit rules. A session stays on the same pool
+account from turn to turn while it is usable, unless the user's own
+subscription can serve or the account is past its limit and running on paid
+credits. Runs without a session (one-shots, automations) spread over the pool.
+When an account reaches a usage limit, Open Session sidelines it until the
+reset Anthropic reported and continues the turn on another eligible account.
+Prompt caching uses the 1-hour retention. An overloaded (529) response, or a
+429 that Anthropic does not mark as the subscription's limit, is retried by Pi
+instead of switching accounts. If Pi gives up on such a 429, the turn moves
+once to another account without sidelining the first.
 
-- `"bridge"` selects the loopback bridge as a rollback.
-- `"native"` sends turns through Pi's own Anthropic provider with the token of
-  a Claude pool account. The account is picked when the turn starts, with the
-  same pin, owner and usage-credit rules as the default path. A session stays
-  on the same pool account from turn to turn while it is usable, unless the
-  user's own subscription can serve or the account is past its limit and
-  running on paid credits. Runs without a session (one-shots, automations)
-  spread over the pool. When an account reaches a usage limit, Open Session
-  sidelines it until the reset Anthropic reported and continues the turn on
-  another eligible account. Prompt caching uses the 1-hour retention. An
-  overloaded (529) response, or a 429 that Anthropic does not mark as the
-  subscription's limit, is retried by Pi instead of switching accounts. If
-  Pi gives up on such a 429, the turn moves once to another account without
-  sidelining the first.
+Earlier releases had an `anthropicTransport` field that chose between this
+provider, an in-process Claude Agent SDK provider and a loopback bridge. The
+field is now ignored, and the server logs a warning once when a `pi.json`
+still sets it. Remove it at your convenience.
 
-Absent and unrecognized values use the in-process provider. To try the native
-provider:
-
-```json
-{ "enabled": true, "anthropicTransport": "native" }
-```
+To limit which pool accounts serve Claude turns, list their ids in
+`~/.opensession/model-providers.json` under `bridge.accounts` (the legacy
+top-level `bridgeAccountIds` also works) with `"enabled": true`. Without that
+list, every pool account can serve.
 
 ## Configure model access
 

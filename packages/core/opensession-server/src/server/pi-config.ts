@@ -15,18 +15,13 @@
  *     "pickerModels": []
  *         // Retired compatibility field. The picker has one shared model
  *         // catalog and the chosen engine is encoded only in the session id.
- *     "anthropicTransport": "inprocess"
- *         // Optional: how pi/anthropic/* turns reach Anthropic.
- *         // "inprocess" (the default; absent normalizes to it) registers
- *         // the Claude Agent SDK provider (pi-anthropic-provider.ts) —
- *         // token-level streaming, no loopback HTTP hop. "bridge" keeps the
- *         // pre-2026-08 loopback Anthropic bridge path as rollback.
- *         // "native" uses pi's own Anthropic provider with a Claude pool
- *         // account's token, picked once per attempt and rotated by the
- *         // runner's account walk (no Claude CLI process). Only the
- *         // literals "bridge" and "native" survive normalization; anything
- *         // else is the default.
  *   }
+ *
+ * pi/anthropic/* turns always use pi's own Anthropic provider with a Claude
+ * pool account's token, picked once per attempt and rotated by the runner's
+ * account walk. The retired `anthropicTransport` field ("inprocess",
+ * "bridge" or "native") is accepted and ignored, so older files keep
+ * loading; the server logs once that it is obsolete.
  *
  * Read fresh per call (tiny file) so edits apply without a restart. The write
  * path (Settings → Accounts "Pi engine" card via routes/connections.ts) is a
@@ -45,35 +40,18 @@ export function piConfigPath(): string {
   return process.env.OPENSESSION_PI_CONFIG || stateDir("pi.json");
 }
 
-/** Transport for pi/anthropic/* turns: the in-process Claude Agent SDK
- *  provider (default), the loopback HTTP bridge (rollback), or pi's own
- *  Anthropic provider fed a Claude pool account's token ("native"). */
-export type PiAnthropicTransport = "inprocess" | "bridge" | "native";
-
-/** The transport values that survive normalization (the non-defaults). */
-function explicitAnthropicTransport(
-  value: unknown,
-): Exclude<PiAnthropicTransport, "inprocess"> | undefined {
-  return value === "bridge" || value === "native" ? value : undefined;
-}
-
 export interface PiEngineConfig {
   enabled: boolean;
   /** Retired compatibility field. Model selection is engine-neutral. */
   pickerModels: string[];
-  /** Present only as a non-default "bridge" or "native" (absent =
-   *  "inprocess"). Read it through piAnthropicTransport(), which resolves
-   *  the default. */
-  anthropicTransport?: PiAnthropicTransport;
 }
 
 /** Pure normalization (exported for tests): raw JSON → typed config. Tolerant
  *  — anything that isn't a JSON object normalizes to the disabled config, and
  *  pickerModels entries that aren't full `pi/<provider>/<model>` ids are
  *  dropped (a bare "pi/foo" would otherwise mint a bogus pi passthrough
- *  downstream). Unknown fields (e.g. the retired bridgeAccounts designation —
- *  pi picks from the account pool like pi since 2026-08-06) are simply
- *  ignored. */
+ *  downstream). Unknown fields (the retired bridgeAccounts designation and
+ *  anthropicTransport switch among them) are simply ignored. */
 /** Whether `id` is a full `pi/<provider>/<model>` model id — the shape the
  *  picker, the write API, and normalizePiConfig's drop rule all agree on (a
  *  bare "pi/foo" would mint a bogus pi passthrough downstream). */
@@ -93,20 +71,41 @@ export function normalizePiConfig(raw: unknown): PiEngineConfig {
   const pickerModels = Array.isArray(r.pickerModels)
     ? r.pickerModels.filter(isPiModelId)
     : [];
-  const anthropicTransport = explicitAnthropicTransport(r.anthropicTransport);
-  return {
-    enabled: r.enabled === true,
-    pickerModels,
-    // Only the literal non-defaults survive; junk/absent = "inprocess".
-    ...(anthropicTransport ? { anthropicTransport } : {}),
-  };
+  return { enabled: r.enabled === true, pickerModels };
+}
+
+let warnedObsoleteTransport = false;
+
+/** Log once per process that a pi.json still sets the retired
+ *  anthropicTransport field. Exported for tests. */
+export function noteObsoletePiFields(raw: unknown, path: string): boolean {
+  if (
+    warnedObsoleteTransport ||
+    !raw ||
+    typeof raw !== "object" ||
+    !("anthropicTransport" in raw)
+  )
+    return false;
+  warnedObsoleteTransport = true;
+  console.warn(
+    `[pi-config] ${path}: "anthropicTransport" is obsolete and ignored; ` +
+      "pi/anthropic/* turns always use pi's own Anthropic provider. Remove the field.",
+  );
+  return true;
+}
+
+/** Test seam: let noteObsoletePiFields log again. */
+export function __resetObsoletePiFieldWarningForTest(): void {
+  warnedObsoleteTransport = false;
 }
 
 export function readPiEngineConfig(): PiEngineConfig | null {
   const path = piConfigPath();
   try {
     const raw = readJsonFileCopy(path);
-    return raw === undefined ? null : normalizePiConfig(raw);
+    if (raw === undefined) return null;
+    noteObsoletePiFields(raw, path);
+    return normalizePiConfig(raw);
   } catch (e) {
     console.warn(`[pi-config] Failed to parse ${path}:`, e);
     return null;
@@ -123,17 +122,6 @@ export function piPickerModels(): string[] {
   const cfg = readPiEngineConfig();
   if (!cfg?.enabled) return [];
   return cfg.pickerModels;
-}
-
-/** Resolved transport for pi/anthropic/* turns — "inprocess" unless the
- *  config explicitly says "bridge" or "native" (missing/disabled/malformed
- *  config all default; the engine-enabled gate is separate and comes
- *  first). */
-export function piAnthropicTransport(): PiAnthropicTransport {
-  return (
-    explicitAnthropicTransport(readPiEngineConfig()?.anthropicTransport) ??
-    "inprocess"
-  );
 }
 
 // ── Write path (Settings → Accounts "Pi engine" card) ───────────────────────

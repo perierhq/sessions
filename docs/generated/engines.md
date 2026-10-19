@@ -19,7 +19,7 @@ Native ids and provider/model paths normalize to `pi/<provider>/<model>`.
 - **Model ids** `pi/<provider>/<model>`
 - **Gate** `enabled` in `piConfigPath()` (normally `~/.opensession/pi.json`; an existing legacy `~/.opensession-pi.json` is still honored). A missing config disables Pi, while first-run onboarding creates it enabled.
 - **Mid-turn steer** yes
-- **Note** In-process engine. `pi/anthropic/*` turns reach the Claude Agent SDK through the native in-process provider by default (`anthropicTransport`, `"bridge"` for the loopback rollback, `"native"` for Pi's own Anthropic provider on a Claude pool account).
+- **Note** In-process engine. `pi/anthropic/*` turns use Pi's own Anthropic provider on a Claude pool account's token, picked per turn and rotated by the runner's account walk.
 
 ### fake (tests only) · `fake`
 

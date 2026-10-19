@@ -41,13 +41,13 @@ const TOOLS = [
   },
   // Installed by install.sh, but only there — a manual clone or a
   // `--no-engine` run still has to get these two, and both back a credential
-  // path: `claude setup-token` for the default model, `codex login` for the
+  // path: `claude setup-token` for the Claude pool, `codex login` for the
   // in-app ChatGPT sign-in.
   {
     bin: "claude",
     label: "Claude Code",
     required: false,
-    hint: "the Anthropic bridge execs it — curl -fsSL https://claude.ai/install.sh | bash",
+    hint: "mints Claude pool tokens (claude setup-token) — curl -fsSL https://claude.ai/install.sh | bash",
   },
   {
     bin: "codex",
@@ -87,7 +87,7 @@ async function checkTools(t: Tally): Promise<void> {
       ) {
         warn(
           `${tool.label} ${version} is older than ${MIN_CLAUDE_CODE_VERSION}`,
-          "newer Claude models fail until it is updated; the server runs `claude update` on start, or run it yourself",
+          "tools that drive it may fail on newer Claude models until it is updated; the server runs `claude update` on start, or run it yourself",
         );
         t.warnings++;
         continue;

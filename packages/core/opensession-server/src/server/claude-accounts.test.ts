@@ -113,20 +113,6 @@ describe("pickAccount usage-credits policy", () => {
     expect(accounts.getAccountById("nope")).toBeUndefined();
   });
 
-  test("does not preemptively sideline accounts from inferred Meridian usage", () => {
-    accounts.__setUsageCacheForTest("fresh", usage(50));
-    accounts.__setUsageCacheForTest("maxed", {
-      ...usage(100),
-      scopedLimits: [{ label: "Fable", utilization: 100, resetsAt: null }],
-      source: "meridian",
-    });
-    expect(
-      accounts.pickAccount(new Set(["fresh"]), undefined, "claude-fable-5-1")
-        ?.id,
-    ).toBe("maxed");
-    accounts.__setUsageCacheForTest("maxed", usage(100));
-  });
-
   test("allows a blind personal account for a singleton Fable requirement", () => {
     expect(
       accounts.pickAccount(undefined, "Jaap", ["claude-fable-5-1"])?.id,
@@ -402,14 +388,14 @@ describe("dry-pool backpressure", () => {
   });
 });
 
-describe("pickBridgeAccount renders the owner-gate refusals", () => {
+describe("pickClaudeAccount renders the owner-gate refusals", () => {
   // The wordings are load-bearing: isPiUsageLimitShape (pi-runner.ts) decides
   // whether the model-fallback walk engages by matching these substrings
   // against the lowercased message, so resolveAccount hands back a structured
   // refusal and each caller keeps its own text.
   const ocConfig = join(dir, "model-providers.json");
   const saved = process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG;
-  let bridge: typeof import("./anthropic-bridge");
+  let pick: typeof import("./claude-account-pick");
   const designate = (ids: string[]) =>
     writeFileSync(
       ocConfig,
@@ -418,7 +404,7 @@ describe("pickBridgeAccount renders the owner-gate refusals", () => {
 
   beforeAll(async () => {
     process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG = ocConfig;
-    bridge = await import("./anthropic-bridge");
+    pick = await import("./claude-account-pick");
   });
 
   afterAll(() => {
@@ -430,7 +416,7 @@ describe("pickBridgeAccount renders the owner-gate refusals", () => {
   test("a designation of only someone else's personal account is dry", () => {
     accounts.__setUsageCacheForTest("personal", usage(0));
     designate(["personal"]);
-    const picked = bridge.pickBridgeAccount("claude-sonnet-5", {
+    const picked = pick.pickClaudeAccount("claude-sonnet-5", {
       user: "Robin",
     });
     const error = (picked as any).error as string;
@@ -440,7 +426,7 @@ describe("pickBridgeAccount renders the owner-gate refusals", () => {
     expect(error.toLowerCase()).toContain("no designated bridge account");
     // Its owner still gets served.
     expect(
-      (bridge.pickBridgeAccount("claude-sonnet-5", { user: "Alex" }) as any).id,
+      (pick.pickClaudeAccount("claude-sonnet-5", { user: "Alex" }) as any).id,
     ).toBe("personal");
   });
 
@@ -449,7 +435,7 @@ describe("pickBridgeAccount renders the owner-gate refusals", () => {
     accounts.__setUsageCacheForTest("fresh", usage(50));
     accounts.__setUsageCacheForTest("maxed", usage(90));
     designate([]);
-    const picked = bridge.pickBridgeAccount("claude-sonnet-5", {
+    const picked = pick.pickClaudeAccount("claude-sonnet-5", {
       user: "Robin",
       accountId: "personal",
       accountStrict: true,
@@ -458,7 +444,7 @@ describe("pickBridgeAccount renders the owner-gate refusals", () => {
     expect(error).toContain('no usable Claude account (pinned "personal"');
     expect(error.toLowerCase()).toContain("no usable claude account");
     // Non-strict, the same pin falls through to the pool instead.
-    const widened = bridge.pickBridgeAccount("claude-sonnet-5", {
+    const widened = pick.pickClaudeAccount("claude-sonnet-5", {
       user: "Robin",
       accountId: "personal",
     });

@@ -30,7 +30,7 @@ import { modelProviderSettingsPayload } from "../lib/model-provider-settings";
 // Settings → Model providers: third-party Pi providers (xai, openrouter,
 // groq, …) — API key + optional baseURL, stored server-side (0600, returned
 // masked) — plus the model ids each one surfaces in the model picker. The
-// anthropic/openai bridges are configured under Accounts, never here; the server
+// anthropic/openai account pools are configured under Accounts, never here; the server
 // rejects those ids.
 
 interface ProviderInfo {

@@ -554,7 +554,7 @@ export async function handleConnectionsRoutes(
   // Third-party Pi providers (xai, openrouter, groq, …): API key +
   // optional baseURL in ~/.opensession-pi.json (0600, keys only ever
   // returned masked), plus their picker model ids. anthropic/openai are
-  // rejected — they run on the subscription bridges, not raw keys.
+  // rejected — they run on the subscription account pools, not raw keys.
   if (path === "/api/settings/model-providers" && req.method === "GET") {
     const pickerModels = readModelProviderConfig()?.pickerModels || [];
     return Response.json({
@@ -610,7 +610,7 @@ export async function handleConnectionsRoutes(
     if (BRIDGE_PROVIDER_IDS.has(id)) {
       return Response.json(
         {
-          error: `"${id}" runs on the subscription bridges (Settings → Providers), not a raw API key`,
+          error: `"${id}" runs on a subscription account pool (Settings → Providers), not a raw API key`,
         },
         { status: 400 },
       );

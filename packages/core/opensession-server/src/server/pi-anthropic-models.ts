@@ -1,4 +1,6 @@
-import type { PiCatalogModel } from "./pi-model-runtime";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+
+type PiCatalogModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
 /** Published limits and USD/MTok pricing for releases newer than pi's
  *  builtin catalog. */
@@ -71,12 +73,11 @@ const PRICE_UPDATES: Record<string, Partial<PiCatalogModel["cost"]>> = {
 };
 
 /**
- * The native provider's catalog: pi's builtin anthropic models passed through
- * (ids, cost tables, context windows, compat — registerNativeProvider
- * REPLACES the builtin provider, so the catalog must ride along) with newer
- * published price changes applied, plus
- * release metadata for known newer models. Unknown ids retain the conservative
- * zero-cost subscription fallback. Shared by native and HTTP bridge transports.
+ * The Anthropic catalog pi-runtime-binding registers on pi's builtin
+ * provider: pi's builtin models passed through (ids, cost tables, context
+ * windows, compat) with newer published price changes applied, plus release
+ * metadata for known newer models. Unknown ids retain the conservative
+ * zero-cost subscription fallback.
  */
 export function buildPiAnthropicModels(
   builtin: readonly PiCatalogModel[],

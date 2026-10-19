@@ -111,10 +111,6 @@ export interface AccountUsage {
     usedCredits: number;
     monthlyLimit: number;
   } | null;
-  // Set when the snapshot came from a live Meridian proxy's /v1/usage/quota
-  // (SDK-observed rate-limit events) rather than the OAuth usage endpoint —
-  // the fallback for setup-token accounts that 403 on USAGE_URL.
-  source?: "meridian";
   error?: string;
   errorStatus?: number;
 }
@@ -395,116 +391,6 @@ async function fetchUsage(
   }
 }
 
-// ── Meridian-observed usage (accounts blind to the OAuth endpoint) ──────────
-//
-// Registered by pi-runner at module load (injection — that module
-// imports this one, so the dependency can't point back). Every live
-// bridge-mode Pi run exposes its proxy's GET /v1/usage/quota,
-// whose SDK-observed half populates from rate-limit events on live requests
-// — so it works even for `claude setup-token` accounts whose token 403s on
-// USAGE_URL (usageScope "missing"). Those accounts get their usage picture
-// from here instead of staying dark until a run dies on a limit error.
-// Meridian reports utilization as a 0..1 fraction and resetsAt as epoch ms;
-// our AccountUsage uses 0..100 and ISO strings — converted at this boundary.
-type MeridianQuotaEndpoint = { accountId: string; url: string; key: string };
-let meridianQuotaProvider: (() => MeridianQuotaEndpoint[]) | null = null;
-export function registerMeridianQuotaProvider(
-  fn: () => MeridianQuotaEndpoint[],
-): void {
-  meridianQuotaProvider = fn;
-}
-
-const MERIDIAN_SCOPED_LABELS: Record<string, string> = {
-  seven_day_opus: "Opus",
-  seven_day_sonnet: "Sonnet",
-  seven_day_fable: "Fable",
-};
-
-function meridianBucketWindow(b: any): UsageWindow {
-  return {
-    utilization:
-      typeof b?.utilization === "number"
-        ? Math.round(b.utilization * 1000) / 10
-        : null,
-    resetsAt:
-      typeof b?.resetsAt === "number"
-        ? new Date(b.resetsAt).toISOString()
-        : null,
-  };
-}
-
-async function fetchMeridianUsage(
-  accountId: string,
-  signal?: AbortSignal,
-): Promise<AccountUsage | null> {
-  const endpoints = (meridianQuotaProvider?.() ?? []).filter(
-    (e) => e.accountId === accountId,
-  );
-  for (const ep of endpoints.slice(0, 2)) {
-    try {
-      const res = await fetch(`${ep.url}/v1/usage/quota`, {
-        headers: { "x-api-key": ep.key },
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(5_000)])
-          : AbortSignal.timeout(5_000),
-      });
-      if (!res.ok) continue;
-      const body: any = await res.json();
-      const buckets: any[] = Array.isArray(body?.buckets) ? body.buckets : [];
-      const has = (b: any) => typeof b?.utilization === "number";
-      const fiveHour = buckets.find((b) => b?.type === "five_hour");
-      const sevenDay = buckets.find((b) => b?.type === "seven_day");
-      const scoped = buckets
-        .filter(
-          (b) =>
-            typeof b?.type === "string" &&
-            b.type.startsWith("seven_day_") &&
-            has(b),
-        )
-        .map((b) => ({
-          label:
-            MERIDIAN_SCOPED_LABELS[b.type] ||
-            b.type.slice("seven_day_".length).replace(/_/g, " "),
-          ...meridianBucketWindow(b),
-        }));
-      // Nothing observed yet (fresh server, no requests served) — not a snapshot.
-      if (!has(fiveHour) && !has(sevenDay) && !scoped.length) continue;
-      return {
-        fetchedAt: new Date().toISOString(),
-        fiveHour: has(fiveHour) ? meridianBucketWindow(fiveHour) : null,
-        sevenDay: has(sevenDay) ? meridianBucketWindow(sevenDay) : null,
-        scopedLimits: scoped.length ? scoped : undefined,
-        extraUsage: body?.extraUsage
-          ? {
-              enabled: !!body.extraUsage.isEnabled,
-              usedCredits: body.extraUsage.usedCredits ?? 0,
-              monthlyLimit: body.extraUsage.monthlyLimit ?? 0,
-            }
-          : null,
-        source: "meridian",
-      };
-    } catch {
-      if (signal?.aborted) return null;
-      // Server died between listing and fetch, or timed out — try the next.
-    }
-  }
-  return null;
-}
-
-/** Best-effort usage refresh from a live Meridian proxy, for accounts whose
- *  own token can't read the OAuth usage endpoint. Mirrors refreshAccountUsage's
- *  exhausted-clear so a sidelined blind account comes back once observed
- *  utilization drops. */
-async function refreshMeridianUsage(
-  account: ClaudeAccount,
-  signal?: AbortSignal,
-): Promise<void> {
-  const usage = await fetchMeridianUsage(account.id, signal);
-  if (!usage) return;
-  usageCache.set(account.id, usage);
-  releaseDisprovenSidelines(account, usage, " via meridian");
-}
-
 async function fetchProfile(
   token: string,
 ): Promise<{ email?: string; plan?: string }> {
@@ -735,16 +621,11 @@ async function refreshAccountUsage(
   if (!tok) return null;
   if ("error" in tok) {
     // Broken usage credentials: keep the actionable error (the account-health
-    // monitor's owner DMs key off it) but fill the windows from a live
-    // Meridian proxy when one is running, so the picker and UI still see
-    // real utilization instead of nothing.
-    const observed = await fetchMeridianUsage(account.id, signal);
+    // monitor's owner DMs key off it).
     const usage = {
-      ...(observed ?? {
-        fetchedAt: new Date().toISOString(),
-        fiveHour: null,
-        sevenDay: null,
-      }),
+      fetchedAt: new Date().toISOString(),
+      fiveHour: null,
+      sevenDay: null,
       error: tok.error,
     };
     usageCache.set(account.id, usage);
@@ -775,11 +656,8 @@ export async function refreshAllUsage(): Promise<void> {
   // Sequential, not Promise.all — the endpoint rate-limits aggressively and a
   // burst of N simultaneous requests from one IP makes that worse.
   for (const account of readStore()) {
-    if (account.usageScope === "missing" && !account.credentialsPath) {
-      // Blind to the OAuth endpoint — Meridian-observed fallback (local, cheap).
-      await refreshMeridianUsage(account);
-      continue;
-    }
+    // Blind to the OAuth endpoint: nothing to poll.
+    if (account.usageScope === "missing" && !account.credentialsPath) continue;
     await refreshAccountUsage(account);
   }
 }
@@ -825,8 +703,8 @@ function hasCreditHeadroom(a: ClaudeAccount): boolean {
 }
 
 // Model families that can carry their own weekly cap, matched against the
-// scoped-limit labels (OAuth `display_name` like "Fable", or the label mapped
-// from Meridian's seven_day_* window types). Mythos rides the Fable tier.
+// scoped-limit labels (OAuth `display_name` like "Fable"). Mythos rides the
+// Fable tier.
 const SCOPED_MODEL_FAMILIES = ["fable", "opus", "sonnet", "haiku"];
 
 function scopedEntryForModel(
@@ -894,11 +772,6 @@ function accountUtilization(
   model?: ClaudeModelRequirement,
 ): number {
   const usage = usageCache.get(a.id);
-  // Meridian reconstructs these windows from SDK rate-limit events. They are
-  // useful telemetry, but not authoritative account state: its scoped bucket
-  // can remain at 100% after the real Claude account has reset, even while
-  // live turns succeed. Actual provider limit errors still call markExhausted.
-  if (usage?.source === "meridian") return 0;
   const fiveHour = currentUtilization(usage?.fiveHour);
   return Math.max(
     fiveHour,
@@ -941,7 +814,7 @@ function isAccountUsableFor(
   // capped: otherwise a blind/inferred account gets picked, the main turn
   // starts, and the later oracle request hangs instead of allowing the whole
   // preset to fall through to Sol before any work begins. Standalone model
-  // picks retain the tolerant Meridian policy below.
+  // picks use the policy below.
   if (
     Array.isArray(model) &&
     models.length > 1 &&
@@ -952,9 +825,6 @@ function isAccountUsableFor(
       return !!allowExtraUsage && hasCreditHeadroom(a);
     }
   }
-  // See accountUtilization: inferred Meridian percentages must not sideline a
-  // healthy account before the provider gets a chance to accept the request.
-  if (usage?.source === "meridian") return true;
   const fiveHour = currentUtilization(usage?.fiveHour);
   const scopedUsable = models.every((required) => {
     const scoped = scopedLimitForModel(usage, required);
@@ -989,9 +859,7 @@ function toPublic(a: ClaudeAccount): ClaudeAccountPublic {
         : null,
     usable:
       !isExhausted(a.id) &&
-      (usage?.source === "meridian" ||
-        fiveHour === null ||
-        fiveHour < EXHAUSTED_UTILIZATION),
+      (fiveHour === null || fiveHour < EXHAUSTED_UTILIZATION),
   };
 }
 
@@ -1417,8 +1285,8 @@ export async function refreshUsageIfNearLimit(
 ): Promise<boolean> {
   const account = readStore().find((x) => x.id === id);
   if (!account) return false;
-  // Blind accounts refresh from a live Meridian proxy instead (same tier and
-  // cooldown gating below — they need a prior observed snapshot to qualify).
+  // Blind accounts cannot read the usage endpoint; they keep the same tier
+  // and cooldown gating below but have nothing to refresh.
   const blind = account.usageScope === "missing" && !account.credentialsPath;
   const cached = usageCache.get(id);
   if (!cached || cached.error) return false;
@@ -1433,8 +1301,7 @@ export async function refreshUsageIfNearLimit(
   const refreshStartedAt = Date.now();
   nearLimitRefreshAt.set(id, refreshStartedAt);
   try {
-    if (blind) await refreshMeridianUsage(account, signal);
-    else await nearLimitRefresher(account, signal);
+    if (!blind) await nearLimitRefresher(account, signal);
     return !signal?.aborted;
   } finally {
     if (signal?.aborted && nearLimitRefreshAt.get(id) === refreshStartedAt) {

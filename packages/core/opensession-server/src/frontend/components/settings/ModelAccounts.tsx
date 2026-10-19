@@ -80,8 +80,6 @@ interface ClaudeAccountInfo {
       usedCredits: number;
       monthlyLimit: number;
     } | null;
-    /** "meridian" = observed via a live Meridian proxy, not the OAuth endpoint. */
-    source?: "meridian";
     error?: string;
     errorStatus?: number;
   } | null;
@@ -661,13 +659,6 @@ function ClaudeAccountRows({ state }: { state: ClaudeAccountsState }) {
                       <UsageMeters windows={claudeLimits(account.usage)} />
                       <ExtraUsageRow extra={account.usage?.extraUsage} />
                     </MeterGroup>
-                    {account.usage?.source === "meridian" && (
-                      <div className="mt-1.5 text-meta text-faint">
-                        Observed through Meridian from rate-limit events during
-                        live runs. The token cannot read the usage endpoint
-                        directly.
-                      </div>
-                    )}
                     {account.usage?.error && (
                       <div className="mt-1.5 text-meta text-red">
                         {account.usage.error}
