@@ -28,7 +28,6 @@ import { logInjectedContext } from "./context-log";
 import { wrapContext } from "./prompt-context";
 import {
   createPiTurnCheckpointWriter,
-  interruptedReplyNote,
   type PiTurnCheckpointWriter,
 } from "./pi-turn-checkpoint";
 import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
@@ -81,7 +80,6 @@ import { piErrorContent } from "./pi-usage-limit";
 import {
   PiAttemptAccounts,
   evidencePoolRef,
-  piStreamEventRequiresAccountContinuation,
   runPiAccountWalk,
   type PiAccountWalk,
 } from "./pi-account-walk";
@@ -102,6 +100,12 @@ import {
   preparePiResources,
 } from "./pi-session-setup";
 import { PiSteerController } from "./pi-steer-controller";
+import {
+  PiEventPump,
+  buildPiPromptForEngine,
+  piSystemEntry,
+  piTurnRepairEntries,
+} from "./pi-events";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -651,16 +655,8 @@ async function* runPiAttempt(
     steering.listenForAbort();
 
     // ── Event pump: callback subscription → this generator's queue ──────────
-    const queue: StreamEvent[] = [];
-    let wake: (() => void) | null = null;
-    const push = (ev: StreamEvent) => {
-      if (piStreamEventRequiresAccountContinuation(ev))
-        ledger.sawStreamedOutput = true;
-      queue.push(ev);
-      const w = wake;
-      wake = null;
-      w?.();
-    };
+    const pump = new PiEventPump(ledger);
+    const push = (ev: StreamEvent) => pump.push(ev);
 
     push({
       type: "init",
@@ -673,43 +669,11 @@ async function* runPiAttempt(
     appendRunLines([userLine]);
 
     if (turnRepair && (turnRepair.reply || turnRepair.toolResults.length)) {
-      const recovered: TranscriptEntry[] = [];
-      if (turnRepair.reply) {
-        recovered.push(
-          ...piAssistantTranscriptEntries(
-            [{ type: "text", text: turnRepair.reply.text }],
-            turnRepair.reply.startedAt,
-            parsed.modelID,
-            turnRepair.reply.id,
-          ),
-        );
-      }
-      for (const result of turnRepair.toolResults) {
-        recovered.push({
-          id: `${result.toolCallId}-result`,
-          type: "tool_result",
-          content: result.text,
-          timestamp: nowIso(),
-          toolUseId: result.toolCallId,
-          isError: true,
-        });
-      }
-      const calls = turnRepair.toolResults.length;
-      const notice = [
-        "The previous turn stopped unexpectedly.",
-        turnRepair.reply ? "Its unfinished reply is kept above." : "",
-        calls
-          ? `${calls === 1 ? "1 tool call" : `${calls} tool calls`} it was running ${calls === 1 ? "is" : "are"} marked as interrupted.`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      recovered.push({
-        id: crypto.randomUUID(),
-        type: "system",
-        content: notice,
-        timestamp: nowIso(),
-      });
+      const {
+        entries: recovered,
+        notice,
+        calls,
+      } = piTurnRepairEntries(turnRepair, parsed.modelID);
       persistRunEntries(recovered);
       push({ type: "runner_notice", text: notice });
       audit({
@@ -725,14 +689,7 @@ async function* runPiAttempt(
         "Pi couldn't resume the previous engine session. " +
         "Continuing in a fresh one with the recent transcript.";
       push({ type: "runner_notice", text: notice });
-      persistRunEntries([
-        {
-          id: crypto.randomUUID(),
-          type: "system",
-          content: notice,
-          timestamp: nowIso(),
-        },
-      ]);
+      persistRunEntries([piSystemEntry(notice)]);
     }
     // What the ENGINE receives; journal/store keep the raw prompt. Fenced the
     // way every other injection is (prompt-context.ts): the fence is what
@@ -747,24 +704,13 @@ async function* runPiAttempt(
       prompt,
       loader.getSkills().skills,
     );
-    const promptForEngine = [
-      wrapContext(sessionContext, "session"),
-      ...(resumeMissNote ? [wrapContext(resumeMissNote, "handoff")] : []),
-      ...(turnRepair?.reply
-        ? [
-            wrapContext(
-              interruptedReplyNote(turnRepair.reply.text),
-              "restart-recovery",
-            ),
-          ]
-        : []),
-      walk.continuation
-        ? wrapContext(
-            "The previous account reached its usage limit. Continue the unfinished task from the existing conversation and completed tool results. Do not restart the task or repeat completed actions. Finish with a reply to the user.",
-            "auto-continue",
-          )
-        : promptWithSkill,
-    ].join("\n\n");
+    const promptForEngine = buildPiPromptForEngine({
+      sessionContext,
+      resumeMissNote,
+      turnRepair,
+      continuation: Boolean(walk.continuation),
+      promptWithSkill,
+    });
     // Injected BELOW runOnModel's choke point, so that call never saw this
     // payload — log it here, exactly as the previous runner runner does for its own
     // same-engine-restart handoff. Re-logging is free: entry ids are
@@ -987,14 +933,7 @@ async function* runPiAttempt(
                 (r.delayMs || 0) / 1000,
               )}s — ${errText.slice(0, 300)}`;
               push({ type: "runner_notice", text: notice });
-              persistRunEntries([
-                {
-                  id: crypto.randomUUID(),
-                  type: "system",
-                  content: notice,
-                  timestamp: nowIso(),
-                },
-              ]);
+              persistRunEntries([piSystemEntry(notice)]);
             }
             break;
           }
@@ -1019,9 +958,7 @@ async function* runPiAttempt(
       // steerPiRun must return false and let run-session queue them for the
       // next turn instead.
       handle.steer = undefined;
-      const w = wake;
-      wake = null;
-      w?.();
+      pump.wake();
     };
     if (abort.signal.aborted) {
       promptOutcome = { ok: true };
@@ -1051,7 +988,7 @@ async function* runPiAttempt(
     // injection, so the transcript never shows it as a user bubble.
     let emptyFinishRetries = 0;
     while (true) {
-      while (queue.length) yield queue.shift()!;
+      while (pump.size) yield pump.take()!;
       if (promptOutcome) {
         if (steering.engineQueueDepth > 0) {
           // An accepted steer is still being staged, so pi's queue count is
@@ -1101,11 +1038,9 @@ async function* runPiAttempt(
         }
         break;
       }
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
+      await pump.wait();
     }
-    while (queue.length) yield queue.shift()!;
+    while (pump.size) yield pump.take()!;
     unsubscribe();
     if (steering.pendingCount > 0) {
       // Accepted but never delivered (drain budget exhausted or the run
@@ -1130,16 +1065,12 @@ async function* runPiAttempt(
       // The retry (if it ran) also came back empty — never end silently on a
       // provider glitch; leave a visible chip explaining the missing reply.
       persistRunEntries([
-        {
-          id: crypto.randomUUID(),
-          type: "system",
-          content:
-            "The model ended this turn with an empty response (no text or tool calls)" +
+        piSystemEntry(
+          "The model ended this turn with an empty response (no text or tool calls)" +
             (emptyFinishRetries > 0
               ? " and an automatic retry produced nothing too. Send another message to continue."
               : "."),
-          timestamp: nowIso(),
-        },
+        ),
       ]);
     }
     if (abort.signal.aborted) {
