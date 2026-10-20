@@ -217,6 +217,82 @@ test("runner route: curl argv, parsed marker, offline Runner", async () => {
     ),
   ).toEqual({ ok: false, error: "prod-1 is offline" });
 });
+test("runner route: curl ignores config files, globbing and @ in the body", async () => {
+  let command = "";
+  const exec = (async (_id: string, cmd: string) => {
+    command = cmd;
+    return { code: 0, stdout: "\n__EGRESS__ 200 0.001 text/plain", stderr: "" };
+  }) as typeof execOnRunner;
+  const ctx = withEgress({
+    route: "runner",
+    runner: "rn-prod",
+    runnerName: "prod-1",
+    hosts: ["search.example.test"],
+  });
+  await egressFetch(
+    ctx,
+    {
+      url: "https://search.example.test/q?a=[1-2]&b={x,y}",
+      method: "POST",
+      body: "@/etc/passwd",
+    },
+    { exec, connected: () => true },
+  );
+  // -q must be curl's very first argument to skip ~/.curlrc.
+  expect(command.startsWith("curl -q ")).toBe(true);
+  expect(command).toContain(" --globoff ");
+  expect(command).toContain(" --data-raw @/etc/passwd ");
+  expect(command).not.toContain("--data-binary");
+});
+test.skipIf(!Bun.which("curl"))(
+  "runner route: a real curl sends an @ body literally and does not expand the query",
+  async () => {
+    const seen: { url: string; body: string }[] = [];
+    const echo = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        seen.push({ url: req.url, body: await req.text() });
+        return new Response("ok", {
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    });
+    try {
+      const exec = (async (_id: string, cmd: string) => {
+        const proc = Bun.spawn(["bash", "-c", cmd], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        return { code, stdout, stderr };
+      }) as typeof execOnRunner;
+      const ctx = withEgress({
+        route: "runner",
+        runner: "rn-prod",
+        runnerName: "prod-1",
+        hosts: ["127.0.0.1"],
+      });
+      const url = `http://127.0.0.1:${echo.port}/q?a=[1-2]&b={x,y}`;
+      const out = await egressFetch(
+        ctx,
+        { url, method: "POST", body: "@/etc/hosts" },
+        { exec, connected: () => true },
+      );
+      expect(out).toMatchObject({ ok: true, status: 200, body: "ok" });
+      // One request, with the brackets and braces as given.
+      expect(seen).toHaveLength(1);
+      expect(new URL(seen[0].url).search).toBe("?a=[1-2]&b={x,y}");
+      expect(seen[0].body).toBe("@/etc/hosts");
+    } finally {
+      echo.stop(true);
+    }
+  },
+);
 test("runner route: a redirect location and a failed curl", async () => {
   const ctx = withEgress({
     route: "runner",

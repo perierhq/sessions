@@ -365,8 +365,13 @@ async function egressFetchInner(
   const connected = deps.connected ?? isRunnerConnected;
   if (!runnerId || !connected(runnerId))
     return failed(`${runnerName} is offline`);
+  // -q must come first: it stops curl reading a .curlrc on the Runner.
+  // --globoff keeps [] and {} in the URL literal, and --data-raw never reads
+  // a body that starts with @ as a file name.
   const argv = [
     "curl",
+    "-q",
+    "--globoff",
     "--silent",
     "--show-error",
     "--max-time",
@@ -385,7 +390,7 @@ async function egressFetchInner(
       "--header",
       `${name}: ${value}`,
     ]),
-    ...(input.body !== undefined ? ["--data-binary", input.body] : []),
+    ...(input.body !== undefined ? ["--data-raw", input.body] : []),
     "--write-out",
     `\n${MARKER}%{http_code} %{time_total} %{content_type}${LOCATION_MARKER}%{redirect_url}`,
     "--url",

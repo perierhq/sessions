@@ -415,7 +415,10 @@ tools is mounted only when the access grants what it reaches:
   The server route resolves the host once, refuses private addresses and
   connects only to the checked addresses; the proxy route checks the proxy
   and the target, and its credential may only add `Proxy-Authorization`; the
-  Runner route runs `curl` on the Runner, which is production's own network.
+  Runner route runs `curl` on the Runner, which is production's own network,
+  with `-q` first so no `.curlrc` is read, `--globoff` so `[]` and `{}` in the
+  URL stay literal, and the body passed with `--data-raw` so a body starting
+  with `@` is sent as given, never read as a file name.
   Redirects are returned, never followed, URLs with credentials are refused,
   and only a short list of harmless headers is forwarded.
 - `call_credential` goes through the keychain broker with the agent's
