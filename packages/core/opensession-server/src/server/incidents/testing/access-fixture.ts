@@ -3,6 +3,8 @@
 // Tests mutate `spec` in place; the environment reads it live.
 // Not on any live import chain (excluded from the side-effect scan).
 import { afterEach, beforeEach } from "bun:test";
+import type { AgentAccess } from "../../../shared/incident-access";
+import type { AutomationDescendantPolicy } from "../../types";
 import {
   type AccessCredentialInfo,
   type AccessEnvironment,
@@ -122,3 +124,42 @@ export function useAccessTestEnv(): { spec: Required<StaticAccessSpec> } {
   });
   return holder;
 }
+
+/** An investigator on `acme` in code mode with nothing granted. */
+export function agentAccessFixture(
+  over: Partial<AgentAccess> = {},
+): AgentAccess {
+  return {
+    incidentId: "inc-1",
+    project: "acme",
+    role: "investigator",
+    signalId: null,
+    overrideApplied: false,
+    defaults: false,
+    connections: [],
+    deniedTools: {},
+    mode: "code",
+    repos: ["acme"],
+    runners: [],
+    hosts: [],
+    credentials: [],
+    model: null,
+    egress: null,
+    narrowed: [],
+    revision: "r1",
+    summary: "Investigator · no connections · can edit acme",
+    ...over,
+  };
+}
+
+/** A descendant policy for the incidents automation on `acme`, no binding. */
+export const descendantFixture: AutomationDescendantPolicy = {
+  automationId: "incidents-acme",
+  automationName: "Incidents",
+  repo: "acme",
+  publicationRepo: "example/acme",
+  baseBranch: "main",
+  mcpServers: [],
+  allowedRunners: [],
+  publication: "branch-pr-only",
+};
