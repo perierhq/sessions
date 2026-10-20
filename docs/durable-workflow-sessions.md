@@ -61,6 +61,7 @@ Both sessions appear beneath the workflow's parent session and in its Agents pan
 
 - `runner`: an online, policy-authorized persistent Runner id. Runner, repository, user, and new-code-workspace capability checks still run in the normal create path. Runner children currently start from the repository default branch; dependent stacked children remain host-worktree sessions.
 - `admission: { tokens, costUsd? }`: an up-front aggregate budget reservation. A child is rejected before creation when the reservation cannot fit; actual usage replaces the reservation as it arrives.
+- `model`: run this child on a different model from the parent. Unknown models are rejected, and a child on a different model does not inherit the parent's effort, speed or account pin.
 
 Completed calls are journaled. Resuming a workflow replays them, while a stable create identity also covers a crash after session creation but before the journal append. Child sessions are normal durable Open Session sessions and outlive the workflow worker or gateway process that launched them.
 

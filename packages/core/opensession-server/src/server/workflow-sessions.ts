@@ -11,6 +11,8 @@ import { buildChildSessionPrompt } from "../agents/slack/sessions-tools";
 import { getRepo } from "./worktree";
 import { onSessionStateChange } from "./session-state-events";
 import { publishSessionBranch } from "./session-publication";
+import { resolveModel } from "./models";
+import type { AutomationDescendantPolicy } from "./types";
 import type {
   WorkflowAutomationSessionPolicy,
   WorkflowSessionController,
@@ -30,6 +32,35 @@ export interface WorkflowSessionControllerDeps {
   publishSessionBranch: typeof publishSessionBranch;
   resolveRepo: typeof resolveSessionRepoContext;
   baseUrl: string;
+  /** Resolves a per-child `model` id or alias; `null` when unknown. */
+  resolveModel: (id: string) => { id: string } | null;
+}
+
+/** What the controller fixes for an automation descendant before a
+ *  server-side builder adds its grants (structurally plan 3's
+ *  `IncidentDescendantBase`). */
+export interface DescendantPolicyBase {
+  automationId: string;
+  automationName: string;
+  repo: string;
+  publicationRepo: string;
+  baseBranch: string;
+}
+
+/** Server-only spawn options. The workflow runner and script paths call
+ *  `spawn(input, requestId)` and cannot reach these. */
+export interface WorkflowServerSpawnOpts {
+  /** Builds the child's descendant policy from the controller's base. Only
+   *  valid with an `automationSessionPolicy`. */
+  descendantPolicy?: (base: DescendantPolicyBase) => AutomationDescendantPolicy;
+}
+
+export interface ServerWorkflowSessionController extends WorkflowSessionController {
+  spawn(
+    opts: WorkflowSpawnSessionOpts,
+    requestId: string,
+    server?: WorkflowServerSpawnOpts,
+  ): Promise<WorkflowSpawnedSession>;
 }
 
 export interface WorkflowSessionControllerOpts {
@@ -41,6 +72,10 @@ export interface WorkflowSessionControllerOpts {
   automationSessionPolicy?: WorkflowAutomationSessionPolicy;
   mcpAllowlist?: string[];
   maxDepth: number;
+  /** Children report back to the parent (default `true`). With `false`
+   *  neither the report-back instruction nor the failed-run beacon targets
+   *  the parent. */
+  reportBack?: boolean;
   /** Test seam; production uses SessionControl + the registered Git repos. */
   deps?: Partial<WorkflowSessionControllerDeps>;
 }
@@ -172,7 +207,7 @@ function reached(
  * policy around that existing implementation. */
 export function createWorkflowSessionController(
   opts: WorkflowSessionControllerOpts,
-): WorkflowSessionController {
+): ServerWorkflowSessionController {
   const deps: WorkflowSessionControllerDeps = {
     control: opts.deps?.control ?? getSessionControl(),
     branchPushed: opts.deps?.branchPushed ?? branchPushed,
@@ -187,7 +222,9 @@ export function createWorkflowSessionController(
       opts.deps?.publishSessionBranch ?? publishSessionBranch,
     resolveRepo: opts.deps?.resolveRepo ?? resolveSessionRepoContext,
     baseUrl: opts.deps?.baseUrl ?? configuredServer().publicBaseUrl,
+    resolveModel: opts.deps?.resolveModel ?? resolveModel,
   };
+  const reportBack = opts.reportBack ?? true;
   const control = deps.control;
   const owned = new Set<string>();
   const cancelled = new Set<string>();
@@ -239,7 +276,7 @@ export function createWorkflowSessionController(
       owned.add(session.id);
     },
 
-    async spawn(input, requestId) {
+    async spawn(input, requestId, server) {
       if (!opts.allowSpawning)
         throw new Error(
           "spawnSession() is unavailable in automation workflows because their tool restrictions cannot be widened into an interactive code session",
@@ -261,6 +298,20 @@ export function createWorkflowSessionController(
         throw new Error("spawnSession() branch must be a string");
       if (input.runner !== undefined && !input.runner.trim())
         throw new Error("spawnSession() runner must be a non-empty id");
+      // No silent fallback: the create path would otherwise use the default
+      // model and could hand a verifier the investigator's model.
+      let childModel: string | undefined;
+      if (input.model !== undefined) {
+        const resolved =
+          typeof input.model === "string" && input.model.trim()
+            ? deps.resolveModel(input.model.trim())
+            : null;
+        if (!resolved)
+          throw new Error(
+            `spawnSession() model "${String(input.model)}" is not a known model`,
+          );
+        childModel = resolved.id;
+      }
       if (input.admission !== undefined) {
         if (
           !Number.isFinite(input.admission.tokens) ||
@@ -312,6 +363,10 @@ export function createWorkflowSessionController(
           `Nested session depth ${depth} exceeds the configured maximum ${opts.maxDepth}`,
         );
       const automationPolicy = opts.automationSessionPolicy;
+      if (server?.descendantPolicy && !automationPolicy)
+        throw new Error(
+          "A server-built descendant policy needs an automation session policy",
+        );
       if (automationPolicy) {
         if (parent.automationId !== automationPolicy.automationId)
           throw new Error(
@@ -377,16 +432,56 @@ export function createWorkflowSessionController(
           );
       }
 
+      let descendantPolicy: AutomationDescendantPolicy | undefined;
+      if (automationPolicy) {
+        const base: DescendantPolicyBase = {
+          automationId: automationPolicy.automationId,
+          automationName: automationPolicy.automationName,
+          repo: input.repo,
+          publicationRepo: deps.publicationRepo(input.repo),
+          baseBranch: deps.defaultBranch(input.repo),
+        };
+        if (server?.descendantPolicy) {
+          const built = server.descendantPolicy({ ...base });
+          if (
+            built.automationId !== base.automationId ||
+            built.repo !== base.repo ||
+            built.publicationRepo !== base.publicationRepo ||
+            built.baseBranch !== base.baseBranch ||
+            built.publication !== "branch-pr-only"
+          )
+            throw new Error("Descendant policy does not match the automation");
+          descendantPolicy = {
+            ...built,
+            mcpServers: [...built.mcpServers],
+            allowedRunners: [...built.allowedRunners],
+          };
+        } else {
+          descendantPolicy = {
+            ...base,
+            mcpServers: [],
+            allowedRunners: [...automationPolicy.allowedRunners],
+            publication: "branch-pr-only",
+          };
+        }
+      }
+      // The parent's account pin and effort belong to the parent's provider.
+      const inherit = !childModel || childModel === parent.model;
+
       const prompt = [
         buildChildSessionPrompt({
           prompt: input.prompt,
           parentSessionId: opts.parentSessionId,
-          reportBack: true,
+          reportBack,
         }),
         "This session was launched by a dynamic workflow. You may commit, push, and open a pull request, but never merge a pull request or merge the branch into its base. A human owns every merge decision.",
       ].join("\n\n");
       const inheritedMcp =
-        opts.mcpAllowlist !== undefined ? opts.mcpAllowlist : parent.mcpServers;
+        server?.descendantPolicy && descendantPolicy
+          ? descendantPolicy.mcpServers
+          : opts.mcpAllowlist !== undefined
+            ? opts.mcpAllowlist
+            : parent.mcpServers;
       const created = await control.createSession({
         requestId,
         requestScope: opts.parentSessionId,
@@ -399,29 +494,18 @@ export function createWorkflowSessionController(
         baseRef,
         stackedOnBranch: stackBase,
         parentSessionId: opts.parentSessionId,
-        reportBack: true,
+        reportBack,
         agentStarted: true,
         user: opts.user || parent.createdBy || parent.startedBy || undefined,
-        model: parent.model,
-        effort: parent.effort,
-        fastMode: parent.fastMode,
-        speed: parent.speed,
-        accountId: parent.accountId,
+        model: childModel ?? parent.model,
+        effort: inherit ? parent.effort : undefined,
+        fastMode: inherit ? parent.fastMode : undefined,
+        speed: inherit ? parent.speed : undefined,
+        accountId: inherit ? parent.accountId : undefined,
         mcpServers: inheritedMcp,
         runner: input.runner,
-        ...(automationPolicy
-          ? {
-              automationDescendantPolicy: {
-                automationId: automationPolicy.automationId,
-                automationName: automationPolicy.automationName,
-                mcpServers: [],
-                repo: input.repo,
-                publicationRepo: deps.publicationRepo(input.repo),
-                baseBranch: deps.defaultBranch(input.repo),
-                allowedRunners: [...automationPolicy.allowedRunners],
-                publication: "branch-pr-only" as const,
-              },
-            }
+        ...(descendantPolicy
+          ? { automationDescendantPolicy: descendantPolicy }
           : {}),
         spawnDepth: depth,
       });
