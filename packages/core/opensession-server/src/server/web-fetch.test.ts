@@ -7,7 +7,14 @@
  * read somewhere, so a URL is an untrusted input, and a redirect is a second
  * untrusted input the first one chose.
  */
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -19,11 +26,20 @@ process.env.OPENSESSION_STATE_DIR = DIR;
 const {
   assertFetchableUrl,
   decodeEntities,
+  fetchChecked,
   fetchWeb,
   htmlToText,
   isBlockedAddress,
+  pinnedLookup,
+  pinnedRequest,
   readFetched,
+  resolveFetchTarget,
 } = await import("./web-fetch");
+type WebFetchDeps = import("./web-fetch").WebFetchDeps;
+type FetchedResponse = import("./web-fetch").FetchedResponse;
+
+/** A documentation address (TEST-NET-3): public as far as the guard knows. */
+const PUBLIC = "203.0.113.10";
 
 beforeEach(() => {
   process.env.OPENSESSION_STATE_DIR = DIR;
@@ -52,6 +68,11 @@ describe("isBlockedAddress", () => {
       "fe80::1",
       "fd00::1",
       "::ffff:127.0.0.1", // v4-mapped loopback
+      "::ffff:7f00:1", // the same, as new URL() spells it
+      "::ffff:a9fe:a9fe", // v4-mapped metadata
+      "::7f00:1", // v4-compatible loopback
+      "64:ff9b::a9fe:a9fe", // NAT64 metadata
+      "2002:7f00:1::1", // 6to4 loopback
     ]) {
       expect(isBlockedAddress(ip)).toBe(true);
     }
@@ -65,6 +86,7 @@ describe("isBlockedAddress", () => {
       "172.32.0.1",
       "100.63.255.255",
       "2606:4700::1111",
+      "::ffff:8.8.8.8",
     ]) {
       expect(isBlockedAddress(ip)).toBe(false);
     }
@@ -95,6 +117,15 @@ describe("assertFetchableUrl", () => {
     await expect(
       assertFetchableUrl("http://169.254.169.254/latest/meta-data/"),
     ).rejects.toThrow(/private/i);
+    for (const url of [
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+      "http://[::7f00:1]/",
+      "http://[64:ff9b::7f00:1]/",
+      "http://[2002:a9fe:a9fe::]/",
+    ]) {
+      await expect(assertFetchableUrl(url)).rejects.toThrow(/private/i);
+    }
     await expect(assertFetchableUrl("http://[::1]/")).rejects.toThrow(
       /private/i,
     );
@@ -165,32 +196,48 @@ describe("decodeEntities", () => {
 
 describe("fetch → handle → read", () => {
   /** A local server would be blocked by the address guard (correctly), so the
-   *  cache/handle contract is exercised through a stubbed fetch. */
+   *  cache/handle contract is exercised through an injected resolver and
+   *  transport. */
+  function stubDeps(
+    respond: () => FetchedResponse,
+  ): WebFetchDeps & { calls: () => number } {
+    let calls = 0;
+    return {
+      resolve: async () => [PUBLIC],
+      isBlocked: isBlockedAddress,
+      request: async () => {
+        calls += 1;
+        return respond();
+      },
+      calls: () => calls,
+    };
+  }
+
+  function ok(body: string, contentType: string): FetchedResponse {
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": contentType }),
+      body: new TextEncoder().encode(body),
+    };
+  }
+
   async function withStubbedFetch<T>(
     body: string,
     contentType: string,
-    fn: () => Promise<T>,
+    fn: (deps: WebFetchDeps) => Promise<T>,
   ): Promise<T> {
-    const real = globalThis.fetch;
-    // `as unknown as` because Bun's fetch carries a `preconnect` property a
-    // plain function stub cannot satisfy.
-    globalThis.fetch = (async () =>
-      new Response(body, {
-        status: 200,
-        headers: { "content-type": contentType },
-      })) as unknown as typeof fetch;
-    try {
-      return await fn();
-    } finally {
-      globalThis.fetch = real;
-    }
+    return fn(stubDeps(() => ok(body, contentType)));
   }
 
   const LONG = `<html><head><title>Docs</title></head><body><p>${"filler ".repeat(2000)}</p><p>The needle is here.</p></body></html>`;
 
   test("returns a bounded head plus a handle, not the whole page", async () => {
-    const page = await withStubbedFetch(LONG, "text/html", () =>
-      fetchWeb("https://example.com/docs", { refresh: true, headChars: 500 }),
+    const page = await withStubbedFetch(LONG, "text/html", (deps) =>
+      fetchWeb(
+        "https://example.com/docs",
+        { refresh: true, headChars: 500 },
+        deps,
+      ),
     );
     expect(page.head.length).toBe(500);
     expect(page.truncated).toBe(true);
@@ -200,8 +247,12 @@ describe("fetch → handle → read", () => {
   });
 
   test("read_page finds a passage the head never showed", async () => {
-    const page = await withStubbedFetch(LONG, "text/html", () =>
-      fetchWeb("https://example.com/docs2", { refresh: true, headChars: 300 }),
+    const page = await withStubbedFetch(LONG, "text/html", (deps) =>
+      fetchWeb(
+        "https://example.com/docs2",
+        { refresh: true, headChars: 300 },
+        deps,
+      ),
     );
     expect(page.head).not.toContain("needle");
     const slice = readFetched(page.handle, { find: "needle" });
@@ -218,11 +269,12 @@ describe("fetch → handle → read", () => {
     const page = await withStubbedFetch(
       "0123456789".repeat(100),
       "text/plain",
-      () =>
-        fetchWeb("https://example.com/plain", {
-          refresh: true,
-          headChars: 200,
-        }),
+      (deps) =>
+        fetchWeb(
+          "https://example.com/plain",
+          { refresh: true, headChars: 200 },
+          deps,
+        ),
     );
     const slice = readFetched(page.handle, { offset: 500, limit: 200 });
     expect(slice.offset).toBe(500);
@@ -231,33 +283,186 @@ describe("fetch → handle → read", () => {
   });
 
   test("a second fetch of the same URL is served from disk", async () => {
-    let calls = 0;
-    const real = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      calls += 1;
-      return new Response("<p>cached body</p>", {
-        status: 200,
-        headers: { "content-type": "text/html" },
-      });
-    }) as unknown as typeof fetch;
-    try {
-      await fetchWeb("https://example.com/cacheme", { refresh: true });
-      await fetchWeb("https://example.com/cacheme");
-      expect(calls).toBe(1);
-    } finally {
-      globalThis.fetch = real;
-    }
+    const deps = stubDeps(() => ok("<p>cached body</p>", "text/html"));
+    await fetchWeb("https://example.com/cacheme", { refresh: true }, deps);
+    await fetchWeb("https://example.com/cacheme", {}, deps);
+    expect(deps.calls()).toBe(1);
   });
 
   test("raw mode keeps the markup, text mode strips it", async () => {
-    const raw = await withStubbedFetch("<p>hi</p>", "text/html", () =>
-      fetchWeb("https://example.com/raw", { refresh: true, mode: "raw" }),
+    const raw = await withStubbedFetch("<p>hi</p>", "text/html", (deps) =>
+      fetchWeb("https://example.com/raw", { refresh: true, mode: "raw" }, deps),
     );
     expect(raw.head).toContain("<p>");
-    const text = await withStubbedFetch("<p>hi</p>", "text/html", () =>
-      fetchWeb("https://example.com/text", { refresh: true, mode: "text" }),
+    const text = await withStubbedFetch("<p>hi</p>", "text/html", (deps) =>
+      fetchWeb(
+        "https://example.com/text",
+        { refresh: true, mode: "text" },
+        deps,
+      ),
     );
     expect(text.head).not.toContain("<p>");
     expect(text.head).toContain("hi");
+  });
+});
+
+describe("DNS answers are checked and pinned", () => {
+  const LOCAL = "127.0.0.1";
+  /** Lets the local test server through and nothing else private, so the
+   *  real node:http transport can be exercised end to end. */
+  const allowOnlyLocal = (address: string) =>
+    address !== LOCAL && isBlockedAddress(address);
+
+  let server: ReturnType<typeof Bun.serve>;
+  const hosts: string[] = [];
+  beforeAll(() => {
+    server = Bun.serve({
+      hostname: LOCAL,
+      port: 0,
+      fetch(req) {
+        hosts.push(req.headers.get("host") ?? "");
+        const url = new URL(req.url);
+        if (url.pathname === "/hop")
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location: `http://second.example.test:${server.port}/end`,
+            },
+          });
+        return new Response(`reached ${url.pathname}`, {
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    });
+  });
+  afterAll(() => server.stop(true));
+  beforeEach(() => {
+    hosts.length = 0;
+  });
+
+  /** A resolver that answers from a script, one answer per call per host. */
+  function scripted(answers: Record<string, string[][]>) {
+    const asked: string[] = [];
+    const resolve = async (hostname: string) => {
+      asked.push(hostname);
+      const queue = answers[hostname];
+      if (!queue?.length) throw new Error(`unexpected lookup ${hostname}`);
+      return queue.length > 1 ? queue.shift()! : queue[0]!;
+    };
+    return { resolve, asked };
+  }
+
+  test("a hostname that resolves to a private address is refused", async () => {
+    for (const answer of [
+      ["10.0.0.5"],
+      ["169.254.169.254"],
+      ["::ffff:7f00:1"],
+      [PUBLIC, "192.168.1.1"],
+    ]) {
+      const { resolve } = scripted({ "acme.example.test": [answer] });
+      await expect(
+        fetchChecked("http://acme.example.test/", undefined, {
+          resolve,
+          isBlocked: isBlockedAddress,
+          request: () => {
+            throw new Error("must not connect");
+          },
+        }),
+      ).rejects.toThrow(/private address/);
+    }
+  });
+
+  test("the connection dials the checked address and never resolves again", async () => {
+    // A rebinding resolver: the first answer passes the check, a later one
+    // would point somewhere else. Only one lookup may happen per hop.
+    const { resolve, asked } = scripted({
+      "acme.example.test": [[LOCAL], ["10.9.9.9"]],
+    });
+    const { response, finalUrl } = await fetchChecked(
+      `http://acme.example.test:${server.port}/page`,
+      undefined,
+      { resolve, isBlocked: allowOnlyLocal, request: pinnedRequest },
+    );
+    expect(new TextDecoder().decode(response.body)).toBe("reached /page");
+    expect(asked).toEqual(["acme.example.test"]);
+    expect(hosts).toEqual([`acme.example.test:${server.port}`]);
+    expect(finalUrl).toBe(`http://acme.example.test:${server.port}/page`);
+  });
+
+  test("every redirect hop is resolved, checked and pinned", async () => {
+    const { resolve, asked } = scripted({
+      "first.example.test": [[LOCAL]],
+      "second.example.test": [[LOCAL]],
+    });
+    const { response } = await fetchChecked(
+      `http://first.example.test:${server.port}/hop`,
+      undefined,
+      { resolve, isBlocked: allowOnlyLocal, request: pinnedRequest },
+    );
+    expect(new TextDecoder().decode(response.body)).toBe("reached /end");
+    expect(asked).toEqual(["first.example.test", "second.example.test"]);
+    expect(hosts).toEqual([
+      `first.example.test:${server.port}`,
+      `second.example.test:${server.port}`,
+    ]);
+  });
+
+  test("a redirect hop that resolves privately is refused", async () => {
+    const { resolve } = scripted({
+      "first.example.test": [[LOCAL]],
+      "second.example.test": [["169.254.169.254"]],
+    });
+    await expect(
+      fetchChecked(`http://first.example.test:${server.port}/hop`, undefined, {
+        resolve,
+        isBlocked: allowOnlyLocal,
+        request: pinnedRequest,
+      }),
+    ).rejects.toThrow(/private address 169\.254\.169\.254/);
+    expect(hosts).toEqual([`first.example.test:${server.port}`]);
+  });
+
+  test("resolveFetchTarget returns the checked addresses to dial", async () => {
+    const target = await resolveFetchTarget("https://acme.example.test/x", {
+      resolve: async () => [PUBLIC, "2606:4700::1111"],
+      isBlocked: isBlockedAddress,
+    });
+    expect(target.host).toBe("acme.example.test");
+    expect(target.addresses).toEqual([PUBLIC, "2606:4700::1111"]);
+  });
+
+  test("the pinned lookup answers only with checked addresses", () => {
+    const lookup = pinnedLookup(
+      { host: "acme.example.test", addresses: [PUBLIC, "2606:4700::1111"] },
+      isBlockedAddress,
+    );
+    const answer = (hostname: string, options: object) =>
+      new Promise<unknown>((resolve) =>
+        lookup(hostname, options, (error, address, family) =>
+          resolve(error ? `error: ${error.message}` : { address, family }),
+        ),
+      );
+    return Promise.all([
+      expect(answer("acme.example.test", { all: true })).resolves.toEqual({
+        address: [
+          { address: PUBLIC, family: 4 },
+          { address: "2606:4700::1111", family: 6 },
+        ],
+        family: undefined,
+      }),
+      expect(answer("acme.example.test", { family: 6 })).resolves.toEqual({
+        address: "2606:4700::1111",
+        family: 6,
+      }),
+      expect(answer("other.example.test", {})).resolves.toMatch(/error/),
+      expect(
+        new Promise((resolve) =>
+          pinnedLookup(
+            { host: "acme.example.test", addresses: ["10.0.0.1"] },
+            isBlockedAddress,
+          )("acme.example.test", {}, (error) => resolve(error?.message)),
+        ),
+      ).resolves.toMatch(/private address/),
+    ]);
   });
 });

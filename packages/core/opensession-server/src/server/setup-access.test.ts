@@ -68,6 +68,11 @@ describe("setup access origins", () => {
       "::1",
       "fd7a:115c:a1e0::1",
       "fe80::1",
+      "198.18.0.1",
+      "::ffff:127.0.0.1",
+      "::ffff:c612:1",
+      "64:ff9b::a9fe:a9fe",
+      "2002:c0a8:101::1",
     ]) {
       expect(isObviouslyPrivateWebhookHost(host)).toBe(true);
       const urlHost = host.includes(":") ? `[${host}]` : host;
@@ -76,6 +81,7 @@ describe("setup access origins", () => {
       ).toThrow("public internet");
     }
     expect(isObviouslyPrivateWebhookHost("hooks.example.com")).toBe(false);
+    expect(isObviouslyPrivateWebhookHost("::ffff:8.8.8.8")).toBe(false);
   });
 
   test("recognizes the Tailscale IPv4 range only", () => {

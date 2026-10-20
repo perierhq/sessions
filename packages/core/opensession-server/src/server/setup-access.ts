@@ -1,6 +1,10 @@
 import { networkInterfaces } from "os";
 import { configuredServer, getConfig } from "./config";
-import { isBlockedAddress, isTailnetIpv4 } from "./shared/network-address";
+import {
+  embeddedIpv4,
+  isBlockedAddress,
+  isTailnetIpv4,
+} from "./shared/network-address";
 
 export { isTailnetIpv4 } from "./shared/network-address";
 
@@ -63,7 +67,7 @@ export function isObviouslyPrivateWebhookHost(value: string): boolean {
   }
 
   if (isBlockedAddress(host) || /^fe[89ab]/.test(host)) return true;
-  const [a, b] = host.split(".").map(Number);
+  const [a, b] = (embeddedIpv4(host) ?? host).split(".").map(Number);
   return a === 198 && (b === 18 || b === 19);
 }
 
