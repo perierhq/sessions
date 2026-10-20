@@ -35,15 +35,14 @@ import {
   type Repo,
 } from "./config";
 import {
-  persistRawConfig,
-  rawConfig,
+  persistRawConfigAsync,
+  rawConfigAsync,
   reposForMutation,
   withConfigMutationLock,
 } from "./config-mutation";
 import { managedCheckoutsRoot } from "./paths";
 import type { UnifiedSession } from "./types";
 import { removeTree } from "./workload-scope";
-import { sessionRepoId } from "./worktree";
 
 export interface RepoRemovalPreview {
   id: string;
@@ -158,17 +157,46 @@ function registeredRepo(id: string): Repo | null {
   return Object.hasOwn(repos, id) ? repos[id] : null;
 }
 
+/**
+ * The repository a session's own work is in, decided from the record alone.
+ * `worktree.ts` sessionRepoId answers the same question but may read the
+ * disk (realpath, the worktree's .git pointer), which the gateway thread must
+ * not do once per session. A session without a recorded `repo` belongs to
+ * the registered checkout its worktree sits in, or to the repository whose
+ * worktree prefix its directory carries (longest prefix wins, as there).
+ */
+function recordedRepoId(
+  session: UnifiedSession,
+  repos: Record<string, Repo>,
+  worktreesDir: string,
+): string | undefined {
+  if (session.repo) return canonicalRepoId(session.repo);
+  const dir = session.worktreeDir;
+  if (!dir) return undefined;
+  for (const repo of Object.values(repos))
+    if (within(dir, repo.repo)) return repo.id;
+  let best: Repo | undefined;
+  for (const repo of Object.values(repos)) {
+    if (!dir.startsWith(`${worktreesDir}/${repo.wtPrefix}-`)) continue;
+    if (!best || repo.wtPrefix.length > best.wtPrefix.length) best = repo;
+  }
+  return best?.id;
+}
+
 /** The live sessions whose own work is in `repoId`. Attached (secondary)
  *  repositories do not count: the session belongs to its primary repo. */
 export function sessionsOfRepo(
   sessions: UnifiedSession[],
   repoId: string,
 ): UnifiedSession[] {
-  return sessions.filter((session) => {
-    if (session.archived || session.repoLess) return false;
-    const owner = sessionRepoId(session);
-    return !!owner && (owner === repoId || canonicalRepoId(owner) === repoId);
-  });
+  const repos = configuredRepos();
+  const worktreesDir = configuredPaths().worktreesDir;
+  return sessions.filter(
+    (session) =>
+      !session.archived &&
+      !session.repoLess &&
+      recordedRepoId(session, repos, worktreesDir) === repoId,
+  );
 }
 
 async function realpathOrNull(path: string): Promise<string | null> {
@@ -492,11 +520,11 @@ export async function removeRepo(
 
     const removed = await withConfigMutationLock(async () => {
       if (!registeredRepo(id)) return false;
-      const config = rawConfig();
+      const config = await rawConfigAsync();
       const repos = reposForMutation(config);
       delete repos[id];
       if (config.newSessionRepo === id) delete config.newSessionRepo;
-      persistRawConfig(config);
+      await persistRawConfigAsync(config);
       return true;
     });
     if (!removed) throw new RepoRemovalError(`Unknown repository: ${id}`, 404);

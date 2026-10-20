@@ -36,7 +36,7 @@ export function runningLine(running: number): string {
 /** What deleting would take: its size and worktrees, as far as is known. */
 function deleteSummary(preview: RepoRemovalPreview): string | null {
   const parts: string[] = [];
-  if (typeof preview.sizeBytes === "number")
+  if (preview.sizeBytes !== undefined && preview.sizeBytes !== null)
     parts.push(formatBytes(preview.sizeBytes));
   if (preview.worktrees)
     parts.push(

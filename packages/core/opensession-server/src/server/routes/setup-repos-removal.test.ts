@@ -20,6 +20,7 @@ import type { RouteContext } from "./context";
 import { handleSetupRepoRoutes } from "./setup-repos";
 
 const saved = {
+  sandbox: process.env.OPENSESSION_SANDBOX_CONFIG,
   config: process.env.OPENSESSION_CONFIG,
   worktrees: process.env.OPENSESSION_WORKTREES_DIR,
   home: process.env.HOME,
@@ -30,6 +31,7 @@ afterEach(async () => {
   __setRepoRemovalDepsForTest(null);
   for (const [key, value] of [
     ["OPENSESSION_CONFIG", saved.config],
+    ["OPENSESSION_SANDBOX_CONFIG", saved.sandbox],
     ["OPENSESSION_WORKTREES_DIR", saved.worktrees],
     ["HOME", saved.home],
   ] as const) {
@@ -247,6 +249,21 @@ describe("repository removal", () => {
       const config = readConfig(env);
       config.newSessionRepo = "widget";
       await writeConfig(env, config);
+      const sandboxPath = join(env.root, "sandbox.json");
+      process.env.OPENSESSION_SANDBOX_CONFIG = sandboxPath;
+      writeFileSync(
+        sandboxPath,
+        JSON.stringify({
+          provider: "local",
+          perRepo: { widget: { sessionDefault: "none" }, other: {} },
+          prewarm: {
+            keepReady: [
+              { provider: "daytona", repoId: "widget" },
+              { provider: "daytona", repoId: "other" },
+            ],
+          },
+        }),
+      );
       patchUiPrefs("alice", {
         "default-repo": "widget",
         "repo-order": JSON.stringify(["other", "widget"]),
@@ -273,6 +290,11 @@ describe("repository removal", () => {
       expect(after.repos.widget).toBeUndefined();
       expect(after.repos.other).toBeDefined();
       expect(after.newSessionRepo).toBeUndefined();
+      expect(JSON.parse(readFileSync(sandboxPath, "utf-8"))).toEqual({
+        provider: "local",
+        perRepo: { other: {} },
+        prewarm: { keepReady: [{ provider: "daytona", repoId: "other" }] },
+      });
       expect(getUiPrefs("alice")).toMatchObject({
         "default-repo": "",
         "repo-order": JSON.stringify(["other"]),

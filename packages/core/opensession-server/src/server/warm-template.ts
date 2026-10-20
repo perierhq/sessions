@@ -55,7 +55,8 @@ import {
 import { dirname, join } from "path";
 import { configuredPaths, configuredRepos, type Repo } from "./config";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
-import { writeJsonAtomic } from "./shared/atomic-write";
+import { readFile } from "fs/promises";
+import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { removeTree } from "./workload-scope";
 import { workloadArgv } from "./workload-scope";
 
@@ -156,12 +157,22 @@ export function setWarmTemplateConfig(
 }
 
 /** Forget a repository's warm-template settings once it is no longer
- * registered, so a later registration under the same id starts clean. */
-export function forgetWarmTemplateConfig(repoId: string): boolean {
-  const repos = readWarmConfigRaw();
-  if (!Object.hasOwn(repos, repoId)) return false;
+ * registered, so a later registration under the same id starts clean. Async,
+ * for the request path. */
+export async function forgetWarmTemplateConfig(
+  repoId: string,
+): Promise<boolean> {
+  let parsed: { repos?: Record<string, unknown> } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(await readFile(configFile(), "utf-8"));
+  } catch {
+    return false;
+  }
+  const repos = parsed?.repos;
+  if (!repos || typeof repos !== "object" || !Object.hasOwn(repos, repoId))
+    return false;
   delete repos[repoId];
-  writeJsonAtomic(configFile(), { repos });
+  await writeJsonAtomicAsync(configFile(), { ...parsed, repos });
   return true;
 }
 
