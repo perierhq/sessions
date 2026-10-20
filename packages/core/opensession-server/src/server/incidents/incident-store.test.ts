@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { appendEvent, transitionIncident } from "./lifecycle";
 import {
   type NewIncident,
@@ -131,24 +131,43 @@ test("list: newest first, filters", async () => {
   );
 });
 
-test("concurrent updates both land", async () => {
+test("a write landing between read and commit is retried, not lost", async () => {
   const i = await createIncident(init());
-  const add = (d: string) =>
-    updateIncident(i.id, (c) =>
-      appendEvent(c, {
+  let runs = 0;
+  const result = await updateIncident(i.id, (c) => {
+    runs++;
+    if (runs === 1) {
+      // Another writer commits first, straight through the kernel.
+      const stored = kit.store().catalogDocumentGet("incidents", i.id);
+      if (!stored?.value) throw new Error("incident not stored");
+      const other = appendEvent(JSON.parse(stored.value), {
         at: AT,
         kind: "signal-state",
         by: "sessions",
-        detail: d,
-      }),
-    );
-  await Promise.all([add("a"), add("b")]);
-  expect(
-    (await getIncident(i.id))?.events
-      .map((e) => e.detail)
-      .slice(1)
-      .sort(),
-  ).toEqual(["a", "b"]);
+        detail: "other",
+      });
+      const put = kit.store().putCatalogDocument({
+        op: "put",
+        namespace: "incidents",
+        key: i.id,
+        expectedRev: stored.rev,
+        value: JSON.stringify(other),
+        requestId: crypto.randomUUID(),
+      });
+      if (put.status !== "committed")
+        throw new Error(`bump failed: ${put.status}`);
+    }
+    return appendEvent(c, {
+      at: AT,
+      kind: "signal-state",
+      by: "sessions",
+      detail: "mine",
+    });
+  });
+  expect(runs).toBe(2);
+  const details = (await getIncident(i.id))?.events.map((e) => e.detail);
+  expect(details?.slice(1)).toEqual(["other", "mine"]);
+  expect(result).toEqual(await getIncident(i.id));
 });
 
 test("an error aborts without a write or audit", async () => {
@@ -244,6 +263,71 @@ test("audits state, attach and findings; listeners see both versions", async () 
   ]);
   off();
   offBroken();
+});
+
+test("listeners run apart from the write: rejections and slow ones are contained", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const seen: string[] = [];
+  const offs = [
+    onIncidentChange(async () => {
+      throw new Error("async listener bug");
+    }),
+    onIncidentChange(() => new Promise<void>(() => {})),
+    onIncidentChange((next) => {
+      seen.push(next.state);
+    }),
+  ];
+  try {
+    const i = await createIncident(init());
+    await updateIncident(i.id, (c) => {
+      const moved = transitionIncident(c, "paused", {
+        by: "Ada",
+        detail: "Later",
+        at: AT,
+      });
+      return moved;
+    });
+    await Bun.sleep(0);
+    expect(seen).toEqual(["investigating", "paused"]);
+    expect(
+      warn.mock.calls.filter((call) =>
+        String(call[1]).includes("async listener bug"),
+      ),
+    ).toHaveLength(2);
+  } finally {
+    for (const off of offs) off();
+    warn.mockRestore();
+  }
+});
+
+test("a resolved disagreement is audited with the signal it was against", async () => {
+  const i = await createIncident(
+    init({
+      findings: [
+        {
+          kind: "disagreement",
+          at: AT,
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+          detail: "Health reports ok while Search is failing",
+        },
+      ],
+    }),
+  );
+  kit.audits.length = 0;
+  await updateIncident(i.id, (c) => ({
+    ...c,
+    findings: c.findings.map((f) => ({ ...f, resolvedAt: AT })),
+  }));
+  expect(kit.audits).toEqual([
+    {
+      kind: "incident_finding_resolved",
+      incidentId: i.id,
+      findingKind: "disagreement",
+      signalId: "sig-r",
+      againstSignalId: "sig-a",
+    },
+  ]);
 });
 
 test("summary", async () => {

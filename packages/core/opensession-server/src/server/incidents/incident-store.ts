@@ -33,7 +33,7 @@ export interface NewIncident {
 export type IncidentListener = (
   next: Incident,
   previous: Incident | null,
-) => void;
+) => void | Promise<void>;
 
 // Bound on first use, never at import: the catalog client is a live effect.
 let documents: ReturnType<typeof catalogDocuments> | undefined;
@@ -81,17 +81,20 @@ export function onIncidentChange(listener: IncidentListener): () => void {
   };
 }
 
+/**
+ * Tell every listener, each on its own microtask: a listener that throws,
+ * rejects or never settles cannot fail the write or hold up the engine.
+ */
 function notify(next: Incident, previous: Incident | null): void {
-  for (const listener of [...listeners]) {
-    try {
-      listener(next, previous);
-    } catch (error) {
-      console.warn(
-        "[incidents] change listener failed:",
-        error instanceof Error ? error.message : error,
-      );
-    }
-  }
+  for (const listener of [...listeners])
+    void Promise.resolve()
+      .then(() => listener(next, previous))
+      .catch((error: unknown) => {
+        console.warn(
+          "[incidents] change listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
 }
 
 function findingAudit(
@@ -145,6 +148,9 @@ function auditChange(previous: Incident, next: Incident): void {
         incidentId: id,
         findingKind: finding.kind,
         signalId: finding.signalId,
+        ...(finding.againstSignalId === undefined
+          ? {}
+          : { againstSignalId: finding.againstSignalId }),
       });
   }
 }

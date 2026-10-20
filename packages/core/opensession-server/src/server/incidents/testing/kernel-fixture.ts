@@ -16,6 +16,8 @@ export const TEST_PROJECTS = ["acme", "acme-api"];
 
 export function useIncidentTestKernel(): {
   root(): string;
+  /** The kernel store behind the catalog, for writes that bypass it. */
+  store(): SessionKernelStore;
   audits: Array<Record<string, unknown>>;
 } {
   const audits: Array<Record<string, unknown>> = [];
@@ -51,5 +53,12 @@ export function useIncidentTestKernel(): {
     await rm(root, { recursive: true, force: true });
   });
 
-  return { root: () => root, audits };
+  return {
+    root: () => root,
+    store: () => {
+      if (!store) throw new Error("The test kernel runs only inside a test");
+      return store;
+    },
+    audits,
+  };
 }
