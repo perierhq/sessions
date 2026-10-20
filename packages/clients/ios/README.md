@@ -43,7 +43,9 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   one, sharing `/api/hides` — while the session keeps running for everyone else.
   A hidden row comes back while one of its sessions is blocked on a question,
   prompting in a session clears its hide, and search ignores hides, so a hidden
-  row stays findable and its menu offers "Restore to sidebar". The row menu
+  row stays findable and its menu offers "Restore to sidebar". The web sidebar
+  also lists hidden rows under a Hidden row at its foot, named by
+  `/api/hides/rows`, which leaves out archived or deleted work. The row menu
   (phone and Mac) offers one membership action, decided by the "me" lens's own
   rule (`PeopleLens.membership`): "Hide from sidebar" for a row your sidebar
   already holds (your own or spawned work, a claim, a mention, a collaborator

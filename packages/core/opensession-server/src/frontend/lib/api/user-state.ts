@@ -243,6 +243,34 @@ export async function saveHidesApi(
   return parsed.success ? (parsed.data.hides ?? {}) : {};
 }
 
+const hiddenRowsResponseSchema = z.object({
+  rows: z
+    .array(
+      z.object({
+        key: z.string(),
+        hiddenAt: z.string(),
+        title: z.string(),
+        repo: z.string().nullable(),
+        sessionId: z.string(),
+      }),
+    )
+    .optional(),
+});
+
+export type HiddenRow = NonNullable<
+  z.infer<typeof hiddenRowsResponseSchema>["rows"]
+>[number];
+
+/** The rows behind your hides, named. Archived or deleted work is left out. */
+export async function fetchHiddenRows(user: string): Promise<HiddenRow[]> {
+  const body = await request<unknown>(
+    `/hides/rows?user=${encodeURIComponent(user)}`,
+    { label: "Failed to fetch hidden rows" },
+  );
+  const parsed = hiddenRowsResponseSchema.safeParse(body);
+  return parsed.success ? (parsed.data.rows ?? []) : [];
+}
+
 // ── Tab colors (per-user session tab colors) ──
 
 export async function fetchTabColors(

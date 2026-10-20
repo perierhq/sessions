@@ -116,6 +116,12 @@ A workspace belongs to whoever created it, and its sidebar row files into their
 lanes. Add teammates as collaborators from the info panel and the row files into
 their sidebar the same way. Each one is notified once, when they are added.
 
+Hiding a row takes it off your own sidebar and nobody else's; archiving is the
+global version. A hidden row comes back by itself while one of its sessions is
+blocked on a question. Otherwise the Hidden row at the foot of the sidebar
+lists everything you hid, with when you hid it and a Restore for each, and ⌘K
+still finds it.
+
 A workspace with no worktree is fine too — that is what an ask-style workspace
 looks like, or a feed workspace for a ticket where there is nothing to check
 out, or a fresh one before any code session materializes it.

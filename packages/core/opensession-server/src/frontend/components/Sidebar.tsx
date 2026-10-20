@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useIsPhone } from "../hooks/useIsPhone";
 import { useNavigation } from "../hooks/useNavigation";
+import { useHiddenRows } from "../hooks/useHiddenRows";
 import { useSidebarDnd } from "../hooks/useSidebarDnd";
 import { useSidebarPeopleActivityNow } from "../hooks/useSidebarPeopleActivityNow";
 import { useSidebarSources } from "../hooks/useSidebarSources";
@@ -16,6 +17,7 @@ import {
   onHidesChanged,
   partitionHidden,
 } from "../lib/hides";
+import { hiddenListEntries } from "../lib/hidden-list";
 import { getLane, getLanes, onLanesChanged } from "../lib/lanes";
 import { mentionFor, onMentionsChanged } from "../lib/mentions";
 import { usePeople } from "../lib/people";
@@ -133,6 +135,7 @@ import { AutomationsBand } from "./sidebar/AutomationsBand";
 import { DraftRow } from "./sidebar/DraftRow";
 import { FeedRow } from "./sidebar/FeedRows";
 import { FilterPopover, RepoFilterChip } from "./sidebar/Filters";
+import { HiddenEntry } from "./sidebar/HiddenEntry";
 import { PeopleBand } from "./sidebar/PeopleBand";
 import { PersonalBand } from "./sidebar/PersonalBand";
 import { ProjectBands } from "./sidebar/ProjectBands";
@@ -510,13 +513,19 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   // again" instead of flickering as questions get asked and answered.
   //
   // Otherwise the viewer offers "Keep in sidebar" when you open a hidden
-  // session through a link or ⌘K. There is no Hidden band: hiding is removal
-  // from your sidebar, not a folder to browse.
+  // session through a link or ⌘K, and the quiet Hidden row at the foot of the
+  // sidebar lists everything you hid with a Restore for each. It is a list
+  // you open on purpose, not a band: hidden rows never render among the
+  // others.
   const { hiddenKeys: hiddenRowKeys, resurfaced: resurfacedRows } =
     partitionHidden(allWsRows, hides);
   // Opening a deep link must not undo a personal hide. The viewer owns the
   // recovery action while the row stays absent.
   const wsRows = allWsRows.filter((r) => !hiddenRowKeys.has(r.key));
+  // The Hidden list names rows the sidebar's own session list leaves out, so
+  // the server resolves them (and drops any whose work is archived or gone).
+  const hiddenRows = useHiddenRows(hides, currentUser);
+  const hiddenEntries = hiddenListEntries(hiddenRows.rows, hides);
   useEffect(() => {
     setRunStartSeen((current) => {
       const next = new Map(current);
@@ -1769,6 +1778,15 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
               style={{ order: 99 }}
             >
               {archivedLink}
+              <HiddenEntry
+                entries={hiddenEntries}
+                isPhone={isPhone}
+                onOpenEntry={(entry) => navigation.openSession(entry.sessionId)}
+                onRestore={(entry) => clearHides([entry.key])}
+                onOpenChange={(open) => {
+                  if (open) hiddenRows.refresh();
+                }}
+              />
             </div>
           )}
 

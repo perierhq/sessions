@@ -3,16 +3,21 @@
 //
 // Hiding is the personal counterpart to archiving: archiving is global, so it
 // removes a session for the whole team — wrong when a teammate is still working
-// in it. A hide is an overlay on a sidebar row key (`workspace:<id>` or a solo
-// session id) that only ever affects you; the session keeps running and stays in
-// everyone else's sidebar.
+// in it. A hide is an overlay on a sidebar row key (`workspace:<id>`,
+// `wt:<dir>` or a solo session id) that only ever affects you; the session keeps
+// running and stays in everyone else's sidebar.
 //
-// There is deliberately no "Hidden" band: hiding means the row is off your
-// sidebar, not filed into a drawer you'd never open. A hidden session stays
-// findable in the ⌘K palette (which ignores hides), and the Sidebar always
-// shows the OPEN session's row — so opening one brings its row back and its menu
-// offers "Restore to my sidebar". Prompting in a session clears its hide outright
-// (`unhideForSession`): you can't be done with work you're actively doing.
+// A hidden row is off your sidebar, not filed into a band among the others.
+// The way back is a quiet "Hidden" row at the foot of the sidebar, shown only
+// while something is hidden: it opens a list of what you hid (name, repo, when),
+// each with Restore (`clearHides`), and clicking a name opens that session
+// without unhiding it. The server names those rows (`/api/hides/rows`), because
+// the sidebar's own session list leaves hidden rows out, and it skips any whose
+// work has since been archived or deleted. A hidden session also stays findable
+// in the ⌘K palette (which ignores hides). Opening one keeps its row hidden; the
+// viewer offers "Keep in sidebar" instead. Prompting in a session clears its
+// hide outright (`unhideForSession`): you can't be done with work you're
+// actively doing.
 //
 // A hide is otherwise sticky (unlike a snooze, it has no expiry), with one
 // exception the Sidebar applies: a hidden row resurfaces while any of its sessions

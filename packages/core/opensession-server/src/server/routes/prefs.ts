@@ -31,6 +31,13 @@ import {
   getHides as getUserHides,
   updateHides as updateUserHides,
 } from "../hides";
+import {
+  hiddenWorkspaceIds,
+  resolveHiddenRows,
+  type HiddenRowWorkspace,
+} from "../hidden-rows";
+import { getCachedSessionsAsync } from "../session-cache";
+import { getWorkspace } from "../workspaces";
 import { mergeMapDelta, requestedMapDelta } from "../shared/map-delta";
 import { broadcastToUser } from "../ws-hub";
 import {
@@ -473,6 +480,29 @@ export async function handlePrefsRoutes(
   if (path === "/api/hides" && req.method === "GET") {
     const user = requestUser(ctx, url.searchParams.get("user")) || "Anonymous";
     return conditionalJsonResponse(req, { hides: await getUserHides(user) });
+  }
+
+  // The rows behind those hides, named, for the sidebar's Hidden list. The
+  // sidebar's own session list leaves hidden rows out, so this is where their
+  // titles come from. Archived or deleted work resolves to nothing.
+  if (path === "/api/hides/rows" && req.method === "GET") {
+    const user = requestUser(ctx, url.searchParams.get("user")) || "Anonymous";
+    const hides = await getUserHides(user);
+    const [sessions, workspaces] = await Promise.all([
+      getCachedSessionsAsync("exclude"),
+      Promise.all(
+        hiddenWorkspaceIds(hides).map(
+          async (id) => [id, await getWorkspace(id)] as const,
+        ),
+      ),
+    ]);
+    const records = new Map<string, HiddenRowWorkspace>();
+    for (const [id, workspace] of workspaces)
+      if (workspace)
+        records.set(id, { name: workspace.name, repo: workspace.repo });
+    return conditionalJsonResponse(req, {
+      rows: resolveHiddenRows(hides, sessions, records),
+    });
   }
 
   if (path === "/api/hides" && req.method === "PUT") {
