@@ -317,11 +317,14 @@ test("a change the engine failed on is replayed by the next observation", async 
     expect(await listIncidents()).toEqual([
       expect.objectContaining({ state: "investigating", signalIds: [s.id] }),
     ]);
-    const states = kit.audits.filter((a) => a.kind === "incident_signal_state");
-    expect(states.map((a) => [a.from, a.to])).toEqual([
+    // A retried change is audited once, when it first happened.
+    const states = () =>
+      kit.audits
+        .filter((a) => a.kind === "incident_signal_state")
+        .map((a) => [a.from, a.to]);
+    expect(states()).toEqual([
       [null, "ok"],
-      [null, "ok"],
-      [null, "failing"],
+      ["ok", "failing"],
     ]);
     // A failed recovery leaves the earlier evaluation in place.
     down = true;
@@ -332,6 +335,11 @@ test("a change the engine failed on is replayed by the next observation", async 
     down = false;
     await feed(s.id, "ok");
     expect(getSignalEvaluation(s.id)?.state).toBe("ok");
+    expect(states()).toEqual([
+      [null, "ok"],
+      ["ok", "failing"],
+      ["failing", "ok"],
+    ]);
     expect((await listIncidents())[0]!.events.at(-1)).toMatchObject({
       kind: "signal-state",
       signalState: "ok",

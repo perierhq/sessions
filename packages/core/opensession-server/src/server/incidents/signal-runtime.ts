@@ -29,6 +29,9 @@ import { evaluateSignal, replaySignal } from "./rules";
 import { getSignal, listSignals } from "./signal-store";
 
 let evaluations = new Map<string, SignalEvaluation>();
+/** The state last audited per signal. A change the engine failed on is
+ *  undone and made again; it is audited once. */
+let auditedStates = new Map<string, SignalEvaluation["state"]>();
 /** The engine's work queue: one decision at a time. */
 let engineChain: Promise<void> = Promise.resolve();
 /**
@@ -51,6 +54,7 @@ export function allSignalEvaluations(): ReadonlyMap<string, SignalEvaluation> {
 /** Drop a signal's evaluation (deleted or disabled). */
 export function forgetSignal(id: string): void {
   evaluations.delete(id);
+  auditedStates.delete(id);
 }
 
 interface IncidentEngine {
@@ -72,6 +76,7 @@ export function __setIncidentEngineForTest(
 
 export function __resetSignalRuntimeForTest(): void {
   evaluations = new Map();
+  auditedStates = new Map();
   engineChain = Promise.resolve();
   booting = null;
   intake = new Map();
@@ -175,16 +180,19 @@ export async function reevaluateSignal(
     now,
   );
   evaluations.set(signal.id, current);
-  if (previous?.state !== current.state) {
+  const audited = auditedStates.get(signal.id);
+  if (audited !== current.state) {
+    auditedStates.set(signal.id, current.state);
     incidentAudit({
       kind: "incident_signal_state",
       signalId: signal.id,
-      from: previous?.state ?? null,
+      from: audited ?? null,
       to: current.state,
       reason: current.reason,
     });
-    await runEngine(signal, previous, current, now);
   }
+  if (previous?.state !== current.state)
+    await runEngine(signal, previous, current, now);
   return current;
 }
 
@@ -265,10 +273,10 @@ async function replayAll(now: number): Promise<void> {
   for (const signal of signals) {
     try {
       await hydrate(signal, now);
-      evaluations.set(
-        signal.id,
-        replaySignal(signal, recentObservations(signal.id), now),
-      );
+      const replayed = replaySignal(signal, recentObservations(signal.id), now);
+      evaluations.set(signal.id, replayed);
+      // Taken back, not changed: later changes audit from here.
+      auditedStates.set(signal.id, replayed.state);
     } catch (error) {
       console.error(
         `[incidents] could not restore ${signal.id}:`,
