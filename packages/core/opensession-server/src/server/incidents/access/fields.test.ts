@@ -79,6 +79,11 @@ test.each([
     { egress: { route: "server", hosts: ["db.internal"] } },
     "public host names",
   ],
+  [{ egress: { route: "server", hosts: ["0x7f.1"] } }, "public host names"],
+  [
+    { egress: { route: "proxy", url: "http://proxy.example.test/x?k=1" } },
+    "path, query or fragment",
+  ],
 ])("rejects %j", (input, message) => {
   expect(validateProfileFields(input, inv, env())).toEqual({
     error: expect.stringContaining(message),
