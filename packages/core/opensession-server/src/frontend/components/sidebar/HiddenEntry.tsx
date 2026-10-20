@@ -168,41 +168,62 @@ function HiddenList({
 }) {
   return (
     <ul className={className}>
-      {entries.map((entry) => (
-        <li key={entry.key} className={HIDDEN_ROW_ITEM}>
-          <div className={HIDDEN_ROW}>
-            <span className={HIDDEN_ROW_MARK} aria-hidden="true">
-              {entry.repo && <RepoTile name={entry.repo} />}
-            </span>
-            <button
-              type="button"
-              className={HIDDEN_ROW_OPEN}
-              onClick={() => onOpenEntry(entry)}
-            >
-              <span className={HIDDEN_ROW_TITLE}>{entry.title}</span>
-              <span className={HIDDEN_ROW_META}>
-                {entry.repo && (
-                  <span className="min-w-0 truncate">
-                    {repoLabel(entry.repo)}
-                  </span>
-                )}
-                <span className="shrink-0 tabular-nums">
-                  Hidden {relativeTime(entry.hiddenAt)}
-                </span>
+      {entries.map((entry) => {
+        // A repository is named by its label and described as one; a row by
+        // its title, with the repo it files under.
+        const title =
+          entry.kind === "repo" ? repoLabel(entry.repo) : entry.title;
+        const context =
+          entry.kind === "repo"
+            ? "Repository"
+            : entry.repo
+              ? repoLabel(entry.repo)
+              : null;
+        return (
+          <li key={entry.key} className={HIDDEN_ROW_ITEM}>
+            <div className={HIDDEN_ROW}>
+              <span className={HIDDEN_ROW_MARK} aria-hidden="true">
+                {entry.repo && <RepoTile name={entry.repo} />}
               </span>
-            </button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className={HIDDEN_ROW_RESTORE}
-              aria-label={`Restore ${entry.title} to your sidebar`}
-              onClick={() => onRestore(entry)}
-            >
-              Restore
-            </Button>
-          </div>
-        </li>
-      ))}
+              <button
+                type="button"
+                className={HIDDEN_ROW_OPEN}
+                onClick={() => onOpenEntry(entry)}
+              >
+                <span className={HIDDEN_ROW_TITLE}>{title}</span>
+                <span className={HIDDEN_ROW_META}>
+                  {context && (
+                    <span className="min-w-0 truncate">{context}</span>
+                  )}
+                  <span className="shrink-0 tabular-nums">
+                    Hidden {relativeTime(entry.hiddenAt)}
+                  </span>
+                </span>
+              </button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className={HIDDEN_ROW_RESTORE}
+                aria-label={`Restore ${title} to your sidebar`}
+                // The hook the focus hand-off below looks for.
+                data-hidden-restore=""
+                onClick={(event) => {
+                  // The row leaves with its button, so keyboard focus moves
+                  // to the next Restore rather than falling to the page.
+                  const item = event.currentTarget.closest("li");
+                  const neighbour = (
+                    item?.nextElementSibling ?? item?.previousElementSibling
+                  )?.querySelector<HTMLElement>("[data-hidden-restore]");
+                  onRestore(entry);
+                  neighbour?.focus();
+                }}
+              >
+                Restore
+              </Button>
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }

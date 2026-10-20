@@ -4,6 +4,7 @@ import type { HiddenListEntry } from "../../lib/hidden-list";
 import { HiddenEntry } from "./HiddenEntry";
 
 const entry = (key: string): HiddenListEntry => ({
+  kind: "row",
   key,
   hiddenAt: "2026-08-01T10:00:00.000Z",
   title: `Title ${key}`,

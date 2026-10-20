@@ -61,6 +61,7 @@ import { projectComposerSessions } from "../lib/composer-session-projection";
 import { baseModelId, modelEngine } from "./ModelEffortSelect";
 import { getSendKeyPref, onSendKeyChanged } from "../lib/send-key-pref";
 import { effectiveSendKey, MOD_ENTER_GLYPH } from "../lib/send-key";
+import { unhideRepo } from "../lib/hides";
 import { NO_REPO } from "../lib/session-repo";
 import {
   sandboxProviderLabel,
@@ -1197,6 +1198,9 @@ export function NewSession({
       : (createWorkspaceId ?? null);
     try {
       send(createMessage);
+      // A session you start in a repo you hid would land out of sight, so
+      // starting one restores the repo (lib/hides.ts).
+      if (createRepo && createRepo !== NO_REPO) unhideRepo(createRepo);
       consumePendingDraftParks(prompt, workspaceId, createWorkspaceId);
       if (createAction === "open") {
         // The send was accepted. Consume the global composer now, before App

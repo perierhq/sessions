@@ -22,6 +22,7 @@ describe("hiddenListEntries", () => {
     );
     expect(entries).toEqual([
       {
+        kind: "row",
         key: "solo",
         hiddenAt: "2026-08-01T11:00:00.000Z",
         title: "Title solo",
@@ -29,6 +30,7 @@ describe("hiddenListEntries", () => {
         sessionId: "session-solo",
       },
       {
+        kind: "row",
         key: "workspace:a",
         hiddenAt: "2026-08-01T09:00:00.000Z",
         title: "Title workspace:a",
@@ -46,6 +48,36 @@ describe("hiddenListEntries", () => {
       { "workspace:b": "2026-08-01T10:00:00.000Z" },
     );
     expect(entries.map((entry) => entry.key)).toEqual(["workspace:b"]);
+  });
+
+  test("lists hidden repositories beside rows, in hide order", () => {
+    const entries = hiddenListEntries(
+      [row("workspace:a")],
+      {
+        "workspace:a": "2026-08-01T09:00:00.000Z",
+        "repo:acme/api": "2026-08-01T12:00:00.000Z",
+      },
+      ["acme/web", "acme/api"],
+    );
+    expect(entries).toEqual([
+      {
+        kind: "repo",
+        key: "repo:acme/api",
+        hiddenAt: "2026-08-01T12:00:00.000Z",
+        repo: "acme/api",
+      },
+      expect.objectContaining({ kind: "row", key: "workspace:a" }),
+    ]);
+  });
+
+  // A repository that left the sidebar's list (unregistered, no work left in
+  // it) is stale, the same as an archived row.
+  test("leaves out hidden repositories the sidebar no longer knows", () => {
+    expect(
+      hiddenListEntries([], { "repo:acme/gone": "2026-08-01T12:00:00.000Z" }, [
+        "acme/web",
+      ]),
+    ).toEqual([]);
   });
 
   // Hides whose work was archived or deleted never come back from the server,
@@ -67,4 +99,6 @@ test("hiddenRowsSignature ignores key order and values", () => {
     }),
   ).toBe(hiddenRowsSignature({ a: "x", b: "y" }));
   expect(hiddenRowsSignature({})).toBe("");
+  // Repository hides need no server answer, so they don't trigger a refetch.
+  expect(hiddenRowsSignature({ "repo:acme/web": "x" })).toBe("");
 });

@@ -8,10 +8,15 @@
  * session was archived or deleted resolves to nothing and is left out, so the
  * list never offers to restore something that is gone. The stored entry is
  * left alone: it is harmless, and a read is not the place to write.
+ *
+ * `repo:<id>` keys hide a whole repository band. They are not rows, so they are
+ * skipped here; the client names them from its own repository list.
  */
 
 import type { Hides } from "./hides";
 import type { UnifiedSession } from "./types";
+
+const REPO_HIDE_PREFIX = "repo:";
 
 export interface HiddenRow {
   /** The hide key, exactly as stored. */
@@ -86,6 +91,7 @@ export function resolveHiddenRows(
 
   const rows: HiddenRow[] = [];
   for (const [key, hiddenAt] of Object.entries(hides)) {
+    if (key.startsWith(REPO_HIDE_PREFIX)) continue;
     if (key.startsWith("workspace:")) {
       const id = key.slice("workspace:".length);
       const members = byWorkspace.get(id);

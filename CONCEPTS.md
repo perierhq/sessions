@@ -46,6 +46,12 @@ And a third — _what starts or coordinates work when you are not there_:
 A project is a source of work. It gets its own band in the sidebar, and the
 things inside it become workspaces.
 
+You can hide a repository's band from your own sidebar, from the band's
+right-click menu or the switch beside it in Customize sidebar. Its workspaces
+leave your sidebar like hidden rows do: the open session stays, a workspace
+blocked on a question still shows, and the repository is listed under Hidden
+until you restore it. Starting a new session in it restores it.
+
 There are two kinds, and the difference is only where the work comes from:
 
 **Repository projects** are git checkouts on the host that you registered.

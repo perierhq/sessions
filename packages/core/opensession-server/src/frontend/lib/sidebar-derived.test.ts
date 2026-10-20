@@ -18,6 +18,7 @@ import {
   sortSidebarSessions,
   supportThreadFromFeedItem,
 } from "./sidebar-derived";
+import { hiddenRepos, partitionHiddenRepos } from "./hides";
 
 function session(
   id: string,
@@ -195,6 +196,67 @@ describe("sidebar derived data", () => {
       snoozedRows: [{ key: "repo-a-snoozed" }],
     });
     expect(projects.canReorder).toBe(true);
+  });
+
+  // A hidden repository's band goes, except for what a hide must never
+  // swallow: the open session's row and rows blocked on a question. The band
+  // then shows with only those rows.
+  test("hidden repositories leave the bands, keeping blocked and open rows", () => {
+    const repoOf = (candidate: WsRow) => candidate.key.split("/")[0]!;
+    const blocked = {
+      ...row("repo-a/blocked", "jaap"),
+      status: "needsinput" as const,
+    };
+    const open = row("repo-a/open", "jaap");
+    const idle = row("repo-a/idle", "jaap");
+    const quiet = row("repo-c/quiet", "jaap");
+    const other = row("repo-b/other", "jaap");
+    const all = [blocked, open, idle, quiet, other];
+    const hidden = hiddenRepos({
+      "repo:repo-a": "2026-08-18T10:00:00.000Z",
+      "repo:repo-c": "2026-08-18T10:00:00.000Z",
+      "repo:repo-d": "2026-08-18T10:00:00.000Z",
+    });
+    const hiddenKeys = partitionHiddenRepos(
+      all,
+      hidden,
+      repoOf,
+      (candidate) => candidate.key === open.key,
+    );
+    expect([...hiddenKeys].sort()).toEqual(["repo-a/idle", "repo-c/quiet"]);
+
+    const projects = deriveSidebarProjectBands({
+      activeRows: all.filter((candidate) => !hiddenKeys.has(candidate.key)),
+      snoozedRows: [],
+      needsReviewRows: [],
+      approvedRows: [],
+      awaitingReviewRows: [],
+      lanePrItems: [],
+      requestedPrItems: [],
+      // repo-d is registered but empty; hidden, it earns no empty band.
+      registeredRepos: ["repo-a", "repo-b", "repo-c", "repo-d"],
+      repos: ["repo-a", "repo-b", "repo-c", "repo-d"],
+      savedRepoOrder: [],
+      filter: filter(),
+      search: "",
+      isPhone: false,
+      askBand: "__ask__",
+      rowIsFeedOnly: () => false,
+      rowIsScratch: () => false,
+      rowIsAsk: () => false,
+      workspaceRepo: repoOf,
+      hiddenRepos: hidden,
+    });
+    expect(
+      projects.bands.map((band) => [
+        band.repo,
+        band.rows.map(({ key }) => key),
+      ]),
+    ).toEqual([
+      ["repo-a", ["repo-a/blocked", "repo-a/open"]],
+      ["repo-b", ["repo-b/other"]],
+    ]);
+    expect(projects.bands[0]?.urgent).toBe(1);
   });
 
   test("keeps the selected session visible through repo and search filters", () => {

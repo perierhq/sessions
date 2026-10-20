@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { isHiddenForSession, partitionHidden } from "./hides";
+import {
+  hiddenRepos,
+  isHiddenForSession,
+  partitionHidden,
+  partitionHiddenRepos,
+  repoFromHideKey,
+  repoHideKey,
+} from "./hides";
 
 const row = (key: string, status: string) => ({ key, status });
 
@@ -81,5 +88,76 @@ describe("isHiddenForSession", () => {
         { "workspace:other": "2026-08-12T10:00:00.000Z" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("repository hides", () => {
+  const repoRow = (key: string, status: string, repo: string | null) => ({
+    key,
+    status,
+    repo,
+  });
+  const repoOf = (r: { repo: string | null }) => r.repo;
+  const AT = "2026-07-31T10:00:00.000Z";
+
+  test("a repo key round-trips and row keys are not repos", () => {
+    expect(repoHideKey("acme/web")).toBe("repo:acme/web");
+    expect(repoFromHideKey("repo:acme/web")).toBe("acme/web");
+    expect(repoFromHideKey("workspace:a")).toBeNull();
+    expect(repoFromHideKey("repo:")).toBeNull();
+  });
+
+  test("hiddenRepos reads repo keys and leaves out the filtered repo", () => {
+    const hides = {
+      "repo:acme/web": AT,
+      "repo:acme/api": AT,
+      "workspace:a": AT,
+    };
+    expect([...hiddenRepos(hides)].sort()).toEqual(["acme/api", "acme/web"]);
+    // Filtering the sidebar to a hidden repo is asking to see it.
+    expect([...hiddenRepos(hides, "acme/web")]).toEqual(["acme/api"]);
+  });
+
+  test("hides every row of a hidden repo and nothing else", () => {
+    const hidden = partitionHiddenRepos(
+      [
+        repoRow("workspace:a", "inprogress", "acme/web"),
+        repoRow("workspace:b", "pending", "acme/web"),
+        repoRow("workspace:c", "pending", "acme/api"),
+        // Scratch and feed rows file under no repository band.
+        repoRow("workspace:d", "pending", null),
+      ],
+      new Set(["acme/web"]),
+      repoOf,
+      () => false,
+    );
+    expect([...hidden]).toEqual(["workspace:a", "workspace:b"]);
+  });
+
+  // The same safety net as a row hide: a hide must never swallow work that
+  // needs you. Unlike a row hide nothing is consumed; the repo stays hidden.
+  test("keeps rows blocked on a question and the open row", () => {
+    const hidden = partitionHiddenRepos(
+      [
+        repoRow("workspace:blocked", "needsinput", "acme/web"),
+        repoRow("workspace:open", "pending", "acme/web"),
+        repoRow("workspace:idle", "pending", "acme/web"),
+      ],
+      new Set(["acme/web"]),
+      repoOf,
+      (r) => r.key === "workspace:open",
+    );
+    expect([...hidden]).toEqual(["workspace:idle"]);
+  });
+
+  test("hides nothing when no repo is hidden", () => {
+    expect(
+      partitionHiddenRepos(
+        [repoRow("workspace:a", "pending", "acme/web")],
+        new Set(),
+        repoOf,
+        () => false,
+      ).size,
+    ).toBe(0);
   });
 });

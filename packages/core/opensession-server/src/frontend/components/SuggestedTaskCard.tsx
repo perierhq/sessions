@@ -5,6 +5,7 @@ import {
 } from "@tellahq/opensession-protocol/tool-presentation";
 import { NavigationContext } from "../hooks/useNavigation";
 import { createSessionApi } from "../lib/api";
+import { unhideRepo } from "../lib/hides";
 import { BASE_PATH } from "../lib/base";
 import { TOOL_CODE_WELL, TOOL_PRE } from "../lib/tool-classes";
 import { Button } from "../ui/button";
@@ -63,6 +64,8 @@ export function SuggestedTaskCard({
         user: getCurrentUser(),
         requestId: requestIdRef.current,
       });
+      // Starting work in a repo you hid restores it (lib/hides.ts).
+      if (task.repo) unhideRepo(task.repo);
       onStarted?.();
       navigation.openSession(id);
       return;

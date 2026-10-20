@@ -19,6 +19,16 @@
 // hide outright (`unhideForSession`): you can't be done with work you're
 // actively doing.
 //
+// A whole repository band can be hidden too, under `repo:<id>` in the same
+// map (row menu on the band header, or the switch in Customize sidebar). Its
+// rows leave your sidebar like hidden rows do, with the same guarantees: the
+// open session's row stays, and a row blocked on a question still shows, in
+// its band with only those rows. Unlike a row hide, a blocked row does NOT
+// consume the repo hide; the rest of the repo stays hidden. Starting a new
+// session in a hidden repo restores it (`unhideRepo`), since you are clearly
+// working there again. The Hidden list offers repos too; opening one filters
+// the sidebar to that repo, which shows its band without restoring it.
+//
 // A hide is otherwise sticky (unlike a snooze, it has no expiry), with one
 // exception the Sidebar applies: a hidden row resurfaces while any of its sessions
 // is blocked on a question, and the entry is consumed when that happens — so a
@@ -128,4 +138,77 @@ export function partitionHidden<T extends { key: string; status: string }>(
     else hiddenKeys.add(row.key);
   }
   return { hiddenKeys, resurfaced };
+}
+
+// ── Repository hides ─────────────────────────────────────────────────────
+
+const REPO_HIDE_PREFIX = "repo:";
+
+/** The hides key that hides a whole repository band. */
+export function repoHideKey(repo: string): string {
+  return `${REPO_HIDE_PREFIX}${repo}`;
+}
+
+/** The repo a `repo:<id>` key hides, or null for a row key. */
+export function repoFromHideKey(key: string): string | null {
+  return key.startsWith(REPO_HIDE_PREFIX)
+    ? key.slice(REPO_HIDE_PREFIX.length) || null
+    : null;
+}
+
+/**
+ * The repositories hidden in a hides map. `shown` is a repo to leave out of
+ * the set: the sidebar's own repo filter, because a filter that names a hidden
+ * repo is the person asking to see it.
+ */
+export function hiddenRepos(
+  hides: Record<string, string>,
+  shown: string | null = null,
+): Set<string> {
+  const repos = new Set<string>();
+  for (const key of Object.keys(hides)) {
+    const repo = repoFromHideKey(key);
+    if (repo && repo !== shown) repos.add(repo);
+  }
+  return repos;
+}
+
+export function hideRepo(repo: string): void {
+  setHide(repoHideKey(repo));
+}
+
+/**
+ * Restore a hidden repository. Also called when you start a session in one:
+ * the new session would otherwise land somewhere you cannot see it, which is
+ * the repo-level version of `unhideForSession`.
+ */
+export function unhideRepo(repo: string): void {
+  clearHides([repoHideKey(repo)]);
+}
+
+/**
+ * The keys of rows a hidden repository takes off the sidebar. Two rows stay
+ * whatever their repo: the one holding the open session, and any blocked on a
+ * question, so a repo hide can never swallow work that needs you. Neither
+ * consumes the hide (unlike `partitionHidden`): the rest of the repo stays
+ * hidden, and the band shows with only those rows.
+ *
+ * `repoOf` returns null for rows that file under no repository band (scratch
+ * and feed rows), which a repo hide never touches.
+ */
+export function partitionHiddenRepos<T extends { key: string; status: string }>(
+  rows: T[],
+  repos: ReadonlySet<string>,
+  repoOf: (row: T) => string | null,
+  isOpen: (row: T) => boolean,
+): Set<string> {
+  const hiddenKeys = new Set<string>();
+  if (repos.size === 0) return hiddenKeys;
+  for (const row of rows) {
+    const repo = repoOf(row);
+    if (!repo || !repos.has(repo)) continue;
+    if (row.status === "needsinput" || isOpen(row)) continue;
+    hiddenKeys.add(row.key);
+  }
+  return hiddenKeys;
 }

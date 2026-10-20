@@ -97,6 +97,17 @@ describe("resolveHiddenRows", () => {
     expect(row).toMatchObject({ title: "Title a", repo: "acme/web" });
   });
 
+  // Repository hides share the map but are not rows; the client names them.
+  test("skips repository keys, even one spelled like a session id", () => {
+    expect(
+      resolveHiddenRows(
+        { "repo:acme/web": "2026-08-18T10:00:00.000Z" },
+        [session("repo:acme/web")],
+        new Map(),
+      ),
+    ).toEqual([]);
+  });
+
   test("finds a session hidden under one of its alias ids", () => {
     const [row] = resolveHiddenRows(
       { "old-id": "2026-08-18T10:00:00.000Z" },

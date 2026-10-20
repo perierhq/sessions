@@ -149,6 +149,8 @@ export function SidebarCustomizeDialog({
   onOpenChange,
   tools,
   repositories,
+  hiddenRepositories,
+  onRepositoryShownChange,
   onToolOrderChange,
   onRepositoryOrderChange,
 }: {
@@ -161,25 +163,35 @@ export function SidebarCustomizeDialog({
     }
   >;
   repositories: string[];
+  /** Repositories hidden from your sidebar (lib/hides.ts `repo:<id>`). */
+  hiddenRepositories: ReadonlySet<string>;
+  onRepositoryShownChange: (repo: string, shown: boolean) => void;
   onToolOrderChange: (order: SidebarToolId[]) => void;
   onRepositoryOrderChange: (order: string[]) => void;
 }) {
   const isPhone = useIsPhone();
+  // The same switch for a tool and a repository, so the two sections read as
+  // one list of things the sidebar shows.
+  const shownSwitch = (
+    label: string,
+    shown: boolean,
+    onShownChange: (shown: boolean) => void,
+  ) => (
+    <Switch
+      size="sm"
+      className="phone:after:absolute phone:after:inset-x-0 phone:after:-inset-y-3 phone:after:content-['']"
+      checked={shown}
+      onCheckedChange={onShownChange}
+      aria-label={`${shown ? "Hide" : "Show"} ${label} in sidebar`}
+    />
+  );
   const sections = (
     <>
       <OrderSection
         label="Tools"
         items={tools.map((tool) => ({
           ...tool,
-          action: (
-            <Switch
-              size="sm"
-              className="phone:after:absolute phone:after:inset-x-0 phone:after:-inset-y-3 phone:after:content-['']"
-              checked={tool.shown}
-              onCheckedChange={tool.onShownChange}
-              aria-label={`${tool.shown ? "Hide" : "Show"} ${tool.label} in sidebar`}
-            />
-          ),
+          action: shownSwitch(tool.label, tool.shown, tool.onShownChange),
         }))}
         onCommit={onToolOrderChange}
       />
@@ -189,6 +201,11 @@ export function SidebarCustomizeDialog({
           id: repo,
           label: repoLabel(repo),
           icon: <RepoTile name={repo} size={20} />,
+          action: shownSwitch(
+            repoLabel(repo),
+            !hiddenRepositories.has(repo),
+            (shown) => onRepositoryShownChange(repo, shown),
+          ),
         }))}
         onCommit={onRepositoryOrderChange}
       />

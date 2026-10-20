@@ -14,8 +14,12 @@ import { useAutomationOverview } from "../lib/automation-overview";
 import {
   clearHides,
   getHides,
+  hiddenRepos,
+  hideRepo,
   onHidesChanged,
   partitionHidden,
+  partitionHiddenRepos,
+  unhideRepo,
 } from "../lib/hides";
 import { hiddenListEntries } from "../lib/hidden-list";
 import { getLane, getLanes, onLanesChanged } from "../lib/lanes";
@@ -499,6 +503,23 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     automationOverview,
   });
 
+  const feedRefKinds = new Set(feeds.map((feed) => feed.refKind));
+  const rowIsFeedOnly = (row: WsRow) =>
+    workspaceRowIsFeedOnly(row, feedRefKinds);
+  const rowIsScratch = (row: WsRow) => isScratchWorkspace(row.sessions);
+  // Repo-less Ask workspaces get their own band above the projects. Checked
+  // BEFORE wsRowRepo's fallbacks, which would otherwise file them under the
+  // default project (lib/session-repo).
+  const rowIsAsk = (row: WsRow) => isAskWorkspace(row.sessions);
+  // The project band a row files under, or null for rows outside every
+  // repository band (feed and scratch rows). Mirrors deriveSidebarProjectBands.
+  const bandRepoOf = (row: WsRow): string | null =>
+    rowIsFeedOnly(row) || rowIsScratch(row)
+      ? null
+      : rowIsAsk(row)
+        ? ASK_BAND
+        : wsRowRepo(row);
+
   // ── Hidden rows ─────────────────────────────────────────────────────────
   // "Hide from my sidebar" is the personal counterpart to Archive: archiving
   // is global (archive.ts), so it's the wrong tool when a teammate is still
@@ -521,11 +542,31 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     partitionHidden(allWsRows, hides);
   // Opening a deep link must not undo a personal hide. The viewer owns the
   // recovery action while the row stays absent.
-  const wsRows = allWsRows.filter((r) => !hiddenRowKeys.has(r.key));
+  //
+  // A hidden repository (`repo:<id>`) takes its rows off the same way, with
+  // the same guarantees: the open session's row stays, and a row blocked on a
+  // question still shows, in its band with only those rows. Neither consumes
+  // the repo hide. A repo filter that names a hidden repo shows it, since that
+  // is the person asking to see it.
+  const storedHiddenRepos = hiddenRepos(hides);
+  const hiddenRepoSet = hiddenRepos(
+    hides,
+    filter.repo === "all" ? null : filter.repo,
+  );
+  const repoHiddenRowKeys = partitionHiddenRepos(
+    allWsRows,
+    hiddenRepoSet,
+    bandRepoOf,
+    rowOwnsSelection,
+  );
+  const wsRows = allWsRows.filter(
+    (r) => !hiddenRowKeys.has(r.key) && !repoHiddenRowKeys.has(r.key),
+  );
   // The Hidden list names rows the sidebar's own session list leaves out, so
   // the server resolves them (and drops any whose work is archived or gone).
+  // Hidden repos are named from the repository list instead.
   const hiddenRows = useHiddenRows(hides, currentUser);
-  const hiddenEntries = hiddenListEntries(hiddenRows.rows, hides);
+  const hiddenEntries = hiddenListEntries(hiddenRows.rows, hides, repos);
   useEffect(() => {
     setRunStartSeen((current) => {
       const next = new Map(current);
@@ -631,9 +672,6 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   // Your person key ("Kent de Bruin" → "kent") is what GitHub's reviewer
   // lists use, unlike the display name used by the Reviewer picker.
   const mePersonKey = personKey(currentUser);
-  const feedRefKinds = new Set(feeds.map((feed) => feed.refKind));
-  const rowIsFeedOnly = (row: WsRow) =>
-    workspaceRowIsFeedOnly(row, feedRefKinds);
   const { placedWsRows, autoCreatedRows } = deriveWorkspacePlacement({
     rows: wsRows,
     filter,
@@ -673,17 +711,25 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     ...awaitingReviewRows,
     ...approvedReviewRows,
   ];
-  const { reviewQueueItems, workspaceCoveredPrUrls, prRowItems } =
-    deriveSidebarPrRows({
-      openPrs: openPrs ?? [],
-      sessions,
-      currentUser,
-      githubLogin,
-      workspaceRows: workspaceRowsInView,
-      workspaceDataReady,
-      filter,
-      search,
-    });
+  const {
+    reviewQueueItems,
+    workspaceCoveredPrUrls,
+    prRowItems: allPrRowItems,
+  } = deriveSidebarPrRows({
+    openPrs: openPrs ?? [],
+    sessions,
+    currentUser,
+    githubLogin,
+    workspaceRows: workspaceRowsInView,
+    workspaceDataReady,
+    filter,
+    search,
+  });
+  // A hidden repository's PR rows go with its band. They are not rows blocked
+  // on a question, so nothing keeps them.
+  const prRowItems = allPrRowItems.filter(
+    (item) => !hiddenRepoSet.has(item.pr.repo),
+  );
 
   // Which lane a PR row files under: ready → Ready to merge, everything else
   // → Backlog. In progress is reserved for live runs — a PR that needs a
@@ -898,11 +944,6 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
       directToMainBranches,
     );
   }
-  const rowIsScratch = (row: WsRow) => isScratchWorkspace(row.sessions);
-  // Repo-less Ask workspaces get their own band above the projects. Checked
-  // BEFORE wsRowRepo's fallbacks, which would otherwise file them under the
-  // default project (lib/session-repo).
-  const rowIsAsk = (row: WsRow) => isAskWorkspace(row.sessions);
 
   const {
     automationsOpen,
@@ -1104,6 +1145,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
         rowIsScratch,
         rowIsAsk,
         workspaceRepo: wsRowRepo,
+        hiddenRepos: hiddenRepoSet,
       })
     : null;
 
@@ -1683,6 +1725,10 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
                           onOpenNewSessionInRepo={
                             navigation.openNewSessionInRepo
                           }
+                          hiddenRepos={storedHiddenRepos}
+                          onSetRepoHidden={(repo, hidden) =>
+                            hidden ? hideRepo(repo) : unhideRepo(repo)
+                          }
                           renderers={{
                             workspaceGrouping: renderWorkspaceGrouping,
                             labeledLane: renderLabeledLane,
@@ -1781,7 +1827,13 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
               <HiddenEntry
                 entries={hiddenEntries}
                 isPhone={isPhone}
-                onOpenEntry={(entry) => navigation.openSession(entry.sessionId)}
+                onOpenEntry={(entry) =>
+                  entry.kind === "repo"
+                    ? // Filtering to a hidden repo shows its band without
+                      // restoring it, the way opening a hidden row does.
+                      setFilter({ repo: entry.repo })
+                    : navigation.openSession(entry.sessionId)
+                }
                 onRestore={(entry) => clearHides([entry.key])}
                 onOpenChange={(open) => {
                   if (open) hiddenRows.refresh();
@@ -1842,6 +1894,10 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
               : setToolVisible(tool.id, shown),
         }))}
         repositories={repos}
+        hiddenRepositories={storedHiddenRepos}
+        onRepositoryShownChange={(repo, shown) =>
+          shown ? unhideRepo(repo) : hideRepo(repo)
+        }
         onToolOrderChange={(next) =>
           setSidebarToolOrder(
             replaceVisibleSidebarToolOrder(getSidebarToolOrder(), next),

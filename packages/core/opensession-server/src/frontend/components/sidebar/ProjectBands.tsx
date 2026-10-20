@@ -17,8 +17,9 @@ import {
 import type { SidebarProjectBands } from "../../lib/sidebar-derived";
 import type { WsRow } from "../../lib/sidebar-types";
 import { cn } from "../../ui/cn";
+import { ContextMenu, MENU_ICON } from "../../ui/menu";
 import { RepoTile, repoLabel } from "../RepoTile";
-import { IconChevronDown, IconEye, IconPlus } from "../icons";
+import { IconChevronDown, IconEye, IconEyeOff, IconPlus } from "../icons";
 
 interface ProjectBandRenderers {
   workspaceGrouping: (
@@ -71,6 +72,8 @@ export function ProjectBands({
   isOpen,
   onToggleGroup,
   onOpenNewSessionInRepo,
+  hiddenRepos,
+  onSetRepoHidden,
   renderers,
   selection,
   drag,
@@ -81,6 +84,10 @@ export function ProjectBands({
   isOpen: (key: string) => boolean;
   onToggleGroup: (key: string) => void;
   onOpenNewSessionInRepo: (repo: string) => void;
+  /** Repositories hidden from your sidebar. A hidden one still renders its
+   * band while it holds rows a hide must not swallow (lib/hides.ts). */
+  hiddenRepos: ReadonlySet<string>;
+  onSetRepoHidden: (repo: string, hidden: boolean) => void;
   renderers: ProjectBandRenderers;
   selection: ProjectBandSelection;
   drag: ProjectBandDrag;
@@ -152,118 +159,156 @@ export function ProjectBands({
               }}
               onClickCapture={drag.swallowClick}
             >
-              <button
-                className={cn(
-                  SIDEBAR_GROUP_HEADER,
-                  SIDEBAR_GROUP_HEADER_INSET,
-                  SIDEBAR_HEADER_ROW,
-                  "group transition-colors",
-                  SIDEBAR_STICKY_LANE,
-                  SIDEBAR_STUCK_BACKING,
-                )}
-                data-sticky-head
-                draggable={projects.canReorder && project.repo !== askBand}
-                title={
-                  projects.canReorder && project.repo !== askBand
-                    ? "Drag to reorder repositories"
-                    : undefined
-                }
-                onDragStart={(event) =>
-                  drag.start(
-                    project.repo,
-                    projects.fullOrder,
-                    projects.order,
-                    event,
-                  )
-                }
-                onDragEnd={() => drag.finish(false)}
-                onClick={() => onToggleGroup(gkey)}
+              {/* Right-click (long-press on touch) offers hiding the whole
+                  repository from your sidebar, as a feed band's header offers
+                  hiding the feed. Ask is not a repository, and a borrowed
+                  lens is someone else's sidebar, so neither gets the menu and
+                  the sidebar's own menu answers instead. */}
+              <ContextMenu.Root
+                disabled={borrowedLens || project.repo === askBand}
               >
-                {/* The rail holds the tile on the same column as every other
+                <ContextMenu.Trigger
+                  render={
+                    <button
+                      className={cn(
+                        SIDEBAR_GROUP_HEADER,
+                        SIDEBAR_GROUP_HEADER_INSET,
+                        SIDEBAR_HEADER_ROW,
+                        "group transition-colors",
+                        SIDEBAR_STICKY_LANE,
+                        SIDEBAR_STUCK_BACKING,
+                      )}
+                      data-sticky-head
+                      draggable={
+                        projects.canReorder && project.repo !== askBand
+                      }
+                      title={
+                        projects.canReorder && project.repo !== askBand
+                          ? "Drag to reorder repositories"
+                          : undefined
+                      }
+                      onDragStart={(event) =>
+                        drag.start(
+                          project.repo,
+                          projects.fullOrder,
+                          projects.order,
+                          event,
+                        )
+                      }
+                      onDragEnd={() => drag.finish(false)}
+                      onClick={() => onToggleGroup(gkey)}
+                    />
+                  }
+                >
+                  {/* The rail holds the tile on the same column as every other
                     header's mark. Ask has no repo and so has no tile. Its eye is
                     the same mark the palette and composer use for that mode, so
                     the band reads as Ask sessions rather than a project named Ask. */}
-                <span className={SIDEBAR_RAIL}>
-                  {project.repo === askBand ? (
-                    <IconEye size={16} className="text-faint" />
-                  ) : (
-                    <RepoTile
-                      name={project.repo}
-                      className={SIDEBAR_REPO_TILE}
-                    />
-                  )}
-                </span>
-                {/* The differently sized name and count share a baseline while
-                    the pair stays vertically centred against the tile. */}
-                <span className="flex min-w-0 flex-[0_1_auto] items-baseline gap-1.5 desktop:gap-[9px]">
-                  <span
-                    className={cn(
-                      SIDEBAR_GROUP_NAME,
-                      "flex-[0_1_auto] font-semibold",
+                  <span className={SIDEBAR_RAIL}>
+                    {project.repo === askBand ? (
+                      <IconEye size={16} className="text-faint" />
+                    ) : (
+                      <RepoTile
+                        name={project.repo}
+                        className={SIDEBAR_REPO_TILE}
+                      />
                     )}
-                  >
-                    {project.repo === askBand ? "Ask" : repoLabel(project.repo)}
                   </span>
-                  <span className={cn(SIDEBAR_GROUP_COUNT, "shrink-0")}>
-                    {project.rows.length +
-                      project.snoozedRows.length +
-                      project.needsReviewRows.length +
-                      project.approvedRows.length +
-                      project.awaitingReviewRows.length +
-                      project.prs.length +
-                      project.requestedPrs.length}
+                  {/* The differently sized name and count share a baseline while
+                    the pair stays vertically centred against the tile. */}
+                  <span className="flex min-w-0 flex-[0_1_auto] items-baseline gap-1.5 desktop:gap-[9px]">
+                    <span
+                      className={cn(
+                        SIDEBAR_GROUP_NAME,
+                        "flex-[0_1_auto] font-semibold",
+                      )}
+                    >
+                      {project.repo === askBand
+                        ? "Ask"
+                        : repoLabel(project.repo)}
+                    </span>
+                    <span className={cn(SIDEBAR_GROUP_COUNT, "shrink-0")}>
+                      {project.rows.length +
+                        project.snoozedRows.length +
+                        project.needsReviewRows.length +
+                        project.approvedRows.length +
+                        project.awaitingReviewRows.length +
+                        project.prs.length +
+                        project.requestedPrs.length}
+                    </span>
                   </span>
-                </span>
-                {/* Work blocked on you must not vanish into a closed band. The
+                  {/* Work blocked on you must not vanish into a closed band. The
                     header carries the count of rows waiting for input and of
                     reviews being asked of you. */}
-                {!open && project.urgent > 0 && (
-                  <span
-                    className={cn(SIDEBAR_ATTN_COUNT, "bg-blue")}
-                    aria-label={`${project.urgent} waiting on you`}
-                  >
-                    {project.urgent}
-                  </span>
-                )}
-                <IconChevronDown
-                  className={cn(
-                    SIDEBAR_GROUP_CHEVRON,
-                    !open && SIDEBAR_GROUP_CHEVRON_COLLAPSED,
+                  {!open && project.urgent > 0 && (
+                    <span
+                      className={cn(SIDEBAR_ATTN_COUNT, "bg-blue")}
+                      aria-label={`${project.urgent} waiting on you`}
+                    >
+                      {project.urgent}
+                    </span>
                   )}
-                  size={22}
-                  style={{ transform: open ? "none" : "rotate(-90deg)" }}
-                />
-                {/* Hover action at the far end: start a new session with this
+                  <IconChevronDown
+                    className={cn(
+                      SIDEBAR_GROUP_CHEVRON,
+                      !open && SIDEBAR_GROUP_CHEVRON_COLLAPSED,
+                    )}
+                    size={22}
+                    style={{ transform: open ? "none" : "rotate(-90deg)" }}
+                  />
+                  {/* Hover action at the far end: start a new session with this
                     repo already selected. It is a span rather than a nested
                     button. The 28px target's wash is inset by 2px because filling
                     its whole height reads as a slab. The proportion matches the
                     shared palette icon button, and corner-shape is restated on
                     the pseudo-element because it does not inherit. */}
-                {!borrowedLens && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="relative ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-faint opacity-100 transition-[opacity,color] duration-150 hover:text-fg focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100 before:absolute before:inset-0.5 before:z-0 before:rounded-sm before:[corner-shape:var(--cs)] before:transition-[background] before:content-[''] hover:before:bg-hover [&>*]:relative [&>*]:z-[1]"
-                    title={
-                      project.repo === askBand
-                        ? "New Ask session, no repo"
-                        : `New session in ${repoLabel(project.repo)}`
-                    }
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenNewSessionInRepo(project.repo);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
+                  {!borrowedLens && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="relative ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-faint opacity-100 transition-[opacity,color] duration-150 hover:text-fg focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100 before:absolute before:inset-0.5 before:z-0 before:rounded-sm before:[corner-shape:var(--cs)] before:transition-[background] before:content-[''] hover:before:bg-hover [&>*]:relative [&>*]:z-[1]"
+                      title={
+                        project.repo === askBand
+                          ? "New Ask session, no repo"
+                          : `New session in ${repoLabel(project.repo)}`
+                      }
+                      onClick={(event) => {
                         event.stopPropagation();
                         onOpenNewSessionInRepo(project.repo);
-                      }
-                    }}
-                  >
-                    <IconPlus size={20} />
-                  </span>
-                )}
-              </button>
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.stopPropagation();
+                          onOpenNewSessionInRepo(project.repo);
+                        }
+                      }}
+                    >
+                      <IconPlus size={20} />
+                    </span>
+                  )}
+                </ContextMenu.Trigger>
+                <ContextMenu.Popup>
+                  {hiddenRepos.has(project.repo) ? (
+                    <ContextMenu.Item
+                      onClick={() => onSetRepoHidden(project.repo, false)}
+                    >
+                      <IconEye size={20} className={MENU_ICON} />
+                      <span className="min-w-0 flex-1 truncate">
+                        Restore repository
+                      </span>
+                    </ContextMenu.Item>
+                  ) : (
+                    <ContextMenu.Item
+                      onClick={() => onSetRepoHidden(project.repo, true)}
+                    >
+                      <IconEyeOff size={20} className={MENU_ICON} />
+                      <span className="min-w-0 flex-1 truncate">
+                        Hide repository
+                      </span>
+                    </ContextMenu.Item>
+                  )}
+                </ContextMenu.Popup>
+              </ContextMenu.Root>
               {open ? (
                 <div className="mt-0.5">
                   {renderers.labeledLane({

@@ -616,6 +616,12 @@ interface DeriveSidebarProjectBandsInput {
   rowIsScratch: (row: WsRow) => boolean;
   rowIsAsk: (row: WsRow) => boolean;
   workspaceRepo: (row: WsRow) => string;
+  /**
+   * Repositories hidden from this person's sidebar (lib/hides.ts). Their rows
+   * are already filtered upstream down to the ones a hide must not swallow;
+   * this only keeps a hidden repo from earning an empty band.
+   */
+  hiddenRepos?: ReadonlySet<string>;
 }
 
 /** Build the rows for each project band without deciding how a row renders. */
@@ -638,6 +644,7 @@ export function deriveSidebarProjectBands({
   rowIsScratch,
   rowIsAsk,
   workspaceRepo,
+  hiddenRepos,
 }: DeriveSidebarProjectBandsInput): SidebarProjectBands {
   const byRepo = new Map<string, WsRow[]>();
   const snoozedByRepo = new Map<string, WsRow[]>();
@@ -714,6 +721,7 @@ export function deriveSidebarProjectBands({
   // because that band is what the person explicitly asked for.
   if (includesEmptyRepoBands(filter, search)) {
     for (const repo of registeredRepos) {
+      if (hiddenRepos?.has(repo)) continue;
       if (filter.repo === "all" || filter.repo === repo) present.add(repo);
     }
   }
