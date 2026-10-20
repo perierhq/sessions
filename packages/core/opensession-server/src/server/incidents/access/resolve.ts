@@ -11,6 +11,7 @@ import {
   type AccessNarrowing,
   type AccessSpawnSnapshot,
   type AgentAccess,
+  CREDENTIAL_GRANT_MODES,
   type CredentialGrantMode,
   egressRouteKey,
   grantModeWithin,
@@ -540,10 +541,12 @@ function spawnSnapshotOf(binding: IncidentAgentBinding): AccessSpawnSnapshot {
   return raw as AccessSpawnSnapshot;
 }
 
+// A mode the snapshot does not know reads as the narrowest one.
 const narrowerMode = (
   a: CredentialGrantMode,
   b: CredentialGrantMode,
-): CredentialGrantMode => (grantModeWithin(a, b) ? a : b);
+): CredentialGrantMode =>
+  !CREDENTIAL_GRANT_MODES.includes(b) ? "once" : grantModeWithin(a, b) ? a : b;
 
 /**
  * The access intersected with the spawn snapshot: hosts and credentials the

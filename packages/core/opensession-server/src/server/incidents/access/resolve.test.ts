@@ -704,6 +704,19 @@ test("a credential lent once at spawn stays once when the settings make it stand
   expect(
     (await resolveAgentAccessForBinding(onceBinding)).credentials,
   ).toMatchObject([{ credential: "kc-proxy", mode: "once" }]);
+  // A mode the snapshot does not know reads as once.
+  const oddBinding = {
+    ...binding,
+    spawn: {
+      ...binding.spawn,
+      credentials: [
+        { credential: "kc-proxy", mode: "forever" as unknown as "once" },
+      ],
+    },
+  };
+  expect(
+    (await resolveAgentAccessForBinding(oddBinding)).credentials,
+  ).toMatchObject([{ credential: "kc-proxy", mode: "once" }]);
 });
 test("a binding without a spawn snapshot reaches no host, credential or egress", async () => {
   const inc = await storedIncident();
