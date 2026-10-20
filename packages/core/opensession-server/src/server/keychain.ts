@@ -76,7 +76,11 @@ import { existsSync, readFileSync, chmodSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
-import { resolveTeammate } from "./shared/user-mappings";
+import {
+  resolveTeammate,
+  teammateByGithubLogin,
+  teammatesNamed,
+} from "./shared/user-mappings";
 import { broadcastToSession } from "./ws-hub";
 import {
   cancelAsk,
@@ -414,6 +418,24 @@ function ownerName(user: string): string {
 
 function sameOwner(a: string, b: string): boolean {
   return norm(ownerName(a)) === norm(ownerName(b));
+}
+
+/**
+ * Whether a verified GitHub login is a credential's owner: the login names
+ * exactly one roster member and the stored owner names that same member and
+ * nobody else. Stricter than sameOwner, which compares roster names: an
+ * owner name two teammates share (a first name) names no one here, and a
+ * name is never accepted in place of the login. Used where a credential
+ * leaves the owner's hands without a per-use ask (incident agent grants).
+ */
+export function isCredentialOwnerLogin(
+  login: string | null | undefined,
+  owner: string,
+): boolean {
+  const lender = teammateByGithubLogin(login);
+  if (!lender) return false;
+  const owners = teammatesNamed(owner);
+  return owners.length === 1 && owners[0] === lender;
 }
 
 // ── Credentials ──────────────────────────────────────────────────────────────

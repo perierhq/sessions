@@ -16,7 +16,7 @@ import {
 
 const kit = useIncidentTestKernel();
 useAccessTestEnv();
-const ada = { name: "Ada", verified: true };
+const ada = { name: "Ada", login: "ada", verified: true };
 const grantsWith = (over: Partial<ProjectAccessGrants>) => ({
   ...defaultProjectGrants("acme"),
   ...over,
@@ -60,7 +60,7 @@ test("grants then profile: revisions, audit with field names only", async () => 
         credentials: [{ credential: "kc-proxy", mode: "once" }],
       },
     },
-    { name: "Bo", verified: true },
+    { name: "Bo", login: "bo", verified: true },
     { expectedRevision: 1 },
   );
   expect(p).toMatchObject({

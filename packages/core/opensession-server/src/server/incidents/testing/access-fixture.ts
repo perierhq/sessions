@@ -11,8 +11,10 @@ import {
   type AccessRunnerInfo,
   type ConnectionStatus,
   __setAccessEnvironmentForTest,
-  sameOwnerName,
+  isOwnerLogin,
 } from "../access/environment";
+import type { TeamMember } from "../../config";
+import { __setIdentitiesForTest } from "../../shared/user-mappings";
 
 export interface StaticAccessSpec {
   projects?: string[];
@@ -44,7 +46,7 @@ export function staticAccessEnvironment(
       const value = id.trim().toLowerCase();
       return (spec.models ?? []).find((m) => m.toLowerCase() === value) ?? null;
     },
-    sameOwner: sameOwnerName,
+    isOwner: isOwnerLogin,
   };
 }
 
@@ -111,9 +113,17 @@ export function defaultAccessSpec(): Required<StaticAccessSpec> {
   };
 }
 
+/** The roster the fixture installs: credential owners "Ada" and "Bo". */
+export const ACCESS_TEST_ROSTER: TeamMember[] = [
+  { name: "Ada Lovelace", github: "ada" },
+  { name: "Bo Example", github: "bo" },
+];
+
 export function useAccessTestEnv(): { spec: Required<StaticAccessSpec> } {
   const holder = { spec: defaultAccessSpec() };
+  let restoreRoster: (() => void) | undefined;
   beforeEach(() => {
+    restoreRoster = __setIdentitiesForTest(ACCESS_TEST_ROSTER);
     const fresh = defaultAccessSpec();
     for (const key of Object.keys(fresh) as Array<keyof typeof fresh>)
       (holder.spec as Record<string, unknown>)[key] = fresh[key];
@@ -121,6 +131,8 @@ export function useAccessTestEnv(): { spec: Required<StaticAccessSpec> } {
   });
   afterEach(() => {
     __setAccessEnvironmentForTest(undefined);
+    restoreRoster?.();
+    restoreRoster = undefined;
   });
   return holder;
 }

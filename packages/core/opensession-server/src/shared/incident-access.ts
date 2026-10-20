@@ -66,7 +66,12 @@ export function egressRouteKey(r: EgressRoute): string {
 export interface ProjectCredentialGrant {
   credential: string;
   mode: CredentialGrantMode;
+  /** Display name of who granted it. */
   grantedBy: string;
+  /** GitHub login of the verified sign-in that granted it: the identity a
+   *  personal credential's ownership is checked against. A personal grant
+   *  without it is dropped at resolution. */
+  grantedByLogin?: string;
   grantedAt: string;
 }
 

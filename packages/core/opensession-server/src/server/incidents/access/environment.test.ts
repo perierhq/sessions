@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addCredentialAsync } from "../../keychain";
 import { listRunnersAsync } from "../../runners";
+import { __setIdentitiesForTest } from "../../shared/user-mappings";
 import { staticAccessEnvironment } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
@@ -99,7 +100,30 @@ test("runners and credentials, never a secret", async () => {
     injectionHeader: "Authorization",
   });
   expect(JSON.stringify(cred)).not.toContain("s3cret");
-  expect(env.sameOwner("ada", "Ada Lovelace")).toBe(true);
+});
+test("ownership compares roster identities, never first names", async () => {
+  const restore = __setIdentitiesForTest([
+    { name: "Ada Lovelace", github: "ada", slackId: "U0ADALOVE" },
+    { name: "Ada Byron", github: "ada-byron" },
+    { name: "Bo Example", github: "bo" },
+  ]);
+  try {
+    const env = await loadAccessEnvironment();
+    // The owner names one teammate; the login is that teammate's.
+    expect(env.isOwner("ada", "Ada Lovelace")).toBe(true);
+    expect(env.isOwner("ADA", "U0ADALOVE")).toBe(true);
+    expect(env.isOwner("bo", "Bo")).toBe(true);
+    // A shared first name is not a match, and names nobody when ambiguous.
+    expect(env.isOwner("ada-byron", "Ada Lovelace")).toBe(false);
+    expect(env.isOwner("ada", "Ada")).toBe(false);
+    expect(env.isOwner("ada-byron", "Ada")).toBe(false);
+    // A login is the only identity accepted for the lender.
+    expect(env.isOwner("Ada Lovelace", "Ada Lovelace")).toBe(false);
+    expect(env.isOwner("", "Bo")).toBe(false);
+    expect(env.isOwner("stranger", "stranger")).toBe(false);
+  } finally {
+    restore();
+  }
 });
 test("an unreadable MCP config means no connections", async () => {
   await writeFile(process.env.OPENSESSION_MCP_CONFIG!, "{not json");

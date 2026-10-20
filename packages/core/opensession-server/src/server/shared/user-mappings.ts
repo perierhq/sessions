@@ -121,6 +121,36 @@ export function resolveTeammate(
   return null;
 }
 
+/**
+ * Every roster member a reference names: a GitHub login, a Slack id, an
+ * email, the full name, an alias or the first name. More than one member
+ * means the reference is ambiguous (two teammates can share a first name),
+ * and callers deciding who someone is must treat that as no one.
+ */
+export function teammatesNamed(ref?: string | null): TeamMember[] {
+  const key = (ref ?? "").trim().replace(/^@/, "").toLowerCase();
+  if (!key) return [];
+  return identity.team.filter(
+    (m) =>
+      m.github?.toLowerCase() === key ||
+      m.slackId?.toLowerCase() === key ||
+      m.email?.toLowerCase() === key ||
+      m.name.toLowerCase() === key ||
+      (m.aliases ?? []).some((a) => a.toLowerCase() === key) ||
+      m.name.toLowerCase().split(/\s+/)[0] === key,
+  );
+}
+
+/** The one roster member with this GitHub login, or null. */
+export function teammateByGithubLogin(
+  login?: string | null,
+): TeamMember | null {
+  const key = (login ?? "").trim().toLowerCase();
+  if (!key) return null;
+  const found = identity.team.filter((m) => m.github?.toLowerCase() === key);
+  return found.length === 1 ? found[0] : null;
+}
+
 export function githubUsernameToSlackId(username: string): string | null {
   return GITHUB_TO_SLACK[username] || null;
 }

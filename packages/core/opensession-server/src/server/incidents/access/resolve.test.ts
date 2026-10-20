@@ -5,6 +5,7 @@ import {
 } from "../../../shared/incident-access";
 import type { Incident, Signal } from "../../../shared/incidents";
 import { catalogDocuments } from "../../catalog-documents";
+import { __setIdentitiesForTest } from "../../shared/user-mappings";
 import { createIncident } from "../incident-store";
 import { createSignal } from "../signal-store";
 import { useAccessTestEnv } from "../testing/access-fixture";
@@ -59,6 +60,7 @@ const settings = (): IncidentAccessSettings => {
         credential: "kc-proxy",
         mode: "standing",
         grantedBy: "Ada",
+        grantedByLogin: "ada",
         grantedAt: "x",
       },
     ],
@@ -230,6 +232,7 @@ test("live state narrows instead of failing, and each narrowing is audited once"
 test("a personal credential granted by someone else is dropped", async () => {
   const s = settings();
   s.grants.credentials[0].grantedBy = "Bo";
+  s.grants.credentials[0].grantedByLogin = "bo";
   expect(
     (
       await resolveAgentAccess("investigator", incident(), signal, {
@@ -241,6 +244,46 @@ test("a personal credential granted by someone else is dropped", async () => {
     item: "kc-proxy",
     reason: "Credential is personal and was not granted by its owner",
   });
+});
+test.each([
+  ["without the granting login", { grantedByLogin: undefined }],
+  [
+    "by a teammate who shares the owner's first name",
+    { grantedByLogin: "ada-byron" },
+  ],
+])("a personal credential granted %s is dropped", async (_label, over) => {
+  __setIdentitiesForTest([
+    { name: "Ada Lovelace", github: "ada" },
+    { name: "Ada Byron", github: "ada-byron" },
+  ]);
+  t.spec.credentials[0].owner = "Ada Lovelace";
+  const s = settings();
+  Object.assign(s.grants.credentials[0], over);
+  const access = await resolveAgentAccess("investigator", incident(), signal, {
+    settings: s,
+  });
+  expect(access.credentials).toEqual([]);
+  expect(access.narrowed).toContainEqual({
+    field: "credentials",
+    item: "kc-proxy",
+    reason: "Credential is personal and was not granted by its owner",
+  });
+});
+test("a personal credential whose owner name two teammates share is dropped", async () => {
+  __setIdentitiesForTest([
+    { name: "Ada Lovelace", github: "ada" },
+    { name: "Ada Byron", github: "ada-byron" },
+  ]);
+  const access = await resolveAgentAccess("investigator", incident(), signal, {
+    settings: settings(),
+  });
+  expect(access.credentials).toEqual([]);
+});
+test("the owner's own grant survives", async () => {
+  const access = await resolveAgentAccess("investigator", incident(), signal, {
+    settings: settings(),
+  });
+  expect(access.credentials.map((c) => c.credential)).toEqual(["kc-proxy"]);
 });
 test("settings beyond their grants fail closed", async () => {
   const s = settings();

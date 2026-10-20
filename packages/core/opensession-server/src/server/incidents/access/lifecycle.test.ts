@@ -18,7 +18,7 @@ const { startIncidentAccess, __incidentAccessIdleForTest } =
 
 useIncidentTestKernel();
 const t = useAccessTestEnv();
-const ada = { name: "Ada", verified: true };
+const ada = { name: "Ada", login: "ada", verified: true };
 
 function reset(): void {
   if (existsSync(STORE)) rmSync(STORE);

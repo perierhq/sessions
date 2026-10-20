@@ -632,7 +632,9 @@ function parseStoredGrants(
     if (!isPlainObject(item))
       return { error: `Field "${p}" must be an object` };
     const keys = ["credential", "mode", "grantedBy", "grantedAt"] as const;
-    const badKey = unknownKey(item, keys, null, { path: p });
+    const badKey = unknownKey(item, [...keys, "grantedByLogin"], null, {
+      path: p,
+    });
     if (badKey) return { error: badKey };
     const miss = missingKey(item, keys, p);
     if (miss) return { error: miss };
@@ -644,9 +646,21 @@ function parseStoredGrants(
     if (isFieldError(grantedBy)) return grantedBy;
     const grantedAt = str(item.grantedAt, at(p, "grantedAt"));
     if (isFieldError(grantedAt)) return grantedAt;
+    let grantedByLogin: string | undefined;
+    if (item.grantedByLogin !== undefined) {
+      const login = str(item.grantedByLogin, at(p, "grantedByLogin"));
+      if (isFieldError(login)) return login;
+      grantedByLogin = login;
+    }
     if (credentials.some((c) => c.credential === credential))
       return { error: `${p}: Credential "${credential}" is listed twice` };
-    credentials.push({ credential, mode, grantedBy, grantedAt });
+    credentials.push({
+      credential,
+      mode,
+      grantedBy,
+      ...(grantedByLogin !== undefined ? { grantedByLogin } : {}),
+      grantedAt,
+    });
   }
   const egress = parseEgressGrants(v.egress, { path: at(path, "egress") });
   if (isFieldError(egress)) return prefixed(at(path, "egress"), egress);

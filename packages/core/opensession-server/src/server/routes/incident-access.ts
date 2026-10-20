@@ -43,9 +43,11 @@ export function accessActor(
   ctx: RouteContext,
   body?: Record<string, unknown>,
 ): AccessActor {
+  const verified = verifiedPerson(ctx) !== "";
   return {
     name: requestUser(ctx, body?.user) || "Anonymous",
-    verified: verifiedPerson(ctx) !== "",
+    verified,
+    ...(verified && ctx.authUser?.login ? { login: ctx.authUser.login } : {}),
   };
 }
 

@@ -30,6 +30,9 @@ export interface AccessActor {
   name: string;
   /** A GitHub web sign-in, not a claimed name. */
   verified: boolean;
+  /** The verified sign-in's GitHub login; lending a personal credential
+   *  is checked against it, never against `name`. */
+  login?: string;
 }
 
 export interface CredentialGrantChange {
@@ -91,7 +94,7 @@ export function validateGrants(
     // grantedBy and grantedAt are stamped here, never taken from the caller.
     const badKey = unknownKey(
       entry,
-      ["credential", "mode", "grantedBy", "grantedAt"],
+      ["credential", "mode", "grantedBy", "grantedByLogin", "grantedAt"],
       "credential",
       {},
     );
@@ -109,23 +112,26 @@ export function validateGrants(
         credential: id,
         mode,
         grantedBy: previous.grantedBy,
+        ...(previous.grantedByLogin !== undefined
+          ? { grantedByLogin: previous.grantedByLogin }
+          : {}),
         grantedAt: previous.grantedAt,
       });
       continue;
     }
     const info = env.credential(id);
     if (!info) return { error: `Unknown credential "${id}"` };
-    if (info.scope === "personal") {
-      if (!ctx.actor.verified) return { error: SIGN_IN };
-      if (!env.sameOwner(ctx.actor.name, info.owner))
-        return {
-          error: `Only ${info.owner} can grant ${info.service} to incident agents`,
-        };
-    } else if (!ctx.actor.verified) return { error: SIGN_IN };
+    const login = ctx.actor.verified ? ctx.actor.login?.trim() : undefined;
+    if (!login) return { error: SIGN_IN };
+    if (info.scope === "personal" && !env.isOwner(login, info.owner))
+      return {
+        error: `Only ${info.owner} can grant ${info.service} to incident agents`,
+      };
     credentials.push({
       credential: id,
       mode,
       grantedBy: ctx.actor.name,
+      grantedByLogin: login,
       grantedAt: ctx.now,
     });
     changes.push({

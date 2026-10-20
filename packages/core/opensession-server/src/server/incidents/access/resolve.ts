@@ -325,7 +325,10 @@ export async function resolveAgentAccess(
         : info.kind === "login"
           ? "Credential is a login"
           : info.scope === "personal" &&
-              !(grant && env.sameOwner(grant.grantedBy, info.owner))
+              !(
+                grant?.grantedByLogin &&
+                env.isOwner(grant.grantedByLogin, info.owner)
+              )
             ? "Credential is personal and was not granted by its owner"
             : null;
     if (reason || !info) {

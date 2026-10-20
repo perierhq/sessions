@@ -5,12 +5,15 @@
 import { readFile } from "node:fs/promises";
 import { configuredPaths, configuredRepos } from "../../config";
 import { requiresAllowedUsers } from "../../connections";
-import { ensureKeychainLoaded, listCredentials } from "../../keychain";
+import {
+  ensureKeychainLoaded,
+  isCredentialOwnerLogin,
+  listCredentials,
+} from "../../keychain";
 import { INTERNAL_MCP_CAPABILITIES } from "../../mcp-capabilities";
 import { resolveModel } from "../../models";
 import { isRunnerConnected } from "../../runner-ws";
 import { listRunnersAsync } from "../../runners";
-import { resolveTeammate } from "../../shared/user-mappings";
 
 export type ConnectionStatus = "ok" | "missing" | "internal" | "user-gated";
 
@@ -46,7 +49,9 @@ export interface AccessEnvironment {
   credential(idOrService: string): AccessCredentialInfo | null;
   /** The canonical model id, or null when unknown. */
   model(id: string): string | null;
-  sameOwner(a: string, b: string): boolean;
+  /** Whether the verified GitHub login is the credential owner's: stable
+   *  roster identities, never first names (see isCredentialOwnerLogin). */
+  isOwner(login: string, owner: string): boolean;
 }
 
 let override: AccessEnvironment | undefined;
@@ -58,15 +63,8 @@ export function __setAccessEnvironmentForTest(
   override = env;
 }
 
-/** Roster first name, lower-cased: identities are first names here. */
-function firstName(name: string): string {
-  const resolved = resolveTeammate(name)?.name || name.trim();
-  return (resolved.split(/\s+/)[0] ?? "").toLowerCase();
-}
-
-export function sameOwnerName(a: string, b: string): boolean {
-  const x = firstName(a);
-  return x !== "" && x === firstName(b);
+export function isOwnerLogin(login: string, owner: string): boolean {
+  return isCredentialOwnerLogin(login, owner);
 }
 
 export function connectionStatusFrom(
@@ -142,6 +140,6 @@ export async function loadAccessEnvironment(): Promise<AccessEnvironment> {
       credentials.find((c) => c.service === ref.trim().toLowerCase()) ??
       null,
     model: (id) => resolveModel(id)?.id ?? null,
-    sameOwner: sameOwnerName,
+    isOwner: isOwnerLogin,
   };
 }
