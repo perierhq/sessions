@@ -339,3 +339,21 @@ export function isTerminalIncidentState(s: IncidentState): boolean {
 export function isOpenIncident(i: Pick<Incident, "state">): boolean {
   return !isTerminalIncidentState(i.state);
 }
+
+const HOUR_MS = 3_600_000;
+const DEFAULT_INTERVAL_MS = { http: 60_000, expiry: 6 * HOUR_MS } as const;
+
+/** How often a signal is expected to produce an observation. */
+export function stripIntervalMs(
+  signal: Pick<Signal, "source" | "rule" | "intervalMs">,
+): number {
+  switch (signal.source.kind) {
+    case "http":
+    case "expiry":
+      return signal.intervalMs ?? DEFAULT_INTERVAL_MS[signal.source.kind];
+    case "heartbeat":
+      return (signal.rule.kind === "missing" && signal.rule.everyMs) || HOUR_MS;
+    case "webhook":
+      return 60_000;
+  }
+}

@@ -6,6 +6,7 @@ import {
   isOpenIncident,
   isSignalState,
   isTerminalIncidentState,
+  stripIntervalMs,
 } from "./incidents";
 
 describe("incident wire types", () => {
@@ -44,4 +45,38 @@ describe("incident wire types", () => {
     expect(isOpenIncident({ state: "closed-without-action" })).toBe(false);
     expect(isOpenIncident({ state: "waiting-on-provider" })).toBe(true);
   });
+});
+
+test("stripIntervalMs per source", () => {
+  expect(
+    stripIntervalMs({
+      source: { kind: "http", url: "https://acme.example.test" },
+      rule: { kind: "consecutive", failures: 3 },
+      intervalMs: 120_000,
+    }),
+  ).toBe(120_000);
+  expect(
+    stripIntervalMs({
+      source: { kind: "http", url: "https://acme.example.test" },
+      rule: { kind: "consecutive", failures: 3 },
+    }),
+  ).toBe(60_000);
+  expect(
+    stripIntervalMs({
+      source: { kind: "heartbeat" },
+      rule: { kind: "missing", everyMs: 86_400_000, graceMs: 0 },
+    }),
+  ).toBe(86_400_000);
+  expect(
+    stripIntervalMs({
+      source: { kind: "heartbeat" },
+      rule: { kind: "missing", cron: "0 3 * * *", graceMs: 0 },
+    }),
+  ).toBe(3_600_000);
+  expect(
+    stripIntervalMs({
+      source: { kind: "webhook" },
+      rule: { kind: "rate", windowMs: 300_000, atLeast: 5 },
+    }),
+  ).toBe(60_000);
 });
