@@ -91,9 +91,13 @@ function curlCommand(
     `--max-time ${maxTimeS}`,
     `--max-filesize ${RUNNER_BODY_CAP_BYTES}`,
     `--request ${shellQuote(init.method ?? "GET")}`,
+    // curl asks for the encodings it can undo and decodes the body: the
+    // Runner channel carries text, so compressed bytes would not survive.
+    "--compressed",
   ];
   for (const [name, value] of Object.entries(init.headers ?? {}))
-    parts.push(`--header ${shellQuote(`${name}: ${value}`)}`);
+    if (name.toLowerCase() !== "accept-encoding")
+      parts.push(`--header ${shellQuote(`${name}: ${value}`)}`);
   const body = bodyText(init.body);
   if (body !== undefined) parts.push(`--data-binary ${shellQuote(body)}`);
   parts.push(`--write-out ${shellQuote(`${STATUS_MARKER}%{http_code}`)}`);

@@ -75,6 +75,27 @@ test("one request per hop, quoted, never following redirects", async () => {
   expect(execOpts[0].timeoutMs).toBeGreaterThan(5_000);
   expect(await net.resolve("acme.example.test")).toEqual(["acme.example.test"]);
 });
+test("curl negotiates and decodes the encoding; a signal's Accept-Encoding is dropped", async () => {
+  const net = runnerNet(
+    "runner-prod",
+    deps(
+      out(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\nplain text\n__SESSIONS_CURL__200",
+      ),
+    ),
+  );
+  const res = await net.send(
+    target("https://acme.example.test/"),
+    init({
+      headers: { "Accept-Encoding": "gzip, br", "User-Agent": "acme-app/4.2" },
+    }),
+    net.isBlocked,
+  );
+  expect(new TextDecoder().decode(res.body)).toBe("plain text");
+  expect(calls[0]).toContain(" --compressed ");
+  expect(calls[0].toLowerCase()).not.toContain("accept-encoding");
+  expect(calls[0]).toContain(`--header 'User-Agent: acme-app/4.2'`);
+});
 test("a POST body is sent as is", async () => {
   const net = runnerNet(
     "runner-prod",
