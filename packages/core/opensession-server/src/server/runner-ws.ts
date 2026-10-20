@@ -1393,12 +1393,6 @@ export async function execOnIncidentRunner(
   );
 }
 
-/** Whether a Runner can take an exec frame's `stdin` (the client says so in
- *  its hello). False for an offline Runner. */
-export function runnerTakesStdin(runnerId: string): boolean {
-  return connections.get(runnerId)?.execStdin === true;
-}
-
 async function execOnRunnerAs(
   runnerId: string,
   command: string,
