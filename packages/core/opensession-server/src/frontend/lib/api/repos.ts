@@ -276,6 +276,10 @@ export interface RepoRemovalPreview {
   deletePaths?: string[];
   /** Worktrees deleting would remove with it. */
   worktrees?: number;
+  /** Linked worktrees deleting leaves in place (made by hand elsewhere),
+   *  which stop working once the checkout is gone. Deleting then needs the
+   *  typed id. */
+  strayWorktrees?: string[];
   /** Disk used by `deletePaths`; null when it couldn't be measured quickly. */
   sizeBytes?: number | null;
   /** Branches not on their upstream, whose commits deleting would lose. */

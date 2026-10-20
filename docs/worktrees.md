@@ -206,7 +206,8 @@ session whose repository was removed stays archived, and a turn sent to it is
 refused with the reason, until the repository is registered again.
 
 While a removal runs, new sessions, attachments and turns for that repository
-are refused. After its entry is gone, removal looks again: if a session
+are refused, and so is adding it again or registering a folder it is
+deleting. After its entry is gone, removal looks again: if a session
 appeared or the files changed since the dialog showed them, the files stay
 and the result says why.
 
@@ -231,7 +232,11 @@ started on this server, then its warm-template spares and state. A worktree
 qualifies only when its name starts with the repository's worktree prefix and
 its `.git` file points into the checkout's own `.git/worktrees/`. It is removed
 with `git worktree remove --force`; when git refuses, it stays, and so do the
-checkout and origin. Paths are compared after resolving symlinks.
+checkout and origin. Paths are compared after resolving symlinks. A linked
+worktree that doesn't qualify but depends on the checkout, such as one made
+by hand outside the worktree root, is left in place: the dialog lists it
+under "These worktrees will stop working." and deleting needs the id typed
+in, whatever the tier.
 
 The same actions are available over HTTP to anyone who may use the setup
 routes. Deleting files also needs a signed-in person; automations can't.

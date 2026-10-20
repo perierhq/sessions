@@ -97,6 +97,10 @@ export interface RepoRemovalPreview {
   deletePaths?: string[];
   /** Worktrees deleting would remove with it. */
   worktrees?: number;
+  /** Linked worktrees of the checkout that deleting leaves in place, such as
+   *  ones made by hand outside the worktree root. They stop working once the
+   *  checkout is gone, so deleting needs the typed id. */
+  strayWorktrees?: string[];
   /** Disk used by `deletePaths`, when it could be measured quickly. */
   sizeBytes?: number | null;
   /** Branches not on their upstream (never pushed, ahead or gone), whose
@@ -419,6 +423,9 @@ export interface FilePlan {
   checkout?: string;
   origin?: string;
   worktrees: string[];
+  /** Linked worktrees left in place that stop working with the checkout
+   *  gone (see RepoRemovalPreview.strayWorktrees). */
+  strayWorktrees: string[];
   /** The repository's warm-template spare pool, when deleting includes it. */
   spares?: string;
   /** Warm-template state, manifest and lock files to drop with the files. */
@@ -447,6 +454,7 @@ export function planToken(plan: FilePlan): string | undefined {
     checkout: plan.checkout,
     origin: plan.origin ?? null,
     worktrees: [...plan.worktrees].sort(),
+    stray: [...plan.strayWorktrees].sort(),
     spares: plan.spares ?? null,
   });
   return createHash("sha256").update(body).digest("hex").slice(0, 32);
@@ -481,6 +489,7 @@ export async function planRepoFileDeletion(
     tier: "never",
     reason,
     worktrees: [],
+    strayWorktrees: [],
     warmFiles: [],
   });
   if (repo.addedFrom === "local") return keep(KEEP_REASON.local);
@@ -517,6 +526,7 @@ export async function planRepoFileDeletion(
       ? "managed"
       : "unverified";
   const warm = await warmTemplateLeftovers(repo, others);
+  const linked = await linkedWorktrees(repo, checkout, otherPaths);
   return {
     tier,
     ...(tier === "unverified" ? { reason: UNVERIFIED_NOTICE } : {}),
@@ -527,7 +537,8 @@ export async function planRepoFileDeletion(
       tier === "managed" && repo.addedFrom === "new"
         ? await localOriginToDelete(checkout, root, others)
         : undefined,
-    worktrees: await worktreesToDelete(repo, checkout, otherPaths),
+    worktrees: linked.deletable,
+    strayWorktrees: linked.stray,
     ...(warm.spares ? { spares: warm.spares } : {}),
     warmFiles: warm.files,
   };
@@ -577,40 +588,55 @@ async function localOriginToDelete(
 }
 
 /**
- * The checkout's linked worktrees that deleting may remove. Each one listed
- * by `git worktree list` must be a real directory directly in the worktree
- * root, named with this repository's prefix (`<wtPrefix>-…`), and its `.git`
- * file must point into this checkout's `.git/worktrees/`. Anything else (a
- * worktree made by hand elsewhere, or an entry whose admin files were edited
- * to name another repository's worktree) is left alone.
+ * The checkout's linked worktrees, split into those deleting may remove and
+ * those it leaves in place. A deletable one, listed by `git worktree list`,
+ * must be a real directory directly in the worktree root, named with this
+ * repository's prefix (`<wtPrefix>-…`), and its `.git` file must point into
+ * this checkout's `.git/worktrees/`. Any other linked worktree on disk whose
+ * `.git` points into this checkout (one made by hand outside the worktree
+ * root, say) is left alone and listed as stray: it stops working once the
+ * checkout is gone. An entry whose admin files were edited to name another
+ * repository's worktree is neither, and one inside the checkout goes with
+ * the checkout.
  */
-async function worktreesToDelete(
+async function linkedWorktrees(
   repo: Repo,
   checkout: string,
   otherPaths: string[],
-): Promise<string[]> {
-  const wtRoot = await realpathOrNull(configuredPaths().worktreesDir);
-  if (!wtRoot || wtRoot === "/") return [];
-  if (!SAFE_SEGMENT.test(repo.wtPrefix)) return [];
+): Promise<{ deletable: string[]; stray: string[] }> {
+  const deletable: string[] = [];
+  const stray: string[] = [];
   const gitDir = join(checkout, ".git");
-  if (!(await isRealDir(gitDir))) return [];
-  const adminRoot = join(gitDir, "worktrees");
+  // A checkout whose `.git` is a file is itself a linked worktree: nothing
+  // hangs off it.
+  if (!(await isRealDir(gitDir))) return { deletable, stray };
   const listed = await git(["-C", checkout, "worktree", "list", "--porcelain"]);
-  if (listed.exitCode !== 0) return [];
-  const out: string[] = [];
+  if (listed.exitCode !== 0) return { deletable, stray };
+  const wtRoot = await realpathOrNull(configuredPaths().worktreesDir);
+  const rootUsable =
+    !!wtRoot && wtRoot !== "/" && SAFE_SEGMENT.test(repo.wtPrefix);
+  const adminRoot = join(gitDir, "worktrees");
   for (const line of listed.stdout.split("\n")) {
     if (!line.startsWith("worktree ")) continue;
     const path = line.slice("worktree ".length);
-    if (await isSymlink(path)) continue;
-    const real = await realpathOrNull(path);
-    if (!real || real === checkout || dirname(real) !== wtRoot) continue;
-    if (!basename(real).startsWith(`${repo.wtPrefix}-`)) continue;
-    if (!(await isRealDir(real))) continue;
+    // Gone from disk: a stale entry, nothing to delete or break.
+    if (!(await exists(path))) continue;
+    const real = (await realpathOrNull(path)) ?? resolve(path);
+    if (within(real, checkout)) continue;
+    // Only a worktree whose `.git` points back into this checkout depends
+    // on it; an entry whose admin files name someone else's is not ours.
     if (!(await pointsInto(real, adminRoot))) continue;
-    if (otherPaths.some((p) => within(p, real) || within(real, p))) continue;
-    if (!out.includes(real)) out.push(real);
+    const ok =
+      rootUsable &&
+      !(await isSymlink(path)) &&
+      dirname(real) === wtRoot &&
+      basename(real).startsWith(`${repo.wtPrefix}-`) &&
+      (await isRealDir(real)) &&
+      !otherPaths.some((p) => within(p, real) || within(real, p));
+    const list = ok ? deletable : stray;
+    if (!list.includes(real)) list.push(real);
   }
-  return out;
+  return { deletable, stray };
 }
 
 /** The worktree's `.git` is a file naming a directory inside `adminRoot`. */
@@ -760,12 +786,17 @@ export async function repoRemovalPreview(
     automations,
     deletable,
     tier: plan.tier,
-    ...(plan.tier === "unverified" ? { confirmRequired: true } : {}),
+    ...(plan.tier === "unverified" || plan.strayWorktrees.length
+      ? { confirmRequired: true }
+      : {}),
     ...(plan.reason ? { reason: plan.reason } : {}),
     ...(deletePaths
       ? {
           deletePaths,
           worktrees: plan.worktrees.length,
+          ...(plan.strayWorktrees.length
+            ? { strayWorktrees: plan.strayWorktrees }
+            : {}),
           sizeBytes,
           unpushedBranches,
           planToken: planToken(plan),
@@ -952,7 +983,12 @@ export async function removeRepo(
         );
       if (!opts.planToken || opts.planToken !== planToken(plan))
         throw new RepoRemovalError(PLAN_CHANGED, 409);
-      if (plan.tier === "unverified" && opts.confirm !== id)
+      // The typed id: the server can't tell whether it made the folder, or
+      // deleting it breaks worktrees it leaves in place.
+      if (
+        (plan.tier === "unverified" || plan.strayWorktrees.length) &&
+        opts.confirm !== id
+      )
         throw new RepoRemovalError(
           `Type ${id} to confirm deleting its files`,
           400,

@@ -70,6 +70,8 @@ function deleteSummary(preview: RepoRemovalPreview): string | null {
     parts.push(
       plural(preview.unpushedBranches, "unpushed branch", "unpushed branches"),
     );
+  else if (preview.unpushedBranches === null)
+    parts.push("Couldn’t check for unpushed branches");
   return parts.length ? parts.join(" · ") : null;
 }
 
@@ -184,10 +186,29 @@ export function RemoveRepoBody({
       )}
       {checked && preview?.confirmRequired && (
         <div className="flex flex-col gap-1.5">
-          <p className="m-0 text-supporting text-dim">
-            {preview.reason ??
-              "This server can’t tell whether it created this folder."}
-          </p>
+          {preview.tier === "unverified" && (
+            <p className="m-0 text-supporting text-dim">
+              {preview.reason ??
+                "This server can’t tell whether it created this folder."}
+            </p>
+          )}
+          {!!preview.strayWorktrees?.length && (
+            <div>
+              <p className="m-0 text-supporting text-dim">
+                These worktrees will stop working.
+              </p>
+              <ul className="m-0 mt-0.5 flex list-none flex-col gap-0.5 p-0">
+                {preview.strayWorktrees.map((p) => (
+                  <li
+                    key={p}
+                    className="break-all font-mono text-meta text-dim"
+                  >
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <label htmlFor={confirmId} className="text-supporting text-fg">
             Type <span className="font-mono">{repoId}</span> to delete its files
           </label>

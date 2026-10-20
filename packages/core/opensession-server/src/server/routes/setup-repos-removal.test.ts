@@ -986,4 +986,43 @@ describe("repository removal", () => {
       expect(isRepoBeingRemoved("widget")).toBe(false);
     },
   );
+  test.serial(
+    "a worktree made by hand elsewhere is listed and needs the typed id",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const checkout = join(env.checkouts, "widget");
+      const managed = await createWorktree("feature", "widget");
+      const hand = join(env.root, "elsewhere", "hand-made");
+      mkdirSync(dirname(hand), { recursive: true });
+      git(["worktree", "add", "-q", "-b", "hand", hand], checkout);
+      fakeSessions([]);
+
+      const shown = await preview("widget");
+      expect(shown.body).toMatchObject({
+        tier: "managed",
+        confirmRequired: true,
+        strayWorktrees: [realpathSync(hand)],
+      });
+      expect(shown.body.deletePaths).toContain(realpathSync(managed));
+      expect(shown.body.deletePaths).not.toContain(realpathSync(hand));
+
+      const unconfirmed = await removeWithFiles("widget");
+      expect(unconfirmed.status).toBe(400);
+      expect(readConfig(env).repos.widget).toBeDefined();
+      expect(existsSync(checkout)).toBe(true);
+
+      const { status, body } = await removeWithFiles("widget", {
+        confirm: "widget",
+      });
+      expect(status).toBe(200);
+      expect(body.deleted).toContain(
+        realpathSync(dirname(checkout)) + "/widget",
+      );
+      expect(body.deleted).not.toContain(realpathSync(hand));
+      expect(existsSync(checkout)).toBe(false);
+      // Left in place, as the preview said.
+      expect(existsSync(join(hand, "README.md"))).toBe(true);
+    },
+  );
 });

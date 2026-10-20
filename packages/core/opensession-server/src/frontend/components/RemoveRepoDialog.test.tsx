@@ -131,6 +131,36 @@ test("a folder the server may not have made asks for the id", () => {
   expect(markup).toContain('spellCheck="false"');
 });
 
+test("worktrees deleting leaves behind are listed and need the typed id", () => {
+  const stray = "/home/acme/elsewhere/hand-made";
+  const value = preview({ confirmRequired: true, strayWorktrees: [stray] });
+  expect(render(value)).not.toContain(stray);
+  const markup = render(value, { deleteFiles: true });
+  expect(markup).toContain("These worktrees will stop working.");
+  expect(markup).toContain(stray);
+  expect(markup).toContain("to delete its files");
+  // A managed folder: the server made it, so no doubt about that is shown.
+  expect(markup).not.toContain("tell whether it created this folder");
+  let state = run(
+    { type: "open" },
+    { type: "loaded", preview: value },
+    { type: "setDeleteFiles", value: true },
+  );
+  expect(removeRequest("widget", state)).toBeNull();
+  state = removeRepoDialogReducer(state, {
+    type: "setConfirm",
+    value: "widget",
+  });
+  expect(removeRequest("widget", state)).toMatchObject({ confirm: "widget" });
+});
+
+test("says so when unpushed branches couldn't be checked", () => {
+  expect(render(preview({ unpushedBranches: null }))).toContain(
+    "5.0 MB · 1 worktree · Couldn’t check for unpushed branches",
+  );
+  expect(render(preview())).not.toContain("Couldn’t check");
+});
+
 test("a folder added from disk disables deletion and says why", () => {
   const markup = render(
     preview({
