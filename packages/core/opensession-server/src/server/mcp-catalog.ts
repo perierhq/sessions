@@ -67,6 +67,7 @@ import { createCommentsMcpServer } from "./comments-mcp";
 import { createDesktopMcpServer } from "./desktop-mcp";
 import { createSelfDeployMcpServer } from "./self-deploy";
 import { createWebMcpServer } from "./web-mcp";
+import { createIncidentAccessMcpServer } from "./incidents/access/mcp";
 
 /**
  * The classes of run that carry in-process servers. One entry per wiring site,
@@ -636,6 +637,62 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     condition: "Only on a session that carries a goalId.",
     note: "Deliberately NOT in SHARED_INPROCESS_SERVERS: goal wakes keep per-session engine servers, because the tool list is discovered once per directory instance.",
     build: () => createGoalSelfMcpServer("goal-example"),
+  },
+  {
+    name: "opensession-incident-access",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-incident-access"].summary,
+    source:
+      "packages/core/opensession-server/src/server/incidents/access/mcp.ts",
+    wiring: [
+      "packages/core/opensession-server/src/server/interactive-mcp.ts",
+      "packages/core/opensession-server/src/server/run-session.ts",
+      "packages/core/opensession-server/src/server/runner-session.ts",
+      "packages/core/opensession-server/src/server/session-create.ts",
+    ],
+    runClasses: ["automation"],
+    condition:
+      "incident agents only (automation descendants with an incident binding)",
+    note: "The only opensession-* server an incident agent gets. Each tool is mounted only when the agent's access grants what it reaches, and every call re-resolves that access.",
+    build: () =>
+      createIncidentAccessMcpServer({
+        sessionId: SESSION_ID,
+        binding: {
+          incidentId: "inc-example",
+          role: "investigator",
+          signalId: null,
+          accessRevision: "example",
+        },
+        access: {
+          incidentId: "inc-example",
+          project: "acme",
+          role: "investigator",
+          signalId: null,
+          overrideApplied: false,
+          defaults: false,
+          connections: [],
+          deniedTools: {},
+          mode: "code",
+          repos: ["acme"],
+          runners: [],
+          hosts: [
+            { runner: "rn-example", runnerName: "prod-1", access: "read-only" },
+          ],
+          credentials: [
+            {
+              credential: "kc-example",
+              service: "example-api",
+              host: "api.example.test",
+              mode: "once",
+              scope: "personal",
+            },
+          ],
+          model: null,
+          egress: { route: "server", hosts: ["status.example.test"] },
+          narrowed: [],
+          revision: "example",
+          summary: "Investigator",
+        },
+      }),
   },
 ];
 

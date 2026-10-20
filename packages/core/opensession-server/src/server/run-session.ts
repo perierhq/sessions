@@ -8,6 +8,7 @@
  * cache in session-cache.ts.
  */
 
+import { incidentAccessMcpForSession } from "./incidents/access/mcp";
 import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
@@ -1922,6 +1923,9 @@ export function sandboxRunSecuritySpec(
      *  (`Object.keys(automationSessionMcp(...))`, computed once by the
      *  caller). Only read for a non-descendant automation-owned turn. */
     automationProxyMcpServers?: string[];
+    /** A bound incident agent's access server
+     *  (SessionRunInputs.incidentProxyMcpServers); descendants only. */
+    incidentProxyMcpServers?: string[];
   },
 ): Pick<
   RunHostSpec,
@@ -1940,10 +1944,13 @@ export function sandboxRunSecuritySpec(
   const descendant = session.automationDescendantPolicy;
   return {
     mcpServers: opts.isAutomationSession ? (opts.mcpServers ?? []) : [],
-    // Descendants proxy nothing; other automation-owned turns proxy exactly
-    // the automation-bar set the run-rpc fallback builder serves them.
+    // Descendants proxy nothing but an incident agent's access server;
+    // other automation-owned turns proxy exactly the automation-bar set the
+    // run-rpc fallback builder serves them.
     proxyMcpServers: descendant
-      ? []
+      ? descendant.incident
+        ? (opts.incidentProxyMcpServers ?? [])
+        : []
       : opts.isAutomationSession
         ? (opts.automationProxyMcpServers ?? [])
         : session.plainDiscussionId
@@ -2014,6 +2021,8 @@ export async function maybeLaunchSandboxedRun(
     isAutomationSession: boolean;
     /** See sandboxRunSecuritySpec. */
     automationProxyMcpServers?: string[];
+    /** See sandboxRunSecuritySpec. */
+    incidentProxyMcpServers?: string[];
     startToken?: string;
   },
 ): Promise<
@@ -3248,6 +3257,12 @@ async function runSessionPromptInner(
         })
       : {};
   const automationProxyMcpServers = Object.keys(automationMcp);
+  // A bound incident agent carries exactly its access server; `{}` when its
+  // access is refused, so it gets no tools (the turn itself was already
+  // re-resolved by resolveSessionRunInputs).
+  const incidentMcp = session.automationDescendantPolicy?.incident
+    ? await incidentAccessMcpForSession(session)
+    : {};
   // A thread reply that resumes an automation-owned session keeps the
   // automation's sibling-repository read token (Automation.readRepos), so a
   // follow-up can still read the repos its unattended run could.
@@ -3292,6 +3307,7 @@ async function runSessionPromptInner(
         deniedTools,
         isAutomationSession,
         automationProxyMcpServers,
+        incidentProxyMcpServers: runInputs.incidentProxyMcpServers,
         startToken,
       });
 
@@ -3361,16 +3377,20 @@ async function runSessionPromptInner(
   // it in the UI) can set the next wake, append to the ledger, or
   // pause/finish — the same tools the headless wake has.
   const inProcessMcpForTurn = (): Record<string, unknown> =>
-    isAutomationSession
-      ? automationMcp
-      : session.plainDiscussionId
-        ? plainDiscussionSessionMcp(sessionId, session.plainDiscussionId)
-        : session.goalId
-          ? {
-              ...interactiveMcpServers(user, sessionId, durablePromptEntryId),
-              "opensession-goal-self": createGoalSelfMcpServer(session.goalId),
-            }
-          : interactiveMcpServers(user, sessionId, durablePromptEntryId);
+    session.automationDescendantPolicy?.incident
+      ? incidentMcp
+      : isAutomationSession
+        ? automationMcp
+        : session.plainDiscussionId
+          ? plainDiscussionSessionMcp(sessionId, session.plainDiscussionId)
+          : session.goalId
+            ? {
+                ...interactiveMcpServers(user, sessionId, durablePromptEntryId),
+                "opensession-goal-self": createGoalSelfMcpServer(
+                  session.goalId,
+                ),
+              }
+            : interactiveMcpServers(user, sessionId, durablePromptEntryId);
   const hostedRun =
     !runnerRun && !sandboxRun && routedEngine === "pi"
       ? runAgentHosted({
@@ -3392,7 +3412,7 @@ async function runSessionPromptInner(
           images,
           mcpServers: mcpServers ?? "all",
           proxyMcpServers: session.automationDescendantPolicy
-            ? []
+            ? Object.keys(incidentMcp)
             : Object.keys(inProcessMcpForTurn()),
           reposNote: isAutomationSession
             ? undefined
@@ -3501,7 +3521,7 @@ async function runSessionPromptInner(
       mcpServers: mcpServers ?? "all",
       // See inProcessMcpForTurn above for what each session kind carries.
       inProcessMcp: session.automationDescendantPolicy
-        ? {}
+        ? incidentMcp
         : inProcessMcpForTurn(),
       reposNote: isAutomationSession
         ? undefined

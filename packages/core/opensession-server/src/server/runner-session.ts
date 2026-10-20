@@ -188,7 +188,7 @@ export async function maybeLaunchRunnerRun(
       : (opts.mcpServers ?? "all"),
     proxyMcpServers: runInputs.isAutomationSession
       ? automationPolicy
-        ? []
+        ? runInputs.incidentProxyMcpServers
         : (opts.automationProxyMcpServers ?? [])
       : Object.keys(interactiveMcpServers(opts.user, session.id)),
     rpcToken: crypto.randomUUID(),

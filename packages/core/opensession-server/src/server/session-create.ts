@@ -1,4 +1,5 @@
 import { registerMemoryGauge } from "./memory-gauges";
+import { incidentAccessMcpForSession } from "./incidents/access/mcp";
 import {
   sessionSpeed,
   type SessionSpeed,
@@ -1881,6 +1882,8 @@ export async function openCreatedSession(
               ...(descendantScope?.deniedTools
                 ? { deniedTools: descendantScope.deniedTools }
                 : {}),
+              incidentProxyMcpServers:
+                descendantScope?.incidentProxyMcpServers ?? [],
               isAutomationSession: !!spec.automationDescendantPolicy,
               startToken,
               promptEntryId: openingPromptEntryId,
@@ -2047,7 +2050,13 @@ export async function openCreatedSession(
       // A discussion session carries only the approval server, never the
       // interactive siblings (see plainDiscussionSessionMcp).
       const openingMcp = automationChild
-        ? {}
+        ? localDescendantScope?.incidentProxyMcpServers.length &&
+          spec.automationDescendantPolicy
+          ? await incidentAccessMcpForSession({
+              id: bksId,
+              automationDescendantPolicy: spec.automationDescendantPolicy,
+            })
+          : {}
         : spec.plainDiscussionId
           ? plainDiscussionSessionMcp(bksId, spec.plainDiscussionId)
           : interactiveMcpServers(spec.user, bksId);

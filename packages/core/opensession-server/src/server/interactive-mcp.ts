@@ -13,6 +13,7 @@
  * papercutsServerFor and the automation guard in the run-rpc builder below.
  */
 
+import type { AutomationDescendantPolicy } from "./types";
 import { lazyServerRecord } from "./inprocess-mcp";
 import { deskNavigationMcp } from "./desk-navigation-mcp";
 import { createSessionsMcpServer } from "../agents/slack/sessions-tools";
@@ -617,6 +618,15 @@ export async function automationSessionMcp(
   sessionId: string,
   opts: { humanPrompter?: string } = {},
 ): Promise<Record<string, unknown>> {
+  // An incident agent gets its access server and nothing else, on every
+  // launch path and through run-rpc's fallback builder (incidents/access).
+  const descendant = session.automationDescendantPolicy as
+    | AutomationDescendantPolicy
+    | undefined;
+  if (descendant?.incident)
+    return (await import("./incidents/access/mcp")).incidentAccessMcpForSession(
+      { id: sessionId, automationDescendantPolicy: descendant },
+    );
   const servers: Record<string, unknown> = {
     ...papercutsServerFor(
       sessionId,

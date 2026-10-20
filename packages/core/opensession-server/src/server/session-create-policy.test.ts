@@ -125,6 +125,41 @@ describe("automation descendant opening policy", () => {
     ).toBeGreaterThanOrEqual(3);
   });
 
+  test("a sandboxed incident agent proxies only the incident access server", () => {
+    const spec = sandboxRunSecuritySpec(
+      {
+        id: "os-1",
+        automationDescendantPolicy: {
+          ...descendant,
+          incident: {
+            incidentId: "inc-1",
+            role: "verifier",
+            signalId: null,
+            accessRevision: "r",
+          },
+        },
+      } as UnifiedSession,
+      {
+        isAutomationSession: true,
+        mcpServers: ["sentry"],
+        incidentProxyMcpServers: ["opensession-incident-access"],
+      },
+    );
+    expect(spec.proxyMcpServers).toEqual(["opensession-incident-access"]);
+    expect(
+      sandboxRunSecuritySpec(
+        {
+          id: "os-2",
+          automationDescendantPolicy: descendant,
+        } as UnifiedSession,
+        {
+          isAutomationSession: true,
+          incidentProxyMcpServers: ["opensession-incident-access"],
+        },
+      ).proxyMcpServers,
+    ).toEqual([]);
+  });
+
   test("opening dispatch rejects default-local and admits an explicit sandbox", () => {
     expect(() =>
       assertAutomationDescendantOpeningIsolation({

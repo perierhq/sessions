@@ -231,6 +231,12 @@ export const INTERNAL_MCP_CAPABILITIES = {
     guidance:
       "Manage this running goal's cadence, status, and durable fact ledger.",
   },
+  "opensession-incident-access": {
+    summary:
+      "Read-only host commands, egress requests and borrowed credentials for one incident agent.",
+    guidance:
+      "Only incident agents have this. Call describe_access first to see what you may reach. host_command runs read-only programs on your granted hosts, egress_fetch sends a request through your granted route (production's own egress when it is a Runner), call_credential uses a credential the project granted you. Everything is audited with your incident and role; anything else you need goes in your findings for the owner.",
+  },
 } as const satisfies Record<string, InternalMcpCapability>;
 
 export type InternalMcpServerName = keyof typeof INTERNAL_MCP_CAPABILITIES;
