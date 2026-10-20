@@ -82,6 +82,11 @@ test("stripIntervalMs per source", () => {
   ).toBe(60_000);
 });
 
-test("impact URLs know two placeholders", () => {
-  expect([...IMPACT_PLACEHOLDERS]).toEqual(["since", "sinceMs"]);
+test("impact URLs know four placeholders", () => {
+  expect([...IMPACT_PLACEHOLDERS]).toEqual([
+    "since",
+    "sinceMs",
+    "until",
+    "untilMs",
+  ]);
 });

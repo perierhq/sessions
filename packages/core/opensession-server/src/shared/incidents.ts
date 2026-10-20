@@ -142,7 +142,12 @@ export type MaintenanceWindow =
     };
 
 /** Placeholders an http impact URL may use, filled in when it is queried. */
-export const IMPACT_PLACEHOLDERS = ["since", "sinceMs"] as const;
+export const IMPACT_PLACEHOLDERS = [
+  "since",
+  "sinceMs",
+  "until",
+  "untilMs",
+] as const;
 
 /**
  * Where an incident's impact is counted. `noun` reads after a number
@@ -152,7 +157,11 @@ export const IMPACT_PLACEHOLDERS = ["since", "sinceMs"] as const;
 export type ImpactSource =
   | {
       kind: "http";
-      /** May use `{{since}}` (ISO instant) and `{{sinceMs}}` (epoch ms). */
+      /**
+       * May use `{{since}}` (when the incident opened, ISO instant) and
+       * `{{sinceMs}}` (epoch ms), `{{until}}` and `{{untilMs}}` (when it
+       * closed, or now while it is open).
+       */
       url: string;
       headers?: Record<string, string>;
       countPath: string;

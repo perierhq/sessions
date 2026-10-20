@@ -178,10 +178,13 @@ function firstCount(values: unknown[] | undefined): number | undefined {
   return undefined;
 }
 
-function impactUrl(impact: HttpImpact, openedAt: string): string {
+/** The URL for the range from `since` to `until` (ISO instants). */
+function impactUrl(impact: HttpImpact, since: string, until: string): string {
   return impact.url
-    .replaceAll("{{since}}", encodeURIComponent(openedAt))
-    .replaceAll("{{sinceMs}}", String(Date.parse(openedAt)));
+    .replaceAll("{{since}}", encodeURIComponent(since))
+    .replaceAll("{{sinceMs}}", String(Date.parse(since)))
+    .replaceAll("{{until}}", encodeURIComponent(until))
+    .replaceAll("{{untilMs}}", String(Date.parse(until)));
 }
 
 async function measureHttp(
@@ -197,7 +200,12 @@ async function measureHttp(
   };
   const source: HttpSource = {
     kind: "http",
-    url: impactUrl(impact, incident.openedAt),
+    // A closed incident's count stops at its close.
+    url: impactUrl(
+      impact,
+      incident.openedAt,
+      incident.closedAt ?? new Date(deps.now()).toISOString(),
+    ),
     ...(impact.headers ? { headers: impact.headers } : {}),
     timeoutMs: deps.queryTimeoutMs,
     json,

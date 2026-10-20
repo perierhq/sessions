@@ -318,6 +318,8 @@ export function validateSource(value: unknown): SignalSource | FieldError {
 const IMPACT_SAMPLES: Record<(typeof IMPACT_PLACEHOLDERS)[number], string> = {
   since: "2026-01-01T00%3A00%3A00.000Z",
   sinceMs: "0",
+  until: "2026-01-01T01%3A00%3A00.000Z",
+  untilMs: "3600000",
 };
 const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
 

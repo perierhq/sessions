@@ -520,6 +520,18 @@ test("impact fields: words, kinds, and events on a webhook", () => {
     ),
   ).toMatchObject({ kind: "http", peoplePath: "users" });
   expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "https://logs.example.test/c?from={{since}}&to={{until}}&a={{sinceMs}}&b={{untilMs}}",
+        countPath: "$.n",
+        noun: "x",
+        label: "y",
+      },
+      webhook,
+    ),
+  ).toMatchObject({ kind: "http" });
+  expect(
     normalizeSignal({
       ...base,
       impact: { kind: "events", count: "fail-events", noun: "x", label: "y" },

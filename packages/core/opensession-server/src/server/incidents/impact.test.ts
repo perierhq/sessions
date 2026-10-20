@@ -130,6 +130,38 @@ test("an http impact counts failures and people since the incident opened", asyn
   });
 });
 
+test("until is now while open and the close once closed", async () => {
+  const seen: string[] = [];
+  const deps: Partial<ImpactDeps> = {
+    runSource: async (s) => {
+      seen.push((s.source as { url: string }).url);
+      return run({ "$.n": [1] });
+    },
+    now: () => NOW,
+  };
+  const untilSignal: Signal = {
+    ...signal,
+    impact: {
+      ...httpImpact,
+      url: "https://logs.example.test/c?to={{until}}&toMs={{untilMs}}",
+      countPath: "$.n",
+    },
+  };
+  await measureImpact({ incident, signal: untilSignal }, deps);
+  const closedAt = "2026-10-20T10:20:00.000Z";
+  await measureImpact(
+    {
+      incident: { ...incident, state: "resolved", closedAt },
+      signal: untilSignal,
+    },
+    deps,
+  );
+  expect(seen).toEqual([
+    `https://logs.example.test/c?to=${encodeURIComponent(new Date(NOW).toISOString())}&toMs=${NOW}`,
+    `https://logs.example.test/c?to=${encodeURIComponent(closedAt)}&toMs=${Date.parse(closedAt)}`,
+  ]);
+});
+
 test("the first usable number counts; sinceMs is epoch milliseconds", async () => {
   const seen: Signal[] = [];
   const out = await measureImpact(
