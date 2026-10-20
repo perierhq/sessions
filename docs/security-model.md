@@ -441,9 +441,12 @@ Every spawn, refusal, access change, narrowing, host command, egress request
 and credential call is audited with the incident and role
 (`incident_access_*`, `incident_host_*`, `incident_egress_*`,
 `incident_credential_call`), and the keychain's own lines carry
-`incident_id` and `incident_role`. Audit lines never carry secrets, header
-values, bodies or URL query strings. Host command arguments are recorded,
-cut to 500 characters, so an argument an agent typed is visible there.
+`incident_id` and `incident_role`. A spawn is recorded as allowed before its
+session exists (`incident_access_spawn_allowed`) and as spawned, with the
+session id, once the create succeeds (`incident_access_spawn`). Audit lines
+never carry secrets, header values, bodies or URL query strings. Host command
+arguments are recorded, cut to 500 characters, so an argument an agent typed
+is visible there.
 
 Limits: the read-only list and the secret-path refusal are a tripwire, not a
 sandbox. A log line can contain a secret, and scrubbing covers only the

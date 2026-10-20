@@ -215,6 +215,38 @@ if (!stored) throw new Error("stored automation missing");
 const workflowPolicy = automations.automationWorkflowSessionPolicy(stored);
 if (!workflowPolicy) throw new Error("stored policy missing");
 
+// With UNATTENDED_RUNNER_CREATE_INCIDENT=1 the descendant is an incident
+// agent: its binding resolves to access narrower than the requested policy,
+// and the incident audit lines are collected.
+const incidentMode = process.env.UNATTENDED_RUNNER_CREATE_INCIDENT === "1";
+const incidentAudits: Record<string, unknown>[] = [];
+if (incidentMode) {
+  const { __setIncidentAuditForTest } = await import("../incidents/audit-sink");
+  const { __setBindingResolverForTest } =
+    await import("../incidents/access/resolve");
+  __setIncidentAuditForTest((event) => incidentAudits.push(event));
+  __setBindingResolverForTest(async (binding) => ({
+    incidentId: binding.incidentId,
+    project: "renderer",
+    role: binding.role,
+    signalId: binding.signalId,
+    overrideApplied: false,
+    defaults: false,
+    connections: [],
+    deniedTools: {},
+    mode: "code",
+    repos: ["renderer"],
+    runners: [registered.runner.id],
+    hosts: [],
+    credentials: [],
+    model: null,
+    egress: null,
+    narrowed: [],
+    revision: "r-narrowed",
+    summary: "Investigator · no connections · can edit renderer",
+  }));
+}
+
 await import("../session-control-wiring");
 const kernelRuntime = await import("../session-kernel/runtime");
 kernelRuntime.startSessionKernelRuntime();
@@ -242,12 +274,24 @@ try {
     automationDescendantPolicy: {
       automationId: workflowPolicy.automationId,
       automationName: workflowPolicy.automationName,
-      mcpServers: [],
+      // An incident agent asks for a connection its fresh access no longer
+      // has; the create must store the narrowed policy.
+      mcpServers: incidentMode ? ["sentry"] : [],
       repo: "renderer",
       publicationRepo: "tellahq/renderer",
       baseBranch: "main",
       allowedRunners: [...workflowPolicy.allowedRunners],
       publication: "branch-pr-only",
+      ...(incidentMode
+        ? {
+            incident: {
+              incidentId: "inc-fixture",
+              role: "investigator" as const,
+              signalId: null,
+              accessRevision: "r-requested",
+            },
+          }
+        : {}),
     },
   });
   const { sessionKernel, sessionRunStateSnapshot } =
@@ -292,6 +336,7 @@ try {
       runState,
       creationState,
       runnerPermissions: runners.getRunner(registered.runner.id)?.permissions,
+      incidentAudits,
       controlFrames: controlFrames.map((frame) => ({
         t: frame.t,
         automationDescendant: frame.automationDescendant,

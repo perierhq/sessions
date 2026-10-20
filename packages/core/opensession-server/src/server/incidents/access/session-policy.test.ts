@@ -3,6 +3,7 @@ import type { AgentAccess } from "../../../shared/incident-access";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 import {
+  auditIncidentSpawned,
   enforceIncidentSpawn,
   incidentDescendantPolicy,
   incidentTurnScope,
@@ -74,13 +75,39 @@ test("spawn re-resolves and narrows to the fresh access", async () => {
       runner: "rn-prod",
     }),
   ).toMatchObject({ mcpServers: ["logs"], incident: { accessRevision: "r3" } });
+  // The session does not exist yet: the allowed decision is recorded, the
+  // spawn itself only once the create succeeds.
   expect(kit.audits).toContainEqual(
     expect.objectContaining({
-      kind: "incident_access_spawn",
+      kind: "incident_access_spawn_allowed",
       incident_id: "inc-1",
       revision: "r3",
     }),
   );
+  expect(kit.audits.filter((e) => e.kind === "incident_access_spawn")).toEqual(
+    [],
+  );
+});
+test("the spawn is audited with the created session", () => {
+  const policy = incidentDescendantPolicy(access({ revision: "r3" }), base);
+  auditIncidentSpawned(policy, "os-9", {
+    repo: "acme",
+    mode: "code",
+    runner: "rn-prod",
+  });
+  auditIncidentSpawned(undefined, "os-10", { repo: "acme", mode: "code" });
+  expect(kit.audits.filter((e) => e.kind === "incident_access_spawn")).toEqual([
+    {
+      kind: "incident_access_spawn",
+      incident_id: "inc-1",
+      incident_role: "investigator",
+      session_id: "os-9",
+      revision: "r3",
+      repo: "acme",
+      runner: "rn-prod",
+      mode: "code",
+    },
+  ]);
 });
 test.each([
   [{ repo: "acme-api", mode: "code" as const }, "does not match"],

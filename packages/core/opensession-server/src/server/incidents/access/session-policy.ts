@@ -111,8 +111,10 @@ export async function enforceIncidentSpawn(
       canonicalModel(request.model) !== canonicalModel(access.model))
   )
     refuse(`This agent must use ${access.model}`);
+  // The session does not exist yet: this records the decision, and
+  // auditIncidentSpawned records the session once it is created.
   incidentAudit({
-    kind: "incident_access_spawn",
+    kind: "incident_access_spawn_allowed",
     incident_id: binding.incidentId,
     incident_role: binding.role,
     revision: access.revision,
@@ -131,6 +133,33 @@ export async function enforceIncidentSpawn(
     ),
     incident: { ...binding, accessRevision: access.revision },
   };
+}
+
+/** Record an incident agent's session once it exists; a policy without a
+ *  binding records nothing. */
+export function auditIncidentSpawned(
+  policy: AutomationDescendantPolicy | undefined,
+  sessionId: string,
+  request: {
+    repo: string;
+    runner?: string;
+    mode: "ask" | "code" | "scratch";
+    model?: string;
+  },
+): void {
+  const binding = policy?.incident;
+  if (!binding) return;
+  incidentAudit({
+    kind: "incident_access_spawn",
+    incident_id: binding.incidentId,
+    incident_role: binding.role,
+    session_id: sessionId,
+    revision: binding.accessRevision,
+    repo: request.repo,
+    ...(request.runner !== undefined ? { runner: request.runner } : {}),
+    mode: request.mode,
+    ...(request.model !== undefined ? { model: request.model } : {}),
+  });
 }
 
 export interface IncidentTurnScope {
