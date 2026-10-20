@@ -9,6 +9,9 @@
  *   POST /api/setup/repos: clone a remote, register an existing local checkout,
  *                          or start a new repository on this server.
  *   PATCH /api/setup/repos/:id: change its default branch or worktree policy.
+ *   GET  /api/setup/repos/:id/removal: what removing it would do (sessions to
+ *        archive, running count, whether its files may be deleted).
+ *   DELETE /api/setup/repos/:id {deleteFiles}: remove it (repo-removal.ts).
  */
 
 import { $ } from "bun";
@@ -56,7 +59,7 @@ import {
   type GithubCredential,
 } from "../github-auth";
 import { githubCredentialHelperCommand } from "../github-git-credential";
-import { homeDir } from "../paths";
+import { managedCheckoutsRoot } from "../paths";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { validNewRepoName } from "../../shared/repo-name";
 import { shellSafeDefaultBranch } from "../repo-branch";
@@ -490,7 +493,7 @@ async function cloneGithubRepo(
 }
 
 function checkoutsRoot(): string {
-  return `${homeDir()}/checkouts`;
+  return managedCheckoutsRoot();
 }
 
 function setupRepoError(message: string, status: number): Error {
@@ -707,6 +710,7 @@ async function createLocalRepo(input: {
         defaultBranch: await normalizeInspectedDefaultBranch(
           inspected.defaultBranch,
         ),
+        addedFrom: "new",
       },
     });
   } catch (error) {
@@ -815,6 +819,7 @@ async function registerGithubRepo(input: {
         wtPrefix: id,
         defaultBranch,
         ghRepo: inspected.ghRepo || input.fullName,
+        addedFrom: "github",
       },
     });
   } catch (error) {
@@ -911,6 +916,7 @@ async function registerLocalRepo(input: {
       ...(inspected.cs
         ? { host: "codestorage" as const, csRepo: inspected.cs.repoId }
         : {}),
+      addedFrom: "local",
     },
   });
 }
@@ -995,6 +1001,7 @@ async function registerCodestorageRepo(input: {
         defaultBranch,
         host: "codestorage",
         csRepo,
+        addedFrom: "codestorage",
       },
     });
   } catch (error) {
@@ -1028,6 +1035,18 @@ function migrateLegacySelfDev(
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
+
+/** The repository id in a `/api/setup/repos/:id` path, or null when it does
+ *  not decode or names one of the registry object's prototype keys. */
+function routeRepoId(segment: string): string | null {
+  let id: string;
+  try {
+    id = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  return ["__proto__", "prototype", "constructor"].includes(id) ? null : id;
+}
 
 function registrationErrorResponse(error: unknown): Response {
   return Response.json(
@@ -1360,7 +1379,61 @@ export async function handleSetupRepoRoutes(
     );
   }
 
+  const removalMatch = path.match(/^\/api\/setup\/repos\/([^/]+)\/removal$/);
+  if (removalMatch && req.method === "GET") {
+    const id = routeRepoId(removalMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const { repoRemovalPreview } = await import("../repo-removal");
+    const preview = await repoRemovalPreview(id);
+    if (!preview) {
+      return Response.json(
+        { error: `Unknown repository: ${id}` },
+        { status: 404 },
+      );
+    }
+    return Response.json(preview);
+  }
+
   const updateMatch = path.match(/^\/api\/setup\/repos\/([^/]+)$/);
+  if (updateMatch && req.method === "DELETE") {
+    const id = routeRepoId(updateMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const body = (await req.json().catch(() => ({}))) as {
+      deleteFiles?: unknown;
+    } | null;
+    const deleteFiles = body?.deleteFiles ?? false;
+    if (typeof deleteFiles !== "boolean") {
+      return Response.json(
+        { error: "deleteFiles must be a boolean" },
+        { status: 400 },
+      );
+    }
+    const { removeRepo, RepoRemovalError } = await import("../repo-removal");
+    try {
+      const result = await removeRepo(id, {
+        deleteFiles,
+        by: ctx.authUser?.login,
+      });
+      // The registered bit in both browse payloads just changed.
+      repoListCache.clear();
+      csRepoListCache = null;
+      return Response.json(result);
+    } catch (error) {
+      if (error instanceof RepoRemovalError) {
+        return Response.json(
+          { error: error.message, ...error.body },
+          { status: error.status },
+        );
+      }
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
   if (updateMatch && req.method === "PATCH") {
     let id: string;
     try {

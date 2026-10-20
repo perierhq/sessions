@@ -36,6 +36,8 @@ type RepoEntry = {
   host?: "github" | "codestorage";
   csRepo?: string;
   default?: boolean;
+  /** "local" marks an existing folder, whose files repository removal keeps. */
+  addedFrom?: "github" | "local";
 };
 
 async function detectBranch(dir: string): Promise<string> {
@@ -207,6 +209,7 @@ async function add(spec?: string): Promise<number> {
     defaultBranch: await detectBranch(checkout),
   };
   if (ghRepo) entry.ghRepo = ghRepo;
+  entry.addedFrom = isLocal ? "local" : "github";
   if (csRepo) {
     entry.host = "codestorage";
     entry.csRepo = csRepo.repoId;

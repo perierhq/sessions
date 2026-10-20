@@ -502,6 +502,48 @@ function updateSandboxConfigFile(
   writeJsonAtomic(path, raw);
 }
 
+/** Drop everything the sandbox config keeps for a repository that is no
+ * longer registered: its `perRepo` overrides and any `prewarm.keepReady`
+ * targets naming it. Returns whether the file changed. */
+export function forgetRepoSandboxConfig(repoId: string): boolean {
+  if (!existsSync(configPath())) return false;
+  let changed = false;
+  updateSandboxConfigFile((raw) => {
+    const perRepo = raw.perRepo;
+    if (
+      perRepo &&
+      typeof perRepo === "object" &&
+      !Array.isArray(perRepo) &&
+      Object.hasOwn(perRepo, repoId)
+    ) {
+      delete (perRepo as Record<string, unknown>)[repoId];
+      if (!Object.keys(perRepo).length) delete raw.perRepo;
+      changed = true;
+    }
+    const prewarm = raw.prewarm as Record<string, unknown> | undefined;
+    if (
+      prewarm &&
+      typeof prewarm === "object" &&
+      Array.isArray(prewarm.keepReady)
+    ) {
+      const kept = prewarm.keepReady.filter(
+        (target: unknown) =>
+          !(
+            target &&
+            typeof target === "object" &&
+            typeof (target as { repoId?: unknown }).repoId === "string" &&
+            (target as { repoId: string }).repoId.trim() === repoId
+          ),
+      );
+      if (kept.length !== prewarm.keepReady.length) {
+        prewarm.keepReady = kept;
+        changed = true;
+      }
+    }
+  });
+  return changed;
+}
+
 /** Persist where new sessions on one repo run. `null` or "workspace" removes
  * the override so the workspace and personal defaults apply again. */
 export function setRepoSandboxDefault(

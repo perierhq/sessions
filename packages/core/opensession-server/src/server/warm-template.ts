@@ -155,6 +155,16 @@ export function setWarmTemplateConfig(
   return cfg;
 }
 
+/** Forget a repository's warm-template settings once it is no longer
+ * registered, so a later registration under the same id starts clean. */
+export function forgetWarmTemplateConfig(repoId: string): boolean {
+  const repos = readWarmConfigRaw();
+  if (!Object.hasOwn(repos, repoId)) return false;
+  delete repos[repoId];
+  writeJsonAtomic(configFile(), { repos });
+  return true;
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 export interface WarmTemplateState {
