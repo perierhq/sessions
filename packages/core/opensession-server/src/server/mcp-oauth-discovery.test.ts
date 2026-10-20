@@ -10,6 +10,17 @@ import {
   startMcpOauthFlow,
 } from "./mcp-oauth";
 import { addMcpServerEntry, getConnections } from "./connections";
+import {
+  installPinnedFetchDouble,
+  type PinnedCall,
+} from "./testing/pinned-fetch-double";
+
+let pinned: PinnedCall[] = [];
+let restorePinned = () => {};
+beforeEach(() => {
+  ({ calls: pinned, restore: restorePinned } = installPinnedFetchDouble());
+});
+afterEach(() => restorePinned());
 
 const resource = "https://mcp.example.test/mcp";
 const issuer = "https://auth.example.test/auth/v1";
@@ -101,11 +112,18 @@ describe("MCP OAuth resource discovery", () => {
     });
     expect(urls()).toEqual([resource, advertised, asInserted]);
     for (const request of requests) {
-      expect(request.redirect).toBe("error");
-      expect(options[requests.indexOf(request)]?.credentials).toBe("omit");
       expect(request.headers.get("authorization")).toBeNull();
       expect(request.signal).toBeDefined();
+      // The configured origin is fetched directly; any other origin goes
+      // through pinnedFetch, which refuses redirects itself.
+      if (request.url.startsWith("https://mcp.example.test/")) {
+        expect(request.redirect).toBe("error");
+        expect(options[requests.indexOf(request)]?.credentials).toBe("omit");
+      }
     }
+    expect(pinned).toEqual([
+      { url: asInserted, method: "GET", addresses: ["203.0.113.1"] },
+    ]);
   });
 
   test("falls back to path insertion and then origin-root resource metadata", async () => {
@@ -470,6 +488,38 @@ describe("MCP OAuth resource discovery", () => {
     expect(
       urls().every((url) => url.startsWith("https://mcp.example.test/")),
     ).toBe(true);
+  });
+
+  test("a cross-origin request re-resolves at request time and refuses a rebound answer", async () => {
+    // The metadata host passes the check, then answers privately when the
+    // request resolves it again. The pinned request must not connect.
+    const meta = "https://meta.example.test/prm";
+    responses.set(
+      resource,
+      () =>
+        new Response(null, {
+          status: 401,
+          headers: {
+            "WWW-Authenticate": `Bearer resource_metadata="${meta}"`,
+          },
+        }),
+    );
+    responses.set(meta, () => Response.json(pr));
+    const asked = new Map<string, number>();
+    lookup.mockImplementation((async (host: string) => {
+      const count = (asked.get(host) ?? 0) + 1;
+      asked.set(host, count);
+      const rebound = host === "meta.example.test" && count > 1;
+      return [{ address: rebound ? "10.0.0.1" : "203.0.113.1", family: 4 }];
+    }) as unknown as typeof dns.lookup);
+    // Discovery falls back to the same-origin document and still succeeds.
+    expect((await discoverMcpOauth(resource)).endpoints.token).toBe(
+      as.token_endpoint,
+    );
+    expect(asked.get("meta.example.test")).toBe(2);
+    expect(urls()).not.toContain(meta);
+    expect(pinned.map((call) => call.url)).not.toContain(meta);
+    expect(urls()).toEqual([resource, inserted, asInserted]);
   });
 
   test.each(["fetch", "DNS", "body"])(

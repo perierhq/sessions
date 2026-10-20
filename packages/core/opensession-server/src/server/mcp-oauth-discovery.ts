@@ -1,3 +1,4 @@
+import { BlockedAddressError, pinnedFetch } from "./shared/pinned-fetch";
 import { assertFetchableUrl } from "./web-fetch";
 
 export interface OauthDiscovery {
@@ -142,7 +143,11 @@ function wellKnown(issuer: URL, name: string): string[] {
 
 /** RFC 9728 resource discovery followed by RFC 8414 / OIDC issuer discovery.
  * No credentials, redirects, recursive discovery, or unbounded provider lists.
- * One deadline covers DNS, all requests, and streaming JSON bodies. */
+ * One deadline covers DNS, all requests, and streaming JSON bodies.
+ * Requests to the configured server's own origin are trusted like the server
+ * itself; any other origin is resolved, checked and pinned at request time,
+ * so a DNS answer that changes after `discoveryUrl` checked it cannot move
+ * the request to a private address. */
 export async function discoverMcpOauth(
   serverUrl: string,
 ): Promise<OauthDiscovery> {
@@ -157,15 +162,19 @@ export async function discoverMcpOauth(
   const request = async (raw: string) => {
     signal.throwIfAborted();
     const url = await bounded(discoveryUrl(raw, resourceUrl), signal);
-    const response = await bounded(
-      fetch(url.href, {
-        headers: { Accept: "application/json" },
-        redirect: "error",
-        credentials: "omit",
-        signal,
-      }),
+    const init = {
+      headers: { Accept: "application/json" },
+      redirect: "error" as const,
       signal,
-    ).catch(() => {
+    };
+    const response = await bounded(
+      url.origin === resourceUrl.origin
+        ? fetch(url.href, { ...init, credentials: "omit" })
+        : pinnedFetch(url.href, { ...init, maxBodyBytes: MAX_METADATA_BYTES }),
+      signal,
+    ).catch((error) => {
+      // A private address is a policy refusal, not a transport failure.
+      if (error instanceof BlockedAddressError) throw error;
       throw new OauthDiscoveryError(true);
     });
     if (
