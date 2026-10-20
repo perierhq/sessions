@@ -313,6 +313,37 @@ managed root. They can access anything available to the Runner's service user.
 Automation sessions never receive Runner tools. Only attach machines the
 workspace intends to trust.
 
+## Production Runners for incidents
+
+Incidents can run a signal's http checks and a project's actions from a
+production Runner, so a check sees what production sees. Binding a Runner to
+a project's incidents reserves it:
+
+- Only Sessions' incident service runs commands on it, as the user
+  `sessions:incidents`, for the projects it is bound to. No session, agent,
+  terminal, Portal or full session can use it, whoever asks, and the
+  `opensession-runners` tools report it as reserved.
+- Pairing a production Runner needs a signed-in person and always registers a
+  new Runner, even when the machine's name matches a paired one. Binding an
+  existing Runner that serves other repositories asks for confirmation first,
+  since they lose it.
+- Windows Runners cannot be bound.
+
+Checks and actions send their request or script to the Runner on stdin, never
+on the command line: curl reads every option from `--config -`, and an action
+runs as `bash -s`. The audit log and the Runner log record a label such as
+`incident http check <signal>` or `incident action <action>` instead of the
+command. This needs a Runner client that advertises command input (`execStdin`
+in its hello). An older client keeps working for everything else, but its
+incident checks report unknown with "Update Runner <name>" and its actions do
+not start. Run `opensession update` on the machine, then restart the Runner
+(`opensession runner service install` reinstalls and starts the service); it
+reconnects with the new capability.
+
+A problem with the Runner itself, such as offline, in maintenance, not
+permitted, too old or disconnected mid-check, makes a check unknown, never a
+failure, and leaves an action's outcome unknown for a person to check.
+
 ## Operator-managed migration
 
 The target must already contain a compatible Open Session Runner client.
