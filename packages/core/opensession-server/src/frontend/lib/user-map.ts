@@ -237,7 +237,7 @@ export function makeUserMap<V>(opts: {
     return next;
   }
 
-  function remove(keys: readonly string[]): UserMapEntries<V> {
+  function remove(keys: readonly string[]) {
     const user = currentUser();
     const hydrated = hydratedFor === user;
     // Hydrated, the cache is the user's map, so a key it lacks is already

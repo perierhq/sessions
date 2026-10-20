@@ -44,15 +44,8 @@ export function nextListOpen(requestedOpen: boolean, count: number): boolean {
   return count > 0 && requestedOpen;
 }
 
-/** The parts of a list item the Restore focus hand-off walks. */
-interface RestoreFocusItem {
-  nextElementSibling: { querySelector: (selector: string) => unknown } | null;
-  previousElementSibling: {
-    querySelector: (selector: string) => unknown;
-  } | null;
-}
-
-type Focusable = { focus: (options?: FocusOptions) => void };
+/** What focus can land on. */
+export type Focusable = Pick<HTMLElement, "focus">;
 
 /**
  * Where keyboard focus goes when a Restore takes its row away: the next
@@ -61,15 +54,15 @@ type Focusable = { focus: (options?: FocusOptions) => void };
  * never falls to the page.
  */
 export function restoreFocusTarget(
-  item: RestoreFocusItem | null,
+  neighbours: readonly (Focusable | null | undefined)[],
   fallback: () => Focusable | null,
 ): Focusable | null {
-  const neighbour = item?.nextElementSibling ?? item?.previousElementSibling;
-  const restore = neighbour?.querySelector("[data-hidden-restore]") as
-    | Focusable
-    | null
-    | undefined;
-  return restore ?? fallback();
+  return neighbours.find((candidate) => candidate != null) ?? fallback();
+}
+
+/** A list item's Restore button, the hook `data-hidden-restore` marks. */
+function restoreButtonIn(item: Element | null | undefined) {
+  return item?.querySelector<HTMLElement>("[data-hidden-restore]");
 }
 
 /**
@@ -224,7 +217,7 @@ export function HiddenList({
   entries: HiddenListEntry[];
   onOpenEntry: (entry: HiddenListEntry) => void;
   onRestore: (entry: HiddenListEntry) => void;
-  focusFallback: () => HTMLElement | null;
+  focusFallback: () => Focusable | null;
   className: string;
 }) {
   return (
@@ -272,8 +265,12 @@ export function HiddenList({
                   // The row leaves with its button, so keyboard focus moves
                   // first: to the next Restore, or, restoring the last entry,
                   // to a control that outlives the list, never to the page.
+                  const item = event.currentTarget.closest("li");
                   restoreFocusTarget(
-                    event.currentTarget.closest("li"),
+                    [
+                      restoreButtonIn(item?.nextElementSibling),
+                      restoreButtonIn(item?.previousElementSibling),
+                    ],
                     focusFallback,
                   )?.focus({ preventScroll: true });
                   onRestore(entry);

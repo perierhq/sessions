@@ -49,8 +49,9 @@ things inside it become workspaces.
 You can hide a repository's band from your own sidebar, from the band's
 right-click menu or the switch beside it in Customize sidebar. Its workspaces
 leave your sidebar like hidden rows do: the open session stays, a workspace
-blocked on a question still shows, and the repository is listed under Hidden
-until you restore it. Starting a new session in it restores it.
+blocked on a question and a review requested from you still show, and the
+repository is listed under Hidden until you restore it. Starting a new session
+in it restores it.
 
 There are two kinds, and the difference is only where the work comes from:
 
@@ -126,7 +127,8 @@ Hiding a row takes it off your own sidebar and nobody else's; archiving is the
 global version. A hidden row comes back by itself while one of its sessions is
 blocked on a question. Otherwise the Hidden row at the foot of the sidebar
 lists everything you hid, with when you hid it and a Restore for each, and ⌘K
-still finds it.
+still finds it. Opening a hidden session shows its row while you are in it,
+without restoring it.
 
 A workspace with no worktree is fine too — that is what an ask-style workspace
 looks like, or a feed workspace for a ticket where there is nothing to check

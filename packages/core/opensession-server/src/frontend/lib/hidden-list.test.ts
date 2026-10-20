@@ -135,11 +135,13 @@ describe("hiddenRowKeys", () => {
   // The server rejects a request over its limits rather than truncating it,
   // so the client never sends one.
   test("stays within the request limits, keeping the newest hides", () => {
-    const hides: Record<string, string> = { ["x".repeat(129)]: "2026-08-02" };
-    for (let i = 0; i < MAX_HIDDEN_ROW_KEYS + 5; i++)
-      hides[`s${String(i).padStart(3, "0")}`] = new Date(
-        Date.UTC(2026, 0, 1, 0, i),
-      ).toISOString();
+    const hides = Object.fromEntries([
+      ["x".repeat(129), "2026-08-02T00:00:00.000Z"],
+      ...Array.from({ length: MAX_HIDDEN_ROW_KEYS + 5 }, (_, i) => [
+        `s${String(i).padStart(3, "0")}`,
+        new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+      ]),
+    ]);
     const keys = hiddenRowKeys(hides);
     expect(keys).toHaveLength(MAX_HIDDEN_ROW_KEYS);
     // The five oldest go; the over-long key is never sent.

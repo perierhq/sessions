@@ -14,6 +14,8 @@ import {
   filterSidebarSessions,
   latestSupportSessionsByThread,
   personLensName,
+  projectBandOf,
+  type ProjectBandDeps,
   pinnedWorkspaceRows,
   sortSidebarSessions,
   supportThreadFromFeedItem,
@@ -257,6 +259,99 @@ describe("sidebar derived data", () => {
       ["repo-b", ["repo-b/other"]],
     ]);
     expect(projects.bands[0]?.urgent).toBe(1);
+  });
+
+  // A repo hide must take exactly the rows the band would show. A workspace
+  // whose sessions run in another repo files under the workspace's own repo,
+  // and so does its hide: hiding the other repo leaves it alone.
+  test("a repo hide follows the band a row files under", () => {
+    const spanning: WsRow = {
+      ...row("ws-span", "jaap"),
+      workspace: {
+        id: "span",
+        name: "Span",
+        repo: "repo-a",
+        createdBy: "jaap",
+        createdAt: "2026-08-18T11:00:00.000Z",
+      } satisfies Workspace,
+      sessions: [
+        session("in-b", { repo: "repo-b" }),
+        session("in-a", { repo: "repo-a" }),
+      ],
+    };
+    const scratch = row("scratch", "jaap");
+    const ask = row("ask", "jaap");
+    const deps: ProjectBandDeps = {
+      askBand: "__ask__",
+      rowIsFeedOnly: () => false,
+      rowIsScratch: (candidate) => candidate.key === "scratch",
+      rowIsAsk: (candidate) => candidate.key === "ask",
+      // Sidebar's wsRowRepo: the workspace's repo wins over a session's.
+      workspaceRepo: (candidate) =>
+        candidate.workspace?.repo || candidate.sessions[0]?.repo || "default",
+    };
+    expect(projectBandOf(spanning, deps)).toBe("repo-a");
+    expect(projectBandOf(scratch, deps)).toBeNull();
+    expect(projectBandOf(ask, deps)).toBe("__ask__");
+
+    const bandOf = (candidate: WsRow) => projectBandOf(candidate, deps);
+    const all = [spanning, scratch, ask];
+    const hideB = partitionHiddenRepos(
+      all,
+      new Set(["repo-b"]),
+      bandOf,
+      () => false,
+    );
+    expect([...hideB]).toEqual([]);
+    const hideA = partitionHiddenRepos(
+      all,
+      new Set(["repo-a"]),
+      bandOf,
+      () => false,
+    );
+    expect([...hideA]).toEqual(["ws-span"]);
+
+    // The bands file the same row under the same repo.
+    const projects = deriveSidebarProjectBands({
+      activeRows: all.filter((candidate) => !hideB.has(candidate.key)),
+      snoozedRows: [],
+      needsReviewRows: [],
+      approvedRows: [],
+      awaitingReviewRows: [],
+      lanePrItems: [],
+      requestedPrItems: [],
+      registeredRepos: [],
+      repos: ["repo-a", "repo-b"],
+      savedRepoOrder: [],
+      filter: filter(),
+      search: "",
+      isPhone: false,
+      ...deps,
+      hiddenRepos: new Set(["repo-b"]),
+    });
+    expect(
+      projects.bands.map((band) => [
+        band.repo,
+        band.rows.map(({ key }) => key),
+      ]),
+    ).toEqual([
+      ["__ask__", ["ask"]],
+      ["repo-a", ["ws-span"]],
+    ]);
+    expect(projects.scratchRows.map(({ key }) => key)).toEqual(["scratch"]);
+  });
+
+  // Sidebar.tsx hands one ProjectBandDeps to both the bands and the repo-hide
+  // partition. A hand-copied band rule there drifted from this module once.
+  test("Sidebar decides bands and repo hides with the same projectBandOf", async () => {
+    const source = await Bun.file(
+      new URL("../components/Sidebar.tsx", import.meta.url),
+    ).text();
+    expect(source).toContain("(row) => projectBandOf(row, bandDeps)");
+    expect(source).toMatch(
+      /deriveSidebarProjectBands\(\{[^}]*\.\.\.bandDeps,/s,
+    );
+    expect(source).not.toContain("bandRepoOf");
   });
 
   test("keeps the selected session visible through repo and search filters", () => {
