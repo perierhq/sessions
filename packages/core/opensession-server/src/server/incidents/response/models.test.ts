@@ -104,6 +104,23 @@ test("independence compares provider, then id", () => {
     ),
   ).toBe("same-model");
 });
+test("dated, variant and Bedrock ids name the same model", () => {
+  for (const [a, b] of [
+    ["claude-sonnet-4-5-20250929", "pi/anthropic/claude-sonnet-4-5"],
+    ["pi/anthropic/claude-sonnet-4-5@20250929", "claude-sonnet-4-5"],
+    ["pi/openrouter/anthropic/claude-sonnet-4-5:thinking", "claude-sonnet-4-5"],
+    [
+      "pi/bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "pi/anthropic/claude-sonnet-4-5",
+    ],
+    ["pi/bedrock/anthropic.claude-sonnet-4-5-v2:0", "claude-sonnet-4-5"],
+    ["gpt-6.1-sol-2026-08-01", "pi/openai/gpt-6.1-sol"],
+    ["claude-sonnet-4-5-latest", "claude-sonnet-4-5"],
+  ])
+    expect([a, b, sameModel(a, b)]).toEqual([a, b, true]);
+  expect(sameModel("claude-sonnet-4-5", "claude-sonnet-4-6")).toBe(false);
+  expect(sameModel("claude-opus-4-1", "claude-opus-4")).toBe(false);
+});
 test("aliases and routed ids name the same model", () => {
   expect(canonicalModelId("opus")).toBe("pi/anthropic/claude-opus-5-5");
   expect(canonicalModelId("claude-opus-5-5")).toBe(

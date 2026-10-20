@@ -43,12 +43,28 @@ export function canonicalModelId(id: string): string {
   return pickerModelId(resolveModel(trimmed)?.id ?? trimmed);
 }
 
-function modelSlug(id: string): string {
-  return (canonicalModelId(id).split("/").at(-1) ?? "").toLowerCase();
+/** The model family a slug names, without the parts that only pick a
+ *  snapshot or a route: a Bedrock region and vendor prefix
+ *  (`us.anthropic.`), a Bedrock version (`-v1:0`), a `:variant`, a date
+ *  (`-20250929`, `@20250929`, `-2026-08-01`) and `-latest`. */
+function modelFamily(slug: string): string {
+  return slug
+    .replace(/^(?:(?:us|eu|apac|global|us-gov)\.)?[a-z]+\.(?=[a-z])/, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
+    .replace(/:[^:]*$/, "")
+    .replace(/[-@](?:\d{8}|\d{4}-\d{2}-\d{2})$/, "")
+    .replace(/-latest$/, "");
 }
 
-/** Two ids name the same model when their final slug matches, whatever
- *  route reaches it (`pi/openrouter/anthropic/x` and `pi/anthropic/x`). */
+function modelSlug(id: string): string {
+  return modelFamily(
+    (canonicalModelId(id).split("/").at(-1) ?? "").toLowerCase(),
+  );
+}
+
+/** Two ids name the same model when their family matches, whatever route
+ *  or snapshot reaches it (`pi/openrouter/anthropic/x`, `pi/anthropic/x`,
+ *  `x-20250929`, Bedrock's `us.anthropic.x-v1:0`). */
 export function sameModel(a: string, b: string): boolean {
   const slug = modelSlug(a);
   return slug !== "" && slug === modelSlug(b);
