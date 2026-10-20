@@ -191,6 +191,10 @@ export function validateRunners(
   for (const ref of list) {
     const info = ctx.env.runner(ref);
     if (!info) return { error: `Unknown Runner "${ref}"` };
+    if (info.reserved)
+      return {
+        error: `Runner ${info.name} is reserved for incidents: agents reach it only through host commands and egress`,
+      };
     if (!info.isolated)
       return {
         error: `Runner ${info.name} is not set up for isolated automation work`,
@@ -222,7 +226,9 @@ function commandRunner(ref: string, ctx: ItemContext): FieldResult<string> {
   if (!info) return { error: `Unknown Runner "${ref}"` };
   if (!info.commands)
     return { error: `Runner ${info.name} does not accept commands` };
-  if (info.userRestricted)
+  // A reserved Runner's user list names only the incident service; agents
+  // reach it on their own read-only path.
+  if (info.userRestricted && !info.reserved)
     return {
       error: `Runner ${info.name} only accepts named people; incident agents act as nobody`,
     };

@@ -28,6 +28,11 @@ export interface AccessRunnerInfo {
   commands: boolean;
   /** The Runner only accepts named people. */
   userRestricted: boolean;
+  /** Reserved for incidents (`reserveRunnerForIncidents`): agents reach it
+   *  only through host commands and egress, on the read-only path
+   *  (runner-exec.ts), and only for the projects it is bound to
+   *  (`allowedRepos`). */
+  reserved: boolean;
   maintenance: boolean;
   allowedRepos: string[];
   connected: boolean;
@@ -128,6 +133,7 @@ export async function loadAccessEnvironment(): Promise<AccessEnvironment> {
     isolated: r.permissions.automationDescendants === true,
     commands: r.permissions.commands === true,
     userRestricted: r.allowedUsers.length > 0,
+    reserved: r.incidentReserved === true,
     maintenance: r.maintenance === true,
     allowedRepos: [...r.allowedRepos],
     connected: isRunnerConnected(r.id),

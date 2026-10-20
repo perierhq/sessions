@@ -912,6 +912,31 @@ export function runnerAllowed(
   return true;
 }
 
+/**
+ * Whether an incident agent's read-only command (a granted host command or
+ * Runner egress, runner-ws `incident-agent-readonly`) may run on this Runner
+ * for `repo`, the incident's project. A Runner reserved for incidents takes
+ * it for the projects it is bound to; any other Runner only under its own
+ * policy, with nobody as the user. Never on Windows, whose shell reads the
+ * quoting differently. Whether the agent's access grants this Runner is
+ * checked separately, just before dispatch.
+ */
+export function runnerAllowsIncidentAgent(
+  runner: Runner,
+  input: { repo: string },
+): boolean {
+  if (
+    runner.maintenance ||
+    !runner.permissions.commands ||
+    runner.platform === "win32"
+  )
+    return false;
+  if (runner.allowedRepos.length && !runner.allowedRepos.includes(input.repo))
+    return false;
+  // A reserved Runner's user list names only the incident service.
+  return runner.incidentReserved === true || runner.allowedUsers.length === 0;
+}
+
 /** Eligibility gate for a future local-model caller. It deliberately returns
  * false for a merely detected runtime, for unconstrained tasks, and for a
  * user outside the policy. No generic Runner network proxy is involved. */

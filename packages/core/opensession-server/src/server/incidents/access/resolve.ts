@@ -324,16 +324,18 @@ export async function resolveAgentAccess(
     const info = env.runner(id);
     const reason = !info
       ? "Runner was removed"
-      : !info.isolated
-        ? "Runner is no longer isolated"
-        : info.userRestricted
-          ? "Runner now only accepts named people"
-          : info.maintenance
-            ? "Runner is in maintenance"
-            : info.allowedRepos.length &&
-                !info.allowedRepos.some((r) => repos.includes(r))
-              ? "Runner does not serve these repos"
-              : null;
+      : info.reserved
+        ? "Runner is reserved for incidents"
+        : !info.isolated
+          ? "Runner is no longer isolated"
+          : info.userRestricted
+            ? "Runner now only accepts named people"
+            : info.maintenance
+              ? "Runner is in maintenance"
+              : info.allowedRepos.length &&
+                  !info.allowedRepos.some((r) => repos.includes(r))
+                ? "Runner does not serve these repos"
+                : null;
     if (reason) narrow("runners", id, reason);
     return !reason;
   });
@@ -346,7 +348,7 @@ export async function resolveAgentAccess(
       ? "Runner was removed"
       : !info.commands
         ? "Runner no longer accepts commands"
-        : info.userRestricted
+        : info.userRestricted && !info.reserved
           ? "Runner now only accepts named people"
           : !runsPosixShell(info)
             ? "Runner does not run on Linux or macOS"

@@ -323,6 +323,13 @@ a project's incidents reserves it:
   `sessions:incidents`, for the projects it is bound to. No session, agent,
   terminal, Portal or full session can use it, whoever asks, and the
   `opensession-runners` tools report it as reserved.
+- The one exception is an incident agent of a project it is bound to, whose
+  access settings grant this Runner as a read-only host or as the egress
+  route. Its `host_command` and `egress_fetch` calls reach the Runner on a
+  read-only path of their own: no user, never the Runner's AWS role, input
+  on stdin and a label in the logs, and only after the agent's access is
+  resolved again just before the command is sent. An agent's session can
+  never run on it.
 - Pairing a production Runner needs a signed-in person and always registers a
   new Runner, even when the machine's name matches a paired one. Binding an
   existing Runner that serves other repositories asks for confirmation first,

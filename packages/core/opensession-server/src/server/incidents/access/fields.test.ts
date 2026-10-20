@@ -205,3 +205,37 @@ test("stored documents parse strictly", () => {
     }),
   ).toEqual({ error: expect.stringContaining("verifier") });
 });
+
+test("a Runner reserved for incidents serves hosts and egress, never sessions", () => {
+  t.spec.runners.push({
+    id: "rn-reserved",
+    name: "prod-reserved",
+    platform: "linux",
+    isolated: false,
+    commands: true,
+    userRestricted: true,
+    reserved: true,
+    maintenance: false,
+    allowedRepos: ["acme"],
+    connected: true,
+  });
+  expect(
+    validateProfileFields(
+      {
+        hosts: [{ runner: "rn-reserved", access: "read-only" }],
+        egress: { route: "runner", runner: "prod-reserved" },
+      },
+      { ...inv, partial: true },
+      env(),
+    ),
+  ).toEqual({
+    hosts: [{ runner: "rn-reserved", access: "read-only" }],
+    egress: { route: "runner", runner: "rn-reserved" },
+  });
+  expect(
+    validateProfileFields({ runners: ["rn-reserved"] }, inv, env()),
+  ).toEqual({
+    error:
+      "Runner prod-reserved is reserved for incidents: agents reach it only through host commands and egress",
+  });
+});

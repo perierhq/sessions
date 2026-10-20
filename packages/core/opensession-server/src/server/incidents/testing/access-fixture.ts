@@ -63,6 +63,7 @@ const runner = (
   isolated: true,
   commands: true,
   userRestricted: false,
+  reserved: false,
   maintenance: false,
   allowedRepos: [],
   connected: true,
