@@ -644,6 +644,27 @@ const PATCH_KEYS = [
   "localInferencePolicy",
 ] as const;
 
+/** All a patch may change on a Runner reserved for incidents: its policy
+ *  changes only through binding (`reserveRunnerForIncidents`). */
+const RESERVED_PATCH_KEYS = [
+  "label",
+  "description",
+  "location",
+  "maintenance",
+] as const;
+
+/** Why `input` may not be applied to `runner`; null when it may. */
+export function reservedRunnerPatchProblem(
+  runner: Runner,
+  input: object,
+): string | null {
+  if (!runner.incidentReserved) return null;
+  const allowed: readonly string[] = RESERVED_PATCH_KEYS;
+  return Object.keys(input).every((key) => allowed.includes(key))
+    ? null
+    : `Runner ${runner.name} is reserved for incidents: only its label, description, location and maintenance can change`;
+}
+
 export function updateRunner(
   id: string,
   input: RunnerPatch,
@@ -652,6 +673,16 @@ export function updateRunner(
   const index = store.runners.findIndex((runner) => runner.id === id);
   if (index < 0) return undefined;
   const current = store.runners[index];
+  if (current.incidentReserved) {
+    // Anything else in the patch is ignored, never applied.
+    const patch: Partial<Pick<Runner, (typeof RESERVED_PATCH_KEYS)[number]>> =
+      {};
+    for (const key of RESERVED_PATCH_KEYS)
+      if (key in input) (patch as Record<string, unknown>)[key] = input[key];
+    store.runners[index] = normalizeRunner({ ...current, ...patch });
+    save(store);
+    return store.runners[index];
+  }
   // Only the patchable fields: an HTTP body passed straight through cannot
   // set the credential, the id or the incident reservation.
   const patch: RunnerPatch = {};

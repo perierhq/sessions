@@ -15,6 +15,7 @@ import {
   removeRunner,
   reserveRunner,
   reserveRunnerForIncidents,
+  reservedRunnerPatchProblem,
   runnerAllowed,
   runnerAllowsLocalInference,
   runnerAvailableForSession,
@@ -467,6 +468,62 @@ describe("Runners reserved for incidents", () => {
         incidentService: true,
       }),
     ).toBe(false);
+  });
+
+  test("a reserved Runner's policy cannot be patched", () => {
+    const out = register({ name: "prod-3", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(
+      reservedRunnerPatchProblem(reserved, {
+        label: "Prod",
+        description: "d",
+        location: "eu",
+        maintenance: true,
+      }),
+    ).toBeNull();
+    expect(reservedRunnerPatchProblem(reserved, { allowedUsers: [] })).toBe(
+      "Runner prod-3 is reserved for incidents: only its label, description, location and maintenance can change",
+    );
+    expect(reservedRunnerPatchProblem(out.runner, { allowedUsers: [] })).toBe(
+      null,
+    );
+    const patched = updateRunner(reserved.id, {
+      label: "Prod",
+      description: "Production box",
+      location: "eu-west",
+      maintenance: true,
+      allowedUsers: ["Ada"],
+      allowedRepos: [],
+      workspaceRoots: ["/srv"],
+      permissions: { fullSessions: true, automationDescendants: true },
+      aws: { roleArn: "arn:aws:iam::123456789012:role/prod" },
+      workspaceRetention: "delete",
+      capabilities: { tags: ["gpu"] },
+      localInferencePolicy: {
+        enabled: true,
+        allowedUsers: [],
+        allowedModels: ["m"],
+        allowedTasks: ["chat"],
+      },
+    });
+    expect(patched).toMatchObject({
+      label: "Prod",
+      description: "Production box",
+      location: "eu-west",
+      maintenance: true,
+      incidentReserved: true,
+      allowedUsers: [INCIDENT_SERVICE_USER],
+      allowedRepos: ["acme"],
+      workspaceRoots: [],
+      permissions: reserved.permissions,
+      capabilities: reserved.capabilities,
+    });
+    expect(patched?.aws).toBeUndefined();
+    expect(patched?.localInferencePolicy).toBeUndefined();
+    expect(patched?.workspaceRetention).toBe(reserved.workspaceRetention);
   });
 
   test("a Runner patch cannot set the reservation or the credential", () => {

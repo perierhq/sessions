@@ -58,6 +58,10 @@ export type RunnerInfo = {
   };
   /** IAM role runs on this Runner assume through the Open Session host. */
   aws?: { roleArn: string; externalId?: string };
+  /** Reserved for incidents: its policy changes only by binding it to a
+   *  project, so a patch may carry only label, description, location and
+   *  maintenance. */
+  incidentReserved?: true;
   workload?: { sessionId?: string; operation?: string; startedAt?: string };
   reservation?: {
     sessionId?: string;
