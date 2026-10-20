@@ -1,10 +1,11 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
 import type {
   Incident,
   IncidentImpact,
   Observation,
   Signal,
 } from "../../shared/incidents";
+import * as incidentStore from "./incident-store";
 import { createIncident, getIncident, updateIncident } from "./incident-store";
 import {
   type ImpactDeps,
@@ -546,4 +547,163 @@ test("a disabled impact signal is skipped for the next one", async () => {
   }));
   expect(await refreshIncidentImpacts(NOW, deps)).toBe(1);
   expect(queried).toEqual([next.id]);
+});
+
+async function impactSignal(name: string) {
+  const s = await createSignal(
+    {
+      name,
+      project: "acme",
+      source: { kind: "http", url: `https://acme.example.test/${name}` },
+      impact: httpImpact,
+    },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  return s;
+}
+
+async function openOn(signalId: string, openedAt = OPENED) {
+  return createIncident({
+    project: "acme",
+    title: `${signalId} is failing`,
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: incident.openedBy,
+    signalIds: [signalId],
+    primarySignalId: signalId,
+    at: openedAt,
+    detail: "failed 3 times",
+  });
+}
+
+test("at most four impact queries run at once, each bounded to 5 s", async () => {
+  for (let i = 0; i < 6; i++) await openOn((await impactSignal(`s${i}`)).id);
+  let running = 0;
+  let most = 0;
+  const timeouts: unknown[] = [];
+  const written = await refreshIncidentImpacts(NOW, {
+    runSource: async (s) => {
+      timeouts.push((s.source as { timeoutMs?: number }).timeoutMs);
+      running++;
+      most = Math.max(most, running);
+      await Bun.sleep(5);
+      running--;
+      return run({ "$.failed": [1] });
+    },
+  });
+  expect(written).toBe(6);
+  expect(most).toBe(4);
+  expect(timeouts).toEqual(Array(6).fill(5_000));
+});
+
+test("an impact query that does not answer in time keeps the last numbers", async () => {
+  const s = await impactSignal("slow");
+  const inc = await openOn(s.id);
+  await updateIncident(inc.id, (c) => ({
+    ...c,
+    impact: {
+      signalId: s.id,
+      at: OPENED,
+      count: 7,
+      approximate: true,
+      noun: "searches failed",
+      label: "the request log",
+    },
+  }));
+  expect(
+    await refreshIncidentImpacts(NOW, {
+      runSource: () => new Promise(() => {}),
+      queryTimeoutMs: 20,
+    }),
+  ).toBe(1);
+  expect((await getIncident(inc.id))?.impact).toMatchObject({
+    count: 7,
+    error: "No answer within 20 ms",
+  });
+});
+
+test("incidents of one signal opened together are measured once per tick", async () => {
+  const s = await impactSignal("shared");
+  const a = await openOn(s.id);
+  const b = await openOn(s.id);
+  const later = await openOn(s.id, "2026-10-20T10:10:00.000Z");
+  const urls: string[] = [];
+  expect(
+    await refreshIncidentImpacts(NOW, {
+      runSource: async (signal) => {
+        urls.push((signal.source as { url: string }).url);
+        return run({ "$.failed": [5] });
+      },
+    }),
+  ).toBe(3);
+  expect(urls).toHaveLength(2);
+  for (const id of [a.id, b.id, later.id])
+    expect((await getIncident(id))?.impact?.count).toBe(5);
+});
+
+test("one incident that fails to write does not stop the others", async () => {
+  const bad = await openOn((await impactSignal("bad")).id);
+  const good = await openOn((await impactSignal("good")).id);
+  const realUpdate = incidentStore.updateIncident;
+  const spy = spyOn(incidentStore, "updateIncident").mockImplementation(
+    async (id, mutate) => {
+      if (id === bad.id) throw new Error("store is down");
+      return realUpdate(id, mutate);
+    },
+  );
+  const logged: unknown[][] = [];
+  const errors = spyOn(console, "error").mockImplementation((...args) => {
+    logged.push(args);
+  });
+  try {
+    expect(
+      await refreshIncidentImpacts(NOW, {
+        runSource: async () => run({ "$.failed": [2] }),
+      }),
+    ).toBe(1);
+  } finally {
+    spy.mockRestore();
+    errors.mockRestore();
+  }
+  expect((await getIncident(good.id))?.impact?.count).toBe(2);
+  expect((await getIncident(bad.id))?.impact).toBeUndefined();
+  expect(logged).toEqual([
+    [`[incidents] impact of ${bad.id} failed:`, "store is down"],
+  ]);
+});
+
+test("a signal whose impact query keeps failing is backed off", async () => {
+  const s = await impactSignal("flaky");
+  await openOn(s.id);
+  let runs = 0;
+  let fail = true;
+  const deps: Partial<ImpactDeps> = {
+    runSource: async () => {
+      runs++;
+      return fail ? run({}, "fail") : run({ "$.failed": [3] });
+    },
+  };
+  const MIN = 60_000;
+  const tick = (t: number) => refreshIncidentImpacts(NOW + t, deps);
+  for (const t of [0, 1, 2].map((m) => m * MIN)) await tick(t);
+  expect(runs).toBe(3);
+  // Three errors in a row: skipped for 5 minutes.
+  await tick(3 * MIN);
+  await tick(6 * MIN);
+  expect(runs).toBe(3);
+  await tick(7 * MIN + 1);
+  expect(runs).toBe(4);
+  // Failed again: the pause doubles to 10 minutes.
+  await tick(16 * MIN);
+  expect(runs).toBe(4);
+  fail = false;
+  await tick(17 * MIN + 2);
+  expect(runs).toBe(5);
+  // An answer clears the backoff.
+  fail = true;
+  await tick(18 * MIN);
+  await tick(19 * MIN);
+  expect(runs).toBe(7);
 });
