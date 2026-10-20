@@ -360,10 +360,28 @@ let testSend: PinnedFetchDeps["send"] | undefined;
 export function __setPinnedFetchSendForTest(
   send: PinnedFetchDeps["send"] | undefined,
 ): void {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("pinned fetch test seam used outside tests");
   testSend = send;
 }
 
 export const PINNED_FETCH_TIMEOUT_MS = 15_000;
+
+/** Sent unless the caller sets its own: node:http adds no User-Agent or
+ *  Accept, and some servers behind a firewall refuse requests without one. */
+export const PINNED_FETCH_USER_AGENT =
+  "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/perierhq/sessions)";
+
+function withDefaultHeaders(
+  headers: Record<string, string> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = { ...headers };
+  const has = (name: string) =>
+    Object.keys(out).some((key) => key.toLowerCase() === name);
+  if (!has("user-agent")) out["user-agent"] = PINNED_FETCH_USER_AGENT;
+  if (!has("accept")) out.accept = "*/*";
+  return out;
+}
 const PINNED_FETCH_MAX_BODY_BYTES = 1024 * 1024;
 
 export interface PinnedFetchInit {
@@ -402,7 +420,7 @@ export async function pinnedFetch(
       target,
       {
         method: init.method,
-        headers: init.headers,
+        headers: withDefaultHeaders(init.headers),
         body: init.body,
         signal,
         maxBodyBytes: init.maxBodyBytes ?? PINNED_FETCH_MAX_BODY_BYTES,

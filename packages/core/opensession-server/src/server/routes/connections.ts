@@ -49,6 +49,7 @@ import {
   setPiEnabled,
   setPiPickerModels,
 } from "../pi-config";
+import { BlockedAddressError } from "../shared/pinned-fetch";
 
 /** The client-facing shape of a configured provider: the key masked, plus the
  *  fields Settings edits and a summary of the catalog it cannot edit. */
@@ -481,6 +482,12 @@ export async function handleConnectionsRoutes(
       );
       return Response.json({ url: authorizeUrl });
     } catch (e: any) {
+      // Don't echo the resolved private address back to the browser.
+      if (e instanceof BlockedAddressError)
+        return Response.json(
+          { error: "The sign-in server is on a private address" },
+          { status: 502 },
+        );
       return Response.json({ error: e?.message || String(e) }, { status: 502 });
     }
   }

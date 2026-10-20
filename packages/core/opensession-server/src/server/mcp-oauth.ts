@@ -242,14 +242,21 @@ function oauthPost(
 ): Promise<Response> {
   const sameOrigin = (() => {
     try {
-      return new URL(endpoint).origin === new URL(serverUrl).origin;
+      const origin = new URL(endpoint).origin;
+      return origin !== "null" && origin === new URL(serverUrl).origin;
     } catch {
       return false;
     }
   })();
+  const headers = { Accept: "application/json", ...init.headers };
   return sameOrigin
-    ? fetch(endpoint, { ...init, method: "POST", redirect: "error" })
-    : pinnedFetch(endpoint, { ...init, method: "POST", redirect: "error" });
+    ? fetch(endpoint, { ...init, headers, method: "POST", redirect: "error" })
+    : pinnedFetch(endpoint, {
+        ...init,
+        headers,
+        method: "POST",
+        redirect: "error",
+      });
 }
 
 /** Dynamic client registration (RFC 7591). Returns the client_id. */

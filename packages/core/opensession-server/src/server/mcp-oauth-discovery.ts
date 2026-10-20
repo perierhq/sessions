@@ -170,7 +170,7 @@ export async function discoverMcpOauth(
     const response = await bounded(
       url.origin === resourceUrl.origin
         ? fetch(url.href, { ...init, credentials: "omit" })
-        : pinnedFetch(url.href, init),
+        : pinnedFetch(url.href, { ...init, maxBodyBytes: MAX_METADATA_BYTES }),
       signal,
     ).catch((error) => {
       // A private address is a policy refusal, not a transport failure.

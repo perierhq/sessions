@@ -11,6 +11,7 @@ import type { AddressInfo } from "net";
 import { isBlockedAddress } from "./network-address";
 import {
   BlockedAddressError,
+  PINNED_FETCH_USER_AGENT,
   type PinnedFetchDeps,
   pinnedFetch,
   pinnedHttpRequest,
@@ -109,6 +110,30 @@ describe("pinnedFetch", () => {
       },
     ]);
     expect(deps.lookups).toEqual(["acme.example.test"]);
+  });
+
+  test("sends a default User-Agent and Accept unless the caller sets them", async () => {
+    const sent: Record<string, string>[] = [];
+    const deps: PinnedFetchDeps = {
+      resolve: async () => [LOCAL],
+      isBlocked: (address) => address !== LOCAL && isBlockedAddress(address),
+      send: async (_target, init) => {
+        sent.push(init.headers ?? {});
+        return { status: 200, headers: new Headers(), body: new Uint8Array() };
+      },
+    };
+    await pinnedFetch(at("/a"), {}, deps);
+    await pinnedFetch(
+      at("/b"),
+      { headers: { "User-Agent": "custom", Accept: "application/json" } },
+      deps,
+    );
+    expect(sent[0]["user-agent"]).toBe(PINNED_FETCH_USER_AGENT);
+    expect(sent[0].accept).toBe("*/*");
+    expect(sent[1]).toEqual({
+      "User-Agent": "custom",
+      Accept: "application/json",
+    });
   });
 
   test("refuses a redirect by default and never requests its target", async () => {
