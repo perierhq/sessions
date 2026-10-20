@@ -9,6 +9,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { existsSync, readFileSync } from "fs";
+import { readFile } from "node:fs/promises";
 import { randomUUIDv7 } from "bun";
 import { statePath } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
@@ -148,13 +149,21 @@ function storePath(): string {
   return statePath(".opensession-runners.json");
 }
 
-function load(): Store {
-  if (!existsSync(storePath())) return { runners: [] };
+function parseStore(raw: string): Store {
   try {
-    const parsed = JSON.parse(readFileSync(storePath(), "utf8"));
+    const parsed = JSON.parse(raw);
     return Array.isArray(parsed?.runners)
       ? { runners: parsed.runners.map(normalizeRunner) }
       : { runners: [] };
+  } catch {
+    return { runners: [] };
+  }
+}
+
+function load(): Store {
+  if (!existsSync(storePath())) return { runners: [] };
+  try {
+    return parseStore(readFileSync(storePath(), "utf8"));
   } catch {
     return { runners: [] };
   }
@@ -438,6 +447,18 @@ function redeemPairing(code: string): Pairing | undefined {
 
 export function listRunners(): Runner[] {
   return load().runners;
+}
+
+/** listRunners for the gateway thread: the same store, read asynchronously.
+ * A missing or unparsable file is no Runners. */
+export async function listRunnersAsync(): Promise<Runner[]> {
+  let raw: string;
+  try {
+    raw = await readFile(storePath(), "utf8");
+  } catch {
+    return [];
+  }
+  return parseStore(raw).runners;
 }
 
 export function getRunner(id: string): Runner | undefined {
