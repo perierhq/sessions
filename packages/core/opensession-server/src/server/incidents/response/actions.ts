@@ -94,6 +94,13 @@ export interface ActionDeps {
 
 /** The Runner runs the script it reads on stdin. */
 const ACTION_COMMAND = "exec bash -s";
+
+/** The script as one group whose own stdin is empty: bash reads the whole
+ *  group before running it, so a step that reads stdin (`cat`, `read`, an
+ *  ssh) gets nothing instead of consuming the rest of the script. */
+function actionScript(rendered: string): string {
+  return `{\n${rendered}\n} </dev/null\n`;
+}
 const CHECK_PRODUCTION = "Check production before going on";
 
 function lastStderrLine(stderr: string): string | undefined {
@@ -155,7 +162,7 @@ export async function runIncidentAction(
       const result = await exec(action.runner, ACTION_COMMAND, {
         timeoutMs: action.timeoutMs,
         repo: input.project,
-        stdin: `${rendered}\n`,
+        stdin: actionScript(rendered),
         auditCommand: `incident action ${action.id}`,
         sessionId: input.sessionId,
         cwd: action.cwd,

@@ -110,7 +110,8 @@ test("runs on the Runner as the incident service, the command on stdin only", as
     {
       timeoutMs: 600_000,
       repo: "acme",
-      stdin: "./rollback.sh 'abc1234' --incident 'inc-1'\n",
+      // One group with its own stdin: a step cannot read the rest.
+      stdin: "{\n./rollback.sh 'abc1234' --incident 'inc-1'\n} </dev/null\n",
       auditCommand: "incident action rollback",
       sessionId: "sess-coord",
       cwd: undefined,
@@ -131,6 +132,48 @@ test("runs on the Runner as the incident service, the command on stdin only", as
   expect(JSON.stringify(run)).not.toContain("rollback.sh");
 });
 
+test.skipIf(!Bun.which("bash"))(
+  "a step that reads stdin cannot swallow the rest of the script",
+  async () => {
+    const seenOutput: string[] = [];
+    const run = await runIncidentAction(
+      {
+        runId: "act-bash",
+        incidentId: "inc-1",
+        round: 1,
+        project: "acme",
+        action: {
+          ...action,
+          command:
+            "echo one\ncat\nread -r line || echo none\necho {{incident}}",
+        },
+        vars,
+        owner: "Ada",
+        purpose: "plan",
+      },
+      {
+        // The Runner runs `bash -lc <command>` with the input on stdin.
+        exec: async (_runner, command, opts) => {
+          const proc = Bun.spawn(["bash", "-c", command], {
+            stdin: new TextEncoder().encode(opts.stdin),
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const [stdout, stderr, code] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+            proc.exited,
+          ]);
+          seenOutput.push(stdout);
+          return { code, stdout, stderr };
+        },
+        now: () => 0,
+      },
+    );
+    expect(run).toMatchObject({ status: "ok", exitCode: 0 });
+    expect(seenOutput).toEqual(["one\nnone\ninc-1\n"]);
+  },
+);
 test("failures never throw", async () => {
   const fail = (r: Partial<RunnerExecResult> | Error) =>
     runIncidentAction(
