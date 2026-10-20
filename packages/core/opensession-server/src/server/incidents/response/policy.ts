@@ -11,8 +11,14 @@ import {
   type NightRule,
   type PolicyDecision,
 } from "../../../shared/incident-response";
-import type { Observation, SignalEvaluation } from "../../../shared/incidents";
+import {
+  stripIntervalMs,
+  type Observation,
+  type Signal,
+  type SignalEvaluation,
+} from "../../../shared/incidents";
 import { activeMaintenance } from "../maintenance";
+import { MISSED_CHECK_IN_DETAIL } from "../rules";
 
 export const FACT_LABELS: Record<NeverWithoutYou, string> = {
   "costs-money": "costs money",
@@ -23,38 +29,60 @@ export const FACT_LABELS: Record<NeverWithoutYou, string> = {
 };
 
 const FULLY_DOWN_RUN = 3;
+/** The newest observation must be at most this many strip intervals old. */
+const FULLY_DOWN_FRESH_INTERVALS = 2;
 
-/** Whether the daily night window is active at `now`. */
+function resolvableTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the daily night window is active at `now`. A rule whose time
+ *  zone cannot be resolved counts as active: the night rule only ever asks
+ *  for more caution. */
 export function nightActive(
   night: NightRule | undefined,
   now: number,
 ): boolean {
   if (!night) return false;
-  return (
-    activeMaintenance(
-      [
-        {
-          kind: "weekly",
-          days: [0, 1, 2, 3, 4, 5, 6],
-          start: night.start,
-          end: night.end,
-          timeZone: night.timeZone,
-        },
-      ],
-      now,
-    ) !== null
-  );
+  if (!night.timeZone || !resolvableTimeZone(night.timeZone)) return true;
+  try {
+    return (
+      activeMaintenance(
+        [
+          {
+            kind: "weekly",
+            days: [0, 1, 2, 3, 4, 5, 6],
+            start: night.start,
+            end: night.end,
+            timeZone: night.timeZone,
+          },
+        ],
+        now,
+      ) !== null
+    );
+  } catch {
+    return true;
+  }
 }
 
 /**
- * Every own signal that still exists evaluates `failing`, and the last three
- * main-lane observations of the primary signal all failed. Deleted signals
- * (missing from `evaluations`) are ignored.
+ * Every own signal that still exists evaluates `failing`, and the primary
+ * signal is down: its last three main-lane observations all failed and the
+ * newest is at most two strip intervals old, or it is a heartbeat whose
+ * check-ins are missing (owner call). Deleted signals (missing from
+ * `evaluations`) are ignored.
  */
 export function fullyDown(input: {
   ownSignalIds: string[];
   evaluations: ReadonlyMap<string, SignalEvaluation>;
   primaryRecent: Observation[];
+  primary: Pick<Signal, "source" | "rule" | "intervalMs">;
+  now: number;
 }): boolean {
   const present = input.ownSignalIds.flatMap((id) => {
     const evaluation = input.evaluations.get(id);
@@ -67,7 +95,18 @@ export function fullyDown(input: {
     .map((o, i) => ({ o, i }))
     .sort((a, b) => (a.o.at === b.o.at ? a.i - b.i : a.o.at < b.o.at ? -1 : 1))
     .map(({ o }) => o);
-  if (main.length < FULLY_DOWN_RUN) return false;
+  const latest = main.at(-1);
+  // A failing heartbeat with no reported failure is missing its check-ins.
+  if (
+    input.primary.source.kind === "heartbeat" &&
+    input.primary.rule.kind === "missing" &&
+    !(latest?.result === "fail" && latest.detail !== MISSED_CHECK_IN_DETAIL)
+  )
+    return true;
+  if (main.length < FULLY_DOWN_RUN || !latest) return false;
+  const age = input.now - Date.parse(latest.at);
+  if (!(age <= FULLY_DOWN_FRESH_INTERVALS * stripIntervalMs(input.primary)))
+    return false;
   return main.slice(-FULLY_DOWN_RUN).every((o) => o.result === "fail");
 }
 
@@ -155,13 +194,14 @@ export function budgetProblem(input: {
   budget: IncidentBudget;
 }): { scope: "incident" | "month"; reason: string; rule: string } | null {
   const { budget } = input;
-  if (input.incidentCostUsd >= budget.perIncidentUsd)
+  // Written as "not under the cap" so a NaN cost or cap stops the agents.
+  if (!(input.incidentCostUsd < budget.perIncidentUsd))
     return {
       scope: "incident",
       reason: `Agents stopped at the ${usd(budget.perIncidentUsd)} budget for this incident`,
       rule: `Budget: ${usd(budget.perIncidentUsd)} per incident, from the project settings`,
     };
-  if (input.monthCostUsd >= budget.perMonthUsd)
+  if (!(input.monthCostUsd < budget.perMonthUsd))
     return {
       scope: "month",
       reason: `Agents stopped at the ${usd(budget.perMonthUsd)} monthly budget`,

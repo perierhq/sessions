@@ -3,7 +3,7 @@ import type {
   IncidentProjectSettings,
   NeverWithoutYou,
 } from "../../../shared/incident-response";
-import type { SignalEvaluation } from "../../../shared/incidents";
+import type { Signal, SignalEvaluation } from "../../../shared/incidents";
 import {
   FACT_LABELS,
   budgetProblem,
@@ -23,6 +23,10 @@ const at = (iso: string) => Date.parse(iso);
 const NOON = at("2026-10-20T10:00:00Z"); // 12:00 in Warsaw
 const NIGHT = at("2026-10-20T23:30:00Z"); // 01:30 in Warsaw
 const night = { start: "23:00", end: "07:00", timeZone: "Europe/Warsaw" };
+const httpPrimary: Pick<Signal, "source" | "rule" | "intervalMs"> = {
+  source: { kind: "http", url: "https://acme.example.test/health" },
+  rule: { kind: "consecutive", failures: 3 },
+};
 const ev = (
   facts: NeverWithoutYou[] = [],
   over: Partial<Parameters<typeof evaluatePolicy>[0]> = {},
@@ -138,6 +142,8 @@ test("fully down needs every own signal failing and three straight failures", ()
     fullyDown({
       ownSignalIds: ["sig-a"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: obs(["ok", "fail", "fail", "fail"]),
     }),
   ).toBe(true);
@@ -145,6 +151,8 @@ test("fully down needs every own signal failing and three straight failures", ()
     fullyDown({
       ownSignalIds: ["sig-a"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: obs(["fail", "ok", "fail"]),
     }),
   ).toBe(false);
@@ -152,6 +160,8 @@ test("fully down needs every own signal failing and three straight failures", ()
     fullyDown({
       ownSignalIds: ["sig-a"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: obs(["fail", "fail"]),
     }),
   ).toBe(false);
@@ -159,6 +169,8 @@ test("fully down needs every own signal failing and three straight failures", ()
     fullyDown({
       ownSignalIds: ["sig-a", "sig-b"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: obs(["fail", "fail", "fail"]),
     }),
   ).toBe(true);
@@ -167,6 +179,8 @@ test("fully down needs every own signal failing and three straight failures", ()
     fullyDown({
       ownSignalIds: ["sig-a", "sig-b"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: obs(["fail", "fail", "fail"]),
     }),
   ).toBe(false);
@@ -190,6 +204,8 @@ test("side lanes do not count toward fully down", () => {
     fullyDown({
       ownSignalIds: ["sig-a"],
       evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
       primaryRecent: recent,
     }),
   ).toBe(false);
@@ -220,4 +236,82 @@ test("budgets", () => {
     reason: "Agents stopped at the $250.5 monthly budget",
     rule: "Budget: $250.5 per month, from the project settings",
   });
+});
+test("fully down needs a fresh observation; a missing heartbeat is down", () => {
+  const evals = new Map([
+    ["sig-a", { signalId: "sig-a", state: "failing" } as SignalEvaluation],
+  ]);
+  const stale = ["fail", "fail", "fail"].map((result, i) => ({
+    at: new Date(NOON - (13 - i) * 60_000).toISOString(),
+    result: result as "fail",
+    detail: "",
+  }));
+  expect(
+    fullyDown({
+      ownSignalIds: ["sig-a"],
+      evaluations: evals,
+      now: NOON,
+      primary: httpPrimary,
+      primaryRecent: stale,
+    }),
+  ).toBe(false);
+  const heartbeat: Pick<Signal, "source" | "rule" | "intervalMs"> = {
+    source: { kind: "heartbeat" },
+    rule: { kind: "missing", everyMs: 3_600_000, graceMs: 0 },
+  };
+  expect(
+    fullyDown({
+      ownSignalIds: ["sig-a"],
+      evaluations: evals,
+      now: NOON,
+      primary: heartbeat,
+      primaryRecent: [],
+    }),
+  ).toBe(true);
+  // A check-in that reported a failure is not missing: three are needed.
+  expect(
+    fullyDown({
+      ownSignalIds: ["sig-a"],
+      evaluations: evals,
+      now: NOON,
+      primary: heartbeat,
+      primaryRecent: [
+        {
+          at: new Date(NOON - 60_000).toISOString(),
+          result: "fail",
+          detail: "Exit 1",
+        },
+      ],
+    }),
+  ).toBe(false);
+});
+test("the night rule fails closed when its time zone cannot be resolved", () => {
+  expect(
+    nightActive(
+      { start: "23:00", end: "07:00", timeZone: "Mars/Olympus" },
+      NOON,
+    ),
+  ).toBe(true);
+});
+test("the kill switch wins over watch", () => {
+  expect(
+    ev([], { settings: S({ agentsPaused: true, autonomy: "watch" }) }),
+  ).toMatchObject({
+    kind: "ask",
+    rule: "Kill switch, from the project settings",
+  });
+});
+test("both budgets over: the incident cap is named; NaN never passes", () => {
+  const budget = { perIncidentUsd: 20, perMonthUsd: 200 };
+  expect(
+    budgetProblem({ incidentCostUsd: 25, monthCostUsd: 250, budget })?.scope,
+  ).toBe("incident");
+  expect(
+    budgetProblem({ incidentCostUsd: Number.NaN, monthCostUsd: 0, budget })
+      ?.scope,
+  ).toBe("incident");
+  expect(
+    budgetProblem({ incidentCostUsd: 0, monthCostUsd: Number.NaN, budget })
+      ?.scope,
+  ).toBe("month");
 });
