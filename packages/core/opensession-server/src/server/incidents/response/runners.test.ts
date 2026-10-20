@@ -2,8 +2,10 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { configuredServer } from "../../config";
 import {
   INCIDENT_SERVICE_USER,
+  authenticateRunner,
   createRunnerPairing,
   getRunner,
+  listRunners,
   registerRunner,
   updateRunner,
 } from "../../runners";
@@ -111,6 +113,65 @@ test("a production pairing never takes over a Runner with the same name", async 
   expect(runner.id).not.toBe(existing.id);
   expect(getRunner(existing.id)?.incidentReserved).toBeUndefined();
   expect(getRunner(existing.id)?.allowedRepos).toEqual([]);
+});
+
+test("a production Runner is reserved from the moment it registers", async () => {
+  const pairing = startPairing("acme");
+  // Before any binding runs: never an ordinary open Runner, even briefly.
+  const out = registerRunner({
+    code: pairing.code,
+    name: "prod-1",
+    platform: "linux",
+    arch: "x64",
+    address: "100.64.0.9",
+  });
+  if (!out.ok) throw new Error(out.error);
+  expect(out.runner).toMatchObject({
+    incidentReserved: true,
+    allowedRepos: ["acme"],
+    allowedUsers: [INCIDENT_SERVICE_USER],
+    label: "Production · acme",
+    permissions: { commands: true, fullSessions: false, terminals: false },
+  });
+  expect(getRunner(out.runner.id)?.incidentReserved).toBe(true);
+  await __flushProductionBindingsForTest();
+});
+
+test("a Windows machine cannot use a production pairing code", async () => {
+  const pairing = startPairing("acme");
+  const out = registerRunner({
+    code: pairing.code,
+    name: "win-1",
+    platform: "win32",
+    arch: "x64",
+    address: "100.64.0.9",
+  });
+  expect(out).toEqual({
+    ok: false,
+    error:
+      "Windows Runners cannot serve incidents. Pair a macOS or Linux machine",
+  });
+  await __flushProductionBindingsForTest();
+  expect(listRunners()).toEqual([]);
+  expect((await getProjectSettings("acme")).productionRunners).toEqual([]);
+});
+
+test("a production Runner whose binding fails is removed", async () => {
+  const pairing = startPairing("acme");
+  // The project is deleted before the machine registers.
+  __setProjectSettingsContextForTest({ projectExists: () => false });
+  const out = registerRunner({
+    code: pairing.code,
+    name: "prod-1",
+    platform: "linux",
+    arch: "x64",
+    address: "100.64.0.9",
+  });
+  if (!out.ok) throw new Error(out.error);
+  await __flushProductionBindingsForTest();
+  expect(getRunner(out.runner.id)).toBeUndefined();
+  expect(authenticateRunner(out.runner.id, out.token)).toBeUndefined();
+  expect(listRunners()).toEqual([]);
 });
 
 test("pairing needs a signed-in person and a real project", () => {

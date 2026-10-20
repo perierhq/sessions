@@ -5,12 +5,13 @@
 // agent, terminal or Portal can reach it. Uses the Runner registry's
 // existing synchronous store functions only.
 import { configuredServer } from "../../config";
-import { isRunnerConnected } from "../../runner-ws";
+import { disconnectRunner, isRunnerConnected } from "../../runner-ws";
 import {
   type Runner,
   createRunnerPairing,
   getRunner,
   listRunners,
+  removeRunner,
   reserveRunnerForIncidents,
 } from "../../runners";
 import { incidentAudit } from "../audit-sink";
@@ -74,7 +75,9 @@ export function listProductionRunnerCandidates(
 
 const bindings = new Set<Promise<void>>();
 
-/** Fire-and-forget from the pairing callback, tracked for tests. */
+/** Fire-and-forget from the pairing callback, tracked for tests. A Runner
+ *  that cannot be bound is removed: it never stays paired outside the
+ *  project it was paired for. */
 function trackBinding(project: string, runnerId: string, by: string): void {
   // The pairing was started by a signed-in person (`startProductionPairing`).
   const binding = bindProductionRunner(
@@ -85,9 +88,11 @@ function trackBinding(project: string, runnerId: string, by: string): void {
     { fresh: true },
   ).catch((error: unknown) => {
     console.warn(
-      `[incidents] could not bind Runner ${runnerId} to ${project}:`,
+      `[incidents] could not bind Runner ${runnerId} to ${project}; removing it:`,
       error instanceof Error ? error.message : error,
     );
+    removeRunner(runnerId);
+    disconnectRunner(runnerId, "removed");
   });
   bindings.add(binding);
   void binding.finally(() => bindings.delete(binding));
@@ -106,9 +111,9 @@ export function startProductionPairing(
   if (!incidentProjectExists(project))
     return { error: `Unknown project ${project}` };
   const { code, expiresAt } = createRunnerPairing(by, {
-    // Always a new Runner: a name match must never hand an existing
-    // Runner's record to production.
-    fresh: true,
+    // Always a new Runner, saved already reserved for the project: a name
+    // match must never hand an existing Runner's record to production.
+    incidentProject: project,
     onRegistered: (runner) => trackBinding(project, runner.id, by),
   });
   incidentAudit({

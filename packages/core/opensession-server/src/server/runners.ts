@@ -128,7 +128,8 @@ export type Runner = {
   maintenance?: boolean;
   /** Bound as a production Runner for incidents: only the incident service
    *  path (`execOnIncidentRunner`) may use it. No session, agent, terminal
-   *  or Portal can, whoever asks. Set only by `reserveRunnerForIncidents`. */
+   *  or Portal can, whoever asks. Set only by `reserveRunnerForIncidents`
+   *  and by registering with a production pairing code. */
   incidentReserved?: true;
   reservation?: RunnerReservation;
   workload?: { sessionId?: string; operation?: string; startedAt?: string };
@@ -153,6 +154,10 @@ type Pairing = {
   migration?: RunnerMigration;
   /** Always registers a new Runner, never re-pairs one by name. */
   fresh?: boolean;
+  /** A production pairing: the Runner is saved already reserved for this
+   *  project's incidents (see `reserveRunnerForIncidents`), never as an
+   *  ordinary open Runner. Implies `fresh`. */
+  incidentProject?: string;
   /** Held in memory with the code only; runs once the Runner is saved. */
   onRegistered?: (runner: Runner) => void;
 };
@@ -417,7 +422,11 @@ function pairingCode(): string {
 
 export function createRunnerPairing(
   createdBy?: string,
-  opts: { onRegistered?: (runner: Runner) => void; fresh?: boolean } = {},
+  opts: {
+    onRegistered?: (runner: Runner) => void;
+    fresh?: boolean;
+    incidentProject?: string;
+  } = {},
 ): {
   code: string;
   expiresAt: number;
@@ -428,7 +437,8 @@ export function createRunnerPairing(
     code,
     expiresAt,
     createdBy,
-    ...(opts.fresh ? { fresh: true } : {}),
+    ...(opts.fresh || opts.incidentProject ? { fresh: true } : {}),
+    ...(opts.incidentProject ? { incidentProject: opts.incidentProject } : {}),
     ...(opts.onRegistered ? { onRegistered: opts.onRegistered } : {}),
   });
   return { code, expiresAt };
@@ -511,6 +521,13 @@ export function registerRunner(
   const name = input.name.trim();
   if (!name || name.length > 120)
     return { ok: false, error: "Runner name is required." };
+  const project = pairing.incidentProject;
+  if (project && input.platform === "win32")
+    return {
+      ok: false,
+      error:
+        "Windows Runners cannot serve incidents. Pair a macOS or Linux machine",
+    };
   const token = randomBytes(32).toString("hex");
   const store = load();
   // A fresh pairing (a production Runner) never inherits another Runner's
@@ -559,6 +576,12 @@ export function registerRunner(
     localInferencePolicy: existing?.localInferencePolicy,
     aws: existing?.aws,
     maintenance: existing?.maintenance,
+    ...(project
+      ? {
+          ...incidentReservation([project]),
+          label: input.label?.trim() || `Production · ${project}`,
+        }
+      : {}),
   });
   if (existingIndex >= 0) store.runners[existingIndex] = runner;
   else store.runners.push(runner);
@@ -658,6 +681,27 @@ export function updateRunner(
   return store.runners[index];
 }
 
+/** The policy of a Runner reserved for incidents. */
+function incidentReservation(
+  repos: string[],
+): Pick<
+  Runner,
+  "incidentReserved" | "allowedRepos" | "allowedUsers" | "permissions"
+> {
+  return {
+    incidentReserved: true,
+    allowedRepos: [...new Set(repos)],
+    allowedUsers: [INCIDENT_SERVICE_USER],
+    permissions: {
+      commands: true,
+      fullSessions: false,
+      terminals: false,
+      portals: false,
+      automationDescendants: false,
+    },
+  };
+}
+
 /** Reserve a Runner for incidents: commands for `repos` as the incident
  *  service only, every other execution path off. Nothing else can set or
  *  clear the reservation; revoking the Runner removes it. */
@@ -671,16 +715,7 @@ export function reserveRunnerForIncidents(
   const current = store.runners[index];
   store.runners[index] = normalizeRunner({
     ...current,
-    incidentReserved: true,
-    allowedRepos: [...new Set(input.repos)],
-    allowedUsers: [INCIDENT_SERVICE_USER],
-    permissions: {
-      commands: true,
-      fullSessions: false,
-      terminals: false,
-      portals: false,
-      automationDescendants: false,
-    },
+    ...incidentReservation(input.repos),
     ...(input.label ? { label: input.label } : {}),
   });
   save(store);
