@@ -633,4 +633,21 @@ describe("server-built descendant policies", () => {
       automationDescendantPolicy: { allowedRunners: ["runner-a"] },
     });
   });
+  test("a child's Runner must be one the descendant policy allows", async () => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn(
+        { prompt: "x", repo: "renderer", runner: "runner-a" },
+        "req-5",
+        { descendantPolicy: policy({ allowedRunners: [] }) },
+      ),
+    ).rejects.toThrow("The child's policy does not allow Runner `runner-a`");
+    expect(creates).toHaveLength(0);
+    await controller.spawn(
+      { prompt: "x", repo: "renderer", runner: "runner-a" },
+      "req-6",
+      { descendantPolicy: policy({ allowedRunners: ["runner-a"] }) },
+    );
+    expect(creates[0]).toMatchObject({ runner: "runner-a" });
+  });
 });

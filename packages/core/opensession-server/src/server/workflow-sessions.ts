@@ -472,6 +472,15 @@ export function createWorkflowSessionController(
             publication: "branch-pr-only",
           };
         }
+        // The child runs under its own policy: a Runner the automation
+        // allows but the child's policy narrowed away stays out of reach.
+        if (
+          input.runner &&
+          !descendantPolicy.allowedRunners.includes(input.runner)
+        )
+          throw new Error(
+            `The child's policy does not allow Runner \`${input.runner}\``,
+          );
       }
       // The parent's account pin and effort belong to the parent's provider.
       const inherit = !childModel || childModel === parent.model;
