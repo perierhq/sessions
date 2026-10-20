@@ -113,7 +113,6 @@ test.each([
     ["--recursive", "-e", "KEY"],
     ["/srv"],
   ],
-  [["--recur", "KEY", "/srv"], ["--recur"], ["KEY", "/srv"]],
   [
     ["-d", "recurse", "KEY", "/srv"],
     ["-d", "recurse"],
@@ -152,11 +151,11 @@ test.each([
   [["-R", "KEY", "/srv"], "Following links"],
   [["-Rn", "KEY", "/srv"], "Following links"],
   [["--dereference-recursive", "KEY", "/srv"], "Following links"],
-  [["--deref", "KEY", "/srv"], "Following links"],
+  [["--deref", "KEY", "/srv"], "grep --deref is not allowed"],
   [["-rS", "KEY", "/srv"], "Following links"],
   [["-r", "--include=.env*", "KEY", "/srv"], "secret-shaped"],
   [["-r", "--include", "*.yaml", "KEY", "/srv"], "secret-shaped"],
-  [["-r", "--incl=id_*", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--incl=id_*", "KEY", "/srv"], "grep --incl is not allowed"],
   [["-r", "--include=*", "KEY", "/srv"], "secret-shaped"],
   [["--include=credentials*", "KEY", "/srv/a.log"], "secret-shaped"],
   [["-r", "--frobnicate", "KEY", "/srv"], "grep --frobnicate is not allowed"],
@@ -176,5 +175,216 @@ test("a pattern that only looks like a flag does not make grep recursive", () =>
   expect(checkReadOnlyCommand("grep", ["-eRROR", "/var/log/app.log"])).toEqual({
     ok: true,
     argv: ["grep", "-eRROR", "/var/log/app.log"],
+  });
+});
+
+// Options are an exact allowlist per program: GNU getopt would expand an
+// unambiguous prefix (`--foll` is `--follow`), so a prefix is refused rather
+// than resolved, and every short letter of a cluster must be allowed.
+test.each([
+  ["systemctl", ["-p", "status", "restart", "app"]],
+  ["systemctl", ["--no-pager", "status", "app"]],
+  ["systemctl", ["-H", "prod", "status", "app"]],
+  ["systemctl", ["status", "-H", "prod", "app"]],
+  ["systemctl", ["status", "--host=prod", "app"]],
+  ["systemctl", ["status", "-M", "box", "app"]],
+  ["systemctl", ["status", "--machine", "box", "app"]],
+  ["systemctl", ["status", "--root=/mnt", "app"]],
+  ["systemctl", ["list-units", "--image=/tmp/img"]],
+  ["systemctl", ["show", "-p", "MainPID", "--prop=Environment", "app"]],
+  ["systemctl", ["show", "-p", "MainPID", "-pEnvironment", "app"]],
+  ["systemctl", ["show", "-pMainPID,Environment", "app"]],
+  ["systemctl", ["show", "-P", "Environment", "app"]],
+  ["systemctl", ["status", "-r", "app"]],
+  ["tail", ["--f", "/var/log/syslog"]],
+  ["tail", ["--fo", "/var/log/syslog"]],
+  ["tail", ["--re", "/var/log/syslog"]],
+  ["tail", ["--follow=name", "/var/log/syslog"]],
+  ["tail", ["-qF", "/var/log/syslog"]],
+  ["tail", ["-s", "1", "/var/log/syslog"]],
+  ["tail", ["--pid=1", "/var/log/syslog"]],
+  ["journalctl", ["--foll"]],
+  ["journalctl", ["--rot"]],
+  ["journalctl", ["--cursor-f=x"]],
+  ["journalctl", ["-u", "app", "-ef"]],
+  ["journalctl", ["--vac=1s"]],
+  ["journalctl", ["-M", "box"]],
+  ["journalctl", ["--directory=/tmp/j"]],
+  ["journalctl", ["--file=/tmp/j.journal"]],
+  ["date", ["--se=2020-01-01"]],
+  ["date", ["--set=2020-01-01"]],
+  ["date", ["-us", "2020-01-01"]],
+  ["date", ["--file=/tmp/dates"]],
+  ["ss", ["--ki"]],
+  ["ss", ["-tK"]],
+  ["ss", ["-D", "/tmp/dump"]],
+  ["ss", ["-F", "/tmp/filter"]],
+  ["ss", ["-N", "other"]],
+  ["ss", ["-E"]],
+  ["cat", ["-X", "/var/log/a.log"]],
+  ["cat", ["--number-non", "/var/log/a.log"]],
+  ["head", ["--lin=5", "/var/log/a.log"]],
+  ["ls", ["--hel"]],
+  ["du", ["--files0-from=/tmp/list"]],
+  ["du", ["--files0-from", "/tmp/list"]],
+  ["du", ["-X", "/tmp/patterns", "/var/log"]],
+  ["wc", ["--files0-from=/tmp/list"]],
+  ["free", ["-s", "1"]],
+  ["free", ["-c", "5"]],
+  ["uname", ["-a", "x"]],
+  ["uptime", ["--sin"]],
+  ["hostname", ["-F", "/tmp/name"]],
+  ["hostname", ["-b"]],
+  ["hostname", ["--fq"]],
+  ["ps", ["axe"]],
+  ["ps", ["-ef", "e"]],
+  ["ps", ["--for", "pid"]],
+  ["ps", ["-o", "pid,environ"]],
+  ["docker", ["logs", "--follow=true", "app"]],
+  ["docker", ["logs", "-tf", "app"]],
+  ["docker", ["logs", "--foll", "app"]],
+  ["docker", ["ps", "--context", "other"]],
+  ["docker", ["top", "app", "eww"]],
+  ["docker", ["top", "app", "-e"]],
+  ["docker", ["info", "--config", "/tmp/c"]],
+  ["docker", ["compose", "logs", "-f"]],
+  ["docker", ["compose", "ps", "--project-directory", "/srv"]],
+  ["grep", ["--recur", "KEY", "/srv"]],
+  ["grep", ["--incl=*.log", "KEY", "/srv/a.log"]],
+  ["grep", ["-f", "/tmp/patterns", "/srv/a.log"]],
+  ["grep", ["--file=/tmp/patterns", "/srv/a.log"]],
+  ["grep", ["-rL", "KEY", "/srv"]],
+  ["grep", ["-X", "KEY", "/srv/a.log"]],
+])("refuses options outside the allowlist: %s %j", (program, args) => {
+  expect(checkReadOnlyCommand(program, args).ok).toBe(false);
+});
+
+test.each([
+  [
+    "systemctl",
+    ["show", "-p", "MainPID", "--property=ActiveState", "app"],
+    [
+      "systemctl",
+      "show",
+      "-p",
+      "MainPID",
+      "--property=ActiveState",
+      "app",
+      "--no-pager",
+    ],
+  ],
+  [
+    "systemctl",
+    ["status", "--no-pager", "-n", "20", "app"],
+    ["systemctl", "status", "--no-pager", "-n", "20", "app"],
+  ],
+  [
+    "systemctl",
+    ["list-units", "--all", "--type=service"],
+    ["systemctl", "list-units", "--all", "--type=service", "--no-pager"],
+  ],
+  ["tail", ["-n200", "/var/log/a.log"], ["tail", "-n200", "/var/log/a.log"]],
+  ["tail", ["-50", "/var/log/a.log"], ["tail", "-50", "/var/log/a.log"]],
+  [
+    "tail",
+    ["--lines=5", "-q", "/var/log/a.log"],
+    ["tail", "--lines=5", "-q", "/var/log/a.log"],
+  ],
+  // -n takes the next word as its value, even one that looks like a flag.
+  [
+    "tail",
+    ["-n", "-f", "/var/log/a.log"],
+    ["tail", "-n", "-f", "/var/log/a.log"],
+  ],
+  [
+    "head",
+    ["-c", "100", "/var/log/a.log"],
+    ["head", "-c", "100", "/var/log/a.log"],
+  ],
+  ["cat", ["-An", "/var/log/a.log"], ["cat", "-An", "/var/log/a.log"]],
+  [
+    "ls",
+    ["-lah", "--sort=time", "/var/log"],
+    ["ls", "-lah", "--sort=time", "/var/log"],
+  ],
+  [
+    "du",
+    ["-sh", "--max-depth=1", "/var/log"],
+    ["du", "-sh", "--max-depth=1", "/var/log"],
+  ],
+  ["df", ["-hT"], ["df", "-hT"]],
+  ["free", ["-m"], ["free", "-m"]],
+  ["uname", ["-a"], ["uname", "-a"]],
+  ["uptime", ["-p"], ["uptime", "-p"]],
+  ["hostname", ["-f"], ["hostname", "-f"]],
+  ["date", ["-u", "+%s"], ["date", "-u", "+%s"]],
+  [
+    "date",
+    ["--date=@0", "--iso-8601=seconds"],
+    ["date", "--date=@0", "--iso-8601=seconds"],
+  ],
+  ["ps", ["-eo", "pid,comm,args"], ["ps", "-eo", "pid,comm,args"]],
+  ["ps", ["aux", "--sort=-pcpu"], ["ps", "aux", "--sort=-pcpu"]],
+  ["ps", ["-ef"], ["ps", "-ef"]],
+  [
+    "ss",
+    ["-tlnp", "state", "listening"],
+    ["ss", "-tlnp", "state", "listening"],
+  ],
+  [
+    "journalctl",
+    ["-u", "app", "-n", "50", "-p", "err"],
+    ["journalctl", "-u", "app", "-n", "50", "-p", "err", "--no-pager"],
+  ],
+  [
+    "journalctl",
+    ["--unit=app", "--lines=50", "-o", "json"],
+    ["journalctl", "--unit=app", "--lines=50", "-o", "json", "--no-pager"],
+  ],
+  [
+    "docker",
+    ["logs", "-n", "50", "-t", "app"],
+    ["docker", "logs", "-n", "50", "-t", "app"],
+  ],
+  [
+    "docker",
+    ["ps", "-a", "--format", "{{.Names}}"],
+    ["docker", "ps", "-a", "--format", "{{.Names}}"],
+  ],
+  ["docker", ["top", "app"], ["docker", "top", "app"]],
+  [
+    "docker",
+    ["compose", "logs", "--tail", "20", "web"],
+    ["docker", "compose", "logs", "--tail", "20", "web"],
+  ],
+  [
+    "grep",
+    ["-in", "--color=never", "ERROR", "/var/log/a.log"],
+    ["grep", "-in", "--color=never", "ERROR", "/var/log/a.log"],
+  ],
+])("allows listed options: %s %j", (program, args, argv) => {
+  expect(checkReadOnlyCommand(program, args)).toEqual({ ok: true, argv });
+});
+
+test("refusals name the option that was refused", () => {
+  expect(checkReadOnlyCommand("tail", ["--f", "/var/log/a"])).toEqual({
+    ok: false,
+    reason: "tail --f is not allowed",
+  });
+  expect(checkReadOnlyCommand("cat", ["-nX", "/var/log/a"])).toEqual({
+    ok: false,
+    reason: "cat -X is not allowed",
+  });
+  expect(checkReadOnlyCommand("tail", ["-n"])).toEqual({
+    ok: false,
+    reason: "tail -n needs a value",
+  });
+  expect(checkReadOnlyCommand("cat", ["--number=3", "/var/log/a"])).toEqual({
+    ok: false,
+    reason: "cat --number takes no value",
+  });
+  expect(checkReadOnlyCommand("systemctl", ["--no-pager", "status"])).toEqual({
+    ok: false,
+    reason: "systemctl needs its subcommand first",
   });
 });

@@ -382,7 +382,12 @@ fallback builder, and none of the other `opensession-*` servers. Each of its
 tools is mounted only when the access grants what it reaches:
 
 - `host_command` runs an argv, never a shell string, from a fixed read-only
-  list of programs and flags, through the Runner command channel with no
+  list of programs. Each program has an exact list of the options it may
+  take: a long option is compared whole (a prefix that getopt would expand,
+  such as `--foll`, is refused), every letter of a short cluster must be
+  listed, an option's value is read the way the program reads it, and
+  `systemctl` and `docker` take their subcommand first. It runs through the
+  Runner command channel with no
   user and no AWS role. Every word is quoted, and quoted again for an SSH hop
   (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <alias>`), so shell
   metacharacters are data. Secret-shaped paths are refused. A recursive

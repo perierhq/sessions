@@ -1,8 +1,9 @@
 // The read-only host commands incident agents may run on a granted host.
 // A command is an argv, never a shell string: the caller quotes every word,
 // so `;`, `|`, `$(...)` and backticks are inert data. This table decides
-// which programs and flags may run at all. Runner hosts run commands as the
-// Runner's own user, so the list is defence in depth, not isolation.
+// which programs may run and, per program, the exact options each may take.
+// Runner hosts run commands as the Runner's own user, so the list is defence
+// in depth, not isolation.
 // Recursive grep runs with secret-shaped files and directories excluded.
 
 export const READ_ONLY_PROGRAMS: readonly string[] = [
@@ -43,47 +44,518 @@ const FOLLOWING = "Following output is not allowed";
 
 const refuse = (reason: string): ReadOnlyCheck => ({ ok: false, reason });
 
-/** A short-flag cluster (`-fn`) that contains one of `letters`. */
-function shortClusterHas(arg: string, letters: string): boolean {
-  if (!/^-[^-]/.test(arg)) return false;
-  return [...arg.slice(1)].some((ch) => letters.includes(ch));
+// Options are an exact allowlist per program. GNU getopt expands any
+// unambiguous prefix of a long option (`--foll` is `--follow`), so a name is
+// compared whole and anything not listed is refused, never resolved. Short
+// clusters are read letter by letter the way getopt reads them: a letter that
+// takes a value ends the cluster, and takes the next word when the cluster
+// ends with it. `optional` values ride only on the same word (`-n5`,
+// `--lines=5`), as getopt reads optional arguments.
+type Arity = "flag" | "value" | "optional";
+
+interface OptionTable {
+  short: Record<string, Arity>;
+  long: Record<string, Arity>;
+  /** Refusals with a specific reason (by letter or long name). */
+  refused?: Record<string, string>;
+  /** A bare `-NUM` (head and tail line counts). */
+  numeric?: boolean;
 }
+
+interface ParsedOption {
+  name: string;
+  value?: string;
+}
+
+interface ParsedArgs {
+  options: ParsedOption[];
+  /** The option words as given, values included, in order. */
+  optionWords: string[];
+  operands: string[];
+}
+
+type ParseResult = ParsedArgs | { error: string };
+
+const isParseError = (r: ParseResult): r is { error: string } => "error" in r;
+
+const flags = (letters: string): Record<string, Arity> =>
+  Object.fromEntries([...letters].map((ch) => [ch, "flag" as const]));
+const values = (letters: string): Record<string, Arity> =>
+  Object.fromEntries([...letters].map((ch) => [ch, "value" as const]));
+const longFlags = (names: string[]): Record<string, Arity> =>
+  Object.fromEntries(names.map((n) => [n, "flag" as const]));
+const longValues = (names: string[]): Record<string, Arity> =>
+  Object.fromEntries(names.map((n) => [n, "value" as const]));
+
+function parseArgs(
+  program: string,
+  args: string[],
+  table: OptionTable,
+): ParseResult {
+  const options: ParsedOption[] = [];
+  const optionWords: string[] = [];
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const name = eq < 0 ? a.slice(2) : a.slice(2, eq);
+      const reason = table.refused?.[`--${name}`];
+      if (reason) return { error: reason };
+      const arity = Object.hasOwn(table.long, name)
+        ? table.long[name]
+        : undefined;
+      if (!arity) return { error: `${program} --${name} is not allowed` };
+      optionWords.push(a);
+      if (arity === "flag") {
+        if (eq >= 0) return { error: `${program} --${name} takes no value` };
+        options.push({ name });
+      } else if (eq >= 0) options.push({ name, value: a.slice(eq + 1) });
+      else if (arity === "optional") options.push({ name });
+      else {
+        if (i + 1 >= args.length)
+          return { error: `${program} --${name} needs a value` };
+        const value = args[++i];
+        optionWords.push(value);
+        options.push({ name, value });
+      }
+      continue;
+    }
+    if (a.startsWith("-") && a.length > 1) {
+      if (table.numeric && /^-\d+$/.test(a)) {
+        optionWords.push(a);
+        options.push({ name: "#", value: a.slice(1) });
+        continue;
+      }
+      optionWords.push(a);
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j];
+        const reason = table.refused?.[`-${ch}`];
+        if (reason) return { error: reason };
+        const arity = Object.hasOwn(table.short, ch)
+          ? table.short[ch]
+          : undefined;
+        if (!arity) return { error: `${program} -${ch} is not allowed` };
+        if (arity === "flag") {
+          options.push({ name: ch });
+          continue;
+        }
+        const rest = a.slice(j + 1);
+        if (rest) options.push({ name: ch, value: rest });
+        else if (arity === "optional") options.push({ name: ch });
+        else {
+          if (i + 1 >= args.length)
+            return { error: `${program} -${ch} needs a value` };
+          const value = args[++i];
+          optionWords.push(value);
+          options.push({ name: ch, value });
+        }
+        break;
+      }
+      continue;
+    }
+    operands.push(a);
+  }
+  return { options, optionWords, operands };
+}
+
+const has = (parsed: ParsedArgs, ...names: string[]): boolean =>
+  parsed.options.some((o) => names.includes(o.name));
 
 const withFlag = (args: string[], flag: string): string[] =>
   args.includes(flag) ? args : [...args, flag];
 
-const firstNonFlag = (args: string[]): number =>
-  args.findIndex((a) => !a.startsWith("-"));
-
-function checkTail(args: string[]): ReadOnlyCheck | null {
-  for (const a of args)
-    if (shortClusterHas(a, "fF") || a.startsWith("--follow") || a === "--retry")
-      return refuse(FOLLOWING);
-  return null;
+function checked(
+  program: string,
+  args: string[],
+  table: OptionTable,
+  more?: (parsed: ParsedArgs) => ReadOnlyCheck | null,
+): ReadOnlyCheck {
+  const parsed = parseArgs(program, args, table);
+  if (isParseError(parsed)) return refuse(parsed.error);
+  return more?.(parsed) ?? { ok: true, argv: [program, ...args] };
 }
 
-const JOURNALCTL_REFUSED = [
-  "--rotate",
-  "--flush",
-  "--sync",
-  "--relinquish-var",
-  "--smart-relinquish-var",
-  "--setup-keys",
-  "--update-catalog",
-  // Writes the cursor back to the named file.
-  "--cursor-file",
-];
+const noOperands =
+  (program: string) =>
+  (parsed: ParsedArgs): ReadOnlyCheck | null =>
+    parsed.operands.length
+      ? refuse(`${program} ${parsed.operands[0]} is not allowed`)
+      : null;
 
-function checkJournalctl(args: string[]): ReadOnlyCheck {
-  for (const a of args) {
-    if (shortClusterHas(a, "f") || a.startsWith("--follow"))
-      return refuse(FOLLOWING);
-    const flag = a.split("=")[0];
-    if (flag.startsWith("--vacuum-") || JOURNALCTL_REFUSED.includes(flag))
-      return refuse(`journalctl ${flag} is not allowed`);
+const CAT: OptionTable = {
+  short: flags("AbeEnstTuv"),
+  long: longFlags([
+    "show-all",
+    "number-nonblank",
+    "show-ends",
+    "number",
+    "squeeze-blank",
+    "show-tabs",
+    "show-nonprinting",
+  ]),
+};
+
+const HEAD_TAIL_LONG = {
+  ...longValues(["bytes", "lines"]),
+  ...longFlags(["quiet", "silent", "verbose", "zero-terminated"]),
+};
+
+const HEAD: OptionTable = {
+  short: { ...values("cn"), ...flags("qvz") },
+  long: HEAD_TAIL_LONG,
+  numeric: true,
+};
+
+// No -f, -F, -s, --follow, --retry, --pid or --sleep-interval: they follow.
+const TAIL: OptionTable = {
+  short: { ...values("cn"), ...flags("qvz") },
+  long: HEAD_TAIL_LONG,
+  refused: {
+    "-f": FOLLOWING,
+    "-F": FOLLOWING,
+    "--follow": FOLLOWING,
+    "--retry": FOLLOWING,
+  },
+  numeric: true,
+};
+
+// No --files0-from: it names the files to read from inside another file.
+const WC: OptionTable = {
+  short: flags("cmlLw"),
+  long: {
+    ...longFlags(["bytes", "chars", "lines", "max-line-length", "words"]),
+    total: "value",
+  },
+};
+
+const LS: OptionTable = {
+  short: {
+    ...flags("aAbBcCdDfFgGhHiklLmnNopqQrRsStuUvxXZ1"),
+    ...values("wTI"),
+  },
+  long: {
+    ...longFlags([
+      "all",
+      "almost-all",
+      "author",
+      "escape",
+      "ignore-backups",
+      "directory",
+      "dired",
+      "file-type",
+      "full-time",
+      "group-directories-first",
+      "no-group",
+      "human-readable",
+      "si",
+      "dereference-command-line",
+      "dereference-command-line-symlink-to-dir",
+      "inode",
+      "kibibytes",
+      "dereference",
+      "numeric-uid-gid",
+      "literal",
+      "hide-control-chars",
+      "show-control-chars",
+      "quote-name",
+      "reverse",
+      "recursive",
+      "size",
+      "context",
+      "zero",
+    ]),
+    ...longValues([
+      "format",
+      "hide",
+      "indicator-style",
+      "ignore",
+      "quoting-style",
+      "sort",
+      "time",
+      "time-style",
+      "tabsize",
+      "width",
+      "block-size",
+    ]),
+    classify: "optional",
+    color: "optional",
+    hyperlink: "optional",
+  },
+};
+
+const STAT: OptionTable = {
+  short: { ...flags("Lft"), ...values("c") },
+  long: {
+    ...longFlags(["dereference", "file-system", "terse"]),
+    ...longValues(["format", "printf", "cached"]),
+  },
+};
+
+// No --files0-from and no -X/--exclude-from: both read another file.
+const DU: OptionTable = {
+  short: { ...flags("abchkmsxlLDPS0"), ...values("dBt") },
+  long: {
+    ...longFlags([
+      "all",
+      "apparent-size",
+      "bytes",
+      "total",
+      "human-readable",
+      "si",
+      "summarize",
+      "one-file-system",
+      "count-links",
+      "dereference",
+      "dereference-args",
+      "no-dereference",
+      "separate-dirs",
+      "null",
+      "inodes",
+    ]),
+    ...longValues([
+      "max-depth",
+      "block-size",
+      "threshold",
+      "time-style",
+      "exclude",
+    ]),
+    time: "optional",
+  },
+};
+
+const DF: OptionTable = {
+  short: { ...flags("ahHiklPT"), ...values("xtB") },
+  long: {
+    ...longFlags([
+      "all",
+      "human-readable",
+      "si",
+      "inodes",
+      "local",
+      "portability",
+      "print-type",
+      "total",
+      "no-sync",
+    ]),
+    ...longValues(["type", "exclude-type", "block-size"]),
+    output: "optional",
+  },
+};
+
+// No -s/--seconds or -c/--count: they repeat.
+const FREE: OptionTable = {
+  short: flags("bkmghwtlv"),
+  long: longFlags([
+    "bytes",
+    "kilo",
+    "mega",
+    "giga",
+    "tera",
+    "peta",
+    "kibi",
+    "mebi",
+    "gibi",
+    "tebi",
+    "pebi",
+    "human",
+    "wide",
+    "total",
+    "lohi",
+    "committed",
+    "si",
+  ]),
+};
+
+const UPTIME: OptionTable = {
+  short: flags("ps"),
+  long: longFlags(["pretty", "since"]),
+};
+
+const UNAME: OptionTable = {
+  short: flags("asnrvmpio"),
+  long: longFlags([
+    "all",
+    "kernel-name",
+    "nodename",
+    "kernel-release",
+    "kernel-version",
+    "machine",
+    "processor",
+    "hardware-platform",
+    "operating-system",
+  ]),
+};
+
+// Any operand, -b, -F and -y set the name.
+const HOSTNAME: OptionTable = {
+  short: flags("aAdfiIs"),
+  long: longFlags([
+    "alias",
+    "all-fqdns",
+    "domain",
+    "fqdn",
+    "long",
+    "ip-address",
+    "all-ip-addresses",
+    "short",
+  ]),
+};
+
+// -s/--set and a bare MMDDhhmm operand set the clock; -f reads a file.
+const DATE: OptionTable = {
+  short: { ...flags("uR"), ...values("dr"), I: "optional" },
+  long: {
+    ...longFlags(["utc", "universal", "rfc-email", "debug"]),
+    ...longValues(["date", "rfc-3339", "reference"]),
+    "iso-8601": "optional",
+  },
+};
+
+// procps ps: UNIX options take a dash, BSD options do not, and BSD `e`
+// prints every process's environment.
+const PS_UNIX: OptionTable = {
+  short: { ...flags("AadefFHjlLMNTwcyPZ"), ...values("oOpquUgGCst") },
+  long: {
+    ...longFlags([
+      "forest",
+      "headers",
+      "no-headers",
+      "cumulative",
+      "deselect",
+      "context",
+    ]),
+    ...longValues([
+      "format",
+      "sort",
+      "pid",
+      "ppid",
+      "quick-pid",
+      "user",
+      "User",
+      "group",
+      "Group",
+      "sid",
+      "tty",
+      "cols",
+      "columns",
+      "lines",
+      "rows",
+      "width",
+    ]),
+  },
+};
+const PS_BSD_LETTERS = "auxwfjlrmvSchHT";
+const PS_FORMAT_OPTIONS = ["o", "O", "format"];
+
+function checkPs(args: string[]): ReadOnlyCheck {
+  const parsed = parseArgs("ps", args, PS_UNIX);
+  if (isParseError(parsed)) return refuse(parsed.error);
+  for (const o of parsed.options)
+    if (PS_FORMAT_OPTIONS.includes(o.name) && /env/i.test(o.value ?? ""))
+      return refuse("ps environment output is not allowed");
+  // Words without a dash: a bare pid list, or a BSD option cluster.
+  for (const word of parsed.operands) {
+    if (/^\d+(,\d+)*$/.test(word)) continue;
+    for (const ch of word) {
+      if (ch === "e") return refuse("ps environment output is not allowed");
+      if (!PS_BSD_LETTERS.includes(ch))
+        return refuse(`ps ${ch} is not allowed`);
+    }
   }
-  return { ok: true, argv: ["journalctl", ...withFlag(args, "--no-pager")] };
+  return { ok: true, argv: ["ps", ...args] };
 }
+
+// No -K/--kill, -D/--diag (writes a file), -F/--filter (reads one),
+// -N/--net (another namespace) or -E/--events (follows).
+const SS: OptionTable = {
+  short: { ...flags("alnrtuwxpeomis460HObMZz"), ...values("fA") },
+  long: {
+    ...longFlags([
+      "all",
+      "listening",
+      "numeric",
+      "resolve",
+      "tcp",
+      "udp",
+      "raw",
+      "unix",
+      "packet",
+      "processes",
+      "extended",
+      "options",
+      "memory",
+      "info",
+      "summary",
+      "ipv4",
+      "ipv6",
+      "no-header",
+      "oneline",
+      "context",
+      "contexts",
+    ]),
+    ...longValues(["family", "query", "socket"]),
+  },
+};
+
+// No -f/--follow; no --rotate, --flush, --sync, --vacuum-*, --setup-keys,
+// --update-catalog, --relinquish-var or --cursor-file (they write); no -M,
+// -D, -i, --root, --image or --namespace (another journal).
+const JOURNALCTL: OptionTable = {
+  short: {
+    ...flags("aeklmqrxN"),
+    ...values("utTpgSUoFc"),
+    n: "optional",
+    b: "optional",
+  },
+  long: {
+    ...longFlags([
+      "all",
+      "pager-end",
+      "dmesg",
+      "full",
+      "no-full",
+      "reverse",
+      "quiet",
+      "merge",
+      "utc",
+      "catalog",
+      "no-hostname",
+      "no-pager",
+      "list-boots",
+      "fields",
+      "show-cursor",
+      "system",
+      "user",
+      "no-tail",
+      "disk-usage",
+    ]),
+    ...longValues([
+      "unit",
+      "user-unit",
+      "identifier",
+      "exclude-identifier",
+      "priority",
+      "facility",
+      "grep",
+      "since",
+      "until",
+      "output",
+      "output-fields",
+      "field",
+      "cursor",
+      "after-cursor",
+    ]),
+    lines: "optional",
+    boot: "optional",
+    "case-sensitive": "optional",
+  },
+  refused: { "-f": FOLLOWING, "--follow": FOLLOWING },
+};
 
 const SYSTEMCTL_SUBCOMMANDS = [
   "status",
@@ -96,80 +568,164 @@ const SYSTEMCTL_SUBCOMMANDS = [
   "list-unit-files",
 ];
 
-/** Property names `systemctl show` was asked for, or null when none. */
-function showProperties(args: string[]): string[] | null {
-  const out: string[] = [];
-  let named = false;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    let value: string | undefined;
-    if (a === "-p" || a === "--property") value = args[++i];
-    else if (a.startsWith("--property=")) value = a.slice("--property=".length);
-    else if (/^-p./.test(a)) value = a.slice(2);
-    else continue;
-    named = true;
-    out.push(...(value ?? "").split(","));
-  }
-  return named ? out : null;
-}
+// Options after the subcommand. No -H/--host, -M/--machine, --root or
+// --image (another system), and no -r/--recursive (local containers).
+const SYSTEMCTL: OptionTable = {
+  short: { ...flags("alq"), ...values("pPtno") },
+  long: {
+    ...longFlags([
+      "all",
+      "full",
+      "value",
+      "quiet",
+      "no-legend",
+      "no-pager",
+      "plain",
+      "failed",
+      "user",
+      "system",
+    ]),
+    ...longValues(["property", "type", "state", "lines", "output"]),
+  },
+};
 
 function checkSystemctl(args: string[]): ReadOnlyCheck {
-  const index = firstNonFlag(args);
-  if (index >= 0) {
-    const sub = args[index];
-    if (!SYSTEMCTL_SUBCOMMANDS.includes(sub))
-      return refuse(`systemctl ${sub} is not allowed`);
-    if (sub === "show") {
-      // Unit properties include Environment=, which carries secrets.
-      const props = showProperties(args);
-      if (!props || props.some((p) => /environment/i.test(p) || !p.trim()))
-        return refuse(
-          "systemctl show needs --property naming properties other than Environment",
-        );
-    }
+  const sub = args[0];
+  if (sub === undefined) return refuse("systemctl needs a subcommand");
+  // getopt permutes: a verb after an option could be an option's value
+  // (`-p status restart`), so the verb must come first.
+  if (sub.startsWith("-"))
+    return refuse("systemctl needs its subcommand first");
+  if (!SYSTEMCTL_SUBCOMMANDS.includes(sub))
+    return refuse(`systemctl ${sub} is not allowed`);
+  const parsed = parseArgs("systemctl", args.slice(1), SYSTEMCTL);
+  if (isParseError(parsed)) return refuse(parsed.error);
+  if (sub === "show") {
+    // Unit properties include Environment=, which carries secrets.
+    const props = parsed.options.flatMap((o) =>
+      o.name === "p" || o.name === "property"
+        ? (o.value ?? "").split(",")
+        : o.name === "P"
+          ? [o.value ?? ""]
+          : [],
+    );
+    if (!props.length || props.some((p) => /environment/i.test(p) || !p.trim()))
+      return refuse(
+        "systemctl show needs --property naming properties other than Environment",
+      );
   }
   return { ok: true, argv: ["systemctl", ...withFlag(args, "--no-pager")] };
 }
 
-const DOCKER_SUBCOMMANDS = [
-  "ps",
-  "logs",
-  "stats",
-  "top",
-  "images",
-  "version",
-  "info",
-];
-const COMPOSE_SUBCOMMANDS = ["ps", "logs", "top", "images"];
+// docker subcommands and the options each may take after it. Global flags
+// (-H, --context, --config) must not appear: the subcommand comes first.
+const DOCKER_LOGS: OptionTable = {
+  short: { ...flags("t"), ...values("n") },
+  long: {
+    ...longFlags(["details", "timestamps"]),
+    ...longValues(["since", "until", "tail"]),
+  },
+  refused: { "-f": FOLLOWING, "--follow": FOLLOWING },
+};
+const DOCKER_SUBCOMMANDS: Record<string, OptionTable> = {
+  ps: {
+    short: { ...flags("alqs"), ...values("fn") },
+    long: {
+      ...longFlags(["all", "latest", "no-trunc", "quiet", "size"]),
+      ...longValues(["filter", "format", "last"]),
+    },
+  },
+  logs: DOCKER_LOGS,
+  stats: {
+    short: flags("a"),
+    long: {
+      ...longFlags(["all", "no-stream", "no-trunc"]),
+      ...longValues(["format"]),
+    },
+  },
+  // `docker top <container> [ps options]` passes the rest to ps, where `e`
+  // prints the environment: only the container is allowed.
+  top: { short: {}, long: {} },
+  images: {
+    short: { ...flags("aq"), ...values("f") },
+    long: {
+      ...longFlags(["all", "digests", "no-trunc", "quiet"]),
+      ...longValues(["filter", "format"]),
+    },
+  },
+  version: { short: values("f"), long: longValues(["format"]) },
+  info: { short: values("f"), long: longValues(["format"]) },
+};
+const COMPOSE_SUBCOMMANDS: Record<string, OptionTable> = {
+  ps: {
+    short: flags("aq"),
+    long: {
+      ...longFlags(["all", "quiet", "services", "no-trunc", "orphans"]),
+      ...longValues(["format", "filter", "status"]),
+    },
+  },
+  logs: {
+    short: flags("t"),
+    long: {
+      ...longFlags(["timestamps", "no-color", "no-log-prefix"]),
+      ...longValues(["tail", "since", "until", "index"]),
+    },
+    refused: { "-f": FOLLOWING, "--follow": FOLLOWING },
+  },
+  top: { short: {}, long: {} },
+  images: {
+    short: flags("q"),
+    long: { ...longFlags(["quiet"]), ...longValues(["format"]) },
+  },
+};
+const DOCKER_NO_OPERANDS = ["ps", "images", "version", "info"];
+const DOCKER_ONE_OPERAND = ["logs", "top"];
 
-function checkDockerLogs(args: string[]): ReadOnlyCheck | null {
-  for (const a of args)
-    if (shortClusterHas(a, "f") || a.startsWith("--follow"))
-      return refuse(FOLLOWING);
+function checkDockerArgs(
+  label: string,
+  sub: string,
+  rest: string[],
+  table: OptionTable,
+  compose: boolean,
+): ReadOnlyCheck | null {
+  const parsed = parseArgs(label, rest, table);
+  if (isParseError(parsed)) return refuse(parsed.error);
+  if (!compose && DOCKER_NO_OPERANDS.includes(sub) && parsed.operands.length)
+    return refuse(`${label} ${parsed.operands[0]} is not allowed`);
+  if (!compose && DOCKER_ONE_OPERAND.includes(sub)) {
+    if (parsed.operands.length !== 1)
+      return refuse(`${label} needs exactly one container`);
+  }
   return null;
 }
 
 function checkDocker(args: string[]): ReadOnlyCheck {
   const sub = args[0];
   if (sub === undefined) return refuse("docker needs a subcommand");
-  // Global flags (-H, --context, --config) would point docker elsewhere.
   if (sub.startsWith("-")) return refuse(`docker ${sub} is not allowed`);
   if (sub === "compose") {
     const next = args[1];
-    if (next === undefined || !COMPOSE_SUBCOMMANDS.includes(next))
+    if (next === undefined || !Object.hasOwn(COMPOSE_SUBCOMMANDS, next))
       return refuse(`docker compose ${next ?? ""} is not allowed`.trim());
-    if (next === "logs") {
-      const follow = checkDockerLogs(args.slice(2));
-      if (follow) return follow;
-    }
-    return { ok: true, argv: ["docker", ...args] };
+    const problem = checkDockerArgs(
+      `docker compose ${next}`,
+      next,
+      args.slice(2),
+      COMPOSE_SUBCOMMANDS[next],
+      true,
+    );
+    return problem ?? { ok: true, argv: ["docker", ...args] };
   }
-  if (!DOCKER_SUBCOMMANDS.includes(sub))
+  if (!Object.hasOwn(DOCKER_SUBCOMMANDS, sub))
     return refuse(`docker ${sub} is not allowed`);
-  if (sub === "logs") {
-    const follow = checkDockerLogs(args.slice(1));
-    if (follow) return follow;
-  }
+  const problem = checkDockerArgs(
+    `docker ${sub}`,
+    sub,
+    args.slice(1),
+    DOCKER_SUBCOMMANDS[sub],
+    false,
+  );
+  if (problem) return problem;
   if (sub === "stats")
     return { ok: true, argv: ["docker", ...withFlag(args, "--no-stream")] };
   return { ok: true, argv: ["docker", ...args] };
@@ -275,165 +831,102 @@ function globMatchesSecret(glob: string): boolean {
   return SECRET_NAME_SAMPLES.some((name) => re.test(name));
 }
 
-// Long options grep accepts here, and whether each takes a value. GNU getopt
-// accepts unique prefixes, so a prefix is resolved against this table; an
-// unknown or ambiguous one is refused.
-const GREP_LONG_OPTIONS: Record<string, boolean> = {
-  "after-context": true,
-  "before-context": true,
-  context: true,
-  "binary-files": true,
-  devices: true,
-  directories: true,
-  exclude: true,
-  "exclude-from": true,
-  "exclude-dir": true,
-  file: true,
-  "group-separator": true,
-  include: true,
-  label: true,
-  "max-count": true,
-  regexp: true,
-  "basic-regexp": false,
-  "extended-regexp": false,
-  "fixed-strings": false,
-  "perl-regexp": false,
-  binary: false,
-  "byte-offset": false,
-  color: false,
-  colour: false,
-  count: false,
-  "dereference-recursive": false,
-  "files-with-matches": false,
-  "files-without-match": false,
-  "ignore-case": false,
-  "no-ignore-case": false,
-  "initial-tab": false,
-  "invert-match": false,
-  "line-buffered": false,
-  "line-number": false,
-  "line-regexp": false,
-  "no-filename": false,
-  "no-group-separator": false,
-  "no-messages": false,
-  null: false,
-  "null-data": false,
-  "only-matching": false,
-  quiet: false,
-  recursive: false,
-  silent: false,
-  text: false,
-  "with-filename": false,
-  "word-regexp": false,
-};
-const GREP_SHORT_WITH_VALUE = "ABCDdefm";
-const GREP_FOLLOW_SHORT = "RS";
-
-function resolveGrepLong(name: string): string | null {
-  if (name in GREP_LONG_OPTIONS) return name;
-  const matches = Object.keys(GREP_LONG_OPTIONS).filter((o) =>
-    o.startsWith(name),
-  );
-  // A prefix that could name the link-following option is read as it, so an
-  // ambiguous one is refused below rather than guessed.
-  if (matches.includes("dereference-recursive")) return "dereference-recursive";
-  return matches.length === 1 ? matches[0] : null;
-}
-
+// grep's options. Not here: -f/--file and --exclude-from (they read another
+// file), -R, -S and --dereference-recursive (follow links), -L (some greps
+// read it as following links).
 const FOLLOWING_LINKS = "Following links in a recursive search is not allowed";
 const SECRET_FILES = "Reading secret-shaped files is not allowed";
 
+const GREP: OptionTable = {
+  short: { ...flags("EFGPiyvwxcoqsbHhnTZzalIUr"), ...values("ABCDdem") },
+  long: {
+    ...longValues([
+      "after-context",
+      "before-context",
+      "context",
+      "binary-files",
+      "devices",
+      "directories",
+      "exclude",
+      "exclude-dir",
+      "group-separator",
+      "include",
+      "label",
+      "max-count",
+      "regexp",
+    ]),
+    ...longFlags([
+      "basic-regexp",
+      "extended-regexp",
+      "fixed-strings",
+      "perl-regexp",
+      "binary",
+      "byte-offset",
+      "count",
+      "files-with-matches",
+      "ignore-case",
+      "no-ignore-case",
+      "initial-tab",
+      "invert-match",
+      "line-buffered",
+      "line-number",
+      "line-regexp",
+      "no-filename",
+      "no-group-separator",
+      "no-messages",
+      "null",
+      "null-data",
+      "only-matching",
+      "quiet",
+      "recursive",
+      "silent",
+      "text",
+      "with-filename",
+      "word-regexp",
+    ]),
+    color: "optional",
+    colour: "optional",
+  },
+  refused: {
+    "-R": FOLLOWING_LINKS,
+    "-S": FOLLOWING_LINKS,
+    "--dereference-recursive": FOLLOWING_LINKS,
+  },
+};
+
+// getopt's argmatch accepts any unambiguous prefix of an action, so only the
+// two non-recursive actions spelled out read as non-recursive.
 function directoriesRecurse(value: string): boolean {
   return value !== "read" && value !== "skip";
 }
 
 function checkGrep(args: string[]): ReadOnlyCheck {
-  const options: string[] = [];
-  const operands: string[] = [];
+  const parsed = parseArgs("grep", args, GREP);
+  if (isParseError(parsed)) return refuse(parsed.error);
   let recursive = false;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--") {
-      operands.push(...args.slice(i + 1));
-      break;
-    }
-    if (a.startsWith("--")) {
-      const eq = a.indexOf("=");
-      const raw = eq < 0 ? a.slice(2) : a.slice(2, eq);
-      const name = resolveGrepLong(raw);
-      if (!name) return refuse(`grep --${raw} is not allowed`);
-      options.push(a);
-      let value: string | undefined;
-      if (GREP_LONG_OPTIONS[name]) {
-        if (eq >= 0) value = a.slice(eq + 1);
-        else {
-          if (i + 1 >= args.length)
-            return refuse(`grep --${raw} needs a value`);
-          value = args[++i];
-          options.push(value);
-        }
-      }
-      if (name === "dereference-recursive") return refuse(FOLLOWING_LINKS);
-      if (name === "recursive") recursive = true;
-      if (name === "directories" && directoriesRecurse(value ?? ""))
-        recursive = true;
-      if (name === "include" && globMatchesSecret(value ?? ""))
-        return refuse(SECRET_FILES);
-      continue;
-    }
-    if (a.startsWith("-") && a.length > 1) {
-      options.push(a);
-      for (let j = 1; j < a.length; j++) {
-        const ch = a[j];
-        if (GREP_FOLLOW_SHORT.includes(ch)) return refuse(FOLLOWING_LINKS);
-        if (ch === "r") recursive = true;
-        if (GREP_SHORT_WITH_VALUE.includes(ch)) {
-          let value = a.slice(j + 1);
-          if (!value) {
-            if (i + 1 >= args.length)
-              return refuse(`grep -${ch} needs a value`);
-            value = args[++i];
-            options.push(value);
-          }
-          if (ch === "d" && directoriesRecurse(value)) recursive = true;
-          break;
-        }
-      }
-      continue;
-    }
-    operands.push(a);
+  for (const o of parsed.options) {
+    if (o.name === "r" || o.name === "recursive") recursive = true;
+    if (
+      (o.name === "d" || o.name === "directories") &&
+      directoriesRecurse(o.value ?? "")
+    )
+      recursive = true;
+    if (o.name === "include" && globMatchesSecret(o.value ?? ""))
+      return refuse(SECRET_FILES);
   }
   if (!recursive) return { ok: true, argv: ["grep", ...args] };
   return {
     ok: true,
     argv: [
       "grep",
-      ...options,
+      ...parsed.optionWords,
       ...GREP_SECRET_FILE_GLOBS.map((g) => `--exclude=${g}`),
       ...GREP_SECRET_DIR_GLOBS.map((g) => `--exclude-dir=${g}`),
       "--",
-      ...operands,
+      ...parsed.operands,
     ],
   };
 }
-
-const HOSTNAME_FLAGS = [
-  "-f",
-  "--fqdn",
-  "--long",
-  "-s",
-  "--short",
-  "-i",
-  "--ip-address",
-  "-I",
-  "--all-ip-addresses",
-  "-d",
-  "--domain",
-  "-A",
-  "--all-fqdns",
-  "-a",
-  "--alias",
-];
 
 export function checkReadOnlyCommand(
   program: string,
@@ -455,44 +948,51 @@ export function checkReadOnlyCommand(
     return refuse("Reading secret-shaped files is not allowed");
 
   switch (program) {
+    case "cat":
+      return checked(program, args, CAT);
+    case "head":
+      return checked(program, args, HEAD);
     case "tail":
-      return checkTail(args) ?? { ok: true, argv: [program, ...args] };
-    case "ps":
-      if (args.some((a) => !a.startsWith("-") && a.includes("e")))
-        return refuse("ps environment output is not allowed");
-      break;
+      return checked(program, args, TAIL);
+    case "wc":
+      return checked(program, args, WC);
+    case "ls":
+      return checked(program, args, LS);
+    case "stat":
+      return checked(program, args, STAT);
+    case "du":
+      return checked(program, args, DU);
+    case "df":
+      return checked(program, args, DF);
+    case "free":
+      return checked(program, args, FREE, noOperands(program));
+    case "uptime":
+      return checked(program, args, UPTIME, noOperands(program));
+    case "uname":
+      return checked(program, args, UNAME, noOperands(program));
     case "hostname":
-      for (const a of args)
-        if (!HOSTNAME_FLAGS.includes(a))
-          return refuse(`hostname ${a} is not allowed`);
-      break;
+      return checked(program, args, HOSTNAME, noOperands(program));
     case "date":
-      for (const a of args)
-        // A bare positional (MMDDhhmm...) sets the clock as well.
-        if (
-          shortClusterHas(a, "s") ||
-          a.startsWith("--set") ||
-          (!a.startsWith("-") && !a.startsWith("+"))
-        )
-          return refuse(`date ${a} is not allowed`);
-      break;
+      return checked(program, args, DATE, (parsed) => {
+        // A bare MMDDhhmm... operand sets the clock; +FORMAT prints.
+        const bad = parsed.operands.find((o) => !o.startsWith("+"));
+        return bad === undefined ? null : refuse(`date ${bad} is not allowed`);
+      });
+    case "ps":
+      return checkPs(args);
     case "ss":
-      for (const a of args)
-        if (
-          shortClusterHas(a, "KD") ||
-          a.startsWith("--kill") ||
-          a.startsWith("--diag")
-        )
-          return refuse(`ss ${a} is not allowed`);
-      break;
+      return checked(program, args, SS);
     case "grep":
       return checkGrep(args);
     case "journalctl":
-      return checkJournalctl(args);
+      return checked(program, args, JOURNALCTL, () => ({
+        ok: true,
+        argv: ["journalctl", ...withFlag(args, "--no-pager")],
+      }));
     case "systemctl":
       return checkSystemctl(args);
     case "docker":
       return checkDocker(args);
   }
-  return { ok: true, argv: [program, ...args] };
+  return refuse(`${program} is not on the read-only list`);
 }
