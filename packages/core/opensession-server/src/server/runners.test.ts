@@ -87,6 +87,48 @@ describe("Runner registry security", () => {
     expect(reused.ok).toBe(false);
   });
 
+  test("onRegistered runs once the Runner is saved", () => {
+    const seen: string[] = [];
+    const { code } = createRunnerPairing("Ada", {
+      onRegistered: (r) => seen.push(r.name),
+    });
+    const out = registerRunner({
+      code,
+      name: "prod-1",
+      platform: "linux",
+      arch: "x64",
+      address: "100.64.0.9",
+    });
+    expect(out.ok).toBe(true);
+    expect(seen).toEqual(["prod-1"]);
+    // A throwing callback never undoes the registration.
+    const again = createRunnerPairing("Ada", {
+      onRegistered: () => {
+        throw new Error("boom");
+      },
+    });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect(
+        registerRunner({
+          code: again.code,
+          name: "prod-2",
+          platform: "linux",
+          arch: "x64",
+          address: "100.64.0.10",
+        }).ok,
+      ).toBe(true);
+    } finally {
+      console.warn = warn;
+    }
+    expect(
+      listRunners()
+        .map((r) => r.name)
+        .sort(),
+    ).toEqual(["prod-1", "prod-2"]);
+  });
+
   test("re-pairing retains policy but rotates the credential", () => {
     const first = register();
     if (!first.ok) throw new Error(first.error);

@@ -143,6 +143,8 @@ type Pairing = {
   expiresAt: number;
   createdBy?: string;
   migration?: RunnerMigration;
+  /** Held in memory with the code only; runs once the Runner is saved. */
+  onRegistered?: (runner: Runner) => void;
 };
 
 function storePath(): string {
@@ -402,13 +404,21 @@ function pairingCode(): string {
   return `${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}`;
 }
 
-export function createRunnerPairing(createdBy?: string): {
+export function createRunnerPairing(
+  createdBy?: string,
+  opts: { onRegistered?: (runner: Runner) => void } = {},
+): {
   code: string;
   expiresAt: number;
 } {
   const code = pairingCode();
   const expiresAt = Date.now() + PAIRING_TTL_MS;
-  pairings.set(code, { code, expiresAt, createdBy });
+  pairings.set(code, {
+    code,
+    expiresAt,
+    createdBy,
+    ...(opts.onRegistered ? { onRegistered: opts.onRegistered } : {}),
+  });
   return { code, expiresAt };
 }
 
@@ -532,6 +542,15 @@ export function registerRunner(
   if (existingIndex >= 0) store.runners[existingIndex] = runner;
   else store.runners.push(runner);
   save(store);
+  if (pairing.onRegistered)
+    try {
+      pairing.onRegistered(runner);
+    } catch (error) {
+      console.warn(
+        `[runners] pairing callback failed for ${runner.name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   return { ok: true, runner, token };
 }
 
