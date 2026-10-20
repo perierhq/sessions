@@ -51,17 +51,14 @@ test("a folder added from disk disables deletion and says why", () => {
   const markup = render(
     preview({
       deletable: false,
-      reason:
-        "Added from an existing folder, so its files stay on this machine",
+      reason: "Added from an existing folder, so its files stay",
       deletePaths: undefined,
       worktrees: undefined,
       sizeBytes: undefined,
     }),
   );
   expect(markup).toContain("data-disabled");
-  expect(markup).toContain(
-    "Added from an existing folder, so its files stay on this machine",
-  );
+  expect(markup).toContain("Added from an existing folder, so its files stay");
   expect(markup).not.toContain("MB");
 });
 

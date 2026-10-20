@@ -250,11 +250,10 @@ async function git(
 
 /** One line on why a repository's files stay, shown under the checkbox. */
 const KEEP_REASON = {
-  local: "Added from an existing folder, so its files stay on this machine",
-  outside:
-    "Only checkouts this server cloned or created in ~/checkouts can be deleted",
-  shared: "Another repository uses this folder, so its files stay",
-  server: "This server runs from this folder, so its files stay",
+  local: "Added from an existing folder, so its files stay",
+  outside: "Not in ~/checkouts, so its files stay",
+  shared: "Another repository uses this folder",
+  server: "This server runs from this folder",
   missing: "Its folder is no longer on this machine",
 } as const;
 
