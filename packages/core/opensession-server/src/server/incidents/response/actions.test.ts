@@ -254,6 +254,20 @@ test("a Runner problem leaves the outcome unknown, never failed", async () => {
       { code: -1, stderr: "half done\n[Runner disconnected]" },
       "The Runner disconnected while the action ran. Check production before going on",
     ],
+    // Refused or never spawned: nothing ran.
+    [
+      new Error("Command input is too large"),
+      "Command input is too large. The action did not start",
+    ],
+    [
+      { code: -1, stderr: 'Executable not found in $PATH: "bash"' },
+      'The Runner could not start the action: Executable not found in $PATH: "bash". The action did not start',
+    ],
+    [
+      { code: -1, stderr: "Could not reach Runner: socket closed" },
+      "The Runner could not start the action: Could not reach Runner: socket closed. The action did not start",
+    ],
+    [{ code: -1, stderr: "" }, "The Runner could not start the action"],
   ];
   for (const [result, detail] of cases)
     expect(await unknown(result)).toMatchObject({ status: "unknown", detail });

@@ -16,7 +16,11 @@ import {
   type IncidentAction,
   type IncidentProjectSettings,
 } from "../../../shared/incident-response";
-import { type RunnerExecResult, execOnIncidentRunner } from "../../runner-ws";
+import {
+  RUNNER_STDIN_TOO_LARGE,
+  type RunnerExecResult,
+  execOnIncidentRunner,
+} from "../../runner-ws";
 import {
   RequestBodyTooLargeError,
   readRequestTextWithinLimit,
@@ -119,9 +123,21 @@ function errorMessage(error: unknown): string {
 /** A Runner problem: refused before dispatch (the action did not start),
  *  or anything else that went wrong getting it there (it may have). */
 function runnerProblemDetail(error: unknown): string {
-  return (error as { code?: unknown }).code === "RUNNER_UNAVAILABLE"
+  const refused =
+    (error as { code?: unknown }).code === "RUNNER_UNAVAILABLE" ||
+    (error instanceof Error && error.message === RUNNER_STDIN_TOO_LARGE);
+  return refused
     ? `${errorMessage(error)}. The action did not start`
     : `The Runner failed while the action started: ${errorMessage(error)}. ${CHECK_PRODUCTION}`;
+}
+
+/** Exit -1 without a dropped channel: the Runner could not spawn the
+ *  script, or the frame never reached it. Nothing ran. */
+function notStartedDetail(stderr: string): string {
+  const line = lastStderrLine(stderr);
+  return line
+    ? `The Runner could not start the action: ${line}. The action did not start`
+    : "The Runner could not start the action";
 }
 
 /** Runs one action and returns the finished run. Never throws. */
@@ -170,9 +186,11 @@ export async function runIncidentAction(
       if (result.timedOut) {
         detail = `Timed out after ${Math.max(1, Math.round(action.timeoutMs / 60_000))} min`;
       } else if (result.code === -1) {
-        // The channel dropped: the script may have run, in part or whole.
         status = "unknown";
-        detail = `The Runner disconnected while the action ran. ${CHECK_PRODUCTION}`;
+        // A dropped channel: the script may have run, in part or whole.
+        detail = (result.stderr ?? "").includes("[Runner disconnected]")
+          ? `The Runner disconnected while the action ran. ${CHECK_PRODUCTION}`
+          : notStartedDetail(result.stderr ?? "");
       } else {
         exitCode = result.code;
         if (result.code === 0) {

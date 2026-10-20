@@ -105,6 +105,8 @@ export type RunnerExecOptions = {
 
 /** Largest `stdin` sent to a Runner. */
 export const RUNNER_STDIN_MAX_BYTES = 262_144;
+/** Thrown before dispatch when `stdin` is over the limit. */
+export const RUNNER_STDIN_TOO_LARGE = "Command input is too large";
 
 /** A Runner problem (offline, not permitted, in maintenance, too old),
  *  never the command's own failure. Callers that judge a service by a
@@ -1420,7 +1422,7 @@ async function execOnRunnerAs(
         `Update Runner ${runner.name} so it can take command input`,
       );
     if (Buffer.byteLength(options.stdin) > RUNNER_STDIN_MAX_BYTES)
-      throw new Error("Command input is too large");
+      throw new Error(RUNNER_STDIN_TOO_LARGE);
   }
   const role = options.aws ? runner.aws : undefined;
   if (role && !connection.execAws)
