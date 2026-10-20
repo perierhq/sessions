@@ -10,6 +10,8 @@ import {
   assessAutoMerge,
   fetchPrSnapshot,
   mergeIncidentPr,
+  MAX_PR_FILES,
+  parsePrFileList,
   parsePrUrl,
   prFilePaths,
   snapshotFromVerdict,
@@ -496,4 +498,18 @@ test("fetches a snapshot only for the incident's own repository", async () => {
       repos,
     ),
   ).toMatchObject({ files: null });
+});
+
+test("a PR file list at GitHub's cap is unreadable, never a short list", () => {
+  const line = (f: string, prev?: string) =>
+    JSON.stringify(prev ? [f, prev] : [f, null]);
+  expect(parsePrFileList(`${line("a.ts")}\n${line("b.ts", "c.ts")}\n`)).toEqual(
+    [{ filename: "a.ts" }, { filename: "b.ts", previous_filename: "c.ts" }],
+  );
+  expect(parsePrFileList("not json\n")).toBeNull();
+  const full = Array.from({ length: MAX_PR_FILES }, (_, i) => line(`f${i}.ts`));
+  expect(parsePrFileList(full.join("\n"))).toBeNull();
+  expect(parsePrFileList(full.slice(1).join("\n"))).toHaveLength(
+    MAX_PR_FILES - 1,
+  );
 });

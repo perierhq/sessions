@@ -29,7 +29,8 @@ import { getRepo } from "../../worktree";
 import { incidentAudit } from "../audit-sink";
 import type { PrFileEntry } from "./facts";
 
-const MAX_PR_FILES = 3000;
+/** GitHub lists at most this many files of a pull request. */
+export const MAX_PR_FILES = 3000;
 const PR_URL =
   /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)\/pull\/([1-9]\d{0,9})\/?$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -187,6 +188,21 @@ function parseFileLine(line: string): PrFileEntry | null {
   }
 }
 
+/** `gh api --paginate .../files` lines as entries. Null when a line is not
+ *  one, or when the list reaches GitHub's cap: a cut list could hide a file
+ *  outside the deploy's scope, so it reads as unreadable (outside scope). */
+export function parsePrFileList(out: string): PrFileEntry[] | null {
+  const files: PrFileEntry[] = [];
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const entry = parseFileLine(line);
+    if (!entry) return null;
+    files.push(entry);
+    if (files.length >= MAX_PR_FILES) return null;
+  }
+  return files;
+}
+
 export function defaultMergeGithub(): MergeGithub {
   return {
     verdict: (t) => githubForceMergeApi.verdict(t),
@@ -206,15 +222,7 @@ export function defaultMergeGithub(): MergeGithub {
         await readCredential(ghRepo),
       );
       if (code !== 0) return null;
-      const files: PrFileEntry[] = [];
-      for (const line of out.split("\n")) {
-        if (!line.trim()) continue;
-        const entry = parseFileLine(line);
-        if (!entry) return null;
-        files.push(entry);
-        if (files.length >= MAX_PR_FILES) break;
-      }
-      return files;
+      return parsePrFileList(out);
     },
     async mergeCommit(ghRepo, n) {
       const { out, err, code } = await gh(
