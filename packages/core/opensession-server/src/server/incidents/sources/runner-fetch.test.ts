@@ -528,3 +528,99 @@ test("the Runner guard allows the host itself, refuses metadata in every form", 
     expect([blocked, runnerCheckBlocked(blocked)]).toEqual([blocked, true]);
   expect(shellQuote("it's")).toBe(`'it'\\''s'`);
 });
+
+test.skipIf(!Bun.which("curl") || !Bun.which("bash"))(
+  "the config works with a real curl",
+  async () => {
+    const seen: Array<{ method: string; url: string; body: string }> = [];
+    const big = "x".repeat(RUNNER_BODY_CAP_BYTES + 50_000);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        seen.push({
+          method: req.method,
+          url: url.pathname + url.search,
+          body: await req.text(),
+        });
+        if (url.pathname === "/big") return new Response(big);
+        // A HEAD answer names a length it never sends.
+        if (url.pathname === "/head") return new Response("y".repeat(100_000));
+        return new Response(`body ${MARK}200`, { status: 201 });
+      },
+    });
+    const stderrs: string[] = [];
+    // The Runner runs `bash -lc <command>` with the input on stdin.
+    const local: Partial<RunnerFetchDeps> = {
+      exec: async (_id, command, o) => {
+        const proc = Bun.spawn(["bash", "-c", command], {
+          stdin: new TextEncoder().encode(o.stdin),
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: o.timeoutMs,
+        });
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        stderrs.push(stderr);
+        return { code, stdout, stderr };
+      },
+      runner: () => ({ name: "local", platform: process.platform }),
+      connected: () => true,
+      gate: async () => null,
+    };
+    const base = `http://127.0.0.1:${server.port}`;
+    const fetchLocal = (
+      path: string,
+      i: Partial<PinnedRequestInit> = {},
+      timeoutMs = 20_000,
+    ) => {
+      const net = runnerNet("runner-local", local, {
+        repo: "acme",
+        host: "127.0.0.1",
+        timeoutMs,
+      });
+      return net.send(target(`${base}${path}`), init(i), net.isBlocked);
+    };
+    try {
+      // The status comes from the marker on stderr, not from the body.
+      const res = await fetchLocal("/q");
+      expect(res.status).toBe(201);
+      expect(new TextDecoder().decode(res.body)).toBe(`body ${MARK}200`);
+      expect(stderrs.at(-1)).toContain("__SESSIONS_CURL__201");
+
+      // A body starting with '@' is sent as text, never read as a file.
+      await fetchLocal("/post", { method: "POST", body: "@/etc/hosts" });
+      expect(seen.at(-1)).toMatchObject({
+        method: "POST",
+        body: "@/etc/hosts",
+      });
+
+      // Brackets are not a glob: one request, sent as written.
+      const before = seen.length;
+      await fetchLocal("/glob?q=[1-3]");
+      expect(seen.slice(before).map((r) => r.url)).toEqual(["/glob?q=[1-3]"]);
+
+      // HEAD returns at once instead of waiting for the promised body.
+      const started = Date.now();
+      const head = await fetchLocal("/head", { method: "HEAD" }, 15_000);
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-length")).toBe("100000");
+      expect(Date.now() - started).toBeLessThan(5_000);
+
+      // The body is cut on the Runner; the status survives.
+      const preview = await fetchLocal("/big", { maxBodyBytes: 16_384 });
+      expect(preview).toMatchObject({ status: 200, truncated: true });
+      expect(preview.body.length).toBe(16_384);
+      await expect(fetchLocal("/big")).rejects.toMatchObject({
+        code: "BODY_TOO_LARGE",
+      });
+    } finally {
+      server.stop(true);
+    }
+  },
+  30_000,
+);
