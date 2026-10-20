@@ -11,8 +11,8 @@ import { incidentAudit } from "./audit-sink";
 import {
   type SignalValidationContext,
   generateHookSecret,
-  mergeRedactedHeaders,
   normalizeSignal,
+  restoreRedactedSource,
   validateSignalInput,
 } from "./signal-validation";
 
@@ -80,17 +80,18 @@ function compact(signal: Signal): Signal {
   return out as unknown as Signal;
 }
 
-/** Restore secret header values sent back redacted, against `stored`. */
-function withMergedHeaders(next: Signal, stored: Signal | undefined): Signal {
-  if (next.source?.kind !== "http") return next;
-  const headers = mergeRedactedHeaders(
-    next.source.headers,
-    stored?.source.kind === "http" ? stored.source.headers : undefined,
-  );
-  const source = { ...next.source };
-  if (headers) source.headers = headers;
-  else delete source.headers;
-  return { ...next, source };
+/**
+ * Restore values sent back redacted (secret headers, query parameters, the
+ * body) against `stored`, only while the address keeps its origin.
+ */
+function withRestoredSecrets(
+  next: Signal,
+  stored: Signal | undefined,
+): Signal | { error: string } {
+  if (!next.source) return next;
+  const restored = restoreRedactedSource(stored?.source, next.source);
+  if ("error" in restored) return restored;
+  return { ...next, source: restored.source };
 }
 
 export async function listSignals(): Promise<Signal[]> {
@@ -124,10 +125,11 @@ export async function createSignal(
     createdAt: now,
     updatedAt: now,
   } as Signal;
-  const merged = withMergedHeaders(
+  const merged = withRestoredSecrets(
     { ...base, ...validated.fields } as Signal,
     undefined,
   );
+  if ("error" in merged) return merged;
   const normalized = normalizeSignal(merged);
   if ("error" in normalized) return normalized;
   const signal = compact(normalized);
@@ -162,7 +164,7 @@ export async function updateSignal(
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
-    const merged = withMergedHeaders(
+    const merged = withRestoredSecrets(
       {
         ...value,
         ...validated.fields,
@@ -173,15 +175,16 @@ export async function updateSignal(
       } as Signal,
       value,
     );
-    const normalized = normalizeSignal(merged);
+    const normalized = "error" in merged ? merged : normalizeSignal(merged);
     if ("error" in normalized) {
       failure = normalized;
       return value;
     }
     const next = compact(normalized);
-    if (needsHookSecret(next))
-      next.hookSecret = value.hookSecret ?? freshSecret;
-    else delete next.hookSecret;
+    // A hook secret is never rotated, not even by switching the source to
+    // another kind and back; only hook kinds publish it (hookPathFor).
+    if (value.hookSecret) next.hookSecret = value.hookSecret;
+    else if (needsHookSecret(next)) next.hookSecret = freshSecret;
     return next;
   });
   if (failure) return failure;

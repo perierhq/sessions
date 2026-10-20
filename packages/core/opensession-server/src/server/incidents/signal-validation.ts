@@ -72,6 +72,32 @@ const SECRET_HEADERS = new Set([
   "x-api-key",
   "api-key",
 ]);
+/** Hop-by-hop and framing headers the fetch layer owns. */
+const FORBIDDEN_HEADERS = new Set([
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "upgrade",
+  "te",
+  "trailer",
+  "keep-alive",
+]);
+/** Query parameter names (or `_`/`-`/`.` separated parts of them) that carry secrets. */
+const SECRET_QUERY_PARTS = new Set([
+  "apikey",
+  "key",
+  "token",
+  "secret",
+  "sig",
+  "signature",
+  "auth",
+  "password",
+  "passwd",
+  "credential",
+  "credentials",
+]);
+const SECRET_QUERY_WORDS = ["token", "secret", "password", "apikey", "api_key"];
 const SECRET_HEADER_PARTS = [
   "token",
   "secret",
@@ -126,9 +152,15 @@ function validateHeaders(
   if (entries.length > MAX_HEADERS)
     return { error: `At most ${MAX_HEADERS} headers` };
   const out: Record<string, string> = {};
+  const seen = new Set<string>();
   for (const [name, raw] of entries) {
     if (!HEADER_NAME.test(name))
       return { error: `Invalid header name "${name.slice(0, 64)}"` };
+    const lower = name.toLowerCase();
+    if (FORBIDDEN_HEADERS.has(lower) || lower.startsWith("proxy-"))
+      return { error: `The ${name} header cannot be set` };
+    if (seen.has(lower)) return { error: `Header "${name}" is listed twice` };
+    seen.add(lower);
     if (typeof raw !== "string")
       return { error: `Invalid header ${name}: the value must be text` };
     if (raw.length > MAX_HEADER_VALUE_CHARS)
@@ -546,42 +578,202 @@ export function hookPathFor(
   return `/incident-hooks/${signal.id}/${signal.hookSecret}`;
 }
 
+function isSecretQueryName(name: string): boolean {
+  let lower: string;
+  try {
+    lower = decodeURIComponent(name.replace(/\+/g, " ")).toLowerCase();
+  } catch {
+    lower = name.toLowerCase();
+  }
+  return (
+    SECRET_QUERY_WORDS.some((word) => lower.includes(word)) ||
+    lower.split(/[-_.]/).some((part) => SECRET_QUERY_PARTS.has(part))
+  );
+}
+
+function decodedQueryValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch {
+    return raw;
+  }
+}
+
+/** `[?&]name=value` pairs of a URL's query, before any fragment. */
+const QUERY_PAIR = /([?&])([^=&#]*)=([^&#]*)/g;
+
+function splitFragment(raw: string): [string, string] {
+  const hash = raw.indexOf("#");
+  return hash < 0 ? [raw, ""] : [raw.slice(0, hash), raw.slice(hash)];
+}
+
+/**
+ * Replace the values of secret-looking query parameters (api_key, token,
+ * key, secret, sig, signature, auth and the like) with {@link REDACTED}.
+ * Works on the text, so every other byte of the URL is kept as it was.
+ */
+export function redactSecretQuery(raw: string): string {
+  const [head, fragment] = splitFragment(raw);
+  if (!head.includes("?")) return raw;
+  const query = head.indexOf("?");
+  return (
+    head.slice(0, query) +
+    head
+      .slice(query)
+      .replace(QUERY_PAIR, (pair, sep: string, name: string, value: string) =>
+        value && isSecretQueryName(name) ? `${sep}${name}=${REDACTED}` : pair,
+      ) +
+    fragment
+  );
+}
+
 /** The signal as it may leave the server: no hook secret, no secret header values. */
 export function redactSignal(signal: Signal): RedactedSignal {
   const { hookSecret: _secret, ...rest } = signal;
   const out: RedactedSignal = { ...rest };
   const hookPath = hookPathFor(signal);
   if (hookPath) out.hookPath = hookPath;
-  if (signal.source.kind === "http" && signal.source.headers) {
-    const headers: Record<string, string> = {};
-    for (const [name, value] of Object.entries(signal.source.headers))
-      headers[name] = isSecretHeader(name) ? REDACTED : value;
-    out.source = { ...signal.source, headers };
+  if (signal.source.kind === "http") {
+    const source: HttpSource = {
+      ...signal.source,
+      url: redactSecretQuery(signal.source.url),
+    };
+    if (signal.source.headers) {
+      const headers: Record<string, string> = {};
+      for (const [name, value] of Object.entries(signal.source.headers))
+        headers[name] = isSecretHeader(name) ? REDACTED : value;
+      source.headers = headers;
+    }
+    if (source.body !== undefined) source.body = REDACTED;
+    out.source = source;
   }
   return out;
 }
 
+type Restored<T> = T | { error: string };
+
+function originOf(raw: string): string | undefined {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Restore secret header values a client sent back as {@link REDACTED}: the
- * stored value for the same name (case-insensitive) wins; without one the
- * header is dropped.
+ * Whether a value sent back redacted may take the stored one: only when the
+ * stored source is http and points at the same origin as the new one. A
+ * secret never follows a signal to another address.
  */
-export function mergeRedactedHeaders(
-  next: Record<string, string> | undefined,
-  stored: Record<string, string> | undefined,
-): Record<string, string> | undefined {
-  if (!next) return undefined;
-  const storedByName = new Map<string, string>();
-  for (const [name, value] of Object.entries(stored ?? {}))
-    storedByName.set(name.toLowerCase(), value);
+function restoreCheck(
+  stored: SignalSource | undefined,
+  next: HttpSource,
+  what: string,
+): { stored: HttpSource } | { error: string } {
+  if (stored?.kind !== "http") return { error: `Enter the ${what} again` };
+  const from = originOf(stored.url);
+  if (from === undefined || from !== originOf(next.url))
+    return { error: `Enter the ${what} again for the new address` };
+  return { stored };
+}
+
+/**
+ * Restore secret header values a client sent back as {@link REDACTED} from
+ * the stored source (same name, case-insensitive). Only for the same origin;
+ * a redacted value with nothing to restore is an error.
+ */
+export function restoreRedactedHeaders(
+  stored: SignalSource | undefined,
+  next: HttpSource,
+): Restored<{ headers?: Record<string, string> }> {
+  if (!next.headers) return {};
   const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(next)) {
+  for (const [name, value] of Object.entries(next.headers)) {
     if (value !== REDACTED) {
       out[name] = value;
       continue;
     }
-    const kept = storedByName.get(name.toLowerCase());
-    if (kept !== undefined && kept !== REDACTED) out[name] = kept;
+    const check = restoreCheck(stored, next, `${name} value`);
+    if ("error" in check) return check;
+    const kept = Object.entries(check.stored.headers ?? {}).find(
+      ([storedName]) => storedName.toLowerCase() === name.toLowerCase(),
+    )?.[1];
+    if (kept === undefined || kept === REDACTED)
+      return { error: `Enter the ${name} value again` };
+    out[name] = kept;
   }
-  return Object.keys(out).length ? out : undefined;
+  return Object.keys(out).length ? { headers: out } : {};
+}
+
+/** Raw query values per parameter name, in order. */
+function queryValues(raw: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const [head] = splitFragment(raw);
+  const query = head.indexOf("?");
+  if (query < 0) return out;
+  for (const [, , name, value] of head.slice(query).matchAll(QUERY_PAIR)) {
+    const list = out.get(name!) ?? [];
+    list.push(value!);
+    out.set(name!, list);
+  }
+  return out;
+}
+
+function restoreRedactedUrl(
+  stored: SignalSource | undefined,
+  next: HttpSource,
+): Restored<{ url: string }> {
+  const [head, fragment] = splitFragment(next.url);
+  const query = head.indexOf("?");
+  if (query < 0) return { url: next.url };
+  let storedValues: Map<string, string[]> | undefined;
+  const used = new Map<string, number>();
+  let failure: { error: string } | undefined;
+  const rest = head
+    .slice(query)
+    .replace(QUERY_PAIR, (pair, sep: string, name: string, value: string) => {
+      if (failure || decodedQueryValue(value) !== REDACTED) return pair;
+      const check = restoreCheck(stored, next, `${name} value`);
+      if ("error" in check) {
+        failure = check;
+        return pair;
+      }
+      storedValues ??= queryValues(check.stored.url);
+      const index = used.get(name) ?? 0;
+      used.set(name, index + 1);
+      const kept = storedValues.get(name)?.[index];
+      if (kept === undefined || decodedQueryValue(kept) === REDACTED) {
+        failure = { error: `Enter the ${name} value again` };
+        return pair;
+      }
+      return `${sep}${name}=${kept}`;
+    });
+  return failure ?? { url: head.slice(0, query) + rest + fragment };
+}
+
+/**
+ * Restore every value a client sent back as {@link REDACTED} (secret query
+ * parameters, secret headers, the body) from the stored source. Use it on
+ * every write and on every test run of a draft against a stored signal.
+ */
+export function restoreRedactedSource(
+  stored: SignalSource | undefined,
+  next: SignalSource,
+): Restored<{ source: SignalSource }> {
+  if (next.kind !== "http") return { source: next };
+  const url = restoreRedactedUrl(stored, next);
+  if ("error" in url) return url;
+  const headers = restoreRedactedHeaders(stored, next);
+  if ("error" in headers) return headers;
+  const source: HttpSource = { ...next, url: url.url };
+  if (headers.headers) source.headers = headers.headers;
+  else delete source.headers;
+  if (next.body === REDACTED) {
+    const check = restoreCheck(stored, next, "body");
+    if ("error" in check) return check;
+    if (check.stored.body === undefined || check.stored.body === REDACTED)
+      return { error: "Enter the body again" };
+    source.body = check.stored.body;
+  }
+  return { source };
 }

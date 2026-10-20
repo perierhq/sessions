@@ -80,6 +80,55 @@ test("partial update keeps the rest and the redacted header", async () => {
   });
 });
 
+test("a redacted header does not follow the signal to another address", async () => {
+  const s = await createSignal(http, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  const moved = await updateSignal(
+    s.id,
+    {
+      source: {
+        kind: "http",
+        url: "https://other.example.test/q",
+        headers: { Authorization: "[redacted]" },
+      },
+    },
+    "Bo",
+  );
+  expect(moved).toEqual({
+    error: "Enter the Authorization value again for the new address",
+  });
+  expect(await getSignal(s.id)).toEqual(s);
+  const retyped = await updateSignal(
+    s.id,
+    {
+      source: {
+        kind: "http",
+        url: "https://other.example.test/q",
+        headers: { Authorization: "Bearer other" },
+      },
+    },
+    "Bo",
+  );
+  expect(retyped).toMatchObject({
+    source: { headers: { Authorization: "Bearer other" } },
+  });
+});
+
+test("a hook keeps its secret across a rename and a switch away and back", async () => {
+  const w = await createSignal(
+    { name: "Errors", project: "acme", source: { kind: "webhook" } },
+    "Ada",
+  );
+  if ("error" in w) throw new Error(w.error);
+  const renamed = await updateSignal(w.id, { name: "Errors API" }, "Ada");
+  expect(renamed && !("error" in renamed) && renamed.hookSecret).toBe(
+    w.hookSecret,
+  );
+  await updateSignal(w.id, { source: http.source }, "Ada");
+  const back = await updateSignal(w.id, { source: { kind: "webhook" } }, "Ada");
+  expect(back && !("error" in back) && back.hookSecret).toBe(w.hookSecret);
+});
+
 test("audits every write without secrets", async () => {
   const s = await createSignal(http, "Ada");
   if ("error" in s) throw new Error(s.error);
