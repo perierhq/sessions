@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
-import { listIncidents } from "./incident-store";
+import { listIncidents, updateIncident } from "./incident-store";
+import { transitionIncident } from "./lifecycle";
 import {
   __resetObservationsForTest,
   appendObservations,
@@ -205,6 +206,27 @@ test("a provider back from a long restart resolves its finding", async () => {
       resolvedAt: expect.any(String),
     }),
   ]);
+});
+
+test("boot does not reopen an incident closed while the signal was failing", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "fail");
+  const [open] = await listIncidents();
+  const closed = await updateIncident(open!.id, (c) =>
+    transitionIncident(c, "resolved", {
+      by: "Ada",
+      detail: "Known, fixed upstream",
+      at: new Date(clock).toISOString(),
+    }),
+  );
+  if (!closed || "error" in closed) throw new Error("close failed");
+  await feed(s.id, "fail");
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  await bootSignalRuntime(clock);
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  expect(await listIncidents()).toEqual([closed]);
 });
 
 test("disabled and deleted signals take no observations", async () => {

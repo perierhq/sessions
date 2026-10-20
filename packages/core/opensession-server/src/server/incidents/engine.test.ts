@@ -383,6 +383,46 @@ describe("decide", () => {
     ).toMatchObject({ op: "open" });
   });
 
+  test("boot leaves alone an incident closed while the signal was already bad", () => {
+    const a = S("sig-a");
+    const b = S("sig-b");
+    // Failing for 20 minutes; someone closed the incident 10 minutes ago.
+    const failing = { ...E("sig-a", "failing"), since: iso(1_200_000) };
+    const closed = I("inc-1", "resolved", { closedAt: iso(600_000) });
+    expect(
+      decideIncidentOps(a, null, failing, snap([a], [], [closed])),
+    ).toEqual([]);
+    // Nor does it merge into another open incident of the project.
+    expect(
+      decideIncidentOps(
+        a,
+        null,
+        failing,
+        snap(
+          [a, b],
+          [],
+          [closed, I("inc-2", "investigating", { signalIds: ["sig-b"] })],
+        ),
+      ),
+    ).toEqual([]);
+    // A bad run that started after the close reopens it.
+    expect(
+      decideIncidentOps(
+        a,
+        null,
+        { ...failing, since: iso(300_000) },
+        snap([a], [], [closed]),
+      ),
+    ).toEqual([
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ]);
+  });
+
   test("recovery: an event, and a heads-up closes once all its signals are ok", () => {
     const a = S("sig-a");
     expect(

@@ -555,6 +555,27 @@ function decideProvider(
   return ops.list();
 }
 
+/**
+ * An incident with the signal was closed after its current bad run began:
+ * someone closed it knowing. Without a restart nothing would have moved, so
+ * a boot replay of the same run moves nothing either.
+ */
+function closedDuringRun(
+  signal: Signal,
+  current: SignalEvaluation,
+  snapshot: EngineSnapshot,
+): boolean {
+  const started = Date.parse(current.since);
+  if (!Number.isFinite(started)) return false;
+  return snapshot.incidents.some(
+    (i) =>
+      isTerminalIncidentState(i.state) &&
+      i.signalIds.includes(signal.id) &&
+      i.closedAt !== undefined &&
+      started <= Date.parse(i.closedAt),
+  );
+}
+
 export function decideIncidentOps(
   signal: Signal,
   previous: SignalEvaluation | null,
@@ -577,7 +598,12 @@ export function decideIncidentOps(
     resolveSelfReported(ops, signal, open);
   const containing = open.filter((i) => i.signalIds.includes(signal.id));
   // After a restart only a bad signal nothing covers yet opens anything.
-  if (previous === null && (!isBad(current.state) || containing.length))
+  if (
+    previous === null &&
+    (!isBad(current.state) ||
+      containing.length ||
+      closedDuringRun(signal, current, snapshot))
+  )
     return ops.list();
   if (isBad(current.state)) decideBad(ops, signal, current, snapshot);
   else decideRecovery(ops, signal, current, snapshot, open);
