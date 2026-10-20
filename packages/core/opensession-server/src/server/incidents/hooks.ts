@@ -1,7 +1,7 @@
 // Webhook and heartbeat intake on the public webhook gateway:
 // `/incident-hooks/<signalId>/<secret>` (POST; GET too for heartbeats) and
-// `/incident-hooks/<signalId>/<secret>/fail` for a heartbeat reporting a
-// failure. The secret in the path is the only auth, so every wrong door
+// `/incident-hooks/<signalId>/<secret>/fail` (POST only) for a heartbeat
+// reporting a failure. The secret in the path is the only auth, so every wrong door
 // (unknown id, wrong secret, a signal that is not a hook, the wrong method
 // or suffix) gets the same 404. No per-call audit: the observations are
 // their own record.
@@ -81,7 +81,8 @@ async function hookSignal(
     case "webhook":
       return method === "POST" && !hook.fail ? signal : null;
     case "heartbeat":
-      return signal;
+      // A GET is a plain check-in; reporting a failure takes a POST.
+      return method === "POST" || !hook.fail ? signal : null;
     default:
       return null;
   }

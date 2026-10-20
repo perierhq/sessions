@@ -84,6 +84,10 @@ test("one indistinguishable 404 for every wrong door", async () => {
   const h = await make({
     source: { kind: "http", url: "https://acme.example.test" },
   });
+  const hb = await make({
+    source: { kind: "heartbeat" },
+    rule: { kind: "missing", everyMs: 3_600_000, graceMs: 0 },
+  });
   for (const [m, p] of [
     ["POST", `/incident-hooks/sig-nope/${w.hookSecret}`],
     ["POST", `/incident-hooks/${w.id}/${"0".repeat(48)}`],
@@ -91,6 +95,7 @@ test("one indistinguishable 404 for every wrong door", async () => {
     ["POST", `/incident-hooks/${h.id}/x`],
     ["GET", `/incident-hooks/${w.id}/${w.hookSecret}`],
     ["POST", `/incident-hooks/${w.id}/${w.hookSecret}/fail`],
+    ["GET", `/incident-hooks/${hb.id}/${hb.hookSecret}/fail`],
   ] as const) {
     const res = await call(m, p);
     expect([res.status, await res.json()]).toEqual([
@@ -106,6 +111,7 @@ test("one indistinguishable 404 for every wrong door", async () => {
       .status,
   ).toBe(400);
   expect(recentObservations(w.id)).toEqual([]);
+  expect(recentObservations(hb.id)).toEqual([]);
 });
 
 test("a signal switched away from a hook keeps its secret but takes nothing", async () => {
@@ -160,7 +166,7 @@ test("disabled and oversized", async () => {
   expect(recentObservations(hb.id)).toEqual([]);
 });
 
-test("heartbeats check in by GET or POST, and can report failure", async () => {
+test("heartbeats check in by GET or POST, and report failure by POST", async () => {
   const hb = await make({
     source: { kind: "heartbeat" },
     rule: { kind: "missing", cron: "0 3 * * *", graceMs: 1_800_000 },
@@ -173,7 +179,7 @@ test("heartbeats check in by GET or POST, and can report failure", async () => {
     `/incident-hooks/${hb.id}/${hb.hookSecret}/fail`,
     "disk full\nmore",
   );
-  await call("GET", `/incident-hooks/${hb.id}/${hb.hookSecret}/fail`);
+  await call("POST", `/incident-hooks/${hb.id}/${hb.hookSecret}/fail`);
   await call(
     "POST",
     `/incident-hooks/${hb.id}/${hb.hookSecret}`,
