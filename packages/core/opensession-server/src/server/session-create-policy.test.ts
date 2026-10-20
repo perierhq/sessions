@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   assertAutomationDescendantOpeningIsolation,
+  descendantOpeningScope,
   openingCreateTrustPolicy,
 } from "./session-create";
+import {
+  AgentAccessError,
+  __setBindingResolverForTest,
+} from "./incidents/access/resolve";
+import { __setIncidentAuditForTest } from "./incidents/audit-sink";
+import { agentAccessFixture } from "./incidents/testing/access-fixture";
 import { sandboxRunSecuritySpec } from "./run-session";
 import { runAccountSpec } from "./session-run-inputs";
 import type { UnifiedSession } from "./types";
@@ -50,6 +57,72 @@ describe("automation descendant opening policy", () => {
         user: "x",
       }).mcpServers,
     ).toEqual([]);
+  });
+
+  test("an incident agent's opening turn re-resolves its access like every later turn", async () => {
+    const incident = {
+      incidentId: "inc-1",
+      role: "investigator" as const,
+      signalId: null,
+      accessRevision: "r1",
+    };
+    const previousAudit = __setIncidentAuditForTest(() => {});
+    try {
+      __setBindingResolverForTest(async () =>
+        agentAccessFixture({
+          repos: ["renderer"],
+          connections: ["logs"],
+          deniedTools: { bash: "off" },
+        }),
+      );
+      const scope = await descendantOpeningScope({
+        id: "os-1",
+        mode: "code",
+        repo: "renderer",
+        automationDescendantPolicy: {
+          ...descendant,
+          mcpServers: ["sentry", "logs"],
+          incident,
+        },
+      });
+      expect(scope.mcpServers).toEqual(["logs"]);
+      expect(scope.deniedTools).toMatchObject({ bash: "off" });
+      expect(scope.incidentProxyMcpServers).toEqual([
+        "opensession-incident-access",
+      ]);
+      __setBindingResolverForTest(async () => {
+        throw new AgentAccessError(
+          "Incident inc-1 is paused; its agents have no access",
+          "incident",
+        );
+      });
+      await expect(
+        descendantOpeningScope({
+          id: "os-1",
+          mode: "code",
+          repo: "renderer",
+          automationDescendantPolicy: { ...descendant, incident },
+        }),
+      ).rejects.toThrow("is paused");
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+    expect(
+      await descendantOpeningScope({
+        id: "os-2",
+        automationDescendantPolicy: descendant,
+      }),
+    ).toEqual({ mcpServers: [], incidentProxyMcpServers: [] });
+  });
+
+  test("the sandbox and local opening turns take the descendant opening scope", async () => {
+    const src = await Bun.file(
+      new URL("./session-create.ts", import.meta.url),
+    ).text();
+    expect(
+      src.match(/descendantOpeningScope\(/g)?.length,
+    ).toBeGreaterThanOrEqual(3);
   });
 
   test("opening dispatch rejects default-local and admits an explicit sandbox", () => {
