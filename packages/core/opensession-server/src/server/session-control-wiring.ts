@@ -714,7 +714,7 @@ registerSessionControl({
       pastedTexts,
       mcpServers,
       runner: runnerInput,
-      automationDescendantPolicy,
+      automationDescendantPolicy: requestedDescendantPolicy,
       workspaceId,
       isolatedWorktree,
       parentSessionId,
@@ -889,6 +889,19 @@ registerSessionControl({
       typeof runnerInput === "string" && runnerInput.trim()
         ? runnerInput.trim()
         : undefined;
+    // An incident agent's access is re-resolved before its session exists,
+    // and the session runs under the policy narrowed to it. Ordinary creates
+    // load nothing new.
+    const automationDescendantPolicy = requestedDescendantPolicy?.incident
+      ? await (
+          await import("./incidents/access/session-policy")
+        ).enforceIncidentSpawn(requestedDescendantPolicy, {
+          repo: repo.id,
+          runner: requestedRunnerId,
+          mode: isScratch ? "scratch" : isAsk ? "ask" : "code",
+          model,
+        })
+      : requestedDescendantPolicy;
     // An explicit Runner bypasses the instance's default Sandbox. Explicitly
     // asking for both remains an error below.
     const sandboxResolved =

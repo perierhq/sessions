@@ -23,6 +23,35 @@ describe("automation descendant opening policy", () => {
     publication: "branch-pr-only" as const,
   };
 
+  test("an incident agent's opening turn gets its enforced connections; other descendants stay empty", () => {
+    const incident = {
+      incidentId: "inc-1",
+      role: "investigator" as const,
+      signalId: null,
+      accessRevision: "r1",
+    };
+    expect(
+      openingCreateTrustPolicy({
+        automationDescendantPolicy: {
+          ...descendant,
+          mcpServers: ["sentry"],
+          incident,
+        },
+        branch: "fix/x",
+        runMcpServers: ["everything"],
+        user: "x",
+      }).mcpServers,
+    ).toEqual(["sentry"]);
+    expect(
+      openingCreateTrustPolicy({
+        automationDescendantPolicy: descendant,
+        branch: "fix/x",
+        runMcpServers: ["everything"],
+        user: "x",
+      }).mcpServers,
+    ).toEqual([]);
+  });
+
   test("opening dispatch rejects default-local and admits an explicit sandbox", () => {
     expect(() =>
       assertAutomationDescendantOpeningIsolation({

@@ -512,7 +512,11 @@ export function openingCreateTrustPolicy(
   const policy = spec.automationDescendantPolicy;
   return {
     automation: !!policy,
-    mcpServers: policy ? [] : (spec.runMcpServers as McpScope),
+    // A descendant's own allow-list: empty for every descendant except an
+    // incident agent, whose connections were enforced at spawn.
+    mcpServers: policy
+      ? [...policy.mcpServers]
+      : (spec.runMcpServers as McpScope),
     // A Plain discussion session reads untrusted ticket text: like an
     // automation run it passes no user, so an allowedUsers-gated server
     // stays invisible (session-run-inputs.ts makes the same call on resume).
@@ -1832,7 +1836,7 @@ export async function openCreatedSession(
               images: spec.images,
               attachments: spec.attachments,
               mcpServers: spec.automationDescendantPolicy
-                ? []
+                ? [...spec.automationDescendantPolicy.mcpServers]
                 : (spec.runMcpServers ?? []),
               isAutomationSession: !!spec.automationDescendantPolicy,
               startToken,
