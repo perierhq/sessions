@@ -65,7 +65,8 @@ export function __setProjectSettingsContextForTest(
 function context(): ProjectSettingsContext {
   return {
     projectExists:
-      contextOverride?.projectExists ?? ((id) => id in configuredRepos()),
+      contextOverride?.projectExists ??
+      ((id) => Object.hasOwn(configuredRepos(), id)),
     runnerProblem: contextOverride?.runnerProblem ?? productionRunnerProblem,
     modelProblem:
       contextOverride?.modelProblem ??
@@ -289,6 +290,34 @@ function validateCost(value: unknown): Result<ActionCost> {
 }
 
 const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
+const PLACEHOLDER_AT = /\{\{[^{}]*\}\}/y;
+
+/** Whether a `{{name}}` sits inside single or double quotes. Sessions quotes
+ *  every value itself, so a quoted placeholder would change its meaning. */
+function placeholderInQuotes(command: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      PLACEHOLDER_AT.lastIndex = i;
+      if (PLACEHOLDER_AT.test(command)) return true;
+    }
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+  }
+  return false;
+}
 
 export function validateAction(
   value: unknown,
@@ -334,6 +363,11 @@ export function validateAction(
   for (const match of command.matchAll(PLACEHOLDER))
     if (!(ACTION_PLACEHOLDERS as readonly string[]).includes(match[1]))
       return { error: `Unknown placeholder {{${match[1]}}}` };
+  if (placeholderInQuotes(command))
+    return {
+      error:
+        "Placeholders cannot be inside quotes: Sessions quotes their values",
+    };
   if (
     cwd !== undefined &&
     (typeof cwd !== "string" ||
@@ -590,6 +624,23 @@ export function settingsInvariantProblem(
   return null;
 }
 
+/** Fields only a signed-in person may change: never an agent, an
+ *  automation or a claimed name. */
+const PERSON_ONLY_FIELDS: readonly CallerField[] = [
+  "actions",
+  "productionRunners",
+];
+
+export interface SettingsWriter {
+  /** A verified sign-in that is not an automation (the route's
+   *  `verifiedPerson(ctx)`). Without it actions and production Runners
+   *  cannot change. */
+  signedInPerson?: boolean;
+}
+
+const PERSON_ONLY_ERROR =
+  "Only a signed-in person can change actions or production Runners";
+
 class SettingsRefused extends Error {
   constructor(readonly reason: string) {
     super(reason);
@@ -600,6 +651,7 @@ export async function updateProjectSettings(
   project: string,
   input: Record<string, unknown>,
   by: string,
+  writer: SettingsWriter = {},
 ): Promise<IncidentProjectSettings | { error: string }> {
   const ctx = context();
   if (!ctx.projectExists(project))
@@ -608,8 +660,22 @@ export async function updateProjectSettings(
   const snapshot = await getProjectSettings(project);
   const early = validatePatch(project, input, snapshot, ctx);
   if (failed(early)) return early;
-  if (changedFields(snapshot, applyPatch(snapshot, early)).length === 0)
-    return snapshot;
+  const personOnly = (fields: CallerField[]) =>
+    writer.signedInPerson
+      ? []
+      : fields.filter((f) => PERSON_ONLY_FIELDS.includes(f));
+  const planned = changedFields(snapshot, applyPatch(snapshot, early));
+  if (planned.length === 0) return snapshot;
+  const refusedEarly = personOnly(planned);
+  if (refusedEarly.length) {
+    incidentAudit({
+      kind: "incident_settings_refused",
+      project,
+      by,
+      fields: refusedEarly,
+    });
+    return { error: PERSON_ONLY_ERROR };
+  }
   let fields: CallerField[] = [];
   let committed: unknown;
   try {
@@ -623,6 +689,8 @@ export async function updateProjectSettings(
       fields = changedFields(current, next);
       if (fields.length === 0 && stored !== null)
         return stored as IncidentProjectSettings;
+      if (personOnly(fields).length)
+        throw new SettingsRefused(PERSON_ONLY_ERROR);
       const problem = settingsInvariantProblem(next);
       if (problem) throw new SettingsRefused(problem);
       return {
@@ -674,10 +742,15 @@ export function redactProjectSettings(
   };
 }
 
+const RELEASE_REF = /^[0-9a-f]{7,40}$/;
+
+/** Records a release, newest first. A `ref` must be a commit SHA. */
 export async function recordRelease(
   project: string,
   release: IncidentRelease,
-): Promise<void> {
+): Promise<{ error: string } | undefined> {
+  if (release.ref !== undefined && !RELEASE_REF.test(release.ref))
+    return { error: "Invalid ref" };
   await patchProjectSettings(project, (s) => ({
     ...s,
     releases: [release, ...s.releases]
@@ -694,6 +767,7 @@ export async function recordRelease(
     source: release.source,
     ref: release.ref,
   });
+  return undefined;
 }
 
 export function latestRelease(

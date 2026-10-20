@@ -15,6 +15,9 @@ import {
 } from "./project-settings";
 
 const kit = useIncidentTestKernel();
+// Signed in: actions and production Runners are editable.
+const update = (project: string, input: Record<string, unknown>, by: string) =>
+  updateProjectSettings(project, input, by, { signedInPerson: true });
 beforeEach(() =>
   __setProjectSettingsContextForTest({
     projectExists: (id) => id === "acme",
@@ -54,7 +57,7 @@ test("defaults without a write", async () => {
   expect(await listProjectSettings()).toEqual([]);
 });
 test("a full update, with action defaults and a hook secret", async () => {
-  const s = await updateProjectSettings(
+  const s = await update(
     "acme",
     {
       autonomy: "propose",
@@ -99,10 +102,10 @@ test("a full update, with action defaults and a hook secret", async () => {
   expect((await listProjectSettings()).map((p) => p.project)).toEqual(["acme"]);
   // The same values again change nothing and audit nothing.
   const audits = kit.audits.length;
-  await updateProjectSettings("acme", { autonomy: "propose" }, "Bo");
+  await update("acme", { autonomy: "propose" }, "Bo");
   expect(kit.audits.length).toBe(audits);
   // Clearing the night rule.
-  const cleared = await updateProjectSettings("acme", { night: null }, "Ada");
+  const cleared = await update("acme", { night: null }, "Ada");
   expect("error" in cleared ? cleared : cleared.night).toBeUndefined();
 });
 test.each([
@@ -144,14 +147,12 @@ test.each([
     "scope",
   ],
 ])("rejects %j", async (input, message) => {
-  expect(await updateProjectSettings("acme", input, "Ada")).toEqual({
+  expect(await update("acme", input, "Ada")).toEqual({
     error: expect.stringContaining(message),
   });
 });
 test("unknown projects are refused", async () => {
-  expect(
-    await updateProjectSettings("other", { autonomy: "watch" }, "Ada"),
-  ).toEqual({
+  expect(await update("other", { autonomy: "watch" }, "Ada")).toEqual({
     error: expect.stringContaining("other"),
   });
 });
@@ -186,7 +187,7 @@ test("validateAction", () => {
   });
 });
 test("server-side fields cannot be written by callers; releases are capped", async () => {
-  await updateProjectSettings(
+  await update(
     "acme",
     {
       automationId: "auto-x",
@@ -225,7 +226,7 @@ test("agent models are stored canonical and compared by model", async () => {
     projectExists: (id) => id === "acme",
     modelProblem: () => null,
   });
-  const s = await updateProjectSettings(
+  const s = await update(
     "acme",
     { agents: { investigatorModel: "opus" } },
     "Ada",
@@ -234,14 +235,14 @@ test("agent models are stored canonical and compared by model", async () => {
     investigatorModel: "pi/anthropic/claude-opus-5-5",
   });
   expect(
-    await updateProjectSettings(
+    await update(
       "acme",
       { agents: { verifierModel: "pi/openrouter/anthropic/claude-opus-5-5" } },
       "Ada",
     ),
   ).toEqual({ error: "Pick a different model for the verifier" });
   expect(
-    await updateProjectSettings(
+    await update(
       "acme",
       {
         agents: {
@@ -254,15 +255,13 @@ test("agent models are stored canonical and compared by model", async () => {
   ).toEqual({ error: "Pick a different model for the verifier" });
 });
 test("a Runner an action uses cannot be removed", async () => {
-  const s = await updateProjectSettings(
+  const s = await update(
     "acme",
     { productionRunners: ["runner-prod"], actions: [deploy] },
     "Ada",
   );
   if ("error" in s) throw new Error(s.error);
-  expect(
-    await updateProjectSettings("acme", { productionRunners: [] }, "Ada"),
-  ).toEqual({
+  expect(await update("acme", { productionRunners: [] }, "Ada")).toEqual({
     error:
       "Action deploy runs on runner-prod, which is not one of the project's production Runners",
   });
@@ -271,15 +270,11 @@ test("a Runner an action uses cannot be removed", async () => {
   ]);
 });
 test("concurrent edits are checked against the record they commit to", async () => {
-  const s = await updateProjectSettings(
-    "acme",
-    { productionRunners: ["runner-prod"] },
-    "Ada",
-  );
+  const s = await update("acme", { productionRunners: ["runner-prod"] }, "Ada");
   if ("error" in s) throw new Error(s.error);
   const [removed, added] = await Promise.all([
-    updateProjectSettings("acme", { productionRunners: [] }, "Ada"),
-    updateProjectSettings("acme", { actions: [deploy] }, "Bo"),
+    update("acme", { productionRunners: [] }, "Ada"),
+    update("acme", { actions: [deploy] }, "Bo"),
   ]);
   expect("error" in removed).toBe(false);
   expect(added).toEqual({
@@ -287,4 +282,64 @@ test("concurrent edits are checked against the record they commit to", async () 
   });
   const after = await getProjectSettings("acme");
   expect([after.productionRunners, after.actions]).toEqual([[], []]);
+});
+test("only a signed-in person changes actions and production Runners", async () => {
+  expect(
+    await updateProjectSettings(
+      "acme",
+      { productionRunners: ["runner-prod"], autonomy: "propose" },
+      "agent",
+    ),
+  ).toEqual({
+    error: "Only a signed-in person can change actions or production Runners",
+  });
+  expect(kit.audits.at(-1)).toEqual({
+    kind: "incident_settings_refused",
+    project: "acme",
+    by: "agent",
+    fields: ["productionRunners"],
+  });
+  expect((await getProjectSettings("acme")).autonomy).toBe("deploy-after-veto");
+  const other = await updateProjectSettings(
+    "acme",
+    { autonomy: "propose" },
+    "agent",
+  );
+  expect("error" in other ? other : other.autonomy).toBe("propose");
+});
+test("placeholders cannot sit inside quotes", () => {
+  for (const command of [
+    "./deploy.sh '{{ref}}'",
+    './deploy.sh "v-{{ref}}"',
+    "echo 'a' \"{{project}}\"",
+  ])
+    expect(validateAction({ ...deploy, command }, ["runner-prod"])).toEqual({
+      error:
+        "Placeholders cannot be inside quotes: Sessions quotes their values",
+    });
+  expect(
+    validateAction({ ...deploy, command: "echo 'x' {{ref}} \\'" }, [
+      "runner-prod",
+    ]),
+  ).toMatchObject({ id: "deploy" });
+});
+test("release refs must be commit SHAs; project ids are own keys", async () => {
+  expect(
+    await recordRelease("acme", {
+      at: "2026-10-20T10:00:00.000Z",
+      source: "hook",
+      ref: "main",
+    }),
+  ).toEqual({ error: "Invalid ref" });
+  expect((await getProjectSettings("acme")).releases).toEqual([]);
+  await recordRelease("acme", {
+    at: "2026-10-20T10:00:00.000Z",
+    source: "hook",
+    ref: "abc1234",
+  });
+  expect((await getProjectSettings("acme")).releases[0]?.ref).toBe("abc1234");
+  __setProjectSettingsContextForTest({ modelProblem: () => null });
+  expect(await update("constructor", { autonomy: "watch" }, "Ada")).toEqual({
+    error: "Unknown project constructor",
+  });
 });
