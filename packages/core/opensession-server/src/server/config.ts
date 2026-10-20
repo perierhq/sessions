@@ -155,13 +155,21 @@ export interface RepoSection {
   securityInstructions?: string;
   /** How the repository was registered. `local` marks an existing folder the
    *  server did not create, so removing the repository never deletes its
-   *  files (repo-removal.ts). Absent on entries written before it existed. */
+   *  files; `adopted` marks a clone that found its folder already there
+   *  (repo-removal.ts). Absent on entries written before it existed. */
   addedFrom?: RepoAddedFrom;
 }
 
 /** Where a registration came from: a clone (`github`, `codestorage`), a
- *  repository started here (`new`), or an existing folder (`local`). */
-export type RepoAddedFrom = "github" | "codestorage" | "new" | "local";
+ *  repository started here (`new`), an existing folder (`local`), or a clone
+ *  whose destination already held the checkout, which was registered as it
+ *  was (`adopted`). */
+export type RepoAddedFrom =
+  | "github"
+  | "codestorage"
+  | "new"
+  | "local"
+  | "adopted";
 
 export interface TeamMember {
   /** Full display name (also the git author name). */
@@ -451,7 +459,8 @@ function parseRepoSection(v: unknown): RepoSection | undefined {
     rawAddedFrom === "github" ||
     rawAddedFrom === "codestorage" ||
     rawAddedFrom === "new" ||
-    rawAddedFrom === "local"
+    rawAddedFrom === "local" ||
+    rawAddedFrom === "adopted"
       ? rawAddedFrom
       : undefined;
   const rawIconSource = str(o.iconSource);

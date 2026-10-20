@@ -20,6 +20,7 @@ import {
   MAX_WORKTREE_SETUP_TIMEOUT_MINUTES,
   type Repo,
 } from "./config";
+import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import { stateDir } from "./paths";
 import { workloadArgv } from "./workload-scope";
 import {
@@ -903,6 +904,8 @@ export async function reviveWorktree(
   repoId?: string,
 ): Promise<string> {
   const repo = getRepo(repoId);
+  // No new worktree in a repository that is being removed.
+  assertRepoNotBeingRemoved(repo.id);
   const wtPath = `${worktreesDir()}/${repo.wtPrefix}-${branch}`;
   if (existsSync(wtPath)) return wtPath;
 
@@ -1143,6 +1146,8 @@ export async function createWorktreeForExistingBranch(
   setup: WorktreeSetupOwner = {},
 ): Promise<string> {
   const repo = getRepo(repoId);
+  // No new worktree in a repository that is being removed.
+  assertRepoNotBeingRemoved(repo.id);
   const shell = gitEnv ? $.env({ ...process.env, ...gitEnv }) : $;
   const existing = (await listWorktrees(repo.id)).find(
     (w) => w.branch === branch,
@@ -1418,6 +1423,8 @@ export async function createWorktree(
   },
 ): Promise<string> {
   const repo = getRepo(repoId);
+  // No new worktree in a repository that is being removed.
+  assertRepoNotBeingRemoved(repo.id);
   const shell = opts?.gitEnv ? $.env({ ...process.env, ...opts.gitEnv }) : $;
 
   // Shared-checkout repos (opensession) don't get a per-session worktree: the
@@ -1514,6 +1521,8 @@ export async function prepareAttachedWorktree(
   gitEnv?: Record<string, string>,
 ): Promise<{ repo: string; branch: string; dir: string }> {
   const repo = getRepo(repoId);
+  // No new worktree in a repository that is being removed.
+  assertRepoNotBeingRemoved(repo.id);
   if (sharedCheckoutForNewSessions(repo)) {
     throw new Error(
       `${repo.id} is a shared-checkout repo and can't be attached as an isolated worktree`,

@@ -71,6 +71,7 @@ import { MAX_PROMPT_IMAGES } from "@tellahq/opensession-protocol/session";
 import { SessionKernelActorError } from "../session-kernel/actor-client";
 import { notifyMentions } from "../mentions";
 import { unarchiveForHumanTurn } from "../session-unarchive";
+import { sessionRepoBlocker } from "../repo-removal-guard";
 import {
   sessionChangesSince,
   sessionGatewayCommand,
@@ -1833,6 +1834,11 @@ export async function handleSessionsRoutes(
       const { stoppedRun } = await archiveSession(sessionId, session);
       return Response.json({ ok: true, stoppedRun });
     }
+    // A session whose repository was removed can't run, so it stays
+    // archived until the repository is registered again.
+    const repoBlocker = sessionRepoBlocker(session);
+    if (repoBlocker)
+      return Response.json({ error: repoBlocker }, { status: 409 });
     await executeArchiveOverrideProjection(sessionId, () =>
       setArchived(sessionId, false),
     );

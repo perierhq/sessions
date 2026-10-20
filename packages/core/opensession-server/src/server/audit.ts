@@ -104,6 +104,16 @@ export function auditAsync(event: Record<string, unknown>): void {
   });
 }
 
+/** auditAsync, resolved once the event has been written (or the write
+ *  failed). For an entry that must be on disk before what it records starts,
+ *  such as a repository removal about to delete files. Never throws. */
+export async function auditDurable(
+  event: Record<string, unknown>,
+): Promise<void> {
+  auditAsync(event);
+  while (flushing) await flushing.catch(() => {});
+}
+
 async function flushPending(): Promise<void> {
   try {
     await mkdir(AUDIT_DIR, { recursive: true });

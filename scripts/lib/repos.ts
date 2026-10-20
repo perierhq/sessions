@@ -36,8 +36,10 @@ type RepoEntry = {
   host?: "github" | "codestorage";
   csRepo?: string;
   default?: boolean;
-  /** "local" marks an existing folder, whose files repository removal keeps. */
-  addedFrom?: "github" | "local";
+  /** "local" marks an existing folder and "adopted" a clone destination that
+   *  already held the checkout; repository removal never treats either as a
+   *  folder the server made. */
+  addedFrom?: "github" | "local" | "adopted";
 };
 
 async function detectBranch(dir: string): Promise<string> {
@@ -149,6 +151,7 @@ async function add(spec?: string): Promise<number> {
     existsSync(resolve(spec));
 
   let checkout: string;
+  let adopted = false;
   let ghRepo: string | undefined;
   let csRepo: { org: string; repoId: string } | undefined;
 
@@ -182,6 +185,7 @@ async function add(spec?: string): Promise<number> {
     checkout = ask("Clone to", join(HOME, "checkouts", spec.split("/")[1]));
     if (existsSync(join(checkout, ".git"))) {
       info(dim(`already cloned at ${checkout} — registering it`));
+      adopted = true;
     } else if (
       (await runInherit(["gh", "repo", "clone", spec, checkout])) !== 0
     ) {
@@ -209,7 +213,7 @@ async function add(spec?: string): Promise<number> {
     defaultBranch: await detectBranch(checkout),
   };
   if (ghRepo) entry.ghRepo = ghRepo;
-  entry.addedFrom = isLocal ? "local" : "github";
+  entry.addedFrom = isLocal ? "local" : adopted ? "adopted" : "github";
   if (csRepo) {
     entry.host = "codestorage";
     entry.csRepo = csRepo.repoId;

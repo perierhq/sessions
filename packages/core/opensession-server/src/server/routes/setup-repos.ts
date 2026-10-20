@@ -60,6 +60,7 @@ import {
 } from "../github-auth";
 import { githubCredentialHelperCommand } from "../github-git-credential";
 import { managedCheckoutsRoot } from "../paths";
+import type { WebIdentity } from "../web-auth";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { validNewRepoName } from "../../shared/repo-name";
 import { shellSafeDefaultBranch } from "../repo-branch";
@@ -819,7 +820,9 @@ async function registerGithubRepo(input: {
         wtPrefix: id,
         defaultBranch,
         ghRepo: inspected.ghRepo || input.fullName,
-        addedFrom: "github",
+        // A folder that was already there predates this registration, so
+        // removal must not treat it as one the server made.
+        addedFrom: adopted ? "adopted" : "github",
       },
     });
   } catch (error) {
@@ -1001,7 +1004,7 @@ async function registerCodestorageRepo(input: {
         defaultBranch,
         host: "codestorage",
         csRepo,
-        addedFrom: "codestorage",
+        addedFrom: adopted ? "adopted" : "codestorage",
       },
     });
   } catch (error) {
@@ -1402,18 +1405,39 @@ export async function handleSetupRepoRoutes(
       return Response.json({ error: "Invalid repository id" }, { status: 400 });
     const body = (await req.json().catch(() => ({}))) as {
       deleteFiles?: unknown;
+      planToken?: unknown;
+      confirm?: unknown;
     } | null;
     const deleteFiles = body?.deleteFiles ?? false;
-    if (typeof deleteFiles !== "boolean") {
+    const planToken = body?.planToken;
+    const confirm = body?.confirm;
+    if (
+      typeof deleteFiles !== "boolean" ||
+      (planToken !== undefined && typeof planToken !== "string") ||
+      (confirm !== undefined && typeof confirm !== "string")
+    ) {
       return Response.json(
-        { error: "deleteFiles must be a boolean" },
+        {
+          error: "deleteFiles must be a boolean, planToken and confirm strings",
+        },
         { status: 400 },
+      );
+    }
+    // Deleting files on this machine is a person's decision: never an
+    // automation's, and never without a verified sign-in.
+    const identity = ctx.authUser as WebIdentity | null | undefined;
+    if (deleteFiles && (!identity?.login || identity.automation === true)) {
+      return Response.json(
+        { error: "Deleting a repository's files needs a signed-in person" },
+        { status: 403 },
       );
     }
     const { removeRepo, RepoRemovalError } = await import("../repo-removal");
     try {
       const result = await removeRepo(id, {
         deleteFiles,
+        planToken,
+        confirm,
         by: ctx.authUser?.login,
       });
       // The registered bit in both browse payloads just changed.

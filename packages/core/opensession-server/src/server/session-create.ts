@@ -218,6 +218,10 @@ import {
   worktreePathFor,
 } from "./worktree";
 import {
+  isRepoBeingRemoved,
+  repoBeingRemovedMessage,
+} from "./repo-removal-guard";
+import {
   type WSClientData,
   broadcastToSession,
   preparingWorkspaces,
@@ -2596,6 +2600,11 @@ export async function handleCreateSessionMessage(
   const repo = getRepo(
     requestedRepo && requestedRepo !== NO_REPO ? requestedRepo : undefined,
   );
+  // A repository being removed takes no new sessions.
+  if (isRepoBeingRemoved(repo.id)) {
+    failCreate(repoBeingRemovedMessage(repo.id));
+    return;
+  }
   // Sandbox opt-in (the sandbox rollout plan): boolean true = the
   // config's default provider (legacy toggle behavior); a string
   // names an explicit provider (including "modal" / "lambda-microvm"),

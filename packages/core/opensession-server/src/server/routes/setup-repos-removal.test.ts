@@ -10,9 +10,18 @@ import {
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { getConfigAsync } from "../config";
-import { __setRepoRemovalDepsForTest } from "../repo-removal";
+import { OPENSESSION_SESSIONS_DIR } from "../paths";
+import {
+  PLAN_CHANGED,
+  UNVERIFIED_NOTICE,
+  __setRepoRemovalDepsForTest,
+} from "../repo-removal";
+import {
+  RepoBeingRemovedError,
+  isRepoBeingRemoved,
+} from "../repo-removal-guard";
 import { getUiPrefs, patchUiPrefs } from "../ui-prefs";
 import type { UnifiedSession } from "../types";
 import { createWorktree } from "../worktree";
@@ -114,9 +123,17 @@ function readConfig(env: Env): Record<string, any> {
   return JSON.parse(readFileSync(env.configPath, "utf-8"));
 }
 
-function route(method: string, path: string, body?: unknown): RouteContext {
+const ALICE = { login: "alice", name: "Alice" };
+
+function route(
+  method: string,
+  path: string,
+  body?: unknown,
+  authUser: RouteContext["authUser"] = ALICE,
+): RouteContext {
   const url = new URL(`http://localhost${path}`);
   return {
+    authUser,
     req: new Request(url, {
       method,
       ...(body === undefined
@@ -153,21 +170,36 @@ function session(
   } as UnifiedSession;
 }
 
-/** Fake session layer: `sessions` are live; archiving records the ids. */
-function fakeSessions(sessions: UnifiedSession[]) {
+/** Fake session layer: `sessions` are live; archiving records the ids.
+ *  `onArchive` runs while the removal is under way. */
+function fakeSessions(
+  sessions: UnifiedSession[],
+  opts: {
+    automations?: number;
+    onArchive?: () => Promise<void> | void;
+    stopWorkloadsInDir?: (dir: string) => Promise<void>;
+  } = {},
+) {
   const archived: string[] = [];
   const released: string[] = [];
+  const disabled: string[] = [];
   __setRepoRemovalDepsForTest({
     liveSessions: async () => sessions.filter((s) => !archived.includes(s.id)),
     archiveSessions: async (batch) => {
       archived.push(...batch.map((s) => s.id));
+      await opts.onArchive?.();
     },
     releaseWorkspaces: async (repoId) => {
       released.push(repoId);
     },
-    stopWorkloadsInDir: async () => {},
+    stopWorkloadsInDir: opts.stopWorkloadsInDir ?? (async () => {}),
+    countAutomations: async () => opts.automations ?? 0,
+    disableAutomations: async (repoId) => {
+      disabled.push(repoId);
+      return opts.automations ?? 0;
+    },
   });
-  return { archived, released };
+  return { archived, released, disabled };
 }
 
 async function preview(id: string) {
@@ -177,11 +209,33 @@ async function preview(id: string) {
   return { status: response?.status, body: (await response?.json()) as any };
 }
 
-async function remove(id: string, body?: unknown) {
+async function remove(
+  id: string,
+  body?: unknown,
+  authUser: RouteContext["authUser"] = ALICE,
+) {
   const response = await handleSetupRepoRoutes(
-    route("DELETE", `/api/setup/repos/${encodeURIComponent(id)}`, body),
+    route(
+      "DELETE",
+      `/api/setup/repos/${encodeURIComponent(id)}`,
+      body,
+      authUser,
+    ),
   );
   return { status: response?.status, body: (await response?.json()) as any };
+}
+
+/** Delete with files, sending back the plan token the preview handed out. */
+async function removeWithFiles(
+  id: string,
+  extra: Record<string, unknown> = {},
+) {
+  const shown = await preview(id);
+  return remove(id, {
+    deleteFiles: true,
+    planToken: shown.body.planToken,
+    ...extra,
+  });
 }
 
 describe("repository removal", () => {
@@ -205,14 +259,21 @@ describe("repository removal", () => {
         path: join(env.checkouts, "widget"),
         sessions: 2,
         running: 1,
+        attached: 0,
+        attachedSessions: [],
+        automations: 0,
         deletable: true,
+        tier: "managed",
         deletePaths: [
           join(env.checkouts, "widget"),
           join(env.checkouts, "widget.git"),
         ],
         worktrees: 0,
+        unpushedBranches: 0,
       });
+      expect(body.confirmRequired).toBeUndefined();
       expect(typeof body.sizeBytes).toBe("number");
+      expect(body.planToken).toMatch(/^[0-9a-f]{32}$/);
     },
   );
 
@@ -281,6 +342,7 @@ describe("repository removal", () => {
       expect(body).toEqual({
         id: "widget",
         archived: 2,
+        automationsDisabled: 0,
         deleted: [],
         kept: [],
       });
@@ -316,9 +378,10 @@ describe("repository removal", () => {
       expect(existsSync(worktree)).toBe(true);
       fakeSessions([]);
 
-      const { status, body } = await remove("widget", { deleteFiles: true });
+      const { status, body } = await removeWithFiles("widget");
 
       expect(status).toBe(200);
+      expect(body.error).toBeUndefined();
       const realWorktree = join(env.worktrees, "widget-feature");
       expect(body.deleted.sort()).toEqual(
         [
@@ -444,7 +507,432 @@ describe("repository removal", () => {
 
     expect((await remove("missing")).status).toBe(404);
     expect((await remove("widget", { deleteFiles: "yes" })).status).toBe(400);
+    expect(
+      (await remove("widget", { deleteFiles: true, planToken: 5 })).status,
+    ).toBe(400);
     expect((await remove("__proto__")).status).toBe(400);
     expect((await preview("missing")).status).toBe(404);
   });
+
+  test.serial(
+    "deleting files needs a signed-in person, not an automation",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      fakeSessions([]);
+      const token = (await preview("widget")).body.planToken;
+
+      for (const who of [null, { ...ALICE, automation: true }]) {
+        const { status } = await remove(
+          "widget",
+          { deleteFiles: true, planToken: token },
+          who as RouteContext["authUser"],
+        );
+        expect(status).toBe(403);
+      }
+      expect(readConfig(env).repos.widget).toBeDefined();
+      expect(existsSync(join(env.checkouts, "widget"))).toBe(true);
+      // Removing without its files needs no sign-in.
+      expect(
+        (await remove("widget", { deleteFiles: false }, null)).status,
+      ).toBe(200);
+    },
+  );
+
+  test.serial(
+    "a delete must carry the token of the plan it reviewed",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      fakeSessions([]);
+      const token = (await preview("widget")).body.planToken;
+
+      const missing = await remove("widget", { deleteFiles: true });
+      expect(missing).toMatchObject({
+        status: 409,
+        body: { error: PLAN_CHANGED },
+      });
+      // A worktree made after the preview changes the plan.
+      await createWorktree("later", "widget");
+      const stale = await remove("widget", {
+        deleteFiles: true,
+        planToken: token,
+      });
+      expect(stale).toMatchObject({
+        status: 409,
+        body: { error: PLAN_CHANGED },
+      });
+      expect(readConfig(env).repos.widget).toBeDefined();
+      expect(existsSync(join(env.checkouts, "widget"))).toBe(true);
+      expect(existsSync(join(env.worktrees, "widget-later"))).toBe(true);
+    },
+  );
+
+  for (const [name, addedFrom] of [
+    ["an entry from before provenance was recorded", undefined],
+    ["a clone that adopted an existing folder", "adopted"],
+  ] as const) {
+    test.serial(
+      `${name} needs the id typed in to delete its files`,
+      async () => {
+        const env = await setup();
+        const checkout = makeCheckout(env.checkouts, "legacy");
+        await writeConfig(env, {
+          repos: {
+            legacy: {
+              repo: checkout,
+              defaultBranch: "main",
+              ...(addedFrom ? { addedFrom } : {}),
+            },
+          },
+        });
+        fakeSessions([]);
+
+        const shown = await preview("legacy");
+        expect(shown.body).toMatchObject({
+          deletable: true,
+          tier: "unverified",
+          confirmRequired: true,
+          reason: UNVERIFIED_NOTICE,
+          // Its bare origin sits in the root too, but nothing says this
+          // server made it, so it is never part of the plan.
+          deletePaths: [checkout],
+        });
+
+        const unconfirmed = await remove("legacy", {
+          deleteFiles: true,
+          planToken: shown.body.planToken,
+        });
+        expect(unconfirmed.status).toBe(400);
+        const wrong = await remove("legacy", {
+          deleteFiles: true,
+          planToken: shown.body.planToken,
+          confirm: "Legacy",
+        });
+        expect(wrong.status).toBe(400);
+        expect(readConfig(env).repos.legacy).toBeDefined();
+        expect(existsSync(checkout)).toBe(true);
+
+        const { status, body } = await removeWithFiles("legacy", {
+          confirm: "legacy",
+        });
+        expect(status).toBe(200);
+        expect(body.deleted).toEqual([checkout]);
+        expect(existsSync(checkout)).toBe(false);
+        expect(existsSync(join(env.checkouts, "legacy-remote.git"))).toBe(true);
+        expect(readConfig(env).repos.legacy).toBeUndefined();
+      },
+    );
+  }
+
+  test.serial(
+    "a folder registered from disk stays even with the id typed in",
+    async () => {
+      const env = await setup();
+      const checkout = makeCheckout(env.checkouts, "mine");
+      await writeConfig(env, {
+        repos: {
+          mine: { repo: checkout, defaultBranch: "main", addedFrom: "local" },
+        },
+      });
+      fakeSessions([]);
+
+      const shown = await preview("mine");
+      expect(shown.body).toMatchObject({ deletable: false, tier: "never" });
+      expect(shown.body.planToken).toBeUndefined();
+      const { status } = await remove("mine", {
+        deleteFiles: true,
+        confirm: "mine",
+        planToken: "0".repeat(32),
+      });
+      expect(status).toBe(400);
+      expect(existsSync(checkout)).toBe(true);
+    },
+  );
+
+  test.serial("refuses the folder the server runs from", async () => {
+    const env = await setup();
+    const checkout = makeCheckout(env.checkouts, "self");
+    await writeConfig(env, {
+      repos: {
+        self: { repo: checkout, defaultBranch: "main", addedFrom: "new" },
+      },
+    });
+    fakeSessions([]);
+    const cwd = process.cwd();
+    process.chdir(checkout);
+    try {
+      const shown = await preview("self");
+      expect(shown.body).toMatchObject({ deletable: false });
+      expect(shown.body.reason).toContain("This server runs from this folder");
+      expect((await remove("self", { deleteFiles: true })).status).toBe(400);
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(existsSync(checkout)).toBe(true);
+  });
+
+  test.serial("refuses a checkout nested deeper in the root", async () => {
+    const env = await setup();
+    mkdirSync(join(env.checkouts, "a"));
+    const checkout = makeCheckout(join(env.checkouts, "a"), "b");
+    await writeConfig(env, {
+      repos: { b: { repo: checkout, defaultBranch: "main", addedFrom: "new" } },
+    });
+    fakeSessions([]);
+
+    expect((await preview("b")).body).toMatchObject({ deletable: false });
+    expect((await remove("b", { deleteFiles: true })).status).toBe(400);
+    expect(existsSync(checkout)).toBe(true);
+    expect(existsSync(join(env.checkouts, "a"))).toBe(true);
+  });
+
+  test.serial(
+    "a registered path that no longer resolves still counts as shared",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const config = readConfig(env);
+      // Another repository registered inside this checkout, whose folder is
+      // gone, so realpath can't resolve it.
+      config.repos.inner = {
+        repo: join(env.checkouts, "widget", "packages", "inner"),
+        defaultBranch: "main",
+      };
+      await writeConfig(env, config);
+      fakeSessions([]);
+
+      const shown = await preview("widget");
+      expect(shown.body).toMatchObject({ deletable: false });
+      expect(shown.body.reason).toContain("Another repository");
+    },
+  );
+
+  test.serial("removes the last repository and its files", async () => {
+    const env = await setup();
+    await createNewRepo("widget");
+    const config = readConfig(env);
+    config.newSessionRepo = "widget";
+    await writeConfig(env, config);
+    fakeSessions([]);
+
+    const { status, body } = await removeWithFiles("widget");
+
+    expect(status).toBe(200);
+    expect(body.kept).toEqual([]);
+    const after = readConfig(env);
+    expect(after.repos).toEqual({});
+    expect(after.newSessionRepo).toBeUndefined();
+    expect(existsSync(env.checkouts)).toBe(true);
+    expect(existsSync(join(env.checkouts, "widget"))).toBe(false);
+  });
+
+  test.serial(
+    "leaves a worktree whose admin files point at another repository's",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      await createNewRepo("widget-two");
+      const theirs = await createWorktree("feature", "widget-two");
+      const mine = await createWorktree("x", "widget");
+      // Edit widget's admin entry so `git worktree list` in widget names
+      // widget-two's worktree, whose name also starts with "widget-".
+      const admin = readFileSync(join(mine, ".git"), "utf-8")
+        .replace(/^gitdir:\s*/, "")
+        .trim();
+      writeFileSync(join(admin, "gitdir"), `${join(theirs, ".git")}\n`);
+      fakeSessions([]);
+
+      const shown = await preview("widget");
+      expect(shown.body.deletePaths).not.toContain(realpathSync(theirs));
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(status).toBe(200);
+      expect(body.deleted).not.toContain(realpathSync(theirs));
+      expect(existsSync(join(theirs, "README.md"))).toBe(true);
+      expect(existsSync(join(env.checkouts, "widget-two"))).toBe(true);
+    },
+  );
+
+  test.serial(
+    "a worktree git can't remove stays, and so does its checkout",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const worktree = realpathSync(await createWorktree("locked", "widget"));
+      // A locked worktree refuses a single --force.
+      git(["-C", join(env.checkouts, "widget"), "worktree", "lock", worktree]);
+      fakeSessions([]);
+
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(status).toBe(200);
+      expect(body.kept).toContain(worktree);
+      expect(body.kept).toContain(join(env.checkouts, "widget"));
+      expect(body.error).toContain("couldn't be deleted");
+      expect(existsSync(worktree)).toBe(true);
+      expect(existsSync(join(env.checkouts, "widget"))).toBe(true);
+      // The registration is gone either way.
+      expect(readConfig(env).repos.widget).toBeUndefined();
+    },
+  );
+
+  test.serial(
+    "a session that attached the repository blocks removal",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      await createNewRepo("other");
+      const { archived } = fakeSessions([
+        session("s1", "other", {
+          title: "Cross-repo change",
+          attachedRepos: [
+            {
+              repo: "widget",
+              branch: "feature",
+              dir: join(env.worktrees, "widget-feature"),
+            },
+          ],
+        }),
+      ]);
+
+      const shown = await preview("widget");
+      expect(shown.body).toMatchObject({
+        sessions: 0,
+        attached: 1,
+        attachedSessions: [{ id: "s1", title: "Cross-repo change" }],
+      });
+      const { status, body } = await remove("widget");
+      expect(status).toBe(409);
+      expect(body).toMatchObject({
+        error: "Archive 1 session that also uses it first",
+        attached: 1,
+      });
+      expect(archived).toEqual([]);
+      expect(readConfig(env).repos.widget).toBeDefined();
+    },
+  );
+
+  test.serial(
+    "refuses new work while removing, and keeps files a late session uses",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const live = [session("s1", "widget")];
+      let refused: unknown;
+      fakeSessions(live, {
+        onArchive: async () => {
+          expect(isRepoBeingRemoved("widget")).toBe(true);
+          refused = await createWorktree("late", "widget").catch((e) => e);
+          // One that started just before the mark still shows up afterwards.
+          live.push(session("s2", "widget"));
+        },
+      });
+
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(refused).toBeInstanceOf(RepoBeingRemovedError);
+      expect(existsSync(join(env.worktrees, "widget-late"))).toBe(false);
+      expect(status).toBe(200);
+      expect(body.deleted).toEqual([]);
+      expect(body.kept).toContain(join(env.checkouts, "widget"));
+      expect(body.error).toContain("A session started in this repository");
+      expect(existsSync(join(env.checkouts, "widget"))).toBe(true);
+      expect(readConfig(env).repos.widget).toBeUndefined();
+      expect(isRepoBeingRemoved("widget")).toBe(false);
+    },
+  );
+
+  test.serial(
+    "a failure while deleting still reports the removal",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const checkout = join(env.checkouts, "widget");
+      fakeSessions([], {
+        stopWorkloadsInDir: async (dir) => {
+          if (dir === checkout) throw new Error("disk on fire");
+        },
+      });
+
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(status).toBe(200);
+      expect(body.error).toContain("disk on fire");
+      expect(body.kept).toContain(checkout);
+      expect(existsSync(checkout)).toBe(true);
+      expect(readConfig(env).repos.widget).toBeUndefined();
+      // Asking again finds nothing to remove.
+      expect((await remove("widget")).status).toBe(404);
+    },
+  );
+
+  test.serial(
+    "turns off the repository's automations and counts them",
+    async () => {
+      await setup();
+      await createNewRepo("widget");
+      const { disabled } = fakeSessions([], { automations: 2 });
+
+      expect((await preview("widget")).body.automations).toBe(2);
+      const { status, body } = await remove("widget");
+
+      expect(status).toBe(200);
+      expect(body.automationsDisabled).toBe(2);
+      expect(disabled).toEqual(["widget"]);
+    },
+  );
+
+  test.serial(
+    "counts a session without a recorded repo through a symlinked path",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const link = join(env.root, "widget-link");
+      symlinkSync(join(env.checkouts, "widget"), link);
+      const { archived } = fakeSessions([
+        session("s1", undefined, { worktreeDir: link }),
+        session("s2", undefined, {
+          worktreeDir: join(env.worktrees, "widget-gone"),
+        }),
+      ]);
+
+      expect((await preview("widget")).body.sessions).toBe(2);
+      expect((await remove("widget")).status).toBe(200);
+      expect(archived).toEqual(["s1", "s2"]);
+    },
+  );
+
+  test.serial(
+    "deletes the warm-template spares and state with the files",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      await createNewRepo("other");
+      const spares = join(env.worktrees, ".warm-spares", "widget");
+      const otherSpares = join(env.worktrees, ".warm-spares", "other");
+      mkdirSync(join(spares, "spare-abc-123"), { recursive: true });
+      mkdirSync(otherSpares, { recursive: true });
+      const warmDir = join(OPENSESSION_SESSIONS_DIR, "warm-templates");
+      mkdirSync(warmDir, { recursive: true });
+      const state = join(warmDir, "widget.state.json");
+      const manifest = join(warmDir, "widget.manifest");
+      const otherState = join(warmDir, "other.state.json");
+      for (const file of [state, manifest, otherState])
+        writeFileSync(file, "{}\n");
+      fakeSessions([]);
+
+      const shown = await preview("widget");
+      expect(shown.body.deletePaths).toContain(realpathSync(spares));
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(status).toBe(200);
+      expect(body.deleted).toContain(realpathSync(dirname(spares)) + "/widget");
+      expect(existsSync(spares)).toBe(false);
+      expect(existsSync(state)).toBe(false);
+      expect(existsSync(manifest)).toBe(false);
+      expect(existsSync(otherSpares)).toBe(true);
+      expect(existsSync(otherState)).toBe(true);
+    },
+  );
 });

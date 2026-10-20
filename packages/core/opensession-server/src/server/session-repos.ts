@@ -65,6 +65,7 @@ import type {
   UnifiedSession,
 } from "./types";
 import { defaultRepo } from "./config";
+import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import { hostRepoId } from "./pr-host";
 import { resolveRegisteredPr } from "./pr-labels";
 import { isNoPrError, prMetaForBranch } from "./pr-info";
@@ -732,6 +733,7 @@ export async function attachRepo(
   if (!REPOS[repoId]) throw new Error(`Unknown repo "${repoId}"`);
   if (session.repo === repoId)
     throw new Error(`${repoId} is this session's primary repo`);
+  assertRepoNotBeingRemoved(repoId);
 
   const effectiveBranch = (branch || session.branch || "").trim();
   if (!effectiveBranch) {
@@ -849,6 +851,7 @@ export async function switchPrimaryRepo(
   if (!REPOS[repoId]) throw new Error(`Unknown repo "${repoId}"`);
   if (session.repo === repoId)
     throw new Error(`${repoId} is already this session's primary repo`);
+  assertRepoNotBeingRemoved(repoId);
   // A switch just repoints the session at a different worktree — the old one
   // (branch, commits, uncommitted edits) stays on disk, so nothing is ever
   // destroyed. We still block by default when there's work so the agent-facing
