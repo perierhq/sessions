@@ -1,0 +1,101 @@
+import { expect, test } from "bun:test";
+import { chooseRoleModels, independenceBetween } from "./models";
+
+const candidates = [
+  { id: "pi/anthropic/claude-opus-5-5", label: "Opus 5.5" },
+  { id: "pi/anthropic/claude-fable-5-1", label: "Fable 5.1" },
+  { id: "pi/openai/gpt-6.1-sol", label: "GPT-6.1 Sol" },
+];
+const providerOf = (id: string) => id.split("/")[1];
+const base = {
+  candidates,
+  providerOf,
+  defaultModel: "pi/anthropic/claude-opus-5-5",
+};
+
+test("default: verifier on another provider", () => {
+  expect(
+    chooseRoleModels({
+      ...base,
+      configuredProviders: new Set(["anthropic", "openai"]),
+    }),
+  ).toEqual({
+    investigator: {
+      model: "pi/anthropic/claude-opus-5-5",
+      provider: "anthropic",
+      label: "Opus 5.5",
+    },
+    verifier: {
+      model: "pi/openai/gpt-6.1-sol",
+      provider: "openai",
+      label: "GPT-6.1 Sol",
+      independence: "other-provider",
+    },
+  });
+});
+test("one provider: same provider, different model", () => {
+  expect(
+    chooseRoleModels({ ...base, configuredProviders: new Set(["anthropic"]) }),
+  ).toMatchObject({
+    verifier: {
+      model: "pi/anthropic/claude-fable-5-1",
+      independence: "same-provider",
+    },
+  });
+});
+test("one model: same model, never an error", () => {
+  expect(
+    chooseRoleModels({
+      ...base,
+      candidates: candidates.slice(0, 1),
+      configuredProviders: new Set(["anthropic"]),
+    }),
+  ).toMatchObject({
+    verifier: {
+      model: "pi/anthropic/claude-opus-5-5",
+      independence: "same-model",
+    },
+  });
+});
+test("explicit choices and unconfigured providers", () => {
+  expect(
+    chooseRoleModels({
+      ...base,
+      investigatorModel: "pi/openai/gpt-6.1-sol",
+      verifierModel: "pi/openai/gpt-6.1-sol",
+      configuredProviders: new Set(["anthropic", "openai"]),
+    }),
+  ).toMatchObject({ verifier: { independence: "same-model" } });
+  expect(
+    chooseRoleModels({ ...base, configuredProviders: new Set(["openai"]) }),
+  ).toEqual({
+    error: "No model provider is configured for incident agents",
+  });
+  expect(
+    chooseRoleModels({
+      ...base,
+      verifierModel: "pi/xai/grok-5",
+      configuredProviders: new Set(["anthropic"]),
+    }),
+  ).toEqual({ error: "The verifier model's provider is not configured" });
+});
+test("independence compares provider, then id", () => {
+  expect(
+    independenceBetween(
+      { model: "a/x", provider: "a" },
+      { model: "b/y", provider: "b" },
+    ),
+  ).toBe("other-provider");
+  expect(
+    independenceBetween(
+      { model: "a/x", provider: "a" },
+      { model: "a/y", provider: "a" },
+    ),
+  ).toBe("same-provider");
+  expect(
+    independenceBetween(
+      { model: "a/x", provider: "a" },
+      { model: "a/x", provider: "a" },
+    ),
+  ).toBe("same-model");
+});
