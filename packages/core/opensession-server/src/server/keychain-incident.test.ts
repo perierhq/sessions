@@ -236,6 +236,8 @@ test("proxy headers come only from a live incident grant for that host", async (
       sessionId: "s-1",
       incidentId: "inc-1",
       credentialId: fwd.id,
+      method: "GET",
+      path: "/q",
       host: "proxy.example.test",
     }),
   ).toEqual({ error: "This agent holds no grant for fwd-proxy" });
@@ -251,6 +253,8 @@ test("proxy headers come only from a live incident grant for that host", async (
       sessionId: "s-1",
       incidentId: "inc-1",
       credentialId: fwd.id,
+      method: "GET",
+      path: "/q",
       host: "evil.example.test",
     }),
   ).toEqual({ error: "fwd-proxy is not for evil.example.test" });
@@ -259,6 +263,8 @@ test("proxy headers come only from a live incident grant for that host", async (
       sessionId: "s-1",
       incidentId: "inc-1",
       credentialId: fwd.id,
+      method: "GET",
+      path: "/q",
       host: "proxy.example.test",
     }),
   ).toEqual({ "Proxy-Authorization": "Basic dXNlcjpwYXNz" });
@@ -268,4 +274,99 @@ test("scrub", async () => {
   expect(
     kc.scrubCredentialSecrets(`token=${SECRET}`, [cred.id, "kc-missing"]),
   ).not.toContain(SECRET);
+});
+test("proxy headers respect statusOnly and the method and path limits, before a once grant is spent", async () => {
+  const fwd = await kc.addCredentialAsync({
+    owner: "Ada",
+    service: "fwd-proxy",
+    host: "proxy.example.test",
+    secret: "dXNlcjpwYXNz",
+    injection: { header: "Proxy-Authorization", scheme: "Basic" },
+    allowedMethods: ["GET"],
+    allowedPathPrefixes: ["/v1/"],
+  });
+  await kc.incidentGrantFor({
+    credentialId: fwd.id,
+    sessionId: "s-1",
+    mode: "once",
+    incident: marker,
+    purpose: "x",
+  });
+  const ask = (method: string, path: string) =>
+    kc.incidentGrantHeaders({
+      sessionId: "s-1",
+      incidentId: "inc-1",
+      credentialId: fwd.id,
+      host: "proxy.example.test",
+      method,
+      path,
+    });
+  expect(ask("POST", "/v1/q")).toMatchObject({
+    error: expect.stringContaining("method POST is not allowed"),
+  });
+  expect(ask("GET", "/admin")).toMatchObject({
+    error: expect.stringContaining(
+      "outside this credential's allowed prefixes",
+    ),
+  });
+  expect(ask("GET", "/v1/q")).toEqual({
+    "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+  });
+  expect(ask("GET", "/v1/q")).toEqual({
+    error: "This agent holds no grant for fwd-proxy",
+  });
+
+  const quiet = await kc.addCredentialAsync({
+    owner: "Ada",
+    service: "quiet-proxy",
+    host: "quiet.example.test",
+    secret: "c2VjcmV0",
+    injection: { header: "Proxy-Authorization", scheme: "Basic" },
+    statusOnly: true,
+  });
+  await kc.incidentGrantFor({
+    credentialId: quiet.id,
+    sessionId: "s-1",
+    mode: "standing",
+    incident: marker,
+    purpose: "x",
+  });
+  expect(
+    kc.incidentGrantHeaders({
+      sessionId: "s-1",
+      incidentId: "inc-1",
+      credentialId: quiet.id,
+      host: "quiet.example.test",
+      method: "GET",
+      path: "/",
+    }),
+  ).toEqual({
+    error: "quiet-proxy returns only statuses and cannot carry a request",
+  });
+});
+test("unsharing a workspace credential or changing its injection revokes incident grants", async () => {
+  const shared = await seed({ scope: "workspace" });
+  const mint = (credentialId: string) =>
+    kc.incidentGrantFor({
+      credentialId,
+      sessionId: "s-1",
+      mode: "standing",
+      incident: marker,
+      purpose: "x",
+    });
+  await mint(shared.id);
+  expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toHaveLength(1);
+  await kc.setCredentialScopeAsync(shared.id, "Ada", "personal");
+  expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
+
+  await mint(shared.id);
+  const current = kc.findCredential(shared.id)!;
+  await kc.updateCredentialAsync(shared.id, "Ada", {
+    spec: {
+      ...kc.credentialSpecOf(current),
+      injection: { header: "X-Api-Key" },
+    },
+    expectedUpdatedAt: current.updatedAt,
+  });
+  expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
 });

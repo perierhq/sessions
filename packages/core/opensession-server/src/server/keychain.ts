@@ -927,10 +927,18 @@ export async function updateCredentialAsync(
     credentials.set(id, next);
     const moved = changed.includes("host") || changed.includes("loginUrl");
     const unshared = changed.includes("scope") && next.scope !== "workspace";
+    // An incident grant was minted for the credential as the project's
+    // access settings saw it: unsharing it or changing how its secret rides
+    // the request ends it, and the agent's next call re-resolves its access.
+    const incidentStale = unshared || changed.includes("injection");
     const revoked = moved
       ? revokeGrantsOf(id)
-      : unshared
-        ? revokeGrantsOf(id, (gr) => !!gr.implicit)
+      : unshared || incidentStale
+        ? revokeGrantsOf(
+            id,
+            (gr) =>
+              (unshared && !!gr.implicit) || (incidentStale && !!gr.incident),
+          )
         : [];
     try {
       await persistAsync();
@@ -1536,6 +1544,10 @@ export function incidentGrantHeaders(input: {
   incidentId: string;
   credentialId: string;
   host: string;
+  /** The proxied request's method and target path, held to the
+   *  credential's method and path limits. */
+  method: string;
+  path: string;
 }): Record<string, string> | { error: string } {
   const cred = credentials.get(input.credentialId);
   if (!cred)
@@ -1548,6 +1560,14 @@ export function incidentGrantHeaders(input: {
   if (!gr) return { error: `This agent holds no grant for ${cred.service}` };
   if (cred.host !== input.host)
     return { error: `${cred.service} is not for ${input.host}` };
+  // The response reaches the agent whole, which a statusOnly credential
+  // promises it never does.
+  if (cred.statusOnly)
+    return {
+      error: `${cred.service} returns only statuses and cannot carry a request`,
+    };
+  const refusal = ceilingRefusal(cred, input.method, input.path);
+  if (refusal) return { error: refusal };
   if (gr.mode === "once") {
     gr.status = "used";
     gr.usedAt = new Date().toISOString();
