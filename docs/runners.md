@@ -336,9 +336,10 @@ runs as `bash -s`. The audit log and the Runner log record a label such as
 command. This needs a Runner client that advertises command input (`execStdin`
 in its hello). An older client keeps working for everything else, but its
 incident checks report unknown with "Update Runner <name>" and its actions do
-not start. Run `opensession update` on the machine, then restart the Runner
-(`opensession runner service install` reinstalls and starts the service); it
-reconnects with the new capability.
+not start. Run `opensession update` on the machine, then restart the Runner:
+`systemctl --user restart opensession-runner` on Linux, or
+`opensession runner service install` on macOS, which reloads the
+LaunchAgent. It reconnects with the new capability.
 
 A problem with the Runner itself, such as offline, in maintenance, not
 permitted, too old or disconnected mid-check, makes a check unknown, never a
