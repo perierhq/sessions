@@ -10,6 +10,7 @@ import {
   redactSignal,
   restoreRedactedHeaders,
   restoreRedactedSource,
+  restoredSecretFields,
   validateSignalInput,
 } from "./signal-validation";
 
@@ -352,4 +353,49 @@ test("rejects header names that differ only in case", async () => {
     ctx(),
   );
   expect(out).toEqual({ error: 'Header "authorization" is listed twice' });
+});
+
+test("a test run restores secrets only for the same method and path", () => {
+  const red = redactSignal({ ...base, source: storedHttp }).source;
+  const same = { sameRequest: true };
+  expect(restoreRedactedSource(storedHttp, red, same)).toEqual({
+    source: storedHttp,
+  });
+  expect(
+    restoreRedactedSource(
+      storedHttp,
+      {
+        ...(red as typeof storedHttp),
+        url: red.kind === "http" ? red.url.replace("/q?", "/admin?") : "",
+      },
+      same,
+    ),
+  ).toEqual({
+    error: "Enter the api_key value again to test another method or path",
+  });
+  expect(
+    restoreRedactedSource(
+      storedHttp,
+      { ...(red as typeof storedHttp), method: "GET", body: undefined },
+      same,
+    ),
+  ).toEqual({
+    error: "Enter the api_key value again to test another method or path",
+  });
+  // A write keeps the origin rule only.
+  expect(
+    "source" in
+      restoreRedactedSource(storedHttp, {
+        ...(red as typeof storedHttp),
+        method: "GET",
+        body: undefined,
+      }),
+  ).toBe(true);
+  expect(restoredSecretFields(red)).toEqual([
+    "query.api_key",
+    "headers.Authorization",
+    "body",
+  ]);
+  expect(restoredSecretFields(storedHttp)).toEqual([]);
+  expect(restoredSecretFields({ kind: "webhook" })).toEqual([]);
 });

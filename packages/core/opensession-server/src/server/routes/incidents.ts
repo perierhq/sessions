@@ -15,6 +15,7 @@ import type {
   StripMarker,
   StripResponse,
 } from "../../shared/incidents";
+import { incidentAudit } from "../incidents/audit-sink";
 import {
   getIncident,
   listIncidents,
@@ -38,6 +39,7 @@ import {
   defaultRuleFor,
   redactSignal,
   restoreRedactedSource,
+  restoredSecretFields,
   validateSource,
 } from "../incidents/signal-validation";
 import { runSignalSource } from "../incidents/sources";
@@ -134,10 +136,15 @@ function draftSignal(
 
 /**
  * Check a draft source once. Values sent back as `[redacted]` are restored
- * from the stored signal named by `signalId` (same origin only); without one
- * they are an error. Nothing is stored.
+ * from the stored signal named by `signalId` (same origin, method and path
+ * only); without one they are an error. A run that restored a secret is
+ * audited by field name. Nothing is stored; the source scrubs the secrets
+ * it sent from what it shows.
  */
-async function testRun(body: Record<string, unknown>): Promise<Response> {
+async function testRun(
+  body: Record<string, unknown>,
+  user: string,
+): Promise<Response> {
   const validated = validateSource(body.source);
   if ("error" in validated) return badRequest(validated.error);
   if (validated.kind === "heartbeat")
@@ -149,9 +156,19 @@ async function testRun(body: Record<string, unknown>): Promise<Response> {
     stored = await getSignal(body.signalId);
     if (!stored) return notFound();
   }
-  const restored = restoreRedactedSource(stored?.source, validated);
+  const restored = restoreRedactedSource(stored?.source, validated, {
+    sameRequest: true,
+  });
   if ("error" in restored) return badRequest(restored.error);
   const source = restored.source;
+  const fields = restoredSecretFields(validated);
+  if (stored && fields.length)
+    incidentAudit({
+      kind: "incident_signal_tested",
+      signalId: stored.id,
+      fields,
+      by: user,
+    });
   if (source.kind === "webhook") {
     const payload =
       typeof body.payload === "string"
@@ -375,7 +392,7 @@ export async function handleIncidentsRoutes(
   if (path === "/api/incident-signals/test" && req.method === "POST") {
     const body = await readObject(req);
     if (body instanceof Response) return body;
-    return testRun(body);
+    return testRun(body, requestUser(ctx, body.user) || "Anonymous");
   }
 
   const signalMatch = SIGNAL_PATH.exec(path);

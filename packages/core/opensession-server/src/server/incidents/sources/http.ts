@@ -23,7 +23,12 @@ import {
   untilAborted,
 } from "../../shared/pinned-fetch";
 import { mapJson } from "../json-mapping";
-import { isSecretHeader, redactSecretQuery } from "../signal-validation";
+import {
+  REDACTED,
+  isSecretHeader,
+  redactSecretQuery,
+  sourceSecretValues,
+} from "../signal-validation";
 
 export const HTTP_BODY_CAP_BYTES = 1_048_576;
 export const HTTP_DEFAULT_TIMEOUT_MS = 10_000;
@@ -75,6 +80,90 @@ class RunStop extends Error {
   ) {
     super(detail);
   }
+}
+
+/** Shorter parts of a secret (a credential after its scheme, a Basic
+ *  password) are too common to scrub on their own. */
+const MIN_SECRET_PART_CHARS = 4;
+
+function decodeBasic(credential: string): string | undefined {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(credential)) return undefined;
+  const decoded = Buffer.from(credential, "base64").toString("utf8");
+  const bare = (b64: string) => b64.replace(/=+$/, "");
+  // Only a credential that is base64 of text.
+  return bare(Buffer.from(decoded, "utf8").toString("base64")) ===
+    bare(credential)
+    ? decoded
+    : undefined;
+}
+
+/**
+ * Every form a secret the check sends could come back in: as sent,
+ * URL-encoded, JSON-escaped; for a `<scheme> <credential>` header also the
+ * credential, and for Basic the `user:pass` it encodes and the password.
+ * Longest first, so a longer form is scrubbed before a part of it.
+ */
+export function secretForms(values: string[]): string[] {
+  const out = new Set<string>();
+  const add = (value: string, part = false) => {
+    if (!value || (part && value.length < MIN_SECRET_PART_CHARS)) return;
+    const encoded = encodeURIComponent(value);
+    out.add(value);
+    out.add(encoded);
+    out.add(encoded.replace(/%20/g, "+"));
+    out.add(JSON.stringify(value).slice(1, -1));
+  };
+  for (const value of values) {
+    add(value);
+    const scheme = /^([A-Za-z][\w-]*)\s+(\S.*)$/.exec(value);
+    if (!scheme) continue;
+    add(scheme[2]!, true);
+    if (scheme[1]!.toLowerCase() !== "basic") continue;
+    const decoded = decodeBasic(scheme[2]!);
+    if (decoded === undefined) continue;
+    add(decoded, true);
+    const colon = decoded.indexOf(":");
+    if (colon >= 0) add(decoded.slice(colon + 1), true);
+  }
+  out.delete(REDACTED);
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+/** `text` with every secret form replaced by {@link REDACTED}. */
+export function scrubText(text: string, secrets: string[]): string {
+  let out = text;
+  for (const secret of secrets)
+    if (out.includes(secret)) out = out.split(secret).join(REDACTED);
+  return out;
+}
+
+/** A cut text can end in the start of a secret: redact that too. */
+function scrubCutEnd(text: string, secrets: string[]): string {
+  for (const secret of secrets)
+    for (
+      let k = Math.min(secret.length - 1, text.length);
+      k >= MIN_SECRET_PART_CHARS;
+      k--
+    )
+      if (text.endsWith(secret.slice(0, k)))
+        return text.slice(0, text.length - k) + REDACTED;
+  return text;
+}
+
+/** Strings (and object keys) anywhere in `value`, scrubbed. */
+export function scrubValue<T>(value: T, secrets: string[]): T {
+  if (!secrets.length) return value;
+  if (typeof value === "string") return scrubText(value, secrets) as T;
+  if (Array.isArray(value))
+    return value.map((item) => scrubValue(item, secrets)) as T;
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        scrubText(key, secrets),
+        scrubValue(item, secrets),
+      ]),
+    ) as T;
+  return value;
 }
 
 /** A URL as it may leave the server: no userinfo, no secret query values. */
@@ -167,6 +256,8 @@ export async function runHttpSource(
   const started = now();
   const at = new Date(started).toISOString();
   const sourceUrl = redactOutputUrl(source.url);
+  // A server may echo what it was sent: no detail or preview carries it.
+  const secrets = secretForms(sourceSecretValues(source));
   // Transport, status and size failures of a provider's status page say
   // nothing about the provider: they are unknown, never an outage.
   const failed: ObservationResult = opts.provider ? "unknown" : "fail";
@@ -178,7 +269,7 @@ export async function runHttpSource(
     at,
     result,
     ...(value === undefined ? {} : { value }),
-    detail,
+    detail: scrubText(detail, secrets),
     sourceUrl,
   });
 
@@ -297,13 +388,16 @@ export async function runHttpSource(
       over: response.truncated === true,
     };
     const latencyMs = Math.max(0, Math.round(now() - started));
+    const shown = scrubText(read.text, secrets);
+    const cut = read.over || shown.length > PREVIEW_BODY_CHARS;
+    const head = shown.slice(0, PREVIEW_BODY_CHARS);
     preview = {
       status: response.status,
-      finalUrl: redactOutputUrl(finalUrl.href),
+      finalUrl: scrubText(redactOutputUrl(finalUrl.href), secrets),
       contentType,
       latencyMs,
-      bodyHead: read.text.slice(0, PREVIEW_BODY_CHARS),
-      bodyTruncated: read.over || read.text.length > PREVIEW_BODY_CHARS,
+      bodyHead: cut ? scrubCutEnd(head, secrets) : head,
+      bodyTruncated: cut,
     };
     const status = response.status;
     if (!statusExpected(status, source.expectStatus))
@@ -364,9 +458,10 @@ export async function runHttpSource(
         preview,
       };
     }
-    if (JSON.stringify(doc).length <= PREVIEW_JSON_CHARS) preview.json = doc;
+    if (JSON.stringify(doc).length <= PREVIEW_JSON_CHARS)
+      preview.json = scrubValue(doc, secrets);
     const outcome = mapJson(doc, source.json);
-    preview.matches = outcome.matches;
+    preview.matches = scrubValue(outcome.matches, secrets);
     const main = observe(
       outcome.result ?? "ok",
       outcome.detail || httpDetail,
@@ -376,9 +471,9 @@ export async function runHttpSource(
       at,
       result: lane.result,
       ...(lane.value === undefined ? {} : { value: lane.value }),
-      detail: lane.detail,
+      detail: scrubText(lane.detail, secrets),
       sourceUrl,
-      lane: lane.lane,
+      lane: scrubText(lane.lane, secrets),
     }));
     return { observations: [main, ...lanes], preview };
   } catch (error) {

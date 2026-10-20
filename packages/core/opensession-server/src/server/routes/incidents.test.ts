@@ -215,6 +215,39 @@ test("a test run restores secrets only from the stored signal", async () => {
   });
   expect(restored?.status).toBe(200);
   expect(JSON.stringify(restored?.json)).not.toContain("s3cret");
+  expect(kit.audits.filter((a) => a.kind === "incident_signal_tested")).toEqual(
+    [
+      {
+        kind: "incident_signal_tested",
+        signalId: json.id,
+        fields: ["headers.Authorization"],
+        by: "Ada",
+      },
+    ],
+  );
+  // Same origin, another path or method: the secret is asked for again.
+  for (const other of [
+    { url: "http://127.0.0.1:9/admin" },
+    { method: "POST", body: "{}" },
+  ])
+    expect(
+      (
+        await call("POST", "/api/incident-signals/test", {
+          signalId: json.id,
+          source: { ...redacted, ...other },
+        })
+      )?.json,
+    ).toEqual({
+      error:
+        "Enter the Authorization value again to test another method or path",
+    });
+  // Nothing restored, nothing to audit.
+  kit.audits.length = 0;
+  await call("POST", "/api/incident-signals/test", {
+    signalId: json.id,
+    source: { ...redacted, headers: { Authorization: "Bearer typed" } },
+  });
+  expect(kit.audits).toEqual([]);
   expect(
     (
       await call("POST", "/api/incident-signals/test", {

@@ -57,6 +57,17 @@ beforeAll(() => {
         seenOnA = { method: req.method, body: await req.text() };
         return new Response("echo");
       }
+      if (p === "/echo-all") {
+        const auth = req.headers.get("authorization") ?? "";
+        return Response.json({
+          url: req.url,
+          auth,
+          basic: atob(auth.replace(/^Basic /, "")),
+          key: encodeURIComponent(req.headers.get("x-api-key") ?? ""),
+          body: await req.text(),
+          n: 1,
+        });
+      }
       if (p === "/see-other") return Response.redirect(`${A}echo`, 303);
       if (p === "/temp") return Response.redirect(`${A}echo`, 307);
       if (p === "/temp-away") return Response.redirect(`${B}`, 307);
@@ -176,6 +187,33 @@ test("a provider's unreadable status page is unknown, never an outage", async ()
     (await run("/text", { expectBody: { contains: "price" } }, provider))
       .observations[0].result,
   ).toBe("fail");
+});
+
+test("secrets the check sends never come back in the preview or a detail", async () => {
+  const basic = btoa("ada:pa55word");
+  const out = await run("/echo-all?api_key=k3y%2Fx&page=2", {
+    method: "POST",
+    body: '{"token":"b0dy-t0ken"}',
+    headers: { Authorization: `Basic ${basic}`, "X-Api-Key": "s3cret+key/=" },
+    json: { detail: "$.basic" },
+  });
+  expect(out.observations[0]).toMatchObject({
+    result: "ok",
+    detail: "[redacted]",
+  });
+  expect(out.preview?.json).toMatchObject({ n: 1, auth: "[redacted]" });
+  expect(out.preview?.matches).toEqual({ "$.basic": ["[redacted]"] });
+  expect(out.preview?.bodyHead).toContain('"n":1');
+  const text = JSON.stringify(out);
+  for (const secret of [
+    "k3y",
+    basic,
+    "pa55word",
+    "s3cret",
+    "s3cret%2Bkey",
+    "b0dy-t0ken",
+  ])
+    expect([secret, text.includes(secret)]).toEqual([secret, false]);
 });
 
 test("303 turns into a GET without a body; 307 keeps both on the same origin", async () => {

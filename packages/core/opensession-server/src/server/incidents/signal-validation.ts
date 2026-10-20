@@ -652,6 +652,19 @@ export function redactSignal(signal: Signal): RedactedSignal {
 
 type Restored<T> = T | { error: string };
 
+export interface RestoreOptions {
+  /** A test run: restore only for the stored method and path too. */
+  sameRequest?: boolean;
+}
+
+function pathOf(raw: string): string | undefined {
+  try {
+    return new URL(raw).pathname;
+  } catch {
+    return undefined;
+  }
+}
+
 function originOf(raw: string): string | undefined {
   try {
     return new URL(raw).origin;
@@ -662,18 +675,26 @@ function originOf(raw: string): string | undefined {
 
 /**
  * Whether a value sent back redacted may take the stored one: only when the
- * stored source is http and points at the same origin as the new one. A
- * secret never follows a signal to another address.
+ * stored source is http and points at the same origin as the new one (for a
+ * test run, also the same method and path). A secret never follows a signal
+ * to another address.
  */
 function restoreCheck(
   stored: SignalSource | undefined,
   next: HttpSource,
   what: string,
+  opts: RestoreOptions = {},
 ): { stored: HttpSource } | { error: string } {
   if (stored?.kind !== "http") return { error: `Enter the ${what} again` };
   const from = originOf(stored.url);
   if (from === undefined || from !== originOf(next.url))
     return { error: `Enter the ${what} again for the new address` };
+  if (
+    opts.sameRequest &&
+    ((stored.method ?? "GET") !== (next.method ?? "GET") ||
+      pathOf(stored.url) !== pathOf(next.url))
+  )
+    return { error: `Enter the ${what} again to test another method or path` };
   return { stored };
 }
 
@@ -685,6 +706,7 @@ function restoreCheck(
 export function restoreRedactedHeaders(
   stored: SignalSource | undefined,
   next: HttpSource,
+  opts: RestoreOptions = {},
 ): Restored<{ headers?: Record<string, string> }> {
   if (!next.headers) return {};
   const out: Record<string, string> = {};
@@ -693,7 +715,7 @@ export function restoreRedactedHeaders(
       out[name] = value;
       continue;
     }
-    const check = restoreCheck(stored, next, `${name} value`);
+    const check = restoreCheck(stored, next, `${name} value`, opts);
     if ("error" in check) return check;
     const kept = Object.entries(check.stored.headers ?? {}).find(
       ([storedName]) => storedName.toLowerCase() === name.toLowerCase(),
@@ -722,6 +744,7 @@ function queryValues(raw: string): Map<string, string[]> {
 function restoreRedactedUrl(
   stored: SignalSource | undefined,
   next: HttpSource,
+  opts: RestoreOptions,
 ): Restored<{ url: string }> {
   const [head, fragment] = splitFragment(next.url);
   const query = head.indexOf("?");
@@ -733,7 +756,7 @@ function restoreRedactedUrl(
     .slice(query)
     .replace(QUERY_PAIR, (pair, sep: string, name: string, value: string) => {
       if (failure || decodedQueryValue(value) !== REDACTED) return pair;
-      const check = restoreCheck(stored, next, `${name} value`);
+      const check = restoreCheck(stored, next, `${name} value`, opts);
       if ("error" in check) {
         failure = check;
         return pair;
@@ -759,21 +782,52 @@ function restoreRedactedUrl(
 export function restoreRedactedSource(
   stored: SignalSource | undefined,
   next: SignalSource,
+  opts: RestoreOptions = {},
 ): Restored<{ source: SignalSource }> {
   if (next.kind !== "http") return { source: next };
-  const url = restoreRedactedUrl(stored, next);
+  const url = restoreRedactedUrl(stored, next, opts);
   if ("error" in url) return url;
-  const headers = restoreRedactedHeaders(stored, next);
+  const headers = restoreRedactedHeaders(stored, next, opts);
   if ("error" in headers) return headers;
   const source: HttpSource = { ...next, url: url.url };
   if (headers.headers) source.headers = headers.headers;
   else delete source.headers;
   if (next.body === REDACTED) {
-    const check = restoreCheck(stored, next, "body");
+    const check = restoreCheck(stored, next, "body", opts);
     if ("error" in check) return check;
     if (check.stored.body === undefined || check.stored.body === REDACTED)
       return { error: "Enter the body again" };
     source.body = check.stored.body;
   }
   return { source };
+}
+
+/** The fields of a draft source sent back as {@link REDACTED}, by name only
+ *  (`query.<name>`, `headers.<name>`, `body`): what a restore fills in. */
+export function restoredSecretFields(next: SignalSource): string[] {
+  if (next.kind !== "http") return [];
+  const out: string[] = [];
+  for (const [name, values] of queryValues(next.url))
+    if (values.some((value) => decodedQueryValue(value) === REDACTED))
+      out.push(`query.${name}`);
+  for (const [name, value] of Object.entries(next.headers ?? {}))
+    if (value === REDACTED) out.push(`headers.${name}`);
+  if (next.body === REDACTED) out.push("body");
+  return out;
+}
+
+/**
+ * The secret values a source sends: secret query values (as written and
+ * decoded), secret header values and the body. Whatever comes back must not
+ * carry them out of the server.
+ */
+export function sourceSecretValues(source: HttpSource): string[] {
+  const out: string[] = [];
+  for (const [name, values] of queryValues(source.url))
+    if (isSecretQueryName(name))
+      for (const value of values) out.push(value, decodedQueryValue(value));
+  for (const [name, value] of Object.entries(source.headers ?? {}))
+    if (isSecretHeader(name)) out.push(value);
+  if (source.body !== undefined) out.push(source.body);
+  return out.filter((value) => value && value !== REDACTED);
 }
