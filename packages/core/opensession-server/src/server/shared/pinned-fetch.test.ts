@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { createServer, type Server } from "http";
 import type { AddressInfo } from "net";
+import { brotliCompressSync, gzipSync } from "zlib";
 import { isBlockedAddress } from "./network-address";
 import {
   BlockedAddressError,
@@ -18,6 +19,12 @@ import {
 } from "./pinned-fetch";
 
 const LOCAL = "127.0.0.1";
+/** Text that compresses to several kilobytes, so a cut stream still holds
+ *  whole blocks to decode. */
+const TEXT = Array.from(
+  { length: 20_000 },
+  (_, i) => `item-${(i * 7919) % 10007}`,
+).join(",");
 
 describe("pinnedFetch", () => {
   let server: Server;
@@ -45,6 +52,19 @@ describe("pinnedFetch", () => {
         if (req.url === "/moved") {
           res.writeHead(307, { location: "/elsewhere" });
           return res.end();
+        }
+        if (req.url === "/gzip") {
+          res.writeHead(200, { "content-encoding": "gzip" });
+          return res.end(gzipSync("y".repeat(10_000)));
+        }
+        if (req.url === "/gzip-text" || req.url === "/br-text") {
+          const br = req.url === "/br-text";
+          res.writeHead(200, { "content-encoding": br ? "br" : "gzip" });
+          return res.end(br ? brotliCompressSync(TEXT) : gzipSync(TEXT));
+        }
+        if (req.url === "/odd-encoding") {
+          res.writeHead(200, { "content-encoding": "compress" });
+          return res.end("0123456789abcdef");
         }
         if (req.url === "/empty") {
           res.writeHead(204);
@@ -196,6 +216,100 @@ describe("pinnedFetch", () => {
     await expect(
       pinnedFetch(at("/big"), { maxBodyBytes: 4 }, localDeps()),
     ).rejects.toThrow(/exceeded the 4 bytes body limit/);
+  });
+
+  test("overflow: truncate keeps the status and the first bytes", async () => {
+    const target = (path: string) => ({
+      url: new URL(at(path)),
+      host: "acme.example.test",
+      addresses: [LOCAL],
+    });
+    const request = (path: string, maxBodyBytes: number) =>
+      pinnedHttpRequest(
+        target(path),
+        {
+          signal: AbortSignal.timeout(5_000),
+          maxBodyBytes,
+          overflow: "truncate",
+        },
+        (address) => address !== LOCAL,
+      );
+    const cut = await request("/big", 4);
+    expect([
+      cut.status,
+      new TextDecoder().decode(cut.body),
+      cut.truncated,
+    ]).toEqual([200, '{"me', true]);
+    const whole = await request("/big", 1_000);
+    expect(whole.truncated).toBeUndefined();
+    // An expansion past the limit keeps the first decoded bytes.
+    const expanded = await request("/gzip", 100);
+    expect([
+      new TextDecoder().decode(expanded.body),
+      expanded.truncated,
+    ]).toEqual(["y".repeat(100), true]);
+    // A stream cut before its first block has nothing to show yet.
+    const header = await request("/gzip", 8);
+    expect([header.status, header.body.length, header.truncated]).toEqual([
+      200,
+      0,
+      true,
+    ]);
+    expect(
+      new TextDecoder().decode((await request("/gzip", 20_000)).body),
+    ).toBe("y".repeat(10_000));
+  });
+
+  test("overflow: truncate decodes as much of a cut compressed body as it can", async () => {
+    for (const path of ["/gzip-text", "/br-text"]) {
+      const cut = await pinnedHttpRequest(
+        {
+          url: new URL(at(path)),
+          host: "acme.example.test",
+          addresses: [LOCAL],
+        },
+        {
+          signal: AbortSignal.timeout(5_000),
+          maxBodyBytes: 2_000,
+          overflow: "truncate",
+        },
+        (address) => address !== LOCAL,
+      );
+      const text = new TextDecoder().decode(cut.body);
+      expect(cut.truncated).toBe(true);
+      expect(text.length).toBeGreaterThan(0);
+      expect(text.length).toBeLessThanOrEqual(2_000);
+      expect(TEXT.startsWith(text)).toBe(true);
+      expect(cut.undecodable).toBeUndefined();
+    }
+  });
+
+  test("an unsupported content-encoding: raw bytes when truncating, refused otherwise", async () => {
+    const request = (maxBodyBytes: number, overflow?: "truncate") =>
+      pinnedHttpRequest(
+        {
+          url: new URL(at("/odd-encoding")),
+          host: "acme.example.test",
+          addresses: [LOCAL],
+        },
+        { signal: AbortSignal.timeout(5_000), maxBodyBytes, overflow },
+        (address) => address !== LOCAL,
+      );
+    const under = await request(1_000, "truncate");
+    expect([
+      new TextDecoder().decode(under.body),
+      under.truncated,
+      under.undecodable,
+    ]).toEqual(["0123456789abcdef", undefined, true]);
+    const over = await request(4, "truncate");
+    expect([
+      new TextDecoder().decode(over.body),
+      over.truncated,
+      over.undecodable,
+    ]).toEqual(["0123", true, true]);
+    await expect(request(1_000)).rejects.toThrow(
+      /unsupported content-encoding: compress/,
+    );
   });
 
   test("the signal covers DNS", async () => {

@@ -20,8 +20,14 @@ import { request as httpRequest } from "http";
 import type { RequestOptions } from "https";
 import { request as httpsRequest } from "https";
 import { isIP } from "net";
+import type { Transform } from "stream";
 import {
   brotliDecompressSync,
+  constants as zlibConstants,
+  createBrotliDecompress,
+  createGunzip,
+  createInflate,
+  createInflateRaw,
   gunzipSync,
   inflateRawSync,
   inflateSync,
@@ -151,8 +157,11 @@ const megabytes = (bytes: number) =>
       ? `${Math.round(bytes / 1024)}KB`
       : `${bytes} bytes`;
 
+/** A body over the request's byte limit, before or after decoding. */
+export class BodyTooLargeError extends Error {}
+
 export const tooLarge = (url: URL, limit: number, bytes?: number) =>
-  new Error(
+  new BodyTooLargeError(
     bytes === undefined
       ? `${url} exceeded the ${megabytes(limit)} body limit`
       : `${url} is ${megabytes(bytes)}, over the ${megabytes(limit)} limit`,
@@ -195,6 +204,85 @@ export function decodeBody(
   throw new Error(`${url} used an unsupported content-encoding: ${encoding}`);
 }
 
+/** Decoders for a cut body: each flushes what it has at the end of its
+ *  input instead of failing on the missing rest. Deflate tries zlib, then
+ *  raw, as `decodeBody` does. */
+function prefixDecoders(encoding: string): Array<() => Transform> | null {
+  const sync = { finishFlush: zlibConstants.Z_SYNC_FLUSH };
+  switch (encoding) {
+    case "gzip":
+    case "x-gzip":
+      return [() => createGunzip(sync)];
+    case "deflate":
+      return [() => createInflate(sync), () => createInflateRaw(sync)];
+    case "br":
+      return [
+        () =>
+          createBrotliDecompress({
+            finishFlush: zlibConstants.BROTLI_OPERATION_FLUSH,
+          }),
+      ];
+  }
+  return null;
+}
+
+/** Run one decoder until `limit` bytes are out or the input runs dry. It is
+ *  stopped at the limit, so a small body cannot inflate past it. */
+function inflatePrefix(
+  decoder: Transform,
+  body: Buffer,
+  limit: number,
+): Promise<{ bytes: Buffer; failed: boolean }> {
+  return new Promise((resolve) => {
+    const out: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (failed: boolean) => {
+      if (settled) return;
+      settled = true;
+      decoder.destroy();
+      resolve({ bytes: Buffer.concat(out).subarray(0, limit), failed });
+    };
+    decoder.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      out.push(chunk);
+      size += chunk.length;
+      if (size >= limit) finish(false);
+    });
+    decoder.on("error", () => finish(size === 0));
+    decoder.on("end", () => finish(false));
+    decoder.end(body);
+  });
+}
+
+/**
+ * The first `limit` bytes of a body that is cut short or decodes past the
+ * limit: as much as its encoding gives up, possibly nothing. Null for an
+ * encoding `decodeBody` does not take.
+ */
+export async function decodeBodyPrefix(
+  encoding: string,
+  body: Buffer,
+  limit: number,
+): Promise<Buffer | null> {
+  const kind = encoding.trim().toLowerCase();
+  if (kind === "" || kind === "identity") return body.subarray(0, limit);
+  const decoders = prefixDecoders(kind);
+  if (!decoders) return null;
+  for (const make of decoders) {
+    const { bytes, failed } = await inflatePrefix(make(), body, limit);
+    if (!failed) return bytes;
+  }
+  return Buffer.alloc(0);
+}
+
+/** Encodings `decodeBody` undoes. */
+function isDecodable(encoding: string): boolean {
+  return ["", "identity", "gzip", "x-gzip", "deflate", "br"].includes(
+    encoding.trim().toLowerCase(),
+  );
+}
+
 type RequestFn = (
   options: RequestOptions,
   onResponse: (res: IncomingMessage) => void,
@@ -219,6 +307,13 @@ export interface PinnedRequestInit {
   signal: AbortSignal;
   /** Largest body accepted, before and after decoding. */
   maxBodyBytes: number;
+  /** What a longer body does: "reject" (the default) fails the request;
+   *  "truncate" stops reading at `maxBodyBytes` and answers with what was
+   *  read and `truncated` set, so the status is still known. A cut encoded
+   *  body is decoded as far as it goes. A body in an encoding that cannot
+   *  be decoded comes back raw, over the limit or not, with `undecodable`
+   *  set. */
+  overflow?: "reject" | "truncate";
 }
 
 export interface PinnedResponse {
@@ -226,6 +321,11 @@ export interface PinnedResponse {
   headers: Headers;
   /** Decoded body bytes; empty for a redirect, which is never read. */
   body: Uint8Array;
+  /** Set when `overflow: "truncate"` cut the body short. */
+  truncated?: boolean;
+  /** Set when `overflow: "truncate"` could not decode the body: `body` is
+   *  the raw bytes (or nothing, if decoding a cut body failed). */
+  undecodable?: true;
 }
 
 /** One request over node:http(s), dialling only the target's checked
@@ -238,6 +338,7 @@ export function pinnedHttpRequest(
 ): Promise<PinnedResponse> {
   const { url, host } = target;
   const { signal, maxBodyBytes } = init;
+  const truncate = init.overflow === "truncate";
   const secure = url.protocol === "https:";
   if (signal.aborted) return Promise.reject(signal.reason);
   const payload =
@@ -288,21 +389,56 @@ export function pinnedHttpRequest(
           return resolve({ status, headers, body: new Uint8Array() });
         }
         const declared = Number(headers.get("content-length"));
-        if (Number.isFinite(declared) && declared > maxBodyBytes) {
+        if (!truncate && Number.isFinite(declared) && declared > maxBodyBytes) {
           done();
           res.destroy();
           return reject(tooLarge(url, maxBodyBytes, declared));
         }
         const chunks: Buffer[] = [];
+        const encoding = headers.get("content-encoding") ?? "";
         let size = 0;
+        let finished = false;
+        /** Answer with the first decoded bytes of `raw`, marked cut. */
+        const resolvePrefix = (raw: Buffer) =>
+          decodeBodyPrefix(encoding, raw, maxBodyBytes).then(
+            (body) =>
+              resolve({
+                status,
+                headers,
+                body: body ?? raw.subarray(0, maxBodyBytes),
+                truncated: true,
+                ...(body === null ? { undecodable: true as const } : {}),
+              }),
+            () =>
+              resolve({
+                status,
+                headers,
+                body: new Uint8Array(),
+                truncated: true,
+                undecodable: true,
+              }),
+          );
+        const cutShort = () => {
+          finished = true;
+          done();
+          res?.destroy();
+          void resolvePrefix(Buffer.concat(chunks));
+        };
         res.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maxBodyBytes) {
+          if (finished) return;
+          if (size + chunk.length > maxBodyBytes) {
+            if (truncate) {
+              chunks.push(chunk.subarray(0, maxBodyBytes - size));
+              size = maxBodyBytes;
+              return cutShort();
+            }
+            finished = true;
             done();
             res?.destroy();
             reject(tooLarge(url, maxBodyBytes));
             return;
           }
+          size += chunk.length;
           chunks.push(chunk);
         });
         res.on("error", (error) => {
@@ -311,16 +447,18 @@ export function pinnedHttpRequest(
         });
         res.on("end", () => {
           done();
-          if (size > maxBodyBytes) return;
+          if (finished) return;
+          finished = true;
+          const raw = Buffer.concat(chunks);
+          // Undecodable but whole: the raw bytes, as over the limit.
+          if (truncate && !isDecodable(encoding))
+            return resolve({ status, headers, body: raw, undecodable: true });
           try {
-            const body = decodeBody(
-              url,
-              headers.get("content-encoding") ?? "",
-              Buffer.concat(chunks),
-              maxBodyBytes,
-            );
+            const body = decodeBody(url, encoding, raw, maxBodyBytes);
             resolve({ status, headers, body });
           } catch (error) {
+            if (truncate && error instanceof BodyTooLargeError)
+              return void resolvePrefix(raw);
             reject(error);
           }
         });

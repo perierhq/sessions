@@ -70,6 +70,9 @@ repo variable is `true`; until then they skip cleanly.
   - `frontend/`: web UI and phone PWA (React 19, Base UI, Tailwind v4).
     `styles/` and `ui/` hold the design system.
   - `server/`: HTTP/API server
+  - `server/incidents/`: signals (sources, rules, observations, strips),
+    incidents (lifecycle, store, engine), the signal scheduler and hook
+    intake; API in `server/routes/incidents.ts`
   - `server/pi-runner.ts`, `pi-runtime-binding.ts`, `runner-shared.ts`: how
     a pi turn runs and how each turn binds a provider account;
     `server/claude-account-pick.ts` picks the Claude pool account for
