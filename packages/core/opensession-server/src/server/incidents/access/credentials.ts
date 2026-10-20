@@ -39,15 +39,23 @@ export interface CredentialCallInput {
 
 const MAX_PURPOSE_CHARS = 500;
 
+/** The lent credential an agent names, by id or service name. A service
+ *  name two lent credentials share is refused rather than guessed. */
 function findGranted(
   access: AgentAccess,
   ref: string,
-): ResolvedCredential | undefined {
+): ResolvedCredential | { error: string } {
+  const byId = access.credentials.find((c) => c.credential === ref);
+  if (byId) return byId;
   const key = ref.trim().toLowerCase();
-  return (
-    access.credentials.find((c) => c.credential === ref) ??
-    access.credentials.find((c) => c.service.toLowerCase() === key)
+  const named = access.credentials.filter(
+    (c) => c.service.toLowerCase() === key,
   );
+  if (named.length > 1)
+    return {
+      error: `Two credentials lent to this agent are named ${named[0].service}; name one by its id`,
+    };
+  return named[0] ?? { error: `${ref} is not granted to this agent` };
 }
 
 function pathOnly(path: string): string {
@@ -82,7 +90,7 @@ export async function freshGrantedCredential(
       error: "Access refused: the agent's access does not match its binding",
     };
   const credential = findGranted(access, ref);
-  if (!credential) return { error: `${ref} is not granted to this agent` };
+  if ("error" in credential) return credential;
   return { access, credential };
 }
 
@@ -91,8 +99,8 @@ export async function incidentCredentialCall(
   input: CredentialCallInput,
   deps: { fetchImpl?: typeof fetch } = {},
 ): Promise<BrokerCallResult> {
-  if (!findGranted(ctx.access, input.credential))
-    return { error: `${input.credential} is not granted to this agent` };
+  const lent = findGranted(ctx.access, input.credential);
+  if ("error" in lent) return lent;
   const purpose = (input.purpose ?? "").trim();
   if (!purpose || purpose.length > MAX_PURPOSE_CHARS)
     return { error: "Say why you make this call (purpose)" };

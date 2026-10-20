@@ -197,3 +197,22 @@ test("a refused resolution mints nothing", async () => {
   expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
   expect(seen).toEqual([]);
 });
+test("two lent credentials with the same service name are refused by name, not guessed", async () => {
+  const c = ctx([granted("kc-a"), granted("kc-b", "standing")]);
+  const ambiguous = {
+    error:
+      "Two credentials lent to this agent are named proxy-api; name one by its id",
+  };
+  expect(
+    await incidentCredentialCall(
+      c,
+      { credential: "proxy-api", method: "GET", path: "/", purpose: "Check" },
+      { fetchImpl },
+    ),
+  ).toEqual(ambiguous);
+  expect(await freshGrantedCredential(c, "Proxy-API")).toEqual(ambiguous);
+  expect(await freshGrantedCredential(c, "kc-b")).toMatchObject({
+    credential: { credential: "kc-b", mode: "standing" },
+  });
+  expect(seen).toEqual([]);
+});
