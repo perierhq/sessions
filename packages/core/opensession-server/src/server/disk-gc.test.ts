@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
-  copyFileSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -171,14 +170,21 @@ describe("worktreesInUse", () => {
   it("detects a real build process's cwd as in use", async () => {
     const wt = join(root, "wt-building");
     mkdirSync(wt, { recursive: true });
-    // `cargo` is in BUILD_PROCESS_NAMES; sleep under that name stands in for a
-    // build so the test needs no toolchain and leaves nothing to clean up.
+    // `cargo` is in BUILD_PROCESS_NAMES; a long-lived process under that name
+    // stands in for a build so the test needs no toolchain. On macOS `ps`
+    // reports the executable path, so a symlink to sleep is enough. Linux
+    // reads /proc/<pid>/comm, and a copy of sleep is not portable: uutils
+    // coreutils (Ubuntu 26.04) is one multicall binary that dispatches on
+    // argv[0] and exits at once as `cargo`. A shell script's comm is the
+    // script's name, and blocking on stdin leaves no child behind on kill.
     const fakeCargo = join(root, "cargo");
     if (process.platform === "darwin") symlinkSync("/bin/sleep", fakeCargo);
-    else copyFileSync("/bin/sleep", fakeCargo);
-    const proc = Bun.spawn([fakeCargo, "30"], { cwd: wt });
+    else writeFileSync(fakeCargo, "#!/bin/sh\nread -r _\n", { mode: 0o755 });
+    const proc = Bun.spawn([fakeCargo, "30"], { cwd: wt, stdin: "pipe" });
     try {
       await Bun.sleep(150);
+      // The stand-in must still be running, or the check below proves nothing.
+      expect(proc.exitCode).toBeNull();
       const inUse = await worktreesInUse(root);
       if (inUse !== null) expect(inUse.has(wt)).toBe(true);
     } finally {
