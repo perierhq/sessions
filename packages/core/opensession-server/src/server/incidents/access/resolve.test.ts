@@ -315,6 +315,8 @@ test("live state narrows instead of failing, and each narrowing is audited once"
 });
 test.each([
   [{ platform: "win32" as const }, "Runner does not run on Linux or macOS"],
+  [{ maintenance: true }, "Runner is in maintenance"],
+  [{ allowedRepos: ["acme-api"] }, "Runner does not serve acme"],
 ])(
   "a host and egress Runner that turned %j is dropped",
   async (over, reason) => {

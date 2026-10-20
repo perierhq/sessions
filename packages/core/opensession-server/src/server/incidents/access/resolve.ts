@@ -344,7 +344,12 @@ export async function resolveAgentAccess(
           ? "Runner now only accepts named people"
           : !runsPosixShell(info)
             ? "Runner does not run on Linux or macOS"
-            : null;
+            : info.maintenance
+              ? "Runner is in maintenance"
+              : info.allowedRepos.length &&
+                  !info.allowedRepos.includes(incident.project)
+                ? `Runner does not serve ${incident.project}`
+                : null;
 
   const hosts: ResolvedHost[] = [];
   for (const host of profile.hosts) {

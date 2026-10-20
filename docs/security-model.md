@@ -396,7 +396,8 @@ tools is mounted only when the access grants what it reaches:
   metacharacters in an argument are data. Host commands and the Runner egress
   route need a Linux or macOS Runner: one on Windows, whose PowerShell reads
   that quoting differently, is refused when the settings are saved and dropped
-  when access is resolved. Secret-shaped paths are refused after the path
+  when access is resolved, as is a Runner in maintenance or one whose repo
+  list leaves out the project. Secret-shaped paths are refused after the path
   is normalised (`.`, `//`, `..`), in operands and option values alike: key
   and `.env` files (`.env*`, `.envrc`), home key stores (`.ssh`, `.docker`,
   `.kube`, `.aws`, `.gnupg`, the GitHub CLI's `.config/gh/hosts.yml`),
