@@ -64,6 +64,40 @@ export function systemdUserEnv(
   };
 }
 
+/**
+ * Arguments that make `systemd-run --scope` run its command verbatim.
+ *
+ * systemd-run expands `$VAR`, `${VAR}` and `$$` in the command it starts.
+ * Scopes were exempt until systemd 258 turned that expansion on for them too,
+ * so on newer hosts a Portal command such as `echo $$` reached its shell as
+ * `echo $`, and a `$VAR` meant for that shell was replaced or dropped first.
+ * `--expand-environment=no` (systemd 254+) restores the old behaviour; older
+ * systemd-run rejects the switch but never expands scope commands anyway.
+ */
+export function scopeVerbatimArgs(
+  version: number | null = systemdRunVersion(),
+): string[] {
+  return version !== null && version >= 254 ? ["--expand-environment=no"] : [];
+}
+
+// systemd-run is not upgraded under a running process; read its version once.
+let cachedSystemdRunVersion: number | null | undefined;
+function systemdRunVersion(): number | null {
+  if (cachedSystemdRunVersion !== undefined) return cachedSystemdRunVersion;
+  cachedSystemdRunVersion = null;
+  try {
+    const result = Bun.spawnSync(["systemd-run", "--version"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const match = /^systemd (\d+)/m.exec(result.stdout.toString());
+    if (result.exitCode === 0 && match)
+      cachedSystemdRunVersion = Number(match[1]);
+  } catch {}
+  return cachedSystemdRunVersion;
+}
+
 export function systemdUserScopesAvailable(): boolean {
   return (
     existsSync(`${SYSTEMD_USER_RUNTIME}/systemd/private`) &&
@@ -102,6 +136,8 @@ export function controlPlaneWorkloadCommand(
     /** Unit Description; session-owned scopes carry their labels here
      * (session-ownership.ts). */
     description?: string;
+    /** systemd-run's version; read from the host when omitted. */
+    systemdVersion?: number | null;
   } = {},
 ): { command: string[]; env: Record<string, string>; unit?: string } {
   const env = options.env ?? process.env;
@@ -120,6 +156,7 @@ export function controlPlaneWorkloadCommand(
       ...(options.description ? [`--description=${options.description}`] : []),
       ...engineScopeSystemdArgs(env),
       "--property=TimeoutStopSec=2",
+      ...scopeVerbatimArgs(options.systemdVersion),
       "--",
       ...command,
     ],
@@ -145,7 +182,12 @@ export function previewScopeCommand(
   command: string[],
   worktreeDir: string,
   portalName: string,
-  options: { env?: LimitEnv; scopesAvailable?: boolean } = {},
+  options: {
+    env?: LimitEnv;
+    scopesAvailable?: boolean;
+    /** systemd-run's version; read from the host when omitted. */
+    systemdVersion?: number | null;
+  } = {},
 ): { command: string[]; env: Record<string, string>; unit?: string } {
   const env = options.env ?? process.env;
   if (!(options.scopesAvailable ?? systemdUserScopesAvailable()))
@@ -161,6 +203,7 @@ export function previewScopeCommand(
       `--unit=${unit}`,
       ...previewScopeSystemdArgs(env),
       "--property=TimeoutStopSec=5",
+      ...scopeVerbatimArgs(options.systemdVersion),
       "--",
       ...command,
     ],

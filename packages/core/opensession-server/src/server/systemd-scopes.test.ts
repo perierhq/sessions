@@ -8,6 +8,7 @@ import {
   previewScopeCommand,
   previewScopeSystemdArgs,
   previewScopeUnit,
+  scopeVerbatimArgs,
 } from "./systemd-scopes";
 
 describe("systemd scope resource controls", () => {
@@ -64,6 +65,7 @@ describe("systemd scope resource controls", () => {
         cgroup:
           "0::/opensession.slice/opensession-control.slice/opensession.service",
         scopesAvailable: true,
+        systemdVersion: 259,
       },
     );
     expect(scoped.unit).toBe("opensession-agent-cmd-test");
@@ -81,6 +83,7 @@ describe("systemd scope resource controls", () => {
       "--property=TasksMax=1024",
       "--property=OOMPolicy=stop",
       "--property=TimeoutStopSec=2",
+      "--expand-environment=no",
       "--",
       "setsid",
       "/bin/bash",
@@ -136,6 +139,7 @@ describe("systemd scope resource controls", () => {
     const scoped = previewScopeCommand(direct, "/srv/worktrees/a", "web", {
       env: { PATH: "/bin", HOME: "/tmp" },
       scopesAvailable: true,
+      systemdVersion: 259,
     });
     expect(scoped.unit).toBe(previewScopeUnit("/srv/worktrees/a", "web"));
     expect(scoped.command).toEqual([
@@ -153,6 +157,7 @@ describe("systemd scope resource controls", () => {
       "--property=CPUQuota=600%",
       "--property=OOMPolicy=stop",
       "--property=TimeoutStopSec=5",
+      "--expand-environment=no",
       "--",
       ...direct,
     ]);
@@ -161,5 +166,23 @@ describe("systemd scope resource controls", () => {
       HOME: "/tmp",
       XDG_RUNTIME_DIR: expect.stringContaining("/run/user/"),
     });
+  });
+
+  test("scope commands reach their shell verbatim on every systemd", () => {
+    // systemd 258 expands `$` in scope commands by default (`$$` -> `$`);
+    // 254 added the switch that turns it off, and older systemd-run rejects
+    // that switch but never expanded scope commands.
+    expect(scopeVerbatimArgs(259)).toEqual(["--expand-environment=no"]);
+    expect(scopeVerbatimArgs(254)).toEqual(["--expand-environment=no"]);
+    expect(scopeVerbatimArgs(252)).toEqual([]);
+    expect(scopeVerbatimArgs(null)).toEqual([]);
+    const direct = ["setsid", "bash", "-lc", "exec bun dev"];
+    expect(
+      previewScopeCommand(direct, "/srv/worktrees/a", "web", {
+        env: { PATH: "/bin" },
+        scopesAvailable: true,
+        systemdVersion: 249,
+      }).command,
+    ).not.toContain("--expand-environment=no");
   });
 });

@@ -35,6 +35,7 @@ import { writeJsonAtomicAsync } from "./shared/atomic-write";
 import { stateDir } from "./paths";
 import {
   engineScopeSystemdArgs,
+  scopeVerbatimArgs,
   stopUserScopeAndWait,
   systemdUserEnv,
   systemdUserScopesAvailable,
@@ -629,6 +630,7 @@ async function launchHost(input: {
         ...engineScopeSystemdArgs(),
         // The host forwards SIGTERM and waits for the command's own grace.
         "--property=TimeoutStopSec=20",
+        ...scopeVerbatimArgs(),
         "--",
         ...input.argv,
       ]
