@@ -29,7 +29,7 @@ import {
   IconPlus,
   IconTrash,
 } from "./icons";
-import { RemoveRepoDialog } from "./RemoveRepoDialog";
+import { RemoveRepoDialog, removedToast } from "./RemoveRepoDialog";
 import {
   getDefaultRepoPref,
   setDefaultRepoPref,
@@ -276,23 +276,30 @@ function RepositoryRow({
           appearance={appearance}
           onChanged={onChanged}
           onRepoUpdated={onRepoUpdated}
+          removable
         />
       </div>
     </SettingRow>
   );
 }
 
-/** A repo row's ⋯ menu and its consequences: the default-branch dialog,
- *  the isolated-worktrees toggle and removal. Shared by the settings page's full row and
- *  the wizard's compact rows, so both surfaces manage a repo identically. */
+/** A repo row's ⋯ menu and its consequences: the default-branch dialog, the
+ *  isolated-worktrees toggle and, on the settings page only, removal. Shared
+ *  by the settings page's full row and the wizard's compact rows, so both
+ *  surfaces repoint and re-mode a repo identically. Removing one is a
+ *  Settings → Repositories decision, not an onboarding step, so the wizard's
+ *  rows leave it out. */
 function RepoActionsMenu({
   repo,
   appearance,
   onChanged,
   onRepoUpdated,
+  removable = false,
 }: {
   repo: SetupStatus["repos"][number];
   appearance: RepoInfo | undefined;
+  /** Offer Remove… (Settings → Repositories only). */
+  removable?: boolean;
   onChanged: () => void | Promise<void>;
   onRepoUpdated?: (
     updated: Pick<SetupRepo, "id"> &
@@ -414,33 +421,39 @@ function RepoActionsMenu({
             </span>
             <Menu.Check on={isolatedWorktrees} />
           </Menu.CheckboxItem>
-          <Menu.Separator />
-          <Menu.Item
-            className="text-red data-[highlighted]:bg-red-soft"
-            onClick={() => setRemoveOpen(true)}
-          >
-            <IconTrash size={17} />
-            <span className="min-w-0 flex-1 truncate">Remove…</span>
-          </Menu.Item>
+          {removable && (
+            <>
+              <Menu.Separator />
+              <Menu.Item
+                className="text-red data-[highlighted]:bg-red-soft"
+                onClick={() => setRemoveOpen(true)}
+              >
+                <IconTrash size={17} />
+                <span className="min-w-0 flex-1 truncate">Remove…</span>
+              </Menu.Item>
+            </>
+          )}
         </Menu.Popup>
       </Menu.Root>
-      <RemoveRepoDialog
-        repo={repo}
-        open={removeOpen}
-        onOpenChange={setRemoveOpen}
-        onRemoved={async (result) => {
-          // The server already cleared stored preferences naming it; this
-          // keeps this browser's cached copy from offering it until then.
-          if (getDefaultRepoPref() === repo.id) setDefaultRepoPref("");
-          toast(
-            result.kept.length
-              ? `Removed ${repo.label}. Some of its files couldn’t be deleted.`
-              : `Removed ${repo.label}`,
-            result.kept.length ? { variant: "error" } : undefined,
-          );
-          await onChanged();
-        }}
-      />
+      {removable && (
+        <RemoveRepoDialog
+          repo={repo}
+          open={removeOpen}
+          onOpenChange={setRemoveOpen}
+          onRemoved={async (result) => {
+            // The server already cleared stored preferences naming it; this
+            // keeps this browser's cached copy from offering it until then.
+            if (getDefaultRepoPref() === repo.id) setDefaultRepoPref("");
+            toast(
+              removedToast(repo.label, result),
+              result.kept.length || result.error
+                ? { variant: "error" }
+                : undefined,
+            );
+            await onChanged();
+          }}
+        />
+      )}
       <Modal.Root
         open={branchDialogOpen}
         onOpenChange={(open) => {

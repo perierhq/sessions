@@ -257,23 +257,52 @@ export interface RepoRemovalPreview {
   sessions: number;
   /** Of those, how many are running. Removal waits until none are. */
   running: number;
+  /** Live sessions of other repositories that have it attached. Removal
+   *  waits until none do. */
+  attached: number;
+  attachedSessions: Array<{ id: string; title: string }>;
+  /** Enabled automations targeting it; removal turns them off. */
+  automations: number;
   /** Whether its files may be deleted along with it. */
   deletable: boolean;
-  /** Why they may not, in one line. */
+  /** `managed`: the server made the folder. `unverified`: it can't tell,
+   *  so deleting needs the id typed in. `never`: its files always stay. */
+  tier: "managed" | "unverified" | "never";
+  /** Deleting needs the repository id typed in. */
+  confirmRequired?: boolean;
+  /** Why its files stay, or why deleting needs the typed id, in one line. */
   reason?: string;
-  /** What deleting would remove: the checkout, and a local origin beside it. */
+  /** Everything deleting would remove. */
   deletePaths?: string[];
   /** Worktrees deleting would remove with it. */
   worktrees?: number;
   /** Disk used by `deletePaths`; null when it couldn't be measured quickly. */
   sizeBytes?: number | null;
+  /** Branches not on their upstream, whose commits deleting would lose. */
+  unpushedBranches?: number | null;
+  /** Sent back with a delete so it deletes exactly what was shown. */
+  planToken?: string;
 }
 
 export interface RepoRemovalResult {
   id: string;
   archived: number;
+  automationsDisabled: number;
   deleted: string[];
   kept: string[];
+  /** What went wrong deleting files. The repository was removed anyway. */
+  error?: string;
+  /** Another tab or person removed it first. */
+  alreadyRemoved?: boolean;
+}
+
+/** The body of `DELETE /api/setup/repos/:id`. */
+export interface RepoRemovalRequest {
+  deleteFiles: boolean;
+  /** The preview's planToken; required with deleteFiles. */
+  planToken?: string;
+  /** The typed repository id, when the preview asks for it. */
+  confirm?: string;
 }
 
 export function fetchRepoRemovalPreview(
@@ -286,21 +315,37 @@ export function fetchRepoRemovalPreview(
 
 /**
  * Remove a registered repository. Its live sessions are archived, and its
- * files are deleted only when `deleteFiles` is set and the server allows it.
- * Every repo list reloads afterwards, so the sidebar and pickers drop it.
+ * files are deleted only when `deleteFiles` is set and the server allows it
+ * (`planToken` from the preview, `confirm` the typed id when it asks for
+ * one). A 404 means it is already gone, which is what was asked for. Every
+ * repo list reloads afterwards, so the sidebar and pickers drop it.
  */
 export async function removeRepoApi(
   id: string,
-  deleteFiles: boolean,
+  opts: RepoRemovalRequest,
 ): Promise<RepoRemovalResult> {
-  const result = await request<RepoRemovalResult>(
-    `/setup/repos/${encodeURIComponent(id)}`,
-    {
-      method: "DELETE",
-      body: { deleteFiles },
-      label: "Couldn’t remove the repository",
-    },
-  );
+  const body: RepoRemovalRequest = { deleteFiles: opts.deleteFiles };
+  if (opts.deleteFiles) {
+    body.planToken = opts.planToken;
+    if (opts.confirm !== undefined) body.confirm = opts.confirm;
+  }
+  let result: RepoRemovalResult;
+  try {
+    result = await request<RepoRemovalResult>(
+      `/setup/repos/${encodeURIComponent(id)}`,
+      { method: "DELETE", body, label: "Couldn’t remove the repository" },
+    );
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+    result = {
+      id,
+      archived: 0,
+      automationsDisabled: 0,
+      deleted: [],
+      kept: [],
+      alreadyRemoved: true,
+    };
+  }
   forgetCachedRepo(id);
   if (workspaceNewSessionRepo === id) workspaceNewSessionRepo = "";
   notifyReposChanged();
