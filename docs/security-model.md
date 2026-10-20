@@ -387,13 +387,22 @@ tools is mounted only when the access grants what it reaches:
   such as `--foll`, is refused), every letter of a short cluster must be
   listed, an option's value is read the way the program reads it, and
   `systemctl` and `docker` take their subcommand first. It runs through the
-  Runner command channel with no
-  user and no AWS role. Every word is quoted, and quoted again for an SSH hop
+  Runner command channel with no user and no AWS role. Every word is
+  quoted, and quoted again for an SSH hop
   (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <alias>`), so shell
-  metacharacters are data. Secret-shaped paths are refused. A recursive
-  `grep` always runs with secret-shaped files and directories excluded
-  (`.env*`, keys, `id_*`, `.git`, `.ssh`, credentials files and the like),
-  may not include a secret-shaped name, and may not follow links. Output is
+  metacharacters are data. Secret-shaped paths are refused after the path
+  is normalised (`.`, `//`, `..`), in operands and option values alike: key
+  and `.env` files, home key stores (`.ssh`, `.docker`, `.kube`, `.aws`,
+  `.gnupg`), any process's `environ`, `mem` and open files under `/proc`,
+  systemd unit files (`/etc/systemd/system`), `/run/systemd`,
+  `/run/credentials` and `/var/lib/docker`. Options that read a list of
+  files from another file (`--files0-from`) are not on any list. A
+  recursive `grep`, in every spelling (`-r`, a cluster, `--recursive`,
+  `-d recurse`, `--directories=recurse`), always runs with secret-shaped
+  files and directories excluded (`.env*`, keys, `id_*`, `.git`, `.ssh`,
+  `systemd`, credentials files and the like), only over absolute paths that
+  neither contain nor sit inside those trees, may not include a
+  secret-shaped name, and may not follow links (`-R`). Output is
   capped and scrubbed of the agent's own granted credentials.
 - `egress_fetch` reaches only the listed hosts through the granted route.
   The server route resolves the host once, refuses private addresses and

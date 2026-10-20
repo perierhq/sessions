@@ -118,7 +118,11 @@ test.each([
     ["-d", "recurse"],
     ["KEY", "/srv"],
   ],
-  [["--directories=recurse", "KEY"], ["--directories=recurse"], ["KEY"]],
+  [
+    ["--directories=recurse", "KEY", "/srv"],
+    ["--directories=recurse"],
+    ["KEY", "/srv"],
+  ],
   [["KEY", "-r", "/srv"], ["-r"], ["KEY", "/srv"]],
   [["-r", "--", "-KEY", "/srv"], ["-r"], ["-KEY", "/srv"]],
   [
@@ -387,4 +391,134 @@ test("refusals name the option that was refused", () => {
     ok: false,
     reason: "systemctl needs its subcommand first",
   });
+});
+
+// Secret-shaped paths, after the path is normalised (`.`, `//`, `..`), for
+// every program, in operands and in option values alike.
+test.each([
+  ["cat", ["/etc//shadow"]],
+  ["cat", ["/etc/./shadow"]],
+  ["cat", ["//etc/gshadow"]],
+  ["cat", ["/etc/ssl/../shadow"]],
+  ["cat", ["/proc/self/./environ"]],
+  ["cat", ["/proc//1//environ"]],
+  ["cat", ["/proc/1/task/../environ"]],
+  ["cat", ["/proc/self/environ"]],
+  ["cat", ["/proc/thread-self/environ"]],
+  ["cat", ["/proc/1/task/12/environ"]],
+  ["cat", ["/proc/self/task/12/environ"]],
+  ["cat", ["/proc/1/mem"]],
+  ["cat", ["/proc/self/fd/3"]],
+  ["ls", ["/proc/1/map_files"]],
+  ["cat", ["proc/1/environ"]],
+  ["cat", ["/etc/systemd/system/app.service"]],
+  ["cat", ["/etc/systemd/system/app.service.d/override.conf"]],
+  ["ls", ["/etc/systemd/system"]],
+  ["cat", ["etc/systemd/system/app.service"]],
+  ["cat", ["/etc/systemd/./system/app.service"]],
+  ["cat", ["/run/systemd/transient/app.service"]],
+  ["cat", ["/run/credentials/app.service/token"]],
+  ["cat", ["/var/run/credentials/app.service/token"]],
+  ["cat", ["/var/lib/docker/containers/abc/config.v2.json"]],
+  ["ls", ["/var/lib/docker"]],
+  ["cat", ["~/.docker/config.json"]],
+  ["cat", ["/root/.docker/config.json"]],
+  ["ls", ["/root/.docker"]],
+  ["cat", ["/home/deploy/.kube/config"]],
+  ["cat", ["~/.kube/cache/discovery"]],
+  ["ls", ["/root/.kube"]],
+  ["cat", ["/home/deploy/.aws/credentials"]],
+  ["date", ["-r.env"]],
+  ["date", ["--reference=/etc//shadow"]],
+  ["stat", ["-c", "%n", "/etc//shadow"]],
+  ["journalctl", ["--since", "/proc/1/../1/environ"]],
+  ["du", ["--files0-from=/tmp/list"]],
+  ["wc", ["--files0-from=-"]],
+])("refuses the secret-shaped path %s %j", (program, args) => {
+  const out = checkReadOnlyCommand(program, args);
+  expect(out.ok).toBe(false);
+});
+test("paths that only look close stay readable", () => {
+  for (const path of [
+    "/var/log/systemd.log",
+    "/etc/systemd/journald.conf",
+    "/proc/loadavg",
+    "/proc/1/status",
+    "/var/lib/dockerd.log",
+  ])
+    expect(checkReadOnlyCommand("cat", [path])).toEqual({
+      ok: true,
+      argv: ["cat", path],
+    });
+});
+
+// Recursive grep in every spelling goes through the forced exclusions, and
+// only over absolute paths that do not contain a secret tree.
+test.each([
+  [["-ri", "KEY", "/srv/app"], ["-ri"], ["KEY", "/srv/app"]],
+  [["-ir", "KEY", "/srv/app"], ["-ir"], ["KEY", "/srv/app"]],
+  [["-nri", "KEY", "/srv/app"], ["-nri"], ["KEY", "/srv/app"]],
+  [["-drecurse", "KEY", "/srv"], ["-drecurse"], ["KEY", "/srv"]],
+  [
+    ["--directories", "recurse", "KEY", "/srv"],
+    ["--directories", "recurse"],
+    ["KEY", "/srv"],
+  ],
+  [
+    ["--directories=rec", "KEY", "/srv"],
+    ["--directories=rec"],
+    ["KEY", "/srv"],
+  ],
+  [
+    ["-r", "-e", "KEY", "/srv", "/var/log"],
+    ["-r", "-e", "KEY"],
+    ["/srv", "/var/log"],
+  ],
+  [["-r", "KEY", "/srv/app/.."], ["-r"], ["KEY", "/srv/app/.."]],
+])(
+  "recursive grep spelling %j gets forced exclusions",
+  (args, options, operands) => {
+    expect(checkReadOnlyCommand("grep", args)).toEqual({
+      ok: true,
+      argv: ["grep", ...options, ...forced, "--", ...operands],
+    });
+  },
+);
+test("the forced exclusions skip systemd unit trees reached through a link", () => {
+  expect(GREP_SECRET_DIR_GLOBS).toContain("systemd");
+});
+test.each([
+  [["-r", "KEY"], "absolute paths"],
+  [["-r", "KEY", "."], "absolute paths"],
+  [["-r", "KEY", "srv/app"], "absolute paths"],
+  [["-r", "-e", "KEY"], "absolute paths"],
+  [["-r", "KEY", "/"], "may not cover"],
+  [["-r", "KEY", "/etc"], "may not cover /etc/systemd/system"],
+  [["-r", "KEY", "/etc/systemd"], "may not cover"],
+  [["-r", "KEY", "/run"], "may not cover"],
+  [["-r", "KEY", "/var/run"], "may not cover"],
+  [["-r", "KEY", "/var"], "may not cover /var/lib/docker"],
+  [["-r", "KEY", "/var/lib"], "may not cover"],
+  [["-r", "KEY", "/srv/../etc"], "may not cover"],
+  [["-r", "KEY", "//"], "may not cover"],
+  [["-r", "KEY", "/proc/1"], "may not cover /proc"],
+  [["-r", "KEY", "/srv", "/etc"], "may not cover"],
+  [["-d", "recurse", "KEY", "/var"], "may not cover"],
+  [["-r", "--include=*.env", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--include=.git-credentials", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--include", "id_rsa", "KEY", "/srv"], "secret-shaped"],
+  [["-rL", "KEY", "/srv"], "grep -L is not allowed"],
+  [["-r", "--dereference-recursive", "KEY", "/srv"], "Following links"],
+])("refuses recursive grep %j", (args, reason) => {
+  const out = checkReadOnlyCommand("grep", args);
+  expect(out.ok).toBe(false);
+  expect(!out.ok && out.reason).toContain(reason);
+});
+test("rg is not on the list in any spelling", () => {
+  for (const args of [
+    ["-r", "KEY", "/srv"],
+    ["KEY", "/srv"],
+    ["-L", "KEY"],
+  ])
+    expect(checkReadOnlyCommand("rg", args).ok).toBe(false);
 });

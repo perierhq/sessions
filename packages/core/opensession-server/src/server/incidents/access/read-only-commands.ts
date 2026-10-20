@@ -4,7 +4,10 @@
 // which programs may run and, per program, the exact options each may take.
 // Runner hosts run commands as the Runner's own user, so the list is defence
 // in depth, not isolation.
-// Recursive grep runs with secret-shaped files and directories excluded.
+// Recursive grep runs with secret-shaped files and directories excluded, and
+// only over absolute paths that contain no secret tree.
+
+import { posix } from "node:path";
 
 export const READ_ONLY_PROGRAMS: readonly string[] = [
   "cat",
@@ -36,9 +39,47 @@ export type ReadOnlyCheck =
   | { ok: true; argv: string[] }
   | { ok: false; reason: string };
 
-// `=` counts as a boundary too, so `--file=/srv/.env` is caught.
-const SECRET_PATH =
-  /(^|[/=])\.env(\.|$)|\.(pem|key|p12|pfx)$|(^|[/=])id_(rsa|dsa|ecdsa|ed25519)|(^|[/=])\.ssh(\/|$)|\/etc\/(shadow|gshadow|sudoers)|\/proc\/[^/]+\/environ|(^|[/=])\.(netrc|pgpass|npmrc|git-credentials)$|(^|[/=])(credentials|secrets?)(\.|\/|$)/i;
+// Secret-shaped paths. `=` counts as a boundary too, so `--file=/srv/.env` is
+// caught, and a path without its leading slash (`etc/...`, read from a `/`
+// working directory) is caught like the absolute one.
+const SECRET_PATHS: readonly RegExp[] = [
+  /(^|[/=])\.env(\.|$)/i,
+  /\.(pem|key|p12|pfx)$/i,
+  /(^|[/=])id_(rsa|dsa|ecdsa|ed25519)/i,
+  // Key and token stores in a home directory (`~/.docker/config.json`,
+  // `/root/.kube/config`, ...).
+  /(^|[/=])\.(ssh|gnupg|aws|kube|docker|password-store)(\/|$)/i,
+  /(^|[/=])etc\/(shadow|gshadow|sudoers)/i,
+  // Any process's environment, memory and open files: /proc/<pid>, self,
+  // thread-self and task/<tid> alike.
+  /(^|[/=])proc\/(.*\/)?(environ|mem|fd|fdinfo|map_files)(\/|$)/i,
+  // Unit files and drop-ins carry Environment= lines; /run holds transient
+  // units and systemd credentials; /var/lib/docker holds container configs
+  // with their environment.
+  /(^|[/=])etc\/systemd\/system(\/|$)/i,
+  /(^|[/=])(var\/)?run\/(systemd|credentials)(\/|$)/i,
+  /(^|[/=])var\/lib\/docker(\/|$)/i,
+  /(^|[/=])\.(netrc|pgpass|npmrc|git-credentials)$/i,
+  /(^|[/=])(credentials|secrets?)(\.|\/|$)/i,
+];
+
+const SECRET_FILES = "Reading secret-shaped files is not allowed";
+
+/** The word as given, normalised (`.`, `//`, `..`), and the value after
+ *  `=` normalised on its own. */
+function pathForms(word: string): string[] {
+  const forms = [word, posix.normalize(word)];
+  const eq = word.indexOf("=");
+  if (eq >= 0 && eq + 1 < word.length)
+    forms.push(posix.normalize(word.slice(eq + 1)));
+  return forms;
+}
+
+function secretShaped(word: string): boolean {
+  return pathForms(word).some((form) =>
+    SECRET_PATHS.some((re) => re.test(form)),
+  );
+}
 
 const FOLLOWING = "Following output is not allowed";
 
@@ -160,6 +201,10 @@ function parseArgs(
     }
     operands.push(a);
   }
+  // A value glued to its option (`-r.env`) is a path of its own.
+  for (const o of options)
+    if (o.value !== undefined && secretShaped(o.value))
+      return { error: SECRET_FILES };
   return { options, optionWords, operands };
 }
 
@@ -770,6 +815,9 @@ export const GREP_SECRET_DIR_GLOBS: readonly string[] = [
   "credentials",
   "secret",
   "secrets",
+  // Unit trees reached through a link the search follows on the command
+  // line (`/var/run` is `/run` on most systems).
+  "systemd",
 ];
 
 // Names an --include glob must not match.
@@ -835,7 +883,6 @@ function globMatchesSecret(glob: string): boolean {
 // file), -R, -S and --dereference-recursive (follow links), -L (some greps
 // read it as following links).
 const FOLLOWING_LINKS = "Following links in a recursive search is not allowed";
-const SECRET_FILES = "Reading secret-shaped files is not allowed";
 
 const GREP: OptionTable = {
   short: { ...flags("EFGPiyvwxcoqsbHhnTZzalIUr"), ...values("ABCDdem") },
@@ -900,6 +947,39 @@ function directoriesRecurse(value: string): boolean {
   return value !== "read" && value !== "skip";
 }
 
+// Trees a recursive search may not reach, as directories that contain them.
+// Their own paths are secret-shaped already.
+const SECRET_TREES = [
+  "/etc/systemd/system",
+  "/run/systemd",
+  "/run/credentials",
+  "/var/lib/docker",
+  "/var/run/systemd",
+  "/var/run/credentials",
+  "/proc",
+];
+
+/** Why a recursive search may not run over these paths, or null. The
+ *  working directory on a host is not the agent's to choose, so the paths
+ *  must be absolute. */
+function recursiveTargetProblem(paths: string[]): string | null {
+  if (!paths.length) return "A recursive search needs absolute paths to search";
+  for (const raw of paths) {
+    if (!raw.startsWith("/"))
+      return "A recursive search needs absolute paths to search";
+    const path = posix.normalize(raw).replace(/\/+$/, "") || "/";
+    for (const tree of SECRET_TREES)
+      if (
+        path === "/" ||
+        tree === path ||
+        tree.startsWith(`${path}/`) ||
+        path.startsWith(`${tree}/`)
+      )
+        return `A recursive search may not cover ${tree}`;
+  }
+  return null;
+}
+
 function checkGrep(args: string[]): ReadOnlyCheck {
   const parsed = parseArgs("grep", args, GREP);
   if (isParseError(parsed)) return refuse(parsed.error);
@@ -915,6 +995,11 @@ function checkGrep(args: string[]): ReadOnlyCheck {
       return refuse(SECRET_FILES);
   }
   if (!recursive) return { ok: true, argv: ["grep", ...args] };
+  const problem = recursiveTargetProblem(
+    // Without -e the first operand is the pattern.
+    has(parsed, "e", "regexp") ? parsed.operands : parsed.operands.slice(1),
+  );
+  if (problem) return refuse(problem);
   return {
     ok: true,
     argv: [
@@ -944,8 +1029,7 @@ export function checkReadOnlyCommand(
     total += a.length;
   }
   if (total > MAX_HOST_ARGS_TOTAL) return refuse("Arguments too long");
-  if (args.some((a) => SECRET_PATH.test(a)))
-    return refuse("Reading secret-shaped files is not allowed");
+  if (args.some(secretShaped)) return refuse(SECRET_FILES);
 
   switch (program) {
     case "cat":
