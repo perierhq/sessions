@@ -3,9 +3,12 @@
  * new work in one while its sessions are archived and its files deleted.
  *
  * Removal marks the id under the config mutation lock, then checks for live
- * sessions; session create, attach-repo, primary-repo switch, run admission
- * and worktree creation check the mark. A session that slipped in before the
- * mark is caught by removal's own re-check after the config entry is gone.
+ * sessions; every session create path, attach-repo, primary-repo switch, run
+ * admission, automation runs, the ask checkout and worktree creation check
+ * the mark, and registering the same id again is refused until it clears. A
+ * session that slipped in before the mark is caught by removal's own
+ * re-check after the config entry is gone. The folders a removal deletes are
+ * recorded too, so no other registration can claim one meanwhile.
  *
  * In-process only, and deliberately import-light: the run and create paths
  * reach it on every turn.
@@ -13,8 +16,14 @@
 
 import { canonicalRepoId, configuredRepos, type Repo } from "./config";
 
-const g = globalThis as unknown as { __reposBeingRemoved?: Set<string> };
+const g = globalThis as unknown as {
+  __reposBeingRemoved?: Set<string>;
+  __repoPathsBeingDeleted?: Map<string, string[]>;
+};
 const removing: Set<string> = (g.__reposBeingRemoved ??= new Set());
+/** The folders each removal is deleting, by repository id. */
+const deleting: Map<string, string[]> = (g.__repoPathsBeingDeleted ??=
+  new Map());
 
 export class RepoBeingRemovedError extends Error {
   constructor(readonly repoId: string) {
@@ -37,6 +46,27 @@ export function markRepoRemoving(repoId: string): boolean {
 
 export function unmarkRepoRemoving(repoId: string): void {
   removing.delete(repoId);
+  deleting.delete(repoId);
+}
+
+/** Record the folders a removal of `repoId` is about to delete, so nothing
+ *  registers one of them (under another id) until it is done. Cleared with
+ *  the removal mark. */
+export function markRepoPathsDeleting(repoId: string, paths: string[]): void {
+  deleting.set(repoId, [...paths]);
+}
+
+/** One of `paths` (a folder and its real location) is, holds or sits inside a
+ *  folder a removal is deleting. */
+export function isPathBeingDeleted(paths: ReadonlyArray<string>): boolean {
+  if (!deleting.size) return false;
+  const inside = (a: string, b: string) =>
+    a === b || a.startsWith(b.endsWith("/") ? b : `${b}/`);
+  for (const planned of deleting.values())
+    for (const target of planned)
+      for (const path of paths)
+        if (inside(path, target) || inside(target, path)) return true;
+  return false;
 }
 
 export function isRepoBeingRemoved(repoId: string | null | undefined): boolean {

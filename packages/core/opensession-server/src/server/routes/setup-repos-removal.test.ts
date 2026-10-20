@@ -177,6 +177,8 @@ function fakeSessions(
   opts: {
     automations?: number;
     onArchive?: () => Promise<void> | void;
+    /** Runs on every session snapshot the removal takes. */
+    onLiveSessions?: () => Promise<void> | void;
     stopWorkloadsInDir?: (dir: string) => Promise<void>;
   } = {},
 ) {
@@ -184,7 +186,10 @@ function fakeSessions(
   const released: string[] = [];
   const disabled: string[] = [];
   __setRepoRemovalDepsForTest({
-    liveSessions: async () => sessions.filter((s) => !archived.includes(s.id)),
+    liveSessions: async () => {
+      await opts.onLiveSessions?.();
+      return sessions.filter((s) => !archived.includes(s.id));
+    },
     archiveSessions: async (batch) => {
       archived.push(...batch.map((s) => s.id));
       await opts.onArchive?.();
@@ -933,6 +938,52 @@ describe("repository removal", () => {
       expect(existsSync(manifest)).toBe(false);
       expect(existsSync(otherSpares)).toBe(true);
       expect(existsSync(otherState)).toBe(true);
+    },
+  );
+  test.serial(
+    "the same repository added again mid-removal keeps its folder",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const checkout = join(env.checkouts, "widget");
+      const entry = readConfig(env).repos.widget;
+      const statuses: Record<string, number | undefined> = {};
+      let readded = false;
+      fakeSessions([], {
+        // The snapshot taken after the config entry is gone.
+        onLiveSessions: async () => {
+          if (readded || readConfig(env).repos.widget) return;
+          readded = true;
+          // Through the server: refused while the removal runs, under the
+          // same id or with the folder about to be deleted.
+          for (const [key, body] of [
+            ["new", { source: "new", name: "widget" }],
+            ["local", { source: "local", path: checkout }],
+            ["local-other-id", { source: "local", path: checkout, id: "w2" }],
+          ] as const) {
+            const response = await handleSetupRepoRoutes(
+              route("POST", "/api/setup/repos", body),
+            );
+            statuses[key] = response?.status;
+          }
+          // Around the server (the CLI writes config.json itself): the same
+          // id and path are back in the registry before the files go.
+          const config = readConfig(env);
+          config.repos.widget = entry;
+          await writeConfig(env, config);
+        },
+      });
+
+      const { status, body } = await removeWithFiles("widget");
+
+      expect(statuses).toEqual({ new: 409, local: 409, "local-other-id": 409 });
+      expect(status).toBe(200);
+      expect(body.deleted).toEqual([]);
+      expect(body.kept).toContain(realpathSync(checkout));
+      expect(body.error).toContain("changed while it was being removed");
+      expect(existsSync(join(checkout, "README.md"))).toBe(true);
+      expect(readConfig(env).repos.widget).toEqual(entry);
+      expect(isRepoBeingRemoved("widget")).toBe(false);
     },
   );
 });

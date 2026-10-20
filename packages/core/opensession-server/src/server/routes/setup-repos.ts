@@ -26,7 +26,7 @@ import {
 } from "fs";
 import { mkdir, rm, stat, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { basename, isAbsolute, join } from "path";
+import { basename, isAbsolute, join, resolve } from "path";
 import { audit } from "../audit";
 import {
   codeStorageConfig,
@@ -60,6 +60,7 @@ import {
 } from "../github-auth";
 import { githubCredentialHelperCommand } from "../github-git-credential";
 import { managedCheckoutsRoot } from "../paths";
+import { isPathBeingDeleted, isRepoBeingRemoved } from "../repo-removal-guard";
 import type { WebIdentity } from "../web-auth";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { validNewRepoName } from "../../shared/repo-name";
@@ -525,6 +526,14 @@ function assertRepoSlotAvailable(
   id: string,
   registered: Record<string, Repo>,
 ): void {
+  // The same id coming back while its removal still runs would race the
+  // removal's file deletion for the same folder and state.
+  if (isRepoBeingRemoved(id)) {
+    throw setupRepoError(
+      `${id} is still being removed; add it again once that finishes`,
+      409,
+    );
+  }
   // Own keys only: the registry is a plain object, so a bare index would find
   // Object's `constructor` on an empty one.
   if (Object.hasOwn(registered, id)) {
@@ -540,6 +549,12 @@ function assertRepoPathAvailable(
   registered: Record<string, Repo>,
 ): void {
   const canonical = canonicalRepoPath(path);
+  if (isPathBeingDeleted([resolve(path), canonical])) {
+    throw setupRepoError(
+      `${canonical} is being deleted by a repository removal; try again once that finishes`,
+      409,
+    );
+  }
   if (
     Object.values(registered).some(
       (repo) => canonicalRepoPath(repo.repo) === canonical,
@@ -605,6 +620,14 @@ function persistRepoRegistration(input: {
   /** The checkout and its origin were made by this call, not found. */
   created?: boolean;
 }): RepoSection & { id: string } {
+  // Checked again at the write: a clone can take long enough for a removal
+  // of the same id to start after the first check.
+  if (isRepoBeingRemoved(input.id)) {
+    throw setupRepoError(
+      `${input.id} is still being removed; add it again once that finishes`,
+      409,
+    );
+  }
   const config = rawConfig();
   const repos = repoSectionsForMutation(config, input.registered);
   const entry: RepoSection = {

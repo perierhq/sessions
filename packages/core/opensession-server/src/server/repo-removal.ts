@@ -57,7 +57,11 @@ import {
   withConfigMutationLock,
 } from "./config-mutation";
 import { managedCheckoutsRoot } from "./paths";
-import { markRepoRemoving, unmarkRepoRemoving } from "./repo-removal-guard";
+import {
+  markRepoPathsDeleting,
+  markRepoRemoving,
+  unmarkRepoRemoving,
+} from "./repo-removal-guard";
 import type { UnifiedSession } from "./types";
 import { removeTree } from "./workload-scope";
 
@@ -466,6 +470,12 @@ async function otherRepoPaths(others: Repo[]): Promise<string[]> {
 export async function planRepoFileDeletion(
   repo: Repo,
   registered: Record<string, Repo> = configuredRepos(),
+  opts: {
+    /** Every entry in `registered` is another repository, even one under
+     *  `repo`'s id: after the config entry is gone, an entry with that id is
+     *  a new registration, not the one being removed. */
+    allOthers?: boolean;
+  } = {},
 ): Promise<FilePlan> {
   const keep = (reason: string): FilePlan => ({
     tier: "never",
@@ -483,7 +493,9 @@ export async function planRepoFileDeletion(
     return keep(KEEP_REASON.outside);
   if (!(await stat(checkout)).isDirectory()) return keep(KEEP_REASON.outside);
 
-  const others = Object.values(registered).filter((r) => r.id !== repo.id);
+  const others = opts.allOthers
+    ? Object.values(registered)
+    : Object.values(registered).filter((r) => r.id !== repo.id);
   const otherPaths = await otherRepoPaths(others);
   const ownPaths = uniq([checkout, resolve(repo.repo)]);
   if (
@@ -961,6 +973,9 @@ export async function removeRepo(
 
     const removed = await withConfigMutationLock(async () => {
       if (!registeredRepo(id)) return false;
+      // From the moment the entry goes, nothing may register a folder this
+      // removal is about to delete, under any id (setup-repos.ts).
+      if (plan) markRepoPathsDeleting(id, planPaths(plan));
       const config = await rawConfigAsync();
       const reposConfig = reposForMutation(config);
       delete reposConfig[id];
@@ -1006,7 +1021,11 @@ async function finishRemoval(input: {
       // the folder may have changed since it was reviewed. Look again now
       // that nothing new can resolve the repository.
       const again = await repoSessions(await deps.liveSessions(), id, repos);
-      const replanned = await planRepoFileDeletion(repo, configuredRepos());
+      // Whatever is registered now is another repository, including one
+      // added again under this id since the entry went.
+      const replanned = await planRepoFileDeletion(repo, configuredRepos(), {
+        allOthers: true,
+      });
       if (again.owned.length || again.attached.length) {
         files.kept.push(...planned);
         error =
