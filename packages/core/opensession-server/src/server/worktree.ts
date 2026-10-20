@@ -719,6 +719,9 @@ function refreshAskCheckout(
 
 export async function ensureAskCheckout(repoId?: string): Promise<string> {
   const repo = getRepo(repoId);
+  // An ask session in a repository being removed would read a checkout
+  // about to be deleted.
+  assertRepoNotBeingRemoved(repo.id);
   if (sharedCheckoutForNewSessions(repo)) return repo.repo;
   const dir = `${worktreesDir()}/${repo.wtPrefix}-ask-checkout`;
   const requiredVersion = askCheckoutInvalidationVersion.get(repo.id) || 0;

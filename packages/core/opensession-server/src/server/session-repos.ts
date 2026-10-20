@@ -796,6 +796,7 @@ export function planCreateAttachRepos(
   for (const id of wanted) {
     const candidate = lookup(id);
     if (!candidate) throw new Error(`Unknown repo "${id}"`);
+    assertRepoNotBeingRemoved(candidate.id);
     // Same refusal prepareAttachedWorktree makes, made early: there is no
     // isolated worktree to hand out, only the live checkout every session
     // of that repo is already working in.

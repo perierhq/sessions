@@ -218,6 +218,7 @@ import {
   worktreePathFor,
 } from "./worktree";
 import {
+  assertCreateReposNotBeingRemoved,
   isRepoBeingRemoved,
   repoBeingRemovedMessage,
 } from "./repo-removal-guard";
@@ -1650,6 +1651,10 @@ export async function openCreatedSession(
     });
 
   try {
+    // Every create path ends here, so this is where a repository being
+    // removed refuses a new session (repo-removal-guard.ts). Before the
+    // announce, the error goes back to the caller.
+    assertCreateReposNotBeingRemoved(spec);
     // Persist + announce BEFORE the slow parts (repo attach, engine boot
     // with its MCP connects) so the client drops into the empty session
     // immediately — the title fills in from the background summary and the
@@ -1783,6 +1788,11 @@ export async function openCreatedSession(
           io.emit({ type: "workspace_status", ready: true });
         }
       }
+
+      // A removal may have started while this create waited for a start
+      // slot or its workspace. Look again before the opening run: past this
+      // point the session counts as running, which refuses the removal.
+      assertCreateReposNotBeingRemoved(spec);
 
       if (spec.slackOrigin) spec.openingPrompt += "\n\n" + SLACK_SESSION_NOTE;
       const retrievedMemory = await retrievedMemoryNoteFor(
@@ -2600,8 +2610,9 @@ export async function handleCreateSessionMessage(
   const repo = getRepo(
     requestedRepo && requestedRepo !== NO_REPO ? requestedRepo : undefined,
   );
-  // A repository being removed takes no new sessions.
-  if (isRepoBeingRemoved(repo.id)) {
+  // A repository being removed takes no new sessions. A repo-less create
+  // only borrows the default for its sandbox and memory scopes.
+  if (!isRepoLess && isRepoBeingRemoved(repo.id)) {
     failCreate(repoBeingRemovedMessage(repo.id));
     return;
   }

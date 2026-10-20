@@ -52,6 +52,19 @@ export function assertRepoNotBeingRemoved(
     throw new RepoBeingRemovedError(repoId);
 }
 
+/**
+ * Throw RepoBeingRemovedError when a session being created would work in a
+ * repository that is being removed: its own (`repoId`, absent for a
+ * repo-less create) or one it attaches.
+ */
+export function assertCreateReposNotBeingRemoved(spec: {
+  repoId?: string;
+  attachRepos?: { repos: ReadonlyArray<string> };
+}): void {
+  assertRepoNotBeingRemoved(spec.repoId);
+  for (const id of spec.attachRepos?.repos ?? []) assertRepoNotBeingRemoved(id);
+}
+
 /** Shown when a session's repository has been removed from the registry. */
 export function repoNotRegisteredMessage(repoId: string): string {
   return `This session's repository "${repoId}" is no longer on this server. Add it again in Settings → Repositories to continue.`;

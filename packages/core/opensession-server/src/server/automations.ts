@@ -103,6 +103,7 @@ import { remoteGuestOsForProvider } from "./sandbox/adapters/bootstrap";
 import { primeWorkspaceSandbox } from "./sandbox/workspace-rpc";
 import { sandboxSessionScratchDir } from "./session-scratch";
 import { canonicalRepoId, configuredIntegration, personaName } from "./config";
+import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import { shouldPersistModelSwitch, type StreamEvent } from "./run-events";
 import {
   deleteAutomationInputState,
@@ -2162,6 +2163,10 @@ export async function runAutomation(
     // shared-checkout repos (opensession), where an unattended run must never
     // work in the live checkout: it ships a PR and a human merges.
     const repo = getRepo(automation.repo);
+    // Removal turns these automations off, but a run already past that
+    // check must not start in a repository being removed. Scratch runs
+    // never touch a repository.
+    if (automation.mode !== "scratch") assertRepoNotBeingRemoved(repo.id);
     let cwd = "";
     let branch = "";
     let sandbox: Sandbox | undefined;
