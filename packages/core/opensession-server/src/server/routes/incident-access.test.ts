@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { defaultProjectGrants } from "../../shared/incident-access";
 import { catalogDocuments } from "../catalog-documents";
+import { createIncident, updateIncident } from "../incidents/incident-store";
+import { transitionIncident } from "../incidents/lifecycle";
 import { createSignal } from "../incidents/signal-store";
 import { useAccessTestEnv } from "../incidents/testing/access-fixture";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
@@ -190,4 +192,108 @@ test("an unreadable document reports and resets", async () => {
 test("other paths fall through", async () => {
   expect(await call("GET", "/api/incident-signals")).toBeUndefined();
   expect(await call("PATCH", "/api/incident-access/acme")).toBeUndefined();
+});
+
+test("preview a draft without saving it", async () => {
+  const out = await call("POST", "/api/incident-access/preview", {
+    project: "acme",
+    role: "investigator",
+    draft: {
+      grants: grants({ connections: ["sentry"] }),
+      profiles: { investigator: { connections: ["sentry"] } },
+    },
+  });
+  expect(out?.json).toMatchObject({
+    access: {
+      connections: ["sentry"],
+      mode: "code",
+      summary: expect.stringMatching(/^Investigator · sentry/),
+    },
+    tools: expect.arrayContaining(["mcp__sentry__*", "write"]),
+  });
+  expect((await call("GET", "/api/incident-access/acme"))?.json.isDefault).toBe(
+    true,
+  );
+  expect(
+    (
+      await call("POST", "/api/incident-access/preview", {
+        project: "acme",
+        role: "investigator",
+        draft: { profiles: { investigator: { connections: ["sentry"] } } },
+      })
+    )?.status,
+  ).toBe(400);
+  expect(
+    (
+      await call("POST", "/api/incident-access/preview", {
+        project: "acme",
+        role: "auditor",
+      })
+    )?.json,
+  ).toEqual({ error: 'Unknown agent role "auditor"' });
+  expect(
+    (
+      await call("POST", "/api/incident-access/preview", {
+        project: "globex",
+        role: "verifier",
+      })
+    )?.status,
+  ).toBe(404);
+  expect(
+    (
+      await call("POST", "/api/incident-access/preview", {
+        project: "acme",
+        role: "verifier",
+        signalId: "sig-missing",
+      })
+    )?.status,
+  ).toBe(400);
+  const stored = await call("POST", "/api/incident-access/preview", {
+    project: "acme",
+    role: "verifier",
+  });
+  expect(stored?.json).toMatchObject({
+    access: { role: "verifier", mode: "ask", defaults: true },
+  });
+  expect(
+    kit.audits.filter((e) => e.kind === "incident_access_narrowed"),
+  ).toEqual([]);
+});
+test("per-incident access shows each role, and refusals for a paused incident", async () => {
+  const inc = await createIncident({
+    project: "acme",
+    title: "Search",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "owner" },
+    signalIds: [],
+    primarySignalId: "",
+    at: new Date().toISOString(),
+    detail: "Opened by hand",
+  } as never);
+  const live = await call("GET", `/api/incidents/${inc.id}/access`);
+  expect(live?.json).toMatchObject({
+    incidentId: inc.id,
+    investigator: { access: { role: "investigator" } },
+    verifier: { access: { mode: "ask" } },
+  });
+  await updateIncident(inc.id, (c) =>
+    transitionIncident(c, "paused", {
+      by: "Ada",
+      detail: "Pause",
+      at: new Date().toISOString(),
+    }),
+  );
+  expect(
+    (await call("GET", `/api/incidents/${inc.id}/access`))?.json.verifier,
+  ).toEqual({
+    access: null,
+    error: `Incident ${inc.id} is paused; its agents have no access`,
+    tools: [],
+    warnings: [],
+  });
+  expect((await call("GET", "/api/incidents/inc-missing/access"))?.status).toBe(
+    404,
+  );
 });

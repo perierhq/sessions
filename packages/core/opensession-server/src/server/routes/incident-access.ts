@@ -6,21 +6,37 @@
  * expectedRevision and a stale one is a 409. An unreadable document is a
  * 500 on read and on every write except the reset (DELETE), which repairs it.
  *
+ * The preview resolves saved or draft settings against a synthetic incident
+ * with gates off and no audit; the per-incident view resolves the real
+ * incident with gates on. Neither writes anything.
+ *
  * Returns a Response for a matched route or undefined to fall through.
  */
 
-import { isIncidentAgentRole } from "../../shared/incident-access";
+import {
+  type IncidentAccessSettings,
+  type IncidentAgentsAccessView,
+  isIncidentAgentRole,
+} from "../../shared/incident-access";
+import type { Incident } from "../../shared/incidents";
+import { loadAccessEnvironment } from "../incidents/access/environment";
 import type { AccessActor } from "../incidents/access/grants";
+import { previewAccess } from "../incidents/access/preview";
 import {
   type AccessChange,
   AccessSettingsError,
+  draftIncidentAccess,
   getIncidentAccessSettings,
   updateIncidentAccess,
 } from "../incidents/access/settings-store";
+import { getIncident } from "../incidents/incident-store";
+import { getSignal } from "../incidents/signal-store";
 import { type RouteContext, requestUser } from "./context";
 import { verifiedPerson } from "./keychain";
 
 const PREFIX = "/api/incident-access/";
+const PREVIEW_PATH = "/api/incident-access/preview";
+const INCIDENT_ACCESS_PATH = /^\/api\/incidents\/([^/]+)\/access$/;
 
 /** Who is changing the settings: lending needs `verified`. */
 export function accessActor(
@@ -97,10 +113,112 @@ function segmentsOf(path: string): string[] | null {
   }
 }
 
+/** The stand-in incident a preview resolves against. */
+function previewIncident(project: string, signalId: string | null): Incident {
+  const now = new Date().toISOString();
+  return {
+    id: "preview",
+    project,
+    title: "Preview",
+    state: "investigating",
+    severity: "major",
+    owner: "",
+    openedBy: { kind: "owner" },
+    signalIds: signalId ? [signalId] : [],
+    primarySignalId: signalId ?? "",
+    openedAt: now,
+    updatedAt: now,
+    lastProblemAt: now,
+    findings: [],
+    events: [],
+    droppedEvents: 0,
+  };
+}
+
+async function preview(ctx: RouteContext): Promise<Response> {
+  const body = await readAccessBody(ctx.req);
+  if (body instanceof Response) return body;
+  const { project, role, signalId, draft } = body;
+  if (!isIncidentAgentRole(role)) return roleError(String(role));
+  if (typeof project !== "string" || !project)
+    return badRequest("project is required");
+  const env = await loadAccessEnvironment();
+  if (!env.projectExists(project))
+    return error(`Unknown project "${project}"`, 404);
+  let signal = null;
+  if (signalId !== undefined && signalId !== null) {
+    signal = typeof signalId === "string" ? await getSignal(signalId) : null;
+    if (!signal) return badRequest(`Unknown signal "${String(signalId)}"`);
+    if (signal.project !== project)
+      return badRequest(`Signal ${signal.id} belongs to another project`);
+  }
+  let settings: IncidentAccessSettings | undefined;
+  if (draft !== undefined && draft !== null) {
+    if (typeof draft !== "object" || Array.isArray(draft))
+      return badRequest("draft must be an object");
+    const out = await draftIncidentAccess(
+      project,
+      draft as Parameters<typeof draftIncidentAccess>[1],
+      accessActor(ctx, body),
+    );
+    if ("error" in out && "status" in out) return error(out.error, out.status);
+    settings = out as IncidentAccessSettings;
+  } else {
+    try {
+      await getIncidentAccessSettings(project);
+    } catch (e) {
+      if (e instanceof AccessSettingsError) return error(e.message, e.status);
+      throw e;
+    }
+  }
+  return Response.json(
+    await previewAccess(
+      role,
+      previewIncident(project, signal?.id ?? null),
+      signal,
+      {
+        ...(settings ? { settings } : {}),
+        gates: false,
+      },
+    ),
+  );
+}
+
+async function incidentAgentsAccess(id: string): Promise<Response> {
+  const incident = await getIncident(id);
+  if (!incident) return error("Not found", 404);
+  const signal = incident.primarySignalId
+    ? await getSignal(incident.primarySignalId)
+    : null;
+  const view: IncidentAgentsAccessView = {
+    incidentId: incident.id,
+    investigator: await previewAccess("investigator", incident, signal, {
+      gates: true,
+    }),
+    verifier: await previewAccess("verifier", incident, signal, {
+      gates: true,
+    }),
+  };
+  return Response.json(view);
+}
+
 export async function handleIncidentAccessRoutes(
   ctx: RouteContext,
 ): Promise<Response | undefined> {
   const { req, path, url } = ctx;
+  if (req.method === "GET") {
+    const match = INCIDENT_ACCESS_PATH.exec(path);
+    if (match) {
+      let id: string;
+      try {
+        id = decodeURIComponent(match[1]!);
+      } catch {
+        return badRequest("Invalid path");
+      }
+      return incidentAgentsAccess(id);
+    }
+  }
+  if (path === PREVIEW_PATH && req.method === "POST") return preview(ctx);
   if (!path.startsWith(PREFIX)) return undefined;
   const segments = segmentsOf(path);
   if (segments === null) return badRequest("Invalid path");
