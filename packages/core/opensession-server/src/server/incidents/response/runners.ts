@@ -5,7 +5,11 @@
 // agent, terminal or Portal can reach it. Uses the Runner registry's
 // existing synchronous store functions only.
 import { configuredServer } from "../../config";
-import { disconnectRunner, isRunnerConnected } from "../../runner-ws";
+import {
+  disconnectRunner,
+  isRunnerConnected,
+  runnerTerminalCount,
+} from "../../runner-ws";
 import {
   type Runner,
   createRunnerPairing,
@@ -13,6 +17,7 @@ import {
   listRunners,
   removeRunner,
   reserveRunnerForIncidents,
+  setRunnerWorkload,
 } from "../../runners";
 import { incidentAudit } from "../audit-sink";
 import {
@@ -37,40 +42,116 @@ export interface ProductionRunnerView {
   confirm?: string;
 }
 
-/** What else the Runner serves that reserving it for `project` would
- *  change, as a sentence; undefined when nothing. */
-function sharedWith(runner: Runner, project: string): string | undefined {
-  if (!runner.incidentReserved && runner.allowedRepos.length === 0)
-    return `Runner ${runner.name} serves every repository`;
+/** What a Runner is doing now that reserving it would end. The Portal
+ *  store loads on demand: it pulls in the session cache. */
+export interface RunnerActivity {
+  terminals: (runnerId: string) => number;
+  portals: (runnerId: string) => Promise<number>;
+  dropPortals: (runnerId: string) => Promise<void>;
+  disconnect: (runnerId: string, reason: string) => boolean;
+}
+
+const defaultActivity: RunnerActivity = {
+  terminals: runnerTerminalCount,
+  portals: async (id) =>
+    (await import("../../runner-portals")).runnerPortalCount(id),
+  dropPortals: async (id) =>
+    (await import("../../runner-portals")).dropRunnerPortalsForRunner(id),
+  disconnect: disconnectRunner,
+};
+let activity = defaultActivity;
+
+export function __setRunnerActivityForTest(
+  over: Partial<RunnerActivity> | undefined,
+): void {
+  activity = over ? { ...defaultActivity, ...over } : defaultActivity;
+}
+
+interface RunnerUse {
+  workloads: number;
+  terminals: number;
+  portals: number;
+}
+
+async function runnerUse(runner: Runner): Promise<RunnerUse> {
+  return {
+    workloads: runner.workloads?.length ?? (runner.workload ? 1 : 0),
+    terminals: activity.terminals(runner.id),
+    portals: await activity.portals(runner.id),
+  };
+}
+
+function andList(items: string[]): string {
+  return items.length < 2
+    ? (items[0] ?? "")
+    : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+function counted(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/** What reserving the Runner for `project` would take from whatever it
+ *  serves now, as a sentence; undefined when nothing. */
+function bindingChanges(
+  runner: Runner,
+  project: string,
+  use: RunnerUse,
+): string | undefined {
+  const clauses: string[] = [];
+  if (!runner.incidentReserved) {
+    if (runner.allowedRepos.length === 0)
+      clauses.push("serves every repository");
+    if (runner.allowedUsers.length)
+      clauses.push(`is open to ${andList(runner.allowedUsers)}`);
+    const { fullSessions, terminals, portals } = runner.permissions;
+    const allows = [
+      ...(fullSessions ? ["full sessions"] : []),
+      ...(terminals ? ["terminals"] : []),
+      ...(portals ? ["Portals"] : []),
+    ];
+    if (allows.length) clauses.push(`allows ${andList(allows)}`);
+  }
   // Already reserved for this project: binding again changes nothing.
-  if (runner.incidentReserved && runner.allowedRepos.includes(project))
-    return undefined;
-  const others = runner.allowedRepos.filter((repo) => repo !== project);
-  return others.length
-    ? `Runner ${runner.name} serves ${others.join(", ")}`
+  if (!(runner.incidentReserved && runner.allowedRepos.includes(project))) {
+    const others = runner.allowedRepos.filter((repo) => repo !== project);
+    if (others.length) clauses.push(`serves ${others.join(", ")}`);
+  }
+  const running = [
+    ...(use.workloads ? [counted(use.workloads, "workload")] : []),
+    ...(use.terminals ? [counted(use.terminals, "terminal")] : []),
+    ...(use.portals ? [counted(use.portals, "Portal")] : []),
+  ];
+  if (running.length) clauses.push(`is running ${andList(running)}`);
+  return clauses.length
+    ? `Runner ${runner.name} ${andList(clauses)}`
     : undefined;
 }
 
-export function listProductionRunnerCandidates(
+export async function listProductionRunnerCandidates(
   project: string,
   bound: string[],
-): ProductionRunnerView[] {
-  return listRunners().map((runner) => {
-    const isBound = bound.includes(runner.id);
-    const confirm = isBound ? undefined : sharedWith(runner, project);
-    return {
-      id: runner.id,
-      name: runner.name,
-      ...(runner.label ? { label: runner.label } : {}),
-      platform: runner.platform,
-      online: isRunnerConnected(runner.id),
-      bound: isBound,
-      problem: isBound
-        ? productionRunnerProblem(runner.id, project)
-        : runnerPlatformProblem(runner),
-      ...(confirm ? { confirm } : {}),
-    };
-  });
+): Promise<ProductionRunnerView[]> {
+  return Promise.all(
+    listRunners().map(async (runner) => {
+      const isBound = bound.includes(runner.id);
+      const confirm = isBound
+        ? undefined
+        : bindingChanges(runner, project, await runnerUse(runner));
+      return {
+        id: runner.id,
+        name: runner.name,
+        ...(runner.label ? { label: runner.label } : {}),
+        platform: runner.platform,
+        online: isRunnerConnected(runner.id),
+        bound: isBound,
+        problem: isBound
+          ? productionRunnerProblem(runner.id, project)
+          : runnerPlatformProblem(runner),
+        ...(confirm ? { confirm } : {}),
+      };
+    }),
+  );
 }
 
 const bindings = new Set<Promise<void>>();
@@ -92,7 +173,7 @@ function trackBinding(project: string, runnerId: string, by: string): void {
       error instanceof Error ? error.message : error,
     );
     removeRunner(runnerId);
-    disconnectRunner(runnerId, "removed");
+    activity.disconnect(runnerId, "removed");
   });
   bindings.add(binding);
   void binding.finally(() => bindings.delete(binding));
@@ -131,10 +212,11 @@ export function startProductionPairing(
 
 /**
  * Reserve a Runner for `project`'s incidents and add it to the project's
- * production Runners. A Runner that already serves other repositories
- * (every repository, or other projects' incidents) is bound only with
- * `confirmShared`: once reserved, nothing but the incident service can use
- * it. `fresh` is a Runner this project's own pairing just created. Only a
+ * production Runners. A Runner that serves anything else (every
+ * repository, other repositories or projects, named people, sessions,
+ * terminals or Portals) or is running workloads, terminals or Portals is
+ * bound only with `confirmShared`: once reserved, nothing but the incident
+ * service can use it, and what it was running is ended. `fresh` is a Runner this project's own pairing just created. Only a
  * signed-in person may bind, as only one may start a pairing.
  */
 export async function bindProductionRunner(
@@ -152,10 +234,12 @@ export async function bindProductionRunner(
     throw new Error(`Unknown project ${project}`);
   const platform = runnerPlatformProblem(runner);
   if (platform) throw new Error(platform);
-  const shared = opts.fresh ? undefined : sharedWith(runner, project);
-  if (shared && !opts.confirmShared)
+  const changes = opts.fresh
+    ? undefined
+    : bindingChanges(runner, project, await runnerUse(runner));
+  if (changes && !opts.confirmShared)
     throw new Error(
-      `${shared}. Confirm to reserve it for ${project} incidents only`,
+      `${changes}. Confirm to reserve it for ${project} incidents only`,
     );
   // Incident projects may share a reserved Runner; anything else it served
   // loses it.
@@ -166,6 +250,14 @@ export async function bindProductionRunner(
     repos,
     ...(runner.label ? {} : { label: `Production · ${project}` }),
   });
+  // Whatever the Runner ran before is over: its Portals, its terminals and
+  // commands (closing the channel ends them; the Runner reconnects under
+  // the new policy) and its workload claims.
+  if (!opts.fresh && !runner.incidentReserved) {
+    await activity.dropPortals(runnerId);
+    activity.disconnect(runnerId, "reserved");
+    setRunnerWorkload(runnerId);
+  }
   await patchProjectSettings(project, (s) =>
     s.productionRunners.includes(runnerId)
       ? s

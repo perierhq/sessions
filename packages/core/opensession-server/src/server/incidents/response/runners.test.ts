@@ -7,6 +7,7 @@ import {
   getRunner,
   listRunners,
   registerRunner,
+  setRunnerWorkload,
   updateRunner,
 } from "../../runners";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
@@ -17,6 +18,7 @@ import {
 } from "./project-settings";
 import {
   __flushProductionBindingsForTest,
+  __setRunnerActivityForTest,
   bindProductionRunner,
   listProductionRunnerCandidates,
   productionRunOnProblem,
@@ -32,7 +34,10 @@ beforeEach(() =>
     projectExists: (id) => id === "acme" || id === "acme-api",
   }),
 );
-afterEach(() => __setProjectSettingsContextForTest(undefined));
+afterEach(() => {
+  __setProjectSettingsContextForTest(undefined);
+  __setRunnerActivityForTest(undefined);
+});
 
 const person = { signedInPerson: true };
 
@@ -228,6 +233,64 @@ test("binding a Runner that serves other repositories needs confirmation", async
   ).rejects.toThrow("Unknown project nope");
 });
 
+test("binding a Runner that is in use needs confirmation, then ends that use", async () => {
+  const calls: string[] = [];
+  __setRunnerActivityForTest({
+    terminals: () => 2,
+    portals: async () => 1,
+    dropPortals: async (id) => {
+      calls.push(`drop ${id}`);
+    },
+    disconnect: (id, reason) => {
+      calls.push(`disconnect ${id} ${reason}`);
+      return true;
+    },
+  });
+  const lab = plainRunner("lab");
+  updateRunner(lab.id, { allowedRepos: ["acme"] });
+  setRunnerWorkload(lab.id, { sessionId: "s1", operation: "session" });
+  await expect(
+    bindProductionRunner("acme", lab.id, "Ada", person),
+  ).rejects.toThrow(
+    "Runner lab is running 1 workload, 2 terminals and 1 Portal. Confirm to reserve it for acme incidents only",
+  );
+  expect(calls).toEqual([]);
+  expect(getRunner(lab.id)?.incidentReserved).toBeUndefined();
+  expect((await listProductionRunnerCandidates("acme", []))[0]?.confirm).toBe(
+    "Runner lab is running 1 workload, 2 terminals and 1 Portal",
+  );
+  await bindProductionRunner("acme", lab.id, "Ada", person, {
+    confirmShared: true,
+  });
+  expect(calls).toEqual([`drop ${lab.id}`, `disconnect ${lab.id} reserved`]);
+  expect(getRunner(lab.id)).toMatchObject({
+    incidentReserved: true,
+    allowedRepos: ["acme"],
+  });
+  expect(getRunner(lab.id)?.workloads).toBeUndefined();
+  expect(getRunner(lab.id)?.workload).toBeUndefined();
+});
+
+test("binding a Runner open to named people needs confirmation", async () => {
+  const lab = plainRunner("lab");
+  updateRunner(lab.id, { allowedRepos: ["acme"], allowedUsers: ["Ada", "Bo"] });
+  await expect(
+    bindProductionRunner("acme", lab.id, "Ada", person),
+  ).rejects.toThrow(
+    "Runner lab is open to Ada and Bo. Confirm to reserve it for acme incidents only",
+  );
+  updateRunner(lab.id, { allowedRepos: [], allowedUsers: ["Ada"] });
+  await expect(
+    bindProductionRunner("acme", lab.id, "Ada", person),
+  ).rejects.toThrow(
+    "Runner lab serves every repository and is open to Ada. Confirm",
+  );
+  // Serving only this project, for everyone, idle: nothing to ask.
+  updateRunner(lab.id, { allowedRepos: ["acme"], allowedUsers: [] });
+  await bindProductionRunner("acme", lab.id, "Ada", person);
+  expect(getRunner(lab.id)?.incidentReserved).toBe(true);
+});
+
 test("binding needs a signed-in person", async () => {
   const runner = plainRunner("lab");
   await expect(
@@ -252,7 +315,7 @@ test("candidates explain what binding a Runner would do", async () => {
   const win = plainRunner("win", "win32");
   const open = plainRunner("open");
   await __flushProductionBindingsForTest();
-  const views = listProductionRunnerCandidates("acme", []);
+  const views = await listProductionRunnerCandidates("acme", []);
   expect(views.find((v) => v.name === "api-only")).toMatchObject({
     id: apiOnly.id,
     platform: "linux",
@@ -272,9 +335,9 @@ test("candidates explain what binding a Runner would do", async () => {
       "Runner win runs Windows; incident checks and actions need macOS or Linux",
   });
   // A bound Runner reports what is wrong with it now.
-  expect(listProductionRunnerCandidates("acme-api", [apiOnly.id])[0]).toEqual(
-    expect.objectContaining({ bound: true, problem: null }),
-  );
+  expect(
+    (await listProductionRunnerCandidates("acme-api", [apiOnly.id]))[0],
+  ).toEqual(expect.objectContaining({ bound: true, problem: null }));
   expect(productionRunnerProblem(open.id, "acme")).toBe(
     "Runner open is not reserved for incidents. Bind it to acme first",
   );
