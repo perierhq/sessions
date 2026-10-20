@@ -13,6 +13,7 @@ import { redactSignal } from "./signal-validation";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
+const person = { signedInPerson: true };
 const http = {
   name: "Search",
   project: "acme",
@@ -266,21 +267,86 @@ test("a runOn check can refuse a signal", async () => {
       : `${s.runOn} is not a production Runner for ${s.project}`;
   });
   try {
-    expect(await createSignal({ ...http, runOn: "runner-lab" }, "Ada")).toEqual(
-      { error: "runner-lab is not a production Runner for acme" },
+    expect(
+      await createSignal({ ...http, runOn: "runner-lab" }, "Ada", person),
+    ).toEqual({ error: "runner-lab is not a production Runner for acme" });
+    const ok = await createSignal(
+      { ...http, runOn: "runner-prod" },
+      "Ada",
+      person,
     );
-    const ok = await createSignal({ ...http, runOn: "runner-prod" }, "Ada");
     if ("error" in ok) throw new Error(ok.error);
-    expect(await updateSignal(ok.id, { runOn: "runner-lab" }, "Ada")).toEqual({
+    expect(
+      await updateSignal(ok.id, { runOn: "runner-lab" }, "Ada", person),
+    ).toEqual({
       error: "runner-lab is not a production Runner for acme",
     });
-    expect(await updateSignal(ok.id, { project: "acme-api" }, "Ada")).toEqual({
+    expect(
+      await updateSignal(ok.id, { project: "acme-api" }, "Ada", person),
+    ).toEqual({
       error: "runner-prod is not a production Runner for acme-api",
     });
     expect((await getSignal(ok.id))?.project).toBe("acme");
     const plain = await createSignal(http, "Ada");
     expect("error" in plain).toBe(false);
     expect(seen).not.toContain("acme:undefined");
+  } finally {
+    setSignalRunOnCheck(undefined);
+  }
+});
+
+test("runOn is refused while no Runner check is installed", async () => {
+  expect(
+    await createSignal({ ...http, runOn: "runner-prod" }, "Ada", person),
+  ).toEqual({ error: "Runner checks are not available on this server yet" });
+  const plain = await createSignal(http, "Ada", person);
+  if ("error" in plain) throw new Error(plain.error);
+  expect(
+    await updateSignal(plain.id, { runOn: "runner-prod" }, "Ada", person),
+  ).toEqual({ error: "Runner checks are not available on this server yet" });
+});
+
+test("only a signed-in person decides where a signal runs and what it fetches", async () => {
+  setSignalRunOnCheck(async () => null);
+  try {
+    const refused = {
+      error:
+        "Only a signed-in person can change a signal that runs from a production Runner",
+    };
+    expect(await createSignal({ ...http, runOn: "runner-prod" }, "Bo")).toEqual(
+      refused,
+    );
+    const plain = await createSignal(http, "Bo");
+    if ("error" in plain) throw new Error(plain.error);
+    expect(
+      await updateSignal(plain.id, { runOn: "runner-prod" }, "Bo"),
+    ).toEqual(refused);
+    const prod = await createSignal(
+      { ...http, runOn: "runner-prod" },
+      "Ada",
+      person,
+    );
+    if ("error" in prod) throw new Error(prod.error);
+    for (const change of [
+      { source: { kind: "http", url: "http://10.0.0.9/admin" } },
+      { project: "acme-api" },
+      { runOn: "runner-other" },
+      { runOn: null },
+    ])
+      expect([change, await updateSignal(prod.id, change, "Bo")]).toEqual([
+        change,
+        refused,
+      ]);
+    // Anything else stays open to everyone who could edit it before.
+    const renamed = await updateSignal(prod.id, { name: "Search API" }, "Bo");
+    expect(renamed).toMatchObject({ name: "Search API", runOn: "runner-prod" });
+    const moved = await updateSignal(
+      prod.id,
+      { source: { kind: "http", url: "https://acme.example.test/v2" } },
+      "Ada",
+      person,
+    );
+    expect(moved).toMatchObject({ runOn: "runner-prod" });
   } finally {
     setSignalRunOnCheck(undefined);
   }

@@ -14,7 +14,12 @@ import {
   __resetSignalRuntimeForTest,
   getSignalEvaluation,
 } from "./signal-runtime";
-import { createSignal, deleteSignal, updateSignal } from "./signal-store";
+import {
+  createSignal,
+  deleteSignal,
+  setSignalRunOnCheck,
+  updateSignal,
+} from "./signal-store";
 import type { SourceRun } from "./sources";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
@@ -48,8 +53,19 @@ const httpSignal = async (over: Record<string, unknown> = {}) => {
   return s;
 };
 
-test("each due signal runs once per interval, locally even with runOn", async () => {
-  const s = await httpSignal({ runOn: "runner-1" });
+test("each due signal runs once per interval, with or without runOn", async () => {
+  setSignalRunOnCheck(async () => null);
+  const s = await createSignal(
+    {
+      name: "Search",
+      project: "acme",
+      source: { kind: "http", url: "https://acme.example.test" },
+      runOn: "runner-1",
+    },
+    "Ada",
+    { signedInPerson: true },
+  ).finally(() => setSignalRunOnCheck(undefined));
+  if ("error" in s) throw new Error(s.error);
   const calls: string[] = [];
   const runSource = async (sig: Signal) => {
     calls.push(sig.id);

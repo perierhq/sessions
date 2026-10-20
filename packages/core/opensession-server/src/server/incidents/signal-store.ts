@@ -44,8 +44,35 @@ export function setSignalRunOnCheck(check: RunOnCheck | undefined): void {
   runOnCheck = check;
 }
 
+/** Without an installed check nothing may run from a Runner. */
 async function runOnProblem(signal: Signal): Promise<string | null> {
-  return signal.runOn && runOnCheck ? runOnCheck(signal) : null;
+  if (!signal.runOn) return null;
+  if (!runOnCheck) return "Runner checks are not available on this server yet";
+  return runOnCheck(signal);
+}
+
+/** Who is writing: only a signed-in person (the route's
+ *  `verifiedPerson(ctx)`) may decide where a signal runs, or change what a
+ *  signal that runs from a production Runner fetches. */
+export interface SignalWriter {
+  signedInPerson?: boolean;
+}
+
+const RUN_ON_PERSON_ERROR =
+  "Only a signed-in person can change a signal that runs from a production Runner";
+
+/** Whether `after` changes where a signal runs, or what a Runner signal
+ *  fetches and for which project. */
+function changesRunnerCheck(
+  before: Signal | undefined,
+  after: Signal,
+): boolean {
+  if ((before?.runOn ?? undefined) !== (after.runOn ?? undefined)) return true;
+  if (!after.runOn || !before) return false;
+  return (
+    before.project !== after.project ||
+    JSON.stringify(before.source) !== JSON.stringify(after.source)
+  );
 }
 
 function projectExists(id: string): boolean {
@@ -141,6 +168,7 @@ export async function getSignal(id: string): Promise<Signal | null> {
 export async function createSignal(
   input: Record<string, unknown>,
   by: string,
+  writer: SignalWriter = {},
 ): Promise<Signal | { error: string }> {
   const validated = await validateSignalInput(input, validationContext());
   if ("error" in validated) return validated;
@@ -162,6 +190,8 @@ export async function createSignal(
   if ("error" in merged) return merged;
   const normalized = normalizeSignal(merged.signal);
   if ("error" in normalized) return normalized;
+  if (changesRunnerCheck(undefined, normalized) && !writer.signedInPerson)
+    return { error: RUN_ON_PERSON_ERROR };
   const refused = await runOnProblem(normalized);
   if (refused) return { error: refused };
   const signal = compact(normalized);
@@ -185,6 +215,7 @@ export async function updateSignal(
   id: string,
   input: Record<string, unknown>,
   by: string,
+  writer: SignalWriter = {},
 ): Promise<Signal | { error: string } | null> {
   if (!isSignalId(id)) return null;
   const validated = await validateSignalInput(input, validationContext(id));
@@ -194,20 +225,20 @@ export async function updateSignal(
   // record as it would be; the write then insists on the same Runner and
   // project.
   let checked: { runOn?: string; project: string } | undefined;
-  if (runOnCheck) {
-    const stored = await getSignal(id);
-    if (stored === null) return null;
-    const restored = withRestoredSecrets(
-      { ...stored, ...validated.fields, id: stored.id } as Signal,
-      stored,
-    );
-    const preview =
-      "error" in restored ? restored : normalizeSignal(restored.signal);
-    if (!("error" in preview)) {
-      const refused = await runOnProblem(preview);
-      if (refused) return { error: refused };
-      checked = { runOn: preview.runOn, project: preview.project };
-    }
+  const stored = await getSignal(id);
+  if (stored === null) return null;
+  const restored = withRestoredSecrets(
+    { ...stored, ...validated.fields, id: stored.id } as Signal,
+    stored,
+  );
+  const preview =
+    "error" in restored ? restored : normalizeSignal(restored.signal);
+  if (!("error" in preview)) {
+    if (changesRunnerCheck(stored, preview) && !writer.signedInPerson)
+      return { error: RUN_ON_PERSON_ERROR };
+    const refused = await runOnProblem(preview);
+    if (refused) return { error: refused };
+    checked = { runOn: preview.runOn, project: preview.project };
   }
   let failure: { error: string } | undefined;
   let impactChanged = false;
@@ -235,8 +266,11 @@ export async function updateSignal(
       failure = normalized;
       return value;
     }
+    if (changesRunnerCheck(value, normalized) && !writer.signedInPerson) {
+      failure = { error: RUN_ON_PERSON_ERROR };
+      return value;
+    }
     if (
-      runOnCheck &&
       normalized.runOn &&
       (checked?.runOn !== normalized.runOn ||
         checked.project !== normalized.project)

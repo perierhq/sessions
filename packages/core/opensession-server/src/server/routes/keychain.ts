@@ -8,7 +8,7 @@
  */
 
 import type { RouteContext } from "./context";
-import { requestUser } from "./context";
+import { requestUser, verifiedPerson } from "./context";
 import {
   addCredentialAsync,
   answerKeychainAsk,
@@ -27,16 +27,7 @@ import {
   submitCredentialRegistration,
 } from "../credential-registrations";
 
-/** The signed-in person making this request, or "" when the identity is only
- *  claimed (no web auth) or belongs to an automation. */
-export function verifiedPerson(ctx: RouteContext): string {
-  const identity = ctx.authUser as
-    | { login?: string; automation?: boolean }
-    | null
-    | undefined;
-  if (!identity?.login || identity.automation === true) return "";
-  return requestUser(ctx);
-}
+export { verifiedPerson } from "./context";
 
 /** The loopback broker URL grants used to be served at:
  *  /api/keychain/broker/<grant>/<path>. */
