@@ -329,7 +329,11 @@ export interface PrSnapshot {
   pendingChecks: string[];
   missingRequired: string[];
   mergeCommitSha?: string;
+  /** Paths changed; a rename lists its old and its new path. */
   files: string[] | null;
+  /** The base branch's rules could not be read, so required checks and
+   *  reviews are unknown and Sessions does not merge. */
+  rulesUnreadable?: true;
   fetchedAt: string;
 }
 
