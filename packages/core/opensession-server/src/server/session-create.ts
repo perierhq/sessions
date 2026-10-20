@@ -1,4 +1,5 @@
 import { registerMemoryGauge } from "./memory-gauges";
+import { incidentAccessMcpForSession } from "./incidents/access/mcp";
 import {
   sessionSpeed,
   type SessionSpeed,
@@ -109,6 +110,10 @@ import {
 } from "./run-session";
 import { type McpScope, STRIPE_CONFIRM_TOOLS } from "./runner-shared";
 import { plainDiscussionDeniedTools } from "./automation-denied-tools";
+import {
+  type RunInputsSession,
+  resolveSessionRunInputs,
+} from "./session-run-inputs";
 import {
   mirrorTurnToPlainDiscussion,
   plainDiscussionToolResult,
@@ -512,7 +517,11 @@ export function openingCreateTrustPolicy(
   const policy = spec.automationDescendantPolicy;
   return {
     automation: !!policy,
-    mcpServers: policy ? [] : (spec.runMcpServers as McpScope),
+    // A descendant's own allow-list: empty for every descendant except an
+    // incident agent, whose connections were enforced at spawn.
+    mcpServers: policy
+      ? [...policy.mcpServers]
+      : (spec.runMcpServers as McpScope),
     // A Plain discussion session reads untrusted ticket text: like an
     // automation run it passes no user, so an allowedUsers-gated server
     // stays invisible (session-run-inputs.ts makes the same call on resume).
@@ -530,6 +539,35 @@ export function openingCreateTrustPolicy(
           },
         }
       : {}),
+  };
+}
+
+/**
+ * The opening turn's scope for an automation descendant. An incident agent
+ * re-resolves its access here exactly as every later turn does
+ * (resolveSessionRunInputs): its connections narrowed to the fresh access,
+ * its denials, and the incident access server; a refusal throws so the
+ * opening turn never runs. Other descendants keep their stored allow-list.
+ */
+export async function descendantOpeningScope(
+  session: Partial<RunInputsSession> &
+    Pick<RunInputsSession, "automationDescendantPolicy">,
+): Promise<{
+  mcpServers: string[];
+  deniedTools?: Record<string, string>;
+  incidentProxyMcpServers: string[];
+}> {
+  const policy = session.automationDescendantPolicy;
+  if (!policy?.incident)
+    return {
+      mcpServers: policy ? [...policy.mcpServers] : [],
+      incidentProxyMcpServers: [],
+    };
+  const inputs = await resolveSessionRunInputs(session as RunInputsSession);
+  return {
+    mcpServers: inputs.mcpServers ?? [],
+    deniedTools: inputs.deniedTools ?? {},
+    incidentProxyMcpServers: inputs.incidentProxyMcpServers,
   };
 }
 
@@ -1824,6 +1862,13 @@ export async function openCreatedSession(
         // per-session-locked provider.ensure instead: a crash replays the
         // opening effect and adopts the same canonical session sandbox.
         const created = findSession(bksId);
+        const descendantScope =
+          created && spec.automationDescendantPolicy
+            ? await descendantOpeningScope({
+                ...created,
+                automationDescendantPolicy: spec.automationDescendantPolicy,
+              })
+            : null;
         sandboxOpeningRun = created
           ? await maybeLaunchSandboxedRun(created, {
               prompt: openingPromptForRun,
@@ -1831,9 +1876,14 @@ export async function openCreatedSession(
               user: spec.user,
               images: spec.images,
               attachments: spec.attachments,
-              mcpServers: spec.automationDescendantPolicy
-                ? []
+              mcpServers: descendantScope
+                ? descendantScope.mcpServers
                 : (spec.runMcpServers ?? []),
+              ...(descendantScope?.deniedTools
+                ? { deniedTools: descendantScope.deniedTools }
+                : {}),
+              incidentProxyMcpServers:
+                descendantScope?.incidentProxyMcpServers ?? [],
               isAutomationSession: !!spec.automationDescendantPolicy,
               startToken,
               promptEntryId: openingPromptEntryId,
@@ -1983,15 +2033,38 @@ export async function openCreatedSession(
       };
       const openingTrust = openingCreateTrustPolicy(spec);
       const automationChild = openingTrust.automation;
+      // Re-resolved only when this turn runs here (a sandbox or Runner
+      // opening turn resolved its own scope above or in its launcher).
+      const localDescendantScope =
+        automationChild &&
+        spec.automationDescendantPolicy &&
+        !sandboxOpeningRun &&
+        !runnerOpeningRun
+          ? await descendantOpeningScope({
+              id: bksId,
+              mode: spec.mode,
+              repo: spec.repoId || undefined,
+              automationDescendantPolicy: spec.automationDescendantPolicy,
+            })
+          : null;
       // A discussion session carries only the approval server, never the
       // interactive siblings (see plainDiscussionSessionMcp).
       const openingMcp = automationChild
-        ? {}
+        ? localDescendantScope?.incidentProxyMcpServers.length &&
+          spec.automationDescendantPolicy
+          ? await incidentAccessMcpForSession({
+              id: bksId,
+              automationDescendantPolicy: spec.automationDescendantPolicy,
+            })
+          : {}
         : spec.plainDiscussionId
           ? plainDiscussionSessionMcp(bksId, spec.plainDiscussionId)
           : interactiveMcpServers(spec.user, bksId);
       const openingDeniedTools = automationChild
-        ? (await import("./automations")).automationDeniedTools()
+        ? {
+            ...(await import("./automations")).automationDeniedTools(),
+            ...localDescendantScope?.deniedTools,
+          }
         : spec.plainDiscussionId
           ? plainDiscussionDeniedTools()
           : undefined;
@@ -2054,7 +2127,9 @@ export async function openCreatedSession(
                 spec.model,
                 spec.autoFallback,
               ),
-              mcpServers: openingTrust.mcpServers,
+              mcpServers: localDescendantScope
+                ? localDescendantScope.mcpServers
+                : openingTrust.mcpServers,
               proxyMcpServers: Object.keys(openingMcp),
               reposNote: openingReposNote,
               images: spec.images,

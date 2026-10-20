@@ -16,11 +16,16 @@
  * A workspace credential needs no grant from its owner: the session's first
  * call mints its implicit workspace grant. Each call to it must say why
  * (`purpose`), and the audit line records that and who made the call.
+ *
+ * An incident agent's call (`incident` set by the server, never by the
+ * agent) uses only that incident's grant in this session. It never mints a
+ * workspace grant, and it never falls back to an interactive grant.
  */
 
 import { audit } from "./audit";
 import {
   activeGrantFor,
+  activeIncidentGrantFor,
   brokerHeaders,
   consumeGrantForBroker,
   ensureKeychainLoaded,
@@ -74,6 +79,9 @@ export interface BrokerCallInput {
    *  owner approved a purpose; recorded with the call either way. */
   purpose?: string;
   signal?: AbortSignal;
+  /** Set by the incident access server for an incident agent: the call may
+   *  use only this incident's grant. */
+  incident?: { incidentId: string; role: string };
   /** Test seam. */
   fetchImpl?: typeof fetch;
 }
@@ -106,8 +114,16 @@ export async function brokerCall(
     return { error: `path must stay on https://${meta.host}` };
 
   const purpose = input.purpose?.trim().slice(0, MAX_PURPOSE_CHARS) || "";
-  let grant = activeGrantFor(input.sessionId, meta.id);
-  const workspace = isWorkspaceCredential(meta);
+  const incident = input.incident;
+  const incidentFields = incident
+    ? { incident_id: incident.incidentId, incident_role: incident.role }
+    : {};
+  let grant = incident
+    ? activeIncidentGrantFor(input.sessionId, meta.id, incident.incidentId)
+    : activeGrantFor(input.sessionId, meta.id);
+  if (incident && !grant)
+    return { error: `This agent holds no grant for ${meta.service}` };
+  const workspace = !incident && isWorkspaceCredential(meta);
   if (workspace && !purpose && (!grant || grant.mode === "workspace"))
     return {
       error: `${meta.service} is a workspace credential: pass purpose, one sentence saying why you make this call. It is recorded with the call`,
@@ -131,6 +147,7 @@ export async function brokerCall(
     input.sessionId,
     input.method,
     target.pathname,
+    incident?.incidentId,
   );
   if ("error" in use) {
     audit({
@@ -140,6 +157,7 @@ export async function brokerCall(
       method: input.method,
       path: target.pathname,
       reason: use.error,
+      ...incidentFields,
     });
     return { error: use.error };
   }
@@ -164,6 +182,7 @@ export async function brokerCall(
     mode: grant.mode,
     ...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
     ...(purpose ? { purpose } : {}),
+    ...incidentFields,
   });
 
   const signal = input.signal

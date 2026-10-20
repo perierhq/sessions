@@ -345,6 +345,137 @@ against a deliberately hostile agent. Closing that gap needs agent runs under
 a separate unprivileged user that can reach neither the store nor the
 process that injects the secret.
 
+## Incident agents
+
+Incident agents (the investigator and the verifier an incident starts) are
+automation descendants. They run in a Sandbox or on a Runner approved for
+isolation, with no user, no MCP grant identity and no person's GitHub or AWS
+credentials. They publish only through a branch and a pull request, and they
+carry the automation deny-set. Their session policy carries an `incident`
+binding that only server-side code sets; no MCP tool, HTTP route or socket
+message accepts one. A workflow started by an incident agent cannot spawn
+sessions, because a child would lose the binding.
+
+Their access comes only from per-project settings stored in the catalog
+(`incident-access`) and edited over the signed-in HTTP API
+(`/api/incident-access/...`): the project's grants are the ceiling, each role
+has a complete profile, and a signal may override fields of a role's
+profile. Nothing is read from a repository, so an agent's pull request cannot
+widen its own access. Unknown fields, roles or values are refused, and an
+unreadable settings document refuses every agent until it is reset. The
+verifier is locked to ask mode, and host access is read-only.
+
+Access is resolved when the session is created, again for its opening turn
+and every later turn, and on every incident tool call. The session's binding
+keeps a snapshot of what the agent was spawned with (its connections, hosts,
+credentials with their modes, and egress route and hosts), and every later
+resolution is intersected with it, a credential at the narrower of the two
+modes: widening the settings reaches only agents spawned afterwards, while
+narrowing applies on the next turn and the next tool call. If the mode, repo or Runner the agent was
+spawned with is no longer allowed, the turn is refused and a new agent has to
+be started. Agents run only in the incident states listed for them
+(investigating, fix ready, veto, deploying, watching, needs you, rolled
+back); a closed or paused incident, a heads-up, one waiting on a provider or
+any state added later, a registered gate (a kill switch or
+budget) or unreadable settings refuse all three. A turn already running when
+access narrows keeps its external MCP connections until it ends; the incident
+tools narrow at once.
+
+An incident agent gets exactly one in-process server,
+`opensession-incident-access`, on every launch path and through the run-rpc
+fallback builder, and none of the other `opensession-*` servers. Each of its
+tools is mounted only when the access grants what it reaches:
+
+- `host_command` runs an argv from a fixed read-only list of programs. Each
+  program has an exact list of the options it may take: a long option is
+  compared whole (a prefix that getopt would expand, such as `--foll`, is
+  refused), every letter of a short cluster must be listed, an option's value
+  is read the way the program reads it, and `systemctl` and `docker` take
+  their subcommand first. It runs through the Runner command channel with no
+  user and no AWS role. Every word is quoted, and quoted again for an SSH hop
+  (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <alias>`), and the Runner's
+  POSIX shell (`bash -lc`, a login shell) runs the quoted command, so shell
+  metacharacters in an argument are data. Host commands and the Runner egress
+  route need a Linux or macOS Runner: one on Windows, whose PowerShell reads
+  that quoting differently, is refused when the settings are saved and dropped
+  when access is resolved, as is a Runner in maintenance or one whose repo
+  list leaves out the project. Secret-shaped paths are refused after the path
+  is normalised (`.`, `//`, `..`), in operands and option values alike: key
+  and `.env` files (`.env*`, `.envrc`), home key stores (`.ssh`, `.docker`,
+  `.kube`, `.aws`, `.gnupg`, the GitHub CLI's `.config/gh/hosts.yml`),
+  Sessions' own state (any `.opensession*` directory), any process's
+  `environ`, `mem` and open files under `/proc`, `/proc/kcore`, every device
+  under `/dev` but `/dev/null`, `/sys/firmware`, `/etc/environment`, systemd
+  unit files (`/etc/systemd/system`), `/run/systemd`, `/run/credentials` and
+  `/var/lib/docker`. Options that read a list of files from another file
+  (`--files0-from`) are not on any list. `systemctl show` prints only a short
+  list of status properties (`ActiveState`, `SubState`, `MainPID`,
+  `NRestarts`, `MemoryCurrent` and the like), never a unit's command lines,
+  environment or credentials, and `docker logs` takes no `--details`. A
+  recursive `grep`, in every spelling (`-r`, a cluster, `--recursive`,
+  `-d recurse`, `--directories=recurse`), always runs with secret-shaped files and
+  directories excluded (`.env*`, `.envrc`, keys, `id_*`, `.git`, `.ssh`,
+  `.opensession*`, `gh`, `systemd`, credentials files and the like), only over
+  absolute paths that neither contain nor sit inside those trees (`/dev` and
+  `/sys/firmware` included), may not include a secret-shaped name, and may not
+  follow links (`-R`). Output is capped and scrubbed of the agent's own
+  granted credentials.
+- `egress_fetch` reaches only the listed hosts through the granted route.
+  With no hosts saved, the signal's own host is the default, and it passes
+  the same rules as a saved host (no IP literals, `localhost`, `.local` or
+  `.internal` names); a host that fails them is dropped and recorded as a
+  narrowing.
+  The server route resolves the host once, refuses private addresses and
+  connects only to the checked addresses; the proxy route checks the proxy
+  and the target, and its credential may only add `Proxy-Authorization`; the
+  Runner route runs `curl` on the Runner, which is production's own network,
+  with `-q` first so no `.curlrc` is read, `--globoff` so `[]` and `{}` in the
+  URL stay literal, and the body passed with `--data-raw` so a body starting
+  with `@` is sent as given, never read as a file name.
+  Redirects are returned, never followed, URLs with credentials are refused,
+  and only a short list of harmless headers is forwarded.
+- `call_credential` goes through the keychain broker with the agent's
+  incident grant only.
+
+The keychain server stays interactive-only. An incident agent borrows a
+credential only through an explicit project grant, made by the credential's
+owner (a personal credential) or any signed-in teammate (a workspace one),
+never a login, and always with a verified sign-in rather than a claimed name.
+Ownership is decided on stable roster identities: the grant records the
+lender's GitHub login, and the credential's owner must name exactly that one
+teammate. A first name two teammates share names no one, so neither can lend
+the credential; an owner with no roster entry carrying a GitHub login cannot
+lend it either, and is told so; and a personal grant without the lender's
+login is dropped. An agent that names a credential by a service name two lent
+credentials share is refused and has to name it by its id.
+A grant is minted only after the agent's access is resolved afresh, at the
+mode that access names. `once` is one call per agent session; `standing`
+lasts at most seven days and ends when the incident leaves those states, when
+the settings stop granting it, when a workspace credential is made personal
+again, or when its injection changes. Workspace credentials never mint
+implicit grants for incident agents. A proxy credential is held to its method
+and path limits, and a status-only credential cannot be used as a proxy.
+
+Every spawn, refusal, access change, narrowing, host command, egress request
+and credential call is audited with the incident and role
+(`incident_access_*`, `incident_host_*`, `incident_egress_*`,
+`incident_credential_call`), and the keychain's own lines carry
+`incident_id` and `incident_role`. A spawn is recorded as allowed before its
+session exists (`incident_access_spawn_allowed`) and as spawned, with the
+session id, once the create succeeds (`incident_access_spawn`). Audit lines
+never carry secrets, header values, bodies or URL query strings. Host command
+arguments are recorded, cut to 500 characters, so an argument an agent typed
+is visible there. Viewing a bound agent's effective config resolves its access
+without audit lines, and shows a refused agent (a paused incident, say) with
+an empty scope and the reason instead of failing.
+
+Limits: the read-only list and the secret-path refusal are a tripwire, not a
+sandbox. A log line can contain a secret, and scrubbing covers only the
+agent's own granted credentials. Revocation after a close or a narrowing is
+asynchronous, so a call already in flight completes, but every new call
+re-resolves access first. Runner hosts are trusted machines, as for every
+Runner.
+
 ## Mac Keychain requests
 
 The interactive-only `opensession-keychain` server can request one macOS Keychain

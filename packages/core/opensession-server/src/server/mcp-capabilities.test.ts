@@ -55,8 +55,16 @@ describe("renderInternalMcpCapabilities", () => {
     // Every server mounted at once is the ceiling; keep it a section, not
     // a manual. Raised from 7,300 for opensession-local-folders, whose
     // per-turn note names its tools instead, and from 7,500 for
-    // opensession-html, one more server at the usual ~150 chars.
-    expect(note.length).toBeLessThan(7_700);
+    // opensession-html, one more server at the usual ~150 chars. The
+    // incident access server is only ever mounted alone, so it is left out.
+    const together = renderInternalMcpCapabilities(
+      Object.fromEntries(
+        names
+          .filter((name) => name !== "opensession-incident-access")
+          .map((name) => [name, {}]),
+      ),
+    );
+    expect(together.length).toBeLessThan(7_700);
   });
 
   test("is empty when nothing internal is mounted", () => {

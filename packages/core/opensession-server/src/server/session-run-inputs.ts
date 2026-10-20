@@ -24,6 +24,8 @@ import {
 } from "./automations";
 import { humanPrompter, interactivePrompter } from "./session-actors";
 import { plainDiscussionDeniedTools } from "./automation-denied-tools";
+import { INCIDENT_ACCESS_SERVER } from "../shared/incident-access";
+import type { IncidentTurnScope } from "./incidents/access/session-policy";
 
 /** Which config decided the run's MCP allowlist. */
 export type McpScopeSource =
@@ -95,6 +97,12 @@ export interface SessionRunInputs {
   /** Whether the run gets the repos/memory/personal-prompt note. Automation
    *  runs get none: their prompts are untrusted text. */
   sessionNote: boolean;
+  /** The in-process servers a bound incident agent's run proxies
+   *  (`[INCIDENT_ACCESS_SERVER]`); empty for every other session. */
+  incidentProxyMcpServers: string[];
+  /** Why a bound incident agent's next turn would be refused; only set when
+   *  resolved for a view (`audit: false`), where a refusal does not throw. */
+  incidentRefusal?: string;
 }
 
 /** The session fields this module reads. Structural so callers (and tests)
@@ -109,7 +117,8 @@ export type RunInputsSession = Pick<
   | "startedBy"
   | "createdByLogin"
   | "plainDiscussionId"
->;
+> &
+  Partial<Pick<UnifiedSession, "id" | "mode" | "repo" | "runner">>;
 
 /** Which in-process server set the next turn carries. Pure — mirrors the
  *  `inProcessMcp` ternary at the runAgent call site. `humanPrompter` is the
@@ -149,7 +158,13 @@ export function sessionMcpScopeSource(
  */
 export async function resolveSessionRunInputs(
   session: RunInputsSession,
-  opts: { user?: string } = {},
+  opts: {
+    user?: string;
+    /** Off for a read-only view of the next turn: an incident agent's
+     *  access is resolved without audit lines, and a refusal empties its
+     *  scope and sets incidentRefusal instead of throwing. */
+    audit?: boolean;
+  } = {},
 ): Promise<SessionRunInputs> {
   const isAutomationSession = !!(
     session.automation || session.automationDescendantPolicy
@@ -163,20 +178,41 @@ export async function resolveSessionRunInputs(
   // discussion keeps its automation branch and takes the same wider deny-set.
   const isPlainDiscussionSession = !!session.plainDiscussionId;
   const source = sessionMcpScopeSource(session);
-  const mcpServers = session.automationDescendantPolicy
-    ? [...session.automationDescendantPolicy.mcpServers]
-    : isAutomationSession
-      ? await automationMcpServersByName(session.automation!)
-      : source === "session"
-        ? session.mcpServers
-        : source === "feed"
-          ? // Feed-workspace sessions are scoped to their feed's declared MCP
-            // servers even when the session file predates the stamping (least
-            // privilege — the feeds design).
-            await (
-              await import("./feeds")
-            ).feedMcpServersForRefs(session.externalRefs!)
-          : undefined;
+  // An incident agent re-resolves its access before every turn; a refusal
+  // throws so the turn never starts, and the scope is never wider than the
+  // spawn snapshot (incidents/access/session-policy.ts). A view resolves it
+  // without audit and shows a refusal as an empty scope.
+  const bound = !!session.automationDescendantPolicy?.incident;
+  let incidentRefusal: string | undefined;
+  let incidentScope: IncidentTurnScope | null = null;
+  if (bound) {
+    const policy = await import("./incidents/access/session-policy");
+    if (opts.audit === false) {
+      const viewed = await policy.viewIncidentTurnScope(session);
+      if (viewed && "refused" in viewed) incidentRefusal = viewed.refused;
+      else incidentScope = viewed;
+    } else incidentScope = await policy.incidentTurnScope(session);
+    if (!incidentScope && incidentRefusal === undefined)
+      throw new Error("Incident agent access could not be resolved");
+  }
+  const mcpServers = incidentScope
+    ? [...incidentScope.mcpServers]
+    : incidentRefusal !== undefined
+      ? []
+      : session.automationDescendantPolicy
+        ? [...session.automationDescendantPolicy.mcpServers]
+        : isAutomationSession
+          ? await automationMcpServersByName(session.automation!)
+          : source === "session"
+            ? session.mcpServers
+            : source === "feed"
+              ? // Feed-workspace sessions are scoped to their feed's declared MCP
+                // servers even when the session file predates the stamping (least
+                // privilege — the feeds design).
+                await (
+                  await import("./feeds")
+                ).feedMcpServersForRefs(session.externalRefs!)
+              : undefined;
   const accountUser = humanPrompter(opts.user) ?? undefined;
   const prompter = interactivePrompter(opts.user) ?? undefined;
   return {
@@ -185,11 +221,14 @@ export async function resolveSessionRunInputs(
     // An automation whose record is gone (or that names no allowlist) resolves
     // to undefined, i.e. no allowlist — report the source honestly.
     mcpServersSource: mcpServers === undefined ? "all" : source,
-    deniedTools: isPlainDiscussionSession
-      ? plainDiscussionDeniedTools()
-      : isAutomationSession
-        ? automationDeniedTools()
-        : undefined,
+    deniedTools: incidentScope
+      ? // The automation deny-set always stays; access can only add to it.
+        { ...automationDeniedTools(), ...incidentScope.deniedTools }
+      : isPlainDiscussionSession
+        ? plainDiscussionDeniedTools()
+        : isAutomationSession
+          ? automationDeniedTools()
+          : undefined,
     user:
       isAutomationSession || isPlainDiscussionSession ? undefined : opts.user,
     mcpGrantUser: session.createdByLogin || undefined,
@@ -197,6 +236,8 @@ export async function resolveSessionRunInputs(
     humanPrompter: prompter,
     inProcessMcpBranch: sessionInProcessMcpBranch(session, prompter),
     sessionNote: !isAutomationSession,
+    incidentProxyMcpServers: incidentScope ? [INCIDENT_ACCESS_SERVER] : [],
+    ...(incidentRefusal !== undefined ? { incidentRefusal } : {}),
   };
 }
 

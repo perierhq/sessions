@@ -77,8 +77,9 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
+| [`opensession-incident-access`](#opensession-incident-access) | 4 | automation | incident agents only (automation descendants with an incident binding) |
 
-37 servers, 180 tools.
+38 servers, 184 tools.
 
 ## opensession-sessions
 
@@ -1502,3 +1503,37 @@ Set a short human-readable phase label for where the mission is (e.g. 'week 2: s
 `mcp__opensession-goal-self__append_ledger` · input: `text` (string, required)
 
 Append to your durable fact ledger — the authoritative record that survives context compaction. Write down baselines, decisions, PR URLs, and measured results here every wake, and read it back at the start of each wake. Be concrete (numbers, links).
+
+## opensession-incident-access
+
+Read-only host commands, egress requests and borrowed credentials for one incident agent.
+
+- **Source** `packages/core/opensession-server/src/server/incidents/access/mcp.ts`
+- **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`, `packages/core/opensession-server/src/server/run-session.ts`, `packages/core/opensession-server/src/server/runner-session.ts`, `packages/core/opensession-server/src/server/session-create.ts`
+- **Runs** automation
+- **Condition** incident agents only (automation descendants with an incident binding)
+- **Note** The only opensession-* server an incident agent gets. Each tool is mounted only when the agent's access grants what it reaches, and every call re-resolves that access.
+
+### `describe_access`
+
+`mcp__opensession-incident-access__describe_access` · input: none
+
+What this incident agent may reach right now: connections, mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. Every call is audited with your incident and role.
+
+### `host_command`
+
+`mcp__opensession-incident-access__host_command` · input: `runner` (string, required), `ssh` (string), `program` (string, required), `args` (string[]), `timeoutSeconds` (number)
+
+Run one read-only program (cat, head, tail, grep, ls, journalctl, systemctl status, docker ps/logs and a few more) on one of your granted hosts, through its paired Runner. Each argument is quoted and the Runner's POSIX shell runs the command, so shell characters in an argument are plain text; anything that writes, follows output or reads secret-shaped files is refused. Hosts are read-only. Every call is audited with your incident and role.
+
+### `egress_fetch`
+
+`mcp__opensession-incident-access__egress_fetch` · input: `url` (string, required), `method` ("GET" | "HEAD" | "POST"), `headers` (object), `body` (string), `timeoutSeconds` (number)
+
+Send one HTTP request to a host on your egress list through your granted route (Sessions' own network, production's own egress through a Runner, or a proxy). Redirects are returned with their location, never followed; only a few harmless headers are forwarded. Every call is audited with your incident and role.
+
+### `call_credential`
+
+`mcp__opensession-incident-access__call_credential` · input: `credential` (string, required), `method` ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE", required), `path` (string, required), `headers` (object), `body` (string), `purpose` (string, required)
+
+Call the API of a credential this project lent you, through the keychain broker: the secret is added to the request and never shown to you. Say why in purpose. A credential lent once allows one call. Every call is audited with your incident and role.

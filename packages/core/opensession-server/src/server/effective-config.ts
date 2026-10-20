@@ -266,6 +266,10 @@ export async function inProcessServerNames(
   session: UnifiedSession,
   inputs: SessionRunInputs,
 ): Promise<string[]> {
+  // An incident agent carries its access server only while its access
+  // resolves; resolveSessionRunInputs already decided that without audit.
+  if (session.automationDescendantPolicy?.incident)
+    return [...inputs.incidentProxyMcpServers];
   const {
     interactiveMcpServers,
     automationSessionMcp,
@@ -303,7 +307,12 @@ export async function buildSessionEffectiveConfig(
   session: UnifiedSession,
   opts: { user?: string; verbose?: boolean } = {},
 ): Promise<EffectiveConfig> {
-  const inputs = await resolveSessionRunInputs(session, { user: opts.user });
+  // A view: an incident agent's access is resolved without audit, and a
+  // refusal (a paused incident, say) is shown rather than thrown.
+  const inputs = await resolveSessionRunInputs(session, {
+    user: opts.user,
+    audit: false,
+  });
   const journalKind = "prompt";
   const requestedModel = session.model || interactiveDefaultModel();
   const routed = routeModel(requestedModel, { interactive: true });
@@ -339,6 +348,17 @@ export async function buildSessionEffectiveConfig(
     ),
     allowed: row(gateReason === null, "run-policy.ts runGateReason"),
     reason: row(gateReason, "run-policy.ts runGateReason"),
+    ...(session.automationDescendantPolicy?.incident
+      ? {
+          incidentAccess: row(
+            inputs.incidentRefusal ?? null,
+            "incidents/access/session-policy.ts viewIncidentTurnScope",
+            {
+              note: "Why this incident agent's next turn would be refused; null when it may run",
+            },
+          ),
+        }
+      : {}),
   };
 
   const model: Record<string, ConfigRow> = {

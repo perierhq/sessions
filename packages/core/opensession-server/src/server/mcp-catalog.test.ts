@@ -106,8 +106,25 @@ describe("MCP server catalog", () => {
     const wired = wiredAutomation();
     expect([...new Set(wired)].sort()).toEqual(
       catalogFor("automation")
+        // Incident agents' server is wired in automationSessionMcp and the
+        // launch paths, never in automations.ts (checked below).
+        .filter((entry) => entry.name !== "opensession-incident-access")
         .map((entry) => entry.name)
         .sort(),
+    );
+  });
+
+  test("bound incident agents get only the incident access server", () => {
+    const source = readFileSync(
+      resolve(import.meta.dir, "interactive-mcp.ts"),
+      "utf-8",
+    );
+    const start = source.indexOf("export async function automationSessionMcp(");
+    const first = source.indexOf("const servers", start);
+    expect(start).toBeGreaterThan(-1);
+    // The incident branch returns before any automation-bar server is built.
+    expect(source.slice(start, first)).toContain(
+      "incidentAccessMcpForSession(",
     );
   });
 

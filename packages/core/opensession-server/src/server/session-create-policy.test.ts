@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   assertAutomationDescendantOpeningIsolation,
+  descendantOpeningScope,
   openingCreateTrustPolicy,
 } from "./session-create";
+import {
+  AgentAccessError,
+  __setBindingResolverForTest,
+} from "./incidents/access/resolve";
+import { __setIncidentAuditForTest } from "./incidents/audit-sink";
+import { agentAccessFixture } from "./incidents/testing/access-fixture";
 import { sandboxRunSecuritySpec } from "./run-session";
 import { runAccountSpec } from "./session-run-inputs";
 import type { UnifiedSession } from "./types";
@@ -22,6 +29,139 @@ describe("automation descendant opening policy", () => {
     allowedRunners: ["mac-studio"],
     publication: "branch-pr-only" as const,
   };
+
+  test("an incident agent's opening turn gets its enforced connections; other descendants stay empty", () => {
+    const incident = {
+      incidentId: "inc-1",
+      role: "investigator" as const,
+      signalId: null,
+      accessRevision: "r1",
+      spawn: { hosts: [], credentials: [], egress: null },
+    };
+    expect(
+      openingCreateTrustPolicy({
+        automationDescendantPolicy: {
+          ...descendant,
+          mcpServers: ["sentry"],
+          incident,
+        },
+        branch: "fix/x",
+        runMcpServers: ["everything"],
+        user: "x",
+      }).mcpServers,
+    ).toEqual(["sentry"]);
+    expect(
+      openingCreateTrustPolicy({
+        automationDescendantPolicy: descendant,
+        branch: "fix/x",
+        runMcpServers: ["everything"],
+        user: "x",
+      }).mcpServers,
+    ).toEqual([]);
+  });
+
+  test("an incident agent's opening turn re-resolves its access like every later turn", async () => {
+    const incident = {
+      incidentId: "inc-1",
+      role: "investigator" as const,
+      signalId: null,
+      accessRevision: "r1",
+      spawn: { hosts: [], credentials: [], egress: null },
+    };
+    const previousAudit = __setIncidentAuditForTest(() => {});
+    try {
+      __setBindingResolverForTest(async () =>
+        agentAccessFixture({
+          repos: ["renderer"],
+          connections: ["logs"],
+          deniedTools: { bash: "off" },
+        }),
+      );
+      const scope = await descendantOpeningScope({
+        id: "os-1",
+        mode: "code",
+        repo: "renderer",
+        automationDescendantPolicy: {
+          ...descendant,
+          mcpServers: ["sentry", "logs"],
+          incident,
+        },
+      });
+      expect(scope.mcpServers).toEqual(["logs"]);
+      expect(scope.deniedTools).toMatchObject({ bash: "off" });
+      expect(scope.incidentProxyMcpServers).toEqual([
+        "opensession-incident-access",
+      ]);
+      __setBindingResolverForTest(async () => {
+        throw new AgentAccessError(
+          "Incident inc-1 is paused; its agents have no access",
+          "incident",
+        );
+      });
+      await expect(
+        descendantOpeningScope({
+          id: "os-1",
+          mode: "code",
+          repo: "renderer",
+          automationDescendantPolicy: { ...descendant, incident },
+        }),
+      ).rejects.toThrow("is paused");
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+    expect(
+      await descendantOpeningScope({
+        id: "os-2",
+        automationDescendantPolicy: descendant,
+      }),
+    ).toEqual({ mcpServers: [], incidentProxyMcpServers: [] });
+  });
+
+  test("the sandbox and local opening turns take the descendant opening scope", async () => {
+    const src = await Bun.file(
+      new URL("./session-create.ts", import.meta.url),
+    ).text();
+    expect(
+      src.match(/descendantOpeningScope\(/g)?.length,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a sandboxed incident agent proxies only the incident access server", () => {
+    const spec = sandboxRunSecuritySpec(
+      {
+        id: "os-1",
+        automationDescendantPolicy: {
+          ...descendant,
+          incident: {
+            incidentId: "inc-1",
+            role: "verifier",
+            signalId: null,
+            accessRevision: "r",
+            spawn: { hosts: [], credentials: [], egress: null },
+          },
+        },
+      } as unknown as UnifiedSession,
+      {
+        isAutomationSession: true,
+        mcpServers: ["sentry"],
+        incidentProxyMcpServers: ["opensession-incident-access"],
+      },
+    );
+    expect(spec.proxyMcpServers).toEqual(["opensession-incident-access"]);
+    expect(
+      sandboxRunSecuritySpec(
+        {
+          id: "os-2",
+          automationDescendantPolicy: descendant,
+        } as UnifiedSession,
+        {
+          isAutomationSession: true,
+          incidentProxyMcpServers: ["opensession-incident-access"],
+        },
+      ).proxyMcpServers,
+    ).toEqual([]);
+  });
 
   test("opening dispatch rejects default-local and admits an explicit sandbox", () => {
     expect(() =>

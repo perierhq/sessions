@@ -714,7 +714,7 @@ registerSessionControl({
       pastedTexts,
       mcpServers,
       runner: runnerInput,
-      automationDescendantPolicy,
+      automationDescendantPolicy: requestedDescendantPolicy,
       workspaceId,
       isolatedWorktree,
       parentSessionId,
@@ -889,6 +889,31 @@ registerSessionControl({
       typeof runnerInput === "string" && runnerInput.trim()
         ? runnerInput.trim()
         : undefined;
+    // An incident agent's access is re-resolved before its session exists,
+    // and the session runs under the policy narrowed to it. Ordinary creates
+    // load nothing new.
+    const incidentSpawn = requestedDescendantPolicy?.incident
+      ? {
+          policy: await import("./incidents/access/session-policy"),
+          request: {
+            repo: repo.id,
+            runner: requestedRunnerId,
+            mode: isScratch
+              ? ("scratch" as const)
+              : isAsk
+                ? ("ask" as const)
+                : ("code" as const),
+            model,
+          },
+        }
+      : undefined;
+    const automationDescendantPolicy =
+      incidentSpawn && requestedDescendantPolicy
+        ? await incidentSpawn.policy.enforceIncidentSpawn(
+            requestedDescendantPolicy,
+            incidentSpawn.request,
+          )
+        : requestedDescendantPolicy;
     // An explicit Runner bypasses the instance's default Sandbox. Explicitly
     // asking for both remains an error below.
     const sandboxResolved =
@@ -1445,6 +1470,12 @@ ${createMentionsNote}`;
               createdBy: info.createdBy,
               createdAt: info.createdAt,
             });
+            // Audited once the session exists, with the policy it stored.
+            incidentSpawn?.policy.auditIncidentSpawned(
+              spec.automationDescendantPolicy,
+              info.id,
+              incidentSpawn.request,
+            );
           },
           emit: (m) => broadcastToSession(bksId, { ...m, sessionId: bksId }),
           fail: (message) => reject(new Error(message)),

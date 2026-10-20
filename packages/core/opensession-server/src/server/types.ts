@@ -26,6 +26,7 @@ import type {
   SessionSpeed,
   SessionUsage,
 } from "@tellahq/opensession-protocol/session";
+import type { IncidentAgentBinding } from "../shared/incident-access";
 
 /**
  * What the last automated (os-review) run concluded about a PR, as the UI needs
@@ -594,6 +595,8 @@ export interface AutomationDescendantPolicy {
   baseBranch: string;
   allowedRunners: string[];
   publication: "branch-pr-only";
+  /** Incident agent: re-resolved at spawn, every turn and every incident tool call (incidents/access). */
+  incident?: IncidentAgentBinding;
 }
 
 export interface NativeSessionFile {

@@ -6,6 +6,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { AgentAccess } from "../shared/incident-access";
+import {
+  AgentAccessError,
+  __setBindingResolverForTest,
+} from "./incidents/access/resolve";
+import { automationDeniedTools } from "./automations";
+import { __setIncidentAuditForTest } from "./incidents/audit-sink";
+import type { AutomationDescendantPolicy } from "./types";
 import {
   resolveSessionRunInputs,
   sessionInProcessMcpBranch,
@@ -20,6 +28,38 @@ const plain: RunInputsSession = {
   goalId: undefined,
   startedBy: "Michiel",
   createdByLogin: "michiel",
+};
+
+const descendantPolicy: AutomationDescendantPolicy = {
+  automationId: "auto-1",
+  automationName: "Renderer swarm",
+  mcpServers: [],
+  repo: "renderer",
+  publicationRepo: "tellahq/renderer",
+  baseBranch: "main",
+  allowedRunners: [],
+  publication: "branch-pr-only",
+};
+
+const incidentAccess: AgentAccess = {
+  incidentId: "inc-1",
+  project: "acme",
+  role: "investigator",
+  signalId: null,
+  overrideApplied: false,
+  defaults: false,
+  connections: ["sentry", "logs"],
+  deniedTools: {},
+  mode: "code",
+  repos: ["acme"],
+  runners: [],
+  hosts: [],
+  credentials: [],
+  model: null,
+  egress: null,
+  narrowed: [],
+  revision: "r1",
+  summary: "",
 };
 
 describe("sessionMcpScopeSource", () => {
@@ -296,16 +336,7 @@ describe("resolveSessionRunInputs", () => {
         ...plain,
         automation: undefined,
         mcpServers: ["dangerous-later-config"],
-        automationDescendantPolicy: {
-          automationId: "auto-1",
-          automationName: "Renderer swarm",
-          mcpServers: [],
-          repo: "renderer",
-          publicationRepo: "tellahq/renderer",
-          baseBranch: "main",
-          allowedRunners: [],
-          publication: "branch-pr-only",
-        },
+        automationDescendantPolicy: descendantPolicy,
       },
       { user: "Kent" },
     );
@@ -326,5 +357,130 @@ describe("resolveSessionRunInputs", () => {
     );
     expect(inputs.mcpServers).toBeUndefined();
     expect(inputs.mcpServersSource).toBe("all");
+  });
+
+  test("an incident agent's turn is scoped by its re-resolved access", async () => {
+    const previousAudit = __setIncidentAuditForTest(() => {});
+    __setBindingResolverForTest(async () => ({
+      ...incidentAccess,
+      connections: ["sentry"],
+      deniedTools: { mcp__sentry__delete_issue: "off" },
+    }));
+    try {
+      const inputs = await resolveSessionRunInputs(
+        {
+          ...plain,
+          id: "os-1",
+          mode: "code",
+          repo: "acme",
+          automationDescendantPolicy: {
+            ...descendantPolicy,
+            repo: "acme",
+            mcpServers: ["sentry", "logs"],
+            incident: {
+              incidentId: "inc-1",
+              role: "investigator",
+              signalId: null,
+              accessRevision: "r1",
+              spawn: { hosts: [], credentials: [], egress: null },
+            },
+          },
+        },
+        { user: "Kent" },
+      );
+      expect(inputs).toMatchObject({
+        isAutomationSession: true,
+        mcpServers: ["sentry"],
+        deniedTools: { mcp__sentry__delete_issue: "off" },
+        user: undefined,
+        incidentProxyMcpServers: ["opensession-incident-access"],
+      });
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+
+  test("a refused incident turn throws instead of running unscoped", async () => {
+    const previousAudit = __setIncidentAuditForTest(() => {});
+    __setBindingResolverForTest(async () => {
+      throw new AgentAccessError(
+        "Incident inc-1 is paused; its agents have no access",
+        "incident",
+      );
+    });
+    try {
+      await expect(
+        resolveSessionRunInputs({
+          ...plain,
+          id: "os-1",
+          automationDescendantPolicy: {
+            ...descendantPolicy,
+            incident: {
+              incidentId: "inc-1",
+              role: "verifier",
+              signalId: null,
+              accessRevision: "r1",
+              spawn: { hosts: [], credentials: [], egress: null },
+            },
+          },
+        }),
+      ).rejects.toThrow("is paused");
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+
+  test("viewing a refused incident agent's inputs neither throws nor audits", async () => {
+    const audits: unknown[] = [];
+    const previousAudit = __setIncidentAuditForTest((e) => audits.push(e));
+    __setBindingResolverForTest(async () => {
+      throw new AgentAccessError(
+        "Incident inc-1 is paused; its agents have no access",
+        "incident",
+      );
+    });
+    try {
+      const inputs = await resolveSessionRunInputs(
+        {
+          ...plain,
+          id: "os-1",
+          automationDescendantPolicy: {
+            ...descendantPolicy,
+            mcpServers: ["sentry"],
+            incident: {
+              incidentId: "inc-1",
+              role: "verifier",
+              signalId: null,
+              accessRevision: "r1",
+              spawn: { hosts: [], credentials: [], egress: null },
+            },
+          },
+        },
+        { audit: false },
+      );
+      expect(inputs).toMatchObject({
+        mcpServers: [],
+        incidentProxyMcpServers: [],
+        incidentRefusal: "Incident inc-1 is paused; its agents have no access",
+      });
+      expect(inputs.deniedTools).toMatchObject(automationDeniedTools());
+      expect(audits).toEqual([]);
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+
+  test("other descendants keep their empty scope and no incident server", async () => {
+    const inputs = await resolveSessionRunInputs({
+      ...plain,
+      automationDescendantPolicy: descendantPolicy,
+    });
+    expect(inputs.incidentProxyMcpServers).toEqual([]);
+    expect(
+      (await resolveSessionRunInputs(plain)).incidentProxyMcpServers,
+    ).toEqual([]);
   });
 });

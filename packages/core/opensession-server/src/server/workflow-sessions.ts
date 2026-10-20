@@ -297,6 +297,15 @@ export function createWorkflowSessionController(
         control.getSession(opts.parentSessionId) ||
         findSession(opts.parentSessionId);
       if (!parent) throw new Error("Workflow parent session no longer exists");
+      // A child would be built without the incident binding and so without
+      // the agent's access enforcement: incident agents never spawn.
+      if (
+        (
+          parent.automationDescendantPolicy ??
+          findSession(opts.parentSessionId)?.automationDescendantPolicy
+        )?.incident
+      )
+        throw new Error("Incident agents cannot start other sessions");
       const depth = (parent.spawnDepth || 0) + 1;
       if (depth > opts.maxDepth)
         throw new Error(
