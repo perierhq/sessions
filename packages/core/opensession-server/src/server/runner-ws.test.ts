@@ -22,6 +22,7 @@ import {
   resizeRunnerTerminal,
   runnerWsClose,
   runnerWsMessage,
+  runnerTerminalCount,
   runnerWsOpen,
   stopRunnerTerminal,
   writeRunnerTerminal,
@@ -218,6 +219,7 @@ describe("Runner WebSocket policy", () => {
       terminalId: frame.id,
       cwd: "/home/ubuntu/worktrees/renderer-s1",
     });
+    expect(runnerTerminalCount(registered.runner.id)).toBe(1);
 
     // Every later frame carries the protocol version, or the Runner drops it.
     writeRunnerTerminal(registered.runner.id, frame.id, "bHM K");
@@ -228,7 +230,55 @@ describe("Runner WebSocket policy", () => {
       { t: "terminal_resize", id: frame.id, cols: 80, rows: 24, version: 1 },
       { t: "terminal_stop", id: frame.id, version: 1 },
     ]);
+    expect(runnerTerminalCount(registered.runner.id)).toBe(0);
     runnerWsClose(ws);
+  });
+
+  test("counts a Runner's open terminals until they exit or it drops", async () => {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "mac-mini",
+      platform: "darwin",
+      arch: "arm64",
+      address: "100.101.102.105",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    const sent: string[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      send: (frame: string) => sent.push(frame),
+      close: () => {},
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1 }));
+    const open = async () => {
+      const opening = openRunnerTerminal({
+        runnerId: id,
+        sessionId: "s1",
+        repo: "renderer",
+        workspacePath: "/w",
+        vm: { name: "sbx-s1", user: "admin", cwd: "/w" },
+      });
+      const frame = JSON.parse(sent.shift()!);
+      runnerWsMessage(
+        ws,
+        JSON.stringify({
+          t: "terminal_ready",
+          id: frame.id,
+          operationToken: frame.operationToken,
+        }),
+      );
+      return (await opening).terminalId;
+    };
+    const first = await open();
+    await open();
+    expect(runnerTerminalCount(id)).toBe(2);
+    runnerWsMessage(ws, JSON.stringify({ t: "terminal_exit", id: first }));
+    expect(runnerTerminalCount(id)).toBe(1);
+    runnerWsClose(ws);
+    expect(runnerTerminalCount(id)).toBe(0);
   });
 
   test("blocks exec when maintenance is enabled after connection", async () => {

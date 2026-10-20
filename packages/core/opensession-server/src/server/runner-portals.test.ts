@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { statePath } from "./paths";
 import {
   orphanedRunnerPortalRecords,
+  runnerPortalCount,
   type RunnerPortalRecord,
 } from "./runner-portals";
+import { writeJsonAtomic } from "./shared/atomic-write";
 
 const portal = (sessionId: string): RunnerPortalRecord => ({
   name: "webapp",
@@ -27,3 +33,29 @@ describe("Runner Portal ownership", () => {
     ).toEqual([portal("deleted")]);
   });
 });
+
+test("counts a Runner's Portals that are not stopped", () => {
+  const previous = process.env.OPENSESSION_STATE_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "os-runner-portals-test-"));
+  process.env.OPENSESSION_STATE_DIR = dir;
+  try {
+    countPortals();
+  } finally {
+    if (previous === undefined) delete process.env.OPENSESSION_STATE_DIR;
+    else process.env.OPENSESSION_STATE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function countPortals() {
+  writeJsonAtomic(statePath(".opensession-runner-portals.json"), {
+    portals: [
+      portal("a"),
+      { ...portal("b"), state: "stopped" },
+      { ...portal("c"), runnerId: "runner-2" },
+    ],
+  });
+  expect(runnerPortalCount("runner-1")).toBe(1);
+  expect(runnerPortalCount("runner-2")).toBe(1);
+  expect(runnerPortalCount("runner-3")).toBe(0);
+}

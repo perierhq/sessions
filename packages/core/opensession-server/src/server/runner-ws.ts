@@ -48,6 +48,9 @@ type Connection = {
   capabilities: Runner["capabilities"];
   resources?: Runner["resources"];
   pending: Map<string, Pending>;
+  /** Terminals opened on this connection and not yet exited or stopped.
+   *  The Runner kills them all when the channel closes. */
+  terminals: Set<string>;
 };
 
 const connections: Map<string, Connection> =
@@ -291,6 +294,7 @@ export async function openRunnerTerminal(input: {
   });
   if (result.code !== 0)
     throw new Error(result.stderr || "Runner terminal could not start");
+  connection.terminals.add(id);
   return { terminalId: id, cwd: result.stdout || input.workspacePath };
 }
 
@@ -321,8 +325,14 @@ export function resizeRunnerTerminal(
     });
 }
 export function stopRunnerTerminal(runnerId: string, terminalId: string): void {
+  connections.get(runnerId)?.terminals.delete(terminalId);
   if (/^rt\d+-[A-Za-z0-9_-]{16}$/.test(terminalId))
     sendRunnerTerminalFrame(runnerId, { t: "terminal_stop", id: terminalId });
+}
+
+/** Open terminals on the Runner's current connection. */
+export function runnerTerminalCount(runnerId: string): number {
+  return connections.get(runnerId)?.terminals.size ?? 0;
 }
 
 /**
@@ -758,6 +768,7 @@ export function runnerWsOpen(ws: any): boolean {
     capabilities: runner.capabilities,
     resources: runner.resources,
     pending: new Map(),
+    terminals: new Set(),
   });
   touchRunner(runnerId);
   console.log(`[runners] ${runner.name} attached (${runnerId})`);
@@ -1003,8 +1014,11 @@ export function runnerWsMessage(ws: any, raw: string | Buffer): boolean {
       });
       return true;
     }
-    case "terminal_data":
     case "terminal_exit":
+      connection.terminals.delete(String(message.id));
+      publishRunnerTerminalFrame(runnerId, message as Record<string, unknown>);
+      return true;
+    case "terminal_data":
       publishRunnerTerminalFrame(runnerId, message as Record<string, unknown>);
       return true;
     case "vm_display_opened":
