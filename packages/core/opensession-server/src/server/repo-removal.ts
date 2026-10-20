@@ -38,6 +38,12 @@
  * session appeared or the plan changed, the files stay and the result says
  * so. Once the config entry is gone the removal has happened: later failures
  * are reported in the result (`kept`, `error`), never as a failed request.
+ *
+ * Deleting files runs in the background after the request is answered, so a
+ * big checkout can't outlast the request's idle timeout. The removal mark
+ * stays until it is done; repoRemovalStatus (`GET …/removal-status`) reports
+ * it, and the audit log records the removal, the start of the delete and
+ * what it deleted or kept.
  */
 
 import { createHash } from "crypto";
@@ -124,6 +130,33 @@ export interface RepoRemovalResult {
    *  repository itself was removed either way. */
   error?: string;
 }
+
+/** What `DELETE /api/setup/repos/:id` answers. Without deleting files the
+ *  removal is complete. With them, it answers as soon as the config entry is
+ *  gone (`deleting`), and the files are deleted in the background: follow
+ *  them with repoRemovalStatus (`GET …/removal-status`). */
+export type RemoveRepoResponse =
+  | (RepoRemovalResult & { removed: true; deleting?: false })
+  | {
+      id: string;
+      removed: true;
+      deleting: true;
+      archived: number;
+      automationsDisabled: number;
+      /** Every path the background delete is working through. */
+      plan: string[];
+    };
+
+/** A removal's file deletion: under way, or finished with its result. */
+export type RepoRemovalStatus =
+  | { id: string; state: "deleting"; startedAt: string; plan: string[] }
+  | {
+      id: string;
+      state: "done";
+      startedAt: string;
+      finishedAt: string;
+      result: RepoRemovalResult;
+    };
 
 export class RepoRemovalError extends Error {
   constructor(
@@ -941,18 +974,28 @@ export interface RemoveRepoOptions {
  * 409 a blocking session, a removal already under way or a plan that no
  * longer matches the preview, 400 a refused file deletion. After the entry
  * is removed it never throws; what happened to the files is in the result.
+ *
+ * Deleting files can take minutes on a big checkout, longer than a request
+ * may stay open. So with files to delete it answers once the entry is gone
+ * and deletes them in the background, still holding the removal mark until
+ * they are settled; repoRemovalStatus reports the outcome.
  */
 export async function removeRepo(
   id: string,
   opts: RemoveRepoOptions,
-): Promise<RepoRemovalResult> {
+): Promise<RemoveRepoResponse> {
   if (!registeredRepo(id))
     throw new RepoRemovalError(`Unknown repository: ${id}`, 404);
+  // Set once the file deletion runs on in the background, which then owns
+  // clearing the removal mark.
+  let backgrounded = false;
   await withConfigMutationLock(async () => {
     const repo = registeredRepo(id);
     if (!repo) throw new RepoRemovalError(`Unknown repository: ${id}`, 404);
     if (!markRepoRemoving(id))
       throw new RepoRemovalError(`${repo.label} is already being removed`, 409);
+    // A new removal of the same id supersedes the last one's status.
+    tracked.delete(id);
   });
   try {
     const repo = registeredRepo(id);
@@ -1021,18 +1064,129 @@ export async function removeRepo(
     });
     if (!removed) throw new RepoRemovalError(`Unknown repository: ${id}`, 404);
 
-    return await finishRemoval({
+    // The removal itself has happened; deleting files (below or in the
+    // background) is recorded on its own when it settles.
+    auditAsync({
+      kind: "setup_repo_remove",
+      id,
+      path: repo.repo,
+      archived: owned.length,
+      automationsDisabled,
+      deleteFiles: !!plan,
+      ...(plan ? { tier: plan.tier } : {}),
+      by: opts.by || null,
+    });
+    await forgetRepoState(id);
+    const input = {
       id,
       repo,
       repos,
-      plan,
       archived: owned.length,
       automationsDisabled,
       by: opts.by || null,
-    });
+    };
+    if (!plan) {
+      return {
+        ...(await finishRemoval({ ...input, plan: null })),
+        removed: true,
+      };
+    }
+    const planned = planPaths(plan);
+    backgrounded = true;
+    trackRemoval(id, planned, finishRemoval({ ...input, plan }), () =>
+      unmarkRepoRemoving(id),
+    );
+    return {
+      id,
+      removed: true,
+      deleting: true,
+      archived: owned.length,
+      automationsDisabled,
+      plan: planned,
+    };
   } finally {
-    unmarkRepoRemoving(id);
+    if (!backgrounded) unmarkRepoRemoving(id);
   }
+}
+
+/** How long a finished removal's status stays readable. */
+const STATUS_TTL_MS = 10 * 60_000;
+
+interface TrackedRemoval {
+  status: RepoRemovalStatus;
+  done: Promise<RepoRemovalResult>;
+}
+
+const gr = globalThis as unknown as {
+  __repoRemovalStatuses?: Map<string, TrackedRemoval>;
+};
+const tracked: Map<string, TrackedRemoval> = (gr.__repoRemovalStatuses ??=
+  new Map());
+
+/** Record a background file deletion and settle its status (and the removal
+ *  mark, through `release`) when it finishes. finishRemoval never throws;
+ *  a throw anyway is logged and reported as the result's error. */
+function trackRemoval(
+  id: string,
+  plan: string[],
+  work: Promise<RepoRemovalResult>,
+  release: () => void,
+): void {
+  const startedAt = new Date().toISOString();
+  const done = work
+    .catch((cause): RepoRemovalResult => {
+      const error = `Deleting its files failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      console.error(
+        `[repo-removal] background removal of ${id} failed:`,
+        cause,
+      );
+      auditAsync({ kind: "setup_repo_remove_files", id, kept: plan, error });
+      return {
+        id,
+        archived: 0,
+        automationsDisabled: 0,
+        deleted: [],
+        kept: plan,
+        error,
+      };
+    })
+    .then((result) => {
+      const entry: TrackedRemoval = {
+        status: {
+          id,
+          state: "done",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          result,
+        },
+        done,
+      };
+      tracked.set(id, entry);
+      const timer = setTimeout(() => {
+        if (tracked.get(id) === entry) tracked.delete(id);
+      }, STATUS_TTL_MS);
+      (timer as { unref?: () => void }).unref?.();
+      return result;
+    })
+    .finally(release);
+  tracked.set(id, {
+    status: { id, state: "deleting", startedAt, plan },
+    done,
+  });
+}
+
+/** The latest removal of `id` that deleted files, while it runs and for a
+ *  while after; null when there is none (or the server restarted since). */
+export function repoRemovalStatus(id: string): RepoRemovalStatus | null {
+  return tracked.get(id)?.status ?? null;
+}
+
+/** Test seam: wait for the background part of a removal of `id`. */
+export async function __waitForRepoRemovalForTest(
+  id: string,
+): Promise<RepoRemovalResult | null> {
+  const entry = tracked.get(id);
+  return entry ? await entry.done : null;
 }
 
 /** Everything after the config entry is gone. Never throws: the repository
@@ -1049,7 +1203,6 @@ async function finishRemoval(input: {
   const { id, repo, repos, plan } = input;
   const files = { deleted: [] as string[], kept: [] as string[] };
   let error: string | undefined;
-  await forgetRepoState(id);
   if (plan) {
     const planned = planPaths(plan);
     try {
@@ -1088,20 +1241,19 @@ async function finishRemoval(input: {
       error = `Deleting its files failed: ${cause instanceof Error ? cause.message : String(cause)}`;
       console.error(`[repo-removal] deleting files for ${id} failed:`, cause);
     }
+    if (error && !error.startsWith("Deleting its files failed"))
+      console.warn(`[repo-removal] ${id}: ${error}`);
+    auditAsync({
+      kind: "setup_repo_remove_files",
+      id,
+      path: repo.repo,
+      tier: plan.tier,
+      ...(files.deleted.length ? { deleted: files.deleted } : {}),
+      ...(files.kept.length ? { kept: files.kept } : {}),
+      ...(error ? { error } : {}),
+      by: input.by,
+    });
   }
-  auditAsync({
-    kind: "setup_repo_remove",
-    id,
-    path: repo.repo,
-    archived: input.archived,
-    automationsDisabled: input.automationsDisabled,
-    deleteFiles: !!plan,
-    ...(plan ? { tier: plan.tier } : {}),
-    ...(files.deleted.length ? { deleted: files.deleted } : {}),
-    ...(files.kept.length ? { kept: files.kept } : {}),
-    ...(error ? { error } : {}),
-    by: input.by,
-  });
   return {
     id,
     archived: input.archived,

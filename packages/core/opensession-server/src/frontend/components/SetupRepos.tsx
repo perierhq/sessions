@@ -21,7 +21,7 @@ import {
   rowMenuTriggerClasses,
   settingsInputClass,
 } from "../ui/settings";
-import { toast } from "../ui/toast";
+import { dismissToast, toast } from "../ui/toast";
 import {
   IconArrowUpToLine,
   IconBranches,
@@ -29,7 +29,12 @@ import {
   IconPlus,
   IconTrash,
 } from "./icons";
-import { RemoveRepoDialog, removedToast } from "./RemoveRepoDialog";
+import {
+  RemoveRepoDialog,
+  followRemoval,
+  removedToast,
+  removedToastIsError,
+} from "./RemoveRepoDialog";
 import {
   getDefaultRepoPref,
   setDefaultRepoPref,
@@ -49,6 +54,7 @@ import { pngFromImageFile } from "../lib/icon-image";
 import { setupRepoDefaultBranch } from "../lib/setup-repo";
 import {
   fetchRepos,
+  isRemovalDeleting,
   notifyReposChanged,
   repoGithubAvatarUrl,
   setRepoAppearanceApi,
@@ -440,17 +446,22 @@ function RepoActionsMenu({
           repo={repo}
           open={removeOpen}
           onOpenChange={setRemoveOpen}
-          onRemoved={async (result) => {
+          onRemoved={async (outcome) => {
             // The server already cleared stored preferences naming it; this
             // keeps this browser's cached copy from offering it until then.
             if (getDefaultRepoPref() === repo.id) setDefaultRepoPref("");
+            // The list drops it now; deleting its files may run on.
+            const reload = onChanged();
+            const pending = isRemovalDeleting(outcome)
+              ? toast("Removing files…", { ongoing: true })
+              : 0;
+            const result = await followRemoval(outcome);
+            if (pending) dismissToast(pending);
             toast(
               removedToast(repo.label, result),
-              result.kept.length || result.error
-                ? { variant: "error" }
-                : undefined,
+              removedToastIsError(result) ? { variant: "error" } : undefined,
             );
-            await onChanged();
+            await reload;
           }}
         />
       )}

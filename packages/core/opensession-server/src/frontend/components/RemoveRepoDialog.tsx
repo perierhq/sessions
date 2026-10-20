@@ -8,10 +8,14 @@ import { errorMessage } from "../lib/error-message";
 import { formatBytes } from "../lib/images";
 import {
   fetchRepoRemovalPreview,
+  fetchRepoRemovalStatus,
+  isRemovalDeleting,
   removeRepoApi,
+  type RepoRemovalOutcome,
   type RepoRemovalPreview,
   type RepoRemovalRequest,
   type RepoRemovalResult,
+  type RepoRemovalStatus,
 } from "../lib/api";
 
 // Settings → Repositories → ⋯ → Remove…: the confirmation for taking a
@@ -81,7 +85,65 @@ export function removedToast(label: string, result: RepoRemovalResult): string {
   if (result.kept.length)
     return `Removed ${label}. Some of its files couldn’t be deleted.`;
   if (result.error) return `Removed ${label}. ${result.error}`;
+  if (result.filesUnknown)
+    return `Removed ${label}. Couldn’t confirm its files were deleted.`;
   return `Removed ${label}`;
+}
+
+/** Whether that toast reports something that went wrong. */
+export function removedToastIsError(result: RepoRemovalResult): boolean {
+  return !!(result.kept.length || result.error || result.filesUnknown);
+}
+
+export interface FollowRemovalDeps {
+  fetchStatus: (id: string) => Promise<RepoRemovalStatus | null>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const followDefaults: FollowRemovalDeps = {
+  fetchStatus: fetchRepoRemovalStatus,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** How often, and for how long, a background delete is polled. */
+export const FOLLOW_INTERVAL_MS = 2_000;
+export const FOLLOW_LIMIT_MS = 10 * 60_000;
+
+/**
+ * The finished result of a removal. One whose files are still being deleted
+ * on the server is polled (`GET …/removal-status`) until it is done. When
+ * the server forgets it (a restart) the files are reported as unconfirmed;
+ * past the time limit, as still being deleted.
+ */
+export async function followRemoval(
+  outcome: RepoRemovalOutcome,
+  deps: FollowRemovalDeps = followDefaults,
+): Promise<RepoRemovalResult> {
+  if (!isRemovalDeleting(outcome)) return outcome;
+  const base: RepoRemovalResult = {
+    id: outcome.id,
+    archived: outcome.archived,
+    automationsDisabled: outcome.automationsDisabled,
+    deleted: [],
+    kept: [],
+  };
+  for (let waited = 0; waited < FOLLOW_LIMIT_MS; waited += FOLLOW_INTERVAL_MS) {
+    await deps.sleep(FOLLOW_INTERVAL_MS);
+    let status: RepoRemovalStatus | null;
+    try {
+      status = await deps.fetchStatus(outcome.id);
+    } catch {
+      continue; // A dropped poll: try again next tick.
+    }
+    if (!status) return { ...base, filesUnknown: true };
+    if (status.state === "done")
+      return {
+        ...status.result,
+        archived: outcome.archived,
+        automationsDisabled: outcome.automationsDisabled,
+      };
+  }
+  return { ...base, error: "Its files are still being deleted." };
 }
 
 /** Remove is blocked: no preview yet, or a session stands in the way. */
@@ -431,7 +493,9 @@ export function RemoveRepoDialog({
   repo: { id: string; label: string; path: string };
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onRemoved: (result: RepoRemovalResult) => void | Promise<void>;
+  /** Called once the dialog has closed, with what the server answered: a
+   *  finished removal, or one still deleting files (see followRemoval). */
+  onRemoved: (outcome: RepoRemovalOutcome) => void | Promise<void>;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const blockerId = useId();

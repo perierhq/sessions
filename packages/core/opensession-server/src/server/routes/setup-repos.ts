@@ -12,6 +12,10 @@
  *   GET  /api/setup/repos/:id/removal: what removing it would do (sessions to
  *        archive, running count, whether its files may be deleted).
  *   DELETE /api/setup/repos/:id {deleteFiles}: remove it (repo-removal.ts).
+ *        With files to delete it answers once the entry is gone and deletes
+ *        them in the background.
+ *   GET  /api/setup/repos/:id/removal-status: how that background delete is
+ *        going, and what it deleted or kept once done.
  */
 
 import { $ } from "bun";
@@ -1419,6 +1423,24 @@ export async function handleSetupRepoRoutes(
       );
     }
     return Response.json(preview);
+  }
+
+  const statusMatch = path.match(
+    /^\/api\/setup\/repos\/([^/]+)\/removal-status$/,
+  );
+  if (statusMatch && req.method === "GET") {
+    const id = routeRepoId(statusMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const { repoRemovalStatus } = await import("../repo-removal");
+    const status = repoRemovalStatus(id);
+    if (!status) {
+      return Response.json(
+        { error: `No recent removal of ${id} deleted files` },
+        { status: 404 },
+      );
+    }
+    return Response.json(status);
   }
 
   const updateMatch = path.match(/^\/api\/setup\/repos\/([^/]+)$/);

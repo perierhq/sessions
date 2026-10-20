@@ -298,6 +298,58 @@ export interface RepoRemovalResult {
   error?: string;
   /** Another tab or person removed it first. */
   alreadyRemoved?: boolean;
+  /** The answer was lost (a dropped connection) but the repository is gone,
+   *  so whether its files were deleted is not known here. */
+  filesUnknown?: boolean;
+}
+
+/** The repository is gone and its files are being deleted on the server;
+ *  follow them with fetchRepoRemovalStatus. */
+export interface RepoRemovalDeleting {
+  id: string;
+  removed: true;
+  deleting: true;
+  archived: number;
+  automationsDisabled: number;
+  /** Every path the server is deleting. */
+  plan: string[];
+}
+
+/** What `DELETE /api/setup/repos/:id` answers: a finished removal, or one
+ *  whose files are still being deleted. */
+export type RepoRemovalOutcome = RepoRemovalResult | RepoRemovalDeleting;
+
+export function isRemovalDeleting(
+  outcome: RepoRemovalOutcome,
+): outcome is RepoRemovalDeleting {
+  return (outcome as RepoRemovalDeleting).deleting === true;
+}
+
+/** A background file delete (`GET /api/setup/repos/:id/removal-status`). */
+export type RepoRemovalStatus =
+  | { id: string; state: "deleting"; startedAt: string; plan: string[] }
+  | {
+      id: string;
+      state: "done";
+      startedAt: string;
+      finishedAt: string;
+      result: RepoRemovalResult;
+    };
+
+/** How the latest file-deleting removal of `id` is going; null when the
+ *  server knows of none (none ran, or it restarted since). */
+export async function fetchRepoRemovalStatus(
+  id: string,
+): Promise<RepoRemovalStatus | null> {
+  try {
+    return await request<RepoRemovalStatus>(
+      `/setup/repos/${encodeURIComponent(id)}/removal-status`,
+      { label: "Couldn’t check the removal" },
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
 }
 
 /** The body of `DELETE /api/setup/repos/:id`. */
@@ -321,39 +373,83 @@ export function fetchRepoRemovalPreview(
  * Remove a registered repository. Its live sessions are archived, and its
  * files are deleted only when `deleteFiles` is set and the server allows it
  * (`planToken` from the preview, `confirm` the typed id when it asks for
- * one). A 404 means it is already gone, which is what was asked for. Every
- * repo list reloads afterwards, so the sidebar and pickers drop it.
+ * one). A 404 means it is already gone, which is what was asked for. With
+ * files to delete, the server answers once the repository is gone and
+ * deletes them in the background (RepoRemovalDeleting). When the answer is
+ * lost to a dropped connection or a gateway timeout, the preview is checked
+ * again: a 404 there means the removal went through. Every repo list
+ * reloads afterwards, so the sidebar and pickers drop it.
  */
 export async function removeRepoApi(
   id: string,
   opts: RepoRemovalRequest,
-): Promise<RepoRemovalResult> {
+): Promise<RepoRemovalOutcome> {
   const body: RepoRemovalRequest = { deleteFiles: opts.deleteFiles };
   if (opts.deleteFiles) {
     body.planToken = opts.planToken;
     if (opts.confirm !== undefined) body.confirm = opts.confirm;
   }
-  let result: RepoRemovalResult;
+  let result: RepoRemovalOutcome;
   try {
-    result = await request<RepoRemovalResult>(
+    result = await request<RepoRemovalOutcome>(
       `/setup/repos/${encodeURIComponent(id)}`,
       { method: "DELETE", body, label: "Couldn’t remove the repository" },
     );
   } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 404) throw error;
-    result = {
-      id,
-      archived: 0,
-      automationsDisabled: 0,
-      deleted: [],
-      kept: [],
-      alreadyRemoved: true,
-    };
+    if (error instanceof ApiError && error.status === 404) {
+      result = { ...emptyRemoval(id), alreadyRemoved: true };
+    } else if (answerLost(error)) {
+      const recovered = await removalAfterLostAnswer(id, opts.deleteFiles);
+      if (!recovered) throw error;
+      result = recovered;
+    } else {
+      throw error;
+    }
   }
   forgetCachedRepo(id);
   if (workspaceNewSessionRepo === id) workspaceNewSessionRepo = "";
   notifyReposChanged();
   return result;
+}
+
+function emptyRemoval(id: string): RepoRemovalResult {
+  return { id, archived: 0, automationsDisabled: 0, deleted: [], kept: [] };
+}
+
+/** The request may have gone through but its answer never arrived: the
+ *  connection dropped, or a gateway gave up waiting. */
+function answerLost(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status >= 502;
+  return !(error instanceof DOMException && error.name === "AbortError");
+}
+
+/** After a lost answer: what is true now, or null when the repository is
+ *  still registered (the removal didn't happen) or that can't be told. */
+async function removalAfterLostAnswer(
+  id: string,
+  deleteFiles: boolean,
+): Promise<RepoRemovalOutcome | null> {
+  try {
+    await fetchRepoRemovalPreview(id);
+    return null;
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) return null;
+  }
+  const status = await fetchRepoRemovalStatus(id).catch(() => null);
+  if (status?.state === "done") return status.result;
+  if (status?.state === "deleting")
+    return {
+      id,
+      removed: true,
+      deleting: true,
+      archived: 0,
+      automationsDisabled: 0,
+      plan: status.plan,
+    };
+  return {
+    ...emptyRemoval(id),
+    ...(deleteFiles ? { filesUnknown: true } : {}),
+  };
 }
 
 export interface GithubOwner {

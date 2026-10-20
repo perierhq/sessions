@@ -17,6 +17,7 @@ import {
   PLAN_CHANGED,
   UNVERIFIED_NOTICE,
   __setRepoRemovalDepsForTest,
+  __waitForRepoRemovalForTest,
 } from "../repo-removal";
 import {
   RepoBeingRemovedError,
@@ -214,6 +215,15 @@ async function preview(id: string) {
   return { status: response?.status, body: (await response?.json()) as any };
 }
 
+async function removalStatus(id: string) {
+  const response = await handleSetupRepoRoutes(
+    route("GET", `/api/setup/repos/${encodeURIComponent(id)}/removal-status`),
+  );
+  return { status: response?.status, body: (await response?.json()) as any };
+}
+
+/** DELETE, and when files are deleted in the background, wait for that and
+ *  fold its result (as the status route reports it) into the body. */
 async function remove(
   id: string,
   body?: unknown,
@@ -227,7 +237,16 @@ async function remove(
       authUser,
     ),
   );
-  return { status: response?.status, body: (await response?.json()) as any };
+  const answered = (await response?.json()) as any;
+  if (response?.status !== 200 || !answered.deleting)
+    return { status: response?.status, body: answered };
+  await __waitForRepoRemovalForTest(id);
+  const status = await removalStatus(id);
+  expect(status.body.state).toBe("done");
+  return {
+    status: response?.status,
+    body: { ...answered, ...status.body.result },
+  };
 }
 
 /** Delete with files, sending back the plan token the preview handed out. */
@@ -346,6 +365,7 @@ describe("repository removal", () => {
       expect(status).toBe(200);
       expect(body).toEqual({
         id: "widget",
+        removed: true,
         archived: 2,
         automationsDisabled: 0,
         deleted: [],
@@ -1025,4 +1045,73 @@ describe("repository removal", () => {
       expect(existsSync(join(hand, "README.md"))).toBe(true);
     },
   );
+  test.serial(
+    "answers once the entry is gone and deletes the files in the background",
+    async () => {
+      const env = await setup();
+      await createNewRepo("widget");
+      const checkout = join(env.checkouts, "widget");
+      let releaseDelete!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseDelete = resolve;
+      });
+      fakeSessions([], {
+        // Hold the delete at its first step, as a big checkout would.
+        stopWorkloadsInDir: async () => {
+          await gate;
+        },
+      });
+      const shown = await preview("widget");
+
+      const response = await handleSetupRepoRoutes(
+        route("DELETE", "/api/setup/repos/widget", {
+          deleteFiles: true,
+          planToken: shown.body.planToken,
+        }),
+      );
+      const body = (await response?.json()) as any;
+
+      expect(response?.status).toBe(200);
+      expect(body).toMatchObject({
+        id: "widget",
+        removed: true,
+        deleting: true,
+        plan: shown.body.deletePaths,
+      });
+      expect(readConfig(env).repos.widget).toBeUndefined();
+      // Still marked: the same id can't come back, nor work start in it.
+      expect(isRepoBeingRemoved("widget")).toBe(true);
+      expect((await removalStatus("widget")).body).toMatchObject({
+        state: "deleting",
+        plan: shown.body.deletePaths,
+      });
+      expect(existsSync(checkout)).toBe(true);
+
+      releaseDelete();
+      const result = await __waitForRepoRemovalForTest("widget");
+
+      expect(result).toMatchObject({
+        kept: [],
+        deleted: shown.body.deletePaths,
+      });
+      expect(existsSync(checkout)).toBe(false);
+      expect(isRepoBeingRemoved("widget")).toBe(false);
+      expect((await removalStatus("widget")).body).toMatchObject({
+        state: "done",
+        result: { kept: [] },
+      });
+    },
+  );
+
+  test.serial("a removal that keeps the files answers in full", async () => {
+    await setup();
+    await createNewRepo("widget");
+    fakeSessions([]);
+    const { status, body } = await remove("widget", { deleteFiles: false });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ removed: true, deleted: [], kept: [] });
+    expect(body.deleting).toBeUndefined();
+    expect(isRepoBeingRemoved("widget")).toBe(false);
+    expect((await removalStatus("widget")).status).toBe(404);
+  });
 });

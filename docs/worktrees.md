@@ -238,13 +238,21 @@ by hand outside the worktree root, is left in place: the dialog lists it
 under "These worktrees will stop working." and deleting needs the id typed
 in, whatever the tier.
 
+Deleting files can take minutes on a large checkout, so the server answers as
+soon as the repository is out of the registry and deletes them in the
+background. The dialog closes, a "Removing files…" toast stays up while they
+go, and it then says what was deleted or kept. Until the delete finishes, the
+repository still counts as being removed. The audit log records the removal,
+the start of the delete, and what it deleted or kept.
+
 The same actions are available over HTTP to anyone who may use the setup
 routes. Deleting files also needs a signed-in person; automations can't.
 
-| Endpoint                            | Does                                                                                                                                                                                                 |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/setup/repos/<id>/removal` | Session, running, attached and automation counts, whether its files may be deleted, what that would remove, and a `planToken`                                                                        |
-| `DELETE /api/setup/repos/<id>`      | Removes it. `{"deleteFiles": true, "planToken": "…"}` also deletes its files (`"confirm": "<id>"` when the preview says `confirmRequired`). 409 while sessions block it or when the plan has changed |
+| Endpoint                                   | Does                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/setup/repos/<id>/removal`        | Session, running, attached and automation counts, whether its files may be deleted, what that would remove, and a `planToken`                                                                                                                                                                                               |
+| `DELETE /api/setup/repos/<id>`             | Removes it. `{"deleteFiles": true, "planToken": "…"}` also deletes its files (`"confirm": "<id>"` when the preview says `confirmRequired`). 409 while sessions block it or when the plan has changed. With files to delete it answers `{"removed": true, "deleting": true, "plan": […]}` and deletes them in the background |
+| `GET /api/setup/repos/<id>/removal-status` | How a background file delete is going (`deleting`), then what it deleted or kept (`done`). Kept in memory for ten minutes; 404 when there is none                                                                                                                                                                           |
 
 ## What cleans up automatically
 

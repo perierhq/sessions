@@ -3,8 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { RepoRemovalPreview } from "../lib/api";
 import { Modal } from "../ui/modal";
 import {
+  FOLLOW_INTERVAL_MS,
+  FOLLOW_LIMIT_MS,
   RemoveRepoBody,
   RemoveRepoPanel,
+  followRemoval,
   initialRemoveRepoDialogState,
   removeRepoDialogReducer,
   removeRequest,
@@ -319,4 +322,97 @@ test("the toast says what happened", () => {
   expect(removedToast("Widget", { ...done, kept: [PATH] })).toBe(
     "Removed Widget. Some of its files couldn’t be deleted.",
   );
+});
+
+test("a removal still deleting files is followed until it is done", async () => {
+  const statuses = [
+    { id: "widget", state: "deleting" as const, startedAt: "t", plan: [PATH] },
+    new Error("dropped"),
+    {
+      id: "widget",
+      state: "done" as const,
+      startedAt: "t",
+      finishedAt: "u",
+      result: {
+        id: "widget",
+        archived: 0,
+        automationsDisabled: 0,
+        deleted: [PATH],
+        kept: [],
+      },
+    },
+  ];
+  const slept: number[] = [];
+  const result = await followRemoval(
+    {
+      id: "widget",
+      removed: true,
+      deleting: true,
+      archived: 2,
+      automationsDisabled: 1,
+      plan: [PATH],
+    },
+    {
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      fetchStatus: async () => {
+        const next = statuses.shift()!;
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    },
+  );
+  expect(slept).toEqual([
+    FOLLOW_INTERVAL_MS,
+    FOLLOW_INTERVAL_MS,
+    FOLLOW_INTERVAL_MS,
+  ]);
+  expect(result).toMatchObject({
+    deleted: [PATH],
+    kept: [],
+    archived: 2,
+    automationsDisabled: 1,
+  });
+  expect(removedToast("Widget", result)).toBe("Removed Widget");
+});
+
+test("a removal the server forgot, or one that runs too long, says so", async () => {
+  const deleting = {
+    id: "widget",
+    removed: true as const,
+    deleting: true as const,
+    archived: 0,
+    automationsDisabled: 0,
+    plan: [PATH],
+  };
+  const sleep = async () => {};
+  const forgotten = await followRemoval(deleting, {
+    sleep,
+    fetchStatus: async () => null,
+  });
+  expect(removedToast("Widget", forgotten)).toBe(
+    "Removed Widget. Couldn’t confirm its files were deleted.",
+  );
+  let polls = 0;
+  const slow = await followRemoval(deleting, {
+    sleep,
+    fetchStatus: async () => {
+      polls++;
+      return { id: "widget", state: "deleting", startedAt: "t", plan: [PATH] };
+    },
+  });
+  expect(polls).toBe(FOLLOW_LIMIT_MS / FOLLOW_INTERVAL_MS);
+  expect(removedToast("Widget", slow)).toBe(
+    "Removed Widget. Its files are still being deleted.",
+  );
+  // A finished removal passes straight through.
+  const done = {
+    id: "widget",
+    archived: 0,
+    automationsDisabled: 0,
+    deleted: [],
+    kept: [],
+  };
+  expect(await followRemoval(done)).toBe(done);
 });
