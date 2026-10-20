@@ -14,7 +14,12 @@ import {
   refreshIncidentImpacts,
 } from "./impact";
 import { createSignal, updateSignal } from "./signal-store";
-import type { SourceRun } from "./sources";
+import { isBlockedAddress } from "../shared/network-address";
+import {
+  runSignalSource,
+  type SourceRun,
+  type SourceRunOptions,
+} from "./sources";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 useIncidentTestKernel();
@@ -67,6 +72,15 @@ const incident: Incident = {
   events: [],
   droppedEvents: 0,
 };
+
+const previousOf = (count: number) => ({
+  signalId: "sig-a",
+  at: "x",
+  count,
+  approximate: true,
+  noun: "searches failed",
+  label: "the request log",
+});
 
 const run = (
   matches: Record<string, unknown[]>,
@@ -706,4 +720,120 @@ test("a signal whose impact query keeps failing is backed off", async () => {
   await tick(18 * MIN);
   await tick(19 * MIN);
   expect(runs).toBe(7);
+});
+
+/** The real http source over a stubbed pinned network. */
+function realHttp(
+  respond: (url: URL, headers: Record<string, string>) => Response | Error,
+  addresses = ["203.0.113.10"],
+): { deps: Partial<ImpactDeps>; sent: string[] } {
+  const sent: string[] = [];
+  const net: SourceRunOptions["net"] = {
+    resolve: async () => addresses,
+    isBlocked: isBlockedAddress,
+    send: async (target, init) => {
+      sent.push(target.url.href);
+      const answer = respond(target.url, init.headers ?? {});
+      if (answer instanceof Error) throw answer;
+      return {
+        status: answer.status,
+        headers: answer.headers,
+        body: new Uint8Array(await answer.arrayBuffer()),
+      };
+    },
+  };
+  return {
+    deps: {
+      runSource: (s, opts) => runSignalSource(s, { ...opts, net }),
+      now: () => NOW,
+    },
+    sent,
+  };
+}
+
+const secretImpact: Signal = {
+  ...signal,
+  impact: {
+    ...httpImpact,
+    url: "https://logs.example.test/c?api_key=k3y-s3cret&since={{since}}",
+    headers: { Authorization: "Bearer tok-s3cret" },
+  },
+};
+const SECRETS = ["k3y-s3cret", "tok-s3cret"];
+
+test("impact over the real http source counts and sends the secrets", async () => {
+  const { deps, sent } = realHttp((url, headers) =>
+    url.searchParams.get("api_key") === "k3y-s3cret" &&
+    headers.Authorization === "Bearer tok-s3cret"
+      ? Response.json({ failed: 41, users: 9 })
+      : new Response("no", { status: 401 }),
+  );
+  expect(
+    await measureImpact({ incident, signal: secretImpact }, deps),
+  ).toMatchObject({ count: 41, people: 9 });
+  expect(sent).toHaveLength(1);
+});
+
+test("secrets echoed back never reach the impact", async () => {
+  const answers: Array<Response | Error> = [
+    Response.json({ failed: "k3y-s3cret", users: "Bearer tok-s3cret" }),
+    Response.json({ failed: 3, users: "tok-s3cret" }),
+    new Response("bad key k3y-s3cret, Bearer tok-s3cret", { status: 503 }),
+    new Error("socket reset after tok-s3cret"),
+  ];
+  const outs: IncidentImpact[] = [];
+  for (const answer of answers) {
+    const { deps } = realHttp(() => answer);
+    outs.push(await measureImpact({ incident, signal: secretImpact }, deps));
+  }
+  for (const out of outs)
+    for (const secret of SECRETS)
+      expect([secret, JSON.stringify(out).includes(secret)]).toEqual([
+        secret,
+        false,
+      ]);
+  expect(outs[0]).toMatchObject({ error: "Nothing at $.failed" });
+  expect(outs[1]).toMatchObject({ count: 3 });
+  expect(outs[1]?.people).toBeUndefined();
+  expect(outs[2]).toMatchObject({ error: "HTTP 503 (expected 2xx)" });
+  expect(outs[3]?.error).toContain("[redacted]");
+});
+
+test("a count that is a secret the query sends is refused", async () => {
+  const numeric: Signal = {
+    ...signal,
+    impact: {
+      ...httpImpact,
+      url: "https://logs.example.test/c?token=4242",
+      headers: { "X-Api-Key": "77" },
+    },
+  };
+  for (const body of [{ failed: 4242 }, { failed: 1, users: 77 }]) {
+    const { deps } = realHttp(() => Response.json(body));
+    const out = await measureImpact(
+      {
+        incident,
+        signal: numeric,
+        previous: previousOf(5),
+      },
+      deps,
+    );
+    expect(out).toMatchObject({
+      count: 5,
+      error: "The answer repeats a secret the query sends",
+    });
+    expect(out.people).toBeUndefined();
+  }
+});
+
+test("an impact query to a private address is refused", async () => {
+  const { deps, sent } = realHttp(
+    () => Response.json({ failed: 1 }),
+    ["10.0.0.5"],
+  );
+  const out = await measureImpact({ incident, signal: secretImpact }, deps);
+  expect(out.error).toStartWith("Refused:");
+  expect(out.error).toContain("10.0.0.5");
+  expect(out.count).toBeUndefined();
+  expect(sent).toEqual([]);
 });

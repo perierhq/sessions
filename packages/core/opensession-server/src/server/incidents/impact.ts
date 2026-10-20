@@ -4,6 +4,7 @@
 // once more after it closes. No audit: an impact carries no secret and
 // no decision. No timers at import; `startIncidentImpact` starts the refresh.
 import {
+  type HttpSource,
   type ImpactSource,
   type Incident,
   type IncidentImpact,
@@ -18,7 +19,9 @@ import {
   scanObservations,
 } from "./observation-store";
 import { listSignals } from "./signal-store";
+import { sourceSecretValues } from "./signal-validation";
 import { runSignalSource } from "./sources";
+import { secretForms } from "./sources/http";
 
 export const IMPACT_REFRESH_MS = 60_000;
 /** How long after it closes an incident still gets its final measurement. */
@@ -192,19 +195,16 @@ async function measureHttp(
     value: impact.countPath,
     ...(impact.peoplePath ? { detail: impact.peoplePath } : {}),
   };
+  const source: HttpSource = {
+    kind: "http",
+    url: impactUrl(impact, incident.openedAt),
+    ...(impact.headers ? { headers: impact.headers } : {}),
+    timeoutMs: deps.queryTimeoutMs,
+    json,
+  };
   let run: Awaited<ReturnType<typeof runSignalSource>>;
   try {
-    run = await deps.runSource({
-      ...signal,
-      provider: false,
-      source: {
-        kind: "http",
-        url: impactUrl(impact, incident.openedAt),
-        ...(impact.headers ? { headers: impact.headers } : {}),
-        timeoutMs: deps.queryTimeoutMs,
-        json,
-      },
-    });
+    run = await deps.runSource({ ...signal, provider: false, source });
   } catch (error) {
     return failed(message(error));
   }
@@ -217,6 +217,14 @@ async function measureHttp(
   const people = impact.peoplePath
     ? firstCount(matches[impact.peoplePath])
     : undefined;
+  // The source scrubs secrets from text, not numbers: a count that is a
+  // numeric secret the query sends (`?token=4242`) would carry it out.
+  const secrets = new Set(secretForms(sourceSecretValues(source)));
+  if (
+    secrets.has(String(count)) ||
+    (people !== undefined && secrets.has(String(people)))
+  )
+    return failed("The answer repeats a secret the query sends");
   return {
     count,
     ...(people === undefined ? {} : { people }),
