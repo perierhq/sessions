@@ -263,6 +263,40 @@ describe("decide", () => {
     ).toMatchObject({ op: "attach", incidentId: "inc-2" });
   });
 
+  test("an attached signal still bad keeps the merge window open past its last report", () => {
+    const a = S("sig-a");
+    const b = S("sig-b");
+    // sig-a has been failing for 40 minutes without a new report.
+    const outage = I("inc-1", "investigating", {
+      lastProblemAt: iso(2_400_000),
+    });
+    expect(
+      decide(
+        b,
+        "ok",
+        E("sig-b", "failing"),
+        snap([a, b], [E("sig-a", "failing"), E("sig-b", "failing")], [outage]),
+      )[0],
+    ).toMatchObject({ op: "attach", incidentId: "inc-1", signalId: "sig-b" });
+    // A warning counts as still bad too.
+    expect(
+      decide(
+        b,
+        "ok",
+        E("sig-b", "failing"),
+        snap([a, b], [E("sig-a", "flaky"), E("sig-b", "failing")], [outage]),
+      )[0],
+    ).toMatchObject({ op: "attach", incidentId: "inc-1" });
+    // Recovered, or gone: the window counts from the last report again.
+    for (const sn of [
+      snap([a, b], [E("sig-a", "ok"), E("sig-b", "failing")], [outage]),
+      snap([b], [E("sig-a", "failing"), E("sig-b", "failing")], [outage]),
+    ])
+      expect(decide(b, "ok", E("sig-b", "failing"), sn)[0]).toMatchObject({
+        op: "open",
+      });
+  });
+
   test("attaching to a heads-up escalates it", () => {
     const b = S("sig-b");
     expect(

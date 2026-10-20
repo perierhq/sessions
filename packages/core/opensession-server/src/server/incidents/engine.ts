@@ -23,7 +23,8 @@ import { appendEvent, transitionIncident } from "./lifecycle";
 import { PROBLEM_STATES, WARNING_STATES } from "./rules";
 
 /** An open incident takes a new problem in its project for this long after
- *  its last reported problem. */
+ *  its last reported problem, and for as long as an attached signal is still
+ *  bad. */
 export const MERGE_WINDOW_MS = 1_800_000;
 /** A signal that turns bad this soon after its incident closed reopens it. */
 export const REOPEN_WINDOW_MS = 1_800_000;
@@ -107,6 +108,18 @@ function relatedSignalIds(
   return related;
 }
 
+/** Inside the merge window: a problem reported recently, or an attached
+ *  signal that is still bad (a continuous outage reports nothing new). */
+function inMergeWindow(incident: Incident, snapshot: EngineSnapshot): boolean {
+  return (
+    since(incident.lastProblemAt, snapshot.now) <= MERGE_WINDOW_MS ||
+    incident.signalIds.some(
+      (id) =>
+        snapshot.signals.has(id) && isBad(snapshot.evaluations.get(id)?.state),
+    )
+  );
+}
+
 type Target =
   | { kind: "own"; incident: Incident }
   | { kind: "merge"; incident: Incident }
@@ -126,9 +139,7 @@ function pickTarget(
   );
   if (dependency) return { kind: "merge", incident: dependency };
   const nearby = open.find(
-    (i) =>
-      i.project === signal.project &&
-      since(i.lastProblemAt, snapshot.now) <= MERGE_WINDOW_MS,
+    (i) => i.project === signal.project && inMergeWindow(i, snapshot),
   );
   if (nearby) return { kind: "merge", incident: nearby };
   const closed = incidents.find(

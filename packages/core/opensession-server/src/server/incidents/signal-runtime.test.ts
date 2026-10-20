@@ -86,6 +86,18 @@ test("a second failing signal in the project joins the same incident", async () 
   expect(all[0]!.signalIds).toEqual([a.id, b.id]);
 });
 
+test("a signal failing for 30+ minutes still takes a new failure in", async () => {
+  const a = await make();
+  const b = await make({ name: "Api" });
+  await feed(a.id, "fail", "fail", "fail");
+  // Still failing: no state change, so no new report on the incident.
+  await feed(a.id, ...Array<"fail">(35).fill("fail"));
+  await feed(b.id, "fail", "fail", "fail");
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.signalIds).toEqual([a.id, b.id]);
+});
+
 test("flapping never opens a second incident", async () => {
   const s = await make();
   await feed(s.id, "fail", "fail", "fail", "ok", "ok", "fail", "fail", "fail");
