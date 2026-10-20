@@ -93,7 +93,11 @@ export function HiddenEntry({
   focusFallback?: () => HTMLElement | null;
 }) {
   const [requestedOpen, setOpen] = useState(false);
+  // Set when the last entry is restored: the popover's trigger is about to
+  // unmount, so closing must not try to hand focus back to it.
+  const closeFocus = useRef<HTMLElement | null>(null);
   const setListOpen = (next: boolean) => {
+    if (next) closeFocus.current = null;
     setOpen(next);
     onOpenChange?.(next);
   };
@@ -104,9 +108,6 @@ export function HiddenEntry({
   useEffect(() => {
     setOpen((current) => nextListOpen(current, count));
   }, [count]);
-  // Set when the last entry is restored: the popover's trigger is about to
-  // unmount, so closing must not try to hand focus back to it.
-  const closeFocus = useRef<HTMLElement | null>(null);
   // Restoring the last entry takes the list and the row it opened from.
   const open = nextListOpen(requestedOpen, count);
   if (count === 0) return null;
