@@ -25,7 +25,11 @@ import {
   listSignals,
 } from "../incidents/signal-store";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
-import { handleIncidentsRoutes } from "./incidents";
+import {
+  MAX_CONCURRENT_TEST_RUNS,
+  __setTestRunSourceForTest,
+  handleIncidentsRoutes,
+} from "./incidents";
 import { routeHandlers } from "./index";
 
 const kit = useIncidentTestKernel();
@@ -264,6 +268,49 @@ test("a test run restores secrets only from the stored signal", async () => {
       })
     )?.status,
   ).toBe(404);
+});
+
+test("at most three test runs at once; the rest get 429", async () => {
+  expect(MAX_CONCURRENT_TEST_RUNS).toBe(3);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let started = 0;
+  __setTestRunSourceForTest(async () => {
+    started++;
+    await gate;
+    return { observations: [] };
+  });
+  try {
+    const draft = {
+      source: { kind: "http", url: "https://acme.example.test/" },
+    };
+    const running = [1, 2, 3].map(() =>
+      call("POST", "/api/incident-signals/test", draft),
+    );
+    while (started < 3) await Bun.sleep(1);
+    expect(await call("POST", "/api/incident-signals/test", draft)).toEqual({
+      status: 429,
+      json: { error: "Too many test runs at once" },
+    });
+    // A webhook preview runs nothing and is never turned away.
+    expect(
+      (
+        await call("POST", "/api/incident-signals/test", {
+          source: { kind: "webhook" },
+          payload: "x",
+        })
+      )?.status,
+    ).toBe(200);
+    release();
+    expect((await Promise.all(running)).map((r) => r?.status)).toEqual([
+      200, 200, 200,
+    ]);
+    expect(
+      (await call("POST", "/api/incident-signals/test", draft))?.status,
+    ).toBe(200);
+  } finally {
+    __setTestRunSourceForTest(undefined);
+  }
 });
 
 test("other paths fall through", async () => {

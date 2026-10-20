@@ -59,6 +59,20 @@ const INCIDENT_PATH = /^\/api\/incidents\/([^/]+)$/;
 const INCIDENT_STRIP_PATH = /^\/api\/incidents\/([^/]+)\/strip$/;
 
 const MINUTE_MS = 60_000;
+/** Test runs reach out to other servers; only this many at once. */
+export const MAX_CONCURRENT_TEST_RUNS = 3;
+let testRunsInFlight = 0;
+let runTestSource = runSignalSource;
+
+/** Run test runs through `run` instead of the real sources; undefined
+ *  restores them. */
+export function __setTestRunSourceForTest(
+  run: typeof runSignalSource | undefined,
+): void {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("test run seam used outside tests");
+  runTestSource = run ?? runSignalSource;
+}
 const MAX_STRIP_SPAN_MS = 31 * 24 * 60 * MINUTE_MS;
 /** Lead-in before an incident opened: 15 minutes or 10% of its length. */
 const INCIDENT_LEAD_MIN_MS = 15 * MINUTE_MS;
@@ -161,14 +175,6 @@ async function testRun(
   });
   if ("error" in restored) return badRequest(restored.error);
   const source = restored.source;
-  const fields = restoredSecretFields(validated);
-  if (stored && fields.length)
-    incidentAudit({
-      kind: "incident_signal_tested",
-      signalId: stored.id,
-      fields,
-      by: user,
-    });
   if (source.kind === "webhook") {
     const payload =
       typeof body.payload === "string"
@@ -187,7 +193,27 @@ async function testRun(
     typeof body.provider === "boolean"
       ? body.provider
       : stored?.provider === true;
-  const run = await runSignalSource(draftSignal(source, provider, stored));
+  if (testRunsInFlight >= MAX_CONCURRENT_TEST_RUNS)
+    return Response.json(
+      { error: "Too many test runs at once" },
+      { status: 429 },
+    );
+  // Audited once the run is sure to go ahead (webhook drafts restore nothing).
+  const fields = restoredSecretFields(validated);
+  if (stored && fields.length)
+    incidentAudit({
+      kind: "incident_signal_tested",
+      signalId: stored.id,
+      fields,
+      by: user,
+    });
+  testRunsInFlight++;
+  let run: Awaited<ReturnType<typeof runSignalSource>>;
+  try {
+    run = await runTestSource(draftSignal(source, provider, stored));
+  } finally {
+    testRunsInFlight--;
+  }
   return Response.json({
     observations: run.observations,
     ...(run.preview ? { preview: run.preview } : {}),
