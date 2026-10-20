@@ -53,6 +53,17 @@
  * the transcript. A login is never usable through call_credential or a
  * scripted run, and an API credential is never released.
  *
+ * Incident agents (investigator, verifier) are the one non-interactive
+ * borrower. They never get the opensession-keychain server: an incident
+ * grant (`incident` marker) is minted only by incidentGrantFor, from an
+ * explicit project grant in the incident access settings made by the
+ * credential's owner (personal) or a signed-in teammate (workspace), never
+ * for a login. Incident grants are invisible to the interactive path
+ * (activeGrantFor, request_credential) and usable only by the same incident
+ * through the incident broker path; they are revoked when the incident
+ * closes or the settings stop granting them. See "Incident agents" in
+ * docs/security-model.md.
+ *
  * Stated limitation: the store is a 0600 file owned by the service user,
  * which agent shells also run as (and which may have root on the host), so
  * nothing here stops a local agent that deliberately reads the store or the
@@ -213,6 +224,16 @@ export interface KeychainGrant {
    *  "workspace" grant, or a run of workspace credentials). Revoked when
    *  the credential is made personal again. */
   implicit?: true;
+  /** Lent to an incident agent through a project grant (incidentGrantFor
+   *  only). Usable only on the incident broker path of that incident. */
+  incident?: IncidentGrantMarker;
+}
+
+export interface IncidentGrantMarker {
+  incidentId: string;
+  role: string;
+  project: string;
+  signalId: string | null;
 }
 
 export interface KeychainAskRecord {
@@ -1239,11 +1260,18 @@ export function consumeGrantForBroker(
   sessionId: string,
   method: string,
   path: string,
+  incidentId?: string,
 ): BrokerUse | { error: string; status: number } {
   load();
   const gr = grants.get(grantId);
   // A grant from another session is reported exactly like a missing one.
   if (!gr || gr.sessionId !== sessionId)
+    return { error: "unknown grant", status: 404 };
+  // Incident grants serve only their own incident's broker path, and that
+  // path uses nothing else.
+  if (gr.incident && gr.incident.incidentId !== incidentId)
+    return { error: "this grant belongs to an incident agent", status: 403 };
+  if (!gr.incident && incidentId !== undefined)
     return { error: "unknown grant", status: 404 };
   settleExpiry(gr);
   if (gr.status !== "active")
@@ -1306,6 +1334,241 @@ function liveNow(gr: KeychainGrant): boolean {
   return (
     gr.status === "active" && Date.now() <= new Date(gr.expiresAt).getTime()
   );
+}
+
+// ── Incident grants ─────────────────────────────────────────────────────────
+
+const MAX_INCIDENT_PURPOSE_CHARS = 500;
+
+/**
+ * The grant an incident agent session uses for a credential its project
+ * grants: its live one, else a new one. The caller (incidents/access) has
+ * resolved the agent's access and checked the project grant; this only
+ * refuses what is never lendable. Persists asynchronously.
+ */
+export async function incidentGrantFor(input: {
+  credentialId: string;
+  sessionId: string;
+  mode: "once" | "standing";
+  incident: IncidentGrantMarker;
+  purpose: string;
+}): Promise<KeychainGrant | { error: string }> {
+  await ensureKeychainLoaded();
+  const cred = credentials.get(input.credentialId);
+  if (!cred)
+    return { error: `Credential ${input.credentialId} no longer exists` };
+  if (cred.kind === "login")
+    return {
+      error: `${cred.service} is a login; logins are never lent to incident agents`,
+    };
+  if (input.mode !== "once" && input.mode !== "standing")
+    return { error: "Incident grants are once or standing" };
+  const mine = [...grants.values()].filter(
+    (gr) =>
+      gr.incident?.incidentId === input.incident.incidentId &&
+      gr.sessionId === input.sessionId &&
+      gr.credentialId === cred.id,
+  );
+  const live = mine.find((gr) => liveNow(gr) && gr.mode === input.mode);
+  if (live) return live;
+  if (
+    input.mode === "once" &&
+    mine.some((gr) => gr.mode === "once" && gr.status === "used")
+  )
+    return {
+      error: `This agent already used its one call to ${cred.service}`,
+    };
+  // A live standing grant where the settings now say once is wider than
+  // the agent may hold: end it before minting the once grant.
+  const wider = mine.filter(
+    (gr) => liveNow(gr) && gr.mode === "standing" && input.mode === "once",
+  );
+  const now = Date.now();
+  for (const gr of wider) {
+    gr.status = "revoked";
+    gr.revokedAt = new Date(now).toISOString();
+  }
+  const gr: KeychainGrant = {
+    id: `kg-${crypto.randomUUID()}`,
+    credentialId: cred.id,
+    owner: cred.owner,
+    sessionId: input.sessionId,
+    requestedBy: `incident ${input.incident.incidentId} ${input.incident.role}`,
+    purpose: input.purpose.trim().slice(0, MAX_INCIDENT_PURPOSE_CHARS),
+    mode: input.mode,
+    status: "active",
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(
+      now + (input.mode === "once" ? ONCE_GRANT_TTL_MS : STANDING_GRANT_TTL_MS),
+    ).toISOString(),
+    incident: { ...input.incident },
+  };
+  grants.set(gr.id, gr);
+  try {
+    await persistAsync();
+  } catch (error) {
+    grants.delete(gr.id);
+    await persistAsync().catch(() => {});
+    console.error("[keychain] failed to save an incident grant:", error);
+    return { error: "couldn't write the keychain store" };
+  }
+  for (const old of wider) {
+    auditAsync({
+      kind: "keychain_grant_revoked",
+      grant_id: old.id,
+      credential_id: old.credentialId,
+      by: "sessions",
+      reason: "Access settings now lend it once",
+      incident_id: input.incident.incidentId,
+    });
+    notifyRevoked(old.id);
+  }
+  auditAsync({
+    kind: "keychain_grant_minted",
+    grant_id: gr.id,
+    credential_id: gr.credentialId,
+    session_id: gr.sessionId,
+    mode: gr.mode,
+    owner: gr.owner,
+    incident_id: input.incident.incidentId,
+    incident_role: input.incident.role,
+    project: input.incident.project,
+  });
+  return gr;
+}
+
+/** The live incident grant this agent session holds for a credential:
+ *  standing first, else the newest once grant. */
+export function activeIncidentGrantFor(
+  sessionId: string,
+  credentialId: string,
+  incidentId: string,
+): KeychainGrant | undefined {
+  const live = [...grants.values()]
+    .filter(
+      (gr) =>
+        gr.incident?.incidentId === incidentId &&
+        gr.sessionId === sessionId &&
+        gr.credentialId === credentialId &&
+        (gr.mode === "once" || gr.mode === "standing") &&
+        liveNow(gr),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return live.find((gr) => gr.mode === "standing") ?? live[0];
+}
+
+/** Live incident grants, newest first. */
+export function listIncidentGrants(filter?: {
+  incidentId?: string;
+  project?: string;
+}): KeychainGrant[] {
+  return [...grants.values()]
+    .filter(
+      (gr) =>
+        !!gr.incident &&
+        liveNow(gr) &&
+        (!filter?.incidentId || gr.incident.incidentId === filter.incidentId) &&
+        (!filter?.project || gr.incident.project === filter.project),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Revoke every live incident grant matching all given keys. */
+export async function revokeIncidentGrants(
+  filter: {
+    incidentId?: string;
+    project?: string;
+    sessionId?: string;
+    credentialId?: string;
+  },
+  reason: string,
+): Promise<number> {
+  if (
+    !filter.incidentId &&
+    !filter.project &&
+    !filter.sessionId &&
+    !filter.credentialId
+  )
+    throw new Error("revokeIncidentGrants needs a filter");
+  await ensureKeychainLoaded();
+  const hit = [...grants.values()].filter(
+    (gr) =>
+      !!gr.incident &&
+      liveNow(gr) &&
+      (!filter.incidentId || gr.incident.incidentId === filter.incidentId) &&
+      (!filter.project || gr.incident.project === filter.project) &&
+      (!filter.sessionId || gr.sessionId === filter.sessionId) &&
+      (!filter.credentialId || gr.credentialId === filter.credentialId),
+  );
+  if (!hit.length) return 0;
+  const at = new Date().toISOString();
+  for (const gr of hit) {
+    gr.status = "revoked";
+    gr.revokedAt = at;
+  }
+  try {
+    await persistAsync();
+  } catch (error) {
+    // Revoked in memory either way; the next write carries it.
+    console.error("[keychain] failed to save incident revocations:", error);
+  }
+  for (const gr of hit) {
+    auditAsync({
+      kind: "keychain_grant_revoked",
+      grant_id: gr.id,
+      credential_id: gr.credentialId,
+      by: "sessions",
+      reason,
+      incident_id: gr.incident?.incidentId,
+    });
+    notifyRevoked(gr.id);
+  }
+  return hit.length;
+}
+
+/**
+ * The headers a proxy credential adds to an incident agent's egress
+ * request, from the agent's live incident grant only. A once grant is spent
+ * by this call. The secret goes into the request, never to the agent.
+ */
+export function incidentGrantHeaders(input: {
+  sessionId: string;
+  incidentId: string;
+  credentialId: string;
+  host: string;
+}): Record<string, string> | { error: string } {
+  const cred = credentials.get(input.credentialId);
+  if (!cred)
+    return { error: `Credential ${input.credentialId} no longer exists` };
+  if (cred.kind === "login")
+    return {
+      error: `${cred.service} is a login; logins are never lent to incident agents`,
+    };
+  const gr = activeIncidentGrantFor(input.sessionId, cred.id, input.incidentId);
+  if (!gr) return { error: `This agent holds no grant for ${cred.service}` };
+  if (cred.host !== input.host)
+    return { error: `${cred.service} is not for ${input.host}` };
+  if (gr.mode === "once") {
+    gr.status = "used";
+    gr.usedAt = new Date().toISOString();
+    persistAsync().catch((error) =>
+      console.error("[keychain] failed to save a spent grant:", error),
+    );
+  }
+  return brokerHeaders(cred);
+}
+
+/** Scrub the secrets of the named credentials from `text`. */
+export function scrubCredentialSecrets(
+  text: string,
+  credentialIds: string[],
+): string {
+  let out = text;
+  for (const id of credentialIds) {
+    const cred = credentials.get(id);
+    if (cred) out = scrubSecret(out, cred.secret);
+  }
+  return out;
 }
 
 export interface RunClaim {
@@ -1707,6 +1970,7 @@ export function activeGrantFor(
     (gr) =>
       gr.credentialId === cred.id &&
       gr.status === "active" &&
+      !gr.incident &&
       gr.mode !== "run" &&
       gr.mode !== "release",
   );
@@ -1900,6 +2164,7 @@ export function requestCredential(
     (gr) =>
       gr.credentialId === credMeta.id &&
       gr.status === "active" &&
+      !gr.incident &&
       !gr.runId &&
       norm(gr.purpose) === norm(purpose) &&
       sameRun(gr.run) &&
@@ -2244,6 +2509,7 @@ export function requestCredentialRun(
     (gr) =>
       ids.has(gr.credentialId) &&
       gr.status === "active" &&
+      !gr.incident &&
       !gr.runId &&
       sameRequest(gr.run, gr.purpose),
   );
