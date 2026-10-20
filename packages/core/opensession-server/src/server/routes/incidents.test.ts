@@ -1,8 +1,29 @@
 import { beforeEach, expect, test } from "bun:test";
-import { __resetObservationsForTest } from "../incidents/observation-store";
+import type {
+  IncidentSummary,
+  Observation,
+  ObservationResult,
+  StripBar,
+} from "../../shared/incidents";
+import {
+  type NewIncident,
+  createIncident,
+  updateIncident,
+} from "../incidents/incident-store";
+import { transitionIncident } from "../incidents/lifecycle";
+import {
+  __resetObservationsForTest,
+  appendObservations,
+  flushObservations,
+} from "../incidents/observation-store";
 import { __resetSchedulerForTest } from "../incidents/scheduler";
 import { __resetSignalRuntimeForTest } from "../incidents/signal-runtime";
-import { getSignal, listSignals } from "../incidents/signal-store";
+import {
+  createSignal,
+  deleteSignal,
+  getSignal,
+  listSignals,
+} from "../incidents/signal-store";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { handleIncidentsRoutes } from "./incidents";
 
@@ -214,4 +235,200 @@ test("a test run restores secrets only from the stored signal", async () => {
 test("other paths fall through", async () => {
   expect(await call("GET", "/api/automations")).toBeUndefined();
   expect(await call("PATCH", "/api/incident-signals")).toBeUndefined();
+});
+
+const newIncident = (over: Partial<NewIncident> = {}): NewIncident => ({
+  project: "acme",
+  title: "Search",
+  state: "investigating",
+  severity: "major",
+  owner: "Ada",
+  openedBy: { kind: "rule", ref: "sig-a" },
+  signalIds: ["sig-a"],
+  primarySignalId: "sig-a",
+  at: new Date().toISOString(),
+  detail: "3 failures in a row",
+  ...over,
+});
+const obs = (at: number, result: ObservationResult): Observation => ({
+  at: new Date(at).toISOString(),
+  result,
+  detail: "",
+});
+const seedSignal = async (over: Record<string, unknown> = {}) => {
+  const s = await createSignal({ ...httpBody, ...over }, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  return s;
+};
+const ids = (json: { incidents: IncidentSummary[] }) =>
+  json.incidents.map((i) => i.id);
+
+test("incident list and detail", async () => {
+  const a = await createIncident(
+    newIncident({ at: new Date(Date.now() - 3_600_000).toISOString() }),
+  );
+  const b = await createIncident(newIncident({ project: "acme-api" }));
+  const closed = await updateIncident(a.id, (c) =>
+    transitionIncident(c, "closed-without-action", {
+      by: "sessions",
+      detail: "x",
+      at: new Date().toISOString(),
+    }),
+  );
+  expect(closed && "state" in closed && closed.state).toBe(
+    "closed-without-action",
+  );
+  const all = await call("GET", "/api/incidents");
+  expect(ids(all?.json)).toEqual([b.id, a.id]);
+  expect(all?.json.incidents[0]).not.toHaveProperty("events");
+  expect(all?.json.incidents[0].eventCount).toBe(1);
+  expect(ids((await call("GET", "/api/incidents?status=open"))?.json)).toEqual([
+    b.id,
+  ]);
+  expect(
+    ids((await call("GET", "/api/incidents?status=closed"))?.json),
+  ).toEqual([a.id]);
+  expect(ids((await call("GET", "/api/incidents?project=acme"))?.json)).toEqual(
+    [a.id],
+  );
+  expect((await call("GET", "/api/incidents?status=nope"))?.status).toBe(400);
+  expect(
+    (await call("GET", `/api/incidents/${b.id}`))?.json.events[0].kind,
+  ).toBe("opened");
+  expect((await call("GET", "/api/incidents/inc-missing"))?.status).toBe(404);
+});
+
+test("signal strip: range, lanes, markers, validation", async () => {
+  const s = await seedSignal(); // http, intervalMs 60_000
+  const now = Date.now();
+  appendObservations(s.id, [
+    obs(now - 90_000, "fail"),
+    obs(now - 30_000, "ok"),
+    { ...obs(now - 30_000, "fail"), lane: "API" },
+  ]);
+  await flushObservations();
+  await createIncident(
+    newIncident({
+      signalIds: [s.id],
+      primarySignalId: s.id,
+      at: new Date(now - 60_000).toISOString(),
+    }),
+  );
+  await createIncident(newIncident({ signalIds: ["sig-other"] }));
+  const res = await call(
+    "GET",
+    `/api/incident-signals/${s.id}/strip?from=${new Date(now - 180_000).toISOString()}&to=${new Date(now).toISOString()}`,
+  );
+  expect(res?.status).toBe(200);
+  expect(res?.json).toMatchObject({
+    from: new Date(now - 180_000).toISOString(),
+    to: new Date(now).toISOString(),
+    bucketMs: 60_000,
+    lanes: [
+      { id: s.id, label: "Search" },
+      { id: `${s.id}:API`, label: "API" },
+    ],
+    markers: [{ kind: "detected", label: "Detected" }],
+  });
+  expect(res?.json.lanes[0].bars.map((b: StripBar) => b.result)).toEqual([
+    null,
+    "fail",
+    "ok",
+  ]);
+  // Default range: 120 intervals back from now.
+  const fallback = await call("GET", `/api/incident-signals/${s.id}/strip`);
+  expect(fallback?.json.lanes[0].bars).toHaveLength(120);
+  expect(
+    (await call("GET", `/api/incident-signals/${s.id}/strip?from=nope`))?.json,
+  ).toEqual({ error: "Invalid range" });
+  expect(
+    (
+      await call(
+        "GET",
+        `/api/incident-signals/${s.id}/strip?from=2026-03-01T00:00:00Z&to=2026-01-01T00:00:00Z`,
+      )
+    )?.json,
+  ).toEqual({ error: "Invalid range" });
+  expect(
+    (
+      await call(
+        "GET",
+        `/api/incident-signals/${s.id}/strip?from=2026-01-01T00:00:00Z&to=2026-03-01T00:00:00Z`,
+      )
+    )?.json,
+  ).toEqual({ error: "Range over 31 days" });
+  expect(
+    (await call("GET", "/api/incident-signals/sig-missing/strip"))?.status,
+  ).toBe(404);
+});
+
+test("expiry strips keep the lowest value per bar", async () => {
+  const s = await seedSignal({
+    source: { kind: "expiry", target: "tls", host: "acme.example.test" },
+  });
+  const now = Date.now();
+  appendObservations(s.id, [
+    { ...obs(now - 120_000, "ok"), value: 20 },
+    { ...obs(now - 60_000, "ok"), value: 19.9 },
+  ]);
+  await flushObservations();
+  const res = await call(
+    "GET",
+    `/api/incident-signals/${s.id}/strip?from=${new Date(now - 3_600_000).toISOString()}&to=${new Date(now).toISOString()}`,
+  );
+  const values = res?.json.lanes[0].bars
+    .map((b: StripBar) => b.value)
+    .filter((v: number | undefined) => v !== undefined);
+  expect(values).toEqual([19.9]);
+});
+
+test("incident strip survives a deleted signal", async () => {
+  const s = await seedSignal();
+  const now = Date.now();
+  appendObservations(s.id, [obs(now - 30_000, "fail")]);
+  await flushObservations();
+  const inc = await createIncident(
+    newIncident({
+      signalIds: [s.id],
+      primarySignalId: s.id,
+      at: new Date(now - 60_000).toISOString(),
+    }),
+  );
+  await deleteSignal(s.id, "Ada");
+  const res = await call("GET", `/api/incidents/${inc.id}/strip`);
+  expect(res?.status).toBe(200);
+  expect(res?.json.bucketMs).toBe(60_000);
+  expect(res?.json.lanes[0]).toMatchObject({ id: s.id, label: s.id });
+  expect(
+    res?.json.lanes[0].bars.some((b: StripBar) => b.result === "fail"),
+  ).toBe(true);
+  expect(res?.json.markers).toEqual([
+    expect.objectContaining({ kind: "detected", incidentId: inc.id }),
+  ]);
+  // Fifteen minutes of lead-in before the opening.
+  expect(Date.parse(res?.json.from)).toBeLessThanOrEqual(
+    now - 60_000 - 900_000,
+  );
+  expect((await call("GET", "/api/incidents/inc-missing/strip"))?.status).toBe(
+    404,
+  );
+});
+
+test("incident strip lanes follow the incident's signals", async () => {
+  const a = await seedSignal({ name: "Api", intervalMs: 120_000 });
+  const b = await seedSignal({ name: "Web", intervalMs: 30_000 });
+  const now = Date.now();
+  const inc = await createIncident(
+    newIncident({
+      signalIds: [b.id, a.id],
+      primarySignalId: b.id,
+      at: new Date(now - 60_000).toISOString(),
+    }),
+  );
+  const res = await call("GET", `/api/incidents/${inc.id}/strip`);
+  expect(res?.json.bucketMs).toBe(30_000);
+  expect(res?.json.lanes.map((l: { label: string }) => l.label)).toEqual([
+    "Web",
+    "Api",
+  ]);
 });
