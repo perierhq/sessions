@@ -567,3 +567,70 @@ describe("per-child model", () => {
     ).rejects.toThrow("Descendant policy does not match the automation");
   });
 });
+
+describe("server-built descendant policies", () => {
+  const automationSessionPolicy: WorkflowAutomationSessionPolicy = {
+    automationId: "auto-1",
+    automationName: "A",
+    allowedRepos: ["renderer"],
+    allowedRunners: ["runner-a"],
+  };
+  const policy =
+    (over: Record<string, unknown> = {}) =>
+    (base: {
+      automationId: string;
+      automationName: string;
+      repo: string;
+      publicationRepo: string;
+      baseBranch: string;
+    }) => ({
+      ...base,
+      mcpServers: [],
+      allowedRunners: [],
+      publication: "branch-pr-only" as const,
+      ...over,
+    });
+
+  test("needs an automation session policy", async () => {
+    const { controller, creates } = harness();
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-1", {
+        descendantPolicy: policy(),
+      }),
+    ).rejects.toThrow(
+      "A server-built descendant policy needs an automation session policy",
+    );
+    expect(creates).toHaveLength(0);
+  });
+  test.each([
+    [{ publicationRepo: "acme/other" }],
+    [{ baseBranch: "release" }],
+    [{ publication: "direct" }],
+    [{ automationId: "auto-2" }],
+  ])("refuses a policy that does not match: %j", async (over) => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-2", {
+        descendantPolicy: policy(over),
+      }),
+    ).rejects.toThrow("Descendant policy does not match the automation");
+    expect(creates).toHaveLength(0);
+  });
+  test("cannot widen the automation's Runners", async () => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-3", {
+        descendantPolicy: policy({ allowedRunners: ["runner-a", "runner-b"] }),
+      }),
+    ).rejects.toThrow(
+      "Descendant policy allows a Runner the automation does not",
+    );
+    expect(creates).toHaveLength(0);
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-4", {
+      descendantPolicy: policy({ allowedRunners: ["runner-a"] }),
+    });
+    expect(creates[0]).toMatchObject({
+      automationDescendantPolicy: { allowedRunners: ["runner-a"] },
+    });
+  });
+});

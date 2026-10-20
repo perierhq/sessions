@@ -451,6 +451,14 @@ export function createWorkflowSessionController(
             built.publication !== "branch-pr-only"
           )
             throw new Error("Descendant policy does not match the automation");
+          if (
+            built.allowedRunners.some(
+              (runner) => !automationPolicy.allowedRunners.includes(runner),
+            )
+          )
+            throw new Error(
+              "Descendant policy allows a Runner the automation does not",
+            );
           descendantPolicy = {
             ...built,
             mcpServers: [...built.mcpServers],
