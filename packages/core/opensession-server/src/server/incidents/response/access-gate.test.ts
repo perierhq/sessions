@@ -1,0 +1,95 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { IncidentResponse } from "../../../shared/incident-response";
+import type { Incident } from "../../../shared/incidents";
+import { resolveAgentAccess } from "../access/resolve";
+import { useAccessTestEnv } from "../testing/access-fixture";
+import { useIncidentTestKernel } from "../testing/kernel-fixture";
+import {
+  __resetIncidentAccessGateForTest,
+  incidentAccessGate,
+  setProjectMonthSpend,
+  startIncidentAccessGate,
+} from "./access-gate";
+import {
+  __setProjectSettingsContextForTest,
+  patchProjectSettings,
+} from "./project-settings";
+
+useIncidentTestKernel();
+useAccessTestEnv();
+beforeEach(() => {
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme",
+    runnerProblem: () => null,
+    modelProblem: () => null,
+  });
+  __resetIncidentAccessGateForTest();
+});
+afterEach(() => {
+  __setProjectSettingsContextForTest(undefined);
+  __resetIncidentAccessGateForTest();
+});
+
+const incident = (costUsd = 0): Incident => ({
+  id: "inc-1",
+  project: "acme",
+  title: "Search",
+  state: "investigating",
+  severity: "major",
+  owner: "Ada",
+  openedBy: { kind: "rule" },
+  signalIds: [],
+  primarySignalId: "sig-1",
+  openedAt: "2026-10-20T10:00:00Z",
+  updatedAt: "2026-10-20T10:00:00Z",
+  lastProblemAt: "2026-10-20T10:00:00Z",
+  findings: [],
+  events: [],
+  droppedEvents: 0,
+  response: { costUsd } as IncidentResponse,
+});
+
+test("nothing in memory yet: the gate does not refuse", () => {
+  expect(incidentAccessGate(incident(), "investigator")).toBeNull();
+});
+
+test("the kill switch refuses every role", async () => {
+  await patchProjectSettings("acme", (s) => ({ ...s, agentsPaused: true }));
+  expect(incidentAccessGate(incident(), "investigator")).toBe(
+    "Agents are paused for acme",
+  );
+  expect(incidentAccessGate(incident(), "verifier")).toBe(
+    "Agents are paused for acme",
+  );
+});
+
+test("the incident and monthly budgets refuse", async () => {
+  await patchProjectSettings("acme", (s) => ({
+    ...s,
+    budget: { perIncidentUsd: 20, perMonthUsd: 100 },
+  }));
+  expect(incidentAccessGate(incident(19.99), "investigator")).toBeNull();
+  expect(incidentAccessGate(incident(20), "investigator")).toBe(
+    "Agents stopped at the $20 budget for this incident",
+  );
+  setProjectMonthSpend("acme", 100);
+  expect(incidentAccessGate(incident(1), "verifier")).toBe(
+    "Agents stopped at the $100 monthly budget",
+  );
+});
+
+test("registered once, the gate refuses spawn, turns and tool calls", async () => {
+  startIncidentAccessGate();
+  startIncidentAccessGate();
+  await patchProjectSettings("acme", (s) => ({ ...s, agentsPaused: true }));
+  await expect(
+    resolveAgentAccess("investigator", incident(), null),
+  ).rejects.toMatchObject({
+    code: "gate",
+    message: "Agents are paused for acme",
+  });
+  __resetIncidentAccessGateForTest();
+  await expect(
+    resolveAgentAccess("investigator", incident(), null),
+  ).resolves.toMatchObject({ role: "investigator" });
+});

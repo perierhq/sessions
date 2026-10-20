@@ -146,6 +146,7 @@ import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
+import { startIncidentAccessGate } from "./src/server/incidents/response/access-gate";
 import { prImagePublicRoutes } from "./src/server/pr-images";
 import { mcpOauthPublicRoutes } from "./src/server/mcp-oauth";
 import {
@@ -865,6 +866,9 @@ if (!g.__opensessionBooted) {
     startIncidentSignals();
     // Revokes incident agents' credential grants when incidents close or access narrows.
     startIncidentAccess();
+    // A project's kill switch and budget refuse its incident agents at
+    // spawn, every turn and every incident tool call.
+    startIncidentAccessGate();
     configureWebhookRoutes(agents, webhookRoutes);
     try {
       startPublicIngress();

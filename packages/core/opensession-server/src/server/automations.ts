@@ -255,6 +255,10 @@ export interface Automation {
   /** Set on the built-in Dreaming automations (memory-repo/dreaming.ts):
    *  the one memory repository this automation consolidates. */
   memoryDreaming?: { repo: string };
+  /** Set only by the server on the built-in incident automation of a
+   *  project (incidents/response/agents.ts): it owns that project's incident
+   *  agents and never runs on its own. No API or tool accepts it. */
+  incidentResponse?: { project: string };
   /**
    * Workspace this automation files under. The automation belongs to the
    * workspace; its RUNS stay in the Automations band rather than becoming
