@@ -27,10 +27,32 @@ export const TIME_RULE_EVERY_MS = 30_000;
 export const PRUNE_EVERY_MS = 86_400_000;
 export const SIGNAL_CACHE_MS = 30_000;
 export const MAX_CONCURRENT_RUNS = 4;
+/** First runs spread over at most this long. */
+export const FIRST_RUN_SPREAD_MS = 60_000;
+const DEFAULT_INTERVAL_MS = 60_000;
 
 export interface SchedulerDeps {
   runSource?: (signal: Signal) => Promise<SourceRun>;
   prune?: (now: number) => Promise<number>;
+  /** Delay before a signal's first run once seen; defaults to
+   *  {@link firstRunOffsetMs}. */
+  firstRunOffsetMs?: (signalId: string, intervalMs: number) => number;
+}
+
+/**
+ * A stable delay for a signal's first run after boot or creation: a hash of
+ * its id modulo min(interval, 60 s), so signals created or restored together
+ * do not all fire on the same tick.
+ */
+export function firstRunOffsetMs(signalId: string, intervalMs: number): number {
+  const window = Math.max(1, Math.min(intervalMs, FIRST_RUN_SPREAD_MS));
+  // FNV-1a, 32 bit.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < signalId.length; i++) {
+    hash ^= signalId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % window;
 }
 
 interface SignalCache {
@@ -179,6 +201,7 @@ export async function runSchedulerTick(
 ): Promise<{ started: string[]; settled: Promise<void> }> {
   const runSource =
     deps.runSource ?? ((signal: Signal) => runSignalSource(signal));
+  const offset = deps.firstRunOffsetMs ?? firstRunOffsetMs;
   const signals = await currentSignals(now);
   dropInactive(signals);
 
@@ -188,8 +211,14 @@ export async function runSchedulerTick(
     if (inFlight.size >= MAX_CONCURRENT_RUNS) break;
     if (!signal.enabled || !isPolled(signal) || inFlight.has(signal.id))
       continue;
-    if ((nextDue.get(signal.id) ?? 0) > now) continue;
-    nextDue.set(signal.id, now + (signal.intervalMs ?? 60_000));
+    const intervalMs = signal.intervalMs ?? DEFAULT_INTERVAL_MS;
+    let due = nextDue.get(signal.id);
+    if (due === undefined) {
+      due = now + offset(signal.id, intervalMs);
+      nextDue.set(signal.id, due);
+    }
+    if (due > now) continue;
+    nextDue.set(signal.id, now + intervalMs);
     inFlight.add(signal.id);
     started.push(signal.id);
     work.push(runOne(signal, runSource));

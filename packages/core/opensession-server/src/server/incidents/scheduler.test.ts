@@ -6,6 +6,7 @@ import {
 } from "./observation-store";
 import {
   __resetSchedulerForTest,
+  firstRunOffsetMs,
   runSchedulerTick,
   signalNextRunAt,
 } from "./scheduler";
@@ -28,6 +29,8 @@ beforeEach(() => {
 });
 
 const noPrune = async () => 0;
+/** Run a signal the first tick it is seen (no spread). */
+const immediate = () => 0;
 const okRun = (at: number): SourceRun => ({
   observations: [{ at: new Date(at).toISOString(), result: "ok", detail: "" }],
 });
@@ -54,7 +57,11 @@ test("each due signal runs once per interval, locally even with runOn", async ()
   };
   for (const t of [T0, T0 + 5_000, T0 + 60_000])
     await (
-      await runSchedulerTick(t, { runSource, prune: noPrune })
+      await runSchedulerTick(t, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
     ).settled;
   expect(calls).toEqual([s.id, s.id]);
   expect(signalNextRunAt(s.id)).toBe(new Date(T0 + 120_000).toISOString());
@@ -73,16 +80,31 @@ test("at most four in flight; disabled never runs", async () => {
     await gate;
     return okRun(T0);
   };
-  const first = await runSchedulerTick(T0, { runSource, prune: noPrune });
+  const first = await runSchedulerTick(T0, {
+    runSource,
+    prune: noPrune,
+    firstRunOffsetMs: immediate,
+  });
   expect(first.started).toHaveLength(4);
   expect(
-    (await runSchedulerTick(T0 + 5_000, { runSource, prune: noPrune })).started,
+    (
+      await runSchedulerTick(T0 + 5_000, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
+    ).started,
   ).toHaveLength(0);
   release();
   await first.settled;
   expect(
-    (await runSchedulerTick(T0 + 10_000, { runSource, prune: noPrune }))
-      .started,
+    (
+      await runSchedulerTick(T0 + 10_000, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
+    ).started,
   ).toHaveLength(2);
   expect(ran).not.toContain(off.id);
   expect(signalNextRunAt(off.id)).toBeUndefined();
@@ -98,7 +120,11 @@ test("a failing run is logged and leaves the signal due at its next time", async
       throw new Error("boom");
     };
     await (
-      await runSchedulerTick(T0, { runSource, prune: noPrune })
+      await runSchedulerTick(T0, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
     ).settled;
   } finally {
     console.error = original;
@@ -112,13 +138,22 @@ test("a deleted signal stops being polled", async () => {
   const s = await httpSignal();
   const runSource = async () => okRun(T0);
   await (
-    await runSchedulerTick(T0, { runSource, prune: noPrune })
+    await runSchedulerTick(T0, {
+      runSource,
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   expect(getSignalEvaluation(s.id)).not.toBeNull();
   await deleteSignal(s.id, "Ada");
   expect(
-    (await runSchedulerTick(T0 + 60_000, { runSource, prune: noPrune }))
-      .started,
+    (
+      await runSchedulerTick(T0 + 60_000, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
+    ).started,
   ).toEqual([]);
   expect(signalNextRunAt(s.id)).toBeUndefined();
   expect(getSignalEvaluation(s.id)).toBeNull();
@@ -128,12 +163,21 @@ test("a disabled signal is forgotten and stops being polled", async () => {
   const s = await httpSignal();
   const runSource = async () => okRun(T0);
   await (
-    await runSchedulerTick(T0, { runSource, prune: noPrune })
+    await runSchedulerTick(T0, {
+      runSource,
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   await updateSignal(s.id, { enabled: false }, "Ada");
   expect(
-    (await runSchedulerTick(T0 + 60_000, { runSource, prune: noPrune }))
-      .started,
+    (
+      await runSchedulerTick(T0 + 60_000, {
+        runSource,
+        prune: noPrune,
+        firstRunOffsetMs: immediate,
+      })
+    ).started,
   ).toEqual([]);
   expect(signalNextRunAt(s.id)).toBeUndefined();
   expect(getSignalEvaluation(s.id)).toBeNull();
@@ -156,17 +200,26 @@ test("one synthetic observation per missed heartbeat slot", async () => {
   const missed = () =>
     recentObservations(hb.id).filter((o) => o.detail === "Missed check-in");
   await (
-    await runSchedulerTick(C + 7_200_000, { prune: noPrune })
+    await runSchedulerTick(C + 7_200_000, {
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   await (
-    await runSchedulerTick(C + 7_240_000, { prune: noPrune })
+    await runSchedulerTick(C + 7_240_000, {
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   expect(missed().map((o) => o.at)).toEqual([
     new Date(C + 7_200_000).toISOString(),
   ]);
   // The next slot gets its own observation.
   await (
-    await runSchedulerTick(C + 10_800_000, { prune: noPrune })
+    await runSchedulerTick(C + 10_800_000, {
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   expect(missed()).toHaveLength(2);
   expect(getSignalEvaluation(hb.id)?.state).toBe("failing");
@@ -176,12 +229,19 @@ test("time rules run every 30 seconds, not every tick", async () => {
   const s = await httpSignal();
   const runSource = async () => okRun(T0);
   await (
-    await runSchedulerTick(T0, { runSource, prune: noPrune })
+    await runSchedulerTick(T0, {
+      runSource,
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   const first = getSignalEvaluation(s.id);
   // No run is due and no time pass is due: the evaluation is untouched.
   await (
-    await runSchedulerTick(T0 + 5_000, { prune: noPrune })
+    await runSchedulerTick(T0 + 5_000, {
+      prune: noPrune,
+      firstRunOffsetMs: immediate,
+    })
   ).settled;
   expect(getSignalEvaluation(s.id)).toBe(first);
   // Ten minutes without an observation (the due run fails): the time pass
@@ -195,6 +255,7 @@ test("time rules run every 30 seconds, not every tick", async () => {
           throw new Error("unreachable");
         },
         prune: noPrune,
+        firstRunOffsetMs: immediate,
       })
     ).settled;
   } finally {
@@ -211,7 +272,45 @@ test("prune runs on the first tick and then daily", async () => {
   };
   for (const t of [T0, T0 + 60_000, T0 + 86_400_000])
     await (
-      await runSchedulerTick(t, { prune })
+      await runSchedulerTick(t, { prune, firstRunOffsetMs: immediate })
     ).settled;
   expect(pruned).toBe(2);
+});
+
+test("first runs spread over the interval by a stable offset per signal", async () => {
+  const fast = await httpSignal({ intervalMs: 30_000 });
+  const slow = await httpSignal({ name: "Slow", intervalMs: 600_000 });
+  const ran: string[] = [];
+  const runSource = async (sig: Signal) => {
+    ran.push(sig.id);
+    return okRun(T0);
+  };
+  const fastAt = T0 + firstRunOffsetMs(fast.id, 30_000);
+  const slowAt = T0 + firstRunOffsetMs(slow.id, 600_000);
+  await (
+    await runSchedulerTick(T0, { runSource, prune: noPrune })
+  ).settled;
+  expect(signalNextRunAt(fast.id)).toBe(
+    new Date(fastAt === T0 ? T0 + 30_000 : fastAt).toISOString(),
+  );
+  expect(signalNextRunAt(slow.id)).toBe(
+    new Date(slowAt === T0 ? T0 + 600_000 : slowAt).toISOString(),
+  );
+  await (
+    await runSchedulerTick(Math.max(fastAt, slowAt), {
+      runSource,
+      prune: noPrune,
+    })
+  ).settled;
+  expect(ran.sort()).toEqual([fast.id, slow.id].sort());
+  // Stable, inside min(interval, 60 s), and not the same for every signal.
+  const ids = Array.from({ length: 20 }, (_, i) => `sig-${i}`);
+  for (const id of ids) {
+    expect(firstRunOffsetMs(id, 600_000)).toBe(firstRunOffsetMs(id, 600_000));
+    expect(firstRunOffsetMs(id, 600_000)).toBeLessThan(60_000);
+    expect(firstRunOffsetMs(id, 10_000)).toBeLessThan(10_000);
+  }
+  expect(
+    new Set(ids.map((id) => firstRunOffsetMs(id, 60_000))).size,
+  ).toBeGreaterThan(10);
 });
