@@ -24,6 +24,7 @@ import { execOnRunner, isRunnerConnected } from "../../runner-ws";
 import { shellQuote } from "../../sandbox/adapters/bootstrap";
 import { assertFetchableUrl } from "../../web-fetch";
 import { refusalDetail } from "../sources/http";
+import { freshGrantedCredential } from "./credentials";
 import { type IncidentToolContext, toolAudit } from "./tool-context";
 
 export const EGRESS_READ_CAP_BYTES = 1_048_576;
@@ -68,7 +69,11 @@ export interface ProxyHeadersInput {
   sessionId: string;
   incidentId: string;
   credentialId: string;
+  /** The proxy's hostname. */
   host: string;
+  /** The proxied request's method and target path. */
+  method: string;
+  path: string;
 }
 type ProxyHeaders = (
   input: ProxyHeadersInput,
@@ -108,26 +113,24 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The proxy credential's grant, minted at the mode the fresh access names,
- *  then its injection headers. */
+/** The proxy credential's grant, minted at the mode the agent's freshly
+ *  resolved access names, then its injection headers. */
 async function defaultProxyHeaders(
   ctx: IncidentToolContext,
   input: ProxyHeadersInput,
 ): Promise<Record<string, string> | { error: string }> {
-  const granted = ctx.access.credentials.find(
-    (c) => c.credential === input.credentialId,
-  );
-  if (!granted)
-    return { error: "The proxy credential is not granted to this agent" };
+  const fresh = await freshGrantedCredential(ctx, input.credentialId);
+  if ("error" in fresh) return { error: fresh.error };
+  const { access, credential } = fresh;
   const grant = await incidentGrantFor({
-    credentialId: granted.credential,
+    credentialId: credential.credential,
     sessionId: input.sessionId,
-    mode: granted.mode,
+    mode: credential.mode,
     incident: {
       incidentId: ctx.binding.incidentId,
       role: ctx.binding.role,
-      project: ctx.access.project,
-      signalId: ctx.access.signalId,
+      project: access.project,
+      signalId: access.signalId,
     },
     purpose: "Egress through the granted proxy",
   });
@@ -309,6 +312,8 @@ async function egressFetchInner(
         incidentId: ctx.binding.incidentId,
         credentialId: egress.proxyCredential,
         host: proxy.hostname.toLowerCase(),
+        method,
+        path,
       };
       const got = await (deps.proxyHeaders
         ? deps.proxyHeaders(input2)
