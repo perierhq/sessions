@@ -1,5 +1,6 @@
-// The `incident-report` contract. Each agent ends its final message with one
-// fenced block tagged `incident-report` holding a JSON report. Errors are
+// The `incident-report` contract. Each agent ends its final message with
+// exactly one fenced block tagged `incident-report` holding a JSON report
+// (only the last 256 KB of a message are read, a block is at most 64 KB). Errors are
 // short, name the field, and go back to the agent verbatim. Unknown keys are
 // dropped. `effectiveVerdict` turns the verifier's verdict into the one
 // Sessions acts on: certainty it cannot back becomes not certain.
@@ -35,11 +36,25 @@ const CLAIM_STATUSES: ClaimStatus[] = ["verified", "refuted", "unverifiable"];
 
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
-/** The content of the last fenced block whose info string is exactly
- *  `incident-report`. An unclosed block runs to the end of the text. */
-export function extractReportBlock(text: string): string | null {
-  const lines = text.split(/\r?\n/);
-  let found: string | null = null;
+/** Only the end of a message is read for its report. */
+export const REPORT_TAIL_CHARS = 256 * 1024;
+/** A report block larger than this is refused before parsing. */
+export const REPORT_BLOCK_MAX_BYTES = 64 * 1024;
+
+/** The end of `text`, from the first whole line inside the last 256 KB. */
+function messageTail(text: string): string {
+  if (text.length <= REPORT_TAIL_CHARS) return text;
+  const tail = text.slice(-REPORT_TAIL_CHARS);
+  const newline = tail.indexOf("\n");
+  return newline === -1 ? "" : tail.slice(newline + 1);
+}
+
+/** The contents of every fenced block whose info string is exactly
+ *  `incident-report`, in the last 256 KB of `text`. An unclosed block runs
+ *  to the end of the text. */
+export function reportBlocks(text: string): string[] {
+  const lines = messageTail(text).split(/\r?\n/);
+  const found: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const open = FENCE_OPEN.exec(lines[i]);
     if (!open) continue;
@@ -59,10 +74,16 @@ export function extractReportBlock(text: string): string | null {
         break;
       body.push(line);
     }
-    if (info === REPORT_FENCE) found = body.join("\n");
+    if (info === REPORT_FENCE) found.push(body.join("\n"));
     i = j;
   }
   return found;
+}
+
+/** The report block when the message holds exactly one, else null. */
+export function extractReportBlock(text: string): string | null {
+  const blocks = reportBlocks(text);
+  return blocks.length === 1 ? blocks[0] : null;
 }
 
 type Result<T> = T | { error: string };
@@ -80,8 +101,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function parseBlock(
   text: string,
 ): { value: Record<string, unknown> } | { error: string } {
-  const block = extractReportBlock(text);
-  if (block === null) return { error: "No incident-report block" };
+  const blocks = reportBlocks(text);
+  if (blocks.length === 0) return { error: "No incident-report block" };
+  if (blocks.length > 1)
+    return { error: "End with exactly one incident-report block" };
+  const block = blocks[0];
+  if (Buffer.byteLength(block, "utf8") > REPORT_BLOCK_MAX_BYTES)
+    return { error: "The incident-report block is too large" };
   let value: unknown;
   try {
     value = JSON.parse(block);

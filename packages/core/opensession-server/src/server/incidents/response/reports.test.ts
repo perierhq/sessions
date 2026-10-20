@@ -65,20 +65,41 @@ test("extracts only blocks tagged exactly incident-report", () => {
     extractReportBlock(
       'a\n```incident-report\n{"a":1}\n```\nb\n```incident-report\n{"a":2}\n```',
     ),
-  ).toBe('{"a":2}');
+  ).toBeNull();
+  expect(extractReportBlock('a\n```incident-report\n{"a":2}\n```')).toBe(
+    '{"a":2}',
+  );
   expect(extractReportBlock("````incident-report\n```inner```\n````")).toBe(
     "```inner```",
   );
 });
-test("parses the last report block", () => {
-  const r = parseInvestigatorReport(
-    `${fence({ role: "investigator" })}\nlater\n${fence(good)}`,
-    ctx,
-  );
+test("exactly one report block, so quoted content cannot override it", () => {
+  expect(
+    parseInvestigatorReport(
+      `${fence({ role: "investigator" })}\nlater\n${fence(good)}`,
+      ctx,
+    ),
+  ).toEqual({ error: "End with exactly one incident-report block" });
+  const r = parseInvestigatorReport(`Quoted earlier.\n${fence(good)}`, ctx);
   expect("error" in r ? r.error : r.candidate).toEqual({
     pr: true,
     actions: [],
   });
+});
+test("only the end of a long message is read, and blocks are bounded", () => {
+  const filler = `${"x".repeat(1000)}\n`.repeat(300);
+  const tail = parseInvestigatorReport(`${filler}${fence(good)}`, ctx);
+  expect("error" in tail ? tail.error : tail.role).toBe("investigator");
+  // A block that sits before the last 256 KB is not seen.
+  expect(parseInvestigatorReport(`${fence(good)}\n${filler}`, ctx)).toEqual({
+    error: "No incident-report block",
+  });
+  expect(
+    parseInvestigatorReport(
+      fence({ ...good, cause: "y".repeat(70 * 1024) }),
+      ctx,
+    ),
+  ).toEqual({ error: "The incident-report block is too large" });
 });
 test("a report's own error key is just an unknown key", () => {
   const r = parseInvestigatorReport(fence({ ...good, error: "x" }), ctx);
