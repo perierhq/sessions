@@ -5,6 +5,7 @@ import { runHttpSource } from "./http";
 import {
   RUNNER_BODY_CAP_BYTES,
   type RunnerFetchDeps,
+  __resetCurlVersionsForTest,
   runnerCheckBlocked,
   runnerNet,
   shellQuote,
@@ -17,6 +18,10 @@ interface Call {
   timeoutMs: number;
 }
 const calls: Call[] = [];
+/** What `curl --version` answers on the Runner; asked once per Runner. */
+let curlVersion: RunnerExecResult;
+let versionChecks = 0;
+const CURL_VERSION = "command curl --version";
 const MARK = "\n__SESSIONS_CURL__";
 /** curl's answer: the response on stdout, the status marker on stderr. */
 const out = (
@@ -34,6 +39,10 @@ const deps = (
   over: Partial<RunnerFetchDeps> = {},
 ): Partial<RunnerFetchDeps> => ({
   exec: async (_id, command, opts) => {
+    if (command === CURL_VERSION) {
+      versionChecks++;
+      return curlVersion;
+    }
     const call = { command, ...opts };
     calls.push(call);
     return typeof result === "function" ? result(call) : result;
@@ -68,6 +77,13 @@ const send = (
 };
 beforeEach(() => {
   calls.length = 0;
+  versionChecks = 0;
+  curlVersion = {
+    code: 0,
+    stdout: "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13\n",
+    stderr: "",
+  };
+  __resetCurlVersionsForTest();
 });
 
 test("every option goes to curl on stdin; argv carries nothing of the request", async () => {
@@ -240,6 +256,83 @@ test("curl's own failures are failures of the service", async () => {
     send(out("", null, 7, "curl: (7) Failed to connect")),
   ).rejects.toThrow("curl: (7) Failed to connect");
   await expect(send(out("", null, 6))).rejects.toThrow("curl exited 6");
+});
+
+test("curl that cannot make the request is a Runner problem", async () => {
+  for (const [code, stderr, detail] of [
+    [
+      1,
+      'curl: (1) Protocol "https" not supported',
+      'curl on Runner prod-1 cannot make this request: curl: (1) Protocol "https" not supported',
+    ],
+    [2, "", "curl on Runner prod-1 cannot make this request (exit 2)"],
+    [
+      4,
+      "curl: (4) A requested feature was not built in",
+      "curl on Runner prod-1 cannot make this request: curl: (4) A requested feature was not built in",
+    ],
+  ] as const)
+    await expect(send(out("", null, code, stderr))).rejects.toMatchObject({
+      code: "RUNNER_UNAVAILABLE",
+      message: detail,
+    });
+});
+
+test("curl must be 7.63 or newer, checked once per Runner", async () => {
+  const ok = out("HTTP/1.1 200 OK\r\n\r\n", 200);
+  await send(ok);
+  await send(ok);
+  expect(versionChecks).toBe(1);
+  expect(calls).toHaveLength(2);
+
+  __resetCurlVersionsForTest();
+  calls.length = 0;
+  curlVersion = {
+    code: 0,
+    stdout: "curl 7.58.0 (x86_64-pc-linux-gnu) libcurl/7.58.0\n",
+    stderr: "",
+  };
+  await expect(send(ok)).rejects.toMatchObject({
+    code: "RUNNER_UNAVAILABLE",
+    message:
+      "Runner prod-1 has curl 7.58.0; incident checks need 7.63 or newer. Update curl on the Runner",
+  });
+  expect(calls).toEqual([]);
+  // A refusal is not remembered: once curl is updated the check runs.
+  curlVersion = { code: 0, stdout: "curl 7.63.0 (x)\n", stderr: "" };
+  expect((await send(ok)).status).toBe(200);
+  expect(versionChecks).toBe(3);
+
+  __resetCurlVersionsForTest();
+  for (const [answer, detail] of [
+    [
+      { code: 127, stdout: "", stderr: "" },
+      "curl is not installed on Runner prod-1",
+    ],
+    [
+      { code: 0, stdout: "something else\n", stderr: "" },
+      "Runner prod-1 did not report a curl version. Update curl on the Runner",
+    ],
+  ] as const) {
+    curlVersion = answer;
+    await expect(send(ok)).rejects.toMatchObject({
+      code: "RUNNER_UNAVAILABLE",
+      message: detail,
+    });
+  }
+});
+
+test("resolving takes no longer than the check has left", async () => {
+  const answer = { code: 0, stdout: "203.0.113.7 STREAM\n", stderr: "" };
+  await runnerNet("runner-prod", deps(answer, { now: () => 0 }), {
+    ...opts,
+    timeoutMs: 3_000,
+  }).resolve("acme.example.test");
+  await runnerNet("runner-prod", deps(answer, { now: () => 0 }), {
+    ...opts,
+    timeoutMs: 60_000,
+  }).resolve("acme.example.test");
+  expect(calls.map((c) => c.timeoutMs)).toEqual([3_000, 10_000]);
 });
 
 test("Runner problems are Runner problems, never failures", async () => {

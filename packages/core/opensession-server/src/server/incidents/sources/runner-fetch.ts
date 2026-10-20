@@ -12,7 +12,8 @@
 // (the URL is set by a person and the Runner is the production host
 // checking itself), refuses them on any other host a redirect leads to, and
 // refuses cloud metadata endpoints always. A problem with the Runner itself
-// (offline, not permitted, in maintenance, too old, gone mid-check) is a
+// (offline, not permitted, in maintenance, too old, gone mid-check, a curl
+// older than 7.63 or one that cannot make the request) is a
 // `RUNNER_UNAVAILABLE` or `RUNNER_OFFLINE` error: the check is unknown,
 // never a failure of the service.
 import { isIP } from "node:net";
@@ -48,6 +49,22 @@ const STDERR_MAX = 200;
 /** One curl, everything on stdin, its output cut on the Runner. The exit
  *  code is curl's, not head's. */
 const CURL_COMMAND = `command curl --disable --config - | command head -c ${RUNNER_BODY_CAP_BYTES + 1}; exit "\${PIPESTATUS[0]}"`;
+
+/** The config needs `%{stderr}` in write-out, new in curl 7.63.0. */
+const CURL_VERSION_COMMAND = "command curl --version";
+const MIN_CURL = { major: 7, minor: 63 };
+/** Runners whose curl was new enough, asked once per Runner. A refusal is
+ *  not remembered, so an updated curl counts at the next check. */
+const curlChecked = new Set<string>();
+
+export function __resetCurlVersionsForTest(): void {
+  curlChecked.clear();
+}
+
+/** curl exits 1 (unsupported protocol), 2 (failed to start) and 4 (a
+ *  feature not built in) say the Runner's curl cannot make the request,
+ *  never that the service is down. */
+const CURL_CANNOT = new Set([1, 2, 4]);
 
 /** The host name arrives on stdin. getent on Linux, dscacheutil on macOS. */
 const RESOLVE_COMMAND = [
@@ -370,6 +387,38 @@ export function runnerNet(
     return result;
   };
 
+  /** Time left for a step that takes at most `cap` ms. */
+  const left = (cap: number): number =>
+    Math.max(MIN_REMAINING_MS, Math.min(cap, deadline - d.now()));
+
+  /** The Runner's curl understands the config (`%{stderr}`), or why not. */
+  const checkCurl = async (name: string): Promise<void> => {
+    if (curlChecked.has(runnerId)) return;
+    const result = await run(
+      name,
+      CURL_VERSION_COMMAND,
+      "",
+      left(RESOLVE_TIMEOUT_MS),
+    );
+    if (result.code === 127 || result.code === 126)
+      throw runnerProblem(`curl is not installed on Runner ${name}`);
+    const version = /^curl (\d+)\.(\d+)(?:\.(\d+))?/m.exec(result.stdout);
+    if (result.code !== 0 || !version)
+      throw runnerProblem(
+        `Runner ${name} did not report a curl version. Update curl on the Runner`,
+      );
+    const major = Number(version[1]);
+    const minor = Number(version[2]);
+    if (
+      major < MIN_CURL.major ||
+      (major === MIN_CURL.major && minor < MIN_CURL.minor)
+    )
+      throw runnerProblem(
+        `Runner ${name} has curl ${version[1]}.${version[2]}.${version[3] ?? "0"}; incident checks need ${MIN_CURL.major}.${MIN_CURL.minor} or newer. Update curl on the Runner`,
+      );
+    curlChecked.add(runnerId);
+  };
+
   return {
     resolve: async (host) => {
       refuseGlobHost(host);
@@ -382,7 +431,7 @@ export function runnerNet(
         name,
         RESOLVE_COMMAND,
         `${host}\n`,
-        RESOLVE_TIMEOUT_MS,
+        left(RESOLVE_TIMEOUT_MS),
       );
       if (result.code === 127 || result.code === 126)
         throw runnerProblem(
@@ -413,6 +462,8 @@ export function runnerNet(
       }
       const name = await usable();
       if (init.signal.aborted) throw timeoutError();
+      await checkCurl(name);
+      if (init.signal.aborted) throw timeoutError();
       const remaining = Math.max(MIN_REMAINING_MS, deadline - d.now());
       const config = curlConfig(target, init, Math.ceil(remaining / 1000));
       const result = await run(
@@ -424,6 +475,14 @@ export function runnerNet(
       if (result.code === 127 || result.code === 126)
         throw runnerProblem(`curl is not installed on Runner ${name}`);
       if (result.code === 28) throw timeoutError();
+      if (CURL_CANNOT.has(result.code)) {
+        const line = curlError(result.stderr);
+        throw runnerProblem(
+          line
+            ? `curl on Runner ${name} cannot make this request: ${line}`
+            : `curl on Runner ${name} cannot make this request (exit ${result.code})`,
+        );
+      }
       // head stopped reading at the cap: curl could not write (23) or the
       // pipe killed it (128 + SIGPIPE).
       const cut =
