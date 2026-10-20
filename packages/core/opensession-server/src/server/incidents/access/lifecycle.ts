@@ -1,5 +1,6 @@
 // Revocation of incident agents' credential grants when their access ends:
-// an incident that closes or pauses, or access settings that narrow. Work
+// an incident that moves to a state its agents may not run in (closed,
+// paused, a heads-up, waiting on a provider), or access settings that narrow. Work
 // runs on one promise chain so a listener never blocks the write that fired
 // it, and a failure is logged rather than thrown. Listeners attach only in
 // startIncidentAccess(); importing this module has no effect.
@@ -11,6 +12,7 @@ import {
 } from "../../keychain";
 import { onIncidentChange } from "../incident-store";
 import { reconcileIncidentGrants } from "./credentials";
+import { incidentAllowsAgents } from "./resolve";
 import { onIncidentAccessChange } from "./settings-store";
 
 let started = false;
@@ -34,12 +36,12 @@ export function startIncidentAccess(): void {
   started = true;
   onIncidentChange((next, previous) => {
     if (previous?.state === next.state) return;
+    if (incidentAllowsAgents(next.state)) return;
     const reason = isTerminalIncidentState(next.state)
       ? "Incident closed"
       : next.state === "paused"
         ? "Incident agents paused"
-        : null;
-    if (!reason) return;
+        : `Incident is ${next.state}`;
     enqueue("revocation", () =>
       revokeIncidentGrants({ incidentId: next.id }, reason),
     );

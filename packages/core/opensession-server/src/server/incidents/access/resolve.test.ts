@@ -202,6 +202,44 @@ test("an expiry signal's private host is dropped too", async () => {
     reason: "Signal host is not a public host name",
   });
 });
+// Agents run only in states listed for them; any other state, including one
+// added later, refuses.
+test.each([
+  "investigating",
+  "fix-ready",
+  "veto",
+  "deploying",
+  "watching",
+  "needs-you",
+  "rolled-back",
+])("agents may run while the incident is %s", async (state) => {
+  expect(
+    (
+      await resolveAgentAccess(
+        "investigator",
+        incident({ state: state as Incident["state"] }),
+        signal,
+        { settings: settings() },
+      )
+    ).incidentId,
+  ).toBe("inc-1");
+});
+test.each(["heads-up", "waiting-on-provider", "archived", ""])(
+  "agents get nothing while the incident is %j",
+  async (state) => {
+    await expect(
+      resolveAgentAccess(
+        "investigator",
+        incident({ state: state as Incident["state"] }),
+        signal,
+        { settings: settings() },
+      ),
+    ).rejects.toMatchObject({
+      code: "incident",
+      message: `Incident inc-1 is ${state}; its agents have no access`,
+    });
+  },
+);
 test("closed, paused and gated incidents get nothing", async () => {
   await expect(
     resolveAgentAccess(

@@ -187,6 +187,19 @@ test("pausing the incident revokes its agents' grants", async () => {
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
 });
+test("waiting on a provider revokes its agents' grants", async () => {
+  startIncidentAccess();
+  const { incident } = await seedIncidentWithGrantedCredential("standing");
+  await updateIncident(incident.id, (c) =>
+    transitionIncident(c, "waiting-on-provider", {
+      by: "Ada",
+      detail: "Upstream outage",
+      at: new Date().toISOString(),
+    }),
+  );
+  await __incidentAccessIdleForTest();
+  expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
+});
 test("narrowing the settings revokes what the agent no longer has", async () => {
   startIncidentAccess();
   const { incident } = await seedIncidentWithGrantedCredential("standing");

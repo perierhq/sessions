@@ -20,7 +20,7 @@ import {
 } from "../../../shared/incident-access";
 import {
   type Incident,
-  isTerminalIncidentState,
+  type IncidentState,
   type Signal,
 } from "../../../shared/incidents";
 import { AUTOMATION_DENIED_TOOLS } from "../../automation-denied-tools";
@@ -62,6 +62,26 @@ export function registerAccessGate(gate: AccessGate): () => void {
   return () => {
     gates.delete(gate);
   };
+}
+
+/**
+ * The incident states in which its agents may run. An allowlist, so a state
+ * added later refuses until it is listed here. Not listed: a heads-up and
+ * waiting on a provider (agents are stopped there), paused, and the closed
+ * states.
+ */
+export const AGENT_INCIDENT_STATES: readonly IncidentState[] = [
+  "investigating",
+  "fix-ready",
+  "veto",
+  "deploying",
+  "watching",
+  "needs-you",
+  "rolled-back",
+];
+
+export function incidentAllowsAgents(state: string): boolean {
+  return (AGENT_INCIDENT_STATES as readonly string[]).includes(state);
 }
 
 export const INCIDENT_DENIED_MESSAGE =
@@ -234,7 +254,7 @@ export async function resolveAgentAccess(
 ): Promise<AgentAccess> {
   if (!isIncidentAgentRole(role))
     throw new AgentAccessError(`Unknown agent role "${String(role)}"`, "role");
-  if (isTerminalIncidentState(incident.state) || incident.state === "paused")
+  if (!incidentAllowsAgents(incident.state))
     throw new AgentAccessError(
       `Incident ${incident.id} is ${incident.state}; its agents have no access`,
       "incident",

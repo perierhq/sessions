@@ -371,7 +371,10 @@ wider than the connections the agent was spawned with: widening the settings
 reaches only agents spawned afterwards, while narrowing applies on the next
 turn and the next tool call. If the mode, repo or Runner the agent was
 spawned with is no longer allowed, the turn is refused and a new agent has to
-be started. A closed or paused incident, a registered gate (a kill switch or
+be started. Agents run only in the incident states listed for them
+(investigating, fix ready, veto, deploying, watching, needs you, rolled
+back); a closed or paused incident, a heads-up, one waiting on a provider or
+any state added later, a registered gate (a kill switch or
 budget) or unreadable settings refuse all three. A turn already running when
 access narrows keeps its external MCP connections until it ends; the incident
 tools narrow at once.
@@ -428,7 +431,7 @@ teammate. A first name two teammates share names no one, so neither can lend
 the credential, and a personal grant without the lender's login is dropped.
 A grant is minted only after the agent's access is resolved afresh, at the
 mode that access names. `once` is one call per agent session; `standing`
-lasts at most seven days and ends when the incident closes or is paused, when
+lasts at most seven days and ends when the incident leaves those states, when
 the settings stop granting it, when a workspace credential is made personal
 again, or when its injection changes. Workspace credentials never mint
 implicit grants for incident agents. A proxy credential is held to its method
