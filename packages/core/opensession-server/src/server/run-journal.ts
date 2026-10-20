@@ -107,6 +107,7 @@ export interface ActiveRunRecord {
   accountUser?: string;
   deniedTools?: Record<string, string>; // per-run tool denials, preserved across resume
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
+  bashRunAs?: string; // incident agent user for bash in a host worktree, preserved across resume
   confirmTools?: Record<string, string>; // per-run human-confirmed tools, preserved across resume
   aws?: boolean; // whether to inject AWS creds, preserved across resume
   claudeCliEnv?: boolean; // pool Claude-CLI credential in the run env (deepsec scans), preserved across resume
@@ -228,6 +229,7 @@ export function buildRunJournalRecord(
   opts: {
     deniedTools?: Record<string, string>;
     publicationPolicy?: { repo: string; branch: string; headBranch: string };
+    bashRunAs?: string;
     aws?: boolean;
     claudeCliEnv?: boolean;
     codexCliEnv?: boolean;
@@ -257,6 +259,7 @@ export function buildRunJournalRecord(
     | "lastResumeAt"
     | "deniedTools"
     | "publicationPolicy"
+    | "bashRunAs"
     | "aws"
     | "claudeCliEnv"
     | "codexCliEnv"
@@ -280,6 +283,7 @@ export function buildRunJournalRecord(
     remoteWorkspace: site.remoteWorkspace ?? withoutToken(opts.remoteWorkspace),
     deniedTools: opts.deniedTools,
     publicationPolicy: opts.publicationPolicy,
+    ...(opts.bashRunAs ? { bashRunAs: opts.bashRunAs } : {}),
     aws: !!opts.aws,
     claudeCliEnv: opts.claudeCliEnv || undefined,
     codexCliEnv: opts.codexCliEnv || undefined,

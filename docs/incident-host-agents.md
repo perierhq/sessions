@@ -101,13 +101,17 @@ It cannot read the Sessions state directory (the catalog, sessions,
 transcripts, the keychain store, the audit log), the gateway user's home or
 other users' homes, unless they are world-readable.
 
-Each shell command runs in its own transient systemd scope in the agent
-workload slice, with that slice's memory and task limits. When the command
-ends, times out or is cancelled, Sessions kills everything left in the scope
-through `cgroup.kill`, including processes the command started in the
-background: the gateway user cannot signal the incident user's processes
-directly, so a background server an agent starts does not outlive its
-command on this path.
+Processes the incident agent user starts cannot be signalled by the gateway
+user, so Sessions stops them through their cgroup instead. A turn normally
+runs in a detached run host, a transient system unit: when the turn ends,
+systemd stops the unit and kills everything in it, including commands the
+agent left running in the background as the incident agent user. A turn
+that runs in the Sessions process itself gives each shell command its own
+transient user scope in the agent workload slice, and kills that scope
+whole through `cgroup.kill` when the command ends, times out or is
+cancelled. Without such a scope, a command as the incident agent user is
+refused. Either way the work counts against the workload slice's memory
+and task limits.
 
 ## Limits
 
@@ -117,6 +121,8 @@ command on this path.
   before use. An agent that swaps a symlink between that check and the
   access could race it; the incident agent user is the boundary for
   commands, the path check for the file tools.
+- A background process an agent starts on purpose (a dev server for its
+  checks) lives at most until its turn ends.
 - The user is shared by every incident agent on the host. Two agents
   running at once can see each other's worktrees and `/tmp` homes.
 - `/tmp/opensession-incident-<session>` is not removed with the session;

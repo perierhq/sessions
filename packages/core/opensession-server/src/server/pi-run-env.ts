@@ -7,7 +7,7 @@ import { pickOpenaiAccount } from "./openai-auth";
 import { ensureAgentAwsCredsFile } from "./aws-creds";
 import type { RemoteWorkspace } from "./remote-workspace";
 import { PI_STATE_DIR } from "./pi-common";
-import { piBashHomeEnv } from "./pi-bash-tool";
+import { incidentUserHomeEnv, piBashHomeEnv } from "./pi-bash-tool";
 import { sessionOwnershipEnv } from "./session-ownership";
 
 export function piCliPoolEnv(input: {
@@ -104,16 +104,25 @@ export async function buildPiBashEnv(input: {
   // server env is NEVER inherited; every entry is explicit.
   // The AWS session file lives on this machine; a Sandbox never gets one.
   const awsEnv = opts.aws && !remote ? await ensureAgentAwsCredsFile() : {};
-  const homeEnv = piBashHomeEnv({
-    runKey,
-    scratchDir: opts.scratchDir,
-    isolated: Boolean(opts.publicationPolicy),
-    hostHome: process.env.HOME,
-    hostGithubLogin,
-  });
-  if (!remote && opts.publicationPolicy && homeEnv.HOME)
+  // An incident agent's bash runs as the incident agent user, which cannot
+  // reach the session scratch under the state directory: its home, TMPDIR
+  // and tool config live under /tmp, created by that user on first use.
+  const runAsHome =
+    opts.bashRunAs && !remote
+      ? incidentUserHomeEnv(opts.journal?.osSessionId || runKey)
+      : null;
+  const homeEnv =
+    runAsHome ??
+    piBashHomeEnv({
+      runKey,
+      scratchDir: opts.scratchDir,
+      isolated: Boolean(opts.publicationPolicy),
+      hostHome: process.env.HOME,
+      hostGithubLogin,
+    });
+  if (!runAsHome && !remote && opts.publicationPolicy && homeEnv.HOME)
     mkdirSync(homeEnv.HOME, { recursive: true, mode: 0o700 });
-  if (!remote && homeEnv.GH_CONFIG_DIR)
+  if (!runAsHome && !remote && homeEnv.GH_CONFIG_DIR)
     mkdirSync(homeEnv.GH_CONFIG_DIR, { recursive: true, mode: 0o700 });
   const bashEnv: Record<string, string> = {
     ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
@@ -121,9 +130,14 @@ export async function buildPiBashEnv(input: {
     ...(process.env.LANG ? { LANG: process.env.LANG } : {}),
     // Session-scoped scratch (session-scratch.ts): temp files follow the
     // session's lifecycle instead of accumulating in shared /tmp.
-    ...(opts.scratchDir
-      ? { TMPDIR: opts.scratchDir, OPENSESSION_SCRATCH: opts.scratchDir }
-      : {}),
+    ...(runAsHome
+      ? {
+          TMPDIR: runAsHome.TMPDIR,
+          OPENSESSION_SCRATCH: runAsHome.OPENSESSION_SCRATCH,
+        }
+      : opts.scratchDir
+        ? { TMPDIR: opts.scratchDir, OPENSESSION_SCRATCH: opts.scratchDir }
+        : {}),
     ...agentGitEnv,
     ...githubEnv,
     ...awsEnv,

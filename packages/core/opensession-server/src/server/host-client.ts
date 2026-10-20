@@ -242,6 +242,8 @@ export interface HostedRunOpts {
   reposNote?: string;
   deniedTools?: Record<string, string>;
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
+  /** An incident agent in a host worktree: its bash runs as this user. */
+  bashRunAs?: string;
   confirmTools?: Record<string, string>;
   aws?: boolean;
   /** Pool credentials for trusted run-spawned CLI tools (deepsec scans). */
@@ -469,6 +471,7 @@ async function* runAgentInProcess(
       reposNote: opts.reposNote,
       deniedTools: opts.deniedTools,
       publicationPolicy: opts.publicationPolicy,
+      bashRunAs: opts.bashRunAs,
       confirmTools: opts.confirmTools,
       aws: opts.aws,
       claudeCliEnv: opts.claudeCliEnv,
@@ -612,6 +615,7 @@ function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
     accountUser: spec.accountUser,
     deniedTools: spec.deniedTools,
     publicationPolicy: spec.publicationPolicy,
+    bashRunAs: spec.bashRunAs,
     confirmTools: spec.confirmTools,
     aws: spec.aws,
     claudeCliEnv: spec.claudeCliEnv,
@@ -689,6 +693,7 @@ async function spawnHostRun(
     reposNote: opts.reposNote,
     deniedTools: opts.deniedTools,
     publicationPolicy: opts.publicationPolicy,
+    ...(opts.bashRunAs ? { bashRunAs: opts.bashRunAs } : {}),
     confirmTools: opts.confirmTools,
     aws: opts.aws,
     claudeCliEnv: opts.claudeCliEnv,

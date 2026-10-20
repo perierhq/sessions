@@ -236,3 +236,16 @@ export async function incidentWorkspaceFor(
     error: `Incident agents need a sandbox or the incident agent user. Set a default sandbox for ${project}, or ${problem} (see docs/incident-host-agents.md), then retry.`,
   };
 }
+
+/**
+ * Throws `isolationMessage` unless `user` is the configured incident agent
+ * user and the host is ready for it right now (the cached probe).
+ */
+export async function assertHostAgentReady(
+  user: string,
+  isolationMessage: string,
+  hostProblem: () => Promise<string | null> = () => hostAgentUserProblem(),
+): Promise<void> {
+  if (user !== incidentAgentUser() || (await hostProblem()) !== null)
+    throw new Error(isolationMessage);
+}

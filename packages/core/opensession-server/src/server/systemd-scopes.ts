@@ -9,6 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 
 const UID = typeof process.getuid === "function" ? process.getuid() : 1000;
 export const SYSTEMD_USER_RUNTIME = `/run/user/${UID}`;
@@ -252,4 +253,40 @@ export function stopUserScope(unit: string): void {
       stderr: "ignore",
     });
   } catch {}
+}
+
+/**
+ * Kill every process in a user scope, whoever owns it, then stop the scope.
+ * The user manager cannot signal another user's processes (an incident
+ * agent's commands run as the incident agent user), but writing
+ * `cgroup.kill` in a cgroup this user owns kills its whole tree. Needs
+ * cgroup v2 on Linux 5.14 or newer; never rejects.
+ */
+export async function killUserScope(unit: string): Promise<void> {
+  try {
+    const proc = Bun.spawn({
+      cmd: [
+        "systemctl",
+        "--user",
+        "show",
+        "--property=ControlGroup",
+        "--value",
+        `${unit}.scope`,
+      ],
+      env: systemdUserEnv(),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [path] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    const cgroup = path.trim();
+    if (cgroup.startsWith("/") && !cgroup.includes(".."))
+      await writeFile(`/sys/fs/cgroup${cgroup}/cgroup.kill`, "1").catch(
+        () => {},
+      );
+  } catch {}
+  stopUserScope(unit);
 }

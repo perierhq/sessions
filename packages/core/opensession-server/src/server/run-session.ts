@@ -9,6 +9,7 @@
  */
 
 import { incidentAccessMcpForSession } from "./incidents/access/mcp";
+import { descendantBashRunAs } from "./descendant-workspace";
 import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
@@ -3233,14 +3234,26 @@ async function runSessionPromptInner(
     });
     return;
   }
-  if (
-    session.automationDescendantPolicy &&
-    !session.runner?.id &&
-    !isRunnableSandboxProvider(session.sandbox?.provider)
-  )
-    throw new Error(
-      "Automation descendants require a sandbox or an explicitly isolated Runner",
-    );
+  // A descendant runs in a sandbox or on an isolated Runner; only an
+  // incident agent may run here, with its bash as the incident agent user,
+  // which must be ready at every turn.
+  const descendantIsolation =
+    "Automation descendants require a sandbox or an explicitly isolated Runner";
+  const bashRunAs = descendantBashRunAs(
+    session.automationDescendantPolicy,
+    {
+      runner: session.runner?.id,
+      sandbox: isRunnableSandboxProvider(session.sandbox?.provider)
+        ? session.sandbox?.provider
+        : null,
+    },
+    descendantIsolation,
+  );
+  if (bashRunAs !== undefined) {
+    const { assertHostAgentReady } =
+      await import("./incidents/response/host-agents");
+    await assertHostAgentReady(bashRunAs, descendantIsolation);
+  }
   // Resolved once, before a backend is chosen: the automation-bar server set
   // is a catalog read, and the Runner, sandbox and hosted proxy name lists,
   // the run-rpc fallback and the in-process mount below must all describe
@@ -3425,6 +3438,7 @@ async function runSessionPromptInner(
                 headBranch: session.branch || "",
               }
             : undefined,
+          ...(bashRunAs ? { bashRunAs } : {}),
           confirmTools: STRIPE_CONFIRM_TOOLS,
           aws:
             (!isAutomationSession && !session.plainDiscussionId) ||
@@ -3534,6 +3548,7 @@ async function runSessionPromptInner(
             headBranch: session.branch || "",
           }
         : undefined,
+      ...(bashRunAs ? { bashRunAs } : {}),
       confirmTools: STRIPE_CONFIRM_TOOLS,
       // Automation descendants and Plain discussion sessions (untrusted
       // ticket text) receive AWS credentials only when the instance opts

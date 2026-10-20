@@ -590,6 +590,7 @@ try {
     reposNote: spec.reposNote,
     deniedTools: spec.deniedTools,
     publicationPolicy: spec.publicationPolicy,
+    bashRunAs: spec.bashRunAs,
     confirmTools: spec.confirmTools,
     aws: spec.aws,
     claudeCliEnv: spec.claudeCliEnv,

@@ -206,6 +206,8 @@ export function buildPiToolset(input: {
             sessionId: journal?.osSessionId,
             runKind: journal?.kind,
             publicationPolicy: opts.publicationPolicy,
+            // A remote workspace is its own boundary.
+            ...(opts.bashRunAs && !remote ? { runAs: opts.bashRunAs } : {}),
             mergeGuard,
             privateTermsGuard,
             runSignal: abort.signal,

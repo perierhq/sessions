@@ -141,6 +141,8 @@ export interface RunHostSpec {
   reposNote?: string;
   deniedTools?: Record<string, string>;
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
+  /** An incident agent in a host worktree: its bash runs as this user. */
+  bashRunAs?: string;
   confirmTools?: Record<string, string>;
   aws?: boolean;
   /** Provision pool credentials for run-spawned Claude/Codex CLI tools. */
