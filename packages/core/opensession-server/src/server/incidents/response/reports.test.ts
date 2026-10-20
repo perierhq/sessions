@@ -110,7 +110,7 @@ test("drops unknown keys", () => {
     fence({
       ...good,
       extra: "x",
-      attempts: [{ ...good.attempts[0], extra: 1 }],
+      attempts: [{ ...good.attempts[0], extra: 1 }, good.attempts[1]],
     }),
     ctx,
   );
@@ -349,4 +349,67 @@ test("effective verdict downgrades certainty Sessions cannot back", () => {
       },
     ),
   ).toEqual({ note: true, runbook: true });
+});
+test("request checks read unless the signal itself sends that request", () => {
+  const post = (url: string) =>
+    fence({
+      ...good,
+      check: { kind: "request", source: { kind: "http", url, method: "POST" } },
+    });
+  expect(
+    parseInvestigatorReport(post("https://acme.example.test/search"), ctx),
+  ).toEqual({
+    error:
+      "A request check must use GET or HEAD unless the signal sends that method to that path",
+  });
+  const same = parseInvestigatorReport(
+    post("https://acme.example.test/search?q=y"),
+    { ...ctx, signalRequest: { method: "POST", path: "/search" } },
+  );
+  expect("error" in same ? same.error : same.check.kind).toBe("request");
+  expect(
+    parseInvestigatorReport(post("https://acme.example.test/admin"), {
+      ...ctx,
+      signalRequest: { method: "POST", path: "/search" },
+    }),
+  ).toEqual({ error: expect.stringContaining("GET or HEAD") });
+});
+test("a candidate needs claims, and each claim cites a source from the table", () => {
+  expect(parseInvestigatorReport(fence({ ...good, claims: [] }), ctx)).toEqual({
+    error: "Give at least one claim for the candidate",
+  });
+  expect(
+    parseInvestigatorReport(
+      fence({
+        ...good,
+        claims: [{ text: "x", source: "https://elsewhere.example.test/" }],
+      }),
+      ctx,
+    ),
+  ).toEqual({
+    error: "Claim 1 cites a source that is not in the evidence table",
+  });
+  const none = parseInvestigatorReport(
+    fence({
+      ...good,
+      candidate: null,
+      noCandidateReason: "Needs a bigger plan",
+      claims: [],
+    }),
+    ctx,
+  );
+  expect("error" in none ? none.error : none.claims).toEqual([]);
+});
+test("terminal escapes, bidi and zero-width characters are stripped", () => {
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      summary: "\u001b[31mUpstream\u001b[0m\u202e blocks\u200b us\nnow",
+      cause: "Line one\u0007\r\nLine two\u2066",
+    }),
+    ctx,
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.summary).toBe("Upstream blocks us now");
+  expect(r.cause).toBe("Line one\nLine two");
 });

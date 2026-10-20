@@ -1,8 +1,9 @@
 // The `incident-report` contract. Each agent ends its final message with
 // exactly one fenced block tagged `incident-report` holding a JSON report
-// (only the last 256 KB of a message are read, a block is at most 64 KB). Errors are
-// short, name the field, and go back to the agent verbatim. Unknown keys are
-// dropped. `effectiveVerdict` turns the verifier's verdict into the one
+// (only the last 256 KB of a message are read, a block is at most 64 KB).
+// Errors are short, name the field, and go back to the agent verbatim.
+// Unknown keys are dropped; terminal escapes, control, bidi and zero-width
+// characters are stripped from text. `effectiveVerdict` turns the verifier's verdict into the one
 // Sessions acts on: certainty it cannot back becomes not certain.
 import type {
   ActionKind,
@@ -119,13 +120,34 @@ function parseBlock(
   return { value };
 }
 
+const ANSI_ESCAPE =
+  /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g;
+// C0 and C1 controls except the newline, bidi marks, embeddings, overrides
+// and isolates, and zero-width characters.
+const INVISIBLE =
+  /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
+const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
+
+/** Report text without terminal escapes or invisible characters. Single-line
+ *  fields also fold newlines into spaces. */
+export function cleanReportText(value: string, multiline: boolean): string {
+  const out = value
+    .replace(/\r\n?/g, "\n")
+    .replace(ANSI_ESCAPE, "")
+    .replace(/\t/g, " ")
+    .replace(INVISIBLE, "");
+  return multiline ? out : out.replace(/\s*\n\s*/g, " ");
+}
+
 function text(
   value: unknown,
   field: string,
   max: number,
   min = 1,
+  multiline = false,
 ): Result<string> {
-  const s = typeof value === "string" ? value.trim() : "";
+  const s =
+    typeof value === "string" ? cleanReportText(value, multiline).trim() : "";
   if (typeof value !== "string" || s.length < min || s.length > max)
     return { error: `The ${field} field must be ${min} to ${max} characters` };
   return s;
@@ -153,7 +175,8 @@ function source(value: unknown, field: string): Result<string | undefined> {
   if (
     typeof value !== "string" ||
     value.length > 2048 ||
-    /[\s\u0000]/.test(value)
+    /\s/.test(value) ||
+    HAS_INVISIBLE.test(value)
   )
     return bad;
   if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
@@ -212,7 +235,13 @@ function attemptsOf(value: unknown): Result<EvidenceRow[]> {
       return { error: `Row ${i + 1} of attempts must be an object` };
     const step = text(item.step, `attempts[${i}].step`, 200);
     if (failed(step)) return step;
-    const evidence = text(item.evidence, `attempts[${i}].evidence`, 1000);
+    const evidence = text(
+      item.evidence,
+      `attempts[${i}].evidence`,
+      1000,
+      1,
+      true,
+    );
     if (failed(evidence)) return evidence;
     if (!COSTS.includes(item.cost as EvidenceCost))
       return {
@@ -246,6 +275,9 @@ export interface InvestigatorReportContext {
   /** Kind of each project action; a `deploy` runs only with the PR. */
   actionKinds: ReadonlyMap<string, ActionKind>;
   signalOrigin: string | null;
+  /** The signal's own method and path. A request check may send anything
+   *  but GET or HEAD only when it matches both. */
+  signalRequest?: { method: "GET" | "HEAD" | "POST"; path: string } | null;
 }
 
 function candidateOf(
@@ -273,12 +305,13 @@ function candidateOf(
 
 function checkOf(
   value: unknown,
-  signalOrigin: string | null,
+  ctx: Pick<InvestigatorReportContext, "signalOrigin" | "signalRequest">,
 ): Result<CandidateCheck> {
+  const { signalOrigin } = ctx;
   if (!isRecord(value))
     return { error: "The check field must be a request or after-deploy check" };
   if (value.kind === "after-deploy") {
-    const reason = text(value.reason, "check.reason", 500);
+    const reason = text(value.reason, "check.reason", 500, 1, true);
     if (failed(reason)) return reason;
     return { kind: "after-deploy", reason };
   }
@@ -292,8 +325,11 @@ function checkOf(
   if (validated.kind !== "http")
     return { error: "A request check needs an http source" };
   let origin: string;
+  let path: string;
   try {
-    origin = new URL(validated.url).origin;
+    const url = new URL(validated.url);
+    origin = url.origin;
+    path = url.pathname;
   } catch {
     return {
       error: "The check.source field is not valid: The URL is not valid",
@@ -302,6 +338,16 @@ function checkOf(
   if (origin !== signalOrigin)
     return {
       error: `A request check must use the signal's own origin ${signalOrigin}`,
+    };
+  const method = validated.method ?? "GET";
+  if (
+    method !== "GET" &&
+    method !== "HEAD" &&
+    (ctx.signalRequest?.method !== method || ctx.signalRequest.path !== path)
+  )
+    return {
+      error:
+        "A request check must use GET or HEAD unless the signal sends that method to that path",
     };
   return { kind: "request", source: validated };
 }
@@ -317,7 +363,7 @@ export function parseInvestigatorReport(
     return { error: "The role field must be investigator" };
   const summary = text(value.summary, "summary", 200);
   if (failed(summary)) return summary;
-  const cause = text(value.cause, "cause", 1000);
+  const cause = text(value.cause, "cause", 1000, 1, true);
   if (failed(cause)) return cause;
   const readFirst = readFirstOf(value.readFirst);
   if (failed(readFirst)) return readFirst;
@@ -327,15 +373,29 @@ export function parseInvestigatorReport(
   if (failed(candidate)) return candidate;
   let noCandidateReason: string | undefined;
   if (candidate === null) {
-    const reason = text(value.noCandidateReason, "noCandidateReason", 1000);
+    const reason = text(
+      value.noCandidateReason,
+      "noCandidateReason",
+      1000,
+      1,
+      true,
+    );
     if (failed(reason))
       return { error: "Explain noCandidateReason when there is no candidate" };
     noCandidateReason = reason;
   }
-  const check = checkOf(value.check, ctx.signalOrigin);
+  const check = checkOf(value.check, ctx);
   if (failed(check)) return check;
   const claims = claimsOf(value.claims);
   if (failed(claims)) return claims;
+  if (candidate !== null && claims.length === 0)
+    return { error: "Give at least one claim for the candidate" };
+  const cited = new Set(attempts.flatMap((a) => (a.source ? [a.source] : [])));
+  for (const [i, claim] of claims.entries())
+    if (claim.source !== undefined && !cited.has(claim.source))
+      return {
+        error: `Claim ${i + 1} cites a source that is not in the evidence table`,
+      };
   if (typeof value.notePath !== "string" || !NOTE_PATH.test(value.notePath))
     return {
       error: "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
@@ -380,7 +440,7 @@ export function parseVerifierReport(
   if (failed(reasonItems)) return reasonItems;
   const reasons: string[] = [];
   for (const [i, r] of reasonItems.entries()) {
-    const t = text(r, `reasons[${i}]`, 500);
+    const t = text(r, `reasons[${i}]`, 500, 1, true);
     if (failed(t)) return t;
     reasons.push(t);
   }
@@ -402,7 +462,13 @@ export function parseVerifierReport(
       return {
         error: `The claims[${i}].status field must be verified, refuted or unverifiable`,
       };
-    const evidence = text(item.evidence, `claims[${i}].evidence`, 1000);
+    const evidence = text(
+      item.evidence,
+      `claims[${i}].evidence`,
+      1000,
+      1,
+      true,
+    );
     if (failed(evidence)) return evidence;
     const s = source(item.source, `claims[${i}].source`);
     if (failed(s)) return s;
