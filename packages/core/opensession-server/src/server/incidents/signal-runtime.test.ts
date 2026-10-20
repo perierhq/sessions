@@ -178,6 +178,35 @@ test("boot opens an incident for a signal that went bad while nothing covered it
   ]);
 });
 
+test("a provider back from a long restart resolves its finding", async () => {
+  const p = await make({ name: "Status", provider: true });
+  const a = await make();
+  await feed(p.id, "fail", "fail", "fail");
+  await feed(a.id, "fail", "fail", "fail");
+  expect((await listIncidents())[0]).toMatchObject({
+    state: "waiting-on-provider",
+    signalIds: [a.id, p.id],
+  });
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  // Down for longer than three intervals: the provider replays unknown.
+  clock += 600_000;
+  await bootSignalRuntime(clock);
+  expect(getSignalEvaluation(p.id)?.state).toBe("unknown");
+  await feed(p.id, "ok");
+  expect(getSignalEvaluation(p.id)?.state).toBe("ok");
+  const [incident] = await listIncidents();
+  expect(incident!.state).toBe("investigating");
+  expect(incident!.findings).toEqual([
+    expect.objectContaining({
+      kind: "external",
+      signalId: p.id,
+      resolvedAt: expect.any(String),
+    }),
+  ]);
+});
+
 test("disabled and deleted signals take no observations", async () => {
   const s = await make({ enabled: false });
   expect(

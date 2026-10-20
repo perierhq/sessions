@@ -471,10 +471,14 @@ function resolveSelfReported(
       });
 }
 
-/** A provider signal changed state. Providers never open incidents. */
+/**
+ * A provider signal changed state (`previous = null`: replayed at boot).
+ * Providers never open incidents. Only `ok` is a recovery: `unknown` says
+ * nothing new, so it neither resolves a finding nor moves an incident.
+ */
 function decideProvider(
   provider: Signal,
-  previous: SignalEvaluation,
+  previous: SignalEvaluation | null,
   current: SignalEvaluation,
   snapshot: EngineSnapshot,
   open: Incident[],
@@ -505,9 +509,11 @@ function decideProvider(
         });
       continue;
     }
-    if (attached)
+    if (attached && previous)
       ops.add(signalEvent("event", incident.id, provider.id, current));
-    if (previous.state !== "external") continue;
+    // Resolve whatever finding is outstanding, whatever the previous state:
+    // a restart may have replayed the provider unknown in between.
+    if (current.state !== "ok") continue;
     const outstanding = incident.findings.filter(
       (f) => !f.resolvedAt && f.kind === "external",
     );
@@ -557,8 +563,9 @@ export function decideIncidentOps(
   if (previous && previous.state === current.state) return [];
   const open = newestFirst(snapshot.incidents).filter(isOpenIncident);
   if (signal.provider)
-    // At boot a provider only takes its state back; it never moves anything.
-    return previous === null
+    // At boot a provider takes its state back; only a recovery while the
+    // server was down acts, resolving what it left outstanding.
+    return previous === null && current.state !== "ok"
       ? []
       : decideProvider(signal, previous, current, snapshot, open);
   const containing = open.filter((i) => i.signalIds.includes(signal.id));

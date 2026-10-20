@@ -750,6 +750,80 @@ describe("providers and disagreements", () => {
     });
   });
 
+  test("a provider that comes back ok from unknown or at boot still resolves", () => {
+    const a = S("sig-a");
+    const waiting = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+      ],
+    });
+    const sn = snap([a, P], [E("sig-a", "ok"), E("sig-p", "ok")], [waiting]);
+    // A restart longer than the stale window replays the provider unknown.
+    for (const previous of ["unknown", null] as const) {
+      const ops = decide(P, previous, E("sig-p", "ok"), sn);
+      expect(ops).toContainEqual({
+        op: "resolve-finding",
+        incidentId: "inc-1",
+        kind: "external",
+        signalId: "sig-p",
+      });
+      expect(ops.at(-1)).toMatchObject({ to: "resolved" });
+    }
+    // Boot adds no events, and an external replay moves nothing.
+    expect(
+      decide(P, null, E("sig-p", "ok"), sn).some((o) => o.op === "event"),
+    ).toBe(false);
+    expect(
+      decide(
+        P,
+        null,
+        E("sig-p", "external"),
+        snap(
+          [a, P],
+          [E("sig-a", "failing"), E("sig-p", "external")],
+          [I("inc-1", "investigating")],
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  test("unknown from a provider is no news: no resolution, no bounce", () => {
+    const a = S("sig-a");
+    const waiting = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+      ],
+    });
+    const quiet = decide(
+      P,
+      "external",
+      E("sig-p", "unknown", "No data for 5m"),
+      snap([a, P], [E("sig-a", "failing"), E("sig-p", "unknown")], [waiting]),
+    );
+    expect(quiet.map((o) => o.op)).toEqual(["event"]);
+    const back = decide(
+      P,
+      "unknown",
+      E("sig-p", "external"),
+      snap([a, P], [E("sig-a", "failing"), E("sig-p", "external")], [waiting]),
+    );
+    expect(back.map((o) => o.op)).toEqual(["event"]);
+  });
+
   test("one provider recovering while another is still out keeps waiting", () => {
     const a = S("sig-a");
     const Q = S("sig-q", { name: "Cloud", provider: true });
