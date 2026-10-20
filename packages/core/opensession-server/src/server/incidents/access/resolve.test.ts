@@ -313,6 +313,27 @@ test("live state narrows instead of failing, and each narrowing is audited once"
     kit.audits.filter((e) => e.kind === "incident_access_narrowed"),
   ).toHaveLength(5);
 });
+test.each([
+  [{ platform: "win32" as const }, "Runner does not run on Linux or macOS"],
+])(
+  "a host and egress Runner that turned %j is dropped",
+  async (over, reason) => {
+    Object.assign(
+      t.spec.runners.find((r) => r.id === "rn-prod")!,
+      over,
+    );
+    const a = await resolveAgentAccess("investigator", incident(), signal, {
+      settings: settings(),
+    });
+    expect(a).toMatchObject({ hosts: [], egress: null });
+    expect(a.narrowed).toEqual(
+      expect.arrayContaining([
+        { field: "hosts", item: "rn-prod", reason },
+        { field: "egress", item: "runner:rn-prod", reason },
+      ]),
+    );
+  },
+);
 test("a personal credential granted by someone else is dropped", async () => {
   const s = settings();
   s.grants.credentials[0].grantedBy = "Bo";

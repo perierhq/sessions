@@ -359,7 +359,9 @@ async function egressFetchInner(
     }
   }
 
-  // Runner: curl on the paired Runner, production's own network.
+  // Runner: curl on the paired Runner, production's own network. The argv
+  // is quoted into one string for the Runner's POSIX shell; resolution keeps
+  // only Linux and macOS Runners here.
   const runnerId = egress.runner ?? "";
   const runnerName = egress.runnerName ?? runnerId;
   const connected = deps.connected ?? isRunnerConnected;

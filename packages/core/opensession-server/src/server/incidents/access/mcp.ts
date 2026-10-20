@@ -100,7 +100,7 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
     tools.push(
       tool(
         "host_command",
-        `Run one read-only program (cat, head, tail, grep, ls, journalctl, systemctl status, docker ps/logs and a few more) on one of your granted hosts, through its paired Runner. The program and arguments are passed as data, never through a shell; anything that writes, follows output or reads secret-shaped files is refused. Hosts are read-only. ${AUDITED}`,
+        `Run one read-only program (cat, head, tail, grep, ls, journalctl, systemctl status, docker ps/logs and a few more) on one of your granted hosts, through its paired Runner. Each argument is quoted and the Runner's POSIX shell runs the command, so shell characters in an argument are plain text; anything that writes, follows output or reads secret-shaped files is refused. Hosts are read-only. ${AUDITED}`,
         {
           runner: z.string().describe("Runner name or id of a granted host"),
           ssh: z

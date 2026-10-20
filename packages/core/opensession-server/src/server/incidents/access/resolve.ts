@@ -27,12 +27,13 @@ import { AUTOMATION_DENIED_TOOLS } from "../../automation-denied-tools";
 import { incidentAudit } from "../audit-sink";
 import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
-import { loadAccessEnvironment } from "./environment";
+import { type AccessRunnerInfo, loadAccessEnvironment } from "./environment";
 import {
   checkWithinGrants,
   egressHostProblem,
   mergeProfile,
   roleLockProblem,
+  runsPosixShell,
 } from "./fields";
 import {
   AccessSettingsError,
@@ -331,16 +332,24 @@ export async function resolveAgentAccess(
     return !reason;
   });
 
-  const hosts: ResolvedHost[] = [];
-  for (const host of profile.hosts) {
-    const info = env.runner(host.runner);
-    const reason = !info
+  // A Runner that runs host commands or egress for this agent.
+  const commandRunnerProblem = (
+    info: AccessRunnerInfo | null,
+  ): string | null =>
+    !info
       ? "Runner was removed"
       : !info.commands
         ? "Runner no longer accepts commands"
         : info.userRestricted
           ? "Runner now only accepts named people"
-          : null;
+          : !runsPosixShell(info)
+            ? "Runner does not run on Linux or macOS"
+            : null;
+
+  const hosts: ResolvedHost[] = [];
+  for (const host of profile.hosts) {
+    const info = env.runner(host.runner);
+    const reason = commandRunnerProblem(info);
     if (reason || !info) {
       narrow("hosts", hostGrantKey(host), reason ?? "Runner was removed");
       continue;
@@ -404,8 +413,15 @@ export async function resolveAgentAccess(
     };
     if (profile.egress.route === "runner") {
       const info = env.runner(profile.egress.runner);
-      if (!info || !info.commands || info.userRestricted) {
-        narrow("egress", key, "Egress Runner was removed");
+      const reason = commandRunnerProblem(info);
+      if (reason || !info) {
+        narrow(
+          "egress",
+          key,
+          !info
+            ? "Egress Runner was removed"
+            : (reason ?? "Runner was removed"),
+        );
         candidate = null;
       } else {
         candidate.runner = info.id;

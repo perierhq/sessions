@@ -69,6 +69,14 @@ test.each([
     { credentials: [{ credential: "admin-login", mode: "once" }] },
     "never lent",
   ],
+  [
+    { hosts: [{ runner: "rn-win", access: "read-only" }] },
+    "Runner win-1 runs on Windows; host commands and egress need a Linux or macOS Runner",
+  ],
+  [
+    { egress: { route: "runner", runner: "win-1" } },
+    "Runner win-1 runs on Windows; host commands and egress need a Linux or macOS Runner",
+  ],
   [{ model: "gpt-0" }, 'Unknown model "gpt-0"'],
   [
     { egress: { route: "proxy", url: "http://u:p@proxy.example.test" } },

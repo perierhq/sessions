@@ -1,6 +1,6 @@
 // The read-only host commands incident agents may run on a granted host.
-// A command is an argv, never a shell string: the caller quotes every word,
-// so `;`, `|`, `$(...)` and backticks are inert data. This table decides
+// A command is an argv. The caller quotes every word and the Runner's POSIX
+// shell runs the result, so `;`, `|`, `$(...)` and backticks are inert data. This table decides
 // which programs may run and, per program, the exact options each may take.
 // Runner hosts run commands as the Runner's own user, so the list is defence
 // in depth, not isolation.

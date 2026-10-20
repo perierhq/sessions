@@ -29,7 +29,7 @@ import {
   defaultRoleProfile,
 } from "../../../shared/incident-access";
 import { LOCAL_WORKSPACE_TOOL_IDS } from "../../run-policy";
-import type { AccessEnvironment } from "./environment";
+import type { AccessEnvironment, AccessRunnerInfo } from "./environment";
 
 export type FieldResult<T> = T | { error: string };
 
@@ -204,6 +204,17 @@ export function validateRunners(
   return out;
 }
 
+/**
+ * Host commands and egress reach the Runner as one POSIX shell string
+ * (quoted words run by `bash -lc`); PowerShell on a Windows Runner reads
+ * that quoting differently, so only Linux and macOS Runners qualify.
+ */
+export function runsPosixShell(
+  info: Pick<AccessRunnerInfo, "platform">,
+): boolean {
+  return info.platform === "linux" || info.platform === "darwin";
+}
+
 /** A Runner that runs commands for incident agents (hosts and egress). */
 function commandRunner(ref: string, ctx: ItemContext): FieldResult<string> {
   if (!ctx.env) return ref;
@@ -214,6 +225,10 @@ function commandRunner(ref: string, ctx: ItemContext): FieldResult<string> {
   if (info.userRestricted)
     return {
       error: `Runner ${info.name} only accepts named people; incident agents act as nobody`,
+    };
+  if (!runsPosixShell(info))
+    return {
+      error: `Runner ${info.name} runs on ${info.platform === "win32" ? "Windows" : info.platform}; host commands and egress need a Linux or macOS Runner`,
     };
   return info.id;
 }

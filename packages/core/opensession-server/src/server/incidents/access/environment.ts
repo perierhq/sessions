@@ -13,13 +13,14 @@ import {
 import { INTERNAL_MCP_CAPABILITIES } from "../../mcp-capabilities";
 import { resolveModel } from "../../models";
 import { isRunnerConnected } from "../../runner-ws";
-import { listRunnersAsync } from "../../runners";
+import { listRunnersAsync, type RunnerPlatform } from "../../runners";
 
 export type ConnectionStatus = "ok" | "missing" | "internal" | "user-gated";
 
 export interface AccessRunnerInfo {
   id: string;
   name: string;
+  platform: RunnerPlatform;
   /** The operator asserted descendant runs are isolated on this Runner. */
   isolated: boolean;
   /** The Runner accepts commands. */
@@ -110,6 +111,7 @@ export async function loadAccessEnvironment(): Promise<AccessEnvironment> {
   const runners: AccessRunnerInfo[] = runnerList.map((r) => ({
     id: r.id,
     name: r.name,
+    platform: r.platform,
     isolated: r.permissions.automationDescendants === true,
     commands: r.permissions.commands === true,
     userRestricted: r.allowedUsers.length > 0,

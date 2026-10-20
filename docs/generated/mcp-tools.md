@@ -1524,7 +1524,7 @@ What this incident agent may reach right now: connections, mode, repos, read-onl
 
 `mcp__opensession-incident-access__host_command` · input: `runner` (string, required), `ssh` (string), `program` (string, required), `args` (string[]), `timeoutSeconds` (number)
 
-Run one read-only program (cat, head, tail, grep, ls, journalctl, systemctl status, docker ps/logs and a few more) on one of your granted hosts, through its paired Runner. The program and arguments are passed as data, never through a shell; anything that writes, follows output or reads secret-shaped files is refused. Hosts are read-only. Every call is audited with your incident and role.
+Run one read-only program (cat, head, tail, grep, ls, journalctl, systemctl status, docker ps/logs and a few more) on one of your granted hosts, through its paired Runner. Each argument is quoted and the Runner's POSIX shell runs the command, so shell characters in an argument are plain text; anything that writes, follows output or reads secret-shaped files is refused. Hosts are read-only. Every call is audited with your incident and role.
 
 ### `egress_fetch`
 

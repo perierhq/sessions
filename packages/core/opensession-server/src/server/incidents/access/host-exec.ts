@@ -1,7 +1,8 @@
 // Read-only commands on an incident agent's granted hosts, through the Runner
 // command channel. The command is an argv from the read-only table, quoted
-// word by word (and once more for an SSH hop), so shell metacharacters are
-// data. It runs with no user, no repo and never the Runner's AWS role; the
+// word by word (and once more for an SSH hop) into one string that the
+// Runner's POSIX shell (`bash -lc`) runs, so shell metacharacters are data.
+// Only Linux and macOS Runners qualify (fields.ts runsPosixShell). It runs with no user, no repo and never the Runner's AWS role; the
 // output is capped and scrubbed of the agent's own granted credentials.
 import type { ResolvedHost } from "../../../shared/incident-access";
 import { scrubCredentialSecrets } from "../../keychain";

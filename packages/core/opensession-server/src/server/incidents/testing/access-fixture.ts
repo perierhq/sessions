@@ -57,6 +57,7 @@ const runner = (
 ): AccessRunnerInfo => ({
   id,
   name,
+  platform: "linux",
   isolated: true,
   commands: true,
   userRestricted: false,
@@ -96,6 +97,7 @@ export function defaultAccessSpec(): Required<StaticAccessSpec> {
       runner("rn-prod", "prod-1"),
       runner("rn-shared", "shared-1", { isolated: false }),
       runner("rn-named", "named-1", { userRestricted: true }),
+      runner("rn-win", "win-1", { platform: "win32" }),
     ],
     credentials: [
       credential("kc-proxy", "proxy-api", "api.proxy.example.test", "Ada"),
