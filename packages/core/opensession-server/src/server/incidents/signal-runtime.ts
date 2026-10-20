@@ -45,9 +45,9 @@ let intake = new Map<string, Promise<void>>();
 
 /** Told when a signal's state changes; never for the boot replay. */
 export type SignalStateListener = (
-  signal: Pick<Signal, "id" | "project" | "name">,
-  current: SignalEvaluation,
-  previous: SignalEvaluation | null,
+  signal: Readonly<Pick<Signal, "id" | "project" | "name">>,
+  current: Readonly<SignalEvaluation>,
+  previous: Readonly<SignalEvaluation> | null,
 ) => void;
 
 const stateListeners = new Set<SignalStateListener>();
@@ -63,16 +63,24 @@ export function onSignalStateChange(listener: SignalStateListener): () => void {
 /**
  * Tell every listener, each on its own microtask: a listener that throws,
  * rejects or never settles cannot fail the evaluation or hold up the engine.
+ * Listeners get frozen copies, so none can change the stored evaluation or
+ * what the next listener sees.
  */
 function notifyStateChange(
   signal: Signal,
   current: SignalEvaluation,
   previous: SignalEvaluation | null,
 ): void {
-  const view = { id: signal.id, project: signal.project, name: signal.name };
+  const view = Object.freeze({
+    id: signal.id,
+    project: signal.project,
+    name: signal.name,
+  });
+  const now = Object.freeze({ ...current });
+  const before = previous ? Object.freeze({ ...previous }) : null;
   for (const listener of [...stateListeners])
     void Promise.resolve()
-      .then(() => listener(view, current, previous))
+      .then(() => listener(view, now, before))
       .catch((error: unknown) => {
         console.warn(
           "[incidents] signal state listener failed:",

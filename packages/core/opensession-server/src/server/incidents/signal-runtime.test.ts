@@ -394,6 +394,30 @@ test("a disabled signal does not hold a heads-up open", async () => {
   expect((await listIncidents())[0]!.state).toBe("closed-without-action");
 });
 
+test("a listener cannot change the evaluation it is told", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const seen: string[] = [];
+  const offA = onSignalStateChange((_s, cur, prev) => {
+    (cur as { state: string }).state = "ok";
+    if (prev) (prev as { reason: string }).reason = "changed";
+  });
+  const offB = onSignalStateChange((_s, cur, prev) =>
+    seen.push(`${prev?.reason ?? "-"}>${cur.state}`),
+  );
+  const s = await make();
+  await feed(s.id, "ok");
+  await Bun.sleep(0);
+  const ok = getSignalEvaluation(s.id)!;
+  await feed(s.id, "fail", "fail", "fail");
+  await Bun.sleep(0);
+  offA();
+  offB();
+  warn.mockRestore();
+  expect(seen).toEqual([`->ok`, `${ok.reason}>failing`]);
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  expect(ok.reason).not.toBe("changed");
+});
+
 test("state listeners hear each change once, not each observation", async () => {
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   const seen: string[] = [];
