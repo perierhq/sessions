@@ -73,11 +73,13 @@ interface RunnerUse {
   portals: number;
 }
 
-async function runnerUse(runner: Runner): Promise<RunnerUse> {
+/** The Portal count is read first (it is asynchronous), the rest from
+ *  the record in hand. */
+function runnerUse(runner: Runner, portals: number): RunnerUse {
   return {
     workloads: runner.workloads?.length ?? (runner.workload ? 1 : 0),
     terminals: activity.terminals(runner.id),
-    portals: await activity.portals(runner.id),
+    portals,
   };
 }
 
@@ -137,7 +139,11 @@ export async function listProductionRunnerCandidates(
       const isBound = bound.includes(runner.id);
       const confirm = isBound
         ? undefined
-        : bindingChanges(runner, project, await runnerUse(runner));
+        : bindingChanges(
+            runner,
+            project,
+            runnerUse(runner, await activity.portals(runner.id)),
+          );
       return {
         id: runner.id,
         name: runner.name,
@@ -216,8 +222,9 @@ export function startProductionPairing(
  * repository, other repositories or projects, named people, sessions,
  * terminals or Portals) or is running workloads, terminals or Portals is
  * bound only with `confirmShared`: once reserved, nothing but the incident
- * service can use it, and what it was running is ended. `fresh` is a Runner this project's own pairing just created. Only a
- * signed-in person may bind, as only one may start a pairing.
+ * service can use it, and what it was running is ended. `fresh` is a
+ * Runner this project's own pairing just created. Only a signed-in person
+ * may bind, as only one may start a pairing.
  */
 export async function bindProductionRunner(
   project: string,
@@ -228,6 +235,9 @@ export async function bindProductionRunner(
 ): Promise<void> {
   if (!writer.signedInPerson)
     throw new Error("Only a signed-in person can bind a production Runner");
+  // Counted before the checks: from them to the reservation nothing
+  // awaits, so no other binding can change the Runner in between.
+  const portals = opts.fresh ? 0 : await activity.portals(runnerId);
   const runner = getRunner(runnerId);
   if (!runner) throw new Error(`Runner ${runnerId} is not paired`);
   if (!incidentProjectExists(project))
@@ -236,7 +246,7 @@ export async function bindProductionRunner(
   if (platform) throw new Error(platform);
   const changes = opts.fresh
     ? undefined
-    : bindingChanges(runner, project, await runnerUse(runner));
+    : bindingChanges(runner, project, runnerUse(runner, portals));
   if (changes && !opts.confirmShared)
     throw new Error(
       `${changes}. Confirm to reserve it for ${project} incidents only`,
