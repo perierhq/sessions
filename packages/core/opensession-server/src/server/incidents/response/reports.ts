@@ -153,6 +153,13 @@ function text(
   return s;
 }
 
+/** A claim's text, with backticks as plain quotes: the verifier quotes
+ *  claims back from a fenced data block, where a backtick cannot stand. */
+function claimText(value: unknown, field: string): Result<string> {
+  const t = text(value, field, 500);
+  return failed(t) ? t : t.replace(/`/g, "'");
+}
+
 function list(
   value: unknown,
   field: string,
@@ -199,7 +206,7 @@ function claimsOf(value: unknown): Result<Claim[]> {
   const out: Claim[] = [];
   for (const [i, item] of items.entries()) {
     if (!isRecord(item)) return { error: `Claim ${i + 1} must be an object` };
-    const t = text(item.text, `claims[${i}].text`, 500);
+    const t = claimText(item.text, `claims[${i}].text`);
     if (failed(t)) return t;
     const s = source(item.source, `claims[${i}].source`);
     if (failed(s)) return s;
@@ -456,7 +463,7 @@ export function parseVerifierReport(
   const checks = new Map<string, ClaimCheck>();
   for (const [i, item] of checkItems.entries()) {
     if (!isRecord(item)) return { error: `Claim ${i + 1} must be an object` };
-    const t = text(item.text, `claims[${i}].text`, 500);
+    const t = claimText(item.text, `claims[${i}].text`);
     if (failed(t)) return t;
     if (!CLAIM_STATUSES.includes(item.status as ClaimStatus))
       return {

@@ -413,3 +413,31 @@ test("terminal escapes, bidi and zero-width characters are stripped", () => {
   expect(r.summary).toBe("Upstream blocks us now");
   expect(r.cause).toBe("Line one\nLine two");
 });
+test("claim texts carry no backticks, so the verifier can quote them exactly", () => {
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      claims: [{ ...good.claims[0], text: "Run `curl -A app` and see 200" }],
+    }),
+    ctx,
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.claims[0]?.text).toBe("Run 'curl -A app' and see 200");
+  const v = parseVerifierReport(
+    fence({
+      role: "verifier",
+      verdict: "certain",
+      reasons: [],
+      proofAccepted: true,
+      claims: [
+        {
+          text: "Run `curl -A app` and see 200",
+          status: "verified",
+          evidence: "seen",
+        },
+      ],
+    }),
+    { claims: r.claims },
+  );
+  expect("error" in v ? v.error : v.claims[0]?.status).toBe("verified");
+});
