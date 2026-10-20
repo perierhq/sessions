@@ -1,15 +1,28 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as dns from "node:dns/promises";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "./paths";
 import {
   CLIENT_METADATA_PATH,
+  completeMcpOauthFlow,
   mcpOauthPublicRoutes,
+  mcpSharedGrantHeader,
   startMcpOauthFlow,
   supportsManualToken,
   validateManualMcpToken,
 } from "./mcp-oauth";
+import {
+  installPinnedFetchDouble,
+  type PinnedCall,
+} from "./testing/pinned-fetch-double";
+
+let pinned: PinnedCall[] = [];
+let restorePinned = () => {};
+beforeEach(() => {
+  ({ calls: pinned, restore: restorePinned } = installPinnedFetchDouble());
+});
+afterEach(() => restorePinned());
 
 describe("MCP OAuth client registration", () => {
   const realFetch = globalThis.fetch;
@@ -279,5 +292,178 @@ describe("manual MCP token providers", () => {
     await expect(validateManualMcpToken("vero", "bad-key")).rejects.toThrow(
       "Vero rejected that key",
     );
+  });
+});
+
+describe("MCP OAuth requests pin the address they connect to", () => {
+  const realFetch = globalThis.fetch;
+  const storePath = statePath(".opensession-mcp-oauth.json");
+  const server = "https://mcp.example.test/mcp";
+  const register = "https://register.example.test/register";
+  const token = "https://token.example.test/token";
+  let lookup: ReturnType<typeof spyOn<typeof dns, "lookup">>;
+  let fetched: Array<{ url: string; method: string; body: string }>;
+  let asked: Map<string, number>;
+  const realTicker = (globalThis as Record<string, unknown>).__osMcpOauthTicker;
+
+  /** Every host is public, except that `host` answers privately from its
+   *  `from`th lookup on: the address changed after it was checked. */
+  function rebind(host?: string, from = 2) {
+    lookup.mockImplementation((async (name: string) => {
+      const count = (asked.get(name) ?? 0) + 1;
+      asked.set(name, count);
+      const rebound = name === host && count >= from;
+      return [{ address: rebound ? "10.0.0.1" : "203.0.113.1", family: 4 }];
+    }) as unknown as typeof dns.lookup);
+  }
+
+  function mockAuthServer(onToken: () => Response) {
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input);
+      fetched.push({
+        url,
+        method: init?.method ?? "GET",
+        body: String(init?.body ?? ""),
+      });
+      if (url === server) return new Response(null, { status: 401 });
+      if (
+        url === "https://mcp.example.test/.well-known/oauth-protected-resource"
+      )
+        return Response.json({
+          resource: server,
+          authorization_servers: ["https://auth.example.test"],
+        });
+      if (
+        url ===
+        "https://auth.example.test/.well-known/oauth-authorization-server"
+      )
+        return Response.json({
+          issuer: "https://auth.example.test",
+          authorization_endpoint: "https://auth.example.test/authorize",
+          token_endpoint: token,
+          registration_endpoint: register,
+        });
+      if (url === register) return Response.json({ client_id: "test-client" });
+      if (url === token) return onToken();
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+  }
+
+  const tokens = () =>
+    Response.json({
+      access_token: "access-1",
+      refresh_token: "refresh-1",
+      // Inside the refresh window, so the next header read refreshes.
+      expires_in: 60,
+    });
+
+  async function startFlow(name: string): Promise<string> {
+    const { url } = await startMcpOauthFlow(name, server);
+    return new URL(url).searchParams.get("state")!;
+  }
+
+  beforeEach(() => {
+    fetched = [];
+    asked = new Map();
+    lookup = spyOn(dns, "lookup");
+    rebind();
+    mkdirSync(dirname(storePath), { recursive: true });
+    // Refresh on demand only: no background ticker in tests.
+    (globalThis as Record<string, unknown>).__osMcpOauthTicker = true;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    lookup.mockRestore();
+    rmSync(storePath, { force: true });
+    (globalThis as Record<string, unknown>).__osMcpOauthTicker = realTicker;
+  });
+
+  test("registration refuses a registration host that rebinds to a private address", async () => {
+    rebind("register.example.test");
+    mockAuthServer(tokens);
+    await expect(startFlow("pin-register")).rejects.toThrow(
+      /private address 10\.0\.0\.1/,
+    );
+    expect(asked.get("register.example.test")).toBe(2);
+    expect(fetched.map((f) => f.url)).not.toContain(register);
+  });
+
+  test("the token exchange refuses a token host that rebinds to a private address", async () => {
+    rebind("token.example.test");
+    mockAuthServer(tokens);
+    const state = await startFlow("pin-token");
+    await expect(completeMcpOauthFlow(state, "code-1")).rejects.toThrow(
+      /private address 10\.0\.0\.1/,
+    );
+    expect(asked.get("token.example.test")).toBe(2);
+    expect(fetched.map((f) => f.url)).not.toContain(token);
+  });
+
+  test("a refresh refuses a token host that rebinds to a private address", async () => {
+    // Discovery checks the host, the exchange resolves it again (public),
+    // and the refresh finds it private.
+    rebind("token.example.test", 3);
+    mockAuthServer(tokens);
+    await completeMcpOauthFlow(await startFlow("pin-refresh"), "code-1");
+    expect(fetched.filter((f) => f.url === token)).toHaveLength(1);
+    const failed = new Promise<string>((resolve) => {
+      const spy = spyOn(console, "error").mockImplementation(
+        (...args: unknown[]) => {
+          spy.mockRestore();
+          resolve(String(args[1]));
+        },
+      );
+    });
+    expect(mcpSharedGrantHeader("pin-refresh")).toBe("Bearer access-1");
+    expect(await failed).toMatch(/private address 10\.0\.0\.1/);
+    expect(asked.get("token.example.test")).toBe(3);
+    expect(fetched.filter((f) => f.url === token)).toHaveLength(1);
+    const stored = JSON.parse(readFileSync(storePath, "utf8"));
+    expect(stored["pin-refresh"].shared.tokens.refreshToken).toBe("refresh-1");
+  });
+
+  test("a refresh against a stable host still works", async () => {
+    let issued = 0;
+    mockAuthServer(() => {
+      issued += 1;
+      return Response.json({
+        access_token: `access-${issued}`,
+        refresh_token: `refresh-${issued}`,
+        expires_in: 60,
+      });
+    });
+    await completeMcpOauthFlow(await startFlow("pin-stable"), "code-1");
+    mcpSharedGrantHeader("pin-stable");
+    for (let i = 0; i < 50 && issued < 2; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(issued).toBe(2);
+    const refresh = fetched.filter((f) => f.url === token)[1]!;
+    expect(refresh.method).toBe("POST");
+    expect(new URLSearchParams(refresh.body).get("refresh_token")).toBe(
+      "refresh-1",
+    );
+  });
+
+  test("a 307 from the token endpoint is not followed", async () => {
+    mockAuthServer(
+      () =>
+        new Response(null, {
+          status: 307,
+          headers: { location: "https://elsewhere.example.test/collect" },
+        }),
+    );
+    const state = await startFlow("pin-redirect");
+    await expect(completeMcpOauthFlow(state, "code-1")).rejects.toThrow(
+      /Refusing to follow a redirect \(HTTP 307\)/,
+    );
+    expect(fetched.filter((f) => f.url === token)).toHaveLength(1);
+    expect(fetched.map((f) => f.url)).not.toContain(
+      "https://elsewhere.example.test/collect",
+    );
+    expect(asked.has("elsewhere.example.test")).toBe(false);
   });
 });

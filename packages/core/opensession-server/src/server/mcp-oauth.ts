@@ -31,6 +31,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { discoverMcpOauth, OauthDiscoveryError } from "./mcp-oauth-discovery";
 import { configuredIngress, configuredServer, productName } from "./config";
 import { statePath } from "./paths";
+import { pinnedFetch } from "./shared/pinned-fetch";
 import { resolveTeammate } from "./shared/user-mappings";
 import { readJsonFileCopy } from "./shared/json-file-cache";
 
@@ -223,12 +224,42 @@ export function mcpOauthPublicRoutes(): Map<
   ]);
 }
 
+/** A POST to an authorization server. Redirects are refused, never followed:
+ *  a 307 or 308 would resend the body (an authorization code, a refresh
+ *  token) to wherever it pointed. An endpoint on the configured MCP server's
+ *  own origin is trusted like the server itself, as discovery trusts it; any
+ *  other origin is resolved, checked against private addresses and pinned at
+ *  request time, so a DNS answer that changed since discovery cannot move
+ *  the request. */
+function oauthPost(
+  endpoint: string,
+  serverUrl: string,
+  init: {
+    headers: Record<string, string>;
+    body: string | URLSearchParams;
+    signal: AbortSignal;
+  },
+): Promise<Response> {
+  const sameOrigin = (() => {
+    try {
+      return new URL(endpoint).origin === new URL(serverUrl).origin;
+    } catch {
+      return false;
+    }
+  })();
+  return sameOrigin
+    ? fetch(endpoint, { ...init, method: "POST", redirect: "error" })
+    : pinnedFetch(endpoint, { ...init, method: "POST", redirect: "error" });
+}
+
 /** Dynamic client registration (RFC 7591). Returns the client_id. */
-async function registerClient(name: string, register: string): Promise<string> {
+async function registerClient(
+  name: string,
+  register: string,
+  serverUrl: string,
+): Promise<string> {
   const registrationUrl = new URL(register);
-  const registrationResponse = await fetch(register, {
-    redirect: "error",
-    method: "POST",
+  const registrationResponse = await oauthPost(register, serverUrl, {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       client_name: productName(),
@@ -295,7 +326,7 @@ async function ensureServerAuth(
   let clientId: string;
   if (endpoints.register) {
     try {
-      clientId = await registerClient(name, endpoints.register);
+      clientId = await registerClient(name, endpoints.register, serverUrl);
     } catch (error) {
       if (!metadataClientId) throw error;
       clientId = metadataClientId;
@@ -468,8 +499,7 @@ export async function completeMcpOauthFlow(
   });
   if (auth.resource) body.set("resource", auth.resource);
   const res = (await (
-    await fetch(auth.endpoints.token, {
-      method: "POST",
+    await oauthPost(auth.endpoints.token, auth.serverUrl, {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
       signal: AbortSignal.timeout(15_000),
@@ -521,8 +551,7 @@ async function refreshGrant(
   if (auth.resource) body.set("resource", auth.resource);
   try {
     const res = (await (
-      await fetch(auth.endpoints.token, {
-        method: "POST",
+      await oauthPost(auth.endpoints.token, auth.serverUrl, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
         signal: AbortSignal.timeout(15_000),
