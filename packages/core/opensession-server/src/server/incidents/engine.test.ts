@@ -8,6 +8,7 @@ import type {
 } from "../../shared/incidents";
 import {
   type EngineSnapshot,
+  type IncidentOp,
   applyIncidentOps,
   decideIncidentOps,
 } from "./engine";
@@ -1100,7 +1101,7 @@ describe("providers and disagreements", () => {
         },
       ],
     });
-    const resolve = {
+    const resolve: IncidentOp = {
       op: "resolve-finding",
       incidentId: "inc-1",
       kind: "disagreement",

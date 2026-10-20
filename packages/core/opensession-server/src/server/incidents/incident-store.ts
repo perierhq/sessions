@@ -30,10 +30,11 @@ export interface NewIncident {
   findings?: Array<Omit<IncidentFinding, "id">>;
 }
 
+/** May be async; what it returns is never awaited by the write. */
 export type IncidentListener = (
   next: Incident,
   previous: Incident | null,
-) => void | Promise<void>;
+) => void;
 
 // Bound on first use, never at import: the catalog client is a live effect.
 let documents: ReturnType<typeof catalogDocuments> | undefined;
