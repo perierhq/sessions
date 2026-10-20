@@ -514,11 +514,16 @@ export function registerRunner(
   const token = randomBytes(32).toString("hex");
   const store = load();
   // A fresh pairing (a production Runner) never inherits another Runner's
-  // record, policy or reservation by reusing its name.
+  // record, policy or reservation by reusing its name, and an ordinary
+  // pairing never re-pairs a Runner reserved for incidents: replacing a
+  // production Runner happens only through a production pairing.
   const existingIndex = pairing.fresh
     ? -1
     : store.runners.findIndex(
-        (runner) => runner.name === name && runner.platform === input.platform,
+        (runner) =>
+          !runner.incidentReserved &&
+          runner.name === name &&
+          runner.platform === input.platform,
       );
   const existing =
     existingIndex >= 0 ? store.runners[existingIndex] : undefined;
@@ -554,7 +559,6 @@ export function registerRunner(
     localInferencePolicy: existing?.localInferencePolicy,
     aws: existing?.aws,
     maintenance: existing?.maintenance,
-    ...(existing?.incidentReserved ? { incidentReserved: true } : {}),
   });
   if (existingIndex >= 0) store.runners[existingIndex] = runner;
   else store.runners.push(runner);

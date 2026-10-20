@@ -376,6 +376,32 @@ describe("Runners reserved for incidents", () => {
     expect(authenticateRunner(first.runner.id, first.token)).toBeDefined();
   });
 
+  test("an ordinary pairing never re-pairs a reserved Runner by name", () => {
+    const prod = register({ name: "prod-box", platform: "linux" });
+    if (!prod.ok) throw new Error(prod.error);
+    reserveRunnerForIncidents(prod.runner.id, {
+      repos: ["acme"],
+      label: "Production · acme",
+    });
+    const again = register({ name: "prod-box", platform: "linux" });
+    if (!again.ok) throw new Error(again.error);
+    expect(again.runner.id).not.toBe(prod.runner.id);
+    expect(getRunner(again.runner.id)).toMatchObject({
+      allowedRepos: [],
+      allowedUsers: [],
+    });
+    expect(getRunner(again.runner.id)?.incidentReserved).toBeUndefined();
+    expect(getRunner(again.runner.id)?.label).toBeUndefined();
+    // The production Runner is untouched and its token still works.
+    expect(getRunner(prod.runner.id)).toMatchObject({
+      incidentReserved: true,
+      allowedRepos: ["acme"],
+      allowedUsers: [INCIDENT_SERVICE_USER],
+    });
+    expect(authenticateRunner(prod.runner.id, prod.token)).toBeDefined();
+    expect(listRunners()).toHaveLength(2);
+  });
+
   test("only the incident service path may use a reserved Runner", () => {
     const out = register({ name: "prod-2", platform: "linux" });
     if (!out.ok) throw new Error(out.error);
