@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { checkReadOnlyCommand } from "./read-only-commands";
+import {
+  GREP_SECRET_DIR_GLOBS,
+  GREP_SECRET_FILE_GLOBS,
+  checkReadOnlyCommand,
+} from "./read-only-commands";
 
 test.each([
   ["cat", ["/var/log/app/error.log"], ["cat", "/var/log/app/error.log"]],
@@ -93,4 +97,84 @@ test("systemctl show is allowed for named properties other than the environment"
       "app",
     ]).ok,
   ).toBe(false);
+});
+
+// Recursive grep runs only with secret-shaped files and directories excluded,
+// and the caller cannot override the exclusions.
+const forced = [
+  ...GREP_SECRET_FILE_GLOBS.map((g) => `--exclude=${g}`),
+  ...GREP_SECRET_DIR_GLOBS.map((g) => `--exclude-dir=${g}`),
+];
+test.each([
+  [["-r", "KEY", "/srv/app"], ["-r"], ["KEY", "/srv/app"]],
+  [["-rn", "KEY", "/srv/app"], ["-rn"], ["KEY", "/srv/app"]],
+  [
+    ["--recursive", "-e", "KEY", "/srv"],
+    ["--recursive", "-e", "KEY"],
+    ["/srv"],
+  ],
+  [["--recur", "KEY", "/srv"], ["--recur"], ["KEY", "/srv"]],
+  [
+    ["-d", "recurse", "KEY", "/srv"],
+    ["-d", "recurse"],
+    ["KEY", "/srv"],
+  ],
+  [["--directories=recurse", "KEY"], ["--directories=recurse"], ["KEY"]],
+  [["KEY", "-r", "/srv"], ["-r"], ["KEY", "/srv"]],
+  [["-r", "--", "-KEY", "/srv"], ["-r"], ["-KEY", "/srv"]],
+  [
+    ["-ri", "--include=*.log", "KEY", "/srv"],
+    ["-ri", "--include=*.log"],
+    ["KEY", "/srv"],
+  ],
+])("recursive grep %j gets forced exclusions", (args, options, operands) => {
+  expect(checkReadOnlyCommand("grep", args)).toEqual({
+    ok: true,
+    argv: ["grep", ...options, ...forced, "--", ...operands],
+  });
+});
+test("the forced exclusions cover the secret-shaped names", () => {
+  for (const glob of [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_*",
+    ".git-credentials",
+    "credentials",
+    "credentials.*",
+  ])
+    expect(GREP_SECRET_FILE_GLOBS).toContain(glob);
+  for (const dir of [".git", ".ssh"])
+    expect(GREP_SECRET_DIR_GLOBS).toContain(dir);
+});
+test.each([
+  [["-R", "KEY", "/srv"], "Following links"],
+  [["-Rn", "KEY", "/srv"], "Following links"],
+  [["--dereference-recursive", "KEY", "/srv"], "Following links"],
+  [["--deref", "KEY", "/srv"], "Following links"],
+  [["-rS", "KEY", "/srv"], "Following links"],
+  [["-r", "--include=.env*", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--include", "*.yaml", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--incl=id_*", "KEY", "/srv"], "secret-shaped"],
+  [["-r", "--include=*", "KEY", "/srv"], "secret-shaped"],
+  [["--include=credentials*", "KEY", "/srv/a.log"], "secret-shaped"],
+  [["-r", "--frobnicate", "KEY", "/srv"], "grep --frobnicate is not allowed"],
+  [["-r", "-e"], "grep -e needs a value"],
+])("refuses grep %j", (args, reason) => {
+  const out = checkReadOnlyCommand("grep", args);
+  expect(out.ok).toBe(false);
+  expect(!out.ok && out.reason).toContain(reason);
+});
+test("a pattern that only looks like a flag does not make grep recursive", () => {
+  expect(
+    checkReadOnlyCommand("grep", ["-e", "-r", "/var/log/app.log"]),
+  ).toEqual({
+    ok: true,
+    argv: ["grep", "-e", "-r", "/var/log/app.log"],
+  });
+  expect(checkReadOnlyCommand("grep", ["-eRROR", "/var/log/app.log"])).toEqual({
+    ok: true,
+    argv: ["grep", "-eRROR", "/var/log/app.log"],
+  });
 });
