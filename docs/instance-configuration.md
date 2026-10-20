@@ -14,7 +14,10 @@ sections the example omits, including `storage` and `organization`.
   deployment tracking, and security-scan guidance lives on each repo entry.
   A repo entry can also carry an `icon`, a PNG served as the repo's tile icon
   (absolute path, or relative to the checkout). When it is unset or missing,
-  the UI renders the repo's assigned-color letter tile.
+  the UI renders the repo's assigned-color letter tile. Registration records
+  `addedFrom` (`github`, `codestorage`, `new` or `local`); removing a
+  repository never deletes the files of a `local` one (see
+  [Removing a repository](worktrees.md#removing-a-repository)).
 - `identity.team` owns commit attribution, GitHub/Slack/Linear mappings,
   per-user connector access, and the team web-sign-in allowlist. There is no
   built-in company roster. `identity.defaultTimezone` controls the fallback

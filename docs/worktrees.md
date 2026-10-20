@@ -186,6 +186,39 @@ This is a deliberate trade with sharp edges. In a shared checkout:
 
 If sessions do not need to edit the running checkout, use isolated worktrees.
 
+## Removing a repository
+
+Settings → Repositories → ⋯ → **Remove…** takes a repository out of the
+registry, so it leaves the sidebar and the new-session pickers. The dialog
+says how many of its sessions it archives. Removal waits while any of them is
+running: stop them first, and the dialog says how many are left.
+
+Removal archives the repository's live sessions the same way a manual archive
+does, so their runs, Portals, containers and units stop. It also forgets the
+state kept under the repository's id: the workspace's default for new
+sessions, sandbox overrides and keep-ready targets, warm-template settings,
+and each person's new-session default and repository order. Its entry leaves
+`config.json` through the same locked, atomic writer registration uses, and
+the removal is recorded in the audit log.
+
+Files stay on disk unless **Also delete its files on this machine** is
+checked. Deletion is offered only for a checkout the server made: one cloned
+or started from Settings, directly inside `~/checkouts`. It then removes the
+repository's worktrees in the worktree root (`git worktree remove --force`),
+the checkout, and the bare `~/checkouts/<name>.git` origin of a repository
+started on this server. The box is disabled, with the reason beside it, for a
+folder registered from disk, a checkout anywhere else, a path another
+registered repository uses, or a symlink. Paths are compared after resolving
+symlinks, and the `~/checkouts` root itself is never deleted.
+
+The same actions are available over HTTP to anyone who may use the setup
+routes:
+
+| Endpoint                            | Does                                                                                     |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET /api/setup/repos/<id>/removal` | Live and running session counts, the checkout path, and whether its files may be deleted |
+| `DELETE /api/setup/repos/<id>`      | Removes it. Body `{"deleteFiles": true}` also deletes its files. 409 while sessions run  |
+
 ## What cleans up automatically
 
 ### Rust build-cache GC
