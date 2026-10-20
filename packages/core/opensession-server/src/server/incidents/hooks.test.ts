@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
 import { incidentHookRoutes } from "./hooks";
 import {
   __resetObservationsForTest,
@@ -8,9 +8,11 @@ import {
 import { listIncidents } from "./incident-store";
 import {
   __resetSignalRuntimeForTest,
+  __setIncidentEngineForTest,
   bootSignalRuntime,
   getSignalEvaluation,
   ingestObservations,
+  intakeSettled,
 } from "./signal-runtime";
 import { createSignal, getSignal, updateSignal } from "./signal-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
@@ -185,6 +187,76 @@ test("heartbeats check in by GET or POST, and can report failure", async () => {
   ]);
 });
 
+test("a stalled engine never holds a hook answer; evaluation keeps its order", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let applied = 0;
+  __setIncidentEngineForTest({
+    apply: async () => {
+      await gate;
+      applied++;
+      return [];
+    },
+  });
+  try {
+    const w = await make({
+      source: { kind: "webhook" },
+      rule: { kind: "consecutive", failures: 3 },
+    });
+    const path = `/incident-hooks/${w.id}/${w.hookSecret}`;
+    for (const [i, body] of ["a", "b", "c", "d"].entries()) {
+      // The third failure opens an incident: its apply never returns yet.
+      const res = await Promise.race([
+        call("POST", path, body),
+        Bun.sleep(1_000).then(() => null),
+      ]);
+      expect([i, res?.status]).toEqual([i, 200]);
+    }
+    expect(recentObservations(w.id).map((o) => o.detail)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+    expect(applied).toBe(0);
+    release();
+    await intakeSettled();
+    expect(applied).toBe(1);
+    expect(getSignalEvaluation(w.id)).toMatchObject({
+      state: "failing",
+      lastObservationAt: recentObservations(w.id).at(-1)!.at,
+    });
+    // Evaluations run in arrival order; one that starts late reads every
+    // observation recorded by then.
+    const states = kit.audits
+      .filter((a) => a.kind === "incident_signal_state")
+      .map((a) => a.to);
+    expect(states.at(-1)).toBe("failing");
+    expect(states.filter((to) => to === "failing")).toHaveLength(1);
+  } finally {
+    __setIncidentEngineForTest(undefined);
+  }
+});
+
+test("an evaluation that throws after a hook answer is logged", async () => {
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const w = await make({ source: { kind: "webhook" } });
+    const path = `/incident-hooks/${w.id}/${w.hookSecret}`;
+    __setIncidentEngineForTest({
+      decide: () => {
+        throw new Error("engine down");
+      },
+    });
+    expect((await call("POST", path, "a")).status).toBe(200);
+    await intakeSettled();
+    expect(error).toHaveBeenCalled();
+  } finally {
+    __setIncidentEngineForTest(undefined);
+    error.mockRestore();
+  }
+});
+
 test("a hook call during boot waits for the replay", async () => {
   const w = await make({ name: "Zz hook", source: { kind: "webhook" } });
   const now = Date.now();
@@ -226,6 +298,7 @@ test("a hook call during boot waits for the replay", async () => {
     "again",
   );
   await boot;
+  await intakeSettled();
   expect(res.status).toBe(200);
   expect(getSignalEvaluation(w.id)?.state).toBe("failing");
   expect(kit.audits.filter((a) => a.kind === "incident_signal_state")).toEqual(

@@ -14,7 +14,7 @@ import {
 } from "../shared/bounded-body";
 import { isShuttingDown } from "../shutdown-state";
 import type { PublicWebhookHandler } from "../webhook-server";
-import { ingestObservations } from "./signal-runtime";
+import { recordObservations } from "./signal-runtime";
 import { getSignal } from "./signal-store";
 import { webhookObservations } from "./sources/webhook";
 
@@ -115,7 +115,8 @@ function handler(method: "GET" | "POST"): PublicWebhookHandler {
       signal.source.kind === "webhook"
         ? webhookObservations(signal.source, body, at).observations
         : [heartbeatObservation(hook.fail, body, at)];
-    await ingestObservations(signal.id, observations, now);
+    // Answered once recorded; the engine catches up in the background.
+    recordObservations(signal, observations, now);
     return Response.json({ ok: true });
   };
 }

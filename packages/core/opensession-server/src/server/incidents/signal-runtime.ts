@@ -37,6 +37,8 @@ let engineChain: Promise<void> = Promise.resolve();
  * replay would then overwrite its evaluation.
  */
 let booting: Promise<void> | null = null;
+/** Background evaluations of recorded observations, the newest per signal. */
+let intake = new Map<string, Promise<void>>();
 
 export function getSignalEvaluation(id: string): SignalEvaluation | null {
   return evaluations.get(id) ?? null;
@@ -72,6 +74,7 @@ export function __resetSignalRuntimeForTest(): void {
   evaluations = new Map();
   engineChain = Promise.resolve();
   booting = null;
+  intake = new Map();
 }
 
 function hydrate(signal: Signal, now: number): Promise<void> {
@@ -195,6 +198,43 @@ export async function ingestObservations(
   if (!signal?.enabled) return null;
   if (observations.length) appendObservations(signal.id, observations);
   return reevaluateSignal(signal, now);
+}
+
+/**
+ * Record observations now and evaluate them in the background, after every
+ * earlier recording for the same signal, so a stalled engine never holds the
+ * caller (a hook answer). The evaluation reads the signal again (it may have
+ * been disabled meanwhile) and logs its errors.
+ */
+export function recordObservations(
+  signal: Signal,
+  observations: Observation[],
+  now: number = Date.now(),
+): void {
+  if (observations.length) appendObservations(signal.id, observations);
+  const evaluate = async () => {
+    await bootSettled();
+    const fresh = await getSignal(signal.id);
+    if (fresh) await reevaluateSignal(fresh, now);
+    else forgetSignal(signal.id);
+  };
+  const next = (intake.get(signal.id) ?? Promise.resolve())
+    .then(evaluate)
+    .catch((error) =>
+      console.error(
+        `[incidents] evaluation failed for ${signal.id}:`,
+        error instanceof Error ? error.message : error,
+      ),
+    );
+  intake.set(signal.id, next);
+  void next.then(() => {
+    if (intake.get(signal.id) === next) intake.delete(signal.id);
+  });
+}
+
+/** Resolves once every background evaluation queued so far is done. */
+export async function intakeSettled(): Promise<void> {
+  while (intake.size) await Promise.all([...intake.values()]);
 }
 
 /**
