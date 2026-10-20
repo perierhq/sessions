@@ -15,6 +15,7 @@ import {
 } from "../../runners";
 import { incidentAudit } from "../audit-sink";
 import {
+  getProjectSettings,
   incidentProjectExists,
   patchProjectSettings,
   productionRunnerProblem,
@@ -157,6 +158,19 @@ export async function bindProductionRunner(
       : { ...s, productionRunners: [...s.productionRunners, runnerId] },
   );
   incidentAudit({ kind: "incident_runner_paired", project, runnerId, by });
+}
+
+/** Why `runnerId` may not run `project`'s checks or actions now: it must be
+ *  one of the project's production Runners and reserved for incidents. The
+ *  signal store's `runOn` check and every Runner check at run time use it. */
+export async function productionRunOnProblem(
+  runnerId: string,
+  project: string,
+): Promise<string | null> {
+  const settings = await getProjectSettings(project);
+  if (!settings.productionRunners.includes(runnerId))
+    return `Runner ${runnerLabel(runnerId)} is not a production Runner for ${project}`;
+  return productionRunnerProblem(runnerId, project);
 }
 
 export function runnerLabel(runnerId: string | undefined): string {

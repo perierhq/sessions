@@ -17,6 +17,7 @@ import {
   __flushProductionBindingsForTest,
   bindProductionRunner,
   listProductionRunnerCandidates,
+  productionRunOnProblem,
   runnerLabel,
   startProductionPairing,
 } from "./runners";
@@ -199,4 +200,19 @@ test("candidates explain what binding a Runner would do", async () => {
   );
   expect(runnerLabel(undefined)).toBe("the Sessions server");
   expect(runnerLabel("runner-gone")).toBe("runner-gone");
+});
+
+test("a check runs only from a reserved production Runner of its project", async () => {
+  const runner = register(startPairing("acme").code, "prod-1");
+  const lab = plainRunner("lab");
+  await __flushProductionBindingsForTest();
+  expect(await productionRunOnProblem(runner.id, "acme")).toBeNull();
+  expect(await productionRunOnProblem(runner.id, "acme-api")).toBe(
+    "Runner Production · acme is not a production Runner for acme-api",
+  );
+  expect(await productionRunOnProblem(lab.id, "acme")).toBe(
+    "Runner lab is not a production Runner for acme",
+  );
+  updateRunner(runner.id, { maintenance: true });
+  expect(await productionRunOnProblem(runner.id, "acme")).toBeNull();
 });

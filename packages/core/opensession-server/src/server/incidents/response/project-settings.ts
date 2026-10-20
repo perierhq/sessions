@@ -105,13 +105,17 @@ export function productionRunnerProblem(
   if (platform) return platform;
   if (!runner.incidentReserved)
     return `Runner ${runner.name} is not reserved for incidents. Bind it to ${project} first`;
+  // Maintenance is a state, not policy: the run itself reports it.
   if (
-    !runnerAllowed(runner, {
-      user: INCIDENT_SERVICE_USER,
-      repo: project,
-      permission: "commands",
-      incidentService: true,
-    })
+    !runnerAllowed(
+      { ...runner, maintenance: false },
+      {
+        user: INCIDENT_SERVICE_USER,
+        repo: project,
+        permission: "commands",
+        incidentService: true,
+      },
+    )
   )
     return `Runner ${runner.name} does not allow commands for ${project}`;
   return null;

@@ -531,3 +531,43 @@ test("Runner offline is unknown, never a failure; size errors fail", async () =>
     ).observations[0],
   ).toMatchObject({ result: "unknown", detail: "Response over 150 KB" });
 });
+
+test("any other Runner problem is unknown with the Runner's own detail", async () => {
+  const problem = Object.assign(
+    new Error(
+      "Update Runner prod-1: it is too old to run incident checks and actions",
+    ),
+    { code: "RUNNER_UNAVAILABLE" },
+  );
+  const fromSend = await runHttpSource(
+    { kind: "http", url: "https://acme.example.test/ok" },
+    {
+      net: {
+        resolve: async () => ["203.0.113.7"],
+        isBlocked: () => false,
+        send: async () => {
+          throw problem;
+        },
+      },
+    },
+  );
+  expect(fromSend.observations[0]).toMatchObject({
+    result: "unknown",
+    detail: problem.message,
+  });
+  const fromResolve = await runHttpSource(
+    { kind: "http", url: "https://acme.example.test/ok" },
+    {
+      net: {
+        resolve: async () => {
+          throw problem;
+        },
+        isBlocked: () => false,
+      },
+    },
+  );
+  expect(fromResolve.observations[0]).toMatchObject({
+    result: "unknown",
+    detail: problem.message,
+  });
+});

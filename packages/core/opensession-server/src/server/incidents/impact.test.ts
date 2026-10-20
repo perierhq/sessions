@@ -120,8 +120,8 @@ test("an http impact counts failures and people since the incident opened", asyn
     noun: "searches failed",
     label: "the request log",
   });
+  expect(seen[0]?.runOn).toBeUndefined();
   expect(seen[0]).toMatchObject({
-    runOn: "runner-prod",
     provider: false,
     source: {
       url: `https://logs.example.test/c?since=${encodeURIComponent(incident.openedAt)}`,

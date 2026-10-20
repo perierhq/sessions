@@ -212,7 +212,11 @@ async function measureHttp(
   };
   let run: Awaited<ReturnType<typeof runSignalSource>>;
   try {
-    run = await deps.runSource({ ...signal, provider: false, source });
+    // An impact query reads a log or metrics API, not production: it runs
+    // from this server with the pinned fetch, never from the signal's
+    // production Runner.
+    const { runOn: _runOn, ...local } = signal;
+    run = await deps.runSource({ ...local, provider: false, source });
   } catch (error) {
     return failed(message(error));
   }

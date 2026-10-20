@@ -8,6 +8,14 @@ import { runTlsExpirySource } from "./tls-expiry";
 
 export type { SourceRun, SourceRunOptions } from "./http";
 
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runSignalSource(
   signal: Signal,
   opts: SourceRunOptions = {},
@@ -18,6 +26,9 @@ export async function runSignalSource(
       return runHttpSource(source, {
         ...opts,
         provider: signal.provider,
+        // As the incident service, never as the signal's author; the
+        // Runner must still be a reserved production Runner of the project
+        // when the check runs.
         ...(signal.runOn
           ? {
               net: runnerNet(
@@ -25,7 +36,8 @@ export async function runSignalSource(
                 {},
                 {
                   repo: signal.project,
-                  user: signal.createdBy,
+                  signalId: signal.id,
+                  host: hostOf(source.url),
                   timeoutMs: source.timeoutMs,
                 },
               ),
