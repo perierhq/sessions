@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { IncidentAction } from "../../../shared/incident-response";
-import type { RunnerExecResult } from "../../runner-ws";
+import { RunnerUnavailableError, type RunnerExecResult } from "../../runner-ws";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   type ActionDeps,
+  __resetReleaseHookLimitForTest,
   incidentReleaseHookRoutes,
   newActionRunId,
   previousReleaseRef,
@@ -65,7 +66,7 @@ test("renders quoted, validated values", () => {
   expect(newActionRunId()).toMatch(/^act-[0-9a-f-]{36}$/);
 });
 
-test("runs on the Runner as the owner, audits without the command", async () => {
+test("runs on the Runner as the incident service, the command on stdin only", async () => {
   const seen: unknown[] = [];
   const run = await runIncidentAction(
     {
@@ -105,11 +106,12 @@ test("runs on the Runner as the owner, audits without the command", async () => 
   });
   expect(seen[0]).toEqual([
     "runner-prod",
-    "./rollback.sh 'abc1234' --incident 'inc-1'",
+    "exec bash -s",
     {
       timeoutMs: 600_000,
-      user: "Ada",
       repo: "acme",
+      stdin: "./rollback.sh 'abc1234' --incident 'inc-1'\n",
+      auditCommand: "incident action rollback",
       sessionId: "sess-coord",
       cwd: undefined,
     },
@@ -162,13 +164,57 @@ test("failures never throw", async () => {
     status: "failed",
     detail: "Timed out after 10 min",
   });
-  expect(
-    await fail(new Error("Runner runner-prod is not connected")),
-  ).toMatchObject({
-    status: "failed",
-    detail: "Runner runner-prod is not connected",
-  });
-  expect(kit.audits).toHaveLength(4);
+  expect(kit.audits).toHaveLength(3);
+});
+
+test("a Runner problem leaves the outcome unknown, never failed", async () => {
+  const unknown = (r: Partial<RunnerExecResult> | Error) =>
+    runIncidentAction(
+      {
+        runId: "act-4",
+        incidentId: "inc-1",
+        round: 1,
+        project: "acme",
+        action,
+        vars,
+        owner: "Ada",
+        purpose: "plan",
+      },
+      {
+        exec: async () => {
+          if (r instanceof Error) throw r;
+          return { code: 0, stdout: "", stderr: "", ...r };
+        },
+        now: () => 0,
+      },
+    );
+  const cases: Array<[Partial<RunnerExecResult> | Error, string]> = [
+    [
+      new RunnerUnavailableError("Runner prod-1 is offline"),
+      "Runner prod-1 is offline. The action did not start",
+    ],
+    [
+      new RunnerUnavailableError("Runner prod-1 is in maintenance"),
+      "Runner prod-1 is in maintenance. The action did not start",
+    ],
+    [
+      new RunnerUnavailableError(
+        "Update Runner prod-1: it is too old to run incident checks and actions",
+      ),
+      "Update Runner prod-1: it is too old to run incident checks and actions. The action did not start",
+    ],
+    [
+      new Error("socket closed"),
+      "The Runner failed while the action started: socket closed. Check production before going on",
+    ],
+    [
+      { code: -1, stderr: "half done\n[Runner disconnected]" },
+      "The Runner disconnected while the action ran. Check production before going on",
+    ],
+  ];
+  for (const [result, detail] of cases)
+    expect(await unknown(result)).toMatchObject({ status: "unknown", detail });
+  expect(kit.audits.map((a) => a.status)).toEqual(cases.map(() => "unknown"));
 });
 
 test("a render error fails the run without touching the Runner", async () => {
@@ -266,4 +312,23 @@ test("release hook records releases for rollback-first", async () => {
     }),
   ).toBe("aaaaaaa");
   expect(previousReleaseRef({ ...s, releases: [] })).toBeUndefined();
+});
+
+test("the release hook takes at most 30 releases a minute per project", async () => {
+  __resetReleaseHookLimitForTest();
+  const s = await updateProjectSettings("acme", { autonomy: "propose" }, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  const route = incidentReleaseHookRoutes().get("POST /incident-releases/*")!;
+  const post = () => {
+    const url = new URL(
+      `https://hooks.example.test/incident-releases/acme/${s.releaseHookSecret}`,
+    );
+    return route(new Request(url, { method: "POST" }), url);
+  };
+  for (let i = 0; i < 30; i++) expect((await post()).status).toBe(200);
+  const limited = await post();
+  expect(limited.status).toBe(429);
+  expect(await limited.json()).toEqual({ error: "Too many releases" });
+  __resetReleaseHookLimitForTest();
+  expect((await post()).status).toBe(200);
 });

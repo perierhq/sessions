@@ -744,15 +744,21 @@ export async function updateProjectSettings(
   return result;
 }
 
-/** Server-side writes (`automationId`, pairing, releases): no validation and
- *  no field audit. */
+/** Server-side writes (`automationId`, pairing, releases): no caller
+ *  validation and no field audit, but only for a registered project and
+ *  only when the whole record still keeps its rules. Throws otherwise and
+ *  writes nothing. */
 export async function patchProjectSettings(
   project: string,
   mutate: (s: IncidentProjectSettings) => IncidentProjectSettings,
 ): Promise<IncidentProjectSettings> {
+  if (!context().projectExists(project))
+    throw new Error(`Unknown project ${project}`);
   const committed = await settingsDocuments().update(project, (stored) => {
     const current = withDefaults(project, stored);
     const next = mutate(current);
+    const problem = settingsInvariantProblem(next);
+    if (problem) throw new Error(problem);
     return {
       ...next,
       project,
@@ -785,6 +791,8 @@ export async function recordRelease(
 ): Promise<{ error: string } | undefined> {
   if (release.ref !== undefined && !RELEASE_REF.test(release.ref))
     return { error: "Invalid ref" };
+  if (!context().projectExists(project))
+    return { error: `Unknown project ${project}` };
   await patchProjectSettings(project, (s) => ({
     ...s,
     releases: [release, ...s.releases]

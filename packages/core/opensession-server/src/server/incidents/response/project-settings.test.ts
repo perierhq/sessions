@@ -343,3 +343,36 @@ test("release refs must be commit SHAs; project ids are own keys", async () => {
     error: "Unknown project constructor",
   });
 });
+test("server-side writes keep the record's own rules and need a real project", async () => {
+  await expect(
+    patchProjectSettings("acme-gone", (p) => ({ ...p, automationId: "a" })),
+  ).rejects.toThrow("Unknown project acme-gone");
+  await expect(
+    patchProjectSettings("acme", (p) => ({
+      ...p,
+      actions: [
+        {
+          id: "deploy",
+          kind: "deploy",
+          label: "Deploy",
+          runner: "runner-lab",
+          command: "./deploy.sh",
+          timeoutMs: 600_000,
+          reversible: true,
+          cost: { kind: "none" },
+          needsSecret: false,
+          scope: { services: [], paths: [], migrationPaths: [] },
+        },
+      ],
+    })),
+  ).rejects.toThrow(
+    "Action deploy runs on runner-lab, which is not one of the project's production Runners",
+  );
+  expect((await getProjectSettings("acme")).actions).toEqual([]);
+  expect(
+    await recordRelease("acme-gone", {
+      at: "2026-10-20T10:00:00.000Z",
+      source: "hook",
+    }),
+  ).toEqual({ error: "Unknown project acme-gone" });
+});

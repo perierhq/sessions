@@ -304,3 +304,37 @@ test("pushed signals prove the baseline from their evaluation", async () => {
   expect(runOn.baseline.verdict).toBe("unclear");
   expect(runOn.candidate.refused).toBe("A request check needs an http signal");
 });
+
+test("a Runner problem never proves a baseline fails or a candidate passes", async () => {
+  const seen: Signal[] = [];
+  const runnerDown = async (s: Signal): Promise<SourceRun> => {
+    seen.push(s);
+    return {
+      observations: [
+        {
+          at: "t",
+          result: "unknown",
+          detail:
+            "Update Runner prod-1: it is too old to run incident checks and actions",
+        },
+      ],
+    };
+  };
+  const p = await runProof(
+    {
+      signal: http,
+      evaluation: null,
+      recent: [],
+      round: 1,
+      check: request("https://acme.example.test/search?q=x"),
+    },
+    { runSource: runnerDown, sleep: async () => {}, now: () => 0 },
+  );
+  expect(p.baseline.verdict).toBe("unclear");
+  expect(p.candidate).toMatchObject({ kind: "request", verdict: "unclear" });
+  expect(p.baseline.samples[0]?.detail).toBe(
+    "Update Runner prod-1: it is too old to run incident checks and actions",
+  );
+  // Baseline and candidate both run from the signal's own Runner.
+  expect(seen.map((s) => s.runOn)).toEqual(Array(6).fill("runner-prod"));
+});

@@ -1,9 +1,13 @@
-// The project's typed actions, run by Sessions alone on a paired production
-// Runner, and the release hook a deploy pipeline outside Sessions calls so
-// rollback-first knows its releases. Every placeholder value is validated
-// and shell-quoted; the command text never reaches the audit log or the
-// returned run. A run is returned finished and never retried here: the
-// caller records the intent first, so a restart mid-run is visible.
+// The project's typed actions, run by Sessions alone on a production Runner
+// reserved for incidents, and the release hook a deploy pipeline outside
+// Sessions calls so rollback-first knows its releases. Every placeholder
+// value is validated and shell-quoted. The rendered command goes to the
+// Runner on stdin (`bash -s`), so it is never in argv, the process list, the
+// audit log or the returned run. A Runner problem leaves the run `unknown`,
+// never `failed`: it may or may not have run. A run is returned finished and
+// never retried here, and an interrupted or unknown run is never run again
+// on its own: the caller records the intent first, so a restart or a lost
+// Runner mid-run is visible and goes to a person.
 import { randomUUIDv7 } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import {
@@ -12,7 +16,7 @@ import {
   type IncidentAction,
   type IncidentProjectSettings,
 } from "../../../shared/incident-response";
-import { execOnRunner, type RunnerExecResult } from "../../runner-ws";
+import { type RunnerExecResult, execOnIncidentRunner } from "../../runner-ws";
 import {
   RequestBodyTooLargeError,
   readRequestTextWithinLimit,
@@ -78,14 +82,19 @@ export interface ActionDeps {
     command: string,
     opts: {
       timeoutMs: number;
-      user?: string;
-      repo?: string;
+      repo: string;
+      stdin: string;
+      auditCommand: string;
       sessionId?: string;
       cwd?: string;
     },
   ) => Promise<RunnerExecResult>;
   now: () => number;
 }
+
+/** The Runner runs the script it reads on stdin. */
+const ACTION_COMMAND = "exec bash -s";
+const CHECK_PRODUCTION = "Check production before going on";
 
 function lastStderrLine(stderr: string): string | undefined {
   const lines = stderr
@@ -98,6 +107,14 @@ function lastStderrLine(stderr: string): string | undefined {
 function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, STDERR_DETAIL_MAX) || "The action failed";
+}
+
+/** A Runner problem: refused before dispatch (the action did not start),
+ *  or anything else that went wrong getting it there (it may have). */
+function runnerProblemDetail(error: unknown): string {
+  return (error as { code?: unknown }).code === "RUNNER_UNAVAILABLE"
+    ? `${errorMessage(error)}. The action did not start`
+    : `The Runner failed while the action started: ${errorMessage(error)}. ${CHECK_PRODUCTION}`;
 }
 
 /** Runs one action and returns the finished run. Never throws. */
@@ -115,7 +132,7 @@ export async function runIncidentAction(
   },
   deps: Partial<ActionDeps> = {},
 ): Promise<ActionRun> {
-  const exec = deps.exec ?? execOnRunner;
+  const exec = deps.exec ?? execOnIncidentRunner;
   const now = deps.now ?? Date.now;
   const { action } = input;
   const ref =
@@ -133,15 +150,22 @@ export async function runIncidentAction(
     detail = rendered.error;
   } else {
     try {
-      const result = await exec(action.runner, rendered, {
+      // As the incident service on a reserved Runner, never as the owner:
+      // the owner counts the budget, the Runner trusts only Sessions.
+      const result = await exec(action.runner, ACTION_COMMAND, {
         timeoutMs: action.timeoutMs,
-        user: input.owner,
         repo: input.project,
+        stdin: `${rendered}\n`,
+        auditCommand: `incident action ${action.id}`,
         sessionId: input.sessionId,
         cwd: action.cwd,
       });
       if (result.timedOut) {
         detail = `Timed out after ${Math.max(1, Math.round(action.timeoutMs / 60_000))} min`;
+      } else if (result.code === -1) {
+        // The channel dropped: the script may have run, in part or whole.
+        status = "unknown";
+        detail = `The Runner disconnected while the action ran. ${CHECK_PRODUCTION}`;
       } else {
         exitCode = result.code;
         if (result.code === 0) {
@@ -155,7 +179,8 @@ export async function runIncidentAction(
         }
       }
     } catch (error) {
-      detail = errorMessage(error);
+      status = "unknown";
+      detail = runnerProblemDetail(error);
     }
   }
   incidentAudit({
@@ -201,6 +226,28 @@ export function previousReleaseRef(
 
 export const RELEASE_BODY_CAP = 10_000;
 const RELEASE_PATH = /^\/incident-releases\/([^/]+)\/([^/]+)$/;
+export const RELEASE_HOOK_LIMIT = 30;
+const RELEASE_HOOK_WINDOW_MS = 60_000;
+/** Accepted calls per project in the last minute; held in memory only. */
+const releaseCalls = new Map<string, number[]>();
+
+/** Whether `project` may take one more release now (and counts it). */
+function releaseAllowed(project: string, now: number): boolean {
+  const recent = (releaseCalls.get(project) ?? []).filter(
+    (at) => now - at < RELEASE_HOOK_WINDOW_MS,
+  );
+  if (recent.length >= RELEASE_HOOK_LIMIT) {
+    releaseCalls.set(project, recent);
+    return false;
+  }
+  recent.push(now);
+  releaseCalls.set(project, recent);
+  return true;
+}
+
+export function __resetReleaseHookLimitForTest(): void {
+  releaseCalls.clear();
+}
 const PROJECT_ID = VALUE_RULES.project;
 const NOTE_MAX = 200;
 
@@ -257,6 +304,8 @@ const releaseHook: PublicWebhookHandler = async (req, url) => {
     return notFound();
   const settings = await getProjectSettings(project);
   if (!secretMatches(settings.releaseHookSecret, secret)) return notFound();
+  if (!releaseAllowed(project, Date.now()))
+    return Response.json({ error: "Too many releases" }, { status: 429 });
   let text: string;
   try {
     text = await readRequestTextWithinLimit(req, RELEASE_BODY_CAP);

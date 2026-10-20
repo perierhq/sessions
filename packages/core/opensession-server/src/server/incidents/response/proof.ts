@@ -4,6 +4,9 @@
 // declares. Sessions measures here; the verifier judges. A candidate check
 // is the signal's request with the agent's changes, on the signal's origin
 // only, so an agent can never aim the production Runner anywhere else.
+// Both run through `runSignalSource`, so they take the signal's Runner
+// transport as it is (reserved production Runner, request on stdin), and a
+// Runner problem is an unknown sample: it never proves anything.
 import type {
   CandidateCheck,
   ProofResult,

@@ -367,7 +367,10 @@ export interface ActionRun {
   kind: ActionKind;
   label: string;
   runner: string;
-  status: "running" | "ok" | "failed" | "interrupted";
+  /** `interrupted`: Sessions restarted mid-run. `unknown`: a Runner
+   *  problem, so it may or may not have run. Neither is ever run again
+   *  without a person. */
+  status: "running" | "ok" | "failed" | "interrupted" | "unknown";
   purpose: "plan" | "auto-rollback" | "rollback-first" | "owner-rollback";
   startedAt: string;
   endedAt?: string;
