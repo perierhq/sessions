@@ -6,12 +6,15 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   createRunnerPairing,
+  INCIDENT_SERVICE_USER,
   listRunners,
   registerRunner,
   removeRunner,
+  reserveRunnerForIncidents,
   updateRunner,
 } from "./runners";
 import {
+  execOnIncidentRunner,
   execOnRunner,
   launchRunnerHost,
   openRunnerTerminal,
@@ -493,5 +496,125 @@ describe("Runner command input and audit labels", () => {
     await expect(execOnRunner("runner-missing", "echo")).rejects.toMatchObject({
       code: "RUNNER_UNAVAILABLE",
     });
+  });
+});
+
+describe("Incident service commands", () => {
+  async function withRunner(
+    hello: Record<string, unknown>,
+    reserve: boolean,
+    run: (id: string, sent: any[]) => Promise<void>,
+  ) {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "prod-runner",
+      platform: "linux",
+      arch: "x64",
+      address: "100.101.102.107",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    if (reserve) reserveRunnerForIncidents(id, { repos: ["acme"] });
+    const sent: any[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      close() {},
+      send(frame: string) {
+        const message = JSON.parse(frame);
+        sent.push(message);
+        if (message.t === "exec")
+          queueMicrotask(() =>
+            runnerWsMessage(
+              ws,
+              JSON.stringify({
+                t: "exit",
+                id: message.id,
+                operationToken: message.operationToken,
+                code: 0,
+              }),
+            ),
+          );
+      },
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1, ...hello }));
+    try {
+      await run(id, sent);
+    } finally {
+      runnerWsClose(ws);
+    }
+  }
+  const input = {
+    repo: "acme",
+    stdin: "script",
+    auditCommand: "incident action rollback",
+    timeoutMs: 5_000,
+  };
+
+  test("runs on a reserved Runner as the incident service", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({ execStdin: true }, true, async (id, sent) => {
+        expect(await execOnIncidentRunner(id, "bash -s", input)).toMatchObject({
+          code: 0,
+        });
+        expect(sent[0]).toMatchObject({ command: "bash -s", stdin: "script" });
+      });
+      expect(audits.mock.calls[0]![0]).toMatchObject({
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        command: "incident action rollback",
+      });
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("a reserved Runner refuses every other caller", async () => {
+    await withRunner({ execStdin: true }, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "id", { user: INCIDENT_SERVICE_USER, repo: "acme" }),
+      ).rejects.toThrow("not permitted");
+      await expect(
+        execOnRunner(id, "id", { user: "Ada", repo: "acme" }),
+      ).rejects.toThrow("not permitted");
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("Runner problems say what is wrong with the Runner", async () => {
+    await withRunner({ execStdin: true }, false, async (id) => {
+      await expect(execOnIncidentRunner(id, "bash -s", input)).rejects.toThrow(
+        "Runner prod-runner is not reserved for incidents",
+      );
+    });
+    await withRunner({}, true, async (id, sent) => {
+      await expect(
+        execOnIncidentRunner(id, "bash -s", input),
+      ).rejects.toMatchObject({
+        code: "RUNNER_UNAVAILABLE",
+        message:
+          "Update Runner prod-runner: it is too old to run incident checks and actions",
+      });
+      expect(sent).toEqual([]);
+    });
+    await withRunner({ execStdin: true }, true, async (id) => {
+      updateRunner(id, { maintenance: true });
+      await expect(execOnIncidentRunner(id, "bash -s", input)).rejects.toThrow(
+        "Runner prod-runner is in maintenance",
+      );
+      updateRunner(id, { maintenance: false });
+      await expect(
+        execOnIncidentRunner(id, "bash -s", { ...input, repo: "acme-api" }),
+      ).rejects.toThrow(
+        "Runner prod-runner does not allow commands for acme-api",
+      );
+    });
+    await expect(
+      execOnIncidentRunner("runner-gone", "bash -s", input),
+    ).rejects.toThrow("Runner runner-gone is not paired");
   });
 });

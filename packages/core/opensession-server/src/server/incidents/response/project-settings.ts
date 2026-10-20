@@ -29,7 +29,12 @@ import {
 import { catalogDocuments } from "../../catalog-documents";
 import { configuredRepos } from "../../config";
 import { resolveModel } from "../../models";
-import { getRunner, runnerAllowed } from "../../runners";
+import {
+  INCIDENT_SERVICE_USER,
+  type Runner,
+  getRunner,
+  runnerAllowed,
+} from "../../runners";
 import { incidentAudit } from "../audit-sink";
 import { canonicalModelId, sameModel } from "./models";
 
@@ -80,15 +85,34 @@ export function incidentProjectExists(project: string): boolean {
   return context().projectExists(project);
 }
 
-/** Whether a paired Runner may run this project's actions. Platform and
- *  online state are reported elsewhere. */
+/** Why a paired Runner cannot be bound for incidents at all. */
+export function runnerPlatformProblem(runner: Runner): string | null {
+  return runner.platform === "win32"
+    ? `Runner ${runner.name} runs Windows; incident checks and actions need macOS or Linux`
+    : null;
+}
+
+/** Whether a paired Runner may run this project's checks and actions: it
+ *  must be reserved for incidents (`bindProductionRunner`) and allow this
+ *  project. Online state is reported elsewhere. */
 export function productionRunnerProblem(
   runnerId: string,
   project: string,
 ): string | null {
   const runner = getRunner(runnerId);
   if (!runner) return `Runner ${runnerId} is not paired`;
-  if (!runnerAllowed(runner, { repo: project, permission: "commands" }))
+  const platform = runnerPlatformProblem(runner);
+  if (platform) return platform;
+  if (!runner.incidentReserved)
+    return `Runner ${runner.name} is not reserved for incidents. Bind it to ${project} first`;
+  if (
+    !runnerAllowed(runner, {
+      user: INCIDENT_SERVICE_USER,
+      repo: project,
+      permission: "commands",
+      incidentService: true,
+    })
+  )
     return `Runner ${runner.name} does not allow commands for ${project}`;
   return null;
 }

@@ -6,12 +6,15 @@ import {
   authenticateRunner,
   createRunnerPairing,
   bindRunnerPairingMigration,
+  getRunner,
+  INCIDENT_SERVICE_USER,
   listRunners,
   normalizeAddress,
   registerRunner,
   releaseRunnerReservation,
   removeRunner,
   reserveRunner,
+  reserveRunnerForIncidents,
   runnerAllowed,
   runnerAllowsLocalInference,
   runnerAvailableForSession,
@@ -352,5 +355,111 @@ describe("Runner policy and reservations", () => {
         task: "chat",
       }),
     ).toBe(false);
+  });
+});
+
+describe("Runners reserved for incidents", () => {
+  test("a fresh pairing never takes over a Runner with the same name", () => {
+    const first = register({ name: "prod-box", platform: "linux" });
+    if (!first.ok) throw new Error(first.error);
+    const { code } = createRunnerPairing("Ada", { fresh: true });
+    const second = registerRunner({
+      code,
+      name: "prod-box",
+      platform: "linux",
+      arch: "x64",
+      address: "100.64.0.10",
+    });
+    if (!second.ok) throw new Error(second.error);
+    expect(second.runner.id).not.toBe(first.runner.id);
+    expect(listRunners()).toHaveLength(2);
+    expect(authenticateRunner(first.runner.id, first.token)).toBeDefined();
+  });
+
+  test("only the incident service path may use a reserved Runner", () => {
+    const out = register({ name: "prod-2", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+      label: "Production · acme",
+    });
+    expect(reserved).toMatchObject({
+      incidentReserved: true,
+      allowedRepos: ["acme"],
+      allowedUsers: [INCIDENT_SERVICE_USER],
+      label: "Production · acme",
+      permissions: {
+        commands: true,
+        fullSessions: false,
+        terminals: false,
+        portals: false,
+        automationDescendants: false,
+      },
+    });
+    const runner = getRunner(out.runner.id)!;
+    for (const permission of [
+      "commands",
+      "fullSessions",
+      "terminals",
+      "portals",
+      "automationDescendants",
+    ] as const)
+      expect(
+        runnerAllowed(runner, {
+          user: INCIDENT_SERVICE_USER,
+          repo: "acme",
+          permission,
+        }),
+      ).toBe(false);
+    expect(
+      runnerAllowed(runner, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(true);
+    expect(
+      runnerAvailableForSession(runner, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        sessionId: "s1",
+      }),
+    ).toBe(false);
+    expect(
+      reserveRunner(runner.id, { reason: "build", reservedBy: "Ada" }),
+    ).toBeUndefined();
+  });
+
+  test("the incident service path refuses a Runner that is not reserved", () => {
+    const out = register({ name: "lab", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    expect(
+      runnerAllowed(out.runner, {
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("a Runner patch cannot set the reservation or the credential", () => {
+    const out = register({ name: "plain", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const patched = updateRunner(out.runner.id, {
+      label: "Plain",
+      incidentReserved: true,
+      tokenHash: "0".repeat(64),
+    } as never);
+    expect(patched?.label).toBe("Plain");
+    expect(patched?.incidentReserved).toBeUndefined();
+    expect(authenticateRunner(out.runner.id, out.token)).toBeDefined();
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(
+      updateRunner(reserved.id, { incidentReserved: false } as never)
+        ?.incidentReserved,
+    ).toBe(true);
   });
 });

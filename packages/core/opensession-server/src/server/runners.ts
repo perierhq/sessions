@@ -126,6 +126,10 @@ export type Runner = {
   localInferencePolicy?: RunnerLocalInferencePolicy;
   aws?: RunnerAwsRole;
   maintenance?: boolean;
+  /** Bound as a production Runner for incidents: only the incident service
+   *  path (`execOnIncidentRunner`) may use it. No session, agent, terminal
+   *  or Portal can, whoever asks. Set only by `reserveRunnerForIncidents`. */
+  incidentReserved?: true;
   reservation?: RunnerReservation;
   workload?: { sessionId?: string; operation?: string; startedAt?: string };
   /** Durable active claims. `workload` is retained as the primary display
@@ -137,12 +141,18 @@ export type Runner = {
   }>;
 };
 
+/** The user the incident service runs Runner commands as. A colon cannot
+ *  appear in a GitHub login, so no person signs in under this name. */
+export const INCIDENT_SERVICE_USER = "sessions:incidents";
+
 type Store = { runners: Runner[] };
 type Pairing = {
   code: string;
   expiresAt: number;
   createdBy?: string;
   migration?: RunnerMigration;
+  /** Always registers a new Runner, never re-pairs one by name. */
+  fresh?: boolean;
   /** Held in memory with the code only; runs once the Runner is saved. */
   onRegistered?: (runner: Runner) => void;
 };
@@ -347,11 +357,12 @@ function normalizeRunner(value: Runner): Runner {
       : [];
   // A patch clears the role with `aws: null`; the stored record never keeps
   // the null (or a rejected ARN) around, it simply has no role.
-  const { aws: rawAws, ...rest } = value;
+  const { aws: rawAws, incidentReserved, ...rest } = value;
   const aws = normalizeAwsRole(rawAws);
   return {
     ...rest,
     ...(aws ? { aws } : {}),
+    ...(incidentReserved === true ? { incidentReserved: true as const } : {}),
     platform,
     capabilities: {
       platform,
@@ -406,7 +417,7 @@ function pairingCode(): string {
 
 export function createRunnerPairing(
   createdBy?: string,
-  opts: { onRegistered?: (runner: Runner) => void } = {},
+  opts: { onRegistered?: (runner: Runner) => void; fresh?: boolean } = {},
 ): {
   code: string;
   expiresAt: number;
@@ -417,6 +428,7 @@ export function createRunnerPairing(
     code,
     expiresAt,
     createdBy,
+    ...(opts.fresh ? { fresh: true } : {}),
     ...(opts.onRegistered ? { onRegistered: opts.onRegistered } : {}),
   });
   return { code, expiresAt };
@@ -501,9 +513,13 @@ export function registerRunner(
     return { ok: false, error: "Runner name is required." };
   const token = randomBytes(32).toString("hex");
   const store = load();
-  const existingIndex = store.runners.findIndex(
-    (runner) => runner.name === name && runner.platform === input.platform,
-  );
+  // A fresh pairing (a production Runner) never inherits another Runner's
+  // record, policy or reservation by reusing its name.
+  const existingIndex = pairing.fresh
+    ? -1
+    : store.runners.findIndex(
+        (runner) => runner.name === name && runner.platform === input.platform,
+      );
   const existing =
     existingIndex >= 0 ? store.runners[existingIndex] : undefined;
   const capabilityInput = Array.isArray(input.capabilities)
@@ -538,6 +554,7 @@ export function registerRunner(
     localInferencePolicy: existing?.localInferencePolicy,
     aws: existing?.aws,
     maintenance: existing?.maintenance,
+    ...(existing?.incidentReserved ? { incidentReserved: true } : {}),
   });
   if (existingIndex >= 0) store.runners[existingIndex] = runner;
   else store.runners.push(runner);
@@ -588,14 +605,38 @@ export type RunnerPatch = Partial<
   aws?: RunnerAwsRole | null;
 };
 
+const PATCH_KEYS = [
+  "label",
+  "description",
+  "location",
+  "maintenance",
+  "allowedUsers",
+  "allowedRepos",
+  "workspaceRoots",
+  "resources",
+  "localInferencePolicy",
+] as const;
+
 export function updateRunner(
   id: string,
-  patch: RunnerPatch,
+  input: RunnerPatch,
 ): Runner | undefined {
   const store = load();
   const index = store.runners.findIndex((runner) => runner.id === id);
   if (index < 0) return undefined;
   const current = store.runners[index];
+  // Only the patchable fields: an HTTP body passed straight through cannot
+  // set the credential, the id or the incident reservation.
+  const patch: RunnerPatch = {};
+  for (const key of PATCH_KEYS)
+    if (key in input) (patch as Record<string, unknown>)[key] = input[key];
+  for (const key of [
+    "aws",
+    "workspaceRetention",
+    "permissions",
+    "capabilities",
+  ] as const)
+    if (key in input) (patch as Record<string, unknown>)[key] = input[key];
   store.runners[index] = normalizeRunner({
     ...current,
     ...patch,
@@ -608,6 +649,35 @@ export function updateRunner(
           : (current.workspaceRetention ?? "retain"),
     permissions: { ...current.permissions, ...patch.permissions },
     capabilities: { ...current.capabilities, ...patch.capabilities },
+  });
+  save(store);
+  return store.runners[index];
+}
+
+/** Reserve a Runner for incidents: commands for `repos` as the incident
+ *  service only, every other execution path off. Nothing else can set or
+ *  clear the reservation; revoking the Runner removes it. */
+export function reserveRunnerForIncidents(
+  id: string,
+  input: { repos: string[]; label?: string },
+): Runner | undefined {
+  const store = load();
+  const index = store.runners.findIndex((runner) => runner.id === id);
+  if (index < 0) return undefined;
+  const current = store.runners[index];
+  store.runners[index] = normalizeRunner({
+    ...current,
+    incidentReserved: true,
+    allowedRepos: [...new Set(input.repos)],
+    allowedUsers: [INCIDENT_SERVICE_USER],
+    permissions: {
+      commands: true,
+      fullSessions: false,
+      terminals: false,
+      portals: false,
+      automationDescendants: false,
+    },
+    ...(input.label ? { label: input.label } : {}),
   });
   save(store);
   return store.runners[index];
@@ -700,7 +770,8 @@ export function reserveRunner(
 ): Runner | undefined {
   const store = load();
   const runner = store.runners.find((candidate) => candidate.id === id);
-  if (!runner || runner.maintenance) return undefined;
+  if (!runner || runner.maintenance || runner.incidentReserved)
+    return undefined;
   const now = Date.now();
   if (
     runner.reservation &&
@@ -751,8 +822,12 @@ export function runnerAllowed(
     user?: string;
     repo?: string;
     permission: keyof RunnerExecutionPermissions;
+    /** Server-only: the incident service's own path. It may use only a
+     *  reserved Runner, and nothing else may. */
+    incidentService?: boolean;
   },
 ): boolean {
+  if (!!runner.incidentReserved !== !!input.incidentService) return false;
   if (runner.maintenance || !runner.permissions[input.permission]) return false;
   if (
     runner.allowedUsers.length &&

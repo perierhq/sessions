@@ -1,8 +1,18 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { configuredServer } from "../../config";
-import { getRunner, registerRunner, updateRunner } from "../../runners";
+import {
+  INCIDENT_SERVICE_USER,
+  createRunnerPairing,
+  getRunner,
+  registerRunner,
+  updateRunner,
+} from "../../runners";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { getProjectSettings } from "./project-settings";
+import {
+  __setProjectSettingsContextForTest,
+  getProjectSettings,
+  productionRunnerProblem,
+} from "./project-settings";
 import {
   __flushProductionBindingsForTest,
   bindProductionRunner,
@@ -14,9 +24,20 @@ import {
 // The fixture points OPENSESSION_STATE_DIR at a scratch dir per test, so the
 // Runner store is scratch too.
 const kit = useIncidentTestKernel();
+beforeEach(() =>
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme" || id === "acme-api",
+  }),
+);
+afterEach(() => __setProjectSettingsContextForTest(undefined));
 
-function pair(name: string, platform: "linux" | "darwin" | "win32" = "linux") {
-  const { code } = startProductionPairing("acme-api", "Ada");
+const person = { signedInPerson: true };
+
+function register(
+  code: string,
+  name: string,
+  platform: "linux" | "darwin" | "win32" = "linux",
+) {
   const out = registerRunner({
     code,
     name,
@@ -28,70 +49,153 @@ function pair(name: string, platform: "linux" | "darwin" | "win32" = "linux") {
   return out.runner;
 }
 
-test("pairing for production binds the Runner to the project, least privilege", async () => {
-  const pairing = startProductionPairing("acme", "Ada");
+/** A Runner paired the ordinary way, open to every repository. */
+function plainRunner(
+  name: string,
+  platform: "linux" | "darwin" | "win32" = "linux",
+) {
+  return register(createRunnerPairing("Ada").code, name, platform);
+}
+
+function startPairing(project: string) {
+  const pairing = startProductionPairing(project, "Ada", person);
+  if ("error" in pairing) throw new Error(pairing.error);
+  return pairing;
+}
+
+test("pairing for production reserves a new Runner for the project", async () => {
+  const pairing = startPairing("acme");
   expect(pairing.command).toBe(
     `opensession runner connect --server ${configuredServer().publicBaseUrl} --code ${pairing.code}`,
   );
-  const out = registerRunner({
-    code: pairing.code,
-    name: "prod-1",
-    platform: "linux",
-    arch: "x64",
-    address: "100.64.0.9",
+  expect(kit.audits).toContainEqual({
+    kind: "incident_runner_pairing_started",
+    project: "acme",
+    by: "Ada",
+    expiresAt: pairing.expiresAt,
   });
-  if (!out.ok) throw new Error(out.error);
+  expect(JSON.stringify(kit.audits)).not.toContain(pairing.code);
+  const runner = register(pairing.code, "prod-1");
   await __flushProductionBindingsForTest(); // the callback is fire-and-forget
-  expect(getRunner(out.runner.id)).toMatchObject({
+  expect(getRunner(runner.id)).toMatchObject({
+    incidentReserved: true,
     allowedRepos: ["acme"],
+    allowedUsers: [INCIDENT_SERVICE_USER],
     label: "Production · acme",
-    permissions: { commands: true },
+    permissions: {
+      commands: true,
+      fullSessions: false,
+      terminals: false,
+      portals: false,
+      automationDescendants: false,
+    },
   });
   expect((await getProjectSettings("acme")).productionRunners).toEqual([
-    out.runner.id,
+    runner.id,
   ]);
   expect(kit.audits).toContainEqual({
     kind: "incident_runner_paired",
     project: "acme",
-    runnerId: out.runner.id,
+    runnerId: runner.id,
     by: "Ada",
   });
-  // Binding again adds nothing twice; a second project joins the list.
-  await bindProductionRunner("acme", out.runner.id, "Ada");
-  await bindProductionRunner("acme-api", out.runner.id, "Bo");
-  expect(getRunner(out.runner.id)).toMatchObject({
-    allowedRepos: ["acme", "acme-api"],
-    label: "Production · acme",
+  expect(productionRunnerProblem(runner.id, "acme")).toBeNull();
+  expect(runnerLabel(runner.id)).toBe("Production · acme");
+});
+
+test("a production pairing never takes over a Runner with the same name", async () => {
+  const existing = plainRunner("prod-1");
+  const runner = register(startPairing("acme").code, "prod-1");
+  await __flushProductionBindingsForTest();
+  expect(runner.id).not.toBe(existing.id);
+  expect(getRunner(existing.id)?.incidentReserved).toBeUndefined();
+  expect(getRunner(existing.id)?.allowedRepos).toEqual([]);
+});
+
+test("pairing needs a signed-in person and a real project", () => {
+  expect(startProductionPairing("acme", "Ada", {})).toEqual({
+    error: "Only a signed-in person can pair a production Runner",
   });
+  expect(startProductionPairing("nope", "Ada", person)).toEqual({
+    error: "Unknown project nope",
+  });
+  expect(kit.audits).toEqual([]);
+});
+
+test("binding a Runner that serves other repositories needs confirmation", async () => {
+  const shared = plainRunner("shared");
+  await expect(bindProductionRunner("acme", shared.id, "Ada")).rejects.toThrow(
+    "Runner shared serves every repository. Confirm to reserve it for acme incidents only",
+  );
+  expect(getRunner(shared.id)?.incidentReserved).toBeUndefined();
+  updateRunner(shared.id, { allowedRepos: ["acme", "acme-api"] });
+  await expect(bindProductionRunner("acme", shared.id, "Ada")).rejects.toThrow(
+    "Runner shared serves acme-api. Confirm to reserve it for acme incidents only",
+  );
+  await bindProductionRunner("acme", shared.id, "Ada", { confirmShared: true });
+  expect(getRunner(shared.id)).toMatchObject({
+    incidentReserved: true,
+    allowedRepos: ["acme"],
+  });
+  // One reserved Runner may serve the incidents of a second project, with
+  // confirmation; binding again adds nothing twice.
+  await expect(
+    bindProductionRunner("acme-api", shared.id, "Bo"),
+  ).rejects.toThrow("Runner shared serves acme");
+  await bindProductionRunner("acme-api", shared.id, "Bo", {
+    confirmShared: true,
+  });
+  await bindProductionRunner("acme", shared.id, "Ada");
+  expect(getRunner(shared.id)?.allowedRepos).toEqual(["acme", "acme-api"]);
   expect((await getProjectSettings("acme")).productionRunners).toEqual([
-    out.runner.id,
+    shared.id,
   ]);
-  expect(runnerLabel(out.runner.id)).toBe("Production · acme");
   await expect(
     bindProductionRunner("acme", "runner-nope", "Ada"),
   ).rejects.toThrow("Runner runner-nope is not paired");
+  await expect(
+    bindProductionRunner("nope", shared.id, "Ada", { confirmShared: true }),
+  ).rejects.toThrow("Unknown project nope");
 });
-test("candidates explain why a Runner cannot serve a project", async () => {
-  const apiOnly = pair("api-only");
-  const win = pair("win", "win32");
+
+test("Windows Runners cannot serve incidents", async () => {
+  const win = plainRunner("win", "win32");
+  await expect(
+    bindProductionRunner("acme", win.id, "Ada", { confirmShared: true }),
+  ).rejects.toThrow("Runner win runs Windows");
+  expect(getRunner(win.id)?.incidentReserved).toBeUndefined();
+});
+
+test("candidates explain what binding a Runner would do", async () => {
+  const apiOnly = register(startPairing("acme-api").code, "api-only");
+  const win = plainRunner("win", "win32");
+  const open = plainRunner("open");
   await __flushProductionBindingsForTest();
-  // Allowed everywhere: the Windows Runner serves any project.
-  updateRunner(win.id, { allowedRepos: [] });
-  const views = listProductionRunnerCandidates("acme", [win.id]);
+  const views = listProductionRunnerCandidates("acme", []);
   expect(views.find((v) => v.name === "api-only")).toMatchObject({
     id: apiOnly.id,
     platform: "linux",
     online: false,
     bound: false,
-    problem: "Runner api-only does not allow commands for acme",
+    problem: null,
+    confirm: "Runner api-only serves acme-api",
+  });
+  expect(views.find((v) => v.name === "open")).toMatchObject({
+    id: open.id,
+    problem: null,
+    confirm: "Runner open serves every repository",
   });
   expect(views.find((v) => v.name === "win")).toMatchObject({
-    bound: true,
-    problem: null,
-    warning: "Windows Runners cannot run http checks",
+    id: win.id,
+    problem:
+      "Runner win runs Windows; incident checks and actions need macOS or Linux",
   });
-  expect(views.find((v) => v.name === "api-only")).not.toHaveProperty(
-    "warning",
+  // A bound Runner reports what is wrong with it now.
+  expect(listProductionRunnerCandidates("acme-api", [apiOnly.id])[0]).toEqual(
+    expect.objectContaining({ bound: true, problem: null }),
+  );
+  expect(productionRunnerProblem(open.id, "acme")).toBe(
+    "Runner open is not reserved for incidents. Bind it to acme first",
   );
   expect(runnerLabel(undefined)).toBe("the Sessions server");
   expect(runnerLabel("runner-gone")).toBe("runner-gone");

@@ -15,6 +15,7 @@ import { audit, auditAsync } from "./audit";
 import { runnerCommandAwsEnv } from "./runner-command-aws";
 import { runnerTailnetOrigin } from "./runner-origin";
 import {
+  INCIDENT_SERVICE_USER,
   authenticateRunner,
   getRunner,
   runnerAllowed,
@@ -1324,7 +1325,72 @@ export async function execOnRunner(
   command: string,
   options: RunnerExecOptions = {},
 ): Promise<RunnerExecResult> {
-  return execOnRunnerAs(runnerId, command, options);
+  return execOnRunnerAs(runnerId, command, options, false);
+}
+
+/** The incident service's own path to a production Runner: a Runner
+ *  reserved for incidents only (`reserveRunnerForIncidents`), commands for
+ *  `repo` as {@link INCIDENT_SERVICE_USER}, input on stdin and a label in
+ *  the audit log. Every Runner problem throws a
+ *  {@link RunnerUnavailableError} that says what is wrong. */
+export async function execOnIncidentRunner(
+  runnerId: string,
+  command: string,
+  options: {
+    repo: string;
+    auditCommand: string;
+    stdin?: string;
+    timeoutMs?: number;
+    cwd?: string;
+    sessionId?: string;
+  },
+): Promise<RunnerExecResult> {
+  const runner = getRunner(runnerId);
+  if (!runner)
+    throw new RunnerUnavailableError(`Runner ${runnerId} is not paired`);
+  const name = runner.label || runner.name;
+  if (!runner.incidentReserved)
+    throw new RunnerUnavailableError(
+      `Runner ${name} is not reserved for incidents`,
+    );
+  if (runner.maintenance)
+    throw new RunnerUnavailableError(`Runner ${name} is in maintenance`);
+  const connection = connections.get(runnerId);
+  if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
+    throw new RunnerUnavailableError(`Runner ${name} is offline`);
+  if (
+    !runnerAllowed(runner, {
+      user: INCIDENT_SERVICE_USER,
+      repo: options.repo,
+      permission: "commands",
+      incidentService: true,
+    })
+  )
+    throw new RunnerUnavailableError(
+      `Runner ${name} does not allow commands for ${options.repo}`,
+    );
+  if (!connection.execStdin)
+    throw new RunnerUnavailableError(
+      `Update Runner ${name}: it is too old to run incident checks and actions`,
+    );
+  return execOnRunnerAs(
+    runnerId,
+    command,
+    {
+      repo: options.repo,
+      user: INCIDENT_SERVICE_USER,
+      auditCommand: options.auditCommand,
+      ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
+      ...(options.timeoutMs !== undefined
+        ? { timeoutMs: options.timeoutMs }
+        : {}),
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(options.sessionId !== undefined
+        ? { sessionId: options.sessionId }
+        : {}),
+    },
+    true,
+  );
 }
 
 /** Whether a Runner can take an exec frame's `stdin` (the client says so in
@@ -1337,6 +1403,7 @@ async function execOnRunnerAs(
   runnerId: string,
   command: string,
   options: RunnerExecOptions,
+  incidentService: boolean,
 ): Promise<RunnerExecResult> {
   const connection = connections.get(runnerId);
   if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
@@ -1347,6 +1414,7 @@ async function execOnRunnerAs(
       user: options.user,
       repo: options.repo,
       permission: "commands",
+      incidentService,
     });
   if (!runner || !allowed(runner))
     throw new RunnerUnavailableError(
