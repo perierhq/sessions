@@ -11,7 +11,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { audit } from "./audit";
+import { audit, auditAsync } from "./audit";
 import { runnerCommandAwsEnv } from "./runner-command-aws";
 import { runnerTailnetOrigin } from "./runner-origin";
 import {
@@ -42,6 +42,8 @@ type Connection = {
   connectedAt: number;
   protocolVersion: number;
   execAws: boolean;
+  /** The client feeds an exec frame's `stdin` to the command. */
+  execStdin: boolean;
   capabilities: Runner["capabilities"];
   resources?: Runner["resources"];
   pending: Map<string, Pending>;
@@ -92,7 +94,23 @@ export type RunnerExecOptions = {
   user?: string;
   repo?: string;
   sessionId?: string;
+  /** Fed to the command's stdin, so it never appears in its argv. Needs a
+   *  Runner client that advertises `execStdin`. Never audited or logged. */
+  stdin?: string;
+  /** What the audit log and the Runner's own log record instead of the
+   *  command text, e.g. `incident action rollback`. */
+  auditCommand?: string;
 };
+
+/** Largest `stdin` sent to a Runner. */
+export const RUNNER_STDIN_MAX_BYTES = 262_144;
+
+/** A Runner problem (offline, not permitted, in maintenance, too old),
+ *  never the command's own failure. Callers that judge a service by a
+ *  command's result report these as unknown. */
+export class RunnerUnavailableError extends Error {
+  readonly code = "RUNNER_UNAVAILABLE";
+}
 
 /** Register a narrow terminal frame consumer. Terminal ids are random and
  * scoped to a browser connection, so a Runner cannot attach to another tab. */
@@ -733,6 +751,7 @@ export function runnerWsOpen(ws: any): boolean {
     connectedAt: Date.now(),
     protocolVersion: 0,
     execAws: false,
+    execStdin: false,
     capabilities: runner.capabilities,
     resources: runner.resources,
     pending: new Map(),
@@ -768,6 +787,7 @@ export function runnerWsMessage(ws: any, raw: string | Buffer): boolean {
       }
       connection.protocolVersion = version;
       connection.execAws = message.execAws === true;
+      connection.execStdin = message.execStdin === true;
       const capabilities =
         message.capabilities && typeof message.capabilities === "object"
           ? message.capabilities
@@ -1304,24 +1324,45 @@ export async function execOnRunner(
   command: string,
   options: RunnerExecOptions = {},
 ): Promise<RunnerExecResult> {
+  return execOnRunnerAs(runnerId, command, options);
+}
+
+/** Whether a Runner can take an exec frame's `stdin` (the client says so in
+ *  its hello). False for an offline Runner. */
+export function runnerTakesStdin(runnerId: string): boolean {
+  return connections.get(runnerId)?.execStdin === true;
+}
+
+async function execOnRunnerAs(
+  runnerId: string,
+  command: string,
+  options: RunnerExecOptions,
+): Promise<RunnerExecResult> {
   const connection = connections.get(runnerId);
   if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
-    throw new Error(`Runner ${runnerId} is not connected`);
+    throw new RunnerUnavailableError(`Runner ${runnerId} is not connected`);
   const runner = getRunner(runnerId);
-  if (
-    !runner ||
-    !runnerAllowed(runner, {
+  const allowed = (r: Runner) =>
+    runnerAllowed(r, {
       user: options.user,
       repo: options.repo,
       permission: "commands",
-    })
-  )
-    throw new Error(
+    });
+  if (!runner || !allowed(runner))
+    throw new RunnerUnavailableError(
       `Runner ${runner?.name ?? runnerId} is not permitted for this command`,
     );
+  if (options.stdin !== undefined) {
+    if (!connection.execStdin)
+      throw new RunnerUnavailableError(
+        `Update Runner ${runner.name} so it can take command input`,
+      );
+    if (Buffer.byteLength(options.stdin) > RUNNER_STDIN_MAX_BYTES)
+      throw new Error("Command input is too large");
+  }
   const role = options.aws ? runner.aws : undefined;
   if (role && !connection.execAws)
-    throw new Error(
+    throw new RunnerUnavailableError(
       `Update Runner ${runner.name} to support AWS command credentials`,
     );
   const awsEnv = role
@@ -1332,16 +1373,12 @@ export async function execOnRunner(
   if (
     connections.get(runnerId) !== connection ||
     !current ||
-    !runnerAllowed(current, {
-      user: options.user,
-      repo: options.repo,
-      permission: "commands",
-    }) ||
+    !allowed(current) ||
     (role &&
       (current.aws?.roleArn !== role.roleArn ||
         current.aws?.externalId !== role.externalId))
   )
-    throw new Error(
+    throw new RunnerUnavailableError(
       "Runner connection or permissions changed before command dispatch",
     );
   return execRunnerCommand(connection, runnerId, command, {
@@ -1368,13 +1405,14 @@ async function execRunnerCommand(
     Math.max(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000),
     60 * 60_000,
   );
-  audit({
+  // The label stands in for the command; `stdin` is never recorded.
+  auditAsync({
     msg: `runner_${options.operation}_start`,
     runner_id: runnerId,
     session_id: options.sessionId,
     user: options.user,
     repo: options.repo,
-    command: command.slice(0, 500),
+    command: options.auditCommand ?? command.slice(0, 500),
     operation_id: id,
   });
   const result = await new Promise<RunnerExecResult>((resolve) => {
@@ -1411,6 +1449,8 @@ async function execRunnerCommand(
           awsEnv: options.awsEnv,
           cwd: options.cwd,
           timeoutMs,
+          ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
+          ...(options.auditCommand ? { label: options.auditCommand } : {}),
         }),
       );
     } catch (error) {
@@ -1423,7 +1463,7 @@ async function execRunnerCommand(
       });
     }
   });
-  audit({
+  auditAsync({
     msg: `runner_${options.operation}_finish`,
     runner_id: runnerId,
     session_id: options.sessionId,

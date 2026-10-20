@@ -158,6 +158,47 @@ export function runnerExecCommand(
     : ["bash", "-lc", command];
 }
 
+/** Largest command input a Runner accepts; the server sends less. */
+export const RUNNER_EXEC_STDIN_MAX = 1_048_576;
+
+/** Command input from an exec frame: a string, or nothing. Input feeds the
+ * child's stdin so secrets (an http check's headers, an action's script)
+ * never appear in its argv or the process list. */
+export function runnerExecStdin(value: unknown): Uint8Array | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("Invalid command input");
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.length > RUNNER_EXEC_STDIN_MAX)
+    throw new Error("Command input is too large");
+  return bytes;
+}
+
+/** What the Runner log says about one exec: the server's label when it sent
+ * one (incident checks and actions), never their command text. */
+export function runnerExecLogLine(id: string, msg: Record<string, unknown>) {
+  const label =
+    typeof msg.label === "string" && msg.label.trim()
+      ? msg.label.trim().slice(0, 120)
+      : undefined;
+  return `exec ${id}: ${label ?? String(msg.command).slice(0, 80)}`;
+}
+
+/** Spawn one delegated command the way the exec frame asks. */
+export function spawnRunnerExec(
+  msg: Record<string, unknown>,
+  env: Record<string, string>,
+  host: string = platform(),
+) {
+  const stdin = runnerExecStdin(msg.stdin);
+  return Bun.spawn(runnerExecCommand(String(msg.command), host), {
+    cwd: typeof msg.cwd === "string" && msg.cwd ? msg.cwd : undefined,
+    env: { ...env, ...runnerCommandAwsEnvironment(msg.awsEnv) },
+    ...(stdin ? { stdin } : {}),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 /** Accept only the server-vended AWS subset, never arbitrary environment injection. */
 export function runnerCommandAwsEnvironment(
   value: unknown,
@@ -841,7 +882,15 @@ export async function runnerRun(): Promise<number> {
         };
         const initial = await report();
         socket.send(
-          JSON.stringify({ t: "hello", version: 1, execAws: true, ...initial }),
+          JSON.stringify({
+            t: "hello",
+            version: 1,
+            execAws: true,
+            // Exec frames may carry `stdin`; the server sends incident
+            // checks and actions only to Runners that say so.
+            execStdin: true,
+            ...initial,
+          }),
         );
         const heartbeat = setInterval(() => {
           // Servers older than heartbeat_ack never send one; only a server
@@ -969,18 +1018,9 @@ export async function runnerRun(): Promise<number> {
           return;
 
         const id = String(msg.id);
-        info(dim(`exec ${id}: ${String(msg.command).slice(0, 80)}`));
+        info(dim(runnerExecLogLine(id, msg)));
         try {
-          const command = runnerExecCommand(String(msg.command));
-          const proc = Bun.spawn(command, {
-            cwd: typeof msg.cwd === "string" && msg.cwd ? msg.cwd : undefined,
-            env: {
-              ...runnerEnvironment(),
-              ...runnerCommandAwsEnvironment(msg.awsEnv),
-            },
-            stdout: "pipe",
-            stderr: "pipe",
-          });
+          const proc = spawnRunnerExec(msg, runnerEnvironment());
           running.set(id, proc);
 
           // Stream both pipes as they arrive rather than buffering to the end,

@@ -7,6 +7,9 @@ import {
   resolveWindowsSchtasks,
   resolveWindowsShell,
   runnerExecCommand,
+  runnerExecLogLine,
+  runnerExecStdin,
+  spawnRunnerExec,
   runnerCommandAwsEnvironment,
   runnerLaunchdPlist,
   runnerScheduledTaskXml,
@@ -227,6 +230,35 @@ describe("Runner service definitions", () => {
     ]);
     expect(windows[0].toLowerCase()).toMatch(
       /(?:^|[\\/])(?:powershell|pwsh)(?:\.exe)?$/,
+    );
+  });
+
+  test("command input reaches the child on stdin, never its argv", async () => {
+    if (process.platform === "win32") return;
+    const proc = spawnRunnerExec(
+      { command: 'cat; echo " args:$#"', stdin: "secret-header-value" },
+      { PATH: process.env.PATH || "/usr/bin:/bin", HOME: "/tmp" },
+    );
+    const [stdout, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("secret-header-value args:0\n");
+    expect(runnerExecStdin(undefined)).toBeUndefined();
+    expect(() => runnerExecStdin(42)).toThrow("Invalid command input");
+    expect(() => runnerExecStdin("x".repeat(1_048_577))).toThrow("too large");
+  });
+
+  test("the Runner log names a labelled exec by its label only", () => {
+    expect(
+      runnerExecLogLine("r1", {
+        command: "curl --disable --config -",
+        label: "incident http check sig-1",
+      }),
+    ).toBe("exec r1: incident http check sig-1");
+    expect(runnerExecLogLine("r2", { command: "echo hi" })).toBe(
+      "exec r2: echo hi",
     );
   });
 

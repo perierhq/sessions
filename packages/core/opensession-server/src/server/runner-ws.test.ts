@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as auditModule from "./audit";
 import * as commandAws from "./runner-command-aws";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -382,5 +383,115 @@ describe("Runner command AWS dispatch", () => {
     } finally {
       mint.mockRestore();
     }
+  });
+});
+
+describe("Runner command input and audit labels", () => {
+  async function withRunner(
+    hello: Record<string, unknown>,
+    run: (id: string, sent: any[]) => Promise<void>,
+  ) {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "stdin-runner",
+      platform: "linux",
+      arch: "x64",
+      address: "100.101.102.106",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    const sent: any[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      close() {},
+      send(frame: string) {
+        const message = JSON.parse(frame);
+        sent.push(message);
+        if (message.t === "exec")
+          queueMicrotask(() =>
+            runnerWsMessage(
+              ws,
+              JSON.stringify({
+                t: "exit",
+                id: message.id,
+                operationToken: message.operationToken,
+                code: 0,
+              }),
+            ),
+          );
+      },
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1, ...hello }));
+    try {
+      await run(id, sent);
+    } finally {
+      runnerWsClose(ws);
+    }
+  }
+
+  test("input rides the frame and the audit records the caller's label", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({ execStdin: true }, async (id, sent) => {
+        await execOnRunner(id, "curl --disable --config -", {
+          stdin: 'header = "Authorization: Bearer s3cret"\n',
+          auditCommand: "incident http check sig-1",
+        });
+        expect(sent[0]).toMatchObject({
+          t: "exec",
+          command: "curl --disable --config -",
+          stdin: 'header = "Authorization: Bearer s3cret"\n',
+          label: "incident http check sig-1",
+        });
+      });
+      const events = audits.mock.calls.map((call) => call[0]);
+      expect(events.map((e) => e.msg)).toEqual([
+        "runner_command_start",
+        "runner_command_finish",
+      ]);
+      expect(events[0].command).toBe("incident http check sig-1");
+      expect(JSON.stringify(events)).not.toContain("s3cret");
+      expect(JSON.stringify(events)).not.toContain("--config");
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("without a label the audit keeps the command head", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({}, async (id, sent) => {
+        await execOnRunner(id, "echo probe");
+        expect(sent[0].stdin).toBeUndefined();
+        expect(sent[0].label).toBeUndefined();
+      });
+      expect(audits.mock.calls[0]![0].command).toBe("echo probe");
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("a Runner that cannot take input is refused before dispatch", async () => {
+    await withRunner({}, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "curl --disable --config -", { stdin: "url = x" }),
+      ).rejects.toMatchObject({
+        code: "RUNNER_UNAVAILABLE",
+        message: expect.stringContaining("Update Runner stdin-runner"),
+      });
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("Runner problems are typed so callers can tell them from failures", async () => {
+    await expect(execOnRunner("runner-missing", "echo")).rejects.toMatchObject({
+      code: "RUNNER_UNAVAILABLE",
+    });
   });
 });
