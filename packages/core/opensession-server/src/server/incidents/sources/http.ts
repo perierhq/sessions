@@ -1,7 +1,10 @@
-// HTTP signal source: one check with manual redirects through the SSRF guard,
-// a body cap, optional body expectations and JSON mapping. Never throws:
-// every failure becomes an observation. A provider's status page that cannot
-// be read is `unknown`, never an outage.
+// HTTP signal source: one check with manual redirects, a body cap, optional
+// body expectations and JSON mapping. Every hop is resolved once, refused if
+// any address is private, and dialled only at the checked addresses (shared
+// pinned transport), so a DNS answer that changes between check and connect
+// cannot move the request. Never throws: every failure becomes an
+// observation. A provider's status page that cannot be read is `unknown`,
+// never an outage.
 import type {
   HttpSource,
   Observation,
@@ -9,7 +12,16 @@ import type {
 } from "../../../shared/incidents";
 import { compileSafeRegex } from "../../shared/safe-regex";
 import { redactUrl } from "../../shared/redact";
-import { assertFetchableUrl } from "../../web-fetch";
+import { isBlockedAddress } from "../../shared/network-address";
+import {
+  BlockedAddressError,
+  type PinnedFetchDeps,
+  type PinnedResponse,
+  pinnedHttpRequest,
+  resolvePinnedTarget,
+  resolveWithDns,
+  untilAborted,
+} from "../../shared/pinned-fetch";
 import { mapJson } from "../json-mapping";
 import { isSecretHeader, redactSecretQuery } from "../signal-validation";
 
@@ -34,8 +46,9 @@ const BODY_HEADERS = new Set([
 export interface SourceRunOptions {
   /** A provider's unreadable status page is `unknown`, never an outage. */
   provider?: boolean;
-  fetchImpl?: typeof fetch;
-  assertUrl?: (raw: string) => Promise<URL>;
+  /** Resolution, address policy and transport. Tests swap them; production
+   *  uses DNS, the shared private-address policy and node:http(s). */
+  net?: Partial<PinnedFetchDeps>;
   now?: () => number;
 }
 
@@ -67,6 +80,39 @@ class RunStop extends Error {
 /** A URL as it may leave the server: no userinfo, no secret query values. */
 export function redactOutputUrl(raw: string): string {
   return redactSecretQuery(redactUrl(raw));
+}
+
+const defaultNet: PinnedFetchDeps = {
+  resolve: resolveWithDns,
+  isBlocked: isBlockedAddress,
+  send: (target, init, isBlocked) => pinnedHttpRequest(target, init, isBlocked),
+};
+
+/** An address-policy refusal as a short detail: `Refused: <why>`. */
+export function refusalDetail(error: unknown): string {
+  const message = errorMessage(error);
+  const resolved =
+    /^Refusing to fetch (.+): it resolves to the private address (.+)$/.exec(
+      message,
+    );
+  if (resolved)
+    return resolved[1] === resolved[2]
+      ? `Refused: ${resolved[2]} is a private address`
+      : `Refused: ${resolved[1]} resolves to the private address ${resolved[2]}`;
+  const name = /^Refusing to fetch a private name: (.+)$/.exec(message);
+  if (name) return `Refused: ${name[1]} is a private name`;
+  const connect = /^Refusing to connect to the private address (.+)$/.exec(
+    message,
+  );
+  if (connect) return `Refused: ${connect[1]} is a private address`;
+  return `Refused: ${message}`;
+}
+
+function isRefusal(error: unknown): boolean {
+  return (
+    error instanceof BlockedAddressError ||
+    (error instanceof Error && error.message.startsWith("Refusing"))
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -111,48 +157,12 @@ function statusExpected(status: number, expectStatus?: number[]): boolean {
     : status >= 200 && status <= 299;
 }
 
-/** Read at most `cap` bytes; `over` when the body is longer. */
-async function readCapped(
-  response: Response,
-  cap: number,
-): Promise<{ text: string; over: boolean }> {
-  if (!response.body) return { text: "", over: false };
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let over = false;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (total + value.byteLength > cap) {
-      chunks.push(value.subarray(0, cap - total));
-      total = cap;
-      over = true;
-      await reader.cancel().catch(() => {});
-      break;
-    }
-    chunks.push(value);
-    total += value.byteLength;
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return {
-    text: new TextDecoder("utf-8", { fatal: false }).decode(bytes),
-    over,
-  };
-}
-
 export async function runHttpSource(
   source: HttpSource,
   opts: SourceRunOptions = {},
 ): Promise<SourceRun> {
   const now = opts.now ?? Date.now;
-  const assertUrl = opts.assertUrl ?? assertFetchableUrl;
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const net: PinnedFetchDeps = { ...defaultNet, ...opts.net };
   const timeoutMs = source.timeoutMs ?? HTTP_DEFAULT_TIMEOUT_MS;
   const started = now();
   const at = new Date(started).toISOString();
@@ -182,21 +192,27 @@ export async function runHttpSource(
     let headers = initialHeaders(source);
     let current = source.url;
     let previousOrigin: string | undefined;
-    let response: Response | undefined;
+    // Without a mapping or a body expectation only the preview reads the
+    // body, so a long one is cut short rather than judged.
+    const needsBody = !!source.json || !!source.expectBody;
+    let response: PinnedResponse | undefined;
     let finalUrl: URL | undefined;
     for (let redirects = 0; ; redirects++) {
-      let target: URL;
+      // One resolution per hop: the addresses checked here are the only
+      // ones this hop may dial.
+      let pinned: Awaited<ReturnType<typeof resolvePinnedTarget>>;
       try {
-        target = withoutUserinfo(await assertUrl(current));
+        pinned = await untilAborted(resolvePinnedTarget(current, net), signal);
       } catch (error) {
-        const message = errorMessage(error);
-        if (message.startsWith("Refusing"))
-          throw new RunStop("unknown", `Refused: ${message}`);
+        if (signal.aborted) throw timedOut();
+        if (isRefusal(error))
+          throw new RunStop("unknown", refusalDetail(error));
         throw new RunStop(
           failed,
-          `Could not reach ${hostOf(current)}: ${message}`,
+          `Could not reach ${hostOf(current)}: ${errorMessage(error)}`,
         );
       }
+      const target = withoutUserinfo(pinned.url);
       if (previousOrigin !== undefined && target.origin !== previousOrigin) {
         // Credentials and the request body stay with the origin they were
         // configured for; another origin gets a plain GET (HEAD stays HEAD).
@@ -214,17 +230,29 @@ export async function runHttpSource(
             kept.set(key, entry);
         headers = kept;
       }
-      let hop: Response;
+      let hop: PinnedResponse;
       try {
-        hop = await fetchImpl(target, {
-          method,
-          headers: [...headers.values()],
-          body,
-          redirect: "manual",
+        hop = await untilAborted(
+          net.send(
+            { ...pinned, url: target },
+            {
+              method,
+              headers: Object.fromEntries(headers.values()),
+              body,
+              signal,
+              maxBodyBytes: needsBody
+                ? HTTP_BODY_CAP_BYTES
+                : PREVIEW_READ_BYTES,
+              overflow: "truncate",
+            },
+            net.isBlocked,
+          ),
           signal,
-        });
+        );
       } catch (error) {
         if (signal.aborted) throw timedOut();
+        if (isRefusal(error))
+          throw new RunStop("unknown", refusalDetail(error));
         throw new RunStop(
           failed,
           `Could not reach ${target.hostname}: ${errorMessage(error)}`,
@@ -241,7 +269,6 @@ export async function runHttpSource(
         finalUrl = target;
         break;
       }
-      await hop.body?.cancel().catch(() => {});
       if (redirects >= HTTP_MAX_REDIRECTS)
         throw new RunStop(failed, "Too many redirects");
       let next: URL;
@@ -264,25 +291,11 @@ export async function runHttpSource(
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    // Without a mapping or a body expectation only the preview reads the
-    // body, so a long one is cut short rather than judged.
-    const needsBody = !!source.json || !!source.expectBody;
-    let read: { text: string; over: boolean };
-    try {
-      read =
-        method === "HEAD"
-          ? { text: "", over: false }
-          : await readCapped(
-              response,
-              needsBody ? HTTP_BODY_CAP_BYTES : PREVIEW_READ_BYTES,
-            );
-    } catch (error) {
-      if (signal.aborted) throw timedOut();
-      throw new RunStop(
-        failed,
-        `Could not reach ${finalUrl.hostname}: ${errorMessage(error)}`,
-      );
-    }
+    // The transport read the body up to the cap, then stopped.
+    const read = {
+      text: new TextDecoder("utf-8", { fatal: false }).decode(response.body),
+      over: response.truncated === true,
+    };
     const latencyMs = Math.max(0, Math.round(now() - started));
     preview = {
       status: response.status,

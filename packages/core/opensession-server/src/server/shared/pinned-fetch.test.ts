@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { createServer, type Server } from "http";
 import type { AddressInfo } from "net";
+import { gzipSync } from "zlib";
 import { isBlockedAddress } from "./network-address";
 import {
   BlockedAddressError,
@@ -45,6 +46,10 @@ describe("pinnedFetch", () => {
         if (req.url === "/moved") {
           res.writeHead(307, { location: "/elsewhere" });
           return res.end();
+        }
+        if (req.url === "/gzip") {
+          res.writeHead(200, { "content-encoding": "gzip" });
+          return res.end(gzipSync("y".repeat(10_000)));
         }
         if (req.url === "/empty") {
           res.writeHead(204);
@@ -196,6 +201,41 @@ describe("pinnedFetch", () => {
     await expect(
       pinnedFetch(at("/big"), { maxBodyBytes: 4 }, localDeps()),
     ).rejects.toThrow(/exceeded the 4 bytes body limit/);
+  });
+
+  test("overflow: truncate keeps the status and the first bytes", async () => {
+    const target = (path: string) => ({
+      url: new URL(at(path)),
+      host: "acme.example.test",
+      addresses: [LOCAL],
+    });
+    const request = (path: string, maxBodyBytes: number) =>
+      pinnedHttpRequest(
+        target(path),
+        {
+          signal: AbortSignal.timeout(5_000),
+          maxBodyBytes,
+          overflow: "truncate",
+        },
+        (address) => address !== LOCAL,
+      );
+    const cut = await request("/big", 4);
+    expect([
+      cut.status,
+      new TextDecoder().decode(cut.body),
+      cut.truncated,
+    ]).toEqual([200, '{"me', true]);
+    const whole = await request("/big", 1_000);
+    expect(whole.truncated).toBeUndefined();
+    // A cut compressed stream cannot be decoded, and an expansion past the
+    // limit is cut too: both answer empty rather than fail.
+    for (const limit of [8, 100]) {
+      const gz = await request("/gzip", limit);
+      expect([gz.status, gz.body.length, gz.truncated]).toEqual([200, 0, true]);
+    }
+    expect(
+      new TextDecoder().decode((await request("/gzip", 20_000)).body),
+    ).toBe("y".repeat(10_000));
   });
 
   test("the signal covers DNS", async () => {

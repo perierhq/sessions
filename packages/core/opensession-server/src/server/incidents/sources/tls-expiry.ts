@@ -1,11 +1,17 @@
 // TLS expiry source: days until a host's certificate expires. Resolves the
-// host first and refuses private addresses before any connection.
-import { lookup } from "node:dns/promises";
+// host once through the shared resolve-and-check, refuses it if any address
+// is private, and connects only to those checked addresses.
 import { isIP } from "node:net";
 import { connect } from "node:tls";
 import type { ExpirySource, Observation } from "../../../shared/incidents";
 import { isBlockedAddress } from "../../shared/network-address";
-import type { SourceRun } from "./http";
+import {
+  BlockedAddressError,
+  type ResolveHost,
+  resolvePinnedTarget,
+  resolveWithDns,
+} from "../../shared/pinned-fetch";
+import { refusalDetail, type SourceRun } from "./http";
 
 /** One deadline for the whole check: resolving and every address tried. */
 export const TLS_TIMEOUT_MS = 10_000;
@@ -55,10 +61,6 @@ export function tlsObservation(
     sourceUrl,
     detail: `Certificate expires ${new Date(expires).toISOString().slice(0, 10)} (${value} days)`,
   };
-}
-
-async function resolveHost(host: string): Promise<string[]> {
-  return (await lookup(host, { all: true })).map((entry) => entry.address);
 }
 
 /** Reject when `promise` has not settled within `ms`. */
@@ -120,7 +122,8 @@ export async function runTlsExpirySource(
     now?: () => number;
     /** The whole check's deadline; {@link TLS_TIMEOUT_MS} by default. */
     timeoutMs?: number;
-    resolve?: (host: string) => Promise<string[]>;
+    resolve?: ResolveHost;
+    isBlocked?: (address: string) => boolean;
     probe?: (
       address: string,
       servername: string | undefined,
@@ -146,24 +149,24 @@ export async function runTlsExpirySource(
   });
   let addresses: string[];
   try {
-    addresses = await withDeadline(
-      (opts.resolve ?? resolveHost)(host),
+    // The URL only carries the host through the shared check; the scheme
+    // and port play no part in which addresses are allowed.
+    const target = await withDeadline(
+      resolvePinnedTarget(`https://${host}/`, {
+        resolve: opts.resolve ?? resolveWithDns,
+        isBlocked: opts.isBlocked ?? isBlockedAddress,
+      }),
       timeoutMs,
     );
+    addresses = target.addresses;
   } catch (error) {
+    if (error instanceof BlockedAddressError)
+      return failure("unknown", refusalDetail(error));
     return failure("fail", `Could not reach ${host}: ${errorMessage(error)}`);
   }
-  if (!addresses.length)
-    return failure("fail", `Could not reach ${host}: no addresses`);
-  const blocked = addresses.find((address) => isBlockedAddress(address));
-  if (blocked)
-    return failure(
-      "unknown",
-      `Refused: ${host} resolves to the private address ${blocked}`,
-    );
   // SNI carries host names only (RFC 6066), never an IP literal.
   const servername = isIP(host) ? undefined : host;
-  // Every address is vetted above; try them in order (a host may publish an
+  // Only the addresses checked above are dialled; try them in order (a host may publish an
   // IPv6 address this machine cannot route) until the deadline.
   const probe = opts.probe ?? probeCertificate;
   let lastError: unknown = new Error(`no TLS handshake within ${timeoutMs} ms`);

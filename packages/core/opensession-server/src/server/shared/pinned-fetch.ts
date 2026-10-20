@@ -151,8 +151,11 @@ const megabytes = (bytes: number) =>
       ? `${Math.round(bytes / 1024)}KB`
       : `${bytes} bytes`;
 
+/** A body over the request's byte limit, before or after decoding. */
+export class BodyTooLargeError extends Error {}
+
 export const tooLarge = (url: URL, limit: number, bytes?: number) =>
-  new Error(
+  new BodyTooLargeError(
     bytes === undefined
       ? `${url} exceeded the ${megabytes(limit)} body limit`
       : `${url} is ${megabytes(bytes)}, over the ${megabytes(limit)} limit`,
@@ -219,6 +222,11 @@ export interface PinnedRequestInit {
   signal: AbortSignal;
   /** Largest body accepted, before and after decoding. */
   maxBodyBytes: number;
+  /** What a longer body does: "reject" (the default) fails the request;
+   *  "truncate" stops reading at `maxBodyBytes` and answers with what was
+   *  read and `truncated` set, so the status is still known. A truncated
+   *  encoded body cannot be decoded and comes back empty. */
+  overflow?: "reject" | "truncate";
 }
 
 export interface PinnedResponse {
@@ -226,6 +234,8 @@ export interface PinnedResponse {
   headers: Headers;
   /** Decoded body bytes; empty for a redirect, which is never read. */
   body: Uint8Array;
+  /** Set when `overflow: "truncate"` cut the body short. */
+  truncated?: boolean;
 }
 
 /** One request over node:http(s), dialling only the target's checked
@@ -238,6 +248,7 @@ export function pinnedHttpRequest(
 ): Promise<PinnedResponse> {
   const { url, host } = target;
   const { signal, maxBodyBytes } = init;
+  const truncate = init.overflow === "truncate";
   const secure = url.protocol === "https:";
   if (signal.aborted) return Promise.reject(signal.reason);
   const payload =
@@ -288,21 +299,44 @@ export function pinnedHttpRequest(
           return resolve({ status, headers, body: new Uint8Array() });
         }
         const declared = Number(headers.get("content-length"));
-        if (Number.isFinite(declared) && declared > maxBodyBytes) {
+        if (!truncate && Number.isFinite(declared) && declared > maxBodyBytes) {
           done();
           res.destroy();
           return reject(tooLarge(url, maxBodyBytes, declared));
         }
         const chunks: Buffer[] = [];
+        const encoding = headers.get("content-encoding") ?? "";
         let size = 0;
+        let finished = false;
+        const cutShort = () => {
+          finished = true;
+          done();
+          res?.destroy();
+          const identity = ["", "identity"].includes(
+            encoding.trim().toLowerCase(),
+          );
+          resolve({
+            status,
+            headers,
+            body: identity ? Buffer.concat(chunks) : new Uint8Array(),
+            truncated: true,
+          });
+        };
         res.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maxBodyBytes) {
+          if (finished) return;
+          if (size + chunk.length > maxBodyBytes) {
+            if (truncate) {
+              chunks.push(chunk.subarray(0, maxBodyBytes - size));
+              size = maxBodyBytes;
+              return cutShort();
+            }
+            finished = true;
             done();
             res?.destroy();
             reject(tooLarge(url, maxBodyBytes));
             return;
           }
+          size += chunk.length;
           chunks.push(chunk);
         });
         res.on("error", (error) => {
@@ -311,16 +345,24 @@ export function pinnedHttpRequest(
         });
         res.on("end", () => {
           done();
-          if (size > maxBodyBytes) return;
+          if (finished) return;
+          finished = true;
           try {
             const body = decodeBody(
               url,
-              headers.get("content-encoding") ?? "",
+              encoding,
               Buffer.concat(chunks),
               maxBodyBytes,
             );
             resolve({ status, headers, body });
           } catch (error) {
+            if (truncate && error instanceof BodyTooLargeError)
+              return resolve({
+                status,
+                headers,
+                body: new Uint8Array(),
+                truncated: true,
+              });
             reject(error);
           }
         });

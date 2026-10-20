@@ -175,3 +175,68 @@ test("a resolver that never answers is cut off by the deadline", async () => {
     detail: "Could not reach acme.example.test: no answer within 20 ms",
   });
 });
+
+test("DNS rebinding: only the addresses checked once are probed", async () => {
+  const answers = [["203.0.113.7"], ["10.0.0.5"]];
+  let calls = 0;
+  const probed: string[] = [];
+  const run = await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "acme.example.test" },
+    {
+      now: () => NOW,
+      resolve: async () => answers[Math.min(calls++, answers.length - 1)]!,
+      probe: async (address) => {
+        probed.push(address);
+        return trusted;
+      },
+    },
+  );
+  expect(run.observations[0]).toMatchObject({ result: "ok", value: 41 });
+  expect(calls).toBe(1);
+  expect(probed).toEqual(["203.0.113.7"]);
+});
+
+test("an IPv4-mapped IPv6 answer for a private address is refused", async () => {
+  for (const answer of [
+    "::ffff:10.0.0.5",
+    "::ffff:7f00:1",
+    "::ffff:a9fe:a9fe",
+  ]) {
+    let probed = false;
+    const run = await runTlsExpirySource(
+      { kind: "expiry", target: "tls", host: "acme.example.test" },
+      {
+        now: () => NOW,
+        resolve: async () => ["203.0.113.7", answer],
+        probe: async () => {
+          probed = true;
+          return trusted;
+        },
+      },
+    );
+    expect(run.observations[0]).toMatchObject({
+      result: "unknown",
+      detail: `Refused: acme.example.test resolves to the private address ${answer}`,
+    });
+    expect(probed).toBe(false);
+  }
+});
+
+test("a reserved private name is refused without resolving", async () => {
+  let resolved = false;
+  const run = await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "db.internal" },
+    {
+      now: () => NOW,
+      resolve: async () => {
+        resolved = true;
+        return ["203.0.113.7"];
+      },
+    },
+  );
+  expect(run.observations[0]).toMatchObject({
+    result: "unknown",
+    detail: "Refused: db.internal is a private name",
+  });
+  expect(resolved).toBe(false);
+});
