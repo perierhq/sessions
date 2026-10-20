@@ -322,7 +322,7 @@ export type RepoRemovalOutcome = RepoRemovalResult | RepoRemovalDeleting;
 export function isRemovalDeleting(
   outcome: RepoRemovalOutcome,
 ): outcome is RepoRemovalDeleting {
-  return (outcome as RepoRemovalDeleting).deleting === true;
+  return "deleting" in outcome && outcome.deleting === true;
 }
 
 /** A background file delete (`GET /api/setup/repos/:id/removal-status`). */
@@ -396,9 +396,15 @@ export async function removeRepoApi(
       { method: "DELETE", body, label: "Couldn’t remove the repository" },
     );
   } catch (error) {
+    // The answer may never have arrived although the request went through:
+    // the connection dropped, or a gateway gave up waiting.
+    const answerLost =
+      error instanceof ApiError
+        ? error.status >= 502
+        : !(error instanceof DOMException && error.name === "AbortError");
     if (error instanceof ApiError && error.status === 404) {
       result = { ...emptyRemoval(id), alreadyRemoved: true };
-    } else if (answerLost(error)) {
+    } else if (answerLost) {
       const recovered = await removalAfterLostAnswer(id, opts.deleteFiles);
       if (!recovered) throw error;
       result = recovered;
@@ -414,13 +420,6 @@ export async function removeRepoApi(
 
 function emptyRemoval(id: string): RepoRemovalResult {
   return { id, archived: 0, automationsDisabled: 0, deleted: [], kept: [] };
-}
-
-/** The request may have gone through but its answer never arrived: the
- *  connection dropped, or a gateway gave up waiting. */
-function answerLost(error: unknown): boolean {
-  if (error instanceof ApiError) return error.status >= 502;
-  return !(error instanceof DOMException && error.name === "AbortError");
 }
 
 /** After a lost answer: what is true now, or null when the repository is
@@ -446,10 +445,9 @@ async function removalAfterLostAnswer(
       automationsDisabled: 0,
       plan: status.plan,
     };
-  return {
-    ...emptyRemoval(id),
-    ...(deleteFiles ? { filesUnknown: true } : {}),
-  };
+  const removed = emptyRemoval(id);
+  if (deleteFiles) removed.filesUnknown = true;
+  return removed;
 }
 
 export interface GithubOwner {
