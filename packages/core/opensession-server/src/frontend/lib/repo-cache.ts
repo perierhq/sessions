@@ -105,3 +105,23 @@ export function rememberRepos(repos: RepoInfo[], newSessionRepo: string): void {
     // A browser with storage blocked still gets the in-memory list.
   }
 }
+
+/** Drop a repo the user just removed, so a picker that opens before the next
+ *  `/repos` answer lands doesn't offer it. */
+export function forgetCachedRepo(id: string): void {
+  const current = read();
+  if (!current?.repos.some((repo) => repo.id === id)) return;
+  const repos = current.repos.filter((repo) => repo.id !== id);
+  cached = {
+    repos,
+    newSessionRepo: concreteDefault(
+      repos,
+      current.newSessionRepo === id ? "" : current.newSessionRepo,
+    ),
+  };
+  try {
+    localStorage.setItem(KEY, JSON.stringify(cached));
+  } catch {
+    // A browser with storage blocked still gets the in-memory list.
+  }
+}

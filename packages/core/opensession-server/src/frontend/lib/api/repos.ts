@@ -5,6 +5,7 @@ import { rememberRepoCount } from "../repo-count";
 import {
   cachedNewSessionRepo,
   cachedRepos,
+  forgetCachedRepo,
   rememberRepos,
 } from "../repo-cache";
 
@@ -244,6 +245,66 @@ export async function registerNewRepoApi(input: {
   });
   notifyReposChanged();
   return repo;
+}
+
+/** What removing a repository would do (`GET /api/setup/repos/:id/removal`). */
+export interface RepoRemovalPreview {
+  id: string;
+  label: string;
+  /** The checkout path as registered. */
+  path: string;
+  /** Live sessions on it; removal archives them. */
+  sessions: number;
+  /** Of those, how many are running. Removal waits until none are. */
+  running: number;
+  /** Whether its files may be deleted along with it. */
+  deletable: boolean;
+  /** Why they may not, in one line. */
+  reason?: string;
+  /** What deleting would remove: the checkout, and a local origin beside it. */
+  deletePaths?: string[];
+  /** Worktrees deleting would remove with it. */
+  worktrees?: number;
+  /** Disk used by `deletePaths`; null when it couldn't be measured quickly. */
+  sizeBytes?: number | null;
+}
+
+export interface RepoRemovalResult {
+  id: string;
+  archived: number;
+  deleted: string[];
+  kept: string[];
+}
+
+export function fetchRepoRemovalPreview(
+  id: string,
+): Promise<RepoRemovalPreview> {
+  return request(`/setup/repos/${encodeURIComponent(id)}/removal`, {
+    label: "Couldn’t check this repository",
+  });
+}
+
+/**
+ * Remove a registered repository. Its live sessions are archived, and its
+ * files are deleted only when `deleteFiles` is set and the server allows it.
+ * Every repo list reloads afterwards, so the sidebar and pickers drop it.
+ */
+export async function removeRepoApi(
+  id: string,
+  deleteFiles: boolean,
+): Promise<RepoRemovalResult> {
+  const result = await request<RepoRemovalResult>(
+    `/setup/repos/${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+      body: { deleteFiles },
+      label: "Couldn’t remove the repository",
+    },
+  );
+  forgetCachedRepo(id);
+  if (workspaceNewSessionRepo === id) workspaceNewSessionRepo = "";
+  notifyReposChanged();
+  return result;
 }
 
 export interface GithubOwner {

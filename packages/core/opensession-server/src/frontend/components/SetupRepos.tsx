@@ -27,7 +27,13 @@ import {
   IconBranches,
   IconDotsHorizontal,
   IconPlus,
+  IconTrash,
 } from "./icons";
+import { RemoveRepoDialog } from "./RemoveRepoDialog";
+import {
+  getDefaultRepoPref,
+  setDefaultRepoPref,
+} from "../lib/default-repo-pref";
 import { RepoTile } from "./RepoTile";
 import { GithubRepoAccess } from "./GithubRepoAccess";
 import { newRepoRegistration } from "../lib/new-repo";
@@ -276,8 +282,8 @@ function RepositoryRow({
   );
 }
 
-/** A repo row's ⋯ menu and its consequences: the default-branch dialog and
- *  the isolated-worktrees toggle. Shared by the settings page's full row and
+/** A repo row's ⋯ menu and its consequences: the default-branch dialog,
+ *  the isolated-worktrees toggle and removal. Shared by the settings page's full row and
  *  the wizard's compact rows, so both surfaces manage a repo identically. */
 function RepoActionsMenu({
   repo,
@@ -303,6 +309,7 @@ function RepoActionsMenu({
     repo.isolatedWorktrees,
   );
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [saving, setSaving] = useState<"branch" | "worktrees" | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
   const branchErrorId = useId();
@@ -407,8 +414,33 @@ function RepoActionsMenu({
             </span>
             <Menu.Check on={isolatedWorktrees} />
           </Menu.CheckboxItem>
+          <Menu.Separator />
+          <Menu.Item
+            className="text-red data-[highlighted]:bg-red-soft"
+            onClick={() => setRemoveOpen(true)}
+          >
+            <IconTrash size={17} />
+            <span className="min-w-0 flex-1 truncate">Remove…</span>
+          </Menu.Item>
         </Menu.Popup>
       </Menu.Root>
+      <RemoveRepoDialog
+        repo={repo}
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        onRemoved={async (result) => {
+          // The server already cleared stored preferences naming it; this
+          // keeps this browser's cached copy from offering it until then.
+          if (getDefaultRepoPref() === repo.id) setDefaultRepoPref("");
+          toast(
+            result.kept.length
+              ? `Removed ${repo.label}. Some of its files couldn’t be deleted.`
+              : `Removed ${repo.label}`,
+            result.kept.length ? { variant: "error" } : undefined,
+          );
+          await onChanged();
+        }}
+      />
       <Modal.Root
         open={branchDialogOpen}
         onOpenChange={(open) => {
