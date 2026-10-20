@@ -14,6 +14,7 @@ import { INTERNAL_MCP_CAPABILITIES } from "../../mcp-capabilities";
 import { resolveModel } from "../../models";
 import { isRunnerConnected } from "../../runner-ws";
 import { listRunnersAsync, type RunnerPlatform } from "../../runners";
+import { teammatesNamed } from "../../shared/user-mappings";
 
 export type ConnectionStatus = "ok" | "missing" | "internal" | "user-gated";
 
@@ -53,7 +54,13 @@ export interface AccessEnvironment {
   /** Whether the verified GitHub login is the credential owner's: stable
    *  roster identities, never first names (see isCredentialOwnerLogin). */
   isOwner(login: string, owner: string): boolean;
+  /** How a credential owner's name reads on the team roster: exactly one
+   *  teammate with a GitHub login, nobody with a login, or a name several
+   *  teammates share. */
+  ownerRoster(owner: string): OwnerRoster;
 }
+
+export type OwnerRoster = "one" | "none" | "shared";
 
 let override: AccessEnvironment | undefined;
 
@@ -66,6 +73,12 @@ export function __setAccessEnvironmentForTest(
 
 export function isOwnerLogin(login: string, owner: string): boolean {
   return isCredentialOwnerLogin(login, owner);
+}
+
+export function ownerRosterOf(owner: string): OwnerRoster {
+  const named = teammatesNamed(owner);
+  if (named.length > 1) return "shared";
+  return named.length === 1 && named[0].github?.trim() ? "one" : "none";
 }
 
 export function connectionStatusFrom(
@@ -143,5 +156,6 @@ export async function loadAccessEnvironment(): Promise<AccessEnvironment> {
       null,
     model: (id) => resolveModel(id)?.id ?? null,
     isOwner: isOwnerLogin,
+    ownerRoster: ownerRosterOf,
   };
 }

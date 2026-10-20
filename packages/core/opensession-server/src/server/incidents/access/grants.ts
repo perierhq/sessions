@@ -52,6 +52,8 @@ const GRANT_KEYS = [
 ] as const;
 
 const SIGN_IN = "Sign in to grant credentials to incident agents";
+const OWNER_NOT_ON_ROSTER =
+  "The owner needs a team roster entry with a GitHub login to lend this credential";
 
 export function validateGrants(
   input: unknown,
@@ -125,7 +127,10 @@ export function validateGrants(
     if (!login) return { error: SIGN_IN };
     if (info.scope === "personal" && !env.isOwner(login, info.owner))
       return {
-        error: `Only ${info.owner} can grant ${info.service} to incident agents`,
+        error:
+          env.ownerRoster(info.owner) === "none"
+            ? OWNER_NOT_ON_ROSTER
+            : `Only ${info.owner} can grant ${info.service} to incident agents`,
       };
     credentials.push({
       credential: id,

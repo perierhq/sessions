@@ -252,3 +252,17 @@ test("the caller cannot set who granted a credential", () => {
     },
   });
 });
+test("an owner without a roster entry and GitHub login cannot lend a personal credential", () => {
+  const missing = {
+    error:
+      "The owner needs a team roster entry with a GitHub login to lend this credential",
+  };
+  t.spec.credentials[0].owner = "Cy";
+  expect(lend(ada)).toEqual(missing);
+  __setIdentitiesForTest([
+    { name: "Ada Lovelace" },
+    { name: "Bo Example", github: "bo" },
+  ]);
+  t.spec.credentials[0].owner = "Ada";
+  expect(lend(ada)).toEqual(missing);
+});

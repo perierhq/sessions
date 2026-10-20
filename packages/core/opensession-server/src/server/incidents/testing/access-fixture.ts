@@ -12,6 +12,7 @@ import {
   type ConnectionStatus,
   __setAccessEnvironmentForTest,
   isOwnerLogin,
+  ownerRosterOf,
 } from "../access/environment";
 import type { TeamMember } from "../../config";
 import { __setIdentitiesForTest } from "../../shared/user-mappings";
@@ -47,6 +48,7 @@ export function staticAccessEnvironment(
       return (spec.models ?? []).find((m) => m.toLowerCase() === value) ?? null;
     },
     isOwner: isOwnerLogin,
+    ownerRoster: ownerRosterOf,
   };
 }
 

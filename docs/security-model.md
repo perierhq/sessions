@@ -444,7 +444,10 @@ never a login, and always with a verified sign-in rather than a claimed name.
 Ownership is decided on stable roster identities: the grant records the
 lender's GitHub login, and the credential's owner must name exactly that one
 teammate. A first name two teammates share names no one, so neither can lend
-the credential, and a personal grant without the lender's login is dropped.
+the credential; an owner with no roster entry carrying a GitHub login cannot
+lend it either, and is told so; and a personal grant without the lender's
+login is dropped. An agent that names a credential by a service name two lent
+credentials share is refused and has to name it by its id.
 A grant is minted only after the agent's access is resolved afresh, at the
 mode that access names. `once` is one call per agent session; `standing`
 lasts at most seven days and ends when the incident leaves those states, when
