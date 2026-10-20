@@ -1,15 +1,26 @@
 import { beforeEach, expect, test } from "bun:test";
-import { appendFile, readFile, readdir } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import {
   __resetObservationsForTest,
   appendObservations,
   flushObservations,
+  forgetObservations,
   hydrateObservations,
+  hydrationLookbackMs,
   pruneObservations,
   queryObservations,
   recentObservations,
+  scanObservations,
 } from "./observation-store";
+import type { Signal } from "../../shared/incidents";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
@@ -66,8 +77,8 @@ test("writes daily files and hydrates after a restart, skipping a torn line", as
   __resetObservationsForTest();
   await hydrateObservations("sig-a", Date.parse("2026-10-20T00:05:00Z"));
   expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
-    "2026-10-19T23:59:00Z",
-    "2026-10-20T00:01:00Z",
+    "2026-10-19T23:59:00.000Z",
+    "2026-10-20T00:01:00.000Z",
   ]);
 });
 
@@ -84,8 +95,8 @@ test("a line written after a torn line survives", async () => {
   __resetObservationsForTest();
   await hydrateObservations("sig-a", Date.parse("2026-10-20T00:05:00Z"));
   expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
-    "2026-10-20T00:01:00Z",
-    "2026-10-20T00:03:00Z",
+    "2026-10-20T00:01:00.000Z",
+    "2026-10-20T00:03:00.000Z",
   ]);
 });
 
@@ -96,8 +107,8 @@ test("hydration merges with observations appended before it, without duplicates"
   appendObservations("sig-a", [ob("2026-10-20T00:02:00Z", "fail")]);
   await hydrateObservations("sig-a", Date.parse("2026-10-20T00:05:00Z"));
   expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
-    "2026-10-20T00:01:00Z",
-    "2026-10-20T00:02:00Z",
+    "2026-10-20T00:01:00.000Z",
+    "2026-10-20T00:02:00.000Z",
   ]);
 });
 
@@ -115,8 +126,8 @@ test("queries across days from files, bounded to 31 days", async () => {
     Date.parse("2026-10-20T12:00:00Z"),
   );
   expect(got.map((o) => o.at)).toEqual([
-    "2026-10-19T12:00:00Z",
-    "2026-10-20T12:00:00Z",
+    "2026-10-19T12:00:00.000Z",
+    "2026-10-20T12:00:00.000Z",
   ]);
   await expect(queryObservations("sig-a", 0, 32 * 86_400_000)).rejects.toThrow(
     RangeError,
@@ -132,4 +143,195 @@ test("prune keeps 30 days", async () => {
   await flushObservations();
   expect(await pruneObservations(Date.parse("2026-10-20T13:00:00Z"))).toBe(2);
   expect(await readdir(dir())).toEqual(["2026-10-20.jsonl"]);
+});
+
+test("observation times are stored as ISO instants; unreadable ones are dropped", async () => {
+  appendObservations("sig-a", [
+    ob("2026-10-20T01:30:00+02:00"),
+    ob("yesterday"),
+    ob("2026-10-20T00:00:00Z"),
+  ]);
+  expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
+    "2026-10-19T23:30:00.000Z",
+    "2026-10-20T00:00:00.000Z",
+  ]);
+  await flushObservations();
+  expect((await readdir(dir())).sort()).toEqual([
+    "2026-10-19.jsonl",
+    "2026-10-20.jsonl",
+  ]);
+});
+
+test("a flush waits for the writes queued before it, not for later ones", async () => {
+  appendObservations("sig-a", [ob("2026-10-20T00:00:00Z")]);
+  let stop = false;
+  let n = 0;
+  const pump = (async () => {
+    while (!stop) {
+      appendObservations("sig-a", [
+        ob(new Date(Date.parse("2026-10-20T00:00:01Z") + n++).toISOString()),
+      ]);
+      // One append per turn of the event loop: some write is always queued.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  })();
+  const flushed = await Promise.race([
+    flushObservations().then(() => true),
+    Bun.sleep(1000).then(() => false),
+  ]);
+  stop = true;
+  await pump;
+  expect(flushed).toBe(true);
+  expect(await readFile(join(dir(), "2026-10-20.jsonl"), "utf8")).toContain(
+    '"2026-10-20T00:00:00.000Z"',
+  );
+});
+
+test("hydration reads back as far as the caller asks, at most 31 days", async () => {
+  const now = Date.parse("2026-10-20T12:00:00Z");
+  appendObservations("sig-a", [
+    ob("2026-09-10T12:00:00Z", "fail"),
+    ob("2026-10-15T12:00:00Z", "fail"),
+    ob("2026-10-18T12:00:00Z"),
+    ob("2026-10-20T11:00:00Z"),
+  ]);
+  await flushObservations();
+  __resetObservationsForTest();
+  await hydrateObservations("sig-a", now);
+  expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
+    "2026-10-18T12:00:00.000Z",
+    "2026-10-20T11:00:00.000Z",
+  ]);
+  __resetObservationsForTest();
+  await hydrateObservations("sig-a", now, 6 * 86_400_000);
+  expect(recentObservations("sig-a")).toHaveLength(3);
+  __resetObservationsForTest();
+  await hydrateObservations("sig-a", now, 365 * 86_400_000);
+  expect(recentObservations("sig-a")).toHaveLength(3);
+});
+
+test("hydration lookback per signal", () => {
+  const DAY = 86_400_000;
+  const now = Date.parse("2026-10-20T12:00:00Z");
+  const signal = (rule: Signal["rule"], kind = "heartbeat") =>
+    ({ rule, source: { kind } }) as Signal;
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "consecutive", failures: 3 }, "http"),
+      now,
+    ),
+  ).toBe(2 * DAY);
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "missing", everyMs: 3_600_000, graceMs: 0 }),
+      now,
+    ),
+  ).toBe(2 * DAY);
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "missing", everyMs: 5 * DAY, graceMs: DAY }),
+      now,
+    ),
+  ).toBe(6 * DAY);
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "missing", everyMs: 31 * DAY, graceMs: DAY }),
+      now,
+    ),
+  ).toBe(31 * DAY);
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "missing", cron: "0 3 * * 1", graceMs: 3_600_000 }),
+      now,
+    ),
+  ).toBe(7 * DAY + 3_600_000);
+  expect(
+    hydrationLookbackMs(
+      signal({ kind: "missing", cron: "0 3 1 * *", graceMs: 0 }),
+      now,
+    ),
+  ).toBe(31 * DAY);
+});
+
+test("range queries stream day files, filtered by lane while reading", async () => {
+  await mkdir(dir(), { recursive: true });
+  const long = "x".repeat(500);
+  const lines: string[] = [];
+  for (let i = 0; i < 400; i++)
+    lines.push(
+      JSON.stringify({
+        at: new Date(
+          Date.parse("2026-10-20T00:00:00Z") + i * 60_000,
+        ).toISOString(),
+        result: i % 2 ? "fail" : "ok",
+        detail: long,
+        ...(i % 4 === 1 ? { lane: "API" } : {}),
+      }),
+    );
+  await writeFile(
+    join(dir(), "2026-10-20.jsonl"),
+    `${lines.join("\n")}\ngarbage\n{"at":"2026-10-20T23:59:00Z","result":"ok","detail":"é"}`,
+  );
+  const from = Date.parse("2026-10-20T00:00:00Z");
+  const to = Date.parse("2026-10-20T23:59:59Z");
+  expect(await queryObservations("sig-a", from, to)).toHaveLength(401);
+  const api = await queryObservations("sig-a", from, to, { lane: "API" });
+  expect(api).toHaveLength(100);
+  expect(api.every((o) => o.lane === "API")).toBe(true);
+  const main = await queryObservations("sig-a", from, to, { lane: "" });
+  expect(main).toHaveLength(301);
+  expect(main.at(-1)?.detail).toBe("é");
+  let seen = 0;
+  const result = await scanObservations(
+    "sig-a",
+    from,
+    Date.parse("2026-10-20T00:09:00Z"),
+    () => {
+      seen++;
+    },
+  );
+  expect(result).toBeUndefined();
+  expect(seen).toBe(10);
+});
+
+test("a failed write checks the file tail again next time", async () => {
+  await mkdir(dir(), { recursive: true });
+  const file = join(dir(), "2026-10-20.jsonl");
+  await writeFile(
+    file,
+    '{"at":"2026-10-20T00:00:00Z","result":"ok","detail":""}\n{"at":"torn',
+  );
+  await chmod(file, 0o400);
+  const error = console.error;
+  console.error = () => {};
+  try {
+    appendObservations("sig-a", [ob("2026-10-20T00:01:00Z")]);
+    await flushObservations();
+  } finally {
+    console.error = error;
+  }
+  await chmod(file, 0o600);
+  appendObservations("sig-a", [ob("2026-10-20T00:02:00Z")]);
+  await flushObservations();
+  __resetObservationsForTest();
+  await hydrateObservations("sig-a", Date.parse("2026-10-20T00:05:00Z"));
+  expect(recentObservations("sig-a").map((o) => o.at)).toEqual([
+    "2026-10-20T00:00:00.000Z",
+    "2026-10-20T00:02:00.000Z",
+  ]);
+});
+
+test("forgetting a signal drops its memory, not its files", async () => {
+  appendObservations("sig-a", [ob("2026-10-20T00:01:00Z")]);
+  await hydrateObservations("sig-a", Date.parse("2026-10-20T00:05:00Z"));
+  forgetObservations("sig-a");
+  forgetObservations("../x");
+  expect(recentObservations("sig-a")).toEqual([]);
+  expect(
+    await queryObservations(
+      "sig-a",
+      Date.parse("2026-10-20T00:00:00Z"),
+      Date.parse("2026-10-20T00:05:00Z"),
+    ),
+  ).toHaveLength(1);
 });

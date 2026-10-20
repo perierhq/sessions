@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import type { Signal, StripMarkerKind } from "../../shared/incidents";
 import {
+  MAX_STRIP_BARS,
+  MAX_STRIP_SIDE_LANES,
   bucketStrip,
+  createStripBucketer,
   defaultStripRange,
   markersFromEvents,
   stripBucketMs,
@@ -136,4 +139,66 @@ test("interval per source and the default range", () => {
   expect(defaultStripRange({ ...http, intervalMs: 10_000 }, T).from).toBe(
     T - 3_600_000,
   );
+});
+
+test("rejects a bucket size that is not positive or makes too many bars", () => {
+  const input = {
+    signalId: "sig-a",
+    label: "Search",
+    from: T - 3_600_000,
+    to: T,
+    observations: [],
+  };
+  for (const bucketMs of [0, -60_000, Number.NaN, Number.POSITIVE_INFINITY])
+    expect(() => bucketStrip({ ...input, bucketMs })).toThrow(RangeError);
+  expect(() =>
+    bucketStrip({ ...input, bucketMs: 3_600_000 / (MAX_STRIP_BARS + 1) }),
+  ).toThrow(RangeError);
+  expect(() =>
+    bucketStrip({ ...input, from: Number.NaN, bucketMs: 60_000 }),
+  ).toThrow(RangeError);
+  expect(
+    bucketStrip({ ...input, bucketMs: 3_600_000 / MAX_STRIP_BARS })[0].bars,
+  ).toHaveLength(MAX_STRIP_BARS);
+});
+
+test("side lanes stop at 24; the main lane is always kept", () => {
+  const lanes = bucketStrip({
+    signalId: "sig-a",
+    label: "Status",
+    from: T - 60_000,
+    to: T,
+    bucketMs: 60_000,
+    observations: [
+      ...Array.from({ length: 30 }, (_, i) => ({
+        at: at(10_000),
+        result: "ok" as const,
+        detail: "",
+        lane: `lane-${String(i).padStart(2, "0")}`,
+      })),
+      { at: at(5_000), result: "fail", detail: "" },
+    ],
+  });
+  expect(MAX_STRIP_SIDE_LANES).toBe(24);
+  expect(lanes).toHaveLength(25);
+  expect(lanes[0].bars[0].result).toBe("fail");
+  expect(lanes.at(-1)?.label).toBe("lane-23");
+});
+
+test("a bucketer takes observations one at a time", () => {
+  const observations = [
+    { at: at(170_000), result: "ok" as const, detail: "", value: 120 },
+    { at: at(150_000), result: "fail" as const, detail: "HTTP 503" },
+    { at: at(10_000), result: "ok" as const, detail: "", lane: "API" },
+  ];
+  const input = {
+    signalId: "sig-a",
+    label: "Search",
+    from: T - 180_000,
+    to: T,
+    bucketMs: 60_000,
+  };
+  const bucketer = createStripBucketer(input);
+  for (const observation of observations) bucketer.add(observation);
+  expect(bucketer.lanes()).toEqual(bucketStrip({ ...input, observations }));
 });

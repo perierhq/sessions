@@ -2,19 +2,13 @@
 // observation's `at`) written by an async batch writer, plus an in-memory
 // ring per lane. Appends touch memory only; files are written off-thread of
 // the caller and never synchronously.
-import {
-  appendFile,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  rm,
-  rmdir,
-} from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Observation } from "../../shared/incidents";
+import { StringDecoder } from "node:string_decoder";
+import type { Observation, Signal } from "../../shared/incidents";
 import { createAuditWriter } from "../audit";
 import { legacyCatalogDirectory } from "../catalog-documents";
+import { previousRun } from "../cron";
 
 export const OBSERVATION_RETENTION_DAYS = 30;
 export const RING_PER_LANE = 720;
@@ -23,10 +17,16 @@ export const MAX_RING_LANES = 25;
 const NAMESPACE = "incident-observations";
 const DAY_MS = 86_400_000;
 const MAX_QUERY_MS = 31 * DAY_MS;
+export const DEFAULT_HYDRATION_LOOKBACK_MS = 2 * DAY_MS;
+export const MAX_HYDRATION_LOOKBACK_MS = 31 * DAY_MS;
+const READ_CHUNK_BYTES = 65_536;
+/** A longer line is garbage (no observation comes near it); skip it. */
+const MAX_LINE_CHARS = 1_048_576;
 const SIGNAL_ID = /^sig-[A-Za-z0-9-]{1,80}$/;
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
-/** Ring key of the main lane. */
-const MAIN = "";
+/** Ring key and lane filter of the main lane. */
+export const MAIN_LANE = "";
+const MAIN = MAIN_LANE;
 
 type Rings = Map<string, Observation[]>;
 
@@ -34,6 +34,8 @@ let rings = new Map<string, Rings>();
 let hydrated = new Set<string>();
 let hydrating = new Map<string, Promise<void>>();
 let pendingWrites = new Set<Promise<void>>();
+/** Bumped by forgetObservations so a hydration already running is dropped. */
+let generations = new Map<string, number>();
 /** Files whose tail this process has checked for a torn last line. */
 let tailChecked = new Set<string>();
 /** Resolved observation directory per OPENSESSION_STATE_DIR value. */
@@ -68,9 +70,15 @@ function utcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function observationDay(observation: Observation): string {
+/**
+ * The observation with `at` as an ISO instant (UTC, milliseconds), so string
+ * order is time order; null when `at` is not a time.
+ */
+function normalizeObservation(observation: Observation): Observation | null {
   const ms = Date.parse(observation.at);
-  return utcDay(Number.isFinite(ms) ? ms : Date.now());
+  if (!Number.isFinite(ms)) return null;
+  const at = new Date(ms).toISOString();
+  return at === observation.at ? observation : { ...observation, at };
 }
 
 /** A crash can leave a file without its final newline; start on a new line. */
@@ -96,11 +104,17 @@ function observationWriter(): ReturnType<typeof createAuditWriter> {
     const directory = await observationDirectory(file.slice(0, split));
     const path = join(directory, file.slice(split + 1));
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    if (!tailChecked.has(path)) {
-      tailChecked.add(path);
-      if (await needsLeadingNewline(path)) text = `\n${text}`;
+    try {
+      if (!tailChecked.has(path)) {
+        tailChecked.add(path);
+        if (await needsLeadingNewline(path)) text = `\n${text}`;
+      }
+      await appendFile(path, text, { mode: 0o600 });
+    } catch (error) {
+      // The append may have left a torn line; check the tail again next time.
+      tailChecked.delete(path);
+      throw error;
     }
-    await appendFile(path, text, { mode: 0o600 });
   }));
 }
 
@@ -148,11 +162,17 @@ function addToRings(signalId: string, observations: Observation[]): void {
   }
 }
 
+/** Observations with an unreadable `at` are dropped. */
 export function appendObservations(
   signalId: string,
-  observations: Observation[],
+  input: Observation[],
 ): void {
   assertSignalId(signalId);
+  const observations: Observation[] = [];
+  for (const observation of input) {
+    const normalized = normalizeObservation(observation);
+    if (normalized) observations.push(normalized);
+  }
   if (!observations.length) return;
   addToRings(signalId, observations);
   const key = directoryKey();
@@ -168,16 +188,29 @@ export function appendObservations(
   // queue across an await, and these pushes are synchronous.
   observations.forEach((observation, index) => {
     out.push({
-      file: `${key}\n${signalId}/${observationDay(observation)}.jsonl`,
+      file: `${key}\n${signalId}/${observation.at.slice(0, 10)}.jsonl`,
       line: JSON.stringify(observation),
       written: index === observations.length - 1 ? resolveWritten : undefined,
     });
   });
 }
 
-/** Resolves once every observation appended so far has been written. */
+/**
+ * Resolves once every observation appended before the call has been written
+ * (or its write failed). Later appends are not waited for, so a steady
+ * stream of observations cannot hold a flush open.
+ */
 export async function flushObservations(): Promise<void> {
-  while (pendingWrites.size) await Promise.all([...pendingWrites]);
+  await Promise.all([...pendingWrites]);
+}
+
+/** Drop a signal's memory (rings, hydration); its day files stay. */
+export function forgetObservations(signalId: string): void {
+  if (!SIGNAL_ID.test(signalId)) return;
+  rings.delete(signalId);
+  hydrated.delete(signalId);
+  hydrating.delete(signalId);
+  generations.set(signalId, (generations.get(signalId) ?? 0) + 1);
 }
 
 export function recentObservations(
@@ -201,30 +234,75 @@ function isObservation(value: unknown): value is Observation {
   );
 }
 
-/** Parse a day file, skipping torn or garbage lines. A missing file is empty. */
-async function readDayFile(
+function parseLine(line: string): Observation | null {
+  if (!line.trim()) return null;
+  try {
+    const value: unknown = JSON.parse(line);
+    return isObservation(value) ? normalizeObservation(value) : null;
+  } catch {
+    // A torn line after a crash or a full disk; keep the rest.
+    return null;
+  }
+}
+
+/**
+ * Stream a day file line by line, handing each readable observation to
+ * `visit`. Torn or garbage lines are skipped; a missing file is empty.
+ */
+async function scanDayFile(
   directory: string,
   signalId: string,
   day: string,
-): Promise<Observation[]> {
-  let text: string;
+  visit: (observation: Observation) => void,
+): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    text = await readFile(join(directory, signalId, `${day}.jsonl`), "utf8");
+    handle = await open(join(directory, signalId, `${day}.jsonl`), "r");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  const out: Observation[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const value: unknown = JSON.parse(line);
-      if (isObservation(value)) out.push(value);
-    } catch {
-      // A torn line after a crash or a full disk; keep the rest.
+  try {
+    const buffer = Buffer.alloc(READ_CHUNK_BYTES);
+    const decoder = new StringDecoder("utf8");
+    let carry = "";
+    let skipping = false;
+    let position = 0;
+    const take = (line: string) => {
+      const observation = parseLine(line);
+      if (observation) visit(observation);
+    };
+    for (;;) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (!bytesRead) break;
+      position += bytesRead;
+      carry += decoder.write(buffer.subarray(0, bytesRead));
+      let start = 0;
+      for (
+        let newline = carry.indexOf("\n");
+        newline >= 0;
+        newline = carry.indexOf("\n", start)
+      ) {
+        if (!skipping) take(carry.slice(start, newline));
+        skipping = false;
+        start = newline + 1;
+      }
+      carry = carry.slice(start);
+      if (carry.length > MAX_LINE_CHARS) {
+        carry = "";
+        skipping = true;
+      }
     }
+    carry += decoder.end();
+    if (!skipping) take(carry);
+  } finally {
+    await handle.close();
   }
-  return out;
 }
 
 /** Union of two lists where an identical observation counts once per copy. */
@@ -247,60 +325,152 @@ function mergeDistinct(
   return out;
 }
 
+function byAt(a: Observation, b: Observation): number {
+  return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;
+}
+
+/** Longest gap between the last few runs of a cron schedule, or null. */
+function cronPeriodMs(cron: string, now: number): number | null {
+  let latest = previousRun(cron, new Date(now));
+  if (!latest) return null;
+  let period = 0;
+  for (let i = 0; i < 4; i++) {
+    const before = previousRun(cron, new Date(latest.getTime() - 60_000));
+    if (!before) return i ? period : null;
+    period = Math.max(period, latest.getTime() - before.getTime());
+    latest = before;
+  }
+  return period;
+}
+
+/**
+ * How far back hydration must read for a signal's rules to see their last
+ * check-in: two days, or a heartbeat's schedule plus its grace when longer,
+ * at most 31 days.
+ */
+export function hydrationLookbackMs(
+  signal: Pick<Signal, "rule">,
+  now: number = Date.now(),
+): number {
+  let need = DEFAULT_HYDRATION_LOOKBACK_MS;
+  const rule = signal.rule;
+  if (rule?.kind === "missing") {
+    const period =
+      rule.everyMs ?? (rule.cron ? cronPeriodMs(rule.cron, now) : null);
+    need =
+      period === null
+        ? MAX_HYDRATION_LOOKBACK_MS
+        : Math.max(need, period + (rule.graceMs ?? 0));
+  }
+  return Math.min(MAX_HYDRATION_LOOKBACK_MS, need);
+}
+
+/**
+ * Load a signal's recent observations into memory once: the day files from
+ * `now - lookbackMs` (two days by default, at most 31) to `now`, merged with
+ * anything appended before hydration. Pass {@link hydrationLookbackMs} of the
+ * signal.
+ */
 export function hydrateObservations(
   signalId: string,
   now: number = Date.now(),
+  lookbackMs: number = DEFAULT_HYDRATION_LOOKBACK_MS,
 ): Promise<void> {
   assertSignalId(signalId);
   if (hydrated.has(signalId)) return Promise.resolve();
   let running = hydrating.get(signalId);
   if (running) return running;
+  const generation = generations.get(signalId) ?? 0;
+  const span = Math.min(
+    MAX_HYDRATION_LOOKBACK_MS,
+    Math.max(0, Number.isFinite(lookbackMs) ? lookbackMs : 0),
+  );
   running = (async () => {
     await flushObservations();
     const directory = await observationDirectory();
-    const stored = [
-      ...(await readDayFile(directory, signalId, utcDay(now - DAY_MS))),
-      ...(await readDayFile(directory, signalId, utcDay(now))),
-    ];
+    const stored: Rings = new Map();
+    for (
+      let day = Date.parse(`${utcDay(now - span)}T00:00:00Z`);
+      day <= now;
+      day += DAY_MS
+    )
+      await scanDayFile(directory, signalId, utcDay(day), (observation) => {
+        const ring = ringFor(stored, laneKey(observation));
+        if (ring) insertSorted(ring, observation);
+      });
+    if ((generations.get(signalId) ?? 0) !== generation) return;
     const memory = recentObservations(signalId, "*");
-    const merged = mergeDistinct(stored, memory).sort((a, b) =>
-      a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
+    const merged = mergeDistinct([...stored.values()].flat(), memory).sort(
+      byAt,
     );
     rings.delete(signalId);
     addToRings(signalId, merged);
     hydrated.add(signalId);
-  })().finally(() => hydrating.delete(signalId));
+  })().finally(() => {
+    if (hydrating.get(signalId) === running) hydrating.delete(signalId);
+  });
   hydrating.set(signalId, running);
   return running;
 }
 
-export async function queryObservations(
+export interface ObservationQueryOptions {
+  /** One lane ({@link MAIN_LANE} for the main lane) or `"*"` (default). */
+  lane?: string;
+}
+
+/**
+ * Hand every observation of `[from, to]` (and of the lane asked for) to
+ * `visit`, streaming day files rather than loading them, in no promised
+ * order. Feed a strip bucketer with it so a long range is never held in
+ * memory. Spans at most 31 days.
+ */
+export async function scanObservations(
   signalId: string,
   from: number,
   to: number,
-): Promise<Observation[]> {
+  visit: (observation: Observation) => void,
+  opts: ObservationQueryOptions = {},
+): Promise<void> {
   assertSignalId(signalId);
+  if (!Number.isFinite(from) || !Number.isFinite(to))
+    throw new RangeError("Observation queries need a finite range");
   if (to - from > MAX_QUERY_MS)
     throw new RangeError("Observation queries span at most 31 days");
-  const inRange = (observation: Observation) => {
+  const lane = opts.lane ?? "*";
+  const wanted = (observation: Observation) => {
+    if (lane !== "*" && laneKey(observation) !== lane) return false;
     const at = Date.parse(observation.at);
     return at >= from && at <= to;
   };
-  const oldest = rings.get(signalId)?.get(MAIN)?.[0];
-  if (hydrated.has(signalId) && oldest && Date.parse(oldest.at) <= from)
-    return recentObservations(signalId, "*").filter(inRange);
+  const filtered = (observation: Observation) => {
+    if (wanted(observation)) visit(observation);
+  };
+  const oldest = rings.get(signalId)?.get(lane === "*" ? MAIN : lane)?.[0];
+  if (hydrated.has(signalId) && oldest && Date.parse(oldest.at) <= from) {
+    for (const observation of recentObservations(signalId, lane))
+      filtered(observation);
+    return;
+  }
   await flushObservations();
   const directory = await observationDirectory();
-  const out: Observation[] = [];
   for (
     let day = Date.parse(`${utcDay(from)}T00:00:00Z`);
     day <= to;
     day += DAY_MS
   )
-    out.push(...(await readDayFile(directory, signalId, utcDay(day))));
-  return out
-    .filter(inRange)
-    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    await scanDayFile(directory, signalId, utcDay(day), filtered);
+}
+
+/** {@link scanObservations}, collected and sorted by `at`. */
+export async function queryObservations(
+  signalId: string,
+  from: number,
+  to: number,
+  opts: ObservationQueryOptions = {},
+): Promise<Observation[]> {
+  const out: Observation[] = [];
+  await scanObservations(signalId, from, to, (o) => out.push(o), opts);
+  return out.sort(byAt);
 }
 
 async function listDirectory(path: string): Promise<string[]> {
@@ -348,6 +518,7 @@ export function __resetObservationsForTest(): void {
   hydrated = new Set();
   hydrating = new Map();
   pendingWrites = new Set();
+  generations = new Map();
   tailChecked = new Set();
   directories.clear();
   writer = undefined;

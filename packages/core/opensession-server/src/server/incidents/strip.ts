@@ -13,6 +13,8 @@ import type {
 } from "../../shared/incidents";
 
 export const MAX_STRIP_BARS = 120;
+/** Component lanes drawn beside the main lane (the JSON mapping's cap). */
+export const MAX_STRIP_SIDE_LANES = 24;
 
 const HOUR_MS = 3_600_000;
 const MIN_RANGE_MS = HOUR_MS;
@@ -105,23 +107,37 @@ function addToBar(
   }
 }
 
-/**
- * Bucket observations into lanes. Bars end at `to`: bar 0 is the oldest and
- * the last bar also includes `to` itself. The main lane always comes first,
- * then one lane per component name, sorted by name.
- */
-export function bucketStrip(input: {
+export interface StripRange {
   signalId: string;
   label: string;
-  observations: Observation[];
   from: number;
   to: number;
   bucketMs: number;
   valueWorst?: "max" | "min";
-}): StripLane[] {
+}
+
+/**
+ * A strip built one observation at a time, so a caller can stream a long
+ * range into it. Bars end at `to`: bar 0 is the oldest and the last bar also
+ * includes `to` itself. The main lane always comes first, then one lane per
+ * component name (at most {@link MAX_STRIP_SIDE_LANES}, first seen first
+ * kept), sorted by name. Throws a RangeError for a range or bucket size that
+ * is not finite and positive, or that needs more than {@link MAX_STRIP_BARS}
+ * bars.
+ */
+export function createStripBucketer(input: StripRange): {
+  add(observation: Observation): void;
+  lanes(): StripLane[];
+} {
   const { signalId, label, from, to, bucketMs } = input;
+  if (!Number.isFinite(bucketMs) || bucketMs <= 0)
+    throw new RangeError("Bucket size must be a positive number");
+  if (!Number.isFinite(from) || !Number.isFinite(to))
+    throw new RangeError("A strip needs a finite range");
   const valueWorst = input.valueWorst ?? "max";
   const count = Math.max(1, Math.ceil((to - from) / bucketMs));
+  if (count > MAX_STRIP_BARS)
+    throw new RangeError(`A strip has at most ${MAX_STRIP_BARS} bars`);
   const firstStart = to - count * bucketMs;
   const main: StripLane = {
     id: signalId,
@@ -129,32 +145,49 @@ export function bucketStrip(input: {
     label,
     bars: emptyBars(firstStart, count, bucketMs),
   };
-  const lanes = new Map<string, StripLane>();
-  for (const observation of input.observations) {
-    const at = Date.parse(observation.at);
-    if (!Number.isFinite(at) || at < firstStart || at > to) continue;
-    let lane = main;
-    if (observation.lane !== undefined) {
-      let side = lanes.get(observation.lane);
-      if (!side) {
-        side = {
-          id: `${signalId}:${observation.lane}`,
-          signalId,
-          lane: observation.lane,
-          label: observation.lane,
-          bars: emptyBars(firstStart, count, bucketMs),
-        };
-        lanes.set(observation.lane, side);
+  const sides = new Map<string, StripLane>();
+  return {
+    add(observation) {
+      const at = Date.parse(observation.at);
+      if (!Number.isFinite(at) || at < firstStart || at > to) return;
+      let lane = main;
+      if (observation.lane !== undefined) {
+        let side = sides.get(observation.lane);
+        if (!side) {
+          if (sides.size >= MAX_STRIP_SIDE_LANES) return;
+          side = {
+            id: `${signalId}:${observation.lane}`,
+            signalId,
+            lane: observation.lane,
+            label: observation.lane,
+            bars: emptyBars(firstStart, count, bucketMs),
+          };
+          sides.set(observation.lane, side);
+        }
+        lane = side;
       }
-      lane = side;
-    }
-    const index = Math.min(count - 1, Math.floor((at - firstStart) / bucketMs));
-    addToBar(lane.bars[index]!, observation, valueWorst);
-  }
-  const sides = [...lanes.values()].sort((a, b) =>
-    a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
-  );
-  return [main, ...sides];
+      const index = Math.min(
+        count - 1,
+        Math.floor((at - firstStart) / bucketMs),
+      );
+      addToBar(lane.bars[index]!, observation, valueWorst);
+    },
+    lanes() {
+      const sorted = [...sides.values()].sort((a, b) =>
+        a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
+      );
+      return [main, ...sorted];
+    },
+  };
+}
+
+/** Bucket a list of observations into lanes; see {@link createStripBucketer}. */
+export function bucketStrip(
+  input: StripRange & { observations: Observation[] },
+): StripLane[] {
+  const bucketer = createStripBucketer(input);
+  for (const observation of input.observations) bucketer.add(observation);
+  return bucketer.lanes();
 }
 
 export function markersFromEvents(

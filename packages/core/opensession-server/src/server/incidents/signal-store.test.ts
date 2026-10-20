@@ -7,6 +7,7 @@ import {
   signalWriteCount,
   updateSignal,
 } from "./signal-store";
+import { appendObservations, recentObservations } from "./observation-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
@@ -158,4 +159,15 @@ test("writes bump the namespace counter", async () => {
   const before = signalWriteCount();
   await createSignal(http, "Ada");
   expect(signalWriteCount()).toBe(before + 1);
+});
+
+test("deleting a signal forgets its observations in memory", async () => {
+  const s = await createSignal(http, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  appendObservations(s.id, [
+    { at: "2026-10-20T10:00:00.000Z", result: "ok", detail: "" },
+  ]);
+  expect(recentObservations(s.id)).toHaveLength(1);
+  await deleteSignal(s.id, "Bo");
+  expect(recentObservations(s.id)).toEqual([]);
 });

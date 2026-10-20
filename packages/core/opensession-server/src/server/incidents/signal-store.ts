@@ -8,6 +8,7 @@ import {
 } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import { incidentAudit } from "./audit-sink";
+import { forgetObservations } from "./observation-store";
 import {
   type SignalValidationContext,
   generateHookSecret,
@@ -201,6 +202,8 @@ export async function updateSignal(
 export async function deleteSignal(id: string, by: string): Promise<boolean> {
   if (!isSignalId(id)) return false;
   const existed = await signalDocuments().delete(id);
+  // Day files stay until retention, so its incidents keep their strips.
+  forgetObservations(id);
   if (existed)
     incidentAudit({
       kind: "incident_signal_deleted",
