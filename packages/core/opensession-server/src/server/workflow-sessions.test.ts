@@ -432,4 +432,33 @@ describe("workflow durable sessions", () => {
       ),
     ).rejects.toThrow(/not allowed to use Runner/);
   });
+
+  test("an incident agent's workflow cannot spawn sessions", async () => {
+    const h = harness({
+      parent: {
+        automation: "Incidents",
+        automationId: "incidents-acme",
+        automationDescendantPolicy: {
+          automationId: "incidents-acme",
+          automationName: "Incidents",
+          repo: "renderer",
+          publicationRepo: "example/renderer",
+          baseBranch: "main",
+          mcpServers: [],
+          allowedRunners: [],
+          publication: "branch-pr-only",
+          incident: {
+            incidentId: "inc-1",
+            role: "investigator",
+            signalId: null,
+            accessRevision: "r1",
+          },
+        },
+      },
+    });
+    await expect(
+      h.controller.spawn(foundationOpts, "request-incident"),
+    ).rejects.toThrow("Incident agents cannot start other sessions");
+    expect(h.creates).toEqual([]);
+  });
 });
