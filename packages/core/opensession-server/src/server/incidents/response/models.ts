@@ -46,7 +46,11 @@ export function canonicalModelId(id: string): string {
 /** The model family a slug names, without the parts that only pick a
  *  snapshot or a route: a Bedrock region and vendor prefix
  *  (`us.anthropic.`), a Bedrock version (`-v1:0`), a `:variant`, a date
- *  (`-20250929`, `@20250929`, `-2026-08-01`) and `-latest`. */
+ *  (`-20250929`, `@20250929`, `-2026-08-01`) and `-latest`. Stripping the
+ *  `:variant` also folds size variants (`qwen3:8b`, `qwen3:32b`) into one
+ *  family, so two sizes of one model never count as independent of each
+ *  other: the check errs toward asking for an independent verifier, never
+ *  toward granting independence. */
 function modelFamily(slug: string): string {
   return slug
     .replace(/^(?:(?:us|eu|apac|global|us-gov)\.)?[a-z]+\.(?=[a-z])/, "")
