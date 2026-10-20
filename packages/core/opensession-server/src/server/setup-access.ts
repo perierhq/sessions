@@ -62,9 +62,7 @@ export function isObviouslyPrivateWebhookHost(value: string): boolean {
     return true;
   }
 
-  if (isBlockedAddress(host) || /^fe[89ab]/.test(host)) return true;
-  const [a, b] = host.split(".").map(Number);
-  return a === 198 && (b === 18 || b === 19);
+  return isBlockedAddress(host);
 }
 
 /** Empty means no separate webhook origin. Integrations then retain the

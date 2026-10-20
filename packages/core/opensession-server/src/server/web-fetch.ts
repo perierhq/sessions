@@ -15,16 +15,24 @@
  * Safety: every hop is checked against private address space before it is
  * dialled, redirects included (an allowed hostname can redirect to
  * 169.254.169.254 or into a tailnet, so checking only the first URL is not a
- * check at all). Blocked: loopback, RFC1918, link-local and cloud metadata,
- * CGNAT/tailnet 100.64/10, unique-local IPv6, multicast, and the reserved
- * *.localhost/*.internal/*.home.arpa names. There is no allowlist to bypass
- * it, because the caller is a model reading untrusted text.
+ * check at all). Each hop resolves its host once, checks every address, and
+ * connects only to those checked addresses, so a DNS answer that changes
+ * between the check and the connect cannot move the request. Blocked:
+ * loopback, RFC1918, link-local and cloud metadata, CGNAT/tailnet 100.64/10,
+ * IETF-reserved 192.0.0/24 and benchmarking 198.18/15, unique-local IPv6,
+ * multicast, IPv4-compatible ::/96, Teredo, IPv6 forms that embed one of
+ * those IPv4 addresses, and the reserved *.localhost/*.internal/*.home.arpa
+ * names. Requests connect directly and ignore HTTP(S)_PROXY: a proxy would
+ * resolve the name again and undo the pin.
+ * There is no allowlist to bypass it, because the caller is a model reading
+ * untrusted text.
  *
  * The cache is scratch, not a store: entries expire in an hour and the
  * directory is capped, so a handle is good for the conversation that made it
  * and nothing is expected to survive a restart.
  */
 import { createHash } from "crypto";
+import type { LookupAddress } from "dns";
 import { lookup } from "dns/promises";
 import {
   existsSync,
@@ -34,7 +42,17 @@ import {
   rmSync,
   statSync,
 } from "fs";
+import type { ClientRequest, IncomingMessage } from "http";
+import { request as httpRequest } from "http";
+import type { RequestOptions } from "https";
+import { request as httpsRequest } from "https";
 import { isIP } from "net";
+import {
+  brotliDecompressSync,
+  gunzipSync,
+  inflateRawSync,
+  inflateSync,
+} from "zlib";
 import { stateDir } from "./paths";
 import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { isBlockedAddress } from "./shared/network-address";
@@ -88,8 +106,48 @@ export interface FetchedSlice {
 
 const BLOCKED_NAMES = /(^|\.)(localhost|local|internal|intranet|home\.arpa)$/i;
 
-/** Parse, then prove every resolved address is public. Throws otherwise. */
-export async function assertFetchableUrl(raw: string): Promise<URL> {
+/** Resolve a hostname to every address it currently has. */
+export type ResolveHost = (hostname: string) => Promise<string[]>;
+
+/** A URL whose host has been resolved and checked. `addresses` is the only
+ *  set the connection may dial: the request never resolves the name again,
+ *  so a DNS answer that changes between the check and the connect (DNS
+ *  rebinding) cannot reach a private address. */
+export interface FetchTarget {
+  url: URL;
+  /** Hostname without IPv6 brackets. Sent as Host and TLS servername. */
+  host: string;
+  addresses: string[];
+}
+
+export interface FetchedResponse {
+  status: number;
+  headers: Headers;
+  /** Decoded body bytes; empty for a redirect that was not read. */
+  body: Uint8Array;
+}
+
+/** The seams of a fetch. Production uses the defaults; tests inject a
+ *  resolver and a transport so no test depends on real DNS. */
+export interface WebFetchDeps {
+  resolve: ResolveHost;
+  isBlocked: (address: string) => boolean;
+  request: (
+    target: FetchTarget,
+    signal: AbortSignal,
+    deps: WebFetchDeps,
+  ) => Promise<FetchedResponse>;
+}
+
+const resolveWithDns: ResolveHost = async (hostname) =>
+  (await lookup(hostname, { all: true })).map((a) => a.address);
+
+/** Parse, resolve, and prove every resolved address is public. Throws
+ *  otherwise. The returned addresses are the ones the request must dial. */
+export async function resolveFetchTarget(
+  raw: string,
+  deps: Pick<WebFetchDeps, "resolve" | "isBlocked"> = defaultDeps,
+): Promise<FetchTarget> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -101,21 +159,67 @@ export async function assertFetchableUrl(raw: string): Promise<URL> {
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (!host) throw new Error(`No host in ${raw}`);
-  if (BLOCKED_NAMES.test(host)) {
+  // `localhost.` is `localhost`: test the name without its root dot.
+  if (BLOCKED_NAMES.test(host.replace(/\.+$/, ""))) {
     throw new Error(`Refusing to fetch a private name: ${host}`);
   }
-  const addresses = isIP(host)
-    ? [host]
-    : (await lookup(host, { all: true })).map((a) => a.address);
+  const addresses = isIP(host) ? [host] : await deps.resolve(host);
   if (!addresses.length) throw new Error(`Could not resolve ${host}`);
   for (const address of addresses) {
-    if (isBlockedAddress(address)) {
+    if (deps.isBlocked(address)) {
       throw new Error(
         `Refusing to fetch ${host}: it resolves to the private address ${address}`,
       );
     }
   }
-  return url;
+  return { url, host, addresses };
+}
+
+/** Parse, then prove every resolved address is public. Throws otherwise.
+ *  A check only: a caller that then dials the URL itself resolves it again.
+ *  Use `fetchWeb` to fetch with the checked address pinned. */
+export async function assertFetchableUrl(raw: string): Promise<URL> {
+  return (await resolveFetchTarget(raw)).url;
+}
+
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number,
+) => void;
+
+/** A `lookup` for node:http that answers only with already-checked
+ *  addresses, re-checking each, and never consults DNS. */
+export function pinnedLookup(
+  target: Pick<FetchTarget, "host" | "addresses">,
+  isBlocked: (address: string) => boolean,
+) {
+  return (
+    hostname: string,
+    options: { family?: number | string; all?: boolean },
+    callback: LookupCallback,
+  ): void => {
+    const fail = (message: string) =>
+      callback(Object.assign(new Error(message), { code: "ENOTFOUND" }), "");
+    const name = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (name !== target.host.toLowerCase())
+      return fail(`Unexpected lookup for ${hostname}`);
+    const blocked = target.addresses.find(isBlocked);
+    if (blocked)
+      return fail(`Refusing to connect to the private address ${blocked}`);
+    const family =
+      options?.family === "IPv4" || options?.family === 4
+        ? 4
+        : options?.family === "IPv6" || options?.family === 6
+          ? 6
+          : 0;
+    const addresses = target.addresses
+      .map((address) => ({ address, family: isIP(address) }))
+      .filter((entry) => entry.family && (!family || entry.family === family));
+    if (!addresses.length) return fail(`No checked address for ${hostname}`);
+    if (options?.all) return callback(null, addresses);
+    callback(null, addresses[0]!.address, addresses[0]!.family);
+  };
 }
 
 // ── HTML → text ─────────────────────────────────────────────────────────────
@@ -273,23 +377,205 @@ function loadPage(
 const UA =
   "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/perierhq/sessions)";
 
-/** Follow redirects by hand so every hop is address-checked, not just the
- *  first. Returns the final response and the URL it came from. */
-async function fetchChecked(
+const tooLarge = (url: URL, bytes?: number) =>
+  new Error(
+    bytes === undefined
+      ? `${url} exceeded the ${MAX_BODY_BYTES / 1024 / 1024}MB body limit`
+      : `${url} is ${Math.round(bytes / 1024 / 1024)}MB, over the ${MAX_BODY_BYTES / 1024 / 1024}MB limit`,
+  );
+
+/** Undo a content-encoding without letting a small compressed body expand
+ *  past the body limit. Exported for tests. */
+export function decodeBody(url: URL, encoding: string, body: Buffer): Buffer {
+  const options = { maxOutputLength: MAX_BODY_BYTES };
+  try {
+    switch (encoding.trim().toLowerCase()) {
+      case "":
+      case "identity":
+        return body;
+      case "gzip":
+      case "x-gzip":
+        return gunzipSync(body, options);
+      case "deflate":
+        // RFC 9110 deflate is zlib-wrapped, but some servers send a raw
+        // deflate stream under the same name; browsers accept both.
+        try {
+          return inflateSync(body, options);
+        } catch (error) {
+          if ((error as { code?: string }).code !== "Z_DATA_ERROR") throw error;
+          return inflateRawSync(body, options);
+        }
+      case "br":
+        return brotliDecompressSync(body, options);
+    }
+  } catch (error) {
+    if ((error as { code?: string }).code === "ERR_BUFFER_TOO_LARGE")
+      throw tooLarge(url);
+    throw error;
+  }
+  throw new Error(`${url} used an unsupported content-encoding: ${encoding}`);
+}
+
+type RequestFn = (
+  options: RequestOptions,
+  onResponse: (res: IncomingMessage) => void,
+) => ClientRequest;
+
+/** The node:http(s) `request` functions a pinned request uses. A seam for
+ *  tests that need to see the options without a real TLS peer. */
+export interface PinnedTransport {
+  http: RequestFn;
+  https: RequestFn;
+}
+
+const nodeTransport: PinnedTransport = {
+  http: httpRequest,
+  https: httpsRequest,
+};
+
+/** Reject with the signal's reason as soon as it aborts. */
+export function untilAborted<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** One GET over node:http(s), dialling only the target's checked addresses.
+ *  The Host header and TLS servername still name the original host, so
+ *  virtual hosting and certificate checks work as with a normal fetch.
+ *  The connection is direct: HTTP(S)_PROXY is not consulted, because a
+ *  proxy would resolve the name again and undo the pin. */
+export function pinnedRequest(
+  target: FetchTarget,
+  signal: AbortSignal,
+  deps: Pick<WebFetchDeps, "isBlocked">,
+  transport: PinnedTransport = nodeTransport,
+): Promise<FetchedResponse> {
+  const { url, host } = target;
+  const secure = url.protocol === "https:";
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    let res: IncomingMessage | undefined;
+    const onAbort = () => {
+      res?.destroy();
+      req.destroy();
+      reject(signal.reason);
+    };
+    const done = () => signal.removeEventListener("abort", onAbort);
+    const req = (secure ? transport.https : transport.http)(
+      {
+        protocol: url.protocol,
+        hostname: host,
+        port: url.port || (secure ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          "user-agent": UA,
+          accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5",
+          "accept-encoding": "gzip, deflate, br",
+        },
+        lookup: pinnedLookup(target, deps.isBlocked),
+        // SNI never carries an IP literal or the root dot.
+        ...(secure && !isIP(host)
+          ? { servername: host.replace(/\.$/, "") }
+          : {}),
+        // No pooled sockets: each request dials its own checked address.
+        agent: false,
+      },
+      (response) => {
+        res = response;
+        const status = res.statusCode ?? 0;
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(res.headers)) {
+          if (value === undefined) continue;
+          for (const item of Array.isArray(value) ? value : [value])
+            headers.append(name, item);
+        }
+        if (status >= 300 && status < 400 && headers.get("location")) {
+          done();
+          res.destroy();
+          return resolve({ status, headers, body: new Uint8Array() });
+        }
+        const declared = Number(headers.get("content-length"));
+        if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+          done();
+          res.destroy();
+          return reject(tooLarge(url, declared));
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > MAX_BODY_BYTES) {
+            done();
+            res?.destroy();
+            reject(tooLarge(url));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("error", (error) => {
+          done();
+          reject(error);
+        });
+        res.on("end", () => {
+          done();
+          if (size > MAX_BODY_BYTES) return;
+          try {
+            const body = decodeBody(
+              url,
+              headers.get("content-encoding") ?? "",
+              Buffer.concat(chunks),
+            );
+            resolve({ status, headers, body });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    req.on("error", (error) => {
+      done();
+      reject(error);
+    });
+    req.end();
+  });
+}
+
+const defaultDeps: WebFetchDeps = {
+  resolve: resolveWithDns,
+  isBlocked: isBlockedAddress,
+  request: pinnedRequest,
+};
+
+/** Follow redirects by hand so every hop is resolved, address-checked and
+ *  dialled at the checked address, not just the first. Returns the final
+ *  response and the URL it came from. One deadline covers the whole chain,
+ *  DNS included, so redirects cannot stretch a fetch past it. */
+export async function fetchChecked(
   raw: string,
   signal?: AbortSignal,
-): Promise<{ response: Response; finalUrl: string }> {
+  deps: WebFetchDeps = defaultDeps,
+): Promise<{ response: FetchedResponse; finalUrl: string }> {
+  const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let target = raw;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const url = await assertFetchableUrl(target);
-    const response = await fetch(url, {
-      redirect: "manual",
-      signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: {
-        "user-agent": UA,
-        accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5",
-      },
-    });
+    const checked = await untilAborted(
+      resolveFetchTarget(target, deps),
+      deadline,
+    );
+    const { url } = checked;
+    const response = await deps.request(checked, deadline, deps);
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) return { response, finalUrl: url.toString() };
@@ -320,6 +606,7 @@ export interface FetchWebOptions {
 export async function fetchWeb(
   raw: string,
   opts: FetchWebOptions = {},
+  deps: WebFetchDeps = defaultDeps,
 ): Promise<FetchedPage> {
   const headChars = Math.max(
     200,
@@ -329,21 +616,11 @@ export async function fetchWeb(
   const cached = opts.refresh ? undefined : loadPage(handle);
   if (cached) return page(cached.meta, cached.body, headChars);
 
-  const { response, finalUrl } = await fetchChecked(raw, opts.signal);
+  const { response, finalUrl } = await fetchChecked(raw, opts.signal, deps);
   const contentType = response.headers.get("content-type") ?? "";
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    throw new Error(
-      `${raw} is ${Math.round(declared / 1024 / 1024)}MB, over the ${MAX_BODY_BYTES / 1024 / 1024}MB limit`,
-    );
-  }
-  const buffer = await response.arrayBuffer();
-  if (buffer.byteLength > MAX_BODY_BYTES) {
-    throw new Error(
-      `${raw} exceeded the ${MAX_BODY_BYTES / 1024 / 1024}MB body limit`,
-    );
-  }
-  const raw_body = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+  const raw_body = new TextDecoder("utf-8", { fatal: false }).decode(
+    response.body,
+  );
 
   let title: string | undefined;
   let body = raw_body;
