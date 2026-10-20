@@ -43,7 +43,8 @@ export type ReadOnlyCheck =
 // caught, and a path without its leading slash (`etc/...`, read from a `/`
 // working directory) is caught like the absolute one.
 const SECRET_PATHS: readonly RegExp[] = [
-  /(^|[/=])\.env(\.|$)/i,
+  // `.env`, `.env.production`, `.env-local` and `.envrc`.
+  /(^|[/=])\.env(\.|-|rc$|$)/i,
   /\.(pem|key|p12|pfx)$/i,
   /(^|[/=])id_(rsa|dsa|ecdsa|ed25519)/i,
   // Key and token stores in a home directory (`~/.docker/config.json`,
@@ -61,6 +62,18 @@ const SECRET_PATHS: readonly RegExp[] = [
   /(^|[/=])var\/lib\/docker(\/|$)/i,
   /(^|[/=])\.(netrc|pgpass|npmrc|git-credentials)$/i,
   /(^|[/=])(credentials|secrets?)(\.|\/|$)/i,
+  // Sessions' own state (`~/.opensession`, `~/.opensession-dev`, ...).
+  /(^|[/=])\.opensession[^/]*(\/|$)/i,
+  // Raw devices, except /dev/null. Anchored at the root (or a run of `..`
+  // from an unknown working directory), so a project's own `dev/` stays
+  // readable.
+  /(^|=)(\/|(\.\.\/)+)?dev\/(?!null$)/,
+  // Kernel memory and firmware tables.
+  /(^|[/=])proc\/kcore$/i,
+  /(^|[/=])sys\/firmware(\/|$)/i,
+  // System-wide environment, and the GitHub CLI's token file.
+  /(^|[/=])etc\/environment(\.d)?(\/|$)/i,
+  /(^|[/=])\.config\/gh\/hosts\.ya?ml$/i,
 ];
 
 const SECRET_FILES = "Reading secret-shaped files is not allowed";
@@ -613,6 +626,22 @@ const SYSTEMCTL_SUBCOMMANDS = [
   "list-unit-files",
 ];
 
+// The unit properties `systemctl show` may print: status and resource use.
+// Others carry the command lines, environment and credentials of a unit
+// (ExecStart, Environment, LoadCredential, ...).
+export const SYSTEMCTL_SHOW_PROPERTIES: readonly string[] = [
+  "ActiveState",
+  "SubState",
+  "LoadState",
+  "MainPID",
+  "NRestarts",
+  "Result",
+  "ActiveEnterTimestamp",
+  "ExecMainStatus",
+  "MemoryCurrent",
+  "CPUUsageNSec",
+];
+
 // Options after the subcommand. No -H/--host, -M/--machine, --root or
 // --image (another system), and no -r/--recursive (local containers).
 const SYSTEMCTL: OptionTable = {
@@ -646,7 +675,6 @@ function checkSystemctl(args: string[]): ReadOnlyCheck {
   const parsed = parseArgs("systemctl", args.slice(1), SYSTEMCTL);
   if (isParseError(parsed)) return refuse(parsed.error);
   if (sub === "show") {
-    // Unit properties include Environment=, which carries secrets.
     const props = parsed.options.flatMap((o) =>
       o.name === "p" || o.name === "property"
         ? (o.value ?? "").split(",")
@@ -654,9 +682,12 @@ function checkSystemctl(args: string[]): ReadOnlyCheck {
           ? [o.value ?? ""]
           : [],
     );
-    if (!props.length || props.some((p) => /environment/i.test(p) || !p.trim()))
+    if (
+      !props.length ||
+      props.some((p) => !SYSTEMCTL_SHOW_PROPERTIES.includes(p))
+    )
       return refuse(
-        "systemctl show needs --property naming properties other than Environment",
+        `systemctl show needs --property naming only ${SYSTEMCTL_SHOW_PROPERTIES.join(", ")}`,
       );
   }
   return { ok: true, argv: ["systemctl", ...withFlag(args, "--no-pager")] };
@@ -664,10 +695,12 @@ function checkSystemctl(args: string[]): ReadOnlyCheck {
 
 // docker subcommands and the options each may take after it. Global flags
 // (-H, --context, --config) must not appear: the subcommand comes first.
+// No `logs --details`: it adds the container's log attributes, which can
+// carry its environment.
 const DOCKER_LOGS: OptionTable = {
   short: { ...flags("t"), ...values("n") },
   long: {
-    ...longFlags(["details", "timestamps"]),
+    ...longFlags(["timestamps"]),
     ...longValues(["since", "until", "tail"]),
   },
   refused: { "-f": FOLLOWING, "--follow": FOLLOWING },
@@ -784,6 +817,9 @@ function checkDocker(args: string[]): ReadOnlyCheck {
 export const GREP_SECRET_FILE_GLOBS: readonly string[] = [
   ".env",
   ".env.*",
+  ".env-*",
+  ".envrc",
+  ".opensession*",
   "*.pem",
   "*.key",
   "*.p12",
@@ -815,6 +851,10 @@ export const GREP_SECRET_DIR_GLOBS: readonly string[] = [
   "credentials",
   "secret",
   "secrets",
+  // Sessions' own state.
+  ".opensession*",
+  // ~/.config/gh holds the GitHub CLI's token.
+  "gh",
   // Unit trees reached through a link the search follows on the command
   // line (`/var/run` is `/run` on most systems).
   "systemd",
@@ -824,6 +864,9 @@ export const GREP_SECRET_DIR_GLOBS: readonly string[] = [
 const SECRET_NAME_SAMPLES = [
   ".env",
   ".env.production",
+  ".env-local",
+  ".envrc",
+  ".opensession",
   "server.pem",
   "tls.key",
   "cert.p12",
@@ -957,6 +1000,8 @@ const SECRET_TREES = [
   "/var/run/systemd",
   "/var/run/credentials",
   "/proc",
+  "/dev",
+  "/sys/firmware",
 ];
 
 /** Why a recursive search may not run over these paths, or null. The

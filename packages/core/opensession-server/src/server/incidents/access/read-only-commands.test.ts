@@ -62,7 +62,7 @@ test.each([
   ["tail", ["-fn", "10", "/var/log/syslog"], "Following output"],
   ["journalctl", ["--cursor-file=/tmp/c"], "not allowed"],
   ["ss", ["-K", "dst", "10.0.0.1"], "ss -K"],
-  ["systemctl", ["show", "app"], "Environment"],
+  ["systemctl", ["show", "app"], "naming only ActiveState"],
   ["docker", ["-H", "tcp://x", "ps"], "docker -H"],
   ["grep", ["KEY", "--file=/srv/.env"], "secret-shaped"],
   ["date", ["010100002020"], "date"],
@@ -83,7 +83,51 @@ test("caps", () => {
     reason: "Argument too long",
   });
 });
-test("systemctl show is allowed for named properties other than the environment", () => {
+test("systemctl show allows only listed status properties", () => {
+  expect(
+    checkReadOnlyCommand("systemctl", [
+      "show",
+      "--property=ActiveState,SubState,LoadState,MainPID,NRestarts,Result",
+      "-p",
+      "ActiveEnterTimestamp,ExecMainStatus,MemoryCurrent,CPUUsageNSec",
+      "app",
+    ]).ok,
+  ).toBe(true);
+  expect(
+    checkReadOnlyCommand("systemctl", ["show", "-P", "MainPID", "app"]).ok,
+  ).toBe(true);
+  for (const props of [
+    "ExecStart",
+    "LoadCredential",
+    "SetCredential",
+    "EnvironmentFiles",
+    "ActiveState,ExecStartPre",
+    "activestate",
+    "ActiveState,",
+  ]) {
+    const out = checkReadOnlyCommand("systemctl", [
+      "show",
+      `--property=${props}`,
+      "app",
+    ]);
+    expect(out.ok).toBe(false);
+    expect(!out.ok && out.reason).toContain("ActiveState");
+  }
+  expect(
+    checkReadOnlyCommand("systemctl", ["show", "-P", "ExecStart", "app"]).ok,
+  ).toBe(false);
+  expect(checkReadOnlyCommand("systemctl", ["show", "app"]).ok).toBe(false);
+});
+test("docker logs --details is refused", () => {
+  expect(checkReadOnlyCommand("docker", ["logs", "--details", "app"])).toEqual({
+    ok: false,
+    reason: "docker logs --details is not allowed",
+  });
+  expect(
+    checkReadOnlyCommand("docker", ["logs", "--tail", "50", "app"]).ok,
+  ).toBe(true);
+});
+test("systemctl show is allowed for listed properties, never the environment", () => {
   expect(
     checkReadOnlyCommand("systemctl", ["show", "-p", "ActiveState", "app"]),
   ).toEqual({
@@ -438,6 +482,64 @@ test.each([
   const out = checkReadOnlyCommand(program, args);
   expect(out.ok).toBe(false);
 });
+// Sessions' own state, raw devices and memory, firmware tables, and the
+// other files that hold an environment or a token.
+test.each([
+  ["cat", ["/home/deploy/.opensession/state.json"]],
+  ["ls", ["/home/deploy/.opensession"]],
+  ["cat", ["/home/deploy/.opensession-dev/keychain.json"]],
+  ["cat", [".opensession/deploy/current"]],
+  ["cat", ["/srv/app/../../home/deploy/.opensession/x"]],
+  ["grep", ["KEY", "--file=/root/.opensession/auth.json"]],
+  ["cat", ["/dev/sda"]],
+  ["cat", ["/dev/mem"]],
+  ["head", ["-c", "64", "/dev/nvme0n1"]],
+  ["cat", ["/dev/stdin"]],
+  ["cat", ["/dev/shm/app.lock"]],
+  ["cat", ["dev/sda"]],
+  ["cat", ["//dev/sda"]],
+  ["cat", ["/tmp/../dev/sda"]],
+  ["cat", ["../../../dev/sda"]],
+  ["date", ["--reference=/dev/sda"]],
+  ["cat", ["/proc/kcore"]],
+  ["cat", ["/proc/./kcore"]],
+  ["ls", ["/sys/firmware"]],
+  ["cat", ["/sys/firmware/acpi/tables/MSDM"]],
+  ["cat", ["/sys/firmware/efi/efivars/x"]],
+  ["cat", ["/srv/app/.envrc"]],
+  ["cat", ["/srv/app/.env-production"]],
+  ["cat", ["/srv/app/.env-local"]],
+  ["cat", ["/etc/environment"]],
+  ["cat", ["etc/environment"]],
+  ["cat", ["/home/deploy/.config/gh/hosts.yml"]],
+  ["cat", ["~/.config/gh/hosts.yml"]],
+])(
+  "refuses Sessions' state, devices and environment files: %s %j",
+  (program, args) => {
+    expect(checkReadOnlyCommand(program, args)).toEqual({
+      ok: false,
+      reason: "Reading secret-shaped files is not allowed",
+    });
+  },
+);
+test("/dev/null stays usable", () => {
+  expect(checkReadOnlyCommand("cat", ["/dev/null"])).toEqual({
+    ok: true,
+    argv: ["cat", "/dev/null"],
+  });
+});
+test("recursive grep skips Sessions' state and may not cover /dev", () => {
+  expect(GREP_SECRET_DIR_GLOBS).toContain(".opensession*");
+  for (const glob of [".envrc", ".env-*"])
+    expect(GREP_SECRET_FILE_GLOBS).toContain(glob);
+  for (const path of ["/dev", "/dev/disk", "/sys", "/sys/firmware/acpi"]) {
+    const out = checkReadOnlyCommand("grep", ["-r", "KEY", path]);
+    expect(out.ok).toBe(false);
+  }
+  expect(
+    checkReadOnlyCommand("grep", ["-r", "--include=.envrc", "KEY", "/srv"]),
+  ).toMatchObject({ ok: false });
+});
 test("paths that only look close stay readable", () => {
   for (const path of [
     "/var/log/systemd.log",
@@ -445,6 +547,10 @@ test("paths that only look close stay readable", () => {
     "/proc/loadavg",
     "/proc/1/status",
     "/var/lib/dockerd.log",
+    "/srv/app/dev/notes.txt",
+    "/srv/opensession.log",
+    "/etc/environment.d.txt",
+    "/srv/app/.environment-notes",
   ])
     expect(checkReadOnlyCommand("cat", [path])).toEqual({
       ok: true,

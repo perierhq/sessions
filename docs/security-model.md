@@ -395,18 +395,26 @@ tools is mounted only when the access grants what it reaches:
   (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <alias>`), so shell
   metacharacters are data. Secret-shaped paths are refused after the path
   is normalised (`.`, `//`, `..`), in operands and option values alike: key
-  and `.env` files, home key stores (`.ssh`, `.docker`, `.kube`, `.aws`,
-  `.gnupg`), any process's `environ`, `mem` and open files under `/proc`,
-  systemd unit files (`/etc/systemd/system`), `/run/systemd`,
-  `/run/credentials` and `/var/lib/docker`. Options that read a list of
-  files from another file (`--files0-from`) are not on any list. A
+  and `.env` files (`.env*`, `.envrc`), home key stores (`.ssh`,
+  `.docker`, `.kube`, `.aws`, `.gnupg`, the GitHub CLI's
+  `.config/gh/hosts.yml`), Sessions' own state (any `.opensession*`
+  directory), any process's `environ`, `mem` and open files under `/proc`,
+  `/proc/kcore`, every device under `/dev` but `/dev/null`,
+  `/sys/firmware`, `/etc/environment`, systemd unit files
+  (`/etc/systemd/system`), `/run/systemd`, `/run/credentials` and
+  `/var/lib/docker`. Options that read a list of files from another file
+  (`--files0-from`) are not on any list. `systemctl show` prints only a
+  short list of status properties (`ActiveState`, `SubState`, `MainPID`,
+  `NRestarts`, `MemoryCurrent` and the like), never a unit's command lines,
+  environment or credentials, and `docker logs` takes no `--details`. A
   recursive `grep`, in every spelling (`-r`, a cluster, `--recursive`,
   `-d recurse`, `--directories=recurse`), always runs with secret-shaped
-  files and directories excluded (`.env*`, keys, `id_*`, `.git`, `.ssh`,
-  `systemd`, credentials files and the like), only over absolute paths that
-  neither contain nor sit inside those trees, may not include a
-  secret-shaped name, and may not follow links (`-R`). Output is
-  capped and scrubbed of the agent's own granted credentials.
+  files and directories excluded (`.env*`, `.envrc`, keys, `id_*`, `.git`,
+  `.ssh`, `.opensession*`, `gh`, `systemd`, credentials files and the
+  like), only over absolute paths that neither contain nor sit inside those
+  trees (`/dev` and `/sys/firmware` included), may not include a
+  secret-shaped name, and may not follow links (`-R`). Output is capped and
+  scrubbed of the agent's own granted credentials.
 - `egress_fetch` reaches only the listed hosts through the granted route.
   With no hosts saved, the signal's own host is the default, and it passes
   the same rules as a saved host (no IP literals, `localhost`, `.local` or
