@@ -1,0 +1,179 @@
+import { beforeEach, expect, test } from "bun:test";
+import { listIncidents } from "./incident-store";
+import {
+  __resetObservationsForTest,
+  appendObservations,
+  flushObservations,
+  recentObservations,
+} from "./observation-store";
+import {
+  __resetSignalRuntimeForTest,
+  allSignalEvaluations,
+  bootSignalRuntime,
+  forgetSignal,
+  getSignalEvaluation,
+  ingestObservations,
+  reevaluateSignal,
+} from "./signal-runtime";
+import { createSignal, updateSignal } from "./signal-store";
+import { useIncidentTestKernel } from "./testing/kernel-fixture";
+
+const kit = useIncidentTestKernel();
+beforeEach(() => {
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+});
+const T0 = Date.parse("2026-10-20T10:00:00Z");
+let clock = T0;
+const make = async (over: Record<string, unknown> = {}) => {
+  const s = await createSignal(
+    {
+      name: "Search",
+      project: "acme",
+      source: { kind: "http", url: "https://acme.example.test" },
+      ...over,
+    },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  return s;
+};
+const feed = async (id: string, ...results: Array<"ok" | "fail">) => {
+  for (const result of results) {
+    clock += 60_000;
+    await ingestObservations(
+      id,
+      [{ at: new Date(clock).toISOString(), result, detail: "" }],
+      clock,
+    );
+  }
+};
+beforeEach(() => {
+  clock = T0;
+});
+
+test("three failures open one incident owned by the signal's creator", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail");
+  expect(await listIncidents()).toEqual([]);
+  await feed(s.id, "fail");
+  expect(await listIncidents()).toEqual([
+    expect.objectContaining({
+      state: "investigating",
+      owner: "Ada",
+      signalIds: [s.id],
+    }),
+  ]);
+  const states = kit.audits.filter((a) => a.kind === "incident_signal_state");
+  expect(states.map((a) => a.to)).toEqual(["ok", "failing"]);
+  expect(states[0]).toMatchObject({ signalId: s.id, from: null, to: "ok" });
+  expect(states[1]).toMatchObject({
+    from: "ok",
+    to: "failing",
+    reason: expect.any(String),
+  });
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  expect(allSignalEvaluations().get(s.id)?.state).toBe("failing");
+});
+
+test("a second failing signal in the project joins the same incident", async () => {
+  const a = await make();
+  const b = await make({ name: "Api" });
+  await feed(a.id, "fail", "fail", "fail");
+  await feed(b.id, "fail", "fail", "fail");
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.signalIds).toEqual([a.id, b.id]);
+});
+
+test("flapping never opens a second incident", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "ok", "ok", "fail", "fail", "fail");
+  expect(await listIncidents()).toHaveLength(1);
+});
+
+test("a heads-up closes on recovery and reopens if it comes back", async () => {
+  const s = await make();
+  await feed(s.id, "ok", "fail", "ok", "fail", "ok", "fail");
+  expect((await listIncidents())[0]!.state).toBe("heads-up");
+  await feed(s.id, ...Array<"ok">(10).fill("ok"));
+  expect((await listIncidents())[0]!.state).toBe("closed-without-action");
+  await feed(s.id, "fail", "ok", "fail", "ok", "fail");
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.state).toBe("heads-up");
+});
+
+test("no duplicate and no new events after a restart", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "ok");
+  await flushObservations();
+  const before = await listIncidents();
+  kit.audits.length = 0;
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  await bootSignalRuntime(clock);
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  expect(await listIncidents()).toEqual(before);
+  // Boot takes states back without auditing them as changes.
+  expect(kit.audits).toEqual([]);
+});
+
+test("boot opens an incident for a signal that went bad while nothing covered it", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail");
+  // Written by an earlier process: the third failure never reached the engine.
+  clock += 60_000;
+  appendObservations(s.id, [
+    { at: new Date(clock).toISOString(), result: "fail", detail: "" },
+  ]);
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  await bootSignalRuntime(clock);
+  expect(await listIncidents()).toEqual([
+    expect.objectContaining({ state: "investigating", signalIds: [s.id] }),
+  ]);
+});
+
+test("disabled and deleted signals take no observations", async () => {
+  const s = await make({ enabled: false });
+  expect(
+    await ingestObservations(
+      s.id,
+      [{ at: new Date(clock).toISOString(), result: "fail", detail: "" }],
+      clock,
+    ),
+  ).toBeNull();
+  expect(recentObservations(s.id)).toEqual([]);
+  expect(await ingestObservations("sig-missing", [], clock)).toBeNull();
+});
+
+test("disabling a signal forgets its evaluation", async () => {
+  const s = await make();
+  await feed(s.id, "ok");
+  expect(getSignalEvaluation(s.id)).not.toBeNull();
+  const off = await updateSignal(s.id, { enabled: false }, "Ada");
+  if (!off || "error" in off) throw new Error("update failed");
+  expect(await reevaluateSignal(off, clock)).toBeNull();
+  expect(getSignalEvaluation(s.id)).toBeNull();
+  await feed(s.id, "ok");
+  forgetSignal(s.id);
+  expect(getSignalEvaluation(s.id)).toBeNull();
+});
+
+test("a disabled signal does not hold a heads-up open", async () => {
+  const a = await make();
+  const b = await make({ name: "Api" });
+  await feed(b.id, "ok", "fail", "ok", "fail", "ok", "fail");
+  await feed(a.id, "ok", "fail", "ok", "fail", "ok", "fail");
+  expect((await listIncidents())[0]).toMatchObject({
+    state: "heads-up",
+    signalIds: [b.id, a.id],
+  });
+  const off = await updateSignal(b.id, { enabled: false }, "Ada");
+  if (!off || "error" in off) throw new Error("update failed");
+  await reevaluateSignal(off, clock);
+  await feed(a.id, ...Array<"ok">(10).fill("ok"));
+  expect((await listIncidents())[0]!.state).toBe("closed-without-action");
+});
