@@ -1,7 +1,7 @@
 // The impact of open incidents: how many requests (and people) the problem
 // hit, measured from where the signal names it (`Signal.impact`), from the
 // signal's own egress. Refreshed once a minute while an incident is open and
-// once more right after it closes. No audit: an impact carries no secret and
+// once more after it closes. No audit: an impact carries no secret and
 // no decision. No timers at import; `startIncidentImpact` starts the refresh.
 import {
   type ImpactSource,
@@ -18,6 +18,8 @@ import { listSignals } from "./signal-store";
 import { runSignalSource } from "./sources";
 
 export const IMPACT_REFRESH_MS = 60_000;
+/** How long after it closes an incident still gets its final measurement. */
+export const IMPACT_FINAL_WINDOW_MS = 3_600_000;
 /** The longest range {@link queryObservations} reads. */
 const MAX_EVENTS_RANGE_MS = 31 * 86_400_000;
 
@@ -199,20 +201,27 @@ function sameImpact(a: IncidentImpact | undefined, b: IncidentImpact): boolean {
   return JSON.stringify(restA) === JSON.stringify(restB);
 }
 
+/** A closed incident not yet measured since it closed. */
+function needsFinal(incident: Incident): boolean {
+  if (isOpenIncident(incident) || !incident.closedAt) return false;
+  const closed = Date.parse(incident.closedAt);
+  return !incident.impact || !(Date.parse(incident.impact.at) >= closed);
+}
+
 function needsMeasuring(incident: Incident, now: number): boolean {
   if (isOpenIncident(incident)) return true;
-  if (!incident.closedAt) return false;
-  const closed = Date.parse(incident.closedAt);
-  if (!(now - closed <= IMPACT_REFRESH_MS)) return false;
-  // One final measurement that covers the whole incident.
-  return !incident.impact || Date.parse(incident.impact.at) < closed;
+  if (!needsFinal(incident)) return false;
+  // One final measurement that covers the whole incident, while it is recent.
+  return now - Date.parse(incident.closedAt!) <= IMPACT_FINAL_WINDOW_MS;
 }
 
 /**
  * Measure every open incident, and every incident closed within the last
- * refresh that has not been measured since it closed. Writes only when the
- * numbers change (a steady count causes no incident change event). Resolves
- * to the number of incidents written.
+ * {@link IMPACT_FINAL_WINDOW_MS} that has not been measured since it closed.
+ * An open incident is written only when the numbers change (a steady count
+ * causes no incident change event); a closed one's final measurement is
+ * always written, so it is measured once. Resolves to the number of
+ * incidents written.
  */
 export async function refreshIncidentImpacts(
   now: number,
@@ -235,10 +244,11 @@ export async function refreshIncidentImpacts(
       { incident, signal, previous },
       { ...deps, now: () => now },
     );
-    if (sameImpact(incident.impact, impact)) continue;
+    const final = needsFinal(incident);
+    if (!final && sameImpact(incident.impact, impact)) continue;
     let changed = false;
     const result = await updateIncident(incident.id, (current) => {
-      changed = !sameImpact(current.impact, impact);
+      changed = needsFinal(current) || !sameImpact(current.impact, impact);
       return changed ? { ...current, impact } : current;
     });
     if (changed && result && !("error" in result)) written++;

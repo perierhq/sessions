@@ -296,7 +296,7 @@ test("refresh writes only when the numbers change", async () => {
 
 test("a closed incident gets one last measurement, then none", async () => {
   const { inc } = await openIncidentWithImpact();
-  const closedAt = new Date(NOW - 30_000).toISOString();
+  const closedAt = new Date(NOW - 60_001).toISOString();
   await updateIncident(inc.id, (c) => ({
     ...c,
     state: "resolved",
@@ -313,15 +313,36 @@ test("a closed incident gets one last measurement, then none", async () => {
   expect(await refreshIncidentImpacts(NOW + 10_000, deps)).toBe(0);
   expect(runs).toBe(1);
   expect((await getIncident(inc.id))?.impact?.count).toBe(200);
-  // Closed longer ago than one refresh: left alone.
+  // Closed more than an hour ago: left alone.
   const old = await openIncidentWithImpact();
   await updateIncident(old.inc.id, (c) => ({
     ...c,
     state: "resolved",
-    closedAt: new Date(NOW - 120_000).toISOString(),
+    closedAt: new Date(NOW - 3_600_001).toISOString(),
   }));
   expect(await refreshIncidentImpacts(NOW + 20_000, deps)).toBe(0);
   expect(runs).toBe(1);
+});
+
+test("the final measurement is written even when the numbers did not change", async () => {
+  const { inc } = await openIncidentWithImpact();
+  let runs = 0;
+  const deps: Partial<ImpactDeps> = {
+    runSource: async () => {
+      runs++;
+      return run({ "$.failed": [140] });
+    },
+  };
+  expect(await refreshIncidentImpacts(NOW, deps)).toBe(1);
+  const closedAt = new Date(NOW + 30_000).toISOString();
+  await updateIncident(inc.id, (c) => ({ ...c, state: "resolved", closedAt }));
+  expect(await refreshIncidentImpacts(NOW + 60_000, deps)).toBe(1);
+  expect((await getIncident(inc.id))?.impact).toMatchObject({
+    count: 140,
+    at: new Date(NOW + 60_000).toISOString(),
+  });
+  expect(await refreshIncidentImpacts(NOW + 120_000, deps)).toBe(0);
+  expect(runs).toBe(2);
 });
 
 test("an incident without an impact signal is not written", async () => {
