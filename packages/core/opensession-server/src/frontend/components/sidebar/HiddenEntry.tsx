@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { relativeTime } from "../../lib/api";
 import type { HiddenListEntry } from "../../lib/hidden-list";
 import {
@@ -36,6 +36,43 @@ import { RepoTile, repoLabel } from "../RepoTile";
 const TITLE = "Hidden from your sidebar";
 
 /**
+ * Whether the list is open once the entry count is `count`. An empty list
+ * closes, and stays closed: entries coming back later (another hide, or one
+ * made on another device) must not reopen a list nobody asked to see.
+ */
+export function nextListOpen(requestedOpen: boolean, count: number): boolean {
+  return count > 0 && requestedOpen;
+}
+
+/** The parts of a list item the Restore focus hand-off walks. */
+interface RestoreFocusItem {
+  nextElementSibling: { querySelector: (selector: string) => unknown } | null;
+  previousElementSibling: {
+    querySelector: (selector: string) => unknown;
+  } | null;
+}
+
+type Focusable = { focus: (options?: FocusOptions) => void };
+
+/**
+ * Where keyboard focus goes when a Restore takes its row away: the next
+ * row's Restore, else the previous one's, else (the last entry, so the list
+ * and its row are about to go) the stable target the sidebar names, so focus
+ * never falls to the page.
+ */
+export function restoreFocusTarget(
+  item: RestoreFocusItem | null,
+  fallback: () => Focusable | null,
+): Focusable | null {
+  const neighbour = item?.nextElementSibling ?? item?.previousElementSibling;
+  const restore = neighbour?.querySelector("[data-hidden-restore]") as
+    | Focusable
+    | null
+    | undefined;
+  return restore ?? fallback();
+}
+
+/**
  * The way back for hidden rows: a quiet "Hidden" row at the foot of the
  * sidebar, shown only while something is hidden. It opens the list of what
  * you hid, each with Restore. A popover beside the sidebar on desktop, the
@@ -47,6 +84,7 @@ export function HiddenEntry({
   onOpenEntry,
   onRestore,
   onOpenChange,
+  focusFallback = () => null,
 }: {
   entries: HiddenListEntry[];
   isPhone: boolean;
@@ -54,15 +92,31 @@ export function HiddenEntry({
   onRestore: (entry: HiddenListEntry) => void;
   /** Told when the list opens, so its names can be refreshed. */
   onOpenChange?: (open: boolean) => void;
+  /**
+   * A control that outlives this row (the Archived link, or the sidebar's
+   * scroll container), for focus to land on when the last entry is restored
+   * and the row and its list go.
+   */
+  focusFallback?: () => HTMLElement | null;
 }) {
   const [requestedOpen, setOpen] = useState(false);
   const setListOpen = (next: boolean) => {
     setOpen(next);
     onOpenChange?.(next);
   };
+  // However the list empties (the last Restore here, a restore on another
+  // device, a blocked row consuming its hide), close it for good, so it does
+  // not reopen by itself when something is hidden again.
+  const count = entries.length;
+  useEffect(() => {
+    setOpen((current) => nextListOpen(current, count));
+  }, [count]);
+  // Set when the last entry is restored: the popover's trigger is about to
+  // unmount, so closing must not try to hand focus back to it.
+  const closeFocus = useRef<HTMLElement | null>(null);
   // Restoring the last entry takes the list and the row it opened from.
-  const open = requestedOpen && entries.length > 0;
-  if (entries.length === 0) return null;
+  const open = nextListOpen(requestedOpen, count);
+  if (count === 0) return null;
 
   const label = `Hidden, ${entries.length} ${entries.length === 1 ? "item" : "items"}`;
   const rowClass = cn(
@@ -92,9 +146,13 @@ export function HiddenEntry({
         onOpenEntry(entry);
       }}
       onRestore={(entry) => {
-        if (entries.length === 1) setListOpen(false);
+        if (entries.length === 1) {
+          closeFocus.current = focusFallback();
+          setListOpen(false);
+        }
         onRestore(entry);
       }}
+      focusFallback={focusFallback}
       className={isPhone ? HIDDEN_SHEET_LIST : HIDDEN_POPUP_LIST}
     />
   );
@@ -143,6 +201,7 @@ export function HiddenEntry({
         align="end"
         elevation="lg"
         initialFocus
+        finalFocus={() => closeFocus.current ?? true}
         aria-label={TITLE}
         className={HIDDEN_POPUP}
       >
@@ -155,15 +214,17 @@ export function HiddenEntry({
   );
 }
 
-function HiddenList({
+export function HiddenList({
   entries,
   onOpenEntry,
   onRestore,
+  focusFallback,
   className,
 }: {
   entries: HiddenListEntry[];
   onOpenEntry: (entry: HiddenListEntry) => void;
   onRestore: (entry: HiddenListEntry) => void;
+  focusFallback: () => HTMLElement | null;
   className: string;
 }) {
   return (
@@ -209,13 +270,13 @@ function HiddenList({
                 data-hidden-restore=""
                 onClick={(event) => {
                   // The row leaves with its button, so keyboard focus moves
-                  // to the next Restore rather than falling to the page.
-                  const item = event.currentTarget.closest("li");
-                  const neighbour = (
-                    item?.nextElementSibling ?? item?.previousElementSibling
-                  )?.querySelector<HTMLElement>("[data-hidden-restore]");
+                  // first: to the next Restore, or, restoring the last entry,
+                  // to a control that outlives the list, never to the page.
+                  restoreFocusTarget(
+                    event.currentTarget.closest("li"),
+                    focusFallback,
+                  )?.focus({ preventScroll: true });
                   onRestore(entry);
-                  neighbour?.focus();
                 }}
               >
                 Restore

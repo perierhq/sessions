@@ -31,13 +31,9 @@ import {
   getHides as getUserHides,
   updateHides as updateUserHides,
 } from "../hides";
-import {
-  hiddenWorkspaceIds,
-  resolveHiddenRows,
-  type HiddenRowWorkspace,
-} from "../hidden-rows";
+import { answerHiddenRows, type HiddenRowWorkspace } from "../hidden-rows";
 import { getCachedSessionsAsync } from "../session-cache";
-import { getWorkspace } from "../workspaces";
+import { peekWorkspace, warmWorkspacesAsync } from "../workspaces";
 import { mergeMapDelta, requestedMapDelta } from "../shared/map-delta";
 import { broadcastToUser } from "../ws-hub";
 import {
@@ -484,24 +480,24 @@ export async function handlePrefsRoutes(
 
   // The rows behind those hides, named, for the sidebar's Hidden list. The
   // sidebar's own session list leaves hidden rows out, so this is where their
-  // titles come from. Archived or deleted work resolves to nothing.
-  if (path === "/api/hides/rows" && req.method === "GET") {
-    const user = requestUser(ctx, url.searchParams.get("user")) || "Anonymous";
-    const hides = await getUserHides(user);
-    const [sessions, workspaces] = await Promise.all([
-      getCachedSessionsAsync("exclude"),
-      Promise.all(
-        hiddenWorkspaceIds(hides).map(
-          async (id) => [id, await getWorkspace(id)] as const,
-        ),
-      ),
-    ]);
-    const records = new Map<string, HiddenRowWorkspace>();
-    for (const [id, workspace] of workspaces)
-      if (workspace)
-        records.set(id, { name: workspace.name, repo: workspace.repo });
-    return conditionalJsonResponse(req, {
-      rows: resolveHiddenRows(hides, sessions, records),
+  // titles come from. The client sends the keys it holds rather than the
+  // server reading its stored map, which a just-sent hide may not have
+  // reached yet (hidden-rows.ts). Archived or deleted work comes back stale.
+  if (path === "/api/hides/rows" && req.method === "POST") {
+    return answerHiddenRows(await req.json().catch(() => null), {
+      sessions: () => getCachedSessionsAsync("exclude"),
+      workspaces: async (ids) => {
+        // One warm of the in-memory projection, then lookups: no per-key
+        // catalog read however many workspaces the request names.
+        await warmWorkspacesAsync();
+        const records = new Map<string, HiddenRowWorkspace>();
+        for (const id of ids) {
+          const workspace = peekWorkspace(id);
+          if (workspace)
+            records.set(id, { name: workspace.name, repo: workspace.repo });
+        }
+        return records;
+      },
     });
   }
 

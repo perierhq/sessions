@@ -597,7 +597,37 @@ export interface SidebarProjectBands {
   canReorder: boolean;
 }
 
-interface DeriveSidebarProjectBandsInput {
+/** What decides which project band a row files under. */
+export interface ProjectBandDeps {
+  askBand: string;
+  rowIsFeedOnly: (row: WsRow) => boolean;
+  rowIsScratch: (row: WsRow) => boolean;
+  rowIsAsk: (row: WsRow) => boolean;
+  workspaceRepo: (row: WsRow) => string;
+}
+
+/**
+ * The project band a row files under, or null for rows outside every project
+ * band. Feed workspaces are represented by their feed band's item rows, so
+ * they must not also mint a pseudo-repo band; scratch workspaces sit in one
+ * unlabelled group above the bands. Repo-less Ask rows bucket under the
+ * dedicated Ask band before the workspace-repo fallback can file them under
+ * the default project.
+ *
+ * A workspace spanning several repos files under the one `workspaceRepo`
+ * names, never under each of them. Anything that acts per band (a repository
+ * hide, lib/hides.ts) asks this same function, so such a workspace is hidden
+ * exactly when the band it shows in is.
+ */
+export function projectBandOf(
+  row: WsRow,
+  deps: ProjectBandDeps,
+): string | null {
+  if (deps.rowIsFeedOnly(row) || deps.rowIsScratch(row)) return null;
+  return deps.rowIsAsk(row) ? deps.askBand : deps.workspaceRepo(row);
+}
+
+interface DeriveSidebarProjectBandsInput extends ProjectBandDeps {
   activeRows: WsRow[];
   snoozedRows: WsRow[];
   needsReviewRows: WsRow[];
@@ -611,11 +641,6 @@ interface DeriveSidebarProjectBandsInput {
   filter: FilterState;
   search: string;
   isPhone: boolean;
-  askBand: string;
-  rowIsFeedOnly: (row: WsRow) => boolean;
-  rowIsScratch: (row: WsRow) => boolean;
-  rowIsAsk: (row: WsRow) => boolean;
-  workspaceRepo: (row: WsRow) => string;
   /**
    * Repositories hidden from this person's sidebar (lib/hides.ts). Their rows
    * are already filtered upstream down to the ones a hide must not swallow;
@@ -664,23 +689,25 @@ export function deriveSidebarProjectBands({
     map.set(repo, items);
     return items;
   };
-  // Feed workspaces are represented by their feed band's item rows, so they
-  // must not also mint a pseudo-repo band. Repo-less Ask rows bucket under the
-  // dedicated Ask band before the workspace-repo fallback can file them under
-  // the default project.
-  const bandOf = (row: WsRow) => (rowIsAsk(row) ? askBand : workspaceRepo(row));
-  const nestsInProject = (row: WsRow) =>
-    !rowIsFeedOnly(row) && !rowIsScratch(row);
+  // One band choice for every bucket below, shared with the repository-hide
+  // partition in Sidebar.tsx (projectBandOf).
+  const bandDeps = {
+    askBand,
+    rowIsFeedOnly,
+    rowIsScratch,
+    rowIsAsk,
+    workspaceRepo,
+  };
+  const fileUnder = (map: Map<string, WsRow[]>, row: WsRow) => {
+    const band = projectBandOf(row, bandDeps);
+    if (band !== null) bucket(map, band).push(row);
+  };
 
-  for (const row of activeRows) {
-    if (nestsInProject(row)) bucket(byRepo, bandOf(row)).push(row);
-  }
+  for (const row of activeRows) fileUnder(byRepo, row);
   // Each project's snoozed rows stay in that project's own band, as a Snoozed
   // group beside its other lanes. A global group would strand them away from
   // the project they belong to.
-  for (const row of snoozedRows) {
-    if (nestsInProject(row)) bucket(snoozedByRepo, bandOf(row)).push(row);
-  }
+  for (const row of snoozedRows) fileUnder(snoozedByRepo, row);
 
   // Session-less PR rows file into their project's status lanes. Requests
   // pointed at you are excluded because they ride Needs review instead.
@@ -691,9 +718,7 @@ export function deriveSidebarProjectBands({
   // A project whose only work is a review still earns a band.
   const reviewByRepo = (source: WsRow[]) => {
     const map = new Map<string, WsRow[]>();
-    for (const row of source) {
-      if (nestsInProject(row)) bucket(map, bandOf(row)).push(row);
-    }
+    for (const row of source) fileUnder(map, row);
     return map;
   };
   const needsReviewByRepo = reviewByRepo(needsReviewRows);

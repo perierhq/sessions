@@ -1199,8 +1199,15 @@ export function NewSession({
     try {
       send(createMessage);
       // A session you start in a repo you hid would land out of sight, so
-      // starting one restores the repo (lib/hides.ts).
-      if (createRepo && createRepo !== NO_REPO) unhideRepo(createRepo);
+      // starting one restores the repo (lib/hides.ts). Joining an existing
+      // workspace files the row under the workspace's repo, which may differ,
+      // so that one is restored too. Safe before hides hydrate.
+      for (const hiddenRepo of new Set([
+        createRepo,
+        workspaces.find((candidate) => candidate.id === createWorkspaceId)
+          ?.repo,
+      ]))
+        if (hiddenRepo && hiddenRepo !== NO_REPO) unhideRepo(hiddenRepo);
       consumePendingDraftParks(prompt, workspaceId, createWorkspaceId);
       if (createAction === "open") {
         // The send was accepted. Consume the global composer now, before App

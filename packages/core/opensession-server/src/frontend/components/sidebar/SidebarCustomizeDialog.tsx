@@ -1,6 +1,7 @@
 import React, { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Reorder } from "motion/react";
 import { useIsPhone } from "../../hooks/useIsPhone";
+import { canHideRepo } from "../../lib/hides";
 import type { SidebarToolId } from "../../lib/sidebar-tools";
 import { Modal } from "../../ui/modal";
 import { ResponsiveDialog, SheetBody, SheetIconButton } from "../../ui/sheet";
@@ -144,6 +145,11 @@ function OrderSection<T extends string>({
   );
 }
 
+/** The accessible name of a "shown in sidebar" switch. */
+export function shownSwitchLabel(label: string): string {
+  return `Show ${label} in sidebar`;
+}
+
 export function SidebarCustomizeDialog({
   open,
   onOpenChange,
@@ -176,13 +182,18 @@ export function SidebarCustomizeDialog({
     label: string,
     shown: boolean,
     onShownChange: (shown: boolean) => void,
+    disabled = false,
   ) => (
     <Switch
       size="sm"
       className="phone:after:absolute phone:after:inset-x-0 phone:after:-inset-y-3 phone:after:content-['']"
       checked={shown}
       onCheckedChange={onShownChange}
-      aria-label={`${shown ? "Hide" : "Show"} ${label} in sidebar`}
+      disabled={disabled}
+      // A fixed name; the switch's own checked state (aria-checked) says
+      // whether it is on. A label that flips with the state reads as the
+      // opposite action to a screen reader.
+      aria-label={shownSwitchLabel(label)}
     />
   );
   const sections = (
@@ -205,6 +216,8 @@ export function SidebarCustomizeDialog({
             repoLabel(repo),
             !hiddenRepositories.has(repo),
             (shown) => onRepositoryShownChange(repo, shown),
+            // A repo id too long to store as a hide stays shown.
+            !hiddenRepositories.has(repo) && !canHideRepo(repo),
           ),
         }))}
         onCommit={onRepositoryOrderChange}

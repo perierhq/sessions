@@ -1,4 +1,5 @@
 import React from "react";
+import { canHideRepo } from "../../lib/hides";
 import type { ReviewQueueItem } from "../../lib/review-queue";
 import {
   SIDEBAR_ATTN_COUNT,
@@ -299,6 +300,9 @@ export function ProjectBands({
                     </ContextMenu.Item>
                   ) : (
                     <ContextMenu.Item
+                      // The server keeps no key that long, so a hide of
+                      // this repo would not survive a reload.
+                      disabled={!canHideRepo(project.repo)}
                       onClick={() => onSetRepoHidden(project.repo, true)}
                     >
                       <IconEyeOff size={20} className={MENU_ICON} />

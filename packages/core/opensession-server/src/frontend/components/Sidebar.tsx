@@ -20,6 +20,7 @@ import {
   partitionHidden,
   partitionHiddenRepos,
   unhideRepo,
+  visiblePrRows,
 } from "../lib/hides";
 import { hiddenListEntries } from "../lib/hidden-list";
 import { getLane, getLanes, onLanesChanged } from "../lib/lanes";
@@ -49,6 +50,8 @@ import {
   completeSidebarRepoOrder,
   deriveSidebarPrRows,
   deriveSidebarProjectBands,
+  projectBandOf,
+  type ProjectBandDeps,
   deriveWorkspacePlacement,
   discoverSidebarRepos,
   latestSupportSessionsByThread,
@@ -266,6 +269,8 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     [],
   );
   useSidebarStickyHeadings(sidebarScrollRef);
+  // The Archived/Hidden footer, where focus goes when the Hidden row leaves.
+  const sidebarFooterRef = useRef<HTMLDivElement>(null);
 
   // Filter popover (group by / repo / sort) — its choices persist together.
   // The person lens is shared with Home's facepile (lib/sidebar-filter), so
@@ -511,14 +516,16 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   // BEFORE wsRowRepo's fallbacks, which would otherwise file them under the
   // default project (lib/session-repo).
   const rowIsAsk = (row: WsRow) => isAskWorkspace(row.sessions);
-  // The project band a row files under, or null for rows outside every
-  // repository band (feed and scratch rows). Mirrors deriveSidebarProjectBands.
-  const bandRepoOf = (row: WsRow): string | null =>
-    rowIsFeedOnly(row) || rowIsScratch(row)
-      ? null
-      : rowIsAsk(row)
-        ? ASK_BAND
-        : wsRowRepo(row);
+  // What decides the project band a row files under. One object for both the
+  // bands (deriveSidebarProjectBands) and the repository-hide partition below,
+  // so a repo hide takes exactly the rows its band would show.
+  const bandDeps: ProjectBandDeps = {
+    askBand: ASK_BAND,
+    rowIsFeedOnly,
+    rowIsScratch,
+    rowIsAsk,
+    workspaceRepo: wsRowRepo,
+  };
 
   // ── Hidden rows ─────────────────────────────────────────────────────────
   // "Hide from my sidebar" is the personal counterpart to Archive: archiving
@@ -533,30 +540,31 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   // rule "it came back because it needed me, and stays back until I hide it
   // again" instead of flickering as questions get asked and answered.
   //
-  // Otherwise the viewer offers "Keep in sidebar" when you open a hidden
-  // session through a link or ⌘K, and the quiet Hidden row at the foot of the
-  // sidebar lists everything you hid with a Restore for each. It is a list
-  // you open on purpose, not a band: hidden rows never render among the
-  // others.
+  // Otherwise the quiet Hidden row at the foot of the sidebar lists
+  // everything you hid with a Restore for each. It is a list you open on
+  // purpose, not a band: hidden rows never render among the others, except
+  // the open session's row, which always shows. Opening a hidden session
+  // (from that list, ⌘K or a link) therefore shows its row while you are in
+  // it, without undoing the personal hide: it leaves again once you move on.
   const { hiddenKeys: hiddenRowKeys, resurfaced: resurfacedRows } =
-    partitionHidden(allWsRows, hides);
-  // Opening a deep link must not undo a personal hide. The viewer owns the
-  // recovery action while the row stays absent.
+    partitionHidden(allWsRows, hides, rowOwnsSelection);
   //
   // A hidden repository (`repo:<id>`) takes its rows off the same way, with
   // the same guarantees: the open session's row stays, and a row blocked on a
   // question still shows, in its band with only those rows. Neither consumes
   // the repo hide. A repo filter that names a hidden repo shows it, since that
   // is the person asking to see it.
-  const storedHiddenRepos = hiddenRepos(hides);
+  // A key stored under a repo id renamed since reads as the repo it became.
+  const storedHiddenRepos = hiddenRepos(hides, null, repos);
   const hiddenRepoSet = hiddenRepos(
     hides,
     filter.repo === "all" ? null : filter.repo,
+    repos,
   );
   const repoHiddenRowKeys = partitionHiddenRepos(
     allWsRows,
     hiddenRepoSet,
-    bandRepoOf,
+    (row) => projectBandOf(row, bandDeps),
     rowOwnsSelection,
   );
   const wsRows = allWsRows.filter(
@@ -725,11 +733,10 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     filter,
     search,
   });
-  // A hidden repository's PR rows go with its band. They are not rows blocked
-  // on a question, so nothing keeps them.
-  const prRowItems = allPrRowItems.filter(
-    (item) => !hiddenRepoSet.has(item.pr.repo),
-  );
+  // A hidden repository's PR rows go with its band, except review requests
+  // addressed to you: someone is waiting on you, so they stay in the band's
+  // Needs review (and the review queue) like a row blocked on a question.
+  const prRowItems = visiblePrRows(allPrRowItems, hiddenRepoSet);
 
   // Which lane a PR row files under: ready → Ready to merge, everything else
   // → Backlog. In progress is reserved for live runs — a PR that needs a
@@ -1140,11 +1147,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
         filter,
         search,
         isPhone,
-        askBand: ASK_BAND,
-        rowIsFeedOnly,
-        rowIsScratch,
-        rowIsAsk,
-        workspaceRepo: wsRowRepo,
+        ...bandDeps,
         hiddenRepos: hiddenRepoSet,
       })
     : null;
@@ -1727,7 +1730,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
                           }
                           hiddenRepos={storedHiddenRepos}
                           onSetRepoHidden={(repo, hidden) =>
-                            hidden ? hideRepo(repo) : unhideRepo(repo)
+                            hidden ? hideRepo(repo) : unhideRepo(repo, repos)
                           }
                           renderers={{
                             workspaceGrouping: renderWorkspaceGrouping,
@@ -1822,6 +1825,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
               // thing in the sidebar whose fill runs edge to edge.
               className={cn(SIDEBAR_INDEPENDENT_SECTION, SIDEBAR_GROUP, "mt-1")}
               style={{ order: 99 }}
+              ref={sidebarFooterRef}
             >
               {archivedLink}
               <HiddenEntry
@@ -1838,6 +1842,13 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
                 onOpenChange={(open) => {
                   if (open) hiddenRows.refresh();
                 }}
+                // Restoring the last entry takes the Hidden row with it, so
+                // focus lands on Archived beside it, or the list itself.
+                focusFallback={() =>
+                  sidebarFooterRef.current?.querySelector<HTMLElement>(
+                    "[data-sidebar-archived]",
+                  ) ?? sidebarScrollRef.current
+                }
               />
             </div>
           )}
@@ -1896,7 +1907,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
         repositories={repos}
         hiddenRepositories={storedHiddenRepos}
         onRepositoryShownChange={(repo, shown) =>
-          shown ? unhideRepo(repo) : hideRepo(repo)
+          shown ? unhideRepo(repo, repos) : hideRepo(repo)
         }
         onToolOrderChange={(next) =>
           setSidebarToolOrder(

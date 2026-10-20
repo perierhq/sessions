@@ -71,6 +71,13 @@ export interface UserMap<V> {
   update: (
     mutate: (current: UserMapEntries<V>) => UserMapEntries<V> | null,
   ) => UserMapEntries<V>;
+  /**
+   * Drop keys. Unlike an `update` that deletes them, this also works before
+   * the map has hydrated: a key the empty cache has never seen is still
+   * recorded as a removal, so the hydration that brings it in drops it again
+   * and the write carries it to the server.
+   */
+  remove: (keys: readonly string[]) => UserMapEntries<V>;
   /** Subscribe to changes (local writes and hydrations). */
   onChanged: (handler: () => void) => () => void;
   /** Whether the cache reflects the server map for the current user. */
@@ -230,6 +237,27 @@ export function makeUserMap<V>(opts: {
     return next;
   }
 
+  function remove(keys: readonly string[]): UserMapEntries<V> {
+    const user = currentUser();
+    const hydrated = hydratedFor === user;
+    // Hydrated, the cache is the user's map, so a key it lacks is already
+    // gone. Unhydrated, absence proves nothing: the key may be on the server.
+    const doomed = [...new Set(keys)].filter(
+      (key) => !hydrated || key in cache,
+    );
+    if (!doomed.length) return cache;
+    const intents = pendingIntents.get(user) ?? {};
+    for (const key of doomed) intents[key] = { kind: "remove", seq: ++seq };
+    pendingIntents.set(user, intents);
+    const next = { ...cache };
+    for (const key of doomed) delete next[key];
+    cache = next;
+    emit();
+    if (hydrated) flush(user);
+    else if (!hydrating) void hydrate(user);
+    return next;
+  }
+
   function scheduleRetry(user: string): void {
     if (!hasDom()) return;
     clearTimeout(retry);
@@ -317,5 +345,5 @@ export function makeUserMap<V>(opts: {
   }
 
   if (opts.name) registry.set(opts.name, resync);
-  return { get, update, onChanged, ready, hydrate, resync };
+  return { get, update, remove, onChanged, ready, hydrate, resync };
 }
