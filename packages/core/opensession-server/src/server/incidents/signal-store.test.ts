@@ -213,3 +213,45 @@ test("an impact keeps its secret when sent back redacted", async () => {
   ]);
   expect(JSON.stringify(kit.audits)).not.toContain("l0g");
 });
+
+test("an impact that copies the source's secrets is audited by field name", async () => {
+  const s = await createSignal(http, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  const impact = {
+    kind: "http",
+    url: "https://acme.example.test/count",
+    headers: { Authorization: "[redacted]" },
+    countPath: "$.failed",
+    noun: "searches failed",
+    label: "the request log",
+  };
+  const updated = await updateSignal(s.id, { impact }, "Bo");
+  expect(updated).toMatchObject({
+    impact: { headers: { Authorization: "Bearer s3cret" } },
+  });
+  // Sent back unchanged: the impact's own secret, nothing from the source.
+  await updateSignal(
+    s.id,
+    { name: "Search API", impact: redactSignal(updated as never).impact },
+    "Bo",
+  );
+  const updates = kit.audits.filter(
+    (a) => a.kind === "incident_signal_updated",
+  );
+  expect(updates).toEqual([
+    {
+      kind: "incident_signal_updated",
+      signalId: s.id,
+      by: "Bo",
+      fields: ["impact"],
+      impactSecrets: { from: "source", fields: ["headers.Authorization"] },
+    },
+    {
+      kind: "incident_signal_updated",
+      signalId: s.id,
+      by: "Bo",
+      fields: ["name"],
+    },
+  ]);
+  expect(JSON.stringify(kit.audits)).not.toContain("s3cret");
+});

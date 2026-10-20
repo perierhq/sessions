@@ -593,3 +593,57 @@ test("impact secrets are redacted and restored like the source's", () => {
     error: expect.stringContaining("Enter the impact"),
   });
 });
+
+test("an impact takes redacted secrets from the signal's own source only on its origin", () => {
+  const source = {
+    kind: "http",
+    url: "https://acme.example.test/health?api_key=src-key",
+    headers: { Authorization: "Bearer src" },
+  } as const;
+  const onAcme = {
+    kind: "http",
+    url: `https://acme.example.test/count?api_key=${REDACTED}`,
+    headers: { Authorization: REDACTED },
+    countPath: "$.n",
+    noun: "x",
+    label: "y",
+  } as ImpactSource;
+  const fromSource = {
+    ...onAcme,
+    url: "https://acme.example.test/count?api_key=src-key",
+    headers: { Authorization: "Bearer src" },
+  };
+  // Same origin as the source: its secrets fill in, and say so.
+  expect(restoreRedactedImpact(undefined, onAcme, source)).toEqual({
+    impact: fromSource,
+    fromSource: ["query.api_key", "headers.Authorization"],
+  });
+  // Another origin: refused.
+  const onLogs = {
+    ...onAcme,
+    url: `https://logs.example.test/c?api_key=${REDACTED}`,
+  } as ImpactSource;
+  expect(restoreRedactedImpact(undefined, onLogs, source)).toEqual({
+    error: "Enter the impact api_key value again for the new address",
+  });
+  // An impact stored on origin B, the source on origin A.
+  const storedOnLogs = {
+    ...onAcme,
+    url: "https://logs.example.test/c?api_key=log-key",
+    headers: { Authorization: "Bearer log" },
+  } as ImpactSource;
+  expect(restoreRedactedImpact(storedOnLogs, onLogs, source)).toEqual({
+    impact: storedOnLogs,
+  });
+  expect(restoreRedactedImpact(storedOnLogs, onAcme, source)).toEqual({
+    impact: fromSource,
+    fromSource: ["query.api_key", "headers.Authorization"],
+  });
+  const onOther = {
+    ...onAcme,
+    url: `https://other.example.test/c?api_key=${REDACTED}`,
+  } as ImpactSource;
+  expect(restoreRedactedImpact(storedOnLogs, onOther, source)).toEqual({
+    error: expect.stringContaining("again for the new address"),
+  });
+});

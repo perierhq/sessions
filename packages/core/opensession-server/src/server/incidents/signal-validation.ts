@@ -1000,13 +1000,15 @@ function sameOrigin(a: string, b: string): boolean {
 /**
  * Restore the secret query values and header values of an http impact sent
  * back as {@link REDACTED}, from the stored impact, or else from the stored
- * signal's own http source, only for the same origin.
+ * signal's own http source, only for the same origin. `fromSource` names
+ * the fields (`query.<name>`, `headers.<name>`, never values) taken from the
+ * source, for the audit.
  */
 export function restoreRedactedImpact(
   stored: ImpactSource | undefined,
   next: ImpactSource,
   storedSource?: SignalSource,
-): Restored<{ impact: ImpactSource }> {
+): Restored<{ impact: ImpactSource; fromSource?: string[] }> {
   if (next.kind !== "http") return { impact: next };
   const request = impactRequest(next);
   const fromImpact =
@@ -1028,7 +1030,10 @@ export function restoreRedactedImpact(
   const impact: HttpImpact = { ...next, url: url.url };
   if (headers.headers) impact.headers = headers.headers;
   else delete impact.headers;
-  return { impact };
+  const restored = restoredSecretFields(request);
+  return base === fromSource && restored.length
+    ? { impact, fromSource: restored }
+    : { impact };
 }
 
 /** The fields of a draft source sent back as {@link REDACTED}, by name only

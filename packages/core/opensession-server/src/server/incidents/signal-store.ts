@@ -90,7 +90,7 @@ function compact(signal: Signal): Signal {
 function withRestoredSecrets(
   next: Signal,
   stored: Signal | undefined,
-): Signal | { error: string } {
+): { signal: Signal; impactFromSource?: string[] } | { error: string } {
   let out = next;
   if (out.source) {
     const restored = restoreRedactedSource(stored?.source, out.source);
@@ -105,8 +105,10 @@ function withRestoredSecrets(
     );
     if ("error" in restored) return restored;
     out = { ...out, impact: restored.impact };
+    if (restored.fromSource)
+      return { signal: out, impactFromSource: restored.fromSource };
   }
-  return out;
+  return { signal: out };
 }
 
 export async function listSignals(): Promise<Signal[]> {
@@ -145,7 +147,7 @@ export async function createSignal(
     undefined,
   );
   if ("error" in merged) return merged;
-  const normalized = normalizeSignal(merged);
+  const normalized = normalizeSignal(merged.signal);
   if ("error" in normalized) return normalized;
   const signal = compact(normalized);
   if (needsHookSecret(signal)) signal.hookSecret = generateHookSecret();
@@ -175,8 +177,10 @@ export async function updateSignal(
   const freshSecret = generateHookSecret();
   let failure: { error: string } | undefined;
   let impactChanged = false;
+  let impactFromSource: string[] | undefined;
   const updated = await signalDocuments().update<Signal>(id, (value) => {
     failure = undefined;
+    impactFromSource = undefined;
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
@@ -191,11 +195,13 @@ export async function updateSignal(
       } as Signal,
       value,
     );
-    const normalized = "error" in merged ? merged : normalizeSignal(merged);
+    const normalized =
+      "error" in merged ? merged : normalizeSignal(merged.signal);
     if ("error" in normalized) {
       failure = normalized;
       return value;
     }
+    if (!("error" in merged)) impactFromSource = merged.impactFromSource;
     const next = compact(normalized);
     impactChanged =
       JSON.stringify(next.impact) !== JSON.stringify(value.impact);
@@ -216,6 +222,10 @@ export async function updateSignal(
     signalId: id,
     by: by || "Anonymous",
     fields: fields.sort(),
+    // Which impact secrets came from the signal's own source (names only).
+    ...(impactFromSource
+      ? { impactSecrets: { from: "source", fields: impactFromSource } }
+      : {}),
   });
   return updated;
 }
