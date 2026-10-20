@@ -101,31 +101,44 @@ export function isTailnetIpv4(address: string): boolean {
 }
 
 function isBlockedIpv4(value: string): boolean {
-  const [a, b] = value.split(".").map(Number);
+  const [a, b, c] = value.split(".").map(Number);
   if (a === 0 || a === 10 || a === 127) return true;
   if (a === 169 && b === 254) return true;
   if (a === 172 && b! >= 16 && b! <= 31) return true;
   if (a === 192 && b === 168) return true;
+  // 192.0.0.0/24 IETF protocol assignments (includes NAT64/DS-Lite
+  // translator addresses) and 198.18.0.0/15 benchmarking.
+  if (a === 192 && b === 0 && c === 0) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
   if (isTailnetIpv4(value)) return true;
   if (a! >= 224) return true;
   return false;
 }
 
 /** RFC1918 + loopback + link-local (cloud metadata) + CGNAT/tailnet +
- * multicast/reserved, and the IPv6 equivalents. An IPv6 address that embeds
- * an IPv4 address (see `embeddedIpv4`) is judged by that IPv4 address.
- * Anything that is not an IP literal returns false: resolve names first. */
+ * IETF-reserved and benchmarking + multicast/reserved, and the IPv6
+ * equivalents. An IPv6 address that embeds an IPv4 address (see
+ * `embeddedIpv4`) is judged by that IPv4 address. Anything that is not an IP
+ * literal returns false: resolve names first.
+ *
+ * This is the one list of addresses nothing may reach on an untrusted
+ * caller's behalf. Callers that deliberately allow tailnet peers check
+ * `isTailnetIpv4` themselves and never consult this. */
 export function isBlockedAddress(ip: string): boolean {
   const value = bareAddress(ip);
   if (isIP(value) === 4) return isBlockedIpv4(value);
   const h = ipv6Hextets(value);
   if (!h) return false;
-  // :: and ::1
-  if (h.slice(0, 7).every((group) => group === 0) && h[7]! <= 1) return true;
+  // ::/96: unspecified, loopback, and the deprecated IPv4-compatible form.
+  // Nothing legitimate lives here, and a translator may route any of it to
+  // the embedded IPv4 host unchecked, so the whole range is refused.
+  if (h.slice(0, 6).every((group) => group === 0)) return true;
   const v4 = embeddedIpv4(value);
   if (v4) return isBlockedIpv4(v4);
   // NAT64 local-use 64:ff9b:1::/48 (RFC 8215): a site-local translator.
   if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 1) return true;
+  // Teredo 2001::/32: tunnels to an IPv4 relay and client.
+  if (h[0] === 0x2001 && h[1] === 0) return true;
   // fe80::/10 link-local and fec0::/10 site-local.
   if ((h[0]! & 0xffc0) === 0xfe80 || (h[0]! & 0xffc0) === 0xfec0) return true;
   // fc00::/7 unique-local.

@@ -203,9 +203,18 @@ describe("guards", () => {
       ["::ffff:127.0.0.1", 6],
       ["fd00::1", 6],
       ["64:ff9b::a9fe:a9fe", 6],
+      ["198.18.0.1", 4],
+      ["192.0.0.170", 4],
+      ["::8.8.8.8", 6],
+      ["2001::1", 6],
+      ["2002:a9fe:a9fe::1", 6],
+      ["fe80::1", 6],
+      ["ff02::1", 6],
     ] as const)
       expect(isLocalAddress(address, family)).toBe(true);
     expect(isLocalAddress("93.184.216.34", 4)).toBe(false);
+    expect(isLocalAddress("2606:4700::1111", 6)).toBe(false);
+    expect(isLocalAddress("64:ff9b::808:808", 6)).toBe(false);
   });
 
   test("only stored renders get the render policy", () => {

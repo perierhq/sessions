@@ -74,6 +74,8 @@ describe("isBlockedAddress", () => {
       "[2002:a9fe:a9fe::1]",
       "[2002:c0a8:101:1::1]",
       "[::ffff:0:7f00:1]",
+      "[::ffff:198.18.0.1]",
+      "[64:ff9b::c000:aa]",
     ]) {
       expect(isBlockedAddress(urlHost(host))).toBe(true);
       expect(isBlockedAddress(host)).toBe(true);
@@ -98,6 +100,20 @@ describe("isBlockedAddress", () => {
     ]) {
       expect(isBlockedAddress(ip)).toBe(true);
     }
+  });
+
+  test("blocks all of ::/96, even with a public IPv4 embedded", () => {
+    for (const host of ["[::8.8.8.8]", "[::808:808]", "[::1.1.1.1]", "[::2]"]) {
+      expect(isBlockedAddress(host)).toBe(true);
+      expect(isBlockedAddress(urlHost(host))).toBe(true);
+    }
+  });
+
+  test("blocks Teredo 2001::/32 but not the rest of 2001::/16", () => {
+    expect(isBlockedAddress("2001::1")).toBe(true);
+    expect(isBlockedAddress("2001:0:4136:e378:8000:63bf:3fff:fdd2")).toBe(true);
+    expect(isBlockedAddress("2001:1::1")).toBe(false);
+    expect(isBlockedAddress("2001:4860:4860::8888")).toBe(false);
   });
 
   test("allows public IPv6 and public IPv4 carried in IPv6", () => {
@@ -126,10 +142,22 @@ describe("isBlockedAddress", () => {
       "100.64.0.1",
       "224.0.0.1",
       "255.255.255.255",
+      "192.0.0.1",
+      "192.0.0.170",
+      "198.18.0.1",
+      "198.19.255.255",
     ]) {
       expect(isBlockedAddress(ip)).toBe(true);
     }
-    for (const ip of ["8.8.8.8", "172.32.0.1", "100.63.255.255"]) {
+    for (const ip of [
+      "8.8.8.8",
+      "172.32.0.1",
+      "100.63.255.255",
+      "192.0.1.1",
+      "192.0.2.1",
+      "198.17.255.255",
+      "198.20.0.1",
+    ]) {
       expect(isBlockedAddress(ip)).toBe(false);
     }
   });

@@ -1,10 +1,6 @@
 import { networkInterfaces } from "os";
 import { configuredServer, getConfig } from "./config";
-import {
-  embeddedIpv4,
-  isBlockedAddress,
-  isTailnetIpv4,
-} from "./shared/network-address";
+import { isBlockedAddress, isTailnetIpv4 } from "./shared/network-address";
 
 export { isTailnetIpv4 } from "./shared/network-address";
 
@@ -66,9 +62,7 @@ export function isObviouslyPrivateWebhookHost(value: string): boolean {
     return true;
   }
 
-  if (isBlockedAddress(host) || /^fe[89ab]/.test(host)) return true;
-  const [a, b] = (embeddedIpv4(host) ?? host).split(".").map(Number);
-  return a === 198 && (b === 18 || b === 19);
+  return isBlockedAddress(host);
 }
 
 /** Empty means no separate webhook origin. Integrations then retain the

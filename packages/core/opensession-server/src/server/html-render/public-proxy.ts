@@ -20,66 +20,7 @@ import {
   type Socket,
 } from "node:net";
 import { networkInterfaces } from "node:os";
-
-const LOCAL = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["224.0.0.0", 3],
-] as const)
-  LOCAL.addSubnet(network, prefix, "ipv4");
-// Also the IPv6 ranges that carry an IPv4 address a translator may route to
-// without checking it: IPv4-compatible, local-use NAT64, and Teredo.
-for (const [network, prefix] of [
-  ["::", 96],
-  ["64:ff9b:1::", 48],
-  ["2001::", 32],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["ff00::", 8],
-] as const)
-  LOCAL.addSubnet(network, prefix, "ipv6");
-
-const NAT64 = new BlockList();
-NAT64.addSubnet("64:ff9b::", 96, "ipv6");
-const SIX_TO_FOUR = new BlockList();
-SIX_TO_FOUR.addSubnet("2002::", 16, "ipv6");
-
-function ipv6Groups(address: string): number[] {
-  const bare = address.split("%", 1)[0]!;
-  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(bare);
-  const text = dotted
-    ? `${bare.slice(0, dotted.index)}${((+dotted[1]! << 8) | +dotted[2]!).toString(16)}:${((+dotted[3]! << 8) | +dotted[4]!).toString(16)}`
-    : bare;
-  const [head = "", tail] = text.split("::");
-  const left = head ? head.split(":") : [];
-  const right = tail ? tail.split(":") : [];
-  const fill = tail === undefined ? 0 : 8 - left.length - right.length;
-  return [...left, ...Array<string>(fill).fill("0"), ...right].map((g) =>
-    Number.parseInt(g, 16),
-  );
-}
-
-/** The IPv4 address a NAT64 or 6to4 address stands for. */
-function embeddedIPv4(address: string): string | undefined {
-  const at = NAT64.check(address, "ipv6")
-    ? 6
-    : SIX_TO_FOUR.check(address, "ipv6")
-      ? 1
-      : -1;
-  if (at === -1) return undefined;
-  const groups = ipv6Groups(address);
-  const high = groups[at] ?? 0;
-  const low = groups[at + 1] ?? 0;
-  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
-}
+import { embeddedIpv4, isBlockedAddress } from "../shared/network-address";
 
 function ownAddresses(): BlockList {
   const own = new BlockList();
@@ -90,13 +31,16 @@ function ownAddresses(): BlockList {
 }
 
 /** This machine or a local network, including a public address one of its
- *  own interfaces holds. */
+ *  own interfaces holds. The ranges are the shared private-address list
+ *  (`isBlockedAddress`, which also judges IPv4 carried inside IPv6); this
+ *  adds only the machine's own interface addresses, embedded forms
+ *  included. */
 export function isLocalAddress(address: string, family: number): boolean {
-  const type = family === 6 ? "ipv6" : "ipv4";
-  if (LOCAL.check(address, type) || ownAddresses().check(address, type))
-    return true;
-  const embedded = family === 6 ? embeddedIPv4(address) : undefined;
-  return embedded !== undefined && isLocalAddress(embedded, 4);
+  if (isBlockedAddress(address)) return true;
+  const own = ownAddresses();
+  if (own.check(address, family === 6 ? "ipv6" : "ipv4")) return true;
+  const embedded = family === 6 ? embeddedIpv4(address) : undefined;
+  return embedded !== undefined && own.check(embedded, "ipv4");
 }
 
 async function publicAddresses(
