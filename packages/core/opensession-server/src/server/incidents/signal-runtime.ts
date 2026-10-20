@@ -43,6 +43,44 @@ let booting: Promise<void> | null = null;
 /** Background evaluations of recorded observations, the newest per signal. */
 let intake = new Map<string, Promise<void>>();
 
+/** Told when a signal's state changes; never for the boot replay. */
+export type SignalStateListener = (
+  signal: Pick<Signal, "id" | "project" | "name">,
+  current: SignalEvaluation,
+  previous: SignalEvaluation | null,
+) => void;
+
+const stateListeners = new Set<SignalStateListener>();
+
+/** Subscribe to signal state changes; returns the unsubscribe function. */
+export function onSignalStateChange(listener: SignalStateListener): () => void {
+  stateListeners.add(listener);
+  return () => {
+    stateListeners.delete(listener);
+  };
+}
+
+/**
+ * Tell every listener, each on its own microtask: a listener that throws,
+ * rejects or never settles cannot fail the evaluation or hold up the engine.
+ */
+function notifyStateChange(
+  signal: Signal,
+  current: SignalEvaluation,
+  previous: SignalEvaluation | null,
+): void {
+  const view = { id: signal.id, project: signal.project, name: signal.name };
+  for (const listener of [...stateListeners])
+    void Promise.resolve()
+      .then(() => listener(view, current, previous))
+      .catch((error: unknown) => {
+        console.warn(
+          "[incidents] signal state listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
+}
+
 export function getSignalEvaluation(id: string): SignalEvaluation | null {
   return evaluations.get(id) ?? null;
 }
@@ -80,6 +118,7 @@ export function __resetSignalRuntimeForTest(): void {
   engineChain = Promise.resolve();
   booting = null;
   intake = new Map();
+  stateListeners.clear();
 }
 
 function hydrate(signal: Signal, now: number): Promise<void> {
@@ -190,6 +229,7 @@ export async function reevaluateSignal(
       to: current.state,
       reason: current.reason,
     });
+    notifyStateChange(signal, current, previous);
   }
   if (previous?.state !== current.state)
     await runEngine(signal, previous, current, now);

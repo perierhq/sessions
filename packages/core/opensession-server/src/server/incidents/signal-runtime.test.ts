@@ -16,6 +16,7 @@ import {
   forgetSignal,
   getSignalEvaluation,
   ingestObservations,
+  onSignalStateChange,
   reevaluateSignal,
 } from "./signal-runtime";
 import { createSignal, updateSignal } from "./signal-store";
@@ -391,4 +392,67 @@ test("a disabled signal does not hold a heads-up open", async () => {
   await reevaluateSignal(off, clock);
   await feed(a.id, ...Array<"ok">(10).fill("ok"));
   expect((await listIncidents())[0]!.state).toBe("closed-without-action");
+});
+
+test("state listeners hear each change once, not each observation", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const seen: string[] = [];
+  const off = onSignalStateChange((s, cur, prev) =>
+    seen.push(`${s.id}:${prev?.state ?? "-"}>${cur.state}`),
+  );
+  onSignalStateChange(() => {
+    throw new Error("boom");
+  });
+  const s = await createSignal(
+    {
+      name: "Search",
+      project: "acme",
+      source: { kind: "http", url: "https://acme.example.test" },
+    },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  let t = Date.parse("2026-10-20T10:00:00Z");
+  for (const result of ["ok", "fail", "fail", "fail", "fail"] as const) {
+    t += 60_000;
+    await ingestObservations(
+      s.id,
+      [{ at: new Date(t).toISOString(), result, detail: "x" }],
+      t,
+    );
+  }
+  await Bun.sleep(0);
+  expect(seen).toEqual([`${s.id}:->ok`, `${s.id}:ok>failing`]);
+  expect(warn).toHaveBeenCalled();
+  off();
+  t += 60_000;
+  await ingestObservations(
+    s.id,
+    [{ at: new Date(t).toISOString(), result: "ok", detail: "x" }],
+    t,
+  );
+  t += 60_000;
+  await ingestObservations(
+    s.id,
+    [{ at: new Date(t).toISOString(), result: "ok", detail: "x" }],
+    t,
+  );
+  await Bun.sleep(0);
+  expect(seen).toHaveLength(2);
+  warn.mockRestore();
+});
+
+test("the boot replay tells no state listener", async () => {
+  const s = await make();
+  appendObservations(s.id, [
+    { at: new Date(T0 + 60_000).toISOString(), result: "fail", detail: "" },
+  ]);
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  const seen: string[] = [];
+  onSignalStateChange((signal, cur) => seen.push(`${signal.id}:${cur.state}`));
+  await bootSignalRuntime(T0 + 120_000);
+  await Bun.sleep(0);
+  expect(getSignalEvaluation(s.id)).not.toBeNull();
+  expect(seen).toEqual([]);
 });
