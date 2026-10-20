@@ -72,17 +72,76 @@ export function audit(event: Record<string, unknown>): void {
   }
 }
 
-let pendingLines: Array<{ file: string; line: string }> = [];
-let flushing: Promise<void> | null = null;
+interface PendingLine {
+  file: string;
+  line: string;
+  /** Called once the batch holding this line has been written. */
+  written?: () => void;
+}
 
 /**
- * audit() for hot paths on the gateway thread, such as a scripted run's
- * proxy, which audits every one of possibly tens of thousands of calls.
- * Events are stamped now and queued; one async writer appends them in
- * batches, so the caller never waits on the filesystem. Never throws.
+ * The batching writer behind auditAsync: lines queue up, and one async loop
+ * appends them a batch at a time. Each line's `written` callback runs once
+ * its own batch is written (or failed), so a caller can wait for its line
+ * without waiting for whatever is queued after it. Exported for tests.
  */
-export function auditAsync(event: Record<string, unknown>): void {
-  if (process.env.NODE_ENV === "test") return;
+export function createAuditWriter(
+  write: (file: string, text: string) => Promise<void>,
+  prepare: () => Promise<void> = async () => {},
+): { push(entry: PendingLine): void } {
+  let pending: PendingLine[] = [];
+  let flushing: Promise<void> | null = null;
+  const flush = async () => {
+    try {
+      await prepare();
+    } catch (e) {
+      console.error("[audit] mkdir failed:", e);
+    }
+    while (pending.length) {
+      const batch = pending;
+      pending = [];
+      const byFile = new Map<string, string>();
+      for (const { file, line } of batch)
+        byFile.set(file, (byFile.get(file) ?? "") + line + "\n");
+      for (const [file, text] of byFile) {
+        try {
+          await write(file, text);
+        } catch (e) {
+          console.error("[audit] write failed:", e);
+        }
+      }
+      for (const entry of batch) entry.written?.();
+    }
+  };
+  const start = () => {
+    flushing = flush().finally(() => {
+      flushing = null;
+      // A line queued after the loop's last check but before this ran would
+      // otherwise wait for the next event (and a durable caller with it).
+      if (pending.length) start();
+    });
+  };
+  return {
+    push(entry) {
+      pending.push(entry);
+      if (!flushing) start();
+    },
+  };
+}
+
+const writer = createAuditWriter(
+  (file, text) => appendFile(file, text),
+  async () => {
+    await mkdir(AUDIT_DIR, { recursive: true });
+  },
+);
+
+/** Stamp and queue one event; false when nothing was queued. */
+function enqueue(
+  event: Record<string, unknown>,
+  written?: () => void,
+): boolean {
+  if (process.env.NODE_ENV === "test") return false;
   const now = new Date();
   let line: string;
   try {
@@ -93,47 +152,34 @@ export function auditAsync(event: Record<string, unknown>): void {
     });
   } catch (e) {
     console.error("[audit] serialize failed:", e);
-    return;
+    return false;
   }
-  pendingLines.push({
+  writer.push({
     file: `${AUDIT_DIR}/audit-${now.toISOString().slice(0, 10)}.jsonl`,
     line,
+    written,
   });
-  flushing ??= flushPending().finally(() => {
-    flushing = null;
-  });
+  return true;
 }
 
-/** auditAsync, resolved once the event has been written (or the write
- *  failed). For an entry that must be on disk before what it records starts,
- *  such as a repository removal about to delete files. Never throws. */
-export async function auditDurable(
-  event: Record<string, unknown>,
-): Promise<void> {
-  auditAsync(event);
-  while (flushing) await flushing.catch(() => {});
+/**
+ * audit() for hot paths on the gateway thread, such as a scripted run's
+ * proxy, which audits every one of possibly tens of thousands of calls.
+ * Events are stamped now and queued; one async writer appends them in
+ * batches, so the caller never waits on the filesystem. Never throws.
+ */
+export function auditAsync(event: Record<string, unknown>): void {
+  enqueue(event);
 }
 
-async function flushPending(): Promise<void> {
-  try {
-    await mkdir(AUDIT_DIR, { recursive: true });
-  } catch (e) {
-    console.error("[audit] mkdir failed:", e);
-  }
-  while (pendingLines.length) {
-    const batch = pendingLines;
-    pendingLines = [];
-    const byFile = new Map<string, string>();
-    for (const { file, line } of batch)
-      byFile.set(file, (byFile.get(file) ?? "") + line + "\n");
-    for (const [file, text] of byFile) {
-      try {
-        await appendFile(file, text);
-      } catch (e) {
-        console.error("[audit] write failed:", e);
-      }
-    }
-  }
+/** auditAsync, resolved once this event's own batch has been written (or the
+ *  write failed), however busy the queue is behind it. For an entry that must
+ *  be on disk before what it records starts, such as a repository removal
+ *  about to delete files. Never throws. */
+export function auditDurable(event: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    if (!enqueue(event, resolve)) resolve();
+  });
 }
 
 // Stored all-lowercase so the redactor's `.toLowerCase()` lookup catches
