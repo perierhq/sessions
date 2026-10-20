@@ -143,6 +143,8 @@ import {
 } from "./src/server/web-auth";
 import { configureWebhookRoutes } from "./src/server/webhook-server";
 import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
+import { incidentHookRoutes } from "./src/server/incidents/hooks";
+import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { prImagePublicRoutes } from "./src/server/pr-images";
 import { mcpOauthPublicRoutes } from "./src/server/mcp-oauth";
 import {
@@ -855,6 +857,11 @@ if (!g.__opensessionBooted) {
     for (const [key, handler] of boatWebhookRoutes()) {
       webhookRoutes.set(key, handler);
     }
+    for (const [key, handler] of incidentHookRoutes())
+      webhookRoutes.set(key, handler);
+    // Incident signals are cheap gateway checks, no model. Started before the
+    // ingress binds so a hook call waits for the boot replay, never races it.
+    startIncidentSignals();
     configureWebhookRoutes(agents, webhookRoutes);
     try {
       startPublicIngress();

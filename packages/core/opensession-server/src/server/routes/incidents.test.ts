@@ -26,6 +26,7 @@ import {
 } from "../incidents/signal-store";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { handleIncidentsRoutes } from "./incidents";
+import { routeHandlers } from "./index";
 
 const kit = useIncidentTestKernel();
 beforeEach(() => {
@@ -431,4 +432,8 @@ test("incident strip lanes follow the incident's signals", async () => {
     "Web",
     "Api",
   ]);
+});
+
+test("registered in the route chain", () => {
+  expect(routeHandlers).toContain(handleIncidentsRoutes);
 });

@@ -44,6 +44,7 @@ import { handlePreviewRoutes } from "./preview";
 import { handleWorkspaceRoutes } from "./workspace";
 import { handleWorkspaceCollaboratorRoutes } from "./workspace-collaborators";
 import { handleAutomationsRoutes } from "./automations";
+import { handleIncidentsRoutes } from "./incidents";
 import { handleHumanAsksRoutes } from "./human-asks";
 import { handleKeychainRoutes } from "./keychain";
 import { handleMacKeychainRoutes } from "./mac-keychain";
@@ -122,6 +123,7 @@ export const routeHandlers: RouteHandler[] = [
   handleWorkspaceCollaboratorRoutes,
   handleWorkspaceRoutes,
   handleAutomationsRoutes,
+  handleIncidentsRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,
   handleMacKeychainRoutes,
