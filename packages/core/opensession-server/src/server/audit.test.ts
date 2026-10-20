@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildAuditDigestFromLines, resolvedError } from "./audit";
+import {
+  buildAuditDigestFromLines,
+  createAuditWriter,
+  resolvedError,
+} from "./audit";
 
 const digest = (...events: Array<Record<string, unknown>>) =>
   buildAuditDigestFromLines(
@@ -186,5 +190,55 @@ describe("resolvedError", () => {
     expect(resolvedError({ error: "" })).toBeUndefined();
     expect(resolvedError(undefined)).toBeUndefined();
     expect(resolvedError("done")).toBeUndefined();
+  });
+});
+
+describe("createAuditWriter", () => {
+  test("a durable line waits for its own batch, not the ones queued after it", async () => {
+    const gates: Array<() => void> = [];
+    const written: string[] = [];
+    const writer = createAuditWriter(async (_file, text) => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      written.push(text);
+    });
+    const done: string[] = [];
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    writer.push({
+      file: "a",
+      line: "first",
+      written: () => done.push("first"),
+    });
+    await tick();
+    // Queued while the first batch is being written: the next batch.
+    writer.push({
+      file: "a",
+      line: "second",
+      written: () => done.push("second"),
+    });
+    gates.shift()!();
+    await tick();
+    expect(written).toEqual(["first\n"]);
+    expect(done).toEqual(["first"]);
+
+    gates.shift()!();
+    await tick();
+    expect(written).toEqual(["first\n", "second\n"]);
+    expect(done).toEqual(["first", "second"]);
+  });
+
+  test("a failed write still releases its waiters", async () => {
+    const writer = createAuditWriter(async () => {
+      throw new Error("disk full");
+    });
+    const error = console.error;
+    console.error = () => {};
+    try {
+      await new Promise<void>((resolve) =>
+        writer.push({ file: "a", line: "x", written: resolve }),
+      );
+    } finally {
+      console.error = error;
+    }
   });
 });

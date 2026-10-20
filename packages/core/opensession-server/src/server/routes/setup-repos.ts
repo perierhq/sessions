@@ -9,6 +9,13 @@
  *   POST /api/setup/repos: clone a remote, register an existing local checkout,
  *                          or start a new repository on this server.
  *   PATCH /api/setup/repos/:id: change its default branch or worktree policy.
+ *   GET  /api/setup/repos/:id/removal: what removing it would do (sessions to
+ *        archive, running count, whether its files may be deleted).
+ *   DELETE /api/setup/repos/:id {deleteFiles}: remove it (repo-removal.ts).
+ *        With files to delete it answers once the entry is gone and deletes
+ *        them in the background.
+ *   GET  /api/setup/repos/:id/removal-status: how that background delete is
+ *        going, and what it deleted or kept once done.
  */
 
 import { $ } from "bun";
@@ -23,7 +30,7 @@ import {
 } from "fs";
 import { mkdir, rm, stat, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { basename, isAbsolute, join } from "path";
+import { basename, isAbsolute, join, resolve } from "path";
 import { audit } from "../audit";
 import {
   codeStorageConfig,
@@ -56,7 +63,9 @@ import {
   type GithubCredential,
 } from "../github-auth";
 import { githubCredentialHelperCommand } from "../github-git-credential";
-import { homeDir } from "../paths";
+import { managedCheckoutsRoot } from "../paths";
+import { isPathBeingDeleted, isRepoBeingRemoved } from "../repo-removal-guard";
+import type { WebIdentity } from "../web-auth";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { validNewRepoName } from "../../shared/repo-name";
 import { shellSafeDefaultBranch } from "../repo-branch";
@@ -490,7 +499,7 @@ async function cloneGithubRepo(
 }
 
 function checkoutsRoot(): string {
-  return `${homeDir()}/checkouts`;
+  return managedCheckoutsRoot();
 }
 
 function setupRepoError(message: string, status: number): Error {
@@ -521,6 +530,14 @@ function assertRepoSlotAvailable(
   id: string,
   registered: Record<string, Repo>,
 ): void {
+  // The same id coming back while its removal still runs would race the
+  // removal's file deletion for the same folder and state.
+  if (isRepoBeingRemoved(id)) {
+    throw setupRepoError(
+      `${id} is still being removed; add it again once that finishes`,
+      409,
+    );
+  }
   // Own keys only: the registry is a plain object, so a bare index would find
   // Object's `constructor` on an empty one.
   if (Object.hasOwn(registered, id)) {
@@ -536,6 +553,12 @@ function assertRepoPathAvailable(
   registered: Record<string, Repo>,
 ): void {
   const canonical = canonicalRepoPath(path);
+  if (isPathBeingDeleted([resolve(path), canonical])) {
+    throw setupRepoError(
+      `${canonical} is being deleted by a repository removal; try again once that finishes`,
+      409,
+    );
+  }
   if (
     Object.values(registered).some(
       (repo) => canonicalRepoPath(repo.repo) === canonical,
@@ -601,6 +624,14 @@ function persistRepoRegistration(input: {
   /** The checkout and its origin were made by this call, not found. */
   created?: boolean;
 }): RepoSection & { id: string } {
+  // Checked again at the write: a clone can take long enough for a removal
+  // of the same id to start after the first check.
+  if (isRepoBeingRemoved(input.id)) {
+    throw setupRepoError(
+      `${input.id} is still being removed; add it again once that finishes`,
+      409,
+    );
+  }
   const config = rawConfig();
   const repos = repoSectionsForMutation(config, input.registered);
   const entry: RepoSection = {
@@ -707,6 +738,7 @@ async function createLocalRepo(input: {
         defaultBranch: await normalizeInspectedDefaultBranch(
           inspected.defaultBranch,
         ),
+        addedFrom: "new",
       },
     });
   } catch (error) {
@@ -815,6 +847,9 @@ async function registerGithubRepo(input: {
         wtPrefix: id,
         defaultBranch,
         ghRepo: inspected.ghRepo || input.fullName,
+        // A folder that was already there predates this registration, so
+        // removal must not treat it as one the server made.
+        addedFrom: adopted ? "adopted" : "github",
       },
     });
   } catch (error) {
@@ -911,6 +946,7 @@ async function registerLocalRepo(input: {
       ...(inspected.cs
         ? { host: "codestorage" as const, csRepo: inspected.cs.repoId }
         : {}),
+      addedFrom: "local",
     },
   });
 }
@@ -995,6 +1031,7 @@ async function registerCodestorageRepo(input: {
         defaultBranch,
         host: "codestorage",
         csRepo,
+        addedFrom: adopted ? "adopted" : "codestorage",
       },
     });
   } catch (error) {
@@ -1028,6 +1065,18 @@ function migrateLegacySelfDev(
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
+
+/** The repository id in a `/api/setup/repos/:id` path, or null when it does
+ *  not decode or names one of the registry object's prototype keys. */
+function routeRepoId(segment: string): string | null {
+  let id: string;
+  try {
+    id = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  return ["__proto__", "prototype", "constructor"].includes(id) ? null : id;
+}
 
 function registrationErrorResponse(error: unknown): Response {
   return Response.json(
@@ -1360,7 +1409,100 @@ export async function handleSetupRepoRoutes(
     );
   }
 
+  const removalMatch = path.match(/^\/api\/setup\/repos\/([^/]+)\/removal$/);
+  if (removalMatch && req.method === "GET") {
+    const id = routeRepoId(removalMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const { repoRemovalPreview } = await import("../repo-removal");
+    const preview = await repoRemovalPreview(id);
+    if (!preview) {
+      return Response.json(
+        { error: `Unknown repository: ${id}` },
+        { status: 404 },
+      );
+    }
+    return Response.json(preview);
+  }
+
+  const statusMatch = path.match(
+    /^\/api\/setup\/repos\/([^/]+)\/removal-status$/,
+  );
+  if (statusMatch && req.method === "GET") {
+    const id = routeRepoId(statusMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const { repoRemovalStatus } = await import("../repo-removal");
+    const status = repoRemovalStatus(id);
+    if (!status) {
+      return Response.json(
+        { error: `No recent removal of ${id} deleted files` },
+        { status: 404 },
+      );
+    }
+    return Response.json(status);
+  }
+
   const updateMatch = path.match(/^\/api\/setup\/repos\/([^/]+)$/);
+  if (updateMatch && req.method === "DELETE") {
+    const id = routeRepoId(updateMatch[1]);
+    if (!id)
+      return Response.json({ error: "Invalid repository id" }, { status: 400 });
+    const body = (await req.json().catch(() => ({}))) as {
+      deleteFiles?: unknown;
+      planToken?: unknown;
+      confirm?: unknown;
+    } | null;
+    const deleteFiles = body?.deleteFiles ?? false;
+    const planToken = body?.planToken;
+    const confirm = body?.confirm;
+    if (
+      typeof deleteFiles !== "boolean" ||
+      (planToken !== undefined && typeof planToken !== "string") ||
+      (confirm !== undefined && typeof confirm !== "string")
+    ) {
+      return Response.json(
+        {
+          error: "deleteFiles must be a boolean, planToken and confirm strings",
+        },
+        { status: 400 },
+      );
+    }
+    // Deleting files on this machine is a person's decision: never an
+    // automation's, and never without a verified sign-in.
+    const identity = ctx.authUser as WebIdentity | null | undefined;
+    if (deleteFiles && (!identity?.login || identity.automation === true)) {
+      return Response.json(
+        { error: "Deleting a repository's files needs a signed-in person" },
+        { status: 403 },
+      );
+    }
+    const { removeRepo, RepoRemovalError } = await import("../repo-removal");
+    try {
+      const result = await removeRepo(id, {
+        deleteFiles,
+        planToken,
+        confirm,
+        by: ctx.authUser?.login,
+      });
+      // The registered bit in both browse payloads just changed.
+      repoListCache.clear();
+      csRepoListCache = null;
+      return Response.json(result);
+    } catch (error) {
+      if (error instanceof RepoRemovalError) {
+        return Response.json(
+          { error: error.message, ...error.body },
+          { status: error.status },
+        );
+      }
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
   if (updateMatch && req.method === "PATCH") {
     let id: string;
     try {

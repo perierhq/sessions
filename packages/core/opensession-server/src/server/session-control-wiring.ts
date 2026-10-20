@@ -106,6 +106,7 @@ import {
   materializeWorkspaceWorktree,
 } from "./workspaces";
 import { ownedWorktree } from "./session-workspace";
+import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import {
   ensureAskCheckout,
   ensureScratchDir,
@@ -867,6 +868,9 @@ registerSessionControl({
         parentRepoContext?.repo ||
         parentSession?.repo,
     );
+    // A repository being removed takes no new sessions. A repo-less create
+    // only borrows the default for its sandbox and memory scopes.
+    if (!isRepoLess) assertRepoNotBeingRemoved(repo.id);
     const sourceWorkspace = joinedWorkspace;
     // Interactive/native joins obey the same destination boundary as the web
     // palette. Child reviewers and forks retain their source checkout context.

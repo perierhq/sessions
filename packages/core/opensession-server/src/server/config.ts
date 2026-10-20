@@ -153,7 +153,23 @@ export interface RepoSection {
   deploymentTracking?: boolean;
   /** Repo-specific threat-model/build notes appended to security scan prompts. */
   securityInstructions?: string;
+  /** How the repository was registered. `local` marks an existing folder the
+   *  server did not create, so removing the repository never deletes its
+   *  files; `adopted` marks a clone that found its folder already there
+   *  (repo-removal.ts). Absent on entries written before it existed. */
+  addedFrom?: RepoAddedFrom;
 }
+
+/** Where a registration came from: a clone (`github`, `codestorage`), a
+ *  repository started here (`new`), an existing folder (`local`), or a clone
+ *  whose destination already held the checkout, which was registered as it
+ *  was (`adopted`). */
+export type RepoAddedFrom =
+  | "github"
+  | "codestorage"
+  | "new"
+  | "local"
+  | "adopted";
 
 export interface TeamMember {
   /** Full display name (also the git author name). */
@@ -324,6 +340,8 @@ export interface Repo {
   warmCachePaths?: string[];
   deploymentTracking?: boolean;
   securityInstructions?: string;
+  /** See RepoSection.addedFrom. */
+  addedFrom?: RepoAddedFrom;
 }
 
 export interface ResolvedServer {
@@ -436,6 +454,15 @@ function parseRepoSection(v: unknown): RepoSection | undefined {
     o.publicationMode === "direct" || o.publicationMode === "pull-request"
       ? o.publicationMode
       : undefined;
+  const rawAddedFrom = str(o.addedFrom);
+  const addedFrom: RepoSection["addedFrom"] =
+    rawAddedFrom === "github" ||
+    rawAddedFrom === "codestorage" ||
+    rawAddedFrom === "new" ||
+    rawAddedFrom === "local" ||
+    rawAddedFrom === "adopted"
+      ? rawAddedFrom
+      : undefined;
   const rawIconSource = str(o.iconSource);
   const iconSource: RepoSection["iconSource"] =
     rawIconSource === "github" || rawIconSource === "upload"
@@ -468,6 +495,7 @@ function parseRepoSection(v: unknown): RepoSection | undefined {
     warmCachePaths: strArray(o.warmCachePaths),
     deploymentTracking: bool(o.deploymentTracking),
     securityInstructions: str(o.securityInstructions),
+    addedFrom,
   });
 }
 
@@ -966,6 +994,7 @@ function resolveConfiguredRepos(
           warmCachePaths: entry.warmCachePaths,
           deploymentTracking: entry.deploymentTracking,
           securityInstructions: entry.securityInstructions,
+          addedFrom: entry.addedFrom,
         }),
       };
     }

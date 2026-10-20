@@ -34,6 +34,18 @@ const sessionsRouteSource = readFileSync(
 );
 
 describe("unarchiveForHumanTurn", () => {
+  test("keeps a session archived when its repository was removed", async () => {
+    const calls = recorder(["os-gone"]);
+    expect(
+      await unarchiveForHumanTurn(
+        { id: "os-gone", archived: true, repo: "acme-removed-repo" },
+        calls.deps,
+      ),
+    ).toBe(false);
+    expect(calls.archived).toEqual([]);
+    expect(calls.files).toEqual([]);
+  });
+
   test("clears every archive identity before accepting a turn", async () => {
     const calls = recorder();
     expect(

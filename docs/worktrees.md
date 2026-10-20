@@ -186,6 +186,74 @@ This is a deliberate trade with sharp edges. In a shared checkout:
 
 If sessions do not need to edit the running checkout, use isolated worktrees.
 
+## Removing a repository
+
+Settings → Repositories → ⋯ → **Remove…** takes a repository out of the
+registry, so it leaves the sidebar and the new-session pickers. The dialog
+says how many of its sessions it archives and how many automations it turns
+off. Removal waits while any of its sessions is running, or while a session
+of another repository has it attached: the dialog names them.
+
+Removal archives the repository's live sessions the same way a manual archive
+does, so their runs, Portals, containers and units stop. It also forgets the
+state kept under the repository's id: the workspace's default for new
+sessions, sandbox overrides and keep-ready targets, warm-template settings,
+each person's new-session default and repository order, and workspaces'
+defaults and attachments. Automations that target it are turned off, not
+deleted. Its entry leaves `config.json` through the same locked, atomic writer
+registration uses, and the removal is recorded in the audit log. An archived
+session whose repository was removed stays archived, and a turn sent to it is
+refused with the reason, until the repository is registered again.
+
+While a removal runs, new sessions, attachments and turns for that repository
+are refused, and so is adding it again or registering a folder it is
+deleting. After its entry is gone, removal looks again: if a session
+appeared or the files changed since the dialog showed them, the files stay
+and the result says why.
+
+Files stay on disk unless **Also delete its files on this machine** is
+checked. The dialog lists every path it would delete, its size, its worktrees
+and how many branches are not on their upstream. Whether deletion is offered
+depends on how the repository was registered (`addedFrom`, see
+[instance configuration](instance-configuration.md)):
+
+- A folder the server cloned or created, directly inside `~/checkouts`: the
+  checkbox is enough.
+- A folder registered before `addedFrom` existed, or a clone whose folder was
+  already there (`adopted`), directly inside `~/checkouts`: the server can't
+  tell whether it created the folder, so the repository id must be typed in.
+- A folder registered from disk, a checkout anywhere else (including deeper
+  inside `~/checkouts`), a symlink, a path another registered repository uses,
+  the folder the server runs from, and the `~/checkouts` root itself: never.
+
+Deleting removes the repository's worktrees in the worktree root, then the
+checkout, then the bare `~/checkouts/<name>.git` origin of a repository
+started on this server, then its warm-template spares and state. A worktree
+qualifies only when its name starts with the repository's worktree prefix and
+its `.git` file points into the checkout's own `.git/worktrees/`. It is removed
+with `git worktree remove --force`; when git refuses, it stays, and so do the
+checkout and origin. Paths are compared after resolving symlinks. A linked
+worktree that doesn't qualify but depends on the checkout, such as one made
+by hand outside the worktree root, is left in place: the dialog lists it
+under "These worktrees will stop working." and deleting needs the id typed
+in, whatever the tier.
+
+Deleting files can take minutes on a large checkout, so the server answers as
+soon as the repository is out of the registry and deletes them in the
+background. The dialog closes, a "Removing files…" toast stays up while they
+go, and it then says what was deleted or kept. Until the delete finishes, the
+repository still counts as being removed. The audit log records the removal,
+the start of the delete, and what it deleted or kept.
+
+The same actions are available over HTTP to anyone who may use the setup
+routes. Deleting files also needs a signed-in person; automations can't.
+
+| Endpoint                                   | Does                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/setup/repos/<id>/removal`        | Session, running, attached and automation counts, whether its files may be deleted, what that would remove, and a `planToken`                                                                                                                                                                                               |
+| `DELETE /api/setup/repos/<id>`             | Removes it. `{"deleteFiles": true, "planToken": "…"}` also deletes its files (`"confirm": "<id>"` when the preview says `confirmRequired`). 409 while sessions block it or when the plan has changed. With files to delete it answers `{"removed": true, "deleting": true, "plan": […]}` and deletes them in the background |
+| `GET /api/setup/repos/<id>/removal-status` | How a background file delete is going (`deleting`), then what it deleted or kept (`done`). Kept in memory for ten minutes; 404 when there is none                                                                                                                                                                           |
+
 ## What cleans up automatically
 
 ### Rust build-cache GC

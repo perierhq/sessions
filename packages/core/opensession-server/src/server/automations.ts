@@ -102,7 +102,8 @@ import { disposeAutomationSandbox } from "./sandbox/automation-disposal";
 import { remoteGuestOsForProvider } from "./sandbox/adapters/bootstrap";
 import { primeWorkspaceSandbox } from "./sandbox/workspace-rpc";
 import { sandboxSessionScratchDir } from "./session-scratch";
-import { configuredIntegration, personaName } from "./config";
+import { canonicalRepoId, configuredIntegration, personaName } from "./config";
+import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import { shouldPersistModelSwitch, type StreamEvent } from "./run-events";
 import {
   deleteAutomationInputState,
@@ -487,6 +488,34 @@ async function mutateAutomation(
       throw new Error(`Automation ${id} record is malformed`);
     return mutate(value);
   });
+}
+
+/** Enabled automations that name `repoId` as their repository. */
+export async function enabledAutomationsForRepo(
+  repoId: string,
+): Promise<Automation[]> {
+  return (await listAutomations()).filter(
+    (a) => a.enabled && !!a.repo && canonicalRepoId(a.repo) === repoId,
+  );
+}
+
+/**
+ * Turn off every automation that targets `repoId`, for repository removal:
+ * left on, each would fire against a repository that is no longer
+ * registered. Returns how many were turned off. The record is kept, so a
+ * person can point it at another repository and turn it back on.
+ */
+export async function disableAutomationsForRepo(
+  repoId: string,
+): Promise<number> {
+  let count = 0;
+  for (const automation of await enabledAutomationsForRepo(repoId)) {
+    const next = await mutateAutomation(automation.id, (current) =>
+      current.enabled ? { ...current, enabled: false } : current,
+    );
+    if (next) count += 1;
+  }
+  return count;
 }
 
 function sanitizeMcpList(list?: unknown): string[] | undefined {
@@ -2134,6 +2163,10 @@ export async function runAutomation(
     // shared-checkout repos (opensession), where an unattended run must never
     // work in the live checkout: it ships a PR and a human merges.
     const repo = getRepo(automation.repo);
+    // Removal turns these automations off, but a run already past that
+    // check must not start in a repository being removed. Scratch runs
+    // never touch a repository.
+    if (automation.mode !== "scratch") assertRepoNotBeingRemoved(repo.id);
     let cwd = "";
     let branch = "";
     let sandbox: Sandbox | undefined;

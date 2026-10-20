@@ -20,7 +20,8 @@ import { configuredIngress } from "../config";
 import { getDefaultModel, providerFor, resolveModel } from "../models";
 import { OPENSESSION_SESSIONS_DIR } from "../paths";
 import { stateDir } from "../paths";
-import { writeJsonAtomic } from "../shared/atomic-write";
+import { readFile } from "fs/promises";
+import { writeJsonAtomic, writeJsonAtomicAsync } from "../shared/atomic-write";
 import { workspaceSecretExists } from "../workspace-secrets";
 import {
   sandboxAdapterSignatureCurrent,
@@ -500,6 +501,61 @@ function updateSandboxConfigFile(
   mutate(raw);
   mkdirSync(dirname(path), { recursive: true });
   writeJsonAtomic(path, raw);
+}
+
+/** Drop everything the sandbox config keeps for a repository that is no
+ * longer registered: its `perRepo` overrides and any `prewarm.keepReady`
+ * targets naming it. Async, for the request path. Returns whether the file
+ * changed; one without either is left untouched. */
+export async function forgetRepoSandboxConfig(
+  repoId: string,
+): Promise<boolean> {
+  const path = configPath();
+  let raw: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return false;
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  let changed = false;
+  const perRepo = raw.perRepo;
+  if (
+    perRepo &&
+    typeof perRepo === "object" &&
+    !Array.isArray(perRepo) &&
+    Object.hasOwn(perRepo, repoId)
+  ) {
+    delete (perRepo as Record<string, unknown>)[repoId];
+    if (!Object.keys(perRepo).length) delete raw.perRepo;
+    changed = true;
+  }
+  const prewarm = raw.prewarm;
+  if (
+    prewarm &&
+    typeof prewarm === "object" &&
+    !Array.isArray(prewarm) &&
+    Array.isArray((prewarm as { keepReady?: unknown }).keepReady)
+  ) {
+    const targets = (prewarm as { keepReady: unknown[] }).keepReady;
+    const kept = targets.filter(
+      (target) =>
+        !(
+          target &&
+          typeof target === "object" &&
+          typeof (target as { repoId?: unknown }).repoId === "string" &&
+          (target as { repoId: string }).repoId.trim() === repoId
+        ),
+    );
+    if (kept.length !== targets.length) {
+      (prewarm as { keepReady: unknown[] }).keepReady = kept;
+      changed = true;
+    }
+  }
+  if (changed) await writeJsonAtomicAsync(path, raw);
+  return changed;
 }
 
 /** Persist where new sessions on one repo run. `null` or "workspace" removes

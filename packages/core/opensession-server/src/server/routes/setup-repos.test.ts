@@ -1519,9 +1519,54 @@ describe("GitHub browser creation handoff", () => {
         defaultBranch: "main",
       });
       expect(mints.length).toBeGreaterThan(0);
-      expect(
-        JSON.parse(readFileSync(configPath, "utf-8")).repos.widget.ghRepo,
-      ).toBe("acme-org/widget");
+      const entry = JSON.parse(readFileSync(configPath, "utf-8")).repos.widget;
+      expect(entry.ghRepo).toBe("acme-org/widget");
+      expect(entry.addedFrom).toBe("github");
+    },
+  );
+
+  test.serial(
+    "records a clone whose folder was already there as adopted",
+    async () => {
+      const root = localRoot();
+      const configPath = await setUp(root);
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.startsWith("https://api.github.com/app/installations?"))
+          return Response.json(installs);
+        return Response.json({
+          token: "ghs_read",
+          expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+        });
+      }) as typeof fetch;
+      const checkout = createRemoteCheckout(
+        join(root, "checkouts"),
+        "widget",
+        "main",
+      );
+      git(
+        [
+          "remote",
+          "set-url",
+          "origin",
+          "https://github.com/acme-org/widget.git",
+        ],
+        checkout,
+      );
+      let cloned = false;
+      __setGithubCloneForTest(async () => {
+        cloned = true;
+      });
+
+      const response = await handleSetupRepoRoutes(
+        postRepo({ source: "github", fullName: "acme-org/widget" }),
+      );
+
+      expect(response?.status).toBe(201);
+      expect(cloned).toBe(false);
+      const entry = JSON.parse(readFileSync(configPath, "utf-8")).repos.widget;
+      expect(entry.ghRepo).toBe("acme-org/widget");
+      expect(entry.addedFrom).toBe("adopted");
     },
   );
 

@@ -159,6 +159,7 @@ import {
   reviveWorktree,
   sessionRepoId,
 } from "./worktree";
+import { sessionRepoBlocker, sessionRepoOrThrow } from "./repo-removal-guard";
 import { createGoalSelfMcpServer } from "../agents/slack/goal-tools";
 import {
   runHostsDir,
@@ -2736,6 +2737,18 @@ async function runSessionPromptInner(
   const autoRetry = await retryAutoFallbackModel(sessionId);
   const session = findSession(sessionId);
   if (!session) return;
+  // Admission: a repository being removed takes no new turns, and one that
+  // is no longer registered can't be worked in. Say so plainly instead of
+  // failing later on an unknown repo id.
+  const repoBlocker = sessionRepoBlocker(session);
+  if (repoBlocker) {
+    broadcastToSession(sessionId, {
+      type: "notice",
+      sessionId,
+      message: repoBlocker,
+    });
+    throw new Error(repoBlocker);
+  }
   if (autoRetry) {
     broadcastToSession(sessionId, {
       type: "model_changed",
@@ -2923,7 +2936,7 @@ async function runSessionPromptInner(
     !hasRemoteWorkspace(session)
   ) {
     const repo = session.repo
-      ? getRepo(session.repo)
+      ? sessionRepoOrThrow(session.repo)
       : repoForPath(session.worktreeDir);
     if (session.branch) {
       broadcastToSession(sessionId, {

@@ -55,7 +55,8 @@ import {
 import { dirname, join } from "path";
 import { configuredPaths, configuredRepos, type Repo } from "./config";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
-import { writeJsonAtomic } from "./shared/atomic-write";
+import { readFile } from "fs/promises";
+import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { removeTree } from "./workload-scope";
 import { workloadArgv } from "./workload-scope";
 
@@ -155,6 +156,26 @@ export function setWarmTemplateConfig(
   return cfg;
 }
 
+/** Forget a repository's warm-template settings once it is no longer
+ * registered, so a later registration under the same id starts clean. Async,
+ * for the request path. */
+export async function forgetWarmTemplateConfig(
+  repoId: string,
+): Promise<boolean> {
+  let parsed: { repos?: Record<string, unknown> } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(await readFile(configFile(), "utf-8"));
+  } catch {
+    return false;
+  }
+  const repos = parsed?.repos;
+  if (!repos || typeof repos !== "object" || !Object.hasOwn(repos, repoId))
+    return false;
+  delete repos[repoId];
+  await writeJsonAtomicAsync(configFile(), { ...parsed, repos });
+  return true;
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 export interface WarmTemplateState {
@@ -211,11 +232,73 @@ const g = globalThis as unknown as {
   __warmTemplateSeeding?: Set<string>;
   __warmTemplateSweepTimer?: ReturnType<typeof setInterval>;
   __warmSpareReplenishing?: Map<string, Promise<void>>;
+  __warmTemplateRetired?: Set<string>;
 };
 const refreshing: Map<string, Promise<void>> = (g.__warmTemplateRefreshing ??=
   new Map());
 // Worktrees with a seed in flight (one seed per worktree — see seedWorktree…).
 const seeding: Set<string> = (g.__warmTemplateSeeding ??= new Set());
+// Repositories being removed (repo-removal.ts): a refresh or spare build in
+// flight for one stops at its next step and writes nothing more.
+const retired: Set<string> = (g.__warmTemplateRetired ??= new Set());
+
+/** Thrown inside doRefresh once its repository is retired. */
+const RETIRED = new Error("repository removed");
+
+/**
+ * Stop warm-template work for a repository that is being removed: a refresh
+ * or spare build in flight stops at its next step, and none starts. Resolves
+ * true once nothing is in flight, false when something still was after
+ * `waitMs` (the caller then keeps the template's files).
+ */
+export async function retireWarmTemplate(
+  repoId: string,
+  waitMs = 60_000,
+): Promise<boolean> {
+  retired.add(repoId);
+  const pending = [refreshing.get(repoId), replenishing.get(repoId)].filter(
+    (p): p is Promise<void> => !!p,
+  );
+  if (!pending.length) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), waitMs);
+  });
+  try {
+    return await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Let warm-template work run for `repoId` again (a later registration
+ *  under the same id). */
+export function unretireWarmTemplate(repoId: string): void {
+  retired.delete(repoId);
+}
+
+/** Where a repository's warm template keeps files outside its worktree: the
+ *  spare pool, and its state, manifest and refresh lock. Repository removal
+ *  deletes them with its files after checking each path itself. */
+export function warmTemplatePaths(repo: Repo): {
+  sparesRoot: string;
+  spares: string;
+  files: string[];
+} {
+  const sparesRoot = join(configuredPaths().worktreesDir, ".warm-spares");
+  return {
+    sparesRoot,
+    spares: join(sparesRoot, repo.wtPrefix),
+    files: [
+      stateFile(repo.id),
+      manifestFile(repo.id),
+      refreshLockFile(repo.id),
+    ],
+  };
+}
 
 // Cross-PROCESS refresh marker: the in-memory `refreshing` map can't be seen
 // by other processes (a CLI-triggered refresh vs the live server's seeds —
@@ -370,14 +453,19 @@ export function refreshWarmTemplate(
 
 async function doRefresh(repoId: string, force: boolean): Promise<void> {
   const repo = configuredRepos()[repoId];
-  if (!repo) return;
+  if (!repo || retired.has(repoId)) return;
   if (repo.sharedCheckout) return; // opensession self-hosts; nothing to warm
   const cfg = warmTemplateConfig(repoId);
   if (!cfg.enabled && !force) return;
   const dir = warmTemplateDir(repo);
   const started = Date.now();
   const prev = warmTemplateState(repoId);
+  const stopIfRetired = () => {
+    if (retired.has(repoId)) throw RETIRED;
+  };
   const fail = async (msg: string) => {
+    // A removed repository's state file is gone; don't write it back.
+    if (retired.has(repoId)) return;
     console.warn(`[warm-template] ${repoId}: ${msg}`);
     writeState({
       ...(prev || {}),
@@ -413,6 +501,7 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
       });
     }
 
+    stopIfRetired();
     // 2. Fetch; skip the expensive rebuild when nothing moved and the last
     //    refresh was good.
     await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`.nothrow();
@@ -441,6 +530,7 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
       ms: number,
       run: () => Promise<T>,
     ): Promise<T> => {
+      stopIfRetired();
       console.log(`[warm-template] ${repoId}: ${name}…`);
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
@@ -481,6 +571,7 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
         timeoutMs: Math.min(worktreeSetupTimeoutMs(repo), installMs),
       }),
     );
+    stopIfRetired();
     if (!install.ok) return void (await fail(install.message));
 
     // 5. Capture the seedable manifest (only on success, so a failed refresh
@@ -491,6 +582,7 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     const manifest = seedableManifest(raw.split("\n"));
     if (!manifest.length)
       return void (await fail("refresh produced no node_modules to seed"));
+    stopIfRetired();
     writeFileSync(manifestFile(repoId), manifest.join("\n") + "\n");
 
     writeState({
@@ -509,6 +601,12 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     // (Spare-pool rotation happens in refreshWarmTemplate once this promise
     // settles — from here the mid-refresh guards would still block it.)
   } catch (e) {
+    if (e === RETIRED) {
+      console.log(
+        `[warm-template] ${repoId}: refresh stopped (repository removed)`,
+      );
+      return;
+    }
     await fail(String((e as any)?.message || e));
   } finally {
     try {
@@ -708,7 +806,7 @@ function replenishSpares(repo: Repo): Promise<void> {
 }
 
 async function doReplenish(repo: Repo): Promise<void> {
-  if (!warmTemplateConfig(repo.id).enabled) return;
+  if (retired.has(repo.id) || !warmTemplateConfig(repo.id).enabled) return;
   const dir = sparesDir(repo);
   mkdirSync(dir, { recursive: true });
   // Sweep leftovers: half-built spares and claimed dirs that were never
@@ -722,6 +820,7 @@ async function doReplenish(repo: Repo): Promise<void> {
     } catch {}
   }
   for (;;) {
+    if (retired.has(repo.id)) return;
     // One predicate for everything: last refresh good, trees actually there,
     // and no refresh (this process or another) rewriting them under us — the
     // post-refresh rotate, or the next sweep tick, picks that back up.

@@ -20,6 +20,12 @@ export function homeDir(): string {
   return process.env.HOME || homedir();
 }
 
+/** Where the server clones repositories and starts new ones (Settings →
+ *  Repositories). Repository removal deletes files only inside it. */
+export function managedCheckoutsRoot(): string {
+  return `${homeDir()}/checkouts`;
+}
+
 /** The historical top-level name for a state entry. */
 function legacyStateName(base: string): string {
   return `.opensession-${base}`;

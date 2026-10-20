@@ -21,13 +21,24 @@ import {
   rowMenuTriggerClasses,
   settingsInputClass,
 } from "../ui/settings";
-import { toast } from "../ui/toast";
+import { dismissToast, toast } from "../ui/toast";
 import {
   IconArrowUpToLine,
   IconBranches,
   IconDotsHorizontal,
   IconPlus,
+  IconTrash,
 } from "./icons";
+import {
+  RemoveRepoDialog,
+  followRemoval,
+  removedToast,
+  removedToastIsError,
+} from "./RemoveRepoDialog";
+import {
+  getDefaultRepoPref,
+  setDefaultRepoPref,
+} from "../lib/default-repo-pref";
 import { RepoTile } from "./RepoTile";
 import { GithubRepoAccess } from "./GithubRepoAccess";
 import { newRepoRegistration } from "../lib/new-repo";
@@ -43,6 +54,7 @@ import { pngFromImageFile } from "../lib/icon-image";
 import { setupRepoDefaultBranch } from "../lib/setup-repo";
 import {
   fetchRepos,
+  isRemovalDeleting,
   notifyReposChanged,
   repoGithubAvatarUrl,
   setRepoAppearanceApi,
@@ -270,23 +282,30 @@ function RepositoryRow({
           appearance={appearance}
           onChanged={onChanged}
           onRepoUpdated={onRepoUpdated}
+          removable
         />
       </div>
     </SettingRow>
   );
 }
 
-/** A repo row's ⋯ menu and its consequences: the default-branch dialog and
- *  the isolated-worktrees toggle. Shared by the settings page's full row and
- *  the wizard's compact rows, so both surfaces manage a repo identically. */
+/** A repo row's ⋯ menu and its consequences: the default-branch dialog, the
+ *  isolated-worktrees toggle and, on the settings page only, removal. Shared
+ *  by the settings page's full row and the wizard's compact rows, so both
+ *  surfaces repoint and re-mode a repo identically. Removing one is a
+ *  Settings → Repositories decision, not an onboarding step, so the wizard's
+ *  rows leave it out. */
 function RepoActionsMenu({
   repo,
   appearance,
   onChanged,
   onRepoUpdated,
+  removable = false,
 }: {
   repo: SetupStatus["repos"][number];
   appearance: RepoInfo | undefined;
+  /** Offer Remove… (Settings → Repositories only). */
+  removable?: boolean;
   onChanged: () => void | Promise<void>;
   onRepoUpdated?: (
     updated: Pick<SetupRepo, "id"> &
@@ -303,6 +322,7 @@ function RepoActionsMenu({
     repo.isolatedWorktrees,
   );
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [saving, setSaving] = useState<"branch" | "worktrees" | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
   const branchErrorId = useId();
@@ -407,8 +427,44 @@ function RepoActionsMenu({
             </span>
             <Menu.Check on={isolatedWorktrees} />
           </Menu.CheckboxItem>
+          {removable && (
+            <>
+              <Menu.Separator />
+              <Menu.Item
+                className="text-red data-[highlighted]:bg-red-soft"
+                onClick={() => setRemoveOpen(true)}
+              >
+                <IconTrash size={17} />
+                <span className="min-w-0 flex-1 truncate">Remove…</span>
+              </Menu.Item>
+            </>
+          )}
         </Menu.Popup>
       </Menu.Root>
+      {removable && (
+        <RemoveRepoDialog
+          repo={repo}
+          open={removeOpen}
+          onOpenChange={setRemoveOpen}
+          onRemoved={async (outcome) => {
+            // The server already cleared stored preferences naming it; this
+            // keeps this browser's cached copy from offering it until then.
+            if (getDefaultRepoPref() === repo.id) setDefaultRepoPref("");
+            // The list drops it now; deleting its files may run on.
+            const reload = onChanged();
+            const pending = isRemovalDeleting(outcome)
+              ? toast("Removing files…", { ongoing: true })
+              : 0;
+            const result = await followRemoval(outcome);
+            if (pending) dismissToast(pending);
+            toast(
+              removedToast(repo.label, result),
+              removedToastIsError(result) ? { variant: "error" } : undefined,
+            );
+            await reload;
+          }}
+        />
+      )}
       <Modal.Root
         open={branchDialogOpen}
         onOpenChange={(open) => {

@@ -13,6 +13,9 @@
  * elsewhere. A key set to null in the patch is deleted.
  */
 
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { writeJsonAtomicAsync } from "./shared/atomic-write";
 import { userStore } from "./shared/user-store";
 
 // Guardrails on a free-form map: sane key shape, short string values, bounded
@@ -106,4 +109,60 @@ export function patchUiPrefs(
     }
   }
   return store.set(user, current);
+}
+
+/** Drop a repository from one prefs map: the personal new-session default
+ *  that names it, and its slot in the sidebar's repo band order. */
+export function prefsWithoutRepo(prefs: UiPrefs, repoId: string): UiPrefs {
+  const next = { ...prefs };
+  // "" rather than a deleted key: clients apply an explicit reset to their
+  // cached copy, and "" already means "no preference".
+  if (next["default-repo"] === repoId) next["default-repo"] = "";
+  const order = next["repo-order"];
+  if (order) {
+    try {
+      const parsed: unknown = JSON.parse(order);
+      if (Array.isArray(parsed) && parsed.includes(repoId))
+        next["repo-order"] = JSON.stringify(
+          parsed.filter((key) => key !== repoId),
+        );
+    } catch {
+      // Not ours to repair; the client normalizes an unreadable order.
+    }
+  }
+  return next;
+}
+
+/**
+ * Forget a removed repository in every person's UI prefs, so no one's
+ * new-session default or band order keeps naming it. Rewrites only the files
+ * that change, and keeps every other field in them. Returns how many changed.
+ */
+export async function forgetRepoInUiPrefs(repoId: string): Promise<number> {
+  const root = store.dir();
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch {
+    return 0;
+  }
+  let changed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = join(root, name);
+    try {
+      const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        continue;
+      const doc = parsed as Record<string, unknown>;
+      const prefs = clean(doc.prefs);
+      const next = prefsWithoutRepo(prefs, repoId);
+      if (JSON.stringify(next) === JSON.stringify(prefs)) continue;
+      await writeJsonAtomicAsync(file, { ...doc, prefs: next });
+      changed++;
+    } catch {
+      // One unreadable file must not stop the others from being cleaned.
+    }
+  }
+  return changed;
 }
