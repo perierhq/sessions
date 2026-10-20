@@ -1,8 +1,9 @@
 // Signal runtime: observations in, evaluations out, incidents moved. Keeps
 // each signal's current evaluation in memory, audits state changes, and
-// hands every change to the engine, serialized per project so two signals
-// of one project never decide against the same stale incident list. No
-// timers: the scheduler and the hook intake drive it.
+// hands every change to the engine, one at a time across all projects, so
+// no two decisions read the same stale incident list (dependencies and
+// providers reach across projects). No timers: the scheduler and the hook
+// intake drive it.
 import {
   type Incident,
   type Observation,
@@ -28,8 +29,8 @@ import { evaluateSignal, replaySignal } from "./rules";
 import { getSignal, listSignals } from "./signal-store";
 
 let evaluations = new Map<string, SignalEvaluation>();
-/** The engine's work queue per project. */
-let projectChains = new Map<string, Promise<void>>();
+/** The engine's work queue: one decision at a time. */
+let engineChain: Promise<void> = Promise.resolve();
 /**
  * The boot replay in progress. Intake waits for it: an observation taken
  * meanwhile would otherwise be judged against no previous state, and the
@@ -50,9 +51,26 @@ export function forgetSignal(id: string): void {
   evaluations.delete(id);
 }
 
+interface IncidentEngine {
+  decide: typeof decideIncidentOps;
+  apply: typeof applyIncidentOps;
+}
+const defaultEngine: IncidentEngine = {
+  decide: decideIncidentOps,
+  apply: applyIncidentOps,
+};
+let engine = defaultEngine;
+
+/** Swap parts of the engine in tests; undefined restores it. */
+export function __setIncidentEngineForTest(
+  parts: Partial<IncidentEngine> | undefined,
+): void {
+  engine = { ...defaultEngine, ...parts };
+}
+
 export function __resetSignalRuntimeForTest(): void {
   evaluations = new Map();
-  projectChains = new Map();
+  engineChain = Promise.resolve();
   booting = null;
 }
 
@@ -84,30 +102,34 @@ async function snapshotAt(now: number): Promise<EngineSnapshot> {
   };
 }
 
-/** Run the engine for one change, after earlier changes in the project. */
+/**
+ * Run the engine for one change, after every earlier change. When it fails,
+ * the change is undone (unless a newer evaluation replaced it meanwhile), so
+ * the next evaluation sees it as a change again and the engine retries.
+ */
 function runEngine(
   signal: Signal,
   previous: SignalEvaluation | null,
   current: SignalEvaluation,
   now: number,
 ): Promise<void> {
-  const key = signal.project;
-  const run = (projectChains.get(key) ?? Promise.resolve()).then(async () => {
+  const run = engineChain.then(async () => {
     try {
       const snapshot = await snapshotAt(now);
-      const ops = decideIncidentOps(signal, previous, current, snapshot);
-      if (ops.length) await applyIncidentOps(ops, new Date(now).toISOString());
+      const ops = engine.decide(signal, previous, current, snapshot);
+      if (ops.length) await engine.apply(ops, new Date(now).toISOString());
     } catch (error) {
       console.error(
         `[incidents] engine failed for ${signal.id}:`,
         error instanceof Error ? error.message : error,
       );
+      if (evaluations.get(signal.id) === current) {
+        if (previous) evaluations.set(signal.id, previous);
+        else evaluations.delete(signal.id);
+      }
     }
   });
-  projectChains.set(key, run);
-  void run.then(() => {
-    if (projectChains.get(key) === run) projectChains.delete(key);
-  });
+  engineChain = run;
   return run;
 }
 

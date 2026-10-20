@@ -1,4 +1,5 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
+import { decideIncidentOps } from "./engine";
 import { listIncidents, updateIncident } from "./incident-store";
 import { transitionIncident } from "./lifecycle";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./observation-store";
 import {
   __resetSignalRuntimeForTest,
+  __setIncidentEngineForTest,
   allSignalEvaluations,
   bootSignalRuntime,
   forgetSignal,
@@ -227,6 +229,93 @@ test("boot does not reopen an incident closed while the signal was failing", asy
   await bootSignalRuntime(clock);
   expect(getSignalEvaluation(s.id)?.state).toBe("failing");
   expect(await listIncidents()).toEqual([closed]);
+});
+
+test("boot restores every evaluation before the engine runs", async () => {
+  const a = await make();
+  const p = await make({ name: "Status", provider: true });
+  await feed(p.id, "fail", "fail", "fail");
+  await feed(a.id, "fail", "fail");
+  // Written by an earlier process: the third failure never reached the engine.
+  clock += 60_000;
+  appendObservations(a.id, [
+    { at: new Date(clock).toISOString(), result: "fail", detail: "" },
+  ]);
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  await bootSignalRuntime(clock);
+  // `a` is listed before the provider, and still sees it external.
+  expect(await listIncidents()).toEqual([
+    expect.objectContaining({
+      state: "waiting-on-provider",
+      signalIds: [a.id, p.id],
+      resumeState: "investigating",
+    }),
+  ]);
+});
+
+test("related signals in two projects failing at once open one incident", async () => {
+  const a = await make();
+  const c = await make({ name: "Api", project: "acme-api", dependsOn: [a.id] });
+  await feed(a.id, "fail", "fail");
+  await feed(c.id, "fail", "fail");
+  clock += 60_000;
+  const at = new Date(clock).toISOString();
+  await Promise.all(
+    [a.id, c.id].map((id) =>
+      ingestObservations(id, [{ at, result: "fail", detail: "" }], clock),
+    ),
+  );
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect([...all[0]!.signalIds].sort()).toEqual([a.id, c.id].sort());
+});
+
+test("a change the engine failed on is replayed by the next observation", async () => {
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  let down = true;
+  let calls = 0;
+  __setIncidentEngineForTest({
+    decide: (...args) => {
+      calls++;
+      if (down) throw new Error("engine down");
+      return decideIncidentOps(...args);
+    },
+  });
+  try {
+    const s = await make();
+    await feed(s.id, "fail", "fail");
+    down = false;
+    await feed(s.id, "fail");
+    // Each failed change was undone, so the next observation made it again.
+    expect(await listIncidents()).toEqual([
+      expect.objectContaining({ state: "investigating", signalIds: [s.id] }),
+    ]);
+    const states = kit.audits.filter((a) => a.kind === "incident_signal_state");
+    expect(states.map((a) => [a.from, a.to])).toEqual([
+      [null, "ok"],
+      [null, "ok"],
+      [null, "failing"],
+    ]);
+    // A failed recovery leaves the earlier evaluation in place.
+    down = true;
+    calls = 0;
+    await feed(s.id, "ok", "ok", "ok");
+    expect(calls).toBeGreaterThan(0);
+    expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+    down = false;
+    await feed(s.id, "ok");
+    expect(getSignalEvaluation(s.id)?.state).toBe("ok");
+    expect((await listIncidents())[0]!.events.at(-1)).toMatchObject({
+      kind: "signal-state",
+      signalState: "ok",
+    });
+    expect(error).toHaveBeenCalled();
+  } finally {
+    __setIncidentEngineForTest(undefined);
+    error.mockRestore();
+  }
 });
 
 test("disabled and deleted signals take no observations", async () => {
