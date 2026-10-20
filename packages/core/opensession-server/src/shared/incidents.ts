@@ -52,6 +52,14 @@ export const STATUS_PAGE_PRESETS = [
 ] as const;
 export type StatusPagePreset = (typeof STATUS_PAGE_PRESETS)[number];
 
+/** Setup notes shown next to a preset, where its endpoint needs one. */
+export const STATUS_PAGE_PRESET_HINTS: Readonly<
+  Partial<Record<StatusPagePreset, string>>
+> = {
+  cachet:
+    "Point it at /api/v1/components. Cachet returns one page of components at a time; add ?per_page=100 (or more) so every component is counted.",
+};
+
 export interface JsonMapping {
   preset?: StatusPagePreset;
   result?: JsonResultMapping;

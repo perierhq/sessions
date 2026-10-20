@@ -18,10 +18,18 @@ const MAX_LIST_VALUES = 20;
 const MAX_LANES_INCLUDE = 50;
 const MAX_DETAIL = 200;
 
-export const STATUS_PAGE_PRESET_MAPPINGS: Record<
-  StatusPagePreset,
-  JsonMapping
-> = {
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Frozen; {@link resolveMapping} hands out copies. */
+export const STATUS_PAGE_PRESET_MAPPINGS: Readonly<
+  Record<StatusPagePreset, JsonMapping>
+> = deepFreeze({
   statuspage: {
     result: {
       path: "$.status.indicator",
@@ -85,7 +93,7 @@ export const STATUS_PAGE_PRESET_MAPPINGS: Record<
       fail: ["down", "fail", "error", "unhealthy", "outage", false],
     },
   },
-};
+});
 
 export interface JsonMappingOutcome {
   /** `null` when the mapping has neither a result rule nor an aggregate. */
@@ -101,13 +109,16 @@ export interface JsonMappingOutcome {
   matches: Record<string, unknown[]>;
 }
 
-/** Preset fields first; explicit fields override per top-level key. */
+/**
+ * Preset fields first; explicit fields override per top-level key. The
+ * result is a copy: changing it never changes the preset table.
+ */
 export function resolveMapping(mapping: JsonMapping): JsonMapping {
   const base = mapping.preset
     ? STATUS_PAGE_PRESET_MAPPINGS[mapping.preset]
     : undefined;
   if (!base) return mapping;
-  const out: JsonMapping = { ...base };
+  const out: JsonMapping = structuredClone(base);
   for (const [key, value] of Object.entries(mapping) as Array<
     [keyof JsonMapping, unknown]
   >) {
@@ -145,10 +156,14 @@ function asNumber(value: unknown): number | undefined {
 function matchResult(
   node: unknown,
   rule: JsonResultMapping,
-): { result: ObservationResult; detail: string } {
+): { result: ObservationResult; detail: string; missing?: true } {
   const found = queryJsonPath(node, rule.path);
   if (!found.length)
-    return { result: "unknown", detail: `Nothing at ${rule.path}` };
+    return {
+      result: "unknown",
+      detail: `Nothing at ${rule.path}`,
+      missing: true,
+    };
   const value = found[0];
   const detail = asText(value);
   if (rule.ok.some((entry) => scalarMatches(entry, value)))
@@ -173,11 +188,11 @@ const RESULT_RANK: Record<ObservationResult, number> = {
   fail: 2,
 };
 
-function mapLanes(
-  doc: unknown,
-  lanes: JsonLaneMapping,
-): JsonMappingOutcome["lanes"] {
-  const items = queryJsonPath(doc, lanes.items).slice(0, MAX_LANES);
+type Lane = JsonMappingOutcome["lanes"][number];
+
+/** Every item the path finds (up to the JSONPath result cap). */
+function mapLanes(doc: unknown, lanes: JsonLaneMapping): Lane[] {
+  const items = queryJsonPath(doc, lanes.items);
   return items.map((item, index) => {
     const names = queryJsonPath(item, lanes.name);
     const raw =
@@ -193,6 +208,38 @@ function mapLanes(
   });
 }
 
+function worstLane(lanes: Lane[]): {
+  result: ObservationResult;
+  detail: string;
+} {
+  if (!lanes.length)
+    return { result: "unknown", detail: "No components to check" };
+  const result = lanes.reduce<ObservationResult>(
+    (worst, l) =>
+      RESULT_RANK[l.result] > RESULT_RANK[worst] ? l.result : worst,
+    "ok",
+  );
+  const bad = lanes.filter((l) => l.result !== "ok");
+  return {
+    result,
+    detail: bad.length
+      ? bad
+          .map((l) => `${l.lane}: ${l.detail}`)
+          .join(", ")
+          .slice(0, MAX_DETAIL)
+      : "All components operational",
+  };
+}
+
+const laneKey = (name: string) => name.trim().toLowerCase();
+
+/**
+ * Maps a JSON document. Lanes: every item is mapped and counted; at most
+ * {@link MAX_LANES} are returned, those named in `lanesInclude` first.
+ * The result is the worst counted lane when `aggregate` or `lanesInclude` is
+ * set, or when a preset aggregates and no explicit `result` is given; it also
+ * falls back to the worst lane when the result path finds nothing.
+ */
 export function mapJson(
   doc: unknown,
   mapping: JsonMapping,
@@ -208,37 +255,29 @@ export function mapJson(
   record(m.detail);
   record(m.lanes?.items);
 
-  const lanes = m.lanes ? mapLanes(doc, m.lanes) : [];
+  const allLanes = m.lanes ? mapLanes(doc, m.lanes) : [];
+  const include = m.lanesInclude ? new Set(m.lanesInclude.map(laneKey)) : null;
+  const counted = include
+    ? allLanes.filter((l) => include.has(laneKey(l.lane)))
+    : allLanes;
+  const lanes = (
+    include
+      ? [...counted, ...allLanes.filter((l) => !include.has(laneKey(l.lane)))]
+      : allLanes
+  ).slice(0, MAX_LANES);
+  let aggregate =
+    mapping.aggregate === "worst-lane" ||
+    mapping.lanesInclude !== undefined ||
+    (m.aggregate === "worst-lane" && !mapping.result);
   let result: ObservationResult | null = null;
   let detail: string | undefined;
-  if (m.result) {
+  if (m.result && !aggregate) {
     const matched = matchResult(doc, m.result);
     result = matched.result;
     detail = matched.detail;
+    if (matched.missing && allLanes.length) aggregate = true;
   }
-  if (m.aggregate === "worst-lane") {
-    const include = m.lanesInclude?.map((name) => name.trim().toLowerCase());
-    const counted = include
-      ? lanes.filter((l) => include.includes(l.lane.trim().toLowerCase()))
-      : lanes;
-    if (!counted.length) {
-      result = "unknown";
-      detail = "No components to check";
-    } else {
-      result = counted.reduce<ObservationResult>(
-        (worst, l) =>
-          RESULT_RANK[l.result] > RESULT_RANK[worst] ? l.result : worst,
-        "ok",
-      );
-      const bad = counted.filter((l) => l.result !== "ok");
-      detail = bad.length
-        ? bad
-            .map((l) => `${l.lane}: ${l.detail}`)
-            .join(", ")
-            .slice(0, MAX_DETAIL)
-        : "All components operational";
-    }
-  }
+  if (aggregate) ({ result, detail } = worstLane(counted));
   if (m.detail) {
     const found = queryJsonPath(doc, m.detail);
     if (
@@ -379,5 +418,7 @@ export function validateJsonMapping(
     return { error: "Mapping needs a preset or at least one path" };
   if (resolved.aggregate && !resolved.lanes)
     return { error: "worst-lane needs component lanes" };
+  if (resolved.lanesInclude && !resolved.lanes)
+    return { error: "lanesInclude needs component lanes" };
   return out;
 }
