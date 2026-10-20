@@ -220,3 +220,36 @@ test("server-side fields cannot be written by callers; releases are capped", asy
   expect(patched.automationId).toBe("auto-1");
   expect((await getProjectSettings("acme")).automationId).toBe("auto-1");
 });
+test("agent models are stored canonical and compared by model", async () => {
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme",
+    modelProblem: () => null,
+  });
+  const s = await updateProjectSettings(
+    "acme",
+    { agents: { investigatorModel: "opus" } },
+    "Ada",
+  );
+  expect("error" in s ? s : s.agents).toEqual({
+    investigatorModel: "pi/anthropic/claude-opus-5-5",
+  });
+  expect(
+    await updateProjectSettings(
+      "acme",
+      { agents: { verifierModel: "pi/openrouter/anthropic/claude-opus-5-5" } },
+      "Ada",
+    ),
+  ).toEqual({ error: "Pick a different model for the verifier" });
+  expect(
+    await updateProjectSettings(
+      "acme",
+      {
+        agents: {
+          investigatorModel: "claude-opus-5-5",
+          verifierModel: "pi/anthropic/claude-opus-5-5",
+        },
+      },
+      "Ada",
+    ),
+  ).toEqual({ error: "Pick a different model for the verifier" });
+});

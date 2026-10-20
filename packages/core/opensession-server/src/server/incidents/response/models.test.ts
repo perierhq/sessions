@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { chooseRoleModels, independenceBetween } from "./models";
+import {
+  canonicalModelId,
+  chooseRoleModels,
+  independenceBetween,
+  sameModel,
+} from "./models";
 
 const candidates = [
   { id: "pi/anthropic/claude-opus-5-5", label: "Opus 5.5" },
@@ -98,4 +103,52 @@ test("independence compares provider, then id", () => {
       { model: "a/x", provider: "a" },
     ),
   ).toBe("same-model");
+});
+test("aliases and routed ids name the same model", () => {
+  expect(canonicalModelId("opus")).toBe("pi/anthropic/claude-opus-5-5");
+  expect(canonicalModelId("claude-opus-5-5")).toBe(
+    "pi/anthropic/claude-opus-5-5",
+  );
+  expect(sameModel("opus", "pi/anthropic/claude-opus-5-5")).toBe(true);
+  expect(
+    sameModel(
+      "pi/openrouter/anthropic/claude-opus-5-5",
+      "pi/anthropic/claude-opus-5-5",
+    ),
+  ).toBe(true);
+  expect(sameModel("opus", "pi/openai/gpt-6.1-sol")).toBe(false);
+  expect(
+    independenceBetween(
+      { model: "opus", provider: "anthropic" },
+      { model: "pi/anthropic/claude-opus-5-5", provider: "anthropic" },
+    ),
+  ).toBe("same-model");
+  expect(
+    independenceBetween(
+      {
+        model: "pi/openrouter/anthropic/claude-opus-5-5",
+        provider: "openrouter",
+      },
+      { model: "pi/anthropic/claude-opus-5-5", provider: "anthropic" },
+    ),
+  ).toBe("same-model");
+});
+test("the default verifier is never the same model through another provider", () => {
+  expect(
+    chooseRoleModels({
+      ...base,
+      candidates: [
+        candidates[0],
+        { id: "pi/openrouter/anthropic/claude-opus-5-5", label: "Opus via OR" },
+        candidates[1],
+      ],
+      providerOf,
+      configuredProviders: new Set(["anthropic", "openrouter"]),
+    }),
+  ).toMatchObject({
+    verifier: {
+      model: "pi/anthropic/claude-fable-5-1",
+      independence: "same-provider",
+    },
+  });
 });

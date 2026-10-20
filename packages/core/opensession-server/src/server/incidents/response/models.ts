@@ -12,6 +12,7 @@ import {
   chooseConfiguredDefaultModel,
   configuredModelProviders,
   modelUpstreamProvider,
+  pickerModelId,
 } from "../../model-catalog";
 import { resolveModel, selectableModels } from "../../models";
 
@@ -35,12 +36,30 @@ export interface RoleModelInput {
   providerOf: (id: string) => string | undefined;
 }
 
+/** The stored, picker form of a model id or alias (`opus` and
+ *  `claude-opus-5-5` both become `pi/anthropic/claude-opus-5-5`). */
+export function canonicalModelId(id: string): string {
+  const trimmed = id.trim();
+  return pickerModelId(resolveModel(trimmed)?.id ?? trimmed);
+}
+
+function modelSlug(id: string): string {
+  return (canonicalModelId(id).split("/").at(-1) ?? "").toLowerCase();
+}
+
+/** Two ids name the same model when their final slug matches, whatever
+ *  route reaches it (`pi/openrouter/anthropic/x` and `pi/anthropic/x`). */
+export function sameModel(a: string, b: string): boolean {
+  const slug = modelSlug(a);
+  return slug !== "" && slug === modelSlug(b);
+}
+
 export function independenceBetween(
   a: Pick<RoleModel, "model" | "provider">,
   b: Pick<RoleModel, "model" | "provider">,
 ): Independence {
-  if (a.provider !== b.provider) return "other-provider";
-  return a.model === b.model ? "same-model" : "same-provider";
+  if (sameModel(a.model, b.model)) return "same-model";
+  return a.provider !== b.provider ? "other-provider" : "same-provider";
 }
 
 export function chooseRoleModels(
@@ -80,12 +99,9 @@ export function chooseRoleModels(
       const provider = configured(c.id);
       return provider ? [{ model: c.id, provider, label: c.label }] : [];
     });
-    verifier = usable.find((c) => c.provider !== investigator.provider) ??
-      usable.find(
-        (c) =>
-          c.provider === investigator.provider &&
-          c.model !== investigator.model,
-      ) ?? {
+    const other = usable.filter((c) => !sameModel(c.model, investigator.model));
+    verifier = other.find((c) => c.provider !== investigator.provider) ??
+      other.find((c) => c.provider === investigator.provider) ?? {
         ...investigator,
       };
   }
@@ -105,7 +121,7 @@ export function resolveRoleModels(
   override?: { investigator?: string; verifier?: string },
 ): RoleModels | { error: string } {
   const normalize = (id: string | undefined) =>
-    id === undefined ? undefined : (resolveModel(id)?.id ?? id);
+    id === undefined ? undefined : canonicalModelId(id);
   const candidates = selectableModels();
   const configuredProviders = configuredModelProviders();
   const preferred = automationModel();

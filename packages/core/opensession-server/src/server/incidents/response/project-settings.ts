@@ -31,6 +31,7 @@ import { configuredRepos } from "../../config";
 import { resolveModel } from "../../models";
 import { getRunner, runnerAllowed } from "../../runners";
 import { incidentAudit } from "../audit-sink";
+import { canonicalModelId, sameModel } from "./models";
 
 export { ACTION_PLACEHOLDERS, ACTION_TEMPLATES };
 
@@ -492,11 +493,12 @@ function validatePatch(
         return { error: `Agent model (${key}) must be a model id` };
       const problem = ctx.modelProblem(v);
       if (problem) return { error: problem };
-      agents[key] = v;
+      agents[key] = canonicalModelId(v);
     }
     if (
       agents.investigatorModel &&
-      agents.investigatorModel === agents.verifierModel
+      agents.verifierModel &&
+      sameModel(agents.investigatorModel, agents.verifierModel)
     )
       return { error: "Pick a different model for the verifier" };
     patch.agents = agents;
