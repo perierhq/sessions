@@ -108,6 +108,43 @@ describe("rate", () => {
     expect(evaluateSignal(s, fails(3), prev, NOW).state).toBe("failing");
     expect(evaluateSignal(s, fails(2), prev, NOW).state).toBe("ok");
   });
+  test("the window excludes its start instant", () => {
+    const edge = [o(300_000, "fail"), ...fails(4)];
+    expect(evaluateSignal(s, edge, null, NOW).state).toBe("ok");
+    expect(evaluateSignal(s, edge, null, NOW - 1).state).toBe("failing");
+  });
+  test("ratio fires", () => {
+    const r = sig(
+      { kind: "rate", windowMs: 300_000, atLeast: 5, ratio: 0.5 },
+      { source: { kind: "webhook" } },
+    );
+    const mixed = [
+      ...fails(5),
+      ...Array.from({ length: 3 }, (_, i) => o(200_000 - i * 1_000, "ok")),
+    ];
+    expect(evaluateSignal(r, mixed, null, NOW)).toMatchObject({
+      state: "failing",
+      reason: "5 failures in 5 min",
+    });
+  });
+  test("ratio hysteresis: stays failing only above half the ratio", () => {
+    const r = sig(
+      { kind: "rate", windowMs: 300_000, atLeast: 5, ratio: 0.5 },
+      { source: { kind: "webhook" } },
+    );
+    const prev = evaluateSignal(r, fails(5), null, NOW);
+    expect(prev.state).toBe("failing");
+    const oks = (n: number) =>
+      Array.from({ length: n }, (_, i) => o(200_000 - i * 1_000, "ok"));
+    // 3 of 20 = 0.15, below 0.25.
+    expect(evaluateSignal(r, [...fails(3), ...oks(17)], prev, NOW).state).toBe(
+      "ok",
+    );
+    // 3 of 9 = 0.33, at least 0.25.
+    expect(evaluateSignal(r, [...fails(3), ...oks(6)], prev, NOW).state).toBe(
+      "failing",
+    );
+  });
   test("ratio", () => {
     // A webhook source: the newest observation is over three minutes old,
     // which would make a polled source stale.
@@ -183,6 +220,27 @@ describe("threshold", () => {
     ).toBe("ok");
   });
 });
+describe("threshold on a webhook", () => {
+  const s = sig(
+    { kind: "threshold", above: 1000, forMs: 300_000 },
+    { source: { kind: "webhook" }, intervalMs: undefined },
+  );
+  test("needs data within forMs", () => {
+    const old = [o(40 * 60_000, "ok", 2000), o(30 * 60_000, "ok", 2000)];
+    expect(evaluateSignal(s, old, null, NOW).state).toBe("ok");
+    const prev = evaluateSignal(s, old, null, NOW - 29 * 60_000);
+    expect(prev.state).toBe("slow");
+    expect(evaluateSignal(s, old, prev, NOW).state).toBe("ok");
+    expect(
+      evaluateSignal(
+        s,
+        [...old, o(20 * 60_000, "ok", 2000), o(60_000, "ok", 2000)],
+        null,
+        NOW,
+      ).state,
+    ).toBe("slow");
+  });
+});
 describe("deadline", () => {
   const s = sig(
     { kind: "deadline", warnDays: 14, failDays: 3 },
@@ -197,7 +255,47 @@ describe("deadline", () => {
     expect(evaluateSignal(s, [o(0, "fail", 2)], null, NOW).state).toBe(
       "failing",
     );
-    expect(evaluateSignal(s, [o(0, "fail")], null, NOW).state).toBe("unknown");
+    expect(evaluateSignal(s, [o(0, "unknown")], null, NOW).state).toBe(
+      "unknown",
+    );
+  });
+  test("a rejected certificate is failing whatever the days left", () => {
+    const rejected = {
+      ...o(0, "fail", 200),
+      detail: "Certificate rejected: ERR_TLS_CERT_ALTNAME_INVALID",
+    };
+    expect(
+      evaluateSignal(s, [o(60_000, "ok", 200), rejected], null, NOW),
+    ).toMatchObject({
+      state: "failing",
+      reason: "Certificate rejected: ERR_TLS_CERT_ALTNAME_INVALID",
+    });
+    const unreachable = { ...o(0, "fail"), detail: "Could not reach host" };
+    expect(evaluateSignal(s, [unreachable], null, NOW)).toMatchObject({
+      state: "failing",
+      reason: "Could not reach host",
+    });
+  });
+  test("an old reading ages", () => {
+    const aged = sig(
+      { kind: "deadline", warnDays: 14, failDays: 3 },
+      {
+        source: { kind: "expiry", target: "tls", host: "acme.example.test" },
+        intervalMs: 7 * 86_400_000,
+      },
+    );
+    expect(
+      evaluateSignal(aged, [o(3 * 86_400_000, "ok", 16)], null, NOW),
+    ).toMatchObject({ state: "upcoming", reason: "13 days left" });
+    // 15 days left two hours ago; the newer check was refused (no value).
+    expect(
+      evaluateSignal(
+        aged,
+        [o(2 * 3_600_000, "ok", 15), { ...o(0, "unknown"), detail: "Refused" }],
+        null,
+        NOW,
+      ),
+    ).toMatchObject({ state: "ok", reason: "14.9 days left" });
   });
 });
 
@@ -228,6 +326,78 @@ describe("missing heartbeat", () => {
     );
     expect(missedSlotAt(hourly, [o(71 * 60_000, "ok")], NOW)).toBe(
       NOW - 71 * 60_000 + 70 * 60_000,
+    );
+  });
+  test("the latest of several missed slots", () => {
+    const b = NOW - 195 * 60_000;
+    expect(missedSlotAt(hourly, [o(195 * 60_000, "ok")], NOW)).toBe(
+      b + 190 * 60_000,
+    );
+  });
+  test("slots due inside a maintenance window are skipped", () => {
+    // Baseline 135 min ago: slots due at b+70 and b+130 min.
+    const b = NOW - 135 * 60_000;
+    const iso = (t: number) => new Date(t).toISOString();
+    const both = hb(
+      { kind: "missing", everyMs: 3_600_000, graceMs: 600_000 },
+      {
+        maintenance: [
+          { kind: "once", start: iso(b + 60 * 60_000), end: iso(NOW) },
+        ],
+      },
+    );
+    const obs = [o(135 * 60_000, "ok")];
+    expect(evaluateSignal(both, obs, null, NOW + 1).state).toBe("ok");
+    expect(missedSlotAt(both, obs, NOW + 1)).toBeNull();
+    const latestOnly = hb(
+      { kind: "missing", everyMs: 3_600_000, graceMs: 600_000 },
+      {
+        maintenance: [
+          { kind: "once", start: iso(b + 120 * 60_000), end: iso(NOW) },
+        ],
+      },
+    );
+    expect(missedSlotAt(latestOnly, obs, NOW + 1)).toBe(b + 70 * 60_000);
+    const nightly = hb(
+      { kind: "missing", cron: "0 3 * * *", graceMs: 1_800_000 },
+      {
+        createdAt: "2026-10-01T00:00:00Z",
+        maintenance: [
+          {
+            kind: "once",
+            start: "2026-10-20T03:00:00Z",
+            end: "2026-10-20T04:00:00Z",
+          },
+        ],
+      },
+    );
+    const ok = {
+      at: "2026-10-19T03:05:00Z",
+      result: "ok" as const,
+      detail: "",
+    };
+    expect(
+      evaluateSignal(nightly, [ok], null, Date.parse("2026-10-20T04:10:00Z"))
+        .state,
+    ).toBe("ok");
+    const older = {
+      at: "2026-10-18T03:05:00Z",
+      result: "ok" as const,
+      detail: "",
+    };
+    expect(
+      missedSlotAt(nightly, [older], Date.parse("2026-10-20T04:10:00Z")),
+    ).toBe(Date.parse("2026-10-19T03:30:00Z"));
+  });
+  test("check-ins during a window still count", () => {
+    const s = hb(
+      { kind: "missing", everyMs: 3_600_000, graceMs: 600_000 },
+      {
+        maintenance: [{ kind: "once", start: ago(90 * 60_000), end: ago(0) }],
+      },
+    );
+    expect(evaluateSignal(s, [o(30 * 60_000, "ok")], null, NOW + 1).state).toBe(
+      "ok",
     );
   });
   test("a synthetic missed check-in is not a reported failure", () => {
@@ -292,6 +462,24 @@ describe("missing heartbeat", () => {
         at("2026-10-20T03:31:00Z"),
       ),
     ).toBe(at("2026-10-20T03:30:00Z"));
+  });
+  test("cron: a signal created just before a slot owes it", () => {
+    const nightly = hb(
+      { kind: "missing", cron: "0 3 * * *", graceMs: 1_800_000 },
+      { createdAt: "2026-10-20T02:45:00Z" },
+    );
+    expect(
+      evaluateSignal(nightly, [], null, Date.parse("2026-10-20T03:31:00Z"))
+        .state,
+    ).toBe("failing");
+    expect(
+      evaluateSignal(
+        nightly,
+        [{ at: "2026-10-20T02:50:00Z", result: "ok", detail: "" }],
+        null,
+        Date.parse("2026-10-20T03:31:00Z"),
+      ).state,
+    ).toBe("ok");
   });
 });
 describe("flaky", () => {
@@ -361,8 +549,87 @@ describe("staleness", () => {
     expect(evaluateSignal(w, [], null, NOW).state).toBe("ok");
   });
 });
+describe("unusable data", () => {
+  const s = sig({ kind: "consecutive", failures: 3 });
+  const refused = (msAgo: number) => ({
+    ...o(msAgo, "unknown"),
+    detail: "Refused: private address",
+  });
+  test("only unknown observations are not ok", () => {
+    expect(evaluateSignal(s, [refused(0)], null, NOW)).toMatchObject({
+      state: "unknown",
+      reason: "No usable data yet: Refused: private address",
+    });
+  });
+  test("staleness counts from the latest ok or fail", () => {
+    const prev = evaluateSignal(
+      s,
+      seq("fail", "fail", "fail"),
+      null,
+      NOW - 4 * 60_000,
+    );
+    expect(prev.state).toBe("failing");
+    const obs = [
+      o(6 * 60_000, "fail"),
+      o(5 * 60_000, "fail"),
+      o(4 * 60_000, "fail"),
+      refused(3 * 60_000),
+      refused(2 * 60_000),
+      refused(60_000),
+      refused(0),
+    ];
+    expect(evaluateSignal(s, obs, prev, NOW)).toMatchObject({
+      state: "unknown",
+      reason: "No usable data for 4 min: Refused: private address",
+    });
+    // Fresh enough: the rule still reads the known observations.
+    expect(evaluateSignal(s, obs.slice(0, 5), prev, NOW - 60_000).state).toBe(
+      "failing",
+    );
+  });
+  test("provider signals too", () => {
+    const p = sig({ kind: "consecutive", failures: 2 }, { provider: true });
+    const html = (msAgo: number) => ({
+      ...o(msAgo, "unknown"),
+      detail: "Expected JSON, got text/html",
+    });
+    expect(
+      evaluateSignal(
+        p,
+        [o(5 * 60_000, "ok"), html(2 * 60_000), html(0)],
+        null,
+        NOW,
+      ),
+    ).toMatchObject({
+      state: "unknown",
+      reason: "No usable data for 5 min: Expected JSON, got text/html",
+    });
+  });
+});
 describe("provider signals", () => {
   const p = sig({ kind: "consecutive", failures: 2 }, { provider: true });
+  test("slow and flaky are external too", () => {
+    const t = sig(
+      { kind: "threshold", above: 1000, forMs: 120_000 },
+      { provider: true },
+    );
+    expect(
+      evaluateSignal(
+        t,
+        [o(180_000, "ok", 2000), o(60_000, "ok", 2000), o(0, "ok", 2000)],
+        null,
+        NOW,
+      ),
+    ).toMatchObject({ state: "external", reason: "Over 1000 for 2 min" });
+    expect(
+      evaluateSignal(
+        sig({ kind: "consecutive", failures: 3 }, { provider: true }),
+        seq("ok", "fail", "ok", "fail", "ok", "fail", "ok", "fail", "ok"),
+        null,
+        NOW,
+      ),
+    ).toMatchObject({ state: "external", reason: "Failing on and off" });
+  });
   test("a provider problem is external and keeps hysteresis", () => {
     const prev = evaluateSignal(p, seq("fail", "fail"), null, NOW);
     expect(prev.state).toBe("external");
@@ -400,6 +667,50 @@ describe("maintenance", () => {
       state: "ok",
       inMaintenance: true,
     });
+  });
+  test("now inside a window with no previous evaluation", () => {
+    const s = sig(
+      { kind: "consecutive", failures: 3 },
+      {
+        maintenance: [
+          {
+            kind: "once",
+            start: ago(60_000),
+            end: new Date(NOW + 60_000).toISOString(),
+          },
+        ],
+      },
+    );
+    expect(
+      evaluateSignal(s, seq("fail", "fail", "fail"), null, NOW),
+    ).toMatchObject({
+      state: "unknown",
+      reason: "In maintenance",
+      inMaintenance: true,
+      since: new Date(NOW).toISOString(),
+    });
+  });
+  test("passes recorded during a past window still count", () => {
+    const s = sig(
+      { kind: "consecutive", failures: 3 },
+      { maintenance: [window] },
+    );
+    const prev = evaluateSignal(
+      s,
+      [o(30 * 60_000, "fail"), o(28 * 60_000, "fail"), o(26 * 60_000, "fail")],
+      null,
+      NOW - 25 * 60_000,
+    );
+    expect(prev.state).toBe("failing");
+    const obs = [
+      o(30 * 60_000, "fail"),
+      o(28 * 60_000, "fail"),
+      o(26 * 60_000, "fail"),
+      o(15 * 60_000, "ok"),
+      o(10 * 60_000, "ok"),
+      o(60_000, "ok"),
+    ];
+    expect(evaluateSignal(s, obs, prev, NOW).state).toBe("ok");
   });
   test("failures recorded during a past window do not count", () => {
     const s = sig(
@@ -442,5 +753,64 @@ describe("replay", () => {
     const obs = seq("fail", "fail", "fail", "ok");
     expect(evaluateSignal(s, obs, null, NOW).state).toBe("ok");
     expect(replaySignal(s, obs, NOW).state).toBe("failing");
+  });
+});
+
+describe("replay performance", () => {
+  test("200 observations and 20 windows replay in well under 50 ms", () => {
+    const zones = ["Europe/Warsaw", "America/New_York", "Asia/Tokyo", "UTC"];
+    const maintenance = Array.from({ length: 20 }, (_, i) => ({
+      kind: "weekly" as const,
+      days: [i % 7],
+      start: "03:00",
+      end: "03:30",
+      timeZone: zones[i % zones.length],
+    }));
+    const s = sig({ kind: "consecutive", failures: 3 }, { maintenance });
+    const obs = Array.from({ length: 200 }, (_, i) =>
+      o((200 - i) * 60_000, i % 7 === 0 ? "fail" : "ok"),
+    );
+    replaySignal(s, obs, NOW);
+    const started = performance.now();
+    replaySignal(s, obs, NOW);
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+  test("replay matches step-by-step evaluation", () => {
+    const s = sig(
+      { kind: "consecutive", failures: 3 },
+      {
+        maintenance: [
+          { kind: "once", start: ago(12 * 60_000), end: ago(8 * 60_000) },
+        ],
+      },
+    );
+    const obs = seq(
+      "fail",
+      "fail",
+      "ok",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "ok",
+      "fail",
+      "ok",
+      "ok",
+      "fail",
+      "fail",
+      "ok",
+    );
+    let prev = null;
+    for (let i = 0; i < obs.length; i++)
+      prev = evaluateSignal(
+        s,
+        obs.slice(0, i + 1),
+        prev,
+        Date.parse(obs[i].at),
+      );
+    expect(replaySignal(s, obs, NOW)).toEqual(
+      evaluateSignal(s, obs, prev, NOW),
+    );
   });
 });
