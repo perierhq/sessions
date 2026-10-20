@@ -8,6 +8,7 @@ import {
   updateSignal,
 } from "./signal-store";
 import { appendObservations, recentObservations } from "./observation-store";
+import { redactSignal } from "./signal-validation";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
@@ -170,4 +171,45 @@ test("deleting a signal forgets its observations in memory", async () => {
   expect(recentObservations(s.id)).toHaveLength(1);
   await deleteSignal(s.id, "Bo");
   expect(recentObservations(s.id)).toEqual([]);
+});
+
+test("an impact keeps its secret when sent back redacted", async () => {
+  const impact = {
+    kind: "http",
+    url: "https://logs.example.test/c?since={{since}}",
+    headers: { Authorization: "Bearer l0g" },
+    countPath: "$.failed",
+    noun: "searches failed",
+    label: "the request log",
+  } as const;
+  const s = await createSignal({ ...http, impact }, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  expect(s.impact).toEqual(impact);
+  const view = redactSignal(s);
+  expect(JSON.stringify(view)).not.toContain("l0g");
+  const renamed = await updateSignal(
+    s.id,
+    { name: "Search API", impact: view.impact },
+    "Bo",
+  );
+  expect(renamed).toMatchObject({ name: "Search API", impact });
+  const reworded = await updateSignal(
+    s.id,
+    { impact: { ...view.impact, noun: "searches lost" } },
+    "Bo",
+  );
+  expect(reworded).toMatchObject({
+    impact: { noun: "searches lost", headers: { Authorization: "Bearer l0g" } },
+  });
+  const cleared = await updateSignal(s.id, { impact: null }, "Bo");
+  expect(cleared && !("error" in cleared) && "impact" in cleared).toBe(false);
+  const updates = kit.audits.filter(
+    (a) => a.kind === "incident_signal_updated",
+  );
+  expect(updates.map((a) => a.fields)).toEqual([
+    ["name"],
+    ["impact"],
+    ["impact"],
+  ]);
+  expect(JSON.stringify(kit.audits)).not.toContain("l0g");
 });

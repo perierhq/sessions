@@ -13,6 +13,7 @@ import {
   type SignalValidationContext,
   generateHookSecret,
   normalizeSignal,
+  restoreRedactedImpact,
   restoreRedactedSource,
   validateSignalInput,
 } from "./signal-validation";
@@ -83,16 +84,29 @@ function compact(signal: Signal): Signal {
 
 /**
  * Restore values sent back redacted (secret headers, query parameters, the
- * body) against `stored`, only while the address keeps its origin.
+ * body, and the same in an http impact) against `stored`, only while the
+ * address keeps its origin.
  */
 function withRestoredSecrets(
   next: Signal,
   stored: Signal | undefined,
 ): Signal | { error: string } {
-  if (!next.source) return next;
-  const restored = restoreRedactedSource(stored?.source, next.source);
-  if ("error" in restored) return restored;
-  return { ...next, source: restored.source };
+  let out = next;
+  if (out.source) {
+    const restored = restoreRedactedSource(stored?.source, out.source);
+    if ("error" in restored) return restored;
+    out = { ...out, source: restored.source };
+  }
+  if (out.impact) {
+    const restored = restoreRedactedImpact(
+      stored?.impact,
+      out.impact,
+      stored?.source,
+    );
+    if ("error" in restored) return restored;
+    out = { ...out, impact: restored.impact };
+  }
+  return out;
 }
 
 export async function listSignals(): Promise<Signal[]> {
@@ -160,6 +174,7 @@ export async function updateSignal(
   if ("error" in validated) return validated;
   const freshSecret = generateHookSecret();
   let failure: { error: string } | undefined;
+  let impactChanged = false;
   const updated = await signalDocuments().update<Signal>(id, (value) => {
     failure = undefined;
     if (value === null) return null;
@@ -182,6 +197,8 @@ export async function updateSignal(
       return value;
     }
     const next = compact(normalized);
+    impactChanged =
+      JSON.stringify(next.impact) !== JSON.stringify(value.impact);
     // A hook secret is never rotated, not even by switching the source to
     // another kind and back; only hook kinds publish it (hookPathFor).
     if (value.hookSecret) next.hookSecret = value.hookSecret;
@@ -190,11 +207,15 @@ export async function updateSignal(
   });
   if (failure) return failure;
   if (updated === null) return null;
+  // An impact sent back as it was (redacted, then restored) is not a change.
+  const fields = [...validated.touched].filter(
+    (field) => field !== "impact" || impactChanged,
+  );
   incidentAudit({
     kind: "incident_signal_updated",
     signalId: id,
     by: by || "Anonymous",
-    fields: [...validated.touched].sort(),
+    fields: fields.sort(),
   });
   return updated;
 }

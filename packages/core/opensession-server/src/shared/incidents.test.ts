@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  IMPACT_PLACEHOLDERS,
   INCIDENT_STATES,
   SIGNAL_STATES,
   isIncidentState,
@@ -79,4 +80,8 @@ test("stripIntervalMs per source", () => {
       rule: { kind: "rate", windowMs: 300_000, atLeast: 5 },
     }),
   ).toBe(60_000);
+});
+
+test("impact URLs know two placeholders", () => {
+  expect([...IMPACT_PLACEHOLDERS]).toEqual(["since", "sinceMs"]);
 });

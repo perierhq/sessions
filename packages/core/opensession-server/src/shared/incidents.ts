@@ -139,6 +139,32 @@ export type MaintenanceWindow =
       note?: string;
     };
 
+/** Placeholders an http impact URL may use, filled in when it is queried. */
+export const IMPACT_PLACEHOLDERS = ["since", "sinceMs"] as const;
+
+/**
+ * Where an incident's impact is counted. `noun` reads after a number
+ * ("140 searches failed"), `label` after "from" ("from the request log").
+ * An http impact may name a service other than the signal's own.
+ */
+export type ImpactSource =
+  | {
+      kind: "http";
+      /** May use `{{since}}` (ISO instant) and `{{sinceMs}}` (epoch ms). */
+      url: string;
+      headers?: Record<string, string>;
+      countPath: string;
+      peoplePath?: string;
+      noun: string;
+      label: string;
+    }
+  | {
+      kind: "events";
+      count: "fail-events" | "value-sum";
+      noun: string;
+      label: string;
+    };
+
 export interface Signal {
   id: string;
   name: string;
@@ -152,6 +178,7 @@ export interface Signal {
   selfReported?: boolean;
   dependsOn?: string[];
   maintenance?: MaintenanceWindow[];
+  impact?: ImpactSource;
   /** Runner id; stored only, every source runs locally for now. */
   runOn?: string;
   hookSecret?: string;
@@ -259,6 +286,19 @@ export interface IncidentFinding {
   resolvedAt?: string;
 }
 
+/** The impact of an incident as last measured from its signal's source. */
+export interface IncidentImpact {
+  signalId: string;
+  at: string;
+  count?: number;
+  people?: number;
+  approximate: boolean;
+  noun: string;
+  label: string;
+  /** Why the last measurement failed; the numbers are the ones before it. */
+  error?: string;
+}
+
 export interface Incident {
   id: string;
   project: string;
@@ -275,6 +315,7 @@ export interface Incident {
   lastProblemAt: string;
   closedAt?: string;
   fixedBy?: FixedBy;
+  impact?: IncidentImpact;
   findings: IncidentFinding[];
   events: IncidentEvent[];
   droppedEvents: number;
