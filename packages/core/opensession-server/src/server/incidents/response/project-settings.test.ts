@@ -253,3 +253,38 @@ test("agent models are stored canonical and compared by model", async () => {
     ),
   ).toEqual({ error: "Pick a different model for the verifier" });
 });
+test("a Runner an action uses cannot be removed", async () => {
+  const s = await updateProjectSettings(
+    "acme",
+    { productionRunners: ["runner-prod"], actions: [deploy] },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  expect(
+    await updateProjectSettings("acme", { productionRunners: [] }, "Ada"),
+  ).toEqual({
+    error:
+      "Action deploy runs on runner-prod, which is not one of the project's production Runners",
+  });
+  expect((await getProjectSettings("acme")).productionRunners).toEqual([
+    "runner-prod",
+  ]);
+});
+test("concurrent edits are checked against the record they commit to", async () => {
+  const s = await updateProjectSettings(
+    "acme",
+    { productionRunners: ["runner-prod"] },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  const [removed, added] = await Promise.all([
+    updateProjectSettings("acme", { productionRunners: [] }, "Ada"),
+    updateProjectSettings("acme", { actions: [deploy] }, "Bo"),
+  ]);
+  expect("error" in removed).toBe(false);
+  expect(added).toEqual({
+    error: "Pick one of the project's production Runners (action deploy)",
+  });
+  const after = await getProjectSettings("acme");
+  expect([after.productionRunners, after.actions]).toEqual([[], []]);
+});

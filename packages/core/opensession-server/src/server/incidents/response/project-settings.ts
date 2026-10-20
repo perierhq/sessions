@@ -571,6 +571,31 @@ function changedFields(
   ).sort();
 }
 
+/** Rules over the whole record, checked on the record a write commits to. */
+export function settingsInvariantProblem(
+  s: IncidentProjectSettings,
+): string | null {
+  for (const action of s.actions)
+    if (!s.productionRunners.includes(action.runner))
+      return `Action ${action.id} runs on ${action.runner}, which is not one of the project's production Runners`;
+  if (!(s.budget.perMonthUsd >= s.budget.perIncidentUsd))
+    return "Budget per month (perMonthUsd) must be from the per-incident budget to $100000";
+  const { investigatorModel, verifierModel } = s.agents;
+  if (
+    investigatorModel &&
+    verifierModel &&
+    sameModel(investigatorModel, verifierModel)
+  )
+    return "Pick a different model for the verifier";
+  return null;
+}
+
+class SettingsRefused extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
 export async function updateProjectSettings(
   project: string,
   input: Record<string, unknown>,
@@ -581,24 +606,36 @@ export async function updateProjectSettings(
     return { error: `Unknown project ${project}` };
   if (!isRecord(input)) return { error: "Settings must be an object" };
   const snapshot = await getProjectSettings(project);
-  const patch = validatePatch(project, input, snapshot, ctx);
-  if (failed(patch)) return patch;
-  if (changedFields(snapshot, applyPatch(snapshot, patch)).length === 0)
+  const early = validatePatch(project, input, snapshot, ctx);
+  if (failed(early)) return early;
+  if (changedFields(snapshot, applyPatch(snapshot, early)).length === 0)
     return snapshot;
   let fields: CallerField[] = [];
-  const committed = await settingsDocuments().update(project, (stored) => {
-    const current = withDefaults(project, stored);
-    const next = applyPatch(current, patch);
-    fields = changedFields(current, next);
-    if (fields.length === 0 && stored !== null)
-      return stored as IncidentProjectSettings;
-    return {
-      ...next,
-      releaseHookSecret: current.releaseHookSecret ?? newHookSecret(),
-      updatedAt: new Date().toISOString(),
-      updatedBy: by,
-    };
-  });
+  let committed: unknown;
+  try {
+    committed = await settingsDocuments().update(project, (stored) => {
+      // Validate again against the record this write commits to: a
+      // concurrent edit may have changed what the patch depends on.
+      const current = withDefaults(project, stored);
+      const patch = validatePatch(project, input, current, ctx);
+      if (failed(patch)) throw new SettingsRefused(patch.error);
+      const next = applyPatch(current, patch);
+      fields = changedFields(current, next);
+      if (fields.length === 0 && stored !== null)
+        return stored as IncidentProjectSettings;
+      const problem = settingsInvariantProblem(next);
+      if (problem) throw new SettingsRefused(problem);
+      return {
+        ...next,
+        releaseHookSecret: current.releaseHookSecret ?? newHookSecret(),
+        updatedAt: new Date().toISOString(),
+        updatedBy: by,
+      };
+    });
+  } catch (error) {
+    if (error instanceof SettingsRefused) return { error: error.reason };
+    throw error;
+  }
   const result = remember(withDefaults(project, committed));
   if (fields.length)
     incidentAudit({ kind: "incident_settings_updated", project, by, fields });
