@@ -74,6 +74,12 @@ function context(): ProjectSettingsContext {
   };
 }
 
+/** Whether `project` is a registered project (the test context may say
+ *  otherwise). */
+export function incidentProjectExists(project: string): boolean {
+  return context().projectExists(project);
+}
+
 /** Whether a paired Runner may run this project's actions. Platform and
  *  online state are reported elsewhere. */
 export function productionRunnerProblem(
