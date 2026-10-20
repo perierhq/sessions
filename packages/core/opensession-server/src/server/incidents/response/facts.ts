@@ -1,7 +1,7 @@
 // The facts the policy needs about a candidate: what its steps cost, whether
 // they need a secret or can be undone, and whether the PR runs a migration
 // or reaches outside the deploy action's scope. Incident notes and runbooks
-// under docs/incidents never count.
+// (markdown under docs/incidents) never count; a rename counts both paths.
 import type {
   CandidatePlan,
   IncidentAction,
@@ -10,7 +10,7 @@ import type {
 } from "../../../shared/incident-response";
 import { projectAction } from "./project-settings";
 
-export const KNOWLEDGE_GLOB = "docs/incidents/**";
+export const KNOWLEDGE_GLOB = "docs/incidents/**/*.md";
 const MAX_SCOPE_DETAILS = 5;
 const GLOB_CACHE_MAX = 500;
 
@@ -26,6 +26,28 @@ export function globMatch(pattern: string, path: string): boolean {
   return glob.match(path);
 }
 
+/** A PR file as GitHub lists it; a plain string is a path with no rename. */
+export type PrFileEntry =
+  | string
+  | { filename: string; previous_filename?: string };
+
+/** A relative path with no `.` or `..` segment, empty segment, backslash or
+ *  NUL: globs would otherwise match a path that leaves its directory. */
+function plainRepoPath(path: string): boolean {
+  if (!path || path.startsWith("/") || /[\\\u0000]/.test(path)) return false;
+  return path
+    .split("/")
+    .every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function entryPaths(entry: PrFileEntry): string[] {
+  if (typeof entry === "string") return [entry];
+  return entry.previous_filename !== undefined &&
+    entry.previous_filename !== entry.filename
+    ? [entry.previous_filename, entry.filename]
+    : [entry.filename];
+}
+
 export interface ChangeFacts {
   facts: Set<NeverWithoutYou>;
   details: string[];
@@ -35,7 +57,7 @@ export interface ChangeFacts {
 export function changeFacts(input: {
   plan: CandidatePlan;
   settings: IncidentProjectSettings;
-  prFiles: string[] | null;
+  prFiles: PrFileEntry[] | null;
 }): ChangeFacts | { error: string } {
   const { plan, settings } = input;
   if (!plan.pr && plan.actions.length === 0)
@@ -71,8 +93,14 @@ export function changeFacts(input: {
       facts.add("outside-scope");
       details.push("Could not read the PR's files");
     } else {
+      const paths = input.prFiles.flatMap(entryPaths);
+      for (const path of paths)
+        if (typeof path !== "string" || !plainRepoPath(path))
+          return {
+            error: `PR path ${JSON.stringify(path)} is not a plain repository path`,
+          };
       let outside = 0;
-      for (const file of input.prFiles) {
+      for (const file of paths) {
         if (globMatch(KNOWLEDGE_GLOB, file)) continue;
         if (deploy.scope.migrationPaths.some((g) => globMatch(g, file))) {
           facts.add("migration");

@@ -41,7 +41,7 @@ const raise = action({
 });
 
 test("globs", () => {
-  expect(KNOWLEDGE_GLOB).toBe("docs/incidents/**");
+  expect(KNOWLEDGE_GLOB).toBe("docs/incidents/**/*.md");
   expect(globMatch("src/**", "src/a/b.ts")).toBe(true);
   expect(globMatch("src/**", "infra/main.tf")).toBe(false);
   expect(globMatch(KNOWLEDGE_GLOB, "docs/incidents/runbooks/search.md")).toBe(
@@ -174,4 +174,53 @@ test("errors", () => {
       prFiles: [],
     }),
   ).toEqual({ error: 'List each action once: "pause-worker"' });
+});
+test("only markdown under docs/incidents is knowledge; odd paths are refused", () => {
+  const out = changeFacts({
+    plan: { pr: true, actions: [] },
+    settings: settings([deploy]),
+    prFiles: ["docs/incidents/fix.sh"],
+  });
+  expect("error" in out ? out : [...out.facts]).toEqual(["outside-scope"]);
+  for (const path of [
+    "docs/incidents/../../infra/main.tf",
+    "./src/a.ts",
+    "/etc/passwd",
+    "src//a.ts",
+  ])
+    expect(
+      changeFacts({
+        plan: { pr: true, actions: [] },
+        settings: settings([deploy]),
+        prFiles: [path],
+      }),
+    ).toEqual({
+      error: `PR path ${JSON.stringify(path)} is not a plain repository path`,
+    });
+});
+test("a rename counts both its old and its new path", () => {
+  const moved = changeFacts({
+    plan: { pr: true, actions: [] },
+    settings: settings([deploy]),
+    prFiles: [
+      {
+        filename: "src/a.sql",
+        previous_filename: "src/db/migrations/0042.sql",
+      },
+    ],
+  });
+  expect("error" in moved ? moved : [...moved.facts]).toEqual(["migration"]);
+  const hidden = changeFacts({
+    plan: { pr: true, actions: [] },
+    settings: settings([deploy]),
+    prFiles: [
+      {
+        filename: "docs/incidents/old-infra.md",
+        previous_filename: "infra/main.md",
+      },
+    ],
+  });
+  expect("error" in hidden ? hidden : hidden.details).toEqual([
+    "infra/main.md is outside Deploy's scope",
+  ]);
 });
