@@ -5,6 +5,7 @@ import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 import {
   enforceIncidentSpawn,
   incidentDescendantPolicy,
+  incidentTurnScope,
 } from "./session-policy";
 
 const kit = useIncidentTestKernel();
@@ -169,4 +170,86 @@ test("createSession enforces before the descendant isolation check", async () =>
   expect(enforce).toBeLessThan(
     src.indexOf("Automation descendants require an explicit sandbox"),
   );
+});
+
+const bound = (over: Record<string, unknown> = {}) => ({
+  id: "os-1",
+  mode: "code" as const,
+  repo: "acme",
+  runner: { id: "rn-prod" },
+  automationDescendantPolicy: {
+    ...incidentDescendantPolicy(access(), base),
+    mcpServers: ["sentry", "logs"],
+  },
+  ...over,
+});
+
+test("a turn never widens past the spawn snapshot and narrows to the fresh access", async () => {
+  current = access({ connections: ["sentry", "logs", "metrics"] });
+  expect((await incidentTurnScope(bound()))?.mcpServers).toEqual([
+    "sentry",
+    "logs",
+  ]);
+  current = access({ connections: ["logs"], deniedTools: { bash: "off" } });
+  expect(await incidentTurnScope(bound())).toMatchObject({
+    mcpServers: ["logs"],
+    deniedTools: { bash: "off" },
+  });
+});
+test.each([
+  [access({ mode: "ask" }), {}, "may now only read"],
+  [access({ repos: [] }), {}, "Repo acme was removed"],
+  [access({ runners: [] }), {}, "Runner rn-prod was removed"],
+])(
+  "refuses a turn when access shrank under the session",
+  async (next, over, message) => {
+    current = next;
+    await expect(incidentTurnScope(bound(over))).rejects.toThrow(message);
+    expect(kit.audits).toContainEqual(
+      expect.objectContaining({
+        kind: "incident_access_refused",
+        phase: "turn",
+        session_id: "os-1",
+        incident_id: "inc-1",
+      }),
+    );
+  },
+);
+test("a refused resolution refuses the turn", async () => {
+  __setBindingResolverForTest(async () => {
+    throw new AgentAccessError(
+      "Incident inc-1 is paused; its agents have no access",
+      "incident",
+    );
+  });
+  await expect(incidentTurnScope(bound())).rejects.toThrow("is paused");
+  expect(kit.audits).toContainEqual(
+    expect.objectContaining({ kind: "incident_access_refused", phase: "turn" }),
+  );
+});
+test("access for another incident or role refuses the turn", async () => {
+  current = access({ role: "verifier" });
+  await expect(incidentTurnScope(bound())).rejects.toMatchObject({
+    code: "turn",
+  });
+});
+test("a revision change is audited once", async () => {
+  current = access({ revision: "r9" });
+  await incidentTurnScope(bound());
+  await incidentTurnScope(bound());
+  expect(
+    kit.audits.filter((e) => e.kind === "incident_access_changed"),
+  ).toEqual([
+    {
+      kind: "incident_access_changed",
+      incident_id: "inc-1",
+      incident_role: "investigator",
+      session_id: "os-1",
+      from: "r2",
+      to: "r9",
+    },
+  ]);
+});
+test("no binding, no scope", async () => {
+  expect(await incidentTurnScope({ id: "os-2" })).toBeNull();
 });
