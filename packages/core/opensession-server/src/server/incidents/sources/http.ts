@@ -64,6 +64,9 @@ export interface HttpPreview {
   latencyMs?: number;
   bodyHead: string;
   bodyTruncated: boolean;
+  /** The body came in an encoding that cannot be decoded: `bodyHead` is
+   *  its raw bytes. */
+  undecodable?: true;
   json?: unknown;
   matches?: Record<string, unknown[]>;
 }
@@ -398,6 +401,7 @@ export async function runHttpSource(
       latencyMs,
       bodyHead: cut ? scrubCutEnd(head, secrets) : head,
       bodyTruncated: cut,
+      ...(response.undecodable ? { undecodable: true as const } : {}),
     };
     const status = response.status;
     if (!statusExpected(status, source.expectStatus))
@@ -411,6 +415,13 @@ export async function runHttpSource(
         ],
         preview,
       };
+    if (response.undecodable && needsBody) {
+      const encoding = response.headers.get("content-encoding") ?? "";
+      throw new RunStop(
+        failed,
+        `Response body is in an encoding that cannot be read (${encoding.trim() || "unknown"})`,
+      );
+    }
     if (read.over && needsBody) throw new RunStop(failed, "Response over 1 MB");
     const contains = source.expectBody?.contains;
     if (contains !== undefined && !read.text.includes(contains))

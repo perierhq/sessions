@@ -311,7 +311,8 @@ export interface PinnedRequestInit {
    *  "truncate" stops reading at `maxBodyBytes` and answers with what was
    *  read and `truncated` set, so the status is still known. A cut encoded
    *  body is decoded as far as it goes. A body in an encoding that cannot
-   *  be decoded comes back raw, over the limit or not. */
+   *  be decoded comes back raw, over the limit or not, with `undecodable`
+   *  set. */
   overflow?: "reject" | "truncate";
 }
 
@@ -322,6 +323,9 @@ export interface PinnedResponse {
   body: Uint8Array;
   /** Set when `overflow: "truncate"` cut the body short. */
   truncated?: boolean;
+  /** Set when `overflow: "truncate"` could not decode the body: `body` is
+   *  the raw bytes (or nothing, if decoding a cut body failed). */
+  undecodable?: true;
 }
 
 /** One request over node:http(s), dialling only the target's checked
@@ -403,6 +407,7 @@ export function pinnedHttpRequest(
                 headers,
                 body: body ?? raw.subarray(0, maxBodyBytes),
                 truncated: true,
+                ...(body === null ? { undecodable: true as const } : {}),
               }),
             () =>
               resolve({
@@ -410,6 +415,7 @@ export function pinnedHttpRequest(
                 headers,
                 body: new Uint8Array(),
                 truncated: true,
+                undecodable: true,
               }),
           );
         const cutShort = () => {
@@ -446,7 +452,7 @@ export function pinnedHttpRequest(
           const raw = Buffer.concat(chunks);
           // Undecodable but whole: the raw bytes, as over the limit.
           if (truncate && !isDecodable(encoding))
-            return resolve({ status, headers, body: raw });
+            return resolve({ status, headers, body: raw, undecodable: true });
           try {
             const body = decodeBody(url, encoding, raw, maxBodyBytes);
             resolve({ status, headers, body });

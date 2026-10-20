@@ -68,6 +68,10 @@ beforeAll(() => {
           n: 1,
         });
       }
+      if (p === "/odd-encoding")
+        return new Response('{"status":"ok"}', {
+          headers: { "content-encoding": "compress" },
+        });
       if (p === "/see-other") return Response.redirect(`${A}echo`, 303);
       if (p === "/temp") return Response.redirect(`${A}echo`, 307);
       if (p === "/temp-away") return Response.redirect(`${B}`, 307);
@@ -214,6 +218,19 @@ test("secrets the check sends never come back in the preview or a detail", async
     "b0dy-t0ken",
   ])
     expect([secret, text.includes(secret)]).toEqual([secret, false]);
+});
+
+test("a body in an encoding that cannot be read says so", async () => {
+  const judged = await run("/odd-encoding", { json: { preset: "plain" } });
+  expect(judged.observations[0]).toMatchObject({
+    result: "fail",
+    detail: "Response body is in an encoding that cannot be read (compress)",
+  });
+  expect(judged.preview?.undecodable).toBe(true);
+  const plain = await run("/odd-encoding");
+  expect(plain.observations[0].result).toBe("ok");
+  expect(plain.preview?.undecodable).toBe(true);
+  expect((await run("/ok")).preview?.undecodable).toBeUndefined();
 });
 
 test("303 turns into a GET without a body; 307 keeps both on the same origin", async () => {

@@ -280,6 +280,7 @@ describe("pinnedFetch", () => {
       expect(text.length).toBeGreaterThan(0);
       expect(text.length).toBeLessThanOrEqual(2_000);
       expect(TEXT.startsWith(text)).toBe(true);
+      expect(cut.undecodable).toBeUndefined();
     }
   });
 
@@ -295,15 +296,17 @@ describe("pinnedFetch", () => {
         (address) => address !== LOCAL,
       );
     const under = await request(1_000, "truncate");
-    expect([new TextDecoder().decode(under.body), under.truncated]).toEqual([
-      "0123456789abcdef",
-      undefined,
-    ]);
+    expect([
+      new TextDecoder().decode(under.body),
+      under.truncated,
+      under.undecodable,
+    ]).toEqual(["0123456789abcdef", undefined, true]);
     const over = await request(4, "truncate");
-    expect([new TextDecoder().decode(over.body), over.truncated]).toEqual([
-      "0123",
-      true,
-    ]);
+    expect([
+      new TextDecoder().decode(over.body),
+      over.truncated,
+      over.undecodable,
+    ]).toEqual(["0123", true, true]);
     await expect(request(1_000)).rejects.toThrow(
       /unsupported content-encoding: compress/,
     );
