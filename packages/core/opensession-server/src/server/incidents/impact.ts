@@ -216,7 +216,8 @@ function needsMeasuring(incident: Incident, now: number): boolean {
 }
 
 /**
- * Measure every open incident, and every incident closed within the last
+ * The impact signal is the first of the incident's signals that still
+ * exists, is enabled and has an impact source. Measure every open incident, and every incident closed within the last
  * {@link IMPACT_FINAL_WINDOW_MS} that has not been measured since it closed.
  * An open incident is written only when the numbers change (a steady count
  * causes no incident change event); a closed one's final measurement is
@@ -236,7 +237,8 @@ export async function refreshIncidentImpacts(
   for (const incident of incidents) {
     const signal = incident.signalIds
       .map((id) => signals.get(id))
-      .find((s) => s?.impact);
+      // A disabled signal is not queried, not even for its impact.
+      .find((s) => s?.enabled && s.impact);
     if (!signal) continue;
     const previous =
       incident.impact?.signalId === signal.id ? incident.impact : undefined;

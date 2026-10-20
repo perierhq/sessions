@@ -6,7 +6,7 @@ import {
   measureImpact,
   refreshIncidentImpacts,
 } from "./impact";
-import { createSignal } from "./signal-store";
+import { createSignal, updateSignal } from "./signal-store";
 import type { SourceRun } from "./sources";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
@@ -373,4 +373,36 @@ test("an incident without an impact signal is not written", async () => {
     }),
   ).toBe(0);
   expect((await getIncident(inc.id))?.impact).toBeUndefined();
+});
+
+test("a disabled impact signal is skipped for the next one", async () => {
+  const { s, inc } = await openIncidentWithImpact();
+  const off = await updateSignal(s.id, { enabled: false }, "Ada");
+  if (!off || "error" in off) throw new Error("update failed");
+  const queried: string[] = [];
+  const deps: Partial<ImpactDeps> = {
+    runSource: async (signal) => {
+      queried.push(signal.id);
+      return run({ "$.failed": [1] });
+    },
+  };
+  expect(await refreshIncidentImpacts(NOW, deps)).toBe(0);
+  expect(queried).toEqual([]);
+  expect((await getIncident(inc.id))?.impact).toBeUndefined();
+  const next = await createSignal(
+    {
+      name: "Search log",
+      project: "acme",
+      source: { kind: "http", url: "https://acme.example.test/log" },
+      impact: httpImpact,
+    },
+    "Ada",
+  );
+  if ("error" in next) throw new Error(next.error);
+  await updateIncident(inc.id, (c) => ({
+    ...c,
+    signalIds: [...c.signalIds, next.id],
+  }));
+  expect(await refreshIncidentImpacts(NOW, deps)).toBe(1);
+  expect(queried).toEqual([next.id]);
 });
