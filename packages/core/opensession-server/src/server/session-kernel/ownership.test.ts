@@ -749,7 +749,11 @@ describe("single session ownership", () => {
     expect(wiring).not.toContain("cancelAgentRun(");
     const routes = read("routes/sessions.ts");
     expect(routes).toContain("await cancelAgentRunAndWait(runIds)");
-    expect(routes).toContain("requestTurnCancel(session.id, session");
+    // Archive's run stop is shared with repository removal.
+    expect(routes).toContain("archiveSession(sessionId, session)");
+    expect(read("session-archive.ts")).toContain(
+      "requestTurnCancel(session.id, session",
+    );
     const prRoutes = read("routes/pr.ts");
     expect(prRoutes).toContain("requestTurnCancel(bksId, reviewSession");
     expect(prRoutes).not.toContain("cancelAgentRun(");
