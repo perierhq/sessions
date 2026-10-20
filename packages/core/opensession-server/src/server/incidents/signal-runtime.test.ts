@@ -119,6 +119,36 @@ test("no duplicate and no new events after a restart", async () => {
   expect(kit.audits).toEqual([]);
 });
 
+test("an observation arriving during boot waits for the replay", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail");
+  await flushObservations();
+  const before = await listIncidents();
+  kit.audits.length = 0;
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  const boot = bootSignalRuntime(clock);
+  clock += 60_000;
+  const during = ingestObservations(
+    s.id,
+    [{ at: new Date(clock).toISOString(), result: "ok", detail: "" }],
+    clock,
+  );
+  const direct = reevaluateSignal(s, clock);
+  await Promise.all([boot, during, direct]);
+  // The ingest saw the replayed `failing` as its previous state: one ok is
+  // not a recovery, nothing is audited as a change from nothing, and boot
+  // did not overwrite the newer evaluation.
+  expect(getSignalEvaluation(s.id)).toMatchObject({
+    state: "failing",
+    lastObservationAt: new Date(clock).toISOString(),
+  });
+  expect(kit.audits.filter((a) => a.kind === "incident_signal_state")).toEqual(
+    [],
+  );
+  expect(await listIncidents()).toEqual(before);
+});
+
 test("boot opens an incident for a signal that went bad while nothing covered it", async () => {
   const s = await make();
   await feed(s.id, "fail", "fail");

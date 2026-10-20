@@ -30,6 +30,12 @@ import { getSignal, listSignals } from "./signal-store";
 let evaluations = new Map<string, SignalEvaluation>();
 /** The engine's work queue per project. */
 let projectChains = new Map<string, Promise<void>>();
+/**
+ * The boot replay in progress. Intake waits for it: an observation taken
+ * meanwhile would otherwise be judged against no previous state, and the
+ * replay would then overwrite its evaluation.
+ */
+let booting: Promise<void> | null = null;
 
 export function getSignalEvaluation(id: string): SignalEvaluation | null {
   return evaluations.get(id) ?? null;
@@ -47,6 +53,7 @@ export function forgetSignal(id: string): void {
 export function __resetSignalRuntimeForTest(): void {
   evaluations = new Map();
   projectChains = new Map();
+  booting = null;
 }
 
 function hydrate(signal: Signal, now: number): Promise<void> {
@@ -108,6 +115,7 @@ export async function reevaluateSignal(
   signal: Signal,
   now: number = Date.now(),
 ): Promise<SignalEvaluation | null> {
+  await bootSettled();
   if (!signal.enabled) {
     forgetSignal(signal.id);
     return null;
@@ -140,6 +148,7 @@ export async function ingestObservations(
   observations: Observation[],
   now: number = Date.now(),
 ): Promise<SignalEvaluation | null> {
+  await bootSettled();
   const signal = await getSignal(signalId);
   if (!signal?.enabled) return null;
   if (observations.length) appendObservations(signal.id, observations);
@@ -150,11 +159,26 @@ export async function ingestObservations(
  * Rebuild every enabled signal's evaluation from stored observations, then
  * let the engine see each one as if new (`previous = null`): only a bad
  * signal that no open incident covers yet opens anything, so a restart adds
- * no duplicates and no events.
+ * no duplicates and no events. Intake ({@link ingestObservations},
+ * {@link reevaluateSignal}) called from the moment this is called waits
+ * until it resolves.
  */
-export async function bootSignalRuntime(
-  now: number = Date.now(),
-): Promise<void> {
+export function bootSignalRuntime(now: number = Date.now()): Promise<void> {
+  const run = replayAll(now);
+  booting = run;
+  const clear = () => {
+    if (booting === run) booting = null;
+  };
+  run.then(clear, clear);
+  return run;
+}
+
+/** Wait out a boot replay in progress; a failed one does not block intake. */
+async function bootSettled(): Promise<void> {
+  if (booting) await booting.catch(() => {});
+}
+
+async function replayAll(now: number): Promise<void> {
   const signals = (await listSignals()).filter((s) => s.enabled);
   for (const signal of signals) {
     try {

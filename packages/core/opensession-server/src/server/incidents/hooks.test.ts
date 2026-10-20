@@ -2,13 +2,20 @@ import { beforeEach, expect, test } from "bun:test";
 import { incidentHookRoutes } from "./hooks";
 import {
   __resetObservationsForTest,
+  flushObservations,
   recentObservations,
 } from "./observation-store";
-import { __resetSignalRuntimeForTest } from "./signal-runtime";
+import { listIncidents } from "./incident-store";
+import {
+  __resetSignalRuntimeForTest,
+  bootSignalRuntime,
+  getSignalEvaluation,
+  ingestObservations,
+} from "./signal-runtime";
 import { createSignal, getSignal, updateSignal } from "./signal-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
-useIncidentTestKernel();
+const kit = useIncidentTestKernel();
 beforeEach(() => {
   __resetSignalRuntimeForTest();
   __resetObservationsForTest();
@@ -176,4 +183,53 @@ test("heartbeats check in by GET or POST, and can report failure", async () => {
     ["fail", "Reported a failure"],
     ["ok", "backup done"],
   ]);
+});
+
+test("a hook call during boot waits for the replay", async () => {
+  const w = await make({ name: "Zz hook", source: { kind: "webhook" } });
+  const now = Date.now();
+  // Others restored first keep the boot replay busy while the call lands.
+  for (let i = 0; i < 20; i++) {
+    const other = await make({
+      name: `Other ${i}`,
+      source: { kind: "webhook" },
+    });
+    await ingestObservations(
+      other.id,
+      [{ at: new Date(now - 60_000).toISOString(), result: "ok", detail: "" }],
+      now,
+    );
+  }
+  for (let i = 0; i < 5; i++)
+    await ingestObservations(
+      w.id,
+      [
+        {
+          at: new Date(now - 60_000 + i).toISOString(),
+          result: "fail",
+          detail: "",
+        },
+      ],
+      now,
+    );
+  expect(getSignalEvaluation(w.id)?.state).toBe("failing");
+  await flushObservations();
+  const before = await listIncidents();
+  expect(before).toHaveLength(1);
+  kit.audits.length = 0;
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  const boot = bootSignalRuntime();
+  const res = await call(
+    "POST",
+    `/incident-hooks/${w.id}/${w.hookSecret}`,
+    "again",
+  );
+  await boot;
+  expect(res.status).toBe(200);
+  expect(getSignalEvaluation(w.id)?.state).toBe("failing");
+  expect(kit.audits.filter((a) => a.kind === "incident_signal_state")).toEqual(
+    [],
+  );
+  expect(await listIncidents()).toEqual(before);
 });
