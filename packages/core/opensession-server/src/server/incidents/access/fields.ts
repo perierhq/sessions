@@ -74,13 +74,13 @@ export interface ItemContext {
 const at = (path: string | undefined, key: string | number): string =>
   path ? `${path}.${key}` : String(key);
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   const proto = Object.getPrototypeOf(v);
   return proto === Object.prototype || proto === null;
 }
 
-function unknownKey(
+export function unknownKey(
   obj: Record<string, unknown>,
   allowed: readonly string[],
   kind: string | null,
@@ -94,7 +94,7 @@ function unknownKey(
   return null;
 }
 
-function missingKey(
+export function missingKey(
   obj: Record<string, unknown>,
   required: readonly string[],
   path: string | undefined,
