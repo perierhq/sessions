@@ -1,5 +1,10 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
-import { incidentHookRoutes } from "./hooks";
+import {
+  HOOK_CALLS_PER_MINUTE,
+  __resetHookRateForTest,
+  incidentHookRoutes,
+  takeHookCall,
+} from "./hooks";
 import {
   __resetObservationsForTest,
   flushObservations,
@@ -19,6 +24,7 @@ import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
 beforeEach(() => {
+  __resetHookRateForTest();
   __resetSignalRuntimeForTest();
   __resetObservationsForTest();
 });
@@ -311,4 +317,45 @@ test("a hook call during boot waits for the replay", async () => {
     [],
   );
   expect(await listIncidents()).toEqual(before);
+});
+
+test("at most 60 hook calls a minute per signal; the rest get 429 unrecorded", async () => {
+  expect(HOOK_CALLS_PER_MINUTE).toBe(60);
+  const w = await make({ source: { kind: "webhook" } });
+  const other = await make({ source: { kind: "webhook" } });
+  const path = `/incident-hooks/${w.id}/${w.hookSecret}`;
+  for (let i = 0; i < 60; i++)
+    expect((await call("POST", path, `e${i}`)).status).toBe(200);
+  const over = await call("POST", path, "one too many");
+  expect(over.status).toBe(429);
+  expect(await over.json()).toEqual({ error: "Too many calls" });
+  const retry = Number(over.headers.get("retry-after"));
+  expect(retry).toBeGreaterThanOrEqual(1);
+  expect(retry).toBeLessThanOrEqual(60);
+  expect(recentObservations(w.id)).toHaveLength(60);
+  // Another signal has its own budget; a wrong door spends none.
+  expect(
+    (await call("POST", `/incident-hooks/${other.id}/${other.hookSecret}`, "x"))
+      .status,
+  ).toBe(200);
+  expect(
+    (await call("POST", `/incident-hooks/${other.id}/${"0".repeat(48)}`))
+      .status,
+  ).toBe(404);
+});
+
+test("the hook budget frees up as calls leave the minute", () => {
+  const t = 1_000_000;
+  for (let i = 0; i < 60; i++)
+    expect(takeHookCall("sig-a", t + i * 500)).toEqual({ ok: true });
+  expect(takeHookCall("sig-a", t + 30_000)).toEqual({
+    ok: false,
+    retryAfterS: 30,
+  });
+  expect(takeHookCall("sig-a", t + 60_000)).toEqual({ ok: true });
+  expect(takeHookCall("sig-a", t + 60_001)).toEqual({
+    ok: false,
+    retryAfterS: 1,
+  });
+  expect(takeHookCall("sig-b", t + 60_001)).toEqual({ ok: true });
 });

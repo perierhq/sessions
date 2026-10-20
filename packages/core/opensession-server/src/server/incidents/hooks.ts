@@ -3,8 +3,9 @@
 // `/incident-hooks/<signalId>/<secret>/fail` (POST only) for a heartbeat
 // reporting a failure. The secret in the path is the only auth, so every wrong door
 // (unknown id, wrong secret, a signal that is not a hook, the wrong method
-// or suffix) gets the same 404. No per-call audit: the observations are
-// their own record.
+// or suffix) gets the same 404. A signal takes at most 60 calls a minute;
+// the rest get a 429 and are not recorded. No per-call audit: the
+// observations are their own record.
 import { timingSafeEqual } from "node:crypto";
 import type { Observation, Signal } from "../../shared/incidents";
 import {
@@ -21,7 +22,43 @@ import { webhookObservations } from "./sources/webhook";
 export const WEBHOOK_BODY_CAP = 262_144;
 export const HEARTBEAT_BODY_CAP = 10_000;
 
+export const HOOK_CALLS_PER_MINUTE = 60;
+const RATE_WINDOW_MS = 60_000;
+
 const MAX_DETAIL_CHARS = 200;
+
+/** Accepted call instants per signal within the last minute, oldest first. */
+let hookCalls = new Map<string, number[]>();
+
+export function __resetHookRateForTest(): void {
+  hookCalls = new Map();
+}
+
+/** Spend one call of the signal's budget, or say when the next one frees. */
+export function takeHookCall(
+  signalId: string,
+  now: number,
+): { ok: true } | { ok: false; retryAfterS: number } {
+  const recent = (hookCalls.get(signalId) ?? []).filter(
+    (at) => now - at < RATE_WINDOW_MS && at <= now,
+  );
+  if (recent.length >= HOOK_CALLS_PER_MINUTE) {
+    hookCalls.set(signalId, recent);
+    const frees = recent[0]! + RATE_WINDOW_MS;
+    return {
+      ok: false,
+      retryAfterS: Math.max(1, Math.ceil((frees - now) / 1000)),
+    };
+  }
+  recent.push(now);
+  hookCalls.set(signalId, recent);
+  // Past 1000 signals, those quiet for a minute are forgotten.
+  if (hookCalls.size > 1_000)
+    for (const [id, calls] of hookCalls)
+      if (!calls.length || now - calls.at(-1)! >= RATE_WINDOW_MS)
+        hookCalls.delete(id);
+  return { ok: true };
+}
 const HOOK_PATH = /^\/incident-hooks\/([^/]+)\/([^/]+)(\/fail)?$/;
 
 interface HookPath {
@@ -97,6 +134,12 @@ function handler(method: "GET" | "POST"): PublicWebhookHandler {
     if (!signal) return notFound();
     if (!signal.enabled)
       return Response.json({ ok: false, skipped: "disabled" });
+    const budget = takeHookCall(signal.id, Date.now());
+    if (!budget.ok)
+      return Response.json(
+        { error: "Too many calls" },
+        { status: 429, headers: { "retry-after": String(budget.retryAfterS) } },
+      );
 
     const cap =
       signal.source.kind === "webhook" ? WEBHOOK_BODY_CAP : HEARTBEAT_BODY_CAP;
