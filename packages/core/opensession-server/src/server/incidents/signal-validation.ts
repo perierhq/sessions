@@ -13,7 +13,7 @@ import {
   type SignalSourceKind,
   type WebhookSource,
 } from "../../shared/incidents";
-import { parseCron } from "../cron";
+import { nextRun, parseCron } from "../cron";
 import { compileSafeRegex } from "../shared/safe-regex";
 import { validateJsonMapping } from "./json-mapping";
 import { validateMaintenanceWindows } from "./maintenance";
@@ -351,6 +351,8 @@ export function validateRule(value: unknown): SignalRule | FieldError {
       const cron = typeof value.cron === "string" ? value.cron.trim() : "";
       if (!parseCron(cron))
         return { error: `Invalid cron expression: "${String(value.cron)}"` };
+      if (!nextRun(cron))
+        return { error: `"${cron}" never runs within a year` };
       return { kind: "missing", cron, graceMs };
     }
     case "deadline": {

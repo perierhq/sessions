@@ -115,7 +115,13 @@ export type SignalRule =
       failingAbove?: number;
       recoveries?: number;
     }
-  | { kind: "missing"; everyMs?: number; cron?: string; graceMs: number }
+  | {
+      kind: "missing";
+      everyMs?: number;
+      /** 5-field cron, evaluated in UTC. */
+      cron?: string;
+      graceMs: number;
+    }
   | { kind: "deadline"; warnDays: number; failDays: number };
 
 /**

@@ -7,6 +7,9 @@ import type { MaintenanceWindow } from "../../shared/incidents";
 export const MAX_MAINTENANCE_WINDOWS = 20;
 const MAX_NOTE = 200;
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** A `once` instant is a date and time ending in `Z` or an offset like `+02:00`. */
+const EXPLICIT_OFFSET =
+  /[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[zZ]|[+-]\d{2}(?::?\d{2})?)$/;
 const WEEKDAYS: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -137,6 +140,13 @@ function validateWindow(
     const end = typeof value.end === "string" ? Date.parse(value.end) : NaN;
     if (Number.isNaN(start) || Number.isNaN(end))
       return { error: `${label}: start and end must be dates` };
+    if (
+      !EXPLICIT_OFFSET.test((value.start as string).trim()) ||
+      !EXPLICIT_OFFSET.test((value.end as string).trim())
+    )
+      return {
+        error: `${label}: start and end need Z or a UTC offset like +02:00`,
+      };
     if (end <= start) return { error: `${label}: end must be after start` };
     const window: MaintenanceWindow = {
       kind: "once",

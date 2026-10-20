@@ -103,3 +103,44 @@ test("validation", () => {
     ]),
   ).toEqual({ error: expect.any(String) });
 });
+test("once needs Z or an explicit offset", () => {
+  expect(
+    validateMaintenanceWindows([
+      { kind: "once", start: "2026-10-20T10:00", end: "2026-10-20T11:00Z" },
+    ]),
+  ).toEqual({ error: expect.stringContaining("offset") });
+  expect(
+    validateMaintenanceWindows([
+      { kind: "once", start: "2026-10-20", end: "2026-10-21" },
+    ]),
+  ).toEqual({ error: expect.stringContaining("offset") });
+  expect(
+    validateMaintenanceWindows([
+      {
+        kind: "once",
+        start: "2026-10-20T12:00:00+02:00",
+        end: "2026-10-20T11:00:00Z",
+      },
+    ]),
+  ).toEqual([
+    {
+      kind: "once",
+      start: "2026-10-20T10:00:00.000Z",
+      end: "2026-10-20T11:00:00.000Z",
+    },
+  ]);
+});
+test("spring forward: a window inside the skipped hour never happens", () => {
+  const w = weekly([0], "02:00", "02:30"); // 2026-03-29, 02:00 CET -> 03:00 CEST
+  for (
+    let t = at("2026-03-28T22:00:00Z");
+    t < at("2026-03-29T04:00:00Z");
+    t += 60_000
+  )
+    expect(activeMaintenance(w, t)).toBeNull();
+});
+test("a window crossing midnight does not match its start day's morning", () => {
+  const w = weekly([1], "22:00", "02:00");
+  expect(activeMaintenance(w, at("2026-10-18T23:00:00Z"))).toBeNull(); // Mon 01:00
+  expect(activeMaintenance(w, at("2026-10-18T21:30:00Z"))).toBeNull(); // Sun 23:30
+});

@@ -97,6 +97,19 @@ test.each([
     "one of",
   ],
   [{ rule: { kind: "deadline", warnDays: 3, failDays: 3 } }, "warnDays"],
+  [{ rule: { kind: "missing", cron: "0 0 31 2 *", graceMs: 0 } }, "never runs"],
+  [
+    {
+      maintenance: [
+        {
+          kind: "once",
+          start: "2026-10-20T10:00:00",
+          end: "2026-10-20T11:00:00",
+        },
+      ],
+    },
+    "offset",
+  ],
   [{ dependsOn: ["sig-missing"] }, "sig-missing"],
   [{ dependsOn: ["sig-1"] }, "itself"],
 ])("rejects %j", async (input, message) => {
