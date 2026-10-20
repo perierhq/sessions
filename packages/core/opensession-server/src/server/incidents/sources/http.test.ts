@@ -477,3 +477,57 @@ test("refusals of names and schemes are unknown too", async () => {
       (await runHttpSource({ kind: "http", url })).observations[0],
     ).toMatchObject({ result: "unknown", detail });
 });
+
+test("Runner offline is unknown, never a failure; size errors fail", async () => {
+  const throwing = (error: Error) => ({
+    net: {
+      resolve: async () => ["203.0.113.7"],
+      isBlocked: () => false,
+      send: async () => {
+        throw error;
+      },
+    },
+  });
+  expect(
+    (
+      await runHttpSource(
+        { kind: "http", url: "https://acme.example.test/ok" },
+        throwing(
+          Object.assign(new Error("Runner offline"), {
+            code: "RUNNER_OFFLINE",
+            runnerName: "prod-1",
+          }),
+        ),
+      )
+    ).observations[0],
+  ).toMatchObject({ result: "unknown", detail: "Runner offline: prod-1" });
+  expect(
+    (
+      await runHttpSource(
+        { kind: "http", url: "https://acme.example.test/ok" },
+        throwing(
+          Object.assign(new Error("x"), {
+            code: "BODY_TOO_LARGE",
+            limitKb: 150,
+          }),
+        ),
+      )
+    ).observations[0],
+  ).toMatchObject({ result: "fail", detail: "Response over 150 KB" });
+  expect(
+    (
+      await runHttpSource(
+        { kind: "http", url: "https://acme.example.test/ok" },
+        {
+          ...throwing(
+            Object.assign(new Error("x"), {
+              code: "BODY_TOO_LARGE",
+              limitKb: 150,
+            }),
+          ),
+          provider: true,
+        },
+      )
+    ).observations[0],
+  ).toMatchObject({ result: "unknown", detail: "Response over 150 KB" });
+});

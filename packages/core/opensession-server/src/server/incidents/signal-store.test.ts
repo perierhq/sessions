@@ -4,6 +4,7 @@ import {
   deleteSignal,
   getSignal,
   listSignals,
+  setSignalRunOnCheck,
   signalWriteCount,
   updateSignal,
 } from "./signal-store";
@@ -254,4 +255,33 @@ test("an impact that copies the source's secrets is audited by field name", asyn
     },
   ]);
   expect(JSON.stringify(kit.audits)).not.toContain("s3cret");
+});
+
+test("a runOn check can refuse a signal", async () => {
+  const seen: string[] = [];
+  setSignalRunOnCheck(async (s) => {
+    seen.push(`${s.project}:${s.runOn}`);
+    return s.runOn === "runner-prod" && s.project === "acme"
+      ? null
+      : `${s.runOn} is not a production Runner for ${s.project}`;
+  });
+  try {
+    expect(await createSignal({ ...http, runOn: "runner-lab" }, "Ada")).toEqual(
+      { error: "runner-lab is not a production Runner for acme" },
+    );
+    const ok = await createSignal({ ...http, runOn: "runner-prod" }, "Ada");
+    if ("error" in ok) throw new Error(ok.error);
+    expect(await updateSignal(ok.id, { runOn: "runner-lab" }, "Ada")).toEqual({
+      error: "runner-lab is not a production Runner for acme",
+    });
+    expect(await updateSignal(ok.id, { project: "acme-api" }, "Ada")).toEqual({
+      error: "runner-prod is not a production Runner for acme-api",
+    });
+    expect((await getSignal(ok.id))?.project).toBe("acme");
+    const plain = await createSignal(http, "Ada");
+    expect("error" in plain).toBe(false);
+    expect(seen).not.toContain("acme:undefined");
+  } finally {
+    setSignalRunOnCheck(undefined);
+  }
 });

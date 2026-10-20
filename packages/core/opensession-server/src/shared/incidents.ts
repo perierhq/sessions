@@ -190,7 +190,8 @@ export interface Signal {
   dependsOn?: string[];
   maintenance?: MaintenanceWindow[];
   impact?: ImpactSource;
-  /** Runner id; stored only, every source runs locally for now. */
+  /** Runner id: an http signal's checks run from that Runner (a project's
+   *  production Runner). Other kinds ignore it. */
   runOn?: string;
   hookSecret?: string;
   createdBy: string;

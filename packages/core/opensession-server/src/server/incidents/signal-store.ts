@@ -35,6 +35,19 @@ export function __setProjectCheckForTest(
   projectCheck = check;
 }
 
+type RunOnCheck = (signal: Signal) => Promise<string | null>;
+let runOnCheck: RunOnCheck | undefined;
+
+/** Install the check a signal with `runOn` must pass to be saved (a
+ *  message refuses it). Undefined removes it. */
+export function setSignalRunOnCheck(check: RunOnCheck | undefined): void {
+  runOnCheck = check;
+}
+
+async function runOnProblem(signal: Signal): Promise<string | null> {
+  return signal.runOn && runOnCheck ? runOnCheck(signal) : null;
+}
+
 function projectExists(id: string): boolean {
   return projectCheck ? projectCheck(id) : id in configuredRepos();
 }
@@ -149,6 +162,8 @@ export async function createSignal(
   if ("error" in merged) return merged;
   const normalized = normalizeSignal(merged.signal);
   if ("error" in normalized) return normalized;
+  const refused = await runOnProblem(normalized);
+  if (refused) return { error: refused };
   const signal = compact(normalized);
   if (needsHookSecret(signal)) signal.hookSecret = generateHookSecret();
   await signalDocuments().set(signal.id, signal);
@@ -175,6 +190,25 @@ export async function updateSignal(
   const validated = await validateSignalInput(input, validationContext(id));
   if ("error" in validated) return validated;
   const freshSecret = generateHookSecret();
+  // The runOn check is async, so it runs before the compare-and-set on the
+  // record as it would be; the write then insists on the same Runner and
+  // project.
+  let checked: { runOn?: string; project: string } | undefined;
+  if (runOnCheck) {
+    const stored = await getSignal(id);
+    if (stored === null) return null;
+    const restored = withRestoredSecrets(
+      { ...stored, ...validated.fields, id: stored.id } as Signal,
+      stored,
+    );
+    const preview =
+      "error" in restored ? restored : normalizeSignal(restored.signal);
+    if (!("error" in preview)) {
+      const refused = await runOnProblem(preview);
+      if (refused) return { error: refused };
+      checked = { runOn: preview.runOn, project: preview.project };
+    }
+  }
   let failure: { error: string } | undefined;
   let impactChanged = false;
   let impactFromSource: string[] | undefined;
@@ -199,6 +233,17 @@ export async function updateSignal(
       "error" in merged ? merged : normalizeSignal(merged.signal);
     if ("error" in normalized) {
       failure = normalized;
+      return value;
+    }
+    if (
+      runOnCheck &&
+      normalized.runOn &&
+      (checked?.runOn !== normalized.runOn ||
+        checked.project !== normalized.project)
+    ) {
+      failure = {
+        error: "The signal changed while it was being saved. Try again.",
+      };
       return value;
     }
     if (!("error" in merged)) impactFromSource = merged.impactFromSource;
