@@ -44,6 +44,7 @@ import { handlePreviewRoutes } from "./preview";
 import { handleWorkspaceRoutes } from "./workspace";
 import { handleWorkspaceCollaboratorRoutes } from "./workspace-collaborators";
 import { handleAutomationsRoutes } from "./automations";
+import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentsRoutes } from "./incidents";
 import { handleHumanAsksRoutes } from "./human-asks";
 import { handleKeychainRoutes } from "./keychain";
@@ -123,6 +124,8 @@ export const routeHandlers: RouteHandler[] = [
   handleWorkspaceCollaboratorRoutes,
   handleWorkspaceRoutes,
   handleAutomationsRoutes,
+  // Before the incidents routes, so /api/incidents/:id/access is answered here.
+  handleIncidentAccessRoutes,
   handleIncidentsRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,

@@ -145,6 +145,7 @@ import { configureWebhookRoutes } from "./src/server/webhook-server";
 import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
+import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { prImagePublicRoutes } from "./src/server/pr-images";
 import { mcpOauthPublicRoutes } from "./src/server/mcp-oauth";
 import {
@@ -862,6 +863,8 @@ if (!g.__opensessionBooted) {
     // Incident signals are cheap gateway checks, no model. Started before the
     // ingress binds so a hook call waits for the boot replay, never races it.
     startIncidentSignals();
+    // Revokes incident agents' credential grants when incidents close or access narrows.
+    startIncidentAccess();
     configureWebhookRoutes(agents, webhookRoutes);
     try {
       startPublicIngress();

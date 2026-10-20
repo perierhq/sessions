@@ -73,6 +73,9 @@ repo variable is `true`; until then they skip cleanly.
   - `server/incidents/`: signals (sources, rules, observations, strips),
     incidents (lifecycle, store, engine), the signal scheduler and hook
     intake; API in `server/routes/incidents.ts`
+  - `server/incidents/access/`: access profiles for incident agents
+    (settings, resolution, spawn and per-turn enforcement, host, egress and
+    credential tools); API in `server/routes/incident-access.ts`
   - `server/pi-runner.ts`, `pi-runtime-binding.ts`, `runner-shared.ts`: how
     a pi turn runs and how each turn binds a provider account;
     `server/claude-account-pick.ts` picks the Claude pool account for

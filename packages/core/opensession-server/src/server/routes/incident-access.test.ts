@@ -8,6 +8,8 @@ import { useAccessTestEnv } from "../incidents/testing/access-fixture";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import type { RouteContext } from "./context";
 import { handleIncidentAccessRoutes } from "./incident-access";
+import { handleIncidentsRoutes } from "./incidents";
+import { routeHandlers } from "./index";
 
 const kit = useIncidentTestKernel();
 useAccessTestEnv();
@@ -296,4 +298,10 @@ test("per-incident access shows each role, and refusals for a paused incident", 
   expect((await call("GET", "/api/incidents/inc-missing/access"))?.status).toBe(
     404,
   );
+});
+
+test("registered before the incidents routes", () => {
+  const at = routeHandlers.indexOf(handleIncidentAccessRoutes);
+  expect(at).toBeGreaterThan(-1);
+  expect(at).toBeLessThan(routeHandlers.indexOf(handleIncidentsRoutes));
 });
