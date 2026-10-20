@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultProjectGrants } from "../../../shared/incident-access";
 import { createIncident, updateIncident } from "../incident-store";
+import { createSignal } from "../signal-store";
 import { transitionIncident } from "../lifecycle";
 import { useAccessTestEnv } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
@@ -127,6 +128,36 @@ test("a deleted credential's live grant is revoked", async () => {
   t.spec.credentials = t.spec.credentials.filter((c) => c.id !== credentialId);
   expect(await reconcileIncidentGrants("acme")).toBe(1);
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
+});
+test("a grant bound to a signal that is not the incident's is revoked", async () => {
+  const { incident, credentialId } =
+    await seedIncidentWithGrantedCredential("standing");
+  const sig = await createSignal(
+    {
+      name: "Checkout",
+      project: "acme",
+      source: { kind: "http", url: "https://checkout.example.test/q" },
+    },
+    "Ada",
+  );
+  if ("error" in sig) throw new Error(sig.error);
+  const stray = await kc.incidentGrantFor({
+    credentialId,
+    sessionId: "os-2",
+    mode: "standing",
+    incident: {
+      incidentId: incident.id,
+      role: "investigator",
+      project: "acme",
+      signalId: sig.id,
+    },
+    purpose: "Check the pool",
+  });
+  if ("error" in stray) throw new Error(stray.error);
+  expect(await reconcileIncidentGrants("acme")).toBe(1);
+  expect(
+    kc.listIncidentGrants({ incidentId: incident.id }).map((g) => g.sessionId),
+  ).toEqual(["os-1"]);
 });
 test("closing the incident revokes its agents' grants", async () => {
   startIncidentAccess();

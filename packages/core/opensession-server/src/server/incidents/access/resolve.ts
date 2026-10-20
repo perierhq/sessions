@@ -459,7 +459,8 @@ export function __setBindingResolverForTest(
 /**
  * Resolve the access of a bound agent from the stored incident and signal.
  * A bound signal that no longer exists refuses rather than falling back to
- * the role default, which may be wider than the signal's override.
+ * the role default, which may be wider than the signal's override, and so
+ * does a signal that is not one of the incident's.
  */
 export async function resolveAgentAccessForBinding(
   binding: IncidentAgentBinding,
@@ -478,6 +479,12 @@ export async function resolveAgentAccessForBinding(
       throw new AgentAccessError(
         `Signal ${binding.signalId} no longer exists`,
         "settings",
+      );
+    // Another signal's override could be wider than this incident's.
+    if (!incident.signalIds.includes(signal.id))
+      throw new AgentAccessError(
+        `Signal ${signal.id} is not part of incident ${incident.id}`,
+        "incident",
       );
   }
   return resolveAgentAccess(binding.role, incident, signal);

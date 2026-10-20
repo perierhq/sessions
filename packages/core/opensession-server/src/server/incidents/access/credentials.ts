@@ -196,6 +196,11 @@ export async function reconcileIncidentGrants(
             `Signal ${marker.signalId} no longer exists`,
             "settings",
           );
+        if (!incident.signalIds.includes(signal.id))
+          throw new AgentAccessError(
+            `Signal ${signal.id} is not part of incident ${incident.id}`,
+            "incident",
+          );
       }
       if (marker.role !== "investigator" && marker.role !== "verifier")
         throw new AgentAccessError(

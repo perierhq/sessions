@@ -406,3 +406,47 @@ test("binding resolution applies the bound signal's override; a deleted signal r
     }),
   ).rejects.toThrow("Signal sig-gone no longer exists");
 });
+test("a binding to a signal that is not the incident's refuses", async () => {
+  const mine = await createSignal(
+    {
+      name: "Search",
+      project: "acme",
+      source: { kind: "http", url: "https://search.example.test/q" },
+    },
+    "Ada",
+  );
+  const other = await createSignal(
+    {
+      name: "Checkout",
+      project: "acme",
+      source: { kind: "http", url: "https://checkout.example.test/q" },
+    },
+    "Ada",
+  );
+  if ("error" in mine) throw new Error(mine.error);
+  if ("error" in other) throw new Error(other.error);
+  const inc = await createIncident({
+    project: "acme",
+    title: "Search",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule", ref: mine.id },
+    signalIds: [mine.id],
+    primarySignalId: mine.id,
+    at: "2026-10-20T10:00:00.000Z",
+    detail: "3 failures in a row",
+  });
+  // The other signal's override could be wider than this incident's.
+  await expect(
+    resolveAgentAccessForBinding({
+      incidentId: inc.id,
+      role: "investigator",
+      signalId: other.id,
+      accessRevision: "x",
+    }),
+  ).rejects.toMatchObject({
+    code: "incident",
+    message: `Signal ${other.id} is not part of incident ${inc.id}`,
+  });
+});
