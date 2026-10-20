@@ -1004,6 +1004,82 @@ describe("providers and disagreements", () => {
     ]);
   });
 
+  test("a self-reported signal not ok ends its disagreements, even after a missed change", () => {
+    const a = S("sig-a");
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const withFinding = I("inc-1", "investigating", {
+      signalIds: ["sig-a", "sig-r"],
+      findings: [
+        {
+          id: "f",
+          kind: "disagreement",
+          at: iso(),
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+          detail: "",
+        },
+      ],
+    });
+    const resolve = {
+      op: "resolve-finding",
+      incidentId: "inc-1",
+      kind: "disagreement",
+      signalId: "sig-r",
+    };
+    // ok -> unknown went unseen (a restart replayed it), then -> failing.
+    expect(
+      decide(
+        R,
+        "unknown",
+        E("sig-r", "failing"),
+        snap(
+          [a, R],
+          [E("sig-a", "failing"), E("sig-r", "failing")],
+          [withFinding],
+        ),
+      ),
+    ).toContainEqual(resolve);
+    // The replay itself: unknown at boot.
+    expect(
+      decide(
+        R,
+        null,
+        E("sig-r", "unknown", "No data for 5m"),
+        snap(
+          [a, R],
+          [E("sig-a", "failing"), E("sig-r", "unknown")],
+          [withFinding],
+        ),
+      ),
+    ).toEqual([resolve]);
+  });
+
+  test("self-reported ok disagrees only with problem signals of its own project", () => {
+    const a = S("sig-a");
+    const c = S("sig-c", { project: "acme-api", dependsOn: ["sig-a"] });
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const ops = decide(
+      R,
+      "unknown",
+      E("sig-r", "ok"),
+      snap(
+        [a, c, R],
+        [E("sig-a", "failing"), E("sig-c", "failing"), E("sig-r", "ok")],
+        [I("inc-1", "investigating", { signalIds: ["sig-a", "sig-c"] })],
+      ),
+    );
+    expect(ops).toEqual([
+      {
+        op: "finding",
+        incidentId: "inc-1",
+        finding: expect.objectContaining({
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+        }),
+      },
+    ]);
+  });
+
   test("findings come after events and before transitions on an existing incident", () => {
     const a = S("sig-a");
     const R = S("sig-r", { name: "Health", selfReported: true });

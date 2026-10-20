@@ -439,6 +439,8 @@ function decideRecovery(
       const s = snapshot.signals.get(id);
       const state = snapshot.evaluations.get(id)?.state;
       if (!isOwn(s) || s.selfReported || s.id === signal.id) continue;
+      // A signal merged in from another project is not this one's to vouch for.
+      if (s.project !== signal.project) continue;
       if (!state || !isProblem(state)) continue;
       const finding = disagreement(signal, s, state, snapshot);
       if (!hasUnresolved(incident, finding))
@@ -568,15 +570,17 @@ export function decideIncidentOps(
     return previous === null && current.state !== "ok"
       ? []
       : decideProvider(signal, previous, current, snapshot, open);
+  const ops = new OpList();
+  // A self-reported signal that is not ok vouches for nothing, whatever it
+  // said before: a restart may have replayed its change from ok unseen.
+  if (signal.selfReported && current.state !== "ok")
+    resolveSelfReported(ops, signal, open);
   const containing = open.filter((i) => i.signalIds.includes(signal.id));
   // After a restart only a bad signal nothing covers yet opens anything.
   if (previous === null && (!isBad(current.state) || containing.length))
-    return [];
-  const ops = new OpList();
+    return ops.list();
   if (isBad(current.state)) decideBad(ops, signal, current, snapshot);
   else decideRecovery(ops, signal, current, snapshot, open);
-  if (signal.selfReported && previous?.state === "ok")
-    resolveSelfReported(ops, signal, open);
   return ops.list();
 }
 
