@@ -234,10 +234,14 @@ export async function updateSignal(
   const preview =
     "error" in restored ? restored : normalizeSignal(restored.signal);
   if (!("error" in preview)) {
-    if (changesRunnerCheck(stored, preview) && !writer.signedInPerson)
-      return { error: RUN_ON_PERSON_ERROR };
-    const refused = await runOnProblem(preview);
-    if (refused) return { error: refused };
+    // Edits that leave where and what a Runner signal fetches alone (its
+    // name, rule, enabled) never need the Runner check: the run itself
+    // re-checks the Runner every time.
+    if (changesRunnerCheck(stored, preview)) {
+      if (!writer.signedInPerson) return { error: RUN_ON_PERSON_ERROR };
+      const refused = await runOnProblem(preview);
+      if (refused) return { error: refused };
+    }
     checked = { runOn: preview.runOn, project: preview.project };
   }
   let failure: { error: string } | undefined;

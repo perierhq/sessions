@@ -347,6 +347,15 @@ test("only a signed-in person decides where a signal runs and what it fetches", 
       person,
     );
     expect(moved).toMatchObject({ runOn: "runner-prod" });
+    // Without a check, a Runner signal can still be renamed or turned off,
+    // but not moved.
+    setSignalRunOnCheck(undefined);
+    expect(
+      await updateSignal(prod.id, { enabled: false }, "Ada", person),
+    ).toMatchObject({ enabled: false, runOn: "runner-prod" });
+    expect(
+      await updateSignal(prod.id, { runOn: "runner-other" }, "Ada", person),
+    ).toEqual({ error: "Runner checks are not available on this server yet" });
   } finally {
     setSignalRunOnCheck(undefined);
   }
