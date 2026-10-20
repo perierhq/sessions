@@ -20,8 +20,14 @@ import { request as httpRequest } from "http";
 import type { RequestOptions } from "https";
 import { request as httpsRequest } from "https";
 import { isIP } from "net";
+import type { Transform } from "stream";
 import {
   brotliDecompressSync,
+  constants as zlibConstants,
+  createBrotliDecompress,
+  createGunzip,
+  createInflate,
+  createInflateRaw,
   gunzipSync,
   inflateRawSync,
   inflateSync,
@@ -198,6 +204,85 @@ export function decodeBody(
   throw new Error(`${url} used an unsupported content-encoding: ${encoding}`);
 }
 
+/** Decoders for a cut body: each flushes what it has at the end of its
+ *  input instead of failing on the missing rest. Deflate tries zlib, then
+ *  raw, as `decodeBody` does. */
+function prefixDecoders(encoding: string): Array<() => Transform> | null {
+  const sync = { finishFlush: zlibConstants.Z_SYNC_FLUSH };
+  switch (encoding) {
+    case "gzip":
+    case "x-gzip":
+      return [() => createGunzip(sync)];
+    case "deflate":
+      return [() => createInflate(sync), () => createInflateRaw(sync)];
+    case "br":
+      return [
+        () =>
+          createBrotliDecompress({
+            finishFlush: zlibConstants.BROTLI_OPERATION_FLUSH,
+          }),
+      ];
+  }
+  return null;
+}
+
+/** Run one decoder until `limit` bytes are out or the input runs dry. It is
+ *  stopped at the limit, so a small body cannot inflate past it. */
+function inflatePrefix(
+  decoder: Transform,
+  body: Buffer,
+  limit: number,
+): Promise<{ bytes: Buffer; failed: boolean }> {
+  return new Promise((resolve) => {
+    const out: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (failed: boolean) => {
+      if (settled) return;
+      settled = true;
+      decoder.destroy();
+      resolve({ bytes: Buffer.concat(out).subarray(0, limit), failed });
+    };
+    decoder.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      out.push(chunk);
+      size += chunk.length;
+      if (size >= limit) finish(false);
+    });
+    decoder.on("error", () => finish(size === 0));
+    decoder.on("end", () => finish(false));
+    decoder.end(body);
+  });
+}
+
+/**
+ * The first `limit` bytes of a body that is cut short or decodes past the
+ * limit: as much as its encoding gives up, possibly nothing. Null for an
+ * encoding `decodeBody` does not take.
+ */
+export async function decodeBodyPrefix(
+  encoding: string,
+  body: Buffer,
+  limit: number,
+): Promise<Buffer | null> {
+  const kind = encoding.trim().toLowerCase();
+  if (kind === "" || kind === "identity") return body.subarray(0, limit);
+  const decoders = prefixDecoders(kind);
+  if (!decoders) return null;
+  for (const make of decoders) {
+    const { bytes, failed } = await inflatePrefix(make(), body, limit);
+    if (!failed) return bytes;
+  }
+  return Buffer.alloc(0);
+}
+
+/** Encodings `decodeBody` undoes. */
+function isDecodable(encoding: string): boolean {
+  return ["", "identity", "gzip", "x-gzip", "deflate", "br"].includes(
+    encoding.trim().toLowerCase(),
+  );
+}
+
 type RequestFn = (
   options: RequestOptions,
   onResponse: (res: IncomingMessage) => void,
@@ -224,8 +309,9 @@ export interface PinnedRequestInit {
   maxBodyBytes: number;
   /** What a longer body does: "reject" (the default) fails the request;
    *  "truncate" stops reading at `maxBodyBytes` and answers with what was
-   *  read and `truncated` set, so the status is still known. A truncated
-   *  encoded body cannot be decoded and comes back empty. */
+   *  read and `truncated` set, so the status is still known. A cut encoded
+   *  body is decoded as far as it goes. A body in an encoding that cannot
+   *  be decoded comes back raw, over the limit or not. */
   overflow?: "reject" | "truncate";
 }
 
@@ -308,19 +394,29 @@ export function pinnedHttpRequest(
         const encoding = headers.get("content-encoding") ?? "";
         let size = 0;
         let finished = false;
+        /** Answer with the first decoded bytes of `raw`, marked cut. */
+        const resolvePrefix = (raw: Buffer) =>
+          decodeBodyPrefix(encoding, raw, maxBodyBytes).then(
+            (body) =>
+              resolve({
+                status,
+                headers,
+                body: body ?? raw.subarray(0, maxBodyBytes),
+                truncated: true,
+              }),
+            () =>
+              resolve({
+                status,
+                headers,
+                body: new Uint8Array(),
+                truncated: true,
+              }),
+          );
         const cutShort = () => {
           finished = true;
           done();
           res?.destroy();
-          const identity = ["", "identity"].includes(
-            encoding.trim().toLowerCase(),
-          );
-          resolve({
-            status,
-            headers,
-            body: identity ? Buffer.concat(chunks) : new Uint8Array(),
-            truncated: true,
-          });
+          void resolvePrefix(Buffer.concat(chunks));
         };
         res.on("data", (chunk: Buffer) => {
           if (finished) return;
@@ -347,22 +443,16 @@ export function pinnedHttpRequest(
           done();
           if (finished) return;
           finished = true;
+          const raw = Buffer.concat(chunks);
+          // Undecodable but whole: the raw bytes, as over the limit.
+          if (truncate && !isDecodable(encoding))
+            return resolve({ status, headers, body: raw });
           try {
-            const body = decodeBody(
-              url,
-              encoding,
-              Buffer.concat(chunks),
-              maxBodyBytes,
-            );
+            const body = decodeBody(url, encoding, raw, maxBodyBytes);
             resolve({ status, headers, body });
           } catch (error) {
             if (truncate && error instanceof BodyTooLargeError)
-              return resolve({
-                status,
-                headers,
-                body: new Uint8Array(),
-                truncated: true,
-              });
+              return void resolvePrefix(raw);
             reject(error);
           }
         });
