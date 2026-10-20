@@ -1,6 +1,8 @@
 // Wire types for signals, observations and incidents, shared by the server
 // and the frontend. Types, constant lists and small guards only.
 
+import type { IncidentResponse } from "./incident-response";
+
 export const SIGNAL_STATES = [
   "ok",
   "slow",
@@ -251,7 +253,14 @@ export type IncidentEventKind =
   | "reopened"
   | "signal-attached"
   | "signal-state"
-  | "finding";
+  | "finding"
+  | "agent"
+  | "proof"
+  | "verdict"
+  | "policy"
+  | "action"
+  | "merge"
+  | "decision";
 
 export type StripMarkerKind =
   | "detected"
@@ -316,6 +325,8 @@ export interface Incident {
   closedAt?: string;
   fixedBy?: FixedBy;
   impact?: IncidentImpact;
+  /** The fix loop's record (agents, proof, policy, actions). */
+  response?: IncidentResponse;
   findings: IncidentFinding[];
   events: IncidentEvent[];
   droppedEvents: number;
