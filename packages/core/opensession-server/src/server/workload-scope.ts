@@ -21,6 +21,7 @@ import {
   SYSTEMD_USER_RUNTIME,
   engineScopeSystemdArgs,
   processRunsInControlPlane,
+  scopeVerbatimArgs,
   systemdUserScopesAvailable,
 } from "./systemd-scopes";
 
@@ -80,6 +81,7 @@ export function workloadScopeArgv(argv: string[], unit: string): string[] {
     `--unit=${unit}`,
     ...engineScopeSystemdArgs(),
     "--property=TimeoutStopSec=2",
+    ...scopeVerbatimArgs(),
     "--",
     ...argv,
   ];
