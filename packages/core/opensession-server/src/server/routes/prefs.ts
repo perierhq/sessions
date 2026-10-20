@@ -31,6 +31,9 @@ import {
   getHides as getUserHides,
   updateHides as updateUserHides,
 } from "../hides";
+import { answerHiddenRows, type HiddenRowWorkspace } from "../hidden-rows";
+import { getCachedSessionsAsync } from "../session-cache";
+import { peekWorkspace, warmWorkspacesAsync } from "../workspaces";
 import { mergeMapDelta, requestedMapDelta } from "../shared/map-delta";
 import { broadcastToUser } from "../ws-hub";
 import {
@@ -473,6 +476,29 @@ export async function handlePrefsRoutes(
   if (path === "/api/hides" && req.method === "GET") {
     const user = requestUser(ctx, url.searchParams.get("user")) || "Anonymous";
     return conditionalJsonResponse(req, { hides: await getUserHides(user) });
+  }
+
+  // The rows behind those hides, named, for the sidebar's Hidden list. The
+  // sidebar's own session list leaves hidden rows out, so this is where their
+  // titles come from. The client sends the keys it holds rather than the
+  // server reading its stored map, which a just-sent hide may not have
+  // reached yet (hidden-rows.ts). Archived or deleted work comes back stale.
+  if (path === "/api/hides/rows" && req.method === "POST") {
+    return answerHiddenRows(await req.json().catch(() => null), {
+      sessions: () => getCachedSessionsAsync("exclude"),
+      workspaces: async (ids) => {
+        // One warm of the in-memory projection, then lookups: no per-key
+        // catalog read however many workspaces the request names.
+        await warmWorkspacesAsync();
+        const records = new Map<string, HiddenRowWorkspace>();
+        for (const id of ids) {
+          const workspace = peekWorkspace(id);
+          if (workspace)
+            records.set(id, { name: workspace.name, repo: workspace.repo });
+        }
+        return records;
+      },
+    });
   }
 
   if (path === "/api/hides" && req.method === "PUT") {

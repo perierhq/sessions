@@ -254,6 +254,9 @@ export function createSidebarToolsModel({
         archivedActive && "bg-selected text-fg",
       )}
       data-selected={archivedActive || undefined}
+      // The Hidden list hands focus here when its last entry is restored
+      // (Sidebar.tsx, HiddenEntry focusFallback).
+      data-sidebar-archived=""
       onClick={navigation.openArchived}
       title="View archived sessions"
     >

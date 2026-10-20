@@ -3,8 +3,9 @@
  * `backstage-user` name from the UserPicker — not an auth identity) gets one
  * JSON file under `~/.opensession-hides/` of shape
  * `{ hides: { [rowKey]: isoHiddenAt } }`, where `rowKey` is a sidebar row key
- * (`workspace:<id>` or a solo session id). Filename, directory resolution and
- * legacy-name fallback come from shared/user-store.ts.
+ * (`workspace:<id>`, `wt:<dir>` or a solo session id) or `repo:<id>` for a
+ * whole repository band. Filename, directory resolution and legacy-name
+ * fallback come from shared/user-store.ts.
  *
  * Hiding is the personal counterpart to archiving: archive.ts is a GLOBAL
  * registry, so archiving a session removes it for the whole team — wrong when a

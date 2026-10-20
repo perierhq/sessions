@@ -243,6 +243,49 @@ export async function saveHidesApi(
   return parsed.success ? (parsed.data.hides ?? {}) : {};
 }
 
+const hiddenRowsResponseSchema = z.object({
+  rows: z
+    .array(
+      z.object({
+        key: z.string(),
+        title: z.string(),
+        repo: z.string().nullable(),
+        sessionId: z.string(),
+      }),
+    )
+    .optional(),
+  stale: z.array(z.string()).optional(),
+});
+
+export type HiddenRow = NonNullable<
+  z.infer<typeof hiddenRowsResponseSchema>["rows"]
+>[number];
+
+export interface HiddenRowsAnswer {
+  rows: HiddenRow[];
+  /** Keys that name no live work (archived, deleted or unknown). */
+  stale: string[];
+}
+
+/**
+ * Name the rows behind these hide keys. The keys are the client's own, so a
+ * hide whose PUT has not landed yet is still answered (server/hidden-rows.ts).
+ */
+export async function fetchHiddenRows(
+  user: string,
+  keys: string[],
+): Promise<HiddenRowsAnswer> {
+  const body = await request<unknown>("/hides/rows", {
+    method: "POST",
+    body: { user, keys },
+    label: "Failed to fetch hidden rows",
+  });
+  const parsed = hiddenRowsResponseSchema.safeParse(body);
+  return parsed.success
+    ? { rows: parsed.data.rows ?? [], stale: parsed.data.stale ?? [] }
+    : { rows: [], stale: [] };
+}
+
 // ── Tab colors (per-user session tab colors) ──
 
 export async function fetchTabColors(
