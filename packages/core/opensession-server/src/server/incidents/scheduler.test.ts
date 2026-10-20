@@ -150,15 +150,25 @@ test("one synthetic observation per missed heartbeat slot", async () => {
     "Ada",
   );
   if ("error" in hb) throw new Error(hb.error);
+  // Slots count from creation; anchor the clock there so both ticks below
+  // fall inside the same slot.
+  const C = Date.parse(hb.createdAt);
+  const missed = () =>
+    recentObservations(hb.id).filter((o) => o.detail === "Missed check-in");
   await (
-    await runSchedulerTick(T0 + 7_200_000, { prune: noPrune })
+    await runSchedulerTick(C + 7_200_000, { prune: noPrune })
   ).settled;
   await (
-    await runSchedulerTick(T0 + 7_240_000, { prune: noPrune })
+    await runSchedulerTick(C + 7_240_000, { prune: noPrune })
   ).settled;
-  expect(
-    recentObservations(hb.id).filter((o) => o.detail === "Missed check-in"),
-  ).toHaveLength(1);
+  expect(missed().map((o) => o.at)).toEqual([
+    new Date(C + 7_200_000).toISOString(),
+  ]);
+  // The next slot gets its own observation.
+  await (
+    await runSchedulerTick(C + 10_800_000, { prune: noPrune })
+  ).settled;
+  expect(missed()).toHaveLength(2);
   expect(getSignalEvaluation(hb.id)?.state).toBe("failing");
 });
 
