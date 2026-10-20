@@ -96,13 +96,17 @@ export function fullyDown(input: {
     .sort((a, b) => (a.o.at === b.o.at ? a.i - b.i : a.o.at < b.o.at ? -1 : 1))
     .map(({ o }) => o);
   const latest = main.at(-1);
-  // A failing heartbeat with no reported failure is missing its check-ins.
+  // A failing heartbeat is fully down while its check-ins are missing:
+  // nothing seen yet, or the newest observation is a missed slot. A job that
+  // checked in, well or not, is still running.
   if (
     input.primary.source.kind === "heartbeat" &&
-    input.primary.rule.kind === "missing" &&
-    !(latest?.result === "fail" && latest.detail !== MISSED_CHECK_IN_DETAIL)
+    input.primary.rule.kind === "missing"
   )
-    return true;
+    return (
+      latest === undefined ||
+      (latest.result === "fail" && latest.detail === MISSED_CHECK_IN_DETAIL)
+    );
   if (main.length < FULLY_DOWN_RUN || !latest) return false;
   const age = input.now - Date.parse(latest.at);
   if (!(age <= FULLY_DOWN_FRESH_INTERVALS * stripIntervalMs(input.primary)))

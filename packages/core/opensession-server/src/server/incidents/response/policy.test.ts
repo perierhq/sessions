@@ -3,7 +3,11 @@ import type {
   IncidentProjectSettings,
   NeverWithoutYou,
 } from "../../../shared/incident-response";
-import type { Signal, SignalEvaluation } from "../../../shared/incidents";
+import type {
+  Observation,
+  Signal,
+  SignalEvaluation,
+} from "../../../shared/incidents";
 import {
   FACT_LABELS,
   budgetProblem,
@@ -284,6 +288,28 @@ test("fully down needs a fresh observation; a missing heartbeat is down", () => 
       ],
     }),
   ).toBe(false);
+});
+test("a heartbeat is fully down only while its check-ins are missing", () => {
+  const evals = new Map([
+    ["sig-a", { signalId: "sig-a", state: "failing" } as SignalEvaluation],
+  ]);
+  const heartbeat: Pick<Signal, "source" | "rule" | "intervalMs"> = {
+    source: { kind: "heartbeat" },
+    rule: { kind: "missing", everyMs: 3_600_000, graceMs: 0 },
+  };
+  const down = (latest: Observation) =>
+    fullyDown({
+      ownSignalIds: ["sig-a"],
+      evaluations: evals,
+      now: NOON,
+      primary: heartbeat,
+      primaryRecent: [latest],
+    });
+  const at = new Date(NOON - 60_000).toISOString();
+  expect(down({ at, result: "fail", detail: "Missed check-in" })).toBe(true);
+  // The job checked in after all: it is not missing.
+  expect(down({ at, result: "ok", detail: "" })).toBe(false);
+  expect(down({ at, result: "unknown", detail: "" })).toBe(false);
 });
 test("the night rule fails closed when its time zone cannot be resolved", () => {
   expect(
