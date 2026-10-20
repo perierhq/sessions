@@ -327,19 +327,32 @@ function isIpLiteral(host: string): boolean {
   return /^(0x[0-9a-f]*|[0-9]+)$/i.test(last);
 }
 
+/** Why a host may not be an egress host, or null; the host lower-cased
+ *  with any IPv6 brackets removed. Saved hosts and the hosts a signal
+ *  reaches by default both go through it. */
+export function egressHostProblem(raw: string): {
+  host: string;
+  problem: string | null;
+} {
+  const host = raw.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    isIpLiteral(host) ||
+    host === "localhost" ||
+    PRIVATE_SUFFIXES.some((s) => host.endsWith(s))
+  )
+    return { host, problem: "Egress hosts must be public host names" };
+  if (!HOST_NAME.test(host))
+    return { host, problem: `Invalid egress host "${raw}"` };
+  return { host, problem: null };
+}
+
 export function validateEgressHosts(v: unknown): FieldResult<string[]> {
   const list = nameList(v, "egress hosts", MAX_EGRESS_HOSTS);
   if (isFieldError(list)) return list;
   const out: string[] = [];
   for (const raw of list) {
-    const host = raw.toLowerCase().replace(/^\[|\]$/g, "");
-    if (
-      isIpLiteral(host) ||
-      host === "localhost" ||
-      PRIVATE_SUFFIXES.some((s) => host.endsWith(s))
-    )
-      return { error: "Egress hosts must be public host names" };
-    if (!HOST_NAME.test(host)) return { error: `Invalid egress host "${raw}"` };
+    const { host, problem } = egressHostProblem(raw);
+    if (problem) return { error: problem };
     if (!out.includes(host)) out.push(host);
   }
   return out;

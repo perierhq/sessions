@@ -405,6 +405,10 @@ tools is mounted only when the access grants what it reaches:
   secret-shaped name, and may not follow links (`-R`). Output is
   capped and scrubbed of the agent's own granted credentials.
 - `egress_fetch` reaches only the listed hosts through the granted route.
+  With no hosts saved, the signal's own host is the default, and it passes
+  the same rules as a saved host (no IP literals, `localhost`, `.local` or
+  `.internal` names); a host that fails them is dropped and recorded as a
+  narrowing.
   The server route resolves the host once, refuses private addresses and
   connects only to the checked addresses; the proxy route checks the proxy
   and the target, and its credential may only add `Proxy-Authorization`; the

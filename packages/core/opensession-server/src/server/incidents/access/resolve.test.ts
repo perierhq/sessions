@@ -156,6 +156,52 @@ test("another signal gets the role default; an override from another project is 
     ).overrideApplied,
   ).toBe(false);
 });
+// The signal's own host is a default, not a grant: it passes the rules a
+// saved egress host does (no IP literals, localhost or private suffixes).
+test.each([
+  ["http://127.0.0.1:8080/health", "127.0.0.1"],
+  ["http://10.0.0.5/health", "10.0.0.5"],
+  // The URL parser reads 0x7f.1 as 127.0.0.1.
+  ["http://0x7f.1/health", "127.0.0.1"],
+  ["http://[::1]:9000/health", "[::1]"],
+  ["http://localhost:9000/health", "localhost"],
+  ["https://metrics.internal/health", "metrics.internal"],
+  ["https://printer.local/status", "printer.local"],
+  ["https://intranet/health", "intranet"],
+])("a signal host %s is not a default egress host", async (url, host) => {
+  const s = settings();
+  const v = await resolveAgentAccess(
+    "verifier",
+    incident(),
+    { ...signal, source: { kind: "http", url } } as Signal,
+    { settings: s },
+  );
+  expect(v.egress).toBeNull();
+  expect(v.narrowed).toContainEqual({
+    field: "egress",
+    item: host,
+    reason: "Signal host is not a public host name",
+  });
+  expect(v.narrowed).toContainEqual({
+    field: "egress",
+    item: "server",
+    reason: "No hosts to reach",
+  });
+});
+test("an expiry signal's private host is dropped too", async () => {
+  const v = await resolveAgentAccess(
+    "verifier",
+    incident(),
+    { ...signal, source: { kind: "expiry", host: "db.internal" } } as Signal,
+    { settings: settings() },
+  );
+  expect(v.egress).toBeNull();
+  expect(v.narrowed).toContainEqual({
+    field: "egress",
+    item: "db.internal",
+    reason: "Signal host is not a public host name",
+  });
+});
 test("closed, paused and gated incidents get nothing", async () => {
   await expect(
     resolveAgentAccess(

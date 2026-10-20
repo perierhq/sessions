@@ -28,7 +28,12 @@ import { incidentAudit } from "../audit-sink";
 import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
 import { loadAccessEnvironment } from "./environment";
-import { checkWithinGrants, mergeProfile, roleLockProblem } from "./fields";
+import {
+  checkWithinGrants,
+  egressHostProblem,
+  mergeProfile,
+  roleLockProblem,
+} from "./fields";
 import {
   AccessSettingsError,
   getIncidentAccessSettings,
@@ -89,6 +94,21 @@ export function signalHosts(signal: Signal | null): string[] {
   }
   if (source.kind === "expiry") return [source.host.toLowerCase()];
   return [];
+}
+
+/** The signal's hosts that pass the saved-host rules (no IP literals,
+ *  localhost or private suffixes); the rest are recorded as narrowed. */
+function defaultEgressHosts(
+  signal: Signal | null,
+  narrow: (field: "egress", item: string, reason: string) => void,
+): string[] {
+  const out: string[] = [];
+  for (const raw of signalHosts(signal)) {
+    const { host, problem } = egressHostProblem(raw);
+    if (problem) narrow("egress", raw, "Signal host is not a public host name");
+    else if (!out.includes(host)) out.push(host);
+  }
+  return out;
 }
 
 export function describeAccess(
@@ -388,7 +408,7 @@ export async function resolveAgentAccess(
         ? profile.egress.hosts
         : grant?.hosts?.length
           ? grant.hosts
-          : signalHosts(signal);
+          : defaultEgressHosts(signal, narrow);
       if (!reach.length) narrow("egress", key, "No hosts to reach");
       else egress = { ...candidate, hosts: [...reach] };
     }
