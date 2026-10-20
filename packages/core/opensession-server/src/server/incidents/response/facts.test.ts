@@ -160,4 +160,18 @@ test("errors", () => {
   ).toEqual({
     error: "The candidate has nothing to run",
   });
+  expect(
+    changeFacts({
+      plan: { pr: true, actions: ["deploy"] },
+      settings: settings([deploy]),
+      prFiles: [],
+    }),
+  ).toEqual({ error: "Deploy runs only with the PR" });
+  expect(
+    changeFacts({
+      plan: { pr: false, actions: ["pause-worker", "pause-worker"] },
+      settings: settings([pause]),
+      prFiles: [],
+    }),
+  ).toEqual({ error: 'List each action once: "pause-worker"' });
 });

@@ -4,6 +4,7 @@
 // dropped. `effectiveVerdict` turns the verifier's verdict into the one
 // Sessions acts on: certainty it cannot back becomes not certain.
 import type {
+  ActionKind,
   CandidatePlan,
   CandidateCheck,
   CandidateState,
@@ -214,18 +215,30 @@ function attemptsOf(value: unknown): Result<EvidenceRow[]> {
   return out;
 }
 
+export interface InvestigatorReportContext {
+  actionIds: ReadonlySet<string>;
+  /** Kind of each project action; a `deploy` runs only with the PR. */
+  actionKinds: ReadonlyMap<string, ActionKind>;
+  signalOrigin: string | null;
+}
+
 function candidateOf(
   value: unknown,
-  actionIds: ReadonlySet<string>,
+  ctx: Pick<InvestigatorReportContext, "actionIds" | "actionKinds">,
 ): Result<CandidatePlan | null> {
   if (value === null) return null;
   if (!isRecord(value) || typeof value.pr !== "boolean")
     return { error: "The candidate field must be null or { pr, actions }" };
   const actions = list(value.actions ?? [], "candidate.actions", 0, 5);
   if (failed(actions)) return actions;
+  const seen = new Set<string>();
   for (const id of actions) {
-    if (typeof id !== "string" || !actionIds.has(id))
+    if (typeof id !== "string" || !ctx.actionIds.has(id))
       return { error: `Unknown action "${String(id)}"` };
+    if (ctx.actionKinds.get(id) === "deploy")
+      return { error: "Deploy runs only with the PR" };
+    if (seen.has(id)) return { error: `List each action once: "${id}"` };
+    seen.add(id);
   }
   if (!value.pr && actions.length === 0)
     return { error: "The candidate field needs a PR or at least one action" };
@@ -269,7 +282,7 @@ function checkOf(
 
 export function parseInvestigatorReport(
   report: string,
-  ctx: { actionIds: ReadonlySet<string>; signalOrigin: string | null },
+  ctx: InvestigatorReportContext,
 ): InvestigatorReport | { error: string } {
   const parsed = parseBlock(report);
   if ("error" in parsed) return parsed;
@@ -284,7 +297,7 @@ export function parseInvestigatorReport(
   if (failed(readFirst)) return readFirst;
   const attempts = attemptsOf(value.attempts);
   if (failed(attempts)) return attempts;
-  const candidate = candidateOf(value.candidate, ctx.actionIds);
+  const candidate = candidateOf(value.candidate, ctx);
   if (failed(candidate)) return candidate;
   let noCandidateReason: string | undefined;
   if (candidate === null) {

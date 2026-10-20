@@ -47,9 +47,16 @@ export function changeFacts(input: {
       return { error: `No deploy action is declared for ${settings.project}` };
     steps.push(deploy);
   }
+  const seen = new Set<string>();
   for (const id of plan.actions) {
     const action = settings.actions.find((a) => a.id === id);
     if (!action) return { error: `Unknown action "${id}"` };
+    // The deploy step comes from `pr` alone, so it can never run twice or
+    // without the merged fix.
+    if (action.kind === "deploy")
+      return { error: "Deploy runs only with the PR" };
+    if (seen.has(id)) return { error: `List each action once: "${id}"` };
+    seen.add(id);
     steps.push(action);
   }
 

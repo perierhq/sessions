@@ -49,7 +49,11 @@ const good = {
   runbookPaths: ["docs/incidents/runbook.md"],
 };
 const ctx = {
-  actionIds: new Set(["rollback"]),
+  actionIds: new Set(["rollback", "deploy"]),
+  actionKinds: new Map([
+    ["rollback", "rollback" as const],
+    ["deploy", "deploy" as const],
+  ]),
   signalOrigin: "https://acme.example.test",
 };
 
@@ -134,6 +138,19 @@ test.each([
     "unknown action",
     fence({ ...good, candidate: { pr: false, actions: ["scale-up"] } }),
     'Unknown action "scale-up"',
+  ],
+  [
+    "deploy as an action",
+    fence({ ...good, candidate: { pr: false, actions: ["deploy"] } }),
+    "Deploy runs only with the PR",
+  ],
+  [
+    "duplicate action",
+    fence({
+      ...good,
+      candidate: { pr: false, actions: ["rollback", "rollback"] },
+    }),
+    'List each action once: "rollback"',
   ],
   [
     "empty candidate",
