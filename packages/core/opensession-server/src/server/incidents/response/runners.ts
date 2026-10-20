@@ -76,9 +76,14 @@ const bindings = new Set<Promise<void>>();
 
 /** Fire-and-forget from the pairing callback, tracked for tests. */
 function trackBinding(project: string, runnerId: string, by: string): void {
-  const binding = bindProductionRunner(project, runnerId, by, {
-    fresh: true,
-  }).catch((error: unknown) => {
+  // The pairing was started by a signed-in person (`startProductionPairing`).
+  const binding = bindProductionRunner(
+    project,
+    runnerId,
+    by,
+    { signedInPerson: true },
+    { fresh: true },
+  ).catch((error: unknown) => {
     console.warn(
       `[incidents] could not bind Runner ${runnerId} to ${project}:`,
       error instanceof Error ? error.message : error,
@@ -124,14 +129,18 @@ export function startProductionPairing(
  * production Runners. A Runner that already serves other repositories
  * (every repository, or other projects' incidents) is bound only with
  * `confirmShared`: once reserved, nothing but the incident service can use
- * it. `fresh` is a Runner this project's own pairing just created.
+ * it. `fresh` is a Runner this project's own pairing just created. Only a
+ * signed-in person may bind, as only one may start a pairing.
  */
 export async function bindProductionRunner(
   project: string,
   runnerId: string,
   by: string,
+  writer: SettingsWriter,
   opts: { confirmShared?: boolean; fresh?: boolean } = {},
 ): Promise<void> {
+  if (!writer.signedInPerson)
+    throw new Error("Only a signed-in person can bind a production Runner");
   const runner = getRunner(runnerId);
   if (!runner) throw new Error(`Runner ${runnerId} is not paired`);
   if (!incidentProjectExists(project))

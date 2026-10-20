@@ -125,15 +125,21 @@ test("pairing needs a signed-in person and a real project", () => {
 
 test("binding a Runner that serves other repositories needs confirmation", async () => {
   const shared = plainRunner("shared");
-  await expect(bindProductionRunner("acme", shared.id, "Ada")).rejects.toThrow(
+  await expect(
+    bindProductionRunner("acme", shared.id, "Ada", person),
+  ).rejects.toThrow(
     "Runner shared serves every repository. Confirm to reserve it for acme incidents only",
   );
   expect(getRunner(shared.id)?.incidentReserved).toBeUndefined();
   updateRunner(shared.id, { allowedRepos: ["acme", "acme-api"] });
-  await expect(bindProductionRunner("acme", shared.id, "Ada")).rejects.toThrow(
+  await expect(
+    bindProductionRunner("acme", shared.id, "Ada", person),
+  ).rejects.toThrow(
     "Runner shared serves acme-api. Confirm to reserve it for acme incidents only",
   );
-  await bindProductionRunner("acme", shared.id, "Ada", { confirmShared: true });
+  await bindProductionRunner("acme", shared.id, "Ada", person, {
+    confirmShared: true,
+  });
   expect(getRunner(shared.id)).toMatchObject({
     incidentReserved: true,
     allowedRepos: ["acme"],
@@ -141,28 +147,41 @@ test("binding a Runner that serves other repositories needs confirmation", async
   // One reserved Runner may serve the incidents of a second project, with
   // confirmation; binding again adds nothing twice.
   await expect(
-    bindProductionRunner("acme-api", shared.id, "Bo"),
+    bindProductionRunner("acme-api", shared.id, "Bo", person),
   ).rejects.toThrow("Runner shared serves acme");
-  await bindProductionRunner("acme-api", shared.id, "Bo", {
+  await bindProductionRunner("acme-api", shared.id, "Bo", person, {
     confirmShared: true,
   });
-  await bindProductionRunner("acme", shared.id, "Ada");
+  await bindProductionRunner("acme", shared.id, "Ada", person);
   expect(getRunner(shared.id)?.allowedRepos).toEqual(["acme", "acme-api"]);
   expect((await getProjectSettings("acme")).productionRunners).toEqual([
     shared.id,
   ]);
   await expect(
-    bindProductionRunner("acme", "runner-nope", "Ada"),
+    bindProductionRunner("acme", "runner-nope", "Ada", person),
   ).rejects.toThrow("Runner runner-nope is not paired");
   await expect(
-    bindProductionRunner("nope", shared.id, "Ada", { confirmShared: true }),
+    bindProductionRunner("nope", shared.id, "Ada", person, {
+      confirmShared: true,
+    }),
   ).rejects.toThrow("Unknown project nope");
+});
+
+test("binding needs a signed-in person", async () => {
+  const runner = plainRunner("lab");
+  await expect(
+    bindProductionRunner("acme", runner.id, "Ada", {}, { confirmShared: true }),
+  ).rejects.toThrow("Only a signed-in person can bind a production Runner");
+  expect(getRunner(runner.id)?.incidentReserved).toBeUndefined();
+  expect((await getProjectSettings("acme")).productionRunners).toEqual([]);
 });
 
 test("Windows Runners cannot serve incidents", async () => {
   const win = plainRunner("win", "win32");
   await expect(
-    bindProductionRunner("acme", win.id, "Ada", { confirmShared: true }),
+    bindProductionRunner("acme", win.id, "Ada", person, {
+      confirmShared: true,
+    }),
   ).rejects.toThrow("Runner win runs Windows");
   expect(getRunner(win.id)?.incidentReserved).toBeUndefined();
 });
