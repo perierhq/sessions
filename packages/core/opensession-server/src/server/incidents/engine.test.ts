@@ -473,6 +473,467 @@ describe("decide", () => {
   });
 });
 
+describe("providers and disagreements", () => {
+  const P = S("sig-p", { name: "Status", provider: true });
+
+  test("own failure during a provider outage waits on the provider", () => {
+    const a = S("sig-a");
+    const [op] = decide(
+      a,
+      "ok",
+      E("sig-a", "failing"),
+      snap([a, P], [E("sig-a", "failing"), E("sig-p", "external")]),
+    );
+    expect(op).toMatchObject({
+      op: "open",
+      incident: {
+        state: "waiting-on-provider",
+        signalIds: ["sig-a", "sig-p"],
+        findings: [
+          {
+            kind: "external",
+            signalId: "sig-p",
+            detail: "Status reports a problem",
+          },
+        ],
+      },
+    });
+  });
+
+  test("a disabled or unrelated provider is not consulted", () => {
+    const a = S("sig-a");
+    const off = S("sig-p", { name: "Status", provider: true, enabled: false });
+    expect(
+      decide(
+        a,
+        "ok",
+        E("sig-a", "failing"),
+        snap([a, off], [E("sig-a", "failing"), E("sig-p", "external")]),
+      )[0],
+    ).toMatchObject({
+      incident: { state: "investigating", signalIds: ["sig-a"] },
+    });
+    const elsewhere = S("sig-p", {
+      name: "Status",
+      provider: true,
+      project: "acme-api",
+    });
+    expect(
+      decide(
+        a,
+        "ok",
+        E("sig-a", "failing"),
+        snap([a, elsewhere], [E("sig-a", "failing"), E("sig-p", "external")]),
+      )[0],
+    ).toMatchObject({ incident: { state: "investigating" } });
+  });
+
+  test("an existing incident moves to waiting on the provider instead of escalating", () => {
+    const a = S("sig-a");
+    const ops = decide(
+      a,
+      "flaky",
+      E("sig-a", "failing"),
+      snap(
+        [a, P],
+        [E("sig-a", "failing"), E("sig-p", "external")],
+        [I("inc-1", "heads-up")],
+      ),
+    );
+    expect(ops).toEqual([
+      {
+        op: "event",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        signalState: "failing",
+        detail: "3 failures in a row",
+      },
+      {
+        op: "attach",
+        incidentId: "inc-1",
+        signalId: "sig-p",
+        signalState: "external",
+        detail: "Status reports a problem",
+      },
+      {
+        op: "finding",
+        incidentId: "inc-1",
+        finding: {
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "Status reports a problem",
+        },
+      },
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "waiting-on-provider",
+        detail: "Waiting on Status",
+      },
+    ]);
+  });
+
+  test("a provider going external moves an investigating incident; never opens one", () => {
+    const a = S("sig-a");
+    const ops = decide(
+      P,
+      "ok",
+      E("sig-p", "external"),
+      snap(
+        [a, P],
+        [E("sig-a", "failing"), E("sig-p", "external")],
+        [I("inc-1", "investigating")],
+      ),
+    );
+    expect(ops.map((o) => o.op)).toEqual(["attach", "finding", "transition"]);
+    expect(ops[2]).toMatchObject({
+      to: "waiting-on-provider",
+      detail: "Waiting on Status",
+    });
+    expect(
+      decide(
+        P,
+        "ok",
+        E("sig-p", "external"),
+        snap([a, P], [E("sig-a", "ok"), E("sig-p", "external")]),
+      ),
+    ).toEqual([]);
+    // A failing provider page is never an incident of its own, even at boot.
+    expect(
+      decide(
+        P,
+        null,
+        E("sig-p", "external"),
+        snap([P], [E("sig-p", "external")]),
+      ),
+    ).toEqual([]);
+  });
+
+  test("a provider already recorded is not attached or found twice", () => {
+    const a = S("sig-a");
+    const recorded = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+      ],
+    });
+    expect(
+      decide(
+        P,
+        "unknown",
+        E("sig-p", "external"),
+        snap(
+          [a, P],
+          [E("sig-a", "failing"), E("sig-p", "external")],
+          [recorded],
+        ),
+      ),
+    ).toEqual([
+      {
+        op: "event",
+        incidentId: "inc-1",
+        signalId: "sig-p",
+        signalState: "external",
+        detail: "3 failures in a row",
+      },
+    ]);
+  });
+
+  test("a provider declared through dependsOn counts across projects", () => {
+    const c = S("sig-c", { project: "acme-api", dependsOn: ["sig-p"] });
+    expect(
+      decide(
+        c,
+        "ok",
+        E("sig-c", "failing"),
+        snap([c, P], [E("sig-c", "failing"), E("sig-p", "external")]),
+      )[0],
+    ).toMatchObject({ incident: { state: "waiting-on-provider" } });
+  });
+
+  test("provider recovery: resolved when ours is fine, back to investigating when not", () => {
+    const a = S("sig-a");
+    const waiting = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+      ],
+    });
+    const recovered = decide(
+      P,
+      "external",
+      E("sig-p", "ok"),
+      snap([a, P], [E("sig-a", "ok"), E("sig-p", "ok")], [waiting]),
+    );
+    expect(recovered).toContainEqual({
+      op: "resolve-finding",
+      incidentId: "inc-1",
+      kind: "external",
+      signalId: "sig-p",
+    });
+    expect(recovered.at(-1)).toEqual({
+      op: "transition",
+      incidentId: "inc-1",
+      to: "resolved",
+      fixedBy: "provider-recovered",
+      detail: "Status recovered",
+    });
+    expect(
+      decide(
+        P,
+        "external",
+        E("sig-p", "ok"),
+        snap([a, P], [E("sig-a", "failing"), E("sig-p", "ok")], [waiting]),
+      ).at(-1),
+    ).toMatchObject({
+      to: "investigating",
+      detail: "Status recovered, Search still failing",
+    });
+    expect(
+      decide(
+        a,
+        "failing",
+        E("sig-a", "ok"),
+        snap([a, P], [E("sig-a", "ok"), E("sig-p", "external")], [waiting]),
+      ).at(-1),
+    ).toMatchObject({
+      to: "resolved",
+      fixedBy: "provider-recovered",
+      detail: "Recovered while a provider had a problem",
+    });
+  });
+
+  test("one provider recovering while another is still out keeps waiting", () => {
+    const a = S("sig-a");
+    const Q = S("sig-q", { name: "Cloud", provider: true });
+    const waiting = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p", "sig-q"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+        {
+          id: "f2",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-q",
+          detail: "",
+        },
+      ],
+    });
+    const ops = decide(
+      P,
+      "external",
+      E("sig-p", "ok"),
+      snap(
+        [a, P, Q],
+        [E("sig-a", "ok"), E("sig-p", "ok"), E("sig-q", "external")],
+        [waiting],
+      ),
+    );
+    expect(ops.some((o) => o.op === "transition")).toBe(false);
+    expect(ops).toContainEqual({
+      op: "resolve-finding",
+      incidentId: "inc-1",
+      kind: "external",
+      signalId: "sig-p",
+    });
+  });
+
+  test("self-reported ok while a real check fails is a finding, deduplicated and resolved", () => {
+    const a = S("sig-a");
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const [open] = decide(
+      a,
+      "ok",
+      E("sig-a", "failing"),
+      snap([a, R], [E("sig-a", "failing"), E("sig-r", "ok")]),
+    );
+    expect(open).toMatchObject({
+      incident: {
+        findings: [
+          {
+            kind: "disagreement",
+            signalId: "sig-r",
+            againstSignalId: "sig-a",
+            detail: "Health reports ok while Search is failing",
+          },
+        ],
+      },
+    });
+    const withFinding = I("inc-1", "investigating", {
+      findings: [
+        {
+          id: "f",
+          kind: "disagreement",
+          at: iso(),
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+          detail: "",
+        },
+      ],
+    });
+    expect(
+      decide(
+        R,
+        "unknown",
+        E("sig-r", "ok"),
+        snap([a, R], [E("sig-a", "failing"), E("sig-r", "ok")], [withFinding]),
+      ),
+    ).toEqual([]);
+    expect(
+      decide(
+        R,
+        "unknown",
+        E("sig-r", "ok"),
+        snap(
+          [a, R],
+          [E("sig-a", "failing"), E("sig-r", "ok")],
+          [I("inc-1", "investigating")],
+        ),
+      ),
+    ).toEqual([
+      {
+        op: "finding",
+        incidentId: "inc-1",
+        finding: expect.objectContaining({
+          kind: "disagreement",
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+        }),
+      },
+    ]);
+    expect(
+      decide(
+        a,
+        "failing",
+        E("sig-a", "ok"),
+        snap([a, R], [E("sig-a", "ok"), E("sig-r", "ok")], [withFinding]),
+      ),
+    ).toContainEqual({
+      op: "resolve-finding",
+      incidentId: "inc-1",
+      kind: "disagreement",
+      againstSignalId: "sig-a",
+    });
+    expect(
+      decide(
+        R,
+        "ok",
+        E("sig-r", "unknown", "No usable data yet: x"),
+        snap(
+          [a, R],
+          [E("sig-a", "failing"), E("sig-r", "unknown")],
+          [withFinding],
+        ),
+      ),
+    ).toEqual([
+      {
+        op: "resolve-finding",
+        incidentId: "inc-1",
+        kind: "disagreement",
+        signalId: "sig-r",
+      },
+    ]);
+  });
+
+  test("a self-reported signal that starts failing ends its disagreements", () => {
+    const a = S("sig-a");
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const withFinding = I("inc-1", "investigating", {
+      findings: [
+        {
+          id: "f",
+          kind: "disagreement",
+          at: iso(),
+          signalId: "sig-r",
+          againstSignalId: "sig-a",
+          detail: "",
+        },
+      ],
+    });
+    const ops = decide(
+      R,
+      "ok",
+      E("sig-r", "failing"),
+      snap(
+        [a, R],
+        [E("sig-a", "failing"), E("sig-r", "failing")],
+        [withFinding],
+      ),
+    );
+    expect(ops).toEqual([
+      {
+        op: "attach",
+        incidentId: "inc-1",
+        signalId: "sig-r",
+        signalState: "failing",
+        detail: "3 failures in a row",
+      },
+      {
+        op: "resolve-finding",
+        incidentId: "inc-1",
+        kind: "disagreement",
+        signalId: "sig-r",
+      },
+    ]);
+  });
+
+  test("findings come after events and before transitions on an existing incident", () => {
+    const a = S("sig-a");
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const ops = decide(
+      a,
+      "flaky",
+      E("sig-a", "failing"),
+      snap(
+        [a, R],
+        [E("sig-a", "failing"), E("sig-r", "ok")],
+        [I("inc-1", "heads-up")],
+      ),
+    );
+    expect(ops.map((o) => o.op)).toEqual(["event", "finding", "transition"]);
+  });
+
+  test("a failing self-reported signal is an ordinary own signal", () => {
+    const R = S("sig-r", { name: "Health", selfReported: true });
+    const a = S("sig-a");
+    expect(
+      decide(
+        R,
+        "ok",
+        E("sig-r", "failing"),
+        snap([a, R], [E("sig-a", "ok"), E("sig-r", "failing")]),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        op: "open",
+        incident: expect.objectContaining({
+          state: "investigating",
+          signalIds: ["sig-r"],
+        }),
+      }),
+    ]);
+  });
+});
+
 describe("apply", () => {
   useIncidentTestKernel();
 

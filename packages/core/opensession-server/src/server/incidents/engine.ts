@@ -168,57 +168,372 @@ function signalEvent(
   };
 }
 
+/** Ops for one decision, kept in the order they must apply per incident:
+ *  events and attaches, then findings, then transitions. */
+class OpList {
+  private readonly head: IncidentOp[] = [];
+  private readonly findings: IncidentOp[] = [];
+  private readonly transitions: IncidentOp[] = [];
+
+  add(op: IncidentOp): void {
+    if (op.op === "finding" || op.op === "resolve-finding")
+      this.findings.push(op);
+    else if (op.op === "transition") this.transitions.push(op);
+    else this.head.push(op);
+  }
+
+  /** A transition that must happen before anything else (a reopen). */
+  first(op: IncidentOp): void {
+    this.head.push(op);
+  }
+
+  list(): IncidentOp[] {
+    return [...this.head, ...this.findings, ...this.transitions];
+  }
+}
+
+const isOwn = (signal: Signal | undefined): signal is Signal =>
+  !!signal && !signal.provider;
+
+/** Provider `p` speaks for own signal `s`. */
+function providerFor(p: Signal, s: Signal): boolean {
+  return (
+    !!p.provider &&
+    p.enabled &&
+    (p.project === s.project || !!s.dependsOn?.includes(p.id))
+  );
+}
+
+/** Providers for `s` whose current evaluation is `external`. */
+function externalProvidersFor(s: Signal, snapshot: EngineSnapshot): Signal[] {
+  const out: Signal[] = [];
+  for (const p of snapshot.signals.values())
+    if (
+      p.id !== s.id &&
+      providerFor(p, s) &&
+      snapshot.evaluations.get(p.id)?.state === "external"
+    )
+      out.push(p);
+  return out;
+}
+
+function hasUnresolved(
+  incident: Incident,
+  finding: Pick<IncidentFinding, "kind" | "signalId" | "againstSignalId">,
+): boolean {
+  return incident.findings.some(
+    (f) => !f.resolvedAt && sameFinding(f, finding),
+  );
+}
+
+function externalFinding(
+  p: Signal,
+  snapshot: EngineSnapshot,
+): Omit<IncidentFinding, "id"> {
+  return {
+    kind: "external",
+    at: new Date(snapshot.now).toISOString(),
+    signalId: p.id,
+    detail: `${p.name} reports a problem`,
+  };
+}
+
+/** Self-reported signals in `s`'s project that say ok while `s` is bad. */
+function disagreementsWith(
+  s: Signal,
+  state: SignalState,
+  snapshot: EngineSnapshot,
+): Array<Omit<IncidentFinding, "id">> {
+  if (s.selfReported) return [];
+  const out: Array<Omit<IncidentFinding, "id">> = [];
+  for (const r of snapshot.signals.values())
+    if (
+      r.id !== s.id &&
+      r.selfReported &&
+      !r.provider &&
+      r.enabled &&
+      r.project === s.project &&
+      snapshot.evaluations.get(r.id)?.state === "ok"
+    )
+      out.push(disagreement(r, s, state, snapshot));
+  return out;
+}
+
+function disagreement(
+  r: Signal,
+  s: Signal,
+  state: SignalState,
+  snapshot: EngineSnapshot,
+): Omit<IncidentFinding, "id"> {
+  return {
+    kind: "disagreement",
+    at: new Date(snapshot.now).toISOString(),
+    signalId: r.id,
+    againstSignalId: s.id,
+    detail: `${r.name} reports ok while ${s.name} is ${state}`,
+  };
+}
+
+/** Attach providers and record their findings on an existing incident. */
+function recordProviders(
+  ops: OpList,
+  incident: Incident,
+  providers: Signal[],
+  snapshot: EngineSnapshot,
+): void {
+  for (const p of providers) {
+    const finding = externalFinding(p, snapshot);
+    if (!incident.signalIds.includes(p.id))
+      ops.add({
+        op: "attach",
+        incidentId: incident.id,
+        signalId: p.id,
+        signalState: "external",
+        detail: finding.detail,
+      });
+    if (!hasUnresolved(incident, finding))
+      ops.add({ op: "finding", incidentId: incident.id, finding });
+  }
+}
+
+/** An own signal turned problem or warning. */
 function decideBad(
+  ops: OpList,
   signal: Signal,
   current: SignalEvaluation,
   snapshot: EngineSnapshot,
-): IncidentOp[] {
+): void {
   const problem = isProblem(current.state);
+  const providers = problem ? externalProvidersFor(signal, snapshot) : [];
+  const disagreements = problem
+    ? disagreementsWith(signal, current.state, snapshot)
+    : [];
   const target = pickTarget(signal, snapshot);
-  if (!target)
-    return [
-      {
-        op: "open",
-        incident: {
-          project: signal.project,
-          title: signal.name,
-          state: problem ? "investigating" : "heads-up",
-          severity: signal.severity,
-          owner: signal.createdBy,
-          openedBy: { kind: "rule", ref: signal.id },
-          signalIds: [signal.id],
-          primarySignalId: signal.id,
-          at: new Date(snapshot.now).toISOString(),
-          detail: current.reason,
-        },
-      },
+  if (!target) {
+    const findings = [
+      ...providers.map((p) => externalFinding(p, snapshot)),
+      ...disagreements,
     ];
-  const incident = target.incident;
-  if (target.kind === "reopen")
-    return [
-      {
-        op: "transition",
-        incidentId: incident.id,
-        to: problem ? "investigating" : "heads-up",
+    ops.add({
+      op: "open",
+      incident: {
+        project: signal.project,
+        title: signal.name,
+        state: providers.length
+          ? "waiting-on-provider"
+          : problem
+            ? "investigating"
+            : "heads-up",
+        severity: signal.severity,
+        owner: signal.createdBy,
+        openedBy: { kind: "rule", ref: signal.id },
+        signalIds: [signal.id, ...providers.map((p) => p.id)],
+        primarySignalId: signal.id,
+        at: new Date(snapshot.now).toISOString(),
         detail: current.reason,
+        ...(findings.length ? { findings } : {}),
       },
-    ];
-  const ops: IncidentOp[] = [
-    signalEvent(
-      target.kind === "own" ? "event" : "attach",
-      incident.id,
-      signal.id,
-      current,
-    ),
-  ];
-  if (problem && incident.state === "heads-up")
-    ops.push({
+    });
+    return;
+  }
+  const incident = target.incident;
+  // What the incident's state will be once the first ops have applied.
+  let state = incident.state;
+  if (target.kind === "reopen") {
+    state = problem ? "investigating" : "heads-up";
+    ops.first({
+      op: "transition",
+      incidentId: incident.id,
+      to: state,
+      detail: current.reason,
+    });
+  } else
+    ops.add(
+      signalEvent(
+        target.kind === "own" ? "event" : "attach",
+        incident.id,
+        signal.id,
+        current,
+      ),
+    );
+  recordProviders(ops, incident, providers, snapshot);
+  for (const finding of disagreements)
+    if (!hasUnresolved(incident, finding))
+      ops.add({ op: "finding", incidentId: incident.id, finding });
+  if (providers.length && (state === "heads-up" || state === "investigating"))
+    ops.add({
+      op: "transition",
+      incidentId: incident.id,
+      to: "waiting-on-provider",
+      detail: `Waiting on ${providers[0]!.name}`,
+    });
+  else if (problem && state === "heads-up")
+    ops.add({
       op: "transition",
       incidentId: incident.id,
       to: "investigating",
       detail: current.reason,
     });
-  return ops;
+}
+
+/** An own signal turned ok or unknown. */
+function decideRecovery(
+  ops: OpList,
+  signal: Signal,
+  current: SignalEvaluation,
+  snapshot: EngineSnapshot,
+  open: Incident[],
+): void {
+  const ok = current.state === "ok";
+  for (const incident of open) {
+    if (!incident.signalIds.includes(signal.id)) continue;
+    ops.add(signalEvent("event", incident.id, signal.id, current));
+    if (ok) {
+      const against = {
+        kind: "disagreement" as const,
+        againstSignalId: signal.id,
+      };
+      if (
+        incident.findings.some(
+          (f) =>
+            !f.resolvedAt &&
+            f.kind === against.kind &&
+            f.againstSignalId === signal.id,
+        )
+      )
+        ops.add({ op: "resolve-finding", incidentId: incident.id, ...against });
+    }
+    if (!ok || !allOwnSignalsOk(incident, snapshot)) continue;
+    if (incident.state === "heads-up")
+      ops.add({
+        op: "transition",
+        incidentId: incident.id,
+        to: "closed-without-action",
+        detail: "Signals back to normal",
+      });
+    else if (incident.state === "waiting-on-provider")
+      ops.add({
+        op: "transition",
+        incidentId: incident.id,
+        to: "resolved",
+        fixedBy: "provider-recovered",
+        detail: "Recovered while a provider had a problem",
+      });
+  }
+  if (!signal.selfReported || !ok) return;
+  // Self-reported ok while a real check in its project is failing.
+  for (const incident of open) {
+    if (incident.project !== signal.project) continue;
+    for (const id of incident.signalIds) {
+      const s = snapshot.signals.get(id);
+      const state = snapshot.evaluations.get(id)?.state;
+      if (!isOwn(s) || s.selfReported || s.id === signal.id) continue;
+      if (!state || !isProblem(state)) continue;
+      const finding = disagreement(signal, s, state, snapshot);
+      if (!hasUnresolved(incident, finding))
+        ops.add({ op: "finding", incidentId: incident.id, finding });
+    }
+  }
+}
+
+/** A self-reported signal stopped saying ok: its disagreements are over. */
+function resolveSelfReported(
+  ops: OpList,
+  signal: Signal,
+  open: Incident[],
+): void {
+  for (const incident of open)
+    if (
+      incident.project === signal.project &&
+      incident.findings.some(
+        (f) =>
+          !f.resolvedAt &&
+          f.kind === "disagreement" &&
+          f.signalId === signal.id,
+      )
+    )
+      ops.add({
+        op: "resolve-finding",
+        incidentId: incident.id,
+        kind: "disagreement",
+        signalId: signal.id,
+      });
+}
+
+/** A provider signal changed state. Providers never open incidents. */
+function decideProvider(
+  provider: Signal,
+  previous: SignalEvaluation,
+  current: SignalEvaluation,
+  snapshot: EngineSnapshot,
+  open: Incident[],
+): IncidentOp[] {
+  const ops = new OpList();
+  const external = current.state === "external";
+  for (const incident of open) {
+    const own = incident.signalIds
+      .map((id) => snapshot.signals.get(id))
+      .filter(isOwn);
+    const attached = incident.signalIds.includes(provider.id);
+    if (external) {
+      const affected = own.some(
+        (s) =>
+          isProblem(snapshot.evaluations.get(s.id)?.state) &&
+          providerFor(provider, s),
+      );
+      if (attached)
+        ops.add(signalEvent("event", incident.id, provider.id, current));
+      if (!affected) continue;
+      recordProviders(ops, incident, [provider], snapshot);
+      if (incident.state === "heads-up" || incident.state === "investigating")
+        ops.add({
+          op: "transition",
+          incidentId: incident.id,
+          to: "waiting-on-provider",
+          detail: `Waiting on ${provider.name}`,
+        });
+      continue;
+    }
+    if (attached)
+      ops.add(signalEvent("event", incident.id, provider.id, current));
+    if (previous.state !== "external") continue;
+    const outstanding = incident.findings.filter(
+      (f) => !f.resolvedAt && f.kind === "external",
+    );
+    if (!outstanding.some((f) => f.signalId === provider.id)) continue;
+    ops.add({
+      op: "resolve-finding",
+      incidentId: incident.id,
+      kind: "external",
+      signalId: provider.id,
+    });
+    if (
+      incident.state !== "waiting-on-provider" ||
+      outstanding.some((f) => f.signalId !== provider.id)
+    )
+      continue;
+    const stillBad = own.find((s) =>
+      isProblem(snapshot.evaluations.get(s.id)?.state),
+    );
+    if (allOwnSignalsOk(incident, snapshot))
+      ops.add({
+        op: "transition",
+        incidentId: incident.id,
+        to: "resolved",
+        fixedBy: "provider-recovered",
+        detail: `${provider.name} recovered`,
+      });
+    else
+      ops.add({
+        op: "transition",
+        incidentId: incident.id,
+        to: "investigating",
+        detail: stillBad
+          ? `${provider.name} recovered, ${stillBad.name} still failing`
+          : `${provider.name} recovered`,
+      });
+  }
+  return ops.list();
 }
 
 export function decideIncidentOps(
@@ -227,34 +542,24 @@ export function decideIncidentOps(
   current: SignalEvaluation,
   snapshot: EngineSnapshot,
 ): IncidentOp[] {
-  // Providers correlate with own signals; they never drive incidents here.
-  if (signal.provider) return [];
   if (current.inMaintenance) return [];
   if (previous && previous.state === current.state) return [];
   const open = newestFirst(snapshot.incidents).filter(isOpenIncident);
+  if (signal.provider)
+    // At boot a provider only takes its state back; it never moves anything.
+    return previous === null
+      ? []
+      : decideProvider(signal, previous, current, snapshot, open);
   const containing = open.filter((i) => i.signalIds.includes(signal.id));
   // After a restart only a bad signal nothing covers yet opens anything.
   if (previous === null && (!isBad(current.state) || containing.length))
     return [];
-
-  if (isBad(current.state)) return decideBad(signal, current, snapshot);
-
-  const ops: IncidentOp[] = [];
-  for (const incident of containing) {
-    ops.push(signalEvent("event", incident.id, signal.id, current));
-    if (
-      current.state === "ok" &&
-      incident.state === "heads-up" &&
-      allOwnSignalsOk(incident, snapshot)
-    )
-      ops.push({
-        op: "transition",
-        incidentId: incident.id,
-        to: "closed-without-action",
-        detail: "Signals back to normal",
-      });
-  }
-  return ops;
+  const ops = new OpList();
+  if (isBad(current.state)) decideBad(ops, signal, current, snapshot);
+  else decideRecovery(ops, signal, current, snapshot, open);
+  if (signal.selfReported && previous?.state === "ok")
+    resolveSelfReported(ops, signal, open);
+  return ops.list();
 }
 
 function sameFinding(
