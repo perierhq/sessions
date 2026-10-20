@@ -462,7 +462,9 @@ session exists (`incident_access_spawn_allowed`) and as spawned, with the
 session id, once the create succeeds (`incident_access_spawn`). Audit lines
 never carry secrets, header values, bodies or URL query strings. Host command
 arguments are recorded, cut to 500 characters, so an argument an agent typed
-is visible there.
+is visible there. Viewing a bound agent's effective config resolves its access
+without audit lines, and shows a refused agent (a paused incident, say) with
+an empty scope and the reason instead of failing.
 
 Limits: the read-only list and the secret-path refusal are a tripwire, not a
 sandbox. A log line can contain a secret, and scrubbing covers only the

@@ -7,6 +7,7 @@ import {
   enforceIncidentSpawn,
   incidentDescendantPolicy,
   incidentTurnScope,
+  viewIncidentTurnScope,
 } from "./session-policy";
 
 const kit = useIncidentTestKernel();
@@ -319,6 +320,33 @@ test("a revision change is audited once", async () => {
       to: "r9",
     },
   ]);
+});
+test("viewing a turn's scope audits nothing and returns a refusal instead of throwing", async () => {
+  const seen: unknown[] = [];
+  __setBindingResolverForTest(async (_binding, opts) => {
+    seen.push(opts);
+    return current;
+  });
+  current = access({ revision: "r9", connections: ["logs"] });
+  expect(await viewIncidentTurnScope(bound())).toMatchObject({
+    mcpServers: ["logs"],
+  });
+  expect(seen).toEqual([{ audit: false }]);
+  current = access({ mode: "ask" });
+  expect(await viewIncidentTurnScope(bound())).toEqual({
+    refused: "This agent may now only read; start a new agent",
+  });
+  __setBindingResolverForTest(async () => {
+    throw new AgentAccessError(
+      "Incident inc-1 is paused; its agents have no access",
+      "incident",
+    );
+  });
+  expect(await viewIncidentTurnScope(bound())).toEqual({
+    refused: "Incident inc-1 is paused; its agents have no access",
+  });
+  expect(kit.audits).toEqual([]);
+  expect(await viewIncidentTurnScope({ id: "os-2" })).toBeNull();
 });
 test("no binding, no scope", async () => {
   expect(await incidentTurnScope({ id: "os-2" })).toBeNull();

@@ -11,6 +11,7 @@ import {
   AgentAccessError,
   __setBindingResolverForTest,
 } from "./incidents/access/resolve";
+import { automationDeniedTools } from "./automations";
 import { __setIncidentAuditForTest } from "./incidents/audit-sink";
 import type { AutomationDescendantPolicy } from "./types";
 import {
@@ -425,6 +426,47 @@ describe("resolveSessionRunInputs", () => {
           },
         }),
       ).rejects.toThrow("is paused");
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+
+  test("viewing a refused incident agent's inputs neither throws nor audits", async () => {
+    const audits: unknown[] = [];
+    const previousAudit = __setIncidentAuditForTest((e) => audits.push(e));
+    __setBindingResolverForTest(async () => {
+      throw new AgentAccessError(
+        "Incident inc-1 is paused; its agents have no access",
+        "incident",
+      );
+    });
+    try {
+      const inputs = await resolveSessionRunInputs(
+        {
+          ...plain,
+          id: "os-1",
+          automationDescendantPolicy: {
+            ...descendantPolicy,
+            mcpServers: ["sentry"],
+            incident: {
+              incidentId: "inc-1",
+              role: "verifier",
+              signalId: null,
+              accessRevision: "r1",
+              spawn: { hosts: [], credentials: [], egress: null },
+            },
+          },
+        },
+        { audit: false },
+      );
+      expect(inputs).toMatchObject({
+        mcpServers: [],
+        incidentProxyMcpServers: [],
+        incidentRefusal: "Incident inc-1 is paused; its agents have no access",
+      });
+      expect(inputs.deniedTools).toMatchObject(automationDeniedTools());
+      expect(audits).toEqual([]);
     } finally {
       __setBindingResolverForTest(undefined);
       __setIncidentAuditForTest(previousAudit);

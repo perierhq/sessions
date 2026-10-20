@@ -237,3 +237,54 @@ describe("describeStrippedTools", () => {
     expect(question!.reason).toContain("opensession-ask");
   });
 });
+
+describe("an incident agent's effective config", () => {
+  test("is a view: it never audits and never throws for a refused agent", async () => {
+    const { buildSessionEffectiveConfig } = await import("./effective-config");
+    const { AgentAccessError, __setBindingResolverForTest } =
+      await import("./incidents/access/resolve");
+    const { __setIncidentAuditForTest } =
+      await import("./incidents/audit-sink");
+    const audits: unknown[] = [];
+    const previousAudit = __setIncidentAuditForTest((e) => audits.push(e));
+    __setBindingResolverForTest(async () => {
+      throw new AgentAccessError(
+        "Incident inc-1 is paused; its agents have no access",
+        "incident",
+      );
+    });
+    try {
+      const config = await buildSessionEffectiveConfig({
+        id: "os-1",
+        mode: "ask",
+        repo: "acme",
+        automationDescendantPolicy: {
+          automationId: "incidents-acme",
+          automationName: "Incidents",
+          repo: "acme",
+          publicationRepo: "example/acme",
+          baseBranch: "main",
+          mcpServers: ["sentry"],
+          allowedRunners: [],
+          publication: "branch-pr-only",
+          incident: {
+            incidentId: "inc-1",
+            role: "verifier",
+            signalId: null,
+            accessRevision: "r1",
+            spawn: { hosts: [], credentials: [], egress: null },
+          },
+        },
+      } as unknown as Parameters<typeof buildSessionEffectiveConfig>[0]);
+      expect(config.gate.incidentAccess).toMatchObject({
+        value: "Incident inc-1 is paused; its agents have no access",
+      });
+      expect(config.mcp.scope.value).toEqual([]);
+      expect(config.mcp.inProcess.servers.value).toEqual([]);
+      expect(audits).toEqual([]);
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+});

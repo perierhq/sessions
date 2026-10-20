@@ -588,13 +588,21 @@ export function clampToSpawn(
   };
 }
 
-let bindingResolver:
-  | ((binding: IncidentAgentBinding) => Promise<AgentAccess>)
-  | undefined;
+export interface BindingResolveOptions {
+  /** Audit narrowings (default on); off for read-only views. */
+  audit?: boolean;
+}
+
+type BindingResolver = (
+  binding: IncidentAgentBinding,
+  opts: BindingResolveOptions,
+) => Promise<AgentAccess>;
+
+let bindingResolver: BindingResolver | undefined;
 
 /** Replace resolveAgentAccessForBinding (undefined restores it). */
 export function __setBindingResolverForTest(
-  fn: ((binding: IncidentAgentBinding) => Promise<AgentAccess>) | undefined,
+  fn: BindingResolver | undefined,
 ): void {
   bindingResolver = fn;
 }
@@ -607,8 +615,9 @@ export function __setBindingResolverForTest(
  */
 export async function resolveAgentAccessForBinding(
   binding: IncidentAgentBinding,
+  opts: BindingResolveOptions = {},
 ): Promise<AgentAccess> {
-  if (bindingResolver) return bindingResolver(binding);
+  if (bindingResolver) return bindingResolver(binding, opts);
   const incident = await getIncident(binding.incidentId);
   if (!incident)
     throw new AgentAccessError(
@@ -631,7 +640,9 @@ export async function resolveAgentAccessForBinding(
       );
   }
   return clampToSpawn(
-    await resolveAgentAccess(binding.role, incident, signal),
+    await resolveAgentAccess(binding.role, incident, signal, {
+      audit: opts.audit,
+    }),
     spawnSnapshotOf(binding),
   );
 }

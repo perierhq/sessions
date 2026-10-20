@@ -25,6 +25,7 @@ import {
 import { humanPrompter, interactivePrompter } from "./session-actors";
 import { plainDiscussionDeniedTools } from "./automation-denied-tools";
 import { INCIDENT_ACCESS_SERVER } from "../shared/incident-access";
+import type { IncidentTurnScope } from "./incidents/access/session-policy";
 
 /** Which config decided the run's MCP allowlist. */
 export type McpScopeSource =
@@ -99,6 +100,9 @@ export interface SessionRunInputs {
   /** The in-process servers a bound incident agent's run proxies
    *  (`[INCIDENT_ACCESS_SERVER]`); empty for every other session. */
   incidentProxyMcpServers: string[];
+  /** Why a bound incident agent's next turn would be refused; only set when
+   *  resolved for a view (`audit: false`), where a refusal does not throw. */
+  incidentRefusal?: string;
 }
 
 /** The session fields this module reads. Structural so callers (and tests)
@@ -154,7 +158,13 @@ export function sessionMcpScopeSource(
  */
 export async function resolveSessionRunInputs(
   session: RunInputsSession,
-  opts: { user?: string } = {},
+  opts: {
+    user?: string;
+    /** Off for a read-only view of the next turn: an incident agent's
+     *  access is resolved without audit lines, and a refusal empties its
+     *  scope and sets incidentRefusal instead of throwing. */
+    audit?: boolean;
+  } = {},
 ): Promise<SessionRunInputs> {
   const isAutomationSession = !!(
     session.automation || session.automationDescendantPolicy
@@ -170,30 +180,39 @@ export async function resolveSessionRunInputs(
   const source = sessionMcpScopeSource(session);
   // An incident agent re-resolves its access before every turn; a refusal
   // throws so the turn never starts, and the scope is never wider than the
-  // spawn snapshot (incidents/access/session-policy.ts).
-  const incidentScope = session.automationDescendantPolicy?.incident
-    ? await (
-        await import("./incidents/access/session-policy")
-      ).incidentTurnScope(session)
-    : null;
-  if (session.automationDescendantPolicy?.incident && !incidentScope)
-    throw new Error("Incident agent access could not be resolved");
+  // spawn snapshot (incidents/access/session-policy.ts). A view resolves it
+  // without audit and shows a refusal as an empty scope.
+  const bound = !!session.automationDescendantPolicy?.incident;
+  let incidentRefusal: string | undefined;
+  let incidentScope: IncidentTurnScope | null = null;
+  if (bound) {
+    const policy = await import("./incidents/access/session-policy");
+    if (opts.audit === false) {
+      const viewed = await policy.viewIncidentTurnScope(session);
+      if (viewed && "refused" in viewed) incidentRefusal = viewed.refused;
+      else incidentScope = viewed;
+    } else incidentScope = await policy.incidentTurnScope(session);
+    if (!incidentScope && incidentRefusal === undefined)
+      throw new Error("Incident agent access could not be resolved");
+  }
   const mcpServers = incidentScope
     ? [...incidentScope.mcpServers]
-    : session.automationDescendantPolicy
-      ? [...session.automationDescendantPolicy.mcpServers]
-      : isAutomationSession
-        ? await automationMcpServersByName(session.automation!)
-        : source === "session"
-          ? session.mcpServers
-          : source === "feed"
-            ? // Feed-workspace sessions are scoped to their feed's declared MCP
-              // servers even when the session file predates the stamping (least
-              // privilege — the feeds design).
-              await (
-                await import("./feeds")
-              ).feedMcpServersForRefs(session.externalRefs!)
-            : undefined;
+    : incidentRefusal !== undefined
+      ? []
+      : session.automationDescendantPolicy
+        ? [...session.automationDescendantPolicy.mcpServers]
+        : isAutomationSession
+          ? await automationMcpServersByName(session.automation!)
+          : source === "session"
+            ? session.mcpServers
+            : source === "feed"
+              ? // Feed-workspace sessions are scoped to their feed's declared MCP
+                // servers even when the session file predates the stamping (least
+                // privilege — the feeds design).
+                await (
+                  await import("./feeds")
+                ).feedMcpServersForRefs(session.externalRefs!)
+              : undefined;
   const accountUser = humanPrompter(opts.user) ?? undefined;
   const prompter = interactivePrompter(opts.user) ?? undefined;
   return {
@@ -218,6 +237,7 @@ export async function resolveSessionRunInputs(
     inProcessMcpBranch: sessionInProcessMcpBranch(session, prompter),
     sessionNote: !isAutomationSession,
     incidentProxyMcpServers: incidentScope ? [INCIDENT_ACCESS_SERVER] : [],
+    ...(incidentRefusal !== undefined ? { incidentRefusal } : {}),
   };
 }
 

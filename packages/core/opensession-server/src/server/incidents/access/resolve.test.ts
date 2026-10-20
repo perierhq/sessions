@@ -730,3 +730,30 @@ test("a binding without a spawn snapshot reaches no host, credential or egress",
   expect(a).toMatchObject({ hosts: [], credentials: [], egress: null });
   expect(a.connections).toEqual(["sentry", "logs"]);
 });
+test("binding resolution without audit records no narrowing", async () => {
+  const inc = await storedIncident();
+  const s = wideGrants(settings());
+  s.overrides = [];
+  s.profiles.investigator = {
+    ...s.profiles.investigator,
+    hosts: [{ runner: "rn-prod", access: "read-only" }],
+  };
+  await store(s);
+  t.spec.runners = t.spec.runners.filter((r) => r.id !== "rn-prod");
+  const binding = {
+    incidentId: inc.id,
+    role: "investigator" as const,
+    signalId: null,
+    accessRevision: "x",
+    spawn: { hosts: ["rn-prod"], credentials: [], egress: null },
+  };
+  const a = await resolveAgentAccessForBinding(binding, { audit: false });
+  expect(a.narrowed.map((n) => n.field)).toContain("hosts");
+  expect(
+    kit.audits.filter((e) => e.kind === "incident_access_narrowed"),
+  ).toEqual([]);
+  await resolveAgentAccessForBinding(binding);
+  expect(
+    kit.audits.filter((e) => e.kind === "incident_access_narrowed").length,
+  ).toBeGreaterThan(0);
+});

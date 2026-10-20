@@ -201,11 +201,37 @@ const MAX_AUDITED_CHANGES = 10_000;
 export async function incidentTurnScope(
   session: IncidentTurnSession,
 ): Promise<IncidentTurnScope | null> {
+  return turnScope(session, true);
+}
+
+/**
+ * The same scope for a read-only view (the effective-config page): nothing
+ * is audited, and a refusal, a paused incident's included, is returned as
+ * `{ refused }` instead of thrown.
+ */
+export async function viewIncidentTurnScope(
+  session: IncidentTurnSession,
+): Promise<IncidentTurnScope | { refused: string } | null> {
+  try {
+    return await turnScope(session, false);
+  } catch (error) {
+    return {
+      refused:
+        error instanceof Error ? error.message : "Access could not be resolved",
+    };
+  }
+}
+
+async function turnScope(
+  session: IncidentTurnSession,
+  audit: boolean,
+): Promise<IncidentTurnScope | null> {
   const policy = session.automationDescendantPolicy;
   const binding = policy?.incident;
   if (!policy || !binding) return null;
   const sessionId = session.id ?? "";
   const refusedTurn = (reason: string) =>
+    audit &&
     incidentAudit({
       kind: "incident_access_refused",
       incident_id: binding.incidentId,
@@ -216,7 +242,10 @@ export async function incidentTurnScope(
     });
   let access: AgentAccess;
   try {
-    access = await resolveAgentAccessForBinding(binding);
+    access = await resolveAgentAccessForBinding(
+      binding,
+      audit ? {} : { audit: false },
+    );
   } catch (error) {
     refusedTurn(
       error instanceof Error ? error.message : "Access could not be resolved",
@@ -240,7 +269,7 @@ export async function incidentTurnScope(
     refuse(
       `Runner ${session.runner.id} was removed from this agent's access; start a new agent`,
     );
-  if (access.revision !== binding.accessRevision) {
+  if (audit && access.revision !== binding.accessRevision) {
     const key = `${sessionId}\u0000${access.revision}`;
     if (!auditedChanges.has(key)) {
       if (auditedChanges.size >= MAX_AUDITED_CHANGES) auditedChanges.clear();
