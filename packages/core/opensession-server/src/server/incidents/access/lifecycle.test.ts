@@ -213,6 +213,47 @@ test("narrowing the settings revokes what the agent no longer has", async () => 
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
 });
+test("changing a standing grant to once in the settings revokes the live standing grant", async () => {
+  startIncidentAccess();
+  const { incident, credentialId } =
+    await seedIncidentWithGrantedCredential("standing");
+  await __incidentAccessIdleForTest();
+  expect(kc.listIncidentGrants({ incidentId: incident.id })).toHaveLength(1);
+  const once = [{ credential: credentialId, mode: "once" as const }];
+  const p = await updateIncidentAccess(
+    "acme",
+    { kind: "profile", role: "investigator", fields: { credentials: once } },
+    ada,
+  );
+  expect(p).not.toHaveProperty("error");
+  await __incidentAccessIdleForTest();
+  expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
+  // The project grant itself narrowed to once revokes as well.
+  const again = await kc.incidentGrantFor({
+    credentialId,
+    sessionId: "os-3",
+    mode: "standing",
+    incident: {
+      incidentId: incident.id,
+      role: "investigator",
+      project: "acme",
+      signalId: null,
+    },
+    purpose: "Check the pool",
+  });
+  if ("error" in again) throw new Error(again.error);
+  const g = await updateIncidentAccess(
+    "acme",
+    {
+      kind: "grants",
+      grants: { ...defaultProjectGrants("acme"), credentials: once },
+    },
+    ada,
+  );
+  expect(g).not.toHaveProperty("error");
+  await __incidentAccessIdleForTest();
+  expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
+});
 test("start is idempotent", () => {
   startIncidentAccess();
   startIncidentAccess();
