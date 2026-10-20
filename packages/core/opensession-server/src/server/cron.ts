@@ -148,3 +148,28 @@ export function nextRun(expr: string, from: Date = new Date()): Date | null {
   nextRuns.set(key, found);
   return found === null ? null : new Date(found);
 }
+
+/** Latest matching minute at or before `at` (seconds floored), scanning back up to ~1 year. */
+export function previousRun(expr: string, at: Date): Date | null {
+  const specs = parsedCron(expr);
+  if (!specs) return null;
+  const cursor = new Date(at.getTime());
+  cursor.setUTCSeconds(0, 0);
+  const end = cursor.getTime() - 527040 * 60_000;
+  while (cursor.getTime() >= end) {
+    // Skip whole days and hours that cannot match instead of every minute.
+    if (!dayMatches(specs, cursor)) {
+      cursor.setUTCHours(0, 0, 0, 0);
+      cursor.setTime(cursor.getTime() - 60_000);
+      continue;
+    }
+    if (!fieldMatches(specs[1], cursor.getUTCHours())) {
+      cursor.setUTCMinutes(0, 0, 0);
+      cursor.setTime(cursor.getTime() - 60_000);
+      continue;
+    }
+    if (fieldMatches(specs[0], cursor.getUTCMinutes())) return cursor;
+    cursor.setTime(cursor.getTime() - 60_000);
+  }
+  return null;
+}

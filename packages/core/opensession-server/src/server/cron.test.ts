@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { cronMatches, nextRun, parseCron } from "./cron";
+import { cronMatches, nextRun, parseCron, previousRun } from "./cron";
 
 // Helper: build a UTC date. Month is 1-based here for readability.
 function utc(
@@ -287,5 +287,35 @@ describe("nextRun skipping", () => {
     expect(nextRun("0 12 * * *", from)?.toISOString()).toBe(
       "2026-10-02T12:00:00.000Z",
     );
+  });
+});
+
+describe("previousRun", () => {
+  it("returns the latest matching minute at or before `at`", () => {
+    expect(
+      previousRun("0 3 * * *", new Date("2026-10-20T03:31:20Z"))?.toISOString(),
+    ).toBe("2026-10-20T03:00:00.000Z");
+    expect(
+      previousRun("0 3 * * *", new Date("2026-10-20T03:00:00Z"))?.toISOString(),
+    ).toBe("2026-10-20T03:00:00.000Z");
+    expect(
+      previousRun("0 3 * * *", new Date("2026-10-20T02:59:00Z"))?.toISOString(),
+    ).toBe("2026-10-19T03:00:00.000Z");
+    expect(
+      previousRun(
+        "*/15 * * * *",
+        new Date("2026-10-20T10:07:00Z"),
+      )?.toISOString(),
+    ).toBe("2026-10-20T10:00:00.000Z");
+    expect(previousRun("not cron", new Date())).toBeNull();
+  });
+  it("skips days that cannot match", () => {
+    // 2026-10-20 is a Tuesday; the latest Sunday 12:30 is 2026-10-18.
+    expect(
+      previousRun(
+        "30 12 * * 0",
+        new Date("2026-10-20T10:00:00Z"),
+      )?.toISOString(),
+    ).toBe("2026-10-18T12:30:00.000Z");
   });
 });
