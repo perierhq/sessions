@@ -7,39 +7,74 @@ import {
   type ImpactSource,
   type Incident,
   type IncidentImpact,
-  type Observation,
   type Signal,
   isOpenIncident,
 } from "../../shared/incidents";
 import { isShuttingDown } from "../shutdown-state";
 import { listIncidents, updateIncident } from "./incident-store";
-import { MAIN_LANE, queryObservations } from "./observation-store";
+import {
+  MAIN_LANE,
+  OBSERVATION_RETENTION_DAYS,
+  scanObservations,
+} from "./observation-store";
 import { listSignals } from "./signal-store";
 import { runSignalSource } from "./sources";
 
 export const IMPACT_REFRESH_MS = 60_000;
 /** How long after it closes an incident still gets its final measurement. */
 export const IMPACT_FINAL_WINDOW_MS = 3_600_000;
-/** The longest range {@link queryObservations} reads. */
-const MAX_EVENTS_RANGE_MS = 31 * 86_400_000;
+const DAY_MS = 86_400_000;
+/** The longest range {@link scanObservations} reads. */
+const MAX_EVENTS_RANGE_MS = 31 * DAY_MS;
+/** Older observations may be pruned: a longer incident's count is approximate. */
+const RETAINED_MS = OBSERVATION_RETENTION_DAYS * DAY_MS;
+/** Cached counts of finished days; the oldest go first past this. */
+const MAX_CACHED_DAYS = 4096;
 
 export interface ImpactDeps {
   runSource: typeof runSignalSource;
-  observations: typeof queryObservations;
+  scan: typeof scanObservations;
   now: () => number;
 }
 
 const defaultDeps: ImpactDeps = {
   runSource: runSignalSource,
-  observations: queryObservations,
+  scan: scanObservations,
   now: () => Date.now(),
 };
+
+interface DayCount {
+  failEvents: number;
+  valueSum: number;
+}
+
+/** Counts of finished UTC days (or the part of one an incident covers), by
+ *  signal, lane and range. A finished day takes no new observations. */
+let dayCounts = new Map<string, DayCount>();
+
+export function __resetImpactForTest(): void {
+  dayCounts = new Map();
+}
 
 type HttpImpact = Extract<ImpactSource, { kind: "http" }>;
 type EventsImpact = Extract<ImpactSource, { kind: "events" }>;
 type Numbers = Pick<IncidentImpact, "count" | "people" | "approximate"> & {
   error?: string;
 };
+
+/** A failed measurement: the numbers before it, and why. */
+function kept(
+  previous: IncidentImpact | undefined,
+  error: string,
+  approximate: boolean,
+): Numbers {
+  return {
+    ...(previous?.count === undefined ? {} : { count: previous.count }),
+    ...(previous?.people === undefined ? {} : { people: previous.people }),
+    approximate: previous?.approximate ?? approximate,
+    error,
+  };
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -77,12 +112,7 @@ async function measureHttp(
   previous: IncidentImpact | undefined,
   deps: ImpactDeps,
 ): Promise<Numbers> {
-  const kept = (error: string): Numbers => ({
-    ...(previous?.count === undefined ? {} : { count: previous.count }),
-    ...(previous?.people === undefined ? {} : { people: previous.people }),
-    approximate: true,
-    error,
-  });
+  const failed = (error: string) => kept(previous, error, true);
   const json = {
     value: impact.countPath,
     ...(impact.peoplePath ? { detail: impact.peoplePath } : {}),
@@ -100,14 +130,14 @@ async function measureHttp(
       },
     });
   } catch (error) {
-    return kept(message(error));
+    return failed(message(error));
   }
   const main =
     run.observations.find((o) => o.lane === undefined) ?? run.observations[0];
-  if (main?.result !== "ok") return kept(main?.detail || "No answer");
+  if (main?.result !== "ok") return failed(main?.detail || "No answer");
   const matches = run.preview?.matches ?? {};
   const count = firstCount(matches[impact.countPath]);
-  if (count === undefined) return kept(`Nothing at ${impact.countPath}`);
+  if (count === undefined) return failed(`Nothing at ${impact.countPath}`);
   const people = impact.peoplePath
     ? firstCount(matches[impact.peoplePath])
     : undefined;
@@ -118,37 +148,61 @@ async function measureHttp(
   };
 }
 
+async function countSpan(
+  signalId: string,
+  from: number,
+  to: number,
+  scan: ImpactDeps["scan"],
+): Promise<DayCount> {
+  const out: DayCount = { failEvents: 0, valueSum: 0 };
+  await scan(
+    signalId,
+    from,
+    to,
+    (o) => {
+      if (o.result !== "fail") return;
+      out.failEvents++;
+      if (typeof o.value === "number" && Number.isFinite(o.value))
+        out.valueSum += o.value;
+    },
+    { lane: MAIN_LANE },
+  );
+  return out;
+}
+
 async function measureEvents(
   incident: Incident,
   signal: Signal,
   impact: EventsImpact,
   deps: ImpactDeps,
 ): Promise<Numbers> {
-  const to = incident.closedAt ? Date.parse(incident.closedAt) : deps.now();
+  const now = deps.now();
+  const to = incident.closedAt ? Date.parse(incident.closedAt) : now;
   const opened = Date.parse(incident.openedAt);
   // Observations are kept for a month: a longer incident counts its last
   // 31 days, and says the count is approximate.
   const from = Math.max(opened, to - MAX_EVENTS_RANGE_MS);
-  let observations: Observation[];
-  try {
-    observations = await deps.observations(signal.id, from, to, {
-      lane: MAIN_LANE,
-    });
-  } catch (error) {
-    return { approximate: false, error: message(error) };
+  const today = Math.floor(now / DAY_MS) * DAY_MS;
+  let total = 0;
+  // One span per UTC day; a finished day is counted once and cached.
+  for (let start = from; start <= to;) {
+    const dayEnd = Math.floor(start / DAY_MS) * DAY_MS + DAY_MS - 1;
+    const end = Math.min(dayEnd, to);
+    const key = `${signal.id}\0${MAIN_LANE}\0${start}\0${end}`;
+    let counted = dayCounts.get(key);
+    if (!counted) {
+      counted = await countSpan(signal.id, start, end, deps.scan);
+      if (dayEnd < today) {
+        if (dayCounts.size >= MAX_CACHED_DAYS)
+          dayCounts.delete(dayCounts.keys().next().value!);
+        dayCounts.set(key, counted);
+      }
+    }
+    total +=
+      impact.count === "fail-events" ? counted.failEvents : counted.valueSum;
+    start = dayEnd + 1;
   }
-  const failed = observations.filter((o) => o.result === "fail");
-  const count =
-    impact.count === "fail-events"
-      ? failed.length
-      : failed.reduce(
-          (sum, o) =>
-            typeof o.value === "number" && Number.isFinite(o.value)
-              ? sum + o.value
-              : sum,
-          0,
-        );
-  return { count, approximate: from > opened };
+  return { count: total, approximate: to - opened > RETAINED_MS };
 }
 
 /**
@@ -179,7 +233,7 @@ export async function measureImpact(
         ? await measureHttp(incident, signal, impact, previous, d)
         : await measureEvents(incident, signal, impact, d);
   } catch (error) {
-    numbers = { approximate: impact.kind === "http", error: message(error) };
+    numbers = kept(previous, message(error), impact.kind === "http");
   }
   return {
     signalId: signal.id,

@@ -1,8 +1,14 @@
-import { expect, test } from "bun:test";
-import type { Incident, IncidentImpact, Signal } from "../../shared/incidents";
+import { beforeEach, expect, test } from "bun:test";
+import type {
+  Incident,
+  IncidentImpact,
+  Observation,
+  Signal,
+} from "../../shared/incidents";
 import { createIncident, getIncident, updateIncident } from "./incident-store";
 import {
   type ImpactDeps,
+  __resetImpactForTest,
   measureImpact,
   refreshIncidentImpacts,
 } from "./impact";
@@ -11,6 +17,7 @@ import type { SourceRun } from "./sources";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 useIncidentTestKernel();
+beforeEach(() => __resetImpactForTest());
 
 const OPENED = "2026-10-20T10:00:00.000Z";
 const NOW = Date.parse("2026-10-20T10:30:00Z");
@@ -174,30 +181,56 @@ test("a failed query keeps the last numbers and says why", async () => {
   ).toMatchObject({ error: "socket closed", noun: "searches failed" });
 });
 
+type Scan = NonNullable<ImpactDeps["scan"]>;
+
+/** A scan over `list` that records every range it was asked for. */
+function scanOf(list: Observation[], asked: unknown[][] = []): Scan {
+  return async (signalId, from, to, visit, opts) => {
+    asked.push([signalId, from, to, opts]);
+    for (const o of list) {
+      const at = Date.parse(o.at);
+      if (at >= from && at <= to) visit(o);
+    }
+  };
+}
+
+const at = (iso: string) => new Date(iso).toISOString();
+const sumImpact = {
+  kind: "events",
+  count: "value-sum",
+  noun: "errors",
+  label: "Sentry",
+} as const;
+const failImpact = { ...sumImpact, count: "fail-events" } as const;
+
 test("webhook events count from stored observations", async () => {
-  const asked: unknown[] = [];
+  const asked: unknown[][] = [];
   const out = await measureImpact(
+    { incident, signal: { ...hookSignal, impact: sumImpact } },
     {
-      incident,
-      signal: {
-        ...hookSignal,
-        impact: {
-          kind: "events",
-          count: "value-sum",
-          noun: "errors",
-          label: "Sentry",
-        },
-      },
-    },
-    {
-      observations: async (...args) => {
-        asked.push(args);
-        return [
-          { at: "1", result: "fail", value: 3, detail: "" },
-          { at: "2", result: "ok", value: 9, detail: "" },
-          { at: "3", result: "fail", value: 4, detail: "" },
-        ];
-      },
+      scan: scanOf(
+        [
+          {
+            at: at("2026-10-20T10:01:00Z"),
+            result: "fail",
+            value: 3,
+            detail: "",
+          },
+          {
+            at: at("2026-10-20T10:02:00Z"),
+            result: "ok",
+            value: 9,
+            detail: "",
+          },
+          {
+            at: at("2026-10-20T10:03:00Z"),
+            result: "fail",
+            value: 4,
+            detail: "",
+          },
+        ],
+        asked,
+      ),
       now: () => NOW,
     },
   );
@@ -207,32 +240,140 @@ test("webhook events count from stored observations", async () => {
   const failures = await measureImpact(
     {
       incident: { ...incident, closedAt: "2026-10-20T10:20:00.000Z" },
-      signal: {
-        ...hookSignal,
-        impact: {
-          kind: "events",
-          count: "fail-events",
-          noun: "errors",
-          label: "Sentry",
-        },
-      },
+      signal: { ...hookSignal, impact: failImpact },
     },
     {
-      observations: async (...args) => {
-        asked.push(args);
-        return [
-          { at: "1", result: "fail", detail: "" },
-          { at: "2", result: "ok", detail: "" },
-          { at: "3", result: "fail", detail: "" },
-        ];
-      },
+      scan: scanOf(
+        [
+          { at: at("2026-10-20T10:01:00Z"), result: "fail", detail: "" },
+          { at: at("2026-10-20T10:02:00Z"), result: "ok", detail: "" },
+          { at: at("2026-10-20T10:03:00Z"), result: "fail", detail: "" },
+          { at: at("2026-10-20T10:25:00Z"), result: "fail", detail: "" },
+        ],
+        asked,
+      ),
       now: () => NOW,
     },
   );
   expect(failures).toMatchObject({ count: 2 });
-  expect((asked[1] as unknown[])[2]).toBe(
-    Date.parse("2026-10-20T10:20:00.000Z"),
+  expect(asked[1]?.[2]).toBe(Date.parse("2026-10-20T10:20:00.000Z"));
+});
+
+test("finished UTC days are counted once; today is scanned again", async () => {
+  const opened = "2026-10-17T22:00:00.000Z";
+  const list: Observation[] = [
+    { at: at("2026-10-17T21:00:00Z"), result: "fail", value: 100, detail: "" },
+    { at: at("2026-10-17T23:00:00Z"), result: "fail", value: 1, detail: "" },
+    { at: at("2026-10-18T00:00:00Z"), result: "fail", value: 2, detail: "" },
+    {
+      at: at("2026-10-19T23:59:59.999Z"),
+      result: "fail",
+      value: 4,
+      detail: "",
+    },
+    { at: at("2026-10-20T00:00:00Z"), result: "fail", value: 8, detail: "" },
+  ];
+  const asked: unknown[][] = [];
+  const input = {
+    incident: { ...incident, openedAt: opened },
+    signal: { ...hookSignal, impact: sumImpact },
+  };
+  const first = await measureImpact(input, {
+    scan: scanOf(list, asked),
+    now: () => NOW,
+  });
+  expect(first.count).toBe(15);
+  expect(asked.map((a) => [a[1], a[2]])).toEqual([
+    [Date.parse(opened), Date.parse("2026-10-18T00:00:00Z") - 1],
+    [
+      Date.parse("2026-10-18T00:00:00Z"),
+      Date.parse("2026-10-19T00:00:00Z") - 1,
+    ],
+    [
+      Date.parse("2026-10-19T00:00:00Z"),
+      Date.parse("2026-10-20T00:00:00Z") - 1,
+    ],
+    [Date.parse("2026-10-20T00:00:00Z"), NOW],
+  ]);
+  list.push({
+    at: at("2026-10-20T10:31:00Z"),
+    result: "fail",
+    value: 16,
+    detail: "",
+  });
+  asked.length = 0;
+  const second = await measureImpact(input, {
+    scan: scanOf(list, asked),
+    now: () => NOW + 60_000,
+  });
+  expect(second.count).toBe(31);
+  expect(asked.map((a) => [a[1], a[2]])).toEqual([
+    [Date.parse("2026-10-20T00:00:00Z"), NOW + 60_000],
+  ]);
+  // Fail events read the same cached days; another signal has its own.
+  asked.length = 0;
+  const events = await measureImpact(
+    { ...input, signal: { ...hookSignal, impact: failImpact } },
+    { scan: scanOf(list, asked), now: () => NOW + 60_000 },
   );
+  expect(events.count).toBe(5);
+  expect(asked).toHaveLength(1);
+  asked.length = 0;
+  await measureImpact(
+    { ...input, signal: { ...hookSignal, id: "sig-other", impact: sumImpact } },
+    { scan: scanOf(list, asked), now: () => NOW + 60_000 },
+  );
+  expect(asked).toHaveLength(4);
+});
+
+test("events count at most the last 31 days, approximate past retention", async () => {
+  const DAY = 86_400_000;
+  const measure = async (openedMs: number) => {
+    __resetImpactForTest();
+    const asked: unknown[][] = [];
+    const out = await measureImpact(
+      {
+        incident: { ...incident, openedAt: new Date(openedMs).toISOString() },
+        signal: { ...hookSignal, impact: failImpact },
+      },
+      { scan: scanOf([], asked), now: () => NOW },
+    );
+    return { out, from: asked[0]?.[1], spans: asked.length };
+  };
+  const long = await measure(NOW - 40 * DAY);
+  expect(long.out).toMatchObject({ count: 0, approximate: true });
+  expect(long.from).toBe(NOW - 31 * DAY);
+  const pastRetention = await measure(NOW - 30 * DAY - 3_600_000);
+  expect(pastRetention.out.approximate).toBe(true);
+  expect(pastRetention.from).toBe(NOW - 30 * DAY - 3_600_000);
+  const within = await measure(NOW - 29 * DAY);
+  expect(within.out.approximate).toBe(false);
+  expect(within.spans).toBe(30);
+});
+
+test("a failed event read keeps the last numbers", async () => {
+  const previous: IncidentImpact = {
+    signalId: "sig-hook",
+    at: "x",
+    count: 12,
+    approximate: false,
+    noun: "errors",
+    label: "Sentry",
+  };
+  const out = await measureImpact(
+    { incident, signal: { ...hookSignal, impact: sumImpact }, previous },
+    {
+      scan: async () => {
+        throw new Error("disk read failed");
+      },
+      now: () => NOW,
+    },
+  );
+  expect(out).toMatchObject({
+    count: 12,
+    approximate: false,
+    error: "disk read failed",
+  });
 });
 
 async function openIncidentWithImpact() {
