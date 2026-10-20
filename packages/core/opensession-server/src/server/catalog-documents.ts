@@ -50,6 +50,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // Comment threads per session (comment-threads.ts). Imported once from
   // their own export directory plus the legacy session-notes files.
   "comment-threads",
+  // Incident signal configuration (incidents/signal-store.ts).
+  "incident-signals",
+  // Incidents with their timelines (incidents/incident-store.ts).
+  "incidents",
 ] as const;
 
 export type ApplicationCatalogNamespace =
