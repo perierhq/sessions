@@ -56,6 +56,7 @@ test("descendant policy carries the binding and the access", () => {
       role: "investigator",
       signalId: "sig-search",
       accessRevision: "r2",
+      spawn: { hosts: [], credentials: [], egress: null },
     },
   });
   expect(() =>
@@ -67,14 +68,56 @@ test("spawn re-resolves and narrows to the fresh access", async () => {
     ...incidentDescendantPolicy(access(), base),
     mcpServers: ["sentry", "logs"],
   };
-  current = access({ connections: ["logs"], revision: "r3" });
+  current = access({
+    connections: ["logs"],
+    revision: "r3",
+    hosts: [
+      {
+        runner: "rn-prod",
+        runnerName: "prod-1",
+        ssh: "db-1",
+        access: "read-only",
+      },
+    ],
+    credentials: [
+      {
+        credential: "kc-proxy",
+        service: "proxy-api",
+        host: "api.proxy.example.test",
+        mode: "once",
+        scope: "personal",
+      },
+    ],
+    egress: {
+      route: "proxy",
+      proxyUrl: "https://proxy.example.test",
+      proxyCredential: "kc-proxy",
+      hosts: ["search.example.test"],
+    },
+  });
+  // The snapshot is taken from the access the session is created under.
   expect(
     await enforceIncidentSpawn(policy, {
       repo: "acme",
       mode: "code",
       runner: "rn-prod",
     }),
-  ).toMatchObject({ mcpServers: ["logs"], incident: { accessRevision: "r3" } });
+  ).toMatchObject({
+    mcpServers: ["logs"],
+    incident: {
+      accessRevision: "r3",
+      spawn: {
+        hosts: ["rn-prod>db-1"],
+        credentials: [{ credential: "kc-proxy", mode: "once" }],
+        egress: {
+          route: "proxy",
+          proxyUrl: "https://proxy.example.test",
+          proxyCredential: "kc-proxy",
+          hosts: ["search.example.test"],
+        },
+      },
+    },
+  });
   // The session does not exist yet: the allowed decision is recorded, the
   // spawn itself only once the create succeeds.
   expect(kit.audits).toContainEqual(

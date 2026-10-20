@@ -60,6 +60,7 @@ const ctx = (credentials: ResolvedCredential[]): IncidentToolContext => {
       role: "investigator",
       signalId: "sig-search",
       accessRevision: "r",
+      spawn: { hosts: [], credentials: [], egress: null },
     },
     access: fresh,
   };

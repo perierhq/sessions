@@ -661,6 +661,7 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
           role: "investigator",
           signalId: null,
           accessRevision: "example",
+          spawn: { hosts: [], credentials: [], egress: null },
         },
         access: {
           incidentId: "inc-example",

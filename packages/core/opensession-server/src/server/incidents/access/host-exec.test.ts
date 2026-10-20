@@ -28,6 +28,7 @@ const ctx = (
     role: "investigator",
     signalId: null,
     accessRevision: "r1",
+    spawn: { hosts: [], credentials: [], egress: null },
   },
   access: {
     ...agentAccessFixture(),

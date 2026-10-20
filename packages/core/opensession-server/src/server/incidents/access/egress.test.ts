@@ -53,6 +53,7 @@ const withEgress = (egress: ResolvedEgress | null): IncidentToolContext => ({
     role: "verifier",
     signalId: null,
     accessRevision: "r",
+    spawn: { hosts: [], credentials: [], egress: null },
   },
   access: agentAccessFixture({ role: "verifier", egress }),
 });

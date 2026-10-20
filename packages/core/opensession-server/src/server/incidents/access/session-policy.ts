@@ -12,7 +12,11 @@ import type {
 import { resolveModel } from "../../models";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentAudit } from "../audit-sink";
-import { AgentAccessError, resolveAgentAccessForBinding } from "./resolve";
+import {
+  AgentAccessError,
+  accessSpawnSnapshot,
+  resolveAgentAccessForBinding,
+} from "./resolve";
 
 export interface IncidentDescendantBase {
   automationId: string;
@@ -45,6 +49,7 @@ export function incidentDescendantPolicy(
       role: access.role,
       signalId: access.signalId,
       accessRevision: access.revision,
+      spawn: accessSpawnSnapshot(access),
     },
   };
 }
@@ -131,7 +136,13 @@ export async function enforceIncidentSpawn(
     allowedRunners: policy.allowedRunners.filter((id) =>
       access.runners.includes(id),
     ),
-    incident: { ...binding, accessRevision: access.revision },
+    // The snapshot every later resolution is held to: the access the
+    // session is created under.
+    incident: {
+      ...binding,
+      accessRevision: access.revision,
+      spawn: accessSpawnSnapshot(access),
+    },
   };
 }
 

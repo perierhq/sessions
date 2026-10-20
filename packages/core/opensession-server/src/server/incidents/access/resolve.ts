@@ -3,12 +3,17 @@
 // narrowed against live state (Runners, connections, credentials, models).
 // Resolution either returns a whole AgentAccess or throws AgentAccessError;
 // it never returns a partial grant. Narrowing is recorded and audited once;
-// widening never happens here.
+// widening never happens here. A bound agent's access is also held to its
+// spawn snapshot (clampToSpawn), so settings widened mid-incident reach only
+// agents spawned afterwards.
 import { createHash } from "node:crypto";
 import {
   type AccessNarrowing,
+  type AccessSpawnSnapshot,
   type AgentAccess,
+  type CredentialGrantMode,
   egressRouteKey,
+  grantModeWithin,
   hostGrantKey,
   type IncidentAccessSettings,
   type IncidentAgentBinding,
@@ -486,6 +491,103 @@ export async function resolveAgentAccess(
   };
 }
 
+/** What this access reaches, as a bound agent's spawn snapshot. */
+export function accessSpawnSnapshot(access: AgentAccess): AccessSpawnSnapshot {
+  return {
+    hosts: access.hosts.map((h) => hostGrantKey(h)),
+    credentials: access.credentials.map((c) => ({
+      credential: c.credential,
+      mode: c.mode,
+    })),
+    egress: access.egress
+      ? {
+          route: access.egress.route,
+          ...(access.egress.runner !== undefined
+            ? { runner: access.egress.runner }
+            : {}),
+          ...(access.egress.proxyUrl !== undefined
+            ? { proxyUrl: access.egress.proxyUrl }
+            : {}),
+          ...(access.egress.proxyCredential !== undefined
+            ? { proxyCredential: access.egress.proxyCredential }
+            : {}),
+          hosts: [...access.egress.hosts],
+        }
+      : null,
+  };
+}
+
+const EMPTY_SNAPSHOT: AccessSpawnSnapshot = {
+  hosts: [],
+  credentials: [],
+  egress: null,
+};
+
+/** A stored snapshot, or the empty one when it is missing or malformed. */
+function spawnSnapshotOf(binding: IncidentAgentBinding): AccessSpawnSnapshot {
+  const raw = (binding as { spawn?: unknown }).spawn as
+    | Partial<AccessSpawnSnapshot>
+    | undefined;
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !Array.isArray(raw.hosts) ||
+    !Array.isArray(raw.credentials) ||
+    (raw.egress !== null &&
+      (typeof raw.egress !== "object" || !Array.isArray(raw.egress?.hosts)))
+  )
+    return EMPTY_SNAPSHOT;
+  return raw as AccessSpawnSnapshot;
+}
+
+const narrowerMode = (
+  a: CredentialGrantMode,
+  b: CredentialGrantMode,
+): CredentialGrantMode => (grantModeWithin(a, b) ? a : b);
+
+/**
+ * The access intersected with the spawn snapshot: hosts and credentials the
+ * agent was spawned with, each credential at the narrower of the two modes,
+ * and the egress route only when it is the spawned one, over the hosts both
+ * name. Revision and summary follow the result.
+ */
+export function clampToSpawn(
+  access: AgentAccess,
+  snapshot: AccessSpawnSnapshot,
+): AgentAccess {
+  const hosts = access.hosts.filter((h) =>
+    snapshot.hosts.includes(hostGrantKey(h)),
+  );
+  const credentials: ResolvedCredential[] = [];
+  for (const c of access.credentials) {
+    const at = snapshot.credentials.find((s) => s.credential === c.credential);
+    if (at) credentials.push({ ...c, mode: narrowerMode(c.mode, at.mode) });
+  }
+  let egress: ResolvedEgress | null = null;
+  const was = snapshot.egress;
+  const now = access.egress;
+  if (
+    was &&
+    now &&
+    now.route === was.route &&
+    (now.runner ?? null) === (was.runner ?? null) &&
+    (now.proxyUrl ?? null) === (was.proxyUrl ?? null) &&
+    (now.proxyCredential ?? null) === (was.proxyCredential ?? null) &&
+    (now.proxyCredential === undefined ||
+      credentials.some((c) => c.credential === now.proxyCredential))
+  ) {
+    const reach = now.hosts.filter((h) => was.hosts.includes(h));
+    if (reach.length) egress = { ...now, hosts: reach };
+  }
+  const { summary: _summary, revision: _revision, ...rest } = access;
+  const base = { ...rest, hosts, credentials, egress };
+  return {
+    ...base,
+    revision: accessRevision(base),
+    summary: describeAccess(base),
+  };
+}
+
 let bindingResolver:
   | ((binding: IncidentAgentBinding) => Promise<AgentAccess>)
   | undefined;
@@ -498,10 +600,10 @@ export function __setBindingResolverForTest(
 }
 
 /**
- * Resolve the access of a bound agent from the stored incident and signal.
- * A bound signal that no longer exists refuses rather than falling back to
- * the role default, which may be wider than the signal's override, and so
- * does a signal that is not one of the incident's.
+ * Resolve the access of a bound agent from the stored incident and signal,
+ * held to its spawn snapshot. A bound signal that no longer exists refuses
+ * rather than falling back to the role default, which may be wider than the
+ * signal's override, and so does a signal that is not one of the incident's.
  */
 export async function resolveAgentAccessForBinding(
   binding: IncidentAgentBinding,
@@ -528,5 +630,8 @@ export async function resolveAgentAccessForBinding(
         "incident",
       );
   }
-  return resolveAgentAccess(binding.role, incident, signal);
+  return clampToSpawn(
+    await resolveAgentAccess(binding.role, incident, signal),
+    spawnSnapshotOf(binding),
+  );
 }

@@ -452,6 +452,7 @@ describe("workflow durable sessions", () => {
             role: "investigator",
             signalId: null,
             accessRevision: "r1",
+            spawn: { hosts: [], credentials: [], egress: null },
           },
         },
       },

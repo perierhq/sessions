@@ -11,6 +11,7 @@ import { createSignal } from "../signal-store";
 import { useAccessTestEnv } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
+  accessSpawnSnapshot,
   registerAccessGate,
   resolveAgentAccess,
   resolveAgentAccessForBinding,
@@ -421,6 +422,7 @@ test("binding resolution reads the incident and signal; a missing incident refus
       role: "verifier",
       signalId: null,
       accessRevision: "x",
+      spawn: { hosts: [], credentials: [], egress: null },
     }),
   ).rejects.toThrow("Incident inc-missing no longer exists");
 });
@@ -451,6 +453,7 @@ test("binding resolution applies the bound signal's override; a deleted signal r
     role: "verifier",
     signalId: sig.id,
     accessRevision: "x",
+    spawn: { hosts: [], credentials: [], egress: null },
   });
   expect(a).toMatchObject({
     incidentId: inc.id,
@@ -464,6 +467,7 @@ test("binding resolution applies the bound signal's override; a deleted signal r
       role: "verifier",
       signalId: "sig-gone",
       accessRevision: "x",
+      spawn: { hosts: [], credentials: [], egress: null },
     }),
   ).rejects.toThrow("Signal sig-gone no longer exists");
 });
@@ -505,9 +509,224 @@ test("a binding to a signal that is not the incident's refuses", async () => {
       role: "investigator",
       signalId: other.id,
       accessRevision: "x",
+      spawn: { hosts: [], credentials: [], egress: null },
     }),
   ).rejects.toMatchObject({
     code: "incident",
     message: `Signal ${other.id} is not part of incident ${inc.id}`,
   });
+});
+
+// A bound agent's access is held to what it was spawned with: widening the
+// settings mid-incident reaches only agents spawned afterwards, while
+// narrowing applies on the next call.
+async function storedIncident(): Promise<Incident> {
+  return createIncident({
+    project: "acme",
+    title: "Search",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-search"],
+    primarySignalId: "sig-search",
+    at: "2026-10-20T10:00:00.000Z",
+    detail: "3 failures in a row",
+  });
+}
+const wideGrants = (s: IncidentAccessSettings) => {
+  s.grants.hosts = [
+    { runner: "rn-prod", access: "read-only" },
+    { runner: "rn-prod", ssh: "db-1", access: "read-only" },
+  ];
+  s.grants.credentials = [
+    {
+      credential: "kc-proxy",
+      mode: "standing",
+      grantedBy: "Ada",
+      grantedByLogin: "ada",
+      grantedAt: "x",
+    },
+    {
+      credential: "kc-shared",
+      mode: "standing",
+      grantedBy: "Bo",
+      grantedByLogin: "bo",
+      grantedAt: "x",
+    },
+  ];
+  s.grants.egress = [
+    { route: "server" },
+    {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["search.example.test", "status.example.test"],
+    },
+  ];
+  return s;
+};
+const store = (s: IncidentAccessSettings) =>
+  catalogDocuments("incident-access").set("acme", s);
+test("widening mid-incident reaches only new agents; narrowing applies at once", async () => {
+  const inc = await storedIncident();
+  const spawned = wideGrants(settings());
+  spawned.overrides = [];
+  spawned.profiles.investigator = {
+    ...spawned.profiles.investigator,
+    hosts: [{ runner: "rn-prod", access: "read-only" }],
+    credentials: [{ credential: "kc-proxy", mode: "once" }],
+    egress: {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["search.example.test"],
+    },
+  };
+  await store(spawned);
+  const first = await resolveAgentAccess("investigator", inc, null);
+  const binding = {
+    incidentId: inc.id,
+    role: "investigator" as const,
+    signalId: null,
+    accessRevision: first.revision,
+    spawn: accessSpawnSnapshot(first),
+  };
+  expect(binding.spawn).toEqual({
+    hosts: ["rn-prod"],
+    credentials: [{ credential: "kc-proxy", mode: "once" }],
+    egress: {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["search.example.test"],
+    },
+  });
+
+  const widened = structuredClone(spawned);
+  widened.profiles.investigator = {
+    ...widened.profiles.investigator,
+    hosts: [
+      { runner: "rn-prod", access: "read-only" },
+      { runner: "rn-prod", ssh: "db-1", access: "read-only" },
+    ],
+    credentials: [
+      { credential: "kc-proxy", mode: "standing" },
+      { credential: "kc-shared", mode: "standing" },
+    ],
+    egress: {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["search.example.test", "status.example.test"],
+    },
+  };
+  await store(widened);
+  const bound = await resolveAgentAccessForBinding(binding);
+  expect(bound).toMatchObject({
+    hosts: [{ runner: "rn-prod", runnerName: "prod-1" }],
+    credentials: [{ credential: "kc-proxy", mode: "once" }],
+    egress: { route: "runner", hosts: ["search.example.test"] },
+  });
+  expect(bound.hosts).toHaveLength(1);
+  expect(bound.credentials).toHaveLength(1);
+  // Nothing the agent can reach changed, so neither did its revision.
+  expect(bound.revision).toBe(first.revision);
+  expect(bound.summary).toBe(first.summary);
+  // A new agent gets the widened access.
+  const fresh = await resolveAgentAccess("investigator", inc, null);
+  expect(fresh.hosts).toHaveLength(2);
+  expect(fresh.credentials).toMatchObject([
+    { credential: "kc-proxy", mode: "standing" },
+    { credential: "kc-shared", mode: "standing" },
+  ]);
+
+  const narrowed = structuredClone(spawned);
+  narrowed.profiles.investigator = {
+    ...narrowed.profiles.investigator,
+    hosts: [],
+    credentials: [],
+    egress: {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["status.example.test"],
+    },
+  };
+  await store(narrowed);
+  expect(await resolveAgentAccessForBinding(binding)).toMatchObject({
+    hosts: [],
+    credentials: [],
+    egress: null,
+  });
+
+  // Another route is not the one the agent was spawned with.
+  const rerouted = structuredClone(spawned);
+  rerouted.profiles.investigator = {
+    ...rerouted.profiles.investigator,
+    egress: { route: "server", hosts: ["search.example.test"] },
+  };
+  await store(rerouted);
+  expect((await resolveAgentAccessForBinding(binding)).egress).toBeNull();
+});
+test("a credential lent once at spawn stays once when the settings make it standing", async () => {
+  const inc = await storedIncident();
+  const s = wideGrants(settings());
+  s.overrides = [];
+  s.profiles.investigator = {
+    ...s.profiles.investigator,
+    credentials: [{ credential: "kc-proxy", mode: "standing" }],
+  };
+  await store(s);
+  const first = await resolveAgentAccess("investigator", inc, null);
+  const binding = {
+    incidentId: inc.id,
+    role: "investigator" as const,
+    signalId: null,
+    accessRevision: first.revision,
+    spawn: accessSpawnSnapshot(first),
+  };
+  // Narrowed to once: applies at once.
+  s.profiles.investigator.credentials = [
+    { credential: "kc-proxy", mode: "once" },
+  ];
+  await store(s);
+  expect(
+    (await resolveAgentAccessForBinding(binding)).credentials,
+  ).toMatchObject([{ credential: "kc-proxy", mode: "once" }]);
+  // A binding spawned at once never becomes standing.
+  const onceBinding = {
+    ...binding,
+    spawn: {
+      ...binding.spawn,
+      credentials: [{ credential: "kc-proxy", mode: "once" as const }],
+    },
+  };
+  s.profiles.investigator.credentials = [
+    { credential: "kc-proxy", mode: "standing" },
+  ];
+  await store(s);
+  expect(
+    (await resolveAgentAccessForBinding(onceBinding)).credentials,
+  ).toMatchObject([{ credential: "kc-proxy", mode: "once" }]);
+});
+test("a binding without a spawn snapshot reaches no host, credential or egress", async () => {
+  const inc = await storedIncident();
+  const s = wideGrants(settings());
+  s.overrides = [];
+  s.profiles.investigator = {
+    ...s.profiles.investigator,
+    hosts: [{ runner: "rn-prod", access: "read-only" }],
+    credentials: [{ credential: "kc-proxy", mode: "once" }],
+    egress: {
+      route: "runner",
+      runner: "rn-prod",
+      hosts: ["search.example.test"],
+    },
+  };
+  await store(s);
+  const a = await resolveAgentAccessForBinding({
+    incidentId: inc.id,
+    role: "investigator",
+    signalId: null,
+    accessRevision: "x",
+    spawn: { hosts: [], credentials: [], egress: null },
+  } as unknown as Parameters<typeof resolveAgentAccessForBinding>[0]);
+  expect(a).toMatchObject({ hosts: [], credentials: [], egress: null });
+  expect(a.connections).toEqual(["sentry", "logs"]);
 });

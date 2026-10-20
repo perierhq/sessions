@@ -36,6 +36,7 @@ describe("automation descendant opening policy", () => {
       role: "investigator" as const,
       signalId: null,
       accessRevision: "r1",
+      spawn: { hosts: [], credentials: [], egress: null },
     };
     expect(
       openingCreateTrustPolicy({
@@ -65,6 +66,7 @@ describe("automation descendant opening policy", () => {
       role: "investigator" as const,
       signalId: null,
       accessRevision: "r1",
+      spawn: { hosts: [], credentials: [], egress: null },
     };
     const previousAudit = __setIncidentAuditForTest(() => {});
     try {
@@ -136,9 +138,10 @@ describe("automation descendant opening policy", () => {
             role: "verifier",
             signalId: null,
             accessRevision: "r",
+            spawn: { hosts: [], credentials: [], egress: null },
           },
         },
-      } as UnifiedSession,
+      } as unknown as UnifiedSession,
       {
         isAutomationSession: true,
         mcpServers: ["sentry"],

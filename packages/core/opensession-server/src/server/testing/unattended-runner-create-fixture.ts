@@ -289,6 +289,7 @@ try {
               role: "investigator" as const,
               signalId: null,
               accessRevision: "r-requested",
+              spawn: { hosts: [], credentials: [], egress: null },
             },
           }
         : {}),

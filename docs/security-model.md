@@ -366,10 +366,12 @@ unreadable settings document refuses every agent until it is reset. The
 verifier is locked to ask mode, and host access is read-only.
 
 Access is resolved when the session is created, again for its opening turn
-and every later turn, and on every incident tool call. A turn never reaches
-wider than the connections the agent was spawned with: widening the settings
-reaches only agents spawned afterwards, while narrowing applies on the next
-turn and the next tool call. If the mode, repo or Runner the agent was
+and every later turn, and on every incident tool call. The session's binding
+keeps a snapshot of what the agent was spawned with (its connections, hosts,
+credentials with their modes, and egress route and hosts), and every later
+resolution is intersected with it, a credential at the narrower of the two
+modes: widening the settings reaches only agents spawned afterwards, while
+narrowing applies on the next turn and the next tool call. If the mode, repo or Runner the agent was
 spawned with is no longer allowed, the turn is refused and a new agent has to
 be started. Agents run only in the incident states listed for them
 (investigating, fix ready, veto, deploying, watching, needs you, rolled

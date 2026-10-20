@@ -148,12 +148,31 @@ export interface IncidentAccessSettingsView extends IncidentAccessSettings {
   credentialInfo: Record<string, CredentialInfo>;
 }
 
+/**
+ * What an incident agent could reach when its session was created. Every
+ * later resolution for the agent is intersected with it, so widening the
+ * settings reaches only agents spawned afterwards.
+ */
+export interface AccessSpawnSnapshot {
+  /** hostGrantKey of each host. */
+  hosts: string[];
+  credentials: Array<{ credential: string; mode: CredentialGrantMode }>;
+  egress: {
+    route: "server" | "runner" | "proxy";
+    runner?: string;
+    proxyUrl?: string;
+    proxyCredential?: string;
+    hosts: string[];
+  } | null;
+}
+
 /** Carried on an incident agent's descendant policy; re-resolved on use. */
 export interface IncidentAgentBinding {
   incidentId: string;
   role: IncidentAgentRole;
   signalId: string | null;
   accessRevision: string;
+  spawn: AccessSpawnSnapshot;
 }
 
 export interface ResolvedHost {

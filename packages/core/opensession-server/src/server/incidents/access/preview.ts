@@ -13,7 +13,7 @@ import type { Incident, Signal } from "../../../shared/incidents";
 import type { LOCAL_WORKSPACE_TOOL_IDS } from "../../run-policy";
 import { type AccessEnvironment, loadAccessEnvironment } from "./environment";
 import { incidentAccessToolDefinitions } from "./mcp";
-import { resolveAgentAccess } from "./resolve";
+import { accessSpawnSnapshot, resolveAgentAccess } from "./resolve";
 
 type LocalTool = (typeof LOCAL_WORKSPACE_TOOL_IDS)[number];
 const READ_TOOLS: LocalTool[] = ["read", "grep", "glob", "bash"];
@@ -33,6 +33,7 @@ export function previewTools(access: AgentAccess): string[] {
       role: access.role,
       signalId: access.signalId,
       accessRevision: access.revision,
+      spawn: accessSpawnSnapshot(access),
     },
     access,
   })

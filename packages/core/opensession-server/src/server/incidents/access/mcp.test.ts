@@ -20,6 +20,7 @@ const binding = {
   role: "investigator" as const,
   signalId: null,
   accessRevision: "r",
+  spawn: { hosts: [], credentials: [], egress: null },
 };
 const names = (access: AgentAccess) =>
   incidentAccessToolDefinitions({ sessionId: "os-1", binding, access }).map(
