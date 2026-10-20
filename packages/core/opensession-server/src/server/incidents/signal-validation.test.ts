@@ -539,6 +539,32 @@ test("impact fields: words, kinds, and events on a webhook", () => {
   ).toEqual({ error: "Event counts need a webhook signal" });
 });
 
+test("impact placeholders stay in the path and query", () => {
+  const impactAt = (url: string) =>
+    validateImpact(
+      { kind: "http", url, countPath: "$.n", noun: "x", label: "y" },
+      { kind: "http", url: "https://acme.example.test/" },
+    );
+  const refused = {
+    error: "Impact URL placeholders may only be in the path or query",
+  };
+  for (const url of [
+    "https://logs{{sinceMs}}.example.test/c",
+    "https://logs.example.test:8{{sinceMs}}/c",
+    "https://logs.example.test/c#{{since}}",
+  ])
+    expect([url, impactAt(url)]).toEqual([url, refused]);
+  // Userinfo is refused whatever it holds.
+  expect(impactAt("https://u{{sinceMs}}@logs.example.test/c")).toEqual({
+    error: expect.stringContaining("credentials"),
+  });
+  for (const url of [
+    "https://logs.example.test/{{sinceMs}}/c?to={{until}}",
+    "https://logs.example.test/c?from={{since}}&{{untilMs}}",
+  ])
+    expect([url, impactAt(url)]).toMatchObject([url, { kind: "http" }]);
+});
+
 test("impact secrets are redacted and restored like the source's", () => {
   const signal = {
     ...base,

@@ -160,7 +160,7 @@ export type ImpactSource =
       /**
        * May use `{{since}}` (when the incident opened, ISO instant) and
        * `{{sinceMs}}` (epoch ms), `{{until}}` and `{{untilMs}}` (when it
-       * closed, or now while it is open).
+       * closed, or now while it is open), in the path and query only.
        */
       url: string;
       headers?: Record<string, string>;

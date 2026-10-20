@@ -314,14 +314,51 @@ export function validateSource(value: unknown): SignalSource | FieldError {
 
 // --- impact --------------------------------------------------------------
 
+type ImpactSamples = Record<(typeof IMPACT_PLACEHOLDERS)[number], string>;
+
 /** Sample values a placeholder takes while its URL is checked. */
-const IMPACT_SAMPLES: Record<(typeof IMPACT_PLACEHOLDERS)[number], string> = {
+const IMPACT_SAMPLES: ImpactSamples = {
   since: "2026-01-01T00%3A00%3A00.000Z",
   sinceMs: "0",
   until: "2026-01-01T01%3A00%3A00.000Z",
   untilMs: "3600000",
 };
+/** Other samples: a placeholder that changes the address between the two
+ *  is outside the path and query. */
+const OTHER_IMPACT_SAMPLES: ImpactSamples = {
+  since: "2026-01-02T00%3A00%3A00.000Z",
+  sinceMs: "86400000",
+  until: "2026-01-02T01%3A00%3A00.000Z",
+  untilMs: "90000000",
+};
 const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
+
+/** `url` with every known placeholder filled in from `samples`. */
+function renderImpactUrl(
+  url: string,
+  samples: ImpactSamples,
+): { url: string } | FieldError {
+  let unknown: string | undefined;
+  const rendered = url.replace(PLACEHOLDER, (whole, name: string) => {
+    if (Object.hasOwn(samples, name))
+      return samples[name as keyof ImpactSamples];
+    unknown ??= whole;
+    return whole;
+  });
+  if (unknown)
+    return { error: `Unknown placeholder ${unknown} in the impact URL` };
+  return { url: rendered };
+}
+
+/** The parts of a URL a placeholder may not change. */
+function fixedParts(raw: string): string | undefined {
+  try {
+    const url = new URL(raw);
+    return JSON.stringify([url.origin, url.username, url.password, url.hash]);
+  } catch {
+    return undefined;
+  }
+}
 
 function impactWords(
   value: unknown,
@@ -355,17 +392,19 @@ function validateHttpImpact(
     return {
       error: `The impact URL can be at most ${MAX_URL_CHARS} characters`,
     };
-  let unknown: string | undefined;
-  const rendered = url.replace(PLACEHOLDER, (whole, name: string) => {
-    if (Object.hasOwn(IMPACT_SAMPLES, name))
-      return IMPACT_SAMPLES[name as keyof typeof IMPACT_SAMPLES];
-    unknown ??= whole;
-    return whole;
-  });
-  if (unknown)
-    return { error: `Unknown placeholder ${unknown} in the impact URL` };
-  const checked = validateHttpSource({ kind: "http", url: rendered });
+  const rendered = renderImpactUrl(url, IMPACT_SAMPLES);
+  if (isFieldError(rendered)) return rendered;
+  const checked = validateHttpSource({ kind: "http", url: rendered.url });
   if (isFieldError(checked)) return { error: `Impact URL: ${checked.error}` };
+  const other = renderImpactUrl(url, OTHER_IMPACT_SAMPLES);
+  if (
+    isFieldError(other) ||
+    fixedParts(other.url) === undefined ||
+    fixedParts(other.url) !== fixedParts(rendered.url)
+  )
+    return {
+      error: "Impact URL placeholders may only be in the path or query",
+    };
   const headers = validateHeaders(value.headers);
   if (isFieldError(headers))
     return { error: `Impact headers: ${headers.error}` };
