@@ -864,6 +864,46 @@ describe("providers and disagreements", () => {
     expect(back.map((o) => o.op)).toEqual(["event"]);
   });
 
+  test("recovering while waiting resolves the outstanding provider findings", () => {
+    const a = S("sig-a");
+    const waiting = I("inc-1", "waiting-on-provider", {
+      signalIds: ["sig-a", "sig-p"],
+      findings: [
+        {
+          id: "f1",
+          kind: "external",
+          at: iso(),
+          signalId: "sig-p",
+          detail: "",
+        },
+      ],
+    });
+    expect(
+      decide(
+        a,
+        "failing",
+        E("sig-a", "ok"),
+        snap([a, P], [E("sig-a", "ok"), E("sig-p", "external")], [waiting]),
+      ),
+    ).toEqual([
+      {
+        op: "event",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        signalState: "ok",
+        detail: "Passing",
+      },
+      { op: "resolve-finding", incidentId: "inc-1", kind: "external" },
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "resolved",
+        fixedBy: "provider-recovered",
+        detail: "Recovered while a provider had a problem",
+      },
+    ]);
+  });
+
   test("one provider recovering while another is still out keeps waiting", () => {
     const a = S("sig-a");
     const Q = S("sig-q", { name: "Cloud", provider: true });

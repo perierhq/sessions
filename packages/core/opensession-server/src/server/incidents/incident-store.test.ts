@@ -95,6 +95,13 @@ test("findings given at creation get ids and are audited", async () => {
   });
 });
 
+test("opening while waiting on a provider resumes to investigating", async () => {
+  const i = await createIncident(init({ state: "waiting-on-provider" }));
+  expect(i.resumeState).toBe("investigating");
+  expect(await getIncident(i.id)).toEqual(i);
+  expect(await createIncident(init())).not.toHaveProperty("resumeState");
+});
+
 test("list: newest first, filters", async () => {
   const old = await createIncident(init({ at: "2026-10-19T10:00:00.000Z" }));
   const other = await createIncident(

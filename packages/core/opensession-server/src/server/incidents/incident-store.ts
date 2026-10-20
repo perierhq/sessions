@@ -163,6 +163,10 @@ export async function createIncident(init: NewIncident): Promise<Incident> {
     openedAt: init.at,
     updatedAt: init.at,
     lastProblemAt: init.at,
+    // Opened already waiting: once the provider is back, work resumes.
+    ...(init.state === "waiting-on-provider"
+      ? { resumeState: "investigating" as const }
+      : {}),
     findings: (init.findings ?? []).map(newFinding),
     events: [
       {

@@ -422,7 +422,14 @@ function decideRecovery(
         to: "closed-without-action",
         detail: "Signals back to normal",
       });
-    else if (incident.state === "waiting-on-provider")
+    else if (incident.state === "waiting-on-provider") {
+      // Resolved: the providers' outages are no longer this incident's.
+      if (incident.findings.some((f) => !f.resolvedAt && f.kind === "external"))
+        ops.add({
+          op: "resolve-finding",
+          incidentId: incident.id,
+          kind: "external",
+        });
       ops.add({
         op: "transition",
         incidentId: incident.id,
@@ -430,6 +437,7 @@ function decideRecovery(
         fixedBy: "provider-recovered",
         detail: "Recovered while a provider had a problem",
       });
+    }
   }
   if (!signal.selfReported || !ok) return;
   // Self-reported ok while a real check in its project is failing.
