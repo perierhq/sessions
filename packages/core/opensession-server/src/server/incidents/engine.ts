@@ -33,7 +33,9 @@ export interface EngineSnapshot {
   signals: Map<string, Signal>;
   /** Already holds the current evaluation of the signal being decided. */
   evaluations: Map<string, SignalEvaluation>;
-  /** Open incidents plus terminal ones closed within REOPEN_WINDOW_MS. */
+  /** Open incidents, terminal ones closed within REOPEN_WINDOW_MS, and
+   *  terminal ones with the changed signal closed at or after its current
+   *  evaluation's `since` (however long ago). */
   incidents: Incident[];
   now: number;
 }

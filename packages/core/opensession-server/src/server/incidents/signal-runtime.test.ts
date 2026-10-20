@@ -231,6 +231,31 @@ test("boot does not reopen an incident closed while the signal was failing", asy
   expect(await listIncidents()).toEqual([closed]);
 });
 
+test("boot long after a close during a failing run opens no duplicate", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "fail");
+  const [open] = await listIncidents();
+  const closed = await updateIncident(open!.id, (c) =>
+    transitionIncident(c, "resolved", {
+      by: "Ada",
+      detail: "Known, fixed upstream",
+      at: new Date(clock).toISOString(),
+    }),
+  );
+  if (!closed || "error" in closed) throw new Error("close failed");
+  // Still failing 45 minutes on: past the reopen window.
+  await feed(s.id, ...Array<"fail">(45).fill("fail"));
+  expect(await listIncidents()).toEqual([closed]);
+  await flushObservations();
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  kit.audits.length = 0;
+  await bootSignalRuntime(clock);
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  expect(await listIncidents()).toEqual([closed]);
+  expect(kit.audits).toEqual([]);
+});
+
 test("boot restores every evaluation before the engine runs", async () => {
   const a = await make();
   const p = await make({ name: "Status", provider: true });

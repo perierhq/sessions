@@ -78,16 +78,36 @@ function hydrate(signal: Signal, now: number): Promise<void> {
   return hydrateObservations(signal.id, now, hydrationLookbackMs(signal, now));
 }
 
-/** Open incidents and those closed recently enough to reopen. */
-function engineIncidents(all: Incident[], now: number): Incident[] {
+/**
+ * Open incidents, those closed recently enough to reopen, and those holding
+ * the changed signal that closed during its current run (from
+ * `current.since` on): the engine reads the last as "closed knowingly".
+ */
+function engineIncidents(
+  all: Incident[],
+  now: number,
+  signalId: string,
+  current: SignalEvaluation,
+): Incident[] {
+  const runStarted = Date.parse(current.since);
   return all.filter((incident) => {
     if (isOpenIncident(incident)) return true;
     const closed = incident.closedAt ? Date.parse(incident.closedAt) : NaN;
-    return Number.isFinite(closed) && now - closed <= REOPEN_WINDOW_MS;
+    if (!Number.isFinite(closed)) return false;
+    if (now - closed <= REOPEN_WINDOW_MS) return true;
+    return (
+      incident.signalIds.includes(signalId) &&
+      Number.isFinite(runStarted) &&
+      closed >= runStarted
+    );
   });
 }
 
-async function snapshotAt(now: number): Promise<EngineSnapshot> {
+async function snapshotAt(
+  now: number,
+  signalId: string,
+  current: SignalEvaluation,
+): Promise<EngineSnapshot> {
   const [signals, incidents] = await Promise.all([
     listSignals(),
     listIncidents(),
@@ -97,7 +117,7 @@ async function snapshotAt(now: number): Promise<EngineSnapshot> {
     // an incident open or correlate with anything.
     signals: new Map(signals.filter((s) => s.enabled).map((s) => [s.id, s])),
     evaluations,
-    incidents: engineIncidents(incidents, now),
+    incidents: engineIncidents(incidents, now, signalId, current),
     now,
   };
 }
@@ -115,7 +135,7 @@ function runEngine(
 ): Promise<void> {
   const run = engineChain.then(async () => {
     try {
-      const snapshot = await snapshotAt(now);
+      const snapshot = await snapshotAt(now, signal.id, current);
       const ops = engine.decide(signal, previous, current, snapshot);
       if (ops.length) await engine.apply(ops, new Date(now).toISOString());
     } catch (error) {
