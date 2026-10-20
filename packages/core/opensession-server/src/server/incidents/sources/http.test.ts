@@ -7,12 +7,21 @@ const allow = { assertUrl: async (raw: string) => new URL(raw) };
 let a: Server<undefined>;
 let b: Server<undefined>;
 let seenAuthOnB: string | null = "unset";
+let seenOnB: Record<string, string | null> = {};
+let seenOnA: Record<string, string | null> = {};
 
 beforeAll(() => {
   b = Bun.serve({
     port: 0,
-    fetch(req) {
+    async fetch(req) {
       seenAuthOnB = req.headers.get("authorization");
+      seenOnB = {
+        method: req.method,
+        authorization: req.headers.get("authorization"),
+        trace: req.headers.get("x-trace"),
+        contentType: req.headers.get("content-type"),
+        body: await req.text(),
+      };
       return Response.json({ status: "ok" });
     },
   });
@@ -31,6 +40,22 @@ beforeAll(() => {
         return new Response("late");
       }
       if (p === "/big") return new Response("x".repeat(1_500_000));
+      if (p === "/big503")
+        return new Response("x".repeat(1_500_000), { status: 503 });
+      if (p === "/echo") {
+        seenOnA = { method: req.method, body: await req.text() };
+        return new Response("echo");
+      }
+      if (p === "/see-other") return Response.redirect(`${a.url}echo`, 303);
+      if (p === "/temp") return Response.redirect(`${a.url}echo`, 307);
+      if (p === "/temp-away") return Response.redirect(`${b.url}`, 307);
+      if (p === "/bad-location")
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://[bad" },
+        });
+      if (p === "/secret-hop")
+        return Response.redirect(`${a.url}ok?token=t0p&page=2`, 302);
       if (p === "/hop") return Response.redirect(`${a.url}ok`, 302);
       if (p === "/away") return Response.redirect(`${b.url}`, 302);
       if (p === "/loop") return Response.redirect(`${a.url}loop`, 302);
@@ -93,10 +118,105 @@ test("status, body and timeout failures", async () => {
   expect(
     (await run("/slow", { timeoutMs: 100 })).observations[0],
   ).toMatchObject({ result: "fail", detail: "No response within 100 ms" });
-  expect((await run("/big")).observations[0]).toMatchObject({
+  expect(
+    (await run("/big", { expectBody: { contains: "y" } })).observations[0],
+  ).toMatchObject({ result: "fail", detail: "Response over 1 MB" });
+  expect(
+    (await run("/big", { json: { preset: "plain" } })).observations[0],
+  ).toMatchObject({ result: "fail", detail: "Response over 1 MB" });
+});
+
+test("status is judged before size; size matters only when the body does", async () => {
+  expect((await run("/big503")).observations[0]).toMatchObject({
     result: "fail",
-    detail: "Response over 1 MB",
+    detail: "HTTP 503 (expected 2xx)",
   });
+  expect(
+    (await run("/big503", { expectBody: { contains: "x" } })).observations[0]
+      .detail,
+  ).toBe("HTTP 503 (expected 2xx)");
+  const big = await run("/big");
+  expect(big.observations[0]).toMatchObject({ result: "ok" });
+  expect(big.preview?.bodyTruncated).toBe(true);
+});
+
+test("a provider's unreadable status page is unknown, never an outage", async () => {
+  const provider = { ...allow, provider: true };
+  for (const [path, extra] of [
+    ["/down", {}],
+    ["/slow", { timeoutMs: 100 }],
+    ["/big", { json: { preset: "plain" } }],
+    ["/loop", {}],
+    ["/bad-location", {}],
+  ] as const) {
+    const [o] = (await run(path, extra as Partial<HttpSource>, provider))
+      .observations;
+    expect([path, o.result]).toEqual([path, "unknown"]);
+  }
+  const refused = await runHttpSource(
+    { kind: "http", url: "http://127.0.0.1:9/" },
+    provider,
+  );
+  expect(refused.observations[0].result).toBe("unknown");
+  // A status page that answers but does not say what it should is a claim.
+  expect(
+    (await run("/text", { expectBody: { contains: "price" } }, provider))
+      .observations[0].result,
+  ).toBe("fail");
+});
+
+test("303 turns into a GET without a body; 307 keeps both on the same origin", async () => {
+  const post = { method: "POST" as const, body: "ping" };
+  await run("/see-other", post);
+  expect(seenOnA).toEqual({ method: "GET", body: "" });
+  await run("/temp", post);
+  expect(seenOnA).toEqual({ method: "POST", body: "ping" });
+});
+
+test("a cross-origin hop drops the body and secret headers, keeps the rest", async () => {
+  await run("/temp-away", {
+    method: "POST",
+    body: '{"q":1}',
+    headers: {
+      Authorization: "Bearer s3cret",
+      "X-Api-Key": "k",
+      "X-Trace": "abc",
+      "Content-Type": "application/json",
+    },
+  });
+  expect(seenOnB).toEqual({
+    method: "GET",
+    authorization: null,
+    trace: "abc",
+    contentType: null,
+    body: "",
+  });
+});
+
+test("a redirect to an invalid URL is a failure", async () => {
+  expect((await run("/bad-location")).observations[0]).toMatchObject({
+    result: "fail",
+    detail: "Redirect to an invalid URL",
+  });
+});
+
+test("an expected 3xx is the answer, not a hop", async () => {
+  const hop = await run("/hop", { expectStatus: [302] });
+  expect(hop.observations[0].result).toBe("ok");
+  expect(hop.preview?.status).toBe(302);
+  expect(hop.preview?.finalUrl).toBe(`${a.url}hop`);
+});
+
+test("secret query values never leave in sourceUrl or finalUrl", async () => {
+  const out = await runHttpSource(
+    { kind: "http", url: `${a.url}secret-hop?api_key=k3y&q=1` },
+    allow,
+  );
+  expect(out.observations[0].sourceUrl).toBe(
+    `${a.url}secret-hop?api_key=[redacted]&q=1`,
+  );
+  expect(out.preview?.finalUrl).toBe(`${a.url}ok?token=[redacted]&page=2`);
+  expect(JSON.stringify(out)).not.toMatch(/k3y|t0p/);
 });
 
 test("redirects: followed, bounded, credentials stay with their origin", async () => {

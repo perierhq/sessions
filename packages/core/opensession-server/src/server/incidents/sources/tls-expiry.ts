@@ -1,11 +1,13 @@
 // TLS expiry source: days until a host's certificate expires. Resolves the
 // host first and refuses private addresses before any connection.
 import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { connect } from "node:tls";
 import type { ExpirySource, Observation } from "../../../shared/incidents";
 import { isBlockedAddress } from "../../shared/network-address";
 import type { SourceRun } from "./http";
 
+/** One deadline for the whole check: resolving and every address tried. */
 export const TLS_TIMEOUT_MS = 10_000;
 
 const DAY_MS = 86_400_000;
@@ -59,10 +61,25 @@ async function resolveHost(host: string): Promise<string[]> {
   return (await lookup(host, { all: true })).map((entry) => entry.address);
 }
 
-/** Connect, read the peer certificate, disconnect. Trust is reported, not enforced. */
+/** Reject when `promise` has not settled within `ms`. */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`no answer within ${ms} ms`)),
+      Math.max(0, ms),
+    );
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Connect, read the peer certificate, disconnect. Trust is reported, not
+ * enforced. `servername` (SNI) is left out for an IP literal host.
+ */
 function probeCertificate(
   address: string,
-  servername: string,
+  servername: string | undefined,
   port: number,
   timeoutMs: number,
 ): Promise<PeerCertificateInfo> {
@@ -70,7 +87,7 @@ function probeCertificate(
     const socket = connect({
       host: address,
       port,
-      servername,
+      ...(servername === undefined ? {} : { servername }),
       rejectUnauthorized: false,
     });
     const timer = setTimeout(() => {
@@ -101,16 +118,20 @@ export async function runTlsExpirySource(
   source: ExpirySource,
   opts: {
     now?: () => number;
+    /** The whole check's deadline; {@link TLS_TIMEOUT_MS} by default. */
+    timeoutMs?: number;
     resolve?: (host: string) => Promise<string[]>;
     probe?: (
       address: string,
-      servername: string,
+      servername: string | undefined,
       port: number,
       timeoutMs: number,
     ) => Promise<PeerCertificateInfo>;
   } = {},
 ): Promise<SourceRun> {
   const now = opts.now ?? Date.now;
+  const timeoutMs = opts.timeoutMs ?? TLS_TIMEOUT_MS;
+  const deadline = now() + timeoutMs;
   const port = source.port ?? DEFAULT_PORT;
   const host = source.host;
   const failure = (result: "fail" | "unknown", detail: string): SourceRun => ({
@@ -125,7 +146,10 @@ export async function runTlsExpirySource(
   });
   let addresses: string[];
   try {
-    addresses = await (opts.resolve ?? resolveHost)(host);
+    addresses = await withDeadline(
+      (opts.resolve ?? resolveHost)(host),
+      timeoutMs,
+    );
   } catch (error) {
     return failure("fail", `Could not reach ${host}: ${errorMessage(error)}`);
   }
@@ -137,13 +161,17 @@ export async function runTlsExpirySource(
       "unknown",
       `Refused: ${host} resolves to the private address ${blocked}`,
     );
+  // SNI carries host names only (RFC 6066), never an IP literal.
+  const servername = isIP(host) ? undefined : host;
   // Every address is vetted above; try them in order (a host may publish an
-  // IPv6 address this machine cannot route).
+  // IPv6 address this machine cannot route) until the deadline.
   const probe = opts.probe ?? probeCertificate;
-  let lastError: unknown;
+  let lastError: unknown = new Error(`no TLS handshake within ${timeoutMs} ms`);
   for (const address of addresses) {
+    const left = deadline - now();
+    if (left <= 0) break;
     try {
-      const info = await probe(address, host, port, TLS_TIMEOUT_MS);
+      const info = await probe(address, servername, port, left);
       return { observations: [tlsObservation(info, host, port, now())] };
     } catch (error) {
       lastError = error;

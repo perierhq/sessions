@@ -42,6 +42,28 @@ test("a mapping can report recovery", () => {
   ).toMatchObject({ result: "fail", detail: "<html>" });
 });
 
+test("lane details are capped like the main detail", () => {
+  const out = webhookObservations(
+    {
+      kind: "webhook",
+      mapping: {
+        result: { path: "$.status", ok: ["ok"] },
+        lanes: {
+          items: "$.parts[*]",
+          name: "$.name",
+          // "Nothing at <path>" for a long path runs past 200 characters.
+          result: { path: `$.${"a".repeat(240)}`, ok: ["ok"] },
+        },
+      },
+    },
+    JSON.stringify({ status: "ok", parts: [{ name: "API" }] }),
+    AT,
+  );
+  expect(out.observations[1].lane).toBe("API");
+  expect(out.observations[1].detail).toStartWith("Nothing at ");
+  expect(out.observations[1].detail.length).toBe(200);
+});
+
 test("dispatcher: pushed sources produce nothing when polled", async () => {
   const s = { id: "sig-a", source: { kind: "heartbeat" } } as Signal;
   expect(await runSignalSource(s)).toEqual({ observations: [] });

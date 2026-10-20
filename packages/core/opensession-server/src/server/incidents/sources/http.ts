@@ -1,6 +1,7 @@
 // HTTP signal source: one check with manual redirects through the SSRF guard,
 // a body cap, optional body expectations and JSON mapping. Never throws:
-// every failure becomes an observation.
+// every failure becomes an observation. A provider's status page that cannot
+// be read is `unknown`, never an outage.
 import type {
   HttpSource,
   Observation,
@@ -10,7 +11,7 @@ import { compileSafeRegex } from "../../shared/safe-regex";
 import { redactUrl } from "../../shared/redact";
 import { assertFetchableUrl } from "../../web-fetch";
 import { mapJson } from "../json-mapping";
-import { isSecretHeader } from "../signal-validation";
+import { isSecretHeader, redactSecretQuery } from "../signal-validation";
 
 export const HTTP_BODY_CAP_BYTES = 1_048_576;
 export const HTTP_DEFAULT_TIMEOUT_MS = 10_000;
@@ -18,8 +19,17 @@ export const HTTP_MAX_REDIRECTS = 5;
 export const SIGNAL_USER_AGENT = "opensession-signals/1";
 
 const PREVIEW_BODY_CHARS = 4000;
+/** Bytes read when only the preview needs the body (4000 chars of UTF-8). */
+const PREVIEW_READ_BYTES = 16_384;
 const PREVIEW_JSON_CHARS = 65_536;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Headers that describe a request body; they go when the body goes. */
+const BODY_HEADERS = new Set([
+  "content-type",
+  "content-encoding",
+  "content-language",
+  "content-location",
+]);
 
 export interface SourceRunOptions {
   /** A provider's unreadable status page is `unknown`, never an outage. */
@@ -54,15 +64,22 @@ class RunStop extends Error {
   }
 }
 
+/** A URL as it may leave the server: no userinfo, no secret query values. */
+export function redactOutputUrl(raw: string): string {
+  return redactSecretQuery(redactUrl(raw));
+}
+
 function errorMessage(error: unknown): string {
-  return redactUrl(error instanceof Error ? error.message : String(error));
+  return redactOutputUrl(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 function hostOf(raw: string): string {
   try {
     return new URL(raw).hostname;
   } catch {
-    return redactUrl(raw);
+    return redactOutputUrl(raw);
   }
 }
 
@@ -94,9 +111,10 @@ function statusExpected(status: number, expectStatus?: number[]): boolean {
     : status >= 200 && status <= 299;
 }
 
-/** Read at most the cap; `over` when the body is longer. */
+/** Read at most `cap` bytes; `over` when the body is longer. */
 async function readCapped(
   response: Response,
+  cap: number,
 ): Promise<{ text: string; over: boolean }> {
   if (!response.body) return { text: "", over: false };
   const reader = response.body.getReader();
@@ -106,9 +124,9 @@ async function readCapped(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (total + value.byteLength > HTTP_BODY_CAP_BYTES) {
-      chunks.push(value.subarray(0, HTTP_BODY_CAP_BYTES - total));
-      total = HTTP_BODY_CAP_BYTES;
+    if (total + value.byteLength > cap) {
+      chunks.push(value.subarray(0, cap - total));
+      total = cap;
       over = true;
       await reader.cancel().catch(() => {});
       break;
@@ -138,7 +156,10 @@ export async function runHttpSource(
   const timeoutMs = source.timeoutMs ?? HTTP_DEFAULT_TIMEOUT_MS;
   const started = now();
   const at = new Date(started).toISOString();
-  const sourceUrl = redactUrl(source.url);
+  const sourceUrl = redactOutputUrl(source.url);
+  // Transport, status and size failures of a provider's status page say
+  // nothing about the provider: they are unknown, never an outage.
+  const failed: ObservationResult = opts.provider ? "unknown" : "fail";
   const observe = (
     result: ObservationResult,
     detail: string,
@@ -153,7 +174,7 @@ export async function runHttpSource(
 
   const signal = AbortSignal.timeout(timeoutMs);
   const timedOut = () =>
-    new RunStop("fail", `No response within ${timeoutMs} ms`);
+    new RunStop(failed, `No response within ${timeoutMs} ms`);
   let preview: HttpPreview | undefined;
   try {
     let method = source.method ?? "GET";
@@ -172,15 +193,25 @@ export async function runHttpSource(
         if (message.startsWith("Refusing"))
           throw new RunStop("unknown", `Refused: ${message}`);
         throw new RunStop(
-          "fail",
+          failed,
           `Could not reach ${hostOf(current)}: ${message}`,
         );
       }
       if (previousOrigin !== undefined && target.origin !== previousOrigin) {
-        // Credentials stay with the origin they were configured for.
+        // Credentials and the request body stay with the origin they were
+        // configured for; another origin gets a plain GET (HEAD stays HEAD).
+        const crossOriginBody = body !== undefined || method === "POST";
+        if (crossOriginBody) {
+          method = "GET";
+          body = undefined;
+        }
         const kept = new Map<string, [string, string]>();
         for (const [key, entry] of headers)
-          if (!isSecretHeader(entry[0])) kept.set(key, entry);
+          if (
+            !isSecretHeader(entry[0]) &&
+            !(crossOriginBody && BODY_HEADERS.has(key))
+          )
+            kept.set(key, entry);
         headers = kept;
       }
       let hop: Response;
@@ -195,70 +226,85 @@ export async function runHttpSource(
       } catch (error) {
         if (signal.aborted) throw timedOut();
         throw new RunStop(
-          "fail",
+          failed,
           `Could not reach ${target.hostname}: ${errorMessage(error)}`,
         );
       }
       const location = hop.headers.get("location");
-      if (!REDIRECT_STATUSES.has(hop.status) || !location) {
+      if (
+        !REDIRECT_STATUSES.has(hop.status) ||
+        !location ||
+        // An expected 3xx is the answer itself.
+        source.expectStatus?.includes(hop.status)
+      ) {
         response = hop;
         finalUrl = target;
         break;
       }
       await hop.body?.cancel().catch(() => {});
       if (redirects >= HTTP_MAX_REDIRECTS)
-        throw new RunStop("fail", "Too many redirects");
+        throw new RunStop(failed, "Too many redirects");
       let next: URL;
       try {
         next = new URL(location, target);
       } catch {
-        throw new RunStop("fail", "Redirect to an invalid URL");
+        throw new RunStop(failed, "Redirect to an invalid URL");
       }
-      if (hop.status === 303 && method !== "HEAD") {
+      // As browsers do: 303 always, and 301/302 after a POST, become a GET.
+      if (
+        (hop.status === 303 && method !== "HEAD") ||
+        ((hop.status === 301 || hop.status === 302) && method === "POST")
+      ) {
         method = "GET";
         body = undefined;
+        for (const key of BODY_HEADERS) headers.delete(key);
       }
       previousOrigin = target.origin;
       current = next.href;
     }
 
     const contentType = response.headers.get("content-type") ?? "";
+    // Without a mapping or a body expectation only the preview reads the
+    // body, so a long one is cut short rather than judged.
+    const needsBody = !!source.json || !!source.expectBody;
     let read: { text: string; over: boolean };
     try {
       read =
         method === "HEAD"
           ? { text: "", over: false }
-          : await readCapped(response);
+          : await readCapped(
+              response,
+              needsBody ? HTTP_BODY_CAP_BYTES : PREVIEW_READ_BYTES,
+            );
     } catch (error) {
       if (signal.aborted) throw timedOut();
       throw new RunStop(
-        "fail",
+        failed,
         `Could not reach ${finalUrl.hostname}: ${errorMessage(error)}`,
       );
     }
     const latencyMs = Math.max(0, Math.round(now() - started));
     preview = {
       status: response.status,
-      finalUrl: redactUrl(finalUrl.href),
+      finalUrl: redactOutputUrl(finalUrl.href),
       contentType,
       latencyMs,
       bodyHead: read.text.slice(0, PREVIEW_BODY_CHARS),
       bodyTruncated: read.over || read.text.length > PREVIEW_BODY_CHARS,
     };
-    if (read.over) throw new RunStop("fail", "Response over 1 MB");
-
     const status = response.status;
     if (!statusExpected(status, source.expectStatus))
       return {
         observations: [
           observe(
-            "fail",
+            failed,
             `HTTP ${status} (expected ${expectedText(source.expectStatus)})`,
             latencyMs,
           ),
         ],
         preview,
       };
+    if (read.over && needsBody) throw new RunStop(failed, "Response over 1 MB");
     const contains = source.expectBody?.contains;
     if (contains !== undefined && !read.text.includes(contains))
       return {
@@ -300,11 +346,7 @@ export async function runHttpSource(
       const type = contentType.split(";")[0]!.trim() || "no content type";
       return {
         observations: [
-          observe(
-            opts.provider ? "unknown" : "fail",
-            `Response was not JSON (${type})`,
-            latencyMs,
-          ),
+          observe(failed, `Response was not JSON (${type})`, latencyMs),
         ],
         preview,
       };
@@ -333,7 +375,7 @@ export async function runHttpSource(
         : signal.aborted
           ? timedOut()
           : new RunStop(
-              "fail",
+              failed,
               `Could not reach ${hostOf(source.url)}: ${errorMessage(error)}`,
             );
     return {

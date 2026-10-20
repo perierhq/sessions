@@ -99,3 +99,79 @@ test("probe and resolve failures are failures", async () => {
   );
   expect(ok.observations[0].value).toBe(41);
 });
+
+const trusted = { validTo: "Nov 30 10:00:00 2026 GMT", authorized: true };
+
+test("an address that fails falls through to the next one", async () => {
+  const tried: string[] = [];
+  const run = await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "acme.example.test" },
+    {
+      now: () => NOW,
+      resolve: async () => ["2001:db8::7", "203.0.113.7"],
+      probe: async (address, servername) => {
+        tried.push(`${address} ${servername}`);
+        if (address.includes(":")) throw new Error("EHOSTUNREACH");
+        return trusted;
+      },
+    },
+  );
+  expect(tried).toEqual([
+    "2001:db8::7 acme.example.test",
+    "203.0.113.7 acme.example.test",
+  ]);
+  expect(run.observations[0]).toMatchObject({ result: "ok", value: 41 });
+});
+
+test("an IP literal is probed without a server name", async () => {
+  let name: string | undefined = "unset";
+  await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "203.0.113.7" },
+    {
+      now: () => NOW,
+      resolve: async () => ["203.0.113.7"],
+      probe: async (_address, servername) => {
+        name = servername;
+        return trusted;
+      },
+    },
+  );
+  expect(name).toBeUndefined();
+});
+
+test("one deadline covers every address", async () => {
+  let clock = NOW;
+  const budgets: number[] = [];
+  const run = await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "acme.example.test" },
+    {
+      now: () => clock,
+      resolve: async () => ["203.0.113.7", "203.0.113.8", "203.0.113.9"],
+      probe: async (_address, _name, _port, timeoutMs) => {
+        budgets.push(timeoutMs);
+        clock += 6_000;
+        throw new Error("timed out");
+      },
+    },
+  );
+  expect(budgets).toEqual([10_000, 4_000]);
+  expect(run.observations[0]).toMatchObject({
+    result: "fail",
+    detail: "Could not reach acme.example.test: timed out",
+  });
+});
+
+test("a resolver that never answers is cut off by the deadline", async () => {
+  const run = await runTlsExpirySource(
+    { kind: "expiry", target: "tls", host: "acme.example.test" },
+    {
+      now: () => NOW,
+      timeoutMs: 20,
+      resolve: () => new Promise(() => {}),
+    },
+  );
+  expect(run.observations[0]).toMatchObject({
+    result: "fail",
+    detail: "Could not reach acme.example.test: no answer within 20 ms",
+  });
+});

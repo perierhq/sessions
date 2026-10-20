@@ -44,7 +44,7 @@ export function webhookObservations(
     at,
     result: lane.result,
     ...(lane.value === undefined ? {} : { value: lane.value }),
-    detail: lane.detail,
+    detail: lane.detail.slice(0, MAX_DETAIL_CHARS),
     lane: lane.lane,
   }));
   return { observations: [main, ...lanes], matches: outcome.matches };
