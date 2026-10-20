@@ -1,0 +1,222 @@
+import { beforeEach, expect, test } from "bun:test";
+import { useIncidentTestKernel } from "../testing/kernel-fixture";
+import {
+  __setProjectSettingsContextForTest,
+  getProjectSettings,
+  latestRelease,
+  listProjectSettings,
+  patchProjectSettings,
+  peekProjectSettings,
+  projectAction,
+  recordRelease,
+  redactProjectSettings,
+  updateProjectSettings,
+  validateAction,
+} from "./project-settings";
+
+const kit = useIncidentTestKernel();
+beforeEach(() =>
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme",
+    runnerProblem: (id) =>
+      id === "runner-prod" ? null : `Runner ${id} is not available`,
+    modelProblem: (id) => (id.startsWith("pi/") ? null : `Unknown model ${id}`),
+  }),
+);
+const deploy = {
+  id: "deploy",
+  kind: "deploy",
+  label: "Deploy",
+  runner: "runner-prod",
+  command: "./deploy.sh {{ref}}",
+};
+
+test("defaults without a write", async () => {
+  expect(await getProjectSettings("acme")).toMatchObject({
+    project: "acme",
+    agentsPaused: false,
+    autonomy: "deploy-after-veto",
+    vetoMs: 600_000,
+    watchMs: 600_000,
+    maxRounds: 2,
+    neverWithoutYou: [
+      "costs-money",
+      "needs-secret",
+      "migration",
+      "outside-scope",
+    ],
+    budget: { perIncidentUsd: 20, perMonthUsd: 200 },
+    productionRunners: [],
+    actions: [],
+    releases: [],
+  });
+  expect(kit.audits).toEqual([]);
+  expect(await listProjectSettings()).toEqual([]);
+});
+test("a full update, with action defaults and a hook secret", async () => {
+  const s = await updateProjectSettings(
+    "acme",
+    {
+      autonomy: "propose",
+      night: { start: "23:00", end: "07:00", timeZone: "Europe/Warsaw" },
+      productionRunners: ["runner-prod"],
+      actions: [
+        deploy,
+        {
+          id: "nightly",
+          kind: "run-once",
+          label: "Run nightly",
+          runner: "runner-prod",
+          command: "./nightly.sh",
+        },
+      ],
+    },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  expect(s.actions[0]).toMatchObject({
+    reversible: true,
+    needsSecret: false,
+    cost: { kind: "none" },
+    timeoutMs: 600_000,
+    scope: { services: [], paths: [], migrationPaths: [] },
+  });
+  expect(s.actions[1].reversible).toBe(false);
+  expect(s.releaseHookSecret).toMatch(/^[0-9a-f]{48}$/);
+  expect(redactProjectSettings(s)).not.toHaveProperty("releaseHookSecret");
+  expect(redactProjectSettings(s).releaseHookPath).toBe(
+    `/incident-releases/acme/${s.releaseHookSecret}`,
+  );
+  expect(kit.audits.at(-1)).toEqual({
+    kind: "incident_settings_updated",
+    project: "acme",
+    by: "Ada",
+    fields: ["actions", "autonomy", "night", "productionRunners"],
+  });
+  expect(s).toMatchObject({ updatedBy: "Ada" });
+  expect(peekProjectSettings("acme")?.autonomy).toBe("propose");
+  expect(projectAction(s, "run-once")?.id).toBe("nightly");
+  expect((await listProjectSettings()).map((p) => p.project)).toEqual(["acme"]);
+  // The same values again change nothing and audit nothing.
+  const audits = kit.audits.length;
+  await updateProjectSettings("acme", { autonomy: "propose" }, "Bo");
+  expect(kit.audits.length).toBe(audits);
+  // Clearing the night rule.
+  const cleared = await updateProjectSettings("acme", { night: null }, "Ada");
+  expect("error" in cleared ? cleared : cleared.night).toBeUndefined();
+});
+test.each([
+  [{ autonomy: "yolo" }, "autonomy"],
+  [{ vetoMs: 5_000 }, "vetoMs"],
+  [{ night: { start: "23:00", end: "23:00", timeZone: "UTC" } }, "night"],
+  [
+    { night: { start: "23:00", end: "07:00", timeZone: "Mars/Olympus" } },
+    "night",
+  ],
+  [{ budget: { perIncidentUsd: 50, perMonthUsd: 20 } }, "perMonthUsd"],
+  [{ neverWithoutYou: ["migration", "migration"] }, "neverWithoutYou"],
+  [
+    { agents: { investigatorModel: "pi/a/x", verifierModel: "pi/a/x" } },
+    "Pick a different model for the verifier",
+  ],
+  [{ agents: { verifierModel: "nope" } }, "Unknown model nope"],
+  [{ productionRunners: ["runner-lab"] }, "Runner runner-lab is not available"],
+  [
+    {
+      productionRunners: ["runner-prod"],
+      actions: [{ ...deploy, command: "./deploy.sh {{branch}}" }],
+    },
+    "Unknown placeholder {{branch}}",
+  ],
+  [
+    {
+      productionRunners: ["runner-prod"],
+      actions: [deploy, { ...deploy, id: "deploy-2" }],
+    },
+    "Only one deploy action per project",
+  ],
+  [{ actions: [deploy] }, "Pick one of the project's production Runners"],
+  [
+    {
+      productionRunners: ["runner-prod"],
+      actions: [{ ...deploy, scope: { paths: ["src/["] } }],
+    },
+    "scope",
+  ],
+])("rejects %j", async (input, message) => {
+  expect(await updateProjectSettings("acme", input, "Ada")).toEqual({
+    error: expect.stringContaining(message),
+  });
+});
+test("unknown projects are refused", async () => {
+  expect(
+    await updateProjectSettings("other", { autonomy: "watch" }, "Ada"),
+  ).toEqual({
+    error: expect.stringContaining("other"),
+  });
+});
+test("validateAction", () => {
+  expect(
+    validateAction({ ...deploy, cwd: "relative" }, ["runner-prod"]),
+  ).toEqual({ error: expect.stringContaining("cwd") });
+  expect(validateAction({ ...deploy, id: "Deploy!" }, ["runner-prod"])).toEqual(
+    { error: expect.stringContaining("id") },
+  );
+  expect(
+    validateAction({ ...deploy, cost: { kind: "amount", usd: 0 } }, [
+      "runner-prod",
+    ]),
+  ).toEqual({
+    error: expect.stringContaining("cost"),
+  });
+  expect(
+    validateAction(
+      {
+        ...deploy,
+        cost: { kind: "amount", usd: 5 },
+        needsSecret: true,
+        reversible: false,
+      },
+      ["runner-prod"],
+    ),
+  ).toMatchObject({
+    cost: { kind: "amount", usd: 5 },
+    needsSecret: true,
+    reversible: false,
+  });
+});
+test("server-side fields cannot be written by callers; releases are capped", async () => {
+  await updateProjectSettings(
+    "acme",
+    {
+      automationId: "auto-x",
+      releases: [{ at: "x" }],
+      releaseHookSecret: "0".repeat(48),
+    },
+    "Ada",
+  );
+  const s = await getProjectSettings("acme");
+  expect(s.automationId).toBeUndefined();
+  expect(s.releases).toEqual([]);
+  expect(s.releaseHookSecret).toBeUndefined();
+  for (let i = 0; i < 25; i++)
+    await recordRelease("acme", {
+      at: new Date(Date.UTC(2026, 9, 20, 10, i)).toISOString(),
+      source: "hook",
+    });
+  const after = await getProjectSettings("acme");
+  expect(after.releases).toHaveLength(20);
+  expect(latestRelease(after)?.at).toBe("2026-10-20T10:24:00.000Z");
+  expect(kit.audits.at(-1)).toEqual({
+    kind: "incident_release",
+    project: "acme",
+    source: "hook",
+    ref: undefined,
+  });
+  const patched = await patchProjectSettings("acme", (p) => ({
+    ...p,
+    automationId: "auto-1",
+  }));
+  expect(patched.automationId).toBe("auto-1");
+  expect((await getProjectSettings("acme")).automationId).toBe("auto-1");
+});
