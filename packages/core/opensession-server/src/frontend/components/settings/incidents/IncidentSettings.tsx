@@ -32,6 +32,7 @@ import { EmptyState, InlineAlert } from "../../../ui/state";
 import { RepoTile } from "../../RepoTile";
 import { PolicySection } from "./PolicySection";
 import { SettingLinkRow } from "./SettingLinkRow";
+import { SignalsSection } from "./SignalsSection";
 
 const REPO_TILE = 28;
 
@@ -191,7 +192,16 @@ function IncidentProjectSettings({
           />
         )
       }
-      sections={{}}
+      sections={{
+        signals: (
+          <SignalsSection
+            project={project}
+            runners={(settings.data?.runners ?? []).filter(
+              (runner) => runner.bound,
+            )}
+          />
+        ),
+      }}
     />
   );
 }

@@ -28,6 +28,7 @@ import type {
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
 import type {
+  ImpactSource,
   Incident,
   IncidentSummary,
   Observation,
@@ -54,10 +55,12 @@ export type SignalInput = Partial<
     | "selfReported"
     | "dependsOn"
     | "maintenance"
-    | "impact"
     | "runOn"
   >
->;
+> & {
+  /** `null` clears a stored impact. */
+  impact?: ImpactSource | null;
+};
 
 export interface SignalTestResult {
   observations: Observation[];

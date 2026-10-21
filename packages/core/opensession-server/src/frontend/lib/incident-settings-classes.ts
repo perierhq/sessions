@@ -52,3 +52,6 @@ export const FIELD_HINT = "m-0 text-meta text-dim";
 
 /** Text inputs inside these dialogs: 44px and 16px on a phone. */
 export const DIALOG_INPUT = "phone:min-h-11 phone:text-input-phone";
+
+/** A heading over a group of fields inside a dialog. */
+export const FORM_SECTION_TITLE = "m-0 text-label font-semibold text-fg";
