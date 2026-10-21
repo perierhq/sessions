@@ -374,6 +374,20 @@ test("one round, a not-certain verdict, the access row", () => {
     now: NOW,
   }).find((r) => r.key === "access");
   expect(row).toMatchObject({ value: "No grants", tone: "red" });
+
+  // A heads-up or a closed incident runs no agents: the server's refusal
+  // there is no row at all.
+  for (const state of ["heads-up", "resolved", "paused"] as const)
+    expect(
+      detailRows({
+        incident: { ...incident, state },
+        earlier: [],
+        pr: null,
+        budgetUsd: null,
+        access: refused,
+        now: NOW,
+      }).some((r) => r.key === "access"),
+    ).toBe(false);
 });
 
 test("earlier incidents: two titles and a count", () => {

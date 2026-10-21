@@ -2,7 +2,10 @@
 // Fix (the change, the incident note), Agents (investigator, verifier,
 // cost, access) and History (earlier incidents). Change, Agent cost and
 // Earlier incidents always render; the rest only with data. Pure.
-import type { IncidentAgentsAccessView } from "../../../shared/incident-access";
+import {
+  type IncidentAgentsAccessView,
+  incidentAllowsAgents,
+} from "../../../shared/incident-access";
 import {
   type AgentRole,
   type AgentRun,
@@ -249,8 +252,13 @@ function costRow(
   };
 }
 
-function accessRow(access: IncidentAgentsAccessView | null): DetailRow | null {
-  if (!access) return null;
+/** No row where agents cannot run (a heads-up, paused, closed): the server's
+ *  refusal there says nothing the owner can act on. */
+function accessRow(
+  access: IncidentAgentsAccessView | null,
+  state: Incident["state"],
+): DetailRow | null {
+  if (!access || !incidentAllowsAgents(state)) return null;
   const preview = access.investigator;
   const row = {
     key: "access",
@@ -296,7 +304,7 @@ export function detailRows(input: {
     investigatorRow(response, input.now),
     verifierRow(response),
     costRow(response, input.budgetUsd),
-    accessRow(input.access),
+    accessRow(input.access, input.incident.state),
     earlierRow(input.earlier),
   ].filter((row): row is DetailRow => row !== null);
 }
