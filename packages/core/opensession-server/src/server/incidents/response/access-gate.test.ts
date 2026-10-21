@@ -7,11 +7,13 @@ import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   __resetIncidentAccessGateForTest,
   incidentAccessGate,
+  loadProjectMonthSpend,
   setProjectMonthSpend,
   startIncidentAccessGate,
 } from "./access-gate";
 import {
   __setProjectSettingsContextForTest,
+  getProjectSettings,
   patchProjectSettings,
 } from "./project-settings";
 
@@ -49,12 +51,50 @@ const incident = (costUsd = 0): Incident => ({
   response: { costUsd } as IncidentResponse,
 });
 
-test("nothing in memory yet: the gate does not refuse", () => {
+test("settings not loaded: the gate refuses rather than skip the kill switch", () => {
+  expect(incidentAccessGate(incident(), "investigator")).toBe(
+    "Project settings not loaded",
+  );
+});
+
+test("monthly spend not loaded: the gate refuses rather than start at $0", async () => {
+  await getProjectSettings("acme");
+  expect(incidentAccessGate(incident(), "investigator")).toBe(
+    "Monthly spend not loaded",
+  );
+  setProjectMonthSpend("acme", 0);
   expect(incidentAccessGate(incident(), "investigator")).toBeNull();
+});
+
+test("boot loads the month's spend from the incidents, not $0", async () => {
+  await patchProjectSettings("acme", (s) => ({
+    ...s,
+    budget: { perIncidentUsd: 20, perMonthUsd: 100 },
+  }));
+  const now = Date.parse("2026-10-20T12:00:00Z");
+  const spent = (id: string, openedAt: string, costUsd: number): Incident => ({
+    ...incident(costUsd),
+    id,
+    openedAt,
+  });
+  await loadProjectMonthSpend(now, async () => [
+    spent("inc-a", "2026-10-02T00:00:00Z", 60),
+    spent("inc-b", "2026-10-19T00:00:00Z", 45),
+    spent("inc-c", "2026-09-30T23:00:00Z", 500),
+    { ...spent("inc-d", "2026-10-03T00:00:00Z", 900), project: "globex" },
+  ]);
+  expect(incidentAccessGate(incident(1), "investigator")).toBe(
+    "Agents stopped at the $100 monthly budget",
+  );
+  // Projects without incidents this month start at $0 once loaded.
+  expect(
+    incidentAccessGate({ ...incident(0), project: "initech" }, "verifier"),
+  ).toBe("Project settings not loaded");
 });
 
 test("the kill switch refuses every role", async () => {
   await patchProjectSettings("acme", (s) => ({ ...s, agentsPaused: true }));
+  setProjectMonthSpend("acme", 0);
   expect(incidentAccessGate(incident(), "investigator")).toBe(
     "Agents are paused for acme",
   );
@@ -68,6 +108,7 @@ test("the incident and monthly budgets refuse", async () => {
     ...s,
     budget: { perIncidentUsd: 20, perMonthUsd: 100 },
   }));
+  setProjectMonthSpend("acme", 0);
   expect(incidentAccessGate(incident(19.99), "investigator")).toBeNull();
   expect(incidentAccessGate(incident(20), "investigator")).toBe(
     "Agents stopped at the $20 budget for this incident",
