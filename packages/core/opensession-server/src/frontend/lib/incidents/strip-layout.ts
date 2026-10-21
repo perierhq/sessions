@@ -4,6 +4,7 @@
 import type { ProofResult } from "../../../shared/incident-response";
 import type {
   ObservationResult,
+  SignalSourceKind,
   StripBar,
   StripLane,
   StripResponse,
@@ -11,6 +12,7 @@ import type {
 import type { BarSpec, BarTone } from "../../ui/bar-strip";
 import { clockTime } from "../time";
 import type { LaneKind } from "./signal-summary";
+import type { DotTone } from "./tone";
 
 /** A live strip always shows at least this many future slots. */
 export const STRIP_FUTURE_MIN_SLOTS = 3;
@@ -70,7 +72,8 @@ export interface StripLayout {
   hiddenMarkers: number;
 }
 
-const RESULT_WORD: Record<ObservationResult, string> = {
+/** What a result is called in a tooltip and the observation detail. */
+export const RESULT_WORD: Record<ObservationResult, string> = {
   ok: "Passed",
   fail: "Failed",
   unknown: "No answer",
@@ -441,5 +444,81 @@ export function proofLane(
     signalId: first.signalId,
     label: "Fix branch",
     bars,
+  };
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * The strip's live line: when the next check runs, what the last hour
+ * brought, or when the incident ended.
+ */
+export function liveLineText(input: {
+  kind: SignalSourceKind;
+  nextRunAt?: string;
+  strip?: StripResponse;
+  lastCheckIn?: string;
+  closedAt?: string;
+  now: number;
+}): string {
+  if (input.closedAt) return `Ended ${clockTime(input.closedAt)}`;
+  switch (input.kind) {
+    case "http":
+    case "expiry": {
+      if (!input.nextRunAt) return "Live";
+      const ms = Date.parse(input.nextRunAt) - input.now;
+      if (!(ms > 0)) return "Live · next run now";
+      if (ms < 60_000) return `Live · next run in ${Math.ceil(ms / 1000)} s`;
+      return `Live · next run in ${Math.max(1, Math.round(ms / 60_000))} min`;
+    }
+    case "webhook": {
+      const since = input.now - HOUR_MS;
+      let fails = 0;
+      for (const lane of input.strip?.lanes ?? [])
+        for (const bar of lane.bars)
+          if (bar.result === "fail" && Date.parse(bar.end) > since)
+            fails += bar.count;
+      return `Live · ${fails} in the last hour`;
+    }
+    case "heartbeat":
+      return input.lastCheckIn
+        ? `Live · last check-in ${clockTime(input.lastCheckIn)}`
+        : "Live · no check-in yet";
+  }
+}
+
+/** The strip's live line. With `nextRunAt` the strip counts down to the
+ *  next check itself, so the text keeps up between refreshes. */
+export interface StripLiveLine {
+  tone: DotTone;
+  text: string;
+  nextRunAt?: string;
+}
+
+/** Bars a strip shows before its data arrives: 120 empty slots, the most
+ *  plan 1 ever returns, so nothing grows when the data lands. */
+export const LOADING_STRIP_BARS = 120;
+
+/** An empty one-lane strip, drawn at final height while the real one loads. */
+export function loadingStrip(label: string): StripResponse {
+  const bucketMs = 60_000;
+  return {
+    from: new Date(0).toISOString(),
+    to: new Date(LOADING_STRIP_BARS * bucketMs).toISOString(),
+    bucketMs,
+    markers: [],
+    lanes: [
+      {
+        id: "loading",
+        signalId: "loading",
+        label,
+        bars: Array.from({ length: LOADING_STRIP_BARS }, (_, i) => ({
+          start: new Date(i * bucketMs).toISOString(),
+          end: new Date((i + 1) * bucketMs).toISOString(),
+          result: null,
+          count: 0,
+        })),
+      },
+    ],
   };
 }
