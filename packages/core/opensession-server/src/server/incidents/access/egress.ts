@@ -448,8 +448,33 @@ async function egressFetchInner(
   }
 }
 
+/** Shannon entropy of `text` in bits per character. */
+function entropyBits(text: string): number {
+  const counts = new Map<string, number>();
+  for (const ch of text) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let bits = 0;
+  for (const n of counts.values()) {
+    const p = n / text.length;
+    bits -= p * Math.log2(p);
+  }
+  return bits;
+}
+
+/** Lowercase words of three or more letters joined by `-`, `_` or `.`. */
+const READABLE_SLUG = /^[a-z]{3,}(?:[-_.][a-z]{3,})+$/;
+
+/** A segment of 16+ characters that reads like a token: mixed case, or
+ *  high entropy that is not a readable multi-word slug. */
+function looksLikeToken(segment: string): boolean {
+  if (segment.length < 16) return false;
+  if (/[a-z]/.test(segment) && /[A-Z]/.test(segment)) return true;
+  if (READABLE_SLUG.test(segment)) return false;
+  return entropyBits(segment) >= 3.5;
+}
+
 /** A path for the audit and Runner logs: every segment that could carry an
- *  identifier or a secret (digits, long or encoded values) becomes `:id`. */
+ *  identifier or a secret (digits, long, encoded or token-like values)
+ *  becomes `:id`. */
 export function pathTemplate(path: string): string {
   return path
     .split("/")
@@ -458,7 +483,8 @@ export function pathTemplate(path: string): string {
       (segment.length <= 40 &&
         /^[A-Za-z0-9._~-]+$/.test(segment) &&
         (segment.match(/\d/g)?.length ?? 0) <= 3 &&
-        !/^[0-9a-f]{12,}$/i.test(segment))
+        !/^[0-9a-f]{12,}$/i.test(segment) &&
+        !looksLikeToken(segment))
         ? segment
         : ":id",
     )

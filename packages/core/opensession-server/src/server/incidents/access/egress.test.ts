@@ -9,7 +9,7 @@ import type {
 import { __resetCurlVersionsForTest } from "../sources/runner-fetch";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { egressFetch } from "./egress";
+import { egressFetch, pathTemplate } from "./egress";
 import type { IncidentToolContext } from "./tool-context";
 
 const kit = useIncidentTestKernel();
@@ -520,4 +520,21 @@ test("proxy route keeps the address guard on the proxy and the target", async ()
       },
     ),
   ).toMatchObject({ ok: false, error: expect.stringMatching(/^Refused: /) });
+});
+
+test("the audit path masks token-like segments of 16+ characters", () => {
+  expect(pathTemplate("/api/search-results/openid-configuration")).toBe(
+    "/api/search-results/openid-configuration",
+  );
+  expect(pathTemplate("/internationalization/status")).toBe(
+    "/internationalization/status",
+  );
+  // Mixed case (base64url style) and high-entropy lowercase tokens.
+  expect(pathTemplate("/hooks/AbCdEfGhIjKlMnOpQr/ping")).toBe(
+    "/hooks/:id/ping",
+  );
+  expect(pathTemplate("/share/qwhzpxkvmbtrlynd")).toBe("/share/:id");
+  expect(pathTemplate("/keys/sk_live_abcdefgh")).toBe("/keys/:id");
+  // Short mixed-case words stay readable.
+  expect(pathTemplate("/v1/getUser")).toBe("/v1/getUser");
 });
