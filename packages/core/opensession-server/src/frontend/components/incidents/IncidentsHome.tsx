@@ -17,6 +17,7 @@ import {
   signalTarget,
 } from "../../lib/incidents/home";
 import {
+  laneKindFor,
   latestValue,
   miniRange,
   signalCaption,
@@ -99,7 +100,15 @@ function SignalRow({
         <span className={HOME_ROW_NAME}>{signal.name}</span>
         <span className={HOME_ROW_CAPTION}>{signalCaption(signal)}</span>
       </span>
-      <div ref={ref} className={HOME_MINI}>
+      {/* An expiry signal draws no bars: its desktop box stays for the
+          column, its phone line goes. */}
+      <div
+        ref={ref}
+        className={cn(
+          HOME_MINI,
+          laneKindFor(signal) === "days" && "phone:hidden",
+        )}
+      >
         <MiniSignal signal={signal} strip={strip} width={width} />
       </div>
       <span className={cn(HOME_ROW_VALUE, VALUE_TONE[value.tone])}>

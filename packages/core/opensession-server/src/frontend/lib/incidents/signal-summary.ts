@@ -107,8 +107,10 @@ export function signalCaption(
       if (!rule.cron) return "Check-in";
       const daily = DAILY_CRON.exec(rule.cron.trim());
       if (!daily) return `Check-in · ${rule.cron}`;
-      const pad = (n: string) => n.padStart(2, "0");
-      return `Check-in · daily at ${pad(daily[2]!)}:${pad(daily[1]!)}`;
+      // The cron runs in UTC; say it in the reader's own clock.
+      const at = new Date();
+      at.setUTCHours(Number(daily[2]), Number(daily[1]), 0, 0);
+      return `Check-in · daily at ${clockTime(at.toISOString())}`;
     }
     case "expiry":
       return `Certificate · ${signal.source.host}`;

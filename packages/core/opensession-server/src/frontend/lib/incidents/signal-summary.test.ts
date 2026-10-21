@@ -43,6 +43,13 @@ const ev = (state: SignalState, reason = "Passing") => ({
   inMaintenance: false,
 });
 
+/** Today at hh:mm UTC, as the caption reads a daily UTC cron. */
+const utcToday = (h: number, m: number) => {
+  const at = new Date();
+  at.setUTCHours(h, m, 0, 0);
+  return at.toISOString();
+};
+
 test("lane kinds follow the rule", () => {
   expect(laneKindFor({ rule: { kind: "consecutive", failures: 3 } })).toBe(
     "passfail",
@@ -105,7 +112,7 @@ test("captions and values per kind", () => {
         rule: { kind: "missing", cron: "0 3 * * *", graceMs: 1_800_000 },
       }),
     ),
-  ).toBe("Check-in · daily at 03:00");
+  ).toBe(`Check-in · daily at ${clockTime(utcToday(3, 0))}`);
   expect(
     signalCaption(
       sig({
