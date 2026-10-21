@@ -56,8 +56,12 @@ export const apiSWRKey = {
   incidentSignals: () => ["api", "incident-signals"] as const,
   incidentSignalStrip: (id: string, from?: string, to?: string) =>
     ["api", "incident-signal-strip", id, from || "", to || ""] as const,
-  incidents: (status: "open" | "closed" | "all", project?: string) =>
-    ["api", "incidents", status, project || ""] as const,
+  incidents: (
+    status: "open" | "closed" | "all",
+    project?: string,
+    closedWithinMs?: number,
+  ) =>
+    ["api", "incidents", status, project || "", closedWithinMs ?? ""] as const,
   incident: (id: string) => ["api", "incident", id] as const,
   incidentStrip: (id: string) => ["api", "incident-strip", id] as const,
   incidentAccess: (id: string) => ["api", "incident-access", id] as const,

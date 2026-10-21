@@ -239,11 +239,22 @@ export function fetchSignalStrip(
   );
 }
 
+export interface IncidentListFilter {
+  status?: "open" | "closed" | "all";
+  project?: string;
+  /** Closed incidents only when they closed this recently. */
+  closedWithinMs?: number;
+}
+
 export async function fetchIncidents(
-  filter: { status?: "open" | "closed" | "all"; project?: string } = {},
+  filter: IncidentListFilter = {},
 ): Promise<IncidentSummary[]> {
   const body = await request<{ incidents: IncidentSummary[] }>(
-    `/incidents${query({ status: filter.status, project: filter.project })}`,
+    `/incidents${query({
+      status: filter.status,
+      project: filter.project,
+      closedWithinMs: filter.closedWithinMs?.toString(),
+    })}`,
     { label: "Failed to load incidents" },
   );
   return body.incidents;

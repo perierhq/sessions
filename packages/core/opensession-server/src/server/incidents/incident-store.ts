@@ -212,12 +212,25 @@ export async function getIncident(id: string): Promise<Incident | null> {
 
 /** Newest `openedAt` first. */
 export async function listIncidents(
-  filter: { open?: boolean; project?: string; signalId?: string } = {},
+  filter: {
+    open?: boolean;
+    project?: string;
+    signalId?: string;
+    /** Closed incidents only when they closed at or after this time (ms);
+     *  open ones are unaffected. */
+    closedSince?: number;
+  } = {},
 ): Promise<Incident[]> {
   const out: Incident[] = [];
   for (const { value } of await incidentDocuments().list()) {
     if (!isIncidentRecord(value)) continue;
     if (filter.open !== undefined && isOpenIncident(value) !== filter.open)
+      continue;
+    if (
+      filter.closedSince !== undefined &&
+      !isOpenIncident(value) &&
+      !(Date.parse(value.closedAt ?? "") >= filter.closedSince)
+    )
       continue;
     if (filter.project !== undefined && value.project !== filter.project)
       continue;

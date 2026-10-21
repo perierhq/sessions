@@ -2,7 +2,10 @@ import { useEffect, useRef } from "react";
 import { isOpenIncident } from "../../../shared/incidents";
 import { useIncidents, useSignals } from "../../hooks/useIncidents";
 import { incidentFacts, incidentHeadline } from "../../lib/incidents/copy";
-import { sidebarIncidents } from "../../lib/incidents/sidebar";
+import {
+  RECENTLY_FIXED_MS,
+  sidebarIncidents,
+} from "../../lib/incidents/sidebar";
 import { SIDEBAR_INCIDENTS_ALL } from "../../lib/incident-classes";
 import {
   SIDEBAR_AUTO_COG,
@@ -39,7 +42,12 @@ export function IncidentsBand({
   onOpenIncident: (id: string) => void;
   onOpenAll: () => void;
 }) {
-  const list = useIncidents({ status: "all" });
+  // Open incidents and the ones closed recently enough to list, never the
+  // whole history.
+  const list = useIncidents({
+    status: "all",
+    closedWithinMs: RECENTLY_FIXED_MS,
+  });
   const signals = useSignals().data ?? [];
   const warned = useRef(false);
   const error = list.error;

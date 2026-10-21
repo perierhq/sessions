@@ -365,9 +365,15 @@ async function incidentList(url: URL): Promise<Response> {
   if (status !== "open" && status !== "closed" && status !== "all")
     return badRequest("Status must be open, closed or all");
   const project = url.searchParams.get("project");
+  // `closedWithinMs`: closed incidents only when they closed that recently.
+  const within = url.searchParams.get("closedWithinMs");
+  const withinMs = within === null ? null : Number(within);
+  if (withinMs !== null && !(Number.isInteger(withinMs) && withinMs >= 0))
+    return badRequest("closedWithinMs must be a whole number of milliseconds");
   const incidents = await listIncidents({
     ...(status === "all" ? {} : { open: status === "open" }),
     ...(project ? { project } : {}),
+    ...(withinMs === null ? {} : { closedSince: Date.now() - withinMs }),
   });
   return Response.json({ incidents: incidents.map(summarizeIncident) });
 }

@@ -19,6 +19,7 @@ import {
   fetchProjectSettingsList,
   fetchSignals,
   fetchSignalStrip,
+  type IncidentListFilter,
 } from "../lib/api/incidents";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
 import { stripRefreshMs } from "../lib/incidents/signal-summary";
@@ -91,13 +92,19 @@ export function useSignalStrip(
   );
 }
 
-export function useIncidents(filter: {
-  status: "open" | "closed" | "all";
-  project?: string;
-}): SWRResponse<IncidentSummary[]> {
+/** Null waits: nothing is fetched until the filter is known. */
+export function useIncidents(
+  filter: (IncidentListFilter & { status: "open" | "closed" | "all" }) | null,
+): SWRResponse<IncidentSummary[]> {
   return useSWR<IncidentSummary[]>(
-    apiSWRKey.incidents(filter.status, filter.project),
-    () => fetchIncidents(filter),
+    filter
+      ? apiSWRKey.incidents(
+          filter.status,
+          filter.project,
+          filter.closedWithinMs,
+        )
+      : null,
+    () => fetchIncidents(filter ?? {}),
     apiResourceSWRConfig<IncidentSummary[]>(0),
   );
 }

@@ -375,6 +375,21 @@ test("incident list and detail", async () => {
     [a.id],
   );
   expect((await call("GET", "/api/incidents?status=nope"))?.status).toBe(400);
+  // Open ones always; closed ones only within the window.
+  expect(
+    ids((await call("GET", "/api/incidents?closedWithinMs=3600000"))?.json),
+  ).toEqual([b.id, a.id]);
+  const old = await updateIncident(a.id, (c) => ({
+    ...c,
+    closedAt: new Date(Date.now() - 7_200_000).toISOString(),
+  }));
+  expect(old && "closedAt" in old).toBe(true);
+  expect(
+    ids((await call("GET", "/api/incidents?closedWithinMs=3600000"))?.json),
+  ).toEqual([b.id]);
+  expect((await call("GET", "/api/incidents?closedWithinMs=-1"))?.status).toBe(
+    400,
+  );
   expect(
     (await call("GET", `/api/incidents/${b.id}`))?.json.events[0].kind,
   ).toBe("opened");
