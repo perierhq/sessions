@@ -68,3 +68,9 @@ export const MAPPING_FOUND_ROW = "flex min-w-0 flex-col";
 /** A raw response body: content, so it is selectable. */
 export const MAPPING_RAW =
   "m-0 max-h-64 select-text overflow-auto whitespace-pre-wrap font-mono text-meta text-dim [overflow-wrap:anywhere]";
+
+/** A maintenance window in a list: what it says, then Edit and Remove.
+ *  The buttons drop under the text on a phone. */
+export const WINDOW_ROW =
+  "flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl bg-surface py-2 pr-2 pl-3";
+export const WINDOW_ROW_TEXT = "min-w-0 flex-1 basis-56";

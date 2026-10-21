@@ -16,6 +16,7 @@ import { errorMessage } from "../../../lib/error-message";
 import {
   CHECK_ROW,
   DIALOG_INPUT,
+  FIELD_ERROR,
   FIELD_HINT,
 } from "../../../lib/incident-settings-classes";
 import {
@@ -49,6 +50,7 @@ import { toast } from "../../../ui/toast";
 import { CopyUrl, FormField, HeaderRows } from "./FormParts";
 import type { JsonDocument } from "../../../lib/incidents/mapping-preview";
 import { JsonMappingPreview } from "./JsonMappingPreview";
+import { MaintenanceWindowsEditor } from "./MaintenanceWindowsEditor";
 import { SettingsDialog } from "./SettingsDialog";
 import { SignalImpactFields } from "./SignalImpactFields";
 import { SignalRuleFields } from "./SignalRuleFields";
@@ -537,6 +539,23 @@ export function SignalEditorFields({
           />
         </Disclosure>
       )}
+
+      <Disclosure
+        title="Maintenance windows"
+        defaultOpen={draft.maintenance.length > 0}
+      >
+        <div className="flex flex-col gap-2">
+          <MaintenanceWindowsEditor
+            windows={draft.maintenance}
+            onChange={(maintenance) => set({ maintenance })}
+          />
+          {errorOf("maintenance") && (
+            <p id={describe("maintenance")} className={FIELD_ERROR}>
+              {errorOf("maintenance")}
+            </p>
+          )}
+        </div>
+      </Disclosure>
 
       <Disclosure title="More">
         <div className="flex flex-col gap-4">

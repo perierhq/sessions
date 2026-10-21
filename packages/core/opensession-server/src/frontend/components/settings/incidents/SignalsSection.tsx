@@ -4,6 +4,7 @@ import type { SignalView } from "../../../../shared/incidents";
 import { useSignals } from "../../../hooks/useIncidents";
 import type { ProductionRunnerView } from "../../../lib/api/incidents";
 import { errorMessage } from "../../../lib/error-message";
+import { projectWindows } from "../../../lib/incidents/maintenance-form";
 import {
   ruleCaption,
   signalCaption,
@@ -18,6 +19,7 @@ import {
   SettingsGroupLabel,
 } from "../../../ui/settings";
 import { EmptyState, InlineAlert } from "../../../ui/state";
+import { ProjectMaintenanceDialog } from "./MaintenanceWindowsEditor";
 import { SettingLinkRow } from "./SettingLinkRow";
 import { SignalEditor } from "./SignalEditor";
 
@@ -59,7 +61,11 @@ export function SignalsSection({
     setEditor({ key: opens + 1, signal });
     setOpen(true);
   };
+  const [maintenance, setMaintenance] = useState<{ key: number } | null>(null);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const all = signals.data ?? [];
+  const own = all.filter((signal) => signal.project === project);
+  const planned = projectWindows(own).length;
   return (
     <>
       <SignalsList
@@ -72,7 +78,31 @@ export function SignalsSection({
         }
         onRetry={() => void signals.mutate()}
         onOpen={openEditor}
+        trailing={
+          own.length > 0 && (
+            <SettingLinkRow
+              title="Maintenance windows"
+              description="Planned downtime doesn't open incidents"
+              value={planned ? `${planned} planned` : "None planned"}
+              onClick={() => {
+                setOpens(opens + 1);
+                setMaintenance({ key: opens + 1 });
+                setMaintenanceOpen(true);
+              }}
+            />
+          )
+        }
       />
+      {maintenance && (
+        <ProjectMaintenanceDialog
+          key={maintenance.key}
+          open={maintenanceOpen}
+          onClose={() => setMaintenanceOpen(false)}
+          project={project}
+          signals={sortSignals(own)}
+          onSaved={() => void signals.mutate()}
+        />
+      )}
       {editor && (
         <SignalEditor
           key={editor.key}

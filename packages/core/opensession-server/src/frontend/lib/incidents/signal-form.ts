@@ -15,6 +15,7 @@ import type {
 } from "../../../shared/incidents";
 import type { SignalInput } from "../api/incidents";
 import { WEBHOOK_BASE_URL } from "../brand";
+import { windowProblem } from "./maintenance-form";
 
 /** What the server sends in place of a stored secret, and keeps it when
  *  sent back unchanged (server `signal-validation.ts`). */
@@ -467,6 +468,11 @@ export function draftToInput(d: SignalDraft): DraftResult {
   if ("field" in built) return built;
   const impact = impactInput(d);
   if ("field" in impact) return impact;
+  if (d.maintenance.some((w) => windowProblem(w) !== null))
+    return {
+      field: "maintenance",
+      error: "Fix the maintenance windows marked below",
+    };
   const input: SignalWrite = {
     name,
     project: d.project,

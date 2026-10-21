@@ -312,3 +312,20 @@ test("interval labels", () => {
     "90000000",
   ]);
 });
+
+test("a bad maintenance window stops the save before the server does", () => {
+  const d = {
+    ...defaultDraft("heartbeat", "acme"),
+    name: "Nightly",
+    maintenance: [
+      {
+        kind: "weekly" as const,
+        days: [],
+        start: "02:00",
+        end: "03:00",
+        timeZone: "UTC",
+      },
+    ],
+  };
+  expect(draftToInput(d)).toMatchObject({ field: "maintenance" });
+});
