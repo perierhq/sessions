@@ -146,7 +146,9 @@ import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
-import { startIncidentAccessGate } from "./src/server/incidents/response/access-gate";
+import { startIncidentImpact } from "./src/server/incidents/impact";
+import { incidentReleaseHookRoutes } from "./src/server/incidents/response/actions";
+import { startIncidentResponse } from "./src/server/incidents/response/coordinator";
 import { prImagePublicRoutes } from "./src/server/pr-images";
 import { mcpOauthPublicRoutes } from "./src/server/mcp-oauth";
 import {
@@ -861,14 +863,19 @@ if (!g.__opensessionBooted) {
     }
     for (const [key, handler] of incidentHookRoutes())
       webhookRoutes.set(key, handler);
+    for (const [key, handler] of incidentReleaseHookRoutes())
+      webhookRoutes.set(key, handler);
     // Incident signals are cheap gateway checks, no model. Started before the
     // ingress binds so a hook call waits for the boot replay, never races it.
     startIncidentSignals();
+    // Impact queries run once a minute for open incidents.
+    startIncidentImpact();
     // Revokes incident agents' credential grants when incidents close or access narrows.
     startIncidentAccess();
-    // A project's kill switch and budget refuse its incident agents at
-    // spawn, every turn and every incident tool call.
-    startIncidentAccessGate();
+    // The fix loop (with the access gate: a project's kill switch and budget
+    // refuse its incident agents at spawn, every turn and every incident
+    // tool call) wakes on incident changes, session state and a 5 s tick.
+    startIncidentResponse();
     configureWebhookRoutes(agents, webhookRoutes);
     try {
       startPublicIngress();

@@ -19,6 +19,8 @@ import {
   __setIncidentResponseRoutesForTest,
   handleIncidentResponseRoutes,
 } from "./incident-response";
+import { handleIncidentsRoutes } from "./incidents";
+import { routeHandlers } from "./index";
 
 const kit = useIncidentTestKernel();
 const ADA = { login: "ada", name: "Ada Lovelace" };
@@ -372,4 +374,10 @@ test("agent audit lists the ledger, each agent's access and its tool calls", asy
 test("other paths fall through", async () => {
   expect(await call("GET", "/api/incidents")).toBeUndefined();
   expect(await call("DELETE", "/api/incident-projects/acme")).toBeUndefined();
+});
+
+test("registered in the route chain after the incidents routes", () => {
+  const at = routeHandlers.indexOf(handleIncidentsRoutes);
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(routeHandlers[at + 1]).toBe(handleIncidentResponseRoutes);
 });
