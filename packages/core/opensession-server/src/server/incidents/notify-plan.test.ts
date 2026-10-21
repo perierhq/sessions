@@ -364,7 +364,7 @@ test("only state changes and new questions notify", () => {
       since: "t1",
       resumePhase: "investigating",
     },
-  } as IncidentResponse;
+  } as unknown as IncidentResponse;
   const r2 = {
     ...r1,
     next: { ...r1.next, reason: "Two" },
