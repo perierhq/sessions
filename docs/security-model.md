@@ -492,6 +492,17 @@ asynchronous, so a call already in flight completes, but every new call
 re-resolves access first. Runner hosts are trusted machines, as for every
 Runner.
 
+Incident notifications only open pages. A lock-screen button (Stop, Deploy
+now, an answer) is a link to `/incidents/<id>?intent=<decision>`: the service
+worker opens it and never fetches or acts on its own, and it drops any button
+whose URL is not a path in the app. The incident page then asks for
+confirmation before it posts the decision through the signed-in API, Stop
+included, and says so when the decision no longer applies. Push text is fixed
+wording: one line of state, the project and what happens next, never agent or
+command output. The reason agents stopped is shown only on the incident page
+and its inbox row, behind sign-in. Pushed text is stripped of control and
+bidirectional characters.
+
 ## Mac Keychain requests
 
 The interactive-only `opensession-keychain` server can request one macOS Keychain
