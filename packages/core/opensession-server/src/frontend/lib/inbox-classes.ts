@@ -6,6 +6,8 @@
  * phones.
  */
 
+import type { NotificationKind } from "./api/notifications";
+
 /** The popover. Wide enough for a title and a reason line side by side. */
 export const INBOX_POPUP =
   "flex max-h-[min(640px,calc(100vh-96px))] w-[420px] flex-col overflow-hidden";
@@ -65,6 +67,27 @@ export const INBOX_UNREAD_DOT = "size-2 shrink-0 rounded-full bg-accent";
 
 export const INBOX_KIND_ICON =
   "mt-0.5 flex size-6 shrink-0 items-center justify-center [&_svg]:size-5";
+
+/**
+ * Each kind's icon tone. Colour is never the only signal: an incident row's
+ * title already says its state in words.
+ */
+export const INBOX_KIND_ICON_INK: Record<NotificationKind, string> = {
+  review_requested: "text-blue",
+  team_review_requested: "text-dim",
+  review_done: "text-blue",
+  mention: "text-accent",
+  comment: "text-accent",
+  collaborator: "text-accent",
+  reminder: "text-dim",
+  incident_heads_up: "text-yellow",
+  incident_opened: "text-red",
+  incident_needs_you: "text-accent",
+  incident_veto: "text-yellow",
+  incident_rolled_back: "text-red",
+  incident_resolved: "text-green",
+  incident_update: "text-dim",
+};
 
 /** Stretched over the row, so a click anywhere opens the notification. */
 export const INBOX_ROW_OPEN =

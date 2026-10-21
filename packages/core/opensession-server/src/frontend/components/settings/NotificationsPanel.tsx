@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { errorMessage } from "../../lib/error-message";
+import { NOTIFICATION_ALERT_ROWS } from "../../lib/notification-alert-rows";
 import {
   ensureNotificationPermission,
   getNotifSettings,
@@ -85,34 +86,6 @@ function PushRow() {
   );
 }
 
-const ALERT_ROWS: {
-  group: keyof NotificationAlerts;
-  title: string;
-  desc: string;
-}[] = [
-  {
-    group: "reviews",
-    title: "Reviews",
-    desc: "Someone asks you for a review, or finishes one you asked for",
-  },
-  {
-    group: "teamReviews",
-    title: "Team review requests",
-    desc: "A team you're on is asked to review, like code owners",
-  },
-  {
-    group: "mentions",
-    title: "Mentions and comments",
-    desc: "Someone tags you, assigns you a comment, or replies to one you're in",
-  },
-  {
-    group: "collaborators",
-    title: "Added to a workspace",
-    desc: "Someone adds you as a collaborator",
-  },
-  { group: "reminders", title: "Reminders", desc: "Desk task reminders" },
-];
-
 export function NotificationsPanel() {
   const [s, setS] = useState<NotifSettings>(getNotifSettings);
   const { alerts } = useNotifications();
@@ -194,7 +167,7 @@ export function NotificationsPanel() {
 
       <SettingsGroupLabel>Notify me when</SettingsGroupLabel>
       <SettingCard>
-        {ALERT_ROWS.map((row) => (
+        {NOTIFICATION_ALERT_ROWS.map((row) => (
           <SettingRow
             key={row.group}
             title={row.title}

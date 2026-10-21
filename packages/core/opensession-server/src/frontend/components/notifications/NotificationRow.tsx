@@ -3,6 +3,7 @@ import { relativeTime } from "../../lib/api/request";
 import type { NotificationKind } from "../../lib/api/notifications";
 import {
   INBOX_KIND_ICON,
+  INBOX_KIND_ICON_INK,
   INBOX_ROW,
   INBOX_ROW_ACTIONS,
   INBOX_ROW_CONTEXT,
@@ -18,6 +19,7 @@ import {
 } from "../../lib/inbox-classes";
 import {
   markNotifications,
+  notificationRowText,
   openNotification,
   type NotificationThread,
 } from "../../lib/notifications";
@@ -26,35 +28,36 @@ import { cn } from "../../ui/cn";
 import { Tooltip } from "../../ui/tooltip";
 import {
   IconAtSign,
-  IconBell,
   IconCheck,
   IconCheckCircle,
   IconClock,
   IconEye,
   IconMail,
   IconMessage,
+  IconMessageQuestion,
+  IconOctagonAlert,
   IconPeople,
+  IconRocket,
+  IconStatusRing,
   IconUndo,
+  IconWarningTriangle,
 } from "../icons";
 
-const KIND_ICON: Record<
-  NotificationKind,
-  { icon: React.ReactNode; ink: string }
-> = {
-  review_requested: { icon: <IconEye />, ink: "text-blue" },
-  team_review_requested: { icon: <IconPeople />, ink: "text-dim" },
-  review_done: { icon: <IconCheckCircle />, ink: "text-blue" },
-  mention: { icon: <IconAtSign />, ink: "text-accent" },
-  comment: { icon: <IconMessage />, ink: "text-accent" },
-  collaborator: { icon: <IconPeople />, ink: "text-accent" },
-  reminder: { icon: <IconClock />, ink: "text-dim" },
-  incident_heads_up: { icon: <IconBell />, ink: "text-dim" },
-  incident_opened: { icon: <IconBell />, ink: "text-dim" },
-  incident_needs_you: { icon: <IconBell />, ink: "text-dim" },
-  incident_veto: { icon: <IconBell />, ink: "text-dim" },
-  incident_rolled_back: { icon: <IconBell />, ink: "text-dim" },
-  incident_resolved: { icon: <IconBell />, ink: "text-dim" },
-  incident_update: { icon: <IconBell />, ink: "text-dim" },
+const KIND_ICON: Record<NotificationKind, React.ReactNode> = {
+  review_requested: <IconEye />,
+  team_review_requested: <IconPeople />,
+  review_done: <IconCheckCircle />,
+  mention: <IconAtSign />,
+  comment: <IconMessage />,
+  collaborator: <IconPeople />,
+  reminder: <IconClock />,
+  incident_heads_up: <IconWarningTriangle />,
+  incident_opened: <IconOctagonAlert />,
+  incident_needs_you: <IconMessageQuestion />,
+  incident_veto: <IconRocket />,
+  incident_rolled_back: <IconUndo />,
+  incident_resolved: <IconCheckCircle />,
+  incident_update: <IconStatusRing />,
 };
 
 const SWIPE_PX = 88;
@@ -83,13 +86,14 @@ export function NotificationRow({
   /** Runs before the row routes, e.g. to close the popover it sits in. */
   onOpen?: () => void;
 }) {
-  const { icon, ink } = KIND_ICON[thread.kind];
+  const icon = KIND_ICON[thread.kind];
+  const ink = INBOX_KIND_ICON_INK[thread.kind];
   const readLabel = thread.unread ? "Mark as read" : "Mark as unread";
   const toggleRead = () =>
     markNotifications([thread.id], { unread: !thread.unread });
   const toggleDone = () =>
     markNotifications([thread.id], { done: !thread.done });
-  const reason = [thread.reason, thread.body].filter(Boolean).join(": ");
+  const { title, line } = notificationRowText(thread);
   const context = thread.subject.context;
 
   // Phone swipe: right reveals read/unread, left reveals done. A full swipe
@@ -229,7 +233,7 @@ export function NotificationRow({
               onOpen?.();
               openNotification(thread);
             }}
-            aria-label={`${thread.unread ? "Unread. " : ""}${thread.subject.title}. ${reason}`}
+            aria-label={`${thread.unread ? "Unread. " : ""}${title}. ${line}`}
           >
             <span className={INBOX_ROW_CONTEXT}>
               {context && <span className="min-w-0 truncate">{context}</span>}
@@ -240,10 +244,8 @@ export function NotificationRow({
                 )}
               </span>
             </span>
-            <span className={INBOX_ROW_TITLE}>
-              {thread.subject.title || "Untitled"}
-            </span>
-            {reason && <span className={INBOX_ROW_REASON}>{reason}</span>}
+            <span className={INBOX_ROW_TITLE}>{title}</span>
+            {line && <span className={INBOX_ROW_REASON}>{line}</span>}
           </button>
           <div className={INBOX_ROW_ACTIONS}>
             <Tooltip label={readLabel} side="top">
