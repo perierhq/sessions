@@ -391,6 +391,7 @@ async function world(
       settings.releases = [release, ...settings.releases];
       return undefined;
     },
+    agentsPaused: () => settings.agentsPaused,
   };
   const incident = await createIncident({
     project: "acme",
@@ -1351,6 +1352,77 @@ test("kill switch while the veto counts down: no merge, ever", async () => {
   await advanceIncident(w.incident.id, w.deps);
   expect((await getIncident(w.incident.id))?.state).toBe("paused");
   expect(w.merges).toEqual([]);
+});
+
+test("kill switch turned on while the merge is under way: nothing is merged", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.clock += 600_000;
+  const verdict = w.deps.github!.verdict;
+  let calls = 0;
+  w.deps.github = {
+    ...w.deps.github!,
+    verdict: async (...args: Parameters<MergeGithub["verdict"]>) => {
+      // The fresh snapshot read right before merging.
+      if (++calls === 2) w.settings.agentsPaused = true;
+      return verdict(...args);
+    },
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  expect(calls).toBe(2);
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("kill switch turned on right after the merge: the deploy never runs", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.clock += 600_000;
+  const merge = w.deps.github!.merge;
+  w.deps.github = {
+    ...w.deps.github!,
+    merge: async (...args: Parameters<MergeGithub["merge"]>) => {
+      const out = await merge(...args);
+      w.settings.agentsPaused = true;
+      return out;
+    },
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.merges).toHaveLength(1);
+  expect(w.actions).toEqual([]);
+  expect((await getIncident(w.incident.id))?.response?.actionRuns).toEqual([]);
+});
+
+test("kill switch turned on before the incident note merges: it is left open", async () => {
+  const w = await world({ releasedMsBeforeOpen: 300_000 });
+  w.deps.github = {
+    ...w.deps.github!,
+    files: async () => [NOTE, "docs/incidents/runbook.md"],
+    verdict: (() => {
+      const verdict = w.deps.github!.verdict;
+      return async (...args: Parameters<MergeGithub["verdict"]>) => {
+        // The note PR's snapshot, read right before merging it.
+        w.settings.agentsPaused = true;
+        return verdict(...args);
+      };
+    })(),
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({ ...investigatorReport, candidate: null, noCandidateReason: "x" }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  w.evaluate("sig-a", "ok");
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+  expect(w.merges).toEqual([]);
+  expect(i?.response?.note).toMatchObject({ merged: false });
 });
 
 test("kill switch while watching: no automatic rollback", async () => {

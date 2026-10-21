@@ -1833,6 +1833,22 @@ test("rollback-first: the parallel investigator is best effort and never holds t
     ).toMatchObject({ step: "open-veto" });
 });
 
+test("documenting: with agents paused the note PR is left open, never merged", () => {
+  const paused = documenting({
+    files: ["docs/incidents/2026-10-20-search.md"],
+  });
+  expect(
+    decideNextStep({
+      ...paused,
+      settings: { ...paused.settings, agentsPaused: true },
+    }),
+  ).toMatchObject({
+    step: "transition",
+    phase: "done",
+    detail: "Note PR #13 is waiting for you: agents are paused",
+  });
+});
+
 test("documenting: a notes-only PR merges, a code PR is left for review, nobody is woken", () => {
   expect(
     decideNextStep(

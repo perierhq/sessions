@@ -1365,6 +1365,8 @@ function documenting(view: ResponseView): ResponseStep {
     return close(`${n} has code changes, so it is left open for review`);
   if (settings.autonomy === "watch" || settings.autonomy === "propose")
     return close(`Note ${n} is waiting for you`);
+  if (settings.agentsPaused)
+    return close(`Note ${n} is waiting for you: agents are paused`);
   if (note.merged) return close("Note merged", true);
   if (note.detail) return close(note.detail);
   const a = assessAutoMerge(pr, pr.headSha);

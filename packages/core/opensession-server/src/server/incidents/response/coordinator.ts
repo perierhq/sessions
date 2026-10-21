@@ -78,6 +78,7 @@ import { independenceBetween, resolveRoleModels } from "./models";
 import {
   getProjectSettings,
   latestRelease,
+  peekProjectSettings,
   projectAction,
   recordRelease,
 } from "./project-settings";
@@ -126,6 +127,9 @@ export interface CoordinatorDeps {
   defaultBranch: (project: string) => string;
   runAction: typeof runIncidentAction;
   recordRelease: typeof recordRelease;
+  /** The kill switch as this process last read or wrote it, checked again
+   *  right before anything is merged or run on production. */
+  agentsPaused: (project: string) => boolean;
 }
 
 function defaultDeps(): CoordinatorDeps {
@@ -157,6 +161,8 @@ function defaultDeps(): CoordinatorDeps {
     },
     runAction: runIncidentAction,
     recordRelease,
+    agentsPaused: (project) =>
+      peekProjectSettings(project)?.agentsPaused === true,
   };
 }
 
@@ -626,7 +632,7 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     const view = await buildResponseView(incident, d, settings);
     const step = decideNextStep(view);
     if (step.step === "none") return;
-    if (shipsOrLeavesVeto(view, step) && heldBeforeEffect(view)) return;
+    if (shipsOrLeavesVeto(view, step) && heldBeforeEffect(view, d)) return;
     let more: boolean;
     try {
       more = await applyStep(view, step, d);
@@ -641,22 +647,26 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
   }
 }
 
-/** Steps that merge, run an action on production or end a veto window. */
+/** Steps that merge, run an action on production, or end a veto window
+ *  to ship. */
 function shipsOrLeavesVeto(view: ResponseView, step: ResponseStep): boolean {
   return (
     step.step === "merge" ||
     step.step === "run-action" ||
-    (view.incident.state === "veto" && step.step === "transition")
+    (view.incident.state === "veto" &&
+      step.step === "transition" &&
+      step.to === "deploying")
   );
 }
 
 /**
- * Whether something that must win over the next effect has arrived: a Stop
- * the owner sent while this advance was running, before the veto deadline
- * (or, once shipping, before shipping began). The advance ends; the Stop is
- * next in the chain.
+ * Whether something that must win over the next effect has arrived: the
+ * kill switch, or a Stop the owner sent while this advance was running,
+ * before the veto deadline (or, once shipping, before shipping began). The
+ * advance ends; the guards or the Stop go next.
  */
-function heldBeforeEffect(view: ResponseView): boolean {
+function heldBeforeEffect(view: ResponseView, d: CoordinatorDeps): boolean {
+  if (d.agentsPaused(view.incident.project)) return true;
   const stopAt = stopRequests.get(view.incident.id);
   if (stopAt === undefined) return false;
   if (!decisionAllowed("stop", view.incident, view.settings)) return false;
@@ -1527,7 +1537,7 @@ async function mergeCandidate(
     );
     return next !== null;
   }
-  if (heldBeforeEffect(view)) return false;
+  if (heldBeforeEffect(view, d)) return false;
   const record = await mergeIncidentPr(
     {
       incidentId: incident.id,
@@ -1599,7 +1609,7 @@ async function runAction(
       },
       d,
     );
-  if (heldBeforeEffect(view)) return false;
+  if (heldBeforeEffect(view, d)) return false;
   const runId = newActionRunId();
   const ref = action.kind === "deploy" ? r.merge?.mergedSha : undefined;
   const previousRef =
@@ -1625,10 +1635,14 @@ async function runAction(
       d,
       settings,
       guardOf(view),
-      (c, base) => ({
-        incident: c,
-        response: { ...base, actionRuns: [...base.actionRuns, intent] },
-      }),
+      (c, base) =>
+        // The kill switch, read again as the intent commits.
+        d.agentsPaused(incident.project)
+          ? { error: `Agents paused for ${incident.project}` }
+          : {
+              incident: c,
+              response: { ...base, actionRuns: [...base.actionRuns, intent] },
+            },
     );
     if (!started) return false;
     try {
@@ -1779,6 +1793,8 @@ async function mergeNote(
   const note = incident.response!.note;
   const pr = note?.pr;
   if (!note || !pr) return false;
+  // The kill switch: the next advance leaves the note open instead.
+  if (d.agentsPaused(incident.project)) return false;
   const record = await mergeIncidentPr(
     {
       incidentId: incident.id,
