@@ -395,6 +395,27 @@ export function startProductionPairingApi(
   );
 }
 
+/**
+ * Reserve a paired Runner for the project's incidents and add it to its
+ * production Runners. A Runner that serves anything else answers 400 with
+ * what it would lose until `confirm` is set; 403 without a signed-in
+ * person.
+ */
+export function bindProductionRunnerApi(
+  project: string,
+  runnerId: string,
+  confirm = false,
+): Promise<ProjectSettingsView> {
+  return request<ProjectSettingsView>(
+    `/incident-projects/${seg(project)}/runners/${seg(runnerId)}/bind`,
+    {
+      method: "POST",
+      body: confirm ? { confirm: true } : {},
+      label: "Failed to bind the Runner",
+    },
+  );
+}
+
 /** 409 when the decision no longer applies, 401 when sign-in is needed,
  *  403 when only a signed-in person may make it. */
 export function decideIncidentApi(

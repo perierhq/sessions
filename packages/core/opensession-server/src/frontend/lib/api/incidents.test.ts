@@ -134,3 +134,24 @@ test("writes throw on a missing route", async () => {
     ApiError,
   );
 });
+
+test("binding a Runner posts the confirmation only when given", async () => {
+  serve({
+    "/api/incident-projects/acme/runners/rn%201/bind": {
+      status: 400,
+      body: {
+        error: "Runner rn 1 serves every repository. Confirm to reserve it",
+      },
+    },
+  });
+  await expect(api.bindProductionRunnerApi("acme", "rn 1")).rejects.toThrow(
+    "Runner rn 1 serves every repository. Confirm to reserve it",
+  );
+  await api
+    .bindProductionRunnerApi("acme", "rn 1", true)
+    .catch(() => undefined);
+  expect(calls.map((c) => [c.method, c.body])).toEqual([
+    ["POST", "{}"],
+    ["POST", '{"confirm":true}'],
+  ]);
+});
