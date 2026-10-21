@@ -6,9 +6,10 @@
  * Identity is the verified sign-in only; a claimed `user` in a body is
  * never taken. Changing actions or production Runners, loosening the
  * policy (autonomy, never without you, veto, budgets, max rounds, kill
- * switch off, night rule), pairing a Runner, and decisions that act on production (deploy
- * now, approve, roll back) need a signed-in person (`verifiedPerson`), even
- * with web sign-in off. Tightening the policy stays open.
+ * switch off, night rule), pairing a Runner, and decisions that act on
+ * production (deploy now, approve, roll back) need a signed-in person
+ * (`verifiedPerson`), even with web sign-in off. Tightening the policy
+ * stays open.
  * The release hook path carries its secret, so only a signed-in person
  * sees it.
  *
@@ -228,7 +229,8 @@ export async function handleIncidentResponseRoutes(
         requestUser(ctx) || "Anonymous",
         { signedInPerson: person },
       );
-      if ("error" in result) return error(result.error, 400);
+      if ("error" in result)
+        return error(result.error, result.forbidden ? 403 : 400);
       return Response.json(view(result, person));
     }
     return undefined;

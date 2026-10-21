@@ -292,6 +292,7 @@ test("only a signed-in person changes actions and production Runners", async () 
     ),
   ).toEqual({
     error: "Only a signed-in person can change actions or production Runners",
+    forbidden: true,
   });
   expect(kit.audits.at(-1)).toEqual({
     kind: "incident_settings_refused",
@@ -347,6 +348,7 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
   for (const [input, field] of loosen) {
     expect(await anonymous(input)).toEqual({
       error: "Only a signed-in person can loosen the incident policy",
+      forbidden: true,
     });
     expect(kit.audits.at(-1)).toEqual({
       kind: "incident_settings_refused",

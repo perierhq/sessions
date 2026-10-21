@@ -230,7 +230,7 @@ test("a claimed user is never taken, and only a person changes actions or sees t
       anonymous,
     ),
   ).toEqual({
-    status: 400,
+    status: 403,
     json: {
       error: "Only a signed-in person can change actions or production Runners",
     },
@@ -243,8 +243,20 @@ test("a claimed user is never taken, and only a person changes actions or sees t
       anonymous,
     ),
   ).toEqual({
-    status: 400,
+    status: 403,
     json: { error: "Only a signed-in person can loosen the incident policy" },
+  });
+  // A bad value is still a bad request.
+  expect(
+    await call(
+      "PUT",
+      "/api/incident-projects/acme",
+      { maxRounds: 9 },
+      anonymous,
+    ),
+  ).toEqual({
+    status: 400,
+    json: { error: "Max rounds (maxRounds) must be from 1 to 5" },
   });
   expect(
     await call(

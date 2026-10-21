@@ -711,17 +711,23 @@ export function loosenedFields(
 }
 
 class SettingsRefused extends Error {
-  constructor(readonly reason: string) {
+  constructor(
+    readonly reason: string,
+    readonly forbidden = false,
+  ) {
     super(reason);
   }
 }
+
+/** A refused write. `forbidden`: only a signed-in person may make it. */
+export type SettingsRefusal = { error: string; forbidden?: true };
 
 export async function updateProjectSettings(
   project: string,
   input: Record<string, unknown>,
   by: string,
   writer: SettingsWriter = {},
-): Promise<IncidentProjectSettings | { error: string }> {
+): Promise<IncidentProjectSettings | SettingsRefusal> {
   const ctx = context();
   if (!ctx.projectExists(project))
     return { error: `Unknown project ${project}` };
@@ -748,7 +754,10 @@ export async function updateProjectSettings(
       by,
       fields: refusedEarly.length ? refusedEarly : looserEarly,
     });
-    return { error: refusedEarly.length ? PERSON_ONLY_ERROR : LOOSEN_ERROR };
+    return {
+      error: refusedEarly.length ? PERSON_ONLY_ERROR : LOOSEN_ERROR,
+      forbidden: true,
+    };
   }
   let fields: CallerField[] = [];
   let committed: unknown;
@@ -764,9 +773,9 @@ export async function updateProjectSettings(
       if (fields.length === 0 && stored !== null)
         return stored as IncidentProjectSettings;
       if (personOnly(fields).length)
-        throw new SettingsRefused(PERSON_ONLY_ERROR);
+        throw new SettingsRefused(PERSON_ONLY_ERROR, true);
       if (loosened(current, next).length)
-        throw new SettingsRefused(LOOSEN_ERROR);
+        throw new SettingsRefused(LOOSEN_ERROR, true);
       const problem = settingsInvariantProblem(next);
       if (problem) throw new SettingsRefused(problem);
       return {
@@ -777,7 +786,10 @@ export async function updateProjectSettings(
       };
     });
   } catch (error) {
-    if (error instanceof SettingsRefused) return { error: error.reason };
+    if (error instanceof SettingsRefused)
+      return error.forbidden
+        ? { error: error.reason, forbidden: true }
+        : { error: error.reason };
     throw error;
   }
   const result = remember(withDefaults(project, committed));
