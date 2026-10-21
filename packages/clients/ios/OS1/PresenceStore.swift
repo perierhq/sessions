@@ -160,9 +160,11 @@ final class PresenceStore {
             if account.id == config.activeId {
                 MentionStore.shared.receiveCleared(user: user, sessionId: sessionId)
             }
-        case .notification(let user, let thread, let alert):
+        case .notification(let user, let thread, let alert, let replace):
             if account.id == config.activeId {
-                NotificationInboxStore.shared.receive(user: user, thread: thread, alert: alert)
+                NotificationInboxStore.shared.receive(
+                    user: user, thread: thread, alert: alert, replace: replace
+                )
             } else if thread?.unread ?? true {
                 config.incrementBadge(for: account.id)
             }

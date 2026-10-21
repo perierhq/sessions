@@ -1169,12 +1169,14 @@ export type WSServerMessage =
   | { type: "mentions_cleared"; user: string; sessionId?: string }
   // A new inbox notification for `user` (lib/notifications.ts). Sent once,
   // when the server first records the event; `alert` says whether the
-  // person's settings want a banner and sound for it.
+  // person's settings want a banner and sound for it, `replace` that a banner
+  // still on screen should take the new text without a sound.
   | {
       type: "notification";
       user: string;
       notification: unknown;
       alert: boolean;
+      replace?: boolean;
     }
   // `user`'s inbox changed on another device (read, done, settings).
   | { type: "notifications_changed"; user: string };

@@ -40,6 +40,7 @@ final class NotificationInboxTests: XCTestCase {
         var savedAlerts: [(InboxScope, [InboxAlerts.Group: Bool])] = []
         var failMarks = false
         var banners: [InboxThread] = []
+        var replaced: [InboxThread] = []
         var withdrawn: [String] = []
         var active = false
         var badge: [Int] = []
@@ -66,6 +67,7 @@ final class NotificationInboxTests: XCTestCase {
             ),
             scope: { h.scope },
             present: { thread, _ in h.banners.append(thread) },
+            replaceBanner: { thread, _ in h.replaced.append(thread) },
             withdraw: { h.withdrawn += $0 },
             isActive: { h.active },
             syncBadge: { h.badge.append($0) }
@@ -121,7 +123,7 @@ final class NotificationInboxTests: XCTestCase {
          "subject":{"type":"session","id":"os-1","title":"Fix login"},"kind":"mention","reason":"Grace mentioned you",
          "body":"","url":"/session/os-1","updatedAt":5,"unread":true,"done":false}}
         """#
-        guard case .notification(let user, let thread, let alert) = ServerEvent.parse(Data(frame.utf8)) else {
+        guard case .notification(let user, let thread, let alert, _) = ServerEvent.parse(Data(frame.utf8)) else {
             return XCTFail("expected a notification event")
         }
         XCTAssertEqual(user, "Ada")
@@ -130,7 +132,7 @@ final class NotificationInboxTests: XCTestCase {
 
         // A row this build cannot read still arrives, as a refresh.
         let unreadable = #"{"type":"notification","user":"Ada","notification":{"kind":"mention"}}"#
-        guard case .notification(_, let missing, let quiet) = ServerEvent.parse(Data(unreadable.utf8)) else {
+        guard case .notification(_, let missing, let quiet, _) = ServerEvent.parse(Data(unreadable.utf8)) else {
             return XCTFail("expected a notification event")
         }
         XCTAssertNil(missing)
@@ -419,5 +421,60 @@ final class NotificationInboxTests: XCTestCase {
         // A banner tapped before its row loaded still routes by its id.
         store.openTapped(.init(threadId: "workspace:ws-3", scope: acme))
         XCTAssertEqual(store.openRequest?.destination, .workspace("ws-3"))
+    }
+
+    // MARK: - Incidents
+
+    func testIncidentKindsDecodeAndAlertUnderIncidents() throws {
+        for raw in ["incident_heads_up", "incident_opened", "incident_needs_you", "incident_veto",
+                    "incident_rolled_back", "incident_resolved", "incident_update"] {
+            XCTAssertEqual(InboxKind(rawValue: raw)?.alertGroup, .incidents, raw)
+        }
+        let alerts = try JSONDecoder().decode(InboxAlerts.self, from: Data(#"{"reviews":true}"#.utf8))
+        XCTAssertTrue(alerts.incidents, "an older server without the switch reads as on")
+        let off = try JSONDecoder().decode(InboxAlerts.self, from: Data(#"{"incidents":false}"#.utf8))
+        XCTAssertFalse(off.incidents)
+    }
+
+    func testIncidentBannerLeadsWithTheProject() {
+        let t = InboxThread(id: "incident:inc-1", subject: .init(type: "incident", id: "inc-1", title: "Search", context: "acme"),
+                            kind: "incident_veto", reason: "Search is down",
+                            body: "The fix is verified and deploys at 12:37 unless you stop it",
+                            url: "/incidents/inc-1", updatedAt: 1, unread: true, done: false)
+        XCTAssertEqual(t.bannerBody, "acme · The fix is verified and deploys at 12:37 unless you stop it")
+        XCTAssertEqual(InboxDestination.resolve(t), .web("/incidents/inc-1"))
+        XCTAssertEqual(thread().bannerBody, "Fix login: Can you look?", "other rows keep their text")
+    }
+
+    func testIncidentSettingsRowMatchesTheWeb() {
+        let row = NotificationsSettingsView.alertRows.last
+        XCTAssertEqual(row?.group, .incidents)
+        XCTAssertEqual(row?.title, "Incidents")
+        XCTAssertEqual(
+            row?.detail,
+            "An incident you own opens, needs you, is about to deploy, rolls back or is fixed. At night only what can't wait"
+        )
+        XCTAssertEqual(Set(NotificationsSettingsView.alertRows.map(\.group)), Set(InboxAlerts.Group.allCases))
+    }
+
+    func testAReplaceFrameUpdatesQuietlyAndNeverRaisesABanner() async {
+        let h = Harness(scope: acme)
+        let store = makeStore(h)
+        await store.hydrate()
+        store.receive(user: "ada", thread: thread("incident:inc-1", updatedAt: 2_000), alert: false, replace: true)
+        XCTAssertTrue(h.banners.isEmpty)
+        XCTAssertEqual(h.replaced.map(\.id), ["incident:inc-1"])
+        store.receive(user: "ada", thread: thread("incident:inc-1", updatedAt: 2_000), alert: false, replace: true)
+        XCTAssertEqual(h.replaced.count, 1, "a duplicate frame is not news")
+    }
+
+    func testReplaceFramesDecode() {
+        let frame = #"{"type":"notification","user":"Ada","alert":false,"replace":true,"notification":{"id":"incident:inc-1","subject":{"type":"incident","id":"inc-1","title":"Search"},"kind":"incident_update","reason":"Search is down","body":"Deploying the fix now","url":"/incidents/inc-1","updatedAt":5,"unread":false,"done":false}}"#
+        guard case .notification(_, let thread, let alert, let replace) = ServerEvent.parse(Data(frame.utf8)) else {
+            return XCTFail("expected a notification event")
+        }
+        XCTAssertEqual(thread?.knownKind, .incidentUpdate)
+        XCTAssertFalse(alert)
+        XCTAssertTrue(replace)
     }
 }

@@ -411,7 +411,9 @@ export function NextAction({
   const handleIntent = useEffectEvent((wanted: OwnerDecision) => {
     if (handledIntent.current === wanted) return;
     handledIntent.current = wanted;
-    const plan = intentPlan(card, wanted, incidentStateWord(incident).text);
+    const plan = intentPlan(card, wanted, incidentStateWord(incident).text, {
+      rollback: !!incident.response?.candidate?.rollbackFirst,
+    });
     if (plan.kind === "confirm")
       confirm({
         title: plan.title,

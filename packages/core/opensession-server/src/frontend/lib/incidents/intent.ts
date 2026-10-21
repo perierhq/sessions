@@ -25,6 +25,8 @@ export function intentPlan(
   card: NextCard,
   intent: OwnerDecision,
   stateWord: string,
+  /** `rollback`: the veto runs a rollback, not a deploy. */
+  veto: { rollback: boolean } = { rollback: false },
 ): IntentPlan {
   if (!offers(card, intent)) {
     const message =
@@ -39,18 +41,28 @@ export function intentPlan(
     return {
       kind: "confirm",
       decision: intent,
-      title: "Stop the deploy?",
-      description: "Nothing ships and the incident waits for you",
+      title: veto.rollback ? "Stop the rollback?" : "Stop the deploy?",
+      description: veto.rollback
+        ? "Nothing is rolled back and the incident waits for you"
+        : "Nothing ships and the incident waits for you",
       confirmLabel: "Stop",
     };
   if (intent === "deploy-now")
-    return {
-      kind: "confirm",
-      decision: intent,
-      title: "Deploy now?",
-      description: "The fix goes out without the rest of the veto window",
-      confirmLabel: "Deploy now",
-    };
+    return veto.rollback
+      ? {
+          kind: "confirm",
+          decision: intent,
+          title: "Roll back now?",
+          description: "The rollback runs without the rest of the veto window",
+          confirmLabel: "Roll back now",
+        }
+      : {
+          kind: "confirm",
+          decision: intent,
+          title: "Deploy now?",
+          description: "The fix goes out without the rest of the veto window",
+          confirmLabel: "Deploy now",
+        };
   const copy = DECISION_COPY[intent];
   return {
     kind: "confirm",

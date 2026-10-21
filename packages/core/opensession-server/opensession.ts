@@ -145,6 +145,7 @@ import { configureWebhookRoutes } from "./src/server/webhook-server";
 import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
+import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
@@ -884,6 +885,9 @@ if (!g.__opensessionBooted) {
           }
         : {},
     );
+    // Incident owners hear about their incidents in the inbox and by push;
+    // alerts held at night go out once after it.
+    startIncidentNotifications();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

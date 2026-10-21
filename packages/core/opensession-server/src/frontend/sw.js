@@ -4,6 +4,11 @@
  * shell so cold starts are instant and a dead/black-holed tailnet gets the
  * app's own reconnecting state instead of a white error page.
  *
+ * Taps and action buttons only ever open the app. An incident push can carry
+ * buttons (Stop the deploy, Deploy now, Open); each one opens its in-app URL,
+ * where the page asks for confirmation before anything is posted. This worker
+ * never calls fetch for a tap and never acts from the notification alone.
+ *
  * Prefix-agnostic: the app serves at the bare domain root; registrations from
  * the historical /opensession/ + /backstage/ scopes may still exist on older
  * installs. All asset/navigation URLs derive from this registration's scope,
@@ -276,29 +281,78 @@ async function updateAppBadge(excludeTag) {
   } catch {}
 }
 
+// Platforms show at most this many buttons when they do not say.
+const DEFAULT_MAX_ACTIONS = 3;
+
+// A pushed field as text: the string itself, or "" for anything else.
+function text(value) {
+  return value === String(value) ? value : "";
+}
+
+// The buttons a push asks for, kept only when each names a local path: an
+// action opens a page in this app, never an external URL.
+function pushActions(value) {
+  if (!Array.isArray(value)) return [];
+  const kept = [];
+  for (const a of value) {
+    const action = text(a?.action);
+    const title = text(a?.title);
+    const url = text(a?.url);
+    // One leading slash, not followed by another slash or a backslash
+    // (browsers read "/\host" as "//host", another origin).
+    if (!action || !title || !/^\/(?![\/\\])/.test(url)) continue;
+    if (kept.some((k) => k.action === action)) continue;
+    kept.push({ action, title, url });
+  }
+  return kept.slice(0, DEFAULT_MAX_ACTIONS);
+}
+
+// How many buttons this platform shows (Notification.maxActions), else 3.
+function maxActions() {
+  const max = self.Notification?.maxActions;
+  return Number.isFinite(max) && max > 0 ? max : DEFAULT_MAX_ACTIONS;
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try {
     data = event.data ? event.data.json() : {};
   } catch {}
   const title = data.title || "Open Session";
+  const kept = pushActions(data.actions);
+  // Every kept action routes, so a platform showing fewer buttons still
+  // handles the ones it shows. The server orders them safe first (Stop), so
+  // a two-button platform drops Open, which the body tap still does.
+  const actionUrls = {};
+  for (const a of kept) actionUrls[a.action] = localUrl(a.url);
+  const tag = data.tag || undefined;
+  const options = {
+    body: data.body || "",
+    tag,
+    icon: PREFIX + "/icon-192.png",
+    badge: PREFIX + "/icon-192.png",
+    actions: kept
+      .slice(0, maxActions())
+      .map(({ action, title }) => ({ action, title })),
+    // A tagless renotify throws in Chromium.
+    renotify: data.renotify === true && !!tag,
+    silent: data.silent === true,
+    requireInteraction: data.requireInteraction === true,
+    // `id` is the inbox row, so a tap can mark it read.
+    data: { url: localUrl(data.url), id: data.id || null, actionUrls },
+  };
+  if (Number.isFinite(data.timestamp)) options.timestamp = data.timestamp;
   event.waitUntil(
     self.registration
-      .showNotification(title, {
-        body: data.body || "",
-        tag: data.tag || undefined,
-        icon: PREFIX + "/icon-192.png",
-        badge: PREFIX + "/icon-192.png",
-        // `id` is the inbox row, so a tap can mark it read.
-        data: { url: localUrl(data.url), id: data.id || null },
-      })
+      .showNotification(title, options)
       .then(() => updateAppBadge()),
   );
 });
 
 /*
  * A tap has to do two things: bring the app forward, and land it on the
- * session the notification is about.
+ * session the notification is about. A tap on an action button lands on that
+ * action's page instead, and nothing else: the page asks before it acts.
  *
  * The document is never reloaded to get there. `WindowClient.navigate()`
  * rejects outright on a client this worker does not control, and matchAll asks
@@ -313,7 +367,14 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const url = localUrl(data.url);
+  // An action button opens its own page (the incident with its confirm);
+  // the body, an unknown action and platforms without buttons open the row.
+  const actionUrls = data.actionUrls || {};
+  const actionUrl =
+    event.action && Object.hasOwn(actionUrls, event.action)
+      ? text(actionUrls[event.action])
+      : "";
+  const url = actionUrl || localUrl(data.url);
   event.waitUntil(
     Promise.all([
       updateAppBadge(event.notification.tag),

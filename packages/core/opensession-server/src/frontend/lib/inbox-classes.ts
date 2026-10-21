@@ -6,6 +6,8 @@
  * phones.
  */
 
+import type { NotificationKind } from "./api/notifications";
+
 /** The popover. Wide enough for a title and a reason line side by side. */
 export const INBOX_POPUP =
   "flex max-h-[min(640px,calc(100vh-96px))] w-[420px] flex-col overflow-hidden";
@@ -66,6 +68,27 @@ export const INBOX_UNREAD_DOT = "size-2 shrink-0 rounded-full bg-accent";
 export const INBOX_KIND_ICON =
   "mt-0.5 flex size-6 shrink-0 items-center justify-center [&_svg]:size-5";
 
+/**
+ * Each kind's icon tone. Colour is never the only signal: an incident row's
+ * title already says its state in words.
+ */
+export const INBOX_KIND_ICON_INK: Record<NotificationKind, string> = {
+  review_requested: "text-blue",
+  team_review_requested: "text-dim",
+  review_done: "text-blue",
+  mention: "text-accent",
+  comment: "text-accent",
+  collaborator: "text-accent",
+  reminder: "text-dim",
+  incident_heads_up: "text-yellow",
+  incident_opened: "text-red",
+  incident_needs_you: "text-accent",
+  incident_veto: "text-yellow",
+  incident_rolled_back: "text-red",
+  incident_resolved: "text-green",
+  incident_update: "text-dim",
+};
+
 /** Stretched over the row, so a click anywhere opens the notification. */
 export const INBOX_ROW_OPEN =
   "focus-ring min-w-0 flex-1 cursor-pointer rounded-sm border-none bg-transparent p-0 " +
@@ -79,6 +102,11 @@ export const INBOX_ROW_TITLE =
 
 export const INBOX_ROW_REASON =
   "mt-0.5 block min-w-0 truncate text-supporting text-dim";
+
+/** An incident row's next step ("deploys at 12:37 unless you stop it")
+ *  wraps to a second line rather than losing its end on a phone. */
+export const INBOX_ROW_NEXT =
+  "mt-0.5 line-clamp-2 min-w-0 text-supporting text-dim";
 
 /** Desktop actions replace the timestamp on hover or keyboard focus. */
 export const INBOX_ROW_ACTIONS =

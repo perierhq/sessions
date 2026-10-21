@@ -191,6 +191,13 @@ private struct InboxRow: View {
         case .comment: "text.bubble"
         case .collaborator: "person.2"
         case .reminder: "clock"
+        case .incidentHeadsUp: "exclamationmark.triangle"
+        case .incidentOpened: "exclamationmark.octagon"
+        case .incidentNeedsYou: "questionmark.bubble"
+        case .incidentVeto: "paperplane"
+        case .incidentRolledBack: "arrow.uturn.backward"
+        case .incidentResolved: "checkmark.circle"
+        case .incidentUpdate: "circle.dashed"
         case nil: "bell"
         }
     }
@@ -198,8 +205,11 @@ private struct InboxRow: View {
     static func tint(_ kind: InboxKind?) -> Color {
         switch kind {
         case .reviewRequested, .reviewDone: OS1VisualStyle.blue
-        case .mention, .comment, .collaborator: OS1VisualStyle.accent
-        case .teamReviewRequested, .reminder, nil: OS1VisualStyle.textDim
+        case .mention, .comment, .collaborator, .incidentNeedsYou: OS1VisualStyle.accent
+        case .incidentHeadsUp, .incidentVeto: OS1VisualStyle.yellow
+        case .incidentOpened, .incidentRolledBack: OS1VisualStyle.red
+        case .incidentResolved: OS1VisualStyle.green
+        case .teamReviewRequested, .reminder, .incidentUpdate, nil: OS1VisualStyle.textDim
         }
     }
 }

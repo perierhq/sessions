@@ -20,7 +20,8 @@ struct InboxScope: Equatable, Hashable, Sendable {
 
 /// The server notification inbox, on this device. The server owns it
 /// (src/server/notifications.ts): one row per session, pull request,
-/// workspace or reminder, with read and done state shared by every device.
+/// workspace, reminder or incident, with read and done state shared by every
+/// device.
 ///
 /// Hydrated with the other account stores, on account switch and after each
 /// socket reconnect, and updated live from the app-wide socket. A banner only
@@ -75,6 +76,7 @@ final class NotificationInboxStore {
     private let backend: Backend
     private let scopeProvider: () -> InboxScope
     private let presentBanner: (InboxThread, InboxScope) -> Void
+    private let replaceBanner: (InboxThread, InboxScope) -> Void
     private let withdrawBanners: ([String]) -> Void
     private let isActive: () -> Bool
     private let syncBadge: (Int) -> Void
@@ -88,6 +90,7 @@ final class NotificationInboxStore {
         backend: Backend? = nil,
         scope: (() -> InboxScope)? = nil,
         present: ((InboxThread, InboxScope) -> Void)? = nil,
+        replaceBanner: ((InboxThread, InboxScope) -> Void)? = nil,
         withdraw: (([String]) -> Void)? = nil,
         isActive: (() -> Bool)? = nil,
         syncBadge: ((Int) -> Void)? = nil
@@ -95,6 +98,7 @@ final class NotificationInboxStore {
         self.backend = backend ?? .live
         scopeProvider = scope ?? { InboxScope.current() }
         presentBanner = present ?? { NativeNotifications.present($0, scope: $1) }
+        self.replaceBanner = replaceBanner ?? { NativeNotifications.replaceIfDelivered($0, scope: $1) }
         withdrawBanners = withdraw ?? { NativeNotifications.withdraw(threadIds: $0) }
         self.isActive = isActive ?? { NativeNotifications.isAppActive() }
         self.syncBadge = syncBadge ?? { NativeNotifications.syncBadgeCount($0) }
@@ -167,7 +171,9 @@ final class NotificationInboxStore {
     // MARK: - Live frames
 
     /// The server recorded a new event for `user`. The only path to a banner.
-    func receive(user: String, thread: InboxThread?, alert: Bool) {
+    /// `replace` only updates a banner still on screen, quietly; it never
+    /// raises one.
+    func receive(user: String, thread: InboxThread?, alert: Bool, replace: Bool = false) {
         let current = scopeProvider()
         resetIfScopeChanged(current)
         guard InboxScope(server: current.server, user: user) == current else { return }
@@ -190,6 +196,8 @@ final class NotificationInboxStore {
         publishBadge()
         if alert, !replay, thread.unread, !thread.done {
             presentBanner(thread, current)
+        } else if replace, !replay, !thread.done {
+            replaceBanner(thread, current)
         }
     }
 

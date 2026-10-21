@@ -128,6 +128,30 @@ enum NativeNotifications {
         ))
     }
 
+    /// Update a banner still on screen with a row's newer text, quietly: no
+    /// sound and a passive interruption. With no banner for the row
+    /// delivered, nothing happens; a replace never raises a new one.
+    static func replaceIfDelivered(_ thread: InboxThread, scope: InboxScope) {
+        let id = identifier(for: thread.id)
+        let content = UNMutableNotificationContent()
+        content.title = thread.reason.isEmpty ? thread.subject.title : thread.reason
+        content.body = thread.reason.isEmpty ? thread.body : thread.bannerBody
+        content.threadIdentifier = thread.id
+        content.userInfo = NotificationTap.userInfo(thread: thread, scope: scope)
+        content.interruptionLevel = .passive
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        Task { @MainActor in
+            guard await isDelivered(id) else { return }
+            deliver(request)
+        }
+    }
+
+    /// Seam for tests: whether a banner with this identifier is on screen.
+    static var isDelivered: (String) async -> Bool = { identifier in
+        await UNUserNotificationCenter.current().deliveredNotifications()
+            .contains { $0.request.identifier == identifier }
+    }
+
     /// Take banners down once their rows are read or done, here or elsewhere.
     static func withdraw(threadIds: [String]) {
         guard !threadIds.isEmpty else { return }

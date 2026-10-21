@@ -3,14 +3,17 @@ import Foundation
 // Wire model of the server's notification inbox
 // (src/server/notification-threads.ts, GET /api/notifications).
 //
-// One row per subject (a session, a pull request, a workspace or a reminder),
+// One row per subject (a session, a pull request, a workspace, a reminder or
+// an incident),
 // with read and done state the server shares across every device. Decoding is
 // deliberately tolerant: a field of the wrong type falls back to its default,
 // a row without an id is dropped, and a kind this build does not know yet
 // still shows, labelled by the reason text the server wrote for it.
 
 /// The kinds the server records today. People notify people; agent activity
-/// (questions, failed or finished runs) is not an inbox event.
+/// (questions, failed or finished runs) is not an inbox event. Incidents are
+/// the exception: an incident you own notifies you as it changes, one row per
+/// incident that later states update in place.
 enum InboxKind: String, CaseIterable, Sendable {
     case reviewRequested = "review_requested"
     /// Asked only through a team the person is on (code owners, say).
@@ -21,6 +24,17 @@ enum InboxKind: String, CaseIterable, Sendable {
     case comment
     case collaborator
     case reminder
+    /// Something may go wrong soon, or fails on and off. Never "is down".
+    case incidentHeadsUp = "incident_heads_up"
+    case incidentOpened = "incident_opened"
+    /// A decision only the owner can make.
+    case incidentNeedsYou = "incident_needs_you"
+    /// A verified fix deploys unless someone stops it.
+    case incidentVeto = "incident_veto"
+    case incidentRolledBack = "incident_rolled_back"
+    case incidentResolved = "incident_resolved"
+    /// Progress (deploying, watching, stopped): updates the row quietly.
+    case incidentUpdate = "incident_update"
 
     /// The alert switch that governs this kind, as the server groups them
     /// (`notification-threads.ts`): comments ride with mentions.
@@ -31,14 +45,16 @@ enum InboxKind: String, CaseIterable, Sendable {
         case .mention, .comment: .mentions
         case .collaborator: .collaborators
         case .reminder: .reminders
+        case .incidentHeadsUp, .incidentOpened, .incidentNeedsYou, .incidentVeto,
+             .incidentRolledBack, .incidentResolved, .incidentUpdate: .incidents
         }
     }
 }
 
 struct InboxThread: Decodable, Equatable, Identifiable, Sendable {
     struct Subject: Equatable, Sendable {
-        /// `session`, `pr`, `workspace` or `reminder`, kept raw so a newer
-        /// subject type still decodes.
+        /// `session`, `pr`, `workspace`, `reminder` or `incident`, kept raw
+        /// so a newer subject type still decodes.
         var type: String
         var id: String
         var title: String
@@ -138,10 +154,14 @@ struct InboxThread: Decodable, Equatable, Identifiable, Sendable {
         done = ((try? c.decodeIfPresent(Bool.self, forKey: .done)) ?? nil) ?? false
     }
 
-    /// The banner body: the subject, then the detail, the way the server
-    /// words its own push.
+    /// The banner body, the way the server words its own push: an incident
+    /// leads with the project ("acme · Deploying the fix now"); every other
+    /// row is the subject, then the detail.
     var bannerBody: String {
-        [subject.title, body].filter { !$0.isEmpty }.joined(separator: ": ")
+        if subject.type == "incident" {
+            return [subject.context ?? "", body].filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+        return [subject.title, body].filter { !$0.isEmpty }.joined(separator: ": ")
     }
 }
 
@@ -154,11 +174,12 @@ struct InboxAlerts: Equatable, Sendable, Decodable {
     var mentions = true
     var collaborators = true
     var reminders = true
+    var incidents = true
 
     static let defaults = InboxAlerts()
 
     enum Group: String, CaseIterable, Sendable {
-        case reviews, teamReviews, mentions, collaborators, reminders
+        case reviews, teamReviews, mentions, collaborators, reminders, incidents
     }
 
     subscript(group: Group) -> Bool {
@@ -169,6 +190,7 @@ struct InboxAlerts: Equatable, Sendable, Decodable {
             case .mentions: mentions
             case .collaborators: collaborators
             case .reminders: reminders
+            case .incidents: incidents
             }
         }
         set {
@@ -178,6 +200,7 @@ struct InboxAlerts: Equatable, Sendable, Decodable {
             case .mentions: mentions = newValue
             case .collaborators: collaborators = newValue
             case .reminders: reminders = newValue
+            case .incidents: incidents = newValue
             }
         }
     }
@@ -194,12 +217,13 @@ struct InboxAlerts: Equatable, Sendable, Decodable {
         mentions = flag(.mentions)
         collaborators = flag(.collaborators)
         reminders = flag(.reminders)
+        incidents = flag(.incidents)
     }
 }
 
 extension InboxAlerts.Group {
     enum CodingKeys: String, CodingKey {
-        case reviews, teamReviews, mentions, collaborators, reminders
+        case reviews, teamReviews, mentions, collaborators, reminders, incidents
     }
 }
 

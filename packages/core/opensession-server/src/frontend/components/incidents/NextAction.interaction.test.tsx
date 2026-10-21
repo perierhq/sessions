@@ -272,6 +272,24 @@ test("an intent opens its confirm once per arrival, and again after it clears", 
   expect(handled).toBe(2);
 });
 
+test("a lock-screen Stop on a rollback veto asks to stop the rollback", async () => {
+  const rollback = veto(360_000);
+  // SAFETY: the card reads only `rollbackFirst` from the candidate.
+  rollback.response = {
+    ...rollback.response!,
+    candidate: { rollbackFirst: true },
+  } as IncidentResponse;
+  const card = harness.mount(
+    NextAction,
+    props({ intent: "stop", incident: rollback }),
+  );
+  await settle();
+  expect(confirmOf(card.output())?.request).toMatchObject({
+    title: "Stop the rollback?",
+    confirmLabel: "Stop",
+  });
+});
+
 test("an intent the card no longer offers says so instead", async () => {
   const card = harness.mount(
     NextAction,
