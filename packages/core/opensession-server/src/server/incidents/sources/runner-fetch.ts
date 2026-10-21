@@ -98,6 +98,9 @@ export interface RunnerNetOptions {
   signalId?: string;
   host?: string;
   timeoutMs?: number;
+  /** What the audit and Runner logs record for every command; default
+   *  `incident http check <signal>`. */
+  label?: string;
 }
 
 const METADATA_NAMES = new Set(["metadata", "metadata.google.internal"]);
@@ -323,7 +326,9 @@ export function runnerNet(
   deps: Partial<RunnerFetchDeps> = {},
   opts: RunnerNetOptions,
 ): PinnedFetchDeps {
-  const label = `incident http check${opts.signalId ? ` ${opts.signalId}` : ""}`;
+  const label =
+    opts.label ??
+    `incident http check${opts.signalId ? ` ${opts.signalId}` : ""}`;
   const d: RunnerFetchDeps = {
     exec:
       deps.exec ??

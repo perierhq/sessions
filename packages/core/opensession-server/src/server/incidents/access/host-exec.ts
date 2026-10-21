@@ -1,14 +1,20 @@
 // Read-only commands on an incident agent's granted hosts, through the Runner
-// command channel. The command is an argv from the read-only table, quoted
-// word by word (and once more for an SSH hop) into one string that the
-// Runner's POSIX shell (`bash -lc`) runs, so shell metacharacters are data.
-// Only Linux and macOS Runners qualify (fields.ts runsPosixShell). It runs with no user, no repo and never the Runner's AWS role; the
-// output is capped and scrubbed of the agent's own granted credentials.
+// command channel's read-only incident agent path (runner-exec.ts). The
+// command is an argv from the read-only table, quoted word by word, and goes
+// to the Runner on stdin: the Runner runs `bash -s`, whose script is that
+// one command with an empty stdin, or for a host behind the Runner an SSH
+// hop whose remote `sh -s` reads the same command. Shell metacharacters in
+// an argument stay data, nothing of the command is in the Runner's argv,
+// and the Runner's audit and log record only `incident host_command
+// <program>`. Only Linux and macOS Runners qualify (fields.ts
+// runsPosixShell). It runs with no user and never the Runner's AWS role;
+// the output is capped and scrubbed of the agent's own granted credentials.
 import type { ResolvedHost } from "../../../shared/incident-access";
 import { scrubCredentialSecrets } from "../../keychain";
 import { execOnRunner, isRunnerConnected } from "../../runner-ws";
 import { shellQuote } from "../../sandbox/adapters/bootstrap";
 import { checkReadOnlyCommand } from "./read-only-commands";
+import { execForIncidentAgent } from "./runner-exec";
 import { type IncidentToolContext, toolAudit } from "./tool-context";
 
 export const HOST_OUTPUT_CAP_BYTES = 65_536;
@@ -19,6 +25,31 @@ const AUDIT_ARGS_CHARS = 500;
 // The same alias rule the settings validator applies; checked again here so
 // a value that reached the access some other way cannot become an ssh flag.
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** The Runner runs the script it reads on stdin. */
+export const HOST_COMMAND = "exec bash -s";
+const SSH_HOP = [
+  "ssh",
+  "-T",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "ConnectTimeout=10",
+  "--",
+];
+
+/**
+ * The script the Runner's `bash -s` reads. The command is one group whose
+ * own stdin is empty, so a program that reads stdin cannot eat the rest. For
+ * a host behind the Runner, the first line replaces bash with the SSH hop;
+ * a shell reading a script from stdin stops right after that line, so the
+ * hop's remote `sh -s` reads the group.
+ */
+export function hostCommandScript(argv: string[], ssh?: string): string {
+  const group = `{ ${shellQuote(argv)}\n} </dev/null\n`;
+  return ssh
+    ? `exec ${shellQuote([...SSH_HOP, ssh, "sh", "-s"])}\n${group}`
+    : group;
+}
 
 export interface HostCommandInput {
   runner: string;
@@ -114,28 +145,25 @@ export async function runHostCommand(
   if (!connected(host.runner))
     return { ok: false, error: `${host.runnerName} is offline` };
 
-  const inner = shellQuote(check.argv);
-  const command = host.ssh
-    ? shellQuote([
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        "--",
-        host.ssh,
-        inner,
-      ])
-    : inner;
   const timeoutMs = clampTimeout(input.timeoutSeconds);
   const started = Date.now();
   let result: Awaited<ReturnType<typeof execOnRunner>>;
   try {
-    result = await exec(host.runner, command, {
-      timeoutMs,
-      sessionId: ctx.sessionId,
-      aws: false,
-    });
+    result = await execForIncidentAgent(
+      ctx,
+      {
+        use: "host",
+        runner: host.runner,
+        ...(host.ssh ? { ssh: host.ssh } : {}),
+      },
+      HOST_COMMAND,
+      {
+        stdin: hostCommandScript(check.argv, host.ssh),
+        label: `incident host_command ${check.argv[0] ?? input.program}`,
+        timeoutMs,
+      },
+      { exec },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     toolAudit(ctx, "incident_host_command", {

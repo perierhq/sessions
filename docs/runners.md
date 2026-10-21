@@ -336,15 +336,18 @@ a project's incidents reserves it:
   since they lose it.
 - Windows Runners cannot be bound.
 
-Checks and actions send their request or script to the Runner on stdin, never
-on the command line: curl reads every option from `--config -`, and an action
-runs as `bash -s`. The audit log and the Runner log record a label such as
-`incident http check <signal>` or `incident action <action>` instead of the
-command. This needs a Runner client that advertises command input (`execStdin`
-in its hello). An older client keeps working for everything else, but its
-incident checks report unknown with "Update Runner <name>" and its actions do
-not start. Run `opensession update` on the machine, then restart the Runner:
-`systemctl --user restart opensession-runner` on Linux, or
+Checks, actions and incident agents' host commands and egress send their
+request or script to the Runner on stdin, never on the command line: curl
+reads every option from `--config -`, and an action or a host command runs as
+`bash -s`. The audit log and the Runner log record a label such as
+`incident http check <signal>`, `incident action <action>`,
+`incident host_command <program>` or `incident egress <METHOD> <host><path>`
+instead of the command. This needs a Runner client that advertises command
+input (`execStdin` in its hello). An older client keeps working for
+everything else, but its incident checks report unknown with "Update Runner
+<name>", its actions do not start, and agents' host commands and egress on it
+fail with the same instruction. Run `opensession update` on the machine, then
+restart the Runner: `systemctl --user restart opensession-runner` on Linux, or
 `opensession runner service install` on macOS, which reloads the
 LaunchAgent. It reconnects with the new capability.
 
