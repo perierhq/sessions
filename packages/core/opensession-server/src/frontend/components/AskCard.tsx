@@ -39,6 +39,12 @@ interface Props {
    * waiting agent's green.
    */
   status?: { label: string; tone: "blue" };
+  /**
+   * Show the question as plain text: no markdown, so no links, images or
+   * avatars, and nothing that loads from another host. For a question whose
+   * text an agent wrote from what it read (an incident's needs-you card).
+   */
+  plainText?: boolean;
 }
 
 /**
@@ -106,6 +112,7 @@ export function AskCard({
   onDismiss,
   active = true,
   status,
+  plainText = false,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
@@ -393,12 +400,18 @@ export function AskCard({
           <Questionnaire.Title
             id={titleId(i)}
             render={
-              <div
-                className="markdown text-body leading-6 text-fg [overflow-wrap:anywhere]"
-                dangerouslySetInnerHTML={{
-                  __html: renderMarkdown(q.question, { repo }),
-                }}
-              />
+              plainText ? (
+                <div className="whitespace-pre-wrap text-body leading-6 text-fg [overflow-wrap:anywhere]">
+                  {q.question}
+                </div>
+              ) : (
+                <div
+                  className="markdown text-body leading-6 text-fg [overflow-wrap:anywhere]"
+                  dangerouslySetInnerHTML={{
+                    __html: renderMarkdown(q.question, { repo }),
+                  }}
+                />
+              )
             }
           />
           <Questionnaire.Choices className="flex flex-col gap-1.5">

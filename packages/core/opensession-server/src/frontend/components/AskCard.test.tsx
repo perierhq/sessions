@@ -299,3 +299,25 @@ test("a decision card names itself and takes the needs-you blue", () => {
   expect(html).toContain("bg-blue");
   expect(html).not.toContain("bg-green");
 });
+
+test("plain text shows the question as typed and loads nothing", () => {
+  const question =
+    "Proxy pool blocked. ![chart](https://example.test/x.png) see @ada";
+  const html = renderToStaticMarkup(
+    <AskCard
+      questions={[{ question, options: [{ label: "Try again" }] }]}
+      onAnswer={() => {}}
+      plainText
+    />,
+  );
+  expect(html).not.toContain("<img");
+  expect(html).not.toContain("<a ");
+  expect(html).toContain("![chart](https://example.test/x.png)");
+  const markdown = renderToStaticMarkup(
+    <AskCard
+      questions={[{ question, options: [{ label: "Try again" }] }]}
+      onAnswer={() => {}}
+    />,
+  );
+  expect(markdown).toContain("<img");
+});

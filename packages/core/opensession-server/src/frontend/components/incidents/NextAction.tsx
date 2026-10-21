@@ -428,6 +428,9 @@ export function NextAction({
           key={`${incident.id}:${incident.updatedAt}:${choiceAttempt}`}
           questions={[card.question]}
           status={{ label: "Next", tone: "blue" }}
+          // The reason is agent text from what it read: never markdown
+          // that could load from another host.
+          plainText
           onAnswer={(answers) => void onAnswer(answers)}
         />
       )}
