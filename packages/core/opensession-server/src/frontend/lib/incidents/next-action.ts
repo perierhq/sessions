@@ -41,6 +41,10 @@ export interface CardButton {
   countdownTo?: string;
   /** What the Stop button reads once the veto has ended. */
   doneLabel?: string;
+  /** Deploy now while its undo window runs: the undo control's label and
+   *  what the button reads meanwhile. */
+  undoLabel?: string;
+  pendingLabel?: string;
   confirm?: {
     title: string;
     description?: string;
@@ -229,9 +233,8 @@ export function nextCard(input: {
       // and the status line already carries the signal's state.
       return shell({
         tone: signalDotTone("upcoming"),
-        eyebrow: rollback
-          ? `Next · rolls back at ${at}`
-          : `Next · deploys at ${at}`,
+        // The time is the headline's; it is said once.
+        eyebrow: "Next",
         headline: rollback ? `Rolls back at ${at}` : `Deploys the fix at ${at}`,
         body: proofSentence(r),
         // A rollback is itself the way back; only a fix promises one.
@@ -247,6 +250,8 @@ export function nextCard(input: {
               : DECISION_COPY["deploy-now"].label,
             weight: "soft",
             decision: "deploy-now",
+            undoLabel: rollback ? "Undo roll back" : "Undo deploy",
+            pendingLabel: rollback ? "Rolling back…" : "Deploying…",
           },
           {
             key: "stop",
@@ -326,23 +331,23 @@ export function orderButtons(buttons: CardButton[]): CardButton[] {
     .map(({ button }) => button);
 }
 
-/** The decision an AskCard answer picked: the answer is, or starts with,
- *  one option's label. Typed text that matches none is null. */
+/** The decision an AskCard answer picked: the answer is one option's
+ *  label (case aside). Anything else is typed text, a note, and null here:
+ *  "Close without action, but…" is not a vote to close. */
 export function decisionFromAnswer(
   answer: string,
   decisions: OwnerDecision[],
 ): OwnerDecision | null {
   const text = answer.trim().toLowerCase();
-  // Longest label first, so one label that prefixes another cannot win.
-  const byLength = [...decisions].sort(
-    (a, b) => DECISION_COPY[b].label.length - DECISION_COPY[a].label.length,
-  );
   return (
-    byLength.find((d) =>
-      text.startsWith(DECISION_COPY[d].label.toLowerCase()),
-    ) ?? null
+    decisions.find((d) => DECISION_COPY[d].label.toLowerCase() === text) ?? null
   );
 }
+
+/** How long Stop stays pressable after the veto's deadline by this
+ *  device's clock. The clocks can disagree; in the grace the server
+ *  decides, and a stop that came too late is its 409. */
+export const STOP_GRACE_MS = 5_000;
 
 /** The shared deferred store's key for an incident's Deploy now. */
 export function incidentDecisionKey(incidentId: string): string {

@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ASK_CARD_PLATE } from "../../lib/ask-card-classes";
-import type { CardButton, ShellCard } from "../../lib/incidents/next-action";
+import {
+  type CardButton,
+  type ShellCard,
+  STOP_GRACE_MS,
+} from "../../lib/incidents/next-action";
 
 Object.assign(globalThis, {
   window: {
@@ -37,7 +41,7 @@ const card = (
   mode: "shell",
   tone: "yellow",
   pulse: false,
-  eyebrow: "Next · deploys at 12:37",
+  eyebrow: "Next",
   headline: "Deploys the fix at 12:37",
   body: "b",
   footnote: "f",
@@ -79,27 +83,81 @@ test("veto shell: plate without border, countdown in the Stop button", () => {
   expect(html).not.toContain("What the agents did");
 });
 
-test("a past deadline renders the deploying state", () => {
+const stopAt = (ms: number): CardButton => ({
+  key: "stop",
+  kind: "stop",
+  label: "Stop",
+  weight: "danger",
+  decision: "stop",
+  countdownTo: new Date(Date.now() + ms).toISOString(),
+  doneLabel: "Deploying",
+});
+
+test("just past the deadline Stop stays pressable, without a count", () => {
+  const html = renderToStaticMarkup(
+    <NextActionView card={card([stopAt(-1000)])} busy={null} onButton={noop} />,
+  );
+  expect(html).toContain(">Stop<");
+  expect(html).not.toContain('disabled=""');
+  expect(html).not.toContain("aria-disabled");
+  expect(html).not.toContain("0:00");
+});
+
+test("past the grace it reads the deploying state, still focusable", () => {
   const html = renderToStaticMarkup(
     <NextActionView
-      card={card([
-        {
-          key: "stop",
-          kind: "stop",
-          label: "Stop",
-          weight: "danger",
-          decision: "stop",
-          countdownTo: new Date(Date.now() - 1000).toISOString(),
-          doneLabel: "Deploying",
-        },
-      ])}
+      card={card([stopAt(-STOP_GRACE_MS - 1000)])}
       busy={null}
       onButton={noop}
     />,
   );
   expect(html).toContain("Deploying");
-  expect(html).toContain("disabled");
+  expect(html).toContain('aria-disabled="true"');
+  expect(html).not.toContain('disabled=""');
   expect(html).not.toContain("0:00");
+});
+
+test("Stop and its count are one label, so the gap opens once", () => {
+  const html = renderToStaticMarkup(
+    <NextActionView
+      card={card([stopAt(347_500)])}
+      busy={null}
+      onButton={noop}
+    />,
+  );
+  expect(html).toMatch(/<span>Stop · <span[^>]*>/);
+});
+
+test("a rollback's scheduled Roll back now says so", () => {
+  const html = renderToStaticMarkup(
+    <NextActionView
+      card={card([
+        {
+          key: "now",
+          kind: "deploy-now",
+          label: "Roll back now",
+          weight: "soft",
+          decision: "deploy-now",
+          undoLabel: "Undo roll back",
+          pendingLabel: "Rolling back…",
+        },
+      ])}
+      busy={null}
+      onButton={noop}
+      scheduled={{ deadline: Date.now() + 4_900, onUndo: noop }}
+    />,
+  );
+  expect(html).toContain("Undo roll back, 5s left");
+  expect(html).toContain("Rolling back…");
+  expect(html).not.toContain("Deploying…");
+});
+
+test("the headline is set larger than the proof sentence", () => {
+  const html = renderToStaticMarkup(
+    <NextActionView card={card([])} busy={null} onButton={noop} />,
+  );
+  expect(html).toMatch(/<h2 class="[^"]*text-dialog-title/);
+  expect(html).toMatch(/<p class="[^"]*text-body[^"]*">b</);
 });
 
 test("busy keeps the label and disables only the pressed button", () => {

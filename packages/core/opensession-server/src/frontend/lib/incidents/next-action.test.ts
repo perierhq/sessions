@@ -128,7 +128,7 @@ test("veto: deploy time, proof, policy footnote, soft then danger", () => {
     mode: "shell",
     tone: "yellow",
     pulse: false,
-    eyebrow: `Next · deploys at ${clockTime(deadline)}`,
+    eyebrow: "Next",
     headline: `Deploys the fix at ${clockTime(deadline)}`,
     body: "The verifier is certain: 12 of 12 checks pass with the fix, 3 of 3 fail without it",
     footnote:
@@ -141,6 +141,10 @@ test("veto: deploy time, proof, policy footnote, soft then danger", () => {
     ["Deploy now", "soft", "deploy-now", undefined],
     ["Stop", "danger", "stop", deadline],
   ]);
+  expect(card?.mode === "shell" && card.buttons[0]).toMatchObject({
+    undoLabel: "Undo deploy",
+    pendingLabel: "Deploying…",
+  });
 });
 
 test("veto: a verifier on the same provider is named; rollback first says so", () => {
@@ -162,12 +166,16 @@ test("veto: a verifier on the same provider is named; rollback first says so", (
     }),
   });
   expect(card).toMatchObject({
-    eyebrow: `Next · rolls back at ${clockTime(deadline)}`,
+    eyebrow: "Next",
     headline: `Rolls back at ${clockTime(deadline)}`,
     body: "The verifier is certain: 12 of 12 checks pass with the fix, 3 of 3 fail without it (same provider, different model)",
     footnote: "Rule",
   });
-  expect(card?.mode === "shell" && card.buttons[0].label).toBe("Roll back now");
+  expect(card?.mode === "shell" && card.buttons[0]).toMatchObject({
+    label: "Roll back now",
+    undoLabel: "Undo roll back",
+    pendingLabel: "Rolling back…",
+  });
 });
 
 test("veto: after-deploy proof", () => {
@@ -389,9 +397,11 @@ test("decision errors", () => {
 
 test("answers map back to decisions", () => {
   expect(decisionFromAnswer("Try again", ["retry", "close"])).toBe("retry");
+  expect(decisionFromAnswer(" try again ", ["retry", "close"])).toBe("retry");
+  // Text that only starts with a label is a note, not that option.
   expect(
     decisionFromAnswer("Close without action, thanks", ["retry", "close"]),
-  ).toBe("close");
+  ).toBeNull();
   expect(decisionFromAnswer("buy proxies", ["retry", "close"])).toBeNull();
 });
 

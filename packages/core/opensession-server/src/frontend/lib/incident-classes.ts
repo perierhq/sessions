@@ -87,6 +87,11 @@ export const AUDIT_SECTION_LABEL = "m-0 text-label font-medium text-faint";
 export const NEXT_EYEBROW =
   "flex min-w-0 items-center gap-1.5 text-meta font-medium text-dim";
 
+/** A button that stays focusable while it cannot be pressed
+ *  (`aria-disabled`), so focus is not dropped when it flips. */
+export const NEXT_BUTTON_INERT =
+  "aria-disabled:pointer-events-none aria-disabled:opacity-40";
+
 /** The next action's buttons: right on a desktop, left and wrapping under
  *  a finger. */
 export const NEXT_BUTTONS =

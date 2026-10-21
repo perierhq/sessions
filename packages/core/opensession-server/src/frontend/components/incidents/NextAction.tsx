@@ -10,6 +10,7 @@ import {
   useDeferredMergeDeadline,
   useDeferredMergePhase,
 } from "../../hooks/useDeferredMerge";
+import { isIncidentKey } from "../../hooks/useIncidents";
 import { useSecondsLeft } from "../../hooks/useSecondsLeft";
 import {
   decideIncidentApi,
@@ -33,10 +34,12 @@ import {
   nextCard,
   orderButtons,
   type ShellCard,
+  STOP_GRACE_MS,
 } from "../../lib/incidents/next-action";
 import { DOT_BG, incidentStateWord } from "../../lib/incidents/tone";
 import {
   NEXT_AUDIT_LINK,
+  NEXT_BUTTON_INERT,
   NEXT_BUTTONS,
   NEXT_EYEBROW,
 } from "../../lib/incident-classes";
@@ -63,30 +66,53 @@ const BUTTON_VARIANT: Record<
 > = { primary: "primary", soft: "soft", danger: "danger" };
 
 /** Stop · m:ss, counting down to the end of the veto. At the deadline it
- *  disables and says what is happening instead; it never shows 0:00 while
- *  still claiming to stop. */
-function StopButton({
+ *  drops the count and stays pressable for STOP_GRACE_MS, since this
+ *  device's clock may run ahead of the server's; then it reads what is
+ *  happening instead. It never shows 0:00 while still claiming to stop, and
+ *  it goes `aria-disabled` rather than `disabled`, so a focused Stop keeps
+ *  the focus when it flips. `onDeadline` fires once the deadline passes. */
+export function StopButton({
   button,
   busy,
   onPress,
+  onDeadline,
 }: {
   button: CardButton;
   busy: boolean;
   onPress: () => void;
+  onDeadline?: () => void;
 }) {
   const deadline = Date.parse(button.countdownTo ?? "");
   const passed = useDeadlinePassed(deadline);
+  const over = useDeadlinePassed(deadline + STOP_GRACE_MS);
   const seconds = useSecondsLeft(passed ? null : deadline);
-  if (passed || !Number.isFinite(deadline))
+  const reached = useEffectEvent(() => onDeadline?.());
+  useEffect(() => {
+    if (passed) reached();
+  }, [passed]);
+  if (over || !Number.isFinite(deadline))
+    return (
+      <Button
+        variant="danger"
+        size="lg"
+        className={cn("phone:min-h-11", NEXT_BUTTON_INERT)}
+        icon={<IconUndo />}
+        aria-disabled
+      >
+        {button.doneLabel ?? "Deploying"}
+      </Button>
+    );
+  if (passed)
     return (
       <Button
         variant="danger"
         size="lg"
         className="phone:min-h-11"
         icon={<IconUndo />}
-        disabled
+        disabled={busy}
+        onClick={onPress}
       >
-        {button.doneLabel ?? "Deploying"}
+        {button.label}
       </Button>
     );
   const left = formatCountdown(seconds ?? 1, "clock");
@@ -100,7 +126,10 @@ function StopButton({
       aria-label={`${button.label}, ${left} left`}
       onClick={onPress}
     >
-      {button.label} · <CountdownDigits deadline={deadline} format="clock" />
+      {/* One child: the button's gap must not open around the dot too. */}
+      <span>
+        {button.label} · <CountdownDigits deadline={deadline} format="clock" />
+      </span>
     </Button>
   );
 }
@@ -116,6 +145,7 @@ export function NextActionView({
   onButton,
   scheduled = null,
   onAudit,
+  onDeadline,
 }: {
   card: ShellCard;
   busy: string | null;
@@ -123,6 +153,8 @@ export function NextActionView({
   scheduled?: { deadline: number | null; onUndo: () => void } | null;
   /** Opens "What the agents did". */
   onAudit?: () => void;
+  /** The veto's deadline passed (Stop's countdown ended). */
+  onDeadline?: () => void;
 }) {
   const buttons = orderButtons(card.buttons);
   return (
@@ -138,7 +170,7 @@ export function NextActionView({
         )}
         <span className="min-w-0 truncate">{card.eyebrow}</span>
       </div>
-      <h2 className="m-0 text-item-title font-medium text-fg [overflow-wrap:anywhere]">
+      <h2 className="m-0 text-dialog-title font-medium text-fg [overflow-wrap:anywhere]">
         {card.headline}
       </h2>
       {card.body && (
@@ -166,6 +198,7 @@ export function NextActionView({
                   button={button}
                   busy={busy === button.key}
                   onPress={() => onButton(button)}
+                  onDeadline={onDeadline}
                 />
               );
             if (button.kind === "deploy-now" && scheduled)
@@ -174,7 +207,7 @@ export function NextActionView({
                   <MergeUndoControl
                     onUndo={scheduled.onUndo}
                     deadline={scheduled.deadline}
-                    label="Undo deploy"
+                    label={button.undoLabel ?? "Undo deploy"}
                   />
                   <Button
                     variant={BUTTON_VARIANT[button.weight]}
@@ -182,7 +215,7 @@ export function NextActionView({
                     className="phone:min-h-11"
                     disabled
                   >
-                    Deploying…
+                    {button.pendingLabel ?? "Deploying…"}
                   </Button>
                 </span>
               );
@@ -263,6 +296,8 @@ export function NextAction({
     try {
       const updated = await decideIncidentApi(incident.id, decision, note);
       await mutate(incidentKey, updated, { revalidate: false });
+      // The lists, the strip and the sidebar band show the decision too.
+      void mutate(isIncidentKey);
       ok = true;
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
@@ -390,8 +425,21 @@ export function NextAction({
     onIntentHandled();
   });
   useEffect(() => {
+    // Handled once per arrival: with the intent gone from the route, the
+    // same intent can come again (a second tap on the same notification).
     if (intent) handleIntent(intent);
+    else handledIntent.current = null;
   }, [intent]);
+
+  // A Deploy now still in its undo window goes when the card stops
+  // offering it (the veto ended, someone else decided).
+  const offersDeployNow =
+    card?.mode === "shell" &&
+    card.buttons.some((button) => button.kind === "deploy-now");
+  useEffect(() => {
+    if (!offersDeployNow && deferPhase === "scheduled")
+      cancelDeferredMergeByKey(deferKey);
+  }, [offersDeployNow, deferPhase, deferKey]);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -421,6 +469,7 @@ export function NextAction({
                 }
           }
           onAudit={incident.response ? () => setAuditOpen(true) : undefined}
+          onDeadline={() => void mutate(incidentKey)}
         />
       )}
       {card?.mode === "choice" && (
