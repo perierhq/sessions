@@ -1,9 +1,10 @@
-// Where an incident agent works. A sandbox is preferred whenever the project
-// has one. Without one, the agent works in an ordinary worktree on this
-// server and its shell commands run as a separate low-privilege system user
+// Where an incident agent works: the project's sandbox. The host path is
+// experimental and off by default: only with OPENSESSION_INCIDENT_HOST_AGENTS=1
+// may an agent without a sandbox work in an ordinary worktree on this
+// server, its shell commands run as a separate low-privilege system user
 // (the incident agent user) that can write the worktrees but cannot read the
-// Sessions state directory. That host path exists only when the user is set
-// up (docs/incident-host-agents.md); otherwise the agent does not start.
+// Sessions state directory, and only when that user is set up
+// (docs/incident-host-agents.md). Otherwise the agent does not start.
 //
 // The readiness probe runs only when called, never at import, and every
 // command it runs is awaited (no synchronous subprocess on the gateway).
@@ -19,6 +20,14 @@ import {
 } from "../../systemd-scopes";
 
 export const INCIDENT_AGENT_USER_DEFAULT = "opensession-incident";
+export const INCIDENT_HOST_AGENTS_ENV = "OPENSESSION_INCIDENT_HOST_AGENTS";
+const NO_SANDBOX = "Configure a sandbox for this project to let agents work";
+
+/** Whether the operator turned on the experimental host path
+ *  (`OPENSESSION_INCIDENT_HOST_AGENTS=1`). Off by default. */
+export function incidentHostAgentsEnabled(): boolean {
+  return process.env[INCIDENT_HOST_AGENTS_ENV]?.trim() === "1";
+}
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const CACHE_MS = 60_000;
 
@@ -213,8 +222,9 @@ export async function hostAgentUserProblem(
 
 /**
  * The workspace for an incident agent: the project's sandbox when it has
- * one, whatever the host offers; otherwise this server as the incident agent
- * user; otherwise an error the incident shows as a setup problem.
+ * one, whatever the host offers; otherwise, only with the experimental host
+ * path turned on, this server as the incident agent user; otherwise an error
+ * the incident shows as a setup problem.
  */
 export async function incidentWorkspaceFor(
   project: string,
@@ -222,6 +232,7 @@ export async function incidentWorkspaceFor(
   deps: {
     sandbox?: typeof resolveInteractiveSandbox;
     hostProblem?: () => Promise<string | null>;
+    hostEnabled?: () => boolean;
     automationUser?: string;
   } = {},
 ): Promise<AgentWorkspace | { error: string }> {
@@ -230,6 +241,8 @@ export async function incidentWorkspaceFor(
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.provider)
     return { kind: "sandbox", provider: resolved.provider };
+  if (!(deps.hostEnabled ?? incidentHostAgentsEnabled)())
+    return { error: NO_SANDBOX };
   const problem = await (deps.hostProblem ?? (() => hostAgentUserProblem()))();
   if (problem === null) return { kind: "host", user: incidentAgentUser() };
   return {
@@ -239,12 +252,14 @@ export async function incidentWorkspaceFor(
 
 /**
  * Throws `isolationMessage` unless `user` is the configured incident agent
- * user and the host is ready for it right now (the cached probe).
+ * user and the host is ready for it right now: the host path is turned on
+ * and the cached probe passes.
  */
 export async function assertHostAgentReady(
   user: string,
   isolationMessage: string,
-  hostProblem: () => Promise<string | null> = () => hostAgentUserProblem(),
+  hostProblem: () => Promise<string | null> = async () =>
+    incidentHostAgentsEnabled() ? hostAgentUserProblem() : NO_SANDBOX,
 ): Promise<void> {
   if (user !== incidentAgentUser() || (await hostProblem()) !== null)
     throw new Error(isolationMessage);

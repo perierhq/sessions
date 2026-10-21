@@ -5,6 +5,8 @@ import {
   hostAgentUserProblem,
   hostBashArgv,
   incidentAgentUser,
+  assertHostAgentReady,
+  incidentHostAgentsEnabled,
   incidentWorkspaceFor,
 } from "./host-agents";
 
@@ -59,17 +61,56 @@ test("a sandbox always wins", async () => {
   ).toEqual({ kind: "sandbox", provider: "daytona" });
 });
 
-test("without a sandbox: the host user, or a clear setup error", async () => {
+test("without a sandbox the host path is off unless the operator turns it on", async () => {
+  const savedFlag = process.env.OPENSESSION_INCIDENT_HOST_AGENTS;
+  try {
+    delete process.env.OPENSESSION_INCIDENT_HOST_AGENTS;
+    expect(incidentHostAgentsEnabled()).toBe(false);
+    let probed = false;
+    expect(
+      await incidentWorkspaceFor("acme", "m", {
+        sandbox: () => ({ ok: true, provider: null }),
+        hostProblem: async () => {
+          probed = true;
+          return null;
+        },
+      }),
+    ).toEqual({
+      error: "Configure a sandbox for this project to let agents work",
+    });
+    expect(probed).toBe(false);
+    // A host agent is refused at its turns too.
+    await expect(
+      assertHostAgentReady("opensession-incident", "Isolation"),
+    ).rejects.toThrow("Isolation");
+    process.env.OPENSESSION_INCIDENT_HOST_AGENTS = "1";
+    expect(incidentHostAgentsEnabled()).toBe(true);
+    expect(
+      await incidentWorkspaceFor("acme", "m", {
+        sandbox: () => ({ ok: true, provider: null }),
+        hostProblem: async () => null,
+      }),
+    ).toEqual({ kind: "host", user: "opensession-incident" });
+  } finally {
+    if (savedFlag === undefined)
+      delete process.env.OPENSESSION_INCIDENT_HOST_AGENTS;
+    else process.env.OPENSESSION_INCIDENT_HOST_AGENTS = savedFlag;
+  }
+});
+
+test("without a sandbox, host agents on: the host user, or a clear setup error", async () => {
   expect(
     await incidentWorkspaceFor("acme", "m", {
       sandbox: () => ({ ok: true, provider: null }),
       hostProblem: async () => null,
+      hostEnabled: () => true,
     }),
   ).toEqual({ kind: "host", user: "opensession-incident" });
   expect(
     await incidentWorkspaceFor("acme", "m", {
       sandbox: () => ({ ok: true, provider: null }),
       hostProblem: async () => "create the system user opensession-incident",
+      hostEnabled: () => true,
     }),
   ).toEqual({
     error:

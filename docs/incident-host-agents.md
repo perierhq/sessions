@@ -1,17 +1,24 @@
 # Incident agents on the host
 
+> **Experimental, off by default, not recommended.** Configure a sandbox for
+> each project whose incidents agents should work on. The host path below
+> runs only when the service environment sets
+> `OPENSESSION_INCIDENT_HOST_AGENTS=1`. Without it, an incident whose project
+> has no sandbox goes to Needs you with "Configure a sandbox for this project
+> to let agents work", and its agents never start on the host.
+
 An incident's investigator and verifier work in the project's sandbox when it
-has one (Daytona, Boat, and later a Mac VM on a paired Mac). Without a
-sandbox they can still run, in an ordinary session worktree on the Sessions
-server, with their shell commands run as a separate low-privilege system
-user: the incident agent user. The incident page then says "Runs on this
-server, not in a sandbox".
+has one (Daytona, Boat, and later a Mac VM on a paired Mac). With the host
+path turned on and no sandbox, they can run in an ordinary session worktree
+on the Sessions server, with their shell commands run as a separate
+low-privilege system user: the incident agent user. The incident page then
+says "Runs on this server, not in a sandbox".
 
 This path exists only for incident agents, never for other automation
-descendants, and only when the incident agent user is set up as below.
-Without a sandbox and without a working incident agent user, an incident's
-agents do not start: the incident goes to Needs you with the step that is
-missing, and Retry tries again.
+descendants, and only when it is turned on and the incident agent user is
+set up as below. Without a sandbox and without a working incident agent user,
+an incident's agents do not start: the incident goes to Needs you with the
+step that is missing, and Retry tries again.
 
 ## Setup (Linux)
 
@@ -76,7 +83,8 @@ default). `<gateway user>` is the user the Sessions service runs as.
    Without `!pam_session`, sudo's PAM session on some distributions moves the
    command into a login session of its own, where Sessions cannot stop it.
 
-5. Restart Sessions. Nothing changes in Settings. The next incident without
+5. Set `OPENSESSION_INCIDENT_HOST_AGENTS=1` in the service environment and
+   restart Sessions. Nothing changes in Settings. The next incident without
    a sandbox runs its agents as this user.
 
 Sessions checks all of this before it starts an agent on the host, at most
