@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StripResponse } from "../../../shared/incidents";
-import { STRIP_LANE, STRIP_LANES_SCROLL } from "../../lib/incident-classes";
+import {
+  STRIP_LANE,
+  STRIP_LANES_SCROLL,
+  STRIP_MARKER_LABEL,
+  STRIP_MARKER_ROW,
+} from "../../lib/incident-classes";
 import { layoutStrip, liveLineText } from "../../lib/incidents/strip-layout";
 import { clockTime } from "../../lib/time";
 
@@ -193,4 +198,41 @@ test("live line copy", () => {
   expect(liveLineText({ kind: "webhook", strip: webhook, now })).toBe(
     "Live · 40 in the last hour",
   );
+});
+
+test("no future markers: no empty row under the lanes", () => {
+  const view = (future?: Array<{ at: string; label: string }>) =>
+    renderToStaticMarkup(
+      <SignalStripView
+        layout={layoutStrip({
+          strip: fixtureStrip(),
+          meta: () => ({ kind: "passfail", label: "Search", format: String }),
+          width: 720,
+          live: true,
+          future,
+        })}
+        title="Search"
+        live={null}
+        onOpen={noop}
+        activeIndex={null}
+        onActiveIndexChange={noop}
+      />,
+    );
+  const rows = (html: string) =>
+    html.split(`class="${STRIP_MARKER_ROW}"`).length - 1;
+  expect(rows(view())).toBe(2);
+  // Marker lines then end at the lanes' bottom edge.
+  expect(view()).toContain("bottom:0");
+  expect(
+    rows(
+      view([
+        { at: new Date(Date.now() + 300_000).toISOString(), label: "Deploys" },
+      ]),
+    ),
+  ).toBe(3);
+});
+
+test("marker labels sit on the page fill above the marker lines", () => {
+  expect(STRIP_MARKER_LABEL).toContain("bg-bg");
+  expect(STRIP_MARKER_LABEL).toContain("z-10");
 });

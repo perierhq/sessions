@@ -39,7 +39,8 @@ import { ResponsiveDialog } from "../../ui/sheet";
 import { IconChevronLeft, IconChevronRight, IconX } from "../icons";
 import { ObservationDetail } from "./ObservationDetail";
 
-/** Marker label rows: two above the lanes, one below for the future. */
+/** Marker label rows: two above the lanes, one below for future markers
+ *  when there are any. */
 const MARKER_ROW_PX = 18;
 const LANE_LABEL_PX = 16;
 const AXIS_PX = 16;
@@ -132,7 +133,8 @@ export function SignalStripView({
   const past = layout.markers.filter((m) => !m.future);
   const ahead = layout.markers.filter((m) => m.future);
   const axis = lanes.find((l) => l.axis)?.axis;
-  const belowPx = MARKER_ROW_PX + (axis ? AXIS_PX : 0);
+  // The row under the lanes is there only for future markers.
+  const belowPx = (ahead.length ? MARKER_ROW_PX : 0) + (axis ? AXIS_PX : 0);
   const tipText =
     activeIndex !== null && lanes[tipLane]
       ? tooltipLines(lanes[tipLane], activeIndex).join(", ")
@@ -287,7 +289,7 @@ export function SignalStripView({
             );
           })}
         </div>
-        <MarkerLabels markers={ahead} />
+        {ahead.length > 0 && <MarkerLabels markers={ahead} />}
         {axis && (
           <div className={STRIP_AXIS}>
             <span>{axis.min}</span>

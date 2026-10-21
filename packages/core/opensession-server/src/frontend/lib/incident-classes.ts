@@ -27,9 +27,11 @@ export const STRIP_LANE_LABEL =
 /** One row of marker labels; fixed height, so packing never moves a lane. */
 export const STRIP_MARKER_ROW = "relative h-[18px]";
 
-/** A marker label inside its row. */
+/** A marker label inside its row. It sits on the page's own fill, above
+ *  the marker lines, so an upper-row line passes behind a lower-row label
+ *  instead of through its text. */
 export const STRIP_MARKER_LABEL =
-  "absolute top-0 whitespace-nowrap text-meta leading-[18px] text-dim tabular-nums";
+  "absolute top-0 z-10 whitespace-nowrap bg-bg text-meta leading-[18px] text-dim tabular-nums";
 
 /** A marker line through every lane. */
 export const STRIP_MARKER_LINE =
