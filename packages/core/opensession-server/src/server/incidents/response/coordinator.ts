@@ -189,6 +189,11 @@ const agentHandles = new Map<
 >();
 /** Agent session id → incident id, for session state wake-ups. */
 const sessionIndex = new Map<string, string>();
+/** When a Stop arrived, by incident, until it is applied. Set before the
+ *  decision is queued, so an advance already running sees it. */
+const stopRequests = new Map<string, number>();
+/** Incidents whose advance a pending Stop held back. */
+const heldByStop = new Set<string>();
 
 export function __resetCoordinatorForTest(): void {
   chains.clear();
@@ -196,6 +201,8 @@ export function __resetCoordinatorForTest(): void {
   liveActions.clear();
   agentHandles.clear();
   sessionIndex.clear();
+  stopRequests.clear();
+  heldByStop.clear();
 }
 
 /** Resolves once no advance is queued or running. */
@@ -619,6 +626,7 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     const view = await buildResponseView(incident, d, settings);
     const step = decideNextStep(view);
     if (step.step === "none") return;
+    if (shipsOrLeavesVeto(view, step) && heldBeforeEffect(view)) return;
     let more: boolean;
     try {
       more = await applyStep(view, step, d);
@@ -631,6 +639,33 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     }
     if (!more) return;
   }
+}
+
+/** Steps that merge, run an action on production or end a veto window. */
+function shipsOrLeavesVeto(view: ResponseView, step: ResponseStep): boolean {
+  return (
+    step.step === "merge" ||
+    step.step === "run-action" ||
+    (view.incident.state === "veto" && step.step === "transition")
+  );
+}
+
+/**
+ * Whether something that must win over the next effect has arrived: a Stop
+ * the owner sent while this advance was running (before the veto deadline,
+ * when there is one). The advance ends; the Stop is next in the chain.
+ */
+function heldBeforeEffect(view: ResponseView): boolean {
+  const stopAt = stopRequests.get(view.incident.id);
+  if (stopAt === undefined) return false;
+  if (!decisionAllowed("stop", view.incident, view.settings)) return false;
+  const deadline =
+    view.incident.state === "veto"
+      ? view.incident.response?.veto?.deadline
+      : undefined;
+  const held = deadline === undefined || stopAt < Date.parse(deadline);
+  if (held) heldByStop.add(view.incident.id);
+  return held;
 }
 
 /** Applies one step; false ends this advance. */
@@ -1491,6 +1526,7 @@ async function mergeCandidate(
     );
     return next !== null;
   }
+  if (heldBeforeEffect(view)) return false;
   const record = await mergeIncidentPr(
     {
       incidentId: incident.id,
@@ -1562,6 +1598,7 @@ async function runAction(
       },
       d,
     );
+  if (heldBeforeEffect(view)) return false;
   const runId = newActionRunId();
   const ref = action.kind === "deploy" ? r.merge?.mergedSha : undefined;
   const previousRef =
@@ -2300,15 +2337,23 @@ export async function applyOwnerDecision(
   if (!isOwnerDecision(decision))
     return { error: "Unknown decision", status: 400 };
   const d = resolveCoordinatorDeps(deps);
+  // Recorded now, before queueing: an advance already running checks it
+  // before it merges, runs an action or ends the veto window.
+  const stopping = decision === "stop" && !stopRequests.has(incidentId);
+  if (stopping) stopRequests.set(incidentId, d.now());
   let out: Incident | DecisionError;
   try {
     out = await runInIncidentChain(incidentId, () =>
       ownerDecision(incidentId, decision, by, note, d),
     );
   } catch (error) {
-    return { error: errorMessage(error), status: 409 };
+    out = { error: errorMessage(error), status: 409 };
+  } finally {
+    if (stopping) stopRequests.delete(incidentId);
   }
-  if (!("error" in out)) scheduleAdvance(incidentId, deps);
+  // A refused Stop may have held an advance back: wake it again.
+  const held = stopping && heldByStop.delete(incidentId);
+  if (!("error" in out) || held) scheduleAdvance(incidentId, deps);
   return out;
 }
 

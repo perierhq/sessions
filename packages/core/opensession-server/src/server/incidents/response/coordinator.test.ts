@@ -1136,6 +1136,78 @@ test("stop and deploy now during the veto", async () => {
   );
 });
 
+/** An advance that is already running, held right after it started. */
+function holdNextAdvance(w: Awaited<ReturnType<typeof world>>) {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let entered!: () => void;
+  const started = new Promise<void>((r) => (entered = r));
+  const settings = w.deps.settings!;
+  let held = false;
+  const deps: Partial<CoordinatorDeps> = {
+    ...w.deps,
+    settings: async (p) => {
+      if (!held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return settings(p);
+    },
+  };
+  return { deps, started, release };
+}
+
+test("stop sent before the veto deadline wins against an advance already running", async () => {
+  const w = await world();
+  await w.toCertain();
+  const deadline = START + 600_000;
+  w.clock = deadline - 1_000;
+  const hold = holdNextAdvance(w);
+  const running = advanceIncident(w.incident.id, hold.deps);
+  await hold.started;
+  // Stop arrives before the deadline, while the advance is mid-flight.
+  const stop = applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  // The advance only reads the clock after the deadline has passed.
+  w.clock = deadline + 1_000;
+  hold.release();
+  await running;
+  expect(await stop).toMatchObject({
+    state: "needs-you",
+    response: { needsYou: { kind: "stopped" } },
+  });
+  await __waitForCoordinatorForTest();
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("stop sent after the veto deadline does not undo a release under way", async () => {
+  const w = await world();
+  await w.toCertain();
+  const deadline = START + 600_000;
+  w.clock = deadline + 1_000;
+  const hold = holdNextAdvance(w);
+  const running = advanceIncident(w.incident.id, hold.deps);
+  await hold.started;
+  const stop = applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  hold.release();
+  await running;
+  expect(await stop).toEqual({ error: "Nothing to stop", status: 409 });
+  expect(w.merges).toHaveLength(1);
+});
+
 test("deploy now skips the rest of the veto", async () => {
   const w = await world();
   await w.toCertain();
