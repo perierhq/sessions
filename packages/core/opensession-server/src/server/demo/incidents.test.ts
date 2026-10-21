@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { listIncidents } from "../incidents/incident-store";
-import { __resetObservationsForTest } from "../incidents/observation-store";
+import {
+  __resetObservationsForTest,
+  flushObservations,
+  recentObservations,
+} from "../incidents/observation-store";
 import {
   __resetSignalRuntimeForTest,
   getSignalEvaluation,
@@ -16,6 +20,7 @@ import {
   rearmDemoVeto,
   runDemoSignalSource,
   seedDemoIncidents,
+  tickDemoSignals,
 } from "./incidents";
 
 useIncidentTestKernel();
@@ -106,4 +111,24 @@ test("demo checks answer from the script and never leave the machine", async () 
   expect(await run("Search")).toBe("fail");
   expect(await run("Sign-in")).toBe("ok");
   expect(await run("acme.example.test certificate")).toBe("ok");
+});
+
+test("after a restart the demo fills the gap and its states come back", async () => {
+  await seedDemoIncidents(NOW);
+  await flushObservations();
+  // A restart: evaluations and in-memory rings are gone, the files stay.
+  __resetSignalRuntimeForTest();
+  __resetObservationsForTest();
+  const later = NOW + 30 * 60_000;
+  await tickDemoSignals(later);
+  const signals = await listSignals();
+  const byName = (name: string) => signals.find((s) => s.name === name)!;
+  expect(getSignalEvaluation(byName("Search").id)?.state).toBe("failing");
+  expect(getSignalEvaluation(byName("Sign-in").id)?.state).toBe("ok");
+  expect(getSignalEvaluation(byName("Bounce webhook").id)?.state).toBe("flaky");
+  const last = recentObservations(byName("Sign-in").id).at(-1)!;
+  expect(later - Date.parse(last.at)).toBeLessThan(60_000);
+  // No duplicates across the seam.
+  const ats = recentObservations(byName("Sign-in").id).map((o) => o.at);
+  expect(new Set(ats).size).toBe(ats.length);
 });

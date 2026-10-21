@@ -4,10 +4,12 @@
  * project with signals, a few hours of observations and incidents in the
  * states the incident views draw: a fix deploying after a veto, one that
  * needs the owner, a flaky heads-up and resolved ones. The demo's signal
- * checks never leave the machine: {@link runDemoSignalSource} answers the
- * scheduler with the same scripted results the history was made from, so
- * the states hold while the demo runs. Idempotent: a second boot keeps what
- * is there and only moves the veto's deadline forward again.
+ * checks never leave the machine: they answer with the same scripted results
+ * the history was made from, so the states hold while the demo runs. A dev
+ * instance runs no signal scheduler, so {@link tickDemoSignals} records
+ * them; where the scheduler does run, {@link runDemoSignalSource} is its
+ * source. Idempotent: a second boot keeps what is there, fills the time it
+ * was down and moves the veto's deadline forward again.
  */
 import type {
   AgentRun,
@@ -30,6 +32,11 @@ import {
   listIncidents,
   updateIncident,
 } from "../incidents/incident-store";
+import {
+  hydrateObservations,
+  hydrationLookbackMs,
+  recentObservations,
+} from "../incidents/observation-store";
 import { ingestObservations } from "../incidents/signal-runtime";
 import { createSignal, listSignals } from "../incidents/signal-store";
 import { runSignalSource, type SourceRun } from "../incidents/sources";
@@ -713,6 +720,45 @@ async function seedIncidents(
     "heads-up",
     "Failing on and off",
   );
+}
+
+const pollIntervalMs = (spec: DemoSignal) =>
+  spec.intervalMs ?? (spec.source.kind === "expiry" ? 6 * HOUR_MS : 0);
+
+/**
+ * Record each polled demo check that is due, from its last observation (or
+ * the start of the history) to `now`, then re-evaluate every demo signal so
+ * time-based rules move on. Does nothing while the signal scheduler runs:
+ * it polls the same checks through {@link runDemoSignalSource}.
+ */
+export async function tickDemoSignals(now: number = Date.now()): Promise<void> {
+  if (globalThis.__incidentSignals) return;
+  const signals = (await listSignals()).filter(
+    (s) => s.createdBy === DEMO_INCIDENT_AUTHOR && s.enabled,
+  );
+  for (const signal of signals) {
+    const key = keyOf(signal);
+    const spec = DEMO_SIGNALS.find((s) => s.key === key);
+    if (!key || !spec) continue;
+    const interval = pollIntervalMs(spec);
+    const due: Observation[] = [];
+    if (interval > 0) {
+      await hydrateObservations(
+        signal.id,
+        now,
+        hydrationLookbackMs(signal, now),
+      );
+      const last = recentObservations(signal.id).at(-1);
+      const start = last
+        ? Date.parse(last.at) + interval
+        : Math.ceil((now - HISTORY_MS) / interval) * interval;
+      for (let at = start; at <= now; at += interval) {
+        const observation = scripted(key, at, 0);
+        if (observation) due.push(observation);
+      }
+    }
+    await ingestObservations(signal.id, due, now);
+  }
 }
 
 /**
