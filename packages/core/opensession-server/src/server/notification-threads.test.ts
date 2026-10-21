@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  alertPrefs,
   applyNotificationEvent,
+  bannerText,
   cleanDocument,
+  INCIDENT_NOTIFICATION_KINDS,
+  kindAlertGroup,
   EVENT_DEDUPE_MS,
   markNotificationThreads,
   MAX_THREADS,
@@ -179,5 +183,171 @@ describe("notification threads", () => {
     expect(
       cleanDocument({ threads: [{ id: "x", subject: { type: "nope" } }, 3] }),
     ).toEqual({ threads: [] });
+  });
+});
+
+const IT0 = 1_760_950_000_000;
+const MIN = 60_000;
+const incidentEvent = (
+  over: Partial<NotificationEvent> = {},
+): NotificationEvent => ({
+  kind: "incident_veto",
+  subject: { type: "incident", id: "inc-1", title: "Search", context: "acme" },
+  reason: "Search is down",
+  body: "The fix is verified and deploys at 12:37 unless you stop it",
+  url: "/incidents/inc-1",
+  eventKey: "evt-1",
+  at: IT0,
+  ...over,
+});
+const apply = (
+  doc: NotificationDocument,
+  over: Partial<NotificationEvent> = {},
+) => applyNotificationEvent(doc, incidentEvent(over));
+
+describe("incident notifications", () => {
+  test("every incident kind alerts under the incidents group, on by default", () => {
+    for (const kind of INCIDENT_NOTIFICATION_KINDS)
+      expect(kindAlertGroup(kind)).toBe("incidents");
+    expect(alertPrefs(null).incidents).toBe(true);
+  });
+
+  test("alert is the default and is remembered", () => {
+    const r = apply({ threads: [] });
+    expect(r.delivery).toBe("alert");
+    expect(r.thread).toMatchObject({
+      id: "incident:inc-1",
+      unread: true,
+      alerted: [{ key: "incident_veto", at: IT0 }],
+    });
+  });
+
+  test("quiet updates the row in place and keeps it read", () => {
+    const first = apply({ threads: [] }).doc;
+    const read = markNotificationThreads(first, {
+      ids: ["incident:inc-1"],
+      unread: false,
+    }).doc;
+    const r = apply(read, {
+      kind: "incident_update",
+      delivery: "quiet",
+      eventKey: "evt-2",
+      reason: "Search is down",
+      body: "Deploying the fix now",
+      at: IT0 + MIN,
+    });
+    expect(r.delivery).toBe("quiet");
+    expect(r.thread).toMatchObject({
+      unread: false,
+      body: "Deploying the fix now",
+      kind: "incident_update",
+      updatedAt: IT0 + MIN,
+    });
+    expect(r.doc.threads).toHaveLength(1);
+    expect(apply({ threads: [] }, { delivery: "quiet" }).thread?.unread).toBe(
+      true,
+    );
+  });
+
+  test("replace needs an alert in the last 12 hours", () => {
+    const alerted = apply({ threads: [] }).doc;
+    expect(
+      apply(alerted, {
+        delivery: "replace",
+        eventKey: "evt-2",
+        at: IT0 + 60 * MIN,
+      }).delivery,
+    ).toBe("replace");
+    expect(
+      apply(alerted, {
+        delivery: "replace",
+        eventKey: "evt-2",
+        at: IT0 + 13 * 60 * MIN,
+      }).delivery,
+    ).toBe("quiet");
+    expect(apply({ threads: [] }, { delivery: "replace" }).delivery).toBe(
+      "quiet",
+    );
+  });
+
+  test("a repeat alert inside the cooldown becomes a replace", () => {
+    const cooldown = { key: "incident_opened", ms: 15 * MIN };
+    const first = apply(
+      { threads: [] },
+      { kind: "incident_opened", cooldown },
+    ).doc;
+    expect(
+      apply(first, {
+        kind: "incident_opened",
+        cooldown,
+        eventKey: "evt-2",
+        at: IT0 + 5 * MIN,
+      }).delivery,
+    ).toBe("replace");
+    expect(
+      apply(first, {
+        kind: "incident_opened",
+        cooldown,
+        eventKey: "evt-2",
+        at: IT0 + 16 * MIN,
+      }).delivery,
+    ).toBe("alert");
+  });
+
+  test("hold keeps it quiet until one flush alerts", () => {
+    const held = apply({ threads: [] }, { hold: true });
+    expect(held.delivery).toBe("quiet");
+    expect(held.thread?.heldAt).toBe(IT0);
+    const flushed = apply(held.doc, {
+      flushHeld: true,
+      eventKey: "flush-1",
+      at: IT0 + 8 * 60 * MIN,
+    });
+    expect(flushed.delivery).toBe("alert");
+    expect(flushed.thread?.heldAt).toBeUndefined();
+    expect(
+      apply(flushed.doc, { flushHeld: true, eventKey: "flush-2" }).thread,
+    ).toBeNull();
+    expect(apply({ threads: [] }, { flushHeld: true }).thread).toBeNull();
+  });
+
+  test("reading a held row cancels its flush", () => {
+    const held = apply({ threads: [] }, { hold: true }).doc;
+    const read = markNotificationThreads(held, {
+      ids: ["incident:inc-1"],
+      unread: false,
+    }).doc;
+    expect(read.threads[0].heldAt).toBeUndefined();
+    expect(
+      apply(read, { flushHeld: true, eventKey: "flush-1" }).thread,
+    ).toBeNull();
+  });
+
+  test("incident rows survive a clean; the wire shape hides delivery state", () => {
+    const stored = apply({ threads: [] }, { hold: true }).doc;
+    const cleaned = cleanDocument(JSON.parse(JSON.stringify(stored)));
+    expect(cleaned.threads[0]).toMatchObject({
+      subject: { type: "incident", id: "inc-1" },
+      heldAt: IT0,
+    });
+    const wire = wireThread(cleaned.threads[0]);
+    expect(wire).not.toHaveProperty("heldAt");
+    expect(wire).not.toHaveProperty("alerted");
+    expect(wire).not.toHaveProperty("events");
+  });
+
+  test("banner text leads incidents with the project", () => {
+    const thread = apply({ threads: [] }).thread!;
+    expect(bannerText(thread)).toEqual({
+      title: "Search is down",
+      body: "acme · The fix is verified and deploys at 12:37 unless you stop it",
+    });
+    expect(
+      bannerText({
+        subject: { type: "session", id: "s1", title: "Fix login" },
+        reason: "Ada mentioned you",
+        body: "look",
+      }),
+    ).toEqual({ title: "Ada mentioned you", body: "Fix login: look" });
   });
 });

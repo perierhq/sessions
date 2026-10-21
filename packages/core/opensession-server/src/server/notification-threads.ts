@@ -14,10 +14,25 @@
  * alert twice.
  */
 
+/** Incidents you own, from the moment they open to the moment they close. */
+export const INCIDENT_NOTIFICATION_KINDS = [
+  "incident_heads_up",
+  "incident_opened",
+  "incident_needs_you",
+  "incident_veto",
+  "incident_rolled_back",
+  "incident_resolved",
+  "incident_update",
+] as const;
+export type IncidentNotificationKind =
+  (typeof INCIDENT_NOTIFICATION_KINDS)[number];
+
 /**
  * People notify people: review requests and results, mentions, workspace
  * invites, and your own Desk reminders. Agent activity (questions, failed or
- * finished runs) does not; the sidebar already shows it.
+ * finished runs) does not; the sidebar already shows it. Incidents you own
+ * are the one kind the system raises for a person, because the decision can
+ * be yours.
  */
 export const NOTIFICATION_KINDS = [
   "review_requested",
@@ -27,6 +42,7 @@ export const NOTIFICATION_KINDS = [
   "collaborator",
   "reminder",
   "comment",
+  ...INCIDENT_NOTIFICATION_KINDS,
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -37,6 +53,7 @@ export const ALERT_GROUPS = {
   mentions: ["mention", "comment"],
   collaborators: ["collaborator"],
   reminders: ["reminder"],
+  incidents: INCIDENT_NOTIFICATION_KINDS,
 } as const satisfies Record<string, readonly NotificationKind[]>;
 export type AlertGroup = keyof typeof ALERT_GROUPS;
 export type AlertPrefs = Record<AlertGroup, boolean>;
@@ -47,13 +64,23 @@ export const DEFAULT_ALERT_PREFS: AlertPrefs = {
   mentions: true,
   collaborators: true,
   reminders: true,
+  incidents: true,
 };
 
 export type NotificationSubjectType =
   | "session"
   | "pr"
   | "workspace"
-  | "reminder";
+  | "reminder"
+  | "incident";
+
+const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
+  "session",
+  "pr",
+  "workspace",
+  "reminder",
+  "incident",
+]);
 
 export interface NotificationSubject {
   type: NotificationSubjectType;
@@ -82,14 +109,45 @@ export interface NotificationThread {
   done: boolean;
 }
 
-/** Stored form: the wire thread plus the recent event keys used to dedupe. */
+/**
+ * Stored form: the wire thread plus the recent event keys used to dedupe,
+ * and the delivery state behind quiet hours and cooldowns.
+ */
 export interface StoredThread extends NotificationThread {
   events: Array<{ key: string; at: number }>;
+  /** An alert held back (at night); one flush later alerts it. */
+  heldAt?: number;
+  /** Recent alerts, newest last: the cooldown and replace windows. */
+  alerted?: Array<{ key: string; at: number }>;
 }
 
 export interface NotificationDocument {
   threads: StoredThread[];
   alerts?: Partial<AlertPrefs>;
+}
+
+/**
+ * How an event reaches the person. `alert` marks the row unread and pushes;
+ * `quiet` updates the row in place without a push; `replace` updates the
+ * row and silently replaces a banner that is still on a screen.
+ */
+export type NotificationDelivery = "alert" | "quiet" | "replace";
+
+export type PushUrgency = "very-low" | "low" | "normal" | "high";
+
+/** A button on the OS notification. `url` is an in-app path to open. */
+export interface PushAction {
+  action: string;
+  title: string;
+  url: string;
+}
+
+/** Delivery hints for the push. Never stored with the row. */
+export interface NotificationPush {
+  actions?: PushAction[];
+  requireInteraction?: boolean;
+  ttlSeconds?: number;
+  urgency?: PushUrgency;
 }
 
 export interface NotificationEvent {
@@ -102,6 +160,15 @@ export interface NotificationEvent {
   /** Names the real occurrence. A repeat within the window is ignored. */
   eventKey?: string;
   at?: number;
+  /** Default `alert`. */
+  delivery?: NotificationDelivery;
+  /** Record quietly and hold the alert for a later `flushHeld`. */
+  hold?: boolean;
+  /** Alert a held row once; a row that is not held is left alone. */
+  flushHeld?: boolean;
+  /** A repeat alert under the same key within `ms` becomes a replace. */
+  cooldown?: { key: string; ms: number };
+  push?: NotificationPush;
 }
 
 export const MAX_THREADS = 200;
@@ -109,6 +176,9 @@ export const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** How long an event key keeps suppressing a replay. */
 export const EVENT_DEDUPE_MS = 48 * 60 * 60 * 1000;
 const MAX_EVENTS_PER_THREAD = 20;
+/** A replace only makes sense while an alert can still be on a screen. */
+export const REPLACE_WINDOW_MS = 12 * 60 * 60 * 1000;
+export const MAX_ALERT_HISTORY = 10;
 const REASON_LEN = 120;
 const BODY_LEN = 280;
 const TITLE_LEN = 160;
@@ -147,30 +217,18 @@ function cleanThread(value: unknown): StoredThread | null {
   if (!isRecord(value) || !isRecord(value.subject)) return null;
   const subject = value.subject;
   const type = subject.type;
-  if (
-    type !== "session" &&
-    type !== "pr" &&
-    type !== "workspace" &&
-    type !== "reminder"
-  )
-    return null;
+  if (typeof type !== "string" || !SUBJECT_TYPES.has(type)) return null;
   if (typeof subject.id !== "string" || !subject.id) return null;
   const kind = value.kind;
   if (!NOTIFICATION_KINDS.some((known) => known === kind)) return null;
   if (typeof value.url !== "string" || typeof value.updatedAt !== "number")
     return null;
-  const events = Array.isArray(value.events)
-    ? value.events.filter(
-        (event): event is { key: string; at: number } =>
-          isRecord(event) &&
-          typeof event.key === "string" &&
-          typeof event.at === "number",
-      )
-    : [];
+  const events = keyedTimes(value.events);
+  const alerted = keyedTimes(value.alerted);
   return {
-    id: threadId({ type, id: subject.id }),
+    id: threadId({ type: type as NotificationSubjectType, id: subject.id }),
     subject: {
-      type,
+      type: type as NotificationSubjectType,
       id: subject.id,
       title: text(subject.title, TITLE_LEN),
       ...(typeof subject.context === "string" && subject.context
@@ -188,7 +246,20 @@ function cleanThread(value: unknown): StoredThread | null {
     unread: value.unread === true,
     done: value.done === true,
     events,
+    ...(typeof value.heldAt === "number" ? { heldAt: value.heldAt } : {}),
+    ...(alerted.length ? { alerted } : {}),
   };
+}
+
+function keyedTimes(value: unknown): Array<{ key: string; at: number }> {
+  return Array.isArray(value)
+    ? value.filter(
+        (entry): entry is { key: string; at: number } =>
+          isRecord(entry) &&
+          typeof entry.key === "string" &&
+          typeof entry.at === "number",
+      )
+    : [];
 }
 
 export function cleanDocument(value: unknown): NotificationDocument {
@@ -214,14 +285,48 @@ function prune(threads: StoredThread[], now: number): StoredThread[] {
     .slice(0, MAX_THREADS);
 }
 
+/** The delivery an event gets on `existing`, after hold, flush, cooldown
+ *  and the replace window. */
+function resolveDelivery(
+  event: NotificationEvent,
+  existing: StoredThread | undefined,
+  now: number,
+): NotificationDelivery {
+  let delivery: NotificationDelivery = event.delivery ?? "alert";
+  if (event.hold) delivery = "quiet";
+  if (event.flushHeld) delivery = "alert";
+  const alerted = existing?.alerted ?? [];
+  const cooldown = event.cooldown;
+  if (
+    delivery === "alert" &&
+    !event.flushHeld &&
+    cooldown &&
+    alerted.some(
+      (seen) => seen.key === cooldown.key && now - seen.at < cooldown.ms,
+    )
+  )
+    delivery = "replace";
+  if (
+    delivery === "replace" &&
+    !alerted.some((seen) => now - seen.at < REPLACE_WINDOW_MS)
+  )
+    delivery = "quiet";
+  return delivery;
+}
+
 /**
- * Apply one event. Returns the next document and the thread it touched, or
- * `thread: null` when the event was a replay and nothing changed.
+ * Apply one event. Returns the next document, the thread it touched and how
+ * it is delivered, or `thread: null` when nothing changed: a replay, or a
+ * flush of a row that is not held.
  */
 export function applyNotificationEvent(
   doc: NotificationDocument,
   event: NotificationEvent,
-): { doc: NotificationDocument; thread: StoredThread | null } {
+): {
+  doc: NotificationDocument;
+  thread: StoredThread | null;
+  delivery: NotificationDelivery;
+} {
   const now = event.at ?? Date.now();
   const id = threadId(event.subject);
   const existing = doc.threads.find((thread) => thread.id === id);
@@ -229,7 +334,22 @@ export function applyNotificationEvent(
     (seen) => now - seen.at < EVENT_DEDUPE_MS,
   );
   if (event.eventKey && events.some((seen) => seen.key === event.eventKey))
-    return { doc, thread: null };
+    return { doc, thread: null, delivery: "quiet" };
+  if (event.flushHeld && existing?.heldAt === undefined)
+    return { doc, thread: null, delivery: "quiet" };
+  const delivery = resolveDelivery(event, existing, now);
+  const alert = delivery === "alert";
+  const heldAt = event.hold
+    ? (existing?.heldAt ?? now)
+    : alert
+      ? undefined
+      : existing?.heldAt;
+  const alerted = alert
+    ? [
+        ...(existing?.alerted ?? []),
+        { key: event.cooldown?.key ?? event.kind, at: now },
+      ].slice(-MAX_ALERT_HISTORY)
+    : (existing?.alerted ?? []);
   const thread: StoredThread = {
     id,
     subject: {
@@ -252,13 +372,16 @@ export function applyNotificationEvent(
     ...(event.actor ? { actor: text(event.actor, 64) } : {}),
     url: event.url,
     updatedAt: now,
-    unread: true,
-    done: false,
+    // Quiet news on a row you already read or finished leaves it that way.
+    unread: alert || !existing ? true : existing.unread,
+    done: alert || !existing ? false : existing.done,
     events: event.eventKey
       ? [...events, { key: event.eventKey, at: now }].slice(
           -MAX_EVENTS_PER_THREAD,
         )
       : events,
+    ...(heldAt !== undefined ? { heldAt } : {}),
+    ...(alerted.length ? { alerted } : {}),
   };
   return {
     doc: {
@@ -269,6 +392,7 @@ export function applyNotificationEvent(
       ),
     },
     thread,
+    delivery,
   };
 }
 
@@ -289,23 +413,52 @@ export function markNotificationThreads(
   let changed = 0;
   const threads = doc.threads.map((thread) => {
     if (!mark.all && !ids.has(thread.id)) return thread;
-    const next = { ...thread };
+    const next: StoredThread = { ...thread };
     if (typeof mark.unread === "boolean") next.unread = mark.unread;
     if (typeof mark.done === "boolean") {
       next.done = mark.done;
       // Done implies read, like GitHub: it leaves the inbox entirely.
       if (mark.done) next.unread = false;
     }
-    if (next.unread !== thread.unread || next.done !== thread.done) changed++;
+    // Reading a held row means the person saw it: no alert after the night.
+    if (next.heldAt !== undefined && (!next.unread || next.done))
+      delete next.heldAt;
+    if (
+      next.unread !== thread.unread ||
+      next.done !== thread.done ||
+      next.heldAt !== thread.heldAt
+    )
+      changed++;
     return next;
   });
   return { doc: changed ? { ...doc, threads } : doc, changed };
 }
 
-/** The client shape: dedupe keys stay on the server. */
+/** The client shape: dedupe keys and delivery state stay on the server. */
 export function wireThread(thread: StoredThread): NotificationThread {
-  const { events: _events, ...wire } = thread;
+  const {
+    events: _events,
+    heldAt: _heldAt,
+    alerted: _alerted,
+    ...wire
+  } = thread;
   return wire;
+}
+
+/**
+ * What a banner says. Incidents lead the body with the project
+ * ("acme · Deploying the fix now"); every other row keeps
+ * "<subject>: <body>".
+ */
+export function bannerText(
+  thread: Pick<NotificationThread, "subject" | "reason" | "body">,
+): { title: string; body: string } {
+  const title = thread.reason || thread.subject.title;
+  const body =
+    thread.subject.type === "incident"
+      ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
+      : [thread.subject.title, thread.body].filter(Boolean).join(": ");
+  return { title, body };
 }
 
 export function unreadCount(doc: NotificationDocument): number {
