@@ -147,6 +147,10 @@ export interface WorkflowSpawnSessionOpts {
     baseSessionId?: string;
   };
   branch?: string;
+  /** A model id or alias for this child only. Unknown models are rejected;
+   * a child on a different model does not inherit the parent's effort,
+   * speed or account pin. */
+  model?: string;
 }
 
 export type WorkflowSessionState =

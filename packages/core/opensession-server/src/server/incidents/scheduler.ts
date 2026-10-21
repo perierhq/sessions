@@ -1,5 +1,6 @@
 // Signal scheduler: one 5 s gateway tick polls due http and TLS expiry
-// signals (at most four at a time, every source runs locally for now),
+// signals (at most four at a time; an http signal with `runOn` runs from
+// that production Runner, everything else from this server),
 // records missed heartbeat check-ins, re-runs time-based rules (staleness,
 // rate decay, missed slots) every 30 s and prunes old observations daily.
 // Nothing runs at import: `startIncidentSignals()` is the only live effect.
@@ -121,7 +122,6 @@ async function runOne(
   runSource: (signal: Signal) => Promise<SourceRun>,
 ): Promise<void> {
   try {
-    // `runOn` is stored only: every source runs in this gateway for now.
     const run = await runSource(signal);
     await ingestObservations(signal.id, run.observations, Date.now());
   } catch (error) {

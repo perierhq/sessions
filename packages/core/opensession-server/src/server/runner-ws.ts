@@ -11,13 +11,15 @@
  */
 
 import { randomBytes } from "crypto";
-import { audit } from "./audit";
+import { audit, auditAsync } from "./audit";
 import { runnerCommandAwsEnv } from "./runner-command-aws";
 import { runnerTailnetOrigin } from "./runner-origin";
 import {
+  INCIDENT_SERVICE_USER,
   authenticateRunner,
   getRunner,
   runnerAllowed,
+  runnerAllowsIncidentAgent,
   runnerOwnsWorkspace,
   touchRunner,
   type Runner,
@@ -42,9 +44,14 @@ type Connection = {
   connectedAt: number;
   protocolVersion: number;
   execAws: boolean;
+  /** The client feeds an exec frame's `stdin` to the command. */
+  execStdin: boolean;
   capabilities: Runner["capabilities"];
   resources?: Runner["resources"];
   pending: Map<string, Pending>;
+  /** Terminals opened on this connection and not yet exited or stopped.
+   *  The Runner kills them all when the channel closes. */
+  terminals: Set<string>;
 };
 
 const connections: Map<string, Connection> =
@@ -92,7 +99,45 @@ export type RunnerExecOptions = {
   user?: string;
   repo?: string;
   sessionId?: string;
+  /** Fed to the command's stdin, so it never appears in its argv. Needs a
+   *  Runner client that advertises `execStdin`. Never audited or logged. */
+  stdin?: string;
+  /** What the audit log and the Runner's own log record instead of the
+   *  command text, e.g. `incident action rollback`. */
+  auditCommand?: string;
+  /** Server-only: an incident agent's read-only command. The only way an
+   *  agent's command reaches a Runner reserved for incidents. */
+  caller?: IncidentAgentRunnerCaller;
 };
+
+/**
+ * An incident agent's read-only command on a host its access grants, or its
+ * Runner egress (incidents/access/runner-exec.ts). It runs with no user and
+ * never the Runner's AWS role, its input on stdin and only a label in the
+ * audit and Runner logs, and only when `authorize`, called just before
+ * dispatch, re-resolves the agent's access and finds this Runner granted.
+ */
+export interface IncidentAgentRunnerCaller {
+  kind: "incident-agent-readonly";
+  incidentId: string;
+  role: string;
+  use: "host" | "egress";
+  /** Why the agent's freshly resolved access does not grant this Runner
+   *  for `use`, or null when it does. */
+  authorize: () => Promise<string | null>;
+}
+
+/** Largest `stdin` sent to a Runner. */
+export const RUNNER_STDIN_MAX_BYTES = 262_144;
+/** Thrown before dispatch when `stdin` is over the limit. */
+export const RUNNER_STDIN_TOO_LARGE = "Command input is too large";
+
+/** A Runner problem (offline, not permitted, in maintenance, too old),
+ *  never the command's own failure. Callers that judge a service by a
+ *  command's result report these as unknown. */
+export class RunnerUnavailableError extends Error {
+  readonly code = "RUNNER_UNAVAILABLE";
+}
 
 /** Register a narrow terminal frame consumer. Terminal ids are random and
  * scoped to a browser connection, so a Runner cannot attach to another tab. */
@@ -270,6 +315,7 @@ export async function openRunnerTerminal(input: {
   });
   if (result.code !== 0)
     throw new Error(result.stderr || "Runner terminal could not start");
+  connection.terminals.add(id);
   return { terminalId: id, cwd: result.stdout || input.workspacePath };
 }
 
@@ -300,8 +346,14 @@ export function resizeRunnerTerminal(
     });
 }
 export function stopRunnerTerminal(runnerId: string, terminalId: string): void {
+  connections.get(runnerId)?.terminals.delete(terminalId);
   if (/^rt\d+-[A-Za-z0-9_-]{16}$/.test(terminalId))
     sendRunnerTerminalFrame(runnerId, { t: "terminal_stop", id: terminalId });
+}
+
+/** Open terminals on the Runner's current connection. */
+export function runnerTerminalCount(runnerId: string): number {
+  return connections.get(runnerId)?.terminals.size ?? 0;
 }
 
 /**
@@ -733,9 +785,11 @@ export function runnerWsOpen(ws: any): boolean {
     connectedAt: Date.now(),
     protocolVersion: 0,
     execAws: false,
+    execStdin: false,
     capabilities: runner.capabilities,
     resources: runner.resources,
     pending: new Map(),
+    terminals: new Set(),
   });
   touchRunner(runnerId);
   console.log(`[runners] ${runner.name} attached (${runnerId})`);
@@ -768,6 +822,7 @@ export function runnerWsMessage(ws: any, raw: string | Buffer): boolean {
       }
       connection.protocolVersion = version;
       connection.execAws = message.execAws === true;
+      connection.execStdin = message.execStdin === true;
       const capabilities =
         message.capabilities && typeof message.capabilities === "object"
           ? message.capabilities
@@ -980,8 +1035,11 @@ export function runnerWsMessage(ws: any, raw: string | Buffer): boolean {
       });
       return true;
     }
-    case "terminal_data":
     case "terminal_exit":
+      connection.terminals.delete(String(message.id));
+      publishRunnerTerminalFrame(runnerId, message as Record<string, unknown>);
+      return true;
+    case "terminal_data":
       publishRunnerTerminalFrame(runnerId, message as Record<string, unknown>);
       return true;
     case "vm_display_opened":
@@ -1304,24 +1362,178 @@ export async function execOnRunner(
   command: string,
   options: RunnerExecOptions = {},
 ): Promise<RunnerExecResult> {
+  if (options.caller) return execForIncidentAgent(runnerId, command, options);
+  return execOnRunnerAs(runnerId, command, options, false);
+}
+
+/** The `incident-agent-readonly` path: see {@link IncidentAgentRunnerCaller}.
+ *  Every Runner problem throws a {@link RunnerUnavailableError}. */
+async function execForIncidentAgent(
+  runnerId: string,
+  command: string,
+  options: RunnerExecOptions,
+): Promise<RunnerExecResult> {
+  const caller = options.caller;
+  if (caller?.kind !== "incident-agent-readonly")
+    throw new Error("Unknown Runner caller");
+  if (options.aws)
+    throw new Error("Incident agent commands never get AWS credentials");
+  if (options.user !== undefined)
+    throw new Error("Incident agent commands run as nobody");
+  if (options.stdin === undefined)
+    throw new Error("Incident agent commands take their input on stdin");
+  if (!options.auditCommand)
+    throw new Error("Incident agent commands need an audit label");
+  if (!options.repo || !options.sessionId)
+    throw new Error("Incident agent commands need their project and session");
+  const repo = options.repo;
+  const runner = getRunner(runnerId);
+  if (!runner)
+    throw new RunnerUnavailableError(`Runner ${runnerId} is not paired`);
+  const name = runner.label || runner.name;
+  if (runner.maintenance)
+    throw new RunnerUnavailableError(`Runner ${name} is in maintenance`);
   const connection = connections.get(runnerId);
   if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
-    throw new Error(`Runner ${runnerId} is not connected`);
-  const runner = getRunner(runnerId);
+    throw new RunnerUnavailableError(`Runner ${name} is offline`);
+  if (!runnerAllowsIncidentAgent(runner, { repo }))
+    throw new RunnerUnavailableError(
+      `Runner ${name} does not allow incident agent commands for ${repo}`,
+    );
+  if (!connection.execStdin)
+    throw new RunnerUnavailableError(
+      `Update Runner ${name}: it is too old to run incident agent commands`,
+    );
+  if (Buffer.byteLength(options.stdin) > RUNNER_STDIN_MAX_BYTES)
+    throw new Error(RUNNER_STDIN_TOO_LARGE);
+  const refused = await caller.authorize();
+  if (refused !== null) throw new Error(`Access refused: ${refused}`);
+  // Authorizing awaits: a revocation or reconnect must not race dispatch.
+  const current = getRunner(runnerId);
   if (
-    !runner ||
+    connections.get(runnerId) !== connection ||
+    !current ||
+    !runnerAllowsIncidentAgent(current, { repo })
+  )
+    throw new RunnerUnavailableError(
+      "Runner connection or permissions changed before command dispatch",
+    );
+  return execRunnerCommand(connection, runnerId, command, {
+    repo,
+    sessionId: options.sessionId,
+    stdin: options.stdin,
+    auditCommand: options.auditCommand,
+    ...(options.timeoutMs !== undefined
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
+    permission: "commands",
+    operation: "command",
+    auditFields: {
+      caller: caller.kind,
+      incident_id: caller.incidentId,
+      incident_role: caller.role,
+      use: caller.use,
+    },
+  });
+}
+
+/** The incident service's own path to a production Runner: a Runner
+ *  reserved for incidents only (`reserveRunnerForIncidents`), commands for
+ *  `repo` as {@link INCIDENT_SERVICE_USER}, input on stdin and a label in
+ *  the audit log. Every Runner problem throws a
+ *  {@link RunnerUnavailableError} that says what is wrong. */
+export async function execOnIncidentRunner(
+  runnerId: string,
+  command: string,
+  options: {
+    repo: string;
+    auditCommand: string;
+    stdin?: string;
+    timeoutMs?: number;
+    cwd?: string;
+    sessionId?: string;
+  },
+): Promise<RunnerExecResult> {
+  const runner = getRunner(runnerId);
+  if (!runner)
+    throw new RunnerUnavailableError(`Runner ${runnerId} is not paired`);
+  const name = runner.label || runner.name;
+  if (!runner.incidentReserved)
+    throw new RunnerUnavailableError(
+      `Runner ${name} is not reserved for incidents`,
+    );
+  if (runner.maintenance)
+    throw new RunnerUnavailableError(`Runner ${name} is in maintenance`);
+  const connection = connections.get(runnerId);
+  if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
+    throw new RunnerUnavailableError(`Runner ${name} is offline`);
+  if (
     !runnerAllowed(runner, {
+      user: INCIDENT_SERVICE_USER,
+      repo: options.repo,
+      permission: "commands",
+      incidentService: true,
+    })
+  )
+    throw new RunnerUnavailableError(
+      `Runner ${name} does not allow commands for ${options.repo}`,
+    );
+  if (!connection.execStdin)
+    throw new RunnerUnavailableError(
+      `Update Runner ${name}: it is too old to run incident checks and actions`,
+    );
+  return execOnRunnerAs(
+    runnerId,
+    command,
+    {
+      repo: options.repo,
+      user: INCIDENT_SERVICE_USER,
+      auditCommand: options.auditCommand,
+      ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
+      ...(options.timeoutMs !== undefined
+        ? { timeoutMs: options.timeoutMs }
+        : {}),
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(options.sessionId !== undefined
+        ? { sessionId: options.sessionId }
+        : {}),
+    },
+    true,
+  );
+}
+
+async function execOnRunnerAs(
+  runnerId: string,
+  command: string,
+  options: RunnerExecOptions,
+  incidentService: boolean,
+): Promise<RunnerExecResult> {
+  const connection = connections.get(runnerId);
+  if (!connection || connection.protocolVersion !== PROTOCOL_VERSION)
+    throw new RunnerUnavailableError(`Runner ${runnerId} is not connected`);
+  const runner = getRunner(runnerId);
+  const allowed = (r: Runner) =>
+    runnerAllowed(r, {
       user: options.user,
       repo: options.repo,
       permission: "commands",
-    })
-  )
-    throw new Error(
+      incidentService,
+    });
+  if (!runner || !allowed(runner))
+    throw new RunnerUnavailableError(
       `Runner ${runner?.name ?? runnerId} is not permitted for this command`,
     );
+  if (options.stdin !== undefined) {
+    if (!connection.execStdin)
+      throw new RunnerUnavailableError(
+        `Update Runner ${runner.name} so it can take command input`,
+      );
+    if (Buffer.byteLength(options.stdin) > RUNNER_STDIN_MAX_BYTES)
+      throw new Error(RUNNER_STDIN_TOO_LARGE);
+  }
   const role = options.aws ? runner.aws : undefined;
   if (role && !connection.execAws)
-    throw new Error(
+    throw new RunnerUnavailableError(
       `Update Runner ${runner.name} to support AWS command credentials`,
     );
   const awsEnv = role
@@ -1332,16 +1544,12 @@ export async function execOnRunner(
   if (
     connections.get(runnerId) !== connection ||
     !current ||
-    !runnerAllowed(current, {
-      user: options.user,
-      repo: options.repo,
-      permission: "commands",
-    }) ||
+    !allowed(current) ||
     (role &&
       (current.aws?.roleArn !== role.roleArn ||
         current.aws?.externalId !== role.externalId))
   )
-    throw new Error(
+    throw new RunnerUnavailableError(
       "Runner connection or permissions changed before command dispatch",
     );
   return execRunnerCommand(connection, runnerId, command, {
@@ -1360,6 +1568,8 @@ async function execRunnerCommand(
     permission: "commands" | "fullSessions";
     operation: string;
     awsEnv?: Record<string, string>;
+    /** Extra audit fields for both lines; never command text. */
+    auditFields?: Record<string, string>;
   },
 ): Promise<RunnerExecResult> {
   const id = `r${++executionCounter}-${Date.now().toString(36)}`;
@@ -1368,14 +1578,16 @@ async function execRunnerCommand(
     Math.max(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000),
     60 * 60_000,
   );
-  audit({
+  // The label stands in for the command; `stdin` is never recorded.
+  auditAsync({
     msg: `runner_${options.operation}_start`,
     runner_id: runnerId,
     session_id: options.sessionId,
     user: options.user,
     repo: options.repo,
-    command: command.slice(0, 500),
+    command: options.auditCommand ?? command.slice(0, 500),
     operation_id: id,
+    ...options.auditFields,
   });
   const result = await new Promise<RunnerExecResult>((resolve) => {
     const timer = setTimeout(() => {
@@ -1411,6 +1623,8 @@ async function execRunnerCommand(
           awsEnv: options.awsEnv,
           cwd: options.cwd,
           timeoutMs,
+          ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
+          ...(options.auditCommand ? { label: options.auditCommand } : {}),
         }),
       );
     } catch (error) {
@@ -1423,7 +1637,7 @@ async function execRunnerCommand(
       });
     }
   });
-  audit({
+  auditAsync({
     msg: `runner_${options.operation}_finish`,
     runner_id: runnerId,
     session_id: options.sessionId,
@@ -1432,6 +1646,7 @@ async function execRunnerCommand(
     operation_id: id,
     exit_code: result.code,
     timed_out: !!result.timedOut,
+    ...options.auditFields,
   });
   return {
     ...result,

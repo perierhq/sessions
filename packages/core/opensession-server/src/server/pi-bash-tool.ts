@@ -10,7 +10,13 @@ import {
   type PrivateTermsGuard,
   type PublicationPolicy,
 } from "./command-policy";
-import { controlPlaneWorkloadCommand, stopUserScope } from "./systemd-scopes";
+import { hostBashArgv } from "./incidents/response/host-agents";
+import {
+  controlPlaneWorkloadCommand,
+  killUserScope,
+  processRunsInControlPlane,
+  stopUserScope,
+} from "./systemd-scopes";
 import { sessionUnitDescription } from "./session-ownership";
 import { runRemoteCommand, type RemoteWorkspace } from "./remote-workspace";
 
@@ -132,6 +138,52 @@ export function piBashHomeEnv(input: {
   };
 }
 
+/** The home, TMPDIR and tool config of an incident agent whose bash runs
+ *  as the incident agent user: under /tmp, one per session, because that
+ *  user cannot reach the session scratch in the state directory. The user
+ *  creates the directories itself (INCIDENT_HOME_PREP). */
+export function incidentUserHomeEnv(key: string): Record<string, string> {
+  const home = `/tmp/opensession-incident-${key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: `${home}/.config`,
+    AWS_CONFIG_FILE: `${home}/.aws/config`,
+    AWS_SHARED_CREDENTIALS_FILE: `${home}/.aws/credentials`,
+    GH_CONFIG_DIR: `${home}/.config/gh`,
+    TMPDIR: `${home}/tmp`,
+    OPENSESSION_SCRATCH: `${home}/tmp`,
+  };
+}
+
+/** Run as the incident agent user before its first command: create its
+ *  home and TMPDIR private to it, and refuse a path someone else made
+ *  (another user's directory or a symlink planted in /tmp). */
+const INCIDENT_HOME_PREP =
+  'umask 077 && mkdir -p -- "$HOME" "$TMPDIR" && for d in "$HOME" "$TMPDIR"; do test ! -L "$d" && test -O "$d" || exit 1; done';
+
+type SpawnedProc = {
+  pid: number;
+  stdout: ReadableStream<Uint8Array> | null;
+  stderr: ReadableStream<Uint8Array> | null;
+  exited: Promise<number>;
+  kill: (signal?: NodeJS.Signals | number) => void;
+};
+
+/** Test seams for the local path. */
+export interface PiBashTestHooks {
+  spawn?: (
+    argv: string[],
+    opts: { cwd: string; env: Record<string, string> },
+  ) => SpawnedProc;
+  /** Whether this process is the gateway (opensession-control.slice). */
+  inControlPlane?: boolean;
+  scope?: (
+    argv: string[],
+    env: Record<string, string>,
+  ) => { command: string[]; env: Record<string, string>; unit?: string };
+  killScope?: (unit: string) => Promise<void>;
+}
+
 /** The custom `bash` tool: same name/schema surface as pi's built-in (so the
  *  model needs no new habits) but execution is ours — Bun.spawn with the
  *  MINIMAL env only, never the server process env. `gated` additionally
@@ -165,7 +217,46 @@ export function makePiBashTool(input: {
    * signal because AgentSession.abort() can leave an active tool signal live. */
   runSignal?: AbortSignal;
   onAudit?: (event: PiBashAuditEvent) => void;
+  /** Run each local command as this low-privilege user through sudo (an
+   *  incident agent in a host worktree, incidents/response/host-agents.ts).
+   *  Ignored for a remote workspace. */
+  runAs?: string;
+  __testHooks?: PiBashTestHooks;
 }): ToolDefinition<any, any, any> {
+  const hooks = input.__testHooks ?? {};
+  const runAs = input.remote ? undefined : input.runAs;
+  // The user creates its own home once per tool; a failure is retried on
+  // the next command.
+  let homeReady: Promise<boolean> | null = null;
+  const spawn = (
+    argv: string[],
+    opts: { cwd: string; env: Record<string, string> },
+  ): SpawnedProc =>
+    hooks.spawn
+      ? hooks.spawn(argv, opts)
+      : Bun.spawn(argv, {
+          cwd: opts.cwd,
+          env: opts.env,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+  const prepareHome = async (user: string): Promise<boolean> => {
+    try {
+      const proc = spawn(hostBashArgv(user, INCIDENT_HOME_PREP), {
+        cwd: input.cwd,
+        env: input.env,
+      });
+      const [code] = await Promise.all([
+        proc.exited,
+        proc.stdout ? new Response(proc.stdout).text() : "",
+        proc.stderr ? new Response(proc.stderr).text() : "",
+      ]);
+      return code === 0;
+    } catch {
+      return false;
+    }
+  };
   return {
     name: "bash",
     label: "bash",
@@ -289,34 +380,77 @@ export function makePiBashTool(input: {
       // setsid makes bash a process-group leader, so kill(-pid) reaches the
       // grandchildren a plain proc.kill() misses (bash may already be gone
       // when the timeout fires). Absent setsid (macOS), degrade to the
-      // direct-child kill.
+      // direct-child kill. As the incident agent user, sudo runs bash and
+      // relays TERM and KILL to it.
       const setsidPath = Bun.which("setsid");
-      const directCommand = setsidPath
-        ? [setsidPath, "/bin/bash", "-c", command]
+      const shell = runAs
+        ? hostBashArgv(runAs, command)
         : ["/bin/bash", "-c", command];
+      const directCommand = setsidPath ? [setsidPath, ...shell] : shell;
       // A scope outlives the command while anything it backgrounded (a dev
       // server) still runs; its labelled description lets archive stop it.
       const description = sessionUnitDescription(
         input.sessionId,
         "agent command",
       );
-      const scoped = controlPlaneWorkloadCommand(
-        directCommand,
-        `opensession-agent-cmd-${crypto.randomUUID().slice(0, 13)}`,
-        { env: input.env, ...(description ? { description } : {}) },
-      );
+      const scoped = hooks.scope
+        ? hooks.scope(directCommand, input.env)
+        : controlPlaneWorkloadCommand(
+            directCommand,
+            `opensession-agent-cmd-${crypto.randomUUID().slice(0, 13)}`,
+            { env: input.env, ...(description ? { description } : {}) },
+          );
+      // This service's user cannot signal the incident agent user's
+      // processes, so in the gateway each command needs a scope that is
+      // killed whole when it ends. A detached run host is a system unit:
+      // stopping it at the end of the turn kills everything it started,
+      // whoever owns it.
+      const killScope = hooks.killScope ?? killUserScope;
+      const killRunAsScope = runAs && scoped.unit ? scoped.unit : undefined;
+      if (
+        runAs &&
+        !scoped.unit &&
+        (hooks.inControlPlane ?? processRunsInControlPlane())
+      ) {
+        input.onAudit?.({
+          phase: "finish",
+          ...commandAudit,
+          timeout_s: timeoutS,
+          duration_ms: 0,
+          exit_code: null,
+          outcome: "failed",
+        });
+        throw new Error(
+          "Commands as the incident agent user need a systemd scope. Run Sessions as its systemd service.",
+        );
+      }
+      if (runAs) {
+        homeReady ??= prepareHome(runAs);
+        if (!(await homeReady)) {
+          homeReady = null;
+          input.onAudit?.({
+            phase: "finish",
+            ...commandAudit,
+            timeout_s: timeoutS,
+            duration_ms: Date.now() - commandStartedAt,
+            exit_code: null,
+            outcome: "failed",
+          });
+          throw new Error(
+            `The incident agent user could not prepare its home (${input.env.HOME ?? "unset"})`,
+          );
+        }
+      }
       let timedOut = false;
       let exitCode: number | null = null;
       try {
-        const proc = Bun.spawn(scoped.command, {
+        const proc = spawn(scoped.command, {
           cwd: input.cwd,
           env: scoped.env,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
         });
         const killTree = () => {
-          if (scoped.unit) stopUserScope(scoped.unit);
+          if (killRunAsScope) void killScope(killRunAsScope);
+          else if (scoped.unit) stopUserScope(scoped.unit);
           const killGroup = (sig: "SIGTERM" | "SIGKILL") => {
             try {
               if (!scoped.unit && setsidPath) process.kill(-proc.pid, sig);
@@ -423,6 +557,8 @@ export function makePiBashTool(input: {
           details: { exitCode, truncatedChars: droppedChars || undefined },
         };
       } finally {
+        // Nothing the incident agent user started outlives its command.
+        if (killRunAsScope) await killScope(killRunAsScope);
         const cancelled = Boolean(signal?.aborted || input.runSignal?.aborted);
         input.onAudit?.({
           phase: "finish",

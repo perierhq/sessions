@@ -1,13 +1,19 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import type { Server } from "bun";
 import type { ResolvedEgress } from "../../../shared/incident-access";
-import type { execOnRunner } from "../../runner-ws";
+import type {
+  RunnerExecOptions,
+  RunnerExecResult,
+  execOnRunner,
+} from "../../runner-ws";
+import { __resetCurlVersionsForTest } from "../sources/runner-fetch";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { egressFetch } from "./egress";
+import { egressFetch, pathTemplate } from "./egress";
 import type { IncidentToolContext } from "./tool-context";
 
 const kit = useIncidentTestKernel();
+beforeEach(() => __resetCurlVersionsForTest());
 let target: Server<undefined>;
 let proxy: Server<undefined>;
 let proxySawAuth: string | null = null;
@@ -163,89 +169,220 @@ test("no route, no requests", async () => {
     ),
   ).toEqual({ ok: false, error: "This agent has no egress route" });
 });
-test("runner route: curl argv, parsed marker, offline Runner", async () => {
-  let command = "";
-  let opts: unknown;
-  const exec = (async (_id: string, cmd: string, o: unknown) => {
-    command = cmd;
-    opts = o;
-    return {
-      code: 0,
-      stdout: "<html>blocked</html>\n__EGRESS__ 403 0.251 text/html",
-      stderr: "",
-    };
+type ExecCall = { runner: string; command: string; opts: RunnerExecOptions };
+const RESOLVE = "getent ahosts";
+const VERSION = "command curl --version";
+/** A Runner that resolves names to `addresses`, has curl 8.5 and answers
+ *  curl with `curl`. */
+function fakeRunner(
+  curl: (call: ExecCall) => RunnerExecResult,
+  addresses = ["93.184.216.34"],
+) {
+  const calls: ExecCall[] = [];
+  const exec = (async (
+    runner: string,
+    command: string,
+    opts: RunnerExecOptions = {},
+  ) => {
+    const call = { runner, command, opts };
+    calls.push(call);
+    if (command.includes(RESOLVE))
+      return {
+        code: 0,
+        stdout: addresses.map((a) => `${a} STREAM x`).join("\n"),
+        stderr: "",
+      };
+    if (command === VERSION)
+      return {
+        code: 0,
+        stdout: "curl 8.5.0 (x86_64-pc-linux-gnu)\n",
+        stderr: "",
+      };
+    return curl(call);
   }) as typeof execOnRunner;
-  const ctx = withEgress({
+  return {
+    calls,
+    deps: {
+      exec,
+      connected: () => true,
+      runner: () => ({ name: "prod-1", platform: "linux" }),
+    },
+  };
+}
+const curlAnswer = (
+  status: number,
+  head: string,
+  body = "",
+  code = 0,
+  stderr = "",
+): RunnerExecResult => ({
+  code,
+  stdout: `HTTP/1.1 ${status} X\r\n${head}\r\n\r\n${body}`,
+  stderr: `${stderr}\n__SESSIONS_CURL__${status}\n`,
+});
+const runnerEgress = (hosts = ["search.example.test"]) =>
+  withEgress({
     route: "runner",
     runner: "rn-prod",
     runnerName: "prod-1",
-    hosts: ["search.example.test"],
+    hosts,
   });
+
+test("runner route: the request goes on stdin, the logs get a label", async () => {
+  const r = fakeRunner(() =>
+    curlAnswer(403, "content-type: text/html", "<html>blocked</html>"),
+  );
+  const ctx = runnerEgress();
   const out = await egressFetch(
     ctx,
     {
-      url: "https://search.example.test/q",
+      url: "https://search.example.test/q?token=abc",
       headers: { "User-Agent": "acme-app/4.2" },
     },
-    { exec, connected: () => true },
+    r.deps,
   );
   expect(out).toMatchObject({
     ok: true,
     route: "runner",
     status: 403,
-    latencyMs: 251,
     contentType: "text/html",
     body: "<html>blocked</html>",
   });
-  expect(opts).toEqual({ timeoutMs: 20_000, sessionId: "os-1", aws: false });
-  expect(command).toContain("--max-redirs 0");
-  expect(command).toContain("--noproxy '*'");
-  expect(command).toContain("--header 'User-Agent: acme-app/4.2'");
-  expect(command.endsWith("--url https://search.example.test/q")).toBe(true);
+  const curl = r.calls.at(-1)!;
+  expect(curl.command).toStartWith("command curl --disable --config - ");
+  expect(curl.opts.stdin).toContain(
+    'url = "https://search.example.test/q?token=abc"',
+  );
+  expect(curl.opts.stdin).toContain('header = "User-Agent: acme-app/4.2"');
+  expect(curl.opts.stdin).toContain("globoff");
+  expect(curl.opts.stdin).toContain("max-redirs = 0");
+  for (const call of r.calls) {
+    expect(call.runner).toBe("rn-prod");
+    expect(call.command).not.toContain("search.example.test");
+    expect(call.command).not.toContain("token");
+    expect(call.opts).toMatchObject({
+      repo: "acme",
+      sessionId: "os-1",
+      auditCommand: "incident egress GET search.example.test/q",
+      caller: {
+        kind: "incident-agent-readonly",
+        use: "egress",
+        incidentId: "inc-1",
+      },
+    });
+    expect(call.opts.aws).toBeUndefined();
+  }
   expect(kit.audits).toContainEqual(
     expect.objectContaining({
       kind: "incident_egress_fetch",
       route: "runner",
       runner_id: "rn-prod",
+      host: "search.example.test",
+      path: "/q",
       status: 403,
     }),
+  );
+  expect(JSON.stringify(kit.audits)).not.toContain("token=abc");
+  expect(
+    await egressFetch(
+      ctx,
+      { url: "https://search.example.test/q" },
+      { ...r.deps, connected: () => false },
+    ),
+  ).toEqual({ ok: false, error: "prod-1 is offline" });
+});
+test("runner route: a body starting with @ is data, and the label keeps no ids", async () => {
+  const r = fakeRunner(() => curlAnswer(200, "content-type: text/plain", "ok"));
+  await egressFetch(
+    runnerEgress(),
+    {
+      url: "https://search.example.test/users/12345/orders/abcdef0123456789?a=[1-2]",
+      method: "POST",
+      body: "@/etc/passwd",
+    },
+    r.deps,
+  );
+  const curl = r.calls.at(-1)!;
+  expect(curl.opts.stdin).toContain('data-raw = "@/etc/passwd"');
+  expect(curl.opts.stdin).toContain('request = "POST"');
+  expect(curl.opts.auditCommand).toBe(
+    "incident egress POST search.example.test/users/:id/orders/:id",
+  );
+});
+test("runner route: a redirect location, a failed curl, metadata and an old curl", async () => {
+  const ctx = runnerEgress();
+  const moved = fakeRunner(() =>
+    curlAnswer(
+      302,
+      "location: https://search.example.test/next\r\ncontent-type: text/html; charset=utf-8",
+    ),
   );
   expect(
     await egressFetch(
       ctx,
       { url: "https://search.example.test/q" },
-      { exec, connected: () => false },
+      moved.deps,
     ),
-  ).toEqual({ ok: false, error: "prod-1 is offline" });
-});
-test("runner route: curl ignores config files, globbing and @ in the body", async () => {
-  let command = "";
-  const exec = (async (_id: string, cmd: string) => {
-    command = cmd;
-    return { code: 0, stdout: "\n__EGRESS__ 200 0.001 text/plain", stderr: "" };
-  }) as typeof execOnRunner;
-  const ctx = withEgress({
-    route: "runner",
-    runner: "rn-prod",
-    runnerName: "prod-1",
-    hosts: ["search.example.test"],
+  ).toMatchObject({
+    ok: true,
+    status: 302,
+    contentType: "text/html; charset=utf-8",
+    location: "https://search.example.test/next",
+    body: "",
   });
-  await egressFetch(
-    ctx,
-    {
-      url: "https://search.example.test/q?a=[1-2]&b={x,y}",
-      method: "POST",
-      body: "@/etc/passwd",
-    },
-    { exec, connected: () => true },
+  const failed = fakeRunner(() => ({
+    code: 7,
+    stdout: "",
+    stderr: "curl: (7) Failed to connect",
+  }));
+  expect(
+    await egressFetch(
+      ctx,
+      { url: "https://search.example.test/q" },
+      failed.deps,
+    ),
+  ).toEqual({
+    ok: false,
+    error: "Request failed: curl: (7) Failed to connect",
+  });
+  const metadata = fakeRunner(
+    () => curlAnswer(200, "content-type: text/plain", "creds"),
+    ["169.254.169.254"],
   );
-  // -q must be curl's very first argument to skip ~/.curlrc.
-  expect(command.startsWith("curl -q ")).toBe(true);
-  expect(command).toContain(" --globoff ");
-  expect(command).toContain(" --data-raw @/etc/passwd ");
-  expect(command).not.toContain("--data-binary");
+  expect(
+    await egressFetch(
+      ctx,
+      { url: "https://search.example.test/q" },
+      metadata.deps,
+    ),
+  ).toEqual({
+    ok: false,
+    error:
+      "Refused: search.example.test resolves to the private address 169.254.169.254",
+  });
+  expect(metadata.calls.some((c) => c.command.includes("--config"))).toBe(
+    false,
+  );
+  __resetCurlVersionsForTest();
+  const old = fakeRunner(() => curlAnswer(200, "", ""));
+  const oldExec = old.deps.exec;
+  old.deps.exec = (async (
+    runner: string,
+    command: string,
+    opts?: RunnerExecOptions,
+  ) =>
+    command === VERSION
+      ? { code: 0, stdout: "curl 7.58.0 (x)\n", stderr: "" }
+      : oldExec(runner, command, opts)) as typeof execOnRunner;
+  expect(
+    await egressFetch(ctx, { url: "https://search.example.test/q" }, old.deps),
+  ).toEqual({
+    ok: false,
+    error:
+      "Could not run on prod-1: Runner prod-1 has curl 7.58.0; incident checks need 7.63 or newer. Update curl on the Runner",
+  });
 });
-test.skipIf(!Bun.which("curl"))(
+test.skipIf(!Bun.which("curl") || !Bun.which("bash"))(
   "runner route: a real curl sends an @ body literally and does not expand the query",
   async () => {
     const seen: { url: string; body: string }[] = [];
@@ -260,8 +397,14 @@ test.skipIf(!Bun.which("curl"))(
       },
     });
     try {
-      const exec = (async (_id: string, cmd: string) => {
+      // The Runner runs `bash -lc <command>` with the input on stdin.
+      const exec = (async (
+        _id: string,
+        cmd: string,
+        o: RunnerExecOptions = {},
+      ) => {
         const proc = Bun.spawn(["bash", "-c", cmd], {
+          stdin: new TextEncoder().encode(o.stdin ?? ""),
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -272,17 +415,15 @@ test.skipIf(!Bun.which("curl"))(
         ]);
         return { code, stdout, stderr };
       }) as typeof execOnRunner;
-      const ctx = withEgress({
-        route: "runner",
-        runner: "rn-prod",
-        runnerName: "prod-1",
-        hosts: ["127.0.0.1"],
-      });
       const url = `http://127.0.0.1:${echo.port}/q?a=[1-2]&b={x,y}`;
       const out = await egressFetch(
-        ctx,
+        runnerEgress(["127.0.0.1"]),
         { url, method: "POST", body: "@/etc/hosts" },
-        { exec, connected: () => true },
+        {
+          exec,
+          connected: () => true,
+          runner: () => ({ name: "local", platform: process.platform }),
+        },
       );
       expect(out).toMatchObject({ ok: true, status: 200, body: "ok" });
       // One request, with the brackets and braces as given.
@@ -294,48 +435,6 @@ test.skipIf(!Bun.which("curl"))(
     }
   },
 );
-test("runner route: a redirect location and a failed curl", async () => {
-  const ctx = withEgress({
-    route: "runner",
-    runner: "rn-prod",
-    runnerName: "prod-1",
-    hosts: ["search.example.test"],
-  });
-  const moved = (async () => ({
-    code: 0,
-    stdout:
-      "\n__EGRESS__ 302 0.010 text/html; charset=utf-8\n__EGRESS_LOCATION__ https://search.example.test/next",
-    stderr: "",
-  })) as unknown as typeof execOnRunner;
-  expect(
-    await egressFetch(
-      ctx,
-      { url: "https://search.example.test/q" },
-      { exec: moved, connected: () => true },
-    ),
-  ).toMatchObject({
-    ok: true,
-    status: 302,
-    contentType: "text/html; charset=utf-8",
-    location: "https://search.example.test/next",
-    body: "",
-  });
-  const failed = (async () => ({
-    code: 6,
-    stdout: "",
-    stderr: "curl: (6) Could not resolve host",
-  })) as unknown as typeof execOnRunner;
-  expect(
-    await egressFetch(
-      ctx,
-      { url: "https://search.example.test/q" },
-      { exec: failed, connected: () => true },
-    ),
-  ).toEqual({
-    ok: false,
-    error: "curl on prod-1 failed (exit 6): curl: (6) Could not resolve host",
-  });
-});
 test("proxy route injects the borrowed proxy header and nothing else", async () => {
   const ctx = withEgress({
     route: "proxy",
@@ -421,4 +520,21 @@ test("proxy route keeps the address guard on the proxy and the target", async ()
       },
     ),
   ).toMatchObject({ ok: false, error: expect.stringMatching(/^Refused: /) });
+});
+
+test("the audit path masks token-like segments of 16+ characters", () => {
+  expect(pathTemplate("/api/search-results/openid-configuration")).toBe(
+    "/api/search-results/openid-configuration",
+  );
+  expect(pathTemplate("/internationalization/status")).toBe(
+    "/internationalization/status",
+  );
+  // Mixed case (base64url style) and high-entropy lowercase tokens.
+  expect(pathTemplate("/hooks/AbCdEfGhIjKlMnOpQr/ping")).toBe(
+    "/hooks/:id/ping",
+  );
+  expect(pathTemplate("/share/qwhzpxkvmbtrlynd")).toBe("/share/:id");
+  expect(pathTemplate("/keys/sk_live_abcdefgh")).toBe("/keys/:id");
+  // Short mixed-case words stay readable.
+  expect(pathTemplate("/v1/getUser")).toBe("/v1/getUser");
 });

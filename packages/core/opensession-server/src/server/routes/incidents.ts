@@ -51,7 +51,7 @@ import {
   stripBucketMs,
   stripIntervalMs,
 } from "../incidents/strip";
-import { type RouteContext, requestUser } from "./context";
+import { type RouteContext, requestUser, verifiedPerson } from "./context";
 
 const SIGNAL_PATH = /^\/api\/incident-signals\/([^/]+)$/;
 const SIGNAL_STRIP_PATH = /^\/api\/incident-signals\/([^/]+)\/strip$/;
@@ -405,10 +405,11 @@ export async function handleIncidentsRoutes(
     if (req.method === "POST") {
       const body = await readObject(req);
       if (body instanceof Response) return body;
-      const result = await createSignal(
-        body,
-        requestUser(ctx, body.user) || "Anonymous",
-      );
+      // Attributed to the verified sign-in only; a claimed body.user is
+      // never taken.
+      const result = await createSignal(body, requestUser(ctx) || "Anonymous", {
+        signedInPerson: !!verifiedPerson(ctx),
+      });
       if ("error" in result) return badRequest(result.error);
       return Response.json(toSignalView(result));
     }
@@ -418,7 +419,7 @@ export async function handleIncidentsRoutes(
   if (path === "/api/incident-signals/test" && req.method === "POST") {
     const body = await readObject(req);
     if (body instanceof Response) return body;
-    return testRun(body, requestUser(ctx, body.user) || "Anonymous");
+    return testRun(body, requestUser(ctx) || "Anonymous");
   }
 
   const signalMatch = SIGNAL_PATH.exec(path);
@@ -435,14 +436,15 @@ export async function handleIncidentsRoutes(
       const result = await updateSignal(
         id,
         body,
-        requestUser(ctx, body.user) || "Anonymous",
+        requestUser(ctx) || "Anonymous",
+        { signedInPerson: !!verifiedPerson(ctx) },
       );
       if (result === null) return notFound();
       if ("error" in result) return badRequest(result.error);
       return Response.json(toSignalView(result));
     }
     if (req.method === "DELETE") {
-      const user = requestUser(ctx, ctx.url.searchParams.get("user"));
+      const user = requestUser(ctx);
       if (!(await deleteSignal(id, user || "Anonymous"))) return notFound();
       forgetSignal(id);
       return Response.json({ ok: true });

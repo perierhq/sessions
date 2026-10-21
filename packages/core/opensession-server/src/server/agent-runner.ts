@@ -217,6 +217,10 @@ export interface RunAgentOpts {
   deniedTools?: Record<string, string>;
   /** Server-enforced publication boundary for automation descendants. */
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
+  /** An incident agent in a host worktree: its bash runs as this
+   *  low-privilege user (incidents/response/host-agents.ts). Ignored for a
+   *  remote workspace, which is its own boundary. */
+  bashRunAs?: string;
   confirmTools?: Record<string, string>;
   aws?: boolean;
   /**
@@ -2119,6 +2123,7 @@ export async function resumeInterruptedRuns(
                   accountUser: run.accountUser,
                   deniedTools: run.deniedTools,
                   publicationPolicy: run.publicationPolicy,
+                  bashRunAs: run.bashRunAs,
                   confirmTools: run.confirmTools,
                   aws: run.aws,
                   fallbackModel: run.fallbackModel,
@@ -2233,6 +2238,7 @@ export async function resumeInterruptedRuns(
                 accountUser: run.accountUser,
                 deniedTools: run.deniedTools,
                 publicationPolicy: run.publicationPolicy,
+                bashRunAs: run.bashRunAs,
                 confirmTools: run.confirmTools,
                 aws: run.aws,
                 claudeCliEnv: run.claudeCliEnv,
@@ -2339,6 +2345,7 @@ export async function resumeInterruptedRuns(
               accountUser: run.accountUser,
               deniedTools: run.deniedTools,
               publicationPolicy: run.publicationPolicy,
+              bashRunAs: run.bashRunAs,
               confirmTools: run.confirmTools,
               aws: run.aws,
               claudeCliEnv: run.claudeCliEnv,

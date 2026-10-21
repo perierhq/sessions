@@ -16,7 +16,20 @@ function resolveRunner(query: string) {
   const wanted = query.trim().toLowerCase();
   if (!wanted)
     return { error: "Name a Runner. Use list_runners first." } as const;
-  const runners = listRunners();
+  const all = listRunners();
+  // A production Runner reserved for incidents is the incident service's
+  // alone: no session, whatever its project, may run on, inspect or
+  // reserve it.
+  const reserved = all.find(
+    (runner) =>
+      runner.incidentReserved &&
+      (runner.id === query || runner.name.toLowerCase() === wanted),
+  );
+  if (reserved)
+    return {
+      error: `${reserved.name} is reserved for incident response.`,
+    } as const;
+  const runners = all.filter((runner) => !runner.incidentReserved);
   const exact = runners.filter(
     (runner) => runner.id === query || runner.name.toLowerCase() === wanted,
   );

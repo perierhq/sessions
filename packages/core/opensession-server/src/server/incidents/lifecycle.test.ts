@@ -95,7 +95,13 @@ test("the table is pinned", () => {
     ],
     "fix-ready": ["veto", "deploying", "investigating", "needs-you", "paused"],
     veto: ["deploying", "investigating", "needs-you", "paused"],
-    deploying: ["watching", "rolled-back", "needs-you", "paused"],
+    deploying: [
+      "watching",
+      "rolled-back",
+      "investigating",
+      "needs-you",
+      "paused",
+    ],
     watching: ["resolved", "rolled-back", "needs-you", "paused"],
     "rolled-back": ["investigating", "needs-you"],
     "needs-you": [
@@ -178,6 +184,7 @@ test("transitions never mutate their input", () => {
 test("markers", () => {
   expect(markerForTransition("fix-ready", "investigating")).toBe("sent-back");
   expect(markerForTransition("veto", "investigating")).toBe("sent-back");
+  expect(markerForTransition("deploying", "investigating")).toBe("sent-back");
   expect(markerForTransition("investigating", "fix-ready")).toBe("fix-ready");
   expect(markerForTransition("veto", "deploying")).toBe("deploy");
   expect(markerForTransition("deploying", "watching")).toBe("released");

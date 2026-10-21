@@ -8,6 +8,7 @@
 import type { ResolvedEgress } from "../../../shared/incident-access";
 import { isBlockedAddress } from "../../shared/network-address";
 import {
+  BlockedAddressError,
   type PinnedFetchDeps,
   pinnedHttpRequest,
   resolvePinnedTarget,
@@ -21,10 +22,15 @@ import {
 } from "../../keychain";
 import { readCapped } from "../../keychain-broker";
 import { execOnRunner, isRunnerConnected } from "../../runner-ws";
-import { shellQuote } from "../../sandbox/adapters/bootstrap";
 import { assertFetchableUrl } from "../../web-fetch";
 import { refusalDetail } from "../sources/http";
+import {
+  RUNNER_BODY_CAP_BYTES,
+  type RunnerFetchDeps,
+  runnerNet,
+} from "../sources/runner-fetch";
 import { freshGrantedCredential } from "./credentials";
+import { execForIncidentAgent } from "./runner-exec";
 import { type IncidentToolContext, toolAudit } from "./tool-context";
 
 export const EGRESS_READ_CAP_BYTES = 1_048_576;
@@ -40,8 +46,6 @@ export const EGRESS_FORWARDED_HEADERS = [
 ];
 const EGRESS_DEFAULT_TIMEOUT_S = 15;
 const EGRESS_MAX_TIMEOUT_S = 30;
-const MARKER = "__EGRESS__ ";
-const LOCATION_MARKER = "\n__EGRESS_LOCATION__ ";
 
 export interface EgressInput {
   url: string;
@@ -89,8 +93,11 @@ export interface EgressDeps {
   fetchImpl?: typeof fetch;
   /** The proxy route only: the address check on the proxy and the target. */
   assertUrl?: (raw: string) => Promise<URL>;
+  /** The runner route: the Runner channel, under the read-only incident
+   *  agent path. */
   exec?: typeof execOnRunner;
   connected?: (id: string) => boolean;
+  runner?: RunnerFetchDeps["runner"];
   proxyHeaders?: ProxyHeaders;
 }
 
@@ -359,82 +366,129 @@ async function egressFetchInner(
     }
   }
 
-  // Runner: curl on the paired Runner, production's own network. The argv
-  // is quoted into one string for the Runner's POSIX shell; resolution keeps
-  // only Linux and macOS Runners here.
+  // Runner: curl on the paired Runner, production's own network, through
+  // the read-only incident agent path (runner-exec.ts). runner-fetch.ts
+  // builds the request: the name resolves on the Runner and is checked here
+  // (cloud metadata is always refused, a private address only on the
+  // granted host itself), then every curl option, the URL, the headers and
+  // the body go to `curl --disable --config -` on stdin, so nothing of the
+  // request is in the Runner's argv or logs; the audit and Runner log get
+  // only `incident egress <METHOD> <host><path template>`.
   const runnerId = egress.runner ?? "";
   const runnerName = egress.runnerName ?? runnerId;
   const connected = deps.connected ?? isRunnerConnected;
   if (!runnerId || !connected(runnerId))
     return failed(`${runnerName} is offline`);
-  // -q must come first: it stops curl reading a .curlrc on the Runner.
-  // --globoff keeps [] and {} in the URL literal, and --data-raw never reads
-  // a body that starts with @ as a file name.
-  const argv = [
-    "curl",
-    "-q",
-    "--globoff",
-    "--silent",
-    "--show-error",
-    "--max-time",
-    String(timeout),
-    "--max-redirs",
-    "0",
-    "--proto",
-    "=http,https",
-    "--noproxy",
-    "*",
-    "--max-filesize",
-    String(EGRESS_READ_CAP_BYTES),
-    "--request",
-    method,
-    ...Object.entries(headers).flatMap(([name, value]) => [
-      "--header",
-      `${name}: ${value}`,
-    ]),
-    ...(input.body !== undefined ? ["--data-raw", input.body] : []),
-    "--write-out",
-    `\n${MARKER}%{http_code} %{time_total} %{content_type}${LOCATION_MARKER}%{redirect_url}`,
-    "--url",
-    url.href,
-  ];
-  const exec = deps.exec ?? execOnRunner;
-  let result: Awaited<ReturnType<typeof execOnRunner>>;
+  const label = `incident egress ${method} ${host}${pathTemplate(path)}`;
+  const net = runnerNet(
+    runnerId,
+    {
+      exec: (id, command, o) =>
+        execForIncidentAgent(
+          ctx,
+          { use: "egress", runner: id },
+          command,
+          { stdin: o.stdin, label: o.auditCommand, timeoutMs: o.timeoutMs },
+          deps.exec ? { exec: deps.exec } : {},
+        ),
+      connected,
+      ...(deps.runner ? { runner: deps.runner } : {}),
+      // Whether the access still grants this Runner is checked just before
+      // every dispatch (runner-exec.ts).
+      gate: async () => null,
+    },
+    {
+      repo: ctx.access.project,
+      host,
+      timeoutMs: timeout * 1000,
+      label,
+    },
+  );
+  const signal = AbortSignal.timeout(timeout * 1000);
+  const runnerFailure = (error: unknown): Fail => {
+    if (signal.aborted || (error as { name?: unknown }).name === "TimeoutError")
+      return failed(`Timed out after ${timeout}s`);
+    const code = (error as { code?: unknown }).code;
+    if (code === "RUNNER_OFFLINE") return failed(`${runnerName} is offline`);
+    if (code === "RUNNER_UNAVAILABLE")
+      return failed(`Could not run on ${runnerName}: ${messageOf(error)}`);
+    if (error instanceof BlockedAddressError)
+      return failed(refusalDetail(error));
+    return failed(`Request failed: ${messageOf(error)}`);
+  };
+  let target: Awaited<ReturnType<typeof resolvePinnedTarget>>;
   try {
-    result = await exec(runnerId, shellQuote(argv), {
-      timeoutMs: timeout * 1000 + 5000,
-      sessionId: ctx.sessionId,
-      aws: false,
+    target = await untilAborted(resolvePinnedTarget(url.href, net), signal);
+  } catch (error) {
+    return runnerFailure(error);
+  }
+  try {
+    const res = await net.send(
+      target,
+      {
+        method,
+        headers,
+        ...(input.body !== undefined ? { body: input.body } : {}),
+        signal,
+        maxBodyBytes: RUNNER_BODY_CAP_BYTES,
+        overflow: "truncate",
+      },
+      net.isBlocked,
+    );
+    const text = textOf(res.body, res.truncated === true, credentialIds);
+    return ok({
+      status: res.status,
+      contentType: res.headers.get("content-type"),
+      location: res.headers.get("location"),
+      latencyMs: Date.now() - started,
+      ...text,
     });
   } catch (error) {
-    return failed(`Could not run on ${runnerName}: ${messageOf(error)}`);
+    return runnerFailure(error);
   }
-  let stdout = result.stdout ?? "";
-  let location: string | undefined;
-  const loc = stdout.lastIndexOf(LOCATION_MARKER);
-  if (loc >= 0 && !stdout.slice(loc + LOCATION_MARKER.length).includes("\n")) {
-    location = stdout.slice(loc + LOCATION_MARKER.length).trim() || undefined;
-    stdout = stdout.slice(0, loc);
+}
+
+/** Shannon entropy of `text` in bits per character. */
+function entropyBits(text: string): number {
+  const counts = new Map<string, number>();
+  for (const ch of text) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let bits = 0;
+  for (const n of counts.values()) {
+    const p = n / text.length;
+    bits -= p * Math.log2(p);
   }
-  const at = stdout.lastIndexOf(`\n${MARKER}`);
-  const markerAt = at >= 0 ? at + 1 : stdout.startsWith(MARKER) ? 0 : -1;
-  if (result.code !== 0 || markerAt < 0)
-    return failed(
-      `curl on ${runnerName} failed (exit ${result.code}): ${(result.stderr ?? "").slice(0, 300)}`,
-    );
-  const [status, seconds, ...type] = stdout
-    .slice(markerAt + MARKER.length)
-    .trim()
-    .split(" ");
-  const body = stdout.slice(0, Math.max(0, markerAt - 1));
-  const text = textOf(new TextEncoder().encode(body), false, credentialIds);
-  return ok({
-    status: Number(status) || 0,
-    contentType: type.join(" ") || undefined,
-    location,
-    latencyMs: Math.round(Number(seconds) * 1000) || 0,
-    ...text,
-  });
+  return bits;
+}
+
+/** Lowercase words of three or more letters joined by `-`, `_` or `.`. */
+const READABLE_SLUG = /^[a-z]{3,}(?:[-_.][a-z]{3,})+$/;
+
+/** A segment of 16+ characters that reads like a token: mixed case, or
+ *  high entropy that is not a readable multi-word slug. */
+function looksLikeToken(segment: string): boolean {
+  if (segment.length < 16) return false;
+  if (/[a-z]/.test(segment) && /[A-Z]/.test(segment)) return true;
+  if (READABLE_SLUG.test(segment)) return false;
+  return entropyBits(segment) >= 3.5;
+}
+
+/** A path for the audit and Runner logs: every segment that could carry an
+ *  identifier or a secret (digits, long, encoded or token-like values)
+ *  becomes `:id`. */
+export function pathTemplate(path: string): string {
+  return path
+    .split("/")
+    .map((segment) =>
+      !segment ||
+      (segment.length <= 40 &&
+        /^[A-Za-z0-9._~-]+$/.test(segment) &&
+        (segment.match(/\d/g)?.length ?? 0) <= 3 &&
+        !/^[0-9a-f]{12,}$/i.test(segment) &&
+        !looksLikeToken(segment))
+        ? segment
+        : ":id",
+    )
+    .join("/");
 }
 
 function hostOf(raw: string | undefined): string {

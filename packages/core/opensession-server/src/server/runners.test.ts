@@ -6,13 +6,18 @@ import {
   authenticateRunner,
   createRunnerPairing,
   bindRunnerPairingMigration,
+  getRunner,
+  INCIDENT_SERVICE_USER,
   listRunners,
   normalizeAddress,
   registerRunner,
   releaseRunnerReservation,
   removeRunner,
   reserveRunner,
+  reserveRunnerForIncidents,
+  reservedRunnerPatchProblem,
   runnerAllowed,
+  runnerAllowsIncidentAgent,
   runnerAllowsLocalInference,
   runnerAvailableForSession,
   updateRunner,
@@ -85,6 +90,48 @@ describe("Runner registry security", () => {
       address: "100.101.102.103",
     });
     expect(reused.ok).toBe(false);
+  });
+
+  test("onRegistered runs once the Runner is saved", () => {
+    const seen: string[] = [];
+    const { code } = createRunnerPairing("Ada", {
+      onRegistered: (r) => seen.push(r.name),
+    });
+    const out = registerRunner({
+      code,
+      name: "prod-1",
+      platform: "linux",
+      arch: "x64",
+      address: "100.64.0.9",
+    });
+    expect(out.ok).toBe(true);
+    expect(seen).toEqual(["prod-1"]);
+    // A throwing callback never undoes the registration.
+    const again = createRunnerPairing("Ada", {
+      onRegistered: () => {
+        throw new Error("boom");
+      },
+    });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect(
+        registerRunner({
+          code: again.code,
+          name: "prod-2",
+          platform: "linux",
+          arch: "x64",
+          address: "100.64.0.10",
+        }).ok,
+      ).toBe(true);
+    } finally {
+      console.warn = warn;
+    }
+    expect(
+      listRunners()
+        .map((r) => r.name)
+        .sort(),
+    ).toEqual(["prod-1", "prod-2"]);
   });
 
   test("re-pairing retains policy but rotates the credential", () => {
@@ -310,5 +357,214 @@ describe("Runner policy and reservations", () => {
         task: "chat",
       }),
     ).toBe(false);
+  });
+});
+
+describe("Runners reserved for incidents", () => {
+  test("a fresh pairing never takes over a Runner with the same name", () => {
+    const first = register({ name: "prod-box", platform: "linux" });
+    if (!first.ok) throw new Error(first.error);
+    const { code } = createRunnerPairing("Ada", { fresh: true });
+    const second = registerRunner({
+      code,
+      name: "prod-box",
+      platform: "linux",
+      arch: "x64",
+      address: "100.64.0.10",
+    });
+    if (!second.ok) throw new Error(second.error);
+    expect(second.runner.id).not.toBe(first.runner.id);
+    expect(listRunners()).toHaveLength(2);
+    expect(authenticateRunner(first.runner.id, first.token)).toBeDefined();
+  });
+
+  test("an ordinary pairing never re-pairs a reserved Runner by name", () => {
+    const prod = register({ name: "prod-box", platform: "linux" });
+    if (!prod.ok) throw new Error(prod.error);
+    reserveRunnerForIncidents(prod.runner.id, {
+      repos: ["acme"],
+      label: "Production · acme",
+    });
+    const again = register({ name: "prod-box", platform: "linux" });
+    if (!again.ok) throw new Error(again.error);
+    expect(again.runner.id).not.toBe(prod.runner.id);
+    expect(getRunner(again.runner.id)).toMatchObject({
+      allowedRepos: [],
+      allowedUsers: [],
+    });
+    expect(getRunner(again.runner.id)?.incidentReserved).toBeUndefined();
+    expect(getRunner(again.runner.id)?.label).toBeUndefined();
+    // The production Runner is untouched and its token still works.
+    expect(getRunner(prod.runner.id)).toMatchObject({
+      incidentReserved: true,
+      allowedRepos: ["acme"],
+      allowedUsers: [INCIDENT_SERVICE_USER],
+    });
+    expect(authenticateRunner(prod.runner.id, prod.token)).toBeDefined();
+    expect(listRunners()).toHaveLength(2);
+  });
+
+  test("only the incident service path may use a reserved Runner", () => {
+    const out = register({ name: "prod-2", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+      label: "Production · acme",
+    });
+    expect(reserved).toMatchObject({
+      incidentReserved: true,
+      allowedRepos: ["acme"],
+      allowedUsers: [INCIDENT_SERVICE_USER],
+      label: "Production · acme",
+      permissions: {
+        commands: true,
+        fullSessions: false,
+        terminals: false,
+        portals: false,
+        automationDescendants: false,
+      },
+    });
+    const runner = getRunner(out.runner.id)!;
+    for (const permission of [
+      "commands",
+      "fullSessions",
+      "terminals",
+      "portals",
+      "automationDescendants",
+    ] as const)
+      expect(
+        runnerAllowed(runner, {
+          user: INCIDENT_SERVICE_USER,
+          repo: "acme",
+          permission,
+        }),
+      ).toBe(false);
+    expect(
+      runnerAllowed(runner, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(true);
+    expect(
+      runnerAvailableForSession(runner, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        sessionId: "s1",
+      }),
+    ).toBe(false);
+    expect(
+      reserveRunner(runner.id, { reason: "build", reservedBy: "Ada" }),
+    ).toBeUndefined();
+  });
+
+  test("a reserved Runner with no projects serves no project", () => {
+    const out = register({ name: "prod-empty", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, { repos: [] })!;
+    expect(reserved.allowedRepos).toEqual([]);
+    expect(runnerAllowsIncidentAgent(reserved, { repo: "acme" })).toBe(false);
+    expect(
+      runnerAllowed(reserved, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(false);
+    const bound = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(runnerAllowsIncidentAgent(bound, { repo: "acme" })).toBe(true);
+    expect(runnerAllowsIncidentAgent(bound, { repo: "globex" })).toBe(false);
+  });
+
+  test("the incident service path refuses a Runner that is not reserved", () => {
+    const out = register({ name: "lab", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    expect(
+      runnerAllowed(out.runner, {
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("a reserved Runner's policy cannot be patched", () => {
+    const out = register({ name: "prod-3", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(
+      reservedRunnerPatchProblem(reserved, {
+        label: "Prod",
+        description: "d",
+        location: "eu",
+        maintenance: true,
+      }),
+    ).toBeNull();
+    expect(reservedRunnerPatchProblem(reserved, { allowedUsers: [] })).toBe(
+      "Runner prod-3 is reserved for incidents: only its label, description, location and maintenance can change",
+    );
+    expect(reservedRunnerPatchProblem(out.runner, { allowedUsers: [] })).toBe(
+      null,
+    );
+    const patched = updateRunner(reserved.id, {
+      label: "Prod",
+      description: "Production box",
+      location: "eu-west",
+      maintenance: true,
+      allowedUsers: ["Ada"],
+      allowedRepos: [],
+      workspaceRoots: ["/srv"],
+      permissions: { fullSessions: true, automationDescendants: true },
+      aws: { roleArn: "arn:aws:iam::123456789012:role/prod" },
+      workspaceRetention: "delete",
+      capabilities: { tags: ["gpu"] },
+      localInferencePolicy: {
+        enabled: true,
+        allowedUsers: [],
+        allowedModels: ["m"],
+        allowedTasks: ["chat"],
+      },
+    });
+    expect(patched).toMatchObject({
+      label: "Prod",
+      description: "Production box",
+      location: "eu-west",
+      maintenance: true,
+      incidentReserved: true,
+      allowedUsers: [INCIDENT_SERVICE_USER],
+      allowedRepos: ["acme"],
+      workspaceRoots: [],
+      permissions: reserved.permissions,
+      capabilities: reserved.capabilities,
+    });
+    expect(patched?.aws).toBeUndefined();
+    expect(patched?.localInferencePolicy).toBeUndefined();
+    expect(patched?.workspaceRetention).toBe(reserved.workspaceRetention);
+  });
+
+  test("a Runner patch cannot set the reservation or the credential", () => {
+    const out = register({ name: "plain", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const patched = updateRunner(out.runner.id, {
+      label: "Plain",
+      incidentReserved: true,
+      tokenHash: "0".repeat(64),
+    } as never);
+    expect(patched?.label).toBe("Plain");
+    expect(patched?.incidentReserved).toBeUndefined();
+    expect(authenticateRunner(out.runner.id, out.token)).toBeDefined();
+    const reserved = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(
+      updateRunner(reserved.id, { incidentReserved: false } as never)
+        ?.incidentReserved,
+    ).toBe(true);
   });
 });

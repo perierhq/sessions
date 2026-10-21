@@ -770,3 +770,39 @@ test("binding resolution without audit records no narrowing", async () => {
     kit.audits.filter((e) => e.kind === "incident_access_narrowed").length,
   ).toBeGreaterThan(0);
 });
+
+test("a Runner reserved for this project's incidents serves hosts and egress only", async () => {
+  Object.assign(
+    t.spec.runners.find((r) => r.id === "rn-prod")!,
+    {
+      reserved: true,
+      userRestricted: true,
+      isolated: false,
+      allowedRepos: ["acme"],
+    },
+  );
+  const a = await resolveAgentAccess("investigator", incident(), signal, {
+    settings: settings(),
+  });
+  expect(a.hosts).toEqual([
+    { runner: "rn-prod", runnerName: "prod-1", access: "read-only" },
+  ]);
+  expect(a.egress).toMatchObject({ route: "runner", runner: "rn-prod" });
+  expect(a.runners).toEqual([]);
+  expect(a.narrowed).toContainEqual({
+    field: "runners",
+    item: "rn-prod",
+    reason: "Runner is reserved for incidents",
+  });
+  // Reserved for another project's incidents: nothing.
+  Object.assign(
+    t.spec.runners.find((r) => r.id === "rn-prod")!,
+    {
+      allowedRepos: ["acme-api"],
+    },
+  );
+  const b = await resolveAgentAccess("investigator", incident(), signal, {
+    settings: settings(),
+  });
+  expect(b).toMatchObject({ hosts: [], egress: null, runners: [] });
+});

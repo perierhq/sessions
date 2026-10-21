@@ -17,6 +17,7 @@ import { canJoinCreateWorkspace } from "../shared/session-create-workspace";
  */
 
 import { AUTO_CONTINUE_USER } from "./auto-continue";
+import { descendantBashRunAs } from "./descendant-workspace";
 import { personaName } from "./config";
 import { currentAgentRunToken, isAgentSessionBusy } from "./agent-runner";
 import { pendingAskAwaitingAnswer, pendingAsks, type PendingAsk } from "./asks";
@@ -922,10 +923,20 @@ registerSessionControl({
         : resolveInteractiveSandbox(sandbox, user, repo.id, model);
     if (!sandboxResolved.ok) throw new Error(sandboxResolved.error);
     const sandboxProvider = sandboxResolved.provider;
-    if (automationDescendantPolicy && !requestedRunnerId && !sandboxProvider)
-      throw new Error(
-        "Automation descendants require an explicit sandbox or isolation-approved Runner",
-      );
+    // A descendant needs a sandbox or an isolated Runner; only an incident
+    // agent may instead use a host worktree, as the incident agent user.
+    const descendantIsolation =
+      "Automation descendants require an explicit sandbox or isolation-approved Runner";
+    const hostAgentUser = descendantBashRunAs(
+      automationDescendantPolicy,
+      { runner: requestedRunnerId, sandbox: sandboxProvider },
+      descendantIsolation,
+    );
+    if (hostAgentUser !== undefined) {
+      const { assertHostAgentReady } =
+        await import("./incidents/response/host-agents");
+      await assertHostAgentReady(hostAgentUser, descendantIsolation);
+    }
     if (requestedRunnerId && sandbox !== undefined && sandbox !== false)
       throw new Error("Choose either Sandbox or a Runner for this session");
     const selectedRunner = requestedRunnerId

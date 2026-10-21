@@ -2,9 +2,11 @@
 // redaction and hook secrets. Pure apart from the context callbacks.
 import { randomBytes } from "node:crypto";
 import {
+  IMPACT_PLACEHOLDERS,
   SEVERITIES,
   type ExpirySource,
   type HttpSource,
+  type ImpactSource,
   type RedactedSignal,
   type Severity,
   type Signal,
@@ -16,6 +18,7 @@ import {
 import { nextRun, parseCron } from "../cron";
 import { compileSafeRegex } from "../shared/safe-regex";
 import { validateJsonMapping } from "./json-mapping";
+import { parseJsonPath } from "./jsonpath";
 import { validateMaintenanceWindows } from "./maintenance";
 
 export interface SignalValidationContext {
@@ -45,6 +48,7 @@ const MAX_BODY_CHARS = 16_384;
 const MAX_CONTAINS_CHARS = 1000;
 const MAX_DEPENDS_ON = 20;
 const MAX_RUN_ON_CHARS = 128;
+const MAX_IMPACT_WORDS_CHARS = 40;
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const HOST_NAME = /^[A-Za-z0-9.-]+$/;
 const DAY_MS = 86_400_000;
@@ -308,6 +312,162 @@ export function validateSource(value: unknown): SignalSource | FieldError {
   }
 }
 
+// --- impact --------------------------------------------------------------
+
+type ImpactSamples = Record<(typeof IMPACT_PLACEHOLDERS)[number], string>;
+
+/** Sample values a placeholder takes while its URL is checked. */
+const IMPACT_SAMPLES: ImpactSamples = {
+  since: "2026-01-01T00%3A00%3A00.000Z",
+  sinceMs: "0",
+  until: "2026-01-01T01%3A00%3A00.000Z",
+  untilMs: "3600000",
+};
+/** Other samples: a placeholder that changes the address between the two
+ *  is outside the path and query. */
+const OTHER_IMPACT_SAMPLES: ImpactSamples = {
+  since: "2026-01-02T00%3A00%3A00.000Z",
+  sinceMs: "86400000",
+  until: "2026-01-02T01%3A00%3A00.000Z",
+  untilMs: "90000000",
+};
+const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
+
+/** `url` with every known placeholder filled in from `samples`. */
+function renderImpactUrl(
+  url: string,
+  samples: ImpactSamples,
+): { url: string } | FieldError {
+  let unknown: string | undefined;
+  const rendered = url.replace(PLACEHOLDER, (whole, name: string) => {
+    if (Object.hasOwn(samples, name))
+      return samples[name as keyof ImpactSamples];
+    unknown ??= whole;
+    return whole;
+  });
+  if (unknown)
+    return { error: `Unknown placeholder ${unknown} in the impact URL` };
+  return { url: rendered };
+}
+
+/** The parts of a URL a placeholder may not change. */
+function fixedParts(raw: string): string | undefined {
+  try {
+    const url = new URL(raw);
+    return JSON.stringify([url.origin, url.username, url.password, url.hash]);
+  } catch {
+    return undefined;
+  }
+}
+
+function impactWords(
+  value: unknown,
+  field: "noun" | "label",
+): string | FieldError {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text || text.length > MAX_IMPACT_WORDS_CHARS)
+    return {
+      error: `Impact ${field} must be 1 to ${MAX_IMPACT_WORDS_CHARS} characters`,
+    };
+  return text;
+}
+
+function impactPath(
+  value: unknown,
+  field: "countPath" | "peoplePath",
+): string | FieldError {
+  if (typeof value !== "string")
+    return { error: `Impact ${field}: a JSONPath is required` };
+  const parsed = parseJsonPath(value);
+  if ("error" in parsed) return { error: `Impact ${field}: ${parsed.error}` };
+  return value.trim();
+}
+
+function validateHttpImpact(
+  value: Record<string, unknown>,
+  words: { noun: string; label: string },
+): ImpactSource | FieldError {
+  const url = typeof value.url === "string" ? value.url.trim() : "";
+  if (url.length > MAX_URL_CHARS)
+    return {
+      error: `The impact URL can be at most ${MAX_URL_CHARS} characters`,
+    };
+  const rendered = renderImpactUrl(url, IMPACT_SAMPLES);
+  if (isFieldError(rendered)) return rendered;
+  const checked = validateHttpSource({ kind: "http", url: rendered.url });
+  if (isFieldError(checked)) return { error: `Impact URL: ${checked.error}` };
+  const other = renderImpactUrl(url, OTHER_IMPACT_SAMPLES);
+  if (
+    isFieldError(other) ||
+    fixedParts(other.url) === undefined ||
+    fixedParts(other.url) !== fixedParts(rendered.url)
+  )
+    return {
+      error: "Impact URL placeholders may only be in the path or query",
+    };
+  const headers = validateHeaders(value.headers);
+  if (isFieldError(headers))
+    return { error: `Impact headers: ${headers.error}` };
+  const countPath = impactPath(value.countPath, "countPath");
+  if (isFieldError(countPath)) return countPath;
+  let peoplePath: string | undefined;
+  if (value.peoplePath !== undefined && value.peoplePath !== null) {
+    const path = impactPath(value.peoplePath, "peoplePath");
+    if (isFieldError(path)) return path;
+    peoplePath = path;
+  }
+  // One key order, so a stored impact and the same one sent back compare equal.
+  return {
+    kind: "http",
+    url,
+    ...(headers ? { headers } : {}),
+    countPath,
+    ...(peoplePath ? { peoplePath } : {}),
+    ...words,
+  };
+}
+
+/** The impact's own fields; {@link normalizeSignal} checks it fits the source. */
+function validateImpactFields(
+  value: unknown,
+): ImpactSource | undefined | FieldError {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) return { error: "Impact must be an object" };
+  if (value.kind !== "http" && value.kind !== "events")
+    return { error: "Impact kind must be http or events" };
+  const noun = impactWords(value.noun, "noun");
+  if (isFieldError(noun)) return noun;
+  const label = impactWords(value.label, "label");
+  if (isFieldError(label)) return label;
+  if (value.kind === "http") return validateHttpImpact(value, { noun, label });
+  if (value.count !== "fail-events" && value.count !== "value-sum")
+    return { error: "Impact count must be fail-events or value-sum" };
+  return { kind: "events", count: value.count, noun, label };
+}
+
+function impactFitsSource(
+  impact: ImpactSource,
+  source: SignalSource,
+): FieldError | undefined {
+  if (impact.kind === "events" && source.kind !== "webhook")
+    return { error: "Event counts need a webhook signal" };
+  return undefined;
+}
+
+/**
+ * Where a signal's impact is counted. `null` or `undefined` clears it. An
+ * http impact may name another service than `source`; event counts need a
+ * webhook.
+ */
+export function validateImpact(
+  value: unknown,
+  source: SignalSource,
+): ImpactSource | undefined | FieldError {
+  const impact = validateImpactFields(value);
+  if (impact === undefined || isFieldError(impact)) return impact;
+  return impactFitsSource(impact, source) ?? impact;
+}
+
 // --- rules ---------------------------------------------------------------
 
 function optionalRecoveries(value: unknown): number | undefined | FieldError {
@@ -473,6 +633,7 @@ const SIGNAL_FIELDS: Record<string, FieldValidator> = {
     return ids.length ? ids : undefined;
   },
   maintenance: (v) => validateMaintenanceWindows(v),
+  impact: (v) => validateImpactFields(v),
   runOn: (v) => {
     if (v === undefined || v === null) return undefined;
     if (typeof v !== "string") return { error: "runOn must be a runner id" };
@@ -551,6 +712,11 @@ export function normalizeSignal(next: Signal): Signal | FieldError {
   }
   if (!out.severity) out.severity = "major";
   if (out.maintenance === undefined) delete out.maintenance;
+  if (out.impact === undefined) delete out.impact;
+  else {
+    const misfit = impactFitsSource(out.impact, out.source);
+    if (misfit) return misfit;
+  }
   if (out.runOn === undefined) delete out.runOn;
   return out;
 }
@@ -627,6 +793,15 @@ export function redactSecretQuery(raw: string): string {
   );
 }
 
+function redactHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers))
+    out[name] = isSecretHeader(name) ? REDACTED : value;
+  return out;
+}
+
 /** The signal as it may leave the server: no hook secret, no secret header values. */
 export function redactSignal(signal: Signal): RedactedSignal {
   const { hookSecret: _secret, ...rest } = signal;
@@ -638,14 +813,19 @@ export function redactSignal(signal: Signal): RedactedSignal {
       ...signal.source,
       url: redactSecretQuery(signal.source.url),
     };
-    if (signal.source.headers) {
-      const headers: Record<string, string> = {};
-      for (const [name, value] of Object.entries(signal.source.headers))
-        headers[name] = isSecretHeader(name) ? REDACTED : value;
-      source.headers = headers;
-    }
+    if (signal.source.headers)
+      source.headers = redactHeaders(signal.source.headers);
     if (source.body !== undefined) source.body = REDACTED;
     out.source = source;
+  }
+  if (signal.impact?.kind === "http") {
+    const impact = {
+      ...signal.impact,
+      url: redactSecretQuery(signal.impact.url),
+    };
+    if (signal.impact.headers)
+      impact.headers = redactHeaders(signal.impact.headers);
+    out.impact = impact;
   }
   return out;
 }
@@ -800,6 +980,60 @@ export function restoreRedactedSource(
     source.body = check.stored.body;
   }
   return { source };
+}
+
+type HttpImpact = Extract<ImpactSource, { kind: "http" }>;
+
+function impactRequest(impact: HttpImpact): HttpSource {
+  return {
+    kind: "http",
+    url: impact.url,
+    ...(impact.headers ? { headers: impact.headers } : {}),
+  };
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  const from = originOf(a);
+  return from !== undefined && from === originOf(b);
+}
+
+/**
+ * Restore the secret query values and header values of an http impact sent
+ * back as {@link REDACTED}, from the stored impact, or else from the stored
+ * signal's own http source, only for the same origin. `fromSource` names
+ * the fields (`query.<name>`, `headers.<name>`, never values) taken from the
+ * source, for the audit.
+ */
+export function restoreRedactedImpact(
+  stored: ImpactSource | undefined,
+  next: ImpactSource,
+  storedSource?: SignalSource,
+): Restored<{ impact: ImpactSource; fromSource?: string[] }> {
+  if (next.kind !== "http") return { impact: next };
+  const request = impactRequest(next);
+  const fromImpact =
+    stored?.kind === "http" ? impactRequest(stored) : undefined;
+  const fromSource = storedSource?.kind === "http" ? storedSource : undefined;
+  const base =
+    fromImpact && sameOrigin(fromImpact.url, next.url)
+      ? fromImpact
+      : fromSource && sameOrigin(fromSource.url, next.url)
+        ? fromSource
+        : (fromImpact ?? fromSource);
+  const inImpact = (failure: { error: string }) => ({
+    error: failure.error.replace(/^Enter the /, "Enter the impact "),
+  });
+  const url = restoreRedactedUrl(base, request, {});
+  if ("error" in url) return inImpact(url);
+  const headers = restoreRedactedHeaders(base, request);
+  if ("error" in headers) return inImpact(headers);
+  const impact: HttpImpact = { ...next, url: url.url };
+  if (headers.headers) impact.headers = headers.headers;
+  else delete impact.headers;
+  const restored = restoredSecretFields(request);
+  return base === fromSource && restored.length
+    ? { impact, fromSource: restored }
+    : { impact };
 }
 
 /** The fields of a draft source sent back as {@link REDACTED}, by name only

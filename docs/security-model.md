@@ -391,15 +391,23 @@ tools is mounted only when the access grants what it reaches:
   compared whole (a prefix that getopt would expand, such as `--foll`, is
   refused), every letter of a short cluster must be listed, an option's value
   is read the way the program reads it, and `systemctl` and `docker` take
-  their subcommand first. It runs through the Runner command channel with no
-  user and no AWS role. Every word is quoted, and quoted again for an SSH hop
-  (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <alias>`), and the Runner's
-  POSIX shell (`bash -lc`, a login shell) runs the quoted command, so shell
-  metacharacters in an argument are data. Host commands and the Runner egress
+  their subcommand first. It reaches the Runner on the read-only incident
+  agent path of the Runner channel: no user, no AWS role, a Runner client
+  that takes command input, and only after the agent's access is resolved
+  again, just before dispatch, and still grants that Runner as a host. Every
+  word is quoted and the command goes to the Runner on stdin, where `bash -s`
+  (in a login shell) runs it with an empty stdin of its own; for a host
+  behind the Runner, the script's first line hands the rest to an SSH hop
+  (`ssh -T -o BatchMode=yes -o ConnectTimeout=10 -- <alias> sh -s`) whose
+  remote shell runs the same command. Shell metacharacters in an argument
+  are data, and the Runner's argv, its log and the Runner audit line carry
+  only `incident host_command <program>`. Host commands and the Runner egress
   route need a Linux or macOS Runner: one on Windows, whose PowerShell reads
   that quoting differently, is refused when the settings are saved and dropped
   when access is resolved, as is a Runner in maintenance or one whose repo
-  list leaves out the project. Secret-shaped paths are refused after the path
+  list leaves out the project. A production Runner reserved for the
+  project's incidents can serve hosts and the egress route this way; it can
+  never run an agent's session. Secret-shaped paths are refused after the path
   is normalised (`.`, `//`, `..`), in operands and option values alike: key
   and `.env` files (`.env*`, `.envrc`), home key stores (`.ssh`, `.docker`,
   `.kube`, `.aws`, `.gnupg`, the GitHub CLI's `.config/gh/hosts.yml`),
@@ -429,9 +437,17 @@ tools is mounted only when the access grants what it reaches:
   connects only to the checked addresses; the proxy route checks the proxy
   and the target, and its credential may only add `Proxy-Authorization`; the
   Runner route runs `curl` on the Runner, which is production's own network,
-  with `-q` first so no `.curlrc` is read, `--globoff` so `[]` and `{}` in the
-  URL stay literal, and the body passed with `--data-raw` so a body starting
-  with `@` is sent as given, never read as a file name.
+  on the same read-only path as host commands. The host resolves on the
+  Runner and is checked here first: cloud metadata addresses are always
+  refused, and a private address only for a host other than the listed one.
+  Every curl option, the URL, the headers and the body then go to
+  `curl --disable --config -` on stdin, so no `.curlrc` is read, `globoff`
+  keeps `[]` and `{}` in the URL literal, the body is `data-raw` so one
+  starting with `@` is sent as given, the status comes back on stderr where
+  a body cannot fake it, and the body is cut at 150 KB. The Runner needs curl
+  7.63 or newer. Its argv, its log and the Runner audit line carry only
+  `incident egress <METHOD> <host><path>`, with path segments that look like
+  identifiers replaced by `:id`.
   Redirects are returned, never followed, URLs with credentials are refused,
   and only a short list of harmless headers is forwarded.
 - `call_credential` goes through the keychain broker with the agent's

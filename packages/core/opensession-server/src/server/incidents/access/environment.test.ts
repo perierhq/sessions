@@ -87,6 +87,7 @@ test("runners and credentials, never a secret", async () => {
     isolated: true,
     commands: true,
     userRestricted: false,
+    reserved: false,
     connected: false,
   });
   expect(env.runner("prod-1")?.id).toBe("rn-prod");

@@ -13,6 +13,7 @@ import {
   type SignalValidationContext,
   generateHookSecret,
   normalizeSignal,
+  restoreRedactedImpact,
   restoreRedactedSource,
   validateSignalInput,
 } from "./signal-validation";
@@ -32,6 +33,46 @@ export function __setProjectCheckForTest(
   check: ((id: string) => boolean) | undefined,
 ): void {
   projectCheck = check;
+}
+
+type RunOnCheck = (signal: Signal) => Promise<string | null>;
+let runOnCheck: RunOnCheck | undefined;
+
+/** Install the check a signal with `runOn` must pass to be saved (a
+ *  message refuses it). Undefined removes it. */
+export function setSignalRunOnCheck(check: RunOnCheck | undefined): void {
+  runOnCheck = check;
+}
+
+/** Without an installed check nothing may run from a Runner. */
+async function runOnProblem(signal: Signal): Promise<string | null> {
+  if (!signal.runOn) return null;
+  if (!runOnCheck) return "Runner checks are not available on this server yet";
+  return runOnCheck(signal);
+}
+
+/** Who is writing: only a signed-in person (the route's
+ *  `verifiedPerson(ctx)`) may decide where a signal runs, or change what a
+ *  signal that runs from a production Runner fetches. */
+export interface SignalWriter {
+  signedInPerson?: boolean;
+}
+
+const RUN_ON_PERSON_ERROR =
+  "Only a signed-in person can change a signal that runs from a production Runner";
+
+/** Whether `after` changes where a signal runs, or what a Runner signal
+ *  fetches and for which project. */
+function changesRunnerCheck(
+  before: Signal | undefined,
+  after: Signal,
+): boolean {
+  if ((before?.runOn ?? undefined) !== (after.runOn ?? undefined)) return true;
+  if (!after.runOn || !before) return false;
+  return (
+    before.project !== after.project ||
+    JSON.stringify(before.source) !== JSON.stringify(after.source)
+  );
 }
 
 function projectExists(id: string): boolean {
@@ -83,16 +124,31 @@ function compact(signal: Signal): Signal {
 
 /**
  * Restore values sent back redacted (secret headers, query parameters, the
- * body) against `stored`, only while the address keeps its origin.
+ * body, and the same in an http impact) against `stored`, only while the
+ * address keeps its origin.
  */
 function withRestoredSecrets(
   next: Signal,
   stored: Signal | undefined,
-): Signal | { error: string } {
-  if (!next.source) return next;
-  const restored = restoreRedactedSource(stored?.source, next.source);
-  if ("error" in restored) return restored;
-  return { ...next, source: restored.source };
+): { signal: Signal; impactFromSource?: string[] } | { error: string } {
+  let out = next;
+  if (out.source) {
+    const restored = restoreRedactedSource(stored?.source, out.source);
+    if ("error" in restored) return restored;
+    out = { ...out, source: restored.source };
+  }
+  if (out.impact) {
+    const restored = restoreRedactedImpact(
+      stored?.impact,
+      out.impact,
+      stored?.source,
+    );
+    if ("error" in restored) return restored;
+    out = { ...out, impact: restored.impact };
+    if (restored.fromSource)
+      return { signal: out, impactFromSource: restored.fromSource };
+  }
+  return { signal: out };
 }
 
 export async function listSignals(): Promise<Signal[]> {
@@ -112,6 +168,7 @@ export async function getSignal(id: string): Promise<Signal | null> {
 export async function createSignal(
   input: Record<string, unknown>,
   by: string,
+  writer: SignalWriter = {},
 ): Promise<Signal | { error: string }> {
   const validated = await validateSignalInput(input, validationContext());
   if ("error" in validated) return validated;
@@ -131,8 +188,12 @@ export async function createSignal(
     undefined,
   );
   if ("error" in merged) return merged;
-  const normalized = normalizeSignal(merged);
+  const normalized = normalizeSignal(merged.signal);
   if ("error" in normalized) return normalized;
+  if (changesRunnerCheck(undefined, normalized) && !writer.signedInPerson)
+    return { error: RUN_ON_PERSON_ERROR };
+  const refused = await runOnProblem(normalized);
+  if (refused) return { error: refused };
   const signal = compact(normalized);
   if (needsHookSecret(signal)) signal.hookSecret = generateHookSecret();
   await signalDocuments().set(signal.id, signal);
@@ -154,14 +215,41 @@ export async function updateSignal(
   id: string,
   input: Record<string, unknown>,
   by: string,
+  writer: SignalWriter = {},
 ): Promise<Signal | { error: string } | null> {
   if (!isSignalId(id)) return null;
   const validated = await validateSignalInput(input, validationContext(id));
   if ("error" in validated) return validated;
   const freshSecret = generateHookSecret();
+  // The runOn check is async, so it runs before the compare-and-set on the
+  // record as it would be; the write then insists on the same Runner and
+  // project.
+  let checked: { runOn?: string; project: string } | undefined;
+  const stored = await getSignal(id);
+  if (stored === null) return null;
+  const restored = withRestoredSecrets(
+    { ...stored, ...validated.fields, id: stored.id } as Signal,
+    stored,
+  );
+  const preview =
+    "error" in restored ? restored : normalizeSignal(restored.signal);
+  if (!("error" in preview)) {
+    // Edits that leave where and what a Runner signal fetches alone (its
+    // name, rule, enabled) never need the Runner check: the run itself
+    // re-checks the Runner every time.
+    if (changesRunnerCheck(stored, preview)) {
+      if (!writer.signedInPerson) return { error: RUN_ON_PERSON_ERROR };
+      const refused = await runOnProblem(preview);
+      if (refused) return { error: refused };
+    }
+    checked = { runOn: preview.runOn, project: preview.project };
+  }
   let failure: { error: string } | undefined;
+  let impactChanged = false;
+  let impactFromSource: string[] | undefined;
   const updated = await signalDocuments().update<Signal>(id, (value) => {
     failure = undefined;
+    impactFromSource = undefined;
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
@@ -176,12 +264,30 @@ export async function updateSignal(
       } as Signal,
       value,
     );
-    const normalized = "error" in merged ? merged : normalizeSignal(merged);
+    const normalized =
+      "error" in merged ? merged : normalizeSignal(merged.signal);
     if ("error" in normalized) {
       failure = normalized;
       return value;
     }
+    if (changesRunnerCheck(value, normalized) && !writer.signedInPerson) {
+      failure = { error: RUN_ON_PERSON_ERROR };
+      return value;
+    }
+    if (
+      normalized.runOn &&
+      (checked?.runOn !== normalized.runOn ||
+        checked.project !== normalized.project)
+    ) {
+      failure = {
+        error: "The signal changed while it was being saved. Try again.",
+      };
+      return value;
+    }
+    if (!("error" in merged)) impactFromSource = merged.impactFromSource;
     const next = compact(normalized);
+    impactChanged =
+      JSON.stringify(next.impact) !== JSON.stringify(value.impact);
     // A hook secret is never rotated, not even by switching the source to
     // another kind and back; only hook kinds publish it (hookPathFor).
     if (value.hookSecret) next.hookSecret = value.hookSecret;
@@ -190,11 +296,19 @@ export async function updateSignal(
   });
   if (failure) return failure;
   if (updated === null) return null;
+  // An impact sent back as it was (redacted, then restored) is not a change.
+  const fields = [...validated.touched].filter(
+    (field) => field !== "impact" || impactChanged,
+  );
   incidentAudit({
     kind: "incident_signal_updated",
     signalId: id,
     by: by || "Anonymous",
-    fields: [...validated.touched].sort(),
+    fields: fields.sort(),
+    // Which impact secrets came from the signal's own source (names only).
+    ...(impactFromSource
+      ? { impactSecrets: { from: "source", fields: impactFromSource } }
+      : {}),
   });
   return updated;
 }

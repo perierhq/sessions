@@ -4,13 +4,16 @@ import {
   deleteSignal,
   getSignal,
   listSignals,
+  setSignalRunOnCheck,
   signalWriteCount,
   updateSignal,
 } from "./signal-store";
 import { appendObservations, recentObservations } from "./observation-store";
+import { redactSignal } from "./signal-validation";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
+const person = { signedInPerson: true };
 const http = {
   name: "Search",
   project: "acme",
@@ -170,4 +173,190 @@ test("deleting a signal forgets its observations in memory", async () => {
   expect(recentObservations(s.id)).toHaveLength(1);
   await deleteSignal(s.id, "Bo");
   expect(recentObservations(s.id)).toEqual([]);
+});
+
+test("an impact keeps its secret when sent back redacted", async () => {
+  const impact = {
+    kind: "http",
+    url: "https://logs.example.test/c?since={{since}}",
+    headers: { Authorization: "Bearer l0g" },
+    countPath: "$.failed",
+    noun: "searches failed",
+    label: "the request log",
+  } as const;
+  const s = await createSignal({ ...http, impact }, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  expect(s.impact).toEqual(impact);
+  const view = redactSignal(s);
+  expect(JSON.stringify(view)).not.toContain("l0g");
+  const renamed = await updateSignal(
+    s.id,
+    { name: "Search API", impact: view.impact },
+    "Bo",
+  );
+  expect(renamed).toMatchObject({ name: "Search API", impact });
+  const reworded = await updateSignal(
+    s.id,
+    { impact: { ...view.impact, noun: "searches lost" } },
+    "Bo",
+  );
+  expect(reworded).toMatchObject({
+    impact: { noun: "searches lost", headers: { Authorization: "Bearer l0g" } },
+  });
+  const cleared = await updateSignal(s.id, { impact: null }, "Bo");
+  expect(cleared && !("error" in cleared) && "impact" in cleared).toBe(false);
+  const updates = kit.audits.filter(
+    (a) => a.kind === "incident_signal_updated",
+  );
+  expect(updates.map((a) => a.fields)).toEqual([
+    ["name"],
+    ["impact"],
+    ["impact"],
+  ]);
+  expect(JSON.stringify(kit.audits)).not.toContain("l0g");
+});
+
+test("an impact that copies the source's secrets is audited by field name", async () => {
+  const s = await createSignal(http, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  const impact = {
+    kind: "http",
+    url: "https://acme.example.test/count",
+    headers: { Authorization: "[redacted]" },
+    countPath: "$.failed",
+    noun: "searches failed",
+    label: "the request log",
+  };
+  const updated = await updateSignal(s.id, { impact }, "Bo");
+  expect(updated).toMatchObject({
+    impact: { headers: { Authorization: "Bearer s3cret" } },
+  });
+  // Sent back unchanged: the impact's own secret, nothing from the source.
+  await updateSignal(
+    s.id,
+    { name: "Search API", impact: redactSignal(updated as never).impact },
+    "Bo",
+  );
+  const updates = kit.audits.filter(
+    (a) => a.kind === "incident_signal_updated",
+  );
+  expect(updates).toEqual([
+    {
+      kind: "incident_signal_updated",
+      signalId: s.id,
+      by: "Bo",
+      fields: ["impact"],
+      impactSecrets: { from: "source", fields: ["headers.Authorization"] },
+    },
+    {
+      kind: "incident_signal_updated",
+      signalId: s.id,
+      by: "Bo",
+      fields: ["name"],
+    },
+  ]);
+  expect(JSON.stringify(kit.audits)).not.toContain("s3cret");
+});
+
+test("a runOn check can refuse a signal", async () => {
+  const seen: string[] = [];
+  setSignalRunOnCheck(async (s) => {
+    seen.push(`${s.project}:${s.runOn}`);
+    return s.runOn === "runner-prod" && s.project === "acme"
+      ? null
+      : `${s.runOn} is not a production Runner for ${s.project}`;
+  });
+  try {
+    expect(
+      await createSignal({ ...http, runOn: "runner-lab" }, "Ada", person),
+    ).toEqual({ error: "runner-lab is not a production Runner for acme" });
+    const ok = await createSignal(
+      { ...http, runOn: "runner-prod" },
+      "Ada",
+      person,
+    );
+    if ("error" in ok) throw new Error(ok.error);
+    expect(
+      await updateSignal(ok.id, { runOn: "runner-lab" }, "Ada", person),
+    ).toEqual({
+      error: "runner-lab is not a production Runner for acme",
+    });
+    expect(
+      await updateSignal(ok.id, { project: "acme-api" }, "Ada", person),
+    ).toEqual({
+      error: "runner-prod is not a production Runner for acme-api",
+    });
+    expect((await getSignal(ok.id))?.project).toBe("acme");
+    const plain = await createSignal(http, "Ada");
+    expect("error" in plain).toBe(false);
+    expect(seen).not.toContain("acme:undefined");
+  } finally {
+    setSignalRunOnCheck(undefined);
+  }
+});
+
+test("runOn is refused while no Runner check is installed", async () => {
+  expect(
+    await createSignal({ ...http, runOn: "runner-prod" }, "Ada", person),
+  ).toEqual({ error: "Runner checks are not available on this server yet" });
+  const plain = await createSignal(http, "Ada", person);
+  if ("error" in plain) throw new Error(plain.error);
+  expect(
+    await updateSignal(plain.id, { runOn: "runner-prod" }, "Ada", person),
+  ).toEqual({ error: "Runner checks are not available on this server yet" });
+});
+
+test("only a signed-in person decides where a signal runs and what it fetches", async () => {
+  setSignalRunOnCheck(async () => null);
+  try {
+    const refused = {
+      error:
+        "Only a signed-in person can change a signal that runs from a production Runner",
+    };
+    expect(await createSignal({ ...http, runOn: "runner-prod" }, "Bo")).toEqual(
+      refused,
+    );
+    const plain = await createSignal(http, "Bo");
+    if ("error" in plain) throw new Error(plain.error);
+    expect(
+      await updateSignal(plain.id, { runOn: "runner-prod" }, "Bo"),
+    ).toEqual(refused);
+    const prod = await createSignal(
+      { ...http, runOn: "runner-prod" },
+      "Ada",
+      person,
+    );
+    if ("error" in prod) throw new Error(prod.error);
+    for (const change of [
+      { source: { kind: "http", url: "http://10.0.0.9/admin" } },
+      { project: "acme-api" },
+      { runOn: "runner-other" },
+      { runOn: null },
+    ])
+      expect([change, await updateSignal(prod.id, change, "Bo")]).toEqual([
+        change,
+        refused,
+      ]);
+    // Anything else stays open to everyone who could edit it before.
+    const renamed = await updateSignal(prod.id, { name: "Search API" }, "Bo");
+    expect(renamed).toMatchObject({ name: "Search API", runOn: "runner-prod" });
+    const moved = await updateSignal(
+      prod.id,
+      { source: { kind: "http", url: "https://acme.example.test/v2" } },
+      "Ada",
+      person,
+    );
+    expect(moved).toMatchObject({ runOn: "runner-prod" });
+    // Without a check, a Runner signal can still be renamed or turned off,
+    // but not moved.
+    setSignalRunOnCheck(undefined);
+    expect(
+      await updateSignal(prod.id, { enabled: false }, "Ada", person),
+    ).toMatchObject({ enabled: false, runOn: "runner-prod" });
+    expect(
+      await updateSignal(prod.id, { runOn: "runner-other" }, "Ada", person),
+    ).toEqual({ error: "Runner checks are not available on this server yet" });
+  } finally {
+    setSignalRunOnCheck(undefined);
+  }
 });

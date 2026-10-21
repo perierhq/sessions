@@ -63,7 +63,7 @@ beforeEach(() => {
   scrubbedWith = [];
 });
 
-test("runs a normalized argv, quoted, as nobody and without AWS", async () => {
+test("runs a normalized argv on stdin, as nobody and without AWS", async () => {
   const out = await runHostCommand(
     ctx(),
     {
@@ -81,11 +81,25 @@ test("runs a normalized argv, quoted, as nobody and without AWS", async () => {
     stderr: "",
     truncated: false,
   });
-  expect(calls[0]).toEqual({
+  expect(calls[0]).toMatchObject({
     runner: "rn-prod",
-    command: "journalctl -u app --since -1h --no-pager",
-    opts: { timeoutMs: 60_000, sessionId: "os-1", aws: false },
+    command: "exec bash -s",
+    opts: {
+      repo: "acme",
+      sessionId: "os-1",
+      timeoutMs: 60_000,
+      stdin: "{ journalctl -u app --since -1h --no-pager\n} </dev/null\n",
+      auditCommand: "incident host_command journalctl",
+      caller: {
+        kind: "incident-agent-readonly",
+        incidentId: "inc-1",
+        role: "investigator",
+        use: "host",
+      },
+    },
   });
+  expect(calls[0]!.opts.aws).toBeUndefined();
+  expect(calls[0]!.opts.user).toBeUndefined();
   expect(scrubbedWith[0]).toEqual(["kc-proxy"]);
   expect(kit.audits).toContainEqual({
     kind: "incident_host_command",
@@ -110,8 +124,9 @@ test("metacharacters stay data", async () => {
     },
     deps(),
   );
-  expect(calls[0].command).toBe(
-    "grep -c '403; rm -rf /' /var/log/app/access.log",
+  expect(calls[0]!.command).toBe("exec bash -s");
+  expect(calls[0]!.opts.stdin).toBe(
+    "{ grep -c '403; rm -rf /' /var/log/app/access.log\n} </dev/null\n",
   );
 });
 test("ssh hosts go through the Runner with a fixed option set", async () => {
@@ -125,9 +140,11 @@ test("ssh hosts go through the Runner with a fixed option set", async () => {
     },
     deps(),
   );
-  expect(calls[0].command).toBe(
-    "ssh -o BatchMode=yes -o ConnectTimeout=10 -- db-1 'cat /var/log/db.log'",
+  expect(calls[0]!.command).toBe("exec bash -s");
+  expect(calls[0]!.opts.stdin).toBe(
+    "exec ssh -T -o BatchMode=yes -o ConnectTimeout=10 -- db-1 sh -s\n{ cat /var/log/db.log\n} </dev/null\n",
   );
+  expect(calls[0]!.opts.auditCommand).toBe("incident host_command cat");
   await runHostCommand(
     ctx(),
     {
@@ -138,9 +155,9 @@ test("ssh hosts go through the Runner with a fixed option set", async () => {
     },
     deps(),
   );
-  // Quoted once for the Runner's shell and once for the remote one.
-  expect(calls[1].command).toBe(
-    String.raw`ssh -o BatchMode=yes -o ConnectTimeout=10 -- db-1 'grep -c '\''$(id)'\'' /var/log/db.log'`,
+  // Quoted once: the remote shell reads the command, not the Runner's.
+  expect(calls[1]!.opts.stdin).toBe(
+    "exec ssh -T -o BatchMode=yes -o ConnectTimeout=10 -- db-1 sh -s\n{ grep -c '$(id)' /var/log/db.log\n} </dev/null\n",
   );
 });
 test("refusals: other hosts, other programs, offline Runners", async () => {
@@ -240,3 +257,49 @@ test("long arguments are cut in the audit", async () => {
   const line = kit.audits.find((e) => e.kind === "incident_host_command");
   expect(String(line?.args).length).toBe(500);
 });
+test.skipIf(!Bun.which("bash"))(
+  "a real shell runs the script as data, with an empty stdin, directly or through the hop",
+  async () => {
+    const { hostCommandScript, HOST_COMMAND } = await import("./host-exec");
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    // A stand-in for ssh: checks the fixed options, then runs `sh -s` the
+    // way the remote host would.
+    const bin = mkdtempSync(join(tmpdir(), "host-exec-"));
+    writeFileSync(
+      join(bin, "ssh"),
+      '#!/bin/sh\n[ "$*" = "-T -o BatchMode=yes -o ConnectTimeout=10 -- db-1 sh -s" ] || { echo "bad ssh: $*" >&2; exit 9; }\nexec sh -s\n',
+    );
+    chmodSync(join(bin, "ssh"), 0o755);
+    const run = async (script: string) => {
+      const proc = Bun.spawn(["bash", "-c", HOST_COMMAND], {
+        stdin: new TextEncoder().encode(script),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { PATH: `${bin}:${process.env.PATH}` },
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { stdout, stderr, code };
+    };
+    try {
+      const argv = ["printf", "%s|", "a b", "$(id)", "`id`", "x; echo pwned"];
+      for (const ssh of [undefined, "db-1"]) {
+        expect(await run(hostCommandScript(argv, ssh))).toEqual({
+          stdout: "a b|$(id)|`id`|x; echo pwned|",
+          stderr: "",
+          code: 0,
+        });
+        // A program reading stdin gets nothing, never the rest of the script.
+        expect((await run(hostCommandScript(["cat"], ssh))).stdout).toBe("");
+      }
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  },
+);

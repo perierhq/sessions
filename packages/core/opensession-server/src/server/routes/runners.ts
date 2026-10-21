@@ -10,8 +10,10 @@ import {
   publicRunner,
   registerRunner,
   releaseRunnerReservation,
+  getRunner,
   removeRunner,
   reserveRunner,
+  reservedRunnerPatchProblem,
   touchRunner,
   updateRunner,
   authenticateRunner,
@@ -200,6 +202,9 @@ export async function handleRunnersRoutes(
       unknown
     > | null;
     if (!body) return Response.json({ error: "Invalid JSON" }, { status: 400 });
+    const current = getRunner(id);
+    const refused = current && reservedRunnerPatchProblem(current, body);
+    if (refused) return Response.json({ error: refused }, { status: 409 });
     const runner = updateRunner(id, body as any);
     if (!runner)
       return Response.json({ error: "Runner not found" }, { status: 404 });

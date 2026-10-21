@@ -424,6 +424,13 @@ export async function dropRunnerPortalRoutes(
   remove(stopped);
 }
 
+/** Portals on the Runner that are not stopped. */
+export function runnerPortalCount(runnerId: string): number {
+  return load().portals.filter(
+    (record) => record.runnerId === runnerId && record.state !== "stopped",
+  ).length;
+}
+
 export async function dropRunnerPortalsForRunner(
   runnerId: string,
 ): Promise<void> {

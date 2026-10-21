@@ -180,6 +180,48 @@ describe("automation descendant opening policy", () => {
     ).not.toThrow();
   });
 
+  test("an incident agent without a sandbox opens in a host worktree as the agent user", () => {
+    const incident = {
+      incidentId: "inc-1",
+      role: "investigator" as const,
+      signalId: null,
+      accessRevision: "r1",
+      spawn: { hosts: [], credentials: [], egress: null },
+    };
+    expect(() =>
+      assertAutomationDescendantOpeningIsolation({
+        automationDescendantPolicy: {
+          ...descendant,
+          incident,
+          hostAgentUser: "opensession-incident",
+        },
+        sandboxProvider: null,
+        runnerTarget: undefined,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAutomationDescendantOpeningIsolation({
+        automationDescendantPolicy: {
+          ...descendant,
+          hostAgentUser: "opensession-incident",
+        },
+        sandboxProvider: null,
+        runnerTarget: undefined,
+      }),
+    ).toThrow("Host worktrees are only for incident agents without a sandbox");
+    expect(() =>
+      assertAutomationDescendantOpeningIsolation({
+        automationDescendantPolicy: {
+          ...descendant,
+          incident,
+          hostAgentUser: "opensession-incident",
+        },
+        sandboxProvider: "daytona",
+        runnerTarget: undefined,
+      }),
+    ).toThrow("Host worktrees are only for incident agents without a sandbox");
+  });
+
   // The flag overrides the instance config, which on a developer box may
   // already opt untrusted runs into AWS: pin it per test, restore it after.
   const savedUntrustedRuns = process.env.AGENT_AWS_UNTRUSTED_RUNS;

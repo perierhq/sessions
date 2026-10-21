@@ -597,6 +597,11 @@ export interface AutomationDescendantPolicy {
   publication: "branch-pr-only";
   /** Incident agent: re-resolved at spawn, every turn and every incident tool call (incidents/access). */
   incident?: IncidentAgentBinding;
+  /** Server-set for incident agents without a sandbox: they work in a host
+   *  worktree and their bash runs as this low-privilege system user
+   *  (incidents/response/host-agents.ts). Never accepted from an HTTP body,
+   *  MCP tool or WebSocket message. */
+  hostAgentUser?: string;
 }
 
 export interface NativeSessionFile {

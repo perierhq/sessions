@@ -5,6 +5,9 @@ import type {
   SessionSummary,
 } from "./session-control";
 import { createWorkflowSessionController } from "./workflow-sessions";
+import type { WorkflowAutomationSessionPolicy } from "./workflow-types";
+
+const KNOWN_TEST_MODELS = ["pi/anthropic/claude-opus-5-5", "gpt-6.1-sol"];
 
 function summary(
   id: string,
@@ -37,9 +40,19 @@ function harness(options?: {
   pushed?: (session: SessionSummary) => boolean;
   dirty?: (session: SessionSummary) => boolean;
   parent?: Partial<SessionSummary>;
+  reportBack?: boolean;
+  automationSessionPolicy?: WorkflowAutomationSessionPolicy;
 }) {
   const sessions = new Map<string, SessionSummary>();
-  sessions.set("parent", summary("parent", options?.parent));
+  sessions.set(
+    "parent",
+    summary("parent", {
+      ...(options?.automationSessionPolicy
+        ? { automationId: options.automationSessionPolicy.automationId }
+        : {}),
+      ...options?.parent,
+    }),
+  );
   const creates: CreateSessionOpts[] = [];
   const sends: Array<{ id: string; message: string }> = [];
   const cancels: string[] = [];
@@ -94,9 +107,16 @@ function harness(options?: {
     user: "Jaap",
     allowSpawning: true,
     maxDepth: 2,
+    ...(options?.reportBack !== undefined
+      ? { reportBack: options.reportBack }
+      : {}),
+    ...(options?.automationSessionPolicy
+      ? { automationSessionPolicy: options.automationSessionPolicy }
+      : {}),
     deps: {
       control,
       baseUrl: "https://os.example.test",
+      resolveModel: (id) => (KNOWN_TEST_MODELS.includes(id) ? { id } : null),
       branchPushed: async (session) => options?.pushed?.(session) ?? true,
       hasUncommittedChanges: async (session) =>
         options?.dirty?.(session) ?? false,
@@ -461,5 +481,173 @@ describe("workflow durable sessions", () => {
       h.controller.spawn(foundationOpts, "request-incident"),
     ).rejects.toThrow("Incident agents cannot start other sessions");
     expect(h.creates).toEqual([]);
+  });
+});
+
+describe("per-child model", () => {
+  test("a child runs on its own model without the parent's pin", async () => {
+    const { controller, creates } = harness({
+      parent: {
+        model: "pi/anthropic/claude-opus-5-5",
+        accountId: "acct-1",
+        effort: "high",
+      },
+    });
+    await controller.spawn(
+      { prompt: "Verify", repo: "renderer", model: "gpt-6.1-sol" },
+      "req-1",
+    );
+    expect(creates[0]).toMatchObject({
+      model: "gpt-6.1-sol",
+      accountId: undefined,
+      effort: undefined,
+    });
+  });
+  test("same model keeps inheritance", async () => {
+    const { controller, creates } = harness({
+      parent: { model: "pi/anthropic/claude-opus-5-5", accountId: "acct-1" },
+    });
+    await controller.spawn(
+      { prompt: "x", repo: "renderer", model: "pi/anthropic/claude-opus-5-5" },
+      "req-2",
+    );
+    expect(creates[0]).toMatchObject({ accountId: "acct-1" });
+  });
+  test("unknown models are refused, not defaulted", async () => {
+    const { controller, creates } = harness();
+    await expect(
+      controller.spawn(
+        { prompt: "x", repo: "renderer", model: "nope" },
+        "req-3",
+      ),
+    ).rejects.toThrow('spawnSession() model "nope" is not a known model');
+    expect(creates).toHaveLength(0);
+  });
+  test("reportBack: false", async () => {
+    const { creates, controller } = harness({ reportBack: false });
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-4");
+    expect(creates[0].reportBack).toBe(false);
+    expect(creates[0].prompt).not.toContain("report back to the parent");
+  });
+  test("a server-built descendant policy replaces the empty default", async () => {
+    const { creates, controller } = harness({
+      automationSessionPolicy: {
+        automationId: "auto-1",
+        automationName: "A",
+        allowedRepos: ["renderer"],
+        allowedRunners: [],
+      },
+    });
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-5", {
+      descendantPolicy: (base) => ({
+        ...base,
+        mcpServers: ["sentry"],
+        allowedRunners: [],
+        publication: "branch-pr-only",
+      }),
+    });
+    expect(creates[0]).toMatchObject({
+      mcpServers: ["sentry"],
+      automationDescendantPolicy: {
+        automationId: "auto-1",
+        repo: "renderer",
+        mcpServers: ["sentry"],
+      },
+    });
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-6", {
+        descendantPolicy: (base) => ({
+          ...base,
+          repo: "other",
+          mcpServers: [],
+          allowedRunners: [],
+          publication: "branch-pr-only",
+        }),
+      }),
+    ).rejects.toThrow("Descendant policy does not match the automation");
+  });
+});
+
+describe("server-built descendant policies", () => {
+  const automationSessionPolicy: WorkflowAutomationSessionPolicy = {
+    automationId: "auto-1",
+    automationName: "A",
+    allowedRepos: ["renderer"],
+    allowedRunners: ["runner-a"],
+  };
+  const policy =
+    (over: Record<string, unknown> = {}) =>
+    (base: {
+      automationId: string;
+      automationName: string;
+      repo: string;
+      publicationRepo: string;
+      baseBranch: string;
+    }) => ({
+      ...base,
+      mcpServers: [],
+      allowedRunners: [],
+      publication: "branch-pr-only" as const,
+      ...over,
+    });
+
+  test("needs an automation session policy", async () => {
+    const { controller, creates } = harness();
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-1", {
+        descendantPolicy: policy(),
+      }),
+    ).rejects.toThrow(
+      "A server-built descendant policy needs an automation session policy",
+    );
+    expect(creates).toHaveLength(0);
+  });
+  test.each([
+    [{ publicationRepo: "acme/other" }],
+    [{ baseBranch: "release" }],
+    [{ publication: "direct" }],
+    [{ automationId: "auto-2" }],
+  ])("refuses a policy that does not match: %j", async (over) => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-2", {
+        descendantPolicy: policy(over),
+      }),
+    ).rejects.toThrow("Descendant policy does not match the automation");
+    expect(creates).toHaveLength(0);
+  });
+  test("cannot widen the automation's Runners", async () => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn({ prompt: "x", repo: "renderer" }, "req-3", {
+        descendantPolicy: policy({ allowedRunners: ["runner-a", "runner-b"] }),
+      }),
+    ).rejects.toThrow(
+      "Descendant policy allows a Runner the automation does not",
+    );
+    expect(creates).toHaveLength(0);
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-4", {
+      descendantPolicy: policy({ allowedRunners: ["runner-a"] }),
+    });
+    expect(creates[0]).toMatchObject({
+      automationDescendantPolicy: { allowedRunners: ["runner-a"] },
+    });
+  });
+  test("a child's Runner must be one the descendant policy allows", async () => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await expect(
+      controller.spawn(
+        { prompt: "x", repo: "renderer", runner: "runner-a" },
+        "req-5",
+        { descendantPolicy: policy({ allowedRunners: [] }) },
+      ),
+    ).rejects.toThrow("The child's policy does not allow Runner `runner-a`");
+    expect(creates).toHaveLength(0);
+    await controller.spawn(
+      { prompt: "x", repo: "renderer", runner: "runner-a" },
+      "req-6",
+      { descendantPolicy: policy({ allowedRunners: ["runner-a"] }) },
+    );
+    expect(creates[0]).toMatchObject({ runner: "runner-a" });
   });
 });

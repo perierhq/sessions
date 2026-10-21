@@ -11,6 +11,9 @@ import type {
   StripMarker,
   StripMarkerKind,
 } from "../../shared/incidents";
+import { stripIntervalMs } from "../../shared/incidents";
+
+export { stripIntervalMs } from "../../shared/incidents";
 
 export const MAX_STRIP_BARS = 120;
 /** Component lanes drawn beside the main lane (the JSON mapping's cap). */
@@ -19,7 +22,6 @@ export const MAX_STRIP_SIDE_LANES = 24;
 const HOUR_MS = 3_600_000;
 const MIN_RANGE_MS = HOUR_MS;
 const MAX_RANGE_MS = 7 * 24 * HOUR_MS;
-const DEFAULT_INTERVAL_MS = { http: 60_000, expiry: 6 * HOUR_MS } as const;
 
 export const MARKER_LABELS: Record<StripMarkerKind, string> = {
   detected: "Detected",
@@ -33,19 +35,6 @@ export const MARKER_LABELS: Record<StripMarkerKind, string> = {
 };
 
 const RANK: Record<ObservationResult, number> = { ok: 1, unknown: 2, fail: 3 };
-
-/** How often a signal is expected to produce an observation. */
-export function stripIntervalMs(signal: Signal): number {
-  switch (signal.source.kind) {
-    case "http":
-    case "expiry":
-      return signal.intervalMs ?? DEFAULT_INTERVAL_MS[signal.source.kind];
-    case "heartbeat":
-      return (signal.rule.kind === "missing" && signal.rule.everyMs) || HOUR_MS;
-    case "webhook":
-      return 60_000;
-  }
-}
 
 /** The interval, multiplied up so the range fits in {@link MAX_STRIP_BARS}. */
 export function stripBucketMs(

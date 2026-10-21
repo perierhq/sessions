@@ -1,4 +1,5 @@
 import { registerMemoryGauge } from "./memory-gauges";
+import { descendantBashRunAs } from "./descendant-workspace";
 import { incidentAccessMcpForSession } from "./incidents/access/mcp";
 import {
   sessionSpeed,
@@ -1505,15 +1506,15 @@ export function assertAutomationDescendantOpeningIsolation(
     "automationDescendantPolicy" | "sandboxProvider" | "runnerTarget"
   >,
 ): void {
-  if (
-    spec.automationDescendantPolicy &&
-    !spec.sandboxProvider &&
-    !spec.runnerTarget
-  )
-    throw new Error(
-      "Automation descendant opening turns require an isolated sandbox or Runner",
-    );
+  descendantBashRunAs(
+    spec.automationDescendantPolicy,
+    { sandbox: spec.sandboxProvider, runner: spec.runnerTarget?.id },
+    OPENING_ISOLATION,
+  );
 }
+
+const OPENING_ISOLATION =
+  "Automation descendant opening turns require an isolated sandbox or Runner";
 
 /** Complete durable setup without admitting an engine turn or adding a message. */
 async function openEmptyCreatedSession(
@@ -2099,10 +2100,20 @@ export async function openCreatedSession(
           ]
             .filter(Boolean)
             .join("\n\n") || undefined;
-      if (automationChild && !sandboxOpeningRun && !runnerOpeningRun)
-        throw new Error(
-          "Automation descendant opening turns require an isolated sandbox or Runner",
+      // A descendant that reaches the local path must be an incident agent
+      // whose bash runs as the incident agent user, ready right now.
+      let openingBashRunAs: string | undefined;
+      if (automationChild && !sandboxOpeningRun && !runnerOpeningRun) {
+        openingBashRunAs = descendantBashRunAs(
+          spec.automationDescendantPolicy,
+          {},
+          OPENING_ISOLATION,
         );
+        if (!openingBashRunAs) throw new Error(OPENING_ISOLATION);
+        const { assertHostAgentReady } =
+          await import("./incidents/response/host-agents");
+        await assertHostAgentReady(openingBashRunAs, OPENING_ISOLATION);
+      }
       const localOpeningRun =
         sandboxOpeningRun || runnerOpeningRun
           ? null
@@ -2142,6 +2153,7 @@ export async function openCreatedSession(
                 : {}),
               deniedTools: openingDeniedTools,
               publicationPolicy: openingTrust.publicationPolicy,
+              ...(openingBashRunAs ? { bashRunAs: openingBashRunAs } : {}),
               confirmTools: STRIPE_CONFIRM_TOOLS,
               aws: openingTrust.aws,
               author: commitAuthorFor(spec.user, spec.createdBy),

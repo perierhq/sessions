@@ -34,3 +34,14 @@ export function requestUser(ctx: RouteContext, claimed?: unknown): string {
   if (ctx.authUser?.name) return ctx.authUser.name.split(" ")[0];
   return typeof claimed === "string" ? claimed.trim() : "";
 }
+
+/** The signed-in person making this request, or "" when the identity is only
+ *  claimed (no web auth) or belongs to an automation. */
+export function verifiedPerson(ctx: RouteContext): string {
+  const identity = ctx.authUser as
+    | { login?: string; automation?: boolean }
+    | null
+    | undefined;
+  if (!identity?.login || identity.automation === true) return "";
+  return requestUser(ctx);
+}

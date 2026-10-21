@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Signal } from "../../shared/incidents";
+import type { ImpactSource, Signal } from "../../shared/incidents";
 import {
   REDACTED,
   type SignalValidationContext,
@@ -9,8 +9,10 @@ import {
   redactSecretQuery,
   redactSignal,
   restoreRedactedHeaders,
+  restoreRedactedImpact,
   restoreRedactedSource,
   restoredSecretFields,
+  validateImpact,
   validateSignalInput,
 } from "./signal-validation";
 
@@ -398,4 +400,250 @@ test("a test run restores secrets only for the same method and path", () => {
   ]);
   expect(restoredSecretFields(storedHttp)).toEqual([]);
   expect(restoredSecretFields({ kind: "webhook" })).toEqual([]);
+});
+
+const httpSource = {
+  kind: "http",
+  url: "https://acme.example.test/search",
+} as const;
+
+test("impact sources validate", () => {
+  const ok = validateImpact(
+    {
+      kind: "http",
+      url: "https://logs.example.test/count?since={{since}}",
+      headers: { Authorization: "Bearer k" },
+      countPath: "$.failed",
+      peoplePath: "$.users",
+      noun: "searches failed",
+      label: "the request log",
+    },
+    httpSource,
+  );
+  expect(ok).toMatchObject({ kind: "http", countPath: "$.failed" });
+  expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "https://logs.example.test/?q={{branch}}",
+        countPath: "$.n",
+        noun: "x",
+        label: "y",
+      },
+      httpSource,
+    ),
+  ).toEqual({ error: "Unknown placeholder {{branch}} in the impact URL" });
+  expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "https://logs.example.test/",
+        countPath: "$..n",
+        noun: "x",
+        label: "y",
+      },
+      httpSource,
+    ),
+  ).toEqual({ error: expect.stringContaining("Impact countPath") });
+  expect(
+    validateImpact(
+      { kind: "events", count: "fail-events", noun: "errors", label: "Sentry" },
+      httpSource,
+    ),
+  ).toEqual({ error: "Event counts need a webhook signal" });
+  expect(validateImpact(null, httpSource)).toBeUndefined();
+});
+
+test("impact fields: words, kinds, and events on a webhook", () => {
+  const webhook = { kind: "webhook" } as const;
+  expect(
+    validateImpact(
+      { kind: "events", count: "value-sum", noun: " errors ", label: "Sentry" },
+      webhook,
+    ),
+  ).toEqual({
+    kind: "events",
+    count: "value-sum",
+    noun: "errors",
+    label: "Sentry",
+  });
+  expect(
+    validateImpact(
+      { kind: "events", count: "all", noun: "errors", label: "Sentry" },
+      webhook,
+    ),
+  ).toEqual({ error: expect.any(String) });
+  expect(
+    validateImpact(
+      { kind: "events", count: "fail-events", noun: "", label: "Sentry" },
+      webhook,
+    ),
+  ).toEqual({ error: expect.stringContaining("noun") });
+  expect(
+    validateImpact(
+      {
+        kind: "events",
+        count: "fail-events",
+        noun: "errors",
+        label: "x".repeat(41),
+      },
+      webhook,
+    ),
+  ).toEqual({ error: expect.stringContaining("label") });
+  expect(validateImpact({ kind: "logs" }, webhook)).toEqual({
+    error: expect.any(String),
+  });
+  expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "ftp://logs.example.test/?ms={{sinceMs}}",
+        countPath: "$.n",
+        noun: "x",
+        label: "y",
+      },
+      webhook,
+    ),
+  ).toEqual({ error: expect.stringContaining("http") });
+  // An http impact may sit on any signal: the log is often another service.
+  expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "https://logs.example.test/?ms={{sinceMs}}",
+        countPath: "$.n",
+        peoplePath: "users",
+        noun: "x",
+        label: "y",
+      },
+      webhook,
+    ),
+  ).toMatchObject({ kind: "http", peoplePath: "users" });
+  expect(
+    validateImpact(
+      {
+        kind: "http",
+        url: "https://logs.example.test/c?from={{since}}&to={{until}}&a={{sinceMs}}&b={{untilMs}}",
+        countPath: "$.n",
+        noun: "x",
+        label: "y",
+      },
+      webhook,
+    ),
+  ).toMatchObject({ kind: "http" });
+  expect(
+    normalizeSignal({
+      ...base,
+      impact: { kind: "events", count: "fail-events", noun: "x", label: "y" },
+    }),
+  ).toEqual({ error: "Event counts need a webhook signal" });
+});
+
+test("impact placeholders stay in the path and query", () => {
+  const impactAt = (url: string) =>
+    validateImpact(
+      { kind: "http", url, countPath: "$.n", noun: "x", label: "y" },
+      { kind: "http", url: "https://acme.example.test/" },
+    );
+  const refused = {
+    error: "Impact URL placeholders may only be in the path or query",
+  };
+  for (const url of [
+    "https://logs{{sinceMs}}.example.test/c",
+    "https://logs.example.test:8{{sinceMs}}/c",
+    "https://logs.example.test/c#{{since}}",
+  ])
+    expect([url, impactAt(url)]).toEqual([url, refused]);
+  // Userinfo is refused whatever it holds.
+  expect(impactAt("https://u{{sinceMs}}@logs.example.test/c")).toEqual({
+    error: expect.stringContaining("credentials"),
+  });
+  for (const url of [
+    "https://logs.example.test/{{sinceMs}}/c?to={{until}}",
+    "https://logs.example.test/c?from={{since}}&{{untilMs}}",
+  ])
+    expect([url, impactAt(url)]).toMatchObject([url, { kind: "http" }]);
+});
+
+test("impact secrets are redacted and restored like the source's", () => {
+  const signal = {
+    ...base,
+    impact: {
+      kind: "http",
+      url: "https://logs.example.test/c?api_key=zzz",
+      headers: { Authorization: "Bearer k" },
+      countPath: "$.n",
+      noun: "x",
+      label: "y",
+    },
+  } as Signal;
+  const out = redactSignal(signal);
+  expect(JSON.stringify(out)).not.toContain("zzz");
+  expect(JSON.stringify(out)).not.toContain("Bearer k");
+  expect(restoreRedactedImpact(signal.impact, out.impact!)).toEqual({
+    impact: signal.impact!,
+  });
+  expect(
+    restoreRedactedImpact(signal.impact, {
+      ...out.impact!,
+      url: "https://other.example.test/c?api_key=[redacted]",
+    } as ImpactSource),
+  ).toEqual({ error: expect.stringContaining("again for the new address") });
+  expect(restoreRedactedImpact(undefined, out.impact!)).toEqual({
+    error: expect.stringContaining("Enter the impact"),
+  });
+});
+
+test("an impact takes redacted secrets from the signal's own source only on its origin", () => {
+  const source = {
+    kind: "http",
+    url: "https://acme.example.test/health?api_key=src-key",
+    headers: { Authorization: "Bearer src" },
+  } as const;
+  const onAcme = {
+    kind: "http",
+    url: `https://acme.example.test/count?api_key=${REDACTED}`,
+    headers: { Authorization: REDACTED },
+    countPath: "$.n",
+    noun: "x",
+    label: "y",
+  } as ImpactSource;
+  const fromSource = {
+    ...onAcme,
+    url: "https://acme.example.test/count?api_key=src-key",
+    headers: { Authorization: "Bearer src" },
+  };
+  // Same origin as the source: its secrets fill in, and say so.
+  expect(restoreRedactedImpact(undefined, onAcme, source)).toEqual({
+    impact: fromSource,
+    fromSource: ["query.api_key", "headers.Authorization"],
+  });
+  // Another origin: refused.
+  const onLogs = {
+    ...onAcme,
+    url: `https://logs.example.test/c?api_key=${REDACTED}`,
+  } as ImpactSource;
+  expect(restoreRedactedImpact(undefined, onLogs, source)).toEqual({
+    error: "Enter the impact api_key value again for the new address",
+  });
+  // An impact stored on origin B, the source on origin A.
+  const storedOnLogs = {
+    ...onAcme,
+    url: "https://logs.example.test/c?api_key=log-key",
+    headers: { Authorization: "Bearer log" },
+  } as ImpactSource;
+  expect(restoreRedactedImpact(storedOnLogs, onLogs, source)).toEqual({
+    impact: storedOnLogs,
+  });
+  expect(restoreRedactedImpact(storedOnLogs, onAcme, source)).toEqual({
+    impact: fromSource,
+    fromSource: ["query.api_key", "headers.Authorization"],
+  });
+  const onOther = {
+    ...onAcme,
+    url: `https://other.example.test/c?api_key=${REDACTED}`,
+  } as ImpactSource;
+  expect(restoreRedactedImpact(storedOnLogs, onOther, source)).toEqual({
+    error: expect.stringContaining("again for the new address"),
+  });
 });

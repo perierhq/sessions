@@ -207,6 +207,38 @@ function isRefusal(error: unknown): boolean {
   );
 }
 
+function isTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "TimeoutError"
+  );
+}
+
+/** Errors a Runner transport (`runner-fetch.ts`) throws from `net.resolve`
+ *  or `net.send`: an offline or otherwise unusable Runner says nothing
+ *  about the service, a body over the Runner's cap is a failure like any
+ *  other size failure. */
+function transportStop(
+  error: unknown,
+  failed: ObservationResult,
+): RunStop | null {
+  const e = error as {
+    code?: unknown;
+    runnerName?: unknown;
+    limitKb?: unknown;
+  };
+  if (typeof error !== "object" || error === null) return null;
+  if (e.code === "RUNNER_OFFLINE")
+    return new RunStop("unknown", `Runner offline: ${String(e.runnerName)}`);
+  // Anything else wrong with the Runner says nothing about the service.
+  if (e.code === "RUNNER_UNAVAILABLE")
+    return new RunStop("unknown", errorMessage(error));
+  if (e.code === "BODY_TOO_LARGE")
+    return new RunStop(failed, `Response over ${String(e.limitKb)} KB`);
+  return null;
+}
+
 function errorMessage(error: unknown): string {
   return redactOutputUrl(
     error instanceof Error ? error.message : String(error),
@@ -301,6 +333,8 @@ export async function runHttpSource(
         if (signal.aborted) throw timedOut();
         if (isRefusal(error))
           throw new RunStop("unknown", refusalDetail(error));
+        const transport = transportStop(error, failed);
+        if (transport) throw transport;
         throw new RunStop(
           failed,
           `Could not reach ${hostOf(current)}: ${errorMessage(error)}`,
@@ -344,9 +378,11 @@ export async function runHttpSource(
           signal,
         );
       } catch (error) {
-        if (signal.aborted) throw timedOut();
+        if (signal.aborted || isTimeout(error)) throw timedOut();
         if (isRefusal(error))
           throw new RunStop("unknown", refusalDetail(error));
+        const transport = transportStop(error, failed);
+        if (transport) throw transport;
         throw new RunStop(
           failed,
           `Could not reach ${target.hostname}: ${errorMessage(error)}`,

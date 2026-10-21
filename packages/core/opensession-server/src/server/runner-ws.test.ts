@@ -1,16 +1,20 @@
 import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as auditModule from "./audit";
 import * as commandAws from "./runner-command-aws";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   createRunnerPairing,
+  INCIDENT_SERVICE_USER,
   listRunners,
   registerRunner,
   removeRunner,
+  reserveRunnerForIncidents,
   updateRunner,
 } from "./runners";
 import {
+  execOnIncidentRunner,
   execOnRunner,
   launchRunnerHost,
   openRunnerTerminal,
@@ -18,6 +22,7 @@ import {
   resizeRunnerTerminal,
   runnerWsClose,
   runnerWsMessage,
+  runnerTerminalCount,
   runnerWsOpen,
   stopRunnerTerminal,
   writeRunnerTerminal,
@@ -214,6 +219,7 @@ describe("Runner WebSocket policy", () => {
       terminalId: frame.id,
       cwd: "/home/ubuntu/worktrees/renderer-s1",
     });
+    expect(runnerTerminalCount(registered.runner.id)).toBe(1);
 
     // Every later frame carries the protocol version, or the Runner drops it.
     writeRunnerTerminal(registered.runner.id, frame.id, "bHM K");
@@ -224,7 +230,55 @@ describe("Runner WebSocket policy", () => {
       { t: "terminal_resize", id: frame.id, cols: 80, rows: 24, version: 1 },
       { t: "terminal_stop", id: frame.id, version: 1 },
     ]);
+    expect(runnerTerminalCount(registered.runner.id)).toBe(0);
     runnerWsClose(ws);
+  });
+
+  test("counts a Runner's open terminals until they exit or it drops", async () => {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "mac-mini",
+      platform: "darwin",
+      arch: "arm64",
+      address: "100.101.102.105",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    const sent: string[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      send: (frame: string) => sent.push(frame),
+      close: () => {},
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1 }));
+    const open = async () => {
+      const opening = openRunnerTerminal({
+        runnerId: id,
+        sessionId: "s1",
+        repo: "renderer",
+        workspacePath: "/w",
+        vm: { name: "sbx-s1", user: "admin", cwd: "/w" },
+      });
+      const frame = JSON.parse(sent.shift()!);
+      runnerWsMessage(
+        ws,
+        JSON.stringify({
+          t: "terminal_ready",
+          id: frame.id,
+          operationToken: frame.operationToken,
+        }),
+      );
+      return (await opening).terminalId;
+    };
+    const first = await open();
+    await open();
+    expect(runnerTerminalCount(id)).toBe(2);
+    runnerWsMessage(ws, JSON.stringify({ t: "terminal_exit", id: first }));
+    expect(runnerTerminalCount(id)).toBe(1);
+    runnerWsClose(ws);
+    expect(runnerTerminalCount(id)).toBe(0);
   });
 
   test("blocks exec when maintenance is enabled after connection", async () => {
@@ -382,5 +436,427 @@ describe("Runner command AWS dispatch", () => {
     } finally {
       mint.mockRestore();
     }
+  });
+});
+
+describe("Runner command input and audit labels", () => {
+  async function withRunner(
+    hello: Record<string, unknown>,
+    run: (id: string, sent: any[]) => Promise<void>,
+  ) {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "stdin-runner",
+      platform: "linux",
+      arch: "x64",
+      address: "100.101.102.106",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    const sent: any[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      close() {},
+      send(frame: string) {
+        const message = JSON.parse(frame);
+        sent.push(message);
+        if (message.t === "exec")
+          queueMicrotask(() =>
+            runnerWsMessage(
+              ws,
+              JSON.stringify({
+                t: "exit",
+                id: message.id,
+                operationToken: message.operationToken,
+                code: 0,
+              }),
+            ),
+          );
+      },
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1, ...hello }));
+    try {
+      await run(id, sent);
+    } finally {
+      runnerWsClose(ws);
+    }
+  }
+
+  test("input rides the frame and the audit records the caller's label", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({ execStdin: true }, async (id, sent) => {
+        await execOnRunner(id, "curl --disable --config -", {
+          stdin: 'header = "Authorization: Bearer s3cret"\n',
+          auditCommand: "incident http check sig-1",
+        });
+        expect(sent[0]).toMatchObject({
+          t: "exec",
+          command: "curl --disable --config -",
+          stdin: 'header = "Authorization: Bearer s3cret"\n',
+          label: "incident http check sig-1",
+        });
+      });
+      const events = audits.mock.calls.map((call) => call[0]);
+      expect(events.map((e) => e.msg)).toEqual([
+        "runner_command_start",
+        "runner_command_finish",
+      ]);
+      expect(events[0].command).toBe("incident http check sig-1");
+      expect(JSON.stringify(events)).not.toContain("s3cret");
+      expect(JSON.stringify(events)).not.toContain("--config");
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("without a label the audit keeps the command head", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({}, async (id, sent) => {
+        await execOnRunner(id, "echo probe");
+        expect(sent[0].stdin).toBeUndefined();
+        expect(sent[0].label).toBeUndefined();
+      });
+      expect(audits.mock.calls[0]![0].command).toBe("echo probe");
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("a Runner that cannot take input is refused before dispatch", async () => {
+    await withRunner({}, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "curl --disable --config -", { stdin: "url = x" }),
+      ).rejects.toMatchObject({
+        code: "RUNNER_UNAVAILABLE",
+        message: expect.stringContaining("Update Runner stdin-runner"),
+      });
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("Runner problems are typed so callers can tell them from failures", async () => {
+    await expect(execOnRunner("runner-missing", "echo")).rejects.toMatchObject({
+      code: "RUNNER_UNAVAILABLE",
+    });
+  });
+});
+
+describe("Incident service commands", () => {
+  async function withRunner(
+    hello: Record<string, unknown>,
+    reserve: boolean,
+    run: (id: string, sent: any[]) => Promise<void>,
+  ) {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "prod-runner",
+      platform: "linux",
+      arch: "x64",
+      address: "100.101.102.107",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    if (reserve) reserveRunnerForIncidents(id, { repos: ["acme"] });
+    const sent: any[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      close() {},
+      send(frame: string) {
+        const message = JSON.parse(frame);
+        sent.push(message);
+        if (message.t === "exec")
+          queueMicrotask(() =>
+            runnerWsMessage(
+              ws,
+              JSON.stringify({
+                t: "exit",
+                id: message.id,
+                operationToken: message.operationToken,
+                code: 0,
+              }),
+            ),
+          );
+      },
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1, ...hello }));
+    try {
+      await run(id, sent);
+    } finally {
+      runnerWsClose(ws);
+    }
+  }
+  const input = {
+    repo: "acme",
+    stdin: "script",
+    auditCommand: "incident action rollback",
+    timeoutMs: 5_000,
+  };
+
+  test("runs on a reserved Runner as the incident service", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({ execStdin: true }, true, async (id, sent) => {
+        expect(await execOnIncidentRunner(id, "bash -s", input)).toMatchObject({
+          code: 0,
+        });
+        expect(sent[0]).toMatchObject({ command: "bash -s", stdin: "script" });
+      });
+      expect(audits.mock.calls[0]![0]).toMatchObject({
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        command: "incident action rollback",
+      });
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("a reserved Runner refuses every other caller", async () => {
+    await withRunner({ execStdin: true }, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "id", { user: INCIDENT_SERVICE_USER, repo: "acme" }),
+      ).rejects.toThrow("not permitted");
+      await expect(
+        execOnRunner(id, "id", { user: "Ada", repo: "acme" }),
+      ).rejects.toThrow("not permitted");
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("Runner problems say what is wrong with the Runner", async () => {
+    await withRunner({ execStdin: true }, false, async (id) => {
+      await expect(execOnIncidentRunner(id, "bash -s", input)).rejects.toThrow(
+        "Runner prod-runner is not reserved for incidents",
+      );
+    });
+    await withRunner({}, true, async (id, sent) => {
+      await expect(
+        execOnIncidentRunner(id, "bash -s", input),
+      ).rejects.toMatchObject({
+        code: "RUNNER_UNAVAILABLE",
+        message:
+          "Update Runner prod-runner: it is too old to run incident checks and actions",
+      });
+      expect(sent).toEqual([]);
+    });
+    await withRunner({ execStdin: true }, true, async (id) => {
+      updateRunner(id, { maintenance: true });
+      await expect(execOnIncidentRunner(id, "bash -s", input)).rejects.toThrow(
+        "Runner prod-runner is in maintenance",
+      );
+      updateRunner(id, { maintenance: false });
+      await expect(
+        execOnIncidentRunner(id, "bash -s", { ...input, repo: "acme-api" }),
+      ).rejects.toThrow(
+        "Runner prod-runner does not allow commands for acme-api",
+      );
+    });
+    await expect(
+      execOnIncidentRunner("runner-gone", "bash -s", input),
+    ).rejects.toThrow("Runner runner-gone is not paired");
+  });
+});
+
+describe("Incident agent read-only commands", () => {
+  async function withRunner(
+    hello: Record<string, unknown>,
+    reserve: boolean,
+    run: (id: string, sent: any[]) => Promise<void>,
+    patch: Parameters<typeof updateRunner>[1] = {},
+  ) {
+    const { code } = createRunnerPairing("tester");
+    const registered = registerRunner({
+      code,
+      name: "prod-runner",
+      platform: "linux",
+      arch: "x64",
+      address: "100.101.102.108",
+    });
+    if (!registered.ok) throw new Error(registered.error);
+    const id = registered.runner.id;
+    if (reserve) reserveRunnerForIncidents(id, { repos: ["acme"] });
+    else
+      updateRunner(id, {
+        permissions: { commands: true },
+        ...patch,
+      });
+    const sent: any[] = [];
+    const ws = {
+      data: { kind: "runner", runnerId: id },
+      close() {},
+      send(frame: string) {
+        const message = JSON.parse(frame);
+        sent.push(message);
+        if (message.t === "exec")
+          queueMicrotask(() =>
+            runnerWsMessage(
+              ws,
+              JSON.stringify({
+                t: "exit",
+                id: message.id,
+                operationToken: message.operationToken,
+                code: 0,
+              }),
+            ),
+          );
+      },
+    };
+    runnerWsOpen(ws);
+    runnerWsMessage(ws, JSON.stringify({ t: "hello", version: 1, ...hello }));
+    try {
+      await run(id, sent);
+    } finally {
+      runnerWsClose(ws);
+    }
+  }
+  const caller = (refusal: string | null = null) => ({
+    kind: "incident-agent-readonly" as const,
+    incidentId: "inc-1",
+    role: "investigator",
+    use: "host" as const,
+    authorize: async () => refusal,
+  });
+  const input = (over: Record<string, unknown> = {}) => ({
+    repo: "acme",
+    sessionId: "os-1",
+    stdin: "{ 'journalctl' '-u' 'acme-api' '--since' '-1h'\n} </dev/null\n",
+    auditCommand: "incident host_command journalctl",
+    timeoutMs: 5_000,
+    caller: caller(),
+    ...over,
+  });
+
+  test("a granted agent runs on a reserved Runner, with a label and no command text in the audit", async () => {
+    const audits = spyOn(auditModule, "auditAsync").mockImplementation(
+      () => {},
+    );
+    try {
+      await withRunner({ execStdin: true }, true, async (id, sent) => {
+        expect(await execOnRunner(id, "exec bash -s", input())).toMatchObject({
+          code: 0,
+        });
+        expect(sent[0]).toMatchObject({
+          t: "exec",
+          command: "exec bash -s",
+          stdin: input().stdin,
+          label: "incident host_command journalctl",
+        });
+        expect(sent[0].awsEnv).toBeUndefined();
+      });
+      const events = audits.mock.calls.map((call) => call[0]);
+      expect(events[0]).toMatchObject({
+        msg: "runner_command_start",
+        command: "incident host_command journalctl",
+        caller: "incident-agent-readonly",
+        incident_id: "inc-1",
+        incident_role: "investigator",
+        repo: "acme",
+      });
+      expect(events[0]!.user).toBeUndefined();
+      expect(JSON.stringify(events)).not.toContain("journalctl' '-u'");
+      expect(JSON.stringify(events)).not.toContain("acme-api");
+    } finally {
+      audits.mockRestore();
+    }
+  });
+
+  test("without a fresh grant nothing is sent", async () => {
+    await withRunner({ execStdin: true }, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "exec bash -s", input({ caller: caller("No host") })),
+      ).rejects.toThrow("Access refused: No host");
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("the path takes input on stdin, a label and no AWS, or refuses", async () => {
+    await withRunner(
+      { execStdin: true, execAws: true },
+      true,
+      async (id, sent) => {
+        await expect(
+          execOnRunner(id, "exec bash -s", input({ aws: true })),
+        ).rejects.toThrow("Incident agent commands never get AWS credentials");
+        await expect(
+          execOnRunner(id, "exec bash -s", input({ stdin: undefined })),
+        ).rejects.toThrow("Incident agent commands take their input on stdin");
+        await expect(
+          execOnRunner(id, "exec bash -s", input({ auditCommand: undefined })),
+        ).rejects.toThrow("Incident agent commands need an audit label");
+        await expect(
+          execOnRunner(id, "exec bash -s", input({ user: "Ada" })),
+        ).rejects.toThrow("Incident agent commands run as nobody");
+        expect(sent).toEqual([]);
+      },
+    );
+  });
+
+  test("an old client is told to update, and another project's Runner refuses", async () => {
+    await withRunner({}, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "exec bash -s", input()),
+      ).rejects.toMatchObject({
+        code: "RUNNER_UNAVAILABLE",
+        message:
+          "Update Runner prod-runner: it is too old to run incident agent commands",
+      });
+      expect(sent).toEqual([]);
+    });
+    await withRunner({ execStdin: true }, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "exec bash -s", input({ repo: "acme-api" })),
+      ).rejects.toThrow(
+        "Runner prod-runner does not allow incident agent commands for acme-api",
+      );
+      updateRunner(id, { maintenance: true });
+      await expect(execOnRunner(id, "exec bash -s", input())).rejects.toThrow(
+        "Runner prod-runner is in maintenance",
+      );
+      expect(sent).toEqual([]);
+    });
+  });
+
+  test("an ordinary Runner takes the same path, under its own user list", async () => {
+    await withRunner({ execStdin: true }, false, async (id, sent) => {
+      expect(await execOnRunner(id, "exec bash -s", input())).toMatchObject({
+        code: 0,
+      });
+      expect(sent).toHaveLength(1);
+    });
+    await withRunner(
+      { execStdin: true },
+      false,
+      async (id, sent) => {
+        await expect(execOnRunner(id, "exec bash -s", input())).rejects.toThrow(
+          "Runner prod-runner does not allow incident agent commands for acme",
+        );
+        expect(sent).toEqual([]);
+      },
+      { allowedUsers: ["Ada"] },
+    );
+  });
+
+  test("a reserved Runner still refuses an ordinary command", async () => {
+    await withRunner({ execStdin: true }, true, async (id, sent) => {
+      await expect(
+        execOnRunner(id, "cat /etc/hostname", {
+          repo: "acme",
+          sessionId: "os-1",
+        }),
+      ).rejects.toThrow("not permitted");
+      expect(sent).toEqual([]);
+    });
   });
 });

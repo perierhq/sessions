@@ -313,6 +313,48 @@ managed root. They can access anything available to the Runner's service user.
 Automation sessions never receive Runner tools. Only attach machines the
 workspace intends to trust.
 
+## Production Runners for incidents
+
+Incidents can run a signal's http checks and a project's actions from a
+production Runner, so a check sees what production sees. Binding a Runner to
+a project's incidents reserves it:
+
+- Only Sessions' incident service runs commands on it, as the user
+  `sessions:incidents`, for the projects it is bound to. No session, agent,
+  terminal, Portal or full session can use it, whoever asks, and the
+  `opensession-runners` tools report it as reserved.
+- The one exception is an incident agent of a project it is bound to, whose
+  access settings grant this Runner as a read-only host or as the egress
+  route. Its `host_command` and `egress_fetch` calls reach the Runner on a
+  read-only path of their own: no user, never the Runner's AWS role, input
+  on stdin and a label in the logs, and only after the agent's access is
+  resolved again just before the command is sent. An agent's session can
+  never run on it.
+- Pairing a production Runner needs a signed-in person and always registers a
+  new Runner, even when the machine's name matches a paired one. Binding an
+  existing Runner that serves other repositories asks for confirmation first,
+  since they lose it.
+- Windows Runners cannot be bound.
+
+Checks, actions and incident agents' host commands and egress send their
+request or script to the Runner on stdin, never on the command line: curl
+reads every option from `--config -`, and an action or a host command runs as
+`bash -s`. The audit log and the Runner log record a label such as
+`incident http check <signal>`, `incident action <action>`,
+`incident host_command <program>` or `incident egress <METHOD> <host><path>`
+instead of the command. This needs a Runner client that advertises command
+input (`execStdin` in its hello). An older client keeps working for
+everything else, but its incident checks report unknown with "Update Runner
+<name>", its actions do not start, and agents' host commands and egress on it
+fail with the same instruction. Run `opensession update` on the machine, then
+restart the Runner: `systemctl --user restart opensession-runner` on Linux, or
+`opensession runner service install` on macOS, which reloads the
+LaunchAgent. It reconnects with the new capability.
+
+A problem with the Runner itself, such as offline, in maintenance, not
+permitted, too old or disconnected mid-check, makes a check unknown, never a
+failure, and leaves an action's outcome unknown for a person to check.
+
 ## Operator-managed migration
 
 The target must already contain a compatible Open Session Runner client.

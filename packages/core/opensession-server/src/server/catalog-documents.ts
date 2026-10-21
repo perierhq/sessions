@@ -54,6 +54,8 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   "incident-signals",
   // Incidents with their timelines (incidents/incident-store.ts).
   "incidents",
+  // Per-project incident settings (incidents/response/project-settings.ts).
+  "incident-projects",
   // Per-project access settings for incident agents, written only through
   // the settings API (incidents/access/settings-store.ts).
   "incident-access",

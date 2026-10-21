@@ -23,6 +23,7 @@ import {
   deleteSignal,
   getSignal,
   listSignals,
+  setSignalRunOnCheck,
 } from "../incidents/signal-store";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import {
@@ -114,7 +115,8 @@ test("validation errors and attribution without sign-in", async () => {
     publicPrefix: "/backstage",
     authUser: null,
   });
-  expect((await res!.json()).createdBy).toBe("Grace");
+  // A claimed name is never taken: without sign-in the author is anonymous.
+  expect((await res!.json()).createdBy).toBe("Anonymous");
   expect((await call("POST", "/api/incident-signals", "[1, 2]"))?.json).toEqual(
     { error: "Body must be a JSON object" },
   );
@@ -516,4 +518,48 @@ test("incident strip lanes follow the incident's signals", async () => {
 
 test("registered in the route chain", () => {
   expect(routeHandlers).toContain(handleIncidentsRoutes);
+});
+
+test("only a signed-in person may point a signal at a production Runner", async () => {
+  setSignalRunOnCheck(async () => null);
+  try {
+    const url = new URL("http://localhost/api/incident-signals");
+    const asClaimed = await handleIncidentsRoutes({
+      req: new Request(url, {
+        method: "POST",
+        body: JSON.stringify({
+          ...httpBody,
+          runOn: "runner-prod",
+          user: "Ada",
+        }),
+      }),
+      url,
+      path: url.pathname,
+      publicPrefix: "/backstage",
+      authUser: null,
+    });
+    expect(asClaimed?.status).toBe(400);
+    const asAutomation = await handleIncidentsRoutes({
+      req: new Request(url, {
+        method: "POST",
+        body: JSON.stringify({ ...httpBody, runOn: "runner-prod" }),
+      }),
+      url,
+      path: url.pathname,
+      publicPrefix: "/backstage",
+      authUser: { login: "bot", name: "Bot", automation: true } as never,
+    });
+    expect(asAutomation?.status).toBe(400);
+    const signedIn = await call("POST", "/api/incident-signals", {
+      ...httpBody,
+      runOn: "runner-prod",
+    });
+    expect(signedIn?.status).toBe(200);
+    expect(signedIn?.json).toMatchObject({
+      runOn: "runner-prod",
+      createdBy: "Ada",
+    });
+  } finally {
+    setSignalRunOnCheck(undefined);
+  }
 });

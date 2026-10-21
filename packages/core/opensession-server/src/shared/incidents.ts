@@ -1,6 +1,8 @@
 // Wire types for signals, observations and incidents, shared by the server
 // and the frontend. Types, constant lists and small guards only.
 
+import type { IncidentResponse } from "./incident-response";
+
 export const SIGNAL_STATES = [
   "ok",
   "slow",
@@ -139,6 +141,41 @@ export type MaintenanceWindow =
       note?: string;
     };
 
+/** Placeholders an http impact URL may use, filled in when it is queried. */
+export const IMPACT_PLACEHOLDERS = [
+  "since",
+  "sinceMs",
+  "until",
+  "untilMs",
+] as const;
+
+/**
+ * Where an incident's impact is counted. `noun` reads after a number
+ * ("140 searches failed"), `label` after "from" ("from the request log").
+ * An http impact may name a service other than the signal's own.
+ */
+export type ImpactSource =
+  | {
+      kind: "http";
+      /**
+       * May use `{{since}}` (when the incident opened, ISO instant) and
+       * `{{sinceMs}}` (epoch ms), `{{until}}` and `{{untilMs}}` (when it
+       * closed, or now while it is open), in the path and query only.
+       */
+      url: string;
+      headers?: Record<string, string>;
+      countPath: string;
+      peoplePath?: string;
+      noun: string;
+      label: string;
+    }
+  | {
+      kind: "events";
+      count: "fail-events" | "value-sum";
+      noun: string;
+      label: string;
+    };
+
 export interface Signal {
   id: string;
   name: string;
@@ -152,7 +189,9 @@ export interface Signal {
   selfReported?: boolean;
   dependsOn?: string[];
   maintenance?: MaintenanceWindow[];
-  /** Runner id; stored only, every source runs locally for now. */
+  impact?: ImpactSource;
+  /** Runner id: an http signal's checks run from that Runner (a project's
+   *  production Runner). Other kinds ignore it. */
   runOn?: string;
   hookSecret?: string;
   createdBy: string;
@@ -224,7 +263,14 @@ export type IncidentEventKind =
   | "reopened"
   | "signal-attached"
   | "signal-state"
-  | "finding";
+  | "finding"
+  | "agent"
+  | "proof"
+  | "verdict"
+  | "policy"
+  | "action"
+  | "merge"
+  | "decision";
 
 export type StripMarkerKind =
   | "detected"
@@ -259,6 +305,19 @@ export interface IncidentFinding {
   resolvedAt?: string;
 }
 
+/** The impact of an incident as last measured from its signal's source. */
+export interface IncidentImpact {
+  signalId: string;
+  at: string;
+  count?: number;
+  people?: number;
+  approximate: boolean;
+  noun: string;
+  label: string;
+  /** Why the last measurement failed; the numbers are the ones before it. */
+  error?: string;
+}
+
 export interface Incident {
   id: string;
   project: string;
@@ -275,6 +334,9 @@ export interface Incident {
   lastProblemAt: string;
   closedAt?: string;
   fixedBy?: FixedBy;
+  impact?: IncidentImpact;
+  /** The fix loop's record (agents, proof, policy, actions). */
+  response?: IncidentResponse;
   findings: IncidentFinding[];
   events: IncidentEvent[];
   droppedEvents: number;
@@ -338,4 +400,22 @@ export function isTerminalIncidentState(s: IncidentState): boolean {
 
 export function isOpenIncident(i: Pick<Incident, "state">): boolean {
   return !isTerminalIncidentState(i.state);
+}
+
+const HOUR_MS = 3_600_000;
+const DEFAULT_INTERVAL_MS = { http: 60_000, expiry: 6 * HOUR_MS } as const;
+
+/** How often a signal is expected to produce an observation. */
+export function stripIntervalMs(
+  signal: Pick<Signal, "source" | "rule" | "intervalMs">,
+): number {
+  switch (signal.source.kind) {
+    case "http":
+    case "expiry":
+      return signal.intervalMs ?? DEFAULT_INTERVAL_MS[signal.source.kind];
+    case "heartbeat":
+      return (signal.rule.kind === "missing" && signal.rule.everyMs) || HOUR_MS;
+    case "webhook":
+      return 60_000;
+  }
 }

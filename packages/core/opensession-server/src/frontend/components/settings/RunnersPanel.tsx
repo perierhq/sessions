@@ -540,11 +540,23 @@ function RunnerDetails({
     runner.aws?.externalId || "",
   );
   const inference = Boolean(runner.resources?.localInference?.length);
+  // A Runner reserved for incidents takes its policy from the binding: the
+  // server refuses any field but label, description, location and
+  // maintenance.
+  const reserved = Boolean(runner.incidentReserved);
   // Every field commits on Save, the switches included: a dialog with its own
   // Save button that also applies two of its controls the moment they move
   // leaves Cancel meaning different things in one form.
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    if (reserved) {
+      const saved = await onChange(runner, {
+        label: label.trim() || undefined,
+        maintenance,
+      });
+      if (saved) onSaved();
+      return;
+    }
     const roleArn = awsRoleArn.trim();
     const patch: Parameters<typeof updateRunner>[1] = {
       label: label.trim() || undefined,
@@ -579,6 +591,7 @@ function RunnerDetails({
               {runner.state}
             </span>{" "}
             · {runner.platform} · {runner.arch} · {resourceSummary(runner)}
+            {reserved ? " · Reserved for incidents" : ""}
           </>
         }
       />
@@ -611,6 +624,7 @@ function RunnerDetails({
               placeholder="No tags"
               autoCapitalize="none"
               spellCheck={false}
+              disabled={reserved}
             />
           </Field>
         </div>
@@ -625,6 +639,7 @@ function RunnerDetails({
               placeholder="All workspace members"
               autoCapitalize="none"
               spellCheck={false}
+              disabled={reserved}
             />
           </Field>
           <Field
@@ -637,6 +652,7 @@ function RunnerDetails({
               placeholder="All repositories"
               autoCapitalize="none"
               spellCheck={false}
+              disabled={reserved}
             />
           </Field>
           {inference ? (
@@ -647,6 +663,7 @@ function RunnerDetails({
                 placeholder="Model names"
                 autoCapitalize="none"
                 spellCheck={false}
+                disabled={reserved}
               />
             </Field>
           ) : null}
@@ -666,6 +683,7 @@ function RunnerDetails({
               autoCapitalize="none"
               spellCheck={false}
               className="font-mono text-xs"
+              disabled={reserved}
             />
           </Field>
           <Field
@@ -678,7 +696,7 @@ function RunnerDetails({
               placeholder="None"
               autoCapitalize="none"
               spellCheck={false}
-              disabled={!awsRoleArn.trim()}
+              disabled={reserved || !awsRoleArn.trim()}
             />
           </Field>
         </div>
@@ -696,14 +714,14 @@ function RunnerDetails({
             label="Commands"
             checked={commands}
             onChange={setCommands}
-            disabled={busy}
+            disabled={busy || reserved}
           />
           {inference ? (
             <SwitchRow
               label="Local inference"
               checked={inferenceEnabled}
               onChange={setInferenceEnabled}
-              disabled={busy}
+              disabled={busy || reserved}
             />
           ) : null}
         </div>
