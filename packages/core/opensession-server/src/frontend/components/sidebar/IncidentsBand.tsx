@@ -24,10 +24,14 @@ import { IncidentRow } from "./IncidentRow";
 import { PlainButton } from "../../ui/plain-button";
 
 /**
- * The sidebar's Incidents band (spec 4.4), first under the tools: open
+ * The sidebar's incidents band (spec 4.4), first under the tools: open
  * incidents by urgency, then those fixed in the last twelve hours. It hides
  * when there is nothing to list, and never shows a load error: the sidebar
  * is not the place to report that the incident list failed.
+ *
+ * The way to the incidents home is the Incidents tool row above it, so the
+ * heading names what the band holds rather than repeating that row's label:
+ * "Open incidents", or "Recently fixed" once only fixes are left.
  */
 export function IncidentsBand({
   open,
@@ -61,6 +65,7 @@ export function IncidentsBand({
   const incidents = sidebarIncidents(list.data ?? [], now);
   if (error || incidents.length === 0) return null;
   const openCount = incidents.filter(isOpenIncident).length;
+  const heading = openCount > 0 ? "Open incidents" : "Recently fixed";
 
   return (
     <div className={cn(SIDEBAR_INDEPENDENT_SECTION, "mt-2")}>
@@ -83,7 +88,7 @@ export function IncidentsBand({
           aria-expanded={open}
           title={open ? "Collapse incidents" : "Expand incidents"}
         >
-          <span className="min-w-0 truncate">Incidents</span>
+          <span className="min-w-0 truncate">{heading}</span>
           {openCount > 0 && (
             <span className={SIDEBAR_GROUP_COUNT}>{openCount}</span>
           )}

@@ -21,6 +21,10 @@ export interface SidebarToolsNavItem {
   onClick: () => void;
   title?: string;
   count?: number;
+  /** A small state at the row's end that is not a count, such as the
+   *  Incidents tool's status dot. It brings its own words for the row's
+   *  accessible name. */
+  trailing?: React.ReactNode;
 }
 
 export function SidebarToolsNav({
@@ -118,6 +122,7 @@ export function SidebarToolsNav({
                 {tool.count}
               </span>
             )}
+            {tool.trailing}
           </>
         );
         // Right-click drops this tool from the strip, the same gesture

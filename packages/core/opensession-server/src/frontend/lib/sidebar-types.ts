@@ -46,6 +46,9 @@ export interface Props {
   reportsActive: boolean;
   /** The incident page that is open, if any: its sidebar row is selected. */
   activeIncidentId?: string | null;
+  /** True on the incidents home and on any incident page: the Incidents
+   *  tool row is selected. */
+  incidentsActive?: boolean;
   databasesActive: boolean;
   /** True while the Analytics surface is open. */
   analyticsActive: boolean;

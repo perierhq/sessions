@@ -95,15 +95,19 @@ final class SidebarToolsTests: XCTestCase {
         XCTAssertEqual(
             SidebarTools.allIds,
             [
-                "feed", "prs", "issues", "tasks", "plain", "catchup", "supporttinder",
-                "reports", "analytics",
+                "feed", "prs", "incidents", "issues", "tasks", "plain", "catchup",
+                "supporttinder", "reports", "databases", "analytics",
             ]
         )
-        XCTAssertEqual(SidebarTools.defaultVisible, ["feed", "prs", "plain", "catchup"])
+        XCTAssertEqual(
+            SidebarTools.defaultVisible,
+            ["feed", "prs", "incidents", "plain", "catchup"]
+        )
         XCTAssertEqual(
             SidebarTools.defaultHidden.sorted(),
-            ["analytics", "issues", "reports", "supporttinder", "tasks"]
+            ["analytics", "databases", "issues", "reports", "supporttinder", "tasks"]
         )
+        XCTAssertFalse(SidebarTools.isHidden("incidents", in: SidebarTools.defaultHiddenJSON))
         XCTAssertFalse(SidebarTools.isHidden(SidebarTools.catchUp, in: SidebarTools.defaultHiddenJSON))
         XCTAssertTrue(SidebarTools.isHidden(SidebarTools.reports, in: SidebarTools.defaultHiddenJSON))
     }
