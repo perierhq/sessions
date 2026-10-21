@@ -1431,6 +1431,49 @@ test("stop during the checks wait wins even if the checks pass meanwhile", async
   expect(w.actions).toEqual([]);
 });
 
+test("stop after a finished deploy action is refused", async () => {
+  const w = await world();
+  await w.toCertain();
+  // A plan without a PR whose deploy ran, before the watch started.
+  await updateIncident(w.incident.id, (c) => {
+    const r = c.response!;
+    return {
+      ...c,
+      state: "deploying",
+      response: {
+        ...r,
+        phase: "deploying",
+        veto: undefined,
+        candidate: {
+          ...r.candidate!,
+          plan: { pr: false, actions: ["deploy"] },
+        },
+        actionRuns: [
+          {
+            id: "run-1",
+            round: r.round,
+            actionId: "deploy",
+            kind: "deploy",
+            label: "Deploy",
+            runner: "runner-prod",
+            status: "ok",
+            purpose: "plan",
+            startedAt: new Date(w.clock).toISOString(),
+            endedAt: new Date(w.clock).toISOString(),
+            exitCode: 0,
+            detail: "Exit 0",
+            secretTouched: false,
+          },
+        ],
+      },
+    };
+  });
+  expect(
+    await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps),
+  ).toEqual({ error: "Nothing to stop", status: 409 });
+  expect((await getIncident(w.incident.id))?.state).toBe("deploying");
+});
+
 test("deploy now skips the rest of the veto", async () => {
   const w = await world();
   await w.toCertain();

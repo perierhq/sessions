@@ -2010,12 +2010,17 @@ function decisionAllowed(
         c.state === "veto" ||
         ((c.state === "investigating" || c.state === "fix-ready") &&
           STOPPABLE_PHASES.has(r.phase)) ||
-        // Shipping, but nothing merged and nothing running yet (waiting
-        // for checks).
+        // Shipping, but nothing merged and no action of this round run
+        // yet, nor running (waiting for checks).
         (c.state === "deploying" &&
           (r.phase === "merging" || r.phase === "deploying") &&
           !r.merge &&
-          !r.actionRuns.some((a) => a.status === "running"))
+          !r.actionRuns.some(
+            (a) =>
+              a.status === "running" ||
+              (a.round === r.round &&
+                (a.purpose === "plan" || a.purpose === "rollback-first")),
+          ))
       );
     case "deploy-now":
       return c.state === "veto";
