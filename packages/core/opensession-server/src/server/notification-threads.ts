@@ -166,6 +166,8 @@ export interface NotificationEvent {
   hold?: boolean;
   /** Alert a held row once; a row that is not held is left alone. */
   flushHeld?: boolean;
+  /** The person has seen the subject: drop any alert held for later. */
+  clearHeld?: boolean;
   /** A repeat alert under the same key within `ms` becomes a replace. */
   cooldown?: { key: string; ms: number };
   push?: NotificationPush;
@@ -339,11 +341,13 @@ export function applyNotificationEvent(
     return { doc, thread: null, delivery: "quiet" };
   const delivery = resolveDelivery(event, existing, now);
   const alert = delivery === "alert";
-  const heldAt = event.hold
-    ? (existing?.heldAt ?? now)
-    : alert
-      ? undefined
-      : existing?.heldAt;
+  const heldAt = event.clearHeld
+    ? undefined
+    : event.hold
+      ? (existing?.heldAt ?? now)
+      : alert
+        ? undefined
+        : existing?.heldAt;
   const alerted = alert
     ? [
         ...(existing?.alerted ?? []),

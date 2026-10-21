@@ -323,6 +323,21 @@ describe("incident notifications", () => {
     ).toBeNull();
   });
 
+  test("clearHeld drops a pending hold without alerting", () => {
+    const held = apply({ threads: [] }, { hold: true }).doc;
+    const cleared = apply(held, {
+      delivery: "quiet",
+      clearHeld: true,
+      eventKey: "evt-2",
+      at: IT0 + MIN,
+    });
+    expect(cleared.delivery).toBe("quiet");
+    expect(cleared.thread?.heldAt).toBeUndefined();
+    expect(
+      apply(cleared.doc, { flushHeld: true, eventKey: "flush-1" }).thread,
+    ).toBeNull();
+  });
+
   test("incident rows survive a clean; the wire shape hides delivery state", () => {
     const stored = apply({ threads: [] }, { hold: true }).doc;
     const cleaned = cleanDocument(JSON.parse(JSON.stringify(stored)));

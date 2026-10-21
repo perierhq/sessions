@@ -6,6 +6,10 @@ import type {
   IncidentState,
 } from "../../shared/incidents";
 import {
+  applyNotificationEvent,
+  type NotificationDocument,
+} from "../notification-threads";
+import {
   type NotifyFacts,
   planHeldFlush,
   planIncidentNotification,
@@ -461,4 +465,62 @@ test("reopen, rollback and the flush after a night", () => {
     kind: "incident_update",
     body: "Deploying the fix now",
   });
+});
+
+// What the coordinator's Stop commits: veto -> needs-you, by the person.
+const stoppedBy = (prev: Incident, by: string) =>
+  step(prev, "needs-you", by, {
+    response: {
+      next: {
+        kind: "needs-you",
+        reason: `Stopped by ${by}`,
+        needsYou: "stopped",
+        options: ["send-back", "close"],
+      },
+      needsYou: {
+        kind: "stopped",
+        reason: `Stopped by ${by}`,
+        since: iso(NOW),
+        resumePhase: "deciding",
+      },
+    } as IncidentResponse,
+  });
+
+test("the owner's own change never alerts them, by day or at night", () => {
+  const prev = inc("fix-ready", [ev("investigating")]);
+  const veto = step(prev, "veto", "sessions", { response: vetoResponse });
+  const night = facts({ night: true, fullyDown: true });
+  const day = planIncidentNotification(
+    stoppedBy(veto, "ada"),
+    veto,
+    facts(),
+    NOW,
+  );
+  expect(day?.event).toMatchObject({ delivery: "replace", clearHeld: true });
+  const atNight = planIncidentNotification(
+    stoppedBy(veto, "ada"),
+    veto,
+    night,
+    NOW,
+  );
+  expect(atNight?.event).toMatchObject({ delivery: "quiet", clearHeld: true });
+  expect(atNight?.event.hold).toBeUndefined();
+});
+
+test("the owner stopping a held veto at night cancels the morning alert", () => {
+  const prev = inc("fix-ready", [ev("investigating")]);
+  const veto = step(prev, "veto", "sessions", { response: vetoResponse });
+  const night = facts({ night: true });
+  let doc: NotificationDocument = { threads: [] };
+  const held = planIncidentNotification(veto, prev, night, NOW)!;
+  expect(held.event.hold).toBe(true);
+  doc = applyNotificationEvent(doc, held.event).doc;
+  expect(doc.threads[0].heldAt).toBe(NOW);
+  const stopped = stoppedBy(veto, "ada");
+  const own = planIncidentNotification(stopped, veto, night, NOW + 60_000)!;
+  const after = applyNotificationEvent(doc, own.event);
+  expect(after.delivery).toBe("quiet");
+  expect(after.thread?.heldAt).toBeUndefined();
+  const flush = planHeldFlush(stopped, facts(), NOW + 8 * 3_600_000)!;
+  expect(applyNotificationEvent(after.doc, flush.event).thread).toBeNull();
 });

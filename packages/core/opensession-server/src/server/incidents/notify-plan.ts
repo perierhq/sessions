@@ -342,26 +342,33 @@ export function planIncidentNotification(
   const event = baseEvent(next, row, facts, now, eventKey);
 
   const ownChange = entry.by.trim().toLowerCase() === owner.toLowerCase();
-  let delivered: Pick<NotificationEvent, "delivery" | "hold" | "cooldown">;
+  let delivered: Pick<
+    NotificationEvent,
+    "delivery" | "hold" | "cooldown" | "clearHeld"
+  >;
   if (
     row.kind === "incident_heads_up" ||
     next.state === "closed-without-action"
   )
     delivered = { delivery: "quiet" };
-  else if (row.kind === "incident_update" || ownChange)
-    delivered = { delivery: "replace" };
+  else if (ownChange)
+    // The owner made this change, so they have seen it: never an alert,
+    // and nothing held for after the night.
+    delivered = { delivery: facts.night ? "quiet" : "replace" };
+  else if (row.kind === "incident_update") delivered = { delivery: "replace" };
   else
     delivered = {
       delivery: "alert",
       cooldown: { key: row.kind, ms: INCIDENT_ALERT_COOLDOWN_MS },
     };
-  if (facts.night && delivered.delivery !== "quiet") {
+  if (facts.night && !ownChange && delivered.delivery !== "quiet") {
     const wakes =
       row.kind === "incident_needs_you" &&
       facts.fullyDown &&
       delivered.delivery === "alert";
     if (!wakes) delivered = { delivery: "quiet", hold: true };
   }
+  if (ownChange) delivered = { ...delivered, clearHeld: true };
   return { user: owner, event: { ...event, ...delivered } };
 }
 
