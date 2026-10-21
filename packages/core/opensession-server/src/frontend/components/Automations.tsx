@@ -26,6 +26,7 @@ import {
   type SandboxStatusInfo,
 } from "../lib/api";
 import { fetchWorkspaces } from "../lib/api/workspaces";
+import { BarStrip, type BarSpec } from "../ui/bar-strip";
 import { providerAccountLabel } from "../lib/provider-account";
 import type { Workspace } from "../lib/types";
 import { getCurrentUser } from "./UserPicker";
@@ -891,74 +892,48 @@ function TriggerGraph({
   const total = buckets.reduce((n, b) => n + b.ok + b.error + b.running, 0);
   if (total === 0) return null;
 
+  const bars: BarSpec[] = buckets.map((b, i) => {
+    const count = b.ok + b.error + b.running;
+    const label = b.date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    if (count === 0)
+      return {
+        key: String(i),
+        tone: "empty",
+        height: 0,
+        label: `${label} · no runs`,
+      };
+    const parts = [
+      b.ok ? `${b.ok} ok` : "",
+      b.error ? `${b.error} failed` : "",
+      b.running ? `${b.running} running` : "",
+    ].filter(Boolean);
+    return {
+      key: String(i),
+      tone: b.error > 0 ? "fail" : b.running > 0 ? "warn" : "ok",
+      // At least 4px, so a single run still reads as a bar.
+      height: Math.max(4, Math.round((count / max) * PLOT_H)) / PLOT_H,
+      label: `${label} · ${count} run${count === 1 ? "" : "s"} (${parts.join(", ")})`,
+    };
+  });
+
+  // rx 3 of a 7px bar rounds the cap without closing it into a capsule, so a
+  // tall bar still shows a straight side to read a height off.
   return (
     <div className={`flex items-end gap-2 ${compact ? "" : "mt-2"}`}>
-      <svg
-        width={GRAPH_DAYS * SLOT - 2}
-        height={PLOT_H + 1}
-        role="img"
-        aria-label={`Trigger history: ${total} runs in the last ${GRAPH_DAYS} days`}
-        className="shrink-0"
-      >
-        {/* baseline */}
-        <rect
-          x={0}
-          y={PLOT_H}
-          width={GRAPH_DAYS * SLOT - 2}
-          height={1}
-          fill="var(--border)"
-        />
-        {buckets.map((b, i) => {
-          const count = b.ok + b.error + b.running;
-          const label = b.date.toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric",
-          });
-          if (count === 0) {
-            return (
-              <rect
-                key={i}
-                x={i * SLOT}
-                y={PLOT_H - 2}
-                width={SLOT - 2}
-                height={2}
-                rx={1}
-                fill="var(--border)"
-              >
-                <title>{`${label} · no runs`}</title>
-              </rect>
-            );
-          }
-          const h = Math.max(4, Math.round((count / max) * PLOT_H));
-          const fill =
-            b.error > 0
-              ? "var(--red)"
-              : b.running > 0
-                ? "var(--yellow)"
-                : "var(--green)";
-          const parts = [
-            b.ok ? `${b.ok} ok` : "",
-            b.error ? `${b.error} failed` : "",
-            b.running ? `${b.running} running` : "",
-          ].filter(Boolean);
-          // rx 3 of a 7px bar rounds the cap without closing it into a
-          // capsule, so a tall bar still shows a straight side to read a
-          // height off. Short ones pill anyway: ry clamps to half the height.
-          return (
-            <rect
-              key={i}
-              x={i * SLOT}
-              y={PLOT_H - h}
-              width={SLOT - 2}
-              height={h}
-              rx={3}
-              fill={fill}
-            >
-              <title>{`${label} · ${count} run${count === 1 ? "" : "s"} (${parts.join(", ")})`}</title>
-            </rect>
-          );
-        })}
-      </svg>
+      <BarStrip
+        bars={bars}
+        width={GRAPH_DAYS * SLOT}
+        height={PLOT_H}
+        gap={2}
+        radius={3}
+        baseline
+        ariaLabel={`Trigger history: ${total} runs in the last ${GRAPH_DAYS} days`}
+        // The strip ends in one trailing gap; pull the caption back over it.
+        className="-mr-0.5 shrink-0"
+      />
       {!compact && (
         <span className="pb-px text-meta leading-none text-faint">
           {total} run{total === 1 ? "" : "s"} · last {GRAPH_DAYS}d

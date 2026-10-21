@@ -19,6 +19,8 @@ import {
   SCROLL_EDGE_DIVIDER,
 } from "../lib/app-shell-classes";
 import { useScrollEdge } from "../hooks/useScrollEdge";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { ChartTooltip } from "../ui/chart-tooltip";
 
 /**
  * Analytics: what happened on/because of Open Session over a date range —
@@ -85,23 +87,6 @@ const KINDS: Array<{ key: string; label: string }> = [
   { key: "goal", label: "Goals" },
 ];
 
-function useWidth<T extends HTMLElement>(): [
-  React.RefObject<T | null>,
-  number,
-] {
-  const ref = useRef<T>(null);
-  const [width, setWidth] = useState(0);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, width];
-}
-
 function niceTicks(max: number, count = 3): number[] {
   if (max <= 0) return [];
   const raw = max / count;
@@ -152,36 +137,6 @@ interface BarChartProps {
   formatTick?: (n: number) => string;
 }
 
-/** The numbers a chart raises under the pointer. Opaque, unlike the app's
- *  other popups: it floats directly over the densest, most colourful thing on
- *  the page, and a translucent surface there tints every row with the bars
- *  behind it. Placement belongs to the chart, which knows its own box. */
-function ChartTooltip({
-  className,
-  style,
-  ref,
-  children,
-}: {
-  className?: string;
-  style?: React.CSSProperties;
-  ref?: React.Ref<HTMLDivElement>;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      ref={ref}
-      className={cn(
-        "pointer-events-none absolute z-10 rounded-popup [corner-shape:squircle] bg-popup",
-        "px-3 py-2.5 [--smooth-ring-color:var(--popup-ring)] smooth-shadow-ring-md",
-        className,
-      )}
-      style={style}
-    >
-      {children}
-    </div>
-  );
-}
-
 /** Stacked/grouped bar chart: hairline gridlines, clean ticks, 2px surface
  *  gaps between stacked segments, rounded caps, and a per-day hover tooltip. */
 function BarChart({
@@ -194,7 +149,7 @@ function BarChart({
   formatTick,
 }: BarChartProps) {
   const tickLabel = formatTick ?? formatValue;
-  const [ref, width] = useWidth<HTMLDivElement>();
+  const [ref, width] = useElementWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
   const gutter = 34;
