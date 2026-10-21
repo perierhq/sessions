@@ -279,4 +279,32 @@ describe("incident delivery", () => {
       body: "acme · line one line two",
     });
   });
+
+  test("a silent replace has no topic, so it cannot drop an undelivered alert", async () => {
+    await notifyUser("Ada", veto());
+    pushes.length = 0;
+    await notifyUser(
+      "Ada",
+      veto({
+        kind: "incident_update",
+        delivery: "replace",
+        eventKey: "evt-2",
+        body: "Deploying the fix now",
+        push: { urgency: "low", ttlSeconds: 3600 },
+      }),
+    );
+    expect(pushes[0].options).toEqual({ ttlSeconds: 3600, urgency: "low" });
+  });
+
+  test("a push with buttons keeps requireInteraction inside the cooldown", async () => {
+    const cooldown = { key: "incident_veto", ms: 900_000 };
+    await notifyUser("Ada", veto({ at: 1_000, cooldown }));
+    pushes.length = 0;
+    await notifyUser("Ada", veto({ eventKey: "evt-2", at: 2_000, cooldown }));
+    expect(pushes[0].payload).toMatchObject({
+      silent: true,
+      requireInteraction: true,
+    });
+    expect(pushes[0].payload.actions).toHaveLength(1);
+  });
 });

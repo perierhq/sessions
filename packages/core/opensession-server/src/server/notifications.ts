@@ -140,7 +140,13 @@ export async function pushFor(
       ...a,
       title: pushSafeText(a.title),
     }));
-  if (alert && hints?.requireInteraction) payload.requireInteraction = true;
+  // A banner with buttons stays until it is handled, even when a repeat
+  // inside the cooldown replaces it silently.
+  if (
+    hints?.requireInteraction &&
+    (alert || (payload.actions?.length ?? 0) > 0)
+  )
+    payload.requireInteraction = true;
   payload.timestamp = event.at ?? Date.now();
   if (alert) payload.renotify = true;
   else {
@@ -152,7 +158,9 @@ export async function pushFor(
       ? { ttlSeconds: hints.ttlSeconds }
       : {}),
     ...(hints?.urgency ? { urgency: hints.urgency } : {}),
-    topic: await topicFor(thread.id),
+    // The push service keeps only the newest undelivered message per
+    // topic: a silent replace must never drop an alert still in flight.
+    ...(alert ? { topic: await topicFor(thread.id) } : {}),
   };
   return { payload, options };
 }
