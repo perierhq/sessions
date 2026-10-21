@@ -400,7 +400,7 @@ function NeverDialog({
   );
 }
 
-function BudgetDialog({
+export function BudgetDialog({
   open,
   onClose,
   which,
