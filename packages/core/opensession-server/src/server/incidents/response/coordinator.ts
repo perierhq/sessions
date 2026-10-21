@@ -67,7 +67,7 @@ import {
   nextActionFor,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
-import { appendLedger, emptyResponse } from "./ledger";
+import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
 import {
   type MergeGithub,
   assessAutoMerge,
@@ -536,8 +536,7 @@ async function monthSpendWithout(
   const month = monthOf(now);
   let sum = 0;
   for (const i of await d.listIncidents({ project }))
-    if (i.id !== exclude && i.openedAt.slice(0, 7) === month)
-      sum += i.response?.costUsd ?? 0;
+    if (i.id !== exclude) sum += spendInMonth(i.response, month, now);
   return cents(sum);
 }
 
@@ -581,12 +580,9 @@ export async function buildResponseView(
     incident.id,
     d,
   );
-  const own = incident.response?.costUsd ?? 0;
   setProjectMonthSpend(
     incident.project,
-    cents(
-      monthCostUsd + (incident.openedAt.slice(0, 7) === monthOf(now) ? own : 0),
-    ),
+    cents(monthCostUsd + spendInMonth(incident.response, monthOf(now), now)),
   );
 
   const agents = new Map<string, AgentLive & { finalText?: string }>();

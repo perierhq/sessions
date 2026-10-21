@@ -37,6 +37,28 @@ export function emptyResponse(input: {
   };
 }
 
+/**
+ * What an incident's agents spent in a UTC month (`YYYY-MM`): each run's
+ * cost counts in the month it was spent, when the run ended (as its
+ * ledger entry records), or now while it is still working. An incident
+ * that spans two months splits its spend between them.
+ */
+export function spendInMonth(
+  r: IncidentResponse | undefined,
+  month: string,
+  now: number,
+): number {
+  let sum = 0;
+  for (const run of r?.agents ?? []) {
+    const working = run.status === "running" || run.status === "waiting";
+    const at =
+      (working ? undefined : (run.endedAt ?? run.startedAt)) ??
+      new Date(now).toISOString();
+    if (at.slice(0, 7) === month) sum += run.costUsd || 0;
+  }
+  return Math.round(sum * 100) / 100;
+}
+
 /** Appends one entry; over the cap the oldest go and are counted. */
 export function appendLedger(
   r: IncidentResponse,

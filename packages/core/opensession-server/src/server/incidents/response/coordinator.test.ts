@@ -820,6 +820,60 @@ test("the view counts the month's spend without this incident", async () => {
   });
 });
 
+test("the month's spend counts each run in the month it was spent", async () => {
+  const w = await world();
+  const older = await createIncident({
+    project: "acme",
+    title: "Checkout",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-a"],
+    primarySignalId: "sig-a",
+    at: "2026-09-30T22:00:00.000Z",
+    detail: "x",
+  });
+  const run = (endedAt: string | undefined, costUsd: number) => ({
+    role: "investigator" as const,
+    round: 1,
+    attempt: 1,
+    sessionId: `child-${costUsd}`,
+    model: "m",
+    provider: "p",
+    workspace: { kind: "sandbox" as const, provider: "daytona" },
+    accessSummary: "",
+    accessRevision: "r1",
+    status: endedAt ? ("done" as const) : ("running" as const),
+    startedAt: "2026-09-30T22:00:00.000Z",
+    turnSentAt: "2026-09-30T22:00:00.000Z",
+    ...(endedAt ? { endedAt } : {}),
+    costUsd,
+    tokens: 0,
+    reminded: false,
+  });
+  await updateIncident(older.id, (c) => ({
+    ...c,
+    response: {
+      ...emptyResponse({
+        now: "2026-09-30T22:00:00.000Z",
+        maxRounds: 2,
+        phase: "investigating",
+      }),
+      agents: [
+        run("2026-09-30T23:00:00.000Z", 100),
+        run("2026-10-01T01:00:00.000Z", 5),
+        run(undefined, 2),
+      ],
+      costUsd: 107,
+    },
+  }));
+  expect(await projectMonthSpend("acme", START, w.deps)).toMatchObject({
+    month: "2026-10",
+    monthUsd: 7,
+  });
+});
+
 test("the tick schedules open work and skips what waits on a person", async () => {
   const w = await world();
   __setCoordinatorDepsForTest(w.deps);
@@ -1071,6 +1125,26 @@ test("rollback-first: with the month's budget used up the rollback still runs", 
         maxRounds: 2,
         phase: "done",
       }),
+      agents: [
+        {
+          role: "investigator",
+          round: 1,
+          attempt: 1,
+          sessionId: "child-spent",
+          model: "m",
+          provider: "p",
+          workspace: { kind: "sandbox", provider: "daytona" },
+          accessSummary: "",
+          accessRevision: "r1",
+          status: "done",
+          startedAt: new Date(START - 60_000).toISOString(),
+          turnSentAt: new Date(START - 60_000).toISOString(),
+          endedAt: new Date(START).toISOString(),
+          costUsd: 200,
+          tokens: 0,
+          reminded: false,
+        },
+      ],
       costUsd: 200,
     },
   }));

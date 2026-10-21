@@ -13,6 +13,7 @@ import type { IncidentAgentRole } from "../../../shared/incident-access";
 import type { Incident } from "../../../shared/incidents";
 import { type AccessGate, registerAccessGate } from "../access/resolve";
 import { listIncidents } from "../incident-store";
+import { spendInMonth } from "./ledger";
 import { budgetProblem } from "./policy";
 import { listProjectSettings, peekProjectSettings } from "./project-settings";
 
@@ -28,8 +29,9 @@ export function setProjectMonthSpend(project: string, usd: number): void {
 
 /**
  * Reads this UTC month's agent spend of every project from the incidents'
- * recorded cost (the same sum the coordinator keeps up to date), so a
- * restart does not start the monthly budget at $0.
+ * recorded runs (the same sum the coordinator keeps up to date, each run in
+ * the month it was spent), so a restart does not start the monthly budget
+ * at $0.
  */
 export async function loadProjectMonthSpend(
   now: number = Date.now(),
@@ -38,11 +40,9 @@ export async function loadProjectMonthSpend(
   const month = new Date(now).toISOString().slice(0, 7);
   const sums = new Map<string, number>();
   for (const incident of await list()) {
-    if (incident.openedAt.slice(0, 7) !== month) continue;
-    sums.set(
-      incident.project,
-      (sums.get(incident.project) ?? 0) + (incident.response?.costUsd ?? 0),
-    );
+    const usd = spendInMonth(incident.response, month, now);
+    if (usd)
+      sums.set(incident.project, (sums.get(incident.project) ?? 0) + usd);
   }
   for (const [project, usd] of sums)
     monthSpend.set(project, Math.round(usd * 100) / 100);

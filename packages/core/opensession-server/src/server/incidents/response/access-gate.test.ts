@@ -72,16 +72,40 @@ test("boot loads the month's spend from the incidents, not $0", async () => {
     budget: { perIncidentUsd: 20, perMonthUsd: 100 },
   }));
   const now = Date.parse("2026-10-20T12:00:00Z");
-  const spent = (id: string, openedAt: string, costUsd: number): Incident => ({
-    ...incident(costUsd),
+  // Each run's cost counts in the month it was spent (when the run ended),
+  // whenever the incident opened.
+  const spent = (
+    id: string,
+    openedAt: string,
+    runs: Array<{ endedAt?: string; costUsd: number }>,
+  ): Incident => ({
+    ...incident(runs.reduce((sum, r) => sum + r.costUsd, 0)),
     id,
     openedAt,
+    response: {
+      costUsd: runs.reduce((sum, r) => sum + r.costUsd, 0),
+      agents: runs.map((r) => ({
+        status: r.endedAt ? "done" : "running",
+        startedAt: openedAt,
+        ...r,
+      })),
+    } as IncidentResponse,
   });
   await loadProjectMonthSpend(now, async () => [
-    spent("inc-a", "2026-10-02T00:00:00Z", 60),
-    spent("inc-b", "2026-10-19T00:00:00Z", 45),
-    spent("inc-c", "2026-09-30T23:00:00Z", 500),
-    { ...spent("inc-d", "2026-10-03T00:00:00Z", 900), project: "globex" },
+    spent("inc-a", "2026-10-02T00:00:00Z", [
+      { endedAt: "2026-10-02T01:00:00Z", costUsd: 40 },
+    ]),
+    spent("inc-b", "2026-10-19T00:00:00Z", [{ costUsd: 45 }]),
+    spent("inc-c", "2026-09-30T23:00:00Z", [
+      { endedAt: "2026-09-30T23:30:00Z", costUsd: 500 },
+      { endedAt: "2026-10-01T00:30:00Z", costUsd: 20 },
+    ]),
+    {
+      ...spent("inc-d", "2026-10-03T00:00:00Z", [
+        { endedAt: "2026-10-03T01:00:00Z", costUsd: 900 },
+      ]),
+      project: "globex",
+    },
   ]);
   expect(incidentAccessGate(incident(1), "investigator")).toBe(
     "Agents stopped at the $100 monthly budget",

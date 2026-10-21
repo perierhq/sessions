@@ -43,7 +43,8 @@ export interface ResponseView {
   signals: ReadonlyMap<string, Signal>;
   evaluations: ReadonlyMap<string, SignalEvaluation>;
   primaryRecent: Observation[];
-  /** The project's agent cost this UTC month, this incident excluded. */
+  /** The project's agent cost spent this UTC month, this incident
+   *  excluded. The guards add this incident's whole cost to it. */
   monthCostUsd: number;
   /** Live status by session id; `finalText` only for finished agents. */
   agents: ReadonlyMap<string, AgentLive & { finalText?: string }>;
