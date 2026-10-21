@@ -40,6 +40,7 @@ import {
 import { EmptyState, InlineAlert, LoadingState } from "../ui/state";
 import { WorkingPill } from "../ui/status";
 import { errorMessage } from "../lib/error-message";
+import { DetailKey } from "../ui/detail-key";
 
 /* Goals is a tool surface hosted inside Settings, so it reads as one of its
    pages: the settings reading column, a SettingsHeader on top, the rows on a
@@ -543,15 +544,6 @@ export function Goals({ onOpenSession, selectedId, onSelect }: Props) {
         </aside>
       )}
     </div>
-  );
-}
-
-/** Left column of the drawer's Configuration grid. */
-function DetailKey({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-faint text-label leading-[1.7] whitespace-nowrap">
-      {children}
-    </span>
   );
 }
 

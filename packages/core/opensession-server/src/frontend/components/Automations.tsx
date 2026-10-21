@@ -27,6 +27,8 @@ import {
 } from "../lib/api";
 import { fetchWorkspaces } from "../lib/api/workspaces";
 import { BarStrip, type BarSpec } from "../ui/bar-strip";
+import { DetailKey } from "../ui/detail-key";
+import { RunLedger, type RunLedgerEntry } from "./RunLedger";
 import { providerAccountLabel } from "../lib/provider-account";
 import type { Workspace } from "../lib/types";
 import { getCurrentUser } from "./UserPicker";
@@ -766,9 +768,15 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
                     <>
                       <TriggerGraph runs={sel.runs!} />
                       <RunLedger
-                        runs={sel.runs!}
+                        entries={sel.runs!.map((r) => ({
+                          ...ledgerEntry(r),
+                          action: {
+                            label: "retrigger",
+                            title: retriggerTitle(r),
+                            onClick: () => handleRetrigger(r.sessionId),
+                          },
+                        }))}
                         onOpenSession={onOpenSession}
-                        onRetrigger={handleRetrigger}
                       />
                     </>
                   )}
@@ -841,15 +849,6 @@ function scheduleLabel(cron: string): string | null {
 
 function eventLabel(key: string): string {
   return EVENT_OPTIONS.find((o) => o.key === key)?.label || key;
-}
-
-/** Left column of the drawer's Configuration grid. */
-function DetailKey({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-faint text-label leading-[1.7] whitespace-nowrap">
-      {children}
-    </span>
-  );
 }
 
 // ── Trigger history graph ────────────────────────────────────
@@ -943,76 +942,23 @@ function TriggerGraph({
   );
 }
 
-/** Expandable run-history ledger for one automation (newest first). */
-function RunLedger({
-  runs,
-  onOpenSession,
-  onRetrigger,
-}: {
-  runs: AutomationRun[];
-  onOpenSession: (sessionId: string) => void;
-  onRetrigger: (sessionId: string) => void;
-}) {
-  return (
-    <div className="mt-2.5 border-t border-line pt-2 flex flex-col gap-1">
-      {runs.map((r) => (
-        <div
-          key={r.sessionId + r.at}
-          className="flex items-baseline gap-2 text-label text-dim min-w-0 phone:flex-wrap"
-        >
-          {r.status === "running" ? (
-            <span className="text-yellow shrink-0">●</span>
-          ) : r.status === "ok" ? (
-            <span className="text-green shrink-0">✓</span>
-          ) : (
-            <span className="text-red shrink-0" title={r.error}>
-              ✗
-            </span>
-          )}
-          <span className="shrink-0" title={new Date(r.at).toLocaleString()}>
-            {relativeTime(r.at)}
-          </span>
-          <span className="text-faint shrink-0">via {r.trigger}</span>
-          {r.durationMs != null && (
-            <span className="text-faint shrink-0">
-              {formatDuration(r.durationMs)}
-            </span>
-          )}
-          {r.error && (
-            <span className="text-red truncate" title={r.error}>
-              {r.error}
-            </span>
-          )}
-          <a
-            className={cn(
-              LINK,
-              "ml-auto max-w-full truncate phone:inline-flex phone:min-h-11 phone:items-center",
-            )}
-            href={`${BASE_PATH}/session/${r.sessionId}`}
-            onClick={(e) => {
-              e.preventDefault();
-              onOpenSession(r.sessionId);
-            }}
-          >
-            <AgentName sessionId={r.sessionId} />
-          </a>
-          {r.status !== "running" && (
-            <button
-              className={cn(LINK, "shrink-0 text-label")}
-              title={
-                r.trigger === "event" || r.trigger === "webhook"
-                  ? "Start a fresh run replaying this run's triggering event"
-                  : "Start a fresh run of this automation"
-              }
-              onClick={() => onRetrigger(r.sessionId)}
-            >
-              retrigger
-            </button>
-          )}
-        </div>
-      ))}
-    </div>
-  );
+/** An automation run as a ledger line: trigger and duration. */
+function ledgerEntry(r: AutomationRun): RunLedgerEntry {
+  const duration = r.durationMs != null ? formatDuration(r.durationMs) : null;
+  return {
+    key: r.sessionId + r.at,
+    status: r.status,
+    at: r.at,
+    meta: [`via ${r.trigger}`, ...(duration ? [duration] : [])],
+    error: r.error,
+    sessionId: r.sessionId,
+  };
+}
+
+function retriggerTitle(r: AutomationRun): string {
+  return r.trigger === "event" || r.trigger === "webhook"
+    ? "Start a fresh run replaying this run's triggering event"
+    : "Start a fresh run of this automation";
 }
 
 /** Secret webhook URL as a Configuration-grid value: truncated URL + copy. */
