@@ -178,9 +178,10 @@ export const SIDEBAR_INCIDENT_STATE =
   "ml-auto shrink-0 whitespace-nowrap pl-1.5 pr-1.5 text-meta tabular-nums desktop:pr-1";
 
 /** "All incidents" at the end of the band heading: shown on hover with a
- *  pointer, always under a finger (there is no hover to find it). */
+ *  pointer, while the heading has keyboard focus (so Tab can reach it),
+ *  and always under a finger (there is no hover to find it). */
 export const SIDEBAR_INCIDENTS_ALL =
-  "phone:inline-flex group-hover/band:inline-flex";
+  "phone:inline-flex group-hover/band:inline-flex group-focus-within/band:inline-flex";
 
 /** The home's rows, outdented so the tiles share the section labels' x. */
 export const HOME_LIST = "-mx-2 flex min-w-0 flex-col";
@@ -208,7 +209,8 @@ export const HOME_ROW_VALUE =
 
 /** The mini signal's box: 160px on a desktop row, the row's width on a
  *  phone, always its final height so bars landing do not move it. */
-export const HOME_MINI = "h-5 w-full min-w-0 [grid-area:mini] desktop:w-40";
+export const HOME_MINI =
+  "block h-5 w-full min-w-0 [grid-area:mini] desktop:w-40";
 
 /** A past incident: a table row whose title button covers the row. */
 export const PAST_ROW = "relative border-b border-line hover:bg-hover";

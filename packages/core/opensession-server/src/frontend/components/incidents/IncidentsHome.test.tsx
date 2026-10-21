@@ -199,3 +199,9 @@ test("past incidents fold to two lines on a phone with the title at full width",
   expect(html.replace(/<!-- -->/g, "")).toContain("Agents · 2 h · —");
   expect(html).toMatch(/phone:sr-only[^"]*">Incident<\/th>/);
 });
+
+test("a signal row's button holds phrasing content only", () => {
+  const html = render({});
+  for (const button of html.match(/<button\b[\s\S]*?<\/button>/g) ?? [])
+    expect(button).not.toMatch(/<(div|section|p|table)\b/);
+});

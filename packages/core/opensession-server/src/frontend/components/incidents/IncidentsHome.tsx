@@ -82,7 +82,7 @@ function SignalRow({
   onOpen: (signal: SignalView) => void;
 }) {
   const strip = useMiniSignalStrip(signal).data;
-  const [ref, width] = useElementWidth<HTMLDivElement>();
+  const [ref, width] = useElementWidth<HTMLSpanElement>();
   const value = latestValue(signal, strip, now);
   return (
     <PlainButton className={HOME_SIGNAL_ROW} onClick={() => onOpen(signal)}>
@@ -95,8 +95,9 @@ function SignalRow({
         <span className={HOME_ROW_CAPTION}>{signalCaption(signal)}</span>
       </span>
       {/* An expiry signal draws no bars: its desktop box stays for the
-          column, its phone line goes. */}
-      <div
+          column, its phone line goes. A span: the row is a button, which
+          may hold only phrasing content. */}
+      <span
         ref={ref}
         className={cn(
           HOME_MINI,
@@ -104,7 +105,7 @@ function SignalRow({
         )}
       >
         <MiniSignal signal={signal} strip={strip} width={width} />
-      </div>
+      </span>
       <span className={cn(HOME_ROW_VALUE, VALUE_TONE[value.tone])}>
         {value.text}
       </span>

@@ -64,9 +64,21 @@ export function IncidentsBand({
 
   return (
     <div className={cn(SIDEBAR_INDEPENDENT_SECTION, "mt-2")}>
-      <div className={cn(SIDEBAR_BAND_LABEL, "py-0 pl-0 pr-2 desktop:pr-0")}>
+      {/* The heading toggles the band; All incidents is its own button
+          beside it, not one nested inside it. Both share the hover group,
+          so the arrow shows when the heading is hovered or focused. */}
+      <div
+        className={cn(
+          SIDEBAR_BAND_LABEL,
+          "group/band flex items-center py-0 pl-0 pr-2 desktop:pr-0",
+        )}
+      >
         <PlainButton
-          className={cn(SIDEBAR_BAND_TOGGLE, SIDEBAR_BAND_TOGGLE_INSET)}
+          className={cn(
+            SIDEBAR_BAND_TOGGLE,
+            SIDEBAR_BAND_TOGGLE_INSET,
+            "min-w-0 flex-1",
+          )}
           onClick={onToggleBand}
           aria-expanded={open}
           title={open ? "Collapse incidents" : "Expand incidents"}
@@ -84,28 +96,14 @@ export function IncidentsBand({
             size={18}
             style={{ transform: open ? "none" : "rotate(-90deg)" }}
           />
-          {/* A span, not a button: it sits inside the heading's button, as
-              the Automations settings glyph does, and takes the row's full
-              height as its target. */}
-          <span
-            role="button"
-            tabIndex={0}
-            className={cn(SIDEBAR_AUTO_COG, SIDEBAR_INCIDENTS_ALL)}
-            title="All incidents"
-            aria-label="All incidents"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenAll();
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              event.stopPropagation();
-              onOpenAll();
-            }}
-          >
-            <IconChevronRight size={20} />
-          </span>
+        </PlainButton>
+        <PlainButton
+          className={cn(SIDEBAR_AUTO_COG, SIDEBAR_INCIDENTS_ALL)}
+          title="All incidents"
+          aria-label="All incidents"
+          onClick={onOpenAll}
+        >
+          <IconChevronRight size={20} />
         </PlainButton>
       </div>
       {open && (

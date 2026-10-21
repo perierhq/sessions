@@ -107,3 +107,26 @@ test("the band renders nothing before the list loads", () => {
   );
   expect(html).toBe("");
 });
+
+test("the heading and All incidents are two buttons, neither inside the other", async () => {
+  const { SWRConfig, unstable_serialize } = await import("swr");
+  const { apiSWRKey } = await import("../../lib/api-swr");
+  const { RECENTLY_FIXED_MS } = await import("../../lib/incidents/sidebar");
+  const key = apiSWRKey.incidents("all", undefined, RECENTLY_FIXED_MS);
+  const html = renderToStaticMarkup(
+    <SWRConfig value={{ fallback: { [unstable_serialize(key)]: [summary()] } }}>
+      <IncidentsBand
+        open
+        onToggleBand={() => {}}
+        onOpenIncident={() => {}}
+        onOpenAll={() => {}}
+      />
+    </SWRConfig>,
+  );
+  expect(html).toContain('aria-label="All incidents"');
+  expect(html).not.toContain('role="button"');
+  // No button opens before the previous one closes.
+  const tags = html.match(/<\/?button\b/g) ?? [];
+  for (let i = 1; i < tags.length; i++)
+    expect(tags[i - 1] === "<button" && tags[i] === "<button").toBe(false);
+});
