@@ -285,3 +285,39 @@ test("a dismiss handler adds a close button that never submits the form", () => 
   const button = html.match(/<button[^>]*aria-label="Dismiss question"[^>]*>/);
   expect(button?.[0]).toContain('type="button"');
 });
+
+test("a decision card names itself and takes the needs-you blue", () => {
+  const html = renderToStaticMarkup(
+    <AskCard
+      questions={[{ header: "Needs you", question: "Deploy the fix?" }]}
+      status={{ label: "Next", tone: "blue" }}
+      onAnswer={() => {}}
+    />,
+  );
+  expect(html).toContain(">Next</span>");
+  expect(html).not.toContain("needs input");
+  expect(html).toContain("bg-blue");
+  expect(html).not.toContain("bg-green");
+});
+
+test("plain text shows the question as typed and loads nothing", () => {
+  const question =
+    "Proxy pool blocked. ![chart](https://example.test/x.png) see @ada";
+  const html = renderToStaticMarkup(
+    <AskCard
+      questions={[{ question, options: [{ label: "Try again" }] }]}
+      onAnswer={() => {}}
+      plainText
+    />,
+  );
+  expect(html).not.toContain("<img");
+  expect(html).not.toContain("<a ");
+  expect(html).toContain("![chart](https://example.test/x.png)");
+  const markdown = renderToStaticMarkup(
+    <AskCard
+      questions={[{ question, options: [{ label: "Try again" }] }]}
+      onAnswer={() => {}}
+    />,
+  );
+  expect(markdown).toContain("<img");
+});

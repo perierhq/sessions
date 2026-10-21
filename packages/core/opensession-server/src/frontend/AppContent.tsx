@@ -22,6 +22,8 @@ import {
   Feed,
   FirstMile,
   Goals,
+  IncidentSettings,
+  IncidentsPane,
   Issues,
   Prs,
   Reports,
@@ -100,6 +102,7 @@ import { pickLandingSession } from "./lib/landing-session";
 import { receiveMention, receiveMentionsCleared } from "./lib/mentions";
 import { InboxPage } from "./components/notifications/InboxPage";
 import { useNotificationInbox } from "./hooks/useNotificationInbox";
+import { useIncidentLiveUpdates } from "./hooks/useIncidents";
 import type { NavigationActions } from "./lib/navigation";
 import {
   errorMatchesPendingCreate,
@@ -516,6 +519,7 @@ export function AppContent({
     if (connected) resyncSidebar();
   }, [connected]);
   useNotificationInbox({ navigate, connected, addHandler });
+  useIncidentLiveUpdates(addHandler);
   // When a session is created from the New Session form or Ask box, jump straight into it
   // The handler reads `inject`/`navigate` through effect events, so the
   // subscription doesn't re-arm just because their closures moved.
@@ -1189,6 +1193,10 @@ export function AppContent({
     openAnalytics: () => navigate({ view: "analytics" }),
     openArchived: () => navigate({ view: "archived" }),
     openCatchUp: () => navigate({ view: "catchup" }),
+    openIncidents: () => navigate({ view: "incidents" }),
+    openIncident: (id) => navigate({ view: "incidents", id }),
+    openIncidentSettings: (project) =>
+      navigate({ view: "incidentSettings", project }),
     openSession,
     openWorkspace,
     openSessionReview: openReviewForSession,
@@ -1307,6 +1315,11 @@ export function AppContent({
                     onSelect={(id) =>
                       navigate({ view: "goals", id: id || undefined })
                     }
+                  />
+                ) : route.view === "incidentSettings" ? (
+                  <IncidentSettings
+                    project={route.project}
+                    onOpenProject={navigationActions.openIncidentSettings}
                   />
                 ) : null}
               </Settings>
@@ -1574,6 +1587,13 @@ export function AppContent({
                     />
                   ) : route.view === "analytics" ? (
                     <Analytics />
+                  ) : route.view === "incidents" ? (
+                    <IncidentsPane
+                      route={route}
+                      sessions={sessions}
+                      onBack={goBack}
+                      navigate={navigate}
+                    />
                   ) : route.view === "feed" ? (
                     <Feed
                       sessions={sessions}

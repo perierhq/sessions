@@ -139,6 +139,7 @@ import { IconDotsHorizontal, IconMessages } from "./icons";
 import { AddProjectDialog, type AddRepoMode } from "./SetupRepos";
 import { PrRow } from "./PrRow";
 import { AutomationsBand } from "./sidebar/AutomationsBand";
+import { IncidentsBand } from "./sidebar/IncidentsBand";
 import { DraftRow } from "./sidebar/DraftRow";
 import { FeedRow } from "./sidebar/FeedRows";
 import { FilterPopover, RepoFilterChip } from "./sidebar/Filters";
@@ -181,6 +182,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
     plainActive,
     supportTinderActive,
     reportsActive,
+    activeIncidentId = null,
     databasesActive,
     analyticsActive,
     showDraftRow,
@@ -954,6 +956,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
 
   const {
     automationsOpen,
+    incidentsOpen,
     isOpen,
     peopleOpen,
     toggleBand,
@@ -1419,6 +1422,15 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
         menuTools: sidebarMenuTools,
         team,
         onSetToolVisible: setToolVisible,
+        afterTools: borrowedLens ? null : (
+          <IncidentsBand
+            open={incidentsOpen}
+            onToggleBand={() => toggleBand("incidents")}
+            activeId={activeIncidentId}
+            onOpenIncident={navigation.openIncident}
+            onOpenAll={navigation.openIncidents}
+          />
+        ),
       }}
       identity={{ filter, currentUser, personLensName, repos }}
       refs={{

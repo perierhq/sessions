@@ -26,6 +26,35 @@ function signalDocuments(): ReturnType<typeof catalogDocuments> {
   return (documents ??= catalogDocuments(NAMESPACE));
 }
 
+/** A signal's configuration was created, edited or deleted. */
+export type SignalWriteListener = (signal: {
+  id: string;
+  project: string;
+}) => void;
+const writeListeners = new Set<SignalWriteListener>();
+
+/** Subscribe to committed signal writes; returns the unsubscribe function. */
+export function onSignalWrite(listener: SignalWriteListener): () => void {
+  writeListeners.add(listener);
+  return () => {
+    writeListeners.delete(listener);
+  };
+}
+
+/** Each listener on its own microtask, so none can fail or hold the write. */
+function notifyWrite(signal: { id: string; project: string }): void {
+  const ref = { id: signal.id, project: signal.project };
+  for (const listener of [...writeListeners])
+    void Promise.resolve()
+      .then(() => listener(ref))
+      .catch((error: unknown) => {
+        console.warn(
+          "[incident-signals] write listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
+}
+
 let projectCheck: ((id: string) => boolean) | undefined;
 
 /** Replace the project check (undefined restores the configured repos). */
@@ -203,6 +232,7 @@ export async function createSignal(
     project: signal.project,
     by: base.createdBy,
   });
+  notifyWrite(signal);
   return signal;
 }
 
@@ -310,20 +340,25 @@ export async function updateSignal(
       ? { impactSecrets: { from: "source", fields: impactFromSource } }
       : {}),
   });
+  notifyWrite(updated);
   return updated;
 }
 
 export async function deleteSignal(id: string, by: string): Promise<boolean> {
   if (!isSignalId(id)) return false;
+  // Read first: the delete message names the project the signal was in.
+  const before = await getSignal(id);
   const existed = await signalDocuments().delete(id);
   // Day files stay until retention, so its incidents keep their strips.
   forgetObservations(id);
-  if (existed)
+  if (existed) {
     incidentAudit({
       kind: "incident_signal_deleted",
       signalId: id,
       by: by || "Anonymous",
     });
+    if (before) notifyWrite(before);
+  }
   return existed;
 }
 

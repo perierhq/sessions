@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { elapsedSince, formatDuration } from "./time";
+import { clockTime, elapsedSince, formatDuration } from "./time";
 
 describe("formatDuration", () => {
   test("nothing under a second", () => {
@@ -38,5 +38,20 @@ describe("elapsedSince", () => {
   test("counts up in formatDuration's units", () => {
     expect(elapsedSince(0, 7_000)).toBe("7s");
     expect(elapsedSince(0, 90_000)).toBe("1m");
+  });
+});
+
+describe("clockTime", () => {
+  test("hour and minute in the locale's convention", () => {
+    expect(clockTime("2026-10-20T10:41:00Z")).toBe(
+      new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date("2026-10-20T10:41:00Z")),
+    );
+  });
+
+  test("an invalid date is empty", () => {
+    expect(clockTime("not a date")).toBe("");
   });
 });

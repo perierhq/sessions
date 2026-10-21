@@ -145,6 +145,7 @@ import { configureWebhookRoutes } from "./src/server/webhook-server";
 import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
+import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
 import { incidentReleaseHookRoutes } from "./src/server/incidents/response/actions";
@@ -435,6 +436,8 @@ const server: import("bun").Server<WSClientData> = hotServe({
       "/security",
       "/goals",
       "/goals/*",
+      "/incidents",
+      "/incidents/*",
       "/tasks",
       "/issues",
       "/analytics",
@@ -867,7 +870,22 @@ if (!g.__opensessionBooted) {
       webhookRoutes.set(key, handler);
     // Incident signals are cheap gateway checks, no model. Started before the
     // ingress binds so a hook call waits for the boot replay, never races it.
-    startIncidentSignals();
+    // The demo instance answers its seeded checks from a script (nothing
+    // leaves the machine) and runs no fix loop: its incidents hold the
+    // states they were seeded in.
+    const demoIncidents = process.env.OPENSESSION_DEMO === "1";
+    startIncidentSignals(
+      demoIncidents
+        ? {
+            runSource: async (signal) =>
+              (await import("./src/server/demo/incidents")).runDemoSignalSource(
+                signal,
+              ),
+          }
+        : {},
+    );
+    // Incident, signal and access changes reach open incident views.
+    startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.
     startIncidentImpact();
     // Revokes incident agents' credential grants when incidents close or access narrows.
@@ -876,7 +894,7 @@ if (!g.__opensessionBooted) {
     // refuse its incident agents at spawn, every turn and every incident
     // tool call) wakes on incident changes, session state and a 5 s tick,
     // and does nothing until readiness is "ready" or once shutdown begins.
-    startIncidentResponse();
+    if (!demoIncidents) startIncidentResponse();
     configureWebhookRoutes(agents, webhookRoutes);
     try {
       startPublicIngress();

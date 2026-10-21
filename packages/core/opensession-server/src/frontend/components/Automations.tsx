@@ -26,6 +26,9 @@ import {
   type SandboxStatusInfo,
 } from "../lib/api";
 import { fetchWorkspaces } from "../lib/api/workspaces";
+import { BarStrip, type BarSpec } from "../ui/bar-strip";
+import { DetailKey } from "../ui/detail-key";
+import { RunLedger, type RunLedgerEntry } from "./RunLedger";
 import { providerAccountLabel } from "../lib/provider-account";
 import type { Workspace } from "../lib/types";
 import { getCurrentUser } from "./UserPicker";
@@ -765,9 +768,15 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
                     <>
                       <TriggerGraph runs={sel.runs!} />
                       <RunLedger
-                        runs={sel.runs!}
+                        entries={sel.runs!.map((r) => ({
+                          ...ledgerEntry(r),
+                          action: {
+                            label: "retrigger",
+                            title: retriggerTitle(r),
+                            onClick: () => handleRetrigger(r.sessionId),
+                          },
+                        }))}
                         onOpenSession={onOpenSession}
-                        onRetrigger={handleRetrigger}
                       />
                     </>
                   )}
@@ -842,15 +851,6 @@ function eventLabel(key: string): string {
   return EVENT_OPTIONS.find((o) => o.key === key)?.label || key;
 }
 
-/** Left column of the drawer's Configuration grid. */
-function DetailKey({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-faint text-label leading-[1.7] whitespace-nowrap">
-      {children}
-    </span>
-  );
-}
-
 // ── Trigger history graph ────────────────────────────────────
 
 const GRAPH_DAYS = 30;
@@ -891,74 +891,48 @@ function TriggerGraph({
   const total = buckets.reduce((n, b) => n + b.ok + b.error + b.running, 0);
   if (total === 0) return null;
 
+  const bars: BarSpec[] = buckets.map((b, i) => {
+    const count = b.ok + b.error + b.running;
+    const label = b.date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    if (count === 0)
+      return {
+        key: String(i),
+        tone: "empty",
+        height: 0,
+        label: `${label} · no runs`,
+      };
+    const parts = [
+      b.ok ? `${b.ok} ok` : "",
+      b.error ? `${b.error} failed` : "",
+      b.running ? `${b.running} running` : "",
+    ].filter(Boolean);
+    return {
+      key: String(i),
+      tone: b.error > 0 ? "fail" : b.running > 0 ? "warn" : "ok",
+      // At least 4px, so a single run still reads as a bar.
+      height: Math.max(4, Math.round((count / max) * PLOT_H)) / PLOT_H,
+      label: `${label} · ${count} run${count === 1 ? "" : "s"} (${parts.join(", ")})`,
+    };
+  });
+
+  // rx 3 of a 7px bar rounds the cap without closing it into a capsule, so a
+  // tall bar still shows a straight side to read a height off.
   return (
     <div className={`flex items-end gap-2 ${compact ? "" : "mt-2"}`}>
-      <svg
-        width={GRAPH_DAYS * SLOT - 2}
-        height={PLOT_H + 1}
-        role="img"
-        aria-label={`Trigger history: ${total} runs in the last ${GRAPH_DAYS} days`}
-        className="shrink-0"
-      >
-        {/* baseline */}
-        <rect
-          x={0}
-          y={PLOT_H}
-          width={GRAPH_DAYS * SLOT - 2}
-          height={1}
-          fill="var(--border)"
-        />
-        {buckets.map((b, i) => {
-          const count = b.ok + b.error + b.running;
-          const label = b.date.toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric",
-          });
-          if (count === 0) {
-            return (
-              <rect
-                key={i}
-                x={i * SLOT}
-                y={PLOT_H - 2}
-                width={SLOT - 2}
-                height={2}
-                rx={1}
-                fill="var(--border)"
-              >
-                <title>{`${label} · no runs`}</title>
-              </rect>
-            );
-          }
-          const h = Math.max(4, Math.round((count / max) * PLOT_H));
-          const fill =
-            b.error > 0
-              ? "var(--red)"
-              : b.running > 0
-                ? "var(--yellow)"
-                : "var(--green)";
-          const parts = [
-            b.ok ? `${b.ok} ok` : "",
-            b.error ? `${b.error} failed` : "",
-            b.running ? `${b.running} running` : "",
-          ].filter(Boolean);
-          // rx 3 of a 7px bar rounds the cap without closing it into a
-          // capsule, so a tall bar still shows a straight side to read a
-          // height off. Short ones pill anyway: ry clamps to half the height.
-          return (
-            <rect
-              key={i}
-              x={i * SLOT}
-              y={PLOT_H - h}
-              width={SLOT - 2}
-              height={h}
-              rx={3}
-              fill={fill}
-            >
-              <title>{`${label} · ${count} run${count === 1 ? "" : "s"} (${parts.join(", ")})`}</title>
-            </rect>
-          );
-        })}
-      </svg>
+      <BarStrip
+        bars={bars}
+        width={GRAPH_DAYS * SLOT}
+        height={PLOT_H}
+        gap={2}
+        radius={3}
+        baseline
+        ariaLabel={`Trigger history: ${total} runs in the last ${GRAPH_DAYS} days`}
+        // The strip ends in one trailing gap; pull the caption back over it.
+        className="-mr-0.5 shrink-0"
+      />
       {!compact && (
         <span className="pb-px text-meta leading-none text-faint">
           {total} run{total === 1 ? "" : "s"} · last {GRAPH_DAYS}d
@@ -968,76 +942,23 @@ function TriggerGraph({
   );
 }
 
-/** Expandable run-history ledger for one automation (newest first). */
-function RunLedger({
-  runs,
-  onOpenSession,
-  onRetrigger,
-}: {
-  runs: AutomationRun[];
-  onOpenSession: (sessionId: string) => void;
-  onRetrigger: (sessionId: string) => void;
-}) {
-  return (
-    <div className="mt-2.5 border-t border-line pt-2 flex flex-col gap-1">
-      {runs.map((r) => (
-        <div
-          key={r.sessionId + r.at}
-          className="flex items-baseline gap-2 text-label text-dim min-w-0 phone:flex-wrap"
-        >
-          {r.status === "running" ? (
-            <span className="text-yellow shrink-0">●</span>
-          ) : r.status === "ok" ? (
-            <span className="text-green shrink-0">✓</span>
-          ) : (
-            <span className="text-red shrink-0" title={r.error}>
-              ✗
-            </span>
-          )}
-          <span className="shrink-0" title={new Date(r.at).toLocaleString()}>
-            {relativeTime(r.at)}
-          </span>
-          <span className="text-faint shrink-0">via {r.trigger}</span>
-          {r.durationMs != null && (
-            <span className="text-faint shrink-0">
-              {formatDuration(r.durationMs)}
-            </span>
-          )}
-          {r.error && (
-            <span className="text-red truncate" title={r.error}>
-              {r.error}
-            </span>
-          )}
-          <a
-            className={cn(
-              LINK,
-              "ml-auto max-w-full truncate phone:inline-flex phone:min-h-11 phone:items-center",
-            )}
-            href={`${BASE_PATH}/session/${r.sessionId}`}
-            onClick={(e) => {
-              e.preventDefault();
-              onOpenSession(r.sessionId);
-            }}
-          >
-            <AgentName sessionId={r.sessionId} />
-          </a>
-          {r.status !== "running" && (
-            <button
-              className={cn(LINK, "shrink-0 text-label")}
-              title={
-                r.trigger === "event" || r.trigger === "webhook"
-                  ? "Start a fresh run replaying this run's triggering event"
-                  : "Start a fresh run of this automation"
-              }
-              onClick={() => onRetrigger(r.sessionId)}
-            >
-              retrigger
-            </button>
-          )}
-        </div>
-      ))}
-    </div>
-  );
+/** An automation run as a ledger line: trigger and duration. */
+function ledgerEntry(r: AutomationRun): RunLedgerEntry {
+  const duration = r.durationMs != null ? formatDuration(r.durationMs) : null;
+  return {
+    key: r.sessionId + r.at,
+    status: r.status,
+    at: r.at,
+    meta: [`via ${r.trigger}`, ...(duration ? [duration] : [])],
+    error: r.error,
+    sessionId: r.sessionId,
+  };
+}
+
+function retriggerTitle(r: AutomationRun): string {
+  return r.trigger === "event" || r.trigger === "webhook"
+    ? "Start a fresh run replaying this run's triggering event"
+    : "Start a fresh run of this automation";
 }
 
 /** Secret webhook URL as a Configuration-grid value: truncated URL + copy. */

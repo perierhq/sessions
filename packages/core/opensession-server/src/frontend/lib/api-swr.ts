@@ -51,6 +51,27 @@ export const apiSWRKey = {
     ["api", "preview-pr", repo, branch] as const,
   previewPrDiff: (repo: string, branch: string) =>
     ["api", "preview-pr-diff", repo, branch] as const,
+  // Every incident key's second element starts with "incident": the
+  // incident socket messages revalidate them all by that prefix.
+  incidentSignals: () => ["api", "incident-signals"] as const,
+  incidentSignalMini: (id: string) =>
+    ["api", "incident-signal-mini", id] as const,
+  incidents: (
+    status: "open" | "closed" | "all",
+    project?: string,
+    closedWithinMs?: number,
+  ) =>
+    ["api", "incidents", status, project || "", closedWithinMs ?? ""] as const,
+  incident: (id: string) => ["api", "incident", id] as const,
+  incidentStrip: (id: string) => ["api", "incident-strip", id] as const,
+  incidentAccess: (id: string) => ["api", "incident-access", id] as const,
+  incidentAgentAudit: (id: string) =>
+    ["api", "incident-agent-audit", id] as const,
+  incidentProjects: () => ["api", "incident-projects"] as const,
+  incidentProject: (project: string) =>
+    ["api", "incident-project", project] as const,
+  incidentAccessSettings: (project: string) =>
+    ["api", "incident-access-settings", project] as const,
 };
 
 /**

@@ -13,6 +13,8 @@ import {
 } from "../incidents/response/coordinator";
 import { emptyResponse } from "../incidents/response/ledger";
 import { __setProjectSettingsContextForTest } from "../incidents/response/project-settings";
+import { __setRunnerActivityForTest } from "../incidents/response/runners";
+import { createRunnerPairing, getRunner, registerRunner } from "../runners";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import type { RouteContext } from "./context";
 import {
@@ -46,6 +48,7 @@ afterEach(async () => {
   __setCoordinatorDepsForTest(undefined);
   __setProjectSettingsContextForTest(undefined);
   __setIncidentResponseRoutesForTest(undefined);
+  __setRunnerActivityForTest(undefined);
 });
 
 const call = async (
@@ -279,6 +282,44 @@ test("a claimed user is never taken, and only a person changes actions or sees t
     expiresAt: expect.any(Number),
     command: expect.stringContaining("opensession runner connect"),
   });
+});
+
+test("binding a paired Runner: a signed-in person, confirmed when shared", async () => {
+  __setRunnerActivityForTest({
+    terminals: () => 0,
+    portals: async () => 0,
+    dropPortals: async () => {},
+    disconnect: () => true,
+  });
+  const out = registerRunner({
+    code: createRunnerPairing("Ada").code,
+    name: "shared",
+    platform: "linux",
+    arch: "x64",
+    address: "100.64.0.9",
+  });
+  if (!out.ok) throw new Error(out.error);
+  const path = `/api/incident-projects/acme/runners/${out.runner.id}/bind`;
+  expect(await call("POST", path, {}, { authUser: null })).toEqual({
+    status: 403,
+    json: { error: "Only a signed-in person can bind a production Runner" },
+  });
+  expect(await call("POST", path, {})).toEqual({
+    status: 400,
+    json: {
+      error:
+        "Runner shared serves every repository. Confirm to reserve it for acme incidents only",
+    },
+  });
+  expect(getRunner(out.runner.id)?.incidentReserved).toBeUndefined();
+  const bound = await call("POST", path, { confirm: true });
+  expect(bound?.status).toBe(200);
+  expect(bound?.json.settings.productionRunners).toEqual([out.runner.id]);
+  expect(getRunner(out.runner.id)?.incidentReserved).toBe(true);
+  expect(
+    (await call("POST", "/api/incident-projects/nope/runners/x/bind", {}))
+      ?.status,
+  ).toBe(404);
 });
 
 test("decisions need a verified sign-in when sign-in is on", async () => {

@@ -259,10 +259,11 @@ declare global {
 
 /**
  * Restore every signal's evaluation, then tick every 5 s. Idempotent per
- * process. A tick is skipped while shutting down or while the previous one
+ * process. `deps` swaps the source runner (the demo instance's scripted
+ * checks). A tick is skipped while shutting down or while the previous one
  * is still fetching the signal list.
  */
-export function startIncidentSignals(): void {
+export function startIncidentSignals(deps: SchedulerDeps = {}): void {
   if (globalThis.__incidentSignals) return;
   const handle: IncidentSignalsHandle = {};
   globalThis.__incidentSignals = handle;
@@ -275,7 +276,7 @@ export function startIncidentSignals(): void {
       handle.interval = setInterval(() => {
         if (isShuttingDown() || ticking) return;
         ticking = true;
-        void runSchedulerTick(Date.now())
+        void runSchedulerTick(Date.now(), deps)
           .catch((error) =>
             console.error("[incidents] scheduler tick failed:", message(error)),
           )

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import {
   firstMileRequested,
   isSettingsRoute,
-  parseRoute,
+  parseRouteWithSearch,
   routePath,
   samePanel,
   type Route,
@@ -106,7 +106,7 @@ export class AppRouteController {
     // Capture both before initialization can replace or push a URL.
     const landingPath = browser.location.pathname;
     const landingSearch = browser.location.search;
-    const parsed = parseRoute(landingPath);
+    const parsed = parseRouteWithSearch(landingPath, landingSearch);
     this.firstMile = firstMileRequested(landingPath, landingSearch);
 
     if (parsed.view === "prs" && !this.firstMile) {
@@ -147,15 +147,17 @@ export class AppRouteController {
         this.browser.location.pathname,
         this.browser.location.search,
       );
-      this.route = parseRoute(this.browser.location.pathname);
+      this.route = parseRouteWithSearch(
+        this.browser.location.pathname,
+        this.browser.location.search,
+      );
       this.publish();
     });
     const stopPush = serviceWorker
       ? this.browser.listenForPushNavigate((url) => {
           try {
-            const pathname = new URL(url, this.browser.location.origin)
-              .pathname;
-            this.navigate(parseRoute(pathname));
+            const target = new URL(url, this.browser.location.origin);
+            this.navigate(parseRouteWithSearch(target.pathname, target.search));
           } catch {
             // A malformed URL is not worth throwing away the current focus.
           }
@@ -254,7 +256,7 @@ export class AppRouteController {
         "",
         `${url.pathname}${url.search}${url.hash}`,
       );
-      this.route = parseRoute(url.pathname);
+      this.route = parseRouteWithSearch(url.pathname, url.search);
       this.publish();
     };
     if (settingsReturn.steps > 0) this.popOr(settingsReturn.steps, restore);

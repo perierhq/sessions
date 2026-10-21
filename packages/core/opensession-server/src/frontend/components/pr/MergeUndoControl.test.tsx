@@ -19,3 +19,24 @@ test("shows a bare glyph without a deadline", () => {
   expect(html).toContain('aria-label="Undo merge"');
   expect(html).not.toContain("tabular-nums");
 });
+
+test("caller label and clock format", () => {
+  const html = renderToStaticMarkup(
+    <MergeUndoControl
+      onUndo={() => undefined}
+      deadline={Date.now() + 4900}
+      label="Undo deploy"
+    />,
+  );
+  expect(html).toContain('aria-label="Undo deploy, 5s left"');
+  const clock = renderToStaticMarkup(
+    <MergeUndoControl
+      onUndo={() => undefined}
+      deadline={Date.now() + 65_500}
+      label="Undo deploy"
+      format="clock"
+    />,
+  );
+  expect(clock).toContain('aria-label="Undo deploy, 1:06 left"');
+  expect(clock).toContain(">1:06</span>");
+});

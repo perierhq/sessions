@@ -53,6 +53,9 @@ interface SidebarChromeTools {
   onSetToolVisible: React.ComponentProps<
     typeof SidebarToolsNav
   >["onSetToolVisible"];
+  /** Rendered between the tools and the Workspaces heading: the Incidents
+   *  band, which sits first in the sidebar under New session (v8). */
+  afterTools?: React.ReactNode;
 }
 
 interface SidebarChromeIdentity {
@@ -102,6 +105,7 @@ export function SidebarChrome({
     menuTools: sidebarMenuTools,
     team,
     onSetToolVisible: setToolVisible,
+    afterTools,
   },
   identity: { filter, currentUser, personLensName, repos },
   refs: { headRef, titleRef, actionsRef, probeRef, setFilterButton },
@@ -149,6 +153,8 @@ export function SidebarChrome({
           setFilter({ person: personLensFilter(next, currentUser) })
         }
       />
+
+      {afterTools}
 
       <div
         className={cn(

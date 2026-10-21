@@ -735,3 +735,27 @@ describe("session memory", () => {
     expect(fake.storage.has("opensession-last-session-user")).toBe(false);
   });
 });
+
+describe("incident push intents", () => {
+  test("landing, back and a push notification keep the intent", () => {
+    const fake = fakeBrowser({ path: "/incidents/inc-1?intent=stop" });
+    const controller = new AppRouteController(fake.browser);
+    expect(controller.getCurrentRoute()).toEqual({
+      view: "incidents",
+      id: "inc-1",
+      intent: "stop",
+    });
+    controller.start(true);
+    fake.emitPop("/incidents/inc-2?intent=deploy-now");
+    expect(controller.getCurrentRoute()).toEqual({
+      view: "incidents",
+      id: "inc-2",
+      intent: "deploy-now",
+    });
+    fake.emitPush("/incidents/inc-3?intent=bogus");
+    expect(controller.getCurrentRoute()).toEqual({
+      view: "incidents",
+      id: "inc-3",
+    });
+  });
+});

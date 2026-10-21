@@ -43,6 +43,9 @@ export interface NavigationActions {
   openDatabases(databaseId?: string): void;
   openAnalytics(): void;
   openArchived(): void;
+  openIncidents(): void;
+  openIncident(id: string): void;
+  openIncidentSettings(project?: string): void;
   openCatchUp(): void;
 
   openSession(id: string, created?: UnifiedSession | null): void;

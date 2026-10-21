@@ -175,6 +175,32 @@ function remember(s: IncidentProjectSettings): IncidentProjectSettings {
   return s;
 }
 
+const listeners = new Set<(project: string) => void>();
+
+/** Subscribe to committed settings writes, the caller's and the server's
+ *  own (releases, pairing); returns the unsubscribe function. */
+export function onProjectSettingsChange(
+  listener: (project: string) => void,
+): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Each listener on its own microtask, so none can fail or hold the write. */
+function notify(project: string): void {
+  for (const listener of [...listeners])
+    void Promise.resolve()
+      .then(() => listener(project))
+      .catch((error: unknown) => {
+        console.warn(
+          "[incident-settings] change listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
+}
+
 /** The last settings this process read or wrote for the project. */
 export function peekProjectSettings(
   project: string,
@@ -793,8 +819,10 @@ export async function updateProjectSettings(
     throw error;
   }
   const result = remember(withDefaults(project, committed));
-  if (fields.length)
+  if (fields.length) {
     incidentAudit({ kind: "incident_settings_updated", project, by, fields });
+    notify(project);
+  }
   return result;
 }
 
@@ -819,7 +847,9 @@ export async function patchProjectSettings(
       releaseHookSecret: next.releaseHookSecret ?? newHookSecret(),
     };
   });
-  return remember(withDefaults(project, committed));
+  const result = remember(withDefaults(project, committed));
+  notify(project);
+  return result;
 }
 
 export function redactProjectSettings(

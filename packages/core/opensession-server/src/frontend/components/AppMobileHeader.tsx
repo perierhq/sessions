@@ -94,47 +94,49 @@ export function AppMobileHeader({
 				    opens the same switcher as the full sidebar row; on a pushed page a Back
 				    chevron pops back to the root, iOS-style. On desktop this bar is hidden.
 				    The catch-up deck renders its own header (back + "N Left" + new-workspace), so we
-				    suppress this one there to avoid a duplicate back bar. */}
-      {route.view !== "catchup" && (
-        <TopBar
-          as="header"
-          ref={setAppHeaderEl}
-          className={cn(
-            appHeader({
-              detail: mobileDetail,
-              floating:
-                route.view === "prs" ||
-                route.view === "feed" ||
-                route.view === "session",
-            }),
-            route.view === "archived" && ARCHIVED_SEARCH_HEADER,
-          )}
-        >
-          <TopBarLeading className="shrink-0">
-            {mobileDetail ? (
-              <TopBarBack
-                floating
-                onClick={goBack}
-                aria-label={
-                  route.view === "session" && currentSession?.parentSessionId
-                    ? "Back to the session that started this one"
-                    : "Back to sidebar"
-                }
-              />
-            ) : (
-              <>
-                <OrganizationSwitcher
-                  variant="topbar"
-                  connected={connected}
-                  onOpenSettings={(section) =>
-                    navigate({ view: "settings", section })
+				    suppress this one there to avoid a duplicate back bar. An incident
+				    page brings its own phone bar too (back to Incidents, the project). */}
+      {route.view !== "catchup" &&
+        !(route.view === "incidents" && route.id) && (
+          <TopBar
+            as="header"
+            ref={setAppHeaderEl}
+            className={cn(
+              appHeader({
+                detail: mobileDetail,
+                floating:
+                  route.view === "prs" ||
+                  route.view === "feed" ||
+                  route.view === "session",
+              }),
+              route.view === "archived" && ARCHIVED_SEARCH_HEADER,
+            )}
+          >
+            <TopBarLeading className="shrink-0">
+              {mobileDetail ? (
+                <TopBarBack
+                  floating
+                  onClick={goBack}
+                  aria-label={
+                    route.view === "session" && currentSession?.parentSessionId
+                      ? "Back to the session that started this one"
+                      : "Back to sidebar"
                   }
                 />
-                <UpdatePill addHandler={addHandler} variant="pill" />
-              </>
-            )}
-          </TopBarLeading>
-          {/* Centered page title on pushed pages, iOS-sheet style. Sessions
+              ) : (
+                <>
+                  <OrganizationSwitcher
+                    variant="topbar"
+                    connected={connected}
+                    onOpenSettings={(section) =>
+                      navigate({ view: "settings", section })
+                    }
+                  />
+                  <UpdatePill addHandler={addHandler} variant="pill" />
+                </>
+              )}
+            </TopBarLeading>
+            {/* Centered page title on pushed pages, iOS-sheet style. Sessions
 					    show the workspace name (per-session titles live on the tabs) plus a
 					    working dot while the engine runs; other views show their plain
 					    title. Desktop hides the whole bar.
@@ -146,108 +148,110 @@ export function AppMobileHeader({
 					    under this bar, which is the large-title move on the platform it
 					    was borrowed from. A session names a thing rather than a page, so
 					    its pill is always up. */}
-          {mobileDetail && (route.view === "session" || topbarTitle) && (
-            <span
-              data-shown={
-                route.view === "session" || phoneTitleHandedOver || undefined
-              }
-              className={cn(
-                route.view === "session" && currentSession
-                  ? `${HEADER_TITLE_PILL_TAPPABLE} session-settings-trigger`
-                  : HEADER_TITLE_PILL,
-                route.view !== "session" && HEADER_TITLE_PILL_FADE,
-                route.view === "archived" && HEADER_TITLE_PILL_CENTERED,
-              )}
-              {...(route.view === "session" && currentSession
-                ? {
-                    role: "button",
-                    tabIndex: 0,
-                    onClick: () =>
-                      window.dispatchEvent(
-                        new Event("opensession:toggle-session-settings"),
-                      ),
-                  }
-                : {})}
-            >
-              {/* Slack-header layout: the repo tile leads the pill (portaled in
+            {mobileDetail && (route.view === "session" || topbarTitle) && (
+              <span
+                data-shown={
+                  route.view === "session" || phoneTitleHandedOver || undefined
+                }
+                className={cn(
+                  route.view === "session" && currentSession
+                    ? `${HEADER_TITLE_PILL_TAPPABLE} session-settings-trigger`
+                    : HEADER_TITLE_PILL,
+                  route.view !== "session" && HEADER_TITLE_PILL_FADE,
+                  route.view === "archived" && HEADER_TITLE_PILL_CENTERED,
+                )}
+                {...(route.view === "session" && currentSession
+                  ? {
+                      role: "button",
+                      tabIndex: 0,
+                      onClick: () =>
+                        window.dispatchEvent(
+                          new Event("opensession:toggle-session-settings"),
+                        ),
+                    }
+                  : {})}
+              >
+                {/* Slack-header layout: the repo tile leads the pill (portaled in
 							    by SessionViewer), or the archive mark replaces it for archived
 							    sessions. The name sits over model · cost. The whole pill is one
 							    tap target that opens the session's deeper info page. */}
-              {route.view === "session" && currentSession && (
-                <span className={HEADER_TITLE_REPO} ref={setHeaderRepoEl} />
-              )}
-              <span className={HEADER_TITLE_COL}>
-                <span className={HEADER_TITLE_ROW}>
-                  <OverflowFadeText className={HEADER_TITLE_TEXT}>
-                    {route.view === "session"
-                      ? // A worker names ITSELF here. The workspace name is what
-                        // its parent shows, so borrowing it would leave the two
-                        // reading identically with nothing to say you had gone a
-                        // level down. Desktop says the same thing as a crumb.
-                        currentSession?.parentSessionId
-                        ? currentSession.title
-                        : (activeWorkspaceId
-                            ? workspaces.find((p) => p.id === activeWorkspaceId)
-                                ?.name
-                            : undefined) ||
-                          currentSession?.title ||
-                          ""
-                      : topbarTitle}
-                  </OverflowFadeText>
-                  {currentSession && sessionWasAgentStarted(currentSession) && (
-                    <IconRobot
-                      size={16}
-                      className="shrink-0 text-faint"
-                      aria-label="Started by an agent"
-                    />
-                  )}
+                {route.view === "session" && currentSession && (
+                  <span className={HEADER_TITLE_REPO} ref={setHeaderRepoEl} />
+                )}
+                <span className={HEADER_TITLE_COL}>
+                  <span className={HEADER_TITLE_ROW}>
+                    <OverflowFadeText className={HEADER_TITLE_TEXT}>
+                      {route.view === "session"
+                        ? // A worker names ITSELF here. The workspace name is what
+                          // its parent shows, so borrowing it would leave the two
+                          // reading identically with nothing to say you had gone a
+                          // level down. Desktop says the same thing as a crumb.
+                          currentSession?.parentSessionId
+                          ? currentSession.title
+                          : (activeWorkspaceId
+                              ? workspaces.find(
+                                  (p) => p.id === activeWorkspaceId,
+                                )?.name
+                              : undefined) ||
+                            currentSession?.title ||
+                            ""
+                        : topbarTitle}
+                    </OverflowFadeText>
+                    {currentSession &&
+                      sessionWasAgentStarted(currentSession) && (
+                        <IconRobot
+                          size={16}
+                          className="shrink-0 text-faint"
+                          aria-label="Started by an agent"
+                        />
+                      )}
+                  </span>
+                  {route.view === "session" &&
+                    currentSession && (
+                      // Filled by SessionViewer's portal (compact model selector).
+                      <span
+                        className={HEADER_TITLE_MODEL}
+                        ref={setHeaderModelEl}
+                      />
+                    )}
                 </span>
-                {route.view === "session" &&
-                  currentSession && (
-                    // Filled by SessionViewer's portal (compact model selector).
-                    <span
-                      className={HEADER_TITLE_MODEL}
-                      ref={setHeaderModelEl}
-                    />
-                  )}
               </span>
-            </span>
-          )}
-          <TopBarActions
-            className={
-              mobileDetail ? APP_HEADER_ACTIONS_DETAIL : APP_HEADER_ACTIONS
-            }
-            ref={setHeaderActionsEl}
-          >
-            {/* On the root page the actions slot is otherwise empty (session
+            )}
+            <TopBarActions
+              className={
+                mobileDetail ? APP_HEADER_ACTIONS_DETAIL : APP_HEADER_ACTIONS
+              }
+              ref={setHeaderActionsEl}
+            >
+              {/* On the root page the actions slot is otherwise empty (session
 						    actions only portal in on pushed pages) — it carries Search,
 						    which lives in the top bar on phones instead of the sidebar.
 						    The Desk rides the bottom-right FAB cluster instead. */}
-            {!mobileDetail && (
-              <>
-                <InboxBarButton onOpen={() => navigate({ view: "inbox" })} />
+              {!mobileDetail && (
+                <>
+                  <InboxBarButton onOpen={() => navigate({ view: "inbox" })} />
+                  <button
+                    className={MOBILE_SEARCH_BTN}
+                    onClick={() => commandMenuRef.current?.open()}
+                    aria-label="Open command menu"
+                  >
+                    <IconSearch size={22} />
+                  </button>
+                </>
+              )}
+              {mobileDetail && deskCallActive && (
                 <button
-                  className={MOBILE_SEARCH_BTN}
-                  onClick={() => commandMenuRef.current?.open()}
-                  aria-label="Open command menu"
+                  className={cn(MOBILE_TOP_BAR_CONTROL, "relative")}
+                  onClick={onOpenDesk}
+                  aria-label="Desk call in progress. Open the Desk"
                 >
-                  <IconSearch size={22} />
+                  <IconCall size={22} />
+                  <PulseDot className="absolute top-1.5 right-1.5 ring-2 ring-[var(--mobile-header-control-surface)]" />
                 </button>
-              </>
-            )}
-            {mobileDetail && deskCallActive && (
-              <button
-                className={cn(MOBILE_TOP_BAR_CONTROL, "relative")}
-                onClick={onOpenDesk}
-                aria-label="Desk call in progress. Open the Desk"
-              >
-                <IconCall size={22} />
-                <PulseDot className="absolute top-1.5 right-1.5 ring-2 ring-[var(--mobile-header-control-surface)]" />
-              </button>
-            )}
-          </TopBarActions>
-        </TopBar>
-      )}
+              )}
+            </TopBarActions>
+          </TopBar>
+        )}
     </>
   );
 }

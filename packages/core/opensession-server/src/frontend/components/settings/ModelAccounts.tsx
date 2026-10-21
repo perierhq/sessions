@@ -37,6 +37,7 @@ import {
   rowMenuTriggerClasses,
 } from "../../ui/settings";
 import { cn } from "../../ui/cn";
+import { Meter, MeterGroup } from "../../ui/meter";
 import { toast } from "../../ui/toast";
 import { BrandMark, IconTile } from "../BrandTile";
 import {
@@ -247,31 +248,6 @@ function AccountProviderMark({ name }: { name: "claude" | "codex" | "xai" }) {
   );
 }
 
-/**
- * A meter's fill. Normal usage is neutral ink, not green: an account that is
- * fine already says so in its "In rotation" pill, and three green bars per
- * account across nine accounts turned the whole page into colour with nothing
- * to look at. Colour here means "this one is running out" — so the two
- * accounts near a limit are the only things that catch the eye.
- */
-const usageToneClasses = {
-  unknown: "bg-line",
-  high: "bg-red",
-  warn: "bg-yellow",
-  normal: "bg-faint",
-} as const;
-
-/** Utilization → tone. Shared so a meter and its neighbours can't drift. */
-function usageTone(pct: number | null): keyof typeof usageToneClasses {
-  return pct === null
-    ? "unknown"
-    : pct >= 90
-      ? "high"
-      : pct >= 70
-        ? "warn"
-        : "normal";
-}
-
 const statusToneClasses = {
   red: { dot: "bg-red", text: "text-red" },
   yellow: { dot: "bg-yellow", text: "text-yellow" },
@@ -340,75 +316,6 @@ function providerAmount(amount: string): string {
   if (!amount.trim() || !Number.isFinite(n)) return amount;
   const cents = Number.isInteger(n) ? 0 : 2;
   return `$${n.toLocaleString([], { minimumFractionDigits: cents, maximumFractionDigits: 2 })}`;
-}
-
-/**
- * Usage windows sit beside each other so three limits add one compact strip
- * instead of three lines to every account. Each window owns its alignment,
- * which also lets Codex wrap a fourth window without changing its neighbours.
- * Phones keep one window per line because the same strip would be unreadable
- * at that width.
- */
-function MeterGroup({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mt-2 grid max-w-[420px] grid-cols-3 gap-3 text-meta phone:grid-cols-1 phone:gap-1.5">
-      {children}
-    </div>
-  );
-}
-
-/** One compact limit: label and value, track, then its reset time. */
-function Meter({
-  label,
-  labelTitle,
-  pct,
-  value,
-  note,
-  noteTitle,
-}: {
-  label: string;
-  labelTitle?: string;
-  /** 0-100, or null when the value is unknown. The track renders empty. */
-  pct: number | null;
-  value: React.ReactNode;
-  note?: React.ReactNode;
-  noteTitle?: string;
-}) {
-  return (
-    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 phone:grid-cols-[minmax(0,1fr)_72px_minmax(38px,auto)] phone:gap-x-2 phone:gap-y-0">
-      {/* `contents` gives the desktop label and reset time separate rows.
-			    On phones they become one cell beside the track and value. */}
-      <span className="min-w-0 phone:overflow-visible phone:whitespace-normal desktop:contents">
-        <span
-          className="overflow-hidden text-ellipsis whitespace-nowrap text-dim desktop:col-start-1 desktop:row-start-1"
-          title={labelTitle}
-        >
-          {label}
-        </span>
-        {note ? (
-          <span
-            className="overflow-hidden text-ellipsis whitespace-nowrap text-faint desktop:col-span-2 desktop:row-start-3"
-            title={noteTitle}
-          >
-            <span className="phone:inline desktop:hidden"> · </span>
-            {note}
-          </span>
-        ) : null}
-      </span>
-      <div className="h-1 overflow-hidden rounded-full bg-active desktop:col-span-2 desktop:row-start-2 phone:col-start-2 phone:row-start-1">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-300",
-            usageToneClasses[usageTone(pct)],
-          )}
-          style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }}
-        />
-      </div>
-      <span className="text-right tabular-nums text-dim desktop:col-start-2 desktop:row-start-1 phone:col-start-3 phone:row-start-1">
-        {value}
-      </span>
-    </div>
-  );
 }
 
 /**

@@ -246,6 +246,9 @@ export function AppSidebar({
           plainActive={route.view === "plain"}
           supportTinderActive={route.view === "supporttinder"}
           reportsActive={route.view === "reports"}
+          activeIncidentId={
+            route.view === "incidents" ? (route.id ?? null) : null
+          }
           databasesActive={route.view === "databases"}
           analyticsActive={route.view === "analytics"}
           showDraftRow={productEmpty && githubConnectionState !== "loading"}

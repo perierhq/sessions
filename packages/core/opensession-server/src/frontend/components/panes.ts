@@ -6,6 +6,8 @@ export { CatchUpDeck } from "./CatchUpDeck";
 export { Databases } from "./Databases";
 export { Feed } from "./Feed";
 export { Goals } from "./Goals";
+export { IncidentsPane } from "./incidents/IncidentsPane";
+export { IncidentSettings } from "./settings/incidents/IncidentSettings";
 export { Issues } from "./Issues";
 export { Prs } from "./Prs";
 export { Reports } from "./Reports";

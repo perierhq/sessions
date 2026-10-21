@@ -46,8 +46,9 @@ export function PulseDot({
   size = 8,
   className,
 }: {
-  /** 8px standalone; 7px when it sits inside text or the Running pill. */
-  size?: 7 | 8;
+  /** 8px standalone; 7px when it sits inside text or the Running pill;
+   *  12px beside a page title. */
+  size?: 7 | 8 | 12;
   className?: string;
 }) {
   return (
@@ -55,7 +56,7 @@ export function PulseDot({
       aria-hidden
       className={cn(
         "shrink-0 rounded-full bg-yellow",
-        size === 8 ? "size-2" : "size-[7px]",
+        size === 12 ? "size-3" : size === 8 ? "size-2" : "size-[7px]",
         PULSE,
         className,
       )}

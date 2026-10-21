@@ -1,12 +1,12 @@
 /**
  * Incident response API: per-project fix loop settings (redacted), pairing
- * a production Runner, owner decisions on an incident, and "What the agents
+ * a production Runner or binding a paired one, owner decisions on an incident, and "What the agents
  * did" (the ledger plus each agent's access and tool calls).
  *
  * Identity is the verified sign-in only; a claimed `user` in a body is
  * never taken. Changing actions or production Runners, loosening the
  * policy (autonomy, never without you, veto, budgets, max rounds, kill
- * switch off, night rule), pairing a Runner, and decisions that act on
+ * switch off, night rule), pairing or binding a Runner, and decisions that act on
  * production (deploy now, approve, roll back) need a signed-in person
  * (`verifiedPerson`), even with web sign-in off. Tightening the policy
  * stays open.
@@ -42,6 +42,7 @@ import {
   updateProjectSettings,
 } from "../incidents/response/project-settings";
 import {
+  bindProductionRunner,
   listProductionRunnerCandidates,
   startProductionPairing,
 } from "../incidents/response/runners";
@@ -54,6 +55,7 @@ export const AGENT_AUDIT_TAIL = 2000;
 const PROJECTS_PATH = "/api/incident-projects";
 const PROJECT_PATH = /^\/api\/incident-projects\/([^/]+)$/;
 const PAIRING_PATH = /^\/api\/incident-projects\/([^/]+)\/runner-pairing$/;
+const BIND_PATH = /^\/api\/incident-projects\/([^/]+)\/runners\/([^/]+)\/bind$/;
 const DECISIONS_PATH = /^\/api\/incidents\/([^/]+)\/decisions$/;
 const AGENT_AUDIT_PATH = /^\/api\/incidents\/([^/]+)\/agent-audit$/;
 
@@ -247,6 +249,33 @@ export async function handleIncidentResponseRoutes(
     );
     if ("error" in pairing) return error(pairing.error, person ? 400 : 403);
     return Response.json(pairing);
+  }
+
+  const bindMatch = BIND_PATH.exec(path);
+  if (bindMatch && req.method === "POST") {
+    const project = decodeSegment(bindMatch[1]!);
+    const runnerId = decodeSegment(bindMatch[2]!);
+    if (project === null || runnerId === null) return notFound();
+    if (!incidentProjectExists(project)) return notFound();
+    const body = await readObject(req);
+    if (body instanceof Response) return body;
+    if (!person)
+      return error("Only a signed-in person can bind a production Runner", 403);
+    try {
+      await bindProductionRunner(
+        project,
+        runnerId,
+        requestUser(ctx) || "Anonymous",
+        { signedInPerson: person },
+        { confirmShared: body.confirm === true },
+      );
+    } catch (cause) {
+      return error(
+        cause instanceof Error ? cause.message : "Couldn't bind the Runner",
+        400,
+      );
+    }
+    return projectDetail(project, person);
   }
 
   const decisionMatch = DECISIONS_PATH.exec(path);

@@ -3,6 +3,8 @@
 // resolved access and its preview. Types, constant lists, defaults and small
 // pure helpers only.
 
+import type { IncidentState } from "./incidents";
+
 export const INCIDENT_AGENT_ROLES = ["investigator", "verifier"] as const;
 export type IncidentAgentRole = (typeof INCIDENT_AGENT_ROLES)[number];
 
@@ -287,4 +289,24 @@ export function defaultIncidentAccessSettings(
     updatedBy: "sessions",
     updatedAt: now,
   };
+}
+
+/**
+ * The incident states in which its agents may run. An allowlist, so a state
+ * added later refuses until it is listed here. Not listed: a heads-up and
+ * waiting on a provider (agents are stopped there), paused, and the closed
+ * states.
+ */
+export const AGENT_INCIDENT_STATES: readonly IncidentState[] = [
+  "investigating",
+  "fix-ready",
+  "veto",
+  "deploying",
+  "watching",
+  "needs-you",
+  "rolled-back",
+];
+
+export function incidentAllowsAgents(state: string): boolean {
+  return (AGENT_INCIDENT_STATES as readonly string[]).includes(state);
 }

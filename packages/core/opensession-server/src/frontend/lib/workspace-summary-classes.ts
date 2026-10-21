@@ -80,6 +80,11 @@ export const WS_SUMMARY_REVIEW_CANVAS_CLEARANCE = "desktop:mr-[312px]";
 export const WS_SUMMARY_SECTION =
   "mt-3 flex h-[22px] shrink-0 items-center px-4 text-label font-medium text-faint first:mt-1";
 
+/** WS_SUMMARY_SECTION on a page: the label sits on the page rows' 8px rail
+ *  (WS_SUMMARY_PAGE_ROW), not the card's 16px one. */
+export const WS_SUMMARY_PAGE_SECTION =
+  "mt-3 flex h-[22px] shrink-0 items-center px-2 text-label font-medium text-faint first:mt-1";
+
 /**
  * A row. 31px tall on a 300px card, which is the proportion a dense list needs
  * before it stops reading as a cramped menu. Anything under about 28 and the
@@ -109,6 +114,17 @@ export const WS_SUMMARY_ROW =
   // band getting darker rather than as a second colour landing on it.
   BAND_ROW +
   " [.ws-summary-band_&]:hover:bg-[color-mix(in_srgb,currentColor_8%,transparent)]";
+
+/**
+ * WS_SUMMARY_ROW at page scale: the same rail, label, hover pill and focus
+ * ring, full width with no card gutter, 36px on desktop and a 44px target on
+ * phones. A page list outdents by `-mx-2` so labels align with the text
+ * above it.
+ */
+export const WS_SUMMARY_PAGE_ROW =
+  "group/ws flex h-9 w-full min-w-0 shrink-0 cursor-pointer items-center gap-1.5 " +
+  "rounded-row border-none bg-transparent px-2 text-left text-item-title text-fg " +
+  "hover:bg-hover focus-ring phone:h-11";
 
 /**
  * The one row that holds a real control: the PR headline and its action

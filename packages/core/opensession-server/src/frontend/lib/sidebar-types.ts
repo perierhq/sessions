@@ -44,6 +44,8 @@ export interface Props {
   supportTinderActive: boolean;
   /** True while the recurring Reports surface is open. */
   reportsActive: boolean;
+  /** The incident page that is open, if any: its sidebar row is selected. */
+  activeIncidentId?: string | null;
   databasesActive: boolean;
   /** True while the Analytics surface is open. */
   analyticsActive: boolean;

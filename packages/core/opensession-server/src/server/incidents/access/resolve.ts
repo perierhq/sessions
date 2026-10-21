@@ -23,6 +23,8 @@ import {
   type ResolvedCredential,
   type ResolvedEgress,
   type ResolvedHost,
+  AGENT_INCIDENT_STATES,
+  incidentAllowsAgents,
 } from "../../../shared/incident-access";
 import {
   type Incident,
@@ -71,25 +73,8 @@ export function registerAccessGate(gate: AccessGate): () => void {
   };
 }
 
-/**
- * The incident states in which its agents may run. An allowlist, so a state
- * added later refuses until it is listed here. Not listed: a heads-up and
- * waiting on a provider (agents are stopped there), paused, and the closed
- * states.
- */
-export const AGENT_INCIDENT_STATES: readonly IncidentState[] = [
-  "investigating",
-  "fix-ready",
-  "veto",
-  "deploying",
-  "watching",
-  "needs-you",
-  "rolled-back",
-];
-
-export function incidentAllowsAgents(state: string): boolean {
-  return (AGENT_INCIDENT_STATES as readonly string[]).includes(state);
-}
+// The states agents may run in are shared with the incident page.
+export { AGENT_INCIDENT_STATES, incidentAllowsAgents };
 
 export const INCIDENT_DENIED_MESSAGE =
   "This tool is turned off for incident agents in this project's access settings.";
