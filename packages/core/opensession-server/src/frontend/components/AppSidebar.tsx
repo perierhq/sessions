@@ -249,6 +249,7 @@ export function AppSidebar({
           activeIncidentId={
             route.view === "incidents" ? (route.id ?? null) : null
           }
+          incidentsActive={route.view === "incidents"}
           databasesActive={route.view === "databases"}
           analyticsActive={route.view === "analytics"}
           showDraftRow={productEmpty && githubConnectionState !== "loading"}

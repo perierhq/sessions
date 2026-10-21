@@ -13,9 +13,12 @@ import { whenCurrentUserReady } from "./auth-ready";
 // Feed leads. The tools below it are places you go to act on one kind of
 // thing; Feed is what the team has actually been doing, which is the page you
 // want in front of you when you have not decided what to work on yet.
+// Incidents follows the two places work starts from: it is where you look to
+// see whether what shipped is still up.
 export const SIDEBAR_TOOL_IDS = [
   "feed",
   "prs",
+  "incidents",
   "issues",
   "tasks",
   "plain",
@@ -31,6 +34,7 @@ export type SidebarToolId = (typeof SIDEBAR_TOOL_IDS)[number];
 export const SIDEBAR_TOOL_LABELS: Record<SidebarToolId, string> = {
   feed: "Feed",
   prs: "Pull requests",
+  incidents: "Incidents",
   issues: "Issues",
   tasks: "Tasks",
   // The Plain queue as a destination. The alternate sidebar band opens a
@@ -97,7 +101,9 @@ const TOOLS_CHANGED_EVENT = "opensession-sidebar-tools-changed";
 const USER_CHANGE_EVENT = "opensession-user-changed";
 
 // A new account starts with the primary destinations: Feed, Pull requests,
-// Support, and Catch up. The rest are either empty until something else exists
+// Incidents, Support, and Catch up. Incidents is on even before a signal
+// exists, because its page is where signals are set up; the band under the
+// tools only appears once there is an incident to list. The rest are either empty until something else exists
 // (Tasks needs todos, Reports needs automations) or need an integration
 // (Support Tinder, Analytics), so shipping them on makes the sidebar look busy
 // and broken at once. They are one click away in the Tools band's ••• menu and
@@ -109,6 +115,7 @@ const USER_CHANGE_EVENT = "opensession-user-changed";
 const DEFAULT_VISIBLE_TOOLS: SidebarToolId[] = [
   "feed",
   "prs",
+  "incidents",
   "plain",
   "catchup",
 ];
@@ -156,13 +163,19 @@ export function mergeSidebarToolOrder(
   const ordered = normalizeSidebarToolOrder(preferred).filter((id) =>
     allowed.has(id),
   );
+  // A tool the saved order has never seen (one added after it was saved)
+  // goes where the default order puts it: straight after the nearest tool
+  // that precedes it there, or first when none does. Appending it instead
+  // would park a primary destination under the ones people switched on last.
   const seen = new Set(ordered);
-  for (const id of available) {
-    if (!seen.has(id)) {
-      seen.add(id);
-      ordered.push(id);
-    }
-  }
+  available.forEach((id, index) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const before = available
+      .slice(0, index)
+      .findLast((candidate) => ordered.includes(candidate));
+    ordered.splice(before ? ordered.indexOf(before) + 1 : 0, 0, id);
+  });
   return ordered;
 }
 

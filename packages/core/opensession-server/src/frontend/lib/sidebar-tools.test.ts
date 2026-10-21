@@ -35,14 +35,23 @@ describe("readHiddenSidebarTools", () => {
   // A tool added to SIDEBAR_TOOL_IDS must not switch itself on for everyone
   // who has never touched the setting. Support is deliberately one of the
   // default destinations.
-  test("a new account sees Feed, Pull requests, Support and Catch up", () => {
+  test("a new account sees Feed, Pull requests, Incidents, Support and Catch up", () => {
     const hidden = readHiddenSidebarTools();
     expect([...SIDEBAR_TOOL_IDS].filter((id) => !hidden.has(id))).toEqual([
       "feed",
       "prs",
+      "incidents",
       "plain",
       "catchup",
     ]);
+  });
+
+  // A stored list names what was switched off. Incidents is newer than every
+  // list stored before it, so it is absent from them and shows: nobody chose
+  // to hide it.
+  test("a tool added after a list was stored shows for that person", () => {
+    store.set(KEY, JSON.stringify(["reports", "analytics"]));
+    expect(readHiddenSidebarTools().has("incidents")).toBe(false);
   });
 
   // Both tools were renamed on 2026-08-14. Someone who had hidden one then
@@ -102,11 +111,60 @@ describe("sidebar tool order", () => {
     ).toEqual(["reports", "prs"]);
   });
 
-  test("appends tools missing from a saved order", () => {
-    expect(mergeSidebarToolOrder(["reports", "feed"]).slice(0, 3)).toEqual([
+  // Each missing tool follows its nearest predecessor in the default order:
+  // Databases and Analytics come after Reports there, the rest after Feed.
+  test("fills in tools missing from a saved order", () => {
+    expect(mergeSidebarToolOrder(["reports", "feed"])).toEqual([
       "reports",
+      "databases",
+      "analytics",
       "feed",
       "prs",
+      "incidents",
+      "issues",
+      "tasks",
+      "plain",
+      "catchup",
+      "supporttinder",
+    ]);
+  });
+
+  // An order saved before Incidents existed has every other tool in it.
+  // The new one lands after Pull requests, where a new account has it,
+  // rather than under the tools that were switched on last.
+  test("a tool newer than the saved order takes its default place", () => {
+    expect(
+      mergeSidebarToolOrder([
+        "catchup",
+        "feed",
+        "prs",
+        "issues",
+        "tasks",
+        "plain",
+        "supporttinder",
+        "reports",
+        "databases",
+        "analytics",
+      ]),
+    ).toEqual([
+      "catchup",
+      "feed",
+      "prs",
+      "incidents",
+      "issues",
+      "tasks",
+      "plain",
+      "supporttinder",
+      "reports",
+      "databases",
+      "analytics",
+    ]);
+  });
+
+  test("a new tool with nothing before it in the saved order goes first", () => {
+    expect(mergeSidebarToolOrder(["reports"], ["feed", "reports"])).toEqual([
+      "feed",
+      "reports",
     ]);
   });
 
@@ -131,12 +189,13 @@ describe("sidebar tool order", () => {
       "catchup",
       "feed",
       "prs",
+      "incidents",
+      "issues",
       "supporttinder",
       "tasks",
       "plain",
       "analytics",
       "databases",
-      "issues",
     ]);
   });
 });

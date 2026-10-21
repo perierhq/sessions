@@ -5,6 +5,7 @@ import {
   IconFeed,
   IconDatabase,
   IconFile,
+  IconGauge,
   IconInbox,
   IconIssue,
   IconListCircles,
@@ -12,6 +13,7 @@ import {
   IconPullRequest,
   IconStack,
 } from "../icons";
+import { IncidentsToolStatus } from "./IncidentsToolStatus";
 import type { SidebarToolsNavItem } from "./SidebarToolsNav";
 import type { SidebarMenuTool } from "./SidebarToolsMenu";
 import { cn } from "../../ui/cn";
@@ -38,6 +40,7 @@ interface SidebarToolsModelOptions {
   navigation: NavigationActions;
   feedActive: boolean;
   prsActive: boolean;
+  incidentsActive: boolean;
   issuesActive: boolean;
   tasksActive: boolean;
   taskCount: number;
@@ -62,6 +65,7 @@ export function createSidebarToolsModel({
   navigation,
   feedActive,
   prsActive,
+  incidentsActive,
   issuesActive,
   tasksActive,
   taskCount,
@@ -103,6 +107,18 @@ export function createSidebarToolsModel({
       active: prsActive,
       onClick: navigation.openPrs,
       title: "Pull request worktrees",
+    },
+    {
+      id: "incidents",
+      label: SIDEBAR_TOOL_LABELS.incidents,
+      // Not the pulse line: Feed already draws it two rows up, and two
+      // identical glyphs in one strip read as one place. The gauge is the
+      // monitoring glyph, and the dot at the row's end carries the state.
+      icon: <IconGauge />,
+      active: incidentsActive,
+      onClick: navigation.openIncidents,
+      title: "Signals and incidents",
+      trailing: <IncidentsToolStatus />,
     },
     {
       id: "issues",

@@ -130,3 +130,34 @@ test("the heading and All incidents are two buttons, neither inside the other", 
   for (let i = 1; i < tags.length; i++)
     expect(tags[i - 1] === "<button" && tags[i] === "<button").toBe(false);
 });
+
+// The Incidents tool row above the band is the way to the incidents home,
+// so the band's heading names what it holds instead of repeating "Incidents".
+test("the heading names what the band holds, not the tool above it", async () => {
+  const { SWRConfig, unstable_serialize } = await import("swr");
+  const { apiSWRKey } = await import("../../lib/api-swr");
+  const { RECENTLY_FIXED_MS } = await import("../../lib/incidents/sidebar");
+  const key = unstable_serialize(
+    apiSWRKey.incidents("all", undefined, RECENTLY_FIXED_MS),
+  );
+  const band = (list: IncidentSummary[]) =>
+    renderToStaticMarkup(
+      <SWRConfig value={{ fallback: { [key]: list } }}>
+        <IncidentsBand
+          open
+          onToggleBand={() => {}}
+          onOpenIncident={() => {}}
+          onOpenAll={() => {}}
+        />
+      </SWRConfig>,
+    );
+  const fixed = summary({
+    id: "inc-2",
+    state: "resolved",
+    closedAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+  const withOpen = band([summary(), fixed]);
+  expect(withOpen).toContain(">Open incidents<");
+  expect(withOpen).not.toContain(">Incidents<");
+  expect(band([fixed])).toContain(">Recently fixed<");
+});

@@ -24,16 +24,19 @@ enum SidebarTools {
     static let catchUp = "catchup"
     static let reports = "reports"
 
-    /// What an account shows when nobody has chosen. Support Tinder and
-    /// Analytics have no phone surface here, but the whole list is mirrored
-    /// because it is the agreement with the web: absent means exactly this, on
-    /// both clients. Keep it in step with DEFAULT_VISIBLE_TOOLS in
+    /// What an account shows when nobody has chosen. Incidents, Support
+    /// Tinder, Databases and Analytics have no phone surface here, but the
+    /// whole list is mirrored because it is the agreement with the web: absent
+    /// means exactly this, on both clients, and the first toggle here writes
+    /// `defaultHidden` to the account, so an id missing from `allIds` would
+    /// come back on in the browser. Keep both in step with SIDEBAR_TOOL_IDS and
+    /// DEFAULT_VISIBLE_TOOLS in
     /// packages/core/opensession-server/src/frontend/lib/sidebar-tools.ts.
     static let allIds = [
-        feed, prs, "issues", tasks, plain, catchUp, "supporttinder", reports,
-        "analytics",
+        feed, prs, "incidents", "issues", tasks, plain, catchUp, "supporttinder",
+        reports, "databases", "analytics",
     ]
-    static let defaultVisible = [feed, prs, plain, catchUp]
+    static let defaultVisible = [feed, prs, "incidents", plain, catchUp]
     static var defaultHidden: [String] { allIds.filter { !defaultVisible.contains($0) } }
     static var defaultHiddenJSON: String { encode(defaultHidden) }
 
