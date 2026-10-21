@@ -1833,6 +1833,26 @@ test("rollback-first: the parallel investigator is best effort and never holds t
     ).toMatchObject({ step: "open-veto" });
 });
 
+test("kill switch before the rollback ran: needs you, the release is still out", () => {
+  const paused = rollingBack([], { ownerRollback: { by: "Bo", at: iso(0) } });
+  const step = decideNextStep({
+    ...paused,
+    settings: { ...paused.settings, agentsPaused: true },
+  });
+  expect(step).toMatchObject({
+    step: "needs-you",
+    kind: "action-failed",
+    reason:
+      "Agents were paused before the rollback ran; the release is still out",
+    via: "investigating",
+    patch: { phase: "investigating", round: 2 },
+  });
+  expect(step.step === "needs-you" && step.patch).toHaveProperty(
+    "ownerRollback",
+    undefined,
+  );
+});
+
 test("documenting: with agents paused the note PR is left open, never merged", () => {
   const paused = documenting({
     files: ["docs/incidents/2026-10-20-search.md"],

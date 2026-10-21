@@ -389,17 +389,21 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     if (state === "paused" || state === "needs-you" || liveActionRunning(view))
       return NONE;
-    // The automatic rollback does not run while agents are paused; the
-    // next round starts from the failed release when they are back.
+    // The rollback does not run while agents are paused, and the failed
+    // release is still out: a person decides what happens next.
     if (state === "rolled-back")
       return {
-        step: "transition",
-        to: "investigating",
-        phase: "investigating",
-        detail: "Agents paused",
+        step: "needs-you",
+        kind: "action-failed",
+        reason:
+          "Agents were paused before the rollback ran; the release is still out",
+        via: "investigating",
         ...(r
           ? {
-              patch: nextRound(r, "Agents were paused before the rollback ran"),
+              patch: {
+                ...nextRound(r, "Agents were paused before the rollback ran"),
+                phase: "investigating",
+              },
             }
           : {}),
       };
@@ -897,6 +901,7 @@ function nextRound(
     merge: undefined,
     watch: undefined,
     mergingSince: undefined,
+    ownerRollback: undefined,
   };
 }
 

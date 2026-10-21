@@ -1563,6 +1563,30 @@ test("manual rollback while watching, then the next round", async () => {
   ).toEqual({ error: "Nothing to roll back", status: 409 });
 });
 
+test("kill switch before a manual rollback ran: needs you, the release is still out", async () => {
+  const w = await world();
+  await w.toWatching();
+  await applyOwnerDecision(w.incident.id, "roll-back", "Bo", undefined, {
+    ...w.deps,
+    // Nothing runs on its own until the kill switch is on.
+    settings: async () => ({ ...w.settings, agentsPaused: true }),
+  });
+  w.settings.agentsPaused = true;
+  await __waitForCoordinatorForTest();
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.resumeState).toBe("investigating");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "action-failed",
+    reason:
+      "Agents were paused before the rollback ran; the release is still out",
+    resumePhase: "investigating",
+  });
+  expect(i?.response?.ownerRollback).toBeUndefined();
+  expect(w.actions.map((a) => a.actionId)).toEqual(["deploy"]);
+});
+
 test("manual rollback after resolution reopens the incident, rounds uncapped", async () => {
   const w = await world();
   await w.toWatching();

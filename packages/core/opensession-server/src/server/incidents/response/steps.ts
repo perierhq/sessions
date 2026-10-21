@@ -89,6 +89,9 @@ export type ResponseStep =
       reason: string;
       rule?: string;
       patch?: Partial<IncidentResponse>;
+      /** A state the incident passes through first, so a person picks the
+       *  work up from there. */
+      via?: IncidentState;
     }
   | {
       step: "open-veto";

@@ -1419,14 +1419,15 @@ async function needsYou(
 ): Promise<boolean> {
   const { incident, settings } = view;
   await write(incident.id, d, settings, guardOf(view), (c, base, at) => {
+    const b = patched(base, step.patch);
     const resumePhase =
-      base.phase === "needs-you"
-        ? (base.needsYou?.resumePhase ?? "investigating")
-        : base.phase;
+      b.phase === "needs-you"
+        ? (b.needsYou?.resumePhase ?? "investigating")
+        : b.phase;
     const response = ledger(
       patched(
         {
-          ...patched(base, step.patch),
+          ...b,
           phase: "needs-you" as const,
           needsYou: {
             kind: step.kind,
@@ -1445,7 +1446,17 @@ async function needsYou(
       },
     );
     if (c.state === "needs-you") return { incident: c, response };
-    const moved = transitionIncident(c, "needs-you", {
+    let from: Incident = c;
+    if (step.via && c.state !== step.via) {
+      const through = transitionIncident(c, step.via, {
+        by: "sessions",
+        detail: step.reason,
+        at,
+      });
+      if ("error" in through) return through;
+      from = through;
+    }
+    const moved = transitionIncident(from, "needs-you", {
       by: "sessions",
       detail: step.reason,
       at,
