@@ -37,6 +37,31 @@ test("the lock-screen Stop and Deploy now open their confirms", () => {
   });
 });
 
+test("a veto that runs a rollback confirms in rollback words", () => {
+  const veto = shell([
+    { kind: "deploy-now", decision: "deploy-now" },
+    { kind: "stop", decision: "stop", weight: "danger" },
+  ]);
+  expect(
+    intentPlan(veto, "stop", "rolls back 12:37", { rollback: true }),
+  ).toEqual({
+    kind: "confirm",
+    decision: "stop",
+    title: "Stop the rollback?",
+    description: "Nothing is rolled back and the incident waits for you",
+    confirmLabel: "Stop",
+  });
+  expect(
+    intentPlan(veto, "deploy-now", "rolls back 12:37", { rollback: true }),
+  ).toEqual({
+    kind: "confirm",
+    decision: "deploy-now",
+    title: "Roll back now?",
+    description: "The rollback runs without the rest of the veto window",
+    confirmLabel: "Roll back now",
+  });
+});
+
 test("a needs-you top option confirms with the page's own words", () => {
   expect(
     intentPlan(
