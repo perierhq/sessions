@@ -660,7 +660,9 @@ function RoleDialog({
         open={open}
         onClose={onClose}
         title={
-          signal ? `${signal.name} · ${ROLE_LABELS[role]}` : ROLE_LABELS[role]
+          signal
+            ? `${signal.name} · ${ROLE_LABELS[role]}`
+            : `${ROLE_LABELS[role]} access`
         }
         error={error ?? previewError}
         busy={busy}
