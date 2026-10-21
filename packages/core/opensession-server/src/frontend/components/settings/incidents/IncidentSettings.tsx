@@ -31,6 +31,7 @@ import {
 } from "../../../ui/settings";
 import { EmptyState, InlineAlert } from "../../../ui/state";
 import { RepoTile } from "../../RepoTile";
+import { ActionsSection } from "./ActionsSection";
 import { PolicySection } from "./PolicySection";
 import { SettingLinkRow } from "./SettingLinkRow";
 import { SignalsSection } from "./SignalsSection";
@@ -196,6 +197,14 @@ function IncidentProjectSettings({
         )
       }
       sections={{
+        actions: settings.data && (
+          <ActionsSection
+            project={project}
+            view={settings.data}
+            onSave={save}
+            onRevalidate={() => void settings.mutate()}
+          />
+        ),
         signals: (
           <SignalsSection
             project={project}

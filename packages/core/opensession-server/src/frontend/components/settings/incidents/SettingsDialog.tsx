@@ -19,7 +19,8 @@ import { IconX } from "../../icons";
  * One incident setting being edited: a centred dialog on a desktop, a sheet
  * on a phone, with a visible close, the fields, the server's refusal above
  * the buttons, and Cancel and Save. `leading` holds a destructive action at
- * the footer's left.
+ * the footer's left. Without `onSave` the dialog edits live and its footer
+ * is one Done button.
  */
 export function SettingsDialog({
   open,
@@ -41,7 +42,7 @@ export function SettingsDialog({
   busy?: boolean;
   canSave?: boolean;
   saveLabel?: string;
-  onSave: () => void;
+  onSave?: () => void;
   leading?: React.ReactNode;
   wide?: boolean;
   children: React.ReactNode;
@@ -62,7 +63,7 @@ export function SettingsDialog({
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            if (canSave && !busy) onSave();
+            if (onSave && canSave && !busy) onSave();
           }}
         >
           <header className={SETTINGS_DIALOG_HEADER}>
@@ -82,16 +83,24 @@ export function SettingsDialog({
             {error && <InlineAlert>{error}</InlineAlert>}
             <div className={SETTINGS_DIALOG_BUTTONS}>
               {leading && <div className="mr-auto">{leading}</div>}
-              <Button type="button" variant="soft" onClick={dismiss}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                variant="primary"
-                disabled={!canSave || busy}
-              >
-                {saveLabel}
-              </Button>
+              {onSave ? (
+                <>
+                  <Button type="button" variant="soft" onClick={dismiss}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={!canSave || busy}
+                  >
+                    {saveLabel}
+                  </Button>
+                </>
+              ) : (
+                <Button type="button" variant="soft" onClick={dismiss}>
+                  Done
+                </Button>
+              )}
             </div>
           </footer>
         </form>

@@ -86,3 +86,19 @@ export const MAPPING_RAW =
 export const WINDOW_ROW =
   "flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl bg-surface py-2 pr-2 pl-3";
 export const WINDOW_ROW_TEXT = "min-w-0 flex-1 basis-56";
+
+/** An action row's caption: the host, then the command's first line in
+ *  monospace, cut to one line. */
+export const ACTION_ROW_DESC = "flex min-w-0 items-baseline gap-1.5";
+export const ACTION_ROW_COMMAND = "min-w-0 truncate font-mono text-meta";
+
+/** The production hosts list inside its dialog: rows divided by a line. */
+export const HOST_LIST = "flex flex-col divide-y divide-line";
+export const HOST_ROW = "flex min-h-11 items-center gap-3 py-3";
+export const HOST_ROW_TEXT = "flex min-w-0 flex-1 flex-col gap-0.5";
+export const HOST_ROW_NAME = "truncate text-body font-medium text-fg";
+
+/** A one-time pairing command: a well under the list, filled, never
+ *  outlined (the mapping preview's recipe). */
+export const PAIRING_WELL =
+  "flex flex-col gap-2 rounded-xl bg-surface p-4 phone:p-3";
