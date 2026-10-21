@@ -426,6 +426,7 @@ export function NextAction({
         <AskCard
           key={`${incident.id}:${incident.updatedAt}:${choiceAttempt}`}
           questions={[card.question]}
+          status={{ label: "Next", tone: "blue" }}
           onAnswer={(answers) => void onAnswer(answers)}
         />
       )}

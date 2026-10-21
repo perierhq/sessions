@@ -32,6 +32,13 @@ interface Props {
    * long moved on simply goes away.
    */
   onDismiss?: () => void;
+  /**
+   * Who is asking, in the status row. Defaults to the agent ("Pi needs
+   * input"); a card asking for a product decision rather than an agent's
+   * question names that instead, and takes the blue of "needs you" over the
+   * waiting agent's green.
+   */
+  status?: { label: string; tone: "blue" };
 }
 
 /**
@@ -98,6 +105,7 @@ export function AskCard({
   onAnswer,
   onDismiss,
   active = true,
+  status,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
@@ -299,10 +307,14 @@ export function AskCard({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
         <span
           aria-hidden="true"
-          className="h-1.5 w-1.5 shrink-0 rounded-full bg-green shadow-[0_0_0_3px_var(--green-soft)]"
+          className={
+            status?.tone === "blue"
+              ? "h-1.5 w-1.5 shrink-0 rounded-full bg-blue shadow-[0_0_0_3px_var(--blue-soft)]"
+              : "h-1.5 w-1.5 shrink-0 rounded-full bg-green shadow-[0_0_0_3px_var(--green-soft)]"
+          }
         />
         <span className="text-label font-semibold text-dim">
-          {AGENT_NAME} needs input
+          {status?.label ?? `${AGENT_NAME} needs input`}
         </span>
         {/* One question's header rides this row instead of claiming a line of
 				    its own: it is a two-word topic tag, so stacked under the status it

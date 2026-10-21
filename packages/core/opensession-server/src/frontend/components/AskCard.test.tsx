@@ -285,3 +285,17 @@ test("a dismiss handler adds a close button that never submits the form", () => 
   const button = html.match(/<button[^>]*aria-label="Dismiss question"[^>]*>/);
   expect(button?.[0]).toContain('type="button"');
 });
+
+test("a decision card names itself and takes the needs-you blue", () => {
+  const html = renderToStaticMarkup(
+    <AskCard
+      questions={[{ header: "Needs you", question: "Deploy the fix?" }]}
+      status={{ label: "Next", tone: "blue" }}
+      onAnswer={() => {}}
+    />,
+  );
+  expect(html).toContain(">Next</span>");
+  expect(html).not.toContain("needs input");
+  expect(html).toContain("bg-blue");
+  expect(html).not.toContain("bg-green");
+});
