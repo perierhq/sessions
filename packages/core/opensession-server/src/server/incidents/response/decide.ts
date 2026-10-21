@@ -6,6 +6,7 @@ import type {
   ActionRun,
   AgentRole,
   AgentRun,
+  IncidentAction,
   IncidentProjectSettings,
   IncidentResponse,
   NeedsYouKind,
@@ -406,24 +407,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     if (state === "paused" || state === "needs-you" || liveActionRunning(view))
       return NONE;
-    // The rollback does not run while agents are paused, and the failed
-    // release is still out: a person decides what happens next.
-    if (state === "rolled-back")
-      return {
-        step: "needs-you",
-        kind: "action-failed",
-        reason:
-          "Agents were paused before the rollback ran; the release is still out",
-        via: "investigating",
-        ...(r
-          ? {
-              patch: {
-                ...nextRound(r, "Agents were paused before the rollback ran"),
-                phase: "investigating",
-              },
-            }
-          : {}),
-      };
+    if (state === "rolled-back") return pausedRollback(view);
     return {
       step: "transition",
       to: "paused",
@@ -1269,6 +1253,54 @@ function watchingStep(view: ResponseView): ResponseStep {
   };
 }
 
+/** The purpose this round's rollback runs with. */
+function rollbackPurpose(r: IncidentResponse): ActionRun["purpose"] {
+  return r.ownerRollback ? "owner-rollback" : "auto-rollback";
+}
+
+/** This round's rollback run, if it started. */
+function rollbackRun(
+  r: IncidentResponse,
+  rollback: IncidentAction,
+): ActionRun | undefined {
+  const purpose = rollbackPurpose(r);
+  return r.actionRuns.findLast(
+    (a) =>
+      a.round === r.round &&
+      a.actionId === rollback.id &&
+      a.purpose === purpose,
+  );
+}
+
+/**
+ * The kill switch in `rolled-back`. A rollback that finished goes on to the
+ * next round, which the next advance pauses. Otherwise the rollback does
+ * not run while agents are paused, and the failed release is still out: a
+ * person decides what happens next.
+ */
+function pausedRollback(view: ResponseView): ResponseStep {
+  const r = view.incident.response;
+  const rollback = projectAction(view.settings, "rollback");
+  const run = r && rollback ? rollbackRun(r, rollback) : undefined;
+  if (run?.status === "ok") return afterRollback(view);
+  const why = !run
+    ? "Agents were paused before the rollback ran"
+    : `Agents were paused after the rollback ${
+        run.status === "failed"
+          ? "failed"
+          : run.status === "unknown"
+            ? "may not have run"
+            : "was interrupted"
+      } (${run.detail})`;
+  return {
+    step: "needs-you",
+    kind: "action-failed",
+    reason: `${why}; the release is still out`,
+    via: "investigating",
+    ...(r ? { patch: { ...nextRound(r, why), phase: "investigating" } } : {}),
+  };
+}
+
 // 29. The rollback, then the next round.
 function rollingBack(view: ResponseView): ResponseStep {
   const { incident, settings } = view;
@@ -1280,23 +1312,27 @@ function rollingBack(view: ResponseView): ResponseStep {
       kind: "no-action",
       reason: `No rollback action is declared for ${incident.project}`,
     };
-  const owner = r.ownerRollback;
-  const purpose: ActionRun["purpose"] = owner
-    ? "owner-rollback"
-    : "auto-rollback";
-  const run = r.actionRuns.findLast(
-    (a) =>
-      a.round === r.round &&
-      a.actionId === rollback.id &&
-      a.purpose === purpose,
-  );
-  if (!run) return { step: "run-action", actionId: rollback.id, purpose };
+  const run = rollbackRun(r, rollback);
+  if (!run)
+    return {
+      step: "run-action",
+      actionId: rollback.id,
+      purpose: rollbackPurpose(r),
+    };
   const next = actionRunProblem(
     view,
     run,
     (detail) => `Rollback failed: ${detail}`,
   );
   if (next !== "ok") return next;
+  return afterRollback(view);
+}
+
+/** The rollback finished: the next round. */
+function afterRollback(view: ResponseView): ResponseStep {
+  const { incident, settings } = view;
+  const r = incident.response!;
+  const owner = r.ownerRollback;
   const to = incident.state === "investigating" ? null : "investigating";
   // The owner asked, so the next round is not capped by max rounds.
   if (owner)

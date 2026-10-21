@@ -1868,6 +1868,69 @@ test("kill switch before the rollback ran: needs you, the release is still out",
   );
 });
 
+test("kill switch after the rollback ran: the next round, then paused", () => {
+  const done = rollingBack([
+    actionRun({
+      id: "act-1",
+      actionId: "rollback",
+      purpose: "auto-rollback",
+      status: "ok",
+    }),
+  ]);
+  const step = decideNextStep({
+    ...done,
+    settings: { ...done.settings, agentsPaused: true },
+  });
+  expect(step).toMatchObject({
+    step: "transition",
+    to: "investigating",
+    phase: "investigating",
+    detail: "Rolled back",
+    patch: { round: 2, sendBack: { kind: "rolled-back" } },
+  });
+  // The next advance pauses the new round.
+  const next = view({
+    incident: incident("investigating", response({ round: 2 })),
+    settings: { ...done.settings, agentsPaused: true },
+  });
+  expect(decideNextStep(next)).toMatchObject({
+    step: "transition",
+    to: "paused",
+    phase: "paused",
+  });
+  // A rollback that failed or was interrupted: the release is still out.
+  for (const [status, detail, word] of [
+    ["failed", "Exit 1", "failed"],
+    [
+      "interrupted",
+      "Sessions restarted while this was running",
+      "was interrupted",
+    ],
+  ] as const) {
+    const bad = rollingBack([
+      actionRun({
+        id: "act-1",
+        actionId: "rollback",
+        purpose: "auto-rollback",
+        status,
+        detail,
+      }),
+    ]);
+    expect(
+      decideNextStep({
+        ...bad,
+        settings: { ...bad.settings, agentsPaused: true },
+      }),
+    ).toMatchObject({
+      step: "needs-you",
+      kind: "action-failed",
+      reason: `Agents were paused after the rollback ${word} (${detail}); the release is still out`,
+      via: "investigating",
+      patch: { phase: "investigating", round: 2 },
+    });
+  }
+});
+
 test("documenting: an investigator running for over 2 h is stopped", () => {
   const overdue = documenting(
     { files: ["docs/incidents/2026-10-20-search.md"] },
