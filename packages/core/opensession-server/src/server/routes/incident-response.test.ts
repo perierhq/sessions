@@ -340,6 +340,16 @@ test("production decisions need a signed-in person, never a claimed name", async
   expect(stop?.json).toMatchObject({
     response: { needsYou: { reason: "Stopped by Anonymous" } },
   });
+  // Retry ships nothing, so it is not kept for a signed-in person: it is
+  // refused here only because a Stop is not retried.
+  expect(
+    await call(
+      "POST",
+      `/api/incidents/${inc.id}/decisions`,
+      { decision: "retry" },
+      { authUser: null },
+    ),
+  ).toEqual({ status: 409, json: { error: "Nothing to retry" } });
 });
 
 test("agent audit lists the ledger, each agent's access and its tool calls", async () => {

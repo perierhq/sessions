@@ -1498,6 +1498,37 @@ test("a decision repeated by the same person is answered with the incident", asy
   ).toMatchObject({ state: "closed-without-action" });
 });
 
+test("retry only starts agents again: it never merges or deploys", async () => {
+  const w = await world();
+  await w.runToVerifier();
+  w.live("child-2", { status: "error", error: "Provider overloaded" });
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.needsYou).toMatchObject({
+    kind: "agent-error",
+    resumePhase: "verifying",
+  });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "retry",
+      "Anonymous",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "fix-ready", response: { phase: "verifying" } });
+  await __waitForCoordinatorForTest();
+  w.clock += 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns.map((s) => s.role)).toEqual([
+    "investigator",
+    "verifier",
+    "verifier",
+  ]);
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+  expect((await getIncident(w.incident.id))?.state).toBe("fix-ready");
+});
+
 test("retry after a setup problem starts the agents again", async () => {
   let fail = true;
   const w = await world();
