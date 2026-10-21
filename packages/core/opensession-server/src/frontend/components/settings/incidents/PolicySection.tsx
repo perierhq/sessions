@@ -15,6 +15,8 @@ import {
   DIALOG_INPUT,
   FIELD_ERROR,
   FIELD_HINT,
+  SETTING_WIDE_CONTROL,
+  SETTING_WIDE_SELECT,
 } from "../../../lib/incident-settings-classes";
 import { formatUsd } from "../../../lib/incidents/copy";
 import {
@@ -128,6 +130,7 @@ export function PolicySection({
         <SettingRow
           title="What agents may do without you"
           desc={AUTONOMY_COPY[settings.autonomy].description}
+          controlClassName={SETTING_WIDE_CONTROL}
           control={
             <OptionSelect<AutonomyLevel>
               label="What agents may do without you"
@@ -137,6 +140,7 @@ export function PolicySection({
                 label: AUTONOMY_COPY[level].label,
               }))}
               onChange={(autonomy) => saveNow(onSave, { autonomy })}
+              className={SETTING_WIDE_SELECT}
             />
           }
         />

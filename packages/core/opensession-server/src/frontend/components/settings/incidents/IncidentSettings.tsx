@@ -19,6 +19,7 @@ import {
   patchSettings,
   projectSummary,
 } from "../../../lib/incidents/policy-copy";
+import { INCIDENT_SETTINGS_FRAME } from "../../../lib/incident-settings-classes";
 import { repoLabel } from "../../../lib/repo-label";
 import { OptionSelect } from "../../../ui/select";
 import {
@@ -131,13 +132,15 @@ function IncidentProjectsIndex({
       </SettingCard>
     );
   return (
-    <SettingsPanel>
-      <SettingsHeader
-        title="Incidents"
-        description="What agents may do when something breaks, per project"
-      />
-      {body}
-    </SettingsPanel>
+    <div className={INCIDENT_SETTINGS_FRAME}>
+      <SettingsPanel className="self-start">
+        <SettingsHeader
+          title="Incidents"
+          description="What agents may do when something breaks, per project"
+        />
+        {body}
+      </SettingsPanel>
+    </div>
   );
 }
 
@@ -264,16 +267,18 @@ export function IncidentSettingsView({
       />
     );
   return (
-    <SettingsPanel>
-      <SettingsHeader
-        title="Incidents"
-        description={`${label} · what the agents may do when something breaks`}
-        actions={picker}
-      />
-      {policy}
-      {sections.signals}
-      {view ? sections.actions : null}
-      {sections.access}
-    </SettingsPanel>
+    <div className={INCIDENT_SETTINGS_FRAME}>
+      <SettingsPanel className="self-start">
+        <SettingsHeader
+          title="Incidents"
+          description={`${label} · what the agents may do when something breaks`}
+          actions={picker}
+        />
+        {policy}
+        {sections.signals}
+        {view ? sections.actions : null}
+        {sections.access}
+      </SettingsPanel>
+    </div>
   );
 }

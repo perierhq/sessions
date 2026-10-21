@@ -1,5 +1,17 @@
 // Class strings for the per-project incident settings and their dialogs.
 
+/** The page frame: a Settings tool view brings its own scroll and padding
+ *  (the settings column only pads its own panels). On a phone the sheet
+ *  already pads its column, so the cards line up with every other panel. */
+export const INCIDENT_SETTINGS_FRAME =
+  "flex min-h-0 flex-1 justify-center overflow-y-auto px-8 pt-11 pb-22 phone:px-0 phone:pt-0 phone:pb-12";
+
+/** A row control too wide for half a phone row (the four autonomy levels):
+ *  it takes the full width under the text instead of truncating. */
+export const SETTING_WIDE_CONTROL =
+  "phone:ml-0 phone:max-w-none phone:basis-full";
+export const SETTING_WIDE_SELECT = "phone:w-full phone:justify-between";
+
 /** A settings row that opens something: the whole row is the button, 44px
  *  at least, washing on hover inside the card's corner. Mirrors
  *  `SettingRow`'s padding so it lines up with the switch rows around it. */
