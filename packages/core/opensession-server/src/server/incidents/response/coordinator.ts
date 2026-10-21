@@ -652,18 +652,19 @@ function shipsOrLeavesVeto(view: ResponseView, step: ResponseStep): boolean {
 
 /**
  * Whether something that must win over the next effect has arrived: a Stop
- * the owner sent while this advance was running (before the veto deadline,
- * when there is one). The advance ends; the Stop is next in the chain.
+ * the owner sent while this advance was running, before the veto deadline
+ * (or, once shipping, before shipping began). The advance ends; the Stop is
+ * next in the chain.
  */
 function heldBeforeEffect(view: ResponseView): boolean {
   const stopAt = stopRequests.get(view.incident.id);
   if (stopAt === undefined) return false;
   if (!decisionAllowed("stop", view.incident, view.settings)) return false;
+  const r = view.incident.response;
   const deadline =
-    view.incident.state === "veto"
-      ? view.incident.response?.veto?.deadline
-      : undefined;
-  const held = deadline === undefined || stopAt < Date.parse(deadline);
+    view.incident.state === "veto" ? r?.veto?.deadline : r?.mergingSince;
+  const cutoff = deadline === undefined ? Number.NaN : Date.parse(deadline);
+  const held = Number.isNaN(cutoff) || stopAt < cutoff;
   if (held) heldByStop.add(view.incident.id);
   return held;
 }
@@ -1956,7 +1957,13 @@ function decisionAllowed(
       return (
         c.state === "veto" ||
         ((c.state === "investigating" || c.state === "fix-ready") &&
-          STOPPABLE_PHASES.has(r.phase))
+          STOPPABLE_PHASES.has(r.phase)) ||
+        // Shipping, but nothing merged and nothing running yet (waiting
+        // for checks).
+        (c.state === "deploying" &&
+          (r.phase === "merging" || r.phase === "deploying") &&
+          !r.merge &&
+          !r.actionRuns.some((a) => a.status === "running"))
       );
     case "deploy-now":
       return c.state === "veto";

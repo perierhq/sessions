@@ -213,6 +213,7 @@ type PrShape = {
   requiredApprovals?: number;
   reviewDecision?: string;
   headSha?: string;
+  pending?: string[];
 };
 
 function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
@@ -226,6 +227,10 @@ function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
       requiredApprovals: pr.requiredApprovals ?? 0,
     },
     rules: { ...v.rules, requiredApprovals: pr.requiredApprovals ?? 0 },
+    checks: {
+      ...v.checks,
+      pending: (pr.pending ?? []).map((name) => ({ name })),
+    },
   } as PrMergeVerdict;
 }
 
@@ -1206,6 +1211,31 @@ test("stop sent after the veto deadline does not undo a release under way", asyn
   await running;
   expect(await stop).toEqual({ error: "Nothing to stop", status: 409 });
   expect(w.merges).toHaveLength(1);
+});
+
+test("stop while the merge waits for checks: nothing is merged", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.setPr({ pending: ["ci"] });
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(await getIncident(w.incident.id)).toMatchObject({
+    state: "deploying",
+    response: { phase: "merging" },
+  });
+  expect(
+    await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps),
+  ).toMatchObject({
+    state: "needs-you",
+    response: {
+      needsYou: { kind: "stopped", resumePhase: "merging" },
+    },
+  });
+  w.setPr({});
+  await __waitForCoordinatorForTest();
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.merges).toEqual([]);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
 });
 
 test("deploy now skips the rest of the veto", async () => {
