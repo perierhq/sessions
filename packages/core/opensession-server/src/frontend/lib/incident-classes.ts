@@ -94,3 +94,35 @@ export const NEXT_BUTTONS =
 /** "What the agents did": a quiet link, 44px tall under a finger. */
 export const NEXT_AUDIT_LINK =
   "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-dim hover:text-fg hover:underline focus-ring desktop:mr-auto phone:min-h-11";
+
+/** A summary band: its label and rows outdented so the labels line up with
+ *  the cause text above. */
+export const DETAIL_BAND = "-mx-2 flex min-w-0 flex-col";
+
+/** The Agents band's sentence when an agent works on the host. Words, so
+ *  the warning never rests on the colour alone. */
+export const DETAIL_BAND_NOTE = "m-0 px-2 pb-1 text-meta text-yellow";
+
+/** A summary row. Page-scale workspace-summary row; on a phone it may wrap
+ *  its value onto a second line (DETAIL_VALUE_WRAP), so it grows past 44px
+ *  instead of truncating both halves. */
+export const DETAIL_ROW =
+  "phone:h-auto phone:min-h-11 phone:flex-wrap phone:py-1.5 no-underline";
+
+/** A summary row's value: right-aligned meta, truncating on a desktop
+ *  before the label does. */
+export const DETAIL_VALUE =
+  "flex min-w-0 max-w-[60%] shrink items-center justify-end gap-2 truncate text-right text-meta text-dim tabular-nums";
+
+/** The value under its label on a phone, aligned with the label's text. */
+export const DETAIL_VALUE_WRAP =
+  "phone:max-w-none phone:basis-full phone:justify-start phone:pl-6.5 phone:text-left";
+
+/** The text inside a value, truncating with the value. */
+export const DETAIL_VALUE_TEXT = "min-w-0 truncate";
+
+/** The budget meter in the Agent cost row. */
+export const DETAIL_METER = "w-14 shrink-0";
+
+/** A row's trailing chevron: only rows that open something carry one. */
+export const DETAIL_CHEVRON = "shrink-0 text-faint";
