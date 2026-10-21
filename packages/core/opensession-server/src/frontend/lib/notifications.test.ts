@@ -273,6 +273,26 @@ describe("incident notifications on this device", () => {
     stop();
   });
 
+  test("opening the incident during the night reads a held row", async () => {
+    focused = true;
+    // A held alert arrives quietly; the server marks the row unread.
+    store.receiveNotification(
+      "Ada",
+      incidentThread({ updatedAt: 4_000, unread: true }),
+      false,
+    );
+    await settle();
+    expect(banners).toEqual([]);
+    marks.length = 0;
+    const stop = store.watchIncidentNotifications("inc-1");
+    await settle();
+    expect(marks.at(-1)).toMatchObject({
+      ids: ["incident:inc-1"],
+      unread: false,
+    });
+    stop();
+  });
+
   test("an older server without the incidents switch reads as on", () => {
     expect(
       alertsSchema.parse({

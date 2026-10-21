@@ -323,6 +323,33 @@ describe("incident notifications", () => {
     ).toBeNull();
   });
 
+  test("a hold on a read row marks it unread, so viewing it cancels the flush", () => {
+    const alerted = apply({ threads: [] }).doc;
+    const read = markNotificationThreads(alerted, {
+      ids: ["incident:inc-1"],
+      unread: false,
+      done: true,
+    }).doc;
+    const held = apply(read, { hold: true, eventKey: "evt-2", at: IT0 + MIN });
+    expect(held.delivery).toBe("quiet");
+    expect(held.thread).toMatchObject({ unread: true, done: false });
+    expect(unreadCount(held.doc)).toBe(1);
+    // The incident page on screen during the night sends the read mark.
+    const viewed = markNotificationThreads(held.doc, {
+      ids: ["incident:inc-1"],
+      unread: false,
+    });
+    expect(viewed.changed).toBe(1);
+    expect(viewed.doc.threads[0].heldAt).toBeUndefined();
+    expect(
+      apply(viewed.doc, {
+        flushHeld: true,
+        eventKey: "flush-1",
+        at: IT0 + 8 * 60 * MIN,
+      }).thread,
+    ).toBeNull();
+  });
+
   test("clearHeld drops a pending hold without alerting", () => {
     const held = apply({ threads: [] }, { hold: true }).doc;
     const cleared = apply(held, {

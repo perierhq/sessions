@@ -377,8 +377,10 @@ export function applyNotificationEvent(
     url: event.url,
     updatedAt: now,
     // Quiet news on a row you already read or finished leaves it that way.
-    unread: alert || !existing ? true : existing.unread,
-    done: alert || !existing ? false : existing.done,
+    // A hold is a delayed alert: the row is unread again, so reading it
+    // (the incident page on screen) cancels the alert after the night.
+    unread: alert || event.hold || !existing ? true : existing.unread,
+    done: alert || event.hold || !existing ? false : existing.done,
     events: event.eventKey
       ? [...events, { key: event.eventKey, at: now }].slice(
           -MAX_EVENTS_PER_THREAD,
