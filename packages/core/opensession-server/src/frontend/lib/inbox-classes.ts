@@ -103,6 +103,11 @@ export const INBOX_ROW_TITLE =
 export const INBOX_ROW_REASON =
   "mt-0.5 block min-w-0 truncate text-supporting text-dim";
 
+/** An incident row's next step ("deploys at 12:37 unless you stop it")
+ *  wraps to a second line rather than losing its end on a phone. */
+export const INBOX_ROW_NEXT =
+  "mt-0.5 line-clamp-2 min-w-0 text-supporting text-dim";
+
 /** Desktop actions replace the timestamp on hover or keyboard focus. */
 export const INBOX_ROW_ACTIONS =
   "absolute top-1.5 right-2 z-[1] flex items-center gap-0.5 opacity-0 transition-opacity " +

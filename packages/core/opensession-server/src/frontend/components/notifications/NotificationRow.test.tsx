@@ -6,7 +6,11 @@
 import { beforeAll, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationThread } from "../../lib/api/notifications";
-import { INBOX_KIND_ICON_INK } from "../../lib/inbox-classes";
+import {
+  INBOX_KIND_ICON_INK,
+  INBOX_ROW_NEXT,
+  INBOX_ROW_REASON,
+} from "../../lib/inbox-classes";
 
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -69,6 +73,8 @@ test("an incident row says the state and what happens next", () => {
     'aria-label="Unread. Search is down. The fix is verified and deploys at 12:37 unless you stop it"',
   );
   expect(html).toContain(INBOX_KIND_ICON_INK.incident_veto);
+  // The next step wraps rather than losing "unless you stop it".
+  expect(html).toContain(INBOX_ROW_NEXT);
 });
 
 test("every incident kind has a tone", () => {
@@ -96,6 +102,8 @@ test("other rows are unchanged", () => {
   );
   expect(html).toContain("Fix login");
   expect(html).toContain("Ada mentioned you: look");
+  expect(html).toContain(INBOX_ROW_REASON);
+  expect(html).not.toContain(INBOX_ROW_NEXT);
   expect(html).toContain(
     'aria-label="Unread. Fix login. Ada mentioned you: look"',
   );

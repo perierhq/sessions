@@ -8,6 +8,7 @@ import {
   INBOX_ROW_ACTIONS,
   INBOX_ROW_CONTEXT,
   INBOX_ROW_ITEM,
+  INBOX_ROW_NEXT,
   INBOX_ROW_OPEN,
   INBOX_ROW_REASON,
   INBOX_ROW_TIME,
@@ -245,7 +246,17 @@ export function NotificationRow({
               </span>
             </span>
             <span className={INBOX_ROW_TITLE}>{title}</span>
-            {line && <span className={INBOX_ROW_REASON}>{line}</span>}
+            {line && (
+              <span
+                className={
+                  thread.subject.type === "incident"
+                    ? INBOX_ROW_NEXT
+                    : INBOX_ROW_REASON
+                }
+              >
+                {line}
+              </span>
+            )}
           </button>
           <div className={INBOX_ROW_ACTIONS}>
             <Tooltip label={readLabel} side="top">
