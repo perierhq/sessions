@@ -6,6 +6,7 @@ import {
   FIELD_HINT,
   FORM_SECTION_TITLE,
 } from "../../../lib/incident-settings-classes";
+import { listToText, textToList } from "../../../lib/incidents/access-form";
 import { type HeaderDraft, REDACTED } from "../../../lib/incidents/signal-form";
 import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
@@ -225,5 +226,49 @@ export function HeaderRows({
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * A comma list, typed. The text is the field's own while it is edited, so
+ * a trailing comma never vanishes under the cursor; `onChange` hears the
+ * trimmed items.
+ */
+export function ListInput({
+  id,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  label,
+  mono = true,
+}: {
+  id?: string;
+  value: string[];
+  onChange: (list: string[]) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  /** The accessible name when no `<label>` points at the field. */
+  label?: string;
+  mono?: boolean;
+}) {
+  // Seeded once: callers key the field by what it edits.
+  const [text, setText] = useState(() => listToText(value));
+  return (
+    <Input
+      id={id}
+      aria-label={label}
+      value={disabled ? listToText(value) : text}
+      placeholder={placeholder}
+      disabled={disabled}
+      autoComplete="off"
+      spellCheck={false}
+      className={cn(mono && "font-mono", DIALOG_INPUT)}
+      onChange={(event) => {
+        const next = event.currentTarget.value;
+        setText(next);
+        onChange(textToList(next));
+      }}
+    />
   );
 }

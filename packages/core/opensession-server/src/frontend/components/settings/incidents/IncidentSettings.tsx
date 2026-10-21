@@ -31,6 +31,7 @@ import {
 } from "../../../ui/settings";
 import { EmptyState, InlineAlert } from "../../../ui/state";
 import { RepoTile } from "../../RepoTile";
+import { AccessSection } from "./AccessSection";
 import { ActionsSection } from "./ActionsSection";
 import { PolicySection } from "./PolicySection";
 import { SettingLinkRow } from "./SettingLinkRow";
@@ -203,6 +204,14 @@ function IncidentProjectSettings({
             view={settings.data}
             onSave={save}
             onRevalidate={() => void settings.mutate()}
+          />
+        ),
+        access: (
+          <AccessSection
+            project={project}
+            models={settings.data?.models ?? null}
+            agents={settings.data?.settings.agents ?? null}
+            onSaveModels={(agents) => save({ agents })}
           />
         ),
         signals: (

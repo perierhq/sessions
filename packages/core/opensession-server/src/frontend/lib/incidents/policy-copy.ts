@@ -89,10 +89,21 @@ export function patchSettings(
   settings: RedactedProjectSettings,
   input: ProjectSettingsInput,
 ): RedactedProjectSettings {
-  const { night, ...rest } = input;
+  const { night, agents, ...rest } = input;
   const next: RedactedProjectSettings = { ...settings, ...rest };
   if (night === null) delete next.night;
   else if (night) next.night = night;
+  if (agents) {
+    // The server's merge: named roles change, `null` clears.
+    const merged = { ...settings.agents };
+    for (const key of ["investigatorModel", "verifierModel"] as const) {
+      if (!(key in agents)) continue;
+      const model = agents[key];
+      if (model) merged[key] = model;
+      else delete merged[key];
+    }
+    next.agents = merged;
+  }
   return next;
 }
 

@@ -68,9 +68,13 @@ export const DIALOG_INPUT = "phone:min-h-11 phone:text-input-phone";
 /** A heading over a group of fields inside a dialog. */
 export const FORM_SECTION_TITLE = "m-0 text-label font-semibold text-fg";
 
-/** The mapping preview: a well under the fields, filled, never outlined. */
-export const MAPPING_PREVIEW =
-  "flex flex-col gap-3 rounded-xl bg-surface p-4 phone:p-3";
+/** A well inside a settings dialog: a step off the dialog's own fill,
+ *  never outlined. The desktop dialog is raised, the phone sheet is the
+ *  page's surface, so the well takes the other one. */
+const DIALOG_WELL = "rounded-xl bg-surface phone:bg-raised";
+
+/** The mapping preview: a well under the fields. */
+export const MAPPING_PREVIEW = `flex flex-col gap-3 ${DIALOG_WELL} p-4 phone:p-3`;
 
 /** "What each path found": each path over what it matched, so a long
  *  filter path never squeezes the values into a column of fragments. */
@@ -83,14 +87,16 @@ export const MAPPING_RAW =
 
 /** A maintenance window in a list: what it says, then Edit and Remove.
  *  The buttons drop under the text on a phone. */
-export const WINDOW_ROW =
-  "flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl bg-surface py-2 pr-2 pl-3";
+export const WINDOW_ROW = `flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 ${DIALOG_WELL} py-2 pr-2 pl-3`;
 export const WINDOW_ROW_TEXT = "min-w-0 flex-1 basis-56";
 
-/** An action row's caption: the host, then the command's first line in
- *  monospace, cut to one line. */
-export const ACTION_ROW_DESC = "flex min-w-0 items-baseline gap-1.5";
-export const ACTION_ROW_COMMAND = "min-w-0 truncate font-mono text-meta";
+/** An action row's caption: the command's first line in monospace, cut to
+ *  fit, then the host it runs on, kept whole. */
+export const ACTION_ROW_DESC =
+  "flex min-w-0 items-baseline gap-x-1.5 phone:flex-wrap";
+/** On a phone the command takes its own line, so it is not cut to a word. */
+export const ACTION_ROW_COMMAND =
+  "min-w-0 truncate font-mono text-meta phone:basis-full";
 
 /** The production hosts list inside its dialog: rows divided by a line. */
 export const HOST_LIST = "flex flex-col divide-y divide-line";
@@ -100,5 +106,26 @@ export const HOST_ROW_NAME = "truncate text-body font-medium text-fg";
 
 /** A one-time pairing command: a well under the list, filled, never
  *  outlined (the mapping preview's recipe). */
-export const PAIRING_WELL =
-  "flex flex-col gap-2 rounded-xl bg-surface p-4 phone:p-3";
+export const PAIRING_WELL = `flex flex-col gap-2 ${DIALOG_WELL} p-4 phone:p-3`;
+
+/** The access preview under a role's fields: what the agent would get. */
+export const ACCESS_PREVIEW = PAIRING_WELL;
+
+/** A list of checkboxes, one per line, each line the target. */
+export const CHECK_LIST = "flex flex-col";
+
+/** A granted host or network route being edited: its own filled block. */
+export const GRANT_ROW = `flex min-w-0 flex-col gap-2 ${DIALOG_WELL} p-3 phone:p-2`;
+export const GRANT_ROW_LINE = "flex min-w-0 flex-wrap items-center gap-2";
+
+/** A credential line: the checkbox and its words, then once or standing. */
+export const CREDENTIAL_LINE =
+  "flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1";
+
+/** A role's field: its label, and in an override the "use the role's
+ *  setting" box on the same line, then the control or the role's value. */
+export const ACCESS_FIELD = "flex min-w-0 flex-col gap-1.5";
+export const ACCESS_FIELD_HEAD =
+  "flex min-w-0 flex-wrap items-center justify-between gap-x-3";
+export const ACCESS_INHERIT =
+  "flex min-h-8 cursor-pointer items-center gap-2 text-meta text-dim phone:min-h-11";

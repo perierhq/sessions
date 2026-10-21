@@ -72,6 +72,7 @@ export function Segmented({
   onValueChange,
   size = "md",
   knobId: knobIdProp,
+  disabled,
   className,
   children,
   ...props
@@ -90,6 +91,9 @@ export function Segmented({
    *  value, so it travels between the two instead of blinking across. Pass
    *  the same id to `SegmentedKnob` over there. */
   knobId?: string;
+  /** Every option, for a value fixed by something else (shown, not
+   *  changeable). */
+  disabled?: boolean;
 }) {
   const ownId = React.useId();
   const knobId = knobIdProp ?? ownId;
@@ -97,6 +101,7 @@ export function Segmented({
     <SegmentedContext.Provider value={{ knobId, value, size }}>
       <ToggleGroup
         aria-label={label}
+        disabled={disabled}
         value={value === null ? [] : [value]}
         onValueChange={(next) => {
           const picked = next[0];

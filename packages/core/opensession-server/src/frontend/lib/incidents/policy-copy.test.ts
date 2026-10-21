@@ -75,6 +75,18 @@ test("patching settings applies and clears the night rule", () => {
   expect(before.night).toBe(night);
 });
 
+test("patching role models merges like the server", () => {
+  const before = partial({
+    agents: { investigatorModel: "pi/a/x", verifierModel: "pi/b/y" },
+  });
+  expect(
+    patchSettings(before, { agents: { verifierModel: null } }).agents,
+  ).toEqual({ investigatorModel: "pi/a/x" });
+  expect(
+    patchSettings(before, { agents: { investigatorModel: "pi/c/z" } }).agents,
+  ).toEqual({ investigatorModel: "pi/c/z", verifierModel: "pi/b/y" });
+});
+
 test("budget amounts", () => {
   expect(parseUsd("20", 0.5, 1000)).toBe(20);
   expect(parseUsd("$6.50", 0.5, 1000)).toBe(6.5);

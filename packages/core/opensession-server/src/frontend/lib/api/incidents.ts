@@ -95,11 +95,14 @@ export type ProjectSettingsInput = Partial<
     | "maxRounds"
     | "neverWithoutYou"
     | "budget"
-    | "agents"
     | "productionRunners"
     | "actions"
   >
-> & { night?: NightRule | null };
+> & {
+  night?: NightRule | null;
+  /** Only the roles named change; `null` goes back to automatic. */
+  agents?: { investigatorModel?: string | null; verifierModel?: string | null };
+};
 
 export interface ProductionPairing {
   code: string;
@@ -151,6 +154,11 @@ const seg = encodeURIComponent;
  *  thing asked for does not exist), never an error to show. */
 export function isSeamMissing(cause: unknown): boolean {
   return cause instanceof ApiError && cause.status === 404;
+}
+
+/** The HTTP status of a failed request, or null for anything else. */
+export function apiStatus(cause: unknown): number | null {
+  return cause instanceof ApiError ? cause.status : null;
 }
 
 async function orNull<T>(pending: Promise<T>): Promise<T | null> {
@@ -324,13 +332,16 @@ export function deleteAccessOverride(
   );
 }
 
+/** Without `expectedRevision` (unreadable settings have none) it resets
+ *  whatever is stored. */
 export function resetAccessSettings(
   project: string,
+  expectedRevision?: number,
 ): Promise<IncidentAccessSettingsView> {
-  return request<IncidentAccessSettingsView>(accessPath(project), {
-    method: "DELETE",
-    label: "Failed to reset access",
-  });
+  return request<IncidentAccessSettingsView>(
+    `${accessPath(project)}${query({ expectedRevision: expectedRevision === undefined ? undefined : String(expectedRevision) })}`,
+    { method: "DELETE", label: "Failed to reset access" },
+  );
 }
 
 export function previewAccessApi(
