@@ -27,12 +27,12 @@ import {
   DETAIL_VALUE,
   DETAIL_VALUE_TEXT,
   DETAIL_VALUE_WRAP,
+  INCIDENT_SECTION_LABEL,
 } from "../../lib/incident-classes";
 import {
   WS_SUMMARY_ICON,
   WS_SUMMARY_LABEL,
   WS_SUMMARY_PAGE_ROW,
-  WS_SUMMARY_PAGE_SECTION,
   WS_SUMMARY_RAIL,
   WS_SUMMARY_STATE,
 } from "../../lib/workspace-summary-classes";
@@ -177,7 +177,7 @@ export function IncidentDetailsView({
         if (!inBand.length) return null;
         return (
           <section key={band} className={DETAIL_BAND}>
-            <h2 className={WS_SUMMARY_PAGE_SECTION}>{band}</h2>
+            <h2 className={INCIDENT_SECTION_LABEL}>{band}</h2>
             {band === "Agents" && workspaceNote && (
               <p className={DETAIL_BAND_NOTE}>{workspaceNote}</p>
             )}

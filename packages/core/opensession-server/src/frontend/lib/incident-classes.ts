@@ -1,4 +1,5 @@
 // Class strings for the incident page, its signal strip and the home rows.
+import { WS_SUMMARY_PAGE_SECTION } from "./workspace-summary-classes";
 
 /** The page column: the status line, strip, next action, cause and details
  *  share one measure. */
@@ -93,7 +94,7 @@ export const NEXT_BUTTONS =
 
 /** "What the agents did": a quiet link, 44px tall under a finger. */
 export const NEXT_AUDIT_LINK =
-  "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-dim hover:text-fg hover:underline focus-ring desktop:mr-auto phone:min-h-11";
+  "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-dim hover:text-fg hover:underline focus-ring desktop:mr-auto phone:min-h-11 phone:basis-full";
 
 /** A summary band: its label and rows outdented so the labels line up with
  *  the cause text above. */
@@ -116,7 +117,7 @@ export const DETAIL_VALUE =
 
 /** The value under its label on a phone, aligned with the label's text. */
 export const DETAIL_VALUE_WRAP =
-  "phone:max-w-none phone:basis-full phone:justify-start phone:pl-6.5 phone:text-left";
+  "phone:order-last phone:max-w-none phone:basis-full phone:justify-start phone:pl-6.5 phone:text-left";
 
 /** The text inside a value, truncating with the value. */
 export const DETAIL_VALUE_TEXT = "min-w-0 truncate";
@@ -126,3 +127,36 @@ export const DETAIL_METER = "w-14 shrink-0";
 
 /** A row's trailing chevron: only rows that open something carry one. */
 export const DETAIL_CHEVRON = "shrink-0 text-faint";
+
+/** The incident page: its own bar above one scroller. */
+export const INCIDENT_PAGE = "flex min-h-0 flex-1 flex-col bg-bg";
+
+/** The page's desktop bar: project, chevron, title. A row across the top
+ *  of the pane, so `wco-chrome` makes it the window's drag region. */
+export const INCIDENT_TOPBAR =
+  "wco-chrome flex h-[var(--desktop-header-h)] shrink-0 items-center gap-2 px-4 text-item-title text-fg phone:hidden";
+
+/** The phone's bar: back to Incidents, the project centred. */
+export const INCIDENT_PHONE_TOPBAR =
+  "desktop:hidden w-full bg-bg pt-[env(safe-area-inset-top)] phone:h-auto phone:min-h-11";
+
+/** The page's scroller. */
+export const INCIDENT_SCROLL = "min-h-0 flex-1 overflow-y-auto";
+
+/** The sections: 32px between them, each section keeps 16px inside (the 2×
+ *  proximity rule). Bottom room clears the home indicator. */
+export const INCIDENT_SECTIONS =
+  "flex flex-col gap-8 pt-10 pb-16 phone:pt-4 phone:pb-[calc(32px+env(safe-area-inset-bottom))]";
+
+/** The next action's plate while the incident loads. */
+export const INCIDENT_PLATE_SKELETON = "h-[140px] rounded-xl bg-raised";
+
+/** Where the strip would be when it failed to load: about its own height,
+ *  so the sections below do not jump when Retry brings it back. */
+export const INCIDENT_STRIP_ERROR =
+  "flex min-h-[110px] flex-col justify-center";
+
+/** A section label on the incident page ("Cause", "Fix"): the page-scale
+ *  summary label, with the heading's own bottom margin taken off so the
+ *  label sits on its rows. */
+export const INCIDENT_SECTION_LABEL = `${WS_SUMMARY_PAGE_SECTION} mb-0`;

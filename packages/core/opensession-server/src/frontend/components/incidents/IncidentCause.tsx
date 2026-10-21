@@ -2,8 +2,8 @@ import type { IncidentCauseView } from "../../lib/incidents/cause";
 import {
   INCIDENT_CAUSE_PROVENANCE,
   INCIDENT_CAUSE_TEXT,
+  INCIDENT_SECTION_LABEL,
 } from "../../lib/incident-classes";
-import { WS_SUMMARY_PAGE_SECTION } from "../../lib/workspace-summary-classes";
 
 const STATUS_WORDS: Record<IncidentCauseView["status"], string> = {
   verified: "verified by the verifier",
@@ -26,7 +26,7 @@ export function IncidentCause({
   if (!cause && !waiting) return null;
   return (
     <section className="-mx-2 flex min-w-0 flex-col">
-      <h2 className={WS_SUMMARY_PAGE_SECTION}>Cause</h2>
+      <h2 className={INCIDENT_SECTION_LABEL}>Cause</h2>
       <div className="flex min-w-0 flex-col gap-1 px-2">
         {cause ? (
           <>
