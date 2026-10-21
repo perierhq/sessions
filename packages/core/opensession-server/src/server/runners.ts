@@ -904,6 +904,10 @@ export function runnerAllowed(
     (!input.user || !runner.allowedUsers.includes(input.user))
   )
     return false;
+  // A reserved Runner serves only the projects it is bound to: an empty
+  // list never means any project.
+  if (runner.incidentReserved)
+    return !!input.repo && runner.allowedRepos.includes(input.repo);
   if (
     runner.allowedRepos.length &&
     (!input.repo || !runner.allowedRepos.includes(input.repo))
@@ -916,7 +920,7 @@ export function runnerAllowed(
  * Whether an incident agent's read-only command (a granted host command or
  * Runner egress, runner-ws `incident-agent-readonly`) may run on this Runner
  * for `repo`, the incident's project. A Runner reserved for incidents takes
- * it for the projects it is bound to; any other Runner only under its own
+ * it only for the projects it is bound to; any other Runner only under its own
  * policy, with nobody as the user. Never on Windows, whose shell reads the
  * quoting differently. Whether the agent's access grants this Runner is
  * checked separately, just before dispatch.
@@ -931,10 +935,13 @@ export function runnerAllowsIncidentAgent(
     runner.platform === "win32"
   )
     return false;
+  // A reserved Runner serves only the projects it is bound to: an empty
+  // list never means any project. Its user list names only the incident
+  // service.
+  if (runner.incidentReserved) return runner.allowedRepos.includes(input.repo);
   if (runner.allowedRepos.length && !runner.allowedRepos.includes(input.repo))
     return false;
-  // A reserved Runner's user list names only the incident service.
-  return runner.incidentReserved === true || runner.allowedUsers.length === 0;
+  return runner.allowedUsers.length === 0;
 }
 
 /** Eligibility gate for a future local-model caller. It deliberately returns

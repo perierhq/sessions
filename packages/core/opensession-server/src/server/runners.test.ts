@@ -17,6 +17,7 @@ import {
   reserveRunnerForIncidents,
   reservedRunnerPatchProblem,
   runnerAllowed,
+  runnerAllowsIncidentAgent,
   runnerAllowsLocalInference,
   runnerAvailableForSession,
   updateRunner,
@@ -456,6 +457,27 @@ describe("Runners reserved for incidents", () => {
     expect(
       reserveRunner(runner.id, { reason: "build", reservedBy: "Ada" }),
     ).toBeUndefined();
+  });
+
+  test("a reserved Runner with no projects serves no project", () => {
+    const out = register({ name: "prod-empty", platform: "linux" });
+    if (!out.ok) throw new Error(out.error);
+    const reserved = reserveRunnerForIncidents(out.runner.id, { repos: [] })!;
+    expect(reserved.allowedRepos).toEqual([]);
+    expect(runnerAllowsIncidentAgent(reserved, { repo: "acme" })).toBe(false);
+    expect(
+      runnerAllowed(reserved, {
+        user: INCIDENT_SERVICE_USER,
+        repo: "acme",
+        permission: "commands",
+        incidentService: true,
+      }),
+    ).toBe(false);
+    const bound = reserveRunnerForIncidents(out.runner.id, {
+      repos: ["acme"],
+    })!;
+    expect(runnerAllowsIncidentAgent(bound, { repo: "acme" })).toBe(true);
+    expect(runnerAllowsIncidentAgent(bound, { repo: "globex" })).toBe(false);
   });
 
   test("the incident service path refuses a Runner that is not reserved", () => {
