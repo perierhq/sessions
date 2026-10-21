@@ -15,7 +15,8 @@ import {
   registerRunner,
   createRunnerPairing,
 } from "../../runners";
-import { createIncident, getIncident } from "../incident-store";
+import { createIncident, getIncident, updateIncident } from "../incident-store";
+import { emptyResponse } from "./ledger";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import { AgentAccessError } from "../access/resolve";
@@ -976,6 +977,86 @@ test("regression after our release: rollback first, investigator in parallel", a
       prompt: expect.stringContaining("Sessions is rolling it back now."),
     }),
   ]);
+});
+
+test("rollback-first: a workspace error skips the parallel investigator, the rollback goes on", async () => {
+  const w = await world({
+    releasedMsBeforeOpen: 300_000,
+    workspace: { error: "No sandbox" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("veto");
+  expect(i?.response?.parallelInvestigator).toBe("unavailable");
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response?.ledger).toContainEqual(
+    expect.objectContaining({
+      detail: "Investigator not started alongside the rollback: No sandbox",
+    }),
+  );
+  expect(w.spawns).toEqual([]);
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(w.actions.map((a) => a.purpose)).toEqual(["rollback-first"]);
+  expect(i?.state).toBe("watching");
+});
+
+test("rollback-first: with the month's budget used up the rollback still runs", async () => {
+  const w = await world({ releasedMsBeforeOpen: 300_000 });
+  const other = await createIncident({
+    project: "acme",
+    title: "Checkout",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-a"],
+    primarySignalId: "sig-a",
+    at: new Date(START).toISOString(),
+    detail: "x",
+  });
+  await updateIncident(other.id, (c) => ({
+    ...c,
+    state: "closed-without-action",
+    response: {
+      ...emptyResponse({
+        now: new Date(START).toISOString(),
+        maxRounds: 2,
+        phase: "done",
+      }),
+      costUsd: 200,
+    },
+  }));
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("veto");
+  expect(i?.response?.parallelInvestigator).toBe("refused");
+  expect(i?.response?.ledger).toContainEqual(
+    expect.objectContaining({
+      detail:
+        "Investigator not started alongside the rollback: Agents stopped at the $200 monthly budget",
+    }),
+  );
+  expect(w.spawns).toEqual([]);
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(w.actions.map((a) => a.purpose)).toEqual(["rollback-first"]);
+  expect(i?.state).toBe("watching");
+});
+
+test("rollback-first: a gate refusal skips the parallel investigator instead of stalling", async () => {
+  const w = await world({
+    releasedMsBeforeOpen: 300_000,
+    access: async () => {
+      throw new AgentAccessError("Monthly spend not loaded", "gate");
+    },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("veto");
+  expect(i?.response?.parallelInvestigator).toBe("refused");
 });
 
 test("a restart mid-deploy never re-runs the action", async () => {

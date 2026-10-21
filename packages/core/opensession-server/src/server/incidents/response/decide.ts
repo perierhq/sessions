@@ -531,13 +531,15 @@ function starting(view: ResponseView): ResponseStep | undefined {
     };
   }
 
-  // 9. No model to run agents on.
+  // 9. No model to run agents on. A rollback-first incident still starts:
+  // its rollback needs no agent.
   if (
     "error" in view.models &&
-    (!r ||
-      r.phase === "idle" ||
-      ((r.phase === "investigating" || r.phase === "verifying") &&
-        runningAgents(view).length === 0))
+    (!r
+      ? !(incident.state === "investigating" && rollbackFirstApplies(view))
+      : r.phase === "idle" ||
+        ((r.phase === "investigating" || r.phase === "verifying") &&
+          runningAgents(view).length === 0))
   )
     return { step: "needs-you", kind: "setup", reason: view.models.error };
 
@@ -913,13 +915,36 @@ function now(view: ResponseView): string {
 }
 
 // 23. A rollback-first candidate: the investigator studies the release in
-// parallel. Its report is recorded and never changes the phase.
+// parallel. Its report is recorded and never changes the phase. It is best
+// effort: over budget or without a model it is skipped (and recorded), and
+// the rollback goes on.
 function rollbackFirstInvestigator(
   view: ResponseView,
 ): ResponseStep | undefined {
   const r = view.incident.response!;
-  if (!r.candidate?.rollbackFirst || currentAgent(r, "investigator"))
+  if (
+    !r.candidate?.rollbackFirst ||
+    r.parallelInvestigator ||
+    currentAgent(r, "investigator")
+  )
     return undefined;
+  const problem = budgetProblem({
+    incidentCostUsd: r.costUsd,
+    monthCostUsd: view.monthCostUsd + r.costUsd,
+    budget: view.settings.budget,
+  });
+  if (problem)
+    return {
+      step: "skip-parallel-investigator",
+      outcome: "refused",
+      reason: problem.reason,
+    };
+  if ("error" in view.models)
+    return {
+      step: "skip-parallel-investigator",
+      outcome: "unavailable",
+      reason: view.models.error,
+    };
   return { step: "start-agent", role: "investigator", round: 1, attempt: 1 };
 }
 

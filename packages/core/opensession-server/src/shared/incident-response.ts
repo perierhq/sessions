@@ -516,6 +516,11 @@ export interface IncidentResponse {
   ownerRollback?: { by: string; at: string };
   sendBack?: SendBackReason;
   retryRequested?: boolean;
+  /** Rollback-first only: the investigator that studies the release in
+   *  parallel is best effort. Set when it could not start (`unavailable`:
+   *  no model, workspace or session; `refused`: the budget or the access
+   *  gate); the rollback goes on without it. */
+  parallelInvestigator?: "unavailable" | "refused";
   pausedFrom?: ResponsePhase;
   needsYou?: {
     kind: NeedsYouKind;

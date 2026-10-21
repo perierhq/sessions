@@ -1796,6 +1796,43 @@ test("rollback-first: the rollback goes to the veto while the investigator reads
   });
 });
 
+test("rollback-first: the parallel investigator is best effort and never holds the rollback", () => {
+  // No model: the rollback still starts, and the investigator is skipped.
+  const noModels = {
+    error: "No model provider is configured for incident agents",
+  };
+  expect(
+    decideNextStep(
+      view({
+        incident: incident("investigating"),
+        settings: {
+          ...defaultSettings,
+          releases: [{ at: iso(-600_000), source: "hook", ref: "abc1234" }],
+        },
+        models: noModels,
+      }),
+    ),
+  ).toEqual({ step: "init", rollbackFirst: true });
+  expect(decideNextStep({ ...rollbackFirst(), models: noModels })).toEqual({
+    step: "skip-parallel-investigator",
+    outcome: "unavailable",
+    reason: "No model provider is configured for incident agents",
+  });
+  // The month's budget is used up: refused, the rollback goes on.
+  expect(decideNextStep({ ...rollbackFirst(), monthCostUsd: 200 })).toEqual({
+    step: "skip-parallel-investigator",
+    outcome: "refused",
+    reason: "Agents stopped at the $200 monthly budget",
+  });
+  // Once skipped, the rollback path goes on without it.
+  for (const outcome of ["unavailable", "refused"] as const)
+    expect(
+      decideNextStep(
+        rollbackFirst({ parallelInvestigator: outcome, decision: undefined }),
+      ),
+    ).toMatchObject({ step: "open-veto" });
+});
+
 test("documenting: a notes-only PR merges, a code PR is left for review, nobody is woken", () => {
   expect(
     decideNextStep(

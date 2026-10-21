@@ -57,6 +57,11 @@ export type ResponseStep =
   | { step: "init"; rollbackFirst: boolean }
   | { step: "start-agent"; role: AgentRole; round: number; attempt: number }
   | {
+      step: "skip-parallel-investigator";
+      outcome: "unavailable" | "refused";
+      reason: string;
+    }
+  | {
       step: "message-agent";
       sessionId: string;
       message: "send-back" | "reminder";

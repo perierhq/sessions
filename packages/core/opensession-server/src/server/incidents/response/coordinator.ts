@@ -646,6 +646,8 @@ async function applyStep(
       return init(view, step.rollbackFirst, d);
     case "start-agent":
       return startAgent(view, step, d);
+    case "skip-parallel-investigator":
+      return skipParallelInvestigator(view, step.outcome, step.reason, d);
     case "message-agent":
       return messageAgent(view, step, d);
     case "record-report":
@@ -689,20 +691,23 @@ async function init(
   d: CoordinatorDeps,
 ): Promise<boolean> {
   const { incident, settings } = view;
-  let automation: Automation;
-  let coordinatorSessionId: string;
+  const release = rollbackFirst ? latestRelease(settings) : undefined;
+  const rollback = projectAction(settings, "rollback");
+  let automation: Automation | undefined;
+  let coordinatorSessionId: string | undefined;
   try {
     automation = await d.automation(incident.project);
     coordinatorSessionId = await d.coordinatorSession(incident, automation);
   } catch (error) {
-    return setupProblem(
-      view,
-      d,
-      `Incident agents could not start: ${errorMessage(error)}`,
-    );
+    // The rollback needs no agent: it starts anyway, and the parallel
+    // investigator is skipped when it finds no coordinator session.
+    if (!release || !rollback)
+      return setupProblem(
+        view,
+        d,
+        `Incident agents could not start: ${errorMessage(error)}`,
+      );
   }
-  const release = rollbackFirst ? latestRelease(settings) : undefined;
-  const rollback = projectAction(settings, "rollback");
   const primary = view.signals.get(incident.primarySignalId);
   const next = await write(
     incident.id,
@@ -715,8 +720,8 @@ async function init(
         now: at,
         maxRounds: settings.maxRounds,
         phase: release && rollback ? "deciding" : "investigating",
-        coordinatorSessionId,
-        automationId: automation.id,
+        ...(coordinatorSessionId ? { coordinatorSessionId } : {}),
+        ...(automation ? { automationId: automation.id } : {}),
       });
       if (!release || !rollback) return { incident: c, response: r };
       const time = hhmm(release.at);
@@ -757,14 +762,23 @@ async function startAgent(
   const { incident, settings } = view;
   const r = incident.response!;
   const { role, round, attempt } = step;
-  if ("error" in view.models) return setupProblem(view, d, view.models.error);
+  // Rollback-first's investigator is best effort: whatever keeps it from
+  // starting is recorded and the rollback goes on (rule 23).
+  const parallel = parallelInvestigator(r, role);
+  const problem = (reason: string, detail = reason): Promise<boolean> =>
+    parallel
+      ? skipParallelInvestigator(view, "unavailable", reason, d)
+      : setupProblem(view, d, `Incident agents could not start: ${detail}`);
+  if ("error" in view.models)
+    return parallel
+      ? skipParallelInvestigator(view, "unavailable", view.models.error, d)
+      : setupProblem(view, d, view.models.error);
   const models = view.models;
   const primary = view.signals.get(incident.primarySignalId) ?? null;
   if (!primary)
-    return setupProblem(
-      view,
-      d,
-      "Incident agents could not start: the incident's primary signal no longer exists",
+    return problem(
+      "The incident's primary signal no longer exists",
+      "the incident's primary signal no longer exists",
     );
 
   let access;
@@ -773,12 +787,10 @@ async function startAgent(
   } catch (error) {
     // The kill switch and budget: rules 3 and 6 see the same thing.
     if (error instanceof AgentAccessError && error.code === "gate")
-      return false;
-    return setupProblem(
-      view,
-      d,
-      `Incident agents could not start: ${errorMessage(error)}`,
-    );
+      return parallel
+        ? skipParallelInvestigator(view, "refused", errorMessage(error), d)
+        : false;
+    return problem(errorMessage(error));
   }
   const model = access.model ?? models[role].model;
   const provider =
@@ -798,7 +810,10 @@ async function startAgent(
       : undefined;
 
   const workspace = await d.workspace(incident.project, model);
-  if ("error" in workspace) return setupProblem(view, d, workspace.error);
+  if ("error" in workspace)
+    return parallel
+      ? skipParallelInvestigator(view, "unavailable", workspace.error, d)
+      : setupProblem(view, d, workspace.error);
 
   let prompt: string;
   if (role === "investigator") {
@@ -862,11 +877,7 @@ async function startAgent(
       workspace,
     }));
   } catch (error) {
-    return setupProblem(
-      view,
-      d,
-      `Incident agents could not start: ${errorMessage(error)}`,
-    );
+    return problem(errorMessage(error));
   }
   sessionIndex.set(sessionId, incident.id);
 
@@ -922,6 +933,47 @@ async function startAgent(
     accessRevision: access.revision,
   });
   return true;
+}
+
+/** Whether starting `role` now is rollback-first's parallel investigator. */
+function parallelInvestigator(r: IncidentResponse, role: AgentRole): boolean {
+  return (
+    role === "investigator" &&
+    r.candidate?.rollbackFirst === true &&
+    r.phase !== "investigating"
+  );
+}
+
+/**
+ * Records that rollback-first's parallel investigator did not start, and
+ * why, so the rollback goes on without it. Written whatever moved meanwhile:
+ * it only ever stops a second try.
+ */
+async function skipParallelInvestigator(
+  view: ResponseView,
+  outcome: "unavailable" | "refused",
+  reason: string,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const detail = `Investigator not started alongside the rollback: ${reason}`;
+  const next = await write(incident.id, d, settings, null, (c, base, at) => {
+    if (
+      !base.candidate?.rollbackFirst ||
+      base.parallelInvestigator ||
+      currentAgent(base, "investigator")
+    )
+      return { incident: c, response: base };
+    return {
+      incident: c,
+      response: ledger({ ...base, parallelInvestigator: outcome }, at, {
+        actor: "sessions",
+        kind: "policy",
+        detail,
+      }),
+    };
+  });
+  return next !== null;
 }
 
 async function messageAgent(
