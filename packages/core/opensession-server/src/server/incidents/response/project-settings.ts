@@ -678,8 +678,8 @@ const LOOSEN_ERROR = "Only a signed-in person can loosen the incident policy";
 
 /**
  * The fields whose change gives agents more room: a higher autonomy, a
- * never-without-you entry removed, a shorter veto, a higher budget, the
- * kill switch off, or the night rule off or changed. Tightening any of them
+ * never-without-you entry removed, a shorter veto, a higher budget, more
+ * rounds, the kill switch off, or the night rule off or changed. Tightening any of them
  * is open to every writer.
  */
 export function loosenedFields(
@@ -706,6 +706,7 @@ export function loosenedFields(
   if (before.neverWithoutYou.some((v) => !after.neverWithoutYou.includes(v)))
     fields.push("neverWithoutYou");
   if (after.vetoMs < before.vetoMs) fields.push("vetoMs");
+  if (after.maxRounds > before.maxRounds) fields.push("maxRounds");
   return fields.sort();
 }
 

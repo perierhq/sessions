@@ -319,6 +319,7 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
         agentsPaused: true,
         autonomy: "propose",
         vetoMs: 1_200_000,
+        maxRounds: 2,
         night,
         neverWithoutYou: [
           "costs-money",
@@ -336,6 +337,7 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
     [{ autonomy: "deploy-right-away" }, "autonomy"],
     [{ neverWithoutYou: ["costs-money"] }, "neverWithoutYou"],
     [{ vetoMs: 600_000 }, "vetoMs"],
+    [{ maxRounds: 3 }, "maxRounds"],
     [{ budget: { perIncidentUsd: 20 } }, "budget"],
     [{ budget: { perMonthUsd: 300 } }, "budget"],
     [{ agentsPaused: false }, "agentsPaused"],
@@ -358,6 +360,7 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
     agentsPaused: true,
     autonomy: "propose",
     vetoMs: 1_200_000,
+    maxRounds: 2,
     night,
     budget: { perIncidentUsd: 10, perMonthUsd: 100 },
   });
@@ -366,11 +369,13 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
   const tighter = await anonymous({
     autonomy: "watch",
     vetoMs: 1_800_000,
+    maxRounds: 1,
     budget: { perIncidentUsd: 5, perMonthUsd: 50 },
   });
   expect(tighter).toMatchObject({
     autonomy: "watch",
     vetoMs: 1_800_000,
+    maxRounds: 1,
     budget: { perIncidentUsd: 5, perMonthUsd: 50 },
   });
   // A person may loosen.
