@@ -3,16 +3,53 @@ import { readFileSync } from "node:fs";
 
 const workerSource = readFileSync(new URL("./sw.js", import.meta.url), "utf8");
 
+type PushAction = { action: string; title: string; url: string };
+/** The JSON a push carries (server/push.ts PushPayload). */
+type PushData = {
+  title?: string;
+  body?: string;
+  url?: string;
+  tag?: string;
+  id?: string;
+  actions?: PushAction[];
+  renotify?: boolean;
+  silent?: boolean;
+  requireInteraction?: boolean;
+  timestamp?: number;
+};
+
 type WorkerEvent = {
   waitUntil?: (task: Promise<unknown>) => void;
+  data?: { json: () => PushData };
+  action?: string;
+  notification?: { data: unknown; tag?: unknown; close: () => void };
   request?: { method: string; mode: string; url: string };
   respondWith?: (response: Promise<Response>) => void;
 };
 
 type WorkerListener = (event: WorkerEvent) => void;
 type CacheInput = string | { url: string };
-/** What the worker posts to a window client (sw.js notifyShellUpdated). */
-type WorkerMessage = { type: string };
+/** What the worker posts to a window client (sw.js notifyShellUpdated, postNavigate). */
+type WorkerMessage = { type: string; url?: string; id?: string | null };
+type ShownNotification = {
+  title: string;
+  options: {
+    body: string;
+    tag?: string;
+    icon: string;
+    badge: string;
+    renotify: boolean;
+    silent: boolean;
+    requireInteraction: boolean;
+    timestamp?: number;
+    actions: Array<{ action: string; title: string }>;
+    data: {
+      url: string;
+      id: string | null;
+      actionUrls: Record<string, string>;
+    };
+  };
+};
 
 function cacheUrl(input: CacheInput): string {
   return input instanceof Object ? input.url : input;
@@ -31,6 +68,7 @@ function workerHarness(
   scopePath = "/",
   existingCacheNames: string[] = [],
   networkFetch: NetworkFetch = offline,
+  maxActions?: number,
 ) {
   const origin = "https://os.test";
   const scope = new URL(scopePath, origin).href;
@@ -39,6 +77,13 @@ function workerHarness(
   const deletedCacheNames: string[] = [];
   const navigated: string[] = [];
   const posted: WorkerMessage[] = [];
+  const shown: ShownNotification[] = [];
+  const opened: string[] = [];
+  let fetches = 0;
+  const countedFetch: NetworkFetch = (input, init) => {
+    fetches++;
+    return networkFetch(input, init);
+  };
   const entries = new Map<string, Response>();
   const cache = {
     async add(input: string) {
@@ -76,8 +121,14 @@ function workerHarness(
       async getNotifications() {
         return [];
       },
-      async showNotification() {},
+      async showNotification(
+        title: string,
+        options: ShownNotification["options"],
+      ) {
+        shown.push({ title, options });
+      },
     },
+    Notification: maxActions === undefined ? undefined : { maxActions },
     location: { origin },
     navigator: {},
     clients: {
@@ -95,7 +146,9 @@ function workerHarness(
           },
         ];
       },
-      async openWindow() {},
+      async openWindow(url: string) {
+        opened.push(url);
+      },
     },
     skipWaiting() {},
     addEventListener(type: string, listener: WorkerListener) {
@@ -106,10 +159,22 @@ function workerHarness(
   new Function("self", "caches", "fetch", workerSource)(
     serviceWorker,
     caches,
-    networkFetch,
+    countedFetch,
   );
 
-  return { added, deletedCacheNames, listeners, navigated, posted, cache };
+  return {
+    added,
+    deletedCacheNames,
+    listeners,
+    navigated,
+    posted,
+    shown,
+    opened,
+    cache,
+    get fetches() {
+      return fetches;
+    },
+  };
 }
 
 function shellHtml(entry: string): Response {
@@ -285,5 +350,172 @@ describe("service worker gate assets", () => {
     expect(response).toBeDefined();
     expect(await (await response!).text()).toBe("cached:/mac-app-icon.png");
     await Promise.all(tasks);
+  });
+});
+
+async function push(h: ReturnType<typeof workerHarness>, data: PushData) {
+  const tasks: Promise<unknown>[] = [];
+  h.listeners.get("push")?.({
+    data: { json: () => data },
+    waitUntil: (t: Promise<unknown>) => tasks.push(t),
+  });
+  await Promise.all(tasks);
+  return h.shown.at(-1)!;
+}
+
+async function click(
+  h: ReturnType<typeof workerHarness>,
+  options: { data: unknown; tag?: unknown },
+  action = "",
+) {
+  const tasks: Promise<unknown>[] = [];
+  h.listeners.get("notificationclick")?.({
+    action,
+    notification: { ...options, close() {} },
+    waitUntil: (t: Promise<unknown>) => tasks.push(t),
+  });
+  await Promise.all(tasks);
+}
+
+const veto: PushData = {
+  title: "Search is down",
+  body: "acme · The fix is verified and deploys at 12:37 unless you stop it",
+  url: "/incidents/inc-1",
+  tag: "os-notification-incident:inc-1",
+  id: "incident:inc-1",
+  renotify: true,
+  requireInteraction: true,
+  timestamp: 5,
+  actions: [
+    {
+      action: "stop",
+      title: "Stop the deploy",
+      url: "/incidents/inc-1?intent=stop",
+    },
+    {
+      action: "deploy-now",
+      title: "Deploy now",
+      url: "/incidents/inc-1?intent=deploy-now",
+    },
+    { action: "open", title: "Open", url: "/incidents/inc-1" },
+  ],
+};
+
+describe("incident push actions", () => {
+  test("shows as many buttons as the platform allows, Stop first", async () => {
+    const h = workerHarness("/", [], offline, 2);
+    const { title, options } = await push(h, veto);
+    expect(title).toBe("Search is down");
+    expect(options).toMatchObject({
+      tag: "os-notification-incident:inc-1",
+      renotify: true,
+      requireInteraction: true,
+      silent: false,
+      timestamp: 5,
+      actions: [
+        { action: "stop", title: "Stop the deploy" },
+        { action: "deploy-now", title: "Deploy now" },
+      ],
+      data: {
+        url: "/incidents/inc-1",
+        id: "incident:inc-1",
+        actionUrls: {
+          stop: "/incidents/inc-1?intent=stop",
+          "deploy-now": "/incidents/inc-1?intent=deploy-now",
+          open: "/incidents/inc-1",
+        },
+      },
+    });
+    expect(
+      (await push(workerHarness("/", [], offline), veto)).options.actions,
+    ).toHaveLength(3);
+  });
+
+  test("drops external action URLs and a tagless renotify; silent replaces stay silent", async () => {
+    const h = workerHarness("/", [], offline, 2);
+    const { options } = await push(h, {
+      ...veto,
+      tag: undefined,
+      renotify: true,
+      actions: [
+        { action: "x", title: "X", url: "https://evil.example.test/" },
+        { action: "y", title: "Y", url: "//evil.example.test/" },
+      ],
+    });
+    expect(options.actions).toEqual([]);
+    expect(options.data.actionUrls).toEqual({});
+    expect(options.renotify).toBe(false);
+    expect(
+      (
+        await push(h, {
+          ...veto,
+          actions: undefined,
+          silent: true,
+          renotify: false,
+        })
+      ).options,
+    ).toMatchObject({ silent: true, renotify: false, actions: [] });
+  });
+
+  test("an action opens its confirm in the app and never acts on its own", async () => {
+    const h = workerHarness("/", [], offline, 2);
+    const { options } = await push(h, veto);
+    await click(h, options, "stop");
+    expect(h.navigated.at(-1)).toBe("/incidents/inc-1?intent=stop");
+    expect(h.fetches).toBe(0);
+    expect(h.posted.at(-1)).toMatchObject({
+      type: "os1-navigate",
+      url: "/incidents/inc-1?intent=stop",
+      id: "incident:inc-1",
+    });
+  });
+
+  test("action URLs follow the registration's historical prefix like data.url does", async () => {
+    const h = workerHarness("/backstage/", [], offline, 2);
+    const { options } = await push(h, {
+      ...veto,
+      actions: [
+        {
+          action: "stop",
+          title: "Stop the deploy",
+          url: "/opensession/incidents/inc-1?intent=stop",
+        },
+      ],
+    });
+    expect(options.data.actionUrls.stop).toBe(
+      "/backstage/incidents/inc-1?intent=stop",
+    );
+  });
+
+  test("a body tap, an unknown action and platforms without buttons open the incident", async () => {
+    const h = workerHarness("/", [], offline, 2);
+    const { options } = await push(h, veto);
+    await click(h, options);
+    expect(h.navigated.at(-1)).toBe("/incidents/inc-1");
+    await click(h, options, "mystery");
+    expect(h.navigated.at(-1)).toBe("/incidents/inc-1");
+    expect(h.fetches).toBe(0);
+  });
+
+  test("a push without actions keeps today's shape", async () => {
+    const h = workerHarness();
+    const { title, options } = await push(h, {
+      title: "Needs input",
+      body: "Fix login: which branch?",
+      url: "/session/s1",
+      tag: "os-notification-session:s1",
+      id: "session:s1",
+    });
+    expect(title).toBe("Needs input");
+    expect(options).toMatchObject({
+      body: "Fix login: which branch?",
+      tag: "os-notification-session:s1",
+      renotify: false,
+      silent: false,
+      requireInteraction: false,
+      actions: [],
+      data: { url: "/session/s1", id: "session:s1", actionUrls: {} },
+    });
+    expect(options.timestamp).toBeUndefined();
   });
 });
