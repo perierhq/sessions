@@ -80,8 +80,10 @@ export function pageModel(input: {
   });
   const open = isOpenIncident(incident);
 
+  // The incident's own title, as the sidebar and the top bar name it; the
+  // signal may have been renamed since.
   const headline = incidentHeadline({
-    title: primaryName,
+    title: incident.title,
     state: incident.state,
     primary: primaryState,
     reason: primary?.evaluation?.reason,

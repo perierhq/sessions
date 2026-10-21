@@ -42,7 +42,7 @@ const incidentFixture = (
   const incident: Incident = {
     id: "inc-1",
     project: "acme",
-    title: "Search down",
+    title: "Search",
     state: "investigating",
     severity: "major",
     owner: "Ada",
@@ -271,4 +271,21 @@ test("rollback first and watch markers; working agents pulse", () => {
   expect(m.future.map((f) => f.label)).toEqual(["Rolls back", "Closes"]);
   expect(m.agentSessionIds).toEqual(["a", "b"]);
   expect(m.dot).toEqual({ tone: "yellow", pulse: true });
+});
+
+test("the headline names the incident by its title, not a renamed signal", () => {
+  const m = pageModel({
+    incident: incidentFixture({ title: "Search" }),
+    signals: [
+      signalFixture({
+        id: "sig-a",
+        name: "Search page",
+        evaluation: evalFixture("failing"),
+      }),
+    ],
+    settings: null,
+    now: NOW,
+  });
+  expect(m.headline).toBe("Search is down");
+  expect(m.primaryName).toBe("Search page");
 });

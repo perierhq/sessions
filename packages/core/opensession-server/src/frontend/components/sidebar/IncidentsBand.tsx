@@ -123,7 +123,7 @@ export function IncidentsBand({
                 key={incident.id}
                 incident={incident}
                 headline={incidentHeadline({
-                  title: primary?.name ?? incident.title,
+                  title: incident.title,
                   state: incident.state,
                   primary: primary?.evaluation?.state ?? null,
                   reason: primary?.evaluation?.reason,

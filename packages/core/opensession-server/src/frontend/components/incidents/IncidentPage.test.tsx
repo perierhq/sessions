@@ -59,7 +59,7 @@ const incident = (withResponse: boolean): Incident => {
   const value: Incident = {
     id: "inc-1",
     project: "acme",
-    title: "Search down",
+    title: "Search",
     state: withResponse ? "veto" : "investigating",
     severity: "major",
     owner: "Ada",
@@ -154,8 +154,8 @@ test("sections in order: status line, strip, next action, cause, details", () =>
   ].map((text) => html.indexOf(text));
   for (const at of order) expect(at).toBeGreaterThan(-1);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
-  // The desktop bar names the project and the incident.
-  expect(html).toContain("Search down");
+  // The desktop bar names the incident by the title the headline uses.
+  expect(html).toContain('<div class="min-w-0 truncate">Search</div>');
   expect(html).toContain('aria-label="Incidents"');
 });
 

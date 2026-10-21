@@ -545,7 +545,6 @@ function needsYouResponse(openedAt: number, now: number): IncidentResponse {
 }
 
 interface PastSpec {
-  title: string;
   signal: DemoKey;
   openedAgo: number;
   lasted: number;
@@ -555,7 +554,6 @@ interface PastSpec {
 
 const PAST: PastSpec[] = [
   {
-    title: "Sign-in errors",
     signal: "signin",
     openedAgo: SIGNIN_DOWN.from,
     lasted: SIGNIN_DOWN.from - SIGNIN_DOWN.to,
@@ -563,7 +561,6 @@ const PAST: PastSpec[] = [
     costUsd: 1.2,
   },
   {
-    title: "Search down",
     signal: "search",
     openedAgo: 9 * DAY_MS,
     lasted: 2 * HOUR_MS,
@@ -571,7 +568,6 @@ const PAST: PastSpec[] = [
     costUsd: 3.8,
   },
   {
-    title: "Checkout connection limit",
     signal: "checkout",
     openedAgo: 20 * DAY_MS,
     lasted: 3 * HOUR_MS,
@@ -579,7 +575,6 @@ const PAST: PastSpec[] = [
     costUsd: 2.1,
   },
   {
-    title: "Search latency over 2 s",
     signal: "latency",
     openedAgo: 60 * DAY_MS,
     lasted: DAY_MS,
@@ -587,7 +582,6 @@ const PAST: PastSpec[] = [
     costUsd: null,
   },
   {
-    title: "Email provider outage",
     signal: "errors",
     openedAgo: 140 * DAY_MS,
     lasted: 50 * MINUTE_MS,
@@ -601,8 +595,10 @@ async function seedIncidents(
   now: number,
 ): Promise<void> {
   const id = (key: DemoKey) => ids.get(key)!;
+  // Titled the way the engine titles a rule's incident: its signal's name.
+  const titleOf = (key: DemoKey) =>
+    DEMO_SIGNALS.find((spec) => spec.key === key)!.name;
   const open = async (
-    title: string,
     key: DemoKey,
     openedAt: number,
     state: "heads-up" | "investigating",
@@ -610,7 +606,7 @@ async function seedIncidents(
   ): Promise<Incident> =>
     createIncident({
       project: DEMO_REPO_ID,
-      title,
+      title: titleOf(key),
       state,
       severity: state === "heads-up" ? "minor" : "critical",
       owner: DEMO_INCIDENT_AUTHOR,
@@ -625,7 +621,6 @@ async function seedIncidents(
     const openedAt = now - past.openedAgo;
     const closedAt = openedAt + past.lasted;
     const created = await open(
-      past.title,
       past.signal,
       openedAt,
       "investigating",
@@ -654,7 +649,6 @@ async function seedIncidents(
 
   const searchOpened = now - SEARCH_DOWN_FOR + 4 * MINUTE_MS;
   const search = await open(
-    "Search down",
     "search",
     searchOpened,
     "investigating",
@@ -687,7 +681,6 @@ async function seedIncidents(
 
   const checkoutOpened = now - CHECKOUT_DOWN_FOR + 3 * MINUTE_MS;
   const checkout = await open(
-    "Checkout fails",
     "checkout",
     checkoutOpened,
     "investigating",
@@ -713,13 +706,7 @@ async function seedIncidents(
     };
   });
 
-  await open(
-    "Bounce webhook fails on and off",
-    "bounce",
-    now - 50 * MINUTE_MS,
-    "heads-up",
-    "Failing on and off",
-  );
+  await open("bounce", now - 50 * MINUTE_MS, "heads-up", "Failing on and off");
 }
 
 const pollIntervalMs = (spec: DemoSignal) =>
