@@ -3,16 +3,22 @@
 // it and asks again, serialized per incident. Every intent and result is
 // written into `incident.response` through the incident store's CAS write,
 // so deadlines and restarts survive in the record. Woken by incident
-// changes, session state events and a tick (started at boot, Task 18).
-// Nothing runs at import.
-import type {
-  AgentRole,
-  AgentRun,
-  CandidateState,
-  IncidentProjectSettings,
-  IncidentResponse,
-  LedgerEntry,
-  ProjectSpend,
+// changes, session state events and a tick (`startIncidentResponse`, from
+// boot). Owner decisions run through the same per-incident chain. Nothing
+// runs at import.
+import {
+  type ActionRun,
+  type AgentRole,
+  type AgentRun,
+  type CancelReason,
+  type CandidateState,
+  type IncidentProjectSettings,
+  type IncidentResponse,
+  type LedgerEntry,
+  OWNER_DECISIONS,
+  type OwnerDecision,
+  type ProjectSpend,
+  type ResponsePhase,
 } from "../../../shared/incident-response";
 import {
   type Incident,
@@ -26,6 +32,7 @@ import {
 import type { Automation } from "../../automations";
 import { modelUpstreamProvider } from "../../model-catalog";
 import { onSessionStateChange } from "../../session-state-events";
+import { isShuttingDown } from "../../shutdown-state";
 import { getRepo } from "../../worktree";
 import { AgentAccessError, resolveAgentAccess } from "../access/resolve";
 import { incidentAudit } from "../audit-sink";
@@ -38,9 +45,13 @@ import {
 import { appendEvent, transitionIncident } from "../lifecycle";
 import { recentObservations } from "../observation-store";
 import { getSignalEvaluation } from "../signal-runtime";
-import { getSignal } from "../signal-store";
-import { setProjectMonthSpend } from "./access-gate";
-import { runIncidentAction } from "./actions";
+import { getSignal, setSignalRunOnCheck } from "../signal-store";
+import { setProjectMonthSpend, startIncidentAccessGate } from "./access-gate";
+import {
+  newActionRunId,
+  previousReleaseRef,
+  runIncidentAction,
+} from "./actions";
 import {
   type AgentLive,
   type IncidentAgents,
@@ -48,10 +59,21 @@ import {
   ensureCoordinatorSession,
   ensureIncidentAutomation,
 } from "./agents";
-import { currentAgent, decideNextStep, nextActionFor } from "./decide";
+import {
+  currentAgent,
+  decideNextStep,
+  manualRollbackAvailable,
+  nextActionFor,
+} from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse } from "./ledger";
-import { type MergeGithub, defaultMergeGithub, fetchPrSnapshot } from "./merge";
+import {
+  type MergeGithub,
+  assessAutoMerge,
+  defaultMergeGithub,
+  fetchPrSnapshot,
+  mergeIncidentPr,
+} from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import {
   getProjectSettings,
@@ -69,7 +91,7 @@ import {
   notePathFor,
   runbookPathsFor,
 } from "./prompts";
-import { runnerLabel } from "./runners";
+import { productionRunOnProblem, runnerLabel } from "./runners";
 import type { ResponseStep, ResponseView } from "./steps";
 
 export const RESPONSE_TICK_MS = 5_000;
@@ -159,7 +181,7 @@ export function __setCoordinatorDepsForTest(
 const chains = new Map<string, Promise<void>>();
 /** Incidents with a scheduled advance that has not started yet. */
 const queued = new Set<string>();
-/** Action runs this process is executing (Task 18 fills it). */
+/** Action runs this process is executing. */
 const liveActions = new Set<string>();
 const agentHandles = new Map<
   string,
@@ -207,12 +229,35 @@ export function advanceIncident(
 }
 
 /** A wake-up: at most one queued advance per incident. */
-export function scheduleAdvance(incidentId: string): void {
+export function scheduleAdvance(
+  incidentId: string,
+  deps: Partial<CoordinatorDeps> = {},
+): void {
   if (queued.has(incidentId)) return;
   queued.add(incidentId);
   void enqueue(incidentId, () => {
     queued.delete(incidentId);
-    return advance(incidentId, resolveCoordinatorDeps());
+    return advance(incidentId, resolveCoordinatorDeps(deps));
+  });
+}
+
+/**
+ * Runs `fn` in the incident's chain, after any advance already queued or
+ * running, and resolves with its result. Owner decisions use it so they
+ * never interleave with a step.
+ */
+export function runInIncidentChain<T>(
+  incidentId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    void enqueue(incidentId, async () => {
+      try {
+        resolve(await fn());
+      } catch (error) {
+        reject(error);
+      }
+    });
   });
 }
 
@@ -319,6 +364,23 @@ async function write(
   guard: { state: IncidentState; phase?: string } | null,
   mutate: (c: Incident, r: IncidentResponse, at: string) => Mutation,
 ): Promise<Incident | null> {
+  const result = await writeOrError(incidentId, d, settings, guard, mutate);
+  if (result === null) return null;
+  if ("error" in result) {
+    console.warn(`[incidents] ${incidentId}: ${result.error}`);
+    return null;
+  }
+  return result;
+}
+
+/** `write`, with the mutation's refusal returned instead of logged. */
+async function writeOrError(
+  incidentId: string,
+  d: CoordinatorDeps,
+  settings: IncidentProjectSettings,
+  guard: { state: IncidentState; phase?: string } | null,
+  mutate: (c: Incident, r: IncidentResponse, at: string) => Mutation,
+): Promise<Incident | { error: string } | null> {
   const at = iso(d.now());
   const result = await d.updateIncident(incidentId, (c) => {
     if (guard && (c.state !== guard.state || c.response?.phase !== guard.phase))
@@ -338,11 +400,6 @@ async function write(
     next.response!.next = nextActionFor(next, settings);
     return next;
   });
-  if (result === null) return null;
-  if ("error" in result) {
-    console.warn(`[incidents] ${incidentId}: ${result.error}`);
-    return null;
-  }
   return result;
 }
 
@@ -604,12 +661,17 @@ async function applyStep(
     case "needs-you":
       return needsYou(view, step, d);
     case "open-veto":
+      return openVeto(view, step, d);
     case "merge":
+      return mergeCandidate(view, d);
     case "run-action":
+      return runAction(view, step, d);
     case "start-watch":
+      return startWatch(view, d);
     case "resolve":
+      return resolveIncident(view, step, d);
     case "merge-note":
-      throw new Error(`Not implemented: ${step.step}`);
+      return mergeNote(view, d);
   }
 }
 
@@ -1272,6 +1334,398 @@ async function needsYou(
   return false;
 }
 
+// ── Veto, merge, actions, watch, notes ─────────────────────────────────────
+
+async function openVeto(
+  view: ResponseView,
+  step: Extract<ResponseStep, { step: "open-veto" }>,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const deadline = iso(view.now + step.decision.vetoMs);
+  const detail = `Deploys at ${deadline} unless stopped. ${step.decision.rule}`;
+  const next = await write(
+    incident.id,
+    d,
+    settings,
+    guardOf(view),
+    (c, base, at) => {
+      const moved = transitionIncident(c, "veto", {
+        by: "sessions",
+        detail: step.decision.rule,
+        at,
+      });
+      if ("error" in moved) return moved;
+      return {
+        incident: event(moved, "policy", at, detail),
+        response: ledger(
+          {
+            ...base,
+            phase: "veto",
+            decision: step.decision,
+            veto: { startedAt: at, deadline },
+          },
+          at,
+          { actor: "sessions", kind: "veto", detail },
+        ),
+      };
+    },
+  );
+  if (!next) return false;
+  incidentAudit({
+    kind: "incident_veto",
+    incidentId: incident.id,
+    event: "opened",
+    deadline,
+  });
+  return true;
+}
+
+function investigatorSummary(r: IncidentResponse): string | undefined {
+  const report = currentAgent(r, "investigator")?.report;
+  return report?.role === "investigator" ? report.summary : undefined;
+}
+
+/**
+ * Merges the verified head. A fresh snapshot is read right before the
+ * merge and assessed again: if anything moved (head, reviews, checks),
+ * nothing is merged and the next step decides on the fresh snapshot.
+ */
+async function mergeCandidate(
+  view: ResponseView,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const r = incident.response!;
+  const prUrl = r.candidate?.prUrl ?? r.candidate?.pr?.url;
+  const verifiedSha = r.verdict?.verifiedSha ?? "";
+  if (!prUrl || !verifiedSha)
+    return needsYou(
+      view,
+      {
+        step: "needs-you",
+        kind: "merge",
+        reason: "There is no verified pull request to merge",
+      },
+      d,
+    );
+  const fresh = await fetchPrSnapshot(
+    { prUrl, repoId: incident.project, now: d.now() },
+    d.github,
+    { ghRepoOf: d.ghRepoOf },
+  );
+  if ("error" in fresh)
+    return needsYou(
+      view,
+      { step: "needs-you", kind: "merge", reason: fresh.error },
+      d,
+    );
+  if (assessAutoMerge(fresh, verifiedSha).kind !== "ready") {
+    const next = await write(
+      incident.id,
+      d,
+      settings,
+      guardOf(view),
+      (c, base) =>
+        base.candidate
+          ? {
+              incident: c,
+              response: {
+                ...base,
+                candidate: { ...base.candidate, pr: fresh },
+              },
+            }
+          : { error: "The candidate is gone" },
+    );
+    return next !== null;
+  }
+  const record = await mergeIncidentPr(
+    {
+      incidentId: incident.id,
+      pr: fresh,
+      verifiedSha,
+      title: investigatorSummary(r) ?? incident.title,
+      now: d.now(),
+    },
+    d.github,
+  );
+  if (record.status === "merged" && !record.mergedSha) {
+    const mergedSha = await d.github
+      .mergeCommit(fresh.ghRepo, fresh.number)
+      .catch(() => undefined);
+    if (mergedSha) record.mergedSha = mergedSha;
+  }
+  const n = `PR #${fresh.number}`;
+  const detail =
+    record.status === "merged"
+      ? `Merged ${n} at ${verifiedSha.slice(0, 7)} as the GitHub App`
+      : `Did not merge ${n}: ${record.detail ?? "refused"}`;
+  const next = await write(
+    incident.id,
+    d,
+    settings,
+    guardOf(view),
+    (c, base, at) => ({
+      incident: event(c, "merge", at, detail),
+      response: ledger(
+        {
+          ...base,
+          merge: record,
+          ...(base.candidate
+            ? { candidate: { ...base.candidate, pr: fresh } }
+            : {}),
+        },
+        at,
+        { actor: "sessions", kind: "merge", detail },
+      ),
+    }),
+  );
+  return next !== null;
+}
+
+function actionLedgerDetail(run: ActionRun): string {
+  return `${run.label} on ${runnerLabel(run.runner)}: ${run.status} (${run.detail})`;
+}
+
+/**
+ * Runs one action on its production Runner. The intent is written first;
+ * the run is live only in this process, so a restart finds it `running`
+ * without a live id and never runs it again.
+ */
+async function runAction(
+  view: ResponseView,
+  step: Extract<ResponseStep, { step: "run-action" }>,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const r = incident.response!;
+  const action = settings.actions.find((a) => a.id === step.actionId);
+  if (!action)
+    return needsYou(
+      view,
+      {
+        step: "needs-you",
+        kind: "no-action",
+        reason: `The action ${step.actionId} is no longer in the project settings`,
+      },
+      d,
+    );
+  const runId = newActionRunId();
+  const ref = action.kind === "deploy" ? r.merge?.mergedSha : undefined;
+  const previousRef =
+    action.kind === "rollback" ? previousReleaseRef(settings) : undefined;
+  const intent: ActionRun = {
+    id: runId,
+    round: r.round,
+    actionId: action.id,
+    kind: action.kind,
+    label: action.label,
+    runner: action.runner,
+    status: "running",
+    purpose: step.purpose,
+    startedAt: iso(d.now()),
+    detail: "Running",
+    secretTouched: action.needsSecret,
+  };
+  liveActions.add(runId);
+  let result: ActionRun;
+  try {
+    const started = await write(
+      incident.id,
+      d,
+      settings,
+      guardOf(view),
+      (c, base) => ({
+        incident: c,
+        response: { ...base, actionRuns: [...base.actionRuns, intent] },
+      }),
+    );
+    if (!started) return false;
+    try {
+      result = await d.runAction({
+        runId,
+        incidentId: incident.id,
+        round: r.round,
+        project: incident.project,
+        action,
+        vars: {
+          incident: incident.id,
+          project: incident.project,
+          ...(ref !== undefined ? { ref } : {}),
+          ...(previousRef !== undefined ? { previousRef } : {}),
+        },
+        owner: incident.owner,
+        purpose: step.purpose,
+        ...(r.coordinatorSessionId
+          ? { sessionId: r.coordinatorSessionId }
+          : {}),
+      });
+    } catch (error) {
+      result = {
+        ...intent,
+        status: "unknown",
+        endedAt: iso(d.now()),
+        detail: `${errorMessage(error)}. Check production before going on.`,
+      };
+    }
+  } finally {
+    liveActions.delete(runId);
+  }
+  const detail = actionLedgerDetail(result);
+  const next = await write(incident.id, d, settings, null, (c, base, at) => ({
+    incident: event(c, "action", at, detail),
+    response: ledger(
+      {
+        ...base,
+        actionRuns: base.actionRuns.map((a) =>
+          a.id === runId ? { ...result, id: runId } : a,
+        ),
+      },
+      at,
+      {
+        actor: "sessions",
+        kind: "action",
+        detail,
+        runner: result.runner,
+        secretTouched: result.secretTouched,
+      },
+    ),
+  }));
+  if (
+    result.status === "ok" &&
+    (action.kind === "deploy" || action.kind === "rollback")
+  ) {
+    const releaseRef = action.kind === "deploy" ? ref : previousRef;
+    const refused = await d.recordRelease(incident.project, {
+      at: result.endedAt ?? iso(d.now()),
+      source: "action",
+      ...(releaseRef !== undefined ? { ref: releaseRef } : {}),
+      actionRunId: runId,
+    });
+    if (refused)
+      console.warn(
+        `[incidents] ${incident.id}: release not recorded: ${refused.error}`,
+      );
+  }
+  return next !== null;
+}
+
+async function startWatch(
+  view: ResponseView,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const deadline = iso(view.now + settings.watchMs);
+  const names = incident.signalIds
+    .map((id) => view.signals.get(id)?.name)
+    .filter((n): n is string => !!n);
+  const detail = `Watching ${names.join(", ") || "the signal"} until ${deadline}`;
+  const next = await write(
+    incident.id,
+    d,
+    settings,
+    guardOf(view),
+    (c, base, at) => {
+      let moved: Incident = c;
+      if (c.state !== "watching") {
+        const result = transitionIncident(c, "watching", {
+          by: "sessions",
+          detail,
+          at,
+        });
+        if ("error" in result) return result;
+        moved = result;
+      }
+      return {
+        incident: moved,
+        response: {
+          ...base,
+          phase: "watching",
+          watch: { startedAt: at, deadline },
+        },
+      };
+    },
+  );
+  return next !== null;
+}
+
+async function resolveIncident(
+  view: ResponseView,
+  step: Extract<ResponseStep, { step: "resolve" }>,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const next = await write(
+    incident.id,
+    d,
+    settings,
+    guardOf(view),
+    (c, base, at) => {
+      const moved = transitionIncident(c, "resolved", {
+        by: "sessions",
+        detail: step.detail,
+        at,
+        fixedBy: step.fixedBy,
+      });
+      if ("error" in moved) return moved;
+      return {
+        incident: moved,
+        response: patched(base, {
+          phase: "documenting",
+          documentingSince: at,
+          watch: undefined,
+        }),
+      };
+    },
+  );
+  return next !== null;
+}
+
+async function mergeNote(
+  view: ResponseView,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const note = incident.response!.note;
+  const pr = note?.pr;
+  if (!note || !pr) return false;
+  const record = await mergeIncidentPr(
+    {
+      incidentId: incident.id,
+      pr,
+      verifiedSha: pr.headSha,
+      title: `Incident note: ${incident.title}`,
+      now: d.now(),
+    },
+    d.github,
+  );
+  const merged = record.status === "merged";
+  const detail = merged
+    ? `Merged the incident note, PR #${pr.number}`
+    : `Did not merge the incident note, PR #${pr.number}: ${record.detail ?? "refused"}`;
+  const next = await write(
+    incident.id,
+    d,
+    settings,
+    guardOf(view),
+    (c, base, at) => ({
+      incident: event(c, "merge", at, detail),
+      response: ledger(
+        {
+          ...base,
+          note: patched(
+            { ...(base.note ?? note), merged },
+            { detail: merged ? undefined : record.detail },
+          ),
+        },
+        at,
+        { actor: "sessions", kind: "merge", detail },
+      ),
+    }),
+  );
+  return next !== null;
+}
+
 // ── Wake-ups ───────────────────────────────────────────────────────────────
 
 /** Whether the tick should look at this incident at all. */
@@ -1360,4 +1814,568 @@ export function watchResponseWakeups(): () => void {
 /** Action runs this process is executing right now. */
 export function liveActionRunIds(): ReadonlySet<string> {
   return liveActions;
+}
+
+// ── Owner decisions ────────────────────────────────────────────────────────
+
+export type DecisionError = { error: string; status: 404 | 409 | 400 };
+
+const REFUSALS: Record<OwnerDecision, string> = {
+  stop: "Nothing to stop",
+  "deploy-now": "No veto window is open",
+  approve: "Nothing verified to approve",
+  "send-back": "Nothing to send back",
+  retry: "Nothing to retry",
+  resolve: "This incident can't be resolved now",
+  close: "This incident can't be closed now",
+  "roll-back": "Nothing to roll back",
+};
+
+const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
+  "investigating",
+  "proving",
+  "verifying",
+  "deciding",
+]);
+const RETRYABLE: ReadonlySet<string> = new Set([
+  "budget",
+  "agent-error",
+  "no-report",
+  "setup",
+]);
+const APPROVABLE: ReadonlySet<string> = new Set([
+  "policy",
+  "protection",
+  "stopped",
+]);
+export const SEND_BACK_NOTE_MAX = 2000;
+
+function isOwnerDecision(value: unknown): value is OwnerDecision {
+  return (OWNER_DECISIONS as readonly unknown[]).includes(value);
+}
+
+/** Whether `decision` applies to `c` now. */
+function decisionAllowed(
+  decision: OwnerDecision,
+  c: Incident,
+  settings: IncidentProjectSettings,
+): boolean {
+  const r = c.response;
+  if (!r) return false;
+  switch (decision) {
+    case "stop":
+      return (
+        c.state === "veto" ||
+        ((c.state === "investigating" || c.state === "fix-ready") &&
+          STOPPABLE_PHASES.has(r.phase))
+      );
+    case "deploy-now":
+      return c.state === "veto";
+    case "approve":
+      return (
+        c.state === "needs-you" &&
+        APPROVABLE.has(r.needsYou?.kind ?? "") &&
+        !!r.candidate &&
+        (r.verdict?.verdict === "certain" || r.candidate.rollbackFirst === true)
+      );
+    case "send-back":
+      return c.state === "needs-you" || c.state === "veto";
+    case "retry":
+      return c.state === "needs-you" && RETRYABLE.has(r.needsYou?.kind ?? "");
+    case "resolve":
+    case "close":
+      return c.state === "needs-you" || c.state === "investigating";
+    case "roll-back":
+      return manualRollbackAvailable(c, settings);
+  }
+}
+
+/** Cancels the incident's working agents; returns the session ids stopped. */
+async function cancelWorking(
+  incident: Incident,
+  d: CoordinatorDeps,
+  why: CancelReason,
+): Promise<Set<string>> {
+  const working = (incident.response?.agents ?? []).filter(
+    (a) => a.status === "running" || a.status === "waiting",
+  );
+  const cancelled = new Set<string>();
+  if (!working.length) return cancelled;
+  const agents = await agentsFor(incident, d);
+  for (const run of working) {
+    try {
+      await agents?.cancel(
+        run.sessionId,
+        `incident:${incident.id}:cancel:${run.sessionId}:${run.turnSentAt}`,
+      );
+      cancelled.add(run.sessionId);
+    } catch (error) {
+      console.error(
+        `[incidents] Could not cancel agent ${run.sessionId} (${why}):`,
+        errorMessage(error),
+      );
+    }
+  }
+  return cancelled;
+}
+
+function markCancelled(
+  r: IncidentResponse,
+  cancelled: ReadonlySet<string>,
+  why: CancelReason,
+  reason: string,
+  at: string,
+): IncidentResponse {
+  if (!cancelled.size) return r;
+  return {
+    ...r,
+    agents: r.agents.map((a) =>
+      cancelled.has(a.sessionId) &&
+      (a.status === "running" || a.status === "waiting")
+        ? patched(a, {
+            status: "cancelled",
+            cancelledFor: why,
+            error: reason,
+            endedAt: at,
+          })
+        : a,
+    ),
+  };
+}
+
+/** The decision's own move: the incident and response before the ledger. */
+function decisionMove(
+  decision: OwnerDecision,
+  c: Incident,
+  base: IncidentResponse,
+  at: string,
+  input: { by: string; note: string; cancelled: ReadonlySet<string> },
+): Mutation {
+  const { by } = input;
+  const move = (
+    to: Parameters<typeof transitionIncident>[1],
+    detail: string,
+    response: IncidentResponse,
+    fixedBy?: "by-hand",
+  ): Mutation => {
+    const moved = transitionIncident(c, to, {
+      by,
+      detail,
+      at,
+      ...(fixedBy ? { fixedBy } : {}),
+    });
+    if ("error" in moved) return moved;
+    return { incident: moved, response };
+  };
+  const toShip = (): Partial<IncidentResponse> => ({
+    phase: base.candidate?.plan.pr ? "merging" : "deploying",
+    mergingSince: at,
+    veto: undefined,
+  });
+  switch (decision) {
+    case "stop": {
+      const reason = `Stopped by ${by}`;
+      const r = markCancelled(base, input.cancelled, "stopped", reason, at);
+      return move(
+        "needs-you",
+        reason,
+        patched(r, {
+          phase: "needs-you",
+          veto: undefined,
+          needsYou: {
+            kind: "stopped",
+            reason,
+            since: at,
+            resumePhase: base.phase === "veto" ? "deciding" : base.phase,
+          },
+        }),
+      );
+    }
+    case "deploy-now":
+      return move("deploying", `Deploy now, by ${by}`, patched(base, toShip()));
+    case "approve":
+      return move(
+        "deploying",
+        `Approved by ${by}`,
+        patched(base, {
+          ...toShip(),
+          // Readiness is read again before anything is merged.
+          ...(base.merge?.status === "refused" ? { merge: undefined } : {}),
+          ...(base.candidate
+            ? { candidate: patched(base.candidate, { pr: undefined }) }
+            : {}),
+        }),
+      );
+    case "send-back":
+      return move(
+        "investigating",
+        `Sent back by ${by}`,
+        patched(base, {
+          phase: "investigating",
+          round: base.round + 1,
+          sendBack: { kind: "owner", by, note: input.note },
+          candidate: undefined,
+          proof: undefined,
+          verdict: undefined,
+          decision: undefined,
+          veto: undefined,
+          merge: undefined,
+          mergingSince: undefined,
+        }),
+      );
+    case "retry": {
+      const resume = base.needsYou?.resumePhase ?? "investigating";
+      return move(
+        c.resumeState ?? "investigating",
+        `Retry, by ${by}`,
+        patched(base, {
+          phase: resume === "idle" ? "investigating" : resume,
+          retryRequested: true,
+        }),
+      );
+    }
+    case "resolve":
+      return move(
+        "resolved",
+        `Resolved by ${by}`,
+        patched(
+          markCancelled(base, input.cancelled, "closed", "Resolved", at),
+          { phase: "documenting", documentingSince: at },
+        ),
+        "by-hand",
+      );
+    case "close":
+      return move(
+        "closed-without-action",
+        `Closed by ${by}`,
+        patched(markCancelled(base, input.cancelled, "closed", "Closed", at), {
+          phase: "done",
+        }),
+      );
+    case "roll-back": {
+      const patch: Partial<IncidentResponse> = {
+        phase: "rolling-back",
+        ownerRollback: { by, at },
+        watch: undefined,
+      };
+      if (c.state === "watching")
+        return move(
+          "rolled-back",
+          `Rolled back by ${by}`,
+          patched(base, patch),
+        );
+      // A reopen: the rollback runs, then the next round (uncapped).
+      return move(
+        "investigating",
+        `Rolled back by ${by}`,
+        patched(base, {
+          ...patch,
+          note: undefined,
+          documentingSince: undefined,
+        }),
+      );
+    }
+  }
+}
+
+async function ownerDecision(
+  incidentId: string,
+  decision: OwnerDecision,
+  by: string,
+  note: string | undefined,
+  d: CoordinatorDeps,
+): Promise<Incident | DecisionError> {
+  const incident = await d.getIncident(incidentId);
+  if (!incident) return { error: "Not found", status: 404 };
+  const text = (note ?? "").trim();
+  if (decision === "send-back" && (!text || text.length > SEND_BACK_NOTE_MAX))
+    return { error: "A note is required", status: 400 };
+  const refused: DecisionError = { error: REFUSALS[decision], status: 409 };
+
+  if (!incident.response) {
+    if (decision !== "resolve" && decision !== "close") return refused;
+    return bareDecision(incident, decision, by, d);
+  }
+  const settings = await d.settings(incident.project);
+  if (!decisionAllowed(decision, incident, settings)) return refused;
+
+  // Effects first, the record after: cancelling agents, and a coordinator
+  // session for a retry whose start failed before it had one.
+  const cancelled =
+    decision === "stop" || decision === "resolve" || decision === "close"
+      ? await cancelWorking(
+          incident,
+          d,
+          decision === "stop" ? "stopped" : "closed",
+        )
+      : new Set<string>();
+  let coordinator:
+    | { coordinatorSessionId: string; automationId: string }
+    | undefined;
+  if (decision === "retry" && !incident.response.coordinatorSessionId) {
+    try {
+      const automation = await d.automation(incident.project);
+      coordinator = {
+        coordinatorSessionId: await d.coordinatorSession(incident, automation),
+        automationId: automation.id,
+      };
+    } catch (error) {
+      return {
+        error: `Incident agents could not start: ${errorMessage(error)}`,
+        status: 409,
+      };
+    }
+  }
+
+  const result = await writeOrError(
+    incidentId,
+    d,
+    settings,
+    null,
+    (c, base, at) => {
+      if (!decisionAllowed(decision, c, settings))
+        return { error: REFUSALS[decision] };
+      const moved = decisionMove(decision, c, base, at, {
+        by,
+        note: text,
+        cancelled,
+      });
+      if ("error" in moved) return moved;
+      const detail = `${by}: ${decision}`;
+      return {
+        incident: appendEvent(moved.incident, {
+          at,
+          kind: "decision",
+          by,
+          detail,
+        }),
+        response: ledger(
+          { ...moved.response, ownerTouched: true, ...coordinator },
+          at,
+          { actor: "owner", kind: "decision", detail, by },
+        ),
+      };
+    },
+  );
+  if (result === null) return { error: "Not found", status: 404 };
+  if ("error" in result) return { error: result.error, status: 409 };
+
+  incidentAudit({
+    kind: "incident_decision",
+    incidentId,
+    decision,
+    by,
+  });
+  if (decision === "stop" && incident.state === "veto")
+    incidentAudit({
+      kind: "incident_veto",
+      incidentId,
+      event: "stopped",
+      by,
+    });
+  if (decision === "deploy-now")
+    incidentAudit({
+      kind: "incident_veto",
+      incidentId,
+      event: "skipped",
+      by,
+    });
+  if (decision === "roll-back")
+    incidentAudit({
+      kind: "incident_rollback_requested",
+      incidentId,
+      by,
+      from: incident.state,
+    });
+  return result;
+}
+
+/** Resolve or close an incident the fix loop never started on. */
+async function bareDecision(
+  incident: Incident,
+  decision: "resolve" | "close",
+  by: string,
+  d: CoordinatorDeps,
+): Promise<Incident | DecisionError> {
+  const at = iso(d.now());
+  const result = await d.updateIncident(incident.id, (c) => {
+    if (c.state !== "needs-you" && c.state !== "investigating")
+      return { error: REFUSALS[decision] };
+    const moved =
+      decision === "resolve"
+        ? transitionIncident(c, "resolved", {
+            by,
+            detail: `Resolved by ${by}`,
+            at,
+            fixedBy: "by-hand",
+          })
+        : transitionIncident(c, "closed-without-action", {
+            by,
+            detail: `Closed by ${by}`,
+            at,
+          });
+    if ("error" in moved) return moved;
+    return appendEvent(moved, {
+      at,
+      kind: "decision",
+      by,
+      detail: `${by}: ${decision}`,
+    });
+  });
+  if (result === null) return { error: "Not found", status: 404 };
+  if ("error" in result) return { error: result.error, status: 409 };
+  incidentAudit({
+    kind: "incident_decision",
+    incidentId: incident.id,
+    decision,
+    by,
+  });
+  return result;
+}
+
+/**
+ * An owner's decision, applied in the incident's chain so it never
+ * interleaves with a step; the loop is woken right after. `by` comes from
+ * the route (a signed-in person where it matters).
+ */
+export async function applyOwnerDecision(
+  incidentId: string,
+  decision: OwnerDecision,
+  by: string,
+  note?: string,
+  deps: Partial<CoordinatorDeps> = {},
+): Promise<Incident | DecisionError> {
+  if (!isOwnerDecision(decision))
+    return { error: "Unknown decision", status: 400 };
+  const d = resolveCoordinatorDeps(deps);
+  let out: Incident | DecisionError;
+  try {
+    out = await runInIncidentChain(incidentId, () =>
+      ownerDecision(incidentId, decision, by, note, d),
+    );
+  } catch (error) {
+    return { error: errorMessage(error), status: 409 };
+  }
+  if (!("error" in out)) scheduleAdvance(incidentId, deps);
+  return out;
+}
+
+// ── Restarts, Runner checks and boot ───────────────────────────────────────
+
+/**
+ * After a restart: every action recorded as running that this process is
+ * not executing becomes `interrupted`. Nothing is ever run again; the
+ * loop then asks the owner. Returns how many runs were marked.
+ */
+export async function recoverIncidentResponses(
+  deps: Partial<CoordinatorDeps> = {},
+): Promise<number> {
+  const d = resolveCoordinatorDeps(deps);
+  let count = 0;
+  for (const incident of await d.listIncidents({ open: true })) {
+    const stale = (incident.response?.actionRuns ?? []).filter(
+      (a) => a.status === "running" && !liveActions.has(a.id),
+    );
+    if (!stale.length) continue;
+    let settings: IncidentProjectSettings;
+    try {
+      settings = await d.settings(incident.project);
+    } catch (error) {
+      console.error(
+        `[incidents] ${incident.id}: could not recover its actions:`,
+        errorMessage(error),
+      );
+      continue;
+    }
+    let marked = 0;
+    const next = await write(incident.id, d, settings, null, (c, base, at) => {
+      marked = 0;
+      let response = base;
+      const runs = base.actionRuns.map((a) => {
+        if (a.status !== "running" || liveActions.has(a.id)) return a;
+        marked++;
+        const run: ActionRun = {
+          ...a,
+          status: "interrupted",
+          endedAt: at,
+          detail: "Sessions restarted while this was running",
+        };
+        response = ledger(response, at, {
+          actor: "sessions",
+          kind: "action",
+          detail: actionLedgerDetail(run),
+          runner: run.runner,
+          secretTouched: run.secretTouched,
+        });
+        return run;
+      });
+      return { incident: c, response: { ...response, actionRuns: runs } };
+    });
+    if (next) count += marked;
+  }
+  return count;
+}
+
+/** The signal store's `runOn` check: http only, from a production Runner
+ *  of the signal's project. */
+export async function incidentRunOnCheck(
+  signal: Signal,
+): Promise<string | null> {
+  if (!signal.runOn) return null;
+  if (signal.source.kind !== "http")
+    return "Only http checks can run on a Runner";
+  return productionRunOnProblem(signal.runOn, signal.project);
+}
+
+const START_KEY = "__incidentResponse";
+type Started = { stop: () => void };
+const started = globalThis as typeof globalThis & { [START_KEY]?: Started };
+
+/**
+ * Starts the fix loop once per process: the access gate, the Runner check
+ * for signals, recovery of interrupted actions, wake-ups on incident and
+ * session changes, and the 5 s tick. Call from boot only.
+ */
+export function startIncidentResponse(): void {
+  if (started[START_KEY]) return;
+  const state: Started = { stop: () => {} };
+  started[START_KEY] = state;
+  startIncidentAccessGate();
+  setSignalRunOnCheck(incidentRunOnCheck);
+  void (async () => {
+    try {
+      const interrupted = await recoverIncidentResponses();
+      if (interrupted)
+        console.warn(
+          `[incidents] ${interrupted} action ${interrupted === 1 ? "run was" : "runs were"} interrupted by the restart`,
+        );
+    } catch (error) {
+      console.error(
+        "[incidents] Could not recover incident actions:",
+        errorMessage(error),
+      );
+    }
+    const off = watchResponseWakeups();
+    let ticking = false;
+    const timer = setInterval(() => {
+      if (ticking || isShuttingDown()) return;
+      ticking = true;
+      runResponseTick(Date.now())
+        .catch((error) =>
+          console.error(
+            "[incidents] Fix loop tick failed:",
+            errorMessage(error),
+          ),
+        )
+        .finally(() => {
+          ticking = false;
+        });
+    }, RESPONSE_TICK_MS);
+    (timer as { unref?: () => void }).unref?.();
+    state.stop = () => {
+      off();
+      clearInterval(timer);
+    };
+    console.log("[incidents] Fix loop started (5s tick)");
+  })();
 }
