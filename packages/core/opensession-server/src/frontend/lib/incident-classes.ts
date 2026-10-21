@@ -74,3 +74,23 @@ export const INCIDENT_CAUSE_TEXT =
 /** Where the cause came from and whether it was verified. */
 export const INCIDENT_CAUSE_PROVENANCE =
   "m-0 text-meta text-dim [overflow-wrap:anywhere]";
+
+/** One line of "What the agents did": a time, then what happened. */
+export const AUDIT_ROW =
+  "grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-3";
+
+/** A group label inside "What the agents did". */
+export const AUDIT_SECTION_LABEL = "m-0 text-label font-medium text-faint";
+
+/** The next action's eyebrow: the dot, then what comes next. */
+export const NEXT_EYEBROW =
+  "flex min-w-0 items-center gap-1.5 text-meta font-medium text-dim";
+
+/** The next action's buttons: right on a desktop, left and wrapping under
+ *  a finger. */
+export const NEXT_BUTTONS =
+  "mt-3 flex flex-wrap items-center gap-2 desktop:justify-end";
+
+/** "What the agents did": a quiet link, 44px tall under a finger. */
+export const NEXT_AUDIT_LINK =
+  "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-dim hover:text-fg hover:underline focus-ring desktop:mr-auto phone:min-h-11";
