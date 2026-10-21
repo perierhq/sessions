@@ -91,3 +91,68 @@ test("access settings changes broadcast the project", async () => {
     project: "acme",
   });
 });
+
+test("signal edits broadcast the signal and its project, no state", async () => {
+  startIncidentBroadcasts();
+  const { updateSignal, deleteSignal } = await import("./signal-store");
+  const s = await createSignal(
+    {
+      name: "Search",
+      project: "acme",
+      source: { kind: "http", url: "https://acme.example.test" },
+    },
+    "Ada",
+  );
+  if ("error" in s) throw new Error(s.error);
+  const edited = {
+    type: "incident_signals_changed",
+    signalId: s.id,
+    project: "acme",
+  };
+  await Bun.sleep(0);
+  expect(sent).toEqual([edited]);
+  await updateSignal(s.id, { name: "Search page" }, "Ada");
+  await Bun.sleep(0);
+  expect(sent).toEqual([edited, edited]);
+  expect(await deleteSignal(s.id, "Ada")).toBe(true);
+  await Bun.sleep(0);
+  expect(sent).toEqual([edited, edited, edited]);
+  expect(JSON.stringify(sent)).not.toContain("Search");
+});
+
+test("project settings writes broadcast the project", async () => {
+  startIncidentBroadcasts();
+  const {
+    __setProjectSettingsContextForTest,
+    patchProjectSettings,
+    updateProjectSettings,
+  } = await import("./response/project-settings");
+  __setProjectSettingsContextForTest({ projectExists: (id) => id === "acme" });
+  try {
+    const out = await updateProjectSettings(
+      "acme",
+      { agentsPaused: true },
+      "Ada",
+      { signedInPerson: true },
+    );
+    expect("error" in out).toBe(false);
+    await Bun.sleep(0);
+    expect(sent).toEqual([
+      { type: "incident_settings_changed", project: "acme" },
+    ]);
+    // The same value again changes nothing and says nothing.
+    await updateProjectSettings("acme", { agentsPaused: true }, "Ada", {
+      signedInPerson: true,
+    });
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(1);
+    await patchProjectSettings("acme", (s) => ({ ...s, agentsPaused: false }));
+    await Bun.sleep(0);
+    expect(sent).toEqual([
+      { type: "incident_settings_changed", project: "acme" },
+      { type: "incident_settings_changed", project: "acme" },
+    ]);
+  } finally {
+    __setProjectSettingsContextForTest(undefined);
+  }
+});

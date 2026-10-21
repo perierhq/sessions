@@ -1073,8 +1073,9 @@ export type WSServerMessage =
   // sidebar projection; older and native clients safely ignore this frame.
   | { type: "sessions_invalidated" }
   | { type: "workspaces_changed" }
-  // An incident was written, a signal changed state, or a project's incident
-  // access settings changed. Ids and states only: incident views refetch.
+  // An incident was written, a signal changed state or was edited, or a
+  // project's incident or access settings changed. Ids and states only:
+  // incident views refetch.
   | {
       type: "incidents_changed";
       incidentId: string;
@@ -1085,7 +1086,8 @@ export type WSServerMessage =
       type: "incident_signals_changed";
       signalId: string;
       project: string;
-      state: SignalState;
+      /** Absent when the signal was created, edited or deleted. */
+      state?: SignalState;
     }
   | { type: "incident_settings_changed"; project: string }
   // One session's list row changed and is visible in this socket's subscribed
