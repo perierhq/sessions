@@ -53,6 +53,9 @@ interface SidebarChromeTools {
   onSetToolVisible: React.ComponentProps<
     typeof SidebarToolsNav
   >["onSetToolVisible"];
+  /** Rendered between the tools and the Workspaces heading: the Incidents
+   *  band, which sits first in the sidebar under New session (v8). */
+  afterTools?: React.ReactNode;
 }
 
 interface SidebarChromeIdentity {
@@ -79,9 +82,6 @@ interface SidebarChromeActions {
 }
 
 interface SidebarChromeProps {
-  /** Rendered between the tools and the Workspaces heading: the Incidents
-   *  band, which sits first in the sidebar under New session (v8). */
-  beforeWorkspaces?: React.ReactNode;
   state: SidebarChromeState;
   tools: SidebarChromeTools;
   identity: SidebarChromeIdentity;
@@ -90,7 +90,6 @@ interface SidebarChromeProps {
 }
 
 export function SidebarChrome({
-  beforeWorkspaces,
   state: {
     density,
     connected,
@@ -106,6 +105,7 @@ export function SidebarChrome({
     menuTools: sidebarMenuTools,
     team,
     onSetToolVisible: setToolVisible,
+    afterTools,
   },
   identity: { filter, currentUser, personLensName, repos },
   refs: { headRef, titleRef, actionsRef, probeRef, setFilterButton },
@@ -154,7 +154,7 @@ export function SidebarChrome({
         }
       />
 
-      {beforeWorkspaces}
+      {afterTools}
 
       <div
         className={cn(

@@ -1407,17 +1407,6 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   // scroll's first child and scrolls away with the list.
   const sidebarChrome = (
     <SidebarChrome
-      beforeWorkspaces={
-        borrowedLens ? null : (
-          <IncidentsBand
-            open={incidentsOpen}
-            onToggleBand={() => toggleBand("incidents")}
-            activeId={activeIncidentId}
-            onOpenIncident={navigation.openIncident}
-            onOpenAll={navigation.openIncidents}
-          />
-        )
-      }
       state={{
         density,
         connected,
@@ -1433,6 +1422,15 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
         menuTools: sidebarMenuTools,
         team,
         onSetToolVisible: setToolVisible,
+        afterTools: borrowedLens ? null : (
+          <IncidentsBand
+            open={incidentsOpen}
+            onToggleBand={() => toggleBand("incidents")}
+            activeId={activeIncidentId}
+            onOpenIncident={navigation.openIncident}
+            onOpenAll={navigation.openIncidents}
+          />
+        ),
       }}
       identity={{ filter, currentUser, personLensName, repos }}
       refs={{
