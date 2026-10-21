@@ -1,7 +1,8 @@
 /**
  * Your notification inbox, on this device. The server owns it
  * (src/server/notifications.ts): one row per session, pull request,
- * workspace or reminder, with read and done state shared by every device you use.
+ * workspace, reminder or incident, with read and done state shared by every
+ * device you use.
  *
  * Banners come only from a `notification` socket frame, which the server
  * sends once, when an event is first recorded. Nothing here compares session
@@ -165,20 +166,66 @@ export function receiveNotificationsChanged(user: string): void {
   if (sameUser(user)) refreshNotifications();
 }
 
-/** A session you are looking at right now, if any: news about it is read. */
+/**
+ * The inbox row on screen right now (`session:<id>` or `incident:<id>`), if
+ * any: news about it is read.
+ */
 let viewing: string | null = null;
 
-/** A new notification was recorded for `user`. */
+export interface NotificationBannerText {
+  title: string;
+  body: string;
+}
+
+export interface NotificationRowText {
+  title: string;
+  line: string;
+}
+
+/**
+ * What a banner says, the client twin of the server's `bannerText`.
+ * Incidents lead the body with the project ("acme · Deploying the fix now");
+ * every other row keeps "<subject>: <body>".
+ */
+export function notificationBannerText(
+  thread: NotificationThread,
+): NotificationBannerText {
+  const title = thread.reason || thread.subject.title;
+  const body =
+    thread.subject.type === "incident"
+      ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
+      : [thread.subject.title, thread.body].filter(Boolean).join(": ");
+  return { title, body };
+}
+
+/**
+ * What an inbox row says. An incident row's title is its state ("Search is
+ * down") and its line what happens next; the project sits above, as the
+ * row's context. Every other row: the subject, then "<reason>: <body>".
+ */
+export function notificationRowText(
+  thread: NotificationThread,
+): NotificationRowText {
+  if (thread.subject.type === "incident")
+    return { title: thread.reason, line: thread.body };
+  return {
+    title: thread.subject.title || "Untitled",
+    line: [thread.reason, thread.body].filter(Boolean).join(": "),
+  };
+}
+
+/**
+ * A notification was recorded for `user`. `alert` raises a banner and a
+ * sound; `replace` only updates a banner this page still shows, silently.
+ */
 export function receiveNotification(
   user: string,
   thread: NotificationThread,
   alert: boolean,
+  replace = false,
 ): void {
   if (!sameUser(user)) return;
-  const seenNow =
-    thread.subject.type === "session" &&
-    thread.subject.id === viewing &&
-    appFocused();
+  const seenNow = thread.id === viewing && appFocused();
   set({
     ...state,
     threads: [thread, ...state.threads.filter((t) => t.id !== thread.id)],
@@ -189,12 +236,13 @@ export function receiveNotification(
     markNotifications([thread.id], { unread: false });
     return;
   }
-  if (!alert || pushOn) return;
+  // With push on, the service worker already got the alert or replace.
+  if (!(alert || replace) || pushOn) return;
   showAlert({
-    title: thread.reason,
-    body: [thread.subject.title, thread.body].filter(Boolean).join(": "),
+    ...notificationBannerText(thread),
     tag: alertTag(thread.id),
     onClick: () => openNotification(thread),
+    replace: !alert,
   });
 }
 
@@ -269,13 +317,12 @@ export function markNotificationRead(id: string): void {
 }
 
 /**
- * Track the session on screen. While the window is focused its inbox row is
- * read, including news that arrives while you watch. A background window
- * leaves it unread until you come back to it.
+ * Track the inbox row on screen. While the window is focused it is read,
+ * including news that arrives while you watch. A background window leaves it
+ * unread until you come back to it.
  */
-export function watchSessionNotifications(sessionId: string): () => void {
-  viewing = sessionId;
-  const id = `session:${sessionId}`;
+function watchThread(id: string): () => void {
+  viewing = id;
   const check = () => {
     if (!appFocused()) return;
     const thread = state.threads.find((t) => t.id === id);
@@ -286,11 +333,21 @@ export function watchSessionNotifications(sessionId: string): () => void {
   window.addEventListener("focus", check);
   document.addEventListener("visibilitychange", check);
   return () => {
-    if (viewing === sessionId) viewing = null;
+    if (viewing === id) viewing = null;
     unsubscribe();
     window.removeEventListener("focus", check);
     document.removeEventListener("visibilitychange", check);
   };
+}
+
+/** The session on screen: its row is read while you watch. */
+export function watchSessionNotifications(sessionId: string): () => void {
+  return watchThread(`session:${sessionId}`);
+}
+
+/** The incident on screen: its row is read while you watch. */
+export function watchIncidentNotifications(incidentId: string): () => void {
+  return watchThread(`incident:${incidentId}`);
 }
 
 export async function setNotificationAlerts(

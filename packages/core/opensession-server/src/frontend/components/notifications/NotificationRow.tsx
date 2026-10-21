@@ -26,6 +26,7 @@ import { cn } from "../../ui/cn";
 import { Tooltip } from "../../ui/tooltip";
 import {
   IconAtSign,
+  IconBell,
   IconCheck,
   IconCheckCircle,
   IconClock,
@@ -47,6 +48,13 @@ const KIND_ICON: Record<
   comment: { icon: <IconMessage />, ink: "text-accent" },
   collaborator: { icon: <IconPeople />, ink: "text-accent" },
   reminder: { icon: <IconClock />, ink: "text-dim" },
+  incident_heads_up: { icon: <IconBell />, ink: "text-dim" },
+  incident_opened: { icon: <IconBell />, ink: "text-dim" },
+  incident_needs_you: { icon: <IconBell />, ink: "text-dim" },
+  incident_veto: { icon: <IconBell />, ink: "text-dim" },
+  incident_rolled_back: { icon: <IconBell />, ink: "text-dim" },
+  incident_resolved: { icon: <IconBell />, ink: "text-dim" },
+  incident_update: { icon: <IconBell />, ink: "text-dim" },
 };
 
 const SWIPE_PX = 88;

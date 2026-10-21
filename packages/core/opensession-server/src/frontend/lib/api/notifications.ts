@@ -12,12 +12,19 @@ export const NOTIFICATION_KINDS = [
   "collaborator",
   "reminder",
   "comment",
+  "incident_heads_up",
+  "incident_opened",
+  "incident_needs_you",
+  "incident_veto",
+  "incident_rolled_back",
+  "incident_resolved",
+  "incident_update",
 ] as const;
 
 export const notificationThreadSchema = z.object({
   id: z.string(),
   subject: z.object({
-    type: z.enum(["session", "pr", "workspace", "reminder"]),
+    type: z.enum(["session", "pr", "workspace", "reminder", "incident"]),
     id: z.string(),
     title: z.string(),
     context: z.string().optional(),
@@ -32,12 +39,14 @@ export const notificationThreadSchema = z.object({
   done: z.boolean(),
 });
 
-const alertsSchema = z.object({
+// A switch an older server does not know yet reads as on, its default.
+export const alertsSchema = z.object({
   reviews: z.boolean(),
   teamReviews: z.boolean().default(true),
   mentions: z.boolean(),
   collaborators: z.boolean(),
   reminders: z.boolean(),
+  incidents: z.boolean().default(true),
 });
 
 const inboxSchema = z.object({
@@ -55,6 +64,7 @@ export const DEFAULT_NOTIFICATION_ALERTS: NotificationAlerts = {
   mentions: true,
   collaborators: true,
   reminders: true,
+  incidents: true,
 };
 
 export async function fetchNotifications(user: string): Promise<{

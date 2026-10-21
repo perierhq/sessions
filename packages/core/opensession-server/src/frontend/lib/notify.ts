@@ -211,24 +211,41 @@ const shown = new Map<string, Notification>();
  * Present one notification on this device: sound and a desktop banner,
  * subject to this device's settings. `tag` names what it is about, so a newer
  * banner about the same thing replaces the older one instead of stacking.
+ *
+ * `replace` only updates a banner this page is still showing under that tag,
+ * silently and whatever the device's settings say about when to alert; with
+ * no banner on screen it does nothing.
  */
 export function showAlert(alert: {
   title: string;
   body: string;
   tag: string;
   onClick: () => void;
+  replace?: boolean;
 }): void {
+  if (alert.replace) {
+    if (shown.has(alert.tag)) raiseBanner(alert, true);
+    return;
+  }
   const s = getNotifSettings();
   if (s.when === "off") return;
   if (s.when === "unfocused" && appFocused()) return;
   playSound(s.sound);
   if (!s.desktop) return;
+  raiseBanner(alert, false);
+}
+
+function raiseBanner(
+  alert: { title: string; body: string; tag: string; onClick: () => void },
+  silent: boolean,
+): void {
   try {
     if (!("Notification" in window) || Notification.permission !== "granted")
       return;
     const n = new Notification(alert.title, {
       body: alert.body,
       tag: alert.tag,
+      silent,
     });
     shown.get(alert.tag)?.close();
     shown.set(alert.tag, n);

@@ -46,7 +46,12 @@ export function useNotificationInbox({
           // the next refresh; it just raises no banner here.
           const thread = notificationThreadSchema.safeParse(msg.notification);
           if (thread.success)
-            receiveNotification(msg.user, thread.data, msg.alert);
+            receiveNotification(
+              msg.user,
+              thread.data,
+              msg.alert,
+              msg.replace === true,
+            );
         } else if (msg.type === "notifications_changed") {
           receiveNotificationsChanged(msg.user);
         }

@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { z } from "zod";
+import { alertsSchema, notificationThreadSchema } from "./api/notifications";
 import type { NotificationThread } from "./api/notifications";
 
 const original = {
@@ -14,16 +16,29 @@ const storage = new Map<string, string>([
   ["opensession-notif-alerts-migrated", "1"],
 ]);
 let focused = true;
-const banners: string[] = [];
-const marks: unknown[] = [];
+type Banner = { title: string; body?: string; tag?: string; silent?: boolean };
+const banners: Banner[] = [];
+type Mark = { user: string; ids?: string[]; unread?: boolean };
+const marks: Mark[] = [];
 let serverThreads: NotificationThread[] = [];
+
+const markSchema = z.object({
+  user: z.string(),
+  ids: z.array(z.string()).optional(),
+  all: z.boolean().optional(),
+  unread: z.boolean().optional(),
+  done: z.boolean().optional(),
+});
 
 class FakeNotification {
   static permission = "granted";
   onclick: (() => void) | null = null;
   onclose: (() => void) | null = null;
-  constructor(title: string) {
-    banners.push(title);
+  constructor(
+    title: string,
+    options: { body?: string; tag?: string; silent?: boolean } = {},
+  ) {
+    banners.push({ title, ...options });
   }
   close() {}
 }
@@ -47,7 +62,7 @@ Object.assign(globalThis, {
   fetch: async (input: string, init?: RequestInit) => {
     const path = String(input).split("?")[0];
     if (path === "/api/notifications/mark") {
-      marks.push(JSON.parse(String(init?.body)));
+      marks.push(markSchema.parse(JSON.parse(String(init?.body))));
       return Response.json({ ok: true, changed: 1 });
     }
     return Response.json({
@@ -119,7 +134,7 @@ describe("notification inbox on this device", () => {
     await settle();
     expect(store.unreadNotificationCount()).toBe(1);
     expect(marks).toEqual([]);
-    expect(banners).toEqual(["Sam asked for your review"]);
+    expect(banners.map((b) => b.title)).toEqual(["Sam asked for your review"]);
     stop();
   });
 
@@ -164,5 +179,108 @@ describe("notification inbox on this device", () => {
     expect(store.filterThreads(rows, "done").map((t) => t.id)).toEqual([
       "session:c",
     ]);
+  });
+});
+
+const incidentThread = (
+  over: Partial<NotificationThread> = {},
+): NotificationThread => ({
+  id: "incident:inc-1",
+  subject: { type: "incident", id: "inc-1", title: "Search", context: "acme" },
+  kind: "incident_veto",
+  reason: "Search is down",
+  body: "The fix is verified and deploys at 12:37 unless you stop it",
+  url: "/incidents/inc-1",
+  updatedAt: 1_000,
+  unread: true,
+  done: false,
+  ...over,
+});
+
+describe("incident notifications on this device", () => {
+  test("incident rows parse and lead with the project", () => {
+    expect(notificationThreadSchema.safeParse(incidentThread()).success).toBe(
+      true,
+    );
+    expect(store.notificationBannerText(incidentThread())).toEqual({
+      title: "Search is down",
+      body: "acme · The fix is verified and deploys at 12:37 unless you stop it",
+    });
+    expect(store.notificationRowText(incidentThread())).toEqual({
+      title: "Search is down",
+      line: "The fix is verified and deploys at 12:37 unless you stop it",
+    });
+  });
+
+  test("other rows keep their text", () => {
+    const row = thread("s1", { reason: "Ada mentioned you", body: "look" });
+    expect(store.notificationBannerText(row)).toEqual({
+      title: "Ada mentioned you",
+      body: "Session s1: look",
+    });
+    expect(store.notificationRowText(row)).toEqual({
+      title: "Session s1",
+      line: "Ada mentioned you: look",
+    });
+  });
+
+  test("a replace frame updates a banner on screen, silently, and never raises a new one", () => {
+    focused = false;
+    store.receiveNotification(
+      "Ada",
+      incidentThread({
+        kind: "incident_update",
+        body: "Deploying the fix now",
+      }),
+      false,
+      true,
+    );
+    expect(banners).toEqual([]);
+    store.receiveNotification("Ada", incidentThread(), true);
+    store.receiveNotification(
+      "Ada",
+      incidentThread({
+        kind: "incident_update",
+        body: "Deploying the fix now",
+        updatedAt: 2_000,
+      }),
+      false,
+      true,
+    );
+    expect(banners.map((b) => [b.body, b.silent ?? false])).toEqual([
+      [
+        "acme · The fix is verified and deploys at 12:37 unless you stop it",
+        false,
+      ],
+      ["acme · Deploying the fix now", true],
+    ]);
+  });
+
+  test("news about the incident on screen is read without a banner", async () => {
+    focused = true;
+    const stop = store.watchIncidentNotifications("inc-1");
+    store.receiveNotification(
+      "Ada",
+      incidentThread({ updatedAt: 3_000 }),
+      true,
+    );
+    await settle();
+    expect(banners).toEqual([]);
+    expect(marks.at(-1)).toMatchObject({
+      ids: ["incident:inc-1"],
+      unread: false,
+    });
+    stop();
+  });
+
+  test("an older server without the incidents switch reads as on", () => {
+    expect(
+      alertsSchema.parse({
+        reviews: true,
+        mentions: true,
+        collaborators: true,
+        reminders: true,
+      }).incidents,
+    ).toBe(true);
   });
 });
