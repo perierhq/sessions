@@ -927,44 +927,40 @@ async function startAgent(
   }
   sessionIndex.set(sessionId, incident.id);
 
-  const next = await write(
-    incident.id,
-    d,
-    settings,
-    guardOf(view),
-    (c, base, at) => {
-      if (base.agents.some((a) => a.sessionId === sessionId))
-        return { incident: c, response: base };
-      const run: AgentRun = {
-        role,
-        round,
-        attempt,
-        sessionId,
-        model,
-        provider,
-        ...(independence ? { independence } : {}),
-        workspace,
-        accessSummary: access.summary,
-        accessRevision: access.revision,
-        status: "running",
-        startedAt: at,
-        turnSentAt: at,
-        costUsd: 0,
-        tokens: 0,
-        reminded: false,
-      };
-      const detail = `${roleLabel(role)} started on ${label}, round ${round}`;
-      const response = ledger(
-        patched(base, {
-          agents: [...base.agents, run],
-          retryRequested: undefined,
-        }),
-        at,
-        { actor: "sessions", kind: "agent-started", detail, sessionId },
-      );
-      return { incident: event(c, "agent", at, detail), response };
-    },
-  );
+  // The agent is running: it is recorded whatever moved meanwhile, and the
+  // guards cancel it if it should not run.
+  const next = await write(incident.id, d, settings, null, (c, base, at) => {
+    if (base.agents.some((a) => a.sessionId === sessionId))
+      return { incident: c, response: base };
+    const run: AgentRun = {
+      role,
+      round,
+      attempt,
+      sessionId,
+      model,
+      provider,
+      ...(independence ? { independence } : {}),
+      workspace,
+      accessSummary: access.summary,
+      accessRevision: access.revision,
+      status: "running",
+      startedAt: at,
+      turnSentAt: at,
+      costUsd: 0,
+      tokens: 0,
+      reminded: false,
+    };
+    const detail = `${roleLabel(role)} started on ${label}, round ${round}`;
+    const response = ledger(
+      patched(base, {
+        agents: [...base.agents, run],
+        retryRequested: undefined,
+      }),
+      at,
+      { actor: "sessions", kind: "agent-started", detail, sessionId },
+    );
+    return { incident: event(c, "agent", at, detail), response };
+  });
   if (!next) return false;
   incidentAudit({
     kind: "incident_agent_started",
@@ -1559,26 +1555,21 @@ async function mergeCandidate(
     record.status === "merged"
       ? `Merged ${n} at ${verifiedSha.slice(0, 7)} as the GitHub App`
       : `Did not merge ${n}: ${record.detail ?? "refused"}`;
-  const next = await write(
-    incident.id,
-    d,
-    settings,
-    guardOf(view),
-    (c, base, at) => ({
-      incident: event(c, "merge", at, detail),
-      response: ledger(
-        {
-          ...base,
-          merge: record,
-          ...(base.candidate
-            ? { candidate: { ...base.candidate, pr: fresh } }
-            : {}),
-        },
-        at,
-        { actor: "sessions", kind: "merge", detail },
-      ),
-    }),
-  );
+  // The merge happened: it is recorded whatever moved meanwhile.
+  const next = await write(incident.id, d, settings, null, (c, base, at) => ({
+    incident: event(c, "merge", at, detail),
+    response: ledger(
+      {
+        ...base,
+        merge: record,
+        ...(base.candidate
+          ? { candidate: { ...base.candidate, pr: fresh } }
+          : {}),
+      },
+      at,
+      { actor: "sessions", kind: "merge", detail },
+    ),
+  }));
   return next !== null;
 }
 
@@ -1809,26 +1800,21 @@ async function mergeNote(
   const detail = merged
     ? `Merged the incident note, PR #${pr.number}`
     : `Did not merge the incident note, PR #${pr.number}: ${record.detail ?? "refused"}`;
-  const next = await write(
-    incident.id,
-    d,
-    settings,
-    guardOf(view),
-    (c, base, at) => ({
-      incident: event(c, "merge", at, detail),
-      response: ledger(
-        {
-          ...base,
-          note: patched(
-            { ...(base.note ?? note), merged },
-            { detail: merged ? undefined : record.detail },
-          ),
-        },
-        at,
-        { actor: "sessions", kind: "merge", detail },
-      ),
-    }),
-  );
+  // Recorded whatever moved meanwhile, like the fix's merge.
+  const next = await write(incident.id, d, settings, null, (c, base, at) => ({
+    incident: event(c, "merge", at, detail),
+    response: ledger(
+      {
+        ...base,
+        note: patched(
+          { ...(base.note ?? note), merged },
+          { detail: merged ? undefined : record.detail },
+        ),
+      },
+      at,
+      { actor: "sessions", kind: "merge", detail },
+    ),
+  }));
   return next !== null;
 }
 

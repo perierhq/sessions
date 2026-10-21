@@ -16,6 +16,7 @@ import {
   createRunnerPairing,
 } from "../../runners";
 import { createIncident, getIncident, updateIncident } from "../incident-store";
+import { transitionIncident } from "../lifecycle";
 import { emptyResponse } from "./ledger";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
@@ -1423,6 +1424,71 @@ test("kill switch turned on before the incident note merges: it is left open", a
   expect(i?.state).toBe("resolved");
   expect(w.merges).toEqual([]);
   expect(i?.response?.note).toMatchObject({ merged: false });
+});
+
+async function moveIncident(
+  id: string,
+  to: Parameters<typeof transitionIncident>[1],
+) {
+  await updateIncident(id, (c) =>
+    transitionIncident(c, to, {
+      by: "Ada",
+      detail: "Moved meanwhile",
+      at: new Date(START).toISOString(),
+    }),
+  );
+}
+
+test("an agent spawned while the incident moved is still recorded, then cancelled", async () => {
+  const w = await world();
+  const agents = w.deps.agents!;
+  w.deps.agents = (incident, ctx) => {
+    const a = agents(incident, ctx);
+    return {
+      ...a,
+      spawn: async (input) => {
+        const out = await a.spawn(input);
+        await moveIncident(w.incident.id, "waiting-on-provider");
+        return out;
+      },
+    };
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("waiting-on-provider");
+  expect(i?.response?.agents).toEqual([
+    expect.objectContaining({
+      sessionId: "child-1",
+      status: "cancelled",
+      cancelledFor: "provider",
+    }),
+  ]);
+  expect(w.cancels).toEqual(["child-1"]);
+});
+
+test("a merge done while the incident moved is still recorded", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.clock += 600_000;
+  const merge = w.deps.github!.merge;
+  w.deps.github = {
+    ...w.deps.github!,
+    merge: async (...args: Parameters<MergeGithub["merge"]>) => {
+      const out = await merge(...args);
+      await moveIncident(w.incident.id, "needs-you");
+      return out;
+    },
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(w.merges).toHaveLength(1);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.merge).toMatchObject({
+    status: "merged",
+    sha: "abc1234",
+  });
+  expect(i?.response?.ledger.map((e) => e.kind)).toContain("merge");
+  expect(w.actions).toEqual([]);
 });
 
 test("kill switch while watching: no automatic rollback", async () => {
