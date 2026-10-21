@@ -32,6 +32,9 @@ export const PR_REFRESH_MS = 30_000;
 export const PR_CHECKS_WAIT_MS = 1_200_000;
 /** A release this close before the incident opened is rolled back first. */
 export const ROLLBACK_FIRST_WINDOW_MS = 1_800_000;
+/** Rollback-first's parallel investigator, refused by the access gate for a
+ *  passing reason, is tried again after this long. */
+export const PARALLEL_INVESTIGATOR_RETRY_MS = 60_000;
 /** A finished agent with no final message after this long has no report. */
 export const FINAL_TEXT_GRACE_MS = 60_000;
 

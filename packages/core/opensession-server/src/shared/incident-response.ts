@@ -524,6 +524,10 @@ export interface IncidentResponse {
    *  no model, workspace or session; `refused`: the budget or the access
    *  gate); the rollback goes on without it. */
   parallelInvestigator?: "unavailable" | "refused";
+  /** Rollback-first only: the access gate refused the parallel
+   *  investigator for a passing reason (not the budget). The rollback goes
+   *  on, and the investigator is tried again from this time. */
+  parallelInvestigatorRetryAt?: string;
   pausedFrom?: ResponsePhase;
   needsYou?: {
     kind: NeedsYouKind;

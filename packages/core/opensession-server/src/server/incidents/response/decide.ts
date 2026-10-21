@@ -914,7 +914,8 @@ function now(view: ResponseView): string {
 // 23. A rollback-first candidate: the investigator studies the release in
 // parallel. Its report is recorded and never changes the phase. It is best
 // effort: over budget or without a model it is skipped (and recorded), and
-// the rollback goes on.
+// the rollback goes on. Refused by the access gate for a passing reason, it
+// waits for its retry time while the rollback goes on.
 function rollbackFirstInvestigator(
   view: ResponseView,
 ): ResponseStep | undefined {
@@ -942,6 +943,8 @@ function rollbackFirstInvestigator(
       outcome: "unavailable",
       reason: view.models.error,
     };
+  const retryAt = Date.parse(r.parallelInvestigatorRetryAt ?? "");
+  if (view.now < retryAt) return undefined;
   return { step: "start-agent", role: "investigator", round: 1, attempt: 1 };
 }
 

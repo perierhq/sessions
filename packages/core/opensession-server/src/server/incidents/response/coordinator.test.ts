@@ -1194,17 +1194,50 @@ test("rollback-first: with the month's budget used up the rollback still runs", 
   expect(i?.state).toBe("watching");
 });
 
-test("rollback-first: a gate refusal skips the parallel investigator instead of stalling", async () => {
+test("rollback-first: a passing gate refusal never holds the rollback, and the investigator is tried again", async () => {
+  let gateOpen = false;
   const w = await world({
     releasedMsBeforeOpen: 300_000,
-    access: async () => {
-      throw new AgentAccessError("Monthly spend not loaded", "gate");
+    access: async (role, incident) => {
+      if (!gateOpen)
+        throw new AgentAccessError("Monthly spend not loaded", "gate");
+      return agentAccessFixture({
+        role,
+        incidentId: incident.id,
+        mode: "code",
+        summary: "Investigator · no connections · can edit acme",
+      });
     },
   });
   await advanceIncident(w.incident.id, w.deps);
-  const i = await getIncident(w.incident.id);
+  let i = await getIncident(w.incident.id);
   expect(i?.state).toBe("veto");
-  expect(i?.response?.parallelInvestigator).toBe("refused");
+  expect(i?.response?.parallelInvestigator).toBeUndefined();
+  expect(i?.response?.parallelInvestigatorRetryAt).toBe(
+    new Date(START + 60_000).toISOString(),
+  );
+  expect(w.spawns).toEqual([]);
+  // Still refused at the retry: one ledger entry, a later retry time.
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.parallelInvestigatorRetryAt).toBe(
+    new Date(START + 120_000).toISOString(),
+  );
+  expect(
+    i?.response?.ledger.filter((e) =>
+      e.detail.includes("Monthly spend not loaded"),
+    ),
+  ).toHaveLength(1);
+  // The gate lets it through: the investigator starts, the veto still runs.
+  gateOpen = true;
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(w.spawns).toEqual([expect.objectContaining({ role: "investigator" })]);
+  expect(i?.state).toBe("veto");
+  expect(i?.response?.parallelInvestigatorRetryAt).toBeUndefined();
+  expect(i?.response?.parallelInvestigator).toBeUndefined();
 });
 
 test("a restart mid-deploy never re-runs the action", async () => {

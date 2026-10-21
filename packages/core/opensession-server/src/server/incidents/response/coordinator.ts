@@ -76,6 +76,7 @@ import {
   mergeIncidentPr,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
+import { budgetProblem } from "./policy";
 import {
   getProjectSettings,
   latestForwardRelease,
@@ -95,7 +96,11 @@ import {
   runbookPathsFor,
 } from "./prompts";
 import { productionRunOnProblem, runnerLabel } from "./runners";
-import type { ResponseStep, ResponseView } from "./steps";
+import {
+  PARALLEL_INVESTIGATOR_RETRY_MS,
+  type ResponseStep,
+  type ResponseView,
+} from "./steps";
 
 export const RESPONSE_TICK_MS = 5_000;
 export const MAX_STEPS_PER_ADVANCE = 8;
@@ -839,11 +844,15 @@ async function startAgent(
   try {
     access = await d.access(role, incident, primary);
   } catch (error) {
-    // The kill switch and budget: rules 3 and 6 see the same thing.
-    if (error instanceof AgentAccessError && error.code === "gate")
-      return parallel
+    // The kill switch and budget: rules 3 and 6 see the same thing. For
+    // the parallel investigator only the budget is final; anything else
+    // (settings or spend not loaded yet) is tried again later.
+    if (error instanceof AgentAccessError && error.code === "gate") {
+      if (!parallel) return false;
+      return overBudget(view)
         ? skipParallelInvestigator(view, "refused", errorMessage(error), d)
-        : false;
+        : deferParallelInvestigator(view, errorMessage(error), d);
+    }
     return problem(errorMessage(error));
   }
   const model = access.model ?? models[role].model;
@@ -966,6 +975,7 @@ async function startAgent(
       patched(base, {
         agents: [...base.agents, run],
         retryRequested: undefined,
+        parallelInvestigatorRetryAt: undefined,
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1045,11 +1055,62 @@ async function skipParallelInvestigator(
       return { incident: c, response: base };
     return {
       incident: c,
-      response: ledger({ ...base, parallelInvestigator: outcome }, at, {
-        actor: "sessions",
-        kind: "policy",
-        detail,
-      }),
+      response: ledger(
+        patched(base, {
+          parallelInvestigator: outcome,
+          parallelInvestigatorRetryAt: undefined,
+        }),
+        at,
+        { actor: "sessions", kind: "policy", detail },
+      ),
+    };
+  });
+  return next !== null;
+}
+
+/** Whether the incident or the month is over its agent budget. */
+function overBudget(view: ResponseView): boolean {
+  const r = view.incident.response!;
+  return (
+    budgetProblem({
+      incidentCostUsd: r.costUsd,
+      monthCostUsd: view.monthCostUsd + r.costUsd,
+      budget: view.settings.budget,
+    }) !== null
+  );
+}
+
+/**
+ * Rollback-first's parallel investigator was refused by the access gate for
+ * a passing reason: it is tried again after a while, and the rollback goes
+ * on meanwhile. The first refusal is written to the ledger. Written
+ * whatever moved meanwhile, like a skip.
+ */
+async function deferParallelInvestigator(
+  view: ResponseView,
+  reason: string,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const retryAt = iso(d.now() + PARALLEL_INVESTIGATOR_RETRY_MS);
+  const next = await write(incident.id, d, settings, null, (c, base, at) => {
+    if (
+      !base.candidate?.rollbackFirst ||
+      base.parallelInvestigator ||
+      currentAgent(base, "investigator")
+    )
+      return { incident: c, response: base };
+    const first = base.parallelInvestigatorRetryAt === undefined;
+    const response = { ...base, parallelInvestigatorRetryAt: retryAt };
+    return {
+      incident: c,
+      response: first
+        ? ledger(response, at, {
+            actor: "sessions",
+            kind: "policy",
+            detail: `Investigator not started alongside the rollback yet: ${reason}. Trying again shortly`,
+          })
+        : response,
     };
   });
   return next !== null;

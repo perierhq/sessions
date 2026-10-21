@@ -1839,6 +1839,29 @@ test("rollback-first: the parallel investigator is best effort and never holds t
     outcome: "refused",
     reason: "Agents stopped at the $200 monthly budget",
   });
+  // A passing gate refusal: the rollback goes on, the investigator is
+  // tried again once the retry time comes.
+  expect(
+    decideNextStep(
+      rollbackFirst({
+        parallelInvestigatorRetryAt: iso(30_000),
+        decision: undefined,
+      }),
+    ),
+  ).toMatchObject({ step: "open-veto" });
+  expect(
+    decideNextStep(
+      rollbackFirst({
+        parallelInvestigatorRetryAt: iso(-1),
+        decision: undefined,
+      }),
+    ),
+  ).toEqual({
+    step: "start-agent",
+    role: "investigator",
+    round: 1,
+    attempt: 1,
+  });
   // Once skipped, the rollback path goes on without it.
   for (const outcome of ["unavailable", "refused"] as const)
     expect(
