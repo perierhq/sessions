@@ -21,6 +21,7 @@ export const CatchUpDeck = deferredExport(panes, "CatchUpDeck");
 export const Databases = deferredExport(panes, "Databases");
 export const Feed = deferredExport(panes, "Feed");
 export const Goals = deferredExport(panes, "Goals");
+export const IncidentsPane = deferredExport(panes, "IncidentsPane");
 export const Issues = deferredExport(panes, "Issues");
 export const Prs = deferredExport(panes, "Prs");
 export const Reports = deferredExport(panes, "Reports");

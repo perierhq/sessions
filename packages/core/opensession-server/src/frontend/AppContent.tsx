@@ -22,6 +22,7 @@ import {
   Feed,
   FirstMile,
   Goals,
+  IncidentsPane,
   Issues,
   Prs,
   Reports,
@@ -91,7 +92,6 @@ import {
   tabSplitDropPreviewClass,
   TOPBAR_ACTION_VIEWS,
 } from "./lib/app-shell-classes";
-import { IncidentPage } from "./components/incidents/IncidentPage";
 import { appTopbarTitle } from "./lib/app-topbar-title";
 import type { AppProps, PendingCreateDraft } from "./lib/app-types";
 import { dropStagingAttachments } from "./lib/attachments";
@@ -1195,11 +1195,7 @@ export function AppContent({
     openIncidents: () => navigate({ view: "incidents" }),
     openIncident: (id) => navigate({ view: "incidents", id }),
     openIncidentSettings: (project) =>
-      navigate(
-        project
-          ? { view: "incidentSettings", project }
-          : { view: "incidentSettings" },
-      ),
+      navigate({ view: "incidentSettings", project }),
     openSession,
     openWorkspace,
     openSessionReview: openReviewForSession,
@@ -1590,18 +1586,13 @@ export function AppContent({
                     />
                   ) : route.view === "analytics" ? (
                     <Analytics />
-                  ) : route.view === "incidents" && route.id ? (
-                    <IncidentPage
-                      key={route.id}
-                      id={route.id}
-                      intent={route.intent}
+                  ) : route.view === "incidents" ? (
+                    <IncidentsPane
+                      route={route}
                       sessions={sessions}
                       onBack={goBack}
                       navigate={navigate}
                     />
-                  ) : route.view === "incidents" ? (
-                    // Placeholder until the incident home lands.
-                    <EmptyState title="Incidents">Incidents</EmptyState>
                   ) : route.view === "feed" ? (
                     <Feed
                       sessions={sessions}
