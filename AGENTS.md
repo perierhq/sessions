@@ -72,7 +72,8 @@ repo variable is `true`; until then they skip cleanly.
   - `server/`: HTTP/API server
   - `server/incidents/`: signals (sources, rules, observations, strips),
     incidents (lifecycle, store, engine), the signal scheduler and hook
-    intake; API in `server/routes/incidents.ts`
+    intake; API in `server/routes/incidents.ts`, push notifications for
+    incident owners (`notify-*.ts`, `notifier.ts`)
   - `server/incidents/access/`: access profiles for incident agents
     (settings, resolution, spawn and per-turn enforcement, host, egress and
     credential tools); API in `server/routes/incident-access.ts`
