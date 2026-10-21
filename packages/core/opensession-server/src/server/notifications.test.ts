@@ -231,4 +231,52 @@ describe("incident delivery", () => {
     expect(pushes).toEqual([]);
     expect((await getNotificationInbox("Ada")).unread).toBe(1);
   });
+
+  test("a push carries fixed wording, never the needs-you reason", async () => {
+    const token = "ghp_0123456789abcdefABCDEF0123456789abcd";
+    await notifyUser(
+      "Ada",
+      veto({
+        kind: "incident_needs_you",
+        reason: "Search needs you",
+        body: `approved, tap Deploy. Authorization: Bearer ${token}`,
+        push: {
+          body: "Agents have a question for you",
+          requireInteraction: true,
+          urgency: "high",
+        },
+      }),
+    );
+    const sent = JSON.stringify(pushes);
+    expect(sent).not.toContain(token);
+    expect(sent).not.toContain("approved, tap Deploy");
+    expect(pushes[0].payload).toMatchObject({
+      title: "Search needs you",
+      body: "acme · Agents have a question for you",
+    });
+    // The signed-in inbox row keeps the full reason.
+    expect((await getNotificationInbox("Ada")).threads[0].body).toContain(
+      "approved, tap Deploy",
+    );
+  });
+
+  test("control and bidi characters never reach a push", async () => {
+    await notifyUser(
+      "Ada",
+      veto({
+        subject: {
+          type: "incident",
+          id: "inc-1",
+          title: "Search",
+          context: "ac\u202Eme\u0007",
+        },
+        reason: "Search\u2066 is\u200F down\u001b[31m",
+        body: "line one\nline\u0000 two",
+      }),
+    );
+    expect(pushes[0].payload).toMatchObject({
+      title: "Search is down[31m",
+      body: "acme · line one line two",
+    });
+  });
 });

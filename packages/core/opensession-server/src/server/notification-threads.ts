@@ -144,6 +144,9 @@ export interface PushAction {
 
 /** Delivery hints for the push. Never stored with the row. */
 export interface NotificationPush {
+  /** What the push body says instead of the row's: fixed wording, so a
+   *  lock screen never shows what only a signed-in page should. */
+  body?: string;
   actions?: PushAction[];
   requireInteraction?: boolean;
   ttlSeconds?: number;
@@ -465,6 +468,22 @@ export function bannerText(
       ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
       : [thread.subject.title, thread.body].filter(Boolean).join(": ");
   return { title, body };
+}
+
+// Bidirectional overrides, embeddings, isolates and marks.
+const BIDI = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
+ * Text as it may appear in a push: one line, no control or bidi characters
+ * (a lock screen must show what the text says, not what it hides).
+ */
+export function pushSafeText(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\p{Cc}/gu, "")
+    .replace(BIDI, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
 }
 
 export function unreadCount(doc: NotificationDocument): number {

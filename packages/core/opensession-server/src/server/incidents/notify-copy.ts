@@ -3,7 +3,10 @@
 // the body on every banner (`bannerText` adds it), so no sentence here
 // names it. Pure: strings in, strings out.
 import { DECISION_COPY } from "../../shared/incident-decision-copy";
-import type { OwnerDecision } from "../../shared/incident-response";
+import type {
+  NeedsYouKind,
+  OwnerDecision,
+} from "../../shared/incident-response";
 import type {
   FixedBy,
   IncidentState,
@@ -32,6 +35,29 @@ export const COPY = {
   closedWithoutAction: "Closed without action",
   open: "Open",
 } as const;
+
+/**
+ * What a push says when agents need the owner: one fixed line per kind.
+ * The reason itself (agent or command output) stays on the incident page
+ * and the inbox row, behind sign-in, and never reaches a lock screen.
+ */
+export const NEEDS_YOU_PUSH: Record<NeedsYouKind, string> = {
+  policy: "The fix needs your approval before it ships",
+  protection: "A protected change needs your approval",
+  stopped: "Stopped. Nothing ships until you decide",
+  budget: "Agents reached the budget and need a decision",
+  rounds: "Agents used every round and need a decision",
+  "agent-error": "An agent failed and needs a decision",
+  "no-report": "An agent finished without a report",
+  "no-candidate": "Agents found no fix to try",
+  question: "Agents have a question for you",
+  "proof-stopped": "The proof stopped and needs a decision",
+  merge: "The fix could not merge and needs you",
+  "action-failed": "An action failed and needs a decision",
+  interrupted: "The response was interrupted and needs a decision",
+  "no-action": "No action fits. Agents need a decision",
+  setup: "Setup needs attention before agents can continue",
+};
 
 /** One line of state. A heads-up never says "is down": nothing is yet. */
 export function incidentHeadline(
@@ -137,8 +163,9 @@ export function resolvedBody(
   }
 }
 
+/** After Stop: the incident waits for the owner (needs-you). */
 export function stoppedBody(actor: string): string {
-  return `${actor} stopped it. Agents are investigating`;
+  return `${actor} stopped it. Nothing ships until you decide`;
 }
 
 export function answeredBody(actor: string): string {

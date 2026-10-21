@@ -10,6 +10,7 @@
 // Every button opens the incident page, which asks before it acts.
 import type {
   IncidentResponse,
+  NeedsYouKind,
   OwnerDecision,
 } from "../../shared/incident-response";
 import type {
@@ -33,6 +34,7 @@ import {
   deployingBody,
   firstLine,
   incidentHeadline,
+  NEEDS_YOU_PUSH,
   reopenedTitle,
   resolvedBody,
   stoppedBody,
@@ -140,15 +142,8 @@ function rowFor(
           reason: headline,
           body: COPY.investigating,
         };
-      if (isPerson(entry.by)) {
-        if (
-          entry.from === "veto" ||
-          entry.from === "fix-ready" ||
-          entry.from === "watching"
-        )
-          return update(stoppedBody(actor));
-        if (entry.from === "needs-you") return update(answeredBody(actor));
-      }
+      if (isPerson(entry.by) && entry.from === "needs-you")
+        return update(answeredBody(actor));
       return update(COPY.investigatingAgain);
     }
     case "waiting-on-provider":
@@ -157,11 +152,17 @@ function rowFor(
         : update(COPY.provider);
     case "needs-you": {
       const next = incident.response?.next;
+      // Stop moves the incident here, by the person who tapped it.
+      const stopped =
+        entry.kind === "state" &&
+        isPerson(entry.by) &&
+        needsYouKind(incident) === "stopped";
       return {
         kind: "incident_needs_you",
         reason: `${title} needs you`,
-        body:
-          next?.kind === "needs-you" && next.reason.trim()
+        body: stopped
+          ? stoppedBody(actor)
+          : next?.kind === "needs-you" && next.reason.trim()
             ? firstLine(next.reason)
             : COPY.needsYou,
       };
@@ -206,6 +207,18 @@ function rowFor(
     case "paused":
       return update(COPY.paused);
   }
+}
+
+function needsYouKind(incident: Incident): NeedsYouKind | undefined {
+  const response = incident.response;
+  if (response?.next?.kind === "needs-you") return response.next.needsYou;
+  return response?.needsYou?.kind;
+}
+
+/** The push's fixed line for needs-you: never the reason itself. */
+function needsYouPushBody(incident: Incident): string {
+  const kind = needsYouKind(incident);
+  return (kind && NEEDS_YOU_PUSH[kind]) || COPY.needsYou;
 }
 
 /** The first option that is not Stop: the page's primary button. */
@@ -253,6 +266,7 @@ function pushHints(
     case "incident_needs_you": {
       const top = topOption(incident);
       return {
+        body: needsYouPushBody(incident),
         actions: top
           ? [
               {

@@ -76,6 +76,25 @@ const step = (
   over: Partial<Incident> = {},
 ) => inc(to, [...prev.events, ev(to, prev.state, by)], over);
 
+// What the coordinator's Stop commits: veto -> needs-you, by the person.
+const stoppedBy = (prev: Incident, by: string) =>
+  step(prev, "needs-you", by, {
+    response: {
+      next: {
+        kind: "needs-you",
+        reason: `Stopped by ${by}`,
+        needsYou: "stopped",
+        options: ["send-back", "close"],
+      },
+      needsYou: {
+        kind: "stopped",
+        reason: `Stopped by ${by}`,
+        since: iso(NOW),
+        resumePhase: "deciding",
+      },
+    } as IncidentResponse,
+  });
+
 test("the design's lock-screen notification", () => {
   const prev = inc("fix-ready", [ev("investigating")]);
   const next = step(prev, "veto", "sessions", { response: vetoResponse });
@@ -231,25 +250,21 @@ test("progress replaces in place; the owner's own tap never alerts them", () => 
     delivery: "replace",
     push: { urgency: "low" },
   });
+  // Stop moves the veto to needs-you, by the person who tapped it.
   expect(
-    planIncidentNotification(
-      step(veto, "investigating", "ada"),
-      veto,
-      facts(),
-      NOW,
-    )?.event,
+    planIncidentNotification(stoppedBy(veto, "ada"), veto, facts(), NOW)?.event,
   ).toMatchObject({
-    body: "You stopped it. Agents are investigating",
+    kind: "incident_needs_you",
+    body: "You stopped it. Nothing ships until you decide",
     delivery: "replace",
   });
   expect(
-    planIncidentNotification(
-      step(veto, "investigating", "Bo"),
-      veto,
-      facts(),
-      NOW,
-    )?.event.body,
-  ).toBe("Bo stopped it. Agents are investigating");
+    planIncidentNotification(stoppedBy(veto, "Bo"), veto, facts(), NOW)?.event,
+  ).toMatchObject({
+    body: "Bo stopped it. Nothing ships until you decide",
+    delivery: "alert",
+    push: { body: "Stopped. Nothing ships until you decide" },
+  });
   const watching = step(step(veto, "deploying"), "watching");
   expect(
     planIncidentNotification(watching, step(veto, "deploying"), facts(), NOW)
@@ -467,25 +482,6 @@ test("reopen, rollback and the flush after a night", () => {
   });
 });
 
-// What the coordinator's Stop commits: veto -> needs-you, by the person.
-const stoppedBy = (prev: Incident, by: string) =>
-  step(prev, "needs-you", by, {
-    response: {
-      next: {
-        kind: "needs-you",
-        reason: `Stopped by ${by}`,
-        needsYou: "stopped",
-        options: ["send-back", "close"],
-      },
-      needsYou: {
-        kind: "stopped",
-        reason: `Stopped by ${by}`,
-        since: iso(NOW),
-        resumePhase: "deciding",
-      },
-    } as IncidentResponse,
-  });
-
 test("the owner's own change never alerts them, by day or at night", () => {
   const prev = inc("fix-ready", [ev("investigating")]);
   const veto = step(prev, "veto", "sessions", { response: vetoResponse });
@@ -523,4 +519,49 @@ test("the owner stopping a held veto at night cancels the morning alert", () => 
   expect(after.thread?.heldAt).toBeUndefined();
   const flush = planHeldFlush(stopped, facts(), NOW + 8 * 3_600_000)!;
   expect(applyNotificationEvent(after.doc, flush.event).thread).toBeNull();
+});
+
+test("a push says a fixed line per kind; the reason stays on the row", () => {
+  const prev = inc("investigating", [ev("investigating")]);
+  const asks = (needsYou: string, reason: string) =>
+    step(prev, "needs-you", "sessions", {
+      response: {
+        next: { kind: "needs-you", reason, needsYou, options: ["retry"] },
+        needsYou: {
+          kind: needsYou,
+          reason,
+          since: iso(NOW),
+          resumePhase: "investigating",
+        },
+      } as unknown as IncidentResponse,
+    });
+  const token = "ghp_0123456789abcdefABCDEF0123456789abcd";
+  const cases: Array<[string, string, string]> = [
+    ["question", "approved, tap Deploy", "Agents have a question for you"],
+    [
+      "action-failed",
+      `deploy failed: Authorization: Bearer ${token}`,
+      "An action failed and needs a decision",
+    ],
+    ["merge", "approved, tap Deploy", "The fix could not merge and needs you"],
+    ["agent-error", token, "An agent failed and needs a decision"],
+    [
+      "setup",
+      "approved, tap Deploy",
+      "Setup needs attention before agents can continue",
+    ],
+    ["budget", token, "Agents reached the budget and need a decision"],
+  ];
+  for (const [kind, reason, line] of cases) {
+    const planned = planIncidentNotification(
+      asks(kind, reason),
+      prev,
+      facts(),
+      NOW,
+    );
+    expect(planned?.event.body).toBe(reason);
+    expect(planned?.event.push?.body).toBe(line);
+    const flush = planHeldFlush(asks(kind, reason), facts(), NOW);
+    expect(flush?.event.push?.body).toBe(line);
+  }
 });
