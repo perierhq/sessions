@@ -126,9 +126,12 @@ export function StopButton({
       aria-label={`${button.label}, ${left} left`}
       onClick={onPress}
     >
-      {/* One child: the button's gap must not open around the dot too. */}
-      <span>
-        {button.label} · <CountdownDigits deadline={deadline} format="clock" />
+      {/* One child: the button's gap must not open around the dot too.
+          Flex, so the rolling digits centre on the label's line rather
+          than sit on their clipped box's bottom edge. */}
+      <span className="inline-flex items-center">
+        {`${button.label}\u00a0·\u00a0`}
+        <CountdownDigits deadline={deadline} format="clock" />
       </span>
     </Button>
   );
@@ -174,7 +177,7 @@ export function NextActionView({
         {card.headline}
       </h2>
       {card.body && (
-        <p className="m-0 text-body text-dim [overflow-wrap:anywhere]">
+        <p className="m-0 text-supporting text-dim [overflow-wrap:anywhere]">
           {card.body}
         </p>
       )}

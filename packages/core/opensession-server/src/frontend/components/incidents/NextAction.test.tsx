@@ -125,7 +125,9 @@ test("Stop and its count are one label, so the gap opens once", () => {
       onButton={noop}
     />,
   );
-  expect(html).toMatch(/<span>Stop · <span[^>]*>/);
+  expect(html).toMatch(
+    /<span class="inline-flex items-center">Stop\u00a0·\u00a0<span[^>]*>/,
+  );
 });
 
 test("a rollback's scheduled Roll back now says so", () => {
@@ -157,7 +159,7 @@ test("the headline is set larger than the proof sentence", () => {
     <NextActionView card={card([])} busy={null} onButton={noop} />,
   );
   expect(html).toMatch(/<h2 class="[^"]*text-dialog-title/);
-  expect(html).toMatch(/<p class="[^"]*text-body[^"]*">b</);
+  expect(html).toMatch(/<p class="[^"]*text-supporting[^"]*">b</);
 });
 
 test("busy keeps the label and disables only the pressed button", () => {
