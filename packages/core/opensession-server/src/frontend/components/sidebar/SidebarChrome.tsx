@@ -79,6 +79,9 @@ interface SidebarChromeActions {
 }
 
 interface SidebarChromeProps {
+  /** Rendered between the tools and the Workspaces heading: the Incidents
+   *  band, which sits first in the sidebar under New session (v8). */
+  beforeWorkspaces?: React.ReactNode;
   state: SidebarChromeState;
   tools: SidebarChromeTools;
   identity: SidebarChromeIdentity;
@@ -87,6 +90,7 @@ interface SidebarChromeProps {
 }
 
 export function SidebarChrome({
+  beforeWorkspaces,
   state: {
     density,
     connected,
@@ -149,6 +153,8 @@ export function SidebarChrome({
           setFilter({ person: personLensFilter(next, currentUser) })
         }
       />
+
+      {beforeWorkspaces}
 
       <div
         className={cn(

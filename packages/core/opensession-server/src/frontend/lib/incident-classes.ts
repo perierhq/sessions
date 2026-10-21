@@ -160,3 +160,17 @@ export const INCIDENT_STRIP_ERROR =
  *  summary label, with the heading's own bottom margin taken off so the
  *  label sits on its rows. */
 export const INCIDENT_SECTION_LABEL = `${WS_SUMMARY_PAGE_SECTION} mb-0`;
+
+/** A sidebar incident row: the workspace row's shape without the room it
+ *  clears for hover actions, because the trailing state never hides. */
+export const SIDEBAR_INCIDENT_ROW = "flex items-center gap-[7px]";
+
+/** The row's trailing state ("deploys 12:37", "needs you"): always shown,
+ *  never shrinking, so the title gives way first. */
+export const SIDEBAR_INCIDENT_STATE =
+  "ml-auto shrink-0 whitespace-nowrap pl-1.5 pr-1.5 text-meta tabular-nums desktop:pr-1";
+
+/** "All incidents" at the end of the band heading: shown on hover with a
+ *  pointer, always under a finger (there is no hover to find it). */
+export const SIDEBAR_INCIDENTS_ALL =
+  "phone:inline-flex group-hover/band:inline-flex";

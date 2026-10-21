@@ -52,10 +52,10 @@ export function createSidebarCollapseController({
     return expanded.has(key);
   };
 
-  const bandOpen = (band: GroupBand | "workspaces") =>
+  const bandOpen = (band: GroupBand | "workspaces" | "incidents") =>
     search.trim().length > 0 ? true : !expanded.has(`collapsed:band:${band}`);
 
-  function toggleBand(band: GroupBand | "tools" | "workspaces") {
+  function toggleBand(band: GroupBand | "tools" | "workspaces" | "incidents") {
     const key = `collapsed:band:${band}`;
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -68,6 +68,8 @@ export function createSidebarCollapseController({
 
   return {
     automationsOpen: bandOpen("automations"),
+    /** Open by default; a collapse persists like every other band. */
+    incidentsOpen: bandOpen("incidents"),
     isOpen,
     peopleOpen: bandOpen("people"),
     toggleBand,
