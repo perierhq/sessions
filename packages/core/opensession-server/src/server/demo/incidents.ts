@@ -33,15 +33,17 @@ import {
 import { ingestObservations } from "../incidents/signal-runtime";
 import { createSignal, listSignals } from "../incidents/signal-store";
 import { runSignalSource, type SourceRun } from "../incidents/sources";
-import { DEMO_GH_REPO, DEMO_REPO_ID } from "./fixtures";
+import { DEMO_GH_REPO, DEMO_PR_NUMBER, DEMO_REPO_ID } from "./fixtures";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 /** Who the demo's records say created them; also how a reboot finds them. */
 export const DEMO_INCIDENT_AUTHOR = "Demo";
-/** How long the demo's veto runs; re-armed before it ends. */
-export const DEMO_VETO_MS = 6 * MINUTE_MS;
+/** How long the demo's veto runs (the default project setting); re-armed
+ *  before it ends. */
+export const DEMO_VETO_MS = 10 * MINUTE_MS;
+const VETO_RULE = "Deploys after a 10 minute veto";
 /** History drawn behind the live edge, per polled signal. */
 const HISTORY_MS = 6 * HOUR_MS;
 
@@ -310,6 +312,7 @@ function agent(
   endedAt: number,
   costUsd: number,
   report: AgentRun["report"],
+  prUrl?: string,
 ): AgentRun {
   return {
     role,
@@ -330,6 +333,7 @@ function agent(
     tokens: Math.round(costUsd * 90_000),
     reminded: false,
     ...(report ? { report } : {}),
+    ...(prUrl ? { prUrl } : {}),
   };
 }
 
@@ -361,31 +365,39 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
   const verified = openedAt + 26 * MINUTE_MS;
   const vetoStart = now - 30_000;
   const deadline = vetoStart + DEMO_VETO_MS;
-  const prUrl = `https://github.com/${DEMO_GH_REPO}/pull/131`;
+  // The demo's own pull request, so the Change row has one to show.
+  const prUrl = `https://github.com/${DEMO_GH_REPO}/pull/${DEMO_PR_NUMBER}`;
   return baseResponse(openedAt + MINUTE_MS, now, {
     phase: "veto",
     agents: [
-      agent("investigator", openedAt + MINUTE_MS, found, 2.6, {
-        role: "investigator",
-        summary: "Search times out since the 12:02 release",
-        cause:
-          "The 12:02 release dropped the search index's read replica, so every query waits on the primary until it times out",
-        readFirst: [],
-        attempts: [],
-        candidate: { pr: true, actions: [] },
-        check: {
-          kind: "request",
-          source: { kind: "http", url: `https://${host}/search?q=demo` },
-        },
-        claims: [
-          {
-            text: "The replica was removed in the release config",
-            source: `${prUrl}/files`,
+      agent(
+        "investigator",
+        openedAt + MINUTE_MS,
+        found,
+        2.6,
+        {
+          role: "investigator",
+          summary: "Search times out since the 12:02 release",
+          cause:
+            "The 12:02 release dropped the search index's read replica, so every query waits on the primary until it times out",
+          readFirst: [],
+          attempts: [],
+          candidate: { pr: true, actions: [] },
+          check: {
+            kind: "request",
+            source: { kind: "http", url: `https://${host}/search?q=demo` },
           },
-        ],
-        notePath: "docs/incidents/search-replica.md",
-        runbookPaths: [],
-      }),
+          claims: [
+            {
+              text: "The replica was removed in the release config",
+              source: `${prUrl}/files`,
+            },
+          ],
+          notePath: "docs/incidents/search-replica.md",
+          runbookPaths: [],
+        },
+        prUrl,
+      ),
       agent("verifier", found, verified, 1.2, {
         role: "verifier",
         verdict: "certain",
@@ -437,14 +449,14 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
       kind: "act",
       after: "veto",
       vetoMs: DEMO_VETO_MS,
-      rule: "Deploys after a 6 minute veto",
+      rule: VETO_RULE,
     },
     veto: { startedAt: iso(vetoStart), deadline: iso(deadline) },
     costUsd: 3.8,
     next: {
       kind: "veto",
       deadline: iso(deadline),
-      rule: "Deploys after a 6 minute veto",
+      rule: VETO_RULE,
     },
     ledger: [
       ledger(
@@ -467,7 +479,7 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
         "The proof request passes against the fix",
       ),
       ledger(verified, "verifier", "verdict", "Certain", 1.2),
-      ledger(vetoStart, "sessions", "veto", "Deploys after a 6 minute veto"),
+      ledger(vetoStart, "sessions", "veto", VETO_RULE),
     ],
   });
 }
@@ -730,7 +742,7 @@ export async function rearmDemoVeto(now: number = Date.now()): Promise<void> {
           next: {
             kind: "veto",
             deadline,
-            rule: "Deploys after a 6 minute veto",
+            rule: VETO_RULE,
           },
         },
       };
