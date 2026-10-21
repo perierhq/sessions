@@ -8,6 +8,10 @@
  * work out notifications by diffing session lists: a banner can only come
  * from a new record, so reconnecting or restarting an app cannot replay one.
  *
+ * An event is delivered as an alert (unread, pushed), quietly (the row
+ * updates in place, no push) or as a replace (the row updates and a banner
+ * still on a screen is replaced without a sound); the model decides which.
+ *
  * Delivery is best-effort. A failed push or broadcast never fails the flow
  * that raised the event.
  */
@@ -15,17 +19,20 @@ import { catalogDocuments } from "./catalog-documents";
 import {
   alertPrefs,
   applyNotificationEvent,
+  bannerText,
   cleanDocument,
   markNotificationThreads,
   shouldAlert,
   unreadCount,
   wireThread,
   type AlertPrefs,
+  type NotificationDelivery,
   type NotificationDocument,
   type NotificationEvent,
   type NotificationMark,
   type NotificationThread,
 } from "./notification-threads";
+import type { PushPayload, PushSendOptions } from "./push";
 import { canonicalName } from "./shared/user-store-key";
 
 export type {
@@ -93,6 +100,53 @@ async function announceChanged(user: string): Promise<void> {
   } catch {}
 }
 
+// Mirrors push.ts `pushTopic`, which stays out of this module's static
+// imports (web-push loads only when something is sent).
+async function topicFor(threadId: string): Promise<string> {
+  const { pushTopic } = await import("./push");
+  return pushTopic(threadId);
+}
+
+/**
+ * The push for a row: the one place a push is built from a thread. Rows
+ * other than incidents keep their plain payload and default options.
+ */
+export async function pushFor(
+  thread: NotificationThread,
+  event: NotificationEvent,
+  delivery: Exclude<NotificationDelivery, "quiet">,
+): Promise<{ payload: PushPayload; options?: PushSendOptions }> {
+  const { title, body } = bannerText(thread);
+  const payload: PushPayload = {
+    title,
+    body,
+    url: thread.url,
+    // One OS notification per thread: a newer event replaces the older
+    // banner instead of stacking, on every device.
+    tag: `os-notification-${thread.id}`,
+    id: thread.id,
+  };
+  if (thread.subject.type !== "incident") return { payload };
+  const hints = event.push;
+  const alert = delivery === "alert";
+  if (hints?.actions?.length) payload.actions = hints.actions;
+  if (alert && hints?.requireInteraction) payload.requireInteraction = true;
+  payload.timestamp = event.at ?? Date.now();
+  if (alert) payload.renotify = true;
+  else {
+    payload.silent = true;
+    payload.renotify = false;
+  }
+  const options: PushSendOptions = {
+    ...(hints?.ttlSeconds !== undefined
+      ? { ttlSeconds: hints.ttlSeconds }
+      : {}),
+    ...(hints?.urgency ? { urgency: hints.urgency } : {}),
+    topic: await topicFor(thread.id),
+  };
+  return { payload, options };
+}
+
 /**
  * Record an event for `user` and deliver it. Returns the thread, or null when
  * the event was a replay (same `eventKey` recently) and nothing was sent.
@@ -104,16 +158,18 @@ export async function notifyUser(
   if (!validUser(user)) return null;
   // Written by the mutator, which the catalog may rerun on a conflict: the
   // last run is the one that committed.
-  const outcome: { thread: NotificationThread | null; alert: boolean } = {
-    thread: null,
-    alert: false,
-  };
+  const outcome: {
+    thread: NotificationThread | null;
+    delivery: NotificationDelivery;
+    allowed: boolean;
+  } = { thread: null, delivery: "quiet", allowed: false };
   try {
     await documents.update(inboxKey(user), (current) => {
       const doc = cleanDocument(current);
       const result = applyNotificationEvent(doc, event);
       outcome.thread = result.thread ? wireThread(result.thread) : null;
-      outcome.alert = shouldAlert(doc, event.kind);
+      outcome.delivery = result.delivery;
+      outcome.allowed = shouldAlert(doc, event.kind);
       return result.doc;
     });
   } catch (error) {
@@ -123,8 +179,10 @@ export async function notifyUser(
     );
     return null;
   }
-  const { thread, alert } = outcome;
+  const { thread, delivery, allowed } = outcome;
   if (!thread) return null;
+  const alert = delivery === "alert" && allowed;
+  const replace = delivery === "replace" && allowed;
   try {
     const { broadcastToUser } = await import("./ws-hub");
     broadcastToUser(user, {
@@ -132,20 +190,19 @@ export async function notifyUser(
       user,
       notification: thread,
       alert,
+      replace,
     });
   } catch {}
-  if (alert) {
+  if (alert || replace) {
     try {
       const { sendPushToUser } = await import("./push");
-      await sendPushToUser(user, {
-        title: thread.reason,
-        body: [thread.subject.title, thread.body].filter(Boolean).join(": "),
-        url: thread.url,
-        // One OS notification per thread: a newer event replaces the older
-        // banner instead of stacking, on every device.
-        tag: `os-notification-${thread.id}`,
-        id: thread.id,
-      });
+      const { payload, options } = await pushFor(
+        thread,
+        event,
+        alert ? "alert" : "replace",
+      );
+      if (options) await sendPushToUser(user, payload, options);
+      else await sendPushToUser(user, payload);
     } catch (error) {
       console.warn(
         "[notifications] push failed:",

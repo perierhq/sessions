@@ -13,12 +13,14 @@
  * serialized, so the gateway thread never blocks on it and two writers cannot
  * lose each other's update.
  */
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import webpush from "web-push";
 import { writeJsonAtomicAsync } from "./shared/atomic-write";
 import { legacyCatalogDirectory } from "./catalog-documents";
 import { configuredIntegration } from "./config";
+import type { PushAction, PushUrgency } from "./notification-threads";
 
 interface VapidKeys {
   publicKey: string;
@@ -187,6 +189,34 @@ export interface PushPayload {
   tag?: string;
   /** Notification thread id, so a tap can mark the right row read. */
   id?: string;
+  /** Buttons; each opens its in-app `url`, never acts on its own. */
+  actions?: PushAction[];
+  /** Sound and vibrate again although the tag replaces a banner. */
+  renotify?: boolean;
+  /** Replace the banner without a sound. */
+  silent?: boolean;
+  /** Stay on screen until the person handles it. */
+  requireInteraction?: boolean;
+  /** ms epoch the notification is about. */
+  timestamp?: number;
+}
+
+export interface PushSendOptions {
+  ttlSeconds?: number;
+  urgency?: PushUrgency;
+  /** The push service keeps only the newest undelivered message per topic. */
+  topic?: string;
+}
+
+export const DEFAULT_PUSH_TTL_SECONDS = 3600;
+
+/**
+ * A Web Push topic for a thread: at most 32 URL-safe characters, stable per
+ * thread, so a phone that was offline gets the current state, not the
+ * history.
+ */
+export function pushTopic(threadId: string): string {
+  return createHash("sha256").update(threadId).digest("base64url").slice(0, 32);
 }
 
 /**
@@ -197,18 +227,24 @@ export interface PushPayload {
 export async function sendPushToUser(
   user: string,
   payload: PushPayload,
+  options?: PushSendOptions,
 ): Promise<void> {
   const subs = await listPushSubscriptions(user);
   if (subs.length === 0) return;
   await ensureVapid();
   const body = JSON.stringify(payload);
+  const sendOptions = {
+    TTL: options?.ttlSeconds ?? DEFAULT_PUSH_TTL_SECONDS,
+    ...(options?.urgency ? { urgency: options.urgency } : {}),
+    ...(options?.topic ? { topic: options.topic } : {}),
+  };
   await Promise.all(
     subs.map(async (s) => {
       try {
         await webpush.sendNotification(
           { endpoint: s.endpoint, keys: s.keys },
           body,
-          { TTL: 60 * 60 },
+          sendOptions,
         );
       } catch (e: unknown) {
         const code =

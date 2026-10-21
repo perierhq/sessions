@@ -7,20 +7,34 @@ import {
   mock,
   test,
 } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
+import type { NotificationEvent } from "./notification-threads";
 
 const root = mkdtempSync(`${tmpdir()}/notifications-test-`);
 const previousRoot = process.env.OPENSESSION_STATE_DIR;
 process.env.OPENSESSION_STATE_DIR = root;
 
 const frames: Array<{ user: string; msg: Record<string, unknown> }> = [];
-const pushes: Array<{ user: string; payload: Record<string, unknown> }> = [];
+const pushes: Array<{
+  user: string;
+  payload: Record<string, unknown>;
+  options?: Record<string, unknown>;
+}> = [];
 mock.module("./push", () => ({
-  sendPushToUser: async (user: string, payload: Record<string, unknown>) => {
-    pushes.push({ user, payload });
+  sendPushToUser: async (
+    user: string,
+    payload: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ) => {
+    pushes.push({ user, payload, ...(options ? { options } : {}) });
   },
+  // The real module cannot load under its own mock: the same one-liner.
+  pushTopic: (threadId: string) =>
+    createHash("sha256").update(threadId).digest("base64url").slice(0, 32),
 }));
+const { pushTopic } = await import("./push");
 
 const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
@@ -113,5 +127,108 @@ describe("notification inbox", () => {
     frames.length = 0;
     await markNotifications("Ada", { all: true, unread: false });
     expect(frames).toHaveLength(0);
+  });
+});
+
+const veto = (over: Partial<NotificationEvent> = {}): NotificationEvent => ({
+  kind: "incident_veto",
+  subject: { type: "incident", id: "inc-1", title: "Search", context: "acme" },
+  reason: "Search is down",
+  body: "The fix is verified and deploys at 12:37 unless you stop it",
+  url: "/incidents/inc-1",
+  eventKey: "evt-1",
+  push: {
+    actions: [
+      {
+        action: "stop",
+        title: "Stop the deploy",
+        url: "/incidents/inc-1?intent=stop",
+      },
+    ],
+    requireInteraction: true,
+    ttlSeconds: 360,
+    urgency: "high",
+  },
+  ...over,
+});
+
+describe("incident delivery", () => {
+  test("an alert pushes the design's text with actions and a per-incident topic", async () => {
+    await notifyUser("Ada", veto({ at: 1_000 }));
+    expect(pushes).toEqual([
+      {
+        user: "Ada",
+        payload: {
+          title: "Search is down",
+          body: "acme · The fix is verified and deploys at 12:37 unless you stop it",
+          url: "/incidents/inc-1",
+          tag: "os-notification-incident:inc-1",
+          id: "incident:inc-1",
+          actions: [
+            {
+              action: "stop",
+              title: "Stop the deploy",
+              url: "/incidents/inc-1?intent=stop",
+            },
+          ],
+          requireInteraction: true,
+          renotify: true,
+          timestamp: 1_000,
+        },
+        options: {
+          ttlSeconds: 360,
+          urgency: "high",
+          topic: pushTopic("incident:inc-1"),
+        },
+      },
+    ]);
+    expect(frames.at(-1)?.msg).toMatchObject({
+      type: "notification",
+      alert: true,
+      replace: false,
+    });
+  });
+
+  test("quiet lands in the inbox and on open clients without a push", async () => {
+    await notifyUser("Ada", veto({ delivery: "quiet" }));
+    expect(pushes).toEqual([]);
+    expect(frames.at(-1)?.msg).toMatchObject({
+      type: "notification",
+      alert: false,
+      replace: false,
+    });
+    expect((await getNotificationInbox("Ada")).threads[0].id).toBe(
+      "incident:inc-1",
+    );
+  });
+
+  test("replace is a silent push after a recent alert", async () => {
+    await notifyUser("Ada", veto());
+    pushes.length = 0;
+    await notifyUser(
+      "Ada",
+      veto({
+        kind: "incident_update",
+        delivery: "replace",
+        eventKey: "evt-2",
+        body: "Deploying the fix now",
+        push: { urgency: "low" },
+      }),
+    );
+    expect(pushes[0].payload).toMatchObject({
+      body: "acme · Deploying the fix now",
+      silent: true,
+      renotify: false,
+    });
+    expect(pushes[0].payload).not.toHaveProperty("actions");
+    expect(frames.at(-1)?.msg).toMatchObject({ alert: false, replace: true });
+  });
+
+  test("incident alerts switched off: nothing pushes, the row still lands", async () => {
+    await setAlertPrefs("Ada", { incidents: false });
+    await notifyUser("Ada", veto());
+    await notifyUser("Ada", veto({ delivery: "replace", eventKey: "evt-2" }));
+    expect(pushes).toEqual([]);
+    expect((await getNotificationInbox("Ada")).unread).toBe(1);
   });
 });
