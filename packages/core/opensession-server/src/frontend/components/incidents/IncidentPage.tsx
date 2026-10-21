@@ -271,10 +271,9 @@ export function IncidentPage({
   const strip = useIncidentStrip(id);
   const data = incident.data;
   const project = data?.project ?? null;
-  const closed = useIncidents({
-    status: "closed",
-    project: project ?? undefined,
-  });
+  // Earlier incidents are the project's: wait for the project rather than
+  // load every closed incident first.
+  const closed = useIncidents(project ? { status: "closed", project } : null);
   const settings = useProjectSettings(project).data?.settings ?? null;
   const now = Date.now();
   const model = data
