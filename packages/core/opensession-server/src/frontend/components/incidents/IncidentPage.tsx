@@ -157,7 +157,6 @@ function Sections({
           incident={incident}
           settings={body.settings}
           primaryName={model.primaryName}
-          primaryState={model.primaryState}
           agentSessionIds={model.agentSessionIds}
           safety={body.safety}
           onOpenSession={actions.onOpenSession}

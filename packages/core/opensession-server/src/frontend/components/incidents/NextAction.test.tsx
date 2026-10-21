@@ -35,7 +35,7 @@ const card = (
   over: Partial<ShellCard> = {},
 ): ShellCard => ({
   mode: "shell",
-  tone: "red",
+  tone: "yellow",
   pulse: false,
   eyebrow: "Next · deploys at 12:37",
   headline: "Deploys the fix at 12:37",

@@ -4,7 +4,7 @@ import type {
   OwnerDecision,
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
-import type { Incident, SignalState } from "../../../shared/incidents";
+import type { Incident } from "../../../shared/incidents";
 import { useDeadlinePassed } from "../../hooks/useDeadlinePassed";
 import {
   useDeferredMergeDeadline,
@@ -214,7 +214,6 @@ export function NextAction({
   incident,
   settings,
   primaryName,
-  primaryState,
   agentSessionIds,
   safety,
   onOpenSession,
@@ -224,7 +223,6 @@ export function NextAction({
   incident: Incident;
   settings: RedactedProjectSettings | null;
   primaryName: string;
-  primaryState: SignalState | null;
   agentSessionIds: string[];
   /** An agent session of this incident paused for safety. */
   safety?: { sessionId: string; state: SessionSafetyState };
@@ -236,7 +234,6 @@ export function NextAction({
     incident,
     settings,
     primaryName,
-    primaryState,
     now: Date.now(),
   });
   const [busy, setBusy] = useState<string | null>(null);

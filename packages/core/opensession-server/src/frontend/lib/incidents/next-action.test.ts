@@ -108,7 +108,6 @@ const verifier = (over: Partial<AgentRun>): AgentRun => ({
 const base = {
   settings,
   primaryName: "Search",
-  primaryState: "failing" as const,
   now: NOW,
 };
 
@@ -127,7 +126,8 @@ test("veto: deploy time, proof, policy footnote, soft then danger", () => {
   });
   expect(card).toMatchObject({
     mode: "shell",
-    tone: "red",
+    tone: "yellow",
+    pulse: false,
     eyebrow: `Next · deploys at ${clockTime(deadline)}`,
     headline: `Deploys the fix at ${clockTime(deadline)}`,
     body: "The verifier is certain: 12 of 12 checks pass with the fix, 3 of 3 fail without it",
@@ -344,7 +344,6 @@ test("paused, provider, watching, done", () => {
   expect(
     nextCard({
       ...base,
-      primaryState: "ok",
       incident: inc("resolved", {
         next: { kind: "done", detail: "Resolved", options: [] },
       }),
@@ -353,7 +352,6 @@ test("paused, provider, watching, done", () => {
   expect(
     nextCard({
       ...base,
-      primaryState: "ok",
       incident: inc("resolved", {
         next: { kind: "done", detail: "Resolved", options: ["roll-back"] },
       }),

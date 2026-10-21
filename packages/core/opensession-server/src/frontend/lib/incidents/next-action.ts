@@ -14,7 +14,6 @@ import {
 import {
   type Incident,
   isTerminalIncidentState,
-  type SignalState,
 } from "../../../shared/incidents";
 import { ApiError } from "../api/request";
 import { repoLabel } from "../repo-label";
@@ -169,10 +168,9 @@ export function nextCard(input: {
   incident: Incident;
   settings: RedactedProjectSettings | null;
   primaryName: string;
-  primaryState: SignalState | null;
   now: number;
 }): NextCard {
-  const { incident, settings, primaryName, primaryState } = input;
+  const { incident, settings, primaryName } = input;
   const r = incident.response;
   if (!r) return null;
   const next = r.next;
@@ -227,8 +225,10 @@ export function nextCard(input: {
       const at = clockTime(next.deadline);
       const rollback = !!r.candidate?.rollbackFirst;
       const watch = formatSpan(settings?.watchMs ?? DEFAULT_WATCH_MS);
+      // A scheduled step is upcoming: steady yellow. Red is for failures
+      // and the status line already carries the signal's state.
       return shell({
-        tone: signalDotTone(primaryState ?? "unknown"),
+        tone: signalDotTone("upcoming"),
         eyebrow: rollback
           ? `Next · rolls back at ${at}`
           : `Next · deploys at ${at}`,
