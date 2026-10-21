@@ -25,6 +25,7 @@ import {
 } from "../../lib/incidents/signal-summary";
 import { incidentStateWord } from "../../lib/incidents/tone";
 import {
+  HOME_BUTTON,
   HOME_HEADS_UP_ROW,
   HOME_LIST,
   HOME_MINI,
@@ -93,7 +94,8 @@ function SignalRow({
       className={HOME_SIGNAL_ROW}
       onClick={() => onOpen(signal)}
     >
-      <span className="[grid-area:tile]">
+      {/* The tile's letter would open every row's name. */}
+      <span aria-hidden="true" className="[grid-area:tile]">
         <RepoTile name={signal.project} />
       </span>
       <span className="flex min-w-0 flex-col [grid-area:text]">
@@ -241,7 +243,13 @@ export function IncidentsHomeView({
       <EmptyState
         icon={<IconOctagonAlert size={22} />}
         title="No signals yet"
-        action={<AddSignal projects={projects} onPick={onAddSignal} />}
+        action={
+          <AddSignal
+            projects={projects}
+            onPick={onAddSignal}
+            className={HOME_BUTTON}
+          />
+        }
       >
         A signal checks something in production and opens an incident when it
         breaks
@@ -261,7 +269,11 @@ export function IncidentsHomeView({
           ))}
         </div>
         <div className="px-2 pt-4">
-          <AddSignal projects={projects} onPick={onAddSignal} />
+          <AddSignal
+            projects={projects}
+            onPick={onAddSignal}
+            className={HOME_BUTTON}
+          />
         </div>
       </>
     );
@@ -293,7 +305,9 @@ export function IncidentsHomeView({
                     className={HOME_HEADS_UP_ROW}
                     onClick={() => onOpenIncident(incident.id)}
                   >
-                    <RepoTile name={incident.project} />
+                    <span aria-hidden="true" className="flex">
+                      <RepoTile name={incident.project} />
+                    </span>
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className={HOME_ROW_NAME}>{incident.title}</span>
                       {reason && (

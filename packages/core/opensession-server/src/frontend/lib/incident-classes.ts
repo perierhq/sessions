@@ -213,3 +213,7 @@ export const PAST_TITLE_BUTTON =
   "block w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left text-item-title text-fg focus-ring after:absolute after:inset-0";
 export const PAST_NUMBER =
   "whitespace-nowrap text-right text-supporting tabular-nums text-dim";
+
+/** A home button (`Add a signal`, `Show 20 more`): a finger-sized target on
+ *  a phone. */
+export const HOME_BUTTON = "phone:min-h-11";

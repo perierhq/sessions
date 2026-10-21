@@ -6,6 +6,7 @@ import {
   showMoreCount,
 } from "../../lib/incidents/home";
 import {
+  HOME_BUTTON,
   PAST_CELL,
   PAST_HEAD,
   PAST_NUMBER,
@@ -129,7 +130,7 @@ export function PastIncidents({
       </table>
       {more > 0 && (
         <Button
-          className="ml-2"
+          className={cn("ml-2", HOME_BUTTON)}
           variant="soft"
           size="sm"
           onClick={() => setShown(shown + PAST_PAGE)}
