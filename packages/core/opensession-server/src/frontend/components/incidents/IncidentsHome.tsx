@@ -145,17 +145,20 @@ function AddSignal({
         }
       />
       <Menu.Popup align="start" className="min-w-[200px] max-w-[320px]">
-        <Menu.GroupLabel>Project</Menu.GroupLabel>
-        {projects.map((name) => (
-          <Menu.Item
-            key={name}
-            className="phone:min-h-11"
-            onClick={() => onPick(name)}
-          >
-            <RepoTile name={name} size={18} />
-            <span className="min-w-0 flex-1 truncate">{repoLabel(name)}</span>
-          </Menu.Item>
-        ))}
+        {/* Base UI needs the label inside its group, or opening the menu throws. */}
+        <Menu.Group>
+          <Menu.GroupLabel>Project</Menu.GroupLabel>
+          {projects.map((name) => (
+            <Menu.Item
+              key={name}
+              className="phone:min-h-11"
+              onClick={() => onPick(name)}
+            >
+              <RepoTile name={name} size={18} />
+              <span className="min-w-0 flex-1 truncate">{repoLabel(name)}</span>
+            </Menu.Item>
+          ))}
+        </Menu.Group>
       </Menu.Popup>
     </Menu.Root>
   );
