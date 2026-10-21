@@ -516,3 +516,40 @@ test("a row wraps its value on a phone only when both do not fit", () => {
   );
   expect(rowWrapsOnPhone(row("Earlier incidents", "x".repeat(300)))).toBe(true);
 });
+
+test("the Fix row falls back to the candidate's PR", () => {
+  const rows = detailRows({
+    incident: withResponse({
+      candidate: candidate({
+        // SAFETY: the Fix row reads only the snapshot's number and url.
+        pr: {
+          ghRepo: "acme/app",
+          number: 512,
+          url: "https://example.test/pr/512",
+        } as CandidateState["pr"],
+      }),
+    }),
+    earlier: [],
+    pr: null,
+    budgetUsd: null,
+    access: null,
+    now: NOW,
+  });
+  expect(rows[0]).toMatchObject({
+    key: "change",
+    label: "PR #512",
+    target: { kind: "url", url: "https://example.test/pr/512" },
+  });
+});
+
+test("a closed incident without a change says No change", () => {
+  const rows = detailRows({
+    incident: { ...base, state: "closed-without-action" },
+    earlier: [],
+    pr: null,
+    budgetUsd: null,
+    access: null,
+    now: NOW,
+  });
+  expect(rows[0]).toMatchObject({ key: "change", value: "No change" });
+});

@@ -108,9 +108,12 @@ function checksWord(pr: PrDetails): Pick<DetailRow, "value" | "tone"> {
 
 function changeRow(incident: Incident, pr: PrDetails | null): DetailRow {
   const response = incident.response;
-  const prUrl = runsOf(response, "investigator").findLast(
-    (run) => run.prUrl,
-  )?.prUrl;
+  // The investigator's run names its PR; a candidate restored without one
+  // (an earlier round, a restart) still carries the PR it was built on.
+  const prUrl =
+    runsOf(response, "investigator").findLast((run) => run.prUrl)?.prUrl ??
+    response?.candidate?.prUrl ??
+    response?.candidate?.pr?.url;
   const row = { key: "change", band: "Fix" } as const;
   if (prUrl && pr)
     return {
@@ -148,7 +151,10 @@ function changeRow(incident: Incident, pr: PrDetails | null): DetailRow {
   return {
     ...row,
     label: "Change",
-    value: "No change yet",
+    // A closed incident will not get one.
+    value: isTerminalIncidentState(incident.state)
+      ? "No change"
+      : "No change yet",
     tone: "faint",
     target: null,
   };
