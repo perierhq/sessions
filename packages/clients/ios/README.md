@@ -94,6 +94,11 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   (the inbox's unread count) stay on the device. A banner only comes from a
   live `notification` socket frame the server marked as alerting, so reconnects
   and relaunches never replay one. Agent runs and questions do not notify.
+  Incidents you own land here too (one row per incident, under their own
+  Incidents switch); later states update a banner still on screen quietly
+  (`replace` frames, a passive interruption without sound), banners carry no
+  action buttons, and a tap opens the incident on the web, where any action
+  asks for confirmation. Lock-screen buttons through APNs come later.
 - **Add project** (`AddRepositoryView`, `RepoRegistration`) — the sidebar
   filter panel's last row opens Clone repository, Local folder (a checkout
   already on the server, by path) or New repository directly, the same flow

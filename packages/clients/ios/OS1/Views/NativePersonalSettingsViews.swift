@@ -111,6 +111,10 @@ struct NotificationsSettingsView: View {
         (.mentions, "Mentions and comments", "Someone tags you, assigns you a comment, or replies to one you're in"),
         (.collaborators, "Added to a workspace", "Someone adds you as a collaborator"),
         (.reminders, "Reminders", "Desk task reminders"),
+        (
+            .incidents, "Incidents",
+            "An incident you own opens, needs you, is about to deploy, rolls back or is fixed. At night only what can't wait"
+        ),
     ]
 
     private func alertBinding(_ group: InboxAlerts.Group) -> Binding<Bool> {

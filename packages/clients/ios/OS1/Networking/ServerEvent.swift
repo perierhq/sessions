@@ -68,7 +68,8 @@ enum ServerEvent: Sendable {
     /// nil when this build cannot read the row; the inbox refreshes instead.
     /// `alert` is the server's verdict from the person's alert settings:
     /// only a live frame like this one may raise a banner, never a refresh.
-    case notification(user: String, thread: InboxThread?, alert: Bool)
+    /// `replace` asks a banner still on screen to take the new text quietly.
+    case notification(user: String, thread: InboxThread?, alert: Bool, replace: Bool)
     /// This person's inbox changed elsewhere (a read or done mark, an alert
     /// setting): re-read it.
     case notificationsChanged(user: String)
@@ -251,7 +252,8 @@ enum ServerEvent: Sendable {
             return .notification(
                 user: user,
                 thread: frame.notification?.thread,
-                alert: frame.alert ?? false
+                alert: frame.alert ?? false,
+                replace: frame.replace ?? false
             )
         case "notifications_changed":
             guard let user = frame.user else { return .ignored }
@@ -651,6 +653,7 @@ private struct RawFrame: Decodable {
     let mention: MentionRecord?
     let notification: LossyInboxThread?
     let alert: Bool?
+    let replace: Bool?
     let suggestions: [ReplySuggestion]?
     let request: SlackComposeRequest?
     let requestId: String?
