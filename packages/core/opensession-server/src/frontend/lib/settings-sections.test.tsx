@@ -84,3 +84,11 @@ describe("settingsPaletteActions", () => {
     expect(missing).toEqual([]);
   });
 });
+
+test("Incidents sits in Automation, after Goals", () => {
+  const keys = SECTIONS.map((section) => String(section.key));
+  const incidents = SECTIONS.find((s) => s.key === "incidentSettings");
+  expect(incidents).toMatchObject({ label: "Incidents", group: "Automation" });
+  expect(keys.indexOf("incidentSettings")).toBe(keys.indexOf("goals") + 1);
+  expect(TOOL_SECTIONS.has("incidentSettings")).toBe(true);
+});

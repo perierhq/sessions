@@ -1191,6 +1191,14 @@ export function AppContent({
     openAnalytics: () => navigate({ view: "analytics" }),
     openArchived: () => navigate({ view: "archived" }),
     openCatchUp: () => navigate({ view: "catchup" }),
+    openIncidents: () => navigate({ view: "incidents" }),
+    openIncident: (id) => navigate({ view: "incidents", id }),
+    openIncidentSettings: (project) =>
+      navigate(
+        project
+          ? { view: "incidentSettings", project }
+          : { view: "incidentSettings" },
+      ),
     openSession,
     openWorkspace,
     openSessionReview: openReviewForSession,
@@ -1310,6 +1318,11 @@ export function AppContent({
                       navigate({ view: "goals", id: id || undefined })
                     }
                   />
+                ) : route.view === "incidentSettings" ? (
+                  // Placeholder until the incident settings page lands.
+                  <EmptyState title="Incidents">
+                    {route.project ?? "Incident settings"}
+                  </EmptyState>
                 ) : null}
               </Settings>
             )}
@@ -1576,6 +1589,11 @@ export function AppContent({
                     />
                   ) : route.view === "analytics" ? (
                     <Analytics />
+                  ) : route.view === "incidents" ? (
+                    // Placeholder until the incident home and page land.
+                    <EmptyState title="Incidents">
+                      {route.id ?? "Incidents"}
+                    </EmptyState>
                   ) : route.view === "feed" ? (
                     <Feed
                       sessions={sessions}

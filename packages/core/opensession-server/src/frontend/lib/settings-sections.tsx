@@ -17,6 +17,7 @@ import {
   IconHome,
   IconGlobe,
   IconKeyboard,
+  IconOctagonAlert,
   IconPeople,
   IconPlug,
   IconRocket,
@@ -37,7 +38,11 @@ const IconProviders = IconLibrary["IconShapes"];
 // table, two surfaces, no drift.
 
 /** Tool surfaces hosted inside Settings — App renders their panel as children. */
-export type ToolSectionKey = "automations" | "goals" | "security";
+export type ToolSectionKey =
+  | "automations"
+  | "goals"
+  | "incidentSettings"
+  | "security";
 
 /** Listed in nav order (SECTIONS below). */
 export type SettingsSectionKey =
@@ -69,6 +74,7 @@ export type SettingsSectionKey =
 export const TOOL_SECTIONS = new Set<SettingsSectionKey>([
   "automations",
   "goals",
+  "incidentSettings",
   "security",
 ]);
 
@@ -187,6 +193,12 @@ export const SECTIONS: SettingsSection[] = [
     label: "Goals",
     group: "Automation",
     icon: <IconTarget />,
+  },
+  {
+    key: "incidentSettings",
+    label: "Incidents",
+    group: "Automation",
+    icon: <IconOctagonAlert />,
   },
   {
     key: "security",

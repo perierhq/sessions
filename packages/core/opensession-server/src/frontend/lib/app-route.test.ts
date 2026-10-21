@@ -4,6 +4,7 @@ import {
   firstMileRequested,
   isSettingsRoute,
   parseRoute,
+  parseRouteWithSearch,
   routePath,
   samePanel,
   type Route,
@@ -123,5 +124,58 @@ describe("issues route", () => {
   test("round-trips the Issues page", () => {
     expect(parseRoute("/issues")).toEqual({ view: "issues" });
     expect(routePath({ view: "issues" })).toBe(`${BASE_PATH}/issues`);
+  });
+});
+
+describe("incident routes", () => {
+  test("home, page and settings", () => {
+    expect(parseRoute("/incidents")).toEqual({ view: "incidents" });
+    expect(parseRoute("/incidents/inc-1")).toEqual({
+      view: "incidents",
+      id: "inc-1",
+    });
+    expect(parseRoute("/settings/incidents")).toEqual({
+      view: "incidentSettings",
+    });
+    expect(parseRoute("/settings/incidents/acme-api")).toEqual({
+      view: "incidentSettings",
+      project: "acme-api",
+    });
+    expect(routePath({ view: "incidents" })).toBe(`${BASE_PATH}/incidents`);
+    expect(routePath({ view: "incidents", id: "inc 1" })).toBe(
+      `${BASE_PATH}/incidents/inc%201`,
+    );
+    expect(routePath({ view: "incidentSettings" })).toBe(
+      `${BASE_PATH}/settings/incidents`,
+    );
+    expect(routePath({ view: "incidentSettings", project: "acme" })).toBe(
+      `${BASE_PATH}/settings/incidents/acme`,
+    );
+    expect(isSettingsRoute({ view: "incidentSettings" })).toBe(true);
+    expect(isSettingsRoute({ view: "incidents" })).toBe(false);
+  });
+
+  test("push intents are owner decisions", () => {
+    expect(parseRouteWithSearch("/incidents/inc-1", "?intent=stop")).toEqual({
+      view: "incidents",
+      id: "inc-1",
+      intent: "stop",
+    });
+    expect(parseRouteWithSearch("/incidents/inc-1", "?intent=approve")).toEqual(
+      { view: "incidents", id: "inc-1", intent: "approve" },
+    );
+    expect(parseRouteWithSearch("/incidents/inc-1", "?intent=rm")).toEqual({
+      view: "incidents",
+      id: "inc-1",
+    });
+    expect(parseRouteWithSearch("/incidents", "?intent=stop")).toEqual({
+      view: "incidents",
+    });
+    expect(parseRouteWithSearch("/goals", "?intent=stop")).toEqual({
+      view: "goals",
+    });
+    expect(routePath({ view: "incidents", id: "inc-1", intent: "retry" })).toBe(
+      `${BASE_PATH}/incidents/inc-1?intent=retry`,
+    );
   });
 });

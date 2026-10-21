@@ -22,6 +22,17 @@ export function shortTime(ts: string): string {
   })).format(d);
 }
 
+/** Hour and minute ("10:41", "10:41 AM"), the locale picking 12h/24h. Empty
+ * for an invalid date. */
+export function clockTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(+d)) return "";
+  return (clockFormat ??= new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  })).format(d);
+}
+
 /** The real wall-clock time behind a message, written out: "Today at 14:32",
  * "Yesterday at 09:05", "Jul 12 at 14:32", "Jul 12, 2025 at 14:32". The locale
  * picks 12h/24h; no seconds — a transcript reads in minutes, and durations are

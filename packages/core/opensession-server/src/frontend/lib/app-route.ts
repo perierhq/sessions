@@ -1,3 +1,5 @@
+import { parseIncidentIntent } from "../../shared/incident-decision-copy";
+import type { OwnerDecision } from "../../shared/incident-response";
 import { BASE_PATH, stripBasePath } from "./base";
 import type { SettingsSectionKey } from "./settings-sections";
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
@@ -26,12 +28,19 @@ export type Route =
   | { view: "automations"; id?: string }
   | { view: "security" }
   | { view: "goals"; id?: string }
+  | { view: "incidents"; id?: string; intent?: OwnerDecision }
+  | { view: "incidentSettings"; project?: string }
   | { view: "settings"; section?: SettingsSectionKey }
   | { view: "archived" }
   | { view: "inbox" }
   | { view: "catchup" };
 
-const TOOL_VIEWS = new Set(["automations", "security", "goals"]);
+const TOOL_VIEWS = new Set([
+  "automations",
+  "security",
+  "goals",
+  "incidentSettings",
+]);
 const SETTINGS_SECTIONS: ReadonlySet<string> = new Set<SettingsSectionKey>([
   "myAccounts",
   "preferences",
@@ -76,7 +85,7 @@ const LEGACY_SETTINGS_SECTIONS = new Map<string, SettingsSectionKey>([
 
 export function isToolView(
   view: string,
-): view is "automations" | "security" | "goals" {
+): view is "automations" | "security" | "goals" | "incidentSettings" {
   return TOOL_VIEWS.has(view);
 }
 
@@ -176,6 +185,22 @@ export function parseRoute(pathname: string): Route {
     if (goal[1]) route.id = decodeURIComponent(goal[1]);
     return route;
   }
+  const incident = path.match(/^\/incidents(?:\/([^/]+))?$/);
+  if (incident) {
+    const route: Extract<Route, { view: "incidents" }> = { view: "incidents" };
+    if (incident[1]) route.id = decodeURIComponent(incident[1]);
+    return route;
+  }
+  // Before the generic /settings/<key>: a project rides after the key.
+  const incidentSettings = path.match(/^\/settings\/incidents(?:\/([^/]+))?$/);
+  if (incidentSettings) {
+    const route: Extract<Route, { view: "incidentSettings" }> = {
+      view: "incidentSettings",
+    };
+    if (incidentSettings[1])
+      route.project = decodeURIComponent(incidentSettings[1]);
+    return route;
+  }
   if (path === "/connections") {
     return { view: "settings", section: "connections" };
   }
@@ -204,6 +229,14 @@ export function parseRoute(pathname: string): Route {
     return route;
   }
   return { view: "prs" };
+}
+
+/** parseRoute plus what the query carries: a push intent on an incident. */
+export function parseRouteWithSearch(pathname: string, search: string): Route {
+  const route = parseRoute(pathname);
+  if (route.view !== "incidents" || !route.id) return route;
+  const intent = parseIncidentIntent(new URLSearchParams(search).get("intent"));
+  return intent ? { ...route, intent } : route;
 }
 
 export function routePath(route: Route): string {
@@ -254,6 +287,14 @@ export function routePath(route: Route): string {
       return route.id
         ? `${BASE_PATH}/goals/${encodeURIComponent(route.id)}`
         : `${BASE_PATH}/goals`;
+    case "incidents":
+      return route.id
+        ? `${BASE_PATH}/incidents/${encodeURIComponent(route.id)}${route.intent ? `?intent=${route.intent}` : ""}`
+        : `${BASE_PATH}/incidents`;
+    case "incidentSettings":
+      return route.project
+        ? `${BASE_PATH}/settings/incidents/${encodeURIComponent(route.project)}`
+        : `${BASE_PATH}/settings/incidents`;
     case "settings":
       return route.section
         ? `${BASE_PATH}/settings/${route.section}`

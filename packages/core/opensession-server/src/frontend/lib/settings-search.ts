@@ -176,6 +176,14 @@ export const SETTINGS_KEYWORDS = {
   memory: ["facts", "remember", "scopes"],
   automations: ["scheduled", "cron", "triggers", "watchers", "jobs"],
   goals: ["standing goals", "objectives"],
+  incidentSettings: [
+    "signals",
+    "outages",
+    "alerts",
+    "autonomy",
+    "veto",
+    "on-call",
+  ],
   security: ["scans", "deepsec", "vulnerabilities", "findings"],
   ingress: [
     "webhooks",

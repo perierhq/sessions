@@ -13,6 +13,8 @@ export function appTopbarTitle(
   route: Route,
   routeWorkspace: Workspace | null,
 ): string {
+  // An incident page brings its own bar, as Reports does.
+  if (route.view === "incidents") return route.id ? "" : "Incidents";
   return route.view === "archived"
     ? "Archived"
     : route.view === "inbox"
