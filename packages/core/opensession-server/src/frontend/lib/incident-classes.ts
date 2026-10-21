@@ -54,3 +54,23 @@ export const STRIP_THRESHOLD_LABEL =
 /** Key/value grid of one observation. */
 export const OBSERVATION_GRID =
   "grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5 text-label text-fg";
+
+/** The status line's headline: page-title size, wrapping anywhere so a long
+ *  or unbroken title never scrolls the page sideways. */
+export const STATUS_LINE_HEADLINE =
+  "m-0 flex min-w-0 items-start gap-3 text-page-title font-title text-fg";
+
+/** Holds the dot at the height of the headline's first line. */
+export const STATUS_LINE_DOT_SLOT = "flex h-[1lh] shrink-0 items-center";
+
+/** The facts under the headline, aligned with its text past the dot. */
+export const STATUS_LINE_FACTS =
+  "m-0 pl-6 text-supporting text-dim [overflow-wrap:anywhere]";
+
+/** The cause sentence: content, so it is selectable. */
+export const INCIDENT_CAUSE_TEXT =
+  "m-0 select-text text-body text-fg [overflow-wrap:anywhere]";
+
+/** Where the cause came from and whether it was verified. */
+export const INCIDENT_CAUSE_PROVENANCE =
+  "m-0 text-meta text-dim [overflow-wrap:anywhere]";
