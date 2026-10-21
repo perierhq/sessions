@@ -1868,6 +1868,27 @@ test("kill switch before the rollback ran: needs you, the release is still out",
   );
 });
 
+test("documenting: an investigator running for over 2 h is stopped", () => {
+  const overdue = documenting(
+    { files: ["docs/incidents/2026-10-20-search.md"] },
+    {
+      agents: [
+        run("investigator", {
+          status: "running",
+          turnSentAt: iso(-7_200_001),
+        }),
+      ],
+    },
+  );
+  expect(
+    decideNextStep({ ...overdue, agents: live({ "child-1": "running" }) }),
+  ).toEqual({
+    step: "cancel-agents",
+    reason: "The investigator ran for 2 h without finishing",
+    for: "timeout",
+  });
+});
+
 test("documenting: with agents paused the note PR is left open, never merged", () => {
   const paused = documenting({
     files: ["docs/incidents/2026-10-20-search.md"],

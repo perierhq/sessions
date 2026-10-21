@@ -331,6 +331,22 @@ export function sendBack(
   };
 }
 
+/** A running agent's turn that has gone on too long: it is cancelled. */
+function overdueStep(view: ResponseView): ResponseStep | undefined {
+  const overdue = runningAgents(view).find(
+    (a) =>
+      statusOf(view, a) === "running" &&
+      !(view.now - Date.parse(a.turnSentAt) <= AGENT_MAX_MS),
+  );
+  return overdue
+    ? {
+        step: "cancel-agents",
+        reason: `The ${overdue.role} ran for 2 h without finishing`,
+        for: "timeout",
+      }
+    : undefined;
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -353,8 +369,9 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     if (r && r.phase !== "done" && r.phase !== "documenting")
       return { step: "transition", to: null, phase: "done", detail: "Closed" };
+    // The note waits for the investigator, but not past its time limit.
     if (state === "resolved" && r?.phase === "documenting")
-      return reports(view) ?? documenting(view);
+      return overdueStep(view) ?? reports(view) ?? documenting(view);
     return NONE;
   }
 
@@ -471,7 +488,9 @@ function guards(view: ResponseView): ResponseStep | undefined {
       patch: { needsYou: undefined },
     };
 
-  // 6. Budget, while agents are or will be working.
+  // 6. Budget, while agents are or will be working. A Retry does not get
+  // past it on purpose (`retryRequested` is not read here): only a higher
+  // budget, set by a signed-in person, lets the agents go on.
   if (
     (state === "investigating" || state === "fix-ready") &&
     (r.phase === "investigating" ||
@@ -496,18 +515,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
   }
 
   // 7. A turn that has run for too long.
-  const overdue = running.find(
-    (a) =>
-      statusOf(view, a) === "running" &&
-      !(view.now - Date.parse(a.turnSentAt) <= AGENT_MAX_MS),
-  );
-  if (overdue)
-    return {
-      step: "cancel-agents",
-      reason: `The ${overdue.role} ran for 2 h without finishing`,
-      for: "timeout",
-    };
-  return undefined;
+  return overdueStep(view);
 }
 
 function starting(view: ResponseView): ResponseStep | undefined {
