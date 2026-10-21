@@ -52,6 +52,7 @@ import {
 } from "../icons";
 import { RunLedger } from "../RunLedger";
 import { LineStats } from "../TurnFooter";
+import { PlainButton } from "../../ui/plain-button";
 
 const BANDS = ["Fix", "Agents", "History"] as const;
 
@@ -145,9 +146,9 @@ function Row({
     );
   if (row.target)
     return (
-      <button type="button" className={className} onClick={() => onRow(row)}>
+      <PlainButton className={className} onClick={() => onRow(row)}>
         <RowBody row={row} />
-      </button>
+      </PlainButton>
     );
   return (
     <div className={cn(className, "cursor-default hover:bg-transparent")}>
@@ -350,8 +351,7 @@ function EarlierSheetBody({
     <ul className="-mx-2 m-0 flex list-none flex-col p-0">
       {earlier.map((other) => (
         <li key={other.id} className="min-w-0">
-          <button
-            type="button"
+          <PlainButton
             className={cn(WS_SUMMARY_PAGE_ROW, DETAIL_ROW)}
             onClick={() => onOpen(other.id)}
           >
@@ -368,7 +368,7 @@ function EarlierSheetBody({
                 .join(" · ")}
             </span>
             <IconChevronRight size={16} dense className={DETAIL_CHEVRON} />
-          </button>
+          </PlainButton>
         </li>
       ))}
     </ul>

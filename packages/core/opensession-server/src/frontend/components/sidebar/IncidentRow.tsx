@@ -15,6 +15,7 @@ import { Popover } from "../../ui/popover";
 import { RepoTile } from "../RepoTile";
 import { CardFooter, RowCardPopup, useRowHoverCard } from "../SidebarRowCards";
 import { SIDEBAR_ROW, SIDEBAR_ROW_TITLE } from "./SidebarItem";
+import { PlainButton } from "../../ui/plain-button";
 
 /**
  * One incident in the sidebar band, built like the automation report row:
@@ -43,8 +44,7 @@ export function IncidentRow({
       <Popover.Trigger
         {...card.triggerProps}
         render={
-          <button
-            type="button"
+          <PlainButton
             className={cn(
               SIDEBAR_ROW,
               SIDEBAR_INCIDENT_ROW,

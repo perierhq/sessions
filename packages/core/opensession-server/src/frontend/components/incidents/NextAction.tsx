@@ -55,6 +55,7 @@ import { KeychainAskCard } from "../KeychainAskCard";
 import { MergeUndoControl } from "../pr/MergeUndoControl";
 import { SessionSafetyNotice } from "../SessionSafetyNotice";
 import { AgentAuditSheet } from "./AgentAuditSheet";
+import { PlainButton } from "../../ui/plain-button";
 
 const BUTTON_VARIANT: Record<
   CardButton["weight"],
@@ -153,9 +154,9 @@ export function NextActionView({
       {(buttons.length > 0 || onAudit) && (
         <div className={NEXT_BUTTONS}>
           {onAudit && (
-            <button type="button" className={NEXT_AUDIT_LINK} onClick={onAudit}>
+            <PlainButton className={NEXT_AUDIT_LINK} onClick={onAudit}>
               What the agents did
-            </button>
+            </PlainButton>
           )}
           {buttons.map((button) => {
             if (button.kind === "stop")

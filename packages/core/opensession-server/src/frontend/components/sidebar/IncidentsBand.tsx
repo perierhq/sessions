@@ -18,6 +18,7 @@ import {
 import { cn } from "../../ui/cn";
 import { IconChevronDown, IconChevronRight } from "../icons";
 import { IncidentRow } from "./IncidentRow";
+import { PlainButton } from "../../ui/plain-button";
 
 /**
  * The sidebar's Incidents band (spec 4.4), first under the tools: open
@@ -56,8 +57,7 @@ export function IncidentsBand({
   return (
     <div className={cn(SIDEBAR_INDEPENDENT_SECTION, "mt-2")}>
       <div className={cn(SIDEBAR_BAND_LABEL, "py-0 pl-0 pr-2 desktop:pr-0")}>
-        <button
-          type="button"
+        <PlainButton
           className={cn(SIDEBAR_BAND_TOGGLE, SIDEBAR_BAND_TOGGLE_INSET)}
           onClick={onToggleBand}
           aria-expanded={open}
@@ -98,7 +98,7 @@ export function IncidentsBand({
           >
             <IconChevronRight size={20} />
           </span>
-        </button>
+        </PlainButton>
       </div>
       {open && (
         <div className={SIDEBAR_INDEPENDENT_SCROLL}>

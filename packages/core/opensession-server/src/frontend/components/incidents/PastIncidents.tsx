@@ -17,6 +17,7 @@ import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
 import { EmptyState } from "../../ui/state";
 import { RepoTile } from "../RepoTile";
+import { PlainButton } from "../../ui/plain-button";
 
 /**
  * Past incidents as a table: title, how it was fixed and in how long, the
@@ -90,13 +91,12 @@ export function PastIncidents({
                   <div className="flex min-w-0 items-center gap-3">
                     <RepoTile name={incident.project} />
                     <div className="flex min-w-0 flex-1 flex-col">
-                      <button
-                        type="button"
+                      <PlainButton
                         className={PAST_TITLE_BUTTON}
                         onClick={() => onOpen(incident.id)}
                       >
                         {row.title}
-                      </button>
+                      </PlainButton>
                       <span className="truncate text-meta text-dim desktop:hidden">
                         {row.fixedBy} · {row.cost}
                       </span>

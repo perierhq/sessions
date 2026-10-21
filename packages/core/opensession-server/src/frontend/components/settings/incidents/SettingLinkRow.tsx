@@ -10,6 +10,7 @@ import {
 } from "../../../lib/incident-settings-classes";
 import { cn } from "../../../ui/cn";
 import { IconChevronRight } from "../../icons";
+import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * A settings row that opens a dialog or a page: title and description on
@@ -35,8 +36,7 @@ export function SettingLinkRow({
   disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <PlainButton
       className={SETTING_LINK_ROW}
       onClick={onClick}
       disabled={disabled}
@@ -59,6 +59,6 @@ export function SettingLinkRow({
         </span>
       )}
       <IconChevronRight size={20} className={SETTING_LINK_CHEVRON} />
-    </button>
+    </PlainButton>
   );
 }

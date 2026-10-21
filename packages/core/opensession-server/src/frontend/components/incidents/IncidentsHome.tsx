@@ -57,6 +57,7 @@ import { SignalEditor } from "../settings/incidents/SignalEditor";
 import { MiniSignal } from "./MiniSignal";
 import { PastIncidents } from "./PastIncidents";
 import { StatusLine } from "./StatusLine";
+import { PlainButton } from "../../ui/plain-button";
 
 const MINUTE_MS = 60_000;
 
@@ -89,11 +90,7 @@ function SignalRow({
   const [ref, width] = useElementWidth<HTMLDivElement>();
   const value = latestValue(signal, strip, now);
   return (
-    <button
-      type="button"
-      className={HOME_SIGNAL_ROW}
-      onClick={() => onOpen(signal)}
-    >
+    <PlainButton className={HOME_SIGNAL_ROW} onClick={() => onOpen(signal)}>
       {/* The tile's letter would open every row's name. */}
       <span aria-hidden="true" className="[grid-area:tile]">
         <RepoTile name={signal.project} />
@@ -116,7 +113,7 @@ function SignalRow({
       <span className={cn(HOME_ROW_VALUE, VALUE_TONE[value.tone])}>
         {value.text}
       </span>
-    </button>
+    </PlainButton>
   );
 }
 
@@ -299,9 +296,8 @@ export function IncidentsHomeView({
               {headsUps.map((incident) => {
                 const reason = reasonOf(incident);
                 return (
-                  <button
+                  <PlainButton
                     key={incident.id}
-                    type="button"
                     className={HOME_HEADS_UP_ROW}
                     onClick={() => onOpenIncident(incident.id)}
                   >
@@ -317,7 +313,7 @@ export function IncidentsHomeView({
                     <span className="shrink-0 whitespace-nowrap text-supporting text-yellow">
                       {incidentStateWord(incident).text}
                     </span>
-                  </button>
+                  </PlainButton>
                 );
               })}
             </section>
