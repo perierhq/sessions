@@ -1439,6 +1439,65 @@ test("stop while investigating cancels the agents; retry and close", async () =>
   });
 });
 
+test("a decision repeated by the same person is answered with the incident", async () => {
+  const w = await world();
+  await w.toCertain();
+  const first = await applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  expect(first).toMatchObject({ state: "needs-you" });
+  const again = await applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  expect(again).toMatchObject({
+    id: w.incident.id,
+    state: "needs-you",
+    response: { needsYou: { kind: "stopped", reason: "Stopped by Bo" } },
+  });
+  expect(w.audits.filter((a) => a.kind === "incident_decision")).toHaveLength(
+    1,
+  );
+  // Someone else's, or another decision, is still refused.
+  expect(
+    await applyOwnerDecision(w.incident.id, "stop", "Cy", undefined, w.deps),
+  ).toEqual({ error: "Nothing to stop", status: 409 });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "deploy-now",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toEqual({ error: "No veto window is open", status: 409 });
+  // Before the fix loop started too.
+  const bare = await world();
+  await applyOwnerDecision(
+    bare.incident.id,
+    "close",
+    "Bo",
+    undefined,
+    bare.deps,
+  );
+  expect(
+    await applyOwnerDecision(
+      bare.incident.id,
+      "close",
+      "Bo",
+      undefined,
+      bare.deps,
+    ),
+  ).toMatchObject({ state: "closed-without-action" });
+});
+
 test("retry after a setup problem starts the agents again", async () => {
   let fail = true;
   const w = await world();

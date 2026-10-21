@@ -2235,6 +2235,8 @@ async function ownerDecision(
   if (decision === "send-back" && (!text || text.length > SEND_BACK_NOTE_MAX))
     return { error: "A note is required", status: 400 };
   const refused: DecisionError = { error: REFUSALS[decision], status: 409 };
+  // A repeat (a double tap, a retried request) gets the incident it made.
+  if (alreadyDecided(incident, decision, by)) return incident;
 
   if (!incident.response) {
     if (decision !== "resolve" && decision !== "close") return refused;
@@ -2332,6 +2334,25 @@ async function ownerDecision(
       from: incident.state,
     });
   return result;
+}
+
+/**
+ * Whether the incident still shows this person's same decision: it was the
+ * last decision, and the incident has not changed state since.
+ */
+function alreadyDecided(
+  incident: Incident,
+  decision: OwnerDecision,
+  by: string,
+): boolean {
+  const last = incident.events.findLast(
+    (e) => e.kind === "decision" || e.kind === "state" || e.kind === "reopened",
+  );
+  return (
+    last?.kind === "decision" &&
+    last.by === by &&
+    last.detail === `${by}: ${decision}`
+  );
 }
 
 /** Resolve or close an incident the fix loop never started on. */
