@@ -31,6 +31,7 @@ import {
 } from "../../../shared/incidents";
 import type { Automation } from "../../automations";
 import { modelUpstreamProvider } from "../../model-catalog";
+import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
 import { getRepo } from "../../worktree";
@@ -130,6 +131,9 @@ export interface CoordinatorDeps {
   /** The kill switch as this process last read or wrote it, checked again
    *  right before anything is merged or run on production. */
   agentsPaused: (project: string) => boolean;
+  /** The service finished recovery and is not shutting down. Until then
+   *  the tick and wake-ups do nothing. */
+  ready: () => boolean;
 }
 
 function defaultDeps(): CoordinatorDeps {
@@ -163,6 +167,7 @@ function defaultDeps(): CoordinatorDeps {
     recordRelease,
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
+    ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
   };
 }
 
@@ -247,6 +252,7 @@ export function scheduleAdvance(
   deps: Partial<CoordinatorDeps> = {},
 ): void {
   if (queued.has(incidentId)) return;
+  if (!resolveCoordinatorDeps(deps).ready()) return;
   queued.add(incidentId);
   void enqueue(incidentId, () => {
     queued.delete(incidentId);
@@ -623,6 +629,7 @@ export async function buildResponseView(
 
 async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
   for (let i = 0; i < MAX_STEPS_PER_ADVANCE; i++) {
+    if (!d.ready()) return;
     let incident = await d.getIncident(incidentId);
     if (!incident) return;
     const settings = await d.settings(incident.project);
@@ -1896,6 +1903,7 @@ export async function runResponseTick(
   deps: Partial<CoordinatorDeps> = {},
 ): Promise<string[]> {
   const d = resolveCoordinatorDeps(deps);
+  if (!d.ready()) return [];
   const incidents = await d.listIncidents();
   sessionIndex.clear();
   const settingsOf = new Map<string, IncidentProjectSettings | undefined>();
@@ -2478,8 +2486,9 @@ type Started = { stop: () => void };
 const started = globalThis as typeof globalThis & { [START_KEY]?: Started };
 
 /**
- * Starts the fix loop once per process: the access gate, the Runner check
- * for signals, recovery of interrupted actions, wake-ups on incident and
+ * Starts the fix loop once per process: the access gate and the Runner
+ * check for signals now; once the service is ready (recovery done, not
+ * shutting down), recovery of interrupted actions, wake-ups on incident and
  * session changes, and the 5 s tick. Call from boot only.
  */
 export function startIncidentResponse(): void {
@@ -2488,7 +2497,10 @@ export function startIncidentResponse(): void {
   started[START_KEY] = state;
   startIncidentAccessGate();
   setSignalRunOnCheck(incidentRunOnCheck);
-  void (async () => {
+  const { ready } = resolveCoordinatorDeps();
+  let off: (() => void) | undefined;
+  let ticking = false;
+  const firstTick = async () => {
     try {
       const interrupted = await recoverIncidentResponses();
       if (interrupted)
@@ -2501,27 +2513,26 @@ export function startIncidentResponse(): void {
         errorMessage(error),
       );
     }
-    const off = watchResponseWakeups();
-    let ticking = false;
-    const timer = setInterval(() => {
-      if (ticking || isShuttingDown()) return;
-      ticking = true;
-      runResponseTick(Date.now())
-        .catch((error) =>
-          console.error(
-            "[incidents] Fix loop tick failed:",
-            errorMessage(error),
-          ),
-        )
-        .finally(() => {
-          ticking = false;
-        });
-    }, RESPONSE_TICK_MS);
-    (timer as { unref?: () => void }).unref?.();
-    state.stop = () => {
-      off();
-      clearInterval(timer);
-    };
+    off = watchResponseWakeups();
     console.log("[incidents] Fix loop started (5s tick)");
-  })();
+  };
+  const timer = setInterval(() => {
+    if (ticking || !ready()) return;
+    ticking = true;
+    (async () => {
+      if (!off) await firstTick();
+      await runResponseTick(Date.now());
+    })()
+      .catch((error) =>
+        console.error("[incidents] Fix loop tick failed:", errorMessage(error)),
+      )
+      .finally(() => {
+        ticking = false;
+      });
+  }, RESPONSE_TICK_MS);
+  (timer as { unref?: () => void }).unref?.();
+  state.stop = () => {
+    off?.();
+    clearInterval(timer);
+  };
 }

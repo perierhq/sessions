@@ -874,7 +874,8 @@ if (!g.__opensessionBooted) {
     startIncidentAccess();
     // The fix loop (with the access gate: a project's kill switch and budget
     // refuse its incident agents at spawn, every turn and every incident
-    // tool call) wakes on incident changes, session state and a 5 s tick.
+    // tool call) wakes on incident changes, session state and a 5 s tick,
+    // and does nothing until readiness is "ready" or once shutdown begins.
     startIncidentResponse();
     configureWebhookRoutes(agents, webhookRoutes);
     try {

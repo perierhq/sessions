@@ -16,6 +16,7 @@ import {
   createRunnerPairing,
 } from "../../runners";
 import { createIncident, getIncident, updateIncident } from "../incident-store";
+import { setServiceReadiness } from "../../service-readiness";
 import { transitionIncident } from "../lifecycle";
 import { emptyResponse } from "./ledger";
 import { agentAccessFixture } from "../testing/access-fixture";
@@ -393,6 +394,7 @@ async function world(
       return undefined;
     },
     agentsPaused: () => settings.agentsPaused,
+    ready: () => true,
   };
   const incident = await createIncident({
     project: "acme",
@@ -829,6 +831,38 @@ test("the tick schedules open work and skips what waits on a person", async () =
   await advanceIncident(w.incident.id, w.deps);
   expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
   expect(await runResponseTick(START, w.deps)).not.toContain(w.incident.id);
+});
+
+test("the fix loop does nothing until the service is ready, nor while it shuts down", async () => {
+  const w = await world();
+  let ready = false;
+  const deps = { ...w.deps, ready: () => ready };
+  __setCoordinatorDepsForTest(deps);
+  expect(await runResponseTick(START, deps)).toEqual([]);
+  scheduleAdvance(w.incident.id, deps);
+  await __waitForCoordinatorForTest();
+  expect(w.spawns).toEqual([]);
+  expect((await getIncident(w.incident.id))?.response).toBeUndefined();
+  ready = true;
+  expect(await runResponseTick(START, deps)).toEqual([w.incident.id]);
+  await __waitForCoordinatorForTest();
+  expect(w.spawns).toHaveLength(1);
+});
+
+test("ready means the service is ready and not shutting down", () => {
+  const flag = globalThis as { __opensessionShuttingDown?: boolean };
+  const { ready } = resolveCoordinatorDeps();
+  try {
+    setServiceReadiness("recovering");
+    expect(ready()).toBe(false);
+    setServiceReadiness("ready");
+    expect(ready()).toBe(true);
+    flag.__opensessionShuttingDown = true;
+    expect(ready()).toBe(false);
+  } finally {
+    delete flag.__opensessionShuttingDown;
+    setServiceReadiness("booting");
+  }
 });
 
 test("coalesced wake-ups never run two advances for one incident at once", async () => {
