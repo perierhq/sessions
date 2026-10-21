@@ -34,6 +34,8 @@ import {
 /** Answering retires the card; re-offer after this so the demo's "waiting on
  *  input" lane repopulates without a restart. */
 const ASK_REARM_MS = 45_000;
+/** How often the demo veto checks whether it needs a new deadline. */
+const VETO_REARM_EVERY_MS = 20_000;
 
 interface DemoState {
   started: boolean;
@@ -180,6 +182,20 @@ export async function startDemo(): Promise<void> {
     seedIssueCache(DEMO_REPO_ID, demoIssues(Date.now()));
   } catch (e) {
     console.error("[demo] issue cache seed failed:", e);
+  }
+
+  // Signals, observations and incidents for the incident views; the veto's
+  // deadline moves forward so a fix is always about to deploy.
+  try {
+    const { seedDemoIncidents, rearmDemoVeto } = await import("./incidents");
+    await seedDemoIncidents();
+    setInterval(() => {
+      void rearmDemoVeto().catch((e) =>
+        console.error("[demo] veto re-arm failed:", e),
+      );
+    }, VETO_REARM_EVERY_MS).unref?.();
+  } catch (e) {
+    console.error("[demo] incident seed failed:", e);
   }
 
   try {
