@@ -217,7 +217,12 @@ export function draftFromAction(
     timeoutMs: action.timeoutMs,
     reversible: action.reversible,
     costs: action.cost.kind === "amount",
-    usd: action.cost.kind === "amount" ? String(action.cost.usd) : "",
+    usd:
+      action.cost.kind !== "amount"
+        ? ""
+        : Number.isInteger(action.cost.usd)
+          ? String(action.cost.usd)
+          : action.cost.usd.toFixed(2),
     needsSecret: action.needsSecret,
     services: action.scope.services.join(", "),
     paths: action.scope.paths.join(", "),

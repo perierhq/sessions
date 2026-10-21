@@ -161,10 +161,10 @@ export function ActionsSection({
               title={action.label}
               description={
                 <span className={ACTION_ROW_DESC}>
-                  <span className="shrink-0">{nameOf(action.runner)} ·</span>
                   <code className={ACTION_ROW_COMMAND}>
                     {firstLine(action.command)}
                   </code>
+                  <span className="shrink-0">on {nameOf(action.runner)}</span>
                 </span>
               }
               stacked
