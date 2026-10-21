@@ -1750,6 +1750,46 @@ test("watch only, then agents on: the investigator starts with a coordinator", a
   expect(w.spawns).toHaveLength(1);
 });
 
+test("agents on uses the coordinator session the incident already has", async () => {
+  const w = await world();
+  w.settings.autonomy = "watch";
+  await advanceIncident(w.incident.id, w.deps);
+  w.settings.autonomy = "deploy-after-veto";
+  let created = 0;
+  const coordinators: string[] = [];
+  const deps: Partial<CoordinatorDeps> = {
+    ...w.deps,
+    coordinatorSession: async () => {
+      created++;
+      return "coord-2";
+    },
+    agents: (incident, ctx) => {
+      coordinators.push(ctx.coordinatorSessionId);
+      return w.deps.agents!(incident, ctx);
+    },
+    // The incident gets its coordinator session after the step was decided.
+    workspace: async () => {
+      await updateIncident(w.incident.id, (c) => ({
+        ...c,
+        response: {
+          ...c.response!,
+          coordinatorSessionId: "coord-1",
+          automationId: "auto-1",
+        },
+      }));
+      return { kind: "sandbox", provider: "daytona" };
+    },
+  };
+  await advanceIncident(w.incident.id, deps);
+  const i = await getIncident(w.incident.id);
+  expect(created).toBe(0);
+  expect(coordinators).toEqual(["coord-1"]);
+  expect(i?.response).toMatchObject({
+    coordinatorSessionId: "coord-1",
+    agents: [{ role: "investigator", sessionId: "child-1" }],
+  });
+});
+
 test("kill switch while the veto counts down: no merge, ever", async () => {
   const w = await world();
   await w.toCertain();

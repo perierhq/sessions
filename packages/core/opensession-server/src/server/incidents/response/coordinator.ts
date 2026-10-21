@@ -1000,7 +1000,8 @@ async function startAgent(
 
 /**
  * The incident with its coordinator session, created now when the fix loop
- * started without one (watch only, then agents on). Recorded whatever moved
+ * started without one (watch only, then agents on). One the record got
+ * meanwhile is reused, never a second one beside it. Recorded whatever moved
  * meanwhile: the session exists either way.
  */
 async function withCoordinator(
@@ -1010,18 +1011,38 @@ async function withCoordinator(
 ): Promise<Incident> {
   const r = incident.response;
   if (!r || r.coordinatorSessionId) return incident;
+  const withSession = (ids: {
+    coordinatorSessionId: string;
+    automationId?: string;
+  }): Incident => ({ ...incident, response: patched(r, ids) });
+  const stored = (await d.getIncident(incident.id))?.response;
+  if (stored?.coordinatorSessionId)
+    return withSession({
+      coordinatorSessionId: stored.coordinatorSessionId,
+      automationId: stored.automationId ?? r.automationId,
+    });
   const automation = await d.automation(incident.project);
-  const coordinatorSessionId = await d.coordinatorSession(incident, automation);
-  await write(incident.id, d, settings, null, (c, base) => ({
+  const created = await d.coordinatorSession(incident, automation);
+  const next = await write(incident.id, d, settings, null, (c, base) => ({
     incident: c,
     response: base.coordinatorSessionId
       ? base
-      : { ...base, coordinatorSessionId, automationId: automation.id },
+      : {
+          ...base,
+          coordinatorSessionId: created,
+          automationId: automation.id,
+        },
   }));
-  return {
-    ...incident,
-    response: { ...r, coordinatorSessionId, automationId: automation.id },
-  };
+  // What the record holds wins: a session written meanwhile is the one.
+  const kept = next?.response;
+  return withSession(
+    kept?.coordinatorSessionId
+      ? {
+          coordinatorSessionId: kept.coordinatorSessionId,
+          automationId: kept.automationId ?? automation.id,
+        }
+      : { coordinatorSessionId: created, automationId: automation.id },
+  );
 }
 
 /** Whether starting `role` now is rollback-first's parallel investigator. */
