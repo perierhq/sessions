@@ -1102,6 +1102,34 @@ test("rollback-first: a workspace error skips the parallel investigator, the rol
   expect(i?.state).toBe("watching");
 });
 
+test("rollback-first: the coordinator session fails to start, the rollback goes on", async () => {
+  const w = await world({ releasedMsBeforeOpen: 300_000 });
+  const deps: Partial<CoordinatorDeps> = {
+    ...w.deps,
+    coordinatorSession: async () => {
+      throw new Error("Session store is read-only");
+    },
+  };
+  await advanceIncident(w.incident.id, deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("veto");
+  expect(i?.response?.coordinatorSessionId).toBeUndefined();
+  expect(i?.response?.parallelInvestigator).toBe("unavailable");
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response?.ledger).toContainEqual(
+    expect.objectContaining({
+      detail:
+        "Investigator not started alongside the rollback: Session store is read-only",
+    }),
+  );
+  expect(w.spawns).toEqual([]);
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, deps);
+  i = await getIncident(w.incident.id);
+  expect(w.actions.map((a) => a.purpose)).toEqual(["rollback-first"]);
+  expect(i?.state).toBe("watching");
+});
+
 test("rollback-first: with the month's budget used up the rollback still runs", async () => {
   const w = await world({ releasedMsBeforeOpen: 300_000 });
   const other = await createIncident({
