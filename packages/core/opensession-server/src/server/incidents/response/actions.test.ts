@@ -369,6 +369,29 @@ test("release hook records releases for rollback-first", async () => {
     }),
   ).toBe("aaaaaaa");
   expect(previousReleaseRef({ ...s, releases: [] })).toBeUndefined();
+  // A rollback is never what a rollback goes back past: the target is what
+  // was live before the newest release that was not a rollback.
+  expect(
+    previousReleaseRef({
+      ...s,
+      releases: [
+        { at: "c", source: "action", ref: "aaaaaaa", rollback: true },
+        { at: "b", source: "action", ref: "bbbbbbb" },
+        { at: "a", source: "hook", ref: "aaaaaaa" },
+      ],
+    }),
+  ).toBe("aaaaaaa");
+  expect(
+    previousReleaseRef({
+      ...s,
+      releases: [
+        { at: "d", source: "hook", ref: "ccccccc" },
+        { at: "c", source: "action", ref: "aaaaaaa", rollback: true },
+        { at: "b", source: "action", ref: "bbbbbbb" },
+        { at: "a", source: "hook", ref: "aaaaaaa" },
+      ],
+    }),
+  ).toBe("aaaaaaa");
 });
 
 test("the release hook takes at most 30 releases a minute per project", async () => {

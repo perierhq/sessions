@@ -859,6 +859,23 @@ export function latestRelease(
   return s.releases[0];
 }
 
+/** The newest release that was not a rollback, and its index. */
+export function latestForwardRelease(
+  s: IncidentProjectSettings,
+): { release: IncidentRelease; index: number } | undefined {
+  const index = s.releases.findIndex((r) => !r.rollback);
+  return index < 0 ? undefined : { release: s.releases[index]!, index };
+}
+
+/** The release rollback-first would undo: the newest, unless it was itself
+ *  a rollback (the release before it is already undone). */
+export function releaseToRollBack(
+  s: IncidentProjectSettings,
+): IncidentRelease | undefined {
+  const newest = s.releases[0];
+  return newest && !newest.rollback ? newest : undefined;
+}
+
 /** The first action of that kind. */
 export function projectAction(
   s: IncidentProjectSettings,

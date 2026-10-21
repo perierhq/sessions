@@ -499,6 +499,21 @@ test("rollback-first needs a recent release and a rollback action", () => {
   expect(rollbackFirstApplies(withRelease(iso(-60_000), [deployAction]))).toBe(
     false,
   );
+  // The newest release was a rollback: the release it undid is not rolled
+  // back again.
+  expect(
+    rollbackFirstApplies(
+      view({
+        settings: {
+          ...defaultSettings,
+          releases: [
+            { at: iso(-60_000), source: "action", rollback: true },
+            { at: iso(-600_000), source: "hook" },
+          ],
+        },
+      }),
+    ),
+  ).toBe(false);
 });
 
 test("investigation: start, remind once, then needs you", () => {

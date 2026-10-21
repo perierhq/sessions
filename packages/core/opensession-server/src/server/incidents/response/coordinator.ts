@@ -78,10 +78,11 @@ import {
 import { independenceBetween, resolveRoleModels } from "./models";
 import {
   getProjectSettings,
-  latestRelease,
+  latestForwardRelease,
   peekProjectSettings,
   projectAction,
   recordRelease,
+  releaseToRollBack,
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
@@ -744,7 +745,7 @@ async function init(
   d: CoordinatorDeps,
 ): Promise<boolean> {
   const { incident, settings } = view;
-  const release = rollbackFirst ? latestRelease(settings) : undefined;
+  const release = rollbackFirst ? releaseToRollBack(settings) : undefined;
   const rollback = projectAction(settings, "rollback");
   let automation: Automation | undefined;
   let coordinatorSessionId: string | undefined;
@@ -871,7 +872,7 @@ async function startAgent(
   let prompt: string;
   if (role === "investigator") {
     const release = r.candidate?.rollbackFirst
-      ? latestRelease(settings)
+      ? latestForwardRelease(settings)?.release
       : undefined;
     prompt = buildInvestigatorPrompt({
       incident,
@@ -1743,6 +1744,7 @@ async function runAction(
       source: "action",
       ...(releaseRef !== undefined ? { ref: releaseRef } : {}),
       actionRunId: runId,
+      ...(action.kind === "rollback" ? { rollback: true as const } : {}),
     });
     if (refused)
       console.warn(

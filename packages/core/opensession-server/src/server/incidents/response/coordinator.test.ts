@@ -1001,6 +1001,11 @@ test("the watch fails: automatic rollback, then round 2 for the same investigato
   expect(w.sends.at(-1)?.message).toContain(
     "Search was still failing 10 min after the release",
   );
+  expect(w.settings.releases[0]).toMatchObject({
+    source: "action",
+    rollback: true,
+  });
+  expect(w.settings.releases[1]).not.toHaveProperty("rollback");
 });
 
 test("regression after our release: rollback first, investigator in parallel", async () => {

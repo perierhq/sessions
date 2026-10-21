@@ -76,6 +76,9 @@ export interface IncidentRelease {
   ref?: string;
   actionRunId?: string;
   note?: string;
+  /** Recorded by a rollback action: it undid a release, so it is never
+   *  rolled back first, nor what a rollback goes back past. */
+  rollback?: true;
 }
 
 export interface IncidentProjectSettings {

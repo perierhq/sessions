@@ -24,7 +24,7 @@ import {
 import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
 import { assessAutoMerge } from "./merge";
 import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
-import { latestRelease, projectAction } from "./project-settings";
+import { projectAction, releaseToRollBack } from "./project-settings";
 import {
   checkKnowledge,
   effectiveVerdict,
@@ -128,7 +128,7 @@ function httpTarget(
 }
 
 export function rollbackFirstApplies(view: ResponseView): boolean {
-  const release = latestRelease(view.settings);
+  const release = releaseToRollBack(view.settings);
   if (!release || !projectAction(view.settings, "rollback")) return false;
   const at = Date.parse(release.at);
   const opened = Date.parse(view.incident.openedAt);

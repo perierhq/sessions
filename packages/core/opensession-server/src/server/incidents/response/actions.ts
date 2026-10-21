@@ -33,6 +33,7 @@ import { shellQuote } from "../sources/runner-fetch";
 import {
   getProjectSettings,
   incidentProjectExists,
+  latestForwardRelease,
   recordRelease,
 } from "./project-settings";
 
@@ -237,11 +238,16 @@ export async function runIncidentAction(
   };
 }
 
-/** The release before the newest one: what a rollback goes back to. */
+/**
+ * What a rollback goes back to: what was live before the newest release
+ * that was not a rollback (rollbacks since then already undid it, so their
+ * targets are skipped).
+ */
 export function previousReleaseRef(
   settings: IncidentProjectSettings,
 ): string | undefined {
-  return settings.releases[1]?.ref;
+  const forward = latestForwardRelease(settings);
+  return forward ? settings.releases[forward.index + 1]?.ref : undefined;
 }
 
 // ---------------------------------------------------------------------------
