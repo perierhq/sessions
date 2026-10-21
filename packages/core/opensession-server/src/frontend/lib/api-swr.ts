@@ -54,8 +54,8 @@ export const apiSWRKey = {
   // Every incident key's second element starts with "incident": the
   // incident socket messages revalidate them all by that prefix.
   incidentSignals: () => ["api", "incident-signals"] as const,
-  incidentSignalStrip: (id: string, from?: string, to?: string) =>
-    ["api", "incident-signal-strip", id, from || "", to || ""] as const,
+  incidentSignalMini: (id: string) =>
+    ["api", "incident-signal-mini", id] as const,
   incidents: (
     status: "open" | "closed" | "all",
     project?: string,

@@ -22,7 +22,7 @@ import {
   type IncidentListFilter,
 } from "../lib/api/incidents";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
-import { stripRefreshMs } from "../lib/incidents/signal-summary";
+import { miniRange, stripRefreshMs } from "../lib/incidents/signal-summary";
 import type { WSServerMessage } from "../lib/types";
 import type { AgentAuditView, ProjectSettingsView } from "../lib/api/incidents";
 import type {
@@ -73,21 +73,23 @@ export function useSignals(): SWRResponse<SignalView[]> {
 function stripConfig(): SWRConfiguration<StripResponse> {
   return {
     ...apiResourceSWRConfig<StripResponse>(0),
-    // A moving range (the home's mini strips) keeps the bars it has while
-    // the next range loads, so they never blink empty.
-    keepPreviousData: true,
     refreshInterval: (latest: StripResponse | undefined) =>
       stripRefreshMs(latest),
   };
 }
 
-export function useSignalStrip(
-  id: string | null,
-  range?: { from: string; to: string },
+/**
+ * A signal's mini strip on the home: the last few intervals up to now. One
+ * key per signal; the range is taken inside the fetcher, so every refresh
+ * reads up to its own now without a new key (and a new cache entry) each
+ * minute.
+ */
+export function useMiniSignalStrip(
+  signal: SignalView,
 ): SWRResponse<StripResponse> {
   return useSWR<StripResponse>(
-    id ? apiSWRKey.incidentSignalStrip(id, range?.from, range?.to) : null,
-    () => fetchSignalStrip(id!, range),
+    apiSWRKey.incidentSignalMini(signal.id),
+    () => fetchSignalStrip(signal.id, miniRange(signal, Date.now())),
     stripConfig(),
   );
 }

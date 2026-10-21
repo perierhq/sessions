@@ -5,8 +5,8 @@ import { useElementWidth } from "../../hooks/useElementWidth";
 import {
   useIncidents,
   useProjectSettings,
+  useMiniSignalStrip,
   useSignals,
-  useSignalStrip,
 } from "../../hooks/useIncidents";
 import { fetchRepos } from "../../lib/api/repos";
 import { DEFAULT_DOC_TITLE, docTitle } from "../../lib/brand";
@@ -19,7 +19,6 @@ import {
 import {
   laneKindFor,
   latestValue,
-  miniRange,
   signalCaption,
   sortSignals,
 } from "../../lib/incidents/signal-summary";
@@ -59,8 +58,6 @@ import { PastIncidents } from "./PastIncidents";
 import { StatusLine } from "./StatusLine";
 import { PlainButton } from "../../ui/plain-button";
 
-const MINUTE_MS = 60_000;
-
 const VALUE_TONE = {
   fg: "text-fg",
   yellow: "text-yellow",
@@ -84,9 +81,7 @@ function SignalRow({
   now: number;
   onOpen: (signal: SignalView) => void;
 }) {
-  // The range moves once a minute, so its key does too.
-  const edge = Math.floor(now / MINUTE_MS) * MINUTE_MS;
-  const strip = useSignalStrip(signal.id, miniRange(signal, edge)).data;
+  const strip = useMiniSignalStrip(signal).data;
   const [ref, width] = useElementWidth<HTMLDivElement>();
   const value = latestValue(signal, strip, now);
   return (
