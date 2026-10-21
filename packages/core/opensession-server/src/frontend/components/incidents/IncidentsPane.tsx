@@ -1,7 +1,7 @@
 import type { Route } from "../../lib/app-route";
 import type { UnifiedSession } from "../../lib/types";
-import { EmptyState } from "../../ui/state";
 import { IncidentPage } from "./IncidentPage";
+import { IncidentsHome } from "./IncidentsHome";
 
 /**
  * The main pane for `/incidents` and `/incidents/:id`, so the composition
@@ -19,8 +19,11 @@ export function IncidentsPane({
   navigate: (route: Route, options?: { replace?: boolean }) => void;
 }) {
   if (!route.id)
-    // Placeholder until the incident home lands.
-    return <EmptyState title="Incidents">Incidents</EmptyState>;
+    return (
+      <IncidentsHome
+        onOpenIncident={(id) => navigate({ view: "incidents", id })}
+      />
+    );
   return (
     <IncidentPage
       key={route.id}

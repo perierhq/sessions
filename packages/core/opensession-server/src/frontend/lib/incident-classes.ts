@@ -174,3 +174,42 @@ export const SIDEBAR_INCIDENT_STATE =
  *  pointer, always under a finger (there is no hover to find it). */
 export const SIDEBAR_INCIDENTS_ALL =
   "phone:inline-flex group-hover/band:inline-flex";
+
+/** The home's rows, outdented so the tiles share the section labels' x. */
+export const HOME_LIST = "-mx-2 flex min-w-0 flex-col";
+
+/**
+ * A home signal row: tile, name over caption, the mini signal, the latest
+ * value. On a phone the mini signal takes its own full-width line under the
+ * first. Rows are divided by a line; nothing is boxed.
+ */
+export const HOME_SIGNAL_ROW =
+  "grid w-full min-w-0 cursor-pointer items-center gap-x-3 gap-y-2 border-b border-line bg-transparent px-2 py-2.5 text-left hover:bg-hover focus-ring " +
+  "grid-cols-[auto_minmax(0,1fr)_auto] [grid-template-areas:'tile_text_value'_'mini_mini_mini'] " +
+  "desktop:min-h-14 desktop:grid-cols-[auto_minmax(0,1fr)_160px_7rem] desktop:[grid-template-areas:'tile_text_mini_value']";
+
+/** A heads-up row: tile, title over the reason, the state word. */
+export const HOME_HEADS_UP_ROW =
+  "flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 border-b border-line bg-transparent px-2 py-2.5 text-left hover:bg-hover focus-ring";
+
+export const HOME_ROW_NAME = "truncate text-item-title text-fg";
+export const HOME_ROW_CAPTION = "truncate text-meta text-dim";
+
+/** The latest value, right-aligned, its width held by tabular numerals. */
+export const HOME_ROW_VALUE =
+  "justify-self-end whitespace-nowrap text-right text-supporting tabular-nums [grid-area:value]";
+
+/** The mini signal's box: 160px on a desktop row, the row's width on a
+ *  phone, always its final height so bars landing do not move it. */
+export const HOME_MINI = "h-5 w-full min-w-0 [grid-area:mini] desktop:w-40";
+
+/** A past incident: a table row whose title button covers the row. */
+export const PAST_ROW = "relative border-b border-line hover:bg-hover";
+export const PAST_HEAD =
+  "border-b border-line text-label font-normal text-faint phone:sr-only";
+export const PAST_CELL =
+  "h-12 px-2 py-2 align-middle phone:h-auto phone:py-2.5";
+export const PAST_TITLE_BUTTON =
+  "block w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left text-item-title text-fg focus-ring after:absolute after:inset-0";
+export const PAST_NUMBER =
+  "whitespace-nowrap text-right text-supporting tabular-nums text-dim";

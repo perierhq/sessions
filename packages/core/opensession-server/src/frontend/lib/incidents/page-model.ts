@@ -39,7 +39,8 @@ export interface IncidentPageModel {
   agentSessionIds: string[];
 }
 
-function laneMetaFor(
+/** How each lane of these signals is drawn. */
+export function laneMetaFor(
   signals: SignalView[],
 ): (lane: StripLane) => StripLaneMeta {
   return (lane) => {

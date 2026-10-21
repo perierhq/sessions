@@ -72,6 +72,9 @@ export function useSignals(): SWRResponse<SignalView[]> {
 function stripConfig(): SWRConfiguration<StripResponse> {
   return {
     ...apiResourceSWRConfig<StripResponse>(0),
+    // A moving range (the home's mini strips) keeps the bars it has while
+    // the next range loads, so they never blink empty.
+    keepPreviousData: true,
     refreshInterval: (latest: StripResponse | undefined) =>
       stripRefreshMs(latest),
   };
