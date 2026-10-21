@@ -27,6 +27,7 @@ import {
   pageModel,
 } from "../../lib/incidents/page-model";
 import { proofLane } from "../../lib/incidents/strip-layout";
+import { watchIncidentNotifications } from "../../lib/notifications";
 import {
   INCIDENT_COLUMN,
   INCIDENT_PAGE,
@@ -285,6 +286,9 @@ export function IncidentPage({
         now,
       })
     : null;
+
+  // Its inbox row is read while the page is on screen, on every device.
+  useEffect(() => watchIncidentNotifications(id), [id]);
 
   const headline = model?.headline;
   useEffect(() => {
