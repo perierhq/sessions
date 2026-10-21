@@ -298,8 +298,9 @@ function pushActions(value) {
     const action = text(a?.action);
     const title = text(a?.title);
     const url = text(a?.url);
-    if (!action || !title || !url.startsWith("/") || url.startsWith("//"))
-      continue;
+    // One leading slash, not followed by another slash or a backslash
+    // (browsers read "/\host" as "//host", another origin).
+    if (!action || !title || !/^\/(?![\/\\])/.test(url)) continue;
     if (kept.some((k) => k.action === action)) continue;
     kept.push({ action, title, url });
   }

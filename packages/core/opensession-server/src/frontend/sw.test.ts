@@ -440,6 +440,8 @@ describe("incident push actions", () => {
       actions: [
         { action: "x", title: "X", url: "https://evil.example.test/" },
         { action: "y", title: "Y", url: "//evil.example.test/" },
+        { action: "z", title: "Z", url: "/\\evil.example.test/" },
+        { action: "w", title: "W", url: "javascript:alert(1)" },
       ],
     });
     expect(options.actions).toEqual([]);
