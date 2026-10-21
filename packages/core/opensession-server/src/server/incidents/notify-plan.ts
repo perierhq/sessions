@@ -299,7 +299,7 @@ function baseEvent(
   row: Row,
   facts: NotifyFacts,
   now: number,
-  eventKey: string,
+  eventKey?: string,
 ): NotificationEvent {
   const push = pushHints(incident, row, facts, now);
   return {
@@ -313,7 +313,7 @@ function baseEvent(
     reason: row.reason,
     body: row.body,
     url: incidentUrl(incident.id),
-    eventKey,
+    ...(eventKey ? { eventKey } : {}),
     at: now,
     ...(push ? { push } : {}),
   };
@@ -386,11 +386,6 @@ export function planIncidentNotification(
   return { user: owner, event: { ...event, ...delivered } };
 }
 
-/** UTC calendar day, `YYYY-MM-DD`: one flush per row per day. */
-function utcDay(now: number): string {
-  return new Date(now).toISOString().slice(0, 10);
-}
-
 /**
  * The one alert after a night: the incident's current state as if it had
  * just entered it. Null for a heads-up and a close without action (they
@@ -415,10 +410,13 @@ export function planHeldFlush(
     by: latestStateEvent(incident)?.by ?? "sessions",
   };
   const row = rowFor(incident, entry, facts, now);
+  // No event key: a flush is idempotent through the row's held mark (a
+  // row that is not held is left alone), and each night's hold flushes
+  // once, however many fall on one calendar day.
   return {
     user: owner,
     event: {
-      ...baseEvent(incident, row, facts, now, `flush:${utcDay(now)}`),
+      ...baseEvent(incident, row, facts, now),
       delivery: "alert",
       flushHeld: true,
     },

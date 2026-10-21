@@ -449,8 +449,8 @@ test("reopen, rollback and the flush after a night", () => {
     body: "Fixed by agents and verified in production",
     delivery: "alert",
     flushHeld: true,
-    eventKey: "flush:2026-10-20",
   });
+  expect(planHeldFlush(done, facts(), NOW)?.event.eventKey).toBeUndefined();
   expect(planHeldFlush(done, facts(), NOW)?.event.cooldown).toBeUndefined();
   const byHand = inc(
     "resolved",
@@ -564,4 +564,35 @@ test("a push says a fixed line per kind; the reason stays on the row", () => {
     const flush = planHeldFlush(asks(kind, reason), facts(), NOW);
     expect(flush?.event.push?.body).toBe(line);
   }
+});
+
+test("two nights flushed on one UTC day each alert once", () => {
+  const prev = inc("fix-ready", [ev("investigating")]);
+  const veto = step(prev, "veto", "sessions", { response: vetoResponse });
+  const night = facts({ night: true });
+  // Held at 00:10 UTC, flushed at 06:00 UTC, held again at 22:00 UTC and
+  // flushed after that zone's night ends, still the same UTC day.
+  const day = Date.parse("2026-10-21T00:10:00Z");
+  let doc: NotificationDocument = { threads: [] };
+  doc = applyNotificationEvent(
+    doc,
+    planIncidentNotification(veto, prev, night, day)!.event,
+  ).doc;
+  const first = applyNotificationEvent(
+    doc,
+    planHeldFlush(veto, facts(), day + 6 * 3_600_000)!.event,
+  );
+  expect(first.delivery).toBe("alert");
+  const again = step(veto, "needs-you");
+  doc = applyNotificationEvent(
+    first.doc,
+    planIncidentNotification(again, veto, night, day + 22 * 3_600_000)!.event,
+  ).doc;
+  expect(doc.threads[0].heldAt).toBeDefined();
+  const second = applyNotificationEvent(
+    doc,
+    planHeldFlush(again, facts(), day + 23.5 * 3_600_000)!.event,
+  );
+  expect(second.thread).not.toBeNull();
+  expect(second.delivery).toBe("alert");
 });
