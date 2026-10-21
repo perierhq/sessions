@@ -237,6 +237,17 @@ test("a claimed user is never taken, and only a person changes actions or sees t
   });
   expect(
     await call(
+      "PUT",
+      "/api/incident-projects/acme",
+      { autonomy: "deploy-right-away" },
+      anonymous,
+    ),
+  ).toEqual({
+    status: 400,
+    json: { error: "Only a signed-in person can loosen the incident policy" },
+  });
+  expect(
+    await call(
       "POST",
       "/api/incident-projects/acme/runner-pairing",
       {},

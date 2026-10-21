@@ -668,12 +668,46 @@ const PERSON_ONLY_FIELDS: readonly CallerField[] = [
 export interface SettingsWriter {
   /** A verified sign-in that is not an automation (the route's
    *  `verifiedPerson(ctx)`). Without it actions and production Runners
-   *  cannot change. */
+   *  cannot change, and the policy cannot be loosened. */
   signedInPerson?: boolean;
 }
 
 const PERSON_ONLY_ERROR =
   "Only a signed-in person can change actions or production Runners";
+const LOOSEN_ERROR = "Only a signed-in person can loosen the incident policy";
+
+/**
+ * The fields whose change gives agents more room: a higher autonomy, a
+ * never-without-you entry removed, a shorter veto, a higher budget, the
+ * kill switch off, or the night rule off or changed. Tightening any of them
+ * is open to every writer.
+ */
+export function loosenedFields(
+  before: IncidentProjectSettings,
+  after: IncidentProjectSettings,
+): CallerField[] {
+  const fields: CallerField[] = [];
+  if (before.agentsPaused && !after.agentsPaused) fields.push("agentsPaused");
+  if (
+    AUTONOMY_LEVELS.indexOf(after.autonomy) >
+    AUTONOMY_LEVELS.indexOf(before.autonomy)
+  )
+    fields.push("autonomy");
+  if (
+    after.budget.perIncidentUsd > before.budget.perIncidentUsd ||
+    after.budget.perMonthUsd > before.budget.perMonthUsd
+  )
+    fields.push("budget");
+  if (
+    before.night &&
+    JSON.stringify(before.night) !== JSON.stringify(after.night)
+  )
+    fields.push("night");
+  if (before.neverWithoutYou.some((v) => !after.neverWithoutYou.includes(v)))
+    fields.push("neverWithoutYou");
+  if (after.vetoMs < before.vetoMs) fields.push("vetoMs");
+  return fields.sort();
+}
 
 class SettingsRefused extends Error {
   constructor(readonly reason: string) {
@@ -698,17 +732,22 @@ export async function updateProjectSettings(
     writer.signedInPerson
       ? []
       : fields.filter((f) => PERSON_ONLY_FIELDS.includes(f));
+  const loosened = (
+    before: IncidentProjectSettings,
+    after: IncidentProjectSettings,
+  ) => (writer.signedInPerson ? [] : loosenedFields(before, after));
   const planned = changedFields(snapshot, applyPatch(snapshot, early));
   if (planned.length === 0) return snapshot;
   const refusedEarly = personOnly(planned);
-  if (refusedEarly.length) {
+  const looserEarly = loosened(snapshot, applyPatch(snapshot, early));
+  if (refusedEarly.length || looserEarly.length) {
     incidentAudit({
       kind: "incident_settings_refused",
       project,
       by,
-      fields: refusedEarly,
+      fields: refusedEarly.length ? refusedEarly : looserEarly,
     });
-    return { error: PERSON_ONLY_ERROR };
+    return { error: refusedEarly.length ? PERSON_ONLY_ERROR : LOOSEN_ERROR };
   }
   let fields: CallerField[] = [];
   let committed: unknown;
@@ -725,6 +764,8 @@ export async function updateProjectSettings(
         return stored as IncidentProjectSettings;
       if (personOnly(fields).length)
         throw new SettingsRefused(PERSON_ONLY_ERROR);
+      if (loosened(current, next).length)
+        throw new SettingsRefused(LOOSEN_ERROR);
       const problem = settingsInvariantProblem(next);
       if (problem) throw new SettingsRefused(problem);
       return {

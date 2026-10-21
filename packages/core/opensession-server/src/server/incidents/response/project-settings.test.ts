@@ -307,6 +307,82 @@ test("only a signed-in person changes actions and production Runners", async () 
   );
   expect("error" in other ? other : other.autonomy).toBe("propose");
 });
+test("only a signed-in person loosens the policy; anyone may tighten it", async () => {
+  const anonymous = (input: Record<string, unknown>) =>
+    updateProjectSettings("acme", input, "agent");
+  const night = { start: "22:00", end: "07:00", timeZone: "Europe/Warsaw" };
+  // Start from a strict record, set by a person.
+  expect(
+    await update(
+      "acme",
+      {
+        agentsPaused: true,
+        autonomy: "propose",
+        vetoMs: 1_200_000,
+        night,
+        neverWithoutYou: [
+          "costs-money",
+          "needs-secret",
+          "migration",
+          "outside-scope",
+          "not-reversible",
+        ],
+        budget: { perIncidentUsd: 10, perMonthUsd: 100 },
+      },
+      "Ada",
+    ),
+  ).not.toHaveProperty("error");
+  const loosen: Array<[Record<string, unknown>, string]> = [
+    [{ autonomy: "deploy-right-away" }, "autonomy"],
+    [{ neverWithoutYou: ["costs-money"] }, "neverWithoutYou"],
+    [{ vetoMs: 600_000 }, "vetoMs"],
+    [{ budget: { perIncidentUsd: 20 } }, "budget"],
+    [{ budget: { perMonthUsd: 300 } }, "budget"],
+    [{ agentsPaused: false }, "agentsPaused"],
+    [{ night: null }, "night"],
+    [{ night: { ...night, end: "06:00" } }, "night"],
+  ];
+  for (const [input, field] of loosen) {
+    expect(await anonymous(input)).toEqual({
+      error: "Only a signed-in person can loosen the incident policy",
+    });
+    expect(kit.audits.at(-1)).toEqual({
+      kind: "incident_settings_refused",
+      project: "acme",
+      by: "agent",
+      fields: [field],
+    });
+  }
+  const strict = await getProjectSettings("acme");
+  expect(strict).toMatchObject({
+    agentsPaused: true,
+    autonomy: "propose",
+    vetoMs: 1_200_000,
+    night,
+    budget: { perIncidentUsd: 10, perMonthUsd: 100 },
+  });
+  expect(strict.neverWithoutYou).toHaveLength(5);
+  // Tightening stays open.
+  const tighter = await anonymous({
+    autonomy: "watch",
+    vetoMs: 1_800_000,
+    budget: { perIncidentUsd: 5, perMonthUsd: 50 },
+  });
+  expect(tighter).toMatchObject({
+    autonomy: "watch",
+    vetoMs: 1_800_000,
+    budget: { perIncidentUsd: 5, perMonthUsd: 50 },
+  });
+  // A person may loosen.
+  expect(
+    await update("acme", { agentsPaused: false, night: null }, "Ada"),
+  ).toMatchObject({ agentsPaused: false });
+  expect(await anonymous({ agentsPaused: true, night })).toMatchObject({
+    agentsPaused: true,
+    night,
+  });
+});
+
 test("placeholders cannot sit inside quotes", () => {
   for (const command of [
     "./deploy.sh '{{ref}}'",

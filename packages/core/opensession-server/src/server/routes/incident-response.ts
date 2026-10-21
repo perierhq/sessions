@@ -4,9 +4,11 @@
  * did" (the ledger plus each agent's access and tool calls).
  *
  * Identity is the verified sign-in only; a claimed `user` in a body is
- * never taken. Changing actions or production Runners, pairing a Runner,
- * and decisions that act on production (deploy now, approve, roll back)
- * need a signed-in person (`verifiedPerson`), even with web sign-in off.
+ * never taken. Changing actions or production Runners, loosening the
+ * policy (autonomy, never without you, veto, budgets, kill switch off, night
+ * rule), pairing a Runner, and decisions that act on production (deploy
+ * now, approve, roll back) need a signed-in person (`verifiedPerson`), even
+ * with web sign-in off. Tightening the policy stays open.
  * The release hook path carries its secret, so only a signed-in person
  * sees it.
  *
