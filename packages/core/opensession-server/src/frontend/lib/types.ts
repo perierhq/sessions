@@ -1,6 +1,7 @@
 // Type-only (erased at build): the dynamic-workflow run snapshot broadcast to
 // the session's Agents panel.
 import type { WorkflowRunSnapshot } from "../../shared/workflow-types";
+import type { IncidentState, SignalState } from "../../shared/incidents";
 import type { MentionRecord } from "./api/user-state";
 // The protocol core: durable record types and the WebSocket frames any
 // session client speaks. This file re-exports them and layers the reference
@@ -1072,6 +1073,21 @@ export type WSServerMessage =
   // sidebar projection; older and native clients safely ignore this frame.
   | { type: "sessions_invalidated" }
   | { type: "workspaces_changed" }
+  // An incident was written, a signal changed state, or a project's incident
+  // access settings changed. Ids and states only: incident views refetch.
+  | {
+      type: "incidents_changed";
+      incidentId: string;
+      project: string;
+      state: IncidentState;
+    }
+  | {
+      type: "incident_signals_changed";
+      signalId: string;
+      project: string;
+      state: SignalState;
+    }
+  | { type: "incident_settings_changed"; project: string }
   // One session's list row changed and is visible in this socket's subscribed
   // sidebar scope (sessions_subscribe). Replaces a whole-list refetch for the
   // common write. `session_row_removed` is the same change for a row the
