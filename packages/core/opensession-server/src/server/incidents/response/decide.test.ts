@@ -698,6 +698,12 @@ test("investigation: questions, errors, timeouts and no candidate", () => {
     kind: "no-candidate",
     reason: "No fix found: Upstream is down for everyone",
   });
+  // Stopped from its own session: the owner decides.
+  expect(decideNextStep(one({ status: "cancelled" }, "cancelled"))).toEqual({
+    step: "needs-you",
+    kind: "agent-error",
+    reason: "The investigator was stopped",
+  });
   // Cancelled by the kill switch: a new attempt once it is off.
   expect(
     decideNextStep(

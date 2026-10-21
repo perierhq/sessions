@@ -710,6 +710,13 @@ function agentProblem(
       kind: "agent-error",
       reason: run.error ?? `The ${run.role} ran for 2 h without finishing`,
     };
+  // Stopped from outside Sessions (its own session's Stop).
+  if (status === "cancelled" && run.cancelledFor === undefined)
+    return {
+      step: "needs-you",
+      kind: "agent-error",
+      reason: `The ${run.role} was stopped`,
+    };
   return undefined;
 }
 
