@@ -22,6 +22,7 @@ import {
   Feed,
   FirstMile,
   Goals,
+  IncidentSettings,
   IncidentsPane,
   Issues,
   Prs,
@@ -1316,10 +1317,10 @@ export function AppContent({
                     }
                   />
                 ) : route.view === "incidentSettings" ? (
-                  // Placeholder until the incident settings page lands.
-                  <EmptyState title="Incidents">
-                    {route.project ?? "Incident settings"}
-                  </EmptyState>
+                  <IncidentSettings
+                    project={route.project}
+                    onOpenProject={navigationActions.openIncidentSettings}
+                  />
                 ) : null}
               </Settings>
             )}
