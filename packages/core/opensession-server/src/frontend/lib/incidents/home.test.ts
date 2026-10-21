@@ -67,7 +67,7 @@ test("past rows", () => {
       }),
       NOW,
     ),
-  ).toMatchObject({ fixedBy: "By hand · 24 h", cost: "—" });
+  ).toMatchObject({ fixedBy: "By hand · 24 h", cost: "$0.00" });
   expect(
     pastIncidentRow(
       inc({

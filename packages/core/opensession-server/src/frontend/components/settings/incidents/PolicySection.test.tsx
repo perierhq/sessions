@@ -85,7 +85,7 @@ test("while loading, each group keeps its final shape", () => {
   );
   expect(html).toContain("Autonomy");
   expect(html).toContain("Budget");
-  expect(html).toContain("acme · what the agents may do when something breaks");
+  expect(html).toContain("What agents may do in acme when something breaks");
 });
 
 test("policy rows in order, with defaults", () => {
@@ -109,7 +109,9 @@ test("policy rows in order, with defaults", () => {
   expect([...order].sort((a, b) => a - b)).toEqual(order);
   expect(html).toContain("Stops every incident run for acme right now");
   expect(html).toContain("Spent this month: $6.50");
-  expect(html).toContain("Off");
+  // At night says Off once, as its value.
+  expect(html).toContain("Fixes can wait for you overnight");
+  expect(html.match(/>Off</g)).toHaveLength(1);
   // Semantic tokens only.
   expect(html).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(/i);
   // Four levels: a select, not the toggle group a Segmented draws.

@@ -65,7 +65,8 @@ export function pastIncidentRow(
   return {
     title: i.title,
     fixedBy,
-    cost: i.response ? formatUsd(i.response.costUsd) : "—",
+    // No agents ran: nothing was spent, in the same form as any cost.
+    cost: formatUsd(i.response?.costUsd ?? 0),
     date: shortDate(i.openedAt, now),
   };
 }

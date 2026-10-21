@@ -63,7 +63,8 @@ export function withCurrent(values: number[], current: number): number[] {
 }
 
 export function nightDescription(night: NightRule | undefined): string {
-  if (!night) return "Off";
+  // Off is the row's value; the description says what turning it on does.
+  if (!night) return "Fixes can wait for you overnight";
   return `From ${formatTimeOfDay(night.start)} to ${formatTimeOfDay(night.end)}, fixes wait for you unless the signal is fully down`;
 }
 

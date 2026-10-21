@@ -22,7 +22,7 @@ test("night description", () => {
   ).toBe(
     `From ${formatTimeOfDay("23:00")} to ${formatTimeOfDay("07:00")}, fixes wait for you unless the signal is fully down`,
   );
-  expect(nightDescription(undefined)).toBe("Off");
+  expect(nightDescription(undefined)).toBe("Fixes can wait for you overnight");
 });
 
 test("minute options", () => {

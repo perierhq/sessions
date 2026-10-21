@@ -289,7 +289,7 @@ export function IncidentSettingsView({
       <SettingsPanel className="self-start">
         <SettingsHeader
           title="Incidents"
-          description={`${label} · what the agents may do when something breaks`}
+          description={`What agents may do in ${label} when something breaks`}
           actions={picker}
         />
         {policy}
