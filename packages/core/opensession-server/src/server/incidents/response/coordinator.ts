@@ -907,7 +907,10 @@ async function startAgent(
 
   let sessionId: string;
   try {
-    const agents = await agentsFor(incident, d);
+    const agents = await agentsFor(
+      await withCoordinator(incident, settings, d),
+      d,
+    );
     if (!agents) throw new Error("The incident has no coordinator session");
     ({ sessionId } = await agents.spawn({
       role,
@@ -975,6 +978,32 @@ async function startAgent(
     accessRevision: access.revision,
   });
   return true;
+}
+
+/**
+ * The incident with its coordinator session, created now when the fix loop
+ * started without one (watch only, then agents on). Recorded whatever moved
+ * meanwhile: the session exists either way.
+ */
+async function withCoordinator(
+  incident: Incident,
+  settings: IncidentProjectSettings,
+  d: CoordinatorDeps,
+): Promise<Incident> {
+  const r = incident.response;
+  if (!r || r.coordinatorSessionId) return incident;
+  const automation = await d.automation(incident.project);
+  const coordinatorSessionId = await d.coordinatorSession(incident, automation);
+  await write(incident.id, d, settings, null, (c, base) => ({
+    incident: c,
+    response: base.coordinatorSessionId
+      ? base
+      : { ...base, coordinatorSessionId, automationId: automation.id },
+  }));
+  return {
+    ...incident,
+    response: { ...r, coordinatorSessionId, automationId: automation.id },
+  };
 }
 
 /** Whether starting `role` now is rollback-first's parallel investigator. */

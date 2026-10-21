@@ -1345,6 +1345,26 @@ test("retry after a setup problem starts the agents again", async () => {
   expect(w.spawns).toHaveLength(1);
 });
 
+test("watch only, then agents on: the investigator starts with a coordinator", async () => {
+  const w = await world();
+  w.settings.autonomy = "watch";
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.phase).toBe("watch-only");
+  expect(i?.response?.coordinatorSessionId).toBeUndefined();
+  w.settings.autonomy = "deploy-after-veto";
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response).toMatchObject({
+    phase: "investigating",
+    coordinatorSessionId: "coord-1",
+    automationId: "auto-1",
+    agents: [{ role: "investigator", sessionId: "child-1" }],
+  });
+  expect(w.spawns).toHaveLength(1);
+});
+
 test("kill switch while the veto counts down: no merge, ever", async () => {
   const w = await world();
   await w.toCertain();
