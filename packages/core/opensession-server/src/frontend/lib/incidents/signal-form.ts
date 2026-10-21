@@ -438,6 +438,26 @@ function sourceAndRule(
   }
 }
 
+/** The draft with its http (`json`) or webhook (`webhookMapping`)
+ *  mapping set, or cleared when `mapping` is undefined. */
+export function withMapping(
+  d: SignalDraft,
+  key: "json" | "webhookMapping",
+  mapping: JsonMapping | undefined,
+): SignalDraft {
+  const next = { ...d };
+  if (mapping) next[key] = mapping;
+  else delete next[key];
+  return next;
+}
+
+/** The draft's source as a test run takes it, or null while a field the
+ *  source needs is still wrong. */
+export function draftSource(d: SignalDraft): SignalSource | null {
+  const built = sourceAndRule(d);
+  return "field" in built ? null : built.source;
+}
+
 /** The draft as the routes take it, or the first field to fix. Every
  *  optional field is sent, so an edit can also clear it. */
 export function draftToInput(d: SignalDraft): DraftResult {

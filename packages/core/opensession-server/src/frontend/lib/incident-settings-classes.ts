@@ -55,3 +55,16 @@ export const DIALOG_INPUT = "phone:min-h-11 phone:text-input-phone";
 
 /** A heading over a group of fields inside a dialog. */
 export const FORM_SECTION_TITLE = "m-0 text-label font-semibold text-fg";
+
+/** The mapping preview: a well under the fields, filled, never outlined. */
+export const MAPPING_PREVIEW =
+  "flex flex-col gap-3 rounded-xl bg-surface p-4 phone:p-3";
+
+/** "What each path found": each path over what it matched, so a long
+ *  filter path never squeezes the values into a column of fragments. */
+export const MAPPING_FOUND_LIST = "m-0 flex flex-col gap-2 p-0";
+export const MAPPING_FOUND_ROW = "flex min-w-0 flex-col";
+
+/** A raw response body: content, so it is selectable. */
+export const MAPPING_RAW =
+  "m-0 max-h-64 select-text overflow-auto whitespace-pre-wrap font-mono text-meta text-dim [overflow-wrap:anywhere]";

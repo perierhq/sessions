@@ -22,6 +22,7 @@ import {
   type DraftField,
   defaultDraft,
   draftFromSignal,
+  draftSource,
   draftToInput,
   GRACE_CHOICES,
   HEARTBEAT_INTERVALS,
@@ -33,6 +34,7 @@ import {
   type SignalDraft,
   switchKind,
   TIMEOUT_CHOICES,
+  withMapping,
 } from "../../../lib/incidents/signal-form";
 import { Button } from "../../../ui/button";
 import { Checkbox } from "../../../ui/checkbox";
@@ -45,6 +47,8 @@ import { OptionSelect } from "../../../ui/select";
 import { Switch } from "../../../ui/switch";
 import { toast } from "../../../ui/toast";
 import { CopyUrl, FormField, HeaderRows } from "./FormParts";
+import type { JsonDocument } from "../../../lib/incidents/mapping-preview";
+import { JsonMappingPreview } from "./JsonMappingPreview";
 import { SettingsDialog } from "./SettingsDialog";
 import { SignalImpactFields } from "./SignalImpactFields";
 import { SignalRuleFields } from "./SignalRuleFields";
@@ -87,6 +91,9 @@ export function SignalEditor({
   } | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The mapping preview's sample: kept here so it outlives a kind switch
+  // back and forth, never saved.
+  const [sample, setSample] = useState<JsonDocument | undefined>(undefined);
   const [confirm, confirmDialog] = useConfirm();
   const idBase = useId();
   const idFor = (field: DraftField) => `${idBase}-${field}`;
@@ -176,6 +183,8 @@ export function SignalEditor({
           others={signals.filter(
             (other) => other.project === project && other.id !== draft.id,
           )}
+          sample={sample}
+          onSample={setSample}
         />
       </SettingsDialog>
       {confirmDialog}
@@ -194,6 +203,8 @@ export function SignalEditorFields({
   idFor,
   runners,
   others,
+  sample,
+  onSample = () => {},
 }: {
   draft: SignalDraft;
   onChange: (next: SignalDraft) => void;
@@ -201,6 +212,9 @@ export function SignalEditorFields({
   idFor: (field: DraftField) => string;
   runners: ProductionRunnerView[];
   others: SignalView[];
+  /** The JSON mapping preview's sample. */
+  sample?: JsonDocument;
+  onSample?: (doc: JsonDocument) => void;
 }) {
   const set = (patch: Partial<SignalDraft>) => onChange({ ...draft, ...patch });
   const errorOf = (field: DraftField) =>
@@ -496,6 +510,33 @@ export function SignalEditorFields({
         describe={describe}
         idFor={idFor}
       />
+
+      {((draft.kind === "http" && draft.method !== "HEAD") ||
+        draft.kind === "webhook") && (
+        <Disclosure
+          title="JSON mapping"
+          defaultOpen={
+            !!(draft.kind === "http" ? draft.json : draft.webhookMapping)
+          }
+        >
+          <JsonMappingPreview
+            kind={draft.kind}
+            source={draftSource(draft)}
+            signalId={draft.id}
+            provider={draft.provider}
+            mapping={draft.kind === "http" ? draft.json : draft.webhookMapping}
+            onChange={(mapping) =>
+              onChange(
+                draft.kind === "http"
+                  ? withMapping(draft, "json", mapping)
+                  : withMapping(draft, "webhookMapping", mapping),
+              )
+            }
+            sample={sample}
+            onSample={onSample}
+          />
+        </Disclosure>
+      )}
 
       <Disclosure title="More">
         <div className="flex flex-col gap-4">
