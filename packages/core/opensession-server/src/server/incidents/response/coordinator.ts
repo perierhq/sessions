@@ -2429,7 +2429,10 @@ async function ownerDecision(
 
 /**
  * Whether the incident still shows this person's same decision: it was the
- * last decision, and the incident has not changed state since.
+ * last decision, and the incident has not changed state since. A repeat
+ * writes nothing, so that decision stays the last one: every further retry
+ * of it (not only the first) gets the same incident back, until a state
+ * change or someone else's decision lands.
  */
 function alreadyDecided(
   incident: Incident,

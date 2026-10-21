@@ -1647,6 +1647,23 @@ test("a decision repeated by the same person is answered with the incident", asy
   expect(w.audits.filter((a) => a.kind === "incident_decision")).toHaveLength(
     1,
   );
+  // A second retry of the same Stop is answered the same way.
+  const third = await applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  expect(third).toEqual(again);
+  expect(w.audits.filter((a) => a.kind === "incident_decision")).toHaveLength(
+    1,
+  );
+  expect(
+    (await getIncident(w.incident.id))?.events.filter(
+      (e) => e.kind === "decision",
+    ),
+  ).toHaveLength(1);
   // Someone else's, or another decision, is still refused.
   expect(
     await applyOwnerDecision(w.incident.id, "stop", "Cy", undefined, w.deps),
