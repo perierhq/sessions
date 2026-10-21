@@ -34,7 +34,14 @@ export const INCIDENT_TRANSITIONS: Readonly<
   ],
   "fix-ready": ["veto", "deploying", "investigating", "needs-you", "paused"],
   veto: ["deploying", "investigating", "needs-you", "paused"],
-  deploying: ["watching", "rolled-back", "needs-you", "paused"],
+  // `investigating`: a failing check before the merge sends the work back.
+  deploying: [
+    "watching",
+    "rolled-back",
+    "investigating",
+    "needs-you",
+    "paused",
+  ],
   watching: ["resolved", "rolled-back", "needs-you", "paused"],
   "rolled-back": ["investigating", "needs-you"],
   "needs-you": [
@@ -96,7 +103,9 @@ export function markerForTransition(
     case "fix-ready":
       return "fix-ready";
     case "investigating":
-      return from === "fix-ready" || from === "veto" ? "sent-back" : undefined;
+      return from === "fix-ready" || from === "veto" || from === "deploying"
+        ? "sent-back"
+        : undefined;
     case "deploying":
       return "deploy";
     case "watching":

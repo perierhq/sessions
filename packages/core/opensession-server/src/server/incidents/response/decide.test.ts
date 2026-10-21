@@ -1145,3 +1145,827 @@ test("helpers: current agent and own signals", () => {
     ),
   ).toBe(false);
 });
+
+// --- Task 16: policy, veto, merge, deploy, watch, rollback, notes ---
+
+const VERIFIED = "abc1234";
+const certainVerdict = {
+  round: 1,
+  at: iso(-60_000),
+  verdict: "certain" as const,
+  reasons: [],
+  verifiedSha: VERIFIED,
+};
+const verifiedAgents = [
+  run("investigator", {
+    status: "done",
+    report: goodInvestigator,
+    prUrl: "https://github.com/acme/web/pull/12",
+  }),
+  run("verifier", {
+    status: "done",
+    report: goodVerifier,
+    independence: "other-provider",
+  }),
+];
+
+function settingsWith(deployScope?: Partial<IncidentAction["scope"]>) {
+  return {
+    ...defaultSettings,
+    actions: [
+      { ...deployAction, scope: { ...deployAction.scope, ...deployScope } },
+      rollbackAction,
+    ],
+  };
+}
+
+function certain(
+  over: {
+    pr?: Partial<PrSnapshot>;
+    deployScope?: Partial<IncidentAction["scope"]>;
+  } = {},
+): ResponseView {
+  return view({
+    settings: settingsWith(over.deployScope),
+    incident: incident(
+      "fix-ready",
+      response({
+        phase: "deciding",
+        candidate: candidate({ pr: prSnapshot(over.pr) }),
+        proof: proofResult({
+          round: 1,
+          baseline: "fails",
+          candidate: "passes",
+        }),
+        verdict: certainVerdict,
+        agents: verifiedAgents,
+      }),
+    ),
+  });
+}
+
+const actDecision = {
+  kind: "act" as const,
+  after: "veto" as const,
+  vetoMs: 600_000,
+  rule: "Deploy after veto, from the project settings",
+};
+
+function inVeto(veto: { deadline: string }): ResponseView {
+  return view({
+    incident: incident(
+      "veto",
+      response({
+        phase: "veto",
+        candidate: candidate({ pr: prSnapshot() }),
+        verdict: certainVerdict,
+        decision: actDecision,
+        veto: { startedAt: iso(-600_000), deadline: veto.deadline },
+        agents: verifiedAgents,
+      }),
+    ),
+  });
+}
+
+function merging(
+  pr: Partial<PrSnapshot>,
+  over: Partial<IncidentResponse> = {},
+): ResponseView {
+  return view({
+    incident: incident(
+      "deploying",
+      response({
+        phase: "merging",
+        candidate: candidate({ pr: prSnapshot(pr) }),
+        verdict: certainVerdict,
+        decision: actDecision,
+        mergingSince: iso(-1_000),
+        agents: verifiedAgents,
+        ...over,
+      }),
+    ),
+  });
+}
+
+const mergedRecord = {
+  ghRepo: "acme/web",
+  number: 12,
+  sha: VERIFIED,
+  status: "merged" as const,
+  mergedSha: "9f9f9f9",
+  at: iso(-30_000),
+};
+
+function deploying(
+  actionRuns: ActionRun[],
+  liveIds: Set<string> = new Set(),
+): ResponseView {
+  return view({
+    liveActionRunIds: liveIds,
+    incident: incident(
+      "deploying",
+      response({
+        phase: "deploying",
+        candidate: candidate({ pr: prSnapshot() }),
+        verdict: certainVerdict,
+        decision: actDecision,
+        merge: mergedRecord,
+        actionRuns,
+        agents: verifiedAgents,
+      }),
+    ),
+  });
+}
+
+function watching(
+  watch: { startedAt: string; deadline: string },
+  evaluations: Map<string, SignalEvaluation>,
+  over: Partial<IncidentResponse> = {},
+): ResponseView {
+  return view({
+    evaluations,
+    incident: incident(
+      "watching",
+      response({
+        phase: "watching",
+        candidate: candidate({ pr: prSnapshot() }),
+        verdict: certainVerdict,
+        decision: actDecision,
+        merge: mergedRecord,
+        actionRuns: [actionRun({ actionId: "deploy", status: "ok" })],
+        watch,
+        agents: verifiedAgents,
+        ...over,
+      }),
+    ),
+  });
+}
+
+function rollingBack(
+  actionRuns: ActionRun[],
+  over: Partial<IncidentResponse> & { state?: IncidentState } = {},
+): ResponseView {
+  const { state = "rolled-back", ...rest } = over;
+  return view({
+    incident: incident(
+      state,
+      response({
+        phase: "rolling-back",
+        candidate: candidate({ pr: prSnapshot() }),
+        merge: mergedRecord,
+        actionRuns: [
+          actionRun({ id: "act-0", actionId: "deploy", status: "ok" }),
+          ...actionRuns,
+        ],
+        agents: verifiedAgents,
+        ...rest,
+      }),
+    ),
+  });
+}
+
+const rollbackCandidate = candidate({
+  plan: { pr: false, actions: ["rollback"] },
+  check: {
+    kind: "after-deploy",
+    reason: "Rolling back the release at 11:55 UTC",
+  },
+  claims: [],
+  prUrl: undefined,
+  rollbackFirst: true,
+});
+
+function rollbackFirst(over: Partial<IncidentResponse> = {}): ResponseView {
+  return view({
+    incident: incident(
+      "fix-ready",
+      response({ phase: "deciding", candidate: rollbackCandidate, ...over }),
+    ),
+  });
+}
+
+function rollbackFirstWatching(watch: { deadline: string }): ResponseView {
+  return view({
+    incident: incident(
+      "watching",
+      response({
+        phase: "watching",
+        candidate: rollbackCandidate,
+        decision: actDecision,
+        actionRuns: [
+          actionRun({
+            actionId: "rollback",
+            purpose: "rollback-first",
+            status: "ok",
+          }),
+        ],
+        watch: { startedAt: iso(-600_000), deadline: watch.deadline },
+        agents: [run("investigator")],
+      }),
+    ),
+    agents: live({ "child-1": "running" }),
+  });
+}
+
+function documenting(
+  pr: Partial<PrSnapshot>,
+  over: Partial<IncidentResponse> = {},
+): ResponseView {
+  return view({
+    incident: incident(
+      "resolved",
+      response({
+        phase: "documenting",
+        documentingSince: iso(-60_000),
+        agents: [
+          run("investigator", {
+            status: "done",
+            prUrl: "https://github.com/acme/web/pull/13",
+          }),
+        ],
+        note: {
+          prUrl: "https://github.com/acme/web/pull/13",
+          pr: prSnapshot({
+            number: 13,
+            url: "https://github.com/acme/web/pull/13",
+            ...pr,
+          }),
+          merged: false,
+        },
+        ...over,
+      }),
+      { fixedBy: "by-hand" },
+    ),
+  });
+}
+
+test("deciding: default policy opens the veto; protection asks first", () => {
+  expect(decideNextStep(certain())).toEqual({
+    step: "open-veto",
+    decision: {
+      kind: "act",
+      after: "veto",
+      vetoMs: 600_000,
+      rule: "Deploy after veto, from the project settings",
+    },
+  });
+  expect(
+    decideNextStep(certain({ pr: { requiredApprovals: 1 } })),
+  ).toMatchObject({
+    step: "needs-you",
+    kind: "protection",
+    reason: "Branch protection requires a review on PR #12",
+  });
+  expect(
+    decideNextStep(
+      certain({
+        pr: { files: ["src/db/migrations/0042.sql"] },
+        deployScope: { migrationPaths: ["src/db/migrations/**"] },
+      }),
+    ),
+  ).toMatchObject({
+    step: "needs-you",
+    kind: "policy",
+    rule: "Never without you: runs a migration, from the project settings",
+  });
+});
+
+test("deciding: a stale PR is fetched first; right away goes straight to merging", () => {
+  expect(decideNextStep(certain({ pr: { fetchedAt: iso(-60_000) } }))).toEqual({
+    step: "fetch-pr",
+    purpose: "merge",
+  });
+  const now = certain();
+  expect(
+    decideNextStep({
+      ...now,
+      settings: { ...now.settings, autonomy: "deploy-right-away" },
+    }),
+  ).toEqual({
+    step: "transition",
+    to: "deploying",
+    phase: "merging",
+    detail: "Deploy right away, from the project settings",
+    patch: {
+      decision: {
+        kind: "act",
+        after: "now",
+        vetoMs: 0,
+        rule: "Deploy right away, from the project settings",
+      },
+      mergingSince: iso(0),
+    },
+  });
+  expect(
+    decideNextStep({
+      ...now,
+      settings: { ...now.settings, autonomy: "propose" },
+    }),
+  ).toMatchObject({
+    step: "needs-you",
+    kind: "policy",
+    reason: "Verified and ready. Waiting for you",
+    patch: { decision: { kind: "ask" } },
+  });
+  expect(
+    decideNextStep(certain({ pr: { failingChecks: ["test"] } })),
+  ).toMatchObject({
+    step: "transition",
+    to: "investigating",
+    patch: {
+      round: 2,
+      sendBack: { kind: "check-failed", detail: "Check test failed on PR #12" },
+    },
+  });
+});
+
+test("veto elapses into merging; merging merges only the verified head", () => {
+  expect(decideNextStep(inVeto({ deadline: iso(1) }))).toEqual({
+    step: "none",
+  });
+  expect(decideNextStep(inVeto({ deadline: iso(-1) }))).toMatchObject({
+    step: "transition",
+    to: "deploying",
+    phase: "merging",
+    detail: "Veto window elapsed",
+  });
+  expect(decideNextStep(merging({}))).toEqual({ step: "merge" });
+  expect(decideNextStep(merging({ headSha: "fff9999" }))).toEqual({
+    step: "needs-you",
+    kind: "merge",
+    reason: "PR #12 changed after verification",
+  });
+  expect(
+    decideNextStep(
+      merging({ pendingChecks: ["test"] }, { mergingSince: iso(-1_300_000) }),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "merge",
+    reason: "Checks are still running on PR #12 after 20 min",
+  });
+  expect(decideNextStep(merging({ pendingChecks: ["test"] }))).toEqual({
+    step: "none",
+  });
+  expect(decideNextStep(merging({ failingChecks: ["test"] }))).toMatchObject({
+    step: "transition",
+    to: "investigating",
+    patch: {
+      round: 2,
+      sendBack: { kind: "check-failed", detail: "Check test failed on PR #12" },
+    },
+  });
+});
+
+test("merging: a recorded merge moves on; someone else's merge is checked", () => {
+  expect(decideNextStep(merging({}, { merge: mergedRecord }))).toEqual({
+    step: "transition",
+    to: null,
+    phase: "deploying",
+    detail: "Merged PR #12",
+  });
+  expect(
+    decideNextStep(
+      merging(
+        {},
+        {
+          merge: {
+            ...mergedRecord,
+            status: "refused",
+            detail: "GitHub refused the merge",
+          },
+        },
+      ),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "merge",
+    reason: "GitHub refused the merge",
+  });
+  expect(
+    decideNextStep(merging({ state: "MERGED", mergeCommitSha: "9f9f9f9" })),
+  ).toMatchObject({
+    step: "transition",
+    to: null,
+    phase: "deploying",
+    detail: "PR #12 was already merged",
+    patch: {
+      merge: { status: "merged", sha: VERIFIED, mergedSha: "9f9f9f9" },
+    },
+  });
+  expect(
+    decideNextStep(merging({ state: "MERGED", headSha: "fff9999" })),
+  ).toEqual({
+    step: "needs-you",
+    kind: "merge",
+    reason: "PR #12 was merged with changes after verification",
+  });
+  expect(decideNextStep(merging({ fetchedAt: iso(-31_000) }))).toEqual({
+    step: "fetch-pr",
+    purpose: "merge",
+  });
+});
+
+test("deploying: runs each step once and never re-runs an interrupted one", () => {
+  expect(decideNextStep(deploying([]))).toEqual({
+    step: "run-action",
+    actionId: "deploy",
+    purpose: "plan",
+  });
+  expect(
+    decideNextStep(
+      deploying(
+        [actionRun({ id: "act-1", actionId: "deploy", status: "running" })],
+        new Set(["act-1"]),
+      ),
+    ),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(
+      deploying(
+        [actionRun({ id: "act-1", actionId: "deploy", status: "running" })],
+        new Set(),
+      ),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "interrupted",
+    reason:
+      "Sessions restarted while Deploy was running. Check production before going on.",
+  });
+  expect(
+    decideNextStep(
+      deploying([actionRun({ actionId: "deploy", status: "interrupted" })]),
+    ),
+  ).toMatchObject({ step: "needs-you", kind: "interrupted" });
+  expect(
+    decideNextStep(
+      deploying([
+        actionRun({ actionId: "deploy", status: "failed", detail: "Exit 1" }),
+      ]),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "action-failed",
+    reason: "Deploy failed: Exit 1",
+  });
+  expect(
+    decideNextStep(
+      deploying([
+        actionRun({
+          actionId: "deploy",
+          status: "unknown",
+          detail: "The Runner disconnected while the action ran",
+        }),
+      ]),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "action-failed",
+    reason: "Deploy: The Runner disconnected while the action ran",
+  });
+  expect(
+    decideNextStep(
+      deploying([actionRun({ actionId: "deploy", status: "ok" })]),
+    ),
+  ).toEqual({ step: "start-watch" });
+  const unmerged = deploying([]);
+  unmerged.incident.response!.merge = undefined;
+  expect(decideNextStep(unmerged)).toEqual({
+    step: "needs-you",
+    kind: "merge",
+    reason: "No merge commit to deploy for PR #12",
+  });
+});
+
+test("watching: green resolves, a red deadline rolls back, then the next round", () => {
+  const green = new Map([["sig-a", evaluation("ok", iso(-60_000))]]);
+  expect(
+    decideNextStep(
+      watching({ startedAt: iso(-120_000), deadline: iso(480_000) }, green),
+    ),
+  ).toEqual({
+    step: "resolve",
+    fixedBy: "agents",
+    detail: "Search back to normal after the release",
+  });
+  expect(
+    decideNextStep(
+      watching({ startedAt: iso(-120_000), deadline: iso(480_000) }, green, {
+        ownerTouched: true,
+      }),
+    ),
+  ).toMatchObject({ step: "resolve", fixedBy: "agents-with-you" });
+  // Green since before the watch started: not yet proof of the release.
+  const before = new Map([["sig-a", evaluation("ok", iso(-200_000))]]);
+  expect(
+    decideNextStep(
+      watching({ startedAt: iso(-120_000), deadline: iso(480_000) }, before),
+    ),
+  ).toEqual({ step: "none" });
+  const stillRed = new Map([["sig-a", evaluation("failing", iso(-3_600_000))]]);
+  expect(
+    decideNextStep(
+      watching({ startedAt: iso(-600_000), deadline: iso(-1) }, stillRed),
+    ),
+  ).toEqual({
+    step: "transition",
+    to: "rolled-back",
+    phase: "rolling-back",
+    detail: "Search still failing after the watch window",
+  });
+  expect(decideNextStep(rollingBack([]))).toEqual({
+    step: "run-action",
+    actionId: "rollback",
+    purpose: "auto-rollback",
+  });
+  expect(
+    decideNextStep(
+      rollingBack([
+        actionRun({
+          actionId: "rollback",
+          purpose: "auto-rollback",
+          status: "ok",
+        }),
+      ]),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    to: "investigating",
+    patch: {
+      round: 2,
+      sendBack: {
+        kind: "rolled-back",
+        detail: "Search was still failing 10 min after the release",
+      },
+    },
+  });
+  expect(
+    decideNextStep(
+      rollingBack(
+        [
+          actionRun({
+            actionId: "rollback",
+            purpose: "auto-rollback",
+            status: "ok",
+            round: 2,
+          }),
+        ],
+        { round: 2 },
+      ),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "rounds",
+    reason: "Rolled back after 2 rounds",
+  });
+  expect(
+    decideNextStep(
+      rollingBack([
+        actionRun({
+          actionId: "rollback",
+          purpose: "auto-rollback",
+          status: "failed",
+          detail: "Exit 2",
+        }),
+      ]),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "action-failed",
+    reason: "Rollback failed: Exit 2",
+  });
+  const noRollback = watching(
+    { startedAt: iso(-600_000), deadline: iso(-1) },
+    stillRed,
+  );
+  expect(
+    decideNextStep({
+      ...noRollback,
+      settings: { ...defaultSettings, actions: [deployAction] },
+    }),
+  ).toEqual({
+    step: "needs-you",
+    kind: "no-action",
+    reason:
+      "Search is still failing after the release and there is no rollback action",
+  });
+});
+
+test("rollback-first: the rollback goes to the veto while the investigator reads the release", () => {
+  const rf = rollbackFirst();
+  expect(decideNextStep(rf)).toEqual({
+    step: "start-agent",
+    role: "investigator",
+    round: 1,
+    attempt: 1,
+  });
+  expect(
+    decideNextStep(rollbackFirst({ agents: [run("investigator")] })),
+  ).toMatchObject({ step: "open-veto" });
+  expect(decideNextStep(rollbackFirstWatching({ deadline: iso(-1) }))).toEqual({
+    step: "needs-you",
+    kind: "action-failed",
+    reason: "The rollback did not bring Search back",
+  });
+  // Deploying a rollback-first candidate runs the rollback, not a deploy.
+  expect(
+    decideNextStep(
+      view({
+        incident: incident(
+          "deploying",
+          response({
+            phase: "deploying",
+            candidate: rollbackCandidate,
+            agents: [run("investigator")],
+          }),
+        ),
+        agents: live({ "child-1": "running" }),
+      }),
+    ),
+  ).toEqual({
+    step: "run-action",
+    actionId: "rollback",
+    purpose: "rollback-first",
+  });
+});
+
+test("documenting: a notes-only PR merges, a code PR is left for review, nobody is woken", () => {
+  expect(
+    decideNextStep(
+      documenting({
+        files: [
+          "docs/incidents/2026-10-20-search.md",
+          "docs/incidents/runbook.md",
+        ],
+      }),
+    ),
+  ).toEqual({ step: "merge-note" });
+  expect(
+    decideNextStep(
+      documenting({
+        files: ["src/search.ts", "docs/incidents/2026-10-20-search.md"],
+      }),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    phase: "done",
+    detail: "PR #13 has code changes, so it is left open for review",
+  });
+  expect(
+    decideNextStep(
+      documenting({ requiredApprovals: 1, files: ["docs/incidents/x.md"] }),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    phase: "done",
+    detail: "Branch protection requires a review on PR #13",
+  });
+});
+
+test("documenting: the fix PR carried the note, or there is none, or it waits", () => {
+  expect(
+    decideNextStep(
+      documenting(
+        {},
+        {
+          candidate: candidate({ pr: prSnapshot() }),
+          merge: mergedRecord,
+        },
+      ),
+    ),
+  ).toEqual({
+    step: "transition",
+    to: null,
+    phase: "done",
+    detail: "Note merged with the fix",
+    patch: {
+      note: { prUrl: "https://github.com/acme/web/pull/12", merged: true },
+    },
+  });
+  expect(
+    decideNextStep(
+      documenting({}, { agents: [run("investigator", { status: "done" })] }),
+    ),
+  ).toMatchObject({
+    phase: "done",
+    patch: { note: { merged: false, detail: "No note PR was opened" } },
+  });
+  expect(
+    decideNextStep(
+      documenting(
+        {},
+        {
+          note: { prUrl: "https://github.com/acme/web/pull/13", merged: false },
+        },
+      ),
+    ),
+  ).toEqual({ step: "fetch-pr", purpose: "note" });
+  const notes = ["docs/incidents/x.md"];
+  expect(
+    decideNextStep(documenting({ files: notes, pendingChecks: ["test"] })),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(
+      documenting(
+        { files: notes, pendingChecks: ["test"] },
+        { documentingSince: iso(-1_300_000) },
+      ),
+    ),
+  ).toMatchObject({
+    phase: "done",
+    detail: "Note PR #13 is waiting for checks",
+  });
+  const propose = documenting({ files: notes });
+  expect(
+    decideNextStep({
+      ...propose,
+      settings: { ...propose.settings, autonomy: "propose" },
+    }),
+  ).toMatchObject({ phase: "done", detail: "Note PR #13 is waiting for you" });
+  expect(
+    decideNextStep(documenting({ files: notes, state: "MERGED" })),
+  ).toMatchObject({ phase: "done", detail: "Note merged" });
+  // Still investigating: wait for it to finish.
+  expect(
+    decideNextStep({
+      ...documenting({ files: notes }),
+      agents: live({ "child-1": "running" }),
+    }),
+  ).toEqual({ step: "none" });
+});
+
+test("kill switch during a veto: paused, and the countdown never fires", () => {
+  const v = inVeto({ deadline: iso(-1) });
+  const out = decideNextStep({
+    ...v,
+    settings: { ...v.settings, agentsPaused: true },
+  });
+  expect(out).toMatchObject({
+    step: "transition",
+    to: "paused",
+    patch: { pausedFrom: "veto", veto: undefined },
+  });
+});
+
+test("manual rollback: offered while watching and after resolve, run with its own purpose", () => {
+  const w = watching(
+    { startedAt: iso(-60_000), deadline: iso(540_000) },
+    new Map([["sig-a", evaluation("failing", iso(-3_600_000))]]),
+  );
+  expect(manualRollbackAvailable(w.incident, w.settings)).toBe(true);
+  expect(nextActionFor(w.incident, w.settings)).toMatchObject({
+    kind: "watching",
+    options: ["roll-back"],
+  });
+  const resolved = {
+    ...w.incident,
+    state: "resolved" as const,
+    response: { ...w.incident.response!, phase: "done" as const },
+  };
+  expect(manualRollbackAvailable(resolved, w.settings)).toBe(true);
+  expect(nextActionFor(resolved, w.settings)).toEqual({
+    kind: "done",
+    detail: "Resolved",
+    options: ["roll-back"],
+  });
+  const rf = rollbackFirstWatching({ deadline: iso(60_000) });
+  expect(manualRollbackAvailable(rf.incident, rf.settings)).toBe(false);
+  const owner = rollingBack([], {
+    ownerRollback: { by: "Bo", at: iso(0) },
+    state: "investigating",
+  });
+  expect(decideNextStep(owner)).toEqual({
+    step: "run-action",
+    actionId: "rollback",
+    purpose: "owner-rollback",
+  });
+  expect(
+    decideNextStep(
+      rollingBack(
+        [
+          actionRun({
+            actionId: "rollback",
+            purpose: "owner-rollback",
+            status: "ok",
+            round: 2,
+          }),
+        ],
+        {
+          ownerRollback: { by: "Bo", at: iso(0) },
+          state: "investigating",
+          round: 2,
+        },
+      ),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    to: null,
+    phase: "investigating",
+    patch: {
+      round: 3,
+      ownerRollback: undefined,
+      sendBack: { kind: "rolled-back", detail: "Bo rolled back the release" },
+    },
+  });
+});

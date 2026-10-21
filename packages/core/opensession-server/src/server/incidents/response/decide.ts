@@ -3,6 +3,7 @@
 // step, writes the result into `incident.response` and asks again. Rules are
 // in priority order; the first that matches wins.
 import type {
+  ActionRun,
   AgentRole,
   AgentRun,
   IncidentProjectSettings,
@@ -20,7 +21,9 @@ import {
   type Signal,
   isTerminalIncidentState,
 } from "../../../shared/incidents";
-import { budgetProblem } from "./policy";
+import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
+import { assessAutoMerge } from "./merge";
+import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
 import { latestRelease, projectAction } from "./project-settings";
 import {
   checkKnowledge,
@@ -31,6 +34,7 @@ import {
 import {
   AGENT_MAX_MS,
   FINAL_TEXT_GRACE_MS,
+  PR_CHECKS_WAIT_MS,
   PR_REFRESH_MS,
   ROLLBACK_FIRST_WINDOW_MS,
   type ResponseStep,
@@ -316,6 +320,7 @@ export function sendBack(
         proof: undefined,
         decision: undefined,
         veto: undefined,
+        merge: undefined,
         mergingSince: undefined,
       },
     };
@@ -348,6 +353,8 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     if (r && r.phase !== "done" && r.phase !== "documenting")
       return { step: "transition", to: null, phase: "done", detail: "Closed" };
+    if (state === "resolved" && r?.phase === "documenting")
+      return reports(view) ?? documenting(view);
     return NONE;
   }
 
@@ -382,12 +389,19 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     if (state === "paused" || state === "needs-you" || liveActionRunning(view))
       return NONE;
+    // The automatic rollback does not run while agents are paused; the
+    // next round starts from the failed release when they are back.
     if (state === "rolled-back")
       return {
         step: "transition",
         to: "investigating",
         phase: "investigating",
         detail: "Agents paused",
+        ...(r
+          ? {
+              patch: nextRound(r, "Agents were paused before the rollback ran"),
+            }
+          : {}),
       };
     return {
       step: "transition",
@@ -858,6 +872,485 @@ function verifying(view: ResponseView): ResponseStep {
   });
 }
 
+/** A new round after a rollback: everything about the last candidate goes. */
+function nextRound(
+  r: IncidentResponse,
+  detail: string,
+): Partial<IncidentResponse> {
+  return {
+    round: r.round + 1,
+    sendBack: { kind: "rolled-back", detail },
+    candidate: undefined,
+    proof: undefined,
+    verdict: undefined,
+    decision: undefined,
+    veto: undefined,
+    merge: undefined,
+    watch: undefined,
+    mergingSince: undefined,
+  };
+}
+
+function primaryName(view: ResponseView): string {
+  return primarySignal(view)?.name ?? "The signal";
+}
+
+function primaryState(view: ResponseView): string {
+  return (
+    view.evaluations.get(view.incident.primarySignalId)?.state ?? "failing"
+  );
+}
+
+function now(view: ResponseView): string {
+  return iso(view.now);
+}
+
+// 23. A rollback-first candidate: the investigator studies the release in
+// parallel. Its report is recorded and never changes the phase.
+function rollbackFirstInvestigator(
+  view: ResponseView,
+): ResponseStep | undefined {
+  const r = view.incident.response!;
+  if (!r.candidate?.rollbackFirst || currentAgent(r, "investigator"))
+    return undefined;
+  return { step: "start-agent", role: "investigator", round: 1, attempt: 1 };
+}
+
+function afterVerification(view: ResponseView): ResponseStep {
+  const r = view.incident.response!;
+  switch (r.phase) {
+    case "deciding":
+      return deciding(view);
+    case "veto":
+      return vetoStep(view);
+    case "deploying":
+      return deployingStep(view);
+    default:
+      return watchingStep(view);
+  }
+}
+
+function prRef(r: IncidentResponse): string {
+  const n = r.candidate?.pr?.number;
+  return n === undefined ? "the PR" : `PR #${n}`;
+}
+
+// 24.
+function deciding(view: ResponseView): ResponseStep {
+  const { settings } = view;
+  const r = view.incident.response!;
+  const c = r.candidate;
+  if (!c)
+    return {
+      step: "needs-you",
+      kind: "no-action",
+      reason: "There is no candidate to decide on",
+    };
+  const plan = c.plan;
+  if (plan.pr && (!c.pr || stale(c.pr.fetchedAt, view.now)))
+    return { step: "fetch-pr", purpose: "merge" };
+  const facts = changeFacts({
+    plan,
+    settings,
+    prFiles: plan.pr ? (c.pr?.files ?? null) : [],
+  });
+  if ("error" in facts)
+    return { step: "needs-you", kind: "no-action", reason: facts.error };
+  const primary = primarySignal(view);
+  const decision = evaluatePolicy({
+    settings,
+    facts: facts.facts,
+    independence: currentAgent(r, "verifier")?.independence ?? "other-provider",
+    now: view.now,
+    fullyDown: primary
+      ? fullyDown({
+          ownSignalIds: ownSignalIds(view),
+          evaluations: view.evaluations,
+          primaryRecent: view.primaryRecent,
+          primary,
+          now: view.now,
+        })
+      : false,
+  });
+  if (decision.kind === "watch")
+    return {
+      step: "transition",
+      to: null,
+      phase: "watch-only",
+      detail: "Watching only",
+      patch: { decision },
+    };
+  if (decision.kind === "ask")
+    return {
+      step: "needs-you",
+      kind: "policy",
+      reason: decision.reason,
+      rule: decision.rule,
+      patch: { decision },
+    };
+  if (plan.pr && c.pr) {
+    const a = assessAutoMerge(c.pr, r.verdict?.verifiedSha ?? "");
+    if (a.kind === "needs-you")
+      return {
+        step: "needs-you",
+        kind: a.needsYou,
+        reason: a.reason,
+        patch: { decision },
+      };
+    if (a.kind === "send-back")
+      return sendBack(
+        view,
+        { kind: "check-failed", detail: a.reason },
+        a.reason,
+      );
+  }
+  if (decision.after === "veto") return { step: "open-veto", decision };
+  return {
+    step: "transition",
+    to: "deploying",
+    phase: plan.pr ? "merging" : "deploying",
+    detail: decision.rule,
+    patch: { decision, mergingSince: now(view) },
+  };
+}
+
+// 25.
+function vetoStep(view: ResponseView): ResponseStep {
+  const r = view.incident.response!;
+  if (!r.veto || !(view.now >= Date.parse(r.veto.deadline))) return NONE;
+  return {
+    step: "transition",
+    to: "deploying",
+    phase: r.candidate?.plan.pr ? "merging" : "deploying",
+    detail: "Veto window elapsed",
+    patch: { veto: undefined, mergingSince: now(view) },
+  };
+}
+
+// 26. Only the verified head is ever merged.
+function mergingStep(view: ResponseView): ResponseStep {
+  const r = view.incident.response!;
+  const n = prRef(r);
+  if (r.merge?.status === "merged")
+    return {
+      step: "transition",
+      to: null,
+      phase: "deploying",
+      detail: `Merged ${n}`,
+    };
+  if (r.merge?.status === "refused")
+    return {
+      step: "needs-you",
+      kind: "merge",
+      reason: r.merge.detail ?? `GitHub refused to merge ${n}`,
+    };
+  const pr = r.candidate?.pr;
+  if (!pr || stale(pr.fetchedAt, view.now))
+    return { step: "fetch-pr", purpose: "merge" };
+  const verifiedSha = r.verdict?.verifiedSha ?? "";
+  const a = assessAutoMerge(pr, verifiedSha);
+  switch (a.kind) {
+    case "ready":
+      return { step: "merge" };
+    case "merged":
+      if (pr.headSha !== verifiedSha)
+        return {
+          step: "needs-you",
+          kind: "merge",
+          reason: `${n} was merged with changes after verification`,
+        };
+      return {
+        step: "transition",
+        to: null,
+        phase: "deploying",
+        detail: `${n} was already merged`,
+        patch: {
+          merge: {
+            ghRepo: pr.ghRepo,
+            number: pr.number,
+            sha: verifiedSha,
+            status: "merged",
+            ...(pr.mergeCommitSha ? { mergedSha: pr.mergeCommitSha } : {}),
+            at: now(view),
+          },
+        },
+      };
+    case "wait": {
+      const since = Date.parse(r.mergingSince ?? "");
+      if (!(view.now - since < PR_CHECKS_WAIT_MS))
+        return {
+          step: "needs-you",
+          kind: "merge",
+          reason: `Checks are still running on ${n} after ${PR_CHECKS_WAIT_MS / 60_000} min`,
+        };
+      return NONE;
+    }
+    case "needs-you":
+      return { step: "needs-you", kind: a.needsYou, reason: a.reason };
+    case "send-back":
+      return sendBack(
+        view,
+        { kind: "check-failed", detail: a.reason },
+        a.reason,
+      );
+  }
+}
+
+/** How a recorded action run goes on: wait, ask, or done. Never re-run. */
+function actionRunProblem(
+  view: ResponseView,
+  run: ActionRun,
+  failedReason: (detail: string) => string,
+): ResponseStep | "ok" {
+  switch (run.status) {
+    case "running":
+      if (view.liveActionRunIds.has(run.id)) return NONE;
+      return interrupted(run);
+    case "interrupted":
+      return interrupted(run);
+    case "unknown":
+      return {
+        step: "needs-you",
+        kind: "action-failed",
+        reason: `${run.label}: ${run.detail}`,
+      };
+    case "failed":
+      return {
+        step: "needs-you",
+        kind: "action-failed",
+        reason: failedReason(run.detail),
+      };
+    case "ok":
+      return "ok";
+  }
+}
+
+function interrupted(run: ActionRun): ResponseStep {
+  return {
+    step: "needs-you",
+    kind: "interrupted",
+    reason: `Sessions restarted while ${run.label} was running. Check production before going on.`,
+  };
+}
+
+// 27. Each step once, in order.
+function deployingStep(view: ResponseView): ResponseStep {
+  const { settings } = view;
+  const r = view.incident.response!;
+  const c = r.candidate;
+  if (!c)
+    return {
+      step: "needs-you",
+      kind: "no-action",
+      reason: "There is no candidate to deploy",
+    };
+  const facts = changeFacts({ plan: c.plan, settings, prFiles: [] });
+  if ("error" in facts)
+    return { step: "needs-you", kind: "no-action", reason: facts.error };
+  const purpose: ActionRun["purpose"] = c.rollbackFirst
+    ? "rollback-first"
+    : "plan";
+  for (const action of facts.steps) {
+    if (action.kind === "deploy" && c.plan.pr && !r.merge?.mergedSha)
+      return {
+        step: "needs-you",
+        kind: "merge",
+        reason: `No merge commit to deploy for ${prRef(r)}`,
+      };
+    const run = r.actionRuns.findLast(
+      (a) =>
+        a.round === r.round &&
+        a.actionId === action.id &&
+        a.purpose === purpose,
+    );
+    if (!run) return { step: "run-action", actionId: action.id, purpose };
+    const next = actionRunProblem(
+      view,
+      run,
+      (detail) => `${run.label} failed: ${detail}`,
+    );
+    if (next !== "ok") return next;
+  }
+  return { step: "start-watch" };
+}
+
+// 28. Resolved when every own signal is back after the watch started.
+function watchingStep(view: ResponseView): ResponseStep {
+  const { settings } = view;
+  const r = view.incident.response!;
+  if (!r.watch) return { step: "start-watch" };
+  const own = ownSignalIds(view);
+  const watched = own.length ? own : [view.incident.primarySignalId];
+  const started = Date.parse(r.watch.startedAt);
+  const green = watched.every((id) => {
+    const e = view.evaluations.get(id);
+    return e?.state === "ok" && Date.parse(e.since) >= started;
+  });
+  if (green) {
+    const names = watched.map((id) => view.signals.get(id)?.name ?? id);
+    return {
+      step: "resolve",
+      fixedBy: r.ownerTouched ? "agents-with-you" : "agents",
+      detail: `${names.join(", ")} back to normal after the release`,
+    };
+  }
+  if (!(view.now >= Date.parse(r.watch.deadline))) return NONE;
+  const name = primaryName(view);
+  const state = primaryState(view);
+  const steps = r.candidate
+    ? changeFacts({ plan: r.candidate.plan, settings, prFiles: [] })
+    : { error: "" };
+  const onlyRollbacks =
+    !("error" in steps) &&
+    steps.steps.length > 0 &&
+    steps.steps.every((s) => s.kind === "rollback");
+  if (r.candidate?.rollbackFirst || onlyRollbacks)
+    return {
+      step: "needs-you",
+      kind: "action-failed",
+      reason: `The rollback did not bring ${name} back`,
+    };
+  if (projectAction(settings, "rollback"))
+    return {
+      step: "transition",
+      to: "rolled-back",
+      phase: "rolling-back",
+      detail: `${name} still ${state} after the watch window`,
+    };
+  return {
+    step: "needs-you",
+    kind: "no-action",
+    reason: `${name} is still ${state} after the release and there is no rollback action`,
+  };
+}
+
+// 29. The rollback, then the next round.
+function rollingBack(view: ResponseView): ResponseStep {
+  const { incident, settings } = view;
+  const r = incident.response!;
+  const rollback = projectAction(settings, "rollback");
+  if (!rollback)
+    return {
+      step: "needs-you",
+      kind: "no-action",
+      reason: `No rollback action is declared for ${incident.project}`,
+    };
+  const owner = r.ownerRollback;
+  const purpose: ActionRun["purpose"] = owner
+    ? "owner-rollback"
+    : "auto-rollback";
+  const run = r.actionRuns.findLast(
+    (a) =>
+      a.round === r.round &&
+      a.actionId === rollback.id &&
+      a.purpose === purpose,
+  );
+  if (!run) return { step: "run-action", actionId: rollback.id, purpose };
+  const next = actionRunProblem(
+    view,
+    run,
+    (detail) => `Rollback failed: ${detail}`,
+  );
+  if (next !== "ok") return next;
+  const to = incident.state === "investigating" ? null : "investigating";
+  // The owner asked, so the next round is not capped by max rounds.
+  if (owner)
+    return {
+      step: "transition",
+      to,
+      phase: "investigating",
+      detail: `Rolled back by ${owner.by}`,
+      patch: {
+        ...nextRound(r, `${owner.by} rolled back the release`),
+        ownerRollback: undefined,
+      },
+    };
+  if (r.round < r.maxRounds)
+    return {
+      step: "transition",
+      to,
+      phase: "investigating",
+      detail: "Rolled back",
+      patch: nextRound(
+        r,
+        `${primaryName(view)} was still ${primaryState(view)} ${Math.round(settings.watchMs / 60_000)} min after the release`,
+      ),
+    };
+  return {
+    step: "needs-you",
+    kind: "rounds",
+    reason: `Rolled back after ${r.maxRounds} rounds`,
+  };
+}
+
+// 30. The incident note after resolution. Never wakes anyone.
+function documenting(view: ResponseView): ResponseStep {
+  const { settings } = view;
+  const r = view.incident.response!;
+  const inv = currentAgent(r, "investigator");
+  if (inv && isRunning(view, inv)) return NONE;
+  const done = (
+    detail: string,
+    note: NonNullable<IncidentResponse["note"]>,
+  ): ResponseStep => ({
+    step: "transition",
+    to: null,
+    phase: "done",
+    detail,
+    patch: { note },
+  });
+  if (r.candidate?.plan.pr && r.merge?.status === "merged")
+    return done("Note merged with the fix", {
+      ...(r.candidate.prUrl ? { prUrl: r.candidate.prUrl } : {}),
+      merged: true,
+    });
+  const prUrl = inv
+    ? (view.agents.get(inv.sessionId)?.prUrl ?? inv.prUrl)
+    : undefined;
+  if (!prUrl)
+    return done("No note PR was opened", {
+      merged: false,
+      detail: "No note PR was opened",
+    });
+  const pr = r.note?.pr;
+  if (!pr || stale(pr.fetchedAt, view.now))
+    return { step: "fetch-pr", purpose: "note" };
+  const note = r.note!;
+  const n = `PR #${pr.number}`;
+  const close = (detail: string, merged = false) =>
+    done(detail, {
+      ...note,
+      prUrl,
+      merged,
+      ...(merged ? {} : { detail }),
+    });
+  if (pr.state === "MERGED") return close("Note merged", true);
+  if (pr.files === null)
+    return close(
+      `Sessions could not read the files of ${n}, so it is left open for review`,
+    );
+  if (pr.files.some((f) => !globMatch(KNOWLEDGE_GLOB, f)))
+    return close(`${n} has code changes, so it is left open for review`);
+  if (settings.autonomy === "watch" || settings.autonomy === "propose")
+    return close(`Note ${n} is waiting for you`);
+  if (note.merged) return close("Note merged", true);
+  if (note.detail) return close(note.detail);
+  const a = assessAutoMerge(pr, pr.headSha);
+  switch (a.kind) {
+    case "ready":
+      return { step: "merge-note" };
+    case "merged":
+      return close("Note merged", true);
+    case "wait": {
+      const since = Date.parse(r.documentingSince ?? "");
+      if (view.now - since < PR_CHECKS_WAIT_MS) return NONE;
+      return close(`Note ${n} is waiting for checks`);
+    }
+    default:
+      return close(a.reason);
+  }
+}
+
 export function decideNextStep(view: ResponseView): ResponseStep {
   const guarded = guards(view);
   if (guarded) return guarded;
@@ -873,6 +1366,15 @@ export function decideNextStep(view: ResponseView): ResponseStep {
       return proving(view);
     case "verifying":
       return verifying(view);
+    case "deciding":
+    case "veto":
+    case "deploying":
+    case "watching":
+      return rollbackFirstInvestigator(view) ?? afterVerification(view);
+    case "merging":
+      return mergingStep(view);
+    case "rolling-back":
+      return rollingBack(view);
     default:
       return NONE;
   }
