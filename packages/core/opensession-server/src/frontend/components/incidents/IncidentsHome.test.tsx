@@ -190,3 +190,12 @@ test("a long Japanese signal name truncates in its slot", () => {
   const open = html.lastIndexOf("<span", at);
   expect(html.slice(open, at)).toContain("truncate");
 });
+
+test("past incidents fold to two lines on a phone with the title at full width", () => {
+  const html = render({});
+  expect(html).toContain("phone:table-auto");
+  expect(html).toContain("phone:w-full phone:max-w-0");
+  // Fixed by and Cost move under the title; their own cells leave.
+  expect(html.replace(/<!-- -->/g, "")).toContain("Agents · 2 h · —");
+  expect(html).toMatch(/phone:sr-only[^"]*">Incident<\/th>/);
+});

@@ -19,8 +19,8 @@ import { RepoTile } from "../RepoTile";
 
 /**
  * Past incidents as a table: title, how it was fixed and in how long, the
- * agents' cost and the date, newest first. A phone drops the header and
- * folds Fixed by and Cost under the title. The title's button covers its
+ * agents' cost and the date, newest first. A phone keeps the header for
+ * screen readers only and folds Fixed by and Cost under the title. The title's button covers its
  * row, so the whole row opens the incident.
  */
 export function PastIncidents({
@@ -44,7 +44,10 @@ export function PastIncidents({
   const more = showMoreCount(incidents.length, shown);
   return (
     <div className="flex min-w-0 flex-col items-start gap-3">
-      <table className="w-full table-fixed border-collapse">
+      {/* Fixed columns on a desktop; on a phone the header is for screen
+          readers only, so the title cell takes the width (max-w-0 lets a
+          cell in an auto table truncate). */}
+      <table className="w-full table-fixed border-collapse phone:table-auto">
         <thead>
           <tr>
             <th
@@ -82,7 +85,7 @@ export function PastIncidents({
             const row = pastIncidentRow(incident, now);
             return (
               <tr key={incident.id} className={PAST_ROW}>
-                <td className={PAST_CELL}>
+                <td className={cn(PAST_CELL, "phone:w-full phone:max-w-0")}>
                   <div className="flex min-w-0 items-center gap-3">
                     <RepoTile name={incident.project} />
                     <div className="flex min-w-0 flex-1 flex-col">
