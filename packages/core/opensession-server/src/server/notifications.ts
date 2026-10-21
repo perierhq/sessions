@@ -173,6 +173,26 @@ export async function notifyUser(
   user: string | null | undefined,
   event: NotificationEvent,
 ): Promise<NotificationThread | null> {
+  try {
+    return await deliverNotification(user, event);
+  } catch (error) {
+    console.warn(
+      "[notifications] could not record:",
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
+/**
+ * `notifyUser` for a caller that retries: it throws when the event could
+ * not be recorded instead of returning null, so "nothing to send" and
+ * "failed" stay apart. Delivery after the record stays best-effort.
+ */
+export async function deliverNotification(
+  user: string | null | undefined,
+  event: NotificationEvent,
+): Promise<NotificationThread | null> {
   if (!validUser(user)) return null;
   // Written by the mutator, which the catalog may rerun on a conflict: the
   // last run is the one that committed.
@@ -181,22 +201,14 @@ export async function notifyUser(
     delivery: NotificationDelivery;
     allowed: boolean;
   } = { thread: null, delivery: "quiet", allowed: false };
-  try {
-    await documents.update(inboxKey(user), (current) => {
-      const doc = cleanDocument(current);
-      const result = applyNotificationEvent(doc, event);
-      outcome.thread = result.thread ? wireThread(result.thread) : null;
-      outcome.delivery = result.delivery;
-      outcome.allowed = shouldAlert(doc, event.kind);
-      return result.doc;
-    });
-  } catch (error) {
-    console.warn(
-      "[notifications] could not record:",
-      error instanceof Error ? error.message : error,
-    );
-    return null;
-  }
+  await documents.update(inboxKey(user), (current) => {
+    const doc = cleanDocument(current);
+    const result = applyNotificationEvent(doc, event);
+    outcome.thread = result.thread ? wireThread(result.thread) : null;
+    outcome.delivery = result.delivery;
+    outcome.allowed = shouldAlert(doc, event.kind);
+    return result.doc;
+  });
   const { thread, delivery, allowed } = outcome;
   if (!thread) return null;
   const alert = delivery === "alert" && allowed;

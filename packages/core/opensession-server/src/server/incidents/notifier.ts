@@ -5,8 +5,9 @@
 // Changes for one incident are handled in commit order, so the banner and
 // the row end on the newest state. Alerts held at night are flushed by a
 // once-a-minute sweep after the night: one alert per incident with its
-// current state, none for a row the owner already read. Any failure is
-// logged and dropped; it never reaches the incident store.
+// current state, none for a row the owner already read. A failed flush
+// stays held and is tried again on the next sweep. Any failure is logged;
+// it never reaches the incident store.
 //
 // Nothing runs at import: `startIncidentNotifications` subscribes and starts
 // the sweep, once.
@@ -26,6 +27,9 @@ export const HELD_LOOKBACK_MS = 86_400_000;
 
 export interface NotifierDeps {
   facts(incident: Incident, now: number): Promise<NotifyFacts>;
+  /** Resolves to the row when it was recorded, null when there was nothing
+   *  to send (a replay, or a flush of a row that is not held); rejects when
+   *  it could not be recorded. */
   notify(user: string, event: NotificationEvent): Promise<unknown>;
   now(): number;
 }
@@ -33,8 +37,8 @@ export interface NotifierDeps {
 const defaultDeps: NotifierDeps = {
   facts: (incident, now) => loadNotifyFacts(incident, now),
   notify: async (user, event) => {
-    const { notifyUser } = await import("../notifications");
-    return notifyUser(user, event);
+    const { deliverNotification } = await import("../notifications");
+    return deliverNotification(user, event);
   },
   now: Date.now,
 };
@@ -114,12 +118,17 @@ export function sweepHeldIncidents(
           const now = deps.now();
           const facts = await deps.facts(incident, now);
           if (facts.night) return false;
-          held.delete(id);
           const planned = planHeldFlush(incident, facts, now);
-          if (!planned) return false;
+          if (!planned) {
+            held.delete(id);
+            return false;
+          }
           // The inbox sends nothing for a row that is not held (read in
-          // the night, or already flushed): that is a null.
-          return (await deps.notify(planned.user, planned.event)) != null;
+          // the night, or already flushed): that is a null, and done too.
+          // A failure throws and keeps the incident for the next sweep.
+          const sent = await deps.notify(planned.user, planned.event);
+          held.delete(id);
+          return sent != null;
         } catch (error) {
           console.warn("[incidents] held notification failed:", message(error));
           return false;

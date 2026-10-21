@@ -172,6 +172,49 @@ test("a night holds the push; the first sweep after it sends one", async () => {
   expect(await sweepHeldIncidents(deps)).toBe(0);
 });
 
+test("a failed flush stays held for the next sweep; a sent one leaves", async () => {
+  night = true;
+  await open();
+  await settle();
+  night = false;
+  clock += 8 * 3_600_000;
+  let fail = true;
+  let calls = 0;
+  const flaky: NotifierDeps = {
+    ...deps,
+    notify: async (user, event) => {
+      calls++;
+      if (fail) throw new Error("catalog unavailable");
+      return notifyUser(user, event);
+    },
+  };
+  expect(await sweepHeldIncidents(flaky)).toBe(0);
+  expect(pushes).toEqual([]);
+  fail = false;
+  expect(await sweepHeldIncidents(flaky)).toBe(1);
+  expect(pushes).toHaveLength(1);
+  expect(await sweepHeldIncidents(flaky)).toBe(0);
+  expect(calls).toBe(2);
+});
+
+test("a flush that fails to load its facts stays held", async () => {
+  night = true;
+  await open();
+  await settle();
+  night = false;
+  let fail = true;
+  const flaky: NotifierDeps = {
+    ...deps,
+    facts: async (incident, now) => {
+      if (fail) throw new Error("settings unavailable");
+      return deps.facts(incident, now);
+    },
+  };
+  expect(await sweepHeldIncidents(flaky)).toBe(0);
+  fail = false;
+  expect(await sweepHeldIncidents(flaky)).toBe(1);
+});
+
 test("a row read during the night is not alerted after it", async () => {
   night = true;
   const i = await open();
