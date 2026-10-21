@@ -1307,7 +1307,7 @@ test("stop sent before the veto deadline wins against an advance already running
   expect(w.actions).toEqual([]);
 });
 
-test("stop sent after the veto deadline does not undo a release under way", async () => {
+test("stop sent after the veto deadline lets the veto end, but still holds the merge", async () => {
   const w = await world();
   await w.toCertain();
   const deadline = START + 600_000;
@@ -1324,8 +1324,32 @@ test("stop sent after the veto deadline does not undo a release under way", asyn
   );
   hold.release();
   await running;
-  expect(await stop).toEqual({ error: "Nothing to stop", status: 409 });
+  // The veto ended (the Stop came after its deadline), but nothing was
+  // merged yet, so the Stop still wins over the merge.
+  expect(await stop).toMatchObject({
+    state: "needs-you",
+    response: { needsYou: { kind: "stopped", resumePhase: "merging" } },
+  });
+  await __waitForCoordinatorForTest();
+  expect(w.merges).toEqual([]);
+});
+
+test("stop sent once the release is under way does not undo it", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.clock += 600_000;
+  w.hangActions();
+  void advanceIncident(w.incident.id, w.deps);
+  await w.until(
+    async () =>
+      (await getIncident(w.incident.id))?.response?.actionRuns.length === 1,
+  );
   expect(w.merges).toHaveLength(1);
+  // The deploy never settles: drop its chain so the decision can run.
+  __resetCoordinatorForTest();
+  expect(
+    await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps),
+  ).toEqual({ error: "Nothing to stop", status: 409 });
 });
 
 test("stop while the merge waits for checks: nothing is merged", async () => {
@@ -1351,6 +1375,60 @@ test("stop while the merge waits for checks: nothing is merged", async () => {
   await advanceIncident(w.incident.id, w.deps);
   expect(w.merges).toEqual([]);
   expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+});
+
+test("stop during the checks wait wins even if the checks pass meanwhile", async () => {
+  const w = await world();
+  await w.toCertain();
+  w.setPr({ pending: ["ci"] });
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(await getIncident(w.incident.id)).toMatchObject({
+    state: "deploying",
+    response: { phase: "merging" },
+  });
+  // The next advance reads the PR again; hold it in that fetch.
+  w.clock += 60_000;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let entered!: () => void;
+  const fetching = new Promise<void>((r) => (entered = r));
+  const github = w.deps.github!;
+  let held = false;
+  const deps: Partial<CoordinatorDeps> = {
+    ...w.deps,
+    github: {
+      ...github,
+      verdict: async (...args: Parameters<MergeGithub["verdict"]>) => {
+        if (!held) {
+          held = true;
+          entered();
+          await gate;
+        }
+        return github.verdict(...args);
+      },
+    },
+  };
+  const running = advanceIncident(w.incident.id, deps);
+  await fetching;
+  // The PR turns green, and a Stop arrives while the fetch is in flight.
+  w.setPr({});
+  const stop = applyOwnerDecision(
+    w.incident.id,
+    "stop",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  release();
+  await running;
+  expect(await stop).toMatchObject({
+    state: "needs-you",
+    response: { needsYou: { kind: "stopped", resumePhase: "merging" } },
+  });
+  await __waitForCoordinatorForTest();
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
 });
 
 test("deploy now skips the rest of the veto", async () => {

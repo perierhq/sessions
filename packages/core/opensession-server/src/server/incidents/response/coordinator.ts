@@ -665,19 +665,23 @@ function shipsOrLeavesVeto(view: ResponseView, step: ResponseStep): boolean {
 
 /**
  * Whether something that must win over the next effect has arrived: the
- * kill switch, or a Stop the owner sent while this advance was running,
- * before the veto deadline (or, once shipping, before shipping began). The
- * advance ends; the guards or the Stop go next.
+ * kill switch, or a Stop the owner sent while this advance was running.
+ * During the veto a Stop counts only if it came before the deadline; once
+ * shipping, it counts whenever it came, as long as Stop still applies
+ * (nothing merged and nothing run yet). The advance ends; the guards or the
+ * Stop go next.
  */
 function heldBeforeEffect(view: ResponseView, d: CoordinatorDeps): boolean {
   if (d.agentsPaused(view.incident.project)) return true;
   const stopAt = stopRequests.get(view.incident.id);
   if (stopAt === undefined) return false;
   if (!decisionAllowed("stop", view.incident, view.settings)) return false;
-  const r = view.incident.response;
   const deadline =
-    view.incident.state === "veto" ? r?.veto?.deadline : r?.mergingSince;
-  const cutoff = deadline === undefined ? Number.NaN : Date.parse(deadline);
+    view.incident.state === "veto"
+      ? view.incident.response?.veto?.deadline
+      : undefined;
+  const cutoff =
+    deadline === undefined ? Number.POSITIVE_INFINITY : Date.parse(deadline);
   const held = Number.isNaN(cutoff) || stopAt < cutoff;
   if (held) heldByStop.add(view.incident.id);
   return held;
