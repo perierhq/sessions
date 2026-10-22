@@ -305,13 +305,14 @@ function selfTestTimeoutMs(targets: IsolationTarget[]): number {
 }
 
 /**
- * Run every probe in one exec. `ok` only when each target reported exactly
- * once and as expected.
+ * Run every probe in one exec. `ok` only when the exec succeeded and each
+ * target reported exactly once and as expected; `error` says why an exec
+ * failed.
  */
 export async function runIsolationSelfTest(
   driver: RemoteDriver,
   targets: IsolationTarget[],
-): Promise<{ ok: boolean; results: IsolationResult[] }> {
+): Promise<{ ok: boolean; results: IsolationResult[]; error?: string }> {
   const names = new Set<string>();
   for (const t of targets) {
     if (names.has(t.name))
@@ -366,8 +367,9 @@ export async function runIsolationSelfTest(
     };
   });
   return {
-    ok: results.length > 0 && results.every((r) => r.pass),
+    ok: !failure && results.length > 0 && results.every((r) => r.pass),
     results,
+    ...(failure ? { error: failure } : {}),
   };
 }
 

@@ -293,6 +293,18 @@ describe("isolation self-test", () => {
     ).toHaveLength(targets.length - 3);
   });
 
+  test("a failed exec fails even when every row passed", async () => {
+    const { driver } = fakeDriver(() => ({
+      exitCode: 1,
+      stdout: rows(targets),
+      stderr: "killed",
+    }));
+    const result = await runIsolationSelfTest(driver, targets);
+    expect(result.results.every((r) => r.pass)).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("exit 1: killed");
+  });
+
   test("an exec that throws fails closed", async () => {
     const driver: RemoteDriver = {
       ...fakeDriver(() => ({ exitCode: 0, stdout: "", stderr: "" })).driver,
