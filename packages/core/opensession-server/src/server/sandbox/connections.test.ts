@@ -10,9 +10,12 @@ import {
   sandboxConnectionReady,
   sandboxHostSettings,
   sandboxProviderCredential,
+  sandboxAdapterSignature,
+  setPodmanConnectionFacts,
   setSandboxConnectionQualification,
   updateSandboxConnection,
 } from "./connections";
+import { sandboxProviderNeedsCredential } from "./adapter-signature";
 
 let scratch = "";
 let oldConfig: string | undefined;
@@ -216,5 +219,43 @@ describe("workspace sandbox connections", () => {
     expect(
       safeSandboxConnections().find((value) => value.provider === "box")?.state,
     ).toBe("needs_attention");
+  });
+});
+
+describe("This machine (container)", () => {
+  test("needs no credential and is not ready until qualified", () => {
+    expect(sandboxProviderNeedsCredential("podman")).toBe(false);
+    expect(sandboxAdapterSignature("podman")).toBe("podman:connection-v1");
+    expect(sandboxConnectionReady("podman")).toBe(false);
+    const connection = connectSandboxProvider("podman", {
+      settings: { memoryMb: 2048, pidsLimit: 512, dns: ["8.8.8.8", "bad"] },
+    });
+    expect(connection.credentialRef).toBeUndefined();
+    expect(connection.settings).toMatchObject({
+      memoryMb: 2048,
+      pidsLimit: 512,
+      dns: ["8.8.8.8"],
+    });
+    expect(sandboxConnectionReady("podman")).toBe(false);
+    setSandboxConnectionQualification("podman", { status: "ready" });
+    expect(sandboxConnectionReady("podman")).toBe(true);
+    updateSandboxConnection("podman", { enabled: false });
+    expect(sandboxConnectionReady("podman")).toBe(false);
+  });
+
+  test("qualification facts are kept on the connection", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    expect(getSandboxConnection("podman")?.podman).toEqual({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    disconnectSandboxProvider("podman");
+    expect(getSandboxConnection("podman")).toBeUndefined();
   });
 });

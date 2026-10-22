@@ -22,9 +22,16 @@
  * rejects; nothing falls back to an open network or another provider.
  */
 
-import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { userInfo } from "node:os";
+import { sessionsDir } from "../../paths";
 import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
+import {
+  getSandboxConnection,
+  type PodmanConnectionFacts,
+} from "../connections";
 import type {
   Sandbox,
   SandboxProvider,
@@ -55,7 +62,10 @@ import {
 import {
   isIpv4,
   PODMAN_NAME_PREFIX,
+  PODMAN_WORKLOAD_HOME,
+  PODMAN_WORKLOAD_USER,
   podCreateArgs,
+  podmanEnv,
   podmanExec,
   podmanNames,
   runPodman,
@@ -74,8 +84,10 @@ import {
   workloadNetnsPath,
   type EgressInput,
 } from "./podman-egress";
-import { podmanImageTag } from "./podman-image";
+import { ensurePodmanImage, podmanImageTag } from "./podman-image";
 import {
+  hostControlCheck,
+  hostTcpProbe,
   isolationTargets,
   runIsolationSelfTest,
   type IsolationResult,
@@ -476,7 +488,9 @@ export class PodmanProvider implements SandboxProvider {
         deps.extraHostAddresses ??
         (() => sandboxConfig().podman?.extraHostAddresses ?? []),
       cpuDelegated: deps.cpuDelegated ?? (() => hostCpuDelegated()),
-      settings: deps.settings ?? (() => podmanSettings(undefined)),
+      settings:
+        deps.settings ??
+        (() => podmanSettings(getSandboxConnection("podman")?.settings)),
       callbackBaseUrl: deps.callbackBaseUrl ?? remoteSandboxCallbackBaseUrl,
       appPort: deps.appPort ?? (() => Number(process.env.PORT) || 3850),
       loopbackPorts:
@@ -650,14 +664,15 @@ export class PodmanProvider implements SandboxProvider {
     );
   }
 
-  private async networkSelfTest(
-    names: PodmanNames,
+  /** The self-test's probes, built from this host's addresses now. */
+  private selfTestTargets(
     egress: EgressInput,
-    workloadNetns: string,
     callbackBaseUrl: string,
-  ): Promise<void> {
+    full: boolean,
+    hostPaths: string[] = [],
+  ) {
     const v4 = egress.hostAddresses.filter(isIpv4);
-    const targets = isolationTargets({
+    return isolationTargets({
       callbackBaseUrl: `${httpBase(callbackBaseUrl)}/`,
       callbackAddresses: egress.callback.addresses,
       hostAddresses: v4,
@@ -665,14 +680,77 @@ export class PodmanProvider implements SandboxProvider {
       extraHostAddresses: egress.extraHostAddresses ?? [],
       appPort: this.d.appPort(),
       loopbackPorts: this.d.loopbackPorts(),
-      full: false,
+      hostPaths,
+      full,
     });
+  }
+
+  /** The network half of the self-test, on every ensure and wake. */
+  private async networkSelfTest(
+    names: PodmanNames,
+    egress: EgressInput,
+    workloadNetns: string,
+    callbackBaseUrl: string,
+  ): Promise<void> {
     const result = await runIsolationSelfTest(
       this.driver(names, async () => {}),
-      targets,
+      this.selfTestTargets(egress, callbackBaseUrl, false),
       { counters: egressCounterProof(this.run, workloadNetns, egress) },
     );
     if (!result.ok) throw selfTestFailure(result);
+  }
+
+  /**
+   * Qualification's checks on a running sandbox: the full self-test (file
+   * and process probes too, each blocked target first proven live from the
+   * host) and the workload's cgroup, which must sit under the user's systemd
+   * manager so a gateway restart cannot kill it.
+   */
+  async qualificationChecks(
+    sandboxId: string,
+    o: {
+      uid: number;
+      hostPaths: string[];
+      hostControl?: (host: string, port: number) => Promise<boolean>;
+    },
+  ): Promise<void> {
+    const names = namesForPod(sandboxId);
+    const callbackBaseUrl = this.d.callbackBaseUrl();
+    const egress = await this.egressInput(callbackBaseUrl);
+    const netns = await workloadNetnsPath(this.run, names.workload);
+    await verifyEgressRulesAt(this.run, netns, egress);
+    const { targets, notLiveOnHost } = await hostControlCheck(
+      this.selfTestTargets(egress, callbackBaseUrl, true, o.hostPaths),
+      o.hostControl ?? hostTcpProbe,
+    );
+    if (notLiveOnHost.length)
+      console.log(
+        `${LOG} qualification: not live on this host: ${notLiveOnHost.map((t) => t.name).join(", ")}`,
+      );
+    const result = await runIsolationSelfTest(
+      this.driver(names, async () => {}),
+      targets,
+      { counters: egressCounterProof(this.run, netns, egress) },
+    );
+    if (!result.ok) throw selfTestFailure(result);
+    const cgroup = (
+      await must(
+        this.run,
+        [
+          "container",
+          "inspect",
+          "--format",
+          "{{.State.CgroupPath}}",
+          names.workload,
+        ],
+        `inspect ${names.workload}`,
+      )
+    ).trim();
+    if (!cgroup.includes(`/user@${o.uid}.service/`))
+      throw new Error(
+        `sandbox containers land in ${cgroup || "an unknown cgroup"}, not under user@${o.uid}.service: ` +
+          "give podman the user's XDG_RUNTIME_DIR and D-Bus session (enable linger), or a gateway restart would kill every sandbox",
+      );
   }
 
   /** Start a stopped pod behind its firewall (any wake path). */
@@ -817,6 +895,225 @@ export class PodmanProvider implements SandboxProvider {
     console.warn(`${LOG} ${kind} ${name} has no sandbox label; left alone`);
     return false;
   }
+}
+
+// ── Qualification ────────────────────────────────────────────────────────────
+
+export interface PodmanQualifyDeps extends PodmanProviderDeps {
+  platform?: string;
+  uid?: number;
+  /** Linger enabled for the gateway user (its systemd manager outlives
+   *  logins). */
+  linger?: () => boolean;
+  /** The host's `nft` binary exists. */
+  nftPresent?: () => boolean;
+  ensureImage?: (
+    run: PodmanRunner,
+    log: (line: string) => void,
+  ) => Promise<string>;
+  hostControl?: (host: string, port: number) => Promise<boolean>;
+  hostPaths?: string[];
+}
+
+const MIN_PODMAN_MAJOR = 5;
+
+function versionMajor(version: unknown): number {
+  const match = typeof version === "string" ? /^(\d+)\./.exec(version) : null;
+  return match ? Number(match[1]) : 0;
+}
+
+/** Host prerequisites, each refusal naming the fix. Returns warnings. */
+async function podmanPrerequisites(
+  run: PodmanRunner,
+  d: { linger: () => boolean; nftPresent: () => boolean },
+): Promise<string[]> {
+  const info = await run(["info", "--format", "json"]);
+  if (info.exitCode !== 0)
+    throw new Error(
+      info.exitCode === 127
+        ? `${PODMAN_PROVIDER_LABEL} needs Linux with rootless Podman: podman is not installed`
+        : `podman info failed: ${(info.stderr || info.stdout).trim().slice(0, 300)}`,
+    );
+  let parsed: any;
+  try {
+    parsed = JSON.parse(info.stdout);
+  } catch {
+    throw new Error("podman info did not return JSON");
+  }
+  const host = parsed?.host ?? {};
+  const version = parsed?.version?.Version;
+  if (versionMajor(version) < MIN_PODMAN_MAJOR)
+    throw new Error(
+      `${PODMAN_PROVIDER_LABEL} needs Podman ${MIN_PODMAN_MAJOR}.0 or newer (found ${version || "unknown"})`,
+    );
+  if (host.security?.rootless !== true)
+    throw new Error(
+      `${PODMAN_PROVIDER_LABEL} needs rootless Podman: run Open Session as an unprivileged user`,
+    );
+  if (host.cgroupVersion !== "v2")
+    throw new Error(`${PODMAN_PROVIDER_LABEL} needs cgroups v2`);
+  const controllers: unknown[] = Array.isArray(host.cgroupControllers)
+    ? host.cgroupControllers
+    : [];
+  for (const controller of ["memory", "pids"])
+    if (!controllers.includes(controller))
+      throw new Error(
+        `${PODMAN_PROVIDER_LABEL} needs the ${controller} cgroup controller delegated to this user: add Delegate=memory pids (and cpu) to user@.service`,
+      );
+  if (!d.linger())
+    throw new Error(
+      `${PODMAN_PROVIDER_LABEL} needs linger for this user: run loginctl enable-linger ${userInfo().username}`,
+    );
+  if (!d.nftPresent())
+    throw new Error(
+      `${PODMAN_PROVIDER_LABEL} needs nftables on the host: install the nft binary`,
+    );
+  const warnings: string[] = [];
+  if (host.security?.selinuxEnabled !== true)
+    warnings.push(
+      "SELinux is not enabled: containers rely on namespaces and seccomp alone",
+    );
+  return warnings;
+}
+
+/** Absent-path probes for qualification: this host's state roots that do not
+ *  overlap the sandbox's own home. */
+function stateHostPaths(): string[] {
+  const candidates = ["/opt/opensession", sessionsDir()];
+  return candidates.filter(
+    (path) =>
+      /^\/[A-Za-z0-9._/-]+$/.test(path) &&
+      !path.split("/").includes("..") &&
+      path !== PODMAN_WORKLOAD_HOME &&
+      !path.startsWith(`${PODMAN_WORKLOAD_HOME}/`) &&
+      !path.startsWith("/tmp/"),
+  );
+}
+
+/**
+ * Prove this host can run "This machine (container)" sandboxes: Linux with
+ * rootless Podman and its prerequisites, the sandbox image (built here, never
+ * during a user's session), then a disposable sandbox that must pass the
+ * full isolation self-test and sit in the user's systemd cgroup. The
+ * disposable sandbox is removed whatever happens. Any failure refuses.
+ */
+export async function qualifyPodmanConnection(
+  progress: (stage: string, progress?: number) => void = () => {},
+  deps: PodmanQualifyDeps = {},
+): Promise<PodmanConnectionFacts & { warnings: string[] }> {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "linux")
+    throw new Error(
+      `${PODMAN_PROVIDER_LABEL} needs Linux with rootless Podman`,
+    );
+  const uid = deps.uid ?? process.getuid?.();
+  if (uid === undefined)
+    throw new Error(`${PODMAN_PROVIDER_LABEL} needs a POSIX host`);
+  const run = deps.run ?? runPodman;
+  progress("Checking Podman", 30);
+  const warnings = await podmanPrerequisites(run, {
+    linger:
+      deps.linger ??
+      (() => existsSync(`/var/lib/systemd/linger/${userInfo().username}`)),
+    nftPresent:
+      deps.nftPresent ??
+      (() =>
+        ["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"].some((p) =>
+          existsSync(p),
+        )),
+  });
+  progress("Building the sandbox image", 40);
+  const imageTag = await (deps.ensureImage ?? ensurePodmanImage)(run, (line) =>
+    progress(line, 45),
+  );
+  const provider = new PodmanProvider({
+    ...deps,
+    run,
+    imageTag: () => imageTag,
+    workspacePlan: async () => ({
+      repoId: "",
+      branch: "",
+      defaultBranch: "",
+      cwd: PODMAN_WORKLOAD_HOME,
+    }),
+    prepare: async () => {},
+    resumeHook: async () => {},
+  });
+  const sessionId = `qual-${randomBytes(6).toString("hex")}`;
+  const { pod } = podmanNames(sessionId);
+  let failure: unknown;
+  try {
+    progress("Starting a test sandbox behind its firewall", 60);
+    await provider.ensure({ sessionId });
+    progress("Running the isolation self-test", 80);
+    await provider.qualificationChecks(pod, {
+      uid,
+      hostPaths: deps.hostPaths ?? stateHostPaths(),
+      hostControl: deps.hostControl,
+    });
+  } catch (error) {
+    failure = error;
+  }
+  progress("Removing the test sandbox", 95);
+  try {
+    await provider.destroy(pod, { strict: true });
+  } catch (cleanup) {
+    if (!failure) throw cleanup;
+    console.warn(`${LOG} qualification cleanup of ${pod} failed:`, cleanup);
+  }
+  if (failure) throw failure;
+  return {
+    imageTag,
+    cpuLimited: (deps.cpuDelegated ?? (() => hostCpuDelegated(uid)))(),
+    selfTestAt: new Date().toISOString(),
+    warnings,
+  };
+}
+
+// ── Terminal ─────────────────────────────────────────────────────────────────
+
+/**
+ * A Terminal tab inside the workload: a local PTY running `podman exec -it`
+ * as uid 1000, with podman's minimal env (the gateway's env never reaches
+ * podman). A sleeping sandbox is woken through the firewall first, as a
+ * terminal is an interactive gesture.
+ */
+export async function podmanTerminalTarget(
+  sandboxId: string,
+  provider: Pick<PodmanProvider, "status" | "resume"> = new PodmanProvider(),
+  uid = process.getuid?.(),
+): Promise<{ argv: string[]; cwd: string }> {
+  const state = readRemoteState("podman", sandboxId);
+  if (!state) throw new Error(`Unknown sandbox ${sandboxId}`);
+  const names = podmanNames(state.sessionId);
+  if (names.pod !== sandboxId) throw new Error(`Unknown sandbox ${sandboxId}`);
+  if (uid === undefined) throw new Error("podman needs a POSIX host");
+  if ((await provider.status(sandboxId)) !== "running") {
+    const woken = await provider.resume(sandboxId);
+    if (!woken) throw new Error("The sandbox could not be woken");
+  }
+  const cwd = state.cwd.startsWith("/") ? state.cwd : PODMAN_WORKLOAD_HOME;
+  return {
+    cwd,
+    argv: [
+      "/usr/bin/env",
+      "-i",
+      ...Object.entries(podmanEnv(uid)).map(([k, v]) => `${k}=${v}`),
+      "TERM=xterm-256color",
+      "podman",
+      "exec",
+      "-it",
+      "--user",
+      PODMAN_WORKLOAD_USER,
+      "--workdir",
+      cwd,
+      "--env",
+      "TERM=xterm-256color",
+      names.workload,
+      "/bin/bash",
+      "-l",
+    ],
+  };
 }
 
 async function defaultLookup(host: string): Promise<string[]> {

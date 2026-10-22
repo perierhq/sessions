@@ -127,6 +127,7 @@ type TermTargetKind =
   | "box"
   | "tart"
   | "usecomputer"
+  | "podman"
   | "microvm"
   | "runner";
 
@@ -288,6 +289,20 @@ async function resolveTarget(
         displayCwd: target.cwd,
         argv: target.argv,
         env: target.env,
+      };
+    }
+
+    if (sb.provider === "podman" && sandboxProviderConfigured("podman")) {
+      // A local PTY running `podman exec -it` as the workload user, with
+      // podman's minimal env (the gateway's env is cleared by `env -i`).
+      const { podmanTerminalTarget } =
+        await import("./sandbox/adapters/podman");
+      const target = await podmanTerminalTarget(sb.sandboxId);
+      return {
+        kind: "spawn",
+        target: "podman",
+        displayCwd: target.cwd,
+        argv: target.argv,
       };
     }
 

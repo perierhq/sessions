@@ -2,6 +2,7 @@
 
 import { audit } from "../audit";
 import {
+  setPodmanConnectionFacts,
   setSandboxConnectionQualification,
   type WorkspaceSandboxProvider,
 } from "./connections";
@@ -79,6 +80,21 @@ export async function qualifySandboxConnection(
       await qualifyTartConnection((stage, progress) =>
         update({ stage, progress }),
       );
+    } else if (provider === "podman") {
+      const { qualifyPodmanConnection } = await import("./adapters/podman");
+      // Every refusal here names its own fix; show it rather than a
+      // keyword-guessed cloud-provider summary.
+      const { warnings, ...facts } = await qualifyPodmanConnection(
+        (stage, progress) => update({ stage, progress }),
+      ).catch((error: unknown) => {
+        throw Object.assign(
+          error instanceof Error ? error : new Error(String(error)),
+          { code: "QUALIFICATION_FAILED" },
+        );
+      });
+      for (const warning of warnings)
+        console.warn(`[sandbox:qualification] podman: ${warning}`);
+      setPodmanConnectionFacts(facts);
     } else if (provider === "usecomputer") {
       const { qualifyUseComputerConnection } =
         await import("./adapters/usecomputer");

@@ -506,7 +506,7 @@ export interface SpawnTaskArgs {
   /** Give the child its own worktree/branch instead of sharing the parent's. */
   isolatedWorktree?: boolean;
   /** true = config default provider; or an explicit configured provider id. */
-  sandbox?: boolean | "daytona" | "box" | "tart" | "usecomputer";
+  sandbox?: boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman";
 }
 
 export type SpawnTaskResult =
@@ -1392,7 +1392,7 @@ export function createSessionsMcpServer(
           sandbox: z
             .union([
               z.boolean(),
-              z.enum(["daytona", "box", "tart", "usecomputer"]),
+              z.enum(["daytona", "box", "tart", "usecomputer", "podman"]),
             ])
             .optional()
             .describe(
@@ -1429,7 +1429,13 @@ export function createSessionsMcpServer(
             reportBack?: boolean;
             standalone?: boolean;
             isolatedWorktree?: boolean;
-            sandbox?: boolean | "daytona" | "box" | "tart" | "usecomputer";
+            sandbox?:
+              | boolean
+              | "daytona"
+              | "box"
+              | "tart"
+              | "usecomputer"
+              | "podman";
             accountId?: string;
             forkFrom?: { sourceId: string; messageId?: string };
           },
@@ -1585,7 +1591,7 @@ export function createSessionsMcpServer(
           sandbox: z
             .union([
               z.boolean(),
-              z.enum(["daytona", "box", "tart", "usecomputer"]),
+              z.enum(["daytona", "box", "tart", "usecomputer", "podman"]),
             ])
             .optional()
             .describe(

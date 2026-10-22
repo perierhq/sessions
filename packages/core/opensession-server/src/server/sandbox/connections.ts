@@ -28,6 +28,7 @@ export const WORKSPACE_SANDBOX_PROVIDERS = [
   "box",
   "tart",
   "usecomputer",
+  "podman",
 ] as const;
 export type WorkspaceSandboxProvider =
   (typeof WORKSPACE_SANDBOX_PROVIDERS)[number];
@@ -59,6 +60,21 @@ export interface SandboxConnectionSettings {
   /** usecomputer: the Mac reservation to use when the account holds more
    *  than one active reservation. */
   reservation?: string;
+  /** podman: the workload's pids limit. */
+  pidsLimit?: number;
+  /** podman: the only DNS resolvers a sandbox may reach (public IPv4). */
+  dns?: string[];
+}
+
+/** What the last successful podman qualification found on this host. */
+export interface PodmanConnectionFacts {
+  /** The sandbox image new sandboxes start from. */
+  imageTag: string;
+  /** False when the host does not delegate the cgroup `cpu` controller, so
+   *  `cpu` cannot be applied. */
+  cpuLimited: boolean;
+  /** When the full isolation self-test last passed. */
+  selfTestAt: string;
 }
 
 export interface SandboxHostSetting {
@@ -101,6 +117,8 @@ export interface SandboxConnection {
   credentialRef?: string;
   settings: SandboxConnectionSettings;
   qualification?: SandboxConnectionQualification;
+  /** podman only: written by qualification. */
+  podman?: PodmanConnectionFacts;
   createdAt: string;
   updatedAt: string;
 }
@@ -188,6 +206,33 @@ function settings(value: unknown): SandboxConnectionSettings {
     ...(string(raw.reservation)
       ? { reservation: string(raw.reservation) }
       : {}),
+    ...(number(raw.pidsLimit)
+      ? { pidsLimit: Math.round(number(raw.pidsLimit)!) }
+      : {}),
+    ...(Array.isArray(raw.dns)
+      ? {
+          dns: raw.dns
+            .map(string)
+            .filter((value): value is string =>
+              Boolean(value && /^\d{1,3}(\.\d{1,3}){3}$/.test(value)),
+            )
+            .slice(0, 4),
+        }
+      : {}),
+  };
+}
+
+function podmanFacts(value: unknown): PodmanConnectionFacts | undefined {
+  const raw =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!raw || !string(raw.imageTag) || typeof raw.cpuLimited !== "boolean")
+    return undefined;
+  return {
+    imageTag: string(raw.imageTag)!,
+    cpuLimited: raw.cpuLimited,
+    selfTestAt: string(raw.selfTestAt) || new Date(0).toISOString(),
   };
 }
 
@@ -274,6 +319,9 @@ function parseConnection(value: unknown): SandboxConnection | undefined {
     settings: settings(raw.settings),
     ...(qualification(raw.qualification)
       ? { qualification: qualification(raw.qualification) }
+      : {}),
+    ...(provider === "podman" && podmanFacts(raw.podman)
+      ? { podman: podmanFacts(raw.podman) }
       : {}),
     createdAt: string(raw.createdAt) || now,
     updatedAt: string(raw.updatedAt) || string(raw.createdAt) || now,
@@ -449,6 +497,21 @@ export function setSandboxConnectionQualification(
       ...result,
       adapterSignature: sandboxAdapterSignature(provider),
     },
+    updatedAt: new Date().toISOString(),
+  };
+  replaceConnection(next);
+  return next;
+}
+
+/** Record what a successful podman qualification found. */
+export function setPodmanConnectionFacts(
+  facts: PodmanConnectionFacts,
+): SandboxConnection {
+  const previous = getSandboxConnection("podman");
+  if (!previous) throw new Error("podman is not connected");
+  const next: SandboxConnection = {
+    ...previous,
+    podman: facts,
     updatedAt: new Date().toISOString(),
   };
   replaceConnection(next);

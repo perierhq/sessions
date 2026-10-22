@@ -8,12 +8,15 @@ export type WorkspaceSandboxProvider =
   | "daytona"
   | "box"
   | "tart"
-  | "usecomputer";
+  | "usecomputer"
+  | "podman";
 
-/** Providers whose connection is a paired Runner rather than an account
- *  credential: nothing is stored in the workspace secret store for them. */
+/** Providers whose connection is a paired Runner or this host rather than an
+ *  account credential: nothing is stored in the workspace secret store for
+ *  them. */
 export const CREDENTIAL_FREE_SANDBOX_PROVIDERS: ReadonlySet<string> = new Set([
   "tart",
+  "podman",
 ]);
 
 export function sandboxProviderNeedsCredential(
