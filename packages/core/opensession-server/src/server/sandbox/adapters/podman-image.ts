@@ -10,8 +10,10 @@
  * published sums, just and bun against sums pinned here); no install
  * script is ever run. On a Sandbox's first start podman copies that
  * home into the session's empty volume; bootstrapRemoteSandbox then only
- * verifies it. The image ends as uid 1000 and carries no privilege
- * escalation tool.
+ * verifies it. The image ends as uid 1000, carries no privilege escalation
+ * tool and has no setuid or setgid file. Its RUN steps get the same
+ * restricted pasta network as a Sandbox pod (no host gateway, no guest
+ * mapping, no port forwards, no IPv6).
  *
  * The tag hashes the image signature (the base runtime's plus the bun and
  * just pins), the base digest and this Containerfile, so a change to any of them means a new image. Building
@@ -33,6 +35,7 @@ import {
 } from "./bootstrap";
 import {
   PODMAN_LONG_TIMEOUT_MS,
+  PODMAN_PASTA_NETWORK,
   PODMAN_WORKLOAD_USER,
   type PodmanRunner,
 } from "./podman-cli";
@@ -177,6 +180,12 @@ export function podmanContainerfile(
       `chown -R ${PODMAN_WORKLOAD_USER} ${home}`,
       `test "$(stat -c %u:%g ${home})" = "${PODMAN_WORKLOAD_USER}"`,
     ]),
+    // The workload has no-new-privileges already; this keeps a setuid binary
+    // from ever being a way back to the root that maps to the gateway user.
+    run([
+      "find / -xdev -type f -perm /6000 -exec chmod ug-s {} +",
+      'test -z "$(find / -xdev -type f -perm /6000 -print -quit)"',
+    ]),
     `ENV PATH=${path}`,
     `USER ${PODMAN_WORKLOAD_USER}`,
     `WORKDIR ${home}`,
@@ -218,7 +227,17 @@ export async function ensurePodmanImage(
   const context = await mkdtemp(join(tmpdir(), "opensession-podman-build-"));
   try {
     const result = await runPodman(
-      ["build", "--pull=missing", "-t", tag, "-f", "-", context],
+      [
+        "build",
+        "--pull=missing",
+        "--network",
+        PODMAN_PASTA_NETWORK,
+        "-t",
+        tag,
+        "-f",
+        "-",
+        context,
+      ],
       { stdin: podmanContainerfile(), timeoutMs: PODMAN_LONG_TIMEOUT_MS },
     );
     if (result.exitCode !== 0)

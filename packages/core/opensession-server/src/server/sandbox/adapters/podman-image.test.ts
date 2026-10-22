@@ -8,7 +8,11 @@ import {
   REMOTE_LINUX_PACKAGES,
   REMOTE_NODE_VERSION,
 } from "./bootstrap";
-import type { PodmanRunner, PodmanRunOpts } from "./podman-cli";
+import {
+  PODMAN_PASTA_NETWORK,
+  type PodmanRunner,
+  type PodmanRunOpts,
+} from "./podman-cli";
 import {
   ensurePodmanImage,
   PODMAN_BASE_IMAGE,
@@ -105,6 +109,19 @@ describe("podman image", () => {
     );
   });
 
+  test("strips every setuid and setgid bit before dropping root", () => {
+    const strip = lines.findIndex((l) =>
+      l.includes("find / -xdev -type f -perm /6000 -exec chmod ug-s {} +"),
+    );
+    expect(strip).toBeGreaterThan(
+      lines.findIndex((l) => l.includes("bun-linux-$arch.zip")),
+    );
+    expect(file).toContain(
+      'test -z "$(find / -xdev -type f -perm /6000 -print -quit)"',
+    );
+    expect(strip).toBeLessThan(lines.indexOf("USER 1000:1000"));
+  });
+
   test("ends as the unprivileged user in its home", () => {
     expect(lines.slice(-2)).toEqual(["USER 1000:1000", "WORKDIR /home/ubuntu"]);
     expect(lines.filter((l) => l.startsWith("USER "))).toEqual([
@@ -138,16 +155,18 @@ describe("ensure podman image", () => {
     const tag = await ensurePodmanImage(run, (line) => logs.push(line));
     expect(tag).toBe(podmanImageTag());
     const build = calls[1]!;
-    expect(build.argv.slice(0, 6)).toEqual([
+    const context = build.argv[8]!;
+    expect(build.argv).toEqual([
       "build",
       "--pull=missing",
+      "--network",
+      PODMAN_PASTA_NETWORK,
       "-t",
       tag,
       "-f",
       "-",
+      context,
     ]);
-    const context = build.argv[6]!;
-    expect(build.argv).toHaveLength(7);
     expect(context.startsWith("/")).toBe(true);
     expect(context).not.toBe(process.cwd());
     expect(build.opts?.stdin).toBe(podmanContainerfile());
