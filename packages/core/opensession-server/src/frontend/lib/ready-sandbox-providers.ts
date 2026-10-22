@@ -9,17 +9,27 @@ export interface SandboxAvailability {
 }
 
 /**
- * Providers a session can run in right now: the Ready connections, or on an
- * instance that predates connections, the configured and certified providers.
+ * Providers a session can run in right now: the Ready connections the server
+ * has not marked uncertified, or on an instance that predates connections,
+ * the configured and certified providers.
  */
 export function readySandboxProviders(
   status: SandboxAvailability | null | undefined,
 ): string[] {
   if (!status) return [];
-  if (status.connections?.length)
+  if (status.connections?.length) {
+    const uncertified = new Set(
+      (status.providers || [])
+        .filter((provider) => !provider.certified)
+        .map((provider) => provider.id),
+    );
     return status.connections
-      .filter((connection) => connection.state === "ready")
+      .filter(
+        (connection) =>
+          connection.state === "ready" && !uncertified.has(connection.provider),
+      )
       .map((connection) => connection.provider);
+  }
   return (status.providers || [])
     .filter((provider) => provider.configured && provider.certified)
     .map((provider) => provider.id);
@@ -30,6 +40,7 @@ const PROVIDER_LABELS = new Map([
   ["box", "Boat"],
   ["tart", "Mac VM"],
   ["usecomputer", "use.computer"],
+  ["podman", "This machine (container)"],
 ]);
 
 export function sandboxProviderLabel(id: string): string {
@@ -45,5 +56,7 @@ export function sandboxProviderNote(id: string): string {
   if (id === "") return "A worktree on this server.";
   if (MAC_PROVIDERS.has(id))
     return "Attached Mac Sandbox with a desktop. Sleeps between turns, keeps files and Portals.";
+  if (id === "podman")
+    return "A Linux container on this server, walled off from it. Sleeps between turns, keeps files and Portals.";
   return "Attached Linux Sandbox. Sleeps between turns, keeps files and Portals.";
 }

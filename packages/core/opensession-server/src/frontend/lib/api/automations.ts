@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PodmanConnectionSummary } from "../podman-sandbox";
 import { ApiError, BASE, request } from "./request";
 import {
   accountLimitsFromUsage,
@@ -342,7 +343,7 @@ export interface SandboxStatusInfo {
   enabled: boolean;
   defaultProvider: string;
   providers: Array<{
-    id: "daytona" | "box" | "tart" | "usecomputer";
+    id: "daytona" | "box" | "tart" | "usecomputer" | "podman";
     configured: boolean;
     certified: boolean;
     lastPassedAt?: string;
@@ -403,12 +404,14 @@ export interface SandboxConnectionSettings {
   maxVms?: number;
   /** Mac VM: every Mac the connection may place a VM on. */
   hosts?: SandboxHostSetting[];
+  /** This machine (container): the workload's process limit. */
+  pidsLimit?: number;
   [key: string]: string | number | boolean | SandboxHostSetting[] | undefined;
 }
 
 export interface SandboxConnectionInfo {
   id: string;
-  provider: "daytona" | "box" | "tart" | "usecomputer";
+  provider: "daytona" | "box" | "tart" | "usecomputer" | "podman";
   enabled: boolean;
   settings: SandboxConnectionSettings;
   qualification?: {
@@ -422,6 +425,8 @@ export interface SandboxConnectionInfo {
   updatedAt: string;
   hasCredentials: boolean;
   state: SandboxConnectionState;
+  /** This machine (container), once qualified. */
+  podman?: PodmanConnectionSummary;
 }
 
 export interface SandboxOperationInfo {
