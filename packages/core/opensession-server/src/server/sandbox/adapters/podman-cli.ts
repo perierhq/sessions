@@ -7,15 +7,22 @@
  * pasta network namespace per pod with no host mappings, a workload with no
  * capabilities, a read-only rootfs and one volume). `runPodman` spawns with a
  * minimal environment: the gateway's own env (model keys, OPENSESSION_*)
- * never reaches podman, conmon or a container. Secrets for one exec travel
- * as `--env NAME` in argv and `NAME=value` in the spawned podman's env, so a
- * value never appears in `/proc/<pid>/cmdline`.
+ * never reaches podman, conmon or a container, and neither does any name a
+ * caller chose. The host podman process env is always exactly PATH, HOME,
+ * XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS: podman hands its env to
+ * conmon, crun and pasta, so a caller's LD_PRELOAD or CONTAINERS_CONF there
+ * would run as the gateway user. An exec's variables (secrets, and the
+ * caller's in-container PATH/HOME) go through `--env-file`, a 0600 file under
+ * `$XDG_RUNTIME_DIR/opensession/` that is deleted when the exec returns, so a
+ * value never appears in `/proc/<pid>/cmdline` or `/proc/<pid>/environ`.
  *
  * Every other podman module takes a `PodmanRunner` so tests inject a fake.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, lstat, mkdir, open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExecResult } from "../provider";
 
 export interface PodmanRunOpts {
@@ -23,8 +30,6 @@ export interface PodmanRunOpts {
   stdin?: string;
   /** Kill the child after this long (default 120 s); the result is exit 124. */
   timeoutMs?: number;
-  /** Extra variables for the child (e.g. the values behind `--env NAME`). */
-  env?: Record<string, string>;
 }
 
 /** Runs `podman <argv>`. Never throws: a non-zero exit, a timeout (124) and a
@@ -63,25 +68,14 @@ export const PODMAN_PASTA_NETWORK =
 
 const SYSTEM_PATH =
   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-/** Set by podmanEnv itself; an extra may not replace them. */
-const RESERVED_ENV = new Set([
-  "PATH",
-  "HOME",
-  "XDG_RUNTIME_DIR",
-  "DBUS_SESSION_BUS_ADDRESS",
-]);
 /** A spawned podman's complete environment. */
 export type PodmanEnv = Record<string, string>;
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** podman reads `--env-file` with a bufio.Scanner: one line per variable,
+ *  at most 64 KiB, a trailing `\r` silently dropped. */
+const MAX_ENV_LINE = 60_000;
 const MAX_KEY = 48;
-
-function assertEnvName(name: string): void {
-  if (!ENV_NAME.test(name))
-    throw new Error(`invalid environment variable name: ${name}`);
-  if (RESERVED_ENV.has(name))
-    throw new Error(`${name} is set by the podman runner and cannot be passed`);
-}
 
 /**
  * The whole environment of a spawned podman: a fixed system PATH, the
@@ -89,16 +83,41 @@ function assertEnvName(name: string): void {
  * (without them podman falls back to cgroupfs and its containers land in
  * the gateway service's cgroup, so a service restart would kill them).
  */
-export function podmanEnv(uid: number, extra: PodmanEnv = {}): PodmanEnv {
+export function podmanEnv(uid: number): PodmanEnv {
   if (!Number.isInteger(uid) || uid < 0) throw new Error(`invalid uid ${uid}`);
-  for (const name of Object.keys(extra)) assertEnvName(name);
   return {
     PATH: SYSTEM_PATH,
     HOME: homedir(),
     XDG_RUNTIME_DIR: `/run/user/${uid}`,
     DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus`,
-    ...extra,
   };
+}
+
+/**
+ * The text of an exec's `--env-file`: one literal `NAME=value` line per
+ * variable (podman does no quoting or expansion). Throws on a name outside
+ * `[A-Za-z_][A-Za-z0-9_]*`, and on a value with a line break or NUL, or too
+ * long for podman's line reader, rather than letting it be cut or split.
+ */
+export function execEnvFileText(env: Record<string, string>): string {
+  let text = "";
+  for (const [name, value] of Object.entries(env)) {
+    if (!ENV_NAME.test(name))
+      throw new Error(
+        `invalid environment variable name: ${JSON.stringify(name)}`,
+      );
+    if (/[\r\n]/.test(value))
+      throw new Error(
+        `environment variable ${name} contains a line break, which the podman sandbox cannot pass`,
+      );
+    if (value.includes("\0"))
+      throw new Error(`environment variable ${name} contains a NUL byte`);
+    const line = `${name}=${value}`;
+    if (Buffer.byteLength(line, "utf8") > MAX_ENV_LINE)
+      throw new Error(`environment variable ${name} is too long`);
+    text += `${line}\n`;
+  }
+  return text;
 }
 
 function errorText(err: unknown): string {
@@ -116,7 +135,7 @@ export function createPodmanRunner(
       return { exitCode: 1, stdout: "", stderr: "podman needs a POSIX host" };
     let env: PodmanEnv;
     try {
-      env = podmanEnv(uid, opts.env);
+      env = podmanEnv(uid);
     } catch (err) {
       return { exitCode: 1, stdout: "", stderr: errorText(err) };
     }
@@ -347,20 +366,24 @@ export function workloadCreateArgs(o: {
 /**
  * `podman exec` into the workload as uid 1000, running `cmd` with bash under
  * `timeout` (`timeoutSec: 0` only for detached commands, which are meant to
- * outlive the call). `envNames` become `--env NAME`: the values must be in
- * the runner's `env`, never in argv.
+ * outlive the call). `envFile` is an absolute `--env-file` path; values never
+ * go in argv. Use `podmanExec`, which writes and removes that file.
  */
 export function execArgs(o: {
   workload: string;
   cwd?: string;
-  envNames: string[];
+  envFile?: string;
   timeoutSec: number;
   detached?: boolean;
   stdin?: boolean;
   cmd: string;
 }): string[] {
   assertOwnName(o.workload);
-  for (const name of o.envNames) assertEnvName(name);
+  if (
+    o.envFile !== undefined &&
+    (!o.envFile.startsWith("/") || /[\0\r\n]/.test(o.envFile))
+  )
+    throw new Error(`exec env file must be an absolute path: ${o.envFile}`);
   if (o.cwd !== undefined && (!o.cwd.startsWith("/") || o.cwd.includes("\0")))
     throw new Error(`exec cwd must be an absolute path: ${o.cwd}`);
   const timeout: string[] = [];
@@ -378,11 +401,90 @@ export function execArgs(o: {
     "--user",
     PODMAN_WORKLOAD_USER,
     ...(o.cwd ? ["--workdir", o.cwd] : []),
-    ...o.envNames.flatMap((name) => ["--env", name]),
+    ...(o.envFile ? ["--env-file", o.envFile] : []),
     o.workload,
     ...timeout,
     "/bin/bash",
     "-c",
     o.cmd,
   ];
+}
+
+/** `$XDG_RUNTIME_DIR/opensession`, created 0700 and owned by us (a symlink
+ *  or someone else's dir is refused). */
+async function privateRuntimeDir(runtimeDir: string): Promise<string> {
+  if (!runtimeDir.startsWith("/"))
+    throw new Error(`runtime dir must be absolute: ${runtimeDir}`);
+  const dir = join(runtimeDir, "opensession");
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  const st = await lstat(dir);
+  if (!st.isDirectory() || st.isSymbolicLink())
+    throw new Error(`${dir} is not a directory`);
+  const uid = process.getuid?.();
+  if (uid !== undefined && st.uid !== uid)
+    throw new Error(`${dir} is not owned by uid ${uid}`);
+  if ((st.mode & 0o777) !== 0o700) await chmod(dir, 0o700);
+  return dir;
+}
+
+function defaultRuntimeDir(): string {
+  const fromEnv = process.env.XDG_RUNTIME_DIR;
+  if (fromEnv?.startsWith("/")) return fromEnv;
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("podman needs a POSIX host");
+  return `/run/user/${uid}`;
+}
+
+/**
+ * Runs `podman exec` (see `execArgs`) with `env` delivered in-container via a
+ * 0600 `--env-file` under `$XDG_RUNTIME_DIR/opensession/` (0700). The file is
+ * removed when the exec returns or throws. Throws before spawning on an env
+ * the file cannot carry.
+ */
+export async function podmanExec(
+  run: PodmanRunner,
+  o: {
+    workload: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutSec: number;
+    detached?: boolean;
+    /** Written to the exec's stdin (adds `-i`). */
+    stdin?: string;
+    cmd: string;
+    timeoutMs?: number;
+    /** Defaults to `$XDG_RUNTIME_DIR` (or `/run/user/<uid>`). */
+    runtimeDir?: string;
+  },
+): Promise<ExecResult> {
+  const base = {
+    workload: o.workload,
+    cwd: o.cwd,
+    timeoutSec: o.timeoutSec,
+    detached: o.detached,
+    stdin: o.stdin !== undefined,
+    cmd: o.cmd,
+  };
+  const runOpts: PodmanRunOpts = { stdin: o.stdin, timeoutMs: o.timeoutMs };
+  const env = o.env ?? {};
+  if (Object.keys(env).length === 0) return run(execArgs(base), runOpts);
+  const text = execEnvFileText(env);
+  const dir = await privateRuntimeDir(o.runtimeDir ?? defaultRuntimeDir());
+  const file = join(dir, `exec-env-${randomBytes(12).toString("hex")}`);
+  try {
+    const handle = await open(file, "wx", 0o600);
+    try {
+      await handle.chmod(0o600);
+      await handle.writeFile(text, "utf8");
+    } finally {
+      await handle.close();
+    }
+    return await run(execArgs({ ...base, envFile: file }), runOpts);
+  } finally {
+    await rm(file, { force: true });
+  }
 }

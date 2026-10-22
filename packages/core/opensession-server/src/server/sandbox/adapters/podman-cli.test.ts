@@ -1,7 +1,24 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
   createPodmanRunner,
   execArgs,
+  execEnvFileText,
+  type PodmanRunner,
+  podmanExec,
   PODMAN_PASTA_NETWORK,
   podCreateArgs,
   podmanEnv,
@@ -173,16 +190,19 @@ describe("podman argv", () => {
     ).toThrow();
   });
 
-  test("exec passes secrets by name and pins the user", () => {
+  test("exec passes env through a file and pins the user", () => {
     const argv = execArgs({
       workload: names.workload,
       cwd: "/home/ubuntu/work",
-      envNames: ["GH_TOKEN"],
+      envFile: "/run/user/1001/opensession/exec-env-x",
       timeoutSec: 30,
       cmd: "echo hi",
     });
     expect(argv[0]).toBe("exec");
-    expect(hasPair(argv, "--env", "GH_TOKEN")).toBe(true);
+    expect(
+      hasPair(argv, "--env-file", "/run/user/1001/opensession/exec-env-x"),
+    ).toBe(true);
+    expect(argv).not.toContain("--env");
     expect(argv.some((w) => w.includes("="))).toBe(false);
     expect(hasPair(argv, "--user", "1000:1000")).toBe(true);
     expect(hasPair(argv, "--workdir", "/home/ubuntu/work")).toBe(true);
@@ -203,7 +223,6 @@ describe("podman argv", () => {
   test("exec -d detaches, -i keeps stdin open", () => {
     const detached = execArgs({
       workload: names.workload,
-      envNames: [],
       timeoutSec: 0,
       detached: true,
       cmd: "sleep 1",
@@ -217,7 +236,6 @@ describe("podman argv", () => {
     ]);
     const piped = execArgs({
       workload: names.workload,
-      envNames: [],
       timeoutSec: 5,
       stdin: true,
       cmd: "cat",
@@ -225,16 +243,13 @@ describe("podman argv", () => {
     expect(piped).toContain("-i");
   });
 
-  test("exec refuses unsafe env names, relative cwd and foreign containers", () => {
-    const envNames: string[] = [];
+  test("exec refuses relative env files, relative cwd and foreign containers", () => {
     const base = {
       workload: names.workload,
-      envNames,
       timeoutSec: 5,
       cmd: "true",
     };
-    expect(() => execArgs({ ...base, envNames: ["GH_TOKEN=x"] })).toThrow();
-    expect(() => execArgs({ ...base, envNames: ["PATH"] })).toThrow();
+    expect(() => execArgs({ ...base, envFile: "env" })).toThrow();
     expect(() => execArgs({ ...base, cwd: "work" })).toThrow();
     expect(() => execArgs({ ...base, workload: "habit-dev-db" })).toThrow();
     expect(() => execArgs({ ...base, timeoutSec: 0 })).toThrow();
@@ -242,52 +257,298 @@ describe("podman argv", () => {
 });
 
 describe("podman env", () => {
-  afterEach(() => {
-    delete process.env.OPENSESSION_TEST_SECRET;
-  });
-
-  test("carries only the user session variables and the caller's extras", () => {
-    process.env.OPENSESSION_TEST_SECRET = "leak";
-    const env = podmanEnv(1001, { GH_TOKEN: "t" });
+  test("is exactly the user session variables", () => {
+    const env = podmanEnv(1001);
     expect(Object.keys(env).sort()).toEqual([
       "DBUS_SESSION_BUS_ADDRESS",
-      "GH_TOKEN",
       "HOME",
       "PATH",
       "XDG_RUNTIME_DIR",
     ]);
     expect(env.XDG_RUNTIME_DIR).toBe("/run/user/1001");
     expect(env.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/run/user/1001/bus");
-    expect(Object.values(env)).not.toContain("leak");
-    expect(Object.keys(podmanEnv(1001)).sort()).toEqual([
+    expect(env.PATH).toBe(
+      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+  });
+});
+
+describe("exec env file", () => {
+  test("carries in-container names, PATH and HOME included", () => {
+    expect(
+      execEnvFileText({
+        GH_TOKEN: "t",
+        PATH: "/home/ubuntu/.bun/bin:/usr/bin",
+        HOME: "/home/ubuntu",
+        LD_PRELOAD: "/home/ubuntu/x.so",
+        QUOTED: '"kept" $HOME \\ #x ',
+      }),
+    ).toBe(
+      "GH_TOKEN=t\n" +
+        "PATH=/home/ubuntu/.bun/bin:/usr/bin\n" +
+        "HOME=/home/ubuntu\n" +
+        "LD_PRELOAD=/home/ubuntu/x.so\n" +
+        'QUOTED="kept" $HOME \\ #x \n',
+    );
+  });
+
+  test("refuses values a line cannot carry", () => {
+    expect(() => execEnvFileText({ KEY: "line one\nline two" })).toThrow(
+      "KEY contains a line break",
+    );
+    expect(() => execEnvFileText({ KEY: "x\r" })).toThrow(
+      "KEY contains a line break",
+    );
+  });
+
+  test("refuses bad names, NUL and oversized values", () => {
+    for (const name of ["BAD-NAME", "A=B", "1A", "", "LD*", " A"])
+      expect(() => execEnvFileText({ [name]: "x" })).toThrow();
+    expect(() => execEnvFileText({ A: "a\0b" })).toThrow();
+    expect(() => execEnvFileText({ A: "x".repeat(70_000) })).toThrow();
+  });
+});
+
+describe("podman exec", () => {
+  const names = podmanNames("sess-1");
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const key of ["LD_PRELOAD", "CONTAINERS_CONF", "CONTAINER_HOST"])
+      delete process.env[key];
+    for (const dir of dirs.splice(0))
+      await rm(dir, { recursive: true, force: true });
+  });
+  async function runtimeDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "podman-exec-test-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  test("writes a 0600 env file in a 0700 dir and removes it", async () => {
+    const dir = await runtimeDir();
+    const seen: {
+      argv: string[];
+      mode: number;
+      dirMode: number;
+      text: string;
+    }[] = [];
+    const run: PodmanRunner = async (argv) => {
+      const file = argv[argv.indexOf("--env-file") + 1]!;
+      seen.push({
+        argv,
+        mode: (await stat(file)).mode & 0o777,
+        dirMode: (await stat(join(dir, "opensession"))).mode & 0o777,
+        text: await readFile(file, "utf8"),
+      });
+      return { exitCode: 0, stdout: "ok", stderr: "" };
+    };
+    const result = await podmanExec(run, {
+      workload: names.workload,
+      cwd: "/home/ubuntu",
+      env: { GH_TOKEN: "t", PATH: "/usr/bin" },
+      timeoutSec: 30,
+      cmd: "echo hi",
+      runtimeDir: dir,
+    });
+    expect(result).toEqual({ exitCode: 0, stdout: "ok", stderr: "" });
+    expect(seen).toHaveLength(1);
+    const file = seen[0]!.argv[seen[0]!.argv.indexOf("--env-file") + 1]!;
+    expect(file.startsWith(join(dir, "opensession") + "/")).toBe(true);
+    expect(seen[0]!.mode).toBe(0o600);
+    expect(seen[0]!.dirMode).toBe(0o700);
+    expect(seen[0]!.text).toBe("GH_TOKEN=t\nPATH=/usr/bin\n");
+    expect(seen[0]!.argv).toEqual([
+      "exec",
+      "--user",
+      "1000:1000",
+      "--workdir",
+      "/home/ubuntu",
+      "--env-file",
+      file,
+      names.workload,
+      "/usr/bin/timeout",
+      "-k",
+      "5",
+      "30",
+      "/bin/bash",
+      "-c",
+      "echo hi",
+    ]);
+    expect(await readdir(join(dir, "opensession"))).toEqual([]);
+  });
+
+  test("removes the env file when the runner fails", async () => {
+    const dir = await runtimeDir();
+    const run: PodmanRunner = async () => {
+      throw new Error("boom");
+    };
+    await expect(
+      podmanExec(run, {
+        workload: names.workload,
+        env: { A: "b" },
+        timeoutSec: 5,
+        cmd: "true",
+        runtimeDir: dir,
+      }),
+    ).rejects.toThrow("boom");
+    expect(await readdir(join(dir, "opensession"))).toEqual([]);
+  });
+
+  test("removes the env file after a failed exec and refuses before writing", async () => {
+    const dir = await runtimeDir();
+    const calls: string[][] = [];
+    const failed = await podmanExec(
+      async (argv) => {
+        calls.push(argv);
+        return { exitCode: 125, stdout: "", stderr: "no such container" };
+      },
+      {
+        workload: names.workload,
+        env: { A: "b" },
+        timeoutSec: 5,
+        cmd: "true",
+        runtimeDir: dir,
+      },
+    );
+    expect(failed.exitCode).toBe(125);
+    expect(await readdir(join(dir, "opensession"))).toEqual([]);
+    await expect(
+      podmanExec(
+        async (argv) => {
+          calls.push(argv);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+        {
+          workload: names.workload,
+          env: { A: "b", KEY: "two\nlines" },
+          timeoutSec: 5,
+          cmd: "true",
+          runtimeDir: dir,
+        },
+      ),
+    ).rejects.toThrow("KEY contains a line break");
+    expect(calls).toHaveLength(1);
+    expect(await readdir(join(dir, "opensession"))).toEqual([]);
+  });
+
+  test("passes no env file when there is no env", async () => {
+    const dir = await runtimeDir();
+    const calls: string[][] = [];
+    await podmanExec(
+      async (argv) => {
+        calls.push(argv);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      { workload: names.workload, timeoutSec: 5, cmd: "true", runtimeDir: dir },
+    );
+    expect(calls[0]).not.toContain("--env-file");
+  });
+
+  test("tightens an existing dir and refuses a symlinked one", async () => {
+    const dir = await runtimeDir();
+    await mkdir(join(dir, "opensession"), { mode: 0o755 });
+    await chmod(join(dir, "opensession"), 0o755);
+    const ok = async () => ({ exitCode: 0, stdout: "", stderr: "" });
+    await podmanExec(ok, {
+      workload: names.workload,
+      env: { A: "b" },
+      timeoutSec: 5,
+      cmd: "true",
+      runtimeDir: dir,
+    });
+    expect((await lstat(join(dir, "opensession"))).mode & 0o777).toBe(0o700);
+
+    const other = await runtimeDir();
+    const target = await runtimeDir();
+    await symlink(target, join(other, "opensession"));
+    await expect(
+      podmanExec(ok, {
+        workload: names.workload,
+        env: { A: "b" },
+        timeoutSec: 5,
+        cmd: "true",
+        runtimeDir: other,
+      }),
+    ).rejects.toThrow();
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  test("caller env never reaches the host podman process", async () => {
+    const dir = await runtimeDir();
+    const stub = join(dir, "podman-stub");
+    await writeFile(
+      stub,
+      [
+        "#!/bin/sh",
+        "/usr/bin/env",
+        'prev=""',
+        'for a in "$@"; do',
+        '  if [ "$prev" = "--env-file" ]; then echo "FILE<<"; cat "$a"; echo ">>FILE"; fi',
+        '  prev="$a"',
+        "done",
+        "",
+      ].join("\n"),
+    );
+    await chmod(stub, 0o755);
+    process.env.LD_PRELOAD = "/nonexistent/host.so";
+    process.env.CONTAINERS_CONF = "/tmp/evil.conf";
+    process.env.CONTAINER_HOST = "unix:///tmp/evil.sock";
+    const run = createPodmanRunner({ binary: stub, uid: 1001 });
+    const result = await podmanExec(run, {
+      workload: names.workload,
+      env: {
+        LD_PRELOAD: "/home/ubuntu/evil.so",
+        CONTAINERS_CONF: "/home/ubuntu/containers.conf",
+        CONTAINER_HOST: "unix:///home/ubuntu/podman.sock",
+        PATH: "/home/ubuntu/bin",
+        HOME: "/home/ubuntu",
+      },
+      timeoutSec: 5,
+      cmd: "true",
+      runtimeDir: dir,
+    });
+    expect(result.exitCode).toBe(0);
+    const [hostEnv, rest] = result.stdout.split("FILE<<\n");
+    const hostKeys = hostEnv!
+      .trim()
+      .split("\n")
+      .map((line) => line.slice(0, line.indexOf("=")))
+      .filter((key) => key !== "PWD" && key !== "SHLVL" && key !== "_")
+      .sort();
+    expect(hostKeys).toEqual([
       "DBUS_SESSION_BUS_ADDRESS",
       "HOME",
       "PATH",
       "XDG_RUNTIME_DIR",
     ]);
-  });
-
-  test("extras cannot replace the session variables", () => {
-    expect(() => podmanEnv(1001, { PATH: "/tmp" })).toThrow();
-    expect(() => podmanEnv(1001, { XDG_RUNTIME_DIR: "/tmp" })).toThrow();
-    expect(() => podmanEnv(1001, { "BAD-NAME": "x" })).toThrow();
+    expect(hostEnv).toContain(
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
+    );
+    expect(hostEnv).not.toContain("/home/ubuntu/bin");
+    expect(rest).toBe(
+      "LD_PRELOAD=/home/ubuntu/evil.so\n" +
+        "CONTAINERS_CONF=/home/ubuntu/containers.conf\n" +
+        "CONTAINER_HOST=unix:///home/ubuntu/podman.sock\n" +
+        "PATH=/home/ubuntu/bin\n" +
+        "HOME=/home/ubuntu\n" +
+        ">>FILE\n",
+    );
+    expect(await readdir(join(dir, "opensession"))).toEqual([]);
   });
 });
 
 describe("podman runner", () => {
-  afterEach(() => {
-    delete process.env.OPENSESSION_TEST_SECRET;
-  });
-
   test("spawns with the minimal env and the caller's stdin", async () => {
     process.env.OPENSESSION_TEST_SECRET = "leak";
-    const run = createPodmanRunner({ binary: "/usr/bin/env", uid: 1001 });
-    const result = await run([], { env: { GH_TOKEN: "t" } });
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("GH_TOKEN=t");
-    expect(result.stdout).toContain("XDG_RUNTIME_DIR=/run/user/1001");
-    expect(result.stdout).not.toContain("OPENSESSION_TEST_SECRET");
-
+    try {
+      const run = createPodmanRunner({ binary: "/usr/bin/env", uid: 1001 });
+      const result = await run([]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("XDG_RUNTIME_DIR=/run/user/1001");
+      expect(result.stdout).not.toContain("OPENSESSION_TEST_SECRET");
+    } finally {
+      delete process.env.OPENSESSION_TEST_SECRET;
+    }
     const cat = createPodmanRunner({ binary: "/bin/cat", uid: 1001 });
     expect((await cat([], { stdin: "rules\n" })).stdout).toBe("rules\n");
   });
