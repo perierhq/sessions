@@ -186,7 +186,10 @@ function sleep(ms: number): { promise: Promise<"timeout">; clear(): void } {
 }
 
 /** SIGKILL the child's whole process group (it leads one: `detached`). */
-function killGroup(proc: { pid: number; kill(signal: string): void }): void {
+function killGroup(proc: {
+  pid: number;
+  kill(signal?: number | NodeJS.Signals): void;
+}): void {
   try {
     process.kill(-proc.pid, "SIGKILL");
   } catch {
