@@ -30,6 +30,8 @@ import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
 import {
   getSandboxConnection,
+  PODMAN_DEFAULT_MEMORY_MB,
+  PODMAN_DEFAULT_PIDS_LIMIT,
   type PodmanConnectionFacts,
 } from "../connections";
 import type {
@@ -132,8 +134,8 @@ export function podmanSettings(raw: unknown): PodmanSettings {
       ? r.cpu
       : undefined;
   return {
-    memoryMb: int(r.memoryMb, 4096),
-    pidsLimit: int(r.pidsLimit, 4096),
+    memoryMb: int(r.memoryMb, PODMAN_DEFAULT_MEMORY_MB),
+    pidsLimit: int(r.pidsLimit, PODMAN_DEFAULT_PIDS_LIMIT),
     ...(cpu !== undefined ? { cpu } : {}),
     dns: dns.length ? dns : [...PODMAN_DEFAULT_DNS],
   };

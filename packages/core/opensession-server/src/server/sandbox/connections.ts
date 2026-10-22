@@ -66,6 +66,10 @@ export interface SandboxConnectionSettings {
   dns?: string[];
 }
 
+/** podman machine shape defaults (adapters/podman.ts podmanSettings). */
+export const PODMAN_DEFAULT_MEMORY_MB = 4096;
+export const PODMAN_DEFAULT_PIDS_LIMIT = 4096;
+
 /** What the last successful podman qualification found on this host. */
 export interface PodmanConnectionFacts {
   /** The sandbox image new sandboxes start from. */
@@ -123,10 +127,18 @@ export interface SandboxConnection {
   updatedAt: string;
 }
 
+/** The This machine (container) card's summary: the qualification facts and
+ *  the limits new sandboxes get. */
+export interface SafePodmanConnection extends PodmanConnectionFacts {
+  memoryMb: number;
+  pidsLimit: number;
+}
+
 export interface SafeSandboxConnection extends Omit<
   SandboxConnection,
-  "credentialRef"
+  "credentialRef" | "podman"
 > {
+  podman?: SafePodmanConnection;
   hasCredentials: boolean;
   state:
     | "not_configured"
@@ -351,9 +363,15 @@ export function getSandboxConnection(
   );
 }
 
-export function safeSandboxConnections(): SafeSandboxConnection[] {
-  return WORKSPACE_SANDBOX_PROVIDERS.map((provider) => {
+/** Every provider's connection for Settings. This machine (container) is
+ *  offered only on a Linux host (podman sandboxes run here), unless one is
+ *  already stored. */
+export function safeSandboxConnections(
+  platform: string = process.platform,
+): SafeSandboxConnection[] {
+  return WORKSPACE_SANDBOX_PROVIDERS.flatMap((provider) => {
     const connection = getSandboxConnection(provider);
+    if (!connection && provider === "podman" && platform !== "linux") return [];
     if (!connection) {
       return {
         id: `unconfigured-${provider}`,
@@ -382,8 +400,27 @@ export function safeSandboxConnections(): SafeSandboxConnection[] {
             signatureCurrent
           ? "ready"
           : "needs_attention";
-    const { credentialRef: _credentialRef, ...safe } = connection;
-    return { ...safe, hasCredentials, state };
+    const {
+      credentialRef: _credentialRef,
+      podman: podmanFacts,
+      ...safe
+    } = connection;
+    return {
+      ...safe,
+      ...(podmanFacts
+        ? {
+            podman: {
+              ...podmanFacts,
+              memoryMb:
+                connection.settings.memoryMb || PODMAN_DEFAULT_MEMORY_MB,
+              pidsLimit:
+                connection.settings.pidsLimit || PODMAN_DEFAULT_PIDS_LIMIT,
+            },
+          }
+        : {}),
+      hasCredentials,
+      state,
+    };
   });
 }
 

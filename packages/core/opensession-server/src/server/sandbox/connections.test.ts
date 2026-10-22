@@ -259,3 +259,38 @@ describe("This machine (container)", () => {
     expect(getSandboxConnection("podman")).toBeUndefined();
   });
 });
+
+describe("This machine (container) in Settings", () => {
+  test("is offered only on Linux until it is connected", () => {
+    const ids = (platform: string) =>
+      safeSandboxConnections(platform).map((c) => c.provider);
+    expect(ids("linux")).toContain("podman");
+    expect(ids("darwin")).not.toContain("podman");
+    connectSandboxProvider("podman", { settings: {} });
+    expect(ids("darwin")).toContain("podman");
+  });
+
+  test("the card summary carries the facts and the effective limits", () => {
+    connectSandboxProvider("podman", { settings: { pidsLimit: 256 } });
+    const before = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    );
+    expect(before?.podman).toBeUndefined();
+    expect(before?.hasCredentials).toBe(true);
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const after = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    );
+    expect(after?.podman).toEqual({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+      memoryMb: 4096,
+      pidsLimit: 256,
+    });
+  });
+});
