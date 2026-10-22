@@ -24,6 +24,7 @@ export const FIXED_BY_LABEL: Record<FixedBy, string> = {
   "agents-with-you": "Agents with you",
   "by-hand": "By hand",
   "provider-recovered": "Provider recovered",
+  recovered: "Recovered on its own",
 };
 
 /** How an incident ended, as a phrase that reads after "was" or alone. */
@@ -32,6 +33,7 @@ const FIXED_BY_PHRASE: Record<FixedBy, string> = {
   "agents-with-you": "fixed by the agents with you",
   "by-hand": "fixed by hand",
   "provider-recovered": "resolved when the provider recovered",
+  recovered: "recovered on its own",
 };
 
 const plural = (n: number, one: string, many = `${one}s`) =>
@@ -147,9 +149,12 @@ export function incidentFacts(input: {
   const { incident, now } = input;
   const impact = impactFact(incident.impact);
   if (incident.state === "closed-without-action")
-    return incident.closedAt
-      ? [`back to normal ${clockTime(incident.closedAt)}`]
-      : [];
+    return [
+      ...(incident.fixedBy ? [FIXED_BY_PHRASE[incident.fixedBy]] : []),
+      ...(incident.closedAt
+        ? [`back to normal ${clockTime(incident.closedAt)}`]
+        : []),
+    ];
   if (isTerminalIncidentState(incident.state)) {
     const facts: string[] = [];
     if (incident.fixedBy) facts.push(FIXED_BY_PHRASE[incident.fixedBy]);

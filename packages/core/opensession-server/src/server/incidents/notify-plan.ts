@@ -196,7 +196,10 @@ function rowFor(
       return {
         kind: "incident_resolved",
         reason: `${title} is back to normal`,
-        body: COPY.closedWithoutAction,
+        body:
+          incident.fixedBy === "recovered"
+            ? COPY.recovered
+            : COPY.closedWithoutAction,
       };
     case "deploying":
       return update(deployingBody(facts.change));

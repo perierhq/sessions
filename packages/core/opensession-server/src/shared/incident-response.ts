@@ -407,6 +407,9 @@ export const NEEDS_YOU_KINDS = [
 ] as const;
 export type NeedsYouKind = (typeof NEEDS_YOU_KINDS)[number];
 
+/** Where a person fixes a setup problem: the settings section to open. */
+export type SetupFix = "sandboxes" | "providers";
+
 export const OWNER_DECISIONS = [
   "stop",
   "deploy-now",
@@ -431,6 +434,8 @@ export type NextAction =
       reason: string;
       needsYou: NeedsYouKind;
       rule?: string;
+      /** A setup problem: where it is fixed. */
+      fix?: SetupFix;
       options: OwnerDecision[];
     }
   | { kind: "watching"; deadline: string; options: OwnerDecision[] }
@@ -534,6 +539,11 @@ export interface IncidentResponse {
     reason: string;
     since: string;
     resumePhase: ResponsePhase;
+    /** A setup problem: false while starting the agents again would fail
+     *  the same way, so Try again is not offered. Absent means it may. */
+    retryable?: boolean;
+    /** A setup problem: where it is fixed. */
+    fix?: SetupFix;
   };
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
   next: NextAction;

@@ -4,7 +4,7 @@ import type {
   OwnerDecision,
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
-import type { Incident } from "../../../shared/incidents";
+import type { Incident, SignalView } from "../../../shared/incidents";
 import { useDeadlinePassed } from "../../hooks/useDeadlinePassed";
 import {
   useDeferredMergeDeadline,
@@ -44,6 +44,7 @@ import {
   NEXT_EYEBROW,
 } from "../../lib/incident-classes";
 import { repoLabel } from "../../lib/repo-label";
+import type { SettingsSectionKey } from "../../lib/settings-sections";
 import type { SessionSafetyState } from "../../lib/types";
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
@@ -250,20 +251,26 @@ export function NextActionView({
 export function NextAction({
   incident,
   settings,
+  signals,
   primaryName,
   agentSessionIds,
   safety,
   onOpenSession,
+  onOpenSettings,
   intent,
   onIntentHandled,
 }: {
   incident: Incident;
   settings: RedactedProjectSettings | null;
+  /** Every signal with its evaluation, for what the card says about them. */
+  signals?: SignalView[];
   primaryName: string;
   agentSessionIds: string[];
   /** An agent session of this incident paused for safety. */
   safety?: { sessionId: string; state: SessionSafetyState };
   onOpenSession: (sessionId: string) => void;
+  /** Opens a settings section, where a setup problem is fixed. */
+  onOpenSettings?: (section: SettingsSectionKey) => void;
   intent?: OwnerDecision;
   onIntentHandled: () => void;
 }) {
@@ -271,6 +278,7 @@ export function NextAction({
     incident,
     settings,
     primaryName,
+    signals,
     now: Date.now(),
   });
   const [busy, setBusy] = useState<string | null>(null);
@@ -361,6 +369,9 @@ export function NextAction({
         return;
       case "resume-agents":
         void writePaused(false, button.key, true);
+        return;
+      case "open-settings":
+        if (button.section) onOpenSettings?.(button.section);
         return;
       case "decision": {
         const decision = button.decision;
@@ -473,7 +484,13 @@ export function NextAction({
                   onUndo: () => cancelDeferredMergeByKey(deferKey),
                 }
           }
-          onAudit={incident.response ? () => setAuditOpen(true) : undefined}
+          // Nothing to show until an agent or an action has run.
+          onAudit={
+            incident.response?.agents.length ||
+            incident.response?.actionRuns.length
+              ? () => setAuditOpen(true)
+              : undefined
+          }
           onDeadline={() => void mutate(incidentKey)}
         />
       )}

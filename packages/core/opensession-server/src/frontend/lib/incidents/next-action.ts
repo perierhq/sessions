@@ -3,6 +3,11 @@
 // primary only when the next step is the owner's. Pure.
 import { DECISION_COPY } from "../../../shared/incident-decision-copy";
 import {
+  closesWhenRecovered,
+  RECOVERED_CLOSE_MS,
+  recoveredCloseAt,
+} from "../../../shared/incident-recovery";
+import {
   type AgentRun,
   type AutonomyLevel,
   describeIndependence,
@@ -10,10 +15,13 @@ import {
   type OwnerDecision,
   type RedactedProjectSettings,
   type ResponsePhase,
+  type SetupFix,
 } from "../../../shared/incident-response";
 import {
   type Incident,
   isTerminalIncidentState,
+  type SignalState,
+  type SignalView,
 } from "../../../shared/incidents";
 import { ApiError } from "../api/request";
 import { repoLabel } from "../repo-label";
@@ -29,7 +37,8 @@ export type CardButtonKind =
   | "deploy-now"
   | "stop"
   | "pause-agents"
-  | "resume-agents";
+  | "resume-agents"
+  | "open-settings";
 
 export interface CardButton {
   key: string;
@@ -37,6 +46,8 @@ export interface CardButton {
   label: string;
   weight: "primary" | "soft" | "danger";
   decision?: OwnerDecision;
+  /** Open settings: the section where a setup problem is fixed. */
+  section?: SetupFix;
   /** The Stop button counts down to the end of the veto. */
   countdownTo?: string;
   /** What the Stop button reads once the veto has ended. */
@@ -94,6 +105,65 @@ const AUTONOMY_BODY: Record<AutonomyLevel, string> = {
   "deploy-right-away":
     "A verified fix goes out as soon as the verifier is certain",
 };
+
+/** The button that opens where a setup problem is fixed. */
+const FIX_LABEL: Record<SetupFix, string> = {
+  sandboxes: "Set up a sandbox",
+  providers: "Set up a model provider",
+};
+
+/** A signal that has not recovered, after "<name> ". */
+const STILL: Partial<Record<SignalState, string>> = {
+  failing: "is still failing",
+  slow: "is still slow",
+  flaky: "is still flaky",
+  external: "is still down at its provider",
+  upcoming: "is still due soon",
+};
+
+/**
+ * What the incident's own signals say now, for an incident that closes by
+ * itself once they recover (`closesWhenRecovered`): still failing, or
+ * passing again and when the incident closes. Null for any other incident,
+ * or before the signals have loaded.
+ */
+export function recoveryLine(
+  incident: Incident,
+  signals: SignalView[],
+  now: number,
+): string | null {
+  if (!closesWhenRecovered(incident)) return null;
+  const find = (id: string) => signals.find((s) => s.id === id);
+  const own = incident.signalIds.flatMap((id) => {
+    const signal = find(id);
+    return signal && !signal.provider ? [signal] : [];
+  });
+  const primary = find(incident.primarySignalId);
+  const watched = own.length ? own : primary ? [primary] : [];
+  if (!watched.length) return null;
+  const closes = `The incident closes by itself ${formatSpan(RECOVERED_CLOSE_MS)} after it recovers`;
+  const bad = watched.find((s) => s.evaluation?.state !== "ok");
+  if (bad) {
+    const state = bad.evaluation?.state;
+    const still = (state && STILL[state]) ?? "has no recent checks";
+    return `${bad.name} ${still}. ${closes}`;
+  }
+  const since = Math.max(
+    ...watched.map((s) => Date.parse(s.evaluation?.since ?? "")),
+  );
+  const who =
+    watched.length === 1
+      ? `${watched[0]!.name} is`
+      : `All ${watched.length} signals are`;
+  // Passing since before it opened: it never recovered, so it does not
+  // close by itself.
+  if (!(since >= Date.parse(incident.openedAt))) return `${who} passing`;
+  const at = new Date(since).toISOString();
+  const closeAt = recoveredCloseAt(since);
+  const when =
+    closeAt > now ? `at ${clockTime(new Date(closeAt).toISOString())}` : "soon";
+  return `${who} passing again since ${clockTime(at)}. The incident closes by itself ${when} if it stays green`;
+}
 
 const ROLL_BACK_CONFIRM: NonNullable<CardButton["confirm"]> = {
   title: "Roll back the release?",
@@ -172,12 +242,16 @@ export function nextCard(input: {
   incident: Incident;
   settings: RedactedProjectSettings | null;
   primaryName: string;
+  /** Every signal with its evaluation, for an incident that closes by
+   *  itself once they recover. */
+  signals?: SignalView[];
   now: number;
 }): NextCard {
   const { incident, settings, primaryName } = input;
   const r = incident.response;
   if (!r) return null;
   const next = r.next;
+  const recovery = recoveryLine(incident, input.signals ?? [], input.now);
 
   if (next.kind === "done") {
     if (incident.state !== "resolved" || !next.options.includes("roll-back"))
@@ -198,6 +272,7 @@ export function nextCard(input: {
       eyebrow: "Paused",
       headline: `Agents are paused for ${repoLabel(incident.project)}`,
       body: "Signals keep running. Nothing changes until you resume",
+      footnote: recovery ?? undefined,
       buttons: [
         {
           key: "resume-agents",
@@ -267,6 +342,33 @@ export function nextCard(input: {
     }
     case "needs-you": {
       const decisions = next.options.filter((d) => d !== "stop");
+      // Agents never started: say where it is fixed and what the signals
+      // say now, since the incident may close by itself.
+      if (next.needsYou === "setup" || recovery) {
+        const fix = next.needsYou === "setup" ? next.fix : undefined;
+        const buttons: CardButton[] = decisions.map((d) =>
+          decisionButton(
+            d,
+            d === "retry" && next.needsYou === "setup" ? "primary" : "soft",
+          ),
+        );
+        if (fix)
+          buttons.push({
+            key: `settings:${fix}`,
+            kind: "open-settings",
+            label: FIX_LABEL[fix],
+            weight: "primary",
+            section: fix,
+          });
+        return shell({
+          tone: "blue",
+          eyebrow: "Needs you",
+          headline: next.reason,
+          body: recovery ?? "",
+          footnote: next.rule,
+          buttons,
+        });
+      }
       if (decisions.length >= 2)
         return {
           mode: "choice",

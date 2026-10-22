@@ -95,4 +95,30 @@ describe("Button", () => {
     );
     expect(html).toContain("hover:bg-accent-hover");
   });
+
+  test("a disabled primary is a neutral plate, not a faded accent", () => {
+    const html = renderToStaticMarkup(
+      <Button variant="primary" disabled>
+        Answer
+      </Button>,
+    );
+    for (const cls of [
+      "disabled:bg-fg/8",
+      "disabled:bg-none",
+      "disabled:text-faint",
+      "disabled:shadow-none",
+      "disabled:opacity-100",
+    ])
+      expect(html).toContain(cls);
+    // The shared fade is replaced, not stacked on the neutral plate.
+    expect(html).not.toContain("disabled:opacity-40");
+    // Other variants keep the shared fade.
+    expect(
+      renderToStaticMarkup(
+        <Button variant="soft" disabled>
+          Cancel
+        </Button>,
+      ),
+    ).toContain("disabled:opacity-40");
+  });
 });

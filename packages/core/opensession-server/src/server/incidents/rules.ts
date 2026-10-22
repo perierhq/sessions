@@ -79,6 +79,33 @@ function trailing(
   return count;
 }
 
+/** How many passing checks in a row end a problem under `rule`. */
+export function recoveriesFor(rule: SignalRule): number {
+  return rule.kind === "consecutive" || rule.kind === "threshold"
+    ? (rule.recoveries ?? DEFAULT_RECOVERIES)
+    : DEFAULT_RECOVERIES;
+}
+
+/**
+ * Passing checks in a row at the end of `observations`, as the signal's
+ * rule counts a recovery: under the threshold for a threshold rule, a pass
+ * otherwise. Unknown results and other lanes are skipped.
+ */
+export function trailingPasses(
+  signal: Pick<Signal, "rule">,
+  observations: Observation[],
+): number {
+  const obs = known(observations.filter((o) => !o.lane));
+  const rule = signal.rule;
+  if (rule.kind === "threshold")
+    return trailing(
+      obs,
+      (o) =>
+        o.result !== "fail" && !(o.value !== undefined && o.value > rule.above),
+    );
+  return trailing(obs, (o) => o.result === "ok");
+}
+
 function consecutive(
   rule: Extract<SignalRule, { kind: "consecutive" }>,
   observations: Observation[],

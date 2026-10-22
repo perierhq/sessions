@@ -114,6 +114,7 @@ const actions = {
   onOpenPr: () => {},
   onOpenIncident: () => {},
   onOpenSettings: () => {},
+  onOpenAppSettings: () => {},
   onIntentHandled: () => {},
 };
 
@@ -138,6 +139,7 @@ const ready = (withResponse: boolean) => {
         onRetryStrip: null,
         earlier: [],
         settings: null,
+        signals: [signal],
       }}
     />,
   );
@@ -189,6 +191,7 @@ test("a strip that failed keeps its slot with Retry", () => {
         onRetryStrip: () => {},
         earlier: [],
         settings: null,
+        signals: [signal],
       }}
     />,
   );

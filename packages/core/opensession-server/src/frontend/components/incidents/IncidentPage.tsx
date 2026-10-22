@@ -7,6 +7,7 @@ import {
   type Incident,
   type IncidentSummary,
   isOpenIncident,
+  type SignalView,
   type StripResponse,
 } from "../../../shared/incidents";
 import {
@@ -40,6 +41,7 @@ import {
   STATUS_LINE_DOT_SLOT,
 } from "../../lib/incident-classes";
 import { repoLabel } from "../../lib/repo-label";
+import type { SettingsSectionKey } from "../../lib/settings-sections";
 import type { SessionSafetyState, UnifiedSession } from "../../lib/types";
 import { Button } from "../../ui/button";
 import {
@@ -78,6 +80,8 @@ export type IncidentPageBody =
       onRetryStrip: (() => void) | null;
       earlier: IncidentSummary[];
       settings: RedactedProjectSettings | null;
+      /** Every signal with its evaluation; empty while loading. */
+      signals: SignalView[];
       safety?: { sessionId: string; state: SessionSafetyState };
       intent?: OwnerDecision;
     };
@@ -89,6 +93,8 @@ export interface IncidentPageActions {
   onOpenPr: (target: PrTarget) => void;
   onOpenIncident: (id: string) => void;
   onOpenSettings: (project: string) => void;
+  /** A settings section, where a setup problem is fixed. */
+  onOpenAppSettings: (section: SettingsSectionKey) => void;
   onIntentHandled: () => void;
 }
 
@@ -157,10 +163,12 @@ function Sections({
         <NextAction
           incident={incident}
           settings={body.settings}
+          signals={body.signals}
           primaryName={model.primaryName}
           agentSessionIds={model.agentSessionIds}
           safety={body.safety}
           onOpenSession={actions.onOpenSession}
+          onOpenSettings={actions.onOpenAppSettings}
           intent={body.intent}
           onIntentHandled={actions.onIntentHandled}
         />
@@ -314,6 +322,7 @@ export function IncidentPage({
     onOpenIncident: (other) => navigate({ view: "incidents", id: other }),
     onOpenSettings: (name) =>
       navigate({ view: "incidentSettings", project: name }),
+    onOpenAppSettings: (section) => navigate({ view: "settings", section }),
     onIntentHandled: () =>
       navigate({ view: "incidents", id }, { replace: true }),
   };
@@ -329,6 +338,7 @@ export function IncidentPage({
         strip.error && !strip.data ? () => void strip.mutate() : null,
       earlier: earlierIncidents(closed.data ?? [], data),
       settings,
+      signals: signals.data ?? [],
       intent,
     };
     if (safe?.safety) ready.safety = { sessionId: safe.id, state: safe.safety };

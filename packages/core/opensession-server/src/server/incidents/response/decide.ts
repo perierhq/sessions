@@ -17,11 +17,17 @@ import type {
   Verdict,
 } from "../../../shared/incident-response";
 import {
+  RECOVERED_MIN_PASSES,
+  closesWhenRecovered,
+  recoveredCloseAt,
+} from "../../../shared/incident-recovery";
+import {
   type Incident,
   type IncidentState,
   type Signal,
   isTerminalIncidentState,
 } from "../../../shared/incidents";
+import { recoveriesFor } from "../rules";
 import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
 import { assessAutoMerge } from "./merge";
 import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
@@ -180,10 +186,14 @@ export function needsYouOptions(
         "send-back",
         "close",
       ];
+    case "setup":
+      // Starting again would fail the same way until the setup is fixed.
+      return r.needsYou?.retryable === false
+        ? ["resolve", "close"]
+        : ["retry", "resolve", "close"];
     case "budget":
     case "agent-error":
     case "no-report":
-    case "setup":
       return ["retry", "resolve", "close"];
     case "question":
       return [];
@@ -233,13 +243,14 @@ export function nextActionFor(
   if (incident.state === "needs-you") {
     if (!r?.needsYou)
       return { kind: "info", detail: "This incident needs you" };
-    const { kind, reason } = r.needsYou;
+    const { kind, reason, fix } = r.needsYou;
     const rule = kind === "policy" ? r.decision?.rule : undefined;
     return {
       kind: "needs-you",
       reason,
       needsYou: kind,
       ...(rule ? { rule } : {}),
+      ...(kind === "setup" && fix ? { fix } : {}),
       options: needsYouOptions(kind, r),
     };
   }
@@ -348,6 +359,73 @@ function overdueStep(view: ResponseView): ResponseStep | undefined {
     : undefined;
 }
 
+function hhmmUtc(ms: number): string {
+  return iso(ms).slice(11, 16);
+}
+
+/**
+ * Waiting on a person before any agent ran (`closesWhenRecovered`), and
+ * every own signal has passed since after the incident opened: outside
+ * maintenance, for as many checks in a row as its rule takes to recover
+ * (never fewer than RECOVERED_MIN_PASSES), and for RECOVERED_CLOSE_MS.
+ * Nothing ran and nothing changed in production, so it closes without
+ * action. Undefined while any of that is not so yet.
+ */
+export function recoveredOnItsOwn(
+  view: ResponseView,
+): ResponseStep | undefined {
+  const { incident, passes } = view;
+  if (!passes || !closesWhenRecovered(incident)) return undefined;
+  const own = ownSignalIds(view);
+  const watched = own.length ? own : [incident.primarySignalId];
+  const opened = Date.parse(incident.openedAt);
+  let since = Number.NEGATIVE_INFINITY;
+  const names: string[] = [];
+  for (const id of watched) {
+    const signal = view.signals.get(id);
+    const evaluation = view.evaluations.get(id);
+    if (!signal || evaluation?.state !== "ok" || evaluation.inMaintenance)
+      return undefined;
+    const at = Date.parse(evaluation.since);
+    if (!(at >= opened)) return undefined;
+    const needed = Math.max(RECOVERED_MIN_PASSES, recoveriesFor(signal.rule));
+    if (!((passes.get(id) ?? 0) >= needed)) return undefined;
+    since = Math.max(since, at);
+    names.push(signal.name);
+  }
+  if (!(view.now >= recoveredCloseAt(since))) return undefined;
+  return {
+    step: "transition",
+    to: "closed-without-action",
+    phase: "done",
+    detail: `Recovered on its own before any agent ran: ${names.join(", ")} passing since ${hhmmUtc(since)} UTC`,
+    fixedBy: "recovered",
+  };
+}
+
+/** A setup problem whose readiness changed: Try again and the place to fix
+ *  it follow what the agents would meet now. */
+function setupChanged(view: ResponseView): ResponseStep | undefined {
+  const ny = view.incident.response?.needsYou;
+  if (ny?.kind !== "setup" || !view.setup) return undefined;
+  const { ready, fix } = view.setup;
+  if ((ny.retryable ?? true) === ready && ny.fix === fix) return undefined;
+  const { retryable: _retryable, fix: _fix, ...rest } = ny;
+  return {
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: ready ? "Agents can start now" : "Agents still cannot start",
+    patch: {
+      needsYou: {
+        ...rest,
+        ...(ready ? {} : { retryable: false }),
+        ...(fix ? { fix } : {}),
+      },
+    },
+  };
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -396,6 +474,10 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     return NONE;
   }
+
+  // 2b. Its signals came back before any agent ran.
+  const recovered = recoveredOnItsOwn(view);
+  if (recovered) return recovered;
 
   // 3. Kill switch: never mid-command.
   if (settings.agentsPaused) {
@@ -450,7 +532,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
         detail: "Question answered",
         patch: { needsYou: undefined },
       };
-    return NONE;
+    return setupChanged(view) ?? NONE;
   }
   if (!r) return undefined;
 
@@ -537,7 +619,13 @@ function starting(view: ResponseView): ResponseStep | undefined {
         ((r.phase === "investigating" || r.phase === "verifying") &&
           runningAgents(view).length === 0))
   )
-    return { step: "needs-you", kind: "setup", reason: view.models.error };
+    return {
+      step: "needs-you",
+      kind: "setup",
+      reason: view.models.error,
+      retryable: false,
+      fix: "providers",
+    };
 
   // 10. First step.
   if (!r)

@@ -168,10 +168,14 @@ test("close and reopen", () => {
     from: "resolved",
     to: "investigating",
   });
-  // Only resolved records how it was fixed.
+  // Only resolved records how it was fixed; closed without action records
+  // only that it recovered on its own.
   expect(
     go(inc("heads-up"), "closed-without-action", "by-hand").fixedBy,
   ).toBeUndefined();
+  const recovered = go(inc("needs-you"), "closed-without-action", "recovered");
+  expect(recovered).toMatchObject({ closedAt: AT, fixedBy: "recovered" });
+  expect(go(recovered, "investigating").fixedBy).toBeUndefined();
 });
 
 test("transitions never mutate their input", () => {

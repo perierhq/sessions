@@ -126,8 +126,14 @@ const iconOnlyPad: Record<Size, string> = {
 // from reading as a flat printed rectangle. It is a white-then-black overlay,
 // so it costs the variant nothing per palette and survives the ink accent at
 // both ends of the light/dark range.
+//
+// Disabled, it gives the accent up for the `soft` plate with faint ink, at
+// full opacity. The shared 40% fade leaves a hued accent (orange, sky) as a
+// pale tint of itself, which reads as the answer, only lighter, rather than
+// as something that cannot be pressed yet. The sheen and the lift go too:
+// they are what say "press me".
 const INK =
-  "bg-accent border-transparent text-on-accent plate-sheen smooth-shadow-xs hover:bg-accent-hover";
+  "bg-accent border-transparent text-on-accent plate-sheen smooth-shadow-xs hover:bg-accent-hover disabled:bg-fg/8 disabled:bg-none disabled:text-faint disabled:shadow-none disabled:opacity-100";
 
 /**
  * Which one, in one line each. The question a variant answers is what the

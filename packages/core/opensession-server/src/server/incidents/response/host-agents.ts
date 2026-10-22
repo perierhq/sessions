@@ -21,7 +21,7 @@ import {
 
 export const INCIDENT_AGENT_USER_DEFAULT = "opensession-incident";
 export const INCIDENT_HOST_AGENTS_ENV = "OPENSESSION_INCIDENT_HOST_AGENTS";
-const NO_SANDBOX = "Configure a sandbox for this project to let agents work";
+const NO_SANDBOX = "Agents can't start: this project has no sandbox";
 
 /** Whether the operator turned on the experimental host path
  *  (`OPENSESSION_INCIDENT_HOST_AGENTS=1`). Off by default. */

@@ -6,7 +6,11 @@ import type {
   ProofResult,
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
-import type { Incident, IncidentState } from "../../../shared/incidents";
+import type {
+  Incident,
+  IncidentState,
+  SignalView,
+} from "../../../shared/incidents";
 import { ApiError } from "../api/request";
 import { clockTime } from "../time";
 import {
@@ -15,6 +19,7 @@ import {
   incidentDecisionKey,
   nextCard,
   orderButtons,
+  recoveryLine,
 } from "./next-action";
 
 const NOW = Date.parse("2026-10-20T12:31:12Z");
@@ -407,4 +412,206 @@ test("answers map back to decisions", () => {
 
 test("deploy-now key for the shared deferred store", () => {
   expect(incidentDecisionKey("inc-1")).toBe("incident:inc-1:deploy-now");
+});
+
+// ── Agents never started ─────────────────────────────────────────────────
+
+const NO_SANDBOX = "Agents can't start: this project has no sandbox";
+const signal = (
+  state: "ok" | "failing" | "unknown",
+  since: string,
+  over: Partial<SignalView> = {},
+): SignalView => ({
+  id: "sig-a",
+  name: "Search",
+  project: "acme",
+  enabled: true,
+  source: { kind: "http", url: "https://acme.example.test/search" },
+  rule: { kind: "consecutive", failures: 3 },
+  severity: "major",
+  createdBy: "Ada",
+  createdAt: "2026-10-01T00:00:00Z",
+  updatedAt: "2026-10-01T00:00:00Z",
+  evaluation: {
+    signalId: over.id ?? "sig-a",
+    state,
+    since,
+    at: "2026-10-20T12:31:00Z",
+    reason: state,
+    inMaintenance: false,
+  },
+  ...over,
+});
+const setup = (
+  over: { retry?: boolean; fix?: "sandboxes" | "providers" } = {},
+): Incident => {
+  const needsYou: NonNullable<IncidentResponse["needsYou"]> = {
+    kind: "setup",
+    reason: NO_SANDBOX,
+    since: "2026-10-20T10:42:00Z",
+    resumePhase: "investigating",
+  };
+  const next: Extract<IncidentResponse["next"], { kind: "needs-you" }> = {
+    kind: "needs-you",
+    reason: NO_SANDBOX,
+    needsYou: "setup",
+    options: over.retry ? ["retry", "resolve", "close"] : ["resolve", "close"],
+  };
+  if (!over.retry) needsYou.retryable = false;
+  if (over.fix) {
+    needsYou.fix = over.fix;
+    next.fix = over.fix;
+  }
+  return inc("needs-you", { phase: "needs-you", costUsd: 0, needsYou, next });
+};
+const labels = (card: ReturnType<typeof nextCard>) =>
+  card?.mode === "shell"
+    ? orderButtons(card.buttons).map((b) => [b.label, b.weight])
+    : null;
+
+test("setup: the place to fix it is the answer, no Try again until it can work", () => {
+  const card = nextCard({
+    ...base,
+    incident: setup({ fix: "sandboxes" }),
+    signals: [signal("failing", "2026-10-20T10:41:00Z")],
+  });
+  expect(card).toMatchObject({
+    mode: "shell",
+    tone: "blue",
+    eyebrow: "Needs you",
+    headline: NO_SANDBOX,
+    body: "Search is still failing. The incident closes by itself 5 min after it recovers",
+  });
+  expect(labels(card)).toEqual([
+    ["Mark as fixed", "soft"],
+    ["Close without action", "soft"],
+    ["Set up a sandbox", "primary"],
+  ]);
+  expect(
+    card?.mode === "shell" &&
+      card.buttons.find((b) => b.kind === "open-settings")?.section,
+  ).toBe("sandboxes");
+  expect(
+    labels(
+      nextCard({
+        ...base,
+        incident: setup({ fix: "providers" }),
+        signals: [],
+      }),
+    )?.at(-1),
+  ).toEqual(["Set up a model provider", "primary"]);
+  // Ready now: Try again is the answer and the settings link goes.
+  expect(
+    labels(nextCard({ ...base, incident: setup({ retry: true }) })),
+  ).toEqual([
+    ["Mark as fixed", "soft"],
+    ["Close without action", "soft"],
+    ["Try again", "primary"],
+  ]);
+});
+
+test("setup: says when the signal passes again and when the incident closes", () => {
+  const since = "2026-10-20T12:28:00Z";
+  const closes = new Date(Date.parse(since) + 300_000).toISOString();
+  expect(
+    nextCard({
+      ...base,
+      incident: setup({ fix: "sandboxes" }),
+      signals: [signal("ok", since)],
+    }),
+  ).toMatchObject({
+    body: `Search is passing again since ${clockTime(since)}. The incident closes by itself at ${clockTime(closes)} if it stays green`,
+  });
+  // Past the window, waiting for the next check or tick.
+  expect(
+    recoveryLine(setup(), [signal("ok", "2026-10-20T12:00:00Z")], NOW),
+  ).toBe(
+    `Search is passing again since ${clockTime("2026-10-20T12:00:00Z")}. The incident closes by itself soon if it stays green`,
+  );
+  // Several signals: the last to recover sets the time; a provider is not one.
+  const other = signal("ok", since, { id: "sig-b", name: "Checkout" });
+  const provider = signal("failing", since, {
+    id: "sig-p",
+    name: "Upstream",
+    provider: true,
+  });
+  const two = setup();
+  two.signalIds = ["sig-a", "sig-b", "sig-p"];
+  expect(
+    recoveryLine(
+      two,
+      [signal("ok", "2026-10-20T12:10:00Z"), other, provider],
+      NOW,
+    ),
+  ).toBe(
+    `All 2 signals are passing again since ${clockTime(since)}. The incident closes by itself at ${clockTime(closes)} if it stays green`,
+  );
+  expect(
+    recoveryLine(two, [signal("unknown", since), other, provider], NOW),
+  ).toBe(
+    "Search has no recent checks. The incident closes by itself 5 min after it recovers",
+  );
+});
+
+test("the signal line only where it closes by itself", () => {
+  const sig = [signal("ok", "2026-10-20T12:28:00Z")];
+  // An agent ran: nothing closes by itself.
+  const ran = setup();
+  ran.response!.agents = [verifier({ role: "investigator", status: "error" })];
+  expect(recoveryLine(ran, sig, NOW)).toBeNull();
+  // A policy question is not a setup problem.
+  expect(
+    recoveryLine(
+      inc("needs-you", {
+        needsYou: {
+          kind: "policy",
+          reason: "x",
+          since: "2026-10-20T12:00:00Z",
+          resumePhase: "deciding",
+        },
+      }),
+      sig,
+      NOW,
+    ),
+  ).toBeNull();
+  // Signals not loaded yet.
+  expect(recoveryLine(setup(), [], NOW)).toBeNull();
+  // Budget before any agent: the choice becomes buttons with the line.
+  const budget = inc("needs-you", {
+    phase: "needs-you",
+    needsYou: {
+      kind: "budget",
+      reason: "Agents stopped at the $200 monthly budget",
+      since: "2026-10-20T12:00:00Z",
+      resumePhase: "investigating",
+    },
+    next: {
+      kind: "needs-you",
+      reason: "Agents stopped at the $200 monthly budget",
+      needsYou: "budget",
+      options: ["retry", "resolve", "close"],
+    },
+  });
+  const card = nextCard({ ...base, incident: budget, signals: sig });
+  expect(card).toMatchObject({
+    mode: "shell",
+    body: expect.stringContaining("Search is passing again since"),
+  });
+  expect(labels(card)?.map(([, weight]) => weight)).toEqual([
+    "soft",
+    "soft",
+    "soft",
+  ]);
+  // Paused before any agent: the line rides under the paused card.
+  expect(
+    nextCard({
+      ...base,
+      incident: inc("paused", { phase: "paused" }),
+      signals: [signal("failing", "2026-10-20T10:41:00Z")],
+    }),
+  ).toMatchObject({
+    eyebrow: "Paused",
+    footnote:
+      "Search is still failing. The incident closes by itself 5 min after it recovers",
+  });
 });
