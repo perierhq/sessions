@@ -32,14 +32,24 @@ export interface PodmanRunOpts {
   timeoutMs?: number;
 }
 
+export interface PodmanResult extends ExecResult {
+  /** Set when stdout or stderr went over PODMAN_MAX_OUTPUT_BYTES and was cut. */
+  truncated?: boolean;
+}
+
 /** Runs `podman <argv>`. Never throws: a non-zero exit, a timeout (124) and a
  *  missing binary (127) are all results. */
 export type PodmanRunner = (
   argv: string[],
   opts?: PodmanRunOpts,
-) => Promise<ExecResult>;
+) => Promise<PodmanResult>;
 
 export const PODMAN_DEFAULT_TIMEOUT_MS = 120_000;
+/** Each of stdout and stderr keeps at most this much; the rest is drained
+ *  and dropped so the child never blocks on a full pipe. */
+export const PODMAN_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+/** After a timeout kill, how long to wait for the pipes to close. */
+const KILL_GRACE_MS = 1_000;
 /** Image builds and first pulls. */
 export const PODMAN_LONG_TIMEOUT_MS = 600_000;
 
@@ -124,6 +134,71 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+interface Capture {
+  /** Settles when the stream ends or errors. */
+  done: Promise<void>;
+  text(): string;
+  truncated(): boolean;
+  cancel(): void;
+}
+
+/** Reads a child's pipe to the end, keeping the first `cap` bytes. */
+function capture(stream: ReadableStream<Uint8Array>, cap: number): Capture {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let cut = false;
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { done: end, value } = await reader.read();
+        if (end) return;
+        const room = cap - bytes;
+        if (value.byteLength <= room) {
+          chunks.push(value);
+          bytes += value.byteLength;
+        } else {
+          if (room > 0) chunks.push(value.subarray(0, room));
+          bytes = cap;
+          cut = true;
+        }
+      }
+    } catch {
+      // Cancelled or broken pipe: keep what was read.
+    }
+  })();
+  return {
+    done,
+    text: () => Buffer.concat(chunks).toString("utf8"),
+    truncated: () => cut,
+    cancel: () => {
+      reader.cancel().catch(() => {});
+    },
+  };
+}
+
+function sleep(ms: number): { promise: Promise<"timeout">; clear(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+  });
+  return { promise, clear: () => clearTimeout(timer) };
+}
+
+/** SIGKILL the child's whole process group (it leads one: `detached`). */
+function killGroup(proc: { pid: number; kill(signal: string): void }): void {
+  try {
+    process.kill(-proc.pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
 /** A runner for `binary` (tests point it at a stand-in). */
 export function createPodmanRunner(
   o: { binary?: string; uid?: number } = {},
@@ -143,6 +218,9 @@ export function createPodmanRunner(
     try {
       proc = Bun.spawn([binary, ...argv], {
         env,
+        // Its own process group, so a timeout kills conmon helpers and any
+        // other descendants along with podman.
+        detached: true,
         stdin:
           opts.stdin === undefined ? "ignore" : Buffer.from(opts.stdin, "utf8"),
         stdout: "pipe",
@@ -155,27 +233,34 @@ export function createPodmanRunner(
         stderr: `${binary}: ${errorText(err)}`,
       };
     }
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGKILL");
-    }, opts.timeoutMs ?? PODMAN_DEFAULT_TIMEOUT_MS);
-    try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      if (timedOut)
-        return {
-          exitCode: 124,
-          stdout,
-          stderr: `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}podman ${argv[0] ?? ""} timed out`,
-        };
-      return { exitCode, stdout, stderr };
-    } finally {
-      clearTimeout(timer);
+    const out = capture(proc.stdout, PODMAN_MAX_OUTPUT_BYTES);
+    const err = capture(proc.stderr, PODMAN_MAX_OUTPUT_BYTES);
+    const finished = Promise.all([out.done, err.done, proc.exited]).then(
+      () => "done" as const,
+    );
+    const deadline = sleep(opts.timeoutMs ?? PODMAN_DEFAULT_TIMEOUT_MS);
+    const first = await Promise.race([finished, deadline.promise]);
+    deadline.clear();
+    let exitCode: number;
+    if (first === "timeout") {
+      killGroup(proc);
+      // Keep what the group wrote before it died, but do not wait on a
+      // descendant that left the group and still holds a pipe.
+      const grace = sleep(KILL_GRACE_MS);
+      await Promise.race([finished, grace.promise]);
+      grace.clear();
+      out.cancel();
+      err.cancel();
+      exitCode = 124;
+    } else {
+      exitCode = await proc.exited;
     }
+    let stderr = err.text();
+    if (first === "timeout")
+      stderr = `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}podman ${argv[0] ?? ""} timed out`;
+    const result: PodmanResult = { exitCode, stdout: out.text(), stderr };
+    if (out.truncated() || err.truncated()) result.truncated = true;
+    return result;
   };
 }
 

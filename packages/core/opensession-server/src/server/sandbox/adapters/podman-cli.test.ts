@@ -19,6 +19,7 @@ import {
   execEnvFileText,
   type PodmanRunner,
   podmanExec,
+  PODMAN_MAX_OUTPUT_BYTES,
   PODMAN_PASTA_NETWORK,
   podCreateArgs,
   podmanEnv,
@@ -569,5 +570,88 @@ describe("podman runner", () => {
       uid: 1001,
     });
     expect((await missing(["info"])).exitCode).toBe(127);
+  });
+
+  async function stub(
+    body: (dir: string) => string,
+  ): Promise<{ binary: string; dir: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "podman-runner-test-"));
+    const binary = join(dir, "podman-stub");
+    await writeFile(binary, `#!/bin/sh\n${body(dir)}\n`);
+    await chmod(binary, 0o755);
+    return { binary, dir };
+  }
+
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("a timeout kills the whole process group", async () => {
+    const { binary, dir } = await stub(
+      (dir) => `/bin/sleep 30 &\necho $! > ${dir}/child.pid\nwait`,
+    );
+    try {
+      const run = createPodmanRunner({ binary, uid: 1001 });
+      const started = Date.now();
+      // Long enough for a loaded machine to start the shell and its child.
+      const result = await run([], { timeoutMs: 1000 });
+      expect(result.exitCode).toBe(124);
+      expect(Date.now() - started).toBeLessThan(4000);
+      const pid = Number(
+        (await readFile(join(dir, "child.pid"), "utf8")).trim(),
+      );
+      for (let i = 0; i < 20 && alive(pid); i++) await Bun.sleep(50);
+      expect(alive(pid)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a timeout returns even when an escaped child holds the pipes", async () => {
+    const { binary, dir } = await stub(
+      (dir) =>
+        `/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 30' &\n` +
+        `echo $! > ${dir}/escaped.pid\nwait`,
+    );
+    try {
+      const run = createPodmanRunner({ binary, uid: 1001 });
+      const started = Date.now();
+      const result = await run([], { timeoutMs: 300 });
+      expect(result.exitCode).toBe(124);
+      expect(Date.now() - started).toBeLessThan(5000);
+    } finally {
+      const pid = Number(
+        await readFile(join(dir, "escaped.pid"), "utf8").catch(() => "0"),
+      );
+      if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("caps stdout and stderr at 8 MiB and says so", async () => {
+    const { binary, dir } = await stub(
+      () =>
+        "/usr/bin/head -c 9000000 /dev/zero\n/usr/bin/head -c 10 /dev/zero >&2",
+    );
+    try {
+      const run = createPodmanRunner({ binary, uid: 1001 });
+      const result = await run([]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.length).toBe(PODMAN_MAX_OUTPUT_BYTES);
+      expect(result.stderr.length).toBe(10);
+      expect(result.truncated).toBe(true);
+      const small = await createPodmanRunner({
+        binary: "/bin/echo",
+        uid: 1001,
+      })(["hi"]);
+      expect(small).toEqual({ exitCode: 0, stdout: "hi\n", stderr: "" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
