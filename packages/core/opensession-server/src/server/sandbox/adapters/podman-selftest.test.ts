@@ -112,6 +112,19 @@ describe("isolation targets", () => {
     expect(new Set(list).size).toBe(list.length);
   });
 
+  test("operator extra host addresses are probed as filtered", () => {
+    const targets = isolationTargets({
+      ...OPTIONS,
+      extraHostAddresses: ["198.51.100.20", "fd00::2"],
+    });
+    expect(find(targets, "tcp:198.51.100.20:22").expect).toBe("filtered");
+    expect(find(targets, "tcp:198.51.100.20:3850").expect).toBe("filtered");
+    expect(names(targets).some((n) => n.includes("fd00::2"))).toBe(false);
+    expect(() =>
+      isolationTargets({ ...OPTIONS, extraHostAddresses: ["1.2.3.4;id"] }),
+    ).toThrow();
+  });
+
   test("the network half leaves out file and process checks", () => {
     const targets = isolationTargets({ ...OPTIONS, full: false });
     expect(targets.length).toBeGreaterThan(0);

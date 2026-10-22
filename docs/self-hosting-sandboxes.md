@@ -552,6 +552,29 @@ password reaches `ssh` through `SSH_ASKPASS`, never argv. Portals ride the
 outbound relay. Automations never run here: the guest network is not
 policy-enforced.
 
+### This machine (container)
+
+Each session gets a rootless Podman pod on this host: a private pasta network
+namespace with an nftables egress table installed from the host before the
+workload starts, and verified, with an isolation self-test, on every start.
+The table allows the public internet, the callback origin on its port and the
+configured DNS resolvers. It refuses IPv6, private, CGNAT, link-local and
+reserved IPv4 ranges, and every IPv4 address on this host's interfaces.
+
+**Extra host addresses.** An address can reach this host without being on any
+of its interfaces: a public IP behind 1:1 NAT (common on cloud VMs), a load
+balancer or a port forward in front of the host. The firewall cannot discover
+those. List them in `~/.opensession/sandbox.json`:
+
+```json
+{ "podman": { "extraHostAddresses": ["198.51.100.20"] } }
+```
+
+Each IPv4 entry joins the refused host set (`hostaddrs4`), and the self-test
+probes it on port 22 and the app port and requires the firewall to refuse the
+connect (a closed port is not enough). An entry that is also a configured DNS
+resolver is an error. IPv6 entries are ignored: IPv6 is refused entirely.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this

@@ -5,6 +5,7 @@ import {
   BLOCKED_IPV4_RANGES,
   installEgressRules,
   ipv4InBlockedRange,
+  expectedEgressListing,
   normalizeNftListing,
   podmanEgressRuleset,
   resolveEgressInput,
@@ -128,6 +129,32 @@ describe("egress ruleset", () => {
     );
   });
 
+  test("operator extra host addresses join the refused host set", () => {
+    const extra = podmanEgressRuleset({
+      ...INPUT,
+      extraHostAddresses: ["198.51.100.20", "fd00::2", "10.1.2.3"],
+    });
+    expect(extra.split("\n").map((l) => l.trim())).toContain(
+      "elements = { 10.1.2.3, 100.64.1.2, 198.51.100.20, 203.0.113.7 }",
+    );
+    expect(extra).not.toContain("fd00::2");
+    expect(
+      expectedEgressListing({
+        ...INPUT,
+        extraHostAddresses: ["198.51.100.20"],
+      }),
+    ).toContain(
+      'set inet opensession hostaddrs4 type="ipv4_addr" flags= ' +
+        "elem=10.1.2.3,100.64.1.2,198.51.100.20,203.0.113.7",
+    );
+    expect(() =>
+      podmanEgressRuleset({ ...INPUT, extraHostAddresses: ["198.51.100.20;"] }),
+    ).toThrow("invalid extra host address");
+    expect(() =>
+      podmanEgressRuleset({ ...INPUT, extraHostAddresses: ["1.1.1.1"] }),
+    ).toThrow("DNS resolver 1.1.1.1");
+  });
+
   test("DNS reaches only the configured resolvers", () => {
     expect(lines).toContain("elements = { 1.1.1.1, 9.9.9.9 }");
     const allow = lines.indexOf(
@@ -213,6 +240,20 @@ describe("egress input", () => {
     expect(input).toEqual({
       callback: { addresses: ["203.0.113.9"], port: 443 },
       hostAddresses: ["10.1.2.3", "fd00::1"],
+      dns: ["1.1.1.1"],
+    });
+    expect(
+      await resolveEgressInput(
+        "https://203.0.113.9/",
+        ["1.1.1.1"],
+        undefined,
+        () => [],
+        ["198.51.100.20"],
+      ),
+    ).toEqual({
+      callback: { addresses: ["203.0.113.9"], port: 443 },
+      hostAddresses: [],
+      extraHostAddresses: ["198.51.100.20"],
       dns: ["1.1.1.1"],
     });
   });

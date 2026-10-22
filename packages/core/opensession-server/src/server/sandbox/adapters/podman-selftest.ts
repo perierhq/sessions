@@ -63,6 +63,9 @@ export interface IsolationTargetOptions {
   hostAddresses: string[];
   /** This host's tailnet addresses. */
   tailnetAddresses: string[];
+  /** The operator's extra host addresses (reach this host but are on none
+   *  of its interfaces). The firewall must refuse them: `filtered`. */
+  extraHostAddresses?: string[];
   /** The gateway's private app port. */
   appPort: number;
   /** Other ports this host listens on locally (the ingress listener). */
@@ -149,6 +152,13 @@ export function isolationTargets(o: IsolationTargetOptions): IsolationTarget[] {
       continue;
     add(tcp(address, 22, "host"));
     add(tcp(address, appPort, "host"));
+  }
+  const callbacks = new Set(o.callbackAddresses ?? []);
+  for (const address of o.extraHostAddresses ?? []) {
+    if (address.includes(":")) continue;
+    for (const port of [22, appPort])
+      if (!(callbacks.has(address) && port === callbackPort))
+        add(tcp(address, port, "filtered"));
   }
   for (const address of o.tailnetAddresses)
     if (!address.includes(":")) add(tcp(address, appPort, "filtered"));

@@ -12,7 +12,9 @@
  *  - DNS to anything but the configured resolvers (pasta's forwarder at
  *    169.254.1.1 would hand queries to the host's resolver);
  *  - private, loopback, CGNAT/tailnet, link-local/metadata, multicast and
- *    reserved IPv4 ranges, and every address on a host interface.
+ *    reserved IPv4 ranges, every address on a host interface, and the
+ *    operator's extra host addresses (ones that reach this host without
+ *    being on an interface, e.g. a NAT'd public IP).
  * Every refusal is `icmpx admin-prohibited`: a blocked connect fails with
  * "No route to host", which the isolation self-test tells apart from a
  * closed port ("Connection refused").
@@ -33,6 +35,10 @@ export interface EgressInput {
   callback: { addresses: string[]; port: number };
   /** Addresses on this host's interfaces (IPv6 entries are ignored). */
   hostAddresses: string[];
+  /** Operator-configured addresses that reach this host but are on none of
+   *  its interfaces (a NAT'd public IP, a load balancer in front of it).
+   *  Refused like `hostAddresses`; IPv6 entries are ignored. */
+  extraHostAddresses?: string[];
   /** The only resolvers DNS may reach. */
   dns: string[];
 }
@@ -108,9 +114,14 @@ function egressPlan(i: EgressInput): EgressPlan {
           "This machine (container) needs a public callback origin",
       );
   }
-  const hostV4 = i.hostAddresses.filter((a) => !isIpv6(a));
-  for (const address of hostV4)
+  const interfaceV4 = i.hostAddresses.filter((a) => !isIpv6(a));
+  for (const address of interfaceV4)
     if (!isIpv4(address)) throw new Error(`invalid host address: ${address}`);
+  const extraV4 = (i.extraHostAddresses ?? []).filter((a) => !isIpv6(a));
+  for (const address of extraV4)
+    if (!isIpv4(address))
+      throw new Error(`invalid extra host address: ${address}`);
+  const hostV4 = [...interfaceV4, ...extraV4];
   if (!i.dns.length) throw new Error("egress policy needs a DNS resolver");
   for (const resolver of i.dns) {
     if (!isIpv4(resolver))
@@ -193,6 +204,8 @@ export async function resolveEgressInput(
   dns: string[],
   lookup: (host: string) => Promise<string[]> = lookupIpv4,
   hostAddresses: () => string[] = localInterfaceAddresses,
+  /** The operator's extra host addresses (sandbox.json). */
+  extraHostAddresses: string[] = [],
 ): Promise<EgressInput> {
   const url = new URL(callbackBaseUrl);
   if (url.protocol !== "https:" && url.protocol !== "http:")
@@ -207,6 +220,7 @@ export async function resolveEgressInput(
   return {
     callback: { addresses, port },
     hostAddresses: hostAddresses(),
+    ...(extraHostAddresses.length ? { extraHostAddresses } : {}),
     dns,
   };
 }
