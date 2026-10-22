@@ -12,6 +12,10 @@ import type { PodmanRunner, PodmanRunOpts } from "./podman-cli";
 import {
   ensurePodmanImage,
   PODMAN_BASE_IMAGE,
+  PODMAN_BUN_SHA256,
+  PODMAN_BUN_VERSION,
+  PODMAN_JUST_SHA256,
+  podmanImageSignature,
   podmanContainerfile,
   podmanImageTag,
 } from "./podman-image";
@@ -61,6 +65,44 @@ describe("podman image", () => {
     expect(file).not.toContain("NOPASSWD");
     expect(file).not.toMatch(/\|\s*(ba)?sh\b/);
     expect(file).not.toMatch(/^SHELL /m);
+  });
+
+  test("installs pinned bun and just from release archives, checked by SHA-256", () => {
+    expect(PODMAN_BUN_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(file).not.toContain("bun.sh/install");
+    expect(file).not.toContain("just.systems/install.sh");
+    const bun = lines.find((l) => l.includes("oven-sh/bun/releases"));
+    expect(bun).toContain(`bun-v${PODMAN_BUN_VERSION}/`);
+    expect(file).toContain(
+      `https://github.com/oven-sh/bun/releases/download/bun-v${PODMAN_BUN_VERSION}/SHASUMS256.txt`,
+    );
+    const just = lines.find((l) => l.includes("casey/just/releases"));
+    expect(just).toContain(
+      `/${REMOTE_JUST_VERSION}/just-${REMOTE_JUST_VERSION}-$target.tar.gz`,
+    );
+    for (const sum of [
+      ...Object.values(PODMAN_BUN_SHA256),
+      ...Object.values(PODMAN_JUST_SHA256),
+    ]) {
+      expect(sum).toMatch(/^[0-9a-f]{64}$/);
+      expect(file).toContain(sum);
+    }
+    expect(Object.keys(PODMAN_BUN_SHA256).sort()).toEqual(["aarch64", "x64"]);
+    expect(Object.keys(PODMAN_JUST_SHA256).sort()).toEqual([
+      "aarch64-unknown-linux-musl",
+      "x86_64-unknown-linux-musl",
+    ]);
+    expect(file.match(/sha256sum -c/g)?.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("the image signature carries the bun and just pins", () => {
+    const signature = podmanImageSignature();
+    expect(signature).toStartWith(baseRuntimeSignature());
+    expect(signature).toContain(`bun@${PODMAN_BUN_VERSION}`);
+    expect(signature).toContain(`just@${REMOTE_JUST_VERSION}`);
+    expect(file).toContain(
+      `LABEL opensession.sandbox-runtime=${JSON.stringify(signature)}`,
+    );
   });
 
   test("ends as the unprivileged user in its home", () => {

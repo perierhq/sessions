@@ -4,15 +4,17 @@
  *
  * The workload never has root, so everything `bootstrapRemoteSandbox` would
  * install as root is baked at build time instead: the workspace packages,
- * the pinned Node, just and gh in /usr/local/bin (Node and gh checked
- * against their published SHA-256 sums), and bun in /home/ubuntu/.bun owned
- * by the image's uid 1000. On a Sandbox's first start podman copies that
+ * the pinned Node, just and gh in /usr/local/bin, and the pinned bun in
+ * /home/ubuntu/.bun owned by the image's uid 1000. Every download is a
+ * release archive checked by SHA-256 (Node, gh and bun against their
+ * published sums, just and bun against sums pinned here); no install
+ * script is ever run. On a Sandbox's first start podman copies that
  * home into the session's empty volume; bootstrapRemoteSandbox then only
  * verifies it. The image ends as uid 1000 and carries no privilege
  * escalation tool.
  *
- * The tag hashes the base runtime signature, the base digest and this
- * Containerfile, so a change to any of them means a new image. Building
+ * The tag hashes the image signature (the base runtime's plus the bun and
+ * just pins), the base digest and this Containerfile, so a change to any of them means a new image. Building
  * happens at qualification, never on a user's ensure.
  */
 
@@ -42,6 +44,31 @@ export const PODMAN_BASE_IMAGE =
 
 export const PODMAN_IMAGE_REPO = "localhost/opensession-sandbox";
 
+/** bun in the image (the repo's own packageManager version). */
+export const PODMAN_BUN_VERSION = "1.4.0";
+/** SHA-256 of `bun-linux-<arch>.zip` for PODMAN_BUN_VERSION, from the
+ *  release's SHASUMS256.txt. */
+export const PODMAN_BUN_SHA256 = {
+  x64: "2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452",
+  aarch64: "4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e",
+} as const;
+/** SHA-256 of `just-<REMOTE_JUST_VERSION>-<target>.tar.gz`, from the
+ *  release's SHA256SUMS. Update with REMOTE_JUST_VERSION. */
+export const PODMAN_JUST_SHA256 = {
+  "x86_64-unknown-linux-musl":
+    "6a3003f68fa4d86ada8afe33830a88ffdb6c2fcaff4e5a840b1cb90eaf6f46fc",
+  "aarch64-unknown-linux-musl":
+    "e28e1f18cecd45d35f9fb39ef3651dd79c0623cb29a2f375ea7a1a185ac32dc9",
+} as const;
+
+/** The image's runtime signature: the base runtime's plus the image-only
+ *  pins, so changing any of them names a new image. */
+export function podmanImageSignature(
+  base: string = baseRuntimeSignature(),
+): string {
+  return `${base}+bun@${PODMAN_BUN_VERSION}+just-release@${REMOTE_JUST_VERSION}`;
+}
+
 /** One `RUN` whose steps run under `set -eu` and stop at the first failure.
  *  /bin/sh is dash, so no pipes carry a download into a shell. */
 function run(steps: string[]): string {
@@ -50,6 +77,16 @@ function run(steps: string[]): string {
 
 const ARCH_NODE =
   'case "$(uname -m)" in x86_64) arch=x64;; aarch64|arm64) arch=arm64;; ' +
+  '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
+const ARCH_BUN =
+  'case "$(uname -m)" in ' +
+  `x86_64) arch=x64; sum=${PODMAN_BUN_SHA256.x64};; ` +
+  `aarch64|arm64) arch=aarch64; sum=${PODMAN_BUN_SHA256.aarch64};; ` +
+  '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
+const ARCH_JUST =
+  'case "$(uname -m)" in ' +
+  `x86_64) target=x86_64-unknown-linux-musl; sum=${PODMAN_JUST_SHA256["x86_64-unknown-linux-musl"]};; ` +
+  `aarch64|arm64) target=aarch64-unknown-linux-musl; sum=${PODMAN_JUST_SHA256["aarch64-unknown-linux-musl"]};; ` +
   '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
 const ARCH_GH =
   'case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; ' +
@@ -63,7 +100,7 @@ export function podmanContainerfile(
   const path = remoteLayout("linux").path;
   return [
     `FROM ${PODMAN_BASE_IMAGE}`,
-    `LABEL opensession.sandbox-runtime=${JSON.stringify(signature)}`,
+    `LABEL opensession.sandbox-runtime=${JSON.stringify(podmanImageSignature(signature))}`,
     "ENV DEBIAN_FRONTEND=noninteractive",
     run([
       "apt-get update",
@@ -104,16 +141,38 @@ export function podmanContainerfile(
       `test "$(/usr/local/bin/gh --version | head -n1 | awk '{print $3}')" = "${REMOTE_GH_VERSION}"`,
     ]),
     run([
-      "curl -fsSL https://just.systems/install.sh -o /tmp/just-install.sh",
-      `bash /tmp/just-install.sh --tag ${REMOTE_JUST_VERSION} --to /usr/local/bin`,
-      "rm -f /tmp/just-install.sh",
+      ARCH_JUST,
+      `archive="just-${REMOTE_JUST_VERSION}-$target.tar.gz"`,
+      "tmp=$(mktemp -d)",
+      'cd "$tmp"',
+      `curl -fsSL "https://github.com/casey/just/releases/download/${REMOTE_JUST_VERSION}/just-${REMOTE_JUST_VERSION}-$target.tar.gz" -o "$archive"`,
+      `printf '%s  %s\\n' "$sum" "$archive" > expected`,
+      "sha256sum -c expected",
+      'tar -xzf "$archive" just',
+      "install -m 0755 just /usr/local/bin/just",
+      "cd /",
+      'rm -rf "$tmp"',
       `test "$(/usr/local/bin/just --version | awk '{print $2}')" = "${REMOTE_JUST_VERSION}"`,
     ]),
     run([
-      "curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh",
-      `HOME=${home} bash /tmp/bun-install.sh`,
-      "rm -f /tmp/bun-install.sh",
-      `test -x ${home}/.bun/bin/bunx || ln -sf ${home}/.bun/bin/bun ${home}/.bun/bin/bunx`,
+      ARCH_BUN,
+      'archive="bun-linux-$arch.zip"',
+      "tmp=$(mktemp -d)",
+      'cd "$tmp"',
+      `curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${PODMAN_BUN_VERSION}/$archive" -o "$archive"`,
+      `curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${PODMAN_BUN_VERSION}/SHASUMS256.txt" -o SHASUMS256.txt`,
+      'grep "  $archive$" SHASUMS256.txt > published',
+      "test -s published",
+      "sha256sum -c published",
+      `printf '%s  %s\\n' "$sum" "$archive" > pinned`,
+      "sha256sum -c pinned",
+      'unzip -q "$archive"',
+      `mkdir -p ${home}/.bun/bin`,
+      `install -m 0755 "bun-linux-$arch/bun" ${home}/.bun/bin/bun`,
+      `ln -sf bun ${home}/.bun/bin/bunx`,
+      "cd /",
+      'rm -rf "$tmp"',
+      `test "$(${home}/.bun/bin/bun --version)" = "${PODMAN_BUN_VERSION}"`,
       `mkdir -p ${home}/.local/bin`,
       `chown -R ${PODMAN_WORKLOAD_USER} ${home}`,
       `test "$(stat -c %u:%g ${home})" = "${PODMAN_WORKLOAD_USER}"`,
