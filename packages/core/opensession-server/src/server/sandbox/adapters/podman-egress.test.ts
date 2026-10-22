@@ -369,6 +369,22 @@ describe("egress verify", () => {
     ).rejects.toThrow("missing table inet opensession");
   });
 
+  test("a dormant table rejects", async () => {
+    const dormant = editedListing((items) => {
+      const table = items.find((item) => "table" in item) as {
+        table: Record<string, unknown>;
+      };
+      table.table.flags = ["dormant"];
+    });
+    await expect(
+      verifyEgressRules(
+        fakeRunner(listingReply(dormant)).run,
+        "opensession-sbx-a-infra",
+        EGRESS_FIXTURE_INPUT,
+      ),
+    ).rejects.toThrow("table inet opensession flags=dormant");
+  });
+
   test("an extra table or reordered rules reject", async () => {
     const extra = editedListing((items) => {
       items.push({ table: { family: "ip", name: "other", handle: 9 } });

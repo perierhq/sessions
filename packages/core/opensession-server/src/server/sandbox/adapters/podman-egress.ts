@@ -338,7 +338,11 @@ export function normalizeNftListing(output: string): string[] {
     const body = item[kind];
     if (!isRecord(body)) throw new Error(`nft listing ${kind} is malformed`);
     if (kind === "table") {
-      lines.push(`table ${String(body.family)} ${String(body.name)}`);
+      // A `dormant` table is listed but filters nothing.
+      const flags = Array.isArray(body.flags) ? body.flags.join(",") : "";
+      lines.push(
+        `table ${String(body.family)} ${String(body.name)} flags=${flags}`,
+      );
     } else if (kind === "set") {
       const elems = Array.isArray(body.elem) ? body.elem.map(setElement) : [];
       const flags = Array.isArray(body.flags) ? body.flags.join(",") : "";
@@ -388,7 +392,7 @@ export function expectedEgressListing(i: EgressInput): string[] {
   const set = (name: string, flags: string, elems: string[]): string =>
     `set ${t} ${name} type="ipv4_addr" flags=${flags} elem=${[...elems].sort().join(",")}`;
   return [
-    `table ${t}`,
+    `table ${t} flags=`,
     set("blocked4", "interval", [...BLOCKED_IPV4_RANGES]),
     set("hostaddrs4", "", plan.hostAddresses),
     set("resolvers4", "", plan.resolvers),
