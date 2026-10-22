@@ -636,9 +636,16 @@ test("no sandbox and no agent user: needs you with the reason, never a silent st
   await advanceIncident(w.incident.id, w.deps);
   const i = await getIncident(w.incident.id);
   expect(i?.state).toBe("needs-you");
-  expect(i?.response?.needsYou).toMatchObject({ kind: "setup", reason });
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "setup",
+    reason,
+    retryable: false,
+    fix: "sandboxes",
+  });
+  // Starting again would fail the same way: no Try again yet.
   expect(i?.response?.next).toMatchObject({
-    options: ["retry", "resolve", "close"],
+    fix: "sandboxes",
+    options: ["resolve", "close"],
   });
   expect(w.spawns).toEqual([]);
 });
@@ -1738,13 +1745,117 @@ test("retry after a setup problem starts the agents again", async () => {
   await advanceIncident(w.incident.id, w.deps);
   expect((await getIncident(w.incident.id))?.response?.needsYou).toMatchObject({
     kind: "setup",
+    retryable: false,
   });
+  expect(
+    await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps),
+  ).toEqual({
+    error: "Agents still can't start: fix the setup first",
+    status: 409,
+  });
+  // A sandbox is set up: the tick looks again and offers Try again.
   fail = false;
+  __setCoordinatorDepsForTest(w.deps);
+  expect(await runResponseTick(START, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  const ready = await getIncident(w.incident.id);
+  expect(ready?.state).toBe("needs-you");
+  expect(ready?.response?.needsYou?.retryable).toBeUndefined();
+  expect(ready?.response?.next).toEqual({
+    kind: "needs-you",
+    reason: "No sandbox",
+    needsYou: "setup",
+    options: ["retry", "resolve", "close"],
+  });
   expect(
     await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps),
   ).toMatchObject({ state: "investigating" });
   await __waitForCoordinatorForTest();
   expect(w.spawns).toHaveLength(1);
+});
+
+/** Two passing checks, the last at `at`. */
+function passing(at: number) {
+  return [at - 60_000, at].map((t) => ({
+    at: new Date(t).toISOString(),
+    result: "ok" as const,
+    detail: "HTTP 200",
+  }));
+}
+
+test("a setup problem closes by itself once its signal has passed for 5 min", async () => {
+  const w = await world({ workspace: { error: "No sandbox" } });
+  __setCoordinatorDepsForTest(w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+
+  // Recovers at +2 min.
+  w.clock = START + 120_000;
+  w.evaluate("sig-a", "ok");
+  w.deps.recent = () => passing(w.clock);
+  w.clock = START + 120_000 + 299_000;
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+
+  w.clock = START + 120_000 + 300_000;
+  w.deps.recent = () => passing(w.clock);
+  await runResponseTick(w.clock, w.deps);
+  await __waitForCoordinatorForTest();
+  const closed = await getIncident(w.incident.id);
+  expect(closed?.state).toBe("closed-without-action");
+  expect(closed?.fixedBy).toBe("recovered");
+  expect(closed?.closedAt).toBe(new Date(w.clock).toISOString());
+  expect(closed?.response?.phase).toBe("done");
+  expect(closed?.response?.next).toMatchObject({ kind: "done" });
+  expect(closed?.events.at(-1)).toMatchObject({
+    kind: "state",
+    by: "sessions",
+    from: "needs-you",
+    to: "closed-without-action",
+    detail:
+      "Recovered on its own before any agent ran: Search passing since 12:02 UTC",
+  });
+  expect(w.spawns).toEqual([]);
+  // Closed: the tick leaves it alone.
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+});
+
+test("a setup problem waits while the signal fails, and for two passing checks", async () => {
+  const w = await world({ workspace: { error: "No sandbox" } });
+  __setCoordinatorDepsForTest(w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  w.clock = START + 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  // Ok by its rule, but only one passing check since: not yet.
+  w.evaluate("sig-a", "ok");
+  w.deps.recent = () => passing(w.clock).slice(1);
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  w.deps.recent = () => passing(w.clock);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe(
+    "closed-without-action",
+  );
+});
+
+test("an incident an agent worked on never closes by itself", async () => {
+  const w = await world();
+  __setCoordinatorDepsForTest(w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns).toHaveLength(1);
+  w.live("child-1", { status: "error", error: "Provider overloaded" });
+  await advanceIncident(w.incident.id, w.deps);
+  const asked = await getIncident(w.incident.id);
+  expect(asked?.response?.needsYou?.kind).toBe("agent-error");
+  w.evaluate("sig-a", "ok");
+  w.deps.recent = () => passing(w.clock);
+  w.clock += 3_600_000;
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
 });
 
 test("watch only, then agents on: the investigator starts with a coordinator", async () => {

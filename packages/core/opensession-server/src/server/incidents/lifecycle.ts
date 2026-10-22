@@ -163,7 +163,9 @@ export function transitionIncident(
   }
   if (isTerminalIncidentState(to)) {
     next.closedAt = opts.at;
-    if (to === "resolved" && opts.fixedBy) next.fixedBy = opts.fixedBy;
+    // Closed without action keeps only how it recovered on its own.
+    if (opts.fixedBy && (to === "resolved" || opts.fixedBy === "recovered"))
+      next.fixedBy = opts.fixedBy;
     else delete next.fixedBy;
   }
 

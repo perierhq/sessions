@@ -400,3 +400,30 @@ test("a failed pause toasts the error and frees the button", async () => {
   ]);
   expect(view(card.output()).busy).toBeNull();
 });
+
+test("Set up a sandbox opens Settings, Sandboxes, and decides nothing", async () => {
+  const sections: string[] = [];
+  const setup = incident(
+    {
+      kind: "needs-you",
+      reason: "Agents can't start: this project has no sandbox",
+      needsYou: "setup",
+      fix: "sandboxes",
+      options: ["resolve", "close"],
+    },
+    "needs-you",
+  );
+  const card = harness.mount(
+    NextAction,
+    props({
+      incident: setup,
+      onOpenSettings: (section) => sections.push(section),
+    }),
+  );
+  const open = button(card.output(), "open-settings");
+  expect(open.label).toBe("Set up a sandbox");
+  view(card.output()).onButton(open);
+  await settle();
+  expect(sections).toEqual(["sandboxes"]);
+  expect(decide).not.toHaveBeenCalled();
+});

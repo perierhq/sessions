@@ -19,7 +19,9 @@ import {
   type OwnerDecision,
   type ProjectSpend,
   type ResponsePhase,
+  type SetupFix,
 } from "../../../shared/incident-response";
+import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
   type Incident,
   type IncidentEvent,
@@ -45,6 +47,7 @@ import {
 } from "../incident-store";
 import { appendEvent, transitionIncident } from "../lifecycle";
 import { recentObservations } from "../observation-store";
+import { trailingPasses } from "../rules";
 import { getSignalEvaluation } from "../signal-runtime";
 import { getSignal, setSignalRunOnCheck } from "../signal-store";
 import { setProjectMonthSpend, startIncidentAccessGate } from "./access-gate";
@@ -613,6 +616,19 @@ export async function buildResponseView(
       }
     }
 
+  const models = d.models(settings.agents);
+  let passes: Map<string, number> | undefined;
+  if (closesWhenRecovered(incident)) {
+    passes = new Map();
+    for (const [id, signal] of signals)
+      passes.set(id, trailingPasses(signal, d.recent(id)));
+  }
+  const setup =
+    incident.state === "needs-you" &&
+    incident.response?.needsYou?.kind === "setup"
+      ? await setupReadiness(incident.project, models, d)
+      : undefined;
+
   return {
     now,
     incident,
@@ -620,11 +636,31 @@ export async function buildResponseView(
     signals,
     evaluations,
     primaryRecent: d.recent(incident.primarySignalId),
+    ...(passes ? { passes } : {}),
+    ...(setup ? { setup } : {}),
     monthCostUsd,
     agents,
     liveActionRunIds: new Set(liveActions),
-    models: d.models(settings.agents),
+    models,
   };
+}
+
+/** Whether incident agents could start for `project` now: a model, then a
+ *  workspace. Not, with where that is fixed. */
+async function setupReadiness(
+  project: string,
+  models: ResponseView["models"],
+  d: CoordinatorDeps,
+): Promise<{ ready: boolean; fix?: SetupFix }> {
+  if ("error" in models) return { ready: false, fix: "providers" };
+  try {
+    const workspace = await d.workspace(project, models.investigator.model);
+    return "error" in workspace
+      ? { ready: false, fix: "sandboxes" }
+      : { ready: true };
+  } catch {
+    return { ready: false, fix: "sandboxes" };
+  }
 }
 
 // ── The loop ───────────────────────────────────────────────────────────────
@@ -740,8 +776,19 @@ function setupProblem(
   view: ResponseView,
   d: CoordinatorDeps,
   reason: string,
+  fix?: SetupFix,
 ): Promise<boolean> {
-  return needsYou(view, { step: "needs-you", kind: "setup", reason }, d);
+  return needsYou(
+    view,
+    {
+      step: "needs-you",
+      kind: "setup",
+      reason,
+      // A missing model or workspace stops a retry the same way.
+      ...(fix ? { retryable: false, fix } : {}),
+    },
+    d,
+  );
 }
 
 async function init(
@@ -831,7 +878,7 @@ async function startAgent(
   if ("error" in view.models)
     return parallel
       ? skipParallelInvestigator(view, "unavailable", view.models.error, d)
-      : setupProblem(view, d, view.models.error);
+      : setupProblem(view, d, view.models.error, "providers");
   const models = view.models;
   const primary = view.signals.get(incident.primarySignalId) ?? null;
   if (!primary)
@@ -876,7 +923,7 @@ async function startAgent(
   if ("error" in workspace)
     return parallel
       ? skipParallelInvestigator(view, "unavailable", workspace.error, d)
-      : setupProblem(view, d, workspace.error);
+      : setupProblem(view, d, workspace.error, "sandboxes");
 
   let prompt: string;
   if (role === "investigator") {
@@ -1524,6 +1571,8 @@ async function needsYou(
             reason: step.reason,
             since: at,
             resumePhase,
+            ...(step.retryable === false ? { retryable: false } : {}),
+            ...(step.fix ? { fix: step.fix } : {}),
           },
         },
         { retryRequested: undefined },
@@ -1951,16 +2000,19 @@ async function mergeNote(
 
 // ── Wake-ups ───────────────────────────────────────────────────────────────
 
-/** Whether the tick should look at this incident at all. */
+/** Whether the tick should look at this incident at all. `recovering`:
+ *  its primary signal passes, so it may close by itself. */
 function needsAttention(
   incident: Incident,
   settings?: IncidentProjectSettings,
+  recovering = false,
 ): boolean {
   const r = incident.response;
   const working = (r?.agents ?? []).some(
     (a) => a.status === "running" || a.status === "waiting" || watchedRun(a),
   );
   if (!isOpenIncident(incident)) return r?.phase === "documenting";
+  if (recovering && closesWhenRecovered(incident)) return true;
   if (
     (incident.state === "heads-up" ||
       incident.state === "waiting-on-provider") &&
@@ -1970,6 +2022,8 @@ function needsAttention(
     return false;
   switch (r?.phase) {
     case "needs-you":
+      // A setup problem: Try again follows whether the agents could start.
+      return working || r?.needsYou?.kind === "setup";
     case "done":
       return working;
     case "paused":
@@ -2000,7 +2054,9 @@ export async function runResponseTick(
         incident.project,
         await d.settings(incident.project).catch(() => undefined),
       );
-    if (!needsAttention(incident, settingsOf.get(incident.project))) continue;
+    const recovering = d.evaluation(incident.primarySignalId)?.state === "ok";
+    if (!needsAttention(incident, settingsOf.get(incident.project), recovering))
+      continue;
     scheduleAdvance(incident.id);
     scheduled.push(incident.id);
   }
@@ -2116,7 +2172,11 @@ function decisionAllowed(
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
     case "retry":
-      return c.state === "needs-you" && RETRYABLE.has(r.needsYou?.kind ?? "");
+      return (
+        c.state === "needs-you" &&
+        RETRYABLE.has(r.needsYou?.kind ?? "") &&
+        r.needsYou?.retryable !== false
+      );
     case "resolve":
     case "close":
       return c.state === "needs-you" || c.state === "investigating";
@@ -2334,7 +2394,11 @@ async function ownerDecision(
     return bareDecision(incident, decision, by, d);
   }
   const settings = await d.settings(incident.project);
-  if (!decisionAllowed(decision, incident, settings)) return refused;
+  if (!decisionAllowed(decision, incident, settings))
+    return decision === "retry" &&
+      incident.response.needsYou?.retryable === false
+      ? { error: "Agents still can't start: fix the setup first", status: 409 }
+      : refused;
 
   // Effects first, the record after: cancelling agents, and a coordinator
   // session for a retry whose start failed before it had one.

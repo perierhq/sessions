@@ -250,7 +250,9 @@ export type FixedBy =
   | "agents"
   | "agents-with-you"
   | "by-hand"
-  | "provider-recovered";
+  | "provider-recovered"
+  /** Closed without action: its signals came back before any agent ran. */
+  | "recovered";
 
 export interface IncidentOpener {
   kind: "rule" | "automation" | "agent" | "owner";

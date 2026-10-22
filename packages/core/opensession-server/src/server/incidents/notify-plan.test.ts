@@ -307,6 +307,21 @@ test("progress replaces in place; the owner's own tap never alerts them", () => 
     body: "Closed without action",
     delivery: "quiet",
   });
+  const waiting = step(veto, "needs-you");
+  expect(
+    planIncidentNotification(
+      step(waiting, "closed-without-action", "sessions", {
+        fixedBy: "recovered",
+      }),
+      waiting,
+      facts(),
+      NOW,
+    )?.event,
+  ).toMatchObject({
+    kind: "incident_resolved",
+    reason: "Search is back to normal",
+    body: "It recovered on its own before any agent ran",
+  });
 });
 
 test("night: hold everything except fully down and needing you", () => {

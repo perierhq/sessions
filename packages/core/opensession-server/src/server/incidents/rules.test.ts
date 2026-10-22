@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { Signal } from "../../shared/incidents";
 import {
+  DEFAULT_RECOVERIES,
   MISSED_CHECK_IN_DETAIL,
   evaluateSignal,
   missedSlotAt,
+  recoveriesFor,
   replaySignal,
+  trailingPasses,
 } from "./rules";
 
 const NOW = Date.parse("2026-10-20T10:00:00Z");
@@ -812,5 +815,50 @@ describe("replay performance", () => {
     expect(replaySignal(s, obs, NOW)).toEqual(
       evaluateSignal(s, obs, prev, NOW),
     );
+  });
+});
+
+describe("recovery counts", () => {
+  test("the rule's own count, else the default", () => {
+    expect(recoveriesFor({ kind: "consecutive", failures: 3 })).toBe(
+      DEFAULT_RECOVERIES,
+    );
+    expect(
+      recoveriesFor({ kind: "consecutive", failures: 3, recoveries: 4 }),
+    ).toBe(4);
+    expect(
+      recoveriesFor({
+        kind: "threshold",
+        above: 500,
+        forMs: 60_000,
+        recoveries: 3,
+      }),
+    ).toBe(3);
+    expect(recoveriesFor({ kind: "rate", windowMs: 600_000, atLeast: 5 })).toBe(
+      DEFAULT_RECOVERIES,
+    );
+  });
+  test("passing checks in a row, as the rule counts them", () => {
+    const s = sig({ kind: "consecutive", failures: 3 });
+    expect(trailingPasses(s, seq("fail", "ok", "unknown", "ok"))).toBe(2);
+    expect(trailingPasses(s, seq("ok", "ok", "fail"))).toBe(0);
+    expect(trailingPasses(s, [])).toBe(0);
+    // Another lane says nothing about the signal itself.
+    expect(
+      trailingPasses(s, [
+        ...seq("fail", "ok"),
+        { ...o(0, "ok"), lane: "proof" },
+      ]),
+    ).toBe(1);
+    // A threshold rule recovers under its threshold, whatever the result.
+    const t = sig({ kind: "threshold", above: 500, forMs: 300_000 });
+    expect(
+      trailingPasses(t, [
+        o(180_000, "ok", 900),
+        o(120_000, "ok", 300),
+        o(60_000, "ok", 400),
+      ]),
+    ).toBe(2);
+    expect(trailingPasses(t, [o(60_000, "ok", 300), o(0, "fail")])).toBe(0);
   });
 });

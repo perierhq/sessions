@@ -88,6 +88,9 @@ test("resolved, decisions, actors, lines", () => {
   expect(resolvedBody("provider-recovered", "Ada")).toBe(
     "The provider recovered",
   );
+  expect(resolvedBody("recovered", "Ada")).toBe(
+    "It recovered on its own before any agent ran",
+  );
   expect(resolvedBody(undefined, "Ada")).toBe("Closed");
   expect(resolvedBody("by-hand", actorName("ada", "Ada"))).toBe(
     "You closed it as fixed",

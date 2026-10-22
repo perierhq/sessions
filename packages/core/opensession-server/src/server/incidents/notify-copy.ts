@@ -33,6 +33,7 @@ export const COPY = {
   fixReady: "A verified fix is ready",
   paused: "Agents are paused",
   closedWithoutAction: "Closed without action",
+  recovered: "It recovered on its own before any agent ran",
   open: "Open",
 } as const;
 
@@ -158,6 +159,8 @@ export function resolvedBody(
       return `${actor} closed it as fixed`;
     case "provider-recovered":
       return "The provider recovered";
+    case "recovered":
+      return COPY.recovered;
     default:
       return "Closed";
   }

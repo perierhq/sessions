@@ -11,6 +11,7 @@ import type {
   NeedsYouKind,
   PolicyDecision,
   ResponsePhase,
+  SetupFix,
   VerifierReport,
 } from "../../../shared/incident-response";
 import type {
@@ -46,6 +47,13 @@ export interface ResponseView {
   signals: ReadonlyMap<string, Signal>;
   evaluations: ReadonlyMap<string, SignalEvaluation>;
   primaryRecent: Observation[];
+  /** Only for an incident that closes once it recovers
+   *  (`closesWhenRecovered`): each own signal's passing checks in a row at
+   *  the end of its recent observations, as its rule counts them. */
+  passes?: ReadonlyMap<string, number>;
+  /** Only for a setup problem: whether the agents could start now, and if
+   *  not, where that is fixed. */
+  setup?: { ready: boolean; fix?: SetupFix };
   /** The project's agent cost spent this UTC month, this incident
    *  excluded. The guards add this incident's whole cost to it. */
   monthCostUsd: number;
@@ -92,6 +100,10 @@ export type ResponseStep =
       kind: NeedsYouKind;
       reason: string;
       rule?: string;
+      /** A setup problem that a retry cannot get past yet, and where it is
+       *  fixed. */
+      retryable?: boolean;
+      fix?: SetupFix;
       patch?: Partial<IncidentResponse>;
       /** A state the incident passes through first, so a person picks the
        *  work up from there. */

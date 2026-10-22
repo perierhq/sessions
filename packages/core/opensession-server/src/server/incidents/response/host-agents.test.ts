@@ -76,7 +76,7 @@ test("without a sandbox the host path is off unless the operator turns it on", a
         },
       }),
     ).toEqual({
-      error: "Configure a sandbox for this project to let agents work",
+      error: "Agents can't start: this project has no sandbox",
     });
     expect(probed).toBe(false);
     // A host agent is refused at its turns too.

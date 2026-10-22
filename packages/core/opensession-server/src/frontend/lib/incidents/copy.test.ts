@@ -140,6 +140,21 @@ test("facts", () => {
       now: NOW,
     }),
   ).toEqual([`back to normal ${clockTime(ago(3_600_000))}`]);
+  expect(
+    incidentFacts({
+      incident: {
+        state: "closed-without-action",
+        openedAt: ago(3 * 3_600_000),
+        closedAt: ago(3_600_000),
+        fixedBy: "recovered",
+      },
+      sources: [],
+      now: NOW,
+    }),
+  ).toEqual([
+    "recovered on its own",
+    `back to normal ${clockTime(ago(3_600_000))}`,
+  ]);
   const impact: IncidentImpact = {
     signalId: "sig-a",
     at: ago(0),
@@ -276,5 +291,6 @@ test("formatters", () => {
     "agents-with-you": "Agents with you",
     "by-hand": "By hand",
     "provider-recovered": "Provider recovered",
+    recovered: "Recovered on its own",
   });
 });

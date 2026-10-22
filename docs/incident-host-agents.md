@@ -4,8 +4,10 @@
 > each project whose incidents agents should work on. The host path below
 > runs only when the service environment sets
 > `OPENSESSION_INCIDENT_HOST_AGENTS=1`. Without it, an incident whose project
-> has no sandbox goes to Needs you with "Configure a sandbox for this project
-> to let agents work", and its agents never start on the host.
+> has no sandbox goes to Needs you with "Agents can't start: this project
+> has no sandbox" and a button to Settings → Sandboxes, and its agents never
+> start on the host. Try again is offered once a sandbox is ready. If its
+> signals recover before anyone acts, the incident closes by itself.
 
 An incident's investigator and verifier work in the project's sandbox when it
 has one (Daytona, Boat, and later a Mac VM on a paired Mac). With the host

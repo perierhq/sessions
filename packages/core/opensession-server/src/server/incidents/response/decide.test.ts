@@ -481,6 +481,8 @@ test("start: init, rollback-first, watch level, setup problem", () => {
     step: "needs-you",
     kind: "setup",
     reason: "No model provider is configured for incident agents",
+    retryable: false,
+    fix: "providers",
   });
 });
 
@@ -2168,5 +2170,330 @@ test("manual rollback: offered while watching and after resolve, run with its ow
       ownerRollback: undefined,
       sendBack: { kind: "rolled-back", detail: "Bo rolled back the release" },
     },
+  });
+});
+
+// ── Recovered before any agent ran ───────────────────────────────────────
+
+const MIN = 60_000;
+const NO_SANDBOX = "Agents can't start: this project has no sandbox";
+
+function setupIncident(
+  over: Partial<IncidentResponse> = {},
+  state: IncidentState = "needs-you",
+): Incident {
+  return incident(
+    state,
+    response({
+      phase: state === "paused" ? "paused" : "needs-you",
+      needsYou: {
+        kind: "setup",
+        reason: NO_SANDBOX,
+        since: iso(MIN),
+        resumePhase: "investigating",
+        retryable: false,
+        fix: "sandboxes",
+      },
+      ...over,
+    }),
+  );
+}
+
+/** Opened at 0, signal passing since `okSince`, decided at `now`. */
+function recoveredView(
+  okSince: number,
+  now: number,
+  over: Partial<ResponseView> = {},
+): ResponseView {
+  return view({
+    now: NOW + now,
+    incident: setupIncident(),
+    evaluations: new Map([["sig-a", evaluation("ok", iso(okSince))]]),
+    passes: new Map([["sig-a", 3]]),
+    setup: { ready: false, fix: "sandboxes" },
+    ...over,
+  });
+}
+
+test("recovered: closes without action once its signals pass for 5 min", () => {
+  expect(decideNextStep(recoveredView(10 * MIN, 15 * MIN))).toEqual({
+    step: "transition",
+    to: "closed-without-action",
+    phase: "done",
+    detail:
+      "Recovered on its own before any agent ran: Search passing since 12:10 UTC",
+    fixedBy: "recovered",
+  });
+  // Not yet 5 min of passing.
+  expect(decideNextStep(recoveredView(10 * MIN, 15 * MIN - 1))).toEqual({
+    step: "none",
+  });
+  // Still failing.
+  expect(
+    decideNextStep(
+      recoveredView(10 * MIN, 60 * MIN, {
+        evaluations: new Map([["sig-a", evaluation("failing", iso(-MIN))]]),
+      }),
+    ),
+  ).toEqual({ step: "none" });
+});
+
+test("recovered: needs two passing checks in a row, or the rule's count", () => {
+  const passes = (n: number) => new Map([["sig-a", n]]);
+  expect(
+    decideNextStep(recoveredView(0, 30 * MIN, { passes: passes(1) })),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(recoveredView(0, 30 * MIN, { passes: passes(2) })),
+  ).toMatchObject({ to: "closed-without-action", fixedBy: "recovered" });
+  const strict: Signal = {
+    ...httpSignal,
+    rule: { kind: "consecutive", failures: 3, recoveries: 4 },
+  };
+  const signals = new Map([["sig-a", strict]]);
+  expect(
+    decideNextStep(recoveredView(0, 30 * MIN, { signals, passes: passes(3) })),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(recoveredView(0, 30 * MIN, { signals, passes: passes(4) })),
+  ).toMatchObject({ to: "closed-without-action" });
+  // Without the counts the view did not look: nothing closes.
+  expect(
+    decideNextStep(recoveredView(0, 30 * MIN, { passes: undefined })),
+  ).toEqual({ step: "none" });
+});
+
+test("recovered: every own signal, passing since after it opened, outside maintenance", () => {
+  const other: Signal = { ...httpSignal, id: "sig-b", name: "Checkout" };
+  const provider: Signal = {
+    ...httpSignal,
+    id: "sig-p",
+    name: "Upstream",
+    provider: true,
+  };
+  const two = setupIncident();
+  two.signalIds = ["sig-a", "sig-b", "sig-p"];
+  const signals = new Map([
+    ["sig-a", httpSignal],
+    ["sig-b", other],
+    ["sig-p", provider],
+  ]);
+  const passes = new Map([
+    ["sig-a", 2],
+    ["sig-b", 2],
+    ["sig-p", 0],
+  ]);
+  const both = (b: SignalEvaluation) =>
+    recoveredView(5 * MIN, 30 * MIN, {
+      incident: two,
+      signals,
+      passes,
+      evaluations: new Map([
+        ["sig-a", evaluation("ok", iso(5 * MIN))],
+        ["sig-b", b],
+        // A provider's own trouble is not the incident's.
+        ["sig-p", evaluation("external", iso(0), "sig-p")],
+      ]),
+    });
+  expect(
+    decideNextStep(both(evaluation("failing", iso(MIN), "sig-b"))),
+  ).toEqual({ step: "none" });
+  // The last to recover sets the clock.
+  expect(
+    decideNextStep(both(evaluation("ok", iso(26 * MIN), "sig-b"))),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(both(evaluation("ok", iso(25 * MIN), "sig-b"))),
+  ).toMatchObject({
+    to: "closed-without-action",
+    detail:
+      "Recovered on its own before any agent ran: Search, Checkout passing since 12:25 UTC",
+  });
+  // Passing since before it opened: it never recovered.
+  expect(decideNextStep(recoveredView(-MIN, 30 * MIN))).toEqual({
+    step: "none",
+  });
+  expect(
+    decideNextStep(
+      recoveredView(0, 30 * MIN, {
+        evaluations: new Map([
+          ["sig-a", { ...evaluation("ok", iso(0)), inMaintenance: true }],
+        ]),
+      }),
+    ),
+  ).toEqual({ step: "none" });
+});
+
+test("recovered: never once an agent ran or anything was proposed, run or merged", () => {
+  const close = (r: Partial<IncidentResponse>) =>
+    decideNextStep(
+      recoveredView(0, 30 * MIN, {
+        incident: setupIncident(r),
+      }),
+    );
+  expect(close({})).toMatchObject({ to: "closed-without-action" });
+  expect(close({ agents: [run("investigator", { status: "error" })] })).toEqual(
+    { step: "none" },
+  );
+  expect(
+    close({
+      candidate: {
+        round: 1,
+        plan: { pr: false, actions: ["rollback"] },
+        check: { kind: "after-deploy", reason: "Rolling back" },
+        claims: [],
+        notePath: "docs/incidents/x.md",
+        runbookPaths: [],
+        rollbackFirst: true,
+      },
+    }),
+  ).toEqual({ step: "none" });
+  expect(close({ actionRuns: [actionRun({ actionId: "rollback" })] })).toEqual({
+    step: "none",
+  });
+  expect(
+    close({
+      merge: {
+        ghRepo: "acme/app",
+        number: 7,
+        sha: "abc",
+        status: "merged",
+        at: iso(0),
+      },
+    }),
+  ).toEqual({ step: "none" });
+});
+
+test("recovered: only setup, budget or the kill switch before any agent", () => {
+  const kind = (k: "budget" | "policy" | "agent-error" | "stopped") =>
+    decideNextStep(
+      recoveredView(0, 30 * MIN, {
+        incident: setupIncident({
+          needsYou: {
+            kind: k,
+            reason: "x",
+            since: iso(MIN),
+            resumePhase: "investigating",
+          },
+        }),
+      }),
+    );
+  expect(kind("budget")).toMatchObject({ to: "closed-without-action" });
+  expect(kind("policy")).toEqual({ step: "none" });
+  expect(kind("agent-error")).toEqual({ step: "none" });
+  expect(kind("stopped")).toEqual({ step: "none" });
+  // Paused before any agent started: closes too, kill switch on or not.
+  const paused = setupIncident({ needsYou: undefined }, "paused");
+  for (const agentsPaused of [true, false])
+    expect(
+      decideNextStep(
+        recoveredView(0, 30 * MIN, {
+          incident: paused,
+          settings: { ...defaultSettings, agentsPaused },
+        }),
+      ),
+    ).toMatchObject({ to: "closed-without-action", fixedBy: "recovered" });
+  // An open incident still working is the fix loop's, never closed here.
+  expect(
+    decideNextStep(
+      recoveredView(0, 30 * MIN, {
+        incident: incident("investigating", response({})),
+      }),
+    ),
+  ).not.toMatchObject({ to: "closed-without-action" });
+});
+
+test("setup: Try again follows whether the agents could start now", () => {
+  // Still no sandbox: nothing to write.
+  expect(
+    decideNextStep(
+      recoveredView(0, MIN, {
+        evaluations: new Map([["sig-a", evaluation("failing", iso(0))]]),
+      }),
+    ),
+  ).toEqual({ step: "none" });
+  const ready = decideNextStep(
+    recoveredView(0, MIN, {
+      evaluations: new Map([["sig-a", evaluation("failing", iso(0))]]),
+      setup: { ready: true },
+    }),
+  );
+  expect(ready).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: "Agents can start now",
+    patch: {
+      needsYou: {
+        kind: "setup",
+        reason: NO_SANDBOX,
+        since: iso(MIN),
+        resumePhase: "investigating",
+      },
+    },
+  });
+  // A model went missing meanwhile: the place to fix it moves.
+  expect(
+    decideNextStep(
+      recoveredView(0, MIN, {
+        evaluations: new Map([["sig-a", evaluation("failing", iso(0))]]),
+        setup: { ready: false, fix: "providers" },
+      }),
+    ),
+  ).toMatchObject({
+    patch: { needsYou: { retryable: false, fix: "providers" } },
+  });
+  // A record from before readiness was tracked, and ready: left alone.
+  const legacy = setupIncident({
+    needsYou: {
+      kind: "setup",
+      reason: "Incident agents could not start: offline",
+      since: iso(MIN),
+      resumePhase: "investigating",
+    },
+  });
+  expect(
+    decideNextStep(
+      recoveredView(0, MIN, {
+        incident: legacy,
+        evaluations: new Map([["sig-a", evaluation("failing", iso(0))]]),
+        setup: { ready: true },
+      }),
+    ),
+  ).toEqual({ step: "none" });
+});
+
+test("setup: options and next action follow retryable and fix", () => {
+  const ny = (over: Partial<NonNullable<IncidentResponse["needsYou"]>>) =>
+    response({
+      phase: "needs-you",
+      needsYou: {
+        kind: "setup",
+        reason: NO_SANDBOX,
+        since: iso(0),
+        resumePhase: "investigating",
+        ...over,
+      },
+    });
+  expect(needsYouOptions("setup", ny({ retryable: false }))).toEqual([
+    "resolve",
+    "close",
+  ]);
+  expect(needsYouOptions("setup", ny({}))).toEqual([
+    "retry",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(
+      incident("needs-you", ny({ retryable: false, fix: "sandboxes" })),
+      defaultSettings,
+    ),
+  ).toEqual({
+    kind: "needs-you",
+    reason: NO_SANDBOX,
+    needsYou: "setup",
+    fix: "sandboxes",
+    options: ["resolve", "close"],
   });
 });
