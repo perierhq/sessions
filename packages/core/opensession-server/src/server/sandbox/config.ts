@@ -159,6 +159,15 @@ export interface SandboxConfig {
   /** Warm-on-typing prewarm pool. Absent = defaults, with `enabled` true
    *  whenever a provider connection is configured. */
   prewarm?: Partial<SandboxPrewarmConfig>;
+  /** "This machine (container)" (adapters/podman.ts). */
+  podman?: SandboxPodmanConfig;
+}
+
+export interface SandboxPodmanConfig {
+  /** Addresses that reach this host without being on any of its interfaces
+   *  (a NAT'd public IP, a load balancer in front of it). The egress firewall
+   *  refuses them and the isolation self-test probes them. */
+  extraHostAddresses?: string[];
 }
 
 const PROVIDER_IDS = new Set<string>([
@@ -298,6 +307,22 @@ export function sandboxConfig(): SandboxConfig {
                         provider: target.provider.trim(),
                         repoId: target.repoId.trim(),
                       }))
+                  : undefined,
+              }
+            : undefined,
+        podman:
+          raw?.podman && typeof raw.podman === "object"
+            ? {
+                extraHostAddresses: Array.isArray(raw.podman.extraHostAddresses)
+                  ? raw.podman.extraHostAddresses
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" &&
+                          value.trim().length > 0 &&
+                          value.trim().length <= 64,
+                      )
+                      .map((value: string) => value.trim())
+                      .slice(0, 64)
                   : undefined,
               }
             : undefined,

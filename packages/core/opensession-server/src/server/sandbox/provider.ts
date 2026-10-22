@@ -13,13 +13,15 @@
 /** The provider ids the registry knows (all implemented — see index.ts).
  *  Persisted sessions may still carry a retired id (docker, modal, e2b,
  *  microvm, lambda-microvm); those fail explicitly at dispatch. `tart` is a
- *  macOS VM on a paired Mac Runner (adapters/tart.ts). */
+ *  macOS VM on a paired Mac Runner (adapters/tart.ts); `podman` is a rootless
+ *  container on this host (adapters/podman.ts). */
 export type SandboxProviderId =
   | "local"
   | "daytona"
   | "box"
   | "tart"
-  | "usecomputer";
+  | "usecomputer"
+  | "podman";
 
 /** Selection authority for starting new work on a configured provider. */
 export type SandboxProviderUsability =
