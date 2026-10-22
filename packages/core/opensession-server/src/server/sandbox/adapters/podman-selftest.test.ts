@@ -161,6 +161,57 @@ describe("isolation targets", () => {
   });
 });
 
+describe("isolation script", () => {
+  const targets = isolationTargets(OPTIONS);
+
+  test("re-runs itself under /bin/bash with a cleared env and a fixed PATH", () => {
+    const script = isolationScript(targets);
+    expect(script.split("\n")[0]).toBe(
+      "exec /usr/bin/env -i /bin/bash --noprofile --norc -c " +
+        "'PATH=/usr/sbin:/usr/bin:/sbin:/bin; hash -r",
+    );
+    expect(script.endsWith("'\n")).toBe(true);
+  });
+
+  test("calls every tool by absolute path", () => {
+    // `echo timeout` is a probe answer, not a call.
+    const script = isolationScript(targets).replace(/echo [a-z]+/g, "echo");
+    for (const tool of ["timeout", "bash", "curl", "getent", "id", "awk"])
+      expect(script).not.toMatch(
+        new RegExp(`(^|[\\s;(|"$])${tool}(\\s|$)`, "m"),
+      );
+    for (const path of [
+      "/usr/bin/timeout",
+      "/bin/bash",
+      "/usr/bin/curl",
+      "/usr/bin/getent",
+      "/usr/bin/id",
+      "/usr/bin/awk",
+    ])
+      expect(script).toContain(path);
+  });
+
+  test("runs end to end without the caller's env", async () => {
+    const script = isolationScript([
+      { name: "file:/tmp", kind: "file", target: "/tmp", expect: "absent" },
+      {
+        name: "file:/no/such/path",
+        kind: "file",
+        target: "/no/such/path",
+        expect: "absent",
+      },
+    ]);
+    const proc = Bun.spawn(["/bin/bash", "-c", script], {
+      env: { PATH: "/nonexistent", MARK: "leak" },
+      stdout: "pipe",
+    });
+    expect(await new Response(proc.stdout).text()).toBe(
+      "file:/tmp\tpresent\nfile:/no/such/path\tabsent\n",
+    );
+    expect(await proc.exited).toBe(0);
+  });
+});
+
 describe("isolation self-test", () => {
   const targets = isolationTargets(OPTIONS);
 

@@ -214,10 +214,15 @@ export function isolationTargets(o: IsolationTargetOptions): IsolationTarget[] {
 
 // ── The in-container script ──────────────────────────────────────────────────
 
+/** The probe script runs in a fresh `/bin/bash` with an empty environment
+ *  (no BASH_ENV, no caller PATH) and calls every tool by absolute path. */
+const RESTART = "exec /usr/bin/env -i /bin/bash --noprofile --norc -c";
+
 const PRELUDE = [
+  "PATH=/usr/sbin:/usr/bin:/sbin:/bin; hash -r",
   "set +e",
   "probe_tcp() {",
-  '  local out rc; out=$(timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>&1); rc=$?',
+  '  local out rc; out=$(/usr/bin/timeout 3 /bin/bash -c "exec 3<>/dev/tcp/$1/$2" 2>&1); rc=$?',
   "  if [ $rc -eq 0 ]; then echo open; elif [ $rc -eq 124 ]; then echo timeout",
   '  else case "$out" in',
   '    *"No route to host"*) echo unreachable ;;',
@@ -227,18 +232,18 @@ const PRELUDE = [
   "  esac; fi",
   "}",
   "probe_http() {",
-  "  local code; code=$(curl -sS -o /dev/null -m 5 -w '%{http_code}' \"$1\" 2>/dev/null)",
+  "  local code; code=$(/usr/bin/curl -sS -o /dev/null -m 5 -w '%{http_code}' \"$1\" 2>/dev/null)",
   '  case "$code" in ""|000) echo failed ;; *) echo "http:$code" ;; esac',
   "}",
   "probe_dns() {",
-  '  if timeout 5 getent ahostsv4 "$1" >/dev/null 2>&1; then echo resolved; else echo unresolved; fi',
+  '  if /usr/bin/timeout 5 /usr/bin/getent ahostsv4 "$1" >/dev/null 2>&1; then echo resolved; else echo unresolved; fi',
   "}",
   "probe_file() {",
   '  if [ -e "$1" ] || [ -L "$1" ]; then echo present; else echo absent; fi',
   "}",
   "probe_proc() {",
-  '  if [ "$1" = uid ]; then id -u; return; fi',
-  '  awk -v k="$1:" \'$1 == k { print $2; found = 1 } END { if (!found) print "none" }\' /proc/self/status',
+  '  if [ "$1" = uid ]; then /usr/bin/id -u; return; fi',
+  '  /usr/bin/awk -v k="$1:" \'$1 == k { print $2; found = 1 } END { if (!found) print "none" }\' /proc/self/status',
   "}",
 ];
 
@@ -272,7 +277,8 @@ export function isolationScript(targets: IsolationTarget[]): string {
   const lines = targets.map(
     (t) => `printf '%s\\t%s\\n' ${shellQuoteWord(t.name)} "$(${probeCall(t)})"`,
   );
-  return [...PRELUDE, ...lines, ""].join("\n");
+  const inner = [...PRELUDE, ...lines, ""].join("\n");
+  return `${RESTART} ${shellQuoteWord(inner)}\n`;
 }
 
 function passes(t: IsolationTarget, got: string): boolean {
