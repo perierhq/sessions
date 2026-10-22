@@ -5,8 +5,11 @@ import {
   BLOCKED_IPV4_RANGES,
   installEgressRules,
   ipv4InBlockedRange,
+  egressCounterProof,
+  egressRuleFor,
   expectedEgressListing,
   normalizeNftListing,
+  readEgressCounters,
   podmanEgressRuleset,
   resolveEgressInput,
   verifyEgressRules,
@@ -516,5 +519,80 @@ describe("egress verify", () => {
     expect(() =>
       normalizeNftListing('{"nftables": [{"a": {}, "b": {}}]}'),
     ).toThrow();
+  });
+});
+
+describe("egress counters", () => {
+  test("names the reject rule a connect must hit, in chain order", () => {
+    const rule = (address: string, port: number) =>
+      egressRuleFor(EGRESS_FIXTURE_INPUT, address, port);
+    expect(rule("203.0.113.7", 443)).toBeUndefined();
+    expect(rule("203.0.113.7", 22)).toBe("callback-reject:203.0.113.7");
+    expect(rule("1.1.1.1", 53)).toBeUndefined();
+    expect(rule("169.254.1.1", 53)).toBe("dns-reject");
+    expect(rule("100.100.100.100", 53)).toBe("dns-reject");
+    expect(rule("169.254.169.254", 80)).toBe("blocked4");
+    expect(rule("100.64.1.2", 3850)).toBe("blocked4");
+    expect(rule("8.8.8.8", 443)).toBeUndefined();
+    expect(
+      egressRuleFor(
+        { ...EGRESS_FIXTURE_INPUT, extraHostAddresses: ["198.51.100.20"] },
+        "198.51.100.20",
+        22,
+      ),
+    ).toBe("hostaddrs4");
+  });
+
+  test("reads every reject rule's packet counter from the namespace", async () => {
+    const { run, calls } = fakeRunner(listingReply(EGRESS_FIXTURE_LISTING));
+    const counters = await readEgressCounters(run, "/proc/4242/ns/net");
+    expect(calls[0]!.argv).toEqual([
+      "unshare",
+      "nsenter",
+      "--net=/proc/4242/ns/net",
+      "nft",
+      "-j",
+      "list",
+      "table",
+      "inet",
+      "opensession",
+    ]);
+    expect(Object.fromEntries(counters)).toEqual({
+      ipv6: 0,
+      "callback-reject:203.0.113.7": 0,
+      "dns-reject": 0,
+      blocked4: 2,
+      hostaddrs4: 0,
+    });
+  });
+
+  test("a listing without counters or an nft error rejects", async () => {
+    const bare = editedListing((items) => {
+      for (const item of items)
+        if ("rule" in item) {
+          const rule = item.rule as { expr: Record<string, unknown>[] };
+          rule.expr = rule.expr.filter((e) => !("counter" in e));
+        }
+    });
+    await expect(
+      readEgressCounters(fakeRunner(listingReply(bare)).run, "/proc/1/ns/net"),
+    ).rejects.toThrow("no counter");
+    await expect(
+      readEgressCounters(
+        fakeRunner(() => ({ exitCode: 1, stdout: "", stderr: "nope" })).run,
+        "/proc/1/ns/net",
+      ),
+    ).rejects.toThrow("nope");
+  });
+
+  test("the proof reads the namespace and maps targets through the policy", async () => {
+    const { run } = fakeRunner(listingReply(EGRESS_FIXTURE_LISTING));
+    const proof = egressCounterProof(
+      run,
+      "/proc/4242/ns/net",
+      EGRESS_FIXTURE_INPUT,
+    );
+    expect((await proof.read()).get("blocked4")).toBe(2);
+    expect(proof.ruleFor("169.254.169.254", 80)).toBe("blocked4");
   });
 });

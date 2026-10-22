@@ -474,3 +474,117 @@ export async function verifyEgressRules(
 ): Promise<void> {
   await verifyEgressRulesAt(run, await infraNetnsPath(run, infra), input);
 }
+
+// ── Counters ─────────────────────────────────────────────────────────────────
+
+/** A reject rule in the egress chain, named by what it matches. */
+export type EgressRuleKey =
+  | "ipv6"
+  | `callback-reject:${string}`
+  | "dns-reject"
+  | "blocked4"
+  | "hostaddrs4";
+
+/**
+ * The reject rule an IPv4 TCP connect to `address:port` from the namespace
+ * must hit, following the chain's order, or undefined when the policy
+ * allows it.
+ */
+export function egressRuleFor(
+  input: EgressInput,
+  address: string,
+  port: number,
+): EgressRuleKey | undefined {
+  const plan = egressPlan(input);
+  if (!isIpv4(address)) throw new Error(`invalid IPv4 address: ${address}`);
+  if (plan.callbacks.includes(address))
+    return port === plan.port ? undefined : `callback-reject:${address}`;
+  if (port === 53)
+    return plan.resolvers.includes(address) ? undefined : "dns-reject";
+  if (ipv4InBlockedRange(address)) return "blocked4";
+  if (plan.hostAddresses.includes(address)) return "hostaddrs4";
+  return undefined;
+}
+
+function ruleKey(expr: Json[]): EgressRuleKey | undefined {
+  for (const item of expr) {
+    if (!isRecord(item) || !isRecord(item.match)) continue;
+    const { left, right } = item.match;
+    if (!isRecord(left)) continue;
+    if (isRecord(left.meta) && left.meta.key === "nfproto" && right === "ipv6")
+      return "ipv6";
+    if (
+      isRecord(left.payload) &&
+      left.payload.field === "dport" &&
+      right === 53
+    )
+      return "dns-reject";
+    if (
+      isRecord(left.payload) &&
+      left.payload.field === "daddr" &&
+      typeof right === "string"
+    ) {
+      if (right === "@blocked4") return "blocked4";
+      if (right === "@hostaddrs4") return "hostaddrs4";
+      if (isIpv4(right)) return `callback-reject:${right}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The packet counter of every reject rule in a namespace's egress table,
+ * read from the host. Throws when nft fails or a reject rule has no counter.
+ */
+export async function readEgressCounters(
+  run: PodmanRunner,
+  netns: string,
+): Promise<Map<EgressRuleKey, number>> {
+  assertNetnsPath(netns, "read egress counters");
+  const result = await run(
+    nftArgs(netns, ["-j", "list", "table", "inet", EGRESS_TABLE]),
+  );
+  if (result.exitCode !== 0) throw failure("list egress counters", result);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("nft listing is not JSON");
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.nftables))
+    throw new Error("nft listing has no nftables array");
+  const counters = new Map<EgressRuleKey, number>();
+  for (const item of parsed.nftables) {
+    if (!isRecord(item) || !isRecord(item.rule)) continue;
+    const expr = item.rule.expr;
+    if (!Array.isArray(expr)) continue;
+    if (!expr.some((e) => isRecord(e) && "reject" in e)) continue;
+    const key = ruleKey(expr);
+    if (!key) continue;
+    const found = expr.find((e) => isRecord(e) && isRecord(e.counter));
+    const packets =
+      found && isRecord(found) && isRecord(found.counter)
+        ? found.counter.packets
+        : undefined;
+    if (typeof packets !== "number")
+      throw new Error(`egress rule ${key} has no counter`);
+    counters.set(key, packets);
+  }
+  return counters;
+}
+
+/** What the isolation self-test needs to prove its refusals came from this
+ *  namespace's table (runIsolationSelfTest's `counters`). */
+export function egressCounterProof(
+  run: PodmanRunner,
+  netns: string,
+  input: EgressInput,
+): {
+  read(): Promise<Map<string, number>>;
+  ruleFor(address: string, port: number): string | undefined;
+} {
+  return {
+    read: () => readEgressCounters(run, netns),
+    ruleFor: (address, port) => egressRuleFor(input, address, port),
+  };
+}

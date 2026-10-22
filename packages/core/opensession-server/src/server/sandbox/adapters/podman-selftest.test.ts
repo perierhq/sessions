@@ -383,6 +383,112 @@ describe("isolation self-test", () => {
   });
 });
 
+describe("counter proof", () => {
+  const targets = isolationTargets(OPTIONS);
+  const ruleFor = (address: string, port: number): string | undefined => {
+    if (address === "203.0.113.7") return `callback-reject:${address}`;
+    if (port === 53) return "dns-reject";
+    if (/^(10|100|127|169)\./.test(address)) return "blocked4";
+    return "hostaddrs4";
+  };
+  const filteredRules = () => {
+    const counts = new Map<string, number>();
+    for (const t of targets)
+      if (t.expect === "filtered" || t.expect === "host") {
+        const [a, p] = t.target.split(":");
+        const key = ruleFor(a!, Number(p));
+        if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    return counts;
+  };
+
+  function proof(after: (before: Map<string, number>) => Map<string, number>) {
+    let reads = 0;
+    const before = new Map([
+      ["blocked4", 5],
+      ["dns-reject", 0],
+      ["callback-reject:203.0.113.7", 0],
+      ["hostaddrs4", 0],
+    ]);
+    return {
+      read: async () => (reads++ === 0 ? before : after(before)),
+      ruleFor,
+      reads: () => reads,
+    };
+  }
+
+  test("passes when each expected reject counter rose by its probes", async () => {
+    const { driver } = fakeDriver(() => ({
+      exitCode: 0,
+      stdout: rows(targets),
+      stderr: "",
+    }));
+    const counters = proof((before) => {
+      const next = new Map(before);
+      for (const [key, n] of filteredRules())
+        next.set(key, (before.get(key) ?? 0) + n);
+      return next;
+    });
+    const result = await runIsolationSelfTest(driver, targets, { counters });
+    expect(counters.reads()).toBe(2);
+    expect(result.ok).toBe(true);
+    const rows_ = result.results.filter((r) => r.name.startsWith("nft:"));
+    expect(rows_.map((r) => r.name).sort()).toEqual(
+      [...filteredRules().keys()].map((k) => `nft:${k}`).sort(),
+    );
+    expect(rows_.every((r) => r.pass && r.expect === "counted")).toBe(true);
+  });
+
+  test("a counter that did not rise fails: the refusal came from elsewhere", async () => {
+    const { driver } = fakeDriver(() => ({
+      exitCode: 0,
+      stdout: rows(targets),
+      stderr: "",
+    }));
+    const counters = proof((before) => {
+      const next = new Map(before);
+      for (const [key, n] of filteredRules())
+        if (key !== "blocked4") next.set(key, (before.get(key) ?? 0) + n);
+      return next;
+    });
+    const result = await runIsolationSelfTest(driver, targets, { counters });
+    expect(result.ok).toBe(false);
+    expect(result.results.find((r) => r.name === "nft:blocked4")).toMatchObject(
+      { expect: "counted", got: "packets 5 -> 5", pass: false },
+    );
+  });
+
+  test("a counter read that fails, or a target no rule covers, fails", async () => {
+    const { driver } = fakeDriver(() => ({
+      exitCode: 0,
+      stdout: rows(targets),
+      stderr: "",
+    }));
+    const broken = {
+      read: async (): Promise<Map<string, number>> => {
+        throw new Error("nft gone");
+      },
+      ruleFor,
+    };
+    const failed = await runIsolationSelfTest(driver, targets, {
+      counters: broken,
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toContain("nft gone");
+
+    const uncovered = await runIsolationSelfTest(driver, targets, {
+      counters: {
+        read: async () => new Map<string, number>(),
+        ruleFor: () => undefined,
+      },
+    });
+    expect(uncovered.ok).toBe(false);
+    expect(
+      uncovered.results.find((r) => r.name === "nft:tcp:169.254.169.254:80"),
+    ).toMatchObject({ got: "no reject rule covers it", pass: false });
+  });
+});
+
 describe("host control", () => {
   test("drops blocked targets the host cannot reach and keeps filtered ones", async () => {
     const targets = isolationTargets(OPTIONS);

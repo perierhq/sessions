@@ -20,6 +20,10 @@
  *  - `reachable`: the public internet, DNS and the callback origin work.
  *  - `absent`: host paths and host names the container must not see.
  *  - `equal`: process facts (no capabilities, no new privileges, uid 1000).
+ *  - `counted` (result rows only, with `counters`): the host-side proof. The
+ *    packet counter of each reject rule a filtered probe must hit, read from
+ *    the host before and after, rose by at least that many probes, so the
+ *    refusals came from this namespace's table and nothing else.
  * A missing row, an exec that fails or times out, or an unknown answer is a
  * failure. The script is built only from validated addresses, ports, URLs,
  * host names and paths, each quoted.
@@ -36,7 +40,8 @@ export type IsolationExpect =
   | "host"
   | "reachable"
   | "absent"
-  | "equal";
+  | "equal"
+  | "counted";
 
 export interface IsolationTarget {
   name: string;
@@ -328,7 +333,59 @@ function passes(t: IsolationTarget, got: string): boolean {
       return t.kind === "dns" ? got === "unresolved" : got === "absent";
     case "equal":
       return t.value !== undefined && got === t.value;
+    case "counted":
+      return false;
   }
+}
+
+/** Reads the egress table's reject counters from the host
+ *  (podman-egress.ts `egressCounterProof`). */
+export interface IsolationCounterProof {
+  read(): Promise<Map<string, number>>;
+  /** The reject rule a TCP connect to `address:port` must hit. */
+  ruleFor(address: string, port: number): string | undefined;
+}
+
+function counterRows(
+  targets: IsolationTarget[],
+  results: IsolationResult[],
+  proof: IsolationCounterProof,
+  before: Map<string, number>,
+  after: Map<string, number>,
+): IsolationResult[] {
+  const rows: IsolationResult[] = [];
+  const expected = new Map<string, number>();
+  targets.forEach((t, index) => {
+    const result = results[index]!;
+    if (t.kind !== "tcp" || !result.pass || result.expect !== "filtered")
+      return;
+    const [address, port] = t.target.split(":");
+    const key = proof.ruleFor(address!, Number(port));
+    if (key === undefined) {
+      rows.push({
+        name: `nft:${t.name}`,
+        expect: "counted",
+        got: "no reject rule covers it",
+        pass: false,
+      });
+      return;
+    }
+    expected.set(key, (expected.get(key) ?? 0) + 1);
+  });
+  for (const [key, probes] of expected) {
+    const was = before.get(key);
+    const now = after.get(key);
+    rows.push({
+      name: `nft:${key}`,
+      expect: "counted",
+      got:
+        was === undefined || now === undefined
+          ? "missing"
+          : `packets ${was} -> ${now}`,
+      pass: was !== undefined && now !== undefined && now - was >= probes,
+    });
+  }
+  return rows;
 }
 
 function selfTestTimeoutMs(targets: IsolationTarget[]): number {
@@ -342,11 +399,13 @@ function selfTestTimeoutMs(targets: IsolationTarget[]): number {
 /**
  * Run every probe in one exec. `ok` only when the exec succeeded and each
  * target reported exactly once and as expected; `error` says why an exec
- * failed.
+ * failed. With `counters`, the egress table's reject counters are read
+ * before and after, and each must rise by the filtered probes that hit it.
  */
 export async function runIsolationSelfTest(
   driver: RemoteDriver,
   targets: IsolationTarget[],
+  opts: { counters?: IsolationCounterProof } = {},
 ): Promise<{ ok: boolean; results: IsolationResult[]; error?: string }> {
   const names = new Set<string>();
   for (const t of targets) {
@@ -358,7 +417,9 @@ export async function runIsolationSelfTest(
   let stdout = "";
   let failure = "";
   let threw = false;
+  let before: Map<string, number> | undefined;
   try {
+    if (opts.counters) before = await opts.counters.read();
     const result = await driver.exec(script, {
       timeoutMs: selfTestTimeoutMs(targets),
     });
@@ -380,6 +441,15 @@ export async function runIsolationSelfTest(
       line.slice(tab + 1).trim(),
     ]);
   }
+  let after: Map<string, number> | undefined;
+  if (opts.counters && before && !failure) {
+    try {
+      after = await opts.counters.read();
+    } catch (err) {
+      failure = `nft counters: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   const results = targets.map((t): IsolationResult => {
     const got = answers.get(t.name) ?? [];
     if (got.length === 1)
@@ -401,6 +471,10 @@ export async function runIsolationSelfTest(
       pass: false,
     };
   });
+  if (opts.counters && before && after)
+    results.push(
+      ...counterRows(targets, results, opts.counters, before, after),
+    );
   return {
     ok: !failure && results.length > 0 && results.every((r) => r.pass),
     results,
