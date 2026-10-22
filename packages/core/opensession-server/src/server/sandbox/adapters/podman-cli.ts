@@ -391,7 +391,7 @@ function positiveInt(value: number, what: string): string {
  * `podman create` for the workload (never `run`: the firewall goes in before
  * it starts). No host mounts, no capabilities, no new privileges, the
  * default seccomp profile and SELinux type, a read-only rootfs and the
- * session volume as the only writable disk. No restart policy: a restart
+ * session volume (nosuid, nodev) as the only writable disk. No restart policy: a restart
  * outside the firewall sequence would start it unfiltered.
  */
 export function workloadCreateArgs(o: {
@@ -444,7 +444,7 @@ export function workloadCreateArgs(o: {
     "--ulimit",
     "nofile=65536:65536",
     "-v",
-    `${o.names.volume}:${PODMAN_WORKLOAD_HOME}:Z`,
+    `${o.names.volume}:${PODMAN_WORKLOAD_HOME}:Z,nosuid,nodev`,
     o.image,
     "sleep",
     "infinity",

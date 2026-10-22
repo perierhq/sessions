@@ -173,7 +173,7 @@ describe("egress ruleset", () => {
   test("a callback on a private, tailnet or loopback address is refused", () => {
     for (const address of [
       "10.0.0.4",
-      "100.101.0.5",
+      "100.64.0.5",
       "127.0.0.1",
       "169.254.169.254",
     ])

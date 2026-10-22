@@ -106,6 +106,31 @@ describe("podman argv", () => {
     ]);
     for (const word of ["-p", "--publish", "host", "--network=host"])
       expect(argv).not.toContain(word);
+    expect(argv).toEqual([
+      "pod",
+      "create",
+      "--name",
+      "opensession-sbx-sess-1",
+      "--infra-name",
+      "opensession-sbx-sess-1-infra",
+      "--network",
+      PODMAN_PASTA_NETWORK,
+      "--dns",
+      "1.1.1.1",
+      "--dns",
+      "9.9.9.9",
+      "--dns-search",
+      ".",
+      "--no-hosts",
+      "--hostname",
+      "sandbox",
+      "--share",
+      "net,uts,ipc",
+      "--label",
+      "opensession.sandbox=1",
+      "--label",
+      "opensession.session=sess-1",
+    ]);
   });
 
   test("pod create refuses resolvers that are not IPv4 addresses", () => {
@@ -120,6 +145,15 @@ describe("podman argv", () => {
     expect(argv.slice(0, 2)).toEqual(["volume", "create"]);
     expect(argv.at(-1)).toBe(names.volume);
     expect(operands(argv, "--label")).toContain("opensession.sandbox=1");
+    expect(argv).toEqual([
+      "volume",
+      "create",
+      "--label",
+      "opensession.sandbox=1",
+      "--label",
+      "opensession.session=sess-1",
+      "opensession-sbx-sess-1-home",
+    ]);
   });
 
   test("workload create drops every privilege and mounts only the volume", () => {
@@ -145,7 +179,9 @@ describe("podman argv", () => {
     expect(hasPair(argv, "--memory", "4096m")).toBe(true);
     expect(hasPair(argv, "--memory-swap", "4096m")).toBe(true);
     expect(hasPair(argv, "--ulimit", "nofile=65536:65536")).toBe(true);
-    expect(operands(argv, "-v")).toEqual([`${names.volume}:/home/ubuntu:Z`]);
+    expect(operands(argv, "-v")).toEqual([
+      `${names.volume}:/home/ubuntu:Z,nosuid,nodev`,
+    ]);
     for (const flag of ["--volume", "--mount", "--cap-add", "--cpus"])
       expect(argv).not.toContain(flag);
     expect(argv.filter((w) => w === "-v")).toHaveLength(1);
@@ -157,7 +193,37 @@ describe("podman argv", () => {
       expect(word).not.toContain("seccomp=unconfined");
       expect(word).not.toContain("label=disable");
     }
-    expect(argv.slice(-3)).toEqual([
+    expect(argv).toEqual([
+      "create",
+      "--pod",
+      "opensession-sbx-sess-1",
+      "--name",
+      "opensession-sbx-sess-1-ws",
+      "--label",
+      "opensession.sandbox=1",
+      "--user",
+      "1000:1000",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--security-opt",
+      "label=type:container_t",
+      "--read-only",
+      "--read-only-tmpfs=true",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev,size=1g",
+      "--init",
+      "--pids-limit",
+      "4096",
+      "--memory",
+      "4096m",
+      "--memory-swap",
+      "4096m",
+      "--ulimit",
+      "nofile=65536:65536",
+      "-v",
+      "opensession-sbx-sess-1-home:/home/ubuntu:Z,nosuid,nodev",
       "localhost/opensession-sandbox:0123456789abcdef",
       "sleep",
       "infinity",
@@ -172,8 +238,43 @@ describe("podman argv", () => {
       pidsLimit: 512,
       cpu: 2,
     });
-    expect(hasPair(argv, "--cpus", "2")).toBe(true);
-    expect(hasPair(argv, "--memory", "2048m")).toBe(true);
+    expect(argv).toEqual([
+      "create",
+      "--pod",
+      "opensession-sbx-sess-1",
+      "--name",
+      "opensession-sbx-sess-1-ws",
+      "--label",
+      "opensession.sandbox=1",
+      "--user",
+      "1000:1000",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--security-opt",
+      "label=type:container_t",
+      "--read-only",
+      "--read-only-tmpfs=true",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev,size=1g",
+      "--init",
+      "--pids-limit",
+      "512",
+      "--memory",
+      "2048m",
+      "--memory-swap",
+      "2048m",
+      "--cpus",
+      "2",
+      "--ulimit",
+      "nofile=65536:65536",
+      "-v",
+      "opensession-sbx-sess-1-home:/home/ubuntu:Z,nosuid,nodev",
+      "localhost/opensession-sandbox:0123456789abcdef",
+      "sleep",
+      "infinity",
+    ]);
   });
 
   test("workload create refuses bad limits and option-like images", () => {
@@ -209,7 +310,14 @@ describe("podman argv", () => {
     expect(hasPair(argv, "--workdir", "/home/ubuntu/work")).toBe(true);
     expect(argv).not.toContain("-d");
     expect(argv).not.toContain("-t");
-    expect(argv.slice(-8)).toEqual([
+    expect(argv).toEqual([
+      "exec",
+      "--user",
+      "1000:1000",
+      "--workdir",
+      "/home/ubuntu/work",
+      "--env-file",
+      "/run/user/1001/opensession/exec-env-x",
       names.workload,
       "/usr/bin/timeout",
       "-k",
@@ -229,7 +337,11 @@ describe("podman argv", () => {
       cmd: "sleep 1",
     });
     expect(detached).toContain("-d");
-    expect(detached.slice(-4)).toEqual([
+    expect(detached).toEqual([
+      "exec",
+      "-d",
+      "--user",
+      "1000:1000",
       names.workload,
       "/bin/bash",
       "-c",
@@ -241,7 +353,20 @@ describe("podman argv", () => {
       stdin: true,
       cmd: "cat",
     });
-    expect(piped).toContain("-i");
+    expect(piped).toEqual([
+      "exec",
+      "-i",
+      "--user",
+      "1000:1000",
+      names.workload,
+      "/usr/bin/timeout",
+      "-k",
+      "5",
+      "5",
+      "/bin/bash",
+      "-c",
+      "cat",
+    ]);
   });
 
   test("exec refuses relative env files, relative cwd and foreign containers", () => {
