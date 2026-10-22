@@ -112,6 +112,42 @@ describe("isolation targets", () => {
     expect(new Set(list).size).toBe(list.length);
   });
 
+  test("IPv6 is probed and must not connect", async () => {
+    const targets = isolationTargets({ ...OPTIONS, full: false });
+    const v6 = find(targets, "tcp6:2606:4700:4700::1111:443");
+    expect(v6).toEqual({
+      name: "tcp6:2606:4700:4700::1111:443",
+      kind: "tcp6",
+      target: "2606:4700:4700::1111:443",
+      expect: "blocked",
+    });
+    expect(isolationScript(targets)).toContain(
+      "probe_tcp 2606:4700:4700::1111 443",
+    );
+    for (const [got, pass] of [
+      ["nonet", true],
+      ["unreachable", true],
+      ["open", false],
+    ] as const) {
+      const { driver } = fakeDriver(() => ({
+        exitCode: 0,
+        stdout: rows(targets, { [v6.name]: got }),
+        stderr: "",
+      }));
+      expect((await runIsolationSelfTest(driver, targets)).ok).toBe(pass);
+    }
+    expect(() =>
+      isolationScript([
+        {
+          name: "tcp6:x",
+          kind: "tcp6",
+          target: "2606:4700:4700::1111:443;id",
+          expect: "blocked",
+        },
+      ]),
+    ).toThrow();
+  });
+
   test("operator extra host addresses are probed as filtered", () => {
     const targets = isolationTargets({
       ...OPTIONS,
@@ -128,7 +164,8 @@ describe("isolation targets", () => {
   test("the network half leaves out file and process checks", () => {
     const targets = isolationTargets({ ...OPTIONS, full: false });
     expect(targets.length).toBeGreaterThan(0);
-    for (const t of targets) expect(["tcp", "http", "dns"]).toContain(t.kind);
+    for (const t of targets)
+      expect(["tcp", "tcp6", "http", "dns"]).toContain(t.kind);
     expect(names(targets)).toContain("tcp:169.254.169.254:80");
     expect(names(targets)).toContain("callback");
   });

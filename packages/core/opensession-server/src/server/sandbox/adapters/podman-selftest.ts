@@ -11,7 +11,8 @@
  *    from `icmpx admin-prohibited`), so a closed port is not enough. For
  *    addresses that leave the namespace: tailnet, metadata, pasta's DNS
  *    forwarder and guest mapping, the callback address on another port.
- *  - `blocked`: anything but open. For loopback.
+ *  - `blocked`: anything but open. For loopback, and a public IPv6 address
+ *    (the namespace has none, and the table refuses IPv6).
  *  - `host`: the host's own interface addresses. pasta may copy one into the
  *    namespace, and then a connect there reaches the sandbox itself, so the
  *    script reads the namespace's own addresses (/proc/net/fib_trie) and
@@ -29,11 +30,11 @@
  * host names and paths, each quoted.
  */
 
-import { createConnection } from "node:net";
+import { createConnection, isIPv6 } from "node:net";
 import { shellQuoteWord, type RemoteDriver } from "./bootstrap";
 import { isIpv4 } from "./podman-cli";
 
-export type IsolationKind = "tcp" | "http" | "dns" | "file" | "proc";
+export type IsolationKind = "tcp" | "tcp6" | "http" | "dns" | "file" | "proc";
 export type IsolationExpect =
   | "filtered"
   | "blocked"
@@ -46,7 +47,8 @@ export type IsolationExpect =
 export interface IsolationTarget {
   name: string;
   kind: IsolationKind;
-  /** tcp `ip:port`, http URL, dns host name, file path, proc field. */
+  /** tcp `ip:port`, tcp6 `ipv6:port`, http URL, dns host name, file path,
+   *  proc field. */
   target: string;
   expect: IsolationExpect;
   /** The value an `equal` target must report. */
@@ -89,6 +91,9 @@ const FIXED_FILTERED: [string, number][] = [
   ["169.254.1.2", 22], // podman's default guest-to-host mapping
   ["100.100.100.100", 53], // tailnet DNS
 ];
+/** A public IPv6 address: the namespace has no IPv6 and the table refuses
+ *  it, so a connect must not open. */
+const FIXED_IPV6: [string, number] = ["2606:4700:4700::1111", 443];
 const FIXED_ABSENT_PATHS = ["/etc/opensession", "/run/user"];
 const WORKLOAD_UID = "1000";
 
@@ -172,6 +177,13 @@ export function isolationTargets(o: IsolationTargetOptions): IsolationTarget[] {
       if (!address.includes(":")) add(tcp(address, 22, "filtered"));
   for (const [address, port] of FIXED_FILTERED)
     add(tcp(address, port, "filtered"));
+  const [v6, v6Port] = FIXED_IPV6;
+  add({
+    name: `tcp6:${v6}:${v6Port}`,
+    kind: "tcp6",
+    target: `${v6}:${v6Port}`,
+    expect: "blocked",
+  });
 
   add({
     name: "dns:github.com",
@@ -283,6 +295,12 @@ function probeCall(t: IsolationTarget): string {
       const probe = t.expect === "host" ? "probe_host_tcp" : "probe_tcp";
       return `${probe} ${checkIpv4(match[1]!)} ${checkPort(Number(match[2]))}`;
     }
+    case "tcp6": {
+      const match = /^([0-9a-f:]+):(\d+)$/.exec(t.target);
+      if (!match || !isIPv6(match[1]!))
+        throw new Error(`invalid tcp6 target: ${t.target}`);
+      return `probe_tcp ${match[1]} ${checkPort(Number(match[2]))}`;
+    }
     case "http":
       return `probe_http ${shellQuoteWord(checkUrl(t.target))}`;
     case "dns":
@@ -392,7 +410,11 @@ function selfTestTimeoutMs(targets: IsolationTarget[]): number {
   let seconds = 15;
   for (const t of targets)
     seconds +=
-      t.kind === "tcp" ? 4 : t.kind === "http" || t.kind === "dns" ? 6 : 1;
+      t.kind === "tcp" || t.kind === "tcp6"
+        ? 4
+        : t.kind === "http" || t.kind === "dns"
+          ? 6
+          : 1;
   return seconds * 1000;
 }
 
