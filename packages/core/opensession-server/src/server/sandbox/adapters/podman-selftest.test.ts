@@ -34,6 +34,7 @@ function find(targets: IsolationTarget[], name: string): IsolationTarget {
 function goodAnswer(t: IsolationTarget): string {
   if (t.expect === "filtered") return "unreachable";
   if (t.expect === "blocked") return "refused";
+  if (t.expect === "host") return "remote:unreachable";
   if (t.expect === "absent") return t.kind === "dns" ? "unresolved" : "absent";
   if (t.expect === "equal") return t.value ?? "";
   return t.kind === "dns" ? "resolved" : "http:200";
@@ -73,12 +74,10 @@ describe("isolation targets", () => {
   test("the full list covers the host, tailnet, metadata, DNS, files and privileges", () => {
     const targets = isolationTargets(OPTIONS);
     const list = names(targets);
-    for (const name of [
-      "tcp:127.0.0.1:3850",
-      "tcp:127.0.0.1:3860",
-      "tcp:10.1.2.3:22",
-    ])
+    for (const name of ["tcp:127.0.0.1:3850", "tcp:127.0.0.1:3860"])
       expect(find(targets, name).expect).toBe("blocked");
+    for (const name of ["tcp:10.1.2.3:22", "tcp:10.1.2.3:3850"])
+      expect(find(targets, name).expect).toBe("host");
     for (const name of [
       "tcp:100.64.1.2:3850",
       "tcp:203.0.113.7:22",
@@ -247,6 +246,36 @@ describe("isolation self-test", () => {
         pass: false,
       },
     ]);
+  });
+
+  test("a host address is blocked only when the namespace holds it", async () => {
+    const script = isolationScript(targets);
+    expect(script).toContain("probe_host_tcp 10.1.2.3 22");
+    expect(script).toContain("/proc/net/fib_trie");
+    const cases: [string, boolean, string][] = [
+      ["local:refused", true, "blocked"],
+      ["local:unreachable", true, "blocked"],
+      ["local:open", false, "blocked"],
+      ["remote:unreachable", true, "filtered"],
+      ["remote:refused", false, "filtered"],
+      ["remote:timeout", false, "filtered"],
+      ["refused", false, "host"],
+    ];
+    for (const [got, pass, expect_] of cases) {
+      const { driver } = fakeDriver(() => ({
+        exitCode: 0,
+        stdout: rows(targets, { "tcp:10.1.2.3:22": got }),
+        stderr: "",
+      }));
+      const result = await runIsolationSelfTest(driver, targets);
+      expect(result.ok).toBe(pass);
+      expect(result.results.find((r) => r.name === "tcp:10.1.2.3:22")).toEqual({
+        name: "tcp:10.1.2.3:22",
+        expect: expect_ as never,
+        got,
+        pass,
+      });
+    }
   });
 
   test("a filtered target must be refused by the firewall, not just closed", async () => {

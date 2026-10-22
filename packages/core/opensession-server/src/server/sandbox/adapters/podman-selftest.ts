@@ -11,9 +11,12 @@
  *    from `icmpx admin-prohibited`), so a closed port is not enough. For
  *    addresses that leave the namespace: tailnet, metadata, pasta's DNS
  *    forwarder and guest mapping, the callback address on another port.
- *  - `blocked`: anything but open. For loopback and the host's own
- *    interface addresses, which pasta may copy into the namespace (so a
- *    connect there reaches the sandbox itself and is refused).
+ *  - `blocked`: anything but open. For loopback.
+ *  - `host`: the host's own interface addresses. pasta may copy one into the
+ *    namespace, and then a connect there reaches the sandbox itself, so the
+ *    script reads the namespace's own addresses (/proc/net/fib_trie) and
+ *    reports `local:` or `remote:`. A local one is `blocked`; any other is
+ *    `filtered` (a refused connect reached the host and fails).
  *  - `reachable`: the public internet, DNS and the callback origin work.
  *  - `absent`: host paths and host names the container must not see.
  *  - `equal`: process facts (no capabilities, no new privileges, uid 1000).
@@ -30,6 +33,7 @@ export type IsolationKind = "tcp" | "http" | "dns" | "file" | "proc";
 export type IsolationExpect =
   | "filtered"
   | "blocked"
+  | "host"
   | "reachable"
   | "absent"
   | "equal";
@@ -143,8 +147,8 @@ export function isolationTargets(o: IsolationTargetOptions): IsolationTarget[] {
   for (const address of o.hostAddresses) {
     if (address.includes(":") || isLoopback(address) || tailnet.has(address))
       continue;
-    add(tcp(address, 22, "blocked"));
-    add(tcp(address, appPort, "blocked"));
+    add(tcp(address, 22, "host"));
+    add(tcp(address, appPort, "host"));
   }
   for (const address of o.tailnetAddresses)
     if (!address.includes(":")) add(tcp(address, appPort, "filtered"));
@@ -231,6 +235,12 @@ const PRELUDE = [
   "    *) echo error ;;",
   "  esac; fi",
   "}",
+  "ns_owns() {",
+  "  /usr/bin/awk -v a=\"$1\" '/\\|--/ { ip = $2 } /\\/32 host LOCAL/ && ip == a { found = 1 } END { exit !found }' /proc/net/fib_trie 2>/dev/null",
+  "}",
+  "probe_host_tcp() {",
+  '  if ns_owns "$1"; then echo "local:$(probe_tcp "$1" "$2")"; else echo "remote:$(probe_tcp "$1" "$2")"; fi',
+  "}",
   "probe_http() {",
   "  local code; code=$(/usr/bin/curl -sS -o /dev/null -m 5 -w '%{http_code}' \"$1\" 2>/dev/null)",
   '  case "$code" in ""|000) echo failed ;; *) echo "http:$code" ;; esac',
@@ -255,7 +265,8 @@ function probeCall(t: IsolationTarget): string {
     case "tcp": {
       const match = /^([0-9.]+):(\d+)$/.exec(t.target);
       if (!match) throw new Error(`invalid tcp target: ${t.target}`);
-      return `probe_tcp ${checkIpv4(match[1]!)} ${checkPort(Number(match[2]))}`;
+      const probe = t.expect === "host" ? "probe_host_tcp" : "probe_tcp";
+      return `${probe} ${checkIpv4(match[1]!)} ${checkPort(Number(match[2]))}`;
     }
     case "http":
       return `probe_http ${shellQuoteWord(checkUrl(t.target))}`;
@@ -281,12 +292,26 @@ export function isolationScript(targets: IsolationTarget[]): string {
   return `${RESTART} ${shellQuoteWord(inner)}\n`;
 }
 
+/** A `host` target's expectation once the script said where the address
+ *  lives. */
+function resolvedExpect(t: IsolationTarget, got: string): IsolationExpect {
+  if (t.expect !== "host") return t.expect;
+  if (got.startsWith("local:")) return "blocked";
+  if (got.startsWith("remote:")) return "filtered";
+  return "host";
+}
+
 function passes(t: IsolationTarget, got: string): boolean {
   switch (t.expect) {
     case "filtered":
       return got === "unreachable";
     case "blocked":
       return ["unreachable", "refused", "timeout", "nonet"].includes(got);
+    case "host": {
+      const expect = resolvedExpect(t, got);
+      if (expect === "host") return false;
+      return passes({ ...t, expect }, got.slice(got.indexOf(":") + 1));
+    }
     case "reachable":
       return t.kind === "dns" ? got === "resolved" : /^http:\d{3}$/.test(got);
     case "absent":
@@ -350,7 +375,7 @@ export async function runIsolationSelfTest(
     if (got.length === 1)
       return {
         name: t.name,
-        expect: t.expect,
+        expect: resolvedExpect(t, got[0]!),
         got: got[0]!,
         pass: passes(t, got[0]!),
       };
@@ -391,8 +416,8 @@ export function hostTcpProbe(host: string, port: number): Promise<boolean> {
 
 /**
  * Probe each TCP target from the host first. A `blocked` target the host
- * cannot reach proves nothing and is dropped; `filtered` targets stay (the
- * firewall must refuse them whether or not anything listens). Both kinds of
+ * cannot reach proves nothing and is dropped; `filtered` and `host` targets
+ * stay (the firewall must refuse them whether or not anything listens). Both kinds of
  * dead target are reported.
  */
 export async function hostControlCheck(
