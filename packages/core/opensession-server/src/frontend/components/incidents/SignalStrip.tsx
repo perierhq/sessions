@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { StripLane, StripResponse } from "../../../shared/incidents";
 import { useElementWidth } from "../../hooks/useElementWidth";
 import { useIsPhone } from "../../hooks/useIsPhone";
@@ -127,6 +127,18 @@ export function SignalStripView({
 }) {
   const [focusLane, setFocusLane] = useState(0);
   const [tipLane, setTipLane] = useState(0);
+  // The tooltip is drawn on the strip, not inside its lane: with many lanes
+  // the lanes sit in a scroll box, and a tooltip above the top lane would be
+  // clipped by it. `tipTop` is the hovered lane's top, measured on the strip.
+  const [tipTop, setTipTop] = useState(0);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const placeTip = (lane: HTMLElement) => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    setTipTop(
+      lane.getBoundingClientRect().top - strip.getBoundingClientRect().top,
+    );
+  };
   const lanes = layout.lanes;
   const scroll = lanes.length > STRIP_LANES_VISIBLE;
   const lastPast = layout.pastSlots - 1;
@@ -135,10 +147,21 @@ export function SignalStripView({
   const axis = lanes.find((l) => l.axis)?.axis;
   // The row under the lanes is there only for future markers.
   const belowPx = (ahead.length ? MARKER_ROW_PX : 0) + (axis ? AXIS_PX : 0);
-  const tipText =
+  const tip =
     activeIndex !== null && lanes[tipLane]
-      ? tooltipLines(lanes[tipLane], activeIndex).join(", ")
-      : "";
+      ? tooltipLines(lanes[tipLane], activeIndex)
+      : [];
+  const tipText = tip.join(", ");
+  const tipX =
+    activeIndex === null
+      ? 0
+      : Math.max(
+          Math.min(TOOLTIP_HALF_PX, layout.width / 2),
+          Math.min(
+            layout.width - TOOLTIP_HALF_PX,
+            (activeIndex + 0.5) * layout.slotWidth,
+          ),
+        );
 
   const xIn = (e: React.MouseEvent<HTMLElement>) =>
     e.clientX - e.currentTarget.getBoundingClientRect().left;
@@ -191,7 +214,7 @@ export function SignalStripView({
         <span className="min-w-0 truncate">{title}</span>
         {live && <LiveLine live={live} />}
       </div>
-      <div className="relative w-full" data-strip>
+      <div ref={stripRef} className="relative w-full" data-strip>
         {/* Row 1 sits furthest from the lanes; row 0 right above them. */}
         <MarkerLabels markers={past.filter((m) => m.row === 1)} />
         <MarkerLabels markers={past.filter((m) => m.row === 0)} />
@@ -204,20 +227,6 @@ export function SignalStripView({
               : phone
                 ? 44
                 : 36;
-            const tip =
-              activeIndex !== null && tipLane === li
-                ? tooltipLines(lane, activeIndex)
-                : [];
-            const tipX =
-              activeIndex === null
-                ? 0
-                : Math.max(
-                    Math.min(TOOLTIP_HALF_PX, layout.width / 2),
-                    Math.min(
-                      layout.width - TOOLTIP_HALF_PX,
-                      (activeIndex + 0.5) * layout.slotWidth,
-                    ),
-                  );
             return (
               <div key={lane.id}>
                 {lane.showLabel && (
@@ -229,13 +238,15 @@ export function SignalStripView({
                   tabIndex={li === focusLane ? 0 : -1}
                   aria-label={`${lane.label}, ${layout.pastSlots} bars. Use arrow keys`}
                   className={lane.verification ? STRIP_VERIFY_LANE : STRIP_LANE}
-                  onFocus={() => {
+                  onFocus={(e) => {
                     setFocusLane(li);
                     setTipLane(li);
+                    placeTip(e.currentTarget);
                   }}
                   onPointerMove={(e) => {
                     if (e.pointerType !== "mouse") return;
                     setTipLane(li);
+                    placeTip(e.currentTarget);
                     onActiveIndexChange(barIndexAt(layout, xIn(e)));
                   }}
                   onPointerLeave={(e) => {
@@ -266,29 +277,29 @@ export function SignalStripView({
                       {lane.thresholdLabel}
                     </span>
                   )}
-                  {tip.length > 0 && (
-                    <ChartTooltip
-                      className="bottom-full mb-1.5 max-w-48 -translate-x-1/2"
-                      style={{ left: tipX }}
-                    >
-                      {tip.map((line, i) => (
-                        <div
-                          key={line}
-                          className={cn(
-                            "truncate text-meta leading-4.5",
-                            i === 0 ? "font-medium text-fg" : "text-dim",
-                          )}
-                        >
-                          {line}
-                        </div>
-                      ))}
-                    </ChartTooltip>
-                  )}
                 </div>
               </div>
             );
           })}
         </div>
+        {tip.length > 0 && (
+          <ChartTooltip
+            className="z-30 max-w-48 -translate-x-1/2 -translate-y-[calc(100%+6px)]"
+            style={{ left: tipX, top: tipTop }}
+          >
+            {tip.map((line, i) => (
+              <div
+                key={line}
+                className={cn(
+                  "truncate text-meta leading-4.5",
+                  i === 0 ? "font-medium text-fg" : "text-dim",
+                )}
+              >
+                {line}
+              </div>
+            ))}
+          </ChartTooltip>
+        )}
         {ahead.length > 0 && <MarkerLabels markers={ahead} />}
         {axis && (
           <div className={STRIP_AXIS}>
