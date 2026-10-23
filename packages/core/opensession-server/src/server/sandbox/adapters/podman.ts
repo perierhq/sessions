@@ -615,7 +615,7 @@ export class PodmanProvider implements SandboxProvider {
         callbackBaseUrl: httpBase(callbackBaseUrl),
       });
     } catch (error) {
-      await stopPod(this.run, names);
+      await withStartLock(names.pod, () => stopPod(this.run, names));
       throw error;
     }
     mark("workspace ready");
@@ -861,15 +861,38 @@ export class PodmanProvider implements SandboxProvider {
   }
 
   /** Stop the pod. Its network namespace and egress table go with it; the
-   *  volume keeps the workspace. */
+   *  volume keeps the workspace. Waits for any start in flight: a stop
+   *  between the infra's verify and the workload start would leave podman
+   *  to auto-start the infra in a fresh namespace with no rules. */
   async pause(sandboxId: string): Promise<void> {
     const names = namesForPod(sandboxId);
-    if ((await this.run(["pod", "exists", names.pod])).exitCode !== 0) return;
-    await must(
-      this.run,
-      ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
-      `stop ${names.pod}`,
-    );
+    await withStartLock(names.pod, async () => {
+      if ((await this.run(["pod", "exists", names.pod])).exitCode !== 0) return;
+      await must(
+        this.run,
+        ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
+        `stop ${names.pod}`,
+      );
+    });
+  }
+
+  /** Stop a running pod if `stillIdle()` holds once the start lock is held
+   *  (a wake may have just touched it). Returns whether it was stopped. */
+  async pauseIfIdle(
+    sandboxId: string,
+    stillIdle: () => boolean,
+  ): Promise<boolean> {
+    const names = namesForPod(sandboxId);
+    return withStartLock(names.pod, async () => {
+      if (!stillIdle()) return false;
+      if ((await this.status(sandboxId)) !== "running") return false;
+      await must(
+        this.run,
+        ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
+        `stop ${names.pod}`,
+      );
+      return true;
+    });
   }
 
   async resume(sandboxId: string): Promise<Sandbox | null> {
@@ -1169,21 +1192,27 @@ async function defaultLookup(host: string): Promise<string[]> {
  *  firewall sequence. */
 export async function sweepIdlePodmanSandboxes(
   now = Date.now(),
-  provider: Pick<PodmanProvider, "pause" | "status"> = new PodmanProvider(),
+  provider: Pick<PodmanProvider, "pauseIfIdle"> = new PodmanProvider(),
 ): Promise<string[]> {
   const idleMs =
     (sandboxConfig().idleStopMinutes || DEFAULT_IDLE_STOP_MINUTES) * 60_000;
-  const stale = listRemoteStates("podman").filter(
-    (state) =>
-      now - Date.parse(state.lastActivityAt || state.createdAt) > idleMs,
-  );
+  const idle = (state: RemoteSandboxState | null) =>
+    !!state &&
+    now - Date.parse(state.lastActivityAt || state.createdAt) > idleMs;
+  const stale = listRemoteStates("podman").filter(idle);
   const stopped: string[] = [];
+  const { hostRunBusy } = await import("../../host-registry");
   for (const state of stale) {
-    const { hostRunBusy } = await import("../../host-registry");
     if (hostRunBusy(state.sessionId)) continue;
     try {
-      if ((await provider.status(state.sandboxId)) !== "running") continue;
-      await provider.pause(state.sandboxId);
+      // Re-read under the lock: a wake or command may have touched it since.
+      const paused = await provider.pauseIfIdle(
+        state.sandboxId,
+        () =>
+          idle(readRemoteState("podman", state.sandboxId)) &&
+          !hostRunBusy(state.sessionId),
+      );
+      if (!paused) continue;
       stopped.push(state.sandboxId);
       console.log(
         `${LOG} stopped idle pod ${state.sandboxId} (${state.sessionId})`,

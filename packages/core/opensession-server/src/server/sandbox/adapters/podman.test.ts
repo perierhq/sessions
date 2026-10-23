@@ -8,9 +8,11 @@ import {
   fakePodman,
   IMAGE,
 } from "./podman-test-fixture";
+import { readRemoteState, writeRemoteState } from "./bootstrap";
 import {
   PodmanProvider,
   podmanDriver,
+  sweepIdlePodmanSandboxes,
   podmanSandboxCwd,
   podmanSettings,
   podmanWorkspaceCwd,
@@ -388,6 +390,70 @@ describe("podman firewall invariants", () => {
     await Promise.allSettled([provider.ensure({ sessionId: id })]);
     await pausing;
     expectNeverUnfiltered(fake);
+  });
+
+  test("a pause waits for an in-flight start, then stops the pod", async () => {
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    let pausing: Promise<void> | undefined;
+    let provider!: PodmanProvider;
+    const run = interceptOnce(
+      fake,
+      (argv) => argv[0] === "start" && argv.at(-1) === names.workload,
+      async () => {
+        pausing = provider.pause(names.pod);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    );
+    provider = new PodmanProvider(deps(fake, { run }));
+    await provider.ensure({ sessionId: id });
+    await pausing;
+    const seen = verbs(fake.calls);
+    expect(seen.indexOf("pod stop")).toBeGreaterThan(
+      seen.indexOf("exec selftest"),
+    );
+    expect(fake.state.running).toBe(false);
+    expectNeverUnfiltered(fake);
+  });
+
+  test("the idle sweep rechecks activity once it holds the start lock", async () => {
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let armed = false;
+    let entered!: () => void;
+    const inLock = new Promise<void>((resolve) => (entered = resolve));
+    const run = async (
+      argv: string[],
+      opts?: Parameters<typeof fake.run>[1],
+    ) => {
+      if (armed && argv[0] === "unshare" && argv.includes("-j")) {
+        armed = false;
+        entered();
+        await gate;
+      }
+      return fake.run(argv, opts);
+    };
+    const provider = new PodmanProvider(deps(fake, { run }));
+    await provider.ensure({ sessionId: id });
+    const stale = readRemoteState("podman", names.pod)!;
+    writeRemoteState({ ...stale, lastActivityAt: "2020-01-01T00:00:00.000Z" });
+    // A wake re-verifies the running pod and holds the lock meanwhile.
+    armed = true;
+    const waking = provider.resume(names.pod);
+    await inLock;
+    const sweeping = sweepIdlePodmanSandboxes(Date.now(), provider);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Activity lands while the sweep waits.
+    writeRemoteState({ ...stale, lastActivityAt: new Date().toISOString() });
+    release();
+    await waking;
+    expect(await sweeping).not.toContain(names.pod);
+    expect(verbs(fake.calls)).not.toContain("pod stop");
+    expect(fake.state.running).toBe(true);
   });
 
   test("concurrent wakes serialize into one firewalled start", async () => {
