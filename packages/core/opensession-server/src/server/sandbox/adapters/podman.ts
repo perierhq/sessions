@@ -284,6 +284,10 @@ async function workloadRun(
  *  after a gateway restart, so every running pod is re-verified once. */
 const verifiedRuns = new Map<string, string>();
 
+/** Pod name -> how many verifications have succeeded, so a caller queued
+ *  behind a start can tell that one finished while it waited. */
+const verifications = new Map<string, number>();
+
 /** Whether the workload is running and its current run is the one this
  *  gateway verified. */
 async function runIsVerified(
@@ -355,6 +359,7 @@ export async function startFirewalledPod(
     if (!identity || `/proc/${identity.split(" ")[0]}/ns/net` !== workloadNetns)
       throw new Error(`${names.workload} restarted during verification`);
     verifiedRuns.set(names.pod, identity);
+    verifications.set(names.pod, (verifications.get(names.pod) ?? 0) + 1);
     return started;
   } catch (error) {
     await stopPod(run, names);
@@ -765,13 +770,20 @@ export class PodmanProvider implements SandboxProvider {
   }
 
   /** The start sequence (or re-verification) plus the network self-test,
-   *  one at a time per pod. */
+   *  one at a time per pod. A caller that queued behind a start which
+   *  verified the run still running is done without repeating it. */
   private startLocked(
     names: PodmanNames,
     egress: EgressInput,
     callbackBaseUrl: string,
   ): Promise<boolean> {
+    const before = verifications.get(names.pod) ?? 0;
     return withStartLock(names.pod, async () => {
+      if (
+        (verifications.get(names.pod) ?? 0) !== before &&
+        (await runIsVerified(this.run, names))
+      )
+        return false;
       if (!(await workloadRunning(this.run, names)))
         await this.assertDiskForStart(names);
       return startFirewalledPod(this.run, names, egress, (netns) =>

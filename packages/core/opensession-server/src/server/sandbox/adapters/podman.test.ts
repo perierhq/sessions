@@ -564,6 +564,8 @@ describe("podman firewall invariants", () => {
     const seen = verbs(fake.calls);
     expect(seen.filter((v) => v === `start ${names.workload}`)).toHaveLength(1);
     expect(seen.filter((v) => v === "nft install")).toHaveLength(1);
+    // The callers queued behind that start reuse its verification.
+    expect(seen.filter((v) => v === "exec selftest")).toHaveLength(1);
     expect(fake.state.workloadStarts).toBe(2);
     expectNeverUnfiltered(fake);
   });
