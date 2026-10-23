@@ -636,7 +636,8 @@ describe("podman provider destroy", () => {
     const rm = fake.calls.filter(({ argv }) => argv.includes("rm"));
     expect(rm.map(({ argv }) => argv)).toEqual([
       ["pod", "rm", "-f", "-t", "5", names.pod],
-      ["volume", "rm", "-f", names.volume],
+      // No -f: a container of someone else's using the volume is not removed.
+      ["volume", "rm", names.volume],
     ]);
     expect(await provider.get(sandbox.id)).toBeNull();
   });
@@ -648,6 +649,29 @@ describe("podman provider destroy", () => {
     await expect(
       provider.destroy(sandbox.id, { strict: true }),
     ).rejects.toThrow(/still exists/);
+  });
+
+  test("an inspect error keeps the pod, the volume and the record", async () => {
+    const fake = fakePodman();
+    let broken = false;
+    const run = async (
+      argv: string[],
+      opts?: Parameters<typeof fake.run>[1],
+    ) =>
+      broken && argv[1] === "inspect"
+        ? { exitCode: 125, stdout: "", stderr: "Error: database is locked" }
+        : fake.run(argv, opts);
+    const provider = new PodmanProvider(deps(fake, { run }));
+    const sandbox = await provider.ensure({ sessionId: sessionId() });
+    broken = true;
+    await expect(provider.destroy(sandbox.id)).rejects.toThrow(
+      /database is locked/,
+    );
+    expect(fake.calls.some(({ argv }) => argv.includes("rm"))).toBe(false);
+    expect(readRemoteState("podman", sandbox.id)).not.toBeNull();
+    broken = false;
+    await provider.destroy(sandbox.id, { strict: true });
+    expect(readRemoteState("podman", sandbox.id)).toBeNull();
   });
 
   test("refuses a name outside the provider's prefix", async () => {

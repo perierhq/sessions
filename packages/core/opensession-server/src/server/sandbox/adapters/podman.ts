@@ -1089,7 +1089,9 @@ export class PodmanProvider implements SandboxProvider {
     if (await this.owned("volume", names.volume))
       await must(
         this.run,
-        ["volume", "rm", "-f", names.volume],
+        // No -f: the pod (and its containers) is already gone, so any
+        // container still using the volume is not ours to remove.
+        ["volume", "rm", names.volume],
         `remove ${names.volume}`,
       );
     if (options.strict) {
@@ -1109,7 +1111,9 @@ export class PodmanProvider implements SandboxProvider {
     removeRemoteState(this.id, sandboxId);
   }
 
-  /** Whether a pod or volume exists and carries the sandbox label. */
+  /** Whether a pod or volume exists and carries the sandbox label. False
+   *  when it does not exist or is not ours; any other inspect failure throws,
+   *  so destroy keeps the record rather than leak an unrecorded pod. */
   private async owned(kind: "pod" | "volume", name: string): Promise<boolean> {
     const result = await this.run([
       kind,
@@ -1118,7 +1122,10 @@ export class PodmanProvider implements SandboxProvider {
       '{{index .Labels "opensession.sandbox"}}',
       name,
     ]);
-    if (result.exitCode !== 0) return false;
+    if (result.exitCode !== 0) {
+      if (new RegExp(`no such ${kind}`, "i").test(result.stderr)) return false;
+      throw failure(`inspect ${name}`, result);
+    }
     if (result.stdout.trim() === "1") return true;
     console.warn(`${LOG} ${kind} ${name} has no sandbox label; left alone`);
     return false;
