@@ -25,6 +25,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { userInfo } from "node:os";
+import { basename, posix } from "node:path";
 import { sessionsDir } from "../../paths";
 import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
@@ -391,6 +392,32 @@ export interface PodmanProviderDeps {
   ) => Promise<void>;
 }
 
+/**
+ * The workspace path inside the sandbox for a host worktree path. Only the
+ * home volume persists (the rootfs is read-only and /tmp is tmpfs), so the
+ * workspace always lives under it, whatever the host's layout.
+ */
+export function podmanWorkspaceCwd(hostWorktreePath: string): string {
+  return `${PODMAN_WORKLOAD_HOME}/worktrees/${basename(hostWorktreePath)}`;
+}
+
+/** `cwd` normalized, or null unless it is an absolute path strictly under the
+ *  sandbox home (the persistent volume). */
+export function podmanSandboxCwd(cwd: string): string | null {
+  if (!cwd.startsWith("/") || cwd.includes("\0")) return null;
+  const normalized = posix.normalize(cwd).replace(/\/+$/, "");
+  return normalized.startsWith(`${PODMAN_WORKLOAD_HOME}/`) ? normalized : null;
+}
+
+function requireSandboxCwd(cwd: string, what: string): string {
+  const normalized = podmanSandboxCwd(cwd);
+  if (!normalized)
+    throw new Error(
+      `${what} ${JSON.stringify(cwd.slice(0, 200))} is not under ${PODMAN_WORKLOAD_HOME}/: only the sandbox home persists in ${PODMAN_PROVIDER_LABEL}`,
+    );
+  return normalized;
+}
+
 async function defaultWorkspacePlan(
   spec: SandboxSessionSpec,
   previous: RemoteSandboxState | null,
@@ -401,10 +428,13 @@ async function defaultWorkspacePlan(
     repoId: repo.id,
     branch,
     defaultBranch: repo.defaultBranch,
-    cwd:
-      spec.cwd ||
-      previous?.cwd ||
-      worktreePathFor(branch, repo.id, { isolated: true }),
+    cwd: spec.cwd
+      ? requireSandboxCwd(spec.cwd, "the requested working directory")
+      : previous?.cwd
+        ? requireSandboxCwd(previous.cwd, "the session's working directory")
+        : podmanWorkspaceCwd(
+            worktreePathFor(branch, repo.id, { isolated: true }),
+          ),
   };
 }
 
@@ -534,7 +564,15 @@ export class PodmanProvider implements SandboxProvider {
       throw new Error(
         `automation runs are not supported on ${PODMAN_PROVIDER_LABEL}`,
       );
-    const plan = await this.d.workspacePlan(spec, prevState);
+    const planned = await this.d.workspacePlan(spec, prevState);
+    const plan: PodmanWorkspacePlan = {
+      ...planned,
+      // The qualification sandbox works in the home itself.
+      cwd:
+        planned.cwd === PODMAN_WORKLOAD_HOME
+          ? planned.cwd
+          : requireSandboxCwd(planned.cwd, "the working directory"),
+    };
     const names = podmanNames(spec.sessionId);
     const callbackBaseUrl = this.d.callbackBaseUrl();
     // Resolved now and validated before anything is created: a callback on
@@ -1094,7 +1132,7 @@ export async function podmanTerminalTarget(
     const woken = await provider.resume(sandboxId);
     if (!woken) throw new Error("The sandbox could not be woken");
   }
-  const cwd = state.cwd.startsWith("/") ? state.cwd : PODMAN_WORKLOAD_HOME;
+  const cwd = podmanSandboxCwd(state.cwd) ?? PODMAN_WORKLOAD_HOME;
   return {
     cwd,
     argv: [

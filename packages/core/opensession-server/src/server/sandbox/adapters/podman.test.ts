@@ -8,7 +8,13 @@ import {
   fakePodman,
   IMAGE,
 } from "./podman-test-fixture";
-import { PodmanProvider, podmanDriver, podmanSettings } from "./podman";
+import {
+  PodmanProvider,
+  podmanDriver,
+  podmanSandboxCwd,
+  podmanSettings,
+  podmanWorkspaceCwd,
+} from "./podman";
 
 let seq = 0;
 function sessionId(): string {
@@ -189,6 +195,57 @@ describe("podman provider ensure", () => {
     expect(seen).toContain("nft list");
     expect(seen).toContain("exec selftest");
     expect(again.wokeFromSleep).toBe(false);
+  });
+});
+
+describe("podman workspace path", () => {
+  test("the workspace lives on the volume, whatever the host layout", () => {
+    expect(podmanWorkspaceCwd("/tmp/opensession/worktrees/acme-main")).toBe(
+      "/home/ubuntu/worktrees/acme-main",
+    );
+    expect(podmanWorkspaceCwd("/Users/x/.opensession/wt/acme-feat")).toBe(
+      "/home/ubuntu/worktrees/acme-feat",
+    );
+  });
+
+  test("only paths under the sandbox home are accepted", () => {
+    expect(podmanSandboxCwd("/home/ubuntu/worktrees/acme")).toBe(
+      "/home/ubuntu/worktrees/acme",
+    );
+    expect(podmanSandboxCwd("/home/ubuntu/w/./x/../y/")).toBe(
+      "/home/ubuntu/w/y",
+    );
+    for (const bad of [
+      "/home/ubuntu",
+      "/home/ubuntu/..",
+      "/home/ubuntu/../root/x",
+      "/home/ubuntuX/w",
+      "/tmp/worktrees/acme",
+      "worktrees/acme",
+      "/home/ubuntu/a\0b",
+      "",
+    ])
+      expect({ bad, cwd: podmanSandboxCwd(bad) }).toEqual({ bad, cwd: null });
+  });
+
+  test("a cwd outside the sandbox home is refused before anything is created", async () => {
+    for (const cwd of ["/tmp/worktrees/acme-main", "/home/ubuntu/../etc"]) {
+      const fake = fakePodman();
+      const provider = new PodmanProvider(
+        deps(fake, {
+          workspacePlan: async () => ({
+            repoId: "acme",
+            branch: "main",
+            defaultBranch: "main",
+            cwd,
+          }),
+        }),
+      );
+      await expect(provider.ensure({ sessionId: sessionId() })).rejects.toThrow(
+        /under \/home\/ubuntu/,
+      );
+      expect(verbs(fake.calls)).not.toContain("pod create");
+    }
   });
 });
 
