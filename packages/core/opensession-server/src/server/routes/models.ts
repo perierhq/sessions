@@ -29,6 +29,11 @@ import {
 } from "../model-catalog";
 import { type Sandbox } from "../sandbox";
 import { suggestBranchName } from "../suggest-branch";
+import {
+  parseWebSearchSetting,
+  readWebSearchSetting,
+  writeWebSearchSetting,
+} from "../web-search-setting";
 import { MAX_AUDIO_BYTES, transcribeAudio } from "../transcribe";
 import {
   supportsOpenaiFastMode,
@@ -138,6 +143,23 @@ export async function handleModelsRoutes(
     return Response.json({
       autoFallback: setModelFallbackAuto(body.auto),
     });
+  }
+
+  // Settings › Models › Web search: which provider the web_search tool
+  // uses. { provider: "auto" | "anthropic" | "openai" | "off" }.
+  if (path === "/api/models/web-search") {
+    if (req.method === "GET")
+      return Response.json({ provider: await readWebSearchSetting() });
+    if (req.method === "PUT") {
+      const body = await req.json().catch(() => null);
+      const provider = parseWebSearchSetting(body?.provider);
+      if (!provider)
+        return Response.json(
+          { error: "provider must be auto, anthropic, openai or off" },
+          { status: 400 },
+        );
+      return Response.json({ provider: await writeWebSearchSetting(provider) });
+    }
   }
 
   // Suggest a branch name from a task prompt (one no-tools Haiku call).
