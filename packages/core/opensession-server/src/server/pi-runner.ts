@@ -545,6 +545,7 @@ async function* runPiAttempt(
       setting: webSearchSetting,
       sessionProvider: parsed.providerID,
       connected: webConnected,
+      unattended: policy.unattended,
       ...(webFetchHosts ? { fetchHosts: webFetchHosts } : {}),
       modelFor: (provider) =>
         webSearchModelId(provider, configuredHaikuFallbackModel()),

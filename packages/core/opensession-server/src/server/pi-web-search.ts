@@ -23,6 +23,8 @@
  * - web_fetch sends only the URL as the user message, fetches it once, and
  *   lets no tool result add a fetchable URL. An unattended run gets it only
  *   with an egress allowlist, which holds the URL and the provider's tool.
+ *   OpenAI's search tool opens pages too, so an unattended run's OpenAI
+ *   web_search is filtered to that allowlist and is not offered without one.
  * - A call is bounded by WEB_TOOL_TIMEOUT_MS. A usage limit benches the
  *   account as a turn does; the tokens count toward the turn's usage.
  *   Findings come back marked as untrusted web content.
@@ -669,6 +671,18 @@ export function resolveSearchProviders(
   return { providers: own && connected(own) ? [own] : [], strict: false };
 }
 
+/** The search providers a run may use. OpenAI's search tool opens pages
+ *  itself, so on an unattended run it runs only filtered to the run's
+ *  egress allowlist, and is left out when the run has none. Anthropic's
+ *  search stays: its results reach the page authors only as queries. */
+export function webSearchProvidersFor(
+  providers: readonly SearchProviderId[],
+  run: { unattended?: boolean; fetchHosts?: readonly string[] },
+): SearchProviderId[] {
+  if (!run.unattended || run.fetchHosts?.length) return [...providers];
+  return providers.filter((provider) => provider !== "openai");
+}
+
 /** Try the providers in order; throw a tool error when none produced an
  *  answer. */
 export async function runWebTool(
@@ -765,14 +779,19 @@ export interface WebToolGate {
 /** Whether a run gets a web tool: not when Settings turns web tools off,
  *  the run's policy denies it (the incident verifier), or no connected
  *  provider can serve it. An unattended run gets web_fetch only with an
- *  egress allowlist to hold it to; its searches cannot be read back by a
- *  page author, so web_search stays. */
+ *  egress allowlist to hold it to. Its web_search stays on Anthropic, whose
+ *  searches a page author cannot read back, and on OpenAI only with the
+ *  allowlist (webSearchProvidersFor). */
 export function webToolEnabled(
   tool: typeof WEB_SEARCH_TOOL | typeof WEB_FETCH_TOOL,
   gate: WebToolGate,
 ): boolean {
   if (gate.setting === "off" || tool in gate.disables) return false;
-  if (!gate.providers.length) return false;
+  const providers =
+    tool === WEB_SEARCH_TOOL
+      ? webSearchProvidersFor(gate.providers, gate)
+      : gate.providers;
+  if (!providers.length) return false;
   if (tool === WEB_FETCH_TOOL && gate.unattended && !gate.fetchHosts?.length)
     return false;
   return true;
@@ -973,9 +992,11 @@ export interface PiWebToolInput {
   /** WEB_TOOL_TIMEOUT_MS unless a test shortens it. */
   timeoutMs?: number;
   /** An unattended run's egress allowlist: web_fetch reads only these
-   *  hosts, and the provider's tool gets the same list. Unset on an
-   *  interactive run, which reads any public page. */
+   *  hosts, and the provider's tool gets the same list (OpenAI's search
+   *  tool too). Unset on an interactive run, which reads any public page. */
   fetchHosts?: readonly string[];
+  /** An unattended run: OpenAI search needs the allowlist. */
+  unattended?: boolean;
 }
 
 /**
@@ -997,11 +1018,16 @@ function runPiWebTool(
   extraAudit: Record<string, unknown>,
 ): Promise<string> {
   const now = input.now ?? Date.now;
-  const { providers, strict } = resolveSearchProviders(
+  const resolved = resolveSearchProviders(
     input.sessionProvider,
     input.setting,
     input.connected,
   );
+  const { strict } = resolved;
+  const providers =
+    kind === "search"
+      ? webSearchProvidersFor(resolved.providers, input)
+      : resolved.providers;
   // The turn's signal, bounded: pi retries a throttled request with
   // backoff, and one call must not hold the turn for minutes.
   const callSignal = AbortSignal.any([
@@ -1093,10 +1119,15 @@ function runPiWebTool(
   );
 }
 
-/** The `search` a run's web_search calls. */
+/** The `search` a run's web_search calls. On an unattended run with an
+ *  egress allowlist, OpenAI's search tool is filtered to it. */
 export function makePiWebSearch(
   input: PiWebToolInput,
 ): (query: string, signal: AbortSignal) => Promise<string> {
+  const allowedDomains =
+    input.unattended && input.fetchHosts?.length
+      ? allowedDomainsFor(input.fetchHosts)
+      : undefined;
   return (query, signal) =>
     runPiWebTool(
       "search",
@@ -1111,6 +1142,9 @@ export function makePiWebSearch(
           onUsage,
           ...(binding.onRateLimit ? { onRateLimit: binding.onRateLimit } : {}),
           ...(basePayload ? { basePayload } : {}),
+          ...(allowedDomains && binding.model.api !== "anthropic-messages"
+            ? { allowedDomains }
+            : {}),
         }),
       { query_bytes: Buffer.byteLength(query, "utf8") },
     );

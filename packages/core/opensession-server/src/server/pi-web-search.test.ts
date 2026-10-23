@@ -1055,6 +1055,129 @@ describe("web_fetch", () => {
   });
 });
 
+describe("web_search on unattended runs", () => {
+  const luna = {
+    id: "gpt-6-luna",
+    api: "openai-codex-responses",
+    provider: "openai-codex",
+  };
+
+  test("OpenAI search is offered only with an egress allowlist; Anthropic stays", () => {
+    const openai = {
+      setting: "auto" as const,
+      disables: {},
+      providers: ["openai" as const],
+    };
+    expect(webToolEnabled("web_search", { ...openai, unattended: true })).toBe(
+      false,
+    );
+    expect(
+      webToolEnabled("web_search", {
+        ...openai,
+        unattended: true,
+        fetchHosts: [],
+      }),
+    ).toBe(false);
+    expect(
+      webToolEnabled("web_search", {
+        ...openai,
+        unattended: true,
+        fetchHosts: ["docs.example.test"],
+      }),
+    ).toBe(true);
+    expect(webToolEnabled("web_search", openai)).toBe(true);
+    expect(
+      webToolEnabled("web_search", {
+        ...openai,
+        providers: ["anthropic"],
+        unattended: true,
+      }),
+    ).toBe(true);
+  });
+
+  function search(
+    provider: "openai" | "anthropic",
+    extra: { unattended?: boolean; fetchHosts?: string[] },
+    bound: string[],
+  ) {
+    const scripted = scriptedRuntime(
+      provider === "openai"
+        ? [{ text: "See [A](https://docs.example.test/a)." }]
+        : [
+            {
+              events: response(
+                [{ type: "text", text: "See [A](https://docs.example.test/a)." }],
+                "end_turn",
+                1,
+              ),
+            },
+          ],
+    );
+    const run = makePiWebSearch({
+      setting: provider,
+      sessionProvider: provider,
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async (p) => {
+        bound.push(p);
+        return {
+          runtime: scripted.runtime,
+          model: p === "openai" ? luna : haiku,
+          usesNativeAnthropic: false,
+        };
+      },
+      onAudit: () => {},
+      now: () => 0,
+      ...extra,
+    });
+    return { run, payloads: scripted.payloads };
+  }
+
+  const toolOf = (payload: Record<string, unknown>) =>
+    (payload.tools as Array<Record<string, unknown>>)[0]!;
+
+  test("an unattended OpenAI search is filtered to the allowlist", async () => {
+    const { run, payloads } = search(
+      "openai",
+      { unattended: true, fetchHosts: ["docs.example.test", "*.acme.test"] },
+      [],
+    );
+    await run("acme", signal);
+    expect(toolOf(payloads[0]!)).toEqual({
+      type: "web_search",
+      filters: { allowed_domains: ["docs.example.test", "acme.test"] },
+    });
+  });
+
+  test("an unattended OpenAI search without an allowlist binds nothing", async () => {
+    const bound: string[] = [];
+    const { run, payloads } = search("openai", { unattended: true }, bound);
+    await expect(run("acme", signal)).rejects.toThrow(
+      "No connected provider can search the web",
+    );
+    expect(bound).toEqual([]);
+    expect(payloads).toEqual([]);
+  });
+
+  test("an unattended Anthropic search keeps no domain filter", async () => {
+    const { run, payloads } = search(
+      "anthropic",
+      { unattended: true, fetchHosts: ["docs.example.test"] },
+      [],
+    );
+    await run("acme", signal);
+    expect(toolOf(payloads[0]!).allowed_domains).toBeUndefined();
+    const bare = search("anthropic", { unattended: true }, []);
+    await bare.run("acme", signal);
+    expect(toolOf(bare.payloads[0]!).type).toBe("web_search_20260318");
+  });
+
+  test("an interactive OpenAI search has no filter", async () => {
+    const { run, payloads } = search("openai", {}, []);
+    await run("acme", signal);
+    expect(toolOf(payloads[0]!)).toEqual({ type: "web_search" });
+  });
+});
+
 describe("web_fetch on unattended runs", () => {
   const gate = {
     setting: "auto" as const,
