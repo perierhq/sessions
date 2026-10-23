@@ -630,6 +630,67 @@ describe("makePiWebSearch", () => {
     expect(bound).toEqual(["openai"]);
   });
 
+  test("a call aborted before it starts binds nothing and audits nothing", async () => {
+    const audits: unknown[] = [];
+    const bound: string[] = [];
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "anthropic",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async (provider) => {
+        bound.push(provider);
+        throw new Error("unreachable");
+      },
+      onAudit: (event) => audits.push(event),
+    });
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(search("acme", aborted.signal)).rejects.toThrow(
+      "The web search was cancelled.",
+    );
+    expect(bound).toEqual([]);
+    expect(audits).toEqual([]);
+  });
+
+  test("a call that runs past the timeout is aborted and says so", async () => {
+    const audits: Record<string, unknown>[] = [];
+    const seen: AbortSignal[] = [];
+    const hanging: SearchRuntime = {
+      completeSimple: (_model, _context, options) =>
+        new Promise((resolve) => {
+          seen.push(options!.signal!);
+          options!.signal!.addEventListener("abort", () =>
+            resolve({
+              content: [],
+              stopReason: "aborted",
+              errorMessage: "Request was aborted",
+            }),
+          );
+        }),
+    };
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "anthropic",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async () => ({
+        runtime: hanging,
+        model: haiku,
+        usesNativeAnthropic: false,
+      }),
+      onAudit: (event) => audits.push(event),
+      timeoutMs: 20,
+    });
+    const turn = new AbortController();
+    await expect(search("acme", turn.signal)).rejects.toThrow(
+      "timed out after 90 s",
+    );
+    // The request got a signal of its own, not the bare turn signal.
+    expect(seen[0]).not.toBe(turn.signal);
+    expect(turn.signal.aborted).toBe(false);
+    expect(audits).toHaveLength(1);
+    expect(String(audits[0]!.error)).toContain("timed out");
+  });
+
   test("a strict choice binds only that provider", async () => {
     const bound: string[] = [];
     const search = makePiWebSearch({

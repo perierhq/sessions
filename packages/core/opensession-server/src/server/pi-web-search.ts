@@ -38,6 +38,8 @@ export const MAX_SEARCH_USES = 5;
 export const MAX_FINDINGS_CHARS = 8_000;
 /** Follow-up requests after `stop_reason: "pause_turn"`. */
 export const MAX_PAUSE_CONTINUATIONS = 3;
+/** A whole web tool call, every provider and retry included, ends by then. */
+export const WEB_TOOL_TIMEOUT_MS = 90_000;
 /** Output budget for one side request. */
 const SEARCH_MAX_TOKENS = 8_192;
 
@@ -577,6 +579,7 @@ export async function runWebTool(
   providers: readonly SearchProviderId[],
   strict: boolean,
   attempt: (provider: SearchProviderId) => Promise<SearchAttemptResult>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const verb = kind;
   if (!providers.length)
@@ -587,6 +590,9 @@ export async function runWebTool(
     );
   const errors: string[] = [];
   for (const provider of providers) {
+    // A cancelled or timed-out call starts nothing more: no binding, no
+    // request, no audit row.
+    if (signal?.aborted) throw new Error(abortedMessage(kind, signal));
     const label = SEARCH_PROVIDER_LABELS[provider];
     let result: SearchAttemptResult;
     try {
@@ -622,7 +628,17 @@ export const runWebSearch = (
   providers: readonly SearchProviderId[],
   strict: boolean,
   attempt: (provider: SearchProviderId) => Promise<SearchAttemptResult>,
-) => runWebTool("search", providers, strict, attempt);
+  signal?: AbortSignal,
+) => runWebTool("search", providers, strict, attempt, signal);
+
+/** Why an aborted call stopped: the turn was cancelled, or the call ran
+ *  past WEB_TOOL_TIMEOUT_MS. */
+export function abortedMessage(kind: WebToolKind, signal: AbortSignal): string {
+  const reason = signal.reason as { name?: unknown } | undefined;
+  return reason?.name === "TimeoutError"
+    ? `The web ${kind} timed out after ${WEB_TOOL_TIMEOUT_MS / 1000} s. Try again, or narrow it.`
+    : `The web ${kind} was cancelled.`;
+}
 
 /** What decides whether a run gets a web tool. */
 export interface WebToolGate {
@@ -780,6 +796,8 @@ export interface PiWebToolInput {
   rewritePayload?: (payload: unknown) => unknown;
   onAudit: (event: Record<string, unknown>) => void;
   now?: () => number;
+  /** WEB_TOOL_TIMEOUT_MS unless a test shortens it. */
+  timeoutMs?: number;
 }
 
 /**
@@ -791,9 +809,11 @@ export interface PiWebToolInput {
 function runPiWebTool(
   kind: WebToolKind,
   input: PiWebToolInput,
+  signal: AbortSignal,
   request: (
     binding: WebSearchBinding,
     basePayload: ((payload: unknown) => unknown) | undefined,
+    signal: AbortSignal,
   ) => Promise<SearchAttemptResult>,
   extraAudit: Record<string, unknown>,
 ): Promise<string> {
@@ -803,39 +823,54 @@ function runPiWebTool(
     input.setting,
     input.connected,
   );
-  return runWebTool(kind, providers, strict, async (provider) => {
-    const started = now();
-    const modelId = input.modelFor(provider);
-    let account: string | undefined;
-    let result: SearchAttemptResult;
-    try {
-      const binding = await input.bind(provider, modelId);
-      account = binding.account;
-      result = await request(
-        binding,
-        binding.usesNativeAnthropic ? input.rewritePayload : undefined,
-      );
-    } catch (error) {
-      result = {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-        uses: 0,
-      };
-    }
-    input.onAudit({
-      msg: KINDS[kind].name,
-      provider,
-      model: modelId,
-      ...(account ? { account } : {}),
-      [KINDS[kind].auditCount]: result.uses,
-      ...(result.ok ? { continuations: result.continuations } : {}),
-      ok: result.ok && !!result.text.trim(),
-      ms: now() - started,
-      ...extraAudit,
-      ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
-    });
-    return result;
-  });
+  // The turn's signal, bounded: pi retries a throttled request with
+  // backoff, and one call must not hold the turn for minutes.
+  const callSignal = AbortSignal.any([
+    signal,
+    AbortSignal.timeout(input.timeoutMs ?? WEB_TOOL_TIMEOUT_MS),
+  ]);
+  return runWebTool(
+    kind,
+    providers,
+    strict,
+    async (provider) => {
+      const started = now();
+      const modelId = input.modelFor(provider);
+      let account: string | undefined;
+      let result: SearchAttemptResult;
+      try {
+        const binding = await input.bind(provider, modelId);
+        account = binding.account;
+        result = await request(
+          binding,
+          binding.usesNativeAnthropic ? input.rewritePayload : undefined,
+          callSignal,
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          uses: 0,
+        };
+      }
+      if (!result.ok && callSignal.aborted)
+        result = { ...result, error: abortedMessage(kind, callSignal) };
+      input.onAudit({
+        msg: KINDS[kind].name,
+        provider,
+        model: modelId,
+        ...(account ? { account } : {}),
+        [KINDS[kind].auditCount]: result.uses,
+        ...(result.ok ? { continuations: result.continuations } : {}),
+        ok: result.ok && !!result.text.trim(),
+        ms: now() - started,
+        ...extraAudit,
+        ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
+      });
+      return result;
+    },
+    callSignal,
+  );
 }
 
 /** The `search` a run's web_search calls. */
@@ -846,12 +881,13 @@ export function makePiWebSearch(
     runPiWebTool(
       "search",
       input,
-      (binding, basePayload) =>
+      signal,
+      (binding, basePayload, callSignal) =>
         searchWithModel({
           runtime: binding.runtime,
           model: binding.model,
           query,
-          signal,
+          signal: callSignal,
           ...(basePayload ? { basePayload } : {}),
         }),
       { query_bytes: Buffer.byteLength(query, "utf8") },
@@ -869,13 +905,14 @@ export function makePiWebFetch(
     runPiWebTool(
       "fetch",
       input,
-      (binding, basePayload) =>
+      signal,
+      (binding, basePayload, callSignal) =>
         fetchWithModel({
           runtime: binding.runtime,
           model: binding.model,
           url: checkFetchUrl(page.url).href,
           ...(page.prompt ? { prompt: page.prompt } : {}),
-          signal,
+          signal: callSignal,
           ...(basePayload ? { basePayload } : {}),
         }),
       {},
