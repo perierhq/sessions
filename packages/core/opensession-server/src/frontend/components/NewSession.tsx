@@ -64,6 +64,7 @@ import { effectiveSendKey, MOD_ENTER_GLYPH } from "../lib/send-key";
 import { unhideRepo } from "../lib/hides";
 import { NO_REPO } from "../lib/session-repo";
 import {
+  readySandboxProviders,
   sandboxProviderLabel,
   sandboxProviderNote,
 } from "../lib/ready-sandbox-providers";
@@ -564,13 +565,7 @@ export function NewSession({
   const repoSandboxDefault = sandboxStatus?.defaults?.repos?.[repo];
   useEffect(() => {
     if (sandboxSelectionTouched.current || !sandboxStatus) return;
-    const ready: string[] = sandboxStatus.connections?.length
-      ? sandboxStatus.connections
-          .filter((connection) => connection.state === "ready")
-          .map((connection) => connection.provider)
-      : (sandboxStatus.providers || [])
-          .filter((p) => p.configured && p.certified)
-          .map((p) => p.id);
+    const ready = readySandboxProviders(sandboxStatus);
     setSandboxProvider(
       repoSandboxDefault &&
         repoSandboxDefault !== "none" &&
@@ -579,16 +574,10 @@ export function NewSession({
         : "",
     );
   }, [repo, repoSandboxDefault, sandboxStatus]);
-  const readySandboxProviders: string[] = sandboxStatus?.connections?.length
-    ? sandboxStatus.connections
-        .filter((connection) => connection.state === "ready")
-        .map((connection) => connection.provider)
-    : (sandboxStatus?.providers || [])
-        .filter((p) => p.configured && p.certified)
-        .map((p) => p.id);
-  const sandboxAvailable = readySandboxProviders.length > 0;
+  const readyProviders = readySandboxProviders(sandboxStatus);
+  const sandboxAvailable = readyProviders.length > 0;
   const selectedSandboxAvailable =
-    !sandboxProvider || readySandboxProviders.includes(sandboxProvider);
+    !sandboxProvider || readyProviders.includes(sandboxProvider);
   const showSandboxPicker =
     !!sandboxStatus && (sandboxAvailable || !!sandboxProvider);
   const sandboxLabel = (id: string) =>
@@ -599,7 +588,7 @@ export function NewSession({
   // is no longer ready (a project default), so the choice stays visible.
   const sandboxChoices = [
     "",
-    ...readySandboxProviders,
+    ...readyProviders,
     ...(sandboxProvider && !selectedSandboxAvailable ? [sandboxProvider] : []),
   ];
   // The repo's first declared Portal, offered to start with the session.
@@ -1830,7 +1819,7 @@ export function NewSession({
                       <Menu.Popup className="max-w-[min(340px,calc(100vw-1rem))]">
                         {sandboxChoices.map((id) => {
                           const available =
-                            id === "" || readySandboxProviders.includes(id);
+                            id === "" || readyProviders.includes(id);
                           const opt = {
                             id,
                             note: available
