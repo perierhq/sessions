@@ -13,6 +13,7 @@ import {
   sandboxAdapterSignatureCurrent,
   sandboxProviderNeedsCredential,
 } from "./adapter-signature";
+import { podmanDiskWarnings } from "./adapters/podman-disk";
 import { stateDir } from "../paths";
 import { writeJsonAtomic } from "../shared/atomic-write";
 import {
@@ -132,6 +133,8 @@ export interface SandboxConnection {
 export interface SafePodmanConnection extends PodmanConnectionFacts {
   memoryMb: number;
   pidsLimit: number;
+  /** The last disk check's findings (low space, large home volumes). */
+  diskWarnings?: string[];
 }
 
 export interface SafeSandboxConnection extends Omit<
@@ -405,6 +408,7 @@ export function safeSandboxConnections(
       podman: podmanFacts,
       ...safe
     } = connection;
+    const diskWarnings = provider === "podman" ? podmanDiskWarnings() : [];
     return {
       ...safe,
       ...(podmanFacts
@@ -415,6 +419,7 @@ export function safeSandboxConnections(
                 connection.settings.memoryMb || PODMAN_DEFAULT_MEMORY_MB,
               pidsLimit:
                 connection.settings.pidsLimit || PODMAN_DEFAULT_PIDS_LIMIT,
+              ...(diskWarnings.length ? { diskWarnings } : {}),
             },
           }
         : {}),

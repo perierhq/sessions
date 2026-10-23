@@ -575,6 +575,18 @@ probes it on port 22 and the app port and requires the firewall to refuse the
 connect (a closed port is not enough). An entry that is also a configured DNS
 resolver is an error. IPv6 entries are ignored: IPv6 is refused entirely.
 
+**Disk limits.** Rootless Podman volumes have no size limit, so the provider
+enforces its own. A sandbox does not start while the filesystem holding
+Podman's storage (its graphroot, where rootless volumes live) has less than
+5 GiB free. Every five minutes, and a minute after the server starts, the
+sweep measures each session's home volume with `podman system df`. From
+10 GiB the session is listed on the This machine (container) card in
+Settings; over 20 GiB its pod is stopped and does not start again until a
+later check finds the volume under the limit. To recover the space, delete
+the session's sandbox, which deletes its workspace. Where the storage
+filesystem supports it (XFS with project quotas), a filesystem quota on
+Podman's storage directory is a stronger backstop.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this

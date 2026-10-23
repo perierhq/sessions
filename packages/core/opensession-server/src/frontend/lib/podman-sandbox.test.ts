@@ -38,6 +38,18 @@ describe("This machine (container) card", () => {
     expect(lines.join("\n")).not.toContain("Self-test");
   });
 
+  test("ends with the disk warnings", () => {
+    const lines = podmanSummaryLines({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      memoryMb: 4096,
+      pidsLimit: 4096,
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+      diskWarnings: ["Session a uses 11.0 GiB (stops at 20.0 GiB)"],
+    });
+    expect(lines.at(-1)).toBe("Session a uses 11.0 GiB (stops at 20.0 GiB)");
+  });
+
   test("settings search finds the sandboxes page by container words", () => {
     const sections = [
       { key: "sandboxes", label: "Sandboxes", group: "Workspace" },

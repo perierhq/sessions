@@ -25,7 +25,9 @@ export interface PodmanDiskReport {
 
 let lastReport: PodmanDiskReport | undefined;
 
-export function recordPodmanDiskReport(report: PodmanDiskReport): void {
+export function recordPodmanDiskReport(
+  report: PodmanDiskReport | undefined,
+): void {
   lastReport = report;
 }
 

@@ -16,6 +16,7 @@ import {
   updateSandboxConnection,
 } from "./connections";
 import { sandboxProviderNeedsCredential } from "./adapter-signature";
+import { GIB, recordPodmanDiskReport } from "./adapters/podman-disk";
 
 let scratch = "";
 let oldConfig: string | undefined;
@@ -292,5 +293,30 @@ describe("This machine (container) in Settings", () => {
       memoryMb: 4096,
       pidsLimit: 256,
     });
+  });
+
+  test("the card summary carries the last disk check's warnings", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const podman = () =>
+      safeSandboxConnections("linux").find((c) => c.provider === "podman")
+        ?.podman;
+    expect(podman()?.diskWarnings).toBeUndefined();
+    try {
+      recordPodmanDiskReport({
+        checkedAt: "2026-10-22T10:00:00.000Z",
+        freeBytes: 50 * GIB,
+        volumes: [{ sandboxId: "os-a", sessionId: "a", bytes: 11 * GIB }],
+      });
+      expect(podman()?.diskWarnings).toEqual([
+        "Session a uses 11.0 GiB (stops at 20.0 GiB)",
+      ]);
+    } finally {
+      recordPodmanDiskReport(undefined);
+    }
   });
 });
