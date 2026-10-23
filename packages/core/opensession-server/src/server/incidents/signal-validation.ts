@@ -26,6 +26,9 @@ export interface SignalValidationContext {
   signalExists(id: string): Promise<boolean>;
   /** The signal being updated; it cannot depend on itself. */
   selfId?: string;
+  /** `name` as an owner, or why it cannot be one (owner.ts). Without it,
+   *  any name is taken as given. */
+  resolveOwner?(name: string): string | { error: string };
 }
 
 export type SignalFields = Partial<
@@ -634,6 +637,15 @@ const SIGNAL_FIELDS: Record<string, FieldValidator> = {
   },
   maintenance: (v) => validateMaintenanceWindows(v),
   impact: (v) => validateImpactFields(v),
+  owner: (v, ctx) => {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== "string") return { error: "The owner must be a person" };
+    const name = v.trim();
+    if (!name) return undefined;
+    if (name.length > MAX_NAME_CHARS)
+      return { error: "The owner must be a person" };
+    return ctx.resolveOwner ? ctx.resolveOwner(name) : name;
+  },
   runOn: (v) => {
     if (v === undefined || v === null) return undefined;
     if (typeof v !== "string") return { error: "runOn must be a runner id" };

@@ -110,6 +110,18 @@ describe("decide", () => {
     ]);
   });
 
+  test("the signal's owner owns the incident, not whoever created it", () => {
+    const a = S("sig-a", { owner: "Bo", createdBy: "Automation" });
+    expect(
+      decide(
+        a,
+        "ok",
+        E("sig-a", "failing"),
+        snap([a], [E("sig-a", "failing")]),
+      )[0],
+    ).toMatchObject({ op: "open", incident: { owner: "Bo" } });
+  });
+
   test("slow opens an investigating incident with the signal's severity", () => {
     const a = S("sig-a", { severity: "critical" });
     expect(

@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { IncidentResponse } from "../../shared/incident-response";
 import type { Incident, IncidentState } from "../../shared/incidents";
@@ -18,6 +18,7 @@ mock.module("../push", () => ({
 const { getNotificationInbox, notifyUser } = await import("../notifications");
 const { createIncident, updateIncident } = await import("./incident-store");
 const { transitionIncident } = await import("./lifecycle");
+const { __setOwnerRosterForTest } = await import("./owner");
 const {
   __resetIncidentNotifierForTest,
   incidentNotificationsSettled,
@@ -48,13 +49,13 @@ beforeEach(() => {
   startIncidentNotifications(deps);
 });
 
-const open = () =>
+const open = (owner = "Ada") =>
   createIncident({
     project: "acme",
     title: "Search",
     state: "investigating",
     severity: "major",
-    owner: "Ada",
+    owner,
     openedBy: { kind: "rule", ref: "sig-a" },
     signalIds: ["sig-a"],
     primarySignalId: "sig-a",
@@ -245,4 +246,65 @@ test("idempotent start subscribes once", async () => {
   await open();
   await settle();
   expect(pushes).toHaveLength(1);
+});
+
+test("an incident nobody can be told about goes to the instance owner", async () => {
+  __setOwnerRosterForTest([{ name: "Bo Diddley" }, { name: "Ada Lovelace" }]);
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await open("Automation");
+    await open("");
+    await settle();
+    expect(pushes.map((p) => p.user)).toEqual(["Bo", "Bo"]);
+    expect((await getNotificationInbox("Bo")).threads).toHaveLength(2);
+    expect((await getNotificationInbox("Automation")).threads).toEqual([]);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining("no person to tell"),
+      expect.stringContaining("no person to tell"),
+    ]);
+  } finally {
+    warn.mockRestore();
+    __setOwnerRosterForTest(undefined);
+  }
+});
+
+test("a held alert for an incident nobody owns goes to the instance owner", async () => {
+  __setOwnerRosterForTest([{ name: "Bo Diddley" }]);
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    night = true;
+    await open("Automation");
+    await settle();
+    expect(pushes).toEqual([]);
+    // Still night: the alert stays held, sweep after sweep.
+    expect(await sweepHeldIncidents(deps)).toBe(0);
+    expect(await sweepHeldIncidents(deps)).toBe(0);
+    night = false;
+    expect(await sweepHeldIncidents(deps)).toBe(1);
+    expect(pushes.map((p) => p.user)).toEqual(["Bo"]);
+    // The fallback is logged once for the incident, not on every sweep.
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining("no person to tell"),
+    ]);
+  } finally {
+    warn.mockRestore();
+    __setOwnerRosterForTest(undefined);
+  }
+});
+
+test("with no instance owner either, nothing is written and it is logged", async () => {
+  __setOwnerRosterForTest([]);
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await open("Automation");
+    await settle();
+    expect(pushes).toEqual([]);
+    expect((await getNotificationInbox("Automation")).threads).toEqual([]);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining("no person to tell"),
+    ]);
+  } finally {
+    warn.mockRestore();
+    __setOwnerRosterForTest(undefined);
+  }
 });

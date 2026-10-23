@@ -51,7 +51,13 @@ import {
   stripBucketMs,
   stripIntervalMs,
 } from "../incidents/strip";
-import { type RouteContext, requestUser, verifiedPerson } from "./context";
+import type { SignalWriter } from "../incidents/signal-store";
+import {
+  type RouteContext,
+  isAutomationPrincipal,
+  requestUser,
+  verifiedPerson,
+} from "./context";
 
 const SIGNAL_PATH = /^\/api\/incident-signals\/([^/]+)$/;
 const SIGNAL_STRIP_PATH = /^\/api\/incident-signals\/([^/]+)\/strip$/;
@@ -121,6 +127,15 @@ async function readObject(
   if (!body || typeof body !== "object" || Array.isArray(body))
     return badRequest("Body must be a JSON object");
   return body as Record<string, unknown>;
+}
+
+/** Who is writing a signal: a signed-in person, or the automation
+ *  principal, which never owns one. */
+function signalWriter(ctx: RouteContext): SignalWriter {
+  return {
+    signedInPerson: !!verifiedPerson(ctx),
+    automation: isAutomationPrincipal(ctx),
+  };
 }
 
 /** A stand-in signal for running a draft source once. */
@@ -413,9 +428,11 @@ export async function handleIncidentsRoutes(
       if (body instanceof Response) return body;
       // Attributed to the verified sign-in only; a claimed body.user is
       // never taken.
-      const result = await createSignal(body, requestUser(ctx) || "Anonymous", {
-        signedInPerson: !!verifiedPerson(ctx),
-      });
+      const result = await createSignal(
+        body,
+        requestUser(ctx) || "Anonymous",
+        signalWriter(ctx),
+      );
       if ("error" in result) return badRequest(result.error);
       return Response.json(toSignalView(result));
     }
@@ -443,7 +460,7 @@ export async function handleIncidentsRoutes(
         id,
         body,
         requestUser(ctx) || "Anonymous",
-        { signedInPerson: !!verifiedPerson(ctx) },
+        signalWriter(ctx),
       );
       if (result === null) return notFound();
       if ("error" in result) return badRequest(result.error);

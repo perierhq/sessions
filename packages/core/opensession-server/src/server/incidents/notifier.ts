@@ -9,6 +9,10 @@
 // stays held and is tried again on the next sweep. Any failure is logged;
 // it never reaches the incident store.
 //
+// An incident owned by nobody who can be told (blank, or a machine
+// principal) goes to the instance owner instead, with a warning; with no
+// instance owner either, nothing is written to a nobody inbox.
+//
 // Nothing runs at import: `startIncidentNotifications` subscribes and starts
 // the sweep, once.
 import type { Incident } from "../../shared/incidents";
@@ -21,6 +25,7 @@ import {
   planHeldFlush,
   planIncidentNotification,
 } from "./notify-plan";
+import { instanceOwner, isPersonName } from "./owner";
 
 export const HELD_SWEEP_MS = 60_000;
 export const HELD_LOOKBACK_MS = 86_400_000;
@@ -76,6 +81,25 @@ function enqueue<T>(id: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Incidents whose missing owner was already logged: the held sweep reads
+ *  the same incident every minute, and one warning is enough. */
+const warnedFallback = new Set<string>();
+
+/** The incident as the inbox sees it: owned by a person who can be told,
+ *  else by the instance owner; null when there is nobody. */
+function tellable(incident: Incident): Incident | null {
+  if (isPersonName(incident.owner)) return incident;
+  const fallback = instanceOwner();
+  if (!warnedFallback.has(incident.id)) {
+    warnedFallback.add(incident.id);
+    console.warn(
+      `[incidents] ${incident.id} has no person to tell (owner ${JSON.stringify(incident.owner ?? "")}); ` +
+        (fallback ? "telling the instance owner" : "no instance owner either"),
+    );
+  }
+  return fallback ? { ...incident, owner: fallback } : null;
+}
+
 /** Plan and deliver the notification for one committed change. */
 export function handleIncidentChange(
   next: Incident,
@@ -84,9 +108,11 @@ export function handleIncidentChange(
 ): Promise<void> {
   return enqueue(next.id, async () => {
     try {
+      const incident = tellable(next);
+      if (!incident) return;
       const now = deps.now();
-      const facts = await deps.facts(next, now);
-      const planned = planIncidentNotification(next, previous, facts, now);
+      const facts = await deps.facts(incident, now);
+      const planned = planIncidentNotification(incident, previous, facts, now);
       if (!planned) return;
       if (planned.event.hold) held.add(next.id);
       await deps.notify(planned.user, planned.event);
@@ -110,7 +136,9 @@ export function sweepHeldIncidents(
     for (const id of [...held]) {
       const sent = await enqueue(id, async () => {
         try {
-          const incident = await getIncident(id);
+          const stored = await getIncident(id);
+          const incident = stored && tellable(stored);
+          if (!stored) warnedFallback.delete(id);
           if (!incident) {
             held.delete(id);
             return false;
@@ -191,5 +219,6 @@ export function __resetIncidentNotifierForTest(): void {
   globalThis.__incidentNotifier = undefined;
   queues.clear();
   held.clear();
+  warnedFallback.clear();
   sweeping = null;
 }

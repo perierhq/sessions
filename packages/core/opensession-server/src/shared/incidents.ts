@@ -194,6 +194,10 @@ export interface Signal {
    *  production Runner). Other kinds ignore it. */
   runOn?: string;
   hookSecret?: string;
+  /** The person its incidents belong to and who is told about them. Never
+   *  a machine principal; older signals without one fall back to a person
+   *  who created them, else the instance owner (incidents/owner.ts). */
+  owner?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

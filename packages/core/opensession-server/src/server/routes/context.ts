@@ -35,13 +35,15 @@ export function requestUser(ctx: RouteContext, claimed?: unknown): string {
   return typeof claimed === "string" ? claimed.trim() : "";
 }
 
+/** Whether the request is signed in as the built-in automation principal. */
+export function isAutomationPrincipal(ctx: RouteContext): boolean {
+  const identity = ctx.authUser as { automation?: boolean } | null | undefined;
+  return identity?.automation === true;
+}
+
 /** The signed-in person making this request, or "" when the identity is only
  *  claimed (no web auth) or belongs to an automation. */
 export function verifiedPerson(ctx: RouteContext): string {
-  const identity = ctx.authUser as
-    | { login?: string; automation?: boolean }
-    | null
-    | undefined;
-  if (!identity?.login || identity.automation === true) return "";
+  if (!ctx.authUser?.login || isAutomationPrincipal(ctx)) return "";
   return requestUser(ctx);
 }

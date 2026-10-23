@@ -9,6 +9,7 @@ import {
 import { configuredRepos } from "../config";
 import { incidentAudit } from "./audit-sink";
 import { forgetObservations } from "./observation-store";
+import { instanceOwner, personOwner, resolveOwner, signalOwner } from "./owner";
 import {
   type SignalValidationContext,
   generateHookSecret,
@@ -85,6 +86,17 @@ async function runOnProblem(signal: Signal): Promise<string | null> {
  *  signal that runs from a production Runner fetches. */
 export interface SignalWriter {
   signedInPerson?: boolean;
+  /** The built-in automation principal: it never owns a signal. */
+  automation?: boolean;
+}
+
+const OWNER_REQUIRED_ERROR = "Name a person to own this signal";
+
+/** Who owns a new signal nobody named an owner for: the person creating
+ *  it, else the instance owner; "" when there is nobody. The automation
+ *  principal never does, whatever it is called. */
+function defaultOwner(by: string, writer: SignalWriter): string {
+  return (!writer.automation && personOwner(by)) || instanceOwner();
 }
 
 const RUN_ON_PERSON_ERROR =
@@ -135,6 +147,7 @@ function validationContext(selfId?: string): SignalValidationContext {
   return {
     projectExists,
     signalExists: async (id) => (await getSignal(id)) !== null,
+    resolveOwner,
     ...(selfId === undefined ? {} : { selfId }),
   };
 }
@@ -219,6 +232,9 @@ export async function createSignal(
   if ("error" in merged) return merged;
   const normalized = normalizeSignal(merged.signal);
   if ("error" in normalized) return normalized;
+  normalized.owner ||= defaultOwner(by, writer) || undefined;
+  if (!normalized.owner && writer.automation)
+    return { error: OWNER_REQUIRED_ERROR };
   if (changesRunnerCheck(undefined, normalized) && !writer.signedInPerson)
     return { error: RUN_ON_PERSON_ERROR };
   const refused = await runOnProblem(normalized);
@@ -277,9 +293,11 @@ export async function updateSignal(
   let failure: { error: string } | undefined;
   let impactChanged = false;
   let impactFromSource: string[] | undefined;
+  let ownerChange: { from: string | null; to: string | null } | undefined;
   const updated = await signalDocuments().update<Signal>(id, (value) => {
     failure = undefined;
     impactFromSource = undefined;
+    ownerChange = undefined;
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
@@ -315,7 +333,12 @@ export async function updateSignal(
       return value;
     }
     if (!("error" in merged)) impactFromSource = merged.impactFromSource;
+    // An edit that names no owner keeps the signal's, and gives one
+    // stored without an owner the person it already fell back to.
+    normalized.owner ||= signalOwner(value) || undefined;
     const next = compact(normalized);
+    if ((value.owner ?? null) !== (next.owner ?? null))
+      ownerChange = { from: value.owner ?? null, to: next.owner ?? null };
     impactChanged =
       JSON.stringify(next.impact) !== JSON.stringify(value.impact);
     // A hook secret is never rotated, not even by switching the source to
@@ -339,6 +362,8 @@ export async function updateSignal(
     ...(impactFromSource
       ? { impactSecrets: { from: "source", fields: impactFromSource } }
       : {}),
+    // Who the signal, and the incidents it opens, moved from and to.
+    ...(ownerChange ? { owner: ownerChange } : {}),
   });
   notifyWrite(updated);
   return updated;

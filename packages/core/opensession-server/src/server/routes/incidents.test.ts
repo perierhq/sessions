@@ -16,6 +16,7 @@ import {
   appendObservations,
   flushObservations,
 } from "../incidents/observation-store";
+import { __setOwnerRosterForTest } from "../incidents/owner";
 import { __resetSchedulerForTest } from "../incidents/scheduler";
 import { __resetSignalRuntimeForTest } from "../incidents/signal-runtime";
 import {
@@ -576,5 +577,42 @@ test("only a signed-in person may point a signal at a production Runner", async 
     });
   } finally {
     setSignalRunOnCheck(undefined);
+  }
+});
+
+test("the automation principal never owns a signal it creates", async () => {
+  __setOwnerRosterForTest([{ name: "Ada Lovelace" }, { name: "Bo Diddley" }]);
+  try {
+    const asAutomation = async (body: unknown) => {
+      const url = new URL("http://localhost/api/incident-signals");
+      const res = await handleIncidentsRoutes({
+        req: new Request(url, { method: "POST", body: JSON.stringify(body) }),
+        url,
+        path: url.pathname,
+        publicPrefix: "/backstage",
+        authUser: {
+          login: "acme-automation",
+          name: "Automation",
+          automation: true,
+        } as never,
+      });
+      return { status: res!.status, json: await res!.json() };
+    };
+    expect((await asAutomation(httpBody)).json).toMatchObject({
+      createdBy: "Automation",
+      owner: "Ada",
+    });
+    expect(
+      (await asAutomation({ ...httpBody, owner: "Bo Diddley" })).json,
+    ).toMatchObject({ createdBy: "Automation", owner: "Bo" });
+    expect(
+      (await asAutomation({ ...httpBody, owner: "Automation" })).status,
+    ).toBe(400);
+    // A signed-in person owns what they create.
+    expect(
+      (await call("POST", "/api/incident-signals", httpBody))?.json,
+    ).toMatchObject({ createdBy: "Ada", owner: "Ada" });
+  } finally {
+    __setOwnerRosterForTest(undefined);
   }
 });
