@@ -14,6 +14,7 @@ import {
   sandboxProviderNeedsCredential,
 } from "./adapter-signature";
 import { podmanDiskWarnings } from "./adapters/podman-disk";
+import { clampPodmanLimits, podmanSettings } from "./adapters/podman-settings";
 import { stateDir } from "../paths";
 import { writeJsonAtomic } from "../shared/atomic-write";
 import {
@@ -67,9 +68,10 @@ export interface SandboxConnectionSettings {
   dns?: string[];
 }
 
-/** podman machine shape defaults (adapters/podman.ts podmanSettings). */
-export const PODMAN_DEFAULT_MEMORY_MB = 4096;
-export const PODMAN_DEFAULT_PIDS_LIMIT = 4096;
+export {
+  PODMAN_DEFAULT_MEMORY_MB,
+  PODMAN_DEFAULT_PIDS_LIMIT,
+} from "./adapters/podman-settings";
 
 /** What the last successful podman qualification found on this host. */
 export interface PodmanConnectionFacts {
@@ -235,6 +237,23 @@ function settings(value: unknown): SandboxConnectionSettings {
         }
       : {}),
   };
+}
+
+/** Settings as saved: a podman machine shape is clamped to what this host
+ *  can honour, so a huge pids limit cannot undo the fork-bomb guard. */
+function providerSettings(
+  provider: WorkspaceSandboxProvider,
+  value: unknown,
+): SandboxConnectionSettings {
+  const parsed = settings(value);
+  if (provider !== "podman") return parsed;
+  const {
+    memoryMb: _memoryMb,
+    pidsLimit: _pidsLimit,
+    cpu: _cpu,
+    ...rest
+  } = parsed;
+  return { ...rest, ...clampPodmanLimits(parsed) };
 }
 
 function podmanFacts(value: unknown): PodmanConnectionFacts | undefined {
@@ -415,10 +434,9 @@ export function safeSandboxConnections(
         ? {
             podman: {
               ...podmanFacts,
-              memoryMb:
-                connection.settings.memoryMb || PODMAN_DEFAULT_MEMORY_MB,
-              pidsLimit:
-                connection.settings.pidsLimit || PODMAN_DEFAULT_PIDS_LIMIT,
+              // What a sandbox actually gets, not the raw stored value.
+              memoryMb: podmanSettings(connection.settings).memoryMb,
+              pidsLimit: podmanSettings(connection.settings).pidsLimit,
               ...(diskWarnings.length ? { diskWarnings } : {}),
             },
           }
@@ -466,7 +484,7 @@ export function connectSandboxProvider(
   }
   const nextSettings = mergeSettings(
     previous?.settings,
-    settings(input.settings),
+    providerSettings(provider, input.settings),
   );
   if (provider === "tart" && !sandboxHostSettings(nextSettings).length) {
     throw new Error("Choose at least one paired macOS Runner to host Mac VMs");
@@ -509,7 +527,10 @@ export function updateSandboxConnection(
   const next: SandboxConnection = {
     ...previous,
     enabled: patch.enabled ?? previous.enabled,
-    settings: mergeSettings(previous.settings, settings(patch.settings)),
+    settings: mergeSettings(
+      previous.settings,
+      providerSettings(provider, patch.settings),
+    ),
     updatedAt: new Date().toISOString(),
   };
   const raw = readRaw();

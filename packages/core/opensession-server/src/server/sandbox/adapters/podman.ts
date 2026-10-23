@@ -32,8 +32,6 @@ import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
 import {
   getSandboxConnection,
-  PODMAN_DEFAULT_MEMORY_MB,
-  PODMAN_DEFAULT_PIDS_LIMIT,
   type PodmanConnectionFacts,
 } from "../connections";
 import type {
@@ -99,6 +97,7 @@ import {
   type PodmanDiskReport,
 } from "./podman-disk";
 import { ensurePodmanImage, podmanImageTag } from "./podman-image";
+import { podmanSettings, type PodmanSettings } from "./podman-settings";
 import {
   hostControlCheck,
   hostTcpProbe,
@@ -118,40 +117,8 @@ const RM_TIMEOUT_SEC = 5;
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-export interface PodmanSettings {
-  memoryMb: number;
-  pidsLimit: number;
-  /** Applied only when this host delegates the cgroup `cpu` controller. */
-  cpu?: number;
-  /** The only resolvers the sandbox may reach (IPv4, public). */
-  dns: string[];
-}
-
-export const PODMAN_DEFAULT_DNS = ["1.1.1.1", "9.9.9.9"];
-
-/** The connection's machine shape, with defaults for anything missing or
- *  invalid. */
-export function podmanSettings(raw: unknown): PodmanSettings {
-  const r = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const int = (v: unknown, fallback: number) =>
-    typeof v === "number" && Number.isInteger(v) && v > 0 ? v : fallback;
-  const dns = Array.isArray(r.dns)
-    ? r.dns.filter((v): v is string => typeof v === "string" && isIpv4(v))
-    : [];
-  const cpu =
-    typeof r.cpu === "number" && Number.isFinite(r.cpu) && r.cpu > 0
-      ? r.cpu
-      : undefined;
-  return {
-    memoryMb: int(r.memoryMb, PODMAN_DEFAULT_MEMORY_MB),
-    pidsLimit: int(r.pidsLimit, PODMAN_DEFAULT_PIDS_LIMIT),
-    ...(cpu !== undefined ? { cpu } : {}),
-    dns: dns.length ? dns : [...PODMAN_DEFAULT_DNS],
-  };
-}
+export { PODMAN_DEFAULT_DNS } from "./podman-settings";
+export { podmanSettings, type PodmanSettings };
 
 // ── Host facts ───────────────────────────────────────────────────────────────
 

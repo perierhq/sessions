@@ -310,6 +310,32 @@ describe("This machine (container) in Settings", () => {
     });
   });
 
+  test("limits are clamped on save and the card shows what applies", () => {
+    const connection = connectSandboxProvider("podman", {
+      settings: { memoryMb: 10, pidsLimit: 1e9, cpu: 1e6 },
+    });
+    expect(connection.settings.memoryMb).toBe(512);
+    expect(connection.settings.pidsLimit).toBe(65_536);
+    expect(connection.settings.cpu).toBeLessThan(1e6);
+    updateSandboxConnection("podman", { settings: { pidsLimit: 3 } });
+    expect(getSandboxConnection("podman")?.settings.pidsLimit).toBe(64);
+    // A value stored before the bounds existed is shown as it applies.
+    const path = process.env.OPENSESSION_SANDBOX_CONFIG!;
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    raw.connections[0].settings.pidsLimit = 1e9;
+    writeFileSync(path, JSON.stringify(raw));
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const card = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    )?.podman;
+    expect(card?.pidsLimit).toBe(65_536);
+    expect(card?.memoryMb).toBe(512);
+  });
+
   test("the card summary carries the last disk check's warnings", () => {
     connectSandboxProvider("podman", { settings: {} });
     setPodmanConnectionFacts({
