@@ -1,7 +1,7 @@
 /**
  * Settings › Models › Web search: which provider the `web_search` and
- * `web_fetch` tools (pi-web-search.ts) use. `auto` tries the session's own
- * provider first, then the others; `anthropic` or `openai` uses only that
+ * `web_fetch` tools (pi-web-search.ts) use. `auto` uses the session's own
+ * provider and never another vendor; `anthropic` or `openai` uses only that
  * provider; `off` removes both tools. Stored as { provider } in the state dir and read fresh
  * (asynchronously) for every turn, so a change applies from the next turn.
  */

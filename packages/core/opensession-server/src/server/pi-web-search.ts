@@ -18,8 +18,8 @@
  *   needs Claude 4.6 or newer, older models call the tool directly), and
  *   `pause_turn` continuations. OpenAI (Codex and API key accounts): the
  *   Responses `web_search` tool.
- * - Which provider: Settings (web-search-setting.ts). Automatic tries the
- *   session's provider first, then the others; a specific provider is strict.
+ * - Which provider: Settings (web-search-setting.ts). Automatic uses the
+ *   session's own provider only; a specific provider is strict.
  *
  * The helpers here are pure and unit-tested with a mocked runtime; the
  * binding and audit wiring is in makePiWebSearch.
@@ -552,23 +552,22 @@ export function checkFetchUrl(raw: string): URL {
   return url;
 }
 
-/** The providers one call may use, in order, and whether the choice is
- *  strict. Automatic: the session's own provider first, then the others,
- *  falling through on failure. A specific provider: only it, and a failure
- *  is an error, never a silent fallback. Off: none. */
+/** The providers one call may use, and whether the choice is strict.
+ *  Automatic: the session's own provider, when it is one with a server-side
+ *  web tool, and never another vendor (a session on xAI or a third-party
+ *  provider gets none). A specific provider: only it, and a failure is an
+ *  error. Off: none. A provider that is not connected is left out, so a run
+ *  with none left is not offered the tools. */
 export function resolveSearchProviders(
   sessionProvider: string | undefined,
   setting: WebSearchSetting,
+  connected: (provider: SearchProviderId) => boolean = () => true,
 ): { providers: SearchProviderId[]; strict: boolean } {
   if (setting === "off") return { providers: [], strict: false };
-  if (setting !== "auto") return { providers: [setting], strict: true };
+  if (setting !== "auto")
+    return { providers: connected(setting) ? [setting] : [], strict: true };
   const own = SEARCH_PROVIDERS.find((p) => p === sessionProvider);
-  return {
-    providers: own
-      ? [own, ...SEARCH_PROVIDERS.filter((p) => p !== own)]
-      : [...SEARCH_PROVIDERS],
-    strict: false,
-  };
+  return { providers: own && connected(own) ? [own] : [], strict: false };
 }
 
 /** Try the providers in order; throw a tool error when none produced an
@@ -625,20 +624,34 @@ export const runWebSearch = (
   attempt: (provider: SearchProviderId) => Promise<SearchAttemptResult>,
 ) => runWebTool("search", providers, strict, attempt);
 
-/** Whether a run gets a web tool: not when Settings turns web tools off or
- *  the run's policy denies it (the incident verifier). */
-export function webToolEnabled(
-  tool: typeof WEB_SEARCH_TOOL | typeof WEB_FETCH_TOOL,
-  setting: WebSearchSetting,
-  disables: Record<string, false>,
-): boolean {
-  return setting !== "off" && !(tool in disables);
+/** What decides whether a run gets a web tool. */
+export interface WebToolGate {
+  setting: WebSearchSetting;
+  /** The run policy's stripped tools (the incident verifier's denials). */
+  disables: Record<string, false>;
+  /** resolveSearchProviders for this run: none means no tool. */
+  providers: readonly SearchProviderId[];
+  /** An unattended run (automation, incident agent, triage). */
+  unattended?: boolean;
+  /** The unattended run's egress allowlist, when it has one. */
+  fetchHosts?: readonly string[];
 }
 
-export const webSearchEnabled = (
-  setting: WebSearchSetting,
-  disables: Record<string, false>,
-) => webToolEnabled(WEB_SEARCH_TOOL, setting, disables);
+/** Whether a run gets a web tool: not when Settings turns web tools off,
+ *  the run's policy denies it (the incident verifier), or no connected
+ *  provider can serve it. An unattended run gets web_fetch only with an
+ *  egress allowlist to hold it to; its searches cannot be read back by a
+ *  page author, so web_search stays. */
+export function webToolEnabled(
+  tool: typeof WEB_SEARCH_TOOL | typeof WEB_FETCH_TOOL,
+  gate: WebToolGate,
+): boolean {
+  if (gate.setting === "off" || tool in gate.disables) return false;
+  if (!gate.providers.length) return false;
+  if (tool === WEB_FETCH_TOOL && gate.unattended && !gate.fetchHosts?.length)
+    return false;
+  return true;
+}
 
 const SEARCH_DESCRIPTION =
   "Search the public web through one of the connected AI providers and get back a short written answer with Markdown links to its sources. Use it for current, public facts; to read a page whose URL you already know, use web_fetch.";
@@ -757,6 +770,8 @@ export interface WebSearchBinding {
 export interface PiWebToolInput {
   setting: WebSearchSetting;
   sessionProvider: string | undefined;
+  /** Whether a provider has accounts to serve a side request. */
+  connected?: (provider: SearchProviderId) => boolean;
   modelFor: (provider: SearchProviderId) => string;
   bind: (
     provider: SearchProviderId,
@@ -786,6 +801,7 @@ function runPiWebTool(
   const { providers, strict } = resolveSearchProviders(
     input.sessionProvider,
     input.setting,
+    input.connected,
   );
   return runWebTool(kind, providers, strict, async (provider) => {
     const started = now();

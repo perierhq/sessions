@@ -44,10 +44,18 @@ export function ModelDefaultsSection({
       <SettingCard>
         <DefaultModelRow onChanged={onChanged} />
         <AutoFallbackRow />
-        <WebSearchRow />
       </SettingCard>
       <SettingsHint>
         Applies to new runs unless the session has its own model.
+      </SettingsHint>
+      <SettingsGroupLabel>Web search</SettingsGroupLabel>
+      <SettingCard>
+        <WebSearchRow />
+      </SettingCard>
+      <SettingsHint>
+        Applies from each session's next turn. Automations and incident agents
+        can search, but read only pages on their egress allowlist, and no
+        pages without one.
       </SettingsHint>
     </>
   );
@@ -264,9 +272,10 @@ const WEB_SEARCH_LABELS: Record<WebSearchChoice, string> = {
 
 /**
  * Which provider the agent's web_search and web_fetch tools use. Automatic
- * tries the session's own provider first, then the others; a specific
- * provider is the only one used; Off removes the tool. Only connected
- * providers are offered (a stored choice stays listed).
+ * uses the session's own provider and never another vendor (a session on
+ * another provider gets no web tools); a specific provider is the only one
+ * used; Off removes both tools. Only connected providers are offered (a
+ * stored choice stays listed).
  */
 function WebSearchRow() {
   const [choice, setChoice] = useState<WebSearchChoice | null>(null);
@@ -340,7 +349,7 @@ function WebSearchRow() {
         <SettingRowTitle>Web search</SettingRowTitle>
         <SettingRowDescription>
           {error ||
-            "Which provider the agent searches and reads the web through. Automatic tries the session's own provider first."}
+            "Which provider the agent searches and reads the web through. Automatic uses the session's own provider when it is Claude or OpenAI, and never sends a search to another one."}
         </SettingRowDescription>
       </SettingRowText>
       <SettingRowControl>

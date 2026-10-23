@@ -20,7 +20,6 @@ import {
   resolveSearchProviders,
   runWebSearch,
   searchWithModel,
-  webSearchEnabled,
   webSearchModelId,
   webSearchServerTool,
   type SearchRuntime,
@@ -423,19 +422,22 @@ describe("findings", () => {
 });
 
 describe("provider choice", () => {
-  test("Automatic tries the session's provider first", () => {
+  test("Automatic uses the session's own provider and never another vendor", () => {
     expect(resolveSearchProviders("anthropic", "auto")).toEqual({
-      providers: ["anthropic", "openai"],
+      providers: ["anthropic"],
       strict: false,
     });
     expect(resolveSearchProviders("openai", "auto")).toEqual({
-      providers: ["openai", "anthropic"],
+      providers: ["openai"],
       strict: false,
     });
     expect(resolveSearchProviders("xai-oauth", "auto")).toEqual({
-      providers: ["anthropic", "openai"],
+      providers: [],
       strict: false,
     });
+    expect(resolveSearchProviders("acme-provider", "auto").providers).toEqual(
+      [],
+    );
   });
 
   test("a specific provider is strict, and Off has none", () => {
@@ -443,10 +445,27 @@ describe("provider choice", () => {
       providers: ["openai"],
       strict: true,
     });
+    expect(resolveSearchProviders("xai-oauth", "anthropic")).toEqual({
+      providers: ["anthropic"],
+      strict: true,
+    });
     expect(resolveSearchProviders("anthropic", "off")).toEqual({
       providers: [],
       strict: false,
     });
+  });
+
+  test("a provider that is not connected is left out", () => {
+    const onlyClaude = (p: string) => p === "anthropic";
+    expect(
+      resolveSearchProviders("anthropic", "openai", onlyClaude).providers,
+    ).toEqual([]);
+    expect(
+      resolveSearchProviders("openai", "auto", onlyClaude).providers,
+    ).toEqual([]);
+    expect(
+      resolveSearchProviders("openai", "anthropic", onlyClaude).providers,
+    ).toEqual(["anthropic"]);
   });
 
   test("Automatic falls through to the next provider", async () => {
@@ -504,11 +523,16 @@ describe("provider choice", () => {
 });
 
 describe("availability", () => {
-  test("off in Settings or denied by policy removes the tool", () => {
-    expect(webSearchEnabled("auto", {})).toBe(true);
-    expect(webSearchEnabled("anthropic", {})).toBe(true);
-    expect(webSearchEnabled("off", {})).toBe(false);
-    expect(webSearchEnabled("auto", { web_search: false })).toBe(false);
+  test("off in Settings, denied by policy, or no provider removes the tool", () => {
+    const gate = { setting: "auto" as const, disables: {}, providers: ["anthropic" as const] };
+    expect(webToolEnabled("web_search", gate)).toBe(true);
+    expect(webToolEnabled("web_search", { ...gate, setting: "anthropic" })).toBe(true);
+    expect(webToolEnabled("web_search", { ...gate, setting: "off" })).toBe(false);
+    expect(
+      webToolEnabled("web_search", { ...gate, disables: { web_search: false } }),
+    ).toBe(false);
+    expect(webToolEnabled("web_search", { ...gate, providers: [] })).toBe(false);
+    expect(webToolEnabled("web_fetch", { ...gate, providers: [] })).toBe(false);
   });
 
   test("the tool takes only a query and returns the findings", async () => {
@@ -536,17 +560,16 @@ describe("availability", () => {
 });
 
 describe("makePiWebSearch", () => {
-  test("binds the session's provider first, audits without the query", async () => {
+  test("binds the session's own provider, audits without the query", async () => {
     const audits: Record<string, unknown>[] = [];
     const bound: string[] = [];
     const rewritten: unknown[] = [];
     const search = makePiWebSearch({
       setting: "auto",
-      sessionProvider: "openai",
+      sessionProvider: "anthropic",
       modelFor: (p) => webSearchModelId(p, "pi/openai/gpt-6-luna"),
       bind: async (provider, modelId) => {
         bound.push(`${provider}/${modelId}`);
-        if (provider === "openai") throw new Error("no usable codex account");
         return {
           runtime: scriptedRuntime([
             {
@@ -570,20 +593,10 @@ describe("makePiWebSearch", () => {
       now: () => 0,
     });
     const out = await search("secret acme query", signal);
-    expect(out).toBe("[Acme](https://example.test/a)");
-    expect(bound).toEqual(["openai/gpt-6-luna", "anthropic/claude-haiku-5-5"]);
+    expect(out).toContain("[Acme](https://example.test/a)");
+    expect(bound).toEqual(["anthropic/claude-haiku-5-5"]);
     expect(rewritten).toHaveLength(1);
     expect(audits).toEqual([
-      {
-        msg: "web_search",
-        provider: "openai",
-        model: "gpt-6-luna",
-        searches: 0,
-        ok: false,
-        ms: 0,
-        query_bytes: 17,
-        error: "no usable codex account",
-      },
       {
         msg: "web_search",
         provider: "anthropic",
@@ -597,6 +610,24 @@ describe("makePiWebSearch", () => {
       },
     ]);
     expect(JSON.stringify(audits)).not.toContain("secret");
+  });
+
+  test("Automatic never falls through to another vendor", async () => {
+    const bound: string[] = [];
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "openai",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async (provider) => {
+        bound.push(provider);
+        throw new Error("no usable codex account");
+      },
+      onAudit: () => {},
+    });
+    await expect(search("acme", signal)).rejects.toThrow(
+      "no usable codex account",
+    );
+    expect(bound).toEqual(["openai"]);
   });
 
   test("a strict choice binds only that provider", async () => {
@@ -828,13 +859,14 @@ describe("web_fetch", () => {
   });
 
   test("Off, or a policy denial, removes it", () => {
-    expect(webToolEnabled("web_fetch", "auto", {})).toBe(true);
-    expect(webToolEnabled("web_fetch", "off", {})).toBe(false);
-    expect(webToolEnabled("web_fetch", "auto", { web_fetch: false })).toBe(
-      false,
-    );
-    expect(webToolEnabled("web_search", "auto", { web_fetch: false })).toBe(
-      true,
-    );
+    const gate = { setting: "auto" as const, disables: {}, providers: ["openai" as const] };
+    expect(webToolEnabled("web_fetch", gate)).toBe(true);
+    expect(webToolEnabled("web_fetch", { ...gate, setting: "off" })).toBe(false);
+    expect(
+      webToolEnabled("web_fetch", { ...gate, disables: { web_fetch: false } }),
+    ).toBe(false);
+    expect(
+      webToolEnabled("web_search", { ...gate, disables: { web_fetch: false } }),
+    ).toBe(true);
   });
 });

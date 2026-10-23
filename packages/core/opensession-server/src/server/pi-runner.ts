@@ -89,9 +89,13 @@ import {
   makePiWebFetch,
   makePiWebSearch,
   type PiWebToolInput,
+  resolveSearchProviders,
+  type SearchProviderId,
   webSearchModelId,
   webToolEnabled,
 } from "./pi-web-search";
+import { hasAccounts as hasClaudeAccounts } from "./claude-accounts";
+import { hasCodexAccounts } from "./codex-accounts";
 import { readWebSearchSetting } from "./web-search-setting";
 import { configuredHaikuFallbackModel } from "./models";
 import { rewriteAnthropicPromptPayload } from "./anthropic-prompt-compat";
@@ -514,9 +518,24 @@ async function* runPiAttempt(
     const boundary: PiSteerBoundary = { pending: false };
     // Settings › Models › Web search, read fresh for every turn.
     const webSearchSetting = await readWebSearchSetting();
+    // The session's own provider is connected (this turn bound it); another
+    // one is when it has accounts.
+    const webConnected = (provider: SearchProviderId) =>
+      provider === parsed.providerID ||
+      (provider === "anthropic" ? hasClaudeAccounts() : hasCodexAccounts());
+    const webGate = {
+      setting: webSearchSetting,
+      disables: policy.disables,
+      providers: resolveSearchProviders(
+        parsed.providerID,
+        webSearchSetting,
+        webConnected,
+      ).providers,
+    };
     const webToolInput: PiWebToolInput = {
       setting: webSearchSetting,
       sessionProvider: parsed.providerID,
+      connected: webConnected,
       modelFor: (provider) =>
         webSearchModelId(provider, configuredHaikuFallbackModel()),
       // A side request on the same account picking a turn uses. The
@@ -574,10 +593,10 @@ async function* runPiAttempt(
       privateTermsGuard,
       abort,
       boundary,
-      webSearch: webToolEnabled("web_search", webSearchSetting, policy.disables)
+      webSearch: webToolEnabled("web_search", webGate)
         ? makePiWebSearch(webToolInput)
         : undefined,
-      webFetch: webToolEnabled("web_fetch", webSearchSetting, policy.disables)
+      webFetch: webToolEnabled("web_fetch", webGate)
         ? makePiWebFetch(webToolInput)
         : undefined,
     });
