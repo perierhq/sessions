@@ -2,8 +2,8 @@
 // machine principal (the Automation web identity, an automation's own
 // runs, the agent). A person is named the way the inbox and push key
 // people: the roster member's first name, the same value `requestUser`
-// gives a signed-in person. Without a roster, a person's name stays as
-// given.
+// gives a signed-in person. With a roster, a name nobody on it goes by is
+// no owner; without one, a person's name stays as given.
 //
 // When nobody is left, the instance owner (the first directory member on
 // the roster) owns the signal and is told about its incidents.
@@ -55,11 +55,24 @@ export function isPersonName(name: string | null | undefined): name is string {
 }
 
 /** `name` as an owner (the roster's first name for a member, the name as
- *  given off the roster), or null when it is not a person. */
+ *  given on an instance without a roster), or null when it is not a
+ *  person: a machine principal, or a name nobody on the roster goes by. */
 export function personOwner(name: string | null | undefined): string | null {
-  if (!isPersonName(name)) return null;
-  const member = memberFor(name, roster());
-  return member ? firstName(member) || name.trim() : name.trim();
+  const owner = resolveOwner(name);
+  return typeof owner === "string" ? owner : null;
+}
+
+/** `name` as an owner, or why it cannot be one. */
+export function resolveOwner(
+  name: string | null | undefined,
+): string | { error: string } {
+  if (!isPersonName(name)) return { error: "The owner must be a person" };
+  const team = roster();
+  if (team.length === 0) return name.trim();
+  const member = memberFor(name, team);
+  if (!member)
+    return { error: `Nobody on the team is called ${JSON.stringify(name.trim())}` };
+  return firstName(member) || name.trim();
 }
 
 /** The instance owner: the first directory member on the roster, or "" on

@@ -9,7 +9,12 @@ import {
 import { configuredRepos } from "../config";
 import { incidentAudit } from "./audit-sink";
 import { forgetObservations } from "./observation-store";
-import { instanceOwner, personOwner, signalOwner } from "./owner";
+import {
+  instanceOwner,
+  personOwner,
+  resolveOwner,
+  signalOwner,
+} from "./owner";
 import {
   type SignalValidationContext,
   generateHookSecret,
@@ -147,7 +152,7 @@ function validationContext(selfId?: string): SignalValidationContext {
   return {
     projectExists,
     signalExists: async (id) => (await getSignal(id)) !== null,
-    personOwner,
+    resolveOwner,
     ...(selfId === undefined ? {} : { selfId }),
   };
 }

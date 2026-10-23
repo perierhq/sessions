@@ -390,6 +390,10 @@ test("a signal is owned by a person, never by the automation principal", async (
         machine,
       ),
     ).toEqual({ error: "The owner must be a person" });
+    // A name nobody on the team goes by is refused, not taken as given.
+    expect(
+      await createSignal({ ...http, owner: "Adaa" }, "ada lovelace", person),
+    ).toEqual({ error: 'Nobody on the team is called "Adaa"' });
     // Edits keep the owner; naming another person moves it.
     expect(
       await updateSignal(
