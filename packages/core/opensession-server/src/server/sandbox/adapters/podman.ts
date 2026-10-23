@@ -1106,12 +1106,21 @@ export class PodmanProvider implements SandboxProvider {
 
   /** Remove the pod (and its containers) and the session volume: the
    *  workspace is deleted with it. Only resources with this provider's name
-   *  prefix and sandbox label are touched. */
+   *  prefix and sandbox label are touched. Waits for any start in flight,
+   *  like every other stop. */
   async destroy(
     sandboxId: string,
     options: { strict?: boolean } = {},
   ): Promise<void> {
     const names = namesForPod(sandboxId);
+    await withStartLock(names.pod, () => this.destroyLocked(names, options));
+  }
+
+  private async destroyLocked(
+    names: PodmanNames,
+    options: { strict?: boolean },
+  ): Promise<void> {
+    verifiedRuns.delete(names.pod);
     if (await this.owned("pod", names.pod))
       await must(
         this.run,
@@ -1140,7 +1149,7 @@ export class PodmanProvider implements SandboxProvider {
           );
       }
     }
-    removeRemoteState(this.id, sandboxId);
+    removeRemoteState(this.id, names.pod);
   }
 
   /** Whether a pod or volume exists and carries the sandbox label. False

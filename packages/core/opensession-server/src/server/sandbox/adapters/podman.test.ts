@@ -673,6 +673,31 @@ describe("podman provider destroy", () => {
     expect(await provider.get(sandbox.id)).toBeNull();
   });
 
+  test("a destroy waits for an in-flight start", async () => {
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    let destroying: Promise<void> | undefined;
+    let provider!: PodmanProvider;
+    const run = interceptOnce(
+      fake,
+      (argv) => argv[0] === "start" && argv.at(-1) === names.workload,
+      async () => {
+        destroying = provider.destroy(names.pod);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    );
+    provider = new PodmanProvider(deps(fake, { run }));
+    await provider.ensure({ sessionId: id });
+    await destroying;
+    const seen = verbs(fake.calls);
+    expect(seen.indexOf("pod inspect")).toBeGreaterThan(
+      seen.indexOf("exec selftest"),
+    );
+    expect(fake.state.podExists).toBe(false);
+    expectNeverUnfiltered(fake);
+  });
+
   test("strict destroy rejects when the pod is still there", async () => {
     const fake = fakePodman({ podSurvivesRm: true });
     const provider = new PodmanProvider(deps(fake));
