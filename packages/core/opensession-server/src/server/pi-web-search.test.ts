@@ -7,6 +7,7 @@ import {
   createWebFetchTool,
   fetchHostAllowed,
   webServerTool,
+  webSideAccountPlan,
   fetchWithModel,
   makePiWebFetch,
   runWebTool,
@@ -1225,5 +1226,54 @@ describe("accounts and usage", () => {
     await expect(search("acme", signal)).rejects.toThrow("usage limit");
     expect(binds).toHaveLength(1);
     expect(sidelined).toEqual(["acct-1"]);
+  });
+});
+
+describe("webSideAccountPlan", () => {
+  const session = {
+    sessionProvider: "anthropic",
+    accountUser: "kent",
+    claudeSessionKey: "os-1",
+    accountId: "claude-pinned",
+    accountStrict: true,
+    usageCredits: true,
+    turnExcluded: new Set(["burned-by-turn"]),
+    excluded: new Set(["burned-by-call"]),
+  };
+
+  test("the session's own provider keeps its pin, remembered account and user", () => {
+    expect(webSideAccountPlan({ ...session, provider: "anthropic" })).toEqual({
+      own: true,
+      accountUser: "kent",
+      claudeSessionKey: "os-1",
+      pin: {
+        accountId: "claude-pinned",
+        accountStrict: true,
+        usageCredits: true,
+      },
+      excludedAccountIds: new Set(["burned-by-turn", "burned-by-call"]),
+      canRotate: false,
+    });
+  });
+
+  test("another provider never gets the session's pin or remembered account", () => {
+    expect(webSideAccountPlan({ ...session, provider: "openai" })).toEqual({
+      own: false,
+      accountUser: "kent",
+      claudeSessionKey: undefined,
+      pin: { usageCredits: true },
+      excludedAccountIds: new Set(["burned-by-turn", "burned-by-call"]),
+      canRotate: true,
+    });
+  });
+
+  test("a soft pin on the own provider may rotate", () => {
+    expect(
+      webSideAccountPlan({
+        ...session,
+        provider: "anthropic",
+        accountStrict: undefined,
+      }).canRotate,
+    ).toBe(true);
   });
 });

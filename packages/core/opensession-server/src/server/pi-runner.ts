@@ -92,6 +92,7 @@ import {
   resolveSearchProviders,
   type SearchProviderId,
   webSearchModelId,
+  webSideAccountPlan,
   webToolEnabled,
 } from "./pi-web-search";
 import { hasAccounts as hasClaudeAccounts } from "./claude-accounts";
@@ -552,22 +553,25 @@ async function* runPiAttempt(
       // the request runs on the session's own provider. A usage limit
       // benches the account the way the turn's own walk does.
       bind: async (provider, modelID, excluded) => {
-        const own = provider === parsed.providerID;
-        const pin = own
-          ? {
-              accountId: opts.accountId,
-              accountStrict: opts.accountStrict,
-              usageCredits: opts.usageCredits,
-            }
-          : { usageCredits: opts.usageCredits };
+        const side = webSideAccountPlan({
+          provider,
+          sessionProvider: parsed.providerID,
+          accountUser,
+          claudeSessionKey,
+          accountId: opts.accountId,
+          accountStrict: opts.accountStrict,
+          usageCredits: opts.usageCredits,
+          turnExcluded: walk.excluded,
+          excluded,
+        });
         const sideAccounts = new PiAttemptAccounts({
           walk: { excluded: new Set(), rotate: false },
           providerID: provider,
           modelID,
-          opts: pin,
-          accountUser,
+          opts: side.pin,
+          accountUser: side.accountUser,
           affinity,
-          claudeSessionKey: own ? claudeSessionKey : undefined,
+          claudeSessionKey: side.claudeSessionKey,
           speed,
           auditBase,
         });
@@ -575,17 +579,11 @@ async function* runPiAttempt(
           providerID: provider,
           modelID,
           affinityKey: affinity,
-          claudeSessionKey: own ? claudeSessionKey : undefined,
+          claudeSessionKey: side.claudeSessionKey,
           unifiedSessionId: unifiedSessionId || runKey,
-          accountUser,
-          ...(own
-            ? {
-                accountId: opts.accountId,
-                accountStrict: opts.accountStrict,
-              }
-            : {}),
-          usageCredits: opts.usageCredits,
-          excludedOpenaiAccountIds: new Set([...walk.excluded, ...excluded]),
+          accountUser: side.accountUser,
+          ...side.pin,
+          excludedOpenaiAccountIds: side.excludedAccountIds,
           onAccountEvidence: (evidence) => sideAccounts.onEvidence(evidence),
           dependencies: bindingDependencies,
         });
@@ -598,7 +596,7 @@ async function* runPiAttempt(
           accountId: sideAccounts.pickedAccount?.id,
           usageLimited: (error) => sideAccounts.isUsageLimit(error),
           sideline: (error) => sideAccounts.sideline(error),
-          canRotate: !(own && opts.accountStrict && opts.accountId),
+          canRotate: side.canRotate,
         };
       },
       // The side request's tokens and cost count toward the turn.

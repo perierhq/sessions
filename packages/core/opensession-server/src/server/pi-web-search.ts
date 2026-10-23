@@ -876,6 +876,53 @@ export interface WebSearchBinding {
   canRotate?: boolean;
 }
 
+/**
+ * The account half of a side request's binding. The session's pin and its
+ * remembered Claude account apply only on the session's own provider: a
+ * pin names an account of that provider, and a strict pin there never
+ * rotates. The person whose subscription may pay (accountUser) and the
+ * usage-credits policy apply on any provider. Accounts the turn's walk or
+ * this call already found at their limit are excluded.
+ */
+export function webSideAccountPlan(input: {
+  provider: SearchProviderId;
+  sessionProvider: string;
+  accountUser: string | undefined;
+  claudeSessionKey: string | undefined;
+  accountId: string | undefined;
+  accountStrict: boolean | undefined;
+  usageCredits: boolean | undefined;
+  turnExcluded: ReadonlySet<string>;
+  excluded: ReadonlySet<string>;
+}): {
+  own: boolean;
+  accountUser: string | undefined;
+  claudeSessionKey: string | undefined;
+  pin: { accountId?: string; accountStrict?: boolean; usageCredits?: boolean };
+  excludedAccountIds: Set<string>;
+  canRotate: boolean;
+} {
+  const own = input.provider === input.sessionProvider;
+  return {
+    own,
+    accountUser: input.accountUser,
+    claudeSessionKey: own ? input.claudeSessionKey : undefined,
+    pin: {
+      ...(own && input.accountId !== undefined
+        ? { accountId: input.accountId }
+        : {}),
+      ...(own && input.accountStrict !== undefined
+        ? { accountStrict: input.accountStrict }
+        : {}),
+      ...(input.usageCredits !== undefined
+        ? { usageCredits: input.usageCredits }
+        : {}),
+    },
+    excludedAccountIds: new Set([...input.turnExcluded, ...input.excluded]),
+    canRotate: !(own && input.accountStrict && input.accountId),
+  };
+}
+
 /** Accounts one web tool call moves past after a usage limit, per provider. */
 export const MAX_WEB_ACCOUNT_ROTATIONS = 1;
 
