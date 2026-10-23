@@ -3,7 +3,7 @@
 // so no picker may offer it. The rows' own hooks run in the hook harness.
 import { afterEach, expect, mock, test } from "bun:test";
 import type { ReactElement } from "react";
-import type { SandboxStatusInfo } from "../../lib/api";
+import type { SandboxConnectionInfo, SandboxStatusInfo } from "../../lib/api";
 import {
   createHookHarness,
   elements,
@@ -41,6 +41,19 @@ const { Select } = await import("./shared");
 
 afterEach(() => harness.unmountAll());
 
+const readyConnection = (
+  provider: SandboxConnectionInfo["provider"],
+): SandboxConnectionInfo => ({
+  id: `sandbox-connection-${provider}`,
+  provider,
+  enabled: true,
+  settings: {},
+  createdAt: "2026-10-22T10:00:00.000Z",
+  updatedAt: "2026-10-22T10:00:00.000Z",
+  hasCredentials: true,
+  state: "ready",
+});
+
 const sandboxStatus = (podmanCertified: boolean): SandboxStatusInfo => ({
   enabled: true,
   defaultProvider: "daytona",
@@ -49,10 +62,7 @@ const sandboxStatus = (podmanCertified: boolean): SandboxStatusInfo => ({
     { id: "daytona", configured: true, certified: true },
     { id: "podman", configured: true, certified: podmanCertified },
   ],
-  connections: [
-    { provider: "daytona", state: "ready" },
-    { provider: "podman", state: "ready" },
-  ] as SandboxStatusInfo["connections"],
+  connections: [readyConnection("daytona"), readyConnection("podman")],
   defaults: {
     workspace: "none",
     personal: "workspace",
@@ -62,18 +72,27 @@ const sandboxStatus = (podmanCertified: boolean): SandboxStatusInfo => ({
   },
 });
 
+/** The props of the rows mounted here: SandboxDefaultRow takes a scope,
+ *  ProjectSandboxDefaults none. */
+interface ChildProps {
+  scope?: "workspace" | "personal";
+}
+
 /** Mount the first function component in `tree` and let its effects land. */
 async function mountChild(
   tree: ReturnType<typeof harness.mount>,
   name: string,
 ) {
+  // A tag string has no name; a component function has its own.
   const child = elements(tree.output()).find(
-    (el) => typeof el.type === "function" && el.type.name === name,
+    (el) => Object(el.type).name === name,
   );
   if (!child) throw new Error(`No ${name}`);
-  // SAFETY: a function component element, mounted with its own props.
-  const type = child.type as (props: object) => ReactElement;
-  const mounted = harness.mount(type, child.props);
+  // SAFETY: the element named `name` is a function component, mounted with
+  // the props it was rendered with.
+  const type = child.type as (props: ChildProps) => ReactElement;
+  // SAFETY: the same element's props, as rendered.
+  const mounted = harness.mount(type, child.props as ChildProps);
   await settle();
   return mounted;
 }
@@ -81,13 +100,17 @@ async function mountChild(
 const selectValues = (tree: ReturnType<typeof harness.mount>) =>
   elements(tree.output())
     .filter((el) => el.type === Select)
-    .map((el) => ({
-      // SAFETY: Select elements carry the OptionSelect props.
-      label: (el.props as { label: string }).label,
-      values: (el.props as { options: Array<{ value: string }> }).options.map(
-        (option) => option.value,
-      ),
-    }));
+    .map((el) => {
+      // SAFETY: an element whose type is Select carries Select's props.
+      const props = el.props as {
+        label: string;
+        options: Array<{ value: string }>;
+      };
+      return {
+        label: props.label,
+        values: props.options.map((option) => option.value),
+      };
+    });
 
 test("the personal default hides an uncertified Ready provider", async () => {
   status = sandboxStatus(false);
