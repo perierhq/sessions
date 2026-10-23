@@ -488,6 +488,8 @@ describe("podman firewall invariants", () => {
       cwd: "/home/ubuntu/worktrees/acme-main",
       repoId: "acme",
       branch: "main",
+      trustProfile: "interactive",
+      egressAllowlist: [],
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
     });
