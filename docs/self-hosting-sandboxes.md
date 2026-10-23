@@ -587,6 +587,16 @@ the session's sandbox, which deletes its workspace. Where the storage
 filesystem supports it (XFS with project quotas), a filesystem quota on
 Podman's storage directory is a stronger backstop.
 
+**Same-user processes (accepted risk).** The pods are rootless and belong to
+the user the server runs as. Any process running as that user can control
+them through Podman: start a workload without its firewall, flush the egress
+table, or exec into a container. That includes host-local sessions (no
+sandbox) and anything else running under that account. The provider trusts
+only a workload run it verified itself and re-verifies any other, but it
+cannot stop that user's processes from acting between checks. Run the server
+as a dedicated user with nothing else on it, and do not use host-local
+sessions on a server whose container sandboxes must stay isolated.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this
