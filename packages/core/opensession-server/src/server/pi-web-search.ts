@@ -47,8 +47,14 @@ export const WEB_FETCH_TOOL = "web_fetch";
 /** Latest Anthropic server web-fetch tool version (dynamic filtering,
  *  cache bypass and `response_inclusion`). */
 export const ANTHROPIC_WEB_FETCH_TYPE = "web_fetch_20260318";
-/** Cap on the provider's own fetches for one call. */
-export const MAX_FETCH_USES = 3;
+/** Cap on the provider's own fetches for one call: the one URL asked for. */
+export const MAX_FETCH_USES = 1;
+/** Fetchable URLs come from the user message only (the URL the tool was
+ *  given), never from tool results: a fetched page cannot lead to another. */
+export const FETCH_URL_SOURCES = {
+  client_tool_results: { type: "none" },
+  server_tool_results: { type: "none" },
+} as const;
 /** Fetched text a provider may read per page (approximate tokens). */
 export const MAX_FETCH_CONTENT_TOKENS = 50_000;
 
@@ -95,20 +101,28 @@ export function buildSearchRequest(query: string): string {
   return `Search the web and answer, with Markdown links to your sources: ${query}`;
 }
 
-/** The system prompt of a fetch side request. */
-export const WEB_FETCH_SYSTEM = [
-  "You are a web reading helper. Fetch the page the user names and write a short, factual extraction of what they ask for.",
-  "Fetch only the URL the user gives. Do not follow other links unless the page itself is only a pointer to the content.",
-  "Do not add citation markers. Be concise: only what was asked, a few sentences or short bullets. If the page cannot be fetched or does not say, say so plainly.",
-].join("\n");
-
-/** The fetch side request's user turn. The URL must be in a user message:
- *  Anthropic's fetch tool only fetches URLs already in the conversation. */
-export function buildFetchRequest(url: string, prompt?: string): string {
+/**
+ * The system prompt of a fetch side request. It carries the extraction ask:
+ * Anthropic's fetch tool never fetches a URL that appears only in the
+ * system prompt, so a URL inside the ask cannot become a second fetch.
+ */
+export function webFetchSystem(prompt?: string): string {
   const ask = prompt?.trim()
-    ? `Extract: ${prompt.trim()}`
-    : "Summarise the main content.";
-  return `Fetch ${url} and answer from it. ${ask}`;
+    ? `Extract from the page: ${prompt.trim()}`
+    : "Summarise the page's main content.";
+  return [
+    "You are a web reading helper. Fetch the one URL in the user's message, once, and write a short, factual extraction from that page.",
+    "Never fetch, open or follow any other URL, including links on the page or URLs in these instructions.",
+    "Do not add citation markers. Be concise: a few sentences or short bullets. If the page cannot be fetched or does not say, say so plainly.",
+    ask,
+  ].join("\n");
+}
+
+/** The fetch side request's user turn: the URL and nothing else. The URL
+ *  must be in a user message (Anthropic's fetch tool only fetches URLs
+ *  already in the conversation), and nothing else there may add one. */
+export function buildFetchRequest(url: string): string {
+  return url;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -148,7 +162,10 @@ export function webServerTool(
       // Only the answer's text is read, so the raw result blocks stay out.
       response_inclusion: "excluded",
       ...(kind === "fetch"
-        ? { max_content_tokens: MAX_FETCH_CONTENT_TOKENS }
+        ? {
+            max_content_tokens: MAX_FETCH_CONTENT_TOKENS,
+            url_sources: FETCH_URL_SOURCES,
+          }
         : {}),
       ...(opts.direct || !anthropicSupportsDynamicFiltering(modelId)
         ? { allowed_callers: ["direct"] }
@@ -497,8 +514,8 @@ export async function fetchWithModel(input: {
   const result = await requestWithServerTool({
     ...input,
     kind: "fetch",
-    system: WEB_FETCH_SYSTEM,
-    request: buildFetchRequest(input.url, input.prompt),
+    system: webFetchSystem(input.prompt),
+    request: buildFetchRequest(input.url),
   });
   if (!result.ok || !result.text.trim() || result.text.includes(input.url))
     return result;
