@@ -403,7 +403,7 @@ describe("resolveSessionRunInputs", () => {
 
   test("an incident agent's egress hosts become its web_fetch allowlist", async () => {
     const previousAudit = __setIncidentAuditForTest(() => {});
-    const session = {
+    const session: RunInputsSession = {
       ...plain,
       id: "os-1",
       mode: "code",

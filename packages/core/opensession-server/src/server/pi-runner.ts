@@ -549,9 +549,28 @@ async function* runPiAttempt(
         webSearchModelId(provider, configuredHaikuFallbackModel()),
       // A side request on the same account picking a turn uses. The
       // session's pin and remembered Claude account apply only when
-      // the request runs on the session's own provider.
-      bind: async (provider, modelID) => {
+      // the request runs on the session's own provider. A usage limit
+      // benches the account the way the turn's own walk does.
+      bind: async (provider, modelID, excluded) => {
         const own = provider === parsed.providerID;
+        const pin = own
+          ? {
+              accountId: opts.accountId,
+              accountStrict: opts.accountStrict,
+              usageCredits: opts.usageCredits,
+            }
+          : { usageCredits: opts.usageCredits };
+        const sideAccounts = new PiAttemptAccounts({
+          walk: { excluded: new Set(), rotate: false },
+          providerID: provider,
+          modelID,
+          opts: pin,
+          accountUser,
+          affinity,
+          claudeSessionKey: own ? claudeSessionKey : undefined,
+          speed,
+          auditBase,
+        });
         const bound = await createPiRuntimeBinding({
           providerID: provider,
           modelID,
@@ -566,16 +585,24 @@ async function* runPiAttempt(
               }
             : {}),
           usageCredits: opts.usageCredits,
-          excludedOpenaiAccountIds: walk.excluded,
+          excludedOpenaiAccountIds: new Set([...walk.excluded, ...excluded]),
+          onAccountEvidence: (evidence) => sideAccounts.onEvidence(evidence),
           dependencies: bindingDependencies,
         });
+        sideAccounts.onEvidence(bound);
         return {
           runtime: bound.runtime,
           model: bound.model,
           usesNativeAnthropic: bound.usesNativeAnthropic,
-          account: evidencePoolRef(bound, "picked")?.masked,
+          account: sideAccounts.pickedAccount?.masked,
+          accountId: sideAccounts.pickedAccount?.id,
+          usageLimited: (error) => sideAccounts.isUsageLimit(error),
+          sideline: (error) => sideAccounts.sideline(error),
+          canRotate: !(own && opts.accountStrict && opts.accountId),
         };
       },
+      // The side request's tokens and cost count toward the turn.
+      onUsage: (usage) => ledger.foldHelperUsage(usage),
       rewritePayload: rewriteAnthropicPromptPayload,
       onAudit: (event) =>
         audit({

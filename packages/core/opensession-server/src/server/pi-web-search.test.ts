@@ -132,6 +132,7 @@ type Script = {
   text?: string;
   stopReason?: string;
   errorMessage?: string;
+  usage?: Record<string, unknown>;
 };
 
 function scriptedRuntime(scripts: Script[]) {
@@ -153,6 +154,7 @@ function scriptedRuntime(scripts: Script[]) {
         content: script.text ? [{ type: "text", text: script.text }] : [],
         stopReason: script.stopReason ?? "stop",
         ...(script.errorMessage ? { errorMessage: script.errorMessage } : {}),
+        ...(script.usage ? { usage: script.usage } : {}),
       };
     },
   };
@@ -1140,5 +1142,88 @@ describe("web_fetch on unattended runs", () => {
       type: "web_search",
       filters: { allowed_domains: ["docs.example.test"] },
     });
+  });
+});
+
+describe("accounts and usage", () => {
+  const limitError = "429 rate_limit_error: usage limit reached";
+
+  function limitedThenOk(canRotate: boolean) {
+    const audits: Record<string, unknown>[] = [];
+    const binds: Array<{ excluded: string[] }> = [];
+    const sidelined: string[] = [];
+    const usages: unknown[] = [];
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "anthropic",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async (_provider, _model, excluded) => {
+        const n = binds.push({ excluded: [...excluded] });
+        const id = `acct-${n}`;
+        return {
+          runtime: scriptedRuntime([
+            n === 1
+              ? { stopReason: "error", errorMessage: limitError }
+              : {
+                  events: response(
+                    [{ type: "text", text: "[A](https://example.test/a)" }],
+                    "end_turn",
+                    1,
+                  ),
+                  usage: {
+                    input: 100,
+                    output: 20,
+                    cacheRead: 5,
+                    cacheWrite: 0,
+                    cost: { total: 0.01 },
+                  },
+                },
+          ]).runtime,
+          model: haiku,
+          usesNativeAnthropic: false,
+          account: id,
+          accountId: id,
+          usageLimited: (error) => error.includes("usage limit"),
+          sideline: () => sidelined.push(id),
+          canRotate,
+        };
+      },
+      onAudit: (event) => audits.push(event),
+      onUsage: (usage) => usages.push(usage),
+      now: () => 0,
+    });
+    return { search, audits, binds, sidelined, usages };
+  }
+
+  test("a usage limit benches the account and moves to another once", async () => {
+    const { search, audits, binds, sidelined, usages } = limitedThenOk(true);
+    const out = await search("acme", signal);
+    expect(out).toContain("[A](https://example.test/a)");
+    expect(binds).toEqual([{ excluded: [] }, { excluded: ["acct-1"] }]);
+    expect(sidelined).toEqual(["acct-1"]);
+    expect(audits).toHaveLength(2);
+    expect(audits[0]).toMatchObject({
+      account: "acct-1",
+      ok: false,
+      sidelined: true,
+    });
+    expect(audits[1]).toMatchObject({
+      account: "acct-2",
+      ok: true,
+      searches: 1,
+      input_tokens: 105,
+      output_tokens: 20,
+      cost_usd: 0.01,
+    });
+    expect(usages).toEqual([
+      { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, cost: { total: 0.01 } },
+    ]);
+  });
+
+  test("a strict pin is benched but never moved", async () => {
+    const { search, binds, sidelined } = limitedThenOk(false);
+    await expect(search("acme", signal)).rejects.toThrow("usage limit");
+    expect(binds).toHaveLength(1);
+    expect(sidelined).toEqual(["acct-1"]);
   });
 });

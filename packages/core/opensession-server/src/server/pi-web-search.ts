@@ -373,10 +373,20 @@ export interface SearchModel {
   provider: string;
 }
 
+/** The usage pi reports on one side request. */
+export interface SideRequestUsage {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: { total?: number };
+}
+
 interface AssistantLike {
   content?: ReadonlyArray<{ type: string; text?: string }>;
   stopReason?: string;
   errorMessage?: string;
+  usage?: SideRequestUsage;
 }
 
 /** The slice of pi's ModelRuntime a search needs. */
@@ -427,6 +437,8 @@ export async function requestWithServerTool(input: {
   basePayload?: (payload: unknown) => unknown;
   /** Domains the server tool may reach (an unattended run's allowlist). */
   allowedDomains?: readonly string[];
+  /** Each request's token usage, failed ones included. */
+  onUsage?: (usage: SideRequestUsage) => void;
 }): Promise<SearchAttemptResult> {
   const { kind, runtime, model, signal } = input;
   const anthropic = model.api === "anthropic-messages";
@@ -469,6 +481,7 @@ export async function requestWithServerTool(input: {
           : {}),
       },
     );
+    if (message.usage) input.onUsage?.(message.usage);
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       const error = message.errorMessage || "the request failed";
       if (
@@ -511,6 +524,7 @@ export async function searchWithModel(input: {
   query: string;
   signal: AbortSignal;
   basePayload?: (payload: unknown) => unknown;
+  onUsage?: (usage: SideRequestUsage) => void;
 }): Promise<SearchAttemptResult> {
   const result = await requestWithServerTool({
     ...input,
@@ -531,6 +545,7 @@ export async function fetchWithModel(input: {
   signal: AbortSignal;
   basePayload?: (payload: unknown) => unknown;
   allowedDomains?: readonly string[];
+  onUsage?: (usage: SideRequestUsage) => void;
 }): Promise<SearchAttemptResult> {
   const result = await requestWithServerTool({
     ...input,
@@ -851,7 +866,18 @@ export interface WebSearchBinding {
    *  prompt rewrite as the turn's own requests. */
   usesNativeAnthropic: boolean;
   account?: string;
+  /** The pool account id, so a rotation can exclude it. */
+  accountId?: string;
+  /** Whether an error is this account's usage limit (pi-usage-limit.ts). */
+  usageLimited?: (error: string) => boolean;
+  /** Bench the account the way a turn does on a usage limit. */
+  sideline?: (error: string) => void;
+  /** False for a strict pin, which never moves to another account. */
+  canRotate?: boolean;
 }
+
+/** Accounts one web tool call moves past after a usage limit, per provider. */
+export const MAX_WEB_ACCOUNT_ROTATIONS = 1;
 
 export interface PiWebToolInput {
   setting: WebSearchSetting;
@@ -859,10 +885,15 @@ export interface PiWebToolInput {
   /** Whether a provider has accounts to serve a side request. */
   connected?: (provider: SearchProviderId) => boolean;
   modelFor: (provider: SearchProviderId) => string;
+  /** Bind a provider account, never one in `excluded` (accounts this call
+   *  already found at their limit). */
   bind: (
     provider: SearchProviderId,
     modelId: string,
+    excluded: ReadonlySet<string>,
   ) => Promise<WebSearchBinding>;
+  /** Each side request's token usage, folded into the turn's usage. */
+  onUsage?: (usage: SideRequestUsage) => void;
   rewritePayload?: (payload: unknown) => unknown;
   onAudit: (event: Record<string, unknown>) => void;
   now?: () => number;
@@ -888,6 +919,7 @@ function runPiWebTool(
     binding: WebSearchBinding,
     basePayload: ((payload: unknown) => unknown) | undefined,
     signal: AbortSignal,
+    onUsage: (usage: SideRequestUsage) => void,
   ) => Promise<SearchAttemptResult>,
   extraAudit: Record<string, unknown>,
 ): Promise<string> {
@@ -908,40 +940,78 @@ function runPiWebTool(
     providers,
     strict,
     async (provider) => {
-      const started = now();
       const modelId = input.modelFor(provider);
-      let account: string | undefined;
-      let result: SearchAttemptResult;
-      try {
-        const binding = await input.bind(provider, modelId);
-        account = binding.account;
-        result = await request(
-          binding,
-          binding.usesNativeAnthropic ? input.rewritePayload : undefined,
-          callSignal,
-        );
-      } catch (error) {
-        result = {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-          uses: 0,
+      const excluded = new Set<string>();
+      for (let rotation = 0; ; rotation++) {
+        const started = now();
+        let account: string | undefined;
+        let binding: WebSearchBinding | undefined;
+        let result: SearchAttemptResult;
+        const used = { input: 0, output: 0, cost: 0, seen: false };
+        const onUsage = (usage: SideRequestUsage) => {
+          used.seen = true;
+          used.input +=
+            (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+          used.output += usage.output ?? 0;
+          used.cost += usage.cost?.total ?? 0;
+          input.onUsage?.(usage);
         };
+        try {
+          binding = await input.bind(provider, modelId, excluded);
+          account = binding.account;
+          result = await request(
+            binding,
+            binding.usesNativeAnthropic ? input.rewritePayload : undefined,
+            callSignal,
+            onUsage,
+          );
+        } catch (error) {
+          result = {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            uses: 0,
+          };
+        }
+        if (!result.ok && callSignal.aborted)
+          result = { ...result, error: abortedMessage(kind, callSignal) };
+        // A usage limit benches the account, as on a turn, and the call
+        // moves to another account of the same provider once.
+        const limited =
+          !result.ok &&
+          !callSignal.aborted &&
+          !!binding?.usageLimited?.(result.error);
+        if (limited) binding?.sideline?.(result.error);
+        input.onAudit({
+          msg: KINDS[kind].name,
+          provider,
+          model: modelId,
+          ...(account ? { account } : {}),
+          [KINDS[kind].auditCount]: result.uses,
+          ...(result.ok ? { continuations: result.continuations } : {}),
+          ok: result.ok && !!result.text.trim(),
+          ms: now() - started,
+          ...(used.seen
+            ? {
+                input_tokens: used.input,
+                output_tokens: used.output,
+                cost_usd: used.cost,
+              }
+            : {}),
+          ...extraAudit,
+          ...(limited ? { sidelined: true } : {}),
+          ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
+        });
+        if (
+          limited &&
+          binding?.canRotate !== false &&
+          binding?.accountId &&
+          rotation < MAX_WEB_ACCOUNT_ROTATIONS
+        ) {
+          excluded.add(binding.accountId);
+          continue;
+        }
+        return result;
       }
-      if (!result.ok && callSignal.aborted)
-        result = { ...result, error: abortedMessage(kind, callSignal) };
-      input.onAudit({
-        msg: KINDS[kind].name,
-        provider,
-        model: modelId,
-        ...(account ? { account } : {}),
-        [KINDS[kind].auditCount]: result.uses,
-        ...(result.ok ? { continuations: result.continuations } : {}),
-        ok: result.ok && !!result.text.trim(),
-        ms: now() - started,
-        ...extraAudit,
-        ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
-      });
-      return result;
     },
     callSignal,
   );
@@ -956,12 +1026,13 @@ export function makePiWebSearch(
       "search",
       input,
       signal,
-      (binding, basePayload, callSignal) =>
+      (binding, basePayload, callSignal, onUsage) =>
         searchWithModel({
           runtime: binding.runtime,
           model: binding.model,
           query,
           signal: callSignal,
+          onUsage,
           ...(basePayload ? { basePayload } : {}),
         }),
       { query_bytes: Buffer.byteLength(query, "utf8") },
@@ -985,11 +1056,12 @@ export function makePiWebFetch(
       "fetch",
       input,
       signal,
-      (binding, basePayload, callSignal) =>
+      (binding, basePayload, callSignal, onUsage) =>
         fetchWithModel({
           runtime: binding.runtime,
           model: binding.model,
           url,
+          onUsage,
           ...(page.prompt ? { prompt: page.prompt } : {}),
           signal: callSignal,
           ...(basePayload ? { basePayload } : {}),
