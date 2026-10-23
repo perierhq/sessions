@@ -15,3 +15,13 @@ test("without a roster, a person's name stays as given", () => {
   __setOwnerRosterForTest([]);
   expect(personOwner(" Adaa ")).toBe("Adaa");
 });
+
+test("an attribution-only identity is no owner", () => {
+  __setOwnerRosterForTest([
+    { name: "Acme Bot", aliases: ["acmebot"], directory: false },
+    { name: "Ada Lovelace" },
+  ]);
+  expect(personOwner("Acme Bot")).toBeNull();
+  expect(personOwner("acmebot")).toBeNull();
+  expect(signalOwner({ owner: "Acme Bot" })).toBe("Ada");
+});

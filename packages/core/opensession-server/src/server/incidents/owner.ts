@@ -33,17 +33,20 @@ function firstName(member: TeamMember): string {
   return member.name.trim().split(" ")[0] ?? "";
 }
 
-/** The roster member `name` refers to: full name, first name, alias or
- *  GitHub login, in any case. */
+/** The directory member `name` refers to: full name, first name, alias or
+ *  GitHub login, in any case. Attribution-only identities (`directory:
+ *  false`) are left out, as they are from the push-key roster (people.ts):
+ *  nobody reads their inbox. */
 function memberFor(name: string, team: TeamMember[]): TeamMember | undefined {
   const key = name.trim().toLowerCase();
   if (!key) return undefined;
   return team.find(
     (m) =>
-      m.name.trim().toLowerCase() === key ||
-      firstName(m).toLowerCase() === key ||
-      m.github?.trim().toLowerCase() === key ||
-      (m.aliases ?? []).some((alias) => alias.trim().toLowerCase() === key),
+      m.directory !== false &&
+      (m.name.trim().toLowerCase() === key ||
+        firstName(m).toLowerCase() === key ||
+        m.github?.trim().toLowerCase() === key ||
+        (m.aliases ?? []).some((alias) => alias.trim().toLowerCase() === key)),
   );
 }
 
@@ -71,7 +74,9 @@ export function resolveOwner(
   if (team.length === 0) return name.trim();
   const member = memberFor(name, team);
   if (!member)
-    return { error: `Nobody on the team is called ${JSON.stringify(name.trim())}` };
+    return {
+      error: `Nobody on the team is called ${JSON.stringify(name.trim())}`,
+    };
   return firstName(member) || name.trim();
 }
 
