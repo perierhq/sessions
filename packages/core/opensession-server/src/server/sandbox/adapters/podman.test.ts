@@ -433,8 +433,11 @@ describe("podman firewall invariants", () => {
       },
     );
     provider = new PodmanProvider(deps(fake, { run }));
-    await Promise.allSettled([provider.ensure({ sessionId: id })]);
+    // The pause waits for the start: the start completes behind its
+    // firewall, then the pause stops it.
+    await provider.ensure({ sessionId: id });
     await pausing;
+    expect(fake.state.running).toBe(false);
     expectNeverUnfiltered(fake);
   });
 
