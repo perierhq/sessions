@@ -72,6 +72,10 @@ export interface FakeOptions {
   nftInstallFails?: boolean;
   selfTest?: Record<string, string>;
   podSurvivesRm?: boolean;
+  /** `pod stop` fails (and leaves everything running). */
+  stopFails?: boolean;
+  /** `pod kill` fails too. */
+  killFails?: boolean;
   podState?: string;
   /** `podman info --format json` output. */
   info?: string;
@@ -98,6 +102,7 @@ export function fakePodman(o: FakeOptions = {}) {
   const calls: { argv: string[]; opts?: PodmanRunOpts }[] = [];
   const state = {
     podExists: o.podExists ?? false,
+    workloadExists: o.podExists ?? false,
     volumeExists: o.podExists ?? false,
     infraRunning: false,
     running: false,
@@ -212,24 +217,43 @@ export function fakePodman(o: FakeOptions = {}) {
       state.podExists = true;
       return ok();
     }
-    if (a === "create") return ok();
+    if (a === "create") {
+      state.workloadExists = true;
+      return ok();
+    }
     if (a === "container" && b === "exists")
-      return state.podExists ? ok() : fail("");
+      return state.podExists && state.workloadExists ? ok() : fail("");
     if (a === "container" && b === "inspect") {
-      const format = argv[3];
-      if (format === "{{.State.Running}}")
-        return ok(state.running ? "true\n" : "false\n");
-      if (format === "{{.NetworkSettings.SandboxKey}}")
-        return ok(state.infraRunning ? `${state.infraNetns}\n` : "\n");
-      if (format === "{{.State.Pid}}") return ok(`${state.workloadPid}\n`);
-      if (format === "{{.State.CgroupPath}}")
-        return ok(
-          `${o.cgroup ?? "/user.slice/user-1001.slice/user@1001.service/user.slice/libpod-x.scope"}\n`,
-        );
+      const target = last;
+      if (target.endsWith("-ws") && !state.workloadExists)
+        return fail(`Error: no such container ${target}`, 125);
+      const fields: Record<string, string> = {
+        ".State.Running": String(state.running),
+        ".NetworkSettings.SandboxKey": state.infraRunning
+          ? state.infraNetns!
+          : "",
+        ".State.Pid": String(state.workloadPid),
+        ".State.StartedAt": state.running ? state.startedAt : "",
+        ".State.CgroupPath":
+          o.cgroup ??
+          "/user.slice/user-1001.slice/user@1001.service/user.slice/libpod-x.scope",
+      };
+      return ok(
+        `${argv[3]!.replace(/\{\{(\.[\w.]+)\}\}/g, (_, key: string) => fields[key] ?? "?")}\n`,
+      );
     }
     if (a === "start") {
       if (last.endsWith("-infra")) startInfra();
-      else startWorkload();
+      else {
+        if (!state.workloadExists)
+          return fail(`Error: no such container ${last}`, 125);
+        startWorkload();
+      }
+      return ok();
+    }
+    if (a === "rm" && argv.includes("-f")) {
+      stopWorkload();
+      state.workloadExists = false;
       return ok();
     }
     if (a === "unshare") {
@@ -266,6 +290,12 @@ export function fakePodman(o: FakeOptions = {}) {
       return ok("");
     }
     if (a === "pod" && b === "stop") {
+      if (o.stopFails) return fail("Error: timed out stopping the pod");
+      stopAll();
+      return ok();
+    }
+    if (a === "pod" && b === "kill") {
+      if (o.killFails) return fail("Error: could not kill the pod");
       stopAll();
       return ok();
     }
@@ -277,6 +307,7 @@ export function fakePodman(o: FakeOptions = {}) {
     if (a === "pod" && b === "rm") {
       stopAll();
       state.podExists = o.podSurvivesRm ?? false;
+      if (!state.podExists) state.workloadExists = false;
       return ok();
     }
     return fail(`unexpected podman ${argv.join(" ")}`, 125);

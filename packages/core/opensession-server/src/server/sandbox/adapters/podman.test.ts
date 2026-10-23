@@ -456,6 +456,78 @@ describe("podman firewall invariants", () => {
     expect(fake.state.running).toBe(true);
   });
 
+  test("a workload restarted out of band is re-verified before the next exec", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    const sandbox = await provider.ensure({ sessionId: id });
+    // Same-uid `podman pod stop` then `podman start <ws>`: the infra comes
+    // back in a fresh namespace with no rules.
+    await fake.run(["pod", "stop", names.pod]);
+    await fake.run(["start", names.workload]);
+    fake.calls.length = 0;
+    fake.state.execs.length = 0;
+    await expect(
+      sandbox.exec(["true"], { workloadIdentity: false }),
+    ).rejects.toThrow(/do not match the policy/);
+    expect(fake.state.execs).toEqual([]);
+    expect(fake.state.running).toBe(false);
+  });
+
+  test("a running workload this gateway never verified is verified once", async () => {
+    // As after a gateway restart: the pod is up, nothing recorded.
+    const fake = fakePodman({ podExists: true, running: true });
+    const id = sessionId();
+    const names = podmanNames(id);
+    const provider = new PodmanProvider(deps(fake));
+    writeRemoteState({
+      sandboxId: names.pod,
+      provider: "podman",
+      sessionId: id,
+      cwd: "/home/ubuntu/worktrees/acme-main",
+      repoId: "acme",
+      branch: "main",
+      createdAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+    });
+    const sandbox = (await provider.get(names.pod))!;
+    await sandbox.exec(["true"], { workloadIdentity: false });
+    let seen = verbs(fake.calls);
+    expect(seen.indexOf("nft list")).toBeGreaterThan(-1);
+    expect(seen.lastIndexOf("exec")).toBeGreaterThan(
+      seen.indexOf("exec selftest"),
+    );
+    fake.calls.length = 0;
+    await sandbox.exec(["true"], { workloadIdentity: false });
+    seen = verbs(fake.calls);
+    expect(seen).not.toContain("nft list");
+    expect(seen).not.toContain("exec selftest");
+    expect(seen).toContain("exec");
+  });
+
+  test("a stop that fails escalates to kill, then removes the workload", async () => {
+    const bad = { "tcp:169.254.169.254:80": "open" };
+    const killed = fakePodman({ selfTest: bad, stopFails: true });
+    await expect(
+      new PodmanProvider(deps(killed)).ensure({ sessionId: sessionId() }),
+    ).rejects.toThrow(/169\.254/);
+    expect(verbs(killed.calls).slice(-2)).toEqual(["pod stop", "pod kill"]);
+    expect(killed.state.running).toBe(false);
+
+    const removed = fakePodman({
+      selfTest: bad,
+      stopFails: true,
+      killFails: true,
+    });
+    await expect(
+      new PodmanProvider(deps(removed)).ensure({ sessionId: sessionId() }),
+    ).rejects.toThrow(/169\.254/);
+    expect(removed.calls.at(-1)!.argv.slice(0, 2)).toEqual(["rm", "-f"]);
+    expect(removed.state.running).toBe(false);
+    expect(removed.state.workloadExists).toBe(false);
+  });
+
   test("concurrent wakes serialize into one firewalled start", async () => {
     const fake = fakePodman();
     const provider = new PodmanProvider(deps(fake));

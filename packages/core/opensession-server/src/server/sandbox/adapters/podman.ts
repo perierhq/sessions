@@ -281,26 +281,64 @@ async function workloadRunning(
   return result.stdout.trim() === "true";
 }
 
-async function stopPod(run: PodmanRunner, names: PodmanNames): Promise<void> {
+/**
+ * The identity of the workload's current run (pid and start time), or null
+ * when it is not running. A run is trusted only once it has been through
+ * the start sequence or a re-verification in this gateway process.
+ */
+async function workloadRun(
+  run: PodmanRunner,
+  names: PodmanNames,
+): Promise<string | null> {
   const result = await run([
-    "pod",
-    "stop",
-    "-t",
-    String(STOP_TIMEOUT_SEC),
-    names.pod,
+    "container",
+    "inspect",
+    "--format",
+    "{{.State.Running}} {{.State.Pid}} {{.State.StartedAt}}",
+    names.workload,
   ]);
-  if (result.exitCode !== 0)
+  if (result.exitCode !== 0) throw failure(`inspect ${names.workload}`, result);
+  const [running, ...rest] = result.stdout.trim().split(" ");
+  return running === "true" ? rest.join(" ") : null;
+}
+
+/** Pod name -> the workload run last verified behind its firewall. Empty
+ *  after a gateway restart, so every running pod is re-verified once. */
+const verifiedRuns = new Map<string, string>();
+
+/**
+ * Stop the pod: `pod stop`, then `pod kill` if that fails. With `remove`
+ * (a failed verification), a pod that survives both has its workload
+ * force-removed; the next ensure recreates it. Returns whether it stopped.
+ */
+async function stopPod(
+  run: PodmanRunner,
+  names: PodmanNames,
+  o: { remove: boolean } = { remove: true },
+): Promise<boolean> {
+  verifiedRuns.delete(names.pod);
+  const attempts = [
+    ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
+    ["pod", "kill", names.pod],
+    ...(o.remove ? [["rm", "-f", "-t", "0", names.workload]] : []),
+  ];
+  for (const argv of attempts) {
+    const result = await run(argv);
+    if (result.exitCode === 0) return true;
     console.warn(
-      `${LOG} could not stop ${names.pod}: ${(result.stderr || result.stdout).trim().slice(0, 200)}`,
+      `${LOG} podman ${argv.slice(0, 2).join(" ")} ${argv.at(-1)} failed: ${(result.stderr || result.stdout).trim().slice(0, 200)}`,
     );
+  }
+  return false;
 }
 
 /**
  * Bring the pod to running behind a verified firewall, then prove it from
  * inside. A stopped workload goes through the whole start sequence; a running
  * one has its namespace re-verified. `selfTest` gets the workload's namespace
- * path. On any failure the pod is stopped and the error rethrown. Returns
- * whether the workload had to be started.
+ * path. On success the workload's run is recorded as verified; on any
+ * failure the pod is stopped (or its workload removed) and the error
+ * rethrown. Returns whether the workload had to be started.
  */
 export async function startFirewalledPod(
   run: PodmanRunner,
@@ -308,6 +346,7 @@ export async function startFirewalledPod(
   egress: EgressInput,
   selfTest: (workloadNetns: string) => Promise<void>,
 ): Promise<boolean> {
+  verifiedRuns.delete(names.pod);
   let started = false;
   try {
     // Renders (and validates) before anything starts.
@@ -323,6 +362,11 @@ export async function startFirewalledPod(
     const workloadNetns = await workloadNetnsPath(run, names.workload);
     await verifyEgressRulesAt(run, workloadNetns, egress);
     await selfTest(workloadNetns);
+    // The run just verified must still be the one running.
+    const identity = await workloadRun(run, names);
+    if (!identity || `/proc/${identity.split(" ")[0]}/ns/net` !== workloadNetns)
+      throw new Error(`${names.workload} restarted during verification`);
+    verifiedRuns.set(names.pod, identity);
     return started;
   } catch (error) {
     await stopPod(run, names);
@@ -809,7 +853,11 @@ export class PodmanProvider implements SandboxProvider {
       ensureStarted:
         ensureStarted ??
         (async () => {
-          if (await workloadRunning(this.run, names)) return;
+          // Trust a running workload only if it is the run this gateway
+          // verified; anything else (restarted out of band, or unseen since
+          // a gateway restart) goes through the sequence again.
+          const current = await workloadRun(this.run, names);
+          if (current && verifiedRuns.get(names.pod) === current) return;
           await this.wake(names);
         }),
     });
@@ -868,11 +916,8 @@ export class PodmanProvider implements SandboxProvider {
     const names = namesForPod(sandboxId);
     await withStartLock(names.pod, async () => {
       if ((await this.run(["pod", "exists", names.pod])).exitCode !== 0) return;
-      await must(
-        this.run,
-        ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
-        `stop ${names.pod}`,
-      );
+      if (!(await stopPod(this.run, names, { remove: false })))
+        throw new Error(`could not stop ${names.pod}`);
     });
   }
 
@@ -886,11 +931,8 @@ export class PodmanProvider implements SandboxProvider {
     return withStartLock(names.pod, async () => {
       if (!stillIdle()) return false;
       if ((await this.status(sandboxId)) !== "running") return false;
-      await must(
-        this.run,
-        ["pod", "stop", "-t", String(STOP_TIMEOUT_SEC), names.pod],
-        `stop ${names.pod}`,
-      );
+      if (!(await stopPod(this.run, names, { remove: false })))
+        throw new Error(`could not stop ${names.pod}`);
       return true;
     });
   }
