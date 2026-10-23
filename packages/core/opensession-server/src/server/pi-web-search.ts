@@ -25,6 +25,8 @@
  * binding and audit wiring is in makePiWebSearch.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { isIP } from "node:net";
+import { isBlockedAddress, isPrivateHostName } from "./shared/network-address";
 import type { WebSearchSetting } from "./web-search-setting";
 
 /** Latest Anthropic server web-search tool version (dynamic filtering on by
@@ -40,6 +42,35 @@ export const MAX_PAUSE_CONTINUATIONS = 3;
 const SEARCH_MAX_TOKENS = 8_192;
 
 export const WEB_SEARCH_TOOL = "web_search";
+export const WEB_FETCH_TOOL = "web_fetch";
+
+/** Latest Anthropic server web-fetch tool version (dynamic filtering,
+ *  cache bypass and `response_inclusion`). */
+export const ANTHROPIC_WEB_FETCH_TYPE = "web_fetch_20260318";
+/** Cap on the provider's own fetches for one call. */
+export const MAX_FETCH_USES = 3;
+/** Fetched text a provider may read per page (approximate tokens). */
+export const MAX_FETCH_CONTENT_TOKENS = 50_000;
+
+/** The two tools built on a provider's server-side web tools. */
+export type WebToolKind = "search" | "fetch";
+
+const KINDS = {
+  search: {
+    name: WEB_SEARCH_TOOL,
+    anthropicType: ANTHROPIC_WEB_SEARCH_TYPE,
+    maxUses: MAX_SEARCH_USES,
+    usageKey: "web_search_requests",
+    auditCount: "searches",
+  },
+  fetch: {
+    name: WEB_FETCH_TOOL,
+    anthropicType: ANTHROPIC_WEB_FETCH_TYPE,
+    maxUses: MAX_FETCH_USES,
+    usageKey: "web_fetch_requests",
+    auditCount: "fetches",
+  },
+} as const;
 
 /** Providers whose server-side search the tool can use, in Automatic order. */
 export type SearchProviderId = "anthropic" | "openai";
@@ -64,6 +95,22 @@ export function buildSearchRequest(query: string): string {
   return `Search the web and answer, with Markdown links to your sources: ${query}`;
 }
 
+/** The system prompt of a fetch side request. */
+export const WEB_FETCH_SYSTEM = [
+  "You are a web reading helper. Fetch the page the user names and write a short, factual extraction of what they ask for.",
+  "Fetch only the URL the user gives. Do not follow other links unless the page itself is only a pointer to the content.",
+  "Do not add citation markers. Be concise: only what was asked, a few sentences or short bullets. If the page cannot be fetched or does not say, say so plainly.",
+].join("\n");
+
+/** The fetch side request's user turn. The URL must be in a user message:
+ *  Anthropic's fetch tool only fetches URLs already in the conversation. */
+export function buildFetchRequest(url: string, prompt?: string): string {
+  const ask = prompt?.trim()
+    ? `Extract: ${prompt.trim()}`
+    : "Summarise the main content.";
+  return `Fetch ${url} and answer from it. ${ask}`;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -83,19 +130,26 @@ export function anthropicSupportsDynamicFiltering(modelId: string): boolean {
   return major > 4 || (major === 4 && minor >= 6);
 }
 
-/** The server-side search tool for a pi model API, or null when it has none. */
-export function webSearchServerTool(
+/** The server-side tool of a kind for a pi model API, or null when the API
+ *  has none. OpenAI has no separate fetch tool: its search tool opens pages,
+ *  so a fetch on OpenAI uses it with the URL in the request. */
+export function webServerTool(
+  kind: WebToolKind,
   api: string | undefined,
   modelId: string,
   opts: { direct?: boolean } = {},
 ): Record<string, unknown> | null {
+  const k = KINDS[kind];
   if (api === "anthropic-messages") {
     return {
-      type: ANTHROPIC_WEB_SEARCH_TYPE,
-      name: WEB_SEARCH_TOOL,
-      max_uses: MAX_SEARCH_USES,
+      type: k.anthropicType,
+      name: k.name,
+      max_uses: k.maxUses,
       // Only the answer's text is read, so the raw result blocks stay out.
       response_inclusion: "excluded",
+      ...(kind === "fetch"
+        ? { max_content_tokens: MAX_FETCH_CONTENT_TOKENS }
+        : {}),
       ...(opts.direct || !anthropicSupportsDynamicFiltering(modelId)
         ? { allowed_callers: ["direct"] }
         : {}),
@@ -105,6 +159,18 @@ export function webSearchServerTool(
     return { type: "web_search" };
   return null;
 }
+
+export const webSearchServerTool = (
+  api: string | undefined,
+  modelId: string,
+  opts: { direct?: boolean } = {},
+) => webServerTool("search", api, modelId, opts);
+
+export const webFetchServerTool = (
+  api: string | undefined,
+  modelId: string,
+  opts: { direct?: boolean } = {},
+) => webServerTool("fetch", api, modelId, opts);
 
 /**
  * Shape a side-request payload: the server tool is its only tool, and a
@@ -135,10 +201,13 @@ export function injectWebSearchTool(
 export class AnthropicResponseCollector {
   blocks: Array<Record<string, unknown>> = [];
   stopReason: string | undefined;
-  searches = 0;
+  /** Server tool uses this response reported (`usageKey`). */
+  uses = 0;
   container: string | undefined;
   private byIndex = new Map<number, Record<string, unknown>>();
   private json = new Map<number, string>();
+
+  constructor(private usageKey = "web_search_requests") {}
 
   onEvent(event: unknown): void {
     if (!isRecord(event)) return;
@@ -211,8 +280,8 @@ export class AnthropicResponseCollector {
 
   private readUsage(usage: unknown): void {
     if (!isRecord(usage) || !isRecord(usage.server_tool_use)) return;
-    const n = usage.server_tool_use.web_search_requests;
-    if (typeof n === "number" && n > this.searches) this.searches = n;
+    const n = usage.server_tool_use[this.usageKey];
+    if (typeof n === "number" && n > this.uses) this.uses = n;
   }
 }
 
@@ -251,6 +320,8 @@ export function findingsFromBlocks(
       for (const c of block.citations) if (isRecord(c)) add(c.url, c.title);
     if (block.type === "web_search_tool_result" && Array.isArray(block.content))
       for (const r of block.content) if (isRecord(r)) add(r.url, r.title);
+    if (block.type === "web_fetch_tool_result" && isRecord(block.content))
+      add(block.content.url, undefined);
   }
   if (!sources.size) return text;
   const list = [...sources]
@@ -302,8 +373,8 @@ export interface SearchRuntime {
 }
 
 export type SearchAttemptResult =
-  | { ok: true; text: string; searches: number; continuations: number }
-  | { ok: false; error: string; searches: number };
+  | { ok: true; text: string; uses: number; continuations: number }
+  | { ok: false; error: string; uses: number };
 
 const piText = (message: AssistantLike) =>
   (message.content ?? [])
@@ -313,45 +384,43 @@ const piText = (message: AssistantLike) =>
     .trim();
 
 /**
- * One provider's search: the side request, its `pause_turn` continuations
- * (Anthropic, up to MAX_PAUSE_CONTINUATIONS, then whatever exists), and one
- * retry with direct calls when the API asks for `allowed_callers`.
+ * One provider's side request with a server tool: the request, its
+ * `pause_turn` continuations (Anthropic, up to MAX_PAUSE_CONTINUATIONS, then
+ * whatever exists), and one retry with direct calls when the API asks for
+ * `allowed_callers`.
  */
-export async function searchWithModel(input: {
+export async function requestWithServerTool(input: {
+  kind: WebToolKind;
   runtime: SearchRuntime;
   model: SearchModel;
-  query: string;
+  system: string;
+  request: string;
   signal: AbortSignal;
   /** Extra payload transform applied first (the Anthropic prompt rewrite). */
   basePayload?: (payload: unknown) => unknown;
 }): Promise<SearchAttemptResult> {
-  const { runtime, model, query, signal } = input;
+  const { kind, runtime, model, signal } = input;
   const anthropic = model.api === "anthropic-messages";
   let direct = false;
-  let retriedDirect = false;
-  let searches = 0;
+  let uses = 0;
   let continuations = 0;
   const paused: Array<Record<string, unknown>> = [];
   let container: string | undefined;
   let fallbackText = "";
   for (;;) {
-    const tool = webSearchServerTool(model.api, model.id, { direct });
+    const tool = webServerTool(kind, model.api, model.id, { direct });
     if (!tool)
-      return { ok: false, error: `${model.api} has no web search`, searches };
-    const collector = new AnthropicResponseCollector();
+      return { ok: false, error: `${model.api} has no web ${kind}`, uses };
+    const collector = new AnthropicResponseCollector(KINDS[kind].usageKey);
     const continuation = paused.length
       ? { content: [...paused], container }
       : undefined;
     const message = await runtime.completeSimple(
       model,
       {
-        systemPrompt: WEB_SEARCH_SYSTEM,
+        systemPrompt: input.system,
         messages: [
-          {
-            role: "user",
-            content: buildSearchRequest(query),
-            timestamp: Date.now(),
-          },
+          { role: "user", content: input.request, timestamp: Date.now() },
         ],
       },
       {
@@ -373,19 +442,17 @@ export async function searchWithModel(input: {
       if (
         anthropic &&
         !direct &&
-        !retriedDirect &&
         !signal.aborted &&
         /allowed_callers/.test(error)
       ) {
         direct = true;
-        retriedDirect = true;
         continue;
       }
-      return { ok: false, error, searches };
+      return { ok: false, error, uses };
     }
-    searches += collector.searches;
+    uses += collector.uses;
     if (!anthropic)
-      return { ok: true, text: piText(message), searches, continuations };
+      return { ok: true, text: piText(message), uses, continuations };
     if (!collector.blocks.length) fallbackText = piText(message);
     paused.push(...collector.blocks);
     container = collector.container ?? container;
@@ -398,8 +465,74 @@ export async function searchWithModel(input: {
       continue;
     }
     const text = findingsFromBlocks(paused) || fallbackText;
-    return { ok: true, text, searches, continuations };
+    return { ok: true, text, uses, continuations };
   }
+}
+
+/** A web search on one provider. */
+export function searchWithModel(input: {
+  runtime: SearchRuntime;
+  model: SearchModel;
+  query: string;
+  signal: AbortSignal;
+  basePayload?: (payload: unknown) => unknown;
+}): Promise<SearchAttemptResult> {
+  return requestWithServerTool({
+    ...input,
+    kind: "search",
+    system: WEB_SEARCH_SYSTEM,
+    request: buildSearchRequest(input.query),
+  });
+}
+
+/** A page fetch on one provider. The answer always links its source. */
+export async function fetchWithModel(input: {
+  runtime: SearchRuntime;
+  model: SearchModel;
+  url: string;
+  prompt?: string;
+  signal: AbortSignal;
+  basePayload?: (payload: unknown) => unknown;
+}): Promise<SearchAttemptResult> {
+  const result = await requestWithServerTool({
+    ...input,
+    kind: "fetch",
+    system: WEB_FETCH_SYSTEM,
+    request: buildFetchRequest(input.url, input.prompt),
+  });
+  if (!result.ok || !result.text.trim() || result.text.includes(input.url))
+    return result;
+  return {
+    ...result,
+    text: `${result.text.trim()}\n\nSource: [${input.url}](${input.url})`,
+  };
+}
+
+/**
+ * The URL a fetch may ask a provider for: http or https, and not a host
+ * that names something internal (an IP literal in a private, loopback,
+ * link-local or tailnet range, localhost, *.internal, *.local, *.ts.net, a
+ * single-label name). The name is not resolved: the provider fetches, and
+ * the point is that an internal hostname never leaves in a request.
+ */
+export function checkFetchUrl(raw: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Not a URL: ${raw}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new Error(
+      `Only http and https URLs can be fetched (got ${url.protocol})`,
+    );
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (!host) throw new Error("The URL has no host.");
+  if (isIP(host) ? isBlockedAddress(host) : isPrivateHostName(host))
+    throw new Error(
+      `Refusing to fetch a private or internal address (${host}). web_fetch reads public pages only.`,
+    );
+  return url;
 }
 
 /** The providers one call may use, in order, and whether the choice is
@@ -421,15 +554,20 @@ export function resolveSearchProviders(
   };
 }
 
-/** Try the providers in order; throw a tool error when none found anything. */
-export async function runWebSearch(
+/** Try the providers in order; throw a tool error when none produced an
+ *  answer. */
+export async function runWebTool(
+  kind: WebToolKind,
   providers: readonly SearchProviderId[],
   strict: boolean,
   attempt: (provider: SearchProviderId) => Promise<SearchAttemptResult>,
 ): Promise<string> {
+  const verb = kind;
   if (!providers.length)
     throw new Error(
-      "No connected provider can search the web. Connect Claude or OpenAI in Settings, or fetch a known URL instead.",
+      kind === "search"
+        ? "No connected provider can search the web. Connect Claude or OpenAI in Settings, or fetch a known URL instead."
+        : "No connected provider can fetch web pages. Connect Claude or OpenAI in Settings.",
     );
   const errors: string[] = [];
   for (const provider of providers) {
@@ -441,38 +579,52 @@ export async function runWebSearch(
       result = {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
-        searches: 0,
+        uses: 0,
       };
     }
+    let reason: string;
     if (result.ok) {
       const findings = formatFindings(result.text);
       if (findings) return findings;
-      errors.push(`${label}: returned no findings`);
+      reason = "returned no findings";
     } else {
-      errors.push(`${label}: ${result.error}`);
+      reason = result.error;
     }
+    errors.push(`${label}: ${reason}`);
     if (strict) {
       throw new Error(
-        `The web search provider chosen in Settings (${label}) could not search: ${errors[0]!.slice(label.length + 2)}. Choose another provider in Settings, or fetch a known URL instead.`,
+        `The web ${verb} provider chosen in Settings (${label}) could not ${verb}: ${reason}. Choose another provider in Settings${kind === "search" ? ", or fetch a known URL instead" : ""}.`,
       );
     }
   }
   throw new Error(
-    `Web search failed on every provider (${errors.join("; ")}). Try again later, or fetch a known URL instead.`,
+    `Web ${verb} failed on every provider (${errors.join("; ")}). Try again later.`,
   );
 }
 
-/** Whether a run gets the tool: not when Settings turns it off or the run's
- *  policy denies it (the incident verifier). */
-export function webSearchEnabled(
+export const runWebSearch = (
+  providers: readonly SearchProviderId[],
+  strict: boolean,
+  attempt: (provider: SearchProviderId) => Promise<SearchAttemptResult>,
+) => runWebTool("search", providers, strict, attempt);
+
+/** Whether a run gets a web tool: not when Settings turns web tools off or
+ *  the run's policy denies it (the incident verifier). */
+export function webToolEnabled(
+  tool: typeof WEB_SEARCH_TOOL | typeof WEB_FETCH_TOOL,
   setting: WebSearchSetting,
   disables: Record<string, false>,
 ): boolean {
-  return setting !== "off" && !(WEB_SEARCH_TOOL in disables);
+  return setting !== "off" && !(tool in disables);
 }
 
-const DESCRIPTION =
-  "Search the public web through one of the connected AI providers and get back a short written answer with Markdown links to its sources. Use it for current, public facts; to read a page whose URL you already know, fetch it instead.";
+export const webSearchEnabled = (
+  setting: WebSearchSetting,
+  disables: Record<string, false>,
+) => webToolEnabled(WEB_SEARCH_TOOL, setting, disables);
+
+const SEARCH_DESCRIPTION =
+  "Search the public web through one of the connected AI providers and get back a short written answer with Markdown links to its sources. Use it for current, public facts; to read a page whose URL you already know, use web_fetch.";
 
 /** The pi tool. `search` resolves the provider and makes the side request. */
 export function createWebSearchTool(deps: {
@@ -481,9 +633,9 @@ export function createWebSearchTool(deps: {
   return {
     name: WEB_SEARCH_TOOL,
     label: "Web search",
-    description: DESCRIPTION,
+    description: SEARCH_DESCRIPTION,
     promptGuidelines: [
-      "Use web_search for current or public facts you cannot find in the workspace (releases, docs, errors, prices). When you already have a URL, fetch it with a command instead of searching.",
+      "Use web_search for current or public facts you cannot find in the workspace (releases, docs, errors, prices). When you already have a URL, read it with web_fetch instead of searching.",
     ],
     parameters: {
       type: "object",
@@ -511,6 +663,59 @@ export function createWebSearchTool(deps: {
   };
 }
 
+const FETCH_DESCRIPTION =
+  "Read one public web page (HTML or PDF) through one of the connected AI providers and get back a short extraction with a link to the page. Give the URL and, optionally, what to extract. Public http(s) pages only.";
+
+/** The pi tool. The URL is checked before anything is sent. */
+export function createWebFetchTool(deps: {
+  fetch: (
+    page: { url: string; prompt?: string },
+    signal: AbortSignal,
+  ) => Promise<string>;
+}): ToolDefinition<any, any, any> {
+  return {
+    name: WEB_FETCH_TOOL,
+    label: "Web fetch",
+    description: FETCH_DESCRIPTION,
+    promptGuidelines: [
+      "Use web_fetch to read a public page whose URL you already have (docs, a changelog, an issue); use web_search when you need to find the page first.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "The http or https URL of the page to read.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "What to extract from the page. Optional; without it you get a short summary.",
+        },
+      },
+      required: ["url"],
+    } as any,
+    async execute(_toolCallId, params, signal) {
+      const p = params as { url?: unknown; prompt?: unknown };
+      const raw = String(p?.url ?? "").trim();
+      if (!raw) throw new Error("A URL is required.");
+      const url = checkFetchUrl(raw).href;
+      const prompt =
+        typeof p?.prompt === "string" && p.prompt.trim()
+          ? p.prompt.trim()
+          : undefined;
+      const findings = await deps.fetch(
+        { url, ...(prompt ? { prompt } : {}) },
+        signal ?? new AbortController().signal,
+      );
+      return {
+        content: [{ type: "text" as const, text: findings }],
+        details: {},
+      };
+    },
+  };
+}
+
 /** The small model a provider searches with: Haiku for Claude, the
  *  configured Haiku fallback tier for OpenAI. */
 export function webSearchModelId(
@@ -521,7 +726,7 @@ export function webSearchModelId(
   return openaiSmallModel?.replace(/^pi\/openai\//, "") || "gpt-6-luna";
 }
 
-/** What a provider binding gives one search: pi's runtime bound to an
+/** What a provider binding gives one request: pi's runtime bound to an
  *  account, the model, and the account label for the audit. */
 export interface WebSearchBinding {
   runtime: SearchRuntime;
@@ -532,13 +737,7 @@ export interface WebSearchBinding {
   account?: string;
 }
 
-/**
- * The `search` a run's tool calls: resolve the providers from the setting,
- * bind each in turn (the same account picking a turn uses) and make the side
- * request. Every attempt is audited with the provider, the account and the
- * number of searches it used; the query text is never recorded.
- */
-export function makePiWebSearch(input: {
+export interface PiWebToolInput {
   setting: WebSearchSetting;
   sessionProvider: string | undefined;
   modelFor: (provider: SearchProviderId) => string;
@@ -549,50 +748,103 @@ export function makePiWebSearch(input: {
   rewritePayload?: (payload: unknown) => unknown;
   onAudit: (event: Record<string, unknown>) => void;
   now?: () => number;
-}): (query: string, signal: AbortSignal) => Promise<string> {
+}
+
+/**
+ * Resolve the providers from the setting, bind each in turn (the same
+ * account picking a turn uses) and run `request` on it. Every attempt is
+ * audited with the provider, the account and the server tool uses; the
+ * query, URL and prompt are never recorded.
+ */
+function runPiWebTool(
+  kind: WebToolKind,
+  input: PiWebToolInput,
+  request: (
+    binding: WebSearchBinding,
+    basePayload: ((payload: unknown) => unknown) | undefined,
+  ) => Promise<SearchAttemptResult>,
+  extraAudit: Record<string, unknown>,
+): Promise<string> {
   const now = input.now ?? Date.now;
-  return (query, signal) => {
-    const { providers, strict } = resolveSearchProviders(
-      input.sessionProvider,
-      input.setting,
-    );
-    return runWebSearch(providers, strict, async (provider) => {
-      const started = now();
-      const modelId = input.modelFor(provider);
-      let account: string | undefined;
-      let result: SearchAttemptResult;
-      try {
-        const binding = await input.bind(provider, modelId);
-        account = binding.account;
-        result = await searchWithModel({
+  const { providers, strict } = resolveSearchProviders(
+    input.sessionProvider,
+    input.setting,
+  );
+  return runWebTool(kind, providers, strict, async (provider) => {
+    const started = now();
+    const modelId = input.modelFor(provider);
+    let account: string | undefined;
+    let result: SearchAttemptResult;
+    try {
+      const binding = await input.bind(provider, modelId);
+      account = binding.account;
+      result = await request(
+        binding,
+        binding.usesNativeAnthropic ? input.rewritePayload : undefined,
+      );
+    } catch (error) {
+      result = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        uses: 0,
+      };
+    }
+    input.onAudit({
+      msg: KINDS[kind].name,
+      provider,
+      model: modelId,
+      ...(account ? { account } : {}),
+      [KINDS[kind].auditCount]: result.uses,
+      ...(result.ok ? { continuations: result.continuations } : {}),
+      ok: result.ok && !!result.text.trim(),
+      ms: now() - started,
+      ...extraAudit,
+      ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
+    });
+    return result;
+  });
+}
+
+/** The `search` a run's web_search calls. */
+export function makePiWebSearch(
+  input: PiWebToolInput,
+): (query: string, signal: AbortSignal) => Promise<string> {
+  return (query, signal) =>
+    runPiWebTool(
+      "search",
+      input,
+      (binding, basePayload) =>
+        searchWithModel({
           runtime: binding.runtime,
           model: binding.model,
           query,
           signal,
-          ...(binding.usesNativeAnthropic && input.rewritePayload
-            ? { basePayload: input.rewritePayload }
-            : {}),
-        });
-      } catch (error) {
-        result = {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-          searches: 0,
-        };
-      }
-      input.onAudit({
-        msg: "web_search",
-        provider,
-        model: modelId,
-        ...(account ? { account } : {}),
-        searches: result.searches,
-        ...(result.ok ? { continuations: result.continuations } : {}),
-        ok: result.ok && !!result.text.trim(),
-        ms: now() - started,
-        query_bytes: Buffer.byteLength(query, "utf8"),
-        ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
-      });
-      return result;
-    });
-  };
+          ...(basePayload ? { basePayload } : {}),
+        }),
+      { query_bytes: Buffer.byteLength(query, "utf8") },
+    );
+}
+
+/** The `fetch` a run's web_fetch calls. */
+export function makePiWebFetch(
+  input: PiWebToolInput,
+): (
+  page: { url: string; prompt?: string },
+  signal: AbortSignal,
+) => Promise<string> {
+  return (page, signal) =>
+    runPiWebTool(
+      "fetch",
+      input,
+      (binding, basePayload) =>
+        fetchWithModel({
+          runtime: binding.runtime,
+          model: binding.model,
+          url: checkFetchUrl(page.url).href,
+          ...(page.prompt ? { prompt: page.prompt } : {}),
+          signal,
+          ...(basePayload ? { basePayload } : {}),
+        }),
+      {},
+    );
 }

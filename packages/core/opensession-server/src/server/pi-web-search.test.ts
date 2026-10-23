@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   ANTHROPIC_WEB_SEARCH_TYPE,
+  MAX_FETCH_CONTENT_TOKENS,
+  checkFetchUrl,
+  createWebFetchTool,
+  fetchWithModel,
+  makePiWebFetch,
+  runWebTool,
+  webFetchServerTool,
+  webToolEnabled,
   MAX_FINDINGS_CHARS,
   MAX_PAUSE_CONTINUATIONS,
   anthropicSupportsDynamicFiltering,
@@ -256,7 +264,7 @@ describe("the Anthropic request loop", () => {
         { type: "text", text: "Still looking." },
       ],
     });
-    expect(result).toMatchObject({ ok: true, searches: 4, continuations: 2 });
+    expect(result).toMatchObject({ ok: true, uses: 4, continuations: 2 });
     if (!result.ok) throw new Error("expected findings");
     expect(result.text).toContain("Acme ships on Fridays.");
     expect(result.text).toContain("[Acme](https://example.test/acme)");
@@ -307,7 +315,7 @@ describe("the Anthropic request loop", () => {
       (payloads[1]!.tools as Array<Record<string, unknown>>)[0]!
         .allowed_callers,
     ).toEqual(["direct"]);
-    expect(result).toMatchObject({ ok: true, text: "Done.", searches: 1 });
+    expect(result).toMatchObject({ ok: true, text: "Done.", uses: 1 });
   });
 
   test("other errors fail the attempt without a retry", async () => {
@@ -321,7 +329,7 @@ describe("the Anthropic request loop", () => {
       signal,
     });
     expect(payloads).toHaveLength(1);
-    expect(result).toEqual({ ok: false, error: "529 overloaded", searches: 0 });
+    expect(result).toEqual({ ok: false, error: "529 overloaded", uses: 0 });
   });
 
   test("OpenAI reads pi's text and makes one request", async () => {
@@ -449,8 +457,8 @@ describe("provider choice", () => {
       async (p) => {
         tried.push(p);
         return p === "anthropic"
-          ? { ok: false, error: "no usable Claude account", searches: 0 }
-          : { ok: true, text: "found", searches: 1, continuations: 0 };
+          ? { ok: false, error: "no usable Claude account", uses: 0 }
+          : { ok: true, text: "found", uses: 1, continuations: 0 };
       },
     );
     expect(tried).toEqual(["anthropic", "openai"]);
@@ -464,7 +472,7 @@ describe("provider choice", () => {
       return {
         ok: false,
         error: "web search is not on this plan",
-        searches: 0,
+        uses: 0,
       };
     });
     await expect(run).rejects.toThrow(
@@ -478,7 +486,7 @@ describe("provider choice", () => {
       runWebSearch(["anthropic", "openai"], false, async () => ({
         ok: true,
         text: " ",
-        searches: 0,
+        uses: 0,
         continuations: 0,
       })),
     ).rejects.toThrow(
@@ -607,5 +615,215 @@ describe("makePiWebSearch", () => {
       "The web search provider chosen in Settings (Claude) could not search: no Claude accounts configured.",
     );
     expect(bound).toEqual(["anthropic"]);
+  });
+});
+
+describe("web_fetch", () => {
+  test("Anthropic gets the newest fetch tool, capped and without raw results", () => {
+    expect(
+      webFetchServerTool("anthropic-messages", "claude-haiku-5-5"),
+    ).toEqual({
+      type: "web_fetch_20260318",
+      name: "web_fetch",
+      max_uses: 3,
+      response_inclusion: "excluded",
+      max_content_tokens: MAX_FETCH_CONTENT_TOKENS,
+    });
+    expect(
+      webFetchServerTool("anthropic-messages", "claude-haiku-4-5")
+        ?.allowed_callers,
+    ).toEqual(["direct"]);
+    expect(webFetchServerTool("openai-codex-responses", "gpt-6-luna")).toEqual({
+      type: "web_search",
+    });
+  });
+
+  test("refuses non-web schemes and internal hosts before any request", () => {
+    for (const url of [
+      "ftp://example.test/a",
+      "file:///etc/passwd",
+      "not a url",
+      "http://127.0.0.1/",
+      "http://[::1]:8080/",
+      "http://169.254.169.254/latest/meta-data",
+      "http://10.1.2.3/",
+      "http://192.168.0.10/",
+      "http://100.101.102.103/",
+      "http://[fd00::1]/",
+      "http://localhost:3000/",
+      "https://db.internal/",
+      "https://printer.local/",
+      "https://box.acme.ts.net/",
+      "https://intranet-server/",
+    ])
+      expect(() => checkFetchUrl(url)).toThrow();
+    expect(checkFetchUrl("https://example.test/a?b=1").href).toBe(
+      "https://example.test/a?b=1",
+    );
+  });
+
+  test("the URL is in the user message; the answer links its source", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      {
+        events: response(
+          [
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_f",
+              name: "web_fetch",
+              input: { url: "https://example.test/doc" },
+            },
+            { type: "text", text: "The doc says hello. " },
+          ],
+          "pause_turn",
+        ),
+      },
+      {
+        events: [
+          ...response([{ type: "text", text: "Done." }], "end_turn").slice(
+            0,
+            -1,
+          ),
+          {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn" },
+            usage: { server_tool_use: { web_fetch_requests: 1 } },
+          },
+        ],
+      },
+    ]);
+    const seen: string[] = [];
+    const recording: SearchRuntime = {
+      completeSimple: (model, context, options) => {
+        seen.push(context.messages[0]!.content);
+        return runtime.completeSimple(model, context, options);
+      },
+    };
+    const result = await fetchWithModel({
+      runtime: recording,
+      model: haiku,
+      url: "https://example.test/doc",
+      prompt: "the greeting",
+      signal,
+    });
+    expect(seen[0]).toContain("https://example.test/doc");
+    expect(seen[0]).toContain("the greeting");
+    expect(payloads[0]!.tools).toEqual([
+      webFetchServerTool("anthropic-messages", "claude-haiku-5-5"),
+    ]);
+    expect(payloads).toHaveLength(2);
+    expect(result).toMatchObject({ ok: true, uses: 1, continuations: 1 });
+    if (!result.ok) throw new Error("expected findings");
+    expect(result.text).toBe(
+      "The doc says hello. Done.\n\nSource: [https://example.test/doc](https://example.test/doc)",
+    );
+  });
+
+  test("a 400 asking for allowed_callers retries the fetch once with direct calls", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      { stopReason: "error", errorMessage: "400 allowed_callers required" },
+      {
+        events: response(
+          [{ type: "text", text: "From [the page](https://example.test/x)." }],
+          "end_turn",
+        ),
+      },
+    ]);
+    const result = await fetchWithModel({
+      runtime,
+      model: haiku,
+      url: "https://example.test/x",
+      signal,
+    });
+    expect(
+      (payloads[1]!.tools as Array<Record<string, unknown>>)[0]!
+        .allowed_callers,
+    ).toEqual(["direct"]);
+    expect(result).toMatchObject({
+      ok: true,
+      text: "From [the page](https://example.test/x).",
+    });
+  });
+
+  test("a strict provider that cannot fetch is a clear error", async () => {
+    await expect(
+      runWebTool("fetch", ["anthropic"], true, async () => ({
+        ok: false,
+        error: "url_not_accessible",
+        uses: 0,
+      })),
+    ).rejects.toThrow(
+      "The web fetch provider chosen in Settings (Claude) could not fetch: url_not_accessible.",
+    );
+  });
+
+  test("the tool checks the URL, then fetches; audits count fetches without the URL", async () => {
+    const audits: Record<string, unknown>[] = [];
+    const fetch = makePiWebFetch({
+      setting: "auto",
+      sessionProvider: "anthropic",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async () => ({
+        runtime: scriptedRuntime([
+          {
+            events: [
+              ...response(
+                [{ type: "text", text: "Hi [p](https://example.test/p)" }],
+                "end_turn",
+              ).slice(0, -1),
+              {
+                type: "message_delta",
+                delta: { stop_reason: "end_turn" },
+                usage: { server_tool_use: { web_fetch_requests: 2 } },
+              },
+            ],
+          },
+        ]).runtime,
+        model: haiku,
+        usesNativeAnthropic: true,
+        account: "acme (12345678, claude)",
+      }),
+      onAudit: (event) => audits.push(event),
+      now: () => 0,
+    });
+    const tool = createWebFetchTool({ fetch });
+    expect(tool.name).toBe("web_fetch");
+    expect(Object.keys((tool.parameters as any).properties)).toEqual([
+      "url",
+      "prompt",
+    ]);
+    await expect(
+      (tool.execute as any)("id", { url: "http://localhost/secret" }, signal),
+    ).rejects.toThrow("private");
+    expect(audits).toEqual([]);
+    const out = await (tool.execute as any)(
+      "id",
+      { url: "https://example.test/p" },
+      signal,
+    );
+    expect(out.content[0].text).toBe("Hi [p](https://example.test/p)");
+    expect(audits).toEqual([
+      {
+        msg: "web_fetch",
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        account: "acme (12345678, claude)",
+        fetches: 2,
+        continuations: 0,
+        ok: true,
+        ms: 0,
+      },
+    ]);
+  });
+
+  test("Off, or a policy denial, removes it", () => {
+    expect(webToolEnabled("web_fetch", "auto", {})).toBe(true);
+    expect(webToolEnabled("web_fetch", "off", {})).toBe(false);
+    expect(webToolEnabled("web_fetch", "auto", { web_fetch: false })).toBe(
+      false,
+    );
+    expect(webToolEnabled("web_search", "auto", { web_fetch: false })).toBe(
+      true,
+    );
   });
 });
