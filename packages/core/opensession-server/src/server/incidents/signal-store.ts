@@ -298,9 +298,11 @@ export async function updateSignal(
   let failure: { error: string } | undefined;
   let impactChanged = false;
   let impactFromSource: string[] | undefined;
+  let ownerChange: { from: string | null; to: string | null } | undefined;
   const updated = await signalDocuments().update<Signal>(id, (value) => {
     failure = undefined;
     impactFromSource = undefined;
+    ownerChange = undefined;
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
@@ -340,6 +342,8 @@ export async function updateSignal(
     // stored without an owner the person it already fell back to.
     normalized.owner ||= signalOwner(value) || undefined;
     const next = compact(normalized);
+    if ((value.owner ?? null) !== (next.owner ?? null))
+      ownerChange = { from: value.owner ?? null, to: next.owner ?? null };
     impactChanged =
       JSON.stringify(next.impact) !== JSON.stringify(value.impact);
     // A hook secret is never rotated, not even by switching the source to
@@ -363,6 +367,8 @@ export async function updateSignal(
     ...(impactFromSource
       ? { impactSecrets: { from: "source", fields: impactFromSource } }
       : {}),
+    // Who the signal, and the incidents it opens, moved from and to.
+    ...(ownerChange ? { owner: ownerChange } : {}),
   });
   notifyWrite(updated);
   return updated;

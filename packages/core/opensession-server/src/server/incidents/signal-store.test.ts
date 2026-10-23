@@ -409,6 +409,25 @@ test("a signal is owned by a person, never by the automation principal", async (
     expect(
       await updateSignal(named.id, { owner: "Automation" }, "Bo", person),
     ).toEqual({ error: "The owner must be a person" });
+    // The audit names who the signal moved from and to.
+    const updates = kit.audits.filter(
+      (a) => a.kind === "incident_signal_updated" && a.signalId === named.id,
+    );
+    expect(updates).toEqual([
+      {
+        kind: "incident_signal_updated",
+        signalId: named.id,
+        by: "Automation",
+        fields: ["name"],
+      },
+      {
+        kind: "incident_signal_updated",
+        signalId: named.id,
+        by: "Bo",
+        fields: ["owner"],
+        owner: { from: "Bo", to: "Ada" },
+      },
+    ]);
   } finally {
     __setOwnerRosterForTest(undefined);
   }
