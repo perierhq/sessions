@@ -86,9 +86,11 @@ import {
 } from "./pi-session-setup";
 import { PiSteerController } from "./pi-steer-controller";
 import {
+  makePiWebFetch,
   makePiWebSearch,
-  webSearchEnabled,
+  type PiWebToolInput,
   webSearchModelId,
+  webToolEnabled,
 } from "./pi-web-search";
 import { readWebSearchSetting } from "./web-search-setting";
 import { configuredHaikuFallbackModel } from "./models";
@@ -512,6 +514,50 @@ async function* runPiAttempt(
     const boundary: PiSteerBoundary = { pending: false };
     // Settings › Models › Web search, read fresh for every turn.
     const webSearchSetting = await readWebSearchSetting();
+    const webToolInput: PiWebToolInput = {
+      setting: webSearchSetting,
+      sessionProvider: parsed.providerID,
+      modelFor: (provider) =>
+        webSearchModelId(provider, configuredHaikuFallbackModel()),
+      // A side request on the same account picking a turn uses. The
+      // session's pin and remembered Claude account apply only when
+      // the request runs on the session's own provider.
+      bind: async (provider, modelID) => {
+        const own = provider === parsed.providerID;
+        const bound = await createPiRuntimeBinding({
+          providerID: provider,
+          modelID,
+          affinityKey: affinity,
+          claudeSessionKey: own ? claudeSessionKey : undefined,
+          unifiedSessionId: unifiedSessionId || runKey,
+          accountUser,
+          ...(own
+            ? {
+                accountId: opts.accountId,
+                accountStrict: opts.accountStrict,
+              }
+            : {}),
+          usageCredits: opts.usageCredits,
+          excludedOpenaiAccountIds: walk.excluded,
+          dependencies: bindingDependencies,
+        });
+        return {
+          runtime: bound.runtime,
+          model: bound.model,
+          usesNativeAnthropic: bound.usesNativeAnthropic,
+          account: evidencePoolRef(bound, "picked")?.masked,
+        };
+      },
+      rewritePayload: rewriteAnthropicPromptPayload,
+      onAudit: (event) =>
+        audit({
+          ...event,
+          request_id: requestId,
+          run_key: runKey,
+          session_id: journal?.osSessionId,
+          run_kind: journal?.kind,
+        }),
+    };
     const { customTools, codemode } = buildPiToolset({
       sdk,
       opts,
@@ -528,51 +574,11 @@ async function* runPiAttempt(
       privateTermsGuard,
       abort,
       boundary,
-      webSearch: webSearchEnabled(webSearchSetting, policy.disables)
-        ? makePiWebSearch({
-            setting: webSearchSetting,
-            sessionProvider: parsed.providerID,
-            modelFor: (provider) =>
-              webSearchModelId(provider, configuredHaikuFallbackModel()),
-            // A side request on the same account picking a turn uses. The
-            // session's pin and remembered Claude account apply only when
-            // the search runs on the session's own provider.
-            bind: async (provider, modelID) => {
-              const own = provider === parsed.providerID;
-              const bound = await createPiRuntimeBinding({
-                providerID: provider,
-                modelID,
-                affinityKey: affinity,
-                claudeSessionKey: own ? claudeSessionKey : undefined,
-                unifiedSessionId: unifiedSessionId || runKey,
-                accountUser,
-                ...(own
-                  ? {
-                      accountId: opts.accountId,
-                      accountStrict: opts.accountStrict,
-                    }
-                  : {}),
-                usageCredits: opts.usageCredits,
-                excludedOpenaiAccountIds: walk.excluded,
-                dependencies: bindingDependencies,
-              });
-              return {
-                runtime: bound.runtime,
-                model: bound.model,
-                usesNativeAnthropic: bound.usesNativeAnthropic,
-                account: evidencePoolRef(bound, "picked")?.masked,
-              };
-            },
-            rewritePayload: rewriteAnthropicPromptPayload,
-            onAudit: (event) =>
-              audit({
-                ...event,
-                request_id: requestId,
-                run_key: runKey,
-                session_id: journal?.osSessionId,
-                run_kind: journal?.kind,
-              }),
-          })
+      webSearch: webToolEnabled("web_search", webSearchSetting, policy.disables)
+        ? makePiWebSearch(webToolInput)
+        : undefined,
+      webFetch: webToolEnabled("web_fetch", webSearchSetting, policy.disables)
+        ? makePiWebFetch(webToolInput)
         : undefined,
     });
 
