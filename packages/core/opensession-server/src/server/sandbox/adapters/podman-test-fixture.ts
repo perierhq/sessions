@@ -65,6 +65,9 @@ function selfTestRows(script: string, override: Record<string, string>) {
 export interface FakeOptions {
   podExists?: boolean;
   running?: boolean;
+  /** For a pod that starts out running: whether its namespace already holds
+   *  the egress rules (default true). */
+  rulesInstalled?: boolean;
   imageExists?: boolean;
   nftInstallFails?: boolean;
   selfTest?: Record<string, string>;
@@ -76,17 +79,104 @@ export interface FakeOptions {
   cgroup?: string;
 }
 
-/** A stateful stand-in for rootless podman: one pod, its infra and its
- *  workload. Records every argv and the options it was run with. */
+/** An nft listing of a namespace with no ruleset loaded. */
+const EMPTY_LISTING =
+  '{"nftables": [{"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}}]}';
+
+/**
+ * A stateful stand-in for rootless podman: one pod, its infra and its
+ * workload. Records every argv and the options it was run with.
+ *
+ * Network namespaces are modelled: every infra start (explicit, or the
+ * auto-start podman does when the workload starts with the infra stopped)
+ * makes a fresh namespace with no rules; nft installs into one namespace and
+ * lists only that namespace's rules; a namespace and its rules go away when
+ * nothing runs in it. Each exec records whether the workload's namespace held
+ * the rules at that moment.
+ */
 export function fakePodman(o: FakeOptions = {}) {
   const calls: { argv: string[]; opts?: PodmanRunOpts }[] = [];
   const state = {
     podExists: o.podExists ?? false,
     volumeExists: o.podExists ?? false,
-    infraRunning: o.running ?? false,
-    running: o.running ?? false,
+    infraRunning: false,
+    running: false,
     packets: 0,
+    netnsSeq: 0,
+    infraNetns: null as string | null,
+    workloadNetns: null as string | null,
+    workloadPid: 0,
+    workloadStarts: 0,
+    startedAt: "",
+    /** Namespaces holding the egress ruleset. */
+    rules: new Set<string>(),
+    /** Every exec into the workload, with whether its namespace was
+     *  filtered when it ran. */
+    execs: [] as { script: string; filtered: boolean }[],
   };
+  const forget = (netns: string | null) => {
+    if (!netns) return;
+    const held =
+      (state.infraRunning && state.infraNetns === netns) ||
+      (state.running && state.workloadNetns === netns);
+    if (!held) state.rules.delete(netns);
+  };
+  const startInfra = () => {
+    if (state.infraRunning) return;
+    state.netnsSeq += 1;
+    state.infraNetns =
+      state.netnsSeq === 1 ? NETNS : `${NETNS}-${state.netnsSeq}`;
+    state.infraRunning = true;
+  };
+  const startWorkload = () => {
+    if (state.running) return;
+    // Real podman auto-starts a stopped infra, in a fresh namespace with no
+    // rules.
+    startInfra();
+    state.workloadStarts += 1;
+    state.workloadPid = 4241 + state.workloadStarts;
+    state.workloadNetns = state.infraNetns;
+    state.startedAt = new Date(
+      Date.UTC(2026, 0, 1, 0, 0, state.workloadStarts),
+    ).toISOString();
+    state.running = true;
+  };
+  /** Stop the infra only (out of band). The namespace survives while the
+   *  workload still runs in it. */
+  const stopInfra = () => {
+    const netns = state.infraNetns;
+    state.infraRunning = false;
+    state.infraNetns = null;
+    forget(netns);
+  };
+  /** Stop the workload only (out of band). */
+  const stopWorkload = () => {
+    const netns = state.workloadNetns;
+    state.running = false;
+    state.workloadPid = 0;
+    state.workloadNetns = null;
+    forget(netns);
+  };
+  const stopAll = () => {
+    stopWorkload();
+    stopInfra();
+  };
+  /** The namespace an `nsenter --net=<path>` lands in, if any. */
+  const resolveNetns = (argv: string[]): string | null => {
+    const path = argv.find((a) => a.startsWith("--net="))?.slice(6);
+    if (!path) return null;
+    const proc = /^\/proc\/(\d+)\/ns\/net$/.exec(path);
+    if (proc)
+      return state.running && Number(proc[1]) === state.workloadPid
+        ? state.workloadNetns
+        : null;
+    return state.infraRunning && path === state.infraNetns ? path : null;
+  };
+  if (o.running) {
+    startInfra();
+    if (o.rulesInstalled !== false) state.rules.add(state.infraNetns!);
+    startWorkload();
+  }
   const listing = () => {
     state.packets += 100;
     return EGRESS_FIXTURE_LISTING.replace(
@@ -130,35 +220,53 @@ export function fakePodman(o: FakeOptions = {}) {
       if (format === "{{.State.Running}}")
         return ok(state.running ? "true\n" : "false\n");
       if (format === "{{.NetworkSettings.SandboxKey}}")
-        return ok(state.infraRunning ? `${NETNS}\n` : "\n");
-      if (format === "{{.State.Pid}}")
-        return ok(state.running ? "4242\n" : "0\n");
+        return ok(state.infraRunning ? `${state.infraNetns}\n` : "\n");
+      if (format === "{{.State.Pid}}") return ok(`${state.workloadPid}\n`);
       if (format === "{{.State.CgroupPath}}")
         return ok(
           `${o.cgroup ?? "/user.slice/user-1001.slice/user@1001.service/user.slice/libpod-x.scope"}\n`,
         );
     }
     if (a === "start") {
-      if (last.endsWith("-infra")) state.infraRunning = true;
-      else {
-        // Real podman would auto-start the infra with no rules.
-        state.infraRunning = true;
-        state.running = true;
-      }
+      if (last.endsWith("-infra")) startInfra();
+      else startWorkload();
       return ok();
     }
-    if (a === "unshare" && argv.includes("-f"))
-      return o.nftInstallFails ? fail("nft: Operation not permitted") : ok();
-    if (a === "unshare" && argv.includes("-j")) return ok(listing());
+    if (a === "unshare") {
+      const netns = resolveNetns(argv);
+      if (!netns)
+        return fail(
+          "nsenter: cannot open namespace: No such file or directory",
+        );
+      if (argv.includes("-f")) {
+        if (o.nftInstallFails) return fail("nft: Operation not permitted");
+        state.rules.add(netns);
+        return ok();
+      }
+      if (argv.includes("-j")) {
+        if (state.rules.has(netns)) return ok(listing());
+        return argv.includes("table")
+          ? fail("Error: No such file or directory")
+          : ok(EMPTY_LISTING);
+      }
+    }
     if (a === "exec") {
+      if (!state.running)
+        return fail(
+          "Error: can only create exec sessions on running containers: container state improper",
+          125,
+        );
       const script = last;
+      state.execs.push({
+        script,
+        filtered: state.rules.has(state.workloadNetns!),
+      });
       if (script.includes("probe_tcp"))
         return ok(selfTestRows(script, o.selfTest ?? {}));
       return ok("");
     }
     if (a === "pod" && b === "stop") {
-      state.running = false;
-      state.infraRunning = false;
+      stopAll();
       return ok();
     }
     if (a === "pod" && b === "inspect") {
@@ -167,13 +275,13 @@ export function fakePodman(o: FakeOptions = {}) {
       return ok(`${o.podState ?? (state.running ? "Running" : "Exited")}\n`);
     }
     if (a === "pod" && b === "rm") {
+      stopAll();
       state.podExists = o.podSurvivesRm ?? false;
-      state.running = false;
       return ok();
     }
     return fail(`unexpected podman ${argv.join(" ")}`, 125);
   };
-  return { run, calls, state };
+  return { run, calls, state, stopInfra, stopWorkload };
 }
 
 /** Provider deps wired to a fake podman and this fixture's addresses. */

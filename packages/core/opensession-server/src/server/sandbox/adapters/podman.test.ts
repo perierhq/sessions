@@ -259,6 +259,102 @@ describe("podman provider sleep and wake", () => {
   });
 });
 
+/** A fake runner that calls `before` once, ahead of the first call that
+ *  matches. */
+function interceptOnce(
+  fake: ReturnType<typeof fakePodman>,
+  match: (argv: string[]) => boolean,
+  before: () => void | Promise<void>,
+) {
+  let fired = false;
+  return async (argv: string[], opts?: Parameters<typeof fake.run>[1]) => {
+    if (!fired && match(argv)) {
+      fired = true;
+      await before();
+    }
+    return fake.run(argv, opts);
+  };
+}
+
+/** The core invariant: no exec ran in an unfiltered namespace, and a running
+ *  workload's namespace holds the rules. */
+function expectNeverUnfiltered(fake: ReturnType<typeof fakePodman>) {
+  expect(fake.state.execs.filter((e) => !e.filtered)).toEqual([]);
+  if (fake.state.running)
+    expect(fake.state.rules.has(fake.state.workloadNetns!)).toBe(true);
+}
+
+describe("podman firewall invariants", () => {
+  test("a workload namespace with no rules stops the pod and fails", async () => {
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    // The infra stops out of band between its verify and the workload
+    // start, so podman auto-starts it in a fresh, empty namespace.
+    const run = interceptOnce(
+      fake,
+      (argv) => argv[0] === "start" && argv.at(-1) === names.workload,
+      () => fake.stopInfra(),
+    );
+    const provider = new PodmanProvider(deps(fake, { run }));
+    await expect(provider.ensure({ sessionId: id })).rejects.toThrow(
+      /do not match the policy/,
+    );
+    expect(fake.state.running).toBe(false);
+    expect(fake.state.infraRunning).toBe(false);
+    const seen = verbs(fake.calls);
+    expect(seen.lastIndexOf("pod stop")).toBeGreaterThan(
+      seen.indexOf(`start ${names.workload}`),
+    );
+    expect(seen).not.toContain("exec selftest");
+    expect(seen).not.toContain("<prepare>");
+    expectNeverUnfiltered(fake);
+  });
+
+  test("a stop landing mid-start never leaves the workload unfiltered", async () => {
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    let pausing: Promise<void> | undefined;
+    let provider!: PodmanProvider;
+    const run = interceptOnce(
+      fake,
+      (argv) => argv[0] === "start" && argv.at(-1) === names.workload,
+      async () => {
+        // A pause (idle sweep, user stop) arrives between the infra's
+        // verify and the workload start.
+        pausing = provider.pause(names.pod);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    );
+    provider = new PodmanProvider(deps(fake, { run }));
+    await Promise.allSettled([provider.ensure({ sessionId: id })]);
+    await pausing;
+    expectNeverUnfiltered(fake);
+  });
+
+  test("concurrent wakes serialize into one firewalled start", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    const sandbox = await provider.ensure({ sessionId: id });
+    await provider.pause(sandbox.id);
+    fake.calls.length = 0;
+    const [a, b] = await Promise.all([
+      provider.resume(sandbox.id),
+      provider.resume(sandbox.id),
+      sandbox.exec(["true"], { workloadIdentity: false }),
+    ]);
+    expect([a?.wokeFromSleep, b?.wokeFromSleep].sort()).toEqual([false, true]);
+    const seen = verbs(fake.calls);
+    expect(seen.filter((v) => v === `start ${names.workload}`)).toHaveLength(1);
+    expect(seen.filter((v) => v === "nft install")).toHaveLength(1);
+    expect(fake.state.workloadStarts).toBe(2);
+    expectNeverUnfiltered(fake);
+  });
+});
+
 describe("podman provider destroy", () => {
   test("removes the pod and the volume, and strict proves both gone", async () => {
     const fake = fakePodman();
