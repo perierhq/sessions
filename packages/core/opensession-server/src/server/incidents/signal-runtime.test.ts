@@ -19,7 +19,8 @@ import {
   onSignalStateChange,
   reevaluateSignal,
 } from "./signal-runtime";
-import { createSignal, updateSignal } from "./signal-store";
+import { __setOwnerRosterForTest } from "./owner";
+import { createSignal, getSignal, updateSignal } from "./signal-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
@@ -78,6 +79,41 @@ test("three failures open one incident owned by the signal's creator", async () 
   });
   expect(getSignalEvaluation(s.id)?.state).toBe("failing");
   expect(allSignalEvaluations().get(s.id)?.state).toBe("failing");
+});
+
+test("a signal the automation principal made opens incidents a person owns", async () => {
+  __setOwnerRosterForTest([{ name: "Ada Lovelace" }, { name: "Bo Diddley" }]);
+  try {
+    const s = await createSignal(
+      {
+        name: "Search",
+        project: "acme",
+        source: { kind: "http", url: "https://acme.example.test" },
+      },
+      "Automation",
+      { automation: true },
+    );
+    if ("error" in s) throw new Error(s.error);
+    // Stored before signals had owners: only the creator is on record.
+    const { owner: _owner, ...legacy } = s;
+    const stored = kit.store().catalogDocumentGet("incident-signals", s.id);
+    const put = kit.store().putCatalogDocument({
+      op: "put",
+      namespace: "incident-signals",
+      key: s.id,
+      expectedRev: stored?.rev ?? null,
+      value: JSON.stringify(legacy),
+      requestId: crypto.randomUUID(),
+    });
+    if (put.status !== "committed") throw new Error(put.status);
+    expect((await getSignal(s.id))?.owner).toBeUndefined();
+    await feed(s.id, "fail", "fail", "fail");
+    expect(await listIncidents()).toEqual([
+      expect.objectContaining({ owner: "Ada", signalIds: [s.id] }),
+    ]);
+  } finally {
+    __setOwnerRosterForTest(undefined);
+  }
 });
 
 test("a second failing signal in the project joins the same incident", async () => {

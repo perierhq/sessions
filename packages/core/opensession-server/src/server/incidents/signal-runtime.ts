@@ -26,6 +26,7 @@ import {
   recentObservations,
 } from "./observation-store";
 import { evaluateSignal, replaySignal } from "./rules";
+import { signalOwner } from "./owner";
 import { getSignal, listSignals } from "./signal-store";
 
 let evaluations = new Map<string, SignalEvaluation>();
@@ -191,7 +192,10 @@ function runEngine(
   const run = engineChain.then(async () => {
     try {
       const snapshot = await snapshotAt(now, signal.id, current);
-      const ops = engine.decide(signal, previous, current, snapshot);
+      // A person owns what it opens, never the principal that created it:
+      // "" when there is nobody, which the notifier reports.
+      const owned = { ...signal, owner: signalOwner(signal) };
+      const ops = engine.decide(owned, previous, current, snapshot);
       if (ops.length) await engine.apply(ops, new Date(now).toISOString());
     } catch (error) {
       console.error(

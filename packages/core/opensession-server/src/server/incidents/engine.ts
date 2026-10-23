@@ -338,7 +338,9 @@ function decideBad(
             ? "investigating"
             : "heads-up",
         severity: signal.severity,
-        owner: signal.createdBy,
+        // The runtime resolves an owner for every signal (owner.ts); the
+        // creator only for a signal passed in without one.
+        owner: signal.owner ?? signal.createdBy,
         openedBy: { kind: "rule", ref: signal.id },
         signalIds: [signal.id, ...providers.map((p) => p.id)],
         primarySignalId: signal.id,
