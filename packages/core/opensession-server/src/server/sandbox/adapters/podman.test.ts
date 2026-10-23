@@ -9,6 +9,7 @@ import {
   IMAGE,
 } from "./podman-test-fixture";
 import { readRemoteState, writeRemoteState } from "./bootstrap";
+import { GIB } from "./podman-disk";
 import {
   PodmanProvider,
   podmanDriver,
@@ -549,6 +550,62 @@ describe("podman firewall invariants", () => {
     expect(seen.filter((v) => v === "nft install")).toHaveLength(1);
     expect(fake.state.workloadStarts).toBe(2);
     expectNeverUnfiltered(fake);
+  });
+});
+
+describe("podman disk limits", () => {
+  test("a start is refused below the free-space floor; a running pod is not", async () => {
+    const fake = fakePodman();
+    let free = 2 * GIB;
+    const provider = new PodmanProvider(
+      deps(fake, { storageFree: async () => free }),
+    );
+    const id = sessionId();
+    const names = podmanNames(id);
+    await expect(provider.ensure({ sessionId: id })).rejects.toThrow(
+      /2\.0 GiB free .* needs 5\.0 GiB/,
+    );
+    expect(verbs(fake.calls).some((v) => v.startsWith("start "))).toBe(false);
+    free = 50 * GIB;
+    await provider.ensure({ sessionId: id });
+    free = 1 * GIB;
+    // Re-verifying a running pod starts nothing, so it is allowed.
+    await provider.ensure({ sessionId: id });
+    expect(fake.state.running).toBe(true);
+    expect(verbs(fake.calls)).toContain(`start ${names.workload}`);
+  });
+
+  test("a volume over the quota stops its pod and refuses starts", async () => {
+    const fake = fakePodman();
+    const sizes = new Map<string, number>();
+    const provider = new PodmanProvider(
+      deps(fake, {
+        volumeUsage: async () => sizes,
+        storageFree: async () => 40 * GIB,
+      }),
+    );
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    sizes.set(names.volume, 12 * GIB);
+    let report = await provider.checkDisk();
+    expect(report.freeBytes).toBe(40 * GIB);
+    expect(report.volumes).toEqual([
+      { sandboxId: names.pod, sessionId: id, bytes: 12 * GIB },
+    ]);
+    expect(fake.state.running).toBe(true);
+    sizes.set(names.volume, 21 * GIB);
+    report = await provider.checkDisk();
+    expect(report.volumes[0]!.bytes).toBe(21 * GIB);
+    expect(fake.state.running).toBe(false);
+    await expect(provider.resume(names.pod)).rejects.toThrow(
+      /21\.0 GiB, over the 20\.0 GiB/,
+    );
+    expect(fake.state.running).toBe(false);
+    // Once it is back under the quota, it starts again.
+    sizes.set(names.volume, 3 * GIB);
+    expect((await provider.checkDisk()).volumes).toEqual([]);
+    expect((await provider.resume(names.pod))?.wokeFromSleep).toBe(true);
   });
 });
 

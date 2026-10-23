@@ -344,6 +344,8 @@ export function fakeProviderDeps(
     resumeHook: async () => {
       fake.calls.push({ argv: ["<resume-hook>"] });
     },
+    storageFree: async () => 100 * 1024 ** 3,
+    volumeUsage: async () => new Map(),
     ...extra,
   };
 }
