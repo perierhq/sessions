@@ -287,6 +287,8 @@ describe("This machine (container) in Settings", () => {
   });
 
   test("the card summary carries the facts and the effective limits", () => {
+    // Another test file's disk checks may have recorded a report.
+    recordPodmanDiskReport(undefined);
     connectSandboxProvider("podman", { settings: { pidsLimit: 256 } });
     const before = safeSandboxConnections("linux").find(
       (c) => c.provider === "podman",

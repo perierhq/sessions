@@ -13,7 +13,7 @@ import {
   sandboxAdapterSignatureCurrent,
   sandboxProviderNeedsCredential,
 } from "./adapter-signature";
-import { podmanDiskWarnings } from "./adapters/podman-disk";
+import { podmanDiskReport, podmanDiskWarnings } from "./adapters/podman-disk";
 import { clampPodmanLimits, podmanSettings } from "./adapters/podman-settings";
 import { stateDir } from "../paths";
 import { writeJsonAtomic } from "../shared/atomic-write";
@@ -427,7 +427,7 @@ export function safeSandboxConnections(
       podman: podmanFacts,
       ...safe
     } = connection;
-    const diskWarnings = provider === "podman" ? podmanDiskWarnings() : [];
+    const diskWarnings = provider === "podman" ? podmanDiskWarnings(podmanDiskReport()) : [];
     return {
       ...safe,
       ...(podmanFacts

@@ -89,11 +89,17 @@ import {
 } from "./podman-egress";
 import {
   formatGib,
+  notePodmanDiskCheck,
   parseSystemDfVolumes,
   PODMAN_MIN_FREE_BYTES,
   PODMAN_VOLUME_QUOTA_BYTES,
   PODMAN_VOLUME_WARN_BYTES,
+  podmanDiskCheckedSinceBoot,
+  podmanDiskCheckRefusal,
+  podmanDiskReport,
+  podmanOverQuota,
   recordPodmanDiskReport,
+  setPodmanOverQuota,
   type PodmanDiskReport,
 } from "./podman-disk";
 import { ensurePodmanImage, podmanImageTag } from "./podman-image";
@@ -446,6 +452,8 @@ export interface PodmanProviderDeps {
   storageFree?: (run: PodmanRunner) => Promise<number>;
   /** Volume name -> bytes used. */
   volumeUsage?: (run: PodmanRunner) => Promise<Map<string, number>>;
+  /** How long a cold start waits for an on-demand disk check. */
+  diskCheckTimeoutMs?: number;
 }
 
 /** Bytes available to this user on podman's storage filesystem (its
@@ -480,9 +488,23 @@ async function defaultVolumeUsage(
   );
 }
 
-/** Pod name -> home volume bytes, for pods the last disk check found over
- *  the quota. Their starts are refused until a check finds them under it. */
-const overQuota = new Map<string, number>();
+/** A cold start with no disk check since boot waits this long for one. */
+const COLD_START_DISK_CHECK_TIMEOUT_MS = 60_000;
+
+interface DiskMeasurement {
+  report: PodmanDiskReport;
+  /** Volume name -> bytes; absent when the volume check failed. */
+  usage?: Map<string, number>;
+  /** Pods measured over the quota now. */
+  over: string[];
+}
+
+/** The disk measurement in flight: the sweep and cold starts share it. */
+let pendingMeasurement: Promise<DiskMeasurement> | undefined;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * The workspace path inside the sandbox for a host worktree path. Only the
@@ -633,6 +655,8 @@ export class PodmanProvider implements SandboxProvider {
           runResumeHook(driver, "podman", sandboxId, state)),
       storageFree: deps.storageFree ?? defaultStorageFree,
       volumeUsage: deps.volumeUsage ?? defaultVolumeUsage,
+      diskCheckTimeoutMs:
+        deps.diskCheckTimeoutMs ?? COLD_START_DISK_CHECK_TIMEOUT_MS,
     };
   }
 
@@ -807,10 +831,37 @@ export class PodmanProvider implements SandboxProvider {
     });
   }
 
-  /** Refuse a start while podman's storage is nearly full or this pod's
-   *  home volume is over the quota. */
+  /** Refuse a start while podman's storage is nearly full, while this
+   *  pod's home volume is over the quota, or while the quota cannot be
+   *  checked: with no successful check since boot (one runs now) or after
+   *  the last few checks failed. */
   private async assertDiskForStart(names: PodmanNames): Promise<void> {
-    const over = overQuota.get(names.pod);
+    if (!podmanDiskCheckedSinceBoot()) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.measureDisk(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("the disk check timed out")),
+              this.d.diskCheckTimeoutMs,
+            );
+          }),
+        ]);
+      } catch (error) {
+        throw new Error(
+          `could not check this sandbox's disk use: ${errorText(error)}. ${PODMAN_PROVIDER_LABEL} does not start a sandbox until a disk check succeeds`,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const refusal = podmanDiskCheckRefusal();
+    if (refusal)
+      throw new Error(
+        `${refusal}: ${PODMAN_PROVIDER_LABEL} does not start a sandbox until a disk check succeeds`,
+      );
+    const over = (await podmanOverQuota()).get(names.pod);
     if (over !== undefined)
       throw new Error(
         `this sandbox's home uses ${formatGib(over)}, over the ${formatGib(PODMAN_VOLUME_QUOTA_BYTES)} limit for ${PODMAN_PROVIDER_LABEL}: it will not start. Delete the session's sandbox to free the space.`,
@@ -820,7 +871,7 @@ export class PodmanProvider implements SandboxProvider {
       free = await this.d.storageFree(this.run);
     } catch (error) {
       throw new Error(
-        `could not check free space for podman's storage: ${error instanceof Error ? error.message : String(error)}`,
+        `could not check free space for podman's storage: ${errorText(error)}`,
       );
     }
     if (free < PODMAN_MIN_FREE_BYTES)
@@ -829,51 +880,124 @@ export class PodmanProvider implements SandboxProvider {
       );
   }
 
-  /**
-   * Measure free space and every session's home volume. A volume over the
-   * quota has its pod stopped (under the start lock) and its starts refused;
-   * one back under it may start again. Returns the report the connection
-   * status shows.
-   */
-  async checkDisk(): Promise<PodmanDiskReport> {
+  /** Measure free space and every session's home volume, update the
+   *  over-quota list and record the report. Never rejects: a failure is
+   *  recorded in the report. One measurement at a time. */
+  private measureDisk(): Promise<DiskMeasurement> {
+    pendingMeasurement ??= this.measureDiskNow().finally(() => {
+      pendingMeasurement = undefined;
+    });
+    return pendingMeasurement;
+  }
+
+  private async measureDiskNow(): Promise<DiskMeasurement> {
     const report: PodmanDiskReport = {
       checkedAt: new Date().toISOString(),
       volumes: [],
     };
+    const errors: string[] = [];
     try {
       report.freeBytes = await this.d.storageFree(this.run);
     } catch (error) {
-      console.warn(`${LOG} free-space check failed:`, error);
+      errors.push(`free space: ${errorText(error)}`);
     }
-    const usage = await this.d.volumeUsage(this.run);
-    for (const state of listRemoteStates(this.id)) {
-      const names = podmanNames(state.sessionId);
-      if (names.pod !== state.sandboxId) continue;
-      const bytes = usage.get(names.volume);
-      if (bytes === undefined || bytes < PODMAN_VOLUME_WARN_BYTES) {
-        overQuota.delete(names.pod);
-        continue;
+    let usage: Map<string, number> | undefined;
+    try {
+      usage = await this.d.volumeUsage(this.run);
+    } catch (error) {
+      errors.push(errorText(error));
+    }
+    const over: string[] = [];
+    if (usage) {
+      const unknown: string[] = [];
+      for (const state of listRemoteStates(this.id)) {
+        const names = podmanNames(state.sessionId);
+        if (names.pod !== state.sandboxId) continue;
+        const bytes = usage.get(names.volume);
+        if (bytes === undefined) {
+          // Not in the report: unknown, so whatever it was stays.
+          unknown.push(state.sessionId);
+          continue;
+        }
+        if (bytes >= PODMAN_VOLUME_WARN_BYTES)
+          report.volumes.push({
+            sandboxId: names.pod,
+            sessionId: state.sessionId,
+            bytes,
+          });
+        if (bytes > PODMAN_VOLUME_QUOTA_BYTES) {
+          over.push(names.pod);
+          await setPodmanOverQuota(names.pod, bytes);
+        } else await setPodmanOverQuota(names.pod, undefined);
       }
-      report.volumes.push({
-        sandboxId: names.pod,
-        sessionId: state.sessionId,
-        bytes,
-      });
-      if (bytes <= PODMAN_VOLUME_QUOTA_BYTES) {
-        overQuota.delete(names.pod);
-        continue;
-      }
-      overQuota.set(names.pod, bytes);
+      if (unknown.length) report.unknownSessions = unknown;
+      notePodmanDiskCheck();
+    } else {
+      notePodmanDiskCheck(errors.join("; "));
+      // What is known stays on the card.
+      report.volumes = podmanDiskReport()?.volumes ?? [];
+    }
+    if (errors.length) {
+      report.error = errors.join("; ");
+      console.warn(`${LOG} disk check failed: ${report.error}`);
+    }
+    if (podmanDiskCheckRefusal()) report.startsRefused = true;
+    recordPodmanDiskReport(report);
+    return { report, usage, over };
+  }
+
+  /**
+   * Measure free space and every session's home volume (see measureDisk).
+   * A volume over the quota has its pod stopped (under the start lock) and
+   * its starts refused; one back under it may start again. With free space
+   * under half the floor, the running pod with the largest home is stopped.
+   * Returns the report the connection status shows.
+   */
+  async checkDisk(): Promise<PodmanDiskReport> {
+    const { report, usage, over } = await this.measureDisk();
+    for (const pod of over) {
       try {
-        if (await this.pauseIfIdle(names.pod, () => true))
-          console.log(
-            `${LOG} stopped ${names.pod}: home volume ${formatGib(bytes)} is over the quota`,
-          );
+        if (await this.pauseIfIdle(pod, () => true))
+          console.log(`${LOG} stopped ${pod}: its home volume is over the quota`);
       } catch (error) {
-        console.warn(`${LOG} could not stop ${names.pod} over quota:`, error);
+        console.warn(`${LOG} could not stop ${pod} over quota:`, error);
       }
     }
+    if (
+      report.freeBytes !== undefined &&
+      report.freeBytes < PODMAN_MIN_FREE_BYTES / 2
+    )
+      await this.stopLargestRunning(report.freeBytes, usage);
     return report;
+  }
+
+  /** Free space is critically low: stop the running pod whose home volume is
+   *  largest. */
+  private async stopLargestRunning(
+    freeBytes: number,
+    usage: Map<string, number> | undefined,
+  ): Promise<void> {
+    if (!usage) {
+      console.warn(
+        `${LOG} only ${formatGib(freeBytes)} free, but volume sizes are unknown: no sandbox stopped`,
+      );
+      return;
+    }
+    const pods = listRemoteStates(this.id)
+      .map((state) => podmanNames(state.sessionId))
+      .filter((names) => usage.has(names.volume))
+      .sort((a, b) => usage.get(b.volume)! - usage.get(a.volume)!);
+    for (const names of pods) {
+      try {
+        if (!(await this.pauseIfIdle(names.pod, () => true))) continue;
+        console.log(
+          `${LOG} stopped ${names.pod}: only ${formatGib(freeBytes)} free for sandbox storage and its home (${formatGib(usage.get(names.volume)!)}) is the largest running`,
+        );
+        return;
+      } catch (error) {
+        console.warn(`${LOG} could not stop ${names.pod} for low space:`, error);
+      }
+    }
   }
 
   /** The self-test's probes, built from this host's addresses now. */
@@ -1533,7 +1657,7 @@ let idleSweep: ReturnType<typeof setInterval> | undefined;
 /** Disk check then idle sweep; never throws. */
 async function podmanSweep(): Promise<void> {
   try {
-    recordPodmanDiskReport(await new PodmanProvider().checkDisk());
+    await new PodmanProvider().checkDisk();
   } catch (error) {
     console.warn(`${LOG} disk check failed:`, error);
   }

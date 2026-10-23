@@ -37,4 +37,19 @@ describe("podman disk", () => {
       "Session a uses 12.0 GiB (stops at 20.0 GiB)",
     ]);
   });
+
+  test("warnings name a failed check and homes it could not find", () => {
+    const lines = podmanDiskWarnings({
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      volumes: [],
+      unknownSessions: ["a", "b"],
+      error: "podman system df: database is locked",
+      startsRefused: true,
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(
+      /^Disk check failed .*: podman system df: database is locked\. Sandboxes will not start until a check succeeds$/,
+    );
+    expect(lines[1]).toBe("Could not measure the home of sessions a, b");
+  });
 });

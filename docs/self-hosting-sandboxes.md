@@ -582,7 +582,17 @@ Podman's storage (its graphroot, where rootless volumes live) has less than
 sweep measures each session's home volume with `podman system df`. From
 10 GiB the session is listed on the This machine (container) card in
 Settings; over 20 GiB its pod is stopped and does not start again until a
-later check finds the volume under the limit. To recover the space, delete
+later check finds the volume under the limit. The list of sandboxes over the
+limit is saved in the sandbox state directory, so it survives a restart, and
+a volume the check cannot find keeps whatever state it had. If
+free space falls below half the floor (2.5 GiB), the sweep also stops the
+running sandbox with the largest home volume.
+
+The limit fails closed. A failed check is shown on the card. Sandboxes do not
+start until a check has succeeded since the server started; the first start
+after a restart runs one, and waits up to a minute for it. Starts are refused
+again after three checks in a row fail, until one succeeds. Running sandboxes
+keep running. To recover the space, delete
 the session's sandbox, which deletes its workspace. Where the storage
 filesystem supports it (XFS with project quotas), a filesystem quota on
 Podman's storage directory is a stronger backstop.

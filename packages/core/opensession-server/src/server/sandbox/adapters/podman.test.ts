@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,12 @@ import {
   IMAGE,
 } from "./podman-test-fixture";
 import { readRemoteState, writeRemoteState } from "./bootstrap";
-import { GIB } from "./podman-disk";
+import {
+  forgetPodmanDiskState,
+  GIB,
+  podmanDiskReport,
+  podmanDiskWarnings,
+} from "./podman-disk";
 import {
   PodmanProvider,
   podmanDriver,
@@ -18,6 +23,9 @@ import {
   podmanSettings,
   podmanWorkspaceCwd,
 } from "./podman";
+
+// Disk checks here record a report and a check history other files read.
+afterAll(() => forgetPodmanDiskState());
 
 let seq = 0;
 function sessionId(): string {
@@ -656,6 +664,129 @@ describe("podman disk limits", () => {
     sizes.set(names.volume, 3 * GIB);
     expect((await provider.checkDisk()).volumes).toEqual([]);
     expect((await provider.resume(names.pod))?.wokeFromSleep).toBe(true);
+  });
+});
+
+describe("podman disk checks fail closed", () => {
+  test("a failed check is reported, and three in a row refuse cold starts", async () => {
+    await forgetPodmanDiskState();
+    const fake = fakePodman();
+    let broken = false;
+    const provider = new PodmanProvider(
+      deps(fake, {
+        volumeUsage: async () => {
+          if (broken) throw new Error("podman system df: database is locked");
+          return new Map();
+        },
+      }),
+    );
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    broken = true;
+    for (let i = 0; i < 2; i++) {
+      const report = await provider.checkDisk();
+      expect(report.error).toBe("podman system df: database is locked");
+      expect(report.startsRefused).toBeUndefined();
+    }
+    expect(podmanDiskWarnings(podmanDiskReport())[0]).toMatch(
+      /^Disk check failed .*: podman system df: database is locked$/,
+    );
+    // Two failures in a row: a cold start still goes ahead.
+    await provider.pause(names.pod);
+    expect((await provider.resume(names.pod))?.wokeFromSleep).toBe(true);
+    await provider.pause(names.pod);
+    const third = await provider.checkDisk();
+    expect(third.startsRefused).toBe(true);
+    expect(podmanDiskWarnings(third)[0]).toMatch(
+      /Sandboxes will not start until a check succeeds$/,
+    );
+    await expect(provider.resume(names.pod)).rejects.toThrow(
+      "the last 3 disk checks failed (podman system df: database is locked)",
+    );
+    expect(fake.state.running).toBe(false);
+    broken = false;
+    expect((await provider.checkDisk()).error).toBeUndefined();
+    expect((await provider.resume(names.pod))?.wokeFromSleep).toBe(true);
+  });
+
+  test("a cold start with no check since boot runs one and fails closed", async () => {
+    await forgetPodmanDiskState();
+    const fake = fakePodman();
+    let usage = async (): Promise<Map<string, number>> => {
+      throw new Error("podman system df: boom");
+    };
+    const provider = new PodmanProvider(
+      deps(fake, { volumeUsage: () => usage(), diskCheckTimeoutMs: 20 }),
+    );
+    const id = sessionId();
+    await expect(provider.ensure({ sessionId: id })).rejects.toThrow(
+      "no disk check has succeeded since the server started (podman system df: boom)",
+    );
+    // A check that hangs times out, and the start is refused.
+    let finish!: (sizes: Map<string, number>) => void;
+    usage = () => new Promise((resolve) => (finish = resolve));
+    await expect(provider.ensure({ sessionId: id })).rejects.toThrow(
+      "could not check this sandbox's disk use: the disk check timed out",
+    );
+    expect(verbs(fake.calls).some((v) => v.startsWith("start "))).toBe(false);
+    finish(new Map());
+    // That check landed late: the next start goes ahead.
+    await provider.ensure({ sessionId: id });
+    expect(fake.state.running).toBe(true);
+  });
+
+  test("a home missing from the check stays over the quota, across a restart", async () => {
+    await forgetPodmanDiskState();
+    const fake = fakePodman();
+    const sizes = new Map<string, number>();
+    const provider = new PodmanProvider(
+      deps(fake, { volumeUsage: async () => sizes }),
+    );
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    sizes.set(names.volume, 21 * GIB);
+    await provider.checkDisk();
+    expect(fake.state.running).toBe(false);
+    sizes.delete(names.volume);
+    const report = await provider.checkDisk();
+    expect(report.unknownSessions).toContain(id);
+    await expect(provider.resume(names.pod)).rejects.toThrow(
+      /21\.0 GiB, over the 20\.0 GiB/,
+    );
+    // As after a restart: the list comes back from the state dir, and the
+    // first check still cannot find the volume.
+    await forgetPodmanDiskState();
+    await expect(provider.resume(names.pod)).rejects.toThrow(
+      /21\.0 GiB, over the 20\.0 GiB/,
+    );
+    sizes.set(names.volume, 1 * GIB);
+    await provider.checkDisk();
+    expect((await provider.resume(names.pod))?.wokeFromSleep).toBe(true);
+  });
+
+  test("below half the free-space floor, the largest running home is stopped", async () => {
+    const fake = fakePodman();
+    let free = 40 * GIB;
+    const sizes = new Map<string, number>();
+    const provider = new PodmanProvider(
+      deps(fake, {
+        volumeUsage: async () => sizes,
+        storageFree: async () => free,
+      }),
+    );
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    sizes.set(names.volume, 3 * GIB);
+    // Under the floor but over half of it: reported only.
+    free = 3 * GIB;
+    await provider.checkDisk();
+    expect(fake.state.running).toBe(true);
+    free = 2 * GIB;
+    await provider.checkDisk();
+    expect(fake.state.running).toBe(false);
   });
 });
 
