@@ -607,7 +607,7 @@ function ConnectDialog({
             Sandboxes reach this server through Public callback under Domains
             for run streaming and workload identity.
             {isPodman &&
-              " Containers need a public callback address: one on the tailnet or loopback is refused."}
+              " Containers need a public callback address. An address on the tailnet, a private network or this server is refused."}
           </p>
           {isUseComputer && (
             <details className="rounded-lg bg-surface p-3 text-supporting text-dim">
