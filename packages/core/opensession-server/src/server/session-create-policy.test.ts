@@ -180,6 +180,16 @@ describe("automation descendant opening policy", () => {
     ).not.toThrow();
   });
 
+  test("opening dispatch refuses This machine (container)", () => {
+    expect(() =>
+      assertAutomationDescendantOpeningIsolation({
+        automationDescendantPolicy: descendant,
+        sandboxProvider: "podman",
+        runnerTarget: undefined,
+      }),
+    ).toThrow(/cannot run in This machine \(container\)/);
+  });
+
   test("an incident agent without a sandbox opens in a host worktree as the agent user", () => {
     const incident = {
       incidentId: "inc-1",

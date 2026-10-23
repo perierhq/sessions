@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   HOST_WORKTREE_MISUSE,
+  PODMAN_DESCENDANT_REFUSED,
   descendantBashRunAs,
 } from "./descendant-workspace";
 import { assertHostAgentReady } from "./incidents/response/host-agents";
@@ -65,6 +66,29 @@ describe("descendant workspace", () => {
       descendantBashRunAs(hostAgent, { runner: "mac-studio" }, ISOLATION),
     ).toThrow(HOST_WORKTREE_MISUSE);
     expect(descendantBashRunAs(undefined, {}, ISOLATION)).toBeUndefined();
+  });
+
+  test("no descendant may run in This machine (container)", () => {
+    // Checked at create before anything is written, before the opening turn
+    // and before every later turn, so a podman sandbox is never ensured.
+    for (const policy of [descendant, hostAgent])
+      expect(() =>
+        descendantBashRunAs(policy, { sandbox: "podman" }, ISOLATION),
+      ).toThrow(PODMAN_DESCENDANT_REFUSED);
+    expect(() =>
+      descendantBashRunAs(
+        descendant,
+        { sandbox: "podman", runner: "mac-studio" },
+        ISOLATION,
+      ),
+    ).toThrow(PODMAN_DESCENDANT_REFUSED);
+    expect(
+      descendantBashRunAs(descendant, { sandbox: "daytona" }, ISOLATION),
+    ).toBeUndefined();
+    // A person's own session is not a descendant.
+    expect(
+      descendantBashRunAs(undefined, { sandbox: "podman" }, ISOLATION),
+    ).toBeUndefined();
   });
 
   test("the host path needs the configured user, ready right now", async () => {
