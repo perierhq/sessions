@@ -81,15 +81,22 @@ function enqueue<T>(id: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Incidents whose missing owner was already logged: the held sweep reads
+ *  the same incident every minute, and one warning is enough. */
+const warnedFallback = new Set<string>();
+
 /** The incident as the inbox sees it: owned by a person who can be told,
  *  else by the instance owner; null when there is nobody. */
 function tellable(incident: Incident): Incident | null {
   if (isPersonName(incident.owner)) return incident;
   const fallback = instanceOwner();
-  console.warn(
-    `[incidents] ${incident.id} has no person to tell (owner ${JSON.stringify(incident.owner ?? "")}); ` +
-      (fallback ? "telling the instance owner" : "no instance owner either"),
-  );
+  if (!warnedFallback.has(incident.id)) {
+    warnedFallback.add(incident.id);
+    console.warn(
+      `[incidents] ${incident.id} has no person to tell (owner ${JSON.stringify(incident.owner ?? "")}); ` +
+        (fallback ? "telling the instance owner" : "no instance owner either"),
+    );
+  }
   return fallback ? { ...incident, owner: fallback } : null;
 }
 
@@ -131,6 +138,7 @@ export function sweepHeldIncidents(
         try {
           const stored = await getIncident(id);
           const incident = stored && tellable(stored);
+          if (!stored) warnedFallback.delete(id);
           if (!incident) {
             held.delete(id);
             return false;
@@ -211,5 +219,6 @@ export function __resetIncidentNotifierForTest(): void {
   globalThis.__incidentNotifier = undefined;
   queues.clear();
   held.clear();
+  warnedFallback.clear();
   sweeping = null;
 }

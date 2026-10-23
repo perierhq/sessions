@@ -276,9 +276,16 @@ test("a held alert for an incident nobody owns goes to the instance owner", asyn
     await open("Automation");
     await settle();
     expect(pushes).toEqual([]);
+    // Still night: the alert stays held, sweep after sweep.
+    expect(await sweepHeldIncidents(deps)).toBe(0);
+    expect(await sweepHeldIncidents(deps)).toBe(0);
     night = false;
     expect(await sweepHeldIncidents(deps)).toBe(1);
     expect(pushes.map((p) => p.user)).toEqual(["Bo"]);
+    // The fallback is logged once for the incident, not on every sweep.
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining("no person to tell"),
+    ]);
   } finally {
     warn.mockRestore();
     __setOwnerRosterForTest(undefined);
