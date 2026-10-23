@@ -241,6 +241,8 @@ export interface HostedRunOpts {
   files?: PromptFile[];
   reposNote?: string;
   deniedTools?: Record<string, string>;
+  /** An unattended run's web_fetch allowlist (its egress hosts). */
+  webFetchHosts?: string[];
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
   /** An incident agent in a host worktree: its bash runs as this user. */
   bashRunAs?: string;
@@ -470,6 +472,7 @@ async function* runAgentInProcess(
       inProcessMcp: await opts.fallbackInProcessMcp?.(),
       reposNote: opts.reposNote,
       deniedTools: opts.deniedTools,
+      webFetchHosts: opts.webFetchHosts,
       publicationPolicy: opts.publicationPolicy,
       bashRunAs: opts.bashRunAs,
       confirmTools: opts.confirmTools,
@@ -614,6 +617,7 @@ function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
     user: spec.user,
     accountUser: spec.accountUser,
     deniedTools: spec.deniedTools,
+    webFetchHosts: spec.webFetchHosts,
     publicationPolicy: spec.publicationPolicy,
     bashRunAs: spec.bashRunAs,
     confirmTools: spec.confirmTools,
@@ -692,6 +696,7 @@ async function spawnHostRun(
     remoteWorkspace: opts.remoteWorkspace,
     reposNote: opts.reposNote,
     deniedTools: opts.deniedTools,
+    ...(opts.webFetchHosts ? { webFetchHosts: opts.webFetchHosts } : {}),
     publicationPolicy: opts.publicationPolicy,
     ...(opts.bashRunAs ? { bashRunAs: opts.bashRunAs } : {}),
     confirmTools: opts.confirmTools,

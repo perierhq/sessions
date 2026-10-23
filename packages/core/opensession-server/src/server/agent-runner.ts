@@ -215,6 +215,13 @@ export interface RunAgentOpts {
   forkSession?: boolean;
   resumeSessionAt?: string;
   deniedTools?: Record<string, string>;
+  /**
+   * Hosts an unattended run's web_fetch may read: its egress allowlist (a
+   * sandboxed automation's Executor domains, an incident agent's egress
+   * hosts). An unattended run without it gets no web_fetch; interactive
+   * runs ignore it. Host names only, so it journals and resumes.
+   */
+  webFetchHosts?: string[];
   /** Server-enforced publication boundary for automation descendants. */
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
   /** An incident agent in a host worktree: its bash runs as this
@@ -2122,6 +2129,7 @@ export async function resumeInterruptedRuns(
                   user: run.user,
                   accountUser: run.accountUser,
                   deniedTools: run.deniedTools,
+                  webFetchHosts: run.webFetchHosts,
                   publicationPolicy: run.publicationPolicy,
                   bashRunAs: run.bashRunAs,
                   confirmTools: run.confirmTools,
@@ -2237,6 +2245,7 @@ export async function resumeInterruptedRuns(
                 user: run.user,
                 accountUser: run.accountUser,
                 deniedTools: run.deniedTools,
+                webFetchHosts: run.webFetchHosts,
                 publicationPolicy: run.publicationPolicy,
                 bashRunAs: run.bashRunAs,
                 confirmTools: run.confirmTools,
@@ -2344,6 +2353,7 @@ export async function resumeInterruptedRuns(
               user: run.user,
               accountUser: run.accountUser,
               deniedTools: run.deniedTools,
+              webFetchHosts: run.webFetchHosts,
               publicationPolicy: run.publicationPolicy,
               bashRunAs: run.bashRunAs,
               confirmTools: run.confirmTools,

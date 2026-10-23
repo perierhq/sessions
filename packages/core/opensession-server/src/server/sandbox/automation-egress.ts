@@ -117,6 +117,27 @@ export function automationEgressDomains(input: {
   return list;
 }
 
+/**
+ * The hosts a sandboxed automation's web_fetch may read: the domains its
+ * Executor reaches on its own (the baseline and the operator's extra
+ * entries), so the provider-side fetch opens no route the Sandbox lacks.
+ * The dial-back URL is left out. An entry the egress parser refuses is
+ * skipped, never widened.
+ */
+export function automationWebFetchHosts(
+  extra: readonly string[] = [],
+): string[] {
+  const hosts = new Set<string>();
+  for (const value of [...AUTOMATION_BASELINE_EGRESS_DOMAINS, ...extra]) {
+    try {
+      hosts.add(parseAutomationEgressDomain(value));
+    } catch {
+      // Not expressible as a domain (an IP, a CIDR): not fetchable either.
+    }
+  }
+  return [...hosts];
+}
+
 const EGRESS_PROBE_CANDIDATES = [
   "https://example.com/",
   "https://www.iana.org/",

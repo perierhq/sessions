@@ -523,6 +523,12 @@ async function* runPiAttempt(
     const webConnected = (provider: SearchProviderId) =>
       provider === parsed.providerID ||
       (provider === "anthropic" ? hasClaudeAccounts() : hasCodexAccounts());
+    // An unattended run reads only its egress allowlist (a sandboxed
+    // automation's, an incident agent's) and, without one, gets no
+    // web_fetch. Interactive runs read any public page.
+    const webFetchHosts = policy.unattended
+      ? (opts.webFetchHosts ?? [])
+      : undefined;
     const webGate = {
       setting: webSearchSetting,
       disables: policy.disables,
@@ -531,11 +537,14 @@ async function* runPiAttempt(
         webSearchSetting,
         webConnected,
       ).providers,
+      unattended: policy.unattended,
+      ...(webFetchHosts ? { fetchHosts: webFetchHosts } : {}),
     };
     const webToolInput: PiWebToolInput = {
       setting: webSearchSetting,
       sessionProvider: parsed.providerID,
       connected: webConnected,
+      ...(webFetchHosts ? { fetchHosts: webFetchHosts } : {}),
       modelFor: (provider) =>
         webSearchModelId(provider, configuredHaikuFallbackModel()),
       // A side request on the same account picking a turn uses. The

@@ -106,6 +106,7 @@ export interface ActiveRunRecord {
    *  read by provider account selection only, never by MCP or GitHub policy. */
   accountUser?: string;
   deniedTools?: Record<string, string>; // per-run tool denials, preserved across resume
+  webFetchHosts?: string[]; // unattended run's web_fetch allowlist (egress hosts), preserved across resume
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
   bashRunAs?: string; // incident agent user for bash in a host worktree, preserved across resume
   confirmTools?: Record<string, string>; // per-run human-confirmed tools, preserved across resume
@@ -228,6 +229,7 @@ function writeRunJournal(journal: Record<string, ActiveRunRecord>): void {
 export function buildRunJournalRecord(
   opts: {
     deniedTools?: Record<string, string>;
+    webFetchHosts?: string[];
     publicationPolicy?: { repo: string; branch: string; headBranch: string };
     bashRunAs?: string;
     aws?: boolean;
@@ -258,6 +260,7 @@ export function buildRunJournalRecord(
     | "resumeAttempts"
     | "lastResumeAt"
     | "deniedTools"
+    | "webFetchHosts"
     | "publicationPolicy"
     | "bashRunAs"
     | "aws"
@@ -282,6 +285,7 @@ export function buildRunJournalRecord(
     // machine). The bearer is per process and is not journaled.
     remoteWorkspace: site.remoteWorkspace ?? withoutToken(opts.remoteWorkspace),
     deniedTools: opts.deniedTools,
+    ...(opts.webFetchHosts ? { webFetchHosts: [...opts.webFetchHosts] } : {}),
     publicationPolicy: opts.publicationPolicy,
     ...(opts.bashRunAs ? { bashRunAs: opts.bashRunAs } : {}),
     aws: !!opts.aws,

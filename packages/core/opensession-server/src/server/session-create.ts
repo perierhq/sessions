@@ -557,6 +557,8 @@ export async function descendantOpeningScope(
   mcpServers: string[];
   deniedTools?: Record<string, string>;
   incidentProxyMcpServers: string[];
+  /** The incident agent's egress hosts, its web_fetch allowlist. */
+  webFetchHosts?: string[];
 }> {
   const policy = session.automationDescendantPolicy;
   if (!policy?.incident)
@@ -569,6 +571,7 @@ export async function descendantOpeningScope(
     mcpServers: inputs.mcpServers ?? [],
     deniedTools: inputs.deniedTools ?? {},
     incidentProxyMcpServers: inputs.incidentProxyMcpServers,
+    ...(inputs.webFetchHosts ? { webFetchHosts: inputs.webFetchHosts } : {}),
   };
 }
 
@@ -1883,6 +1886,9 @@ export async function openCreatedSession(
               ...(descendantScope?.deniedTools
                 ? { deniedTools: descendantScope.deniedTools }
                 : {}),
+              ...(descendantScope?.webFetchHosts
+                ? { webFetchHosts: descendantScope.webFetchHosts }
+                : {}),
               incidentProxyMcpServers:
                 descendantScope?.incidentProxyMcpServers ?? [],
               isAutomationSession: !!spec.automationDescendantPolicy,
@@ -2152,6 +2158,9 @@ export async function openCreatedSession(
                   }
                 : {}),
               deniedTools: openingDeniedTools,
+              ...(localDescendantScope?.webFetchHosts
+                ? { webFetchHosts: localDescendantScope.webFetchHosts }
+                : {}),
               publicationPolicy: openingTrust.publicationPolicy,
               ...(openingBashRunAs ? { bashRunAs: openingBashRunAs } : {}),
               confirmTools: STRIPE_CONFIRM_TOOLS,

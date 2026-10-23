@@ -72,6 +72,9 @@ export interface SessionRunInputs {
   mcpServersSource: McpScopeSource;
   /** Tool-permission denials, or undefined when the run carries none. */
   deniedTools: Record<string, string> | undefined;
+  /** An incident agent's egress hosts, which its web_fetch is held to
+   *  (pi-web-search.ts); undefined for every other run. */
+  webFetchHosts?: string[];
   /** The prompter, or undefined for automation-owned sessions (which must
    *  never clear a server's `allowedUsers` gate). */
   user: string | undefined;
@@ -237,6 +240,9 @@ export async function resolveSessionRunInputs(
     inProcessMcpBranch: sessionInProcessMcpBranch(session, prompter),
     sessionNote: !isAutomationSession,
     incidentProxyMcpServers: incidentScope ? [INCIDENT_ACCESS_SERVER] : [],
+    ...(incidentScope?.access.egress?.hosts.length
+      ? { webFetchHosts: [...incidentScope.access.egress.hosts] }
+      : {}),
     ...(incidentRefusal !== undefined ? { incidentRefusal } : {}),
   };
 }

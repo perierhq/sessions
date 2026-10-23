@@ -195,6 +195,9 @@ export async function maybeLaunchRunnerRun(
     wsToken: crypto.randomUUID(),
     reposNote: runInputs.isAutomationSession ? undefined : opts.reposNote,
     deniedTools: runInputs.deniedTools,
+    ...(runInputs.webFetchHosts
+      ? { webFetchHosts: runInputs.webFetchHosts }
+      : {}),
     publicationPolicy,
     confirmTools: STRIPE_CONFIRM_TOOLS,
     aws: !runInputs.isAutomationSession || agentAwsCredsForUntrustedRuns(),
@@ -249,6 +252,9 @@ export async function maybeLaunchRunnerRun(
     accountId: session.accountId,
     fallbackModel: interactiveFallbackModel(session.model),
     deniedTools: runInputs.deniedTools,
+    ...(runInputs.webFetchHosts
+      ? { webFetchHosts: runInputs.webFetchHosts }
+      : {}),
     publicationPolicy,
     aws: !runInputs.isAutomationSession || agentAwsCredsForUntrustedRuns(),
     trustProfile: runInputs.isAutomationSession ? "automation" : "interactive",
