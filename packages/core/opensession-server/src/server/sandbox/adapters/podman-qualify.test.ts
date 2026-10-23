@@ -135,6 +135,71 @@ describe("podman qualification", () => {
     expect(pod[pod.indexOf("--name") + 1]).toMatch(/^opensession-sbx-qual-/);
   });
 
+  test("a progress callback that throws does not skip the cleanup", async () => {
+    const fake = setup();
+    await expect(
+      qualifyPodmanConnection((stage) => {
+        if (stage === "Removing the test sandbox") throw new Error("ui gone");
+      }, qualifyDeps(fake)),
+    ).resolves.toBeDefined();
+    expect(removed(fake)).toBe(true);
+  });
+
+  test("test sandboxes left by an earlier run are removed first", async () => {
+    const fake = setup();
+    const leftover = "opensession-sbx-qual-0123456789ab";
+    const orphanVolume = "opensession-sbx-qual-ba9876543210-home";
+    const removedNames: string[] = [];
+    const run = async (
+      argv: string[],
+      opts?: Parameters<typeof fake.run>[1],
+    ) => {
+      const [a, b] = argv;
+      if (a === "pod" && b === "ps") {
+        fake.calls.push({ argv, opts });
+        return {
+          exitCode: 0,
+          stdout: `${leftover}\nsomeone-else\n`,
+          stderr: "",
+        };
+      }
+      if (a === "volume" && b === "ls") {
+        fake.calls.push({ argv, opts });
+        return {
+          exitCode: 0,
+          stdout: `${leftover}-home\n${orphanVolume}\nopensession-sbx-sess-1-home\n`,
+          stderr: "",
+        };
+      }
+      const target = argv.at(-1)!;
+      if (target === "opensession-sbx-qual-ba9876543210")
+        return b === "exists"
+          ? { exitCode: 1, stdout: "", stderr: "" }
+          : { exitCode: 125, stdout: "", stderr: "Error: no such pod" };
+      if (target.startsWith(leftover) || target === orphanVolume) {
+        fake.calls.push({ argv, opts });
+        if (b === "inspect") return { exitCode: 0, stdout: "1\n", stderr: "" };
+        if (b === "rm") removedNames.push(target);
+        if (b === "exists") return { exitCode: 1, stdout: "", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return fake.run(argv, opts);
+    };
+    await qualifyPodmanConnection(() => {}, qualifyDeps(fake, { run }));
+    expect(removedNames.sort()).toEqual(
+      [leftover, `${leftover}-home`, orphanVolume].sort(),
+    );
+    // Listed by the sandbox label only.
+    const ps = fake.calls.find(({ argv }) => argv[1] === "ps")!.argv;
+    expect(ps).toContain("label=opensession.sandbox=1");
+    // Before the new test sandbox is created.
+    const first = fake.calls.findIndex(({ argv }) => argv[1] === "rm");
+    const create = fake.calls.findIndex(
+      ({ argv }) => argv[0] === "pod" && argv[1] === "create",
+    );
+    expect(first).toBeLessThan(create);
+  });
+
   test("a failed full self-test refuses and still removes the sandbox", async () => {
     const fake = setup({ selfTest: { "file:/opt/opensession": "present" } });
     await expect(

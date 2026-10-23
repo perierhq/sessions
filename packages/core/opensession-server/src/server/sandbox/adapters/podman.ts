@@ -66,6 +66,7 @@ import {
 import {
   isIpv4,
   PODMAN_NAME_PREFIX,
+  PODMAN_SANDBOX_LABEL,
   PODMAN_WORKLOAD_HOME,
   PODMAN_WORKLOAD_USER,
   podCreateArgs,
@@ -1225,6 +1226,69 @@ function stateHostPaths(): string[] {
   );
 }
 
+const QUAL_PREFIX = `${PODMAN_NAME_PREFIX}qual-`;
+
+/** Names podman lists for resources carrying the sandbox label. */
+async function listLabelled(
+  run: PodmanRunner,
+  argv: string[],
+): Promise<string[]> {
+  const result = await run(argv);
+  if (result.exitCode !== 0) {
+    console.warn(
+      `${LOG} podman ${argv.slice(0, 2).join(" ")} failed: ${(result.stderr || result.stdout).trim().slice(0, 200)}`,
+    );
+    return [];
+  }
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Remove test sandboxes an earlier qualification left behind (a gateway
+ * crash between create and cleanup). Only pods and volumes with the sandbox
+ * label and the qualification prefix are touched; failures are logged.
+ */
+async function removeLeftoverTestSandboxes(
+  run: PodmanRunner,
+  provider: PodmanProvider,
+): Promise<void> {
+  const label = `label=${PODMAN_SANDBOX_LABEL}`;
+  const pods = await listLabelled(run, [
+    "pod",
+    "ps",
+    "-a",
+    "--filter",
+    label,
+    "--format",
+    "{{.Name}}",
+  ]);
+  const volumes = await listLabelled(run, [
+    "volume",
+    "ls",
+    "--filter",
+    label,
+    "--format",
+    "{{.Name}}",
+  ]);
+  const leftovers = new Set([
+    ...pods.filter((name) => name.startsWith(QUAL_PREFIX)),
+    ...volumes
+      .filter((name) => name.startsWith(QUAL_PREFIX) && name.endsWith("-home"))
+      .map((name) => name.slice(0, -"-home".length)),
+  ]);
+  for (const pod of leftovers) {
+    try {
+      await provider.destroy(pod);
+      console.log(`${LOG} removed leftover test sandbox ${pod}`);
+    } catch (error) {
+      console.warn(`${LOG} could not remove leftover ${pod}:`, error);
+    }
+  }
+}
+
 /**
  * Prove this host can run "This machine (container)" sandboxes: Linux with
  * rootless Podman and its prerequisites, the sandbox image (built here, never
@@ -1274,6 +1338,7 @@ export async function qualifyPodmanConnection(
     prepare: async () => {},
     resumeHook: async () => {},
   });
+  await removeLeftoverTestSandboxes(run, provider);
   const sessionId = `qual-${randomBytes(6).toString("hex")}`;
   const { pod } = podmanNames(sessionId);
   let failure: unknown;
@@ -1289,7 +1354,11 @@ export async function qualifyPodmanConnection(
   } catch (error) {
     failure = error;
   }
-  progress("Removing the test sandbox", 95);
+  try {
+    progress("Removing the test sandbox", 95);
+  } catch (error) {
+    console.warn(`${LOG} qualification progress update failed:`, error);
+  }
   try {
     await provider.destroy(pod, { strict: true });
   } catch (cleanup) {

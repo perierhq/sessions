@@ -199,6 +199,8 @@ export function fakePodman(o: FakeOptions = {}) {
     if (a === "info")
       return o.info === undefined ? fail("no info") : ok(o.info);
     if (a === "pod" && b === "exists") return state.podExists ? ok() : fail("");
+    if ((a === "pod" && b === "ps") || (a === "volume" && b === "ls"))
+      return ok("");
     if (a === "image" && b === "exists")
       return o.imageExists === false ? fail("") : ok();
     if (a === "volume" && b === "exists")
