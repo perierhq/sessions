@@ -48,6 +48,9 @@ function failureSummary(code: string): string {
   );
 }
 
+/** Enough for a podman refusal that lists every failed self-test probe. */
+const FAILURE_DETAIL_MAX = 4000;
+
 function safeFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message
@@ -55,7 +58,7 @@ function safeFailureDetail(error: unknown): string {
     .replace(/\b(?:boat|box)_[A-Za-z0-9_-]+\b/g, "Boat")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 400);
+    .slice(0, FAILURE_DETAIL_MAX);
 }
 
 export async function qualifySandboxConnection(

@@ -49,6 +49,20 @@ describe("podman qualification dispatch", () => {
     expect(getSandboxConnection("podman")?.podman).toBeUndefined();
   });
 
+  test("a long refusal is kept whole, past the old 400-character cut", async () => {
+    const probes = Array.from(
+      { length: 40 },
+      (_, i) => `tcp:203.0.113.${i}:443 (expected unreachable, got open)`,
+    ).join("; ");
+    refusal = new Error(`isolation self-test failed: ${probes}`);
+    await expect(
+      qualifySandboxConnection("podman", undefined, "linux"),
+    ).rejects.toThrow(probes);
+    expect(
+      getSandboxConnection("podman")?.qualification?.failureSummary,
+    ).toBe(`Qualification failed: isolation self-test failed: ${probes}`);
+  });
+
   test("a recheck clears the facts while it runs and records the new ones", async () => {
     refusal = undefined;
     await qualifySandboxConnection("podman", undefined, "linux");

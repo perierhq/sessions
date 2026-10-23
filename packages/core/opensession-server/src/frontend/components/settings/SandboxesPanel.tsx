@@ -825,7 +825,7 @@ function ConnectionCard({
               {summary && (
                 <p
                   className={cn(
-                    "m-0 mt-2 text-supporting",
+                    "m-0 mt-2 text-supporting break-words",
                     connection.state === "needs_attention"
                       ? "text-red"
                       : "text-dim",
