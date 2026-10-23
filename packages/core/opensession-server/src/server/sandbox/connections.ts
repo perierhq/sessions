@@ -450,7 +450,9 @@ export function connectSandboxProvider(
 ): SandboxConnection {
   const previous = getSandboxConnection(provider);
   let credentialRef = previous?.credentialRef;
-  if (input.secret) {
+  // A provider that takes no credential never stores one, whatever a client
+  // sends.
+  if (input.secret && sandboxProviderNeedsCredential(provider)) {
     credentialRef = putWorkspaceSecret(
       `sandbox.${provider}`,
       input.secret.trim(),

@@ -244,6 +244,21 @@ describe("This machine (container)", () => {
     expect(sandboxConnectionReady("podman")).toBe(false);
   });
 
+  test("an API key sent anyway is never stored", () => {
+    const connection = connectSandboxProvider("podman", {
+      secret: "sk-should-not-be-kept",
+      settings: {},
+    });
+    expect(connection.credentialRef).toBeUndefined();
+    expect(sandboxProviderCredential("podman")).toBeUndefined();
+    expect(
+      readFileSync(process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!, {
+        encoding: "utf8",
+        flag: "a+",
+      }),
+    ).not.toContain("sk-should-not-be-kept");
+  });
+
   test("qualification facts are kept on the connection", () => {
     connectSandboxProvider("podman", { settings: {} });
     setPodmanConnectionFacts({
