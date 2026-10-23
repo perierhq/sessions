@@ -1257,6 +1257,31 @@ describe("web_fetch on unattended runs", () => {
     return { fetch, payloads: scripted.payloads };
   }
 
+  test("allowlist matching takes default ports only, unless the entry names one", () => {
+    const hosts = ["github.com", "*.acme.test", "docs.example.test:8443"];
+    expect(fetchHostAllowed("github.com", hosts, "")).toBe(true);
+    expect(fetchHostAllowed("github.com", hosts, "443")).toBe(true);
+    expect(fetchHostAllowed("github.com", hosts, "80")).toBe(true);
+    expect(fetchHostAllowed("github.com", hosts, "8443")).toBe(false);
+    expect(fetchHostAllowed("api.acme.test", hosts, "8080")).toBe(false);
+    expect(fetchHostAllowed("docs.example.test", hosts, "8443")).toBe(true);
+    expect(fetchHostAllowed("docs.example.test", hosts, "")).toBe(false);
+    expect(() =>
+      checkFetchUrl("https://github.com:8443/x", ["github.com"]),
+    ).toThrow("github.com:8443 is not on this run's egress allowlist");
+    expect(checkFetchUrl("https://github.com:443/x", ["github.com"]).href).toBe(
+      "https://github.com/x",
+    );
+    expect(checkFetchUrl("http://github.com:80/x", ["github.com"]).href).toBe(
+      "http://github.com/x",
+    );
+    expect(allowedDomainsFor(hosts)).toEqual([
+      "github.com",
+      "acme.test",
+      "docs.example.test",
+    ]);
+  });
+
   test("a URL off the allowlist is refused before any request or audit", async () => {
     const audits: unknown[] = [];
     const bound: string[] = [];

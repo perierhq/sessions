@@ -618,36 +618,55 @@ export function checkFetchUrl(
     throw new Error(
       `Refusing to fetch a private or internal address (${host}). web_fetch reads public pages only.`,
     );
-  if (allowedHosts && !fetchHostAllowed(host, allowedHosts))
+  if (allowedHosts && !fetchHostAllowed(host, allowedHosts, url.port))
     throw new Error(
-      `${host} is not on this run's egress allowlist. An unattended run's web_fetch reads only the hosts it may reach (${allowedHosts.join(", ")}).`,
+      `${url.host} is not on this run's egress allowlist. An unattended run's web_fetch reads only the hosts it may reach (${allowedHosts.join(", ")}).`,
     );
   return url;
 }
 
-/** Whether an egress allowlist covers a host: an exact name, or a `*.`
- *  wildcard entry for any name under it (Daytona's semantics). */
+/** An allowlist entry's host and the port it names, if any. */
+function allowlistEntry(raw: string): { name: string; port?: string } {
+  const entry = raw.trim().toLowerCase();
+  const match = entry.match(/^(\[[^\]]*\]|[^:]*)(?::(\d+))?$/);
+  const name = (match ? match[1]! : entry)
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+  return match?.[2] ? { name, port: match[2] } : { name };
+}
+
+/** Whether an egress allowlist covers a host and port: an exact name, or a
+ *  `*.` wildcard entry for any name under it (Daytona's semantics). The
+ *  port must be a default one (none, 80 or 443) unless the entry names it,
+ *  and an entry that names a port covers only that port. */
 export function fetchHostAllowed(
   host: string,
   allowedHosts: readonly string[],
+  port = "",
 ): boolean {
   const name = host.toLowerCase().replace(/\.+$/, "");
   return allowedHosts.some((raw) => {
-    const entry = raw.toLowerCase().replace(/\.+$/, "");
-    return entry.startsWith("*.")
-      ? name.endsWith(entry.slice(1)) && name.length > entry.length - 1
-      : name === entry;
+    const entry = allowlistEntry(raw);
+    const portOk =
+      entry.port !== undefined
+        ? port === entry.port
+        : port === "" || port === "80" || port === "443";
+    if (!portOk) return false;
+    return entry.name.startsWith("*.")
+      ? name.endsWith(entry.name.slice(1)) &&
+          name.length > entry.name.length - 1
+      : name === entry.name;
   });
 }
 
 /** An egress allowlist as provider domain filters: no wildcards (a domain
- *  covers its subdomains there), deduplicated. checkFetchUrl holds the URL
+ *  covers its subdomains there) and no ports, deduplicated. checkFetchUrl holds the URL
  *  to the exact list first. */
 export function allowedDomainsFor(allowedHosts: readonly string[]): string[] {
   return [
     ...new Set(
       allowedHosts
-        .map((h) => h.toLowerCase().replace(/^\*\./, "").replace(/\.+$/, ""))
+        .map((h) => allowlistEntry(h).name.replace(/^\*\./, ""))
         .filter(Boolean),
     ),
   ];
