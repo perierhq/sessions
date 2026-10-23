@@ -147,6 +147,8 @@ interface SpawnTarget {
   notice?: string;
   /** Extra env for the spawned process (e.g. the shared ssh-agent sock). */
   env?: Record<string, string>;
+  /** Called on terminal input and output (the target throttles it). */
+  onActivity?: () => void;
   dispose?: () => void;
 }
 
@@ -303,6 +305,8 @@ async function resolveTarget(
         target: "podman",
         displayCwd: target.cwd,
         argv: target.argv,
+        // Keeps the idle sweep off a pod with an open shell.
+        onActivity: target.touch,
       };
     }
 
@@ -549,6 +553,7 @@ function spawnPty(
       cols: clampCols(opts.cols),
       rows: clampRows(opts.rows),
       data: (_term: unknown, chunk: Uint8Array) => {
+        target.onActivity?.();
         opts.send({
           type: "term_data",
           data: Buffer.from(chunk).toString("base64"),
@@ -559,6 +564,7 @@ function spawnPty(
 
   const entry: TermEntry = {
     write: (data) => {
+      target.onActivity?.();
       try {
         (proc as any).terminal?.write(data);
       } catch {}

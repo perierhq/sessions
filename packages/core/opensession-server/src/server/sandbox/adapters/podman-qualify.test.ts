@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { getSandboxProvider } from "../index";
 import {
+  readRemoteState,
   remoteGuestHomeForProvider,
   remoteGuestOsForProvider,
+  writeRemoteState,
 } from "./bootstrap";
 import {
   PodmanProvider,
+  podmanActivityToucher,
   podmanTerminalTarget,
   qualifyPodmanConnection,
   type PodmanQualifyDeps,
@@ -191,5 +194,66 @@ describe("podman terminal", () => {
       "-l",
     ]);
     expect(target.cwd).toBe("/home/ubuntu/worktrees/acme-main");
+  });
+
+  test("waking for a terminal starts the infra, installs the rules, then the workload", async () => {
+    const fake = setup();
+    const provider = new PodmanProvider(fakeProviderDeps(fake));
+    const sandbox = await provider.ensure({
+      sessionId: `bks-podman-term-${Date.now().toString(36)}`,
+    });
+    await provider.pause(sandbox.id);
+    fake.calls.length = 0;
+    await podmanTerminalTarget(sandbox.id, provider, 1001);
+    const steps = fake.calls
+      .map(({ argv }) =>
+        argv[0] === "start"
+          ? `start ${argv.at(-1)}`
+          : argv[0] === "unshare"
+            ? argv.includes("-f")
+              ? "nft install"
+              : "nft list"
+            : "",
+      )
+      .filter(Boolean);
+    expect(steps.slice(0, 4)).toEqual([
+      `start ${sandbox.id}-infra`,
+      "nft install",
+      "nft list",
+      `start ${sandbox.id}-ws`,
+    ]);
+    expect(fake.state.execs.every((e) => e.filtered)).toBe(true);
+  });
+
+  test("an open terminal keeps the sandbox's activity fresh, throttled", async () => {
+    const fake = setup();
+    const provider = new PodmanProvider(fakeProviderDeps(fake));
+    const sandbox = await provider.ensure({
+      sessionId: `bks-podman-term-${Date.now().toString(36)}`,
+    });
+    const old = "2020-01-01T00:00:00.000Z";
+    const reset = () =>
+      writeRemoteState({
+        ...readRemoteState("podman", sandbox.id)!,
+        lastActivityAt: old,
+      });
+    reset();
+    const target = await podmanTerminalTarget(sandbox.id, provider, 1001);
+    // Opening the shell counts as activity.
+    expect(readRemoteState("podman", sandbox.id)!.lastActivityAt).not.toBe(old);
+
+    let now = 1_000_000;
+    const touch = podmanActivityToucher(sandbox.id, () => now);
+    reset();
+    touch();
+    expect(readRemoteState("podman", sandbox.id)!.lastActivityAt).not.toBe(old);
+    reset();
+    now += 30_000;
+    touch();
+    expect(readRemoteState("podman", sandbox.id)!.lastActivityAt).toBe(old);
+    now += 31_000;
+    touch();
+    expect(readRemoteState("podman", sandbox.id)!.lastActivityAt).not.toBe(old);
+    expect(typeof target.touch).toBe("function");
   });
 });

@@ -1313,11 +1313,30 @@ export async function qualifyPodmanConnection(
  * podman). A sleeping sandbox is woken through the firewall first, as a
  * terminal is an interactive gesture.
  */
+const TERMINAL_TOUCH_MS = 60_000;
+
+/** Marks the sandbox active at most once a minute: terminal I/O calls it so
+ *  the idle sweep does not stop a pod under an open shell. */
+export function podmanActivityToucher(
+  sandboxId: string,
+  now: () => number = Date.now,
+): () => void {
+  let last = Number.NEGATIVE_INFINITY;
+  return () => {
+    const at = now();
+    if (at - last < TERMINAL_TOUCH_MS) return;
+    last = at;
+    try {
+      touchRemoteState("podman", sandboxId);
+    } catch {}
+  };
+}
+
 export async function podmanTerminalTarget(
   sandboxId: string,
   provider: Pick<PodmanProvider, "status" | "resume"> = new PodmanProvider(),
   uid = process.getuid?.(),
-): Promise<{ argv: string[]; cwd: string }> {
+): Promise<{ argv: string[]; cwd: string; touch: () => void }> {
   const state = readRemoteState("podman", sandboxId);
   if (!state) throw new Error(`Unknown sandbox ${sandboxId}`);
   const names = podmanNames(state.sessionId);
@@ -1328,8 +1347,11 @@ export async function podmanTerminalTarget(
     if (!woken) throw new Error("The sandbox could not be woken");
   }
   const cwd = podmanSandboxCwd(state.cwd) ?? PODMAN_WORKLOAD_HOME;
+  const touch = podmanActivityToucher(sandboxId);
+  touch();
   return {
     cwd,
+    touch,
     argv: [
       "/usr/bin/env",
       "-i",
