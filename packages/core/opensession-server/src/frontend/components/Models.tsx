@@ -348,7 +348,10 @@ function WebSearchRow() {
           items={items}
           value={choice ?? "auto"}
           disabled={choice === null || saving}
-          onValueChange={(value) => change(value as WebSearchChoice)}
+          onValueChange={(value) => {
+            const next = options.find((option) => option === value);
+            if (next) void change(next);
+          }}
         >
           <Select.Trigger
             aria-label="Web search provider"
