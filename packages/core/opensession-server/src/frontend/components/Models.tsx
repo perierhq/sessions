@@ -263,7 +263,7 @@ const WEB_SEARCH_LABELS: Record<WebSearchChoice, string> = {
 };
 
 /**
- * Which provider the agent's web_search tool searches through. Automatic
+ * Which provider the agent's web_search and web_fetch tools use. Automatic
  * tries the session's own provider first, then the others; a specific
  * provider is the only one used; Off removes the tool. Only connected
  * providers are offered (a stored choice stays listed).
@@ -340,7 +340,7 @@ function WebSearchRow() {
         <SettingRowTitle>Web search</SettingRowTitle>
         <SettingRowDescription>
           {error ||
-            "Which provider the agent searches the web through. Automatic tries the session's own provider first."}
+            "Which provider the agent searches and reads the web through. Automatic tries the session's own provider first."}
         </SettingRowDescription>
       </SettingRowText>
       <SettingRowControl>
