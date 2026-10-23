@@ -8,12 +8,14 @@ import {
   signalWriteCount,
   updateSignal,
 } from "./signal-store";
+import { __setOwnerRosterForTest } from "./owner";
 import { appendObservations, recentObservations } from "./observation-store";
 import { redactSignal } from "./signal-validation";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
 const kit = useIncidentTestKernel();
 const person = { signedInPerson: true };
+const machine = { automation: true };
 const http = {
   name: "Search",
   project: "acme",
@@ -358,5 +360,94 @@ test("only a signed-in person decides where a signal runs and what it fetches", 
     ).toEqual({ error: "Runner checks are not available on this server yet" });
   } finally {
     setSignalRunOnCheck(undefined);
+  }
+});
+
+test("a signal is owned by a person, never by the automation principal", async () => {
+  __setOwnerRosterForTest([
+    { name: "Ada Lovelace", aliases: ["ada"], github: "ada-acme" },
+    { name: "Bo Diddley" },
+  ]);
+  try {
+    // The person who creates it owns it, keyed by their first name.
+    const mine = await createSignal(http, "ada lovelace", person);
+    expect(mine).toMatchObject({ owner: "Ada", createdBy: "ada lovelace" });
+    // The automation principal never owns one: the instance owner does,
+    // unless it names a person.
+    const made = await createSignal(http, "Automation", machine);
+    expect(made).toMatchObject({ owner: "Ada", createdBy: "Automation" });
+    const named = await createSignal(
+      { ...http, owner: "bo diddley" },
+      "Automation",
+      machine,
+    );
+    if ("error" in named) throw new Error(named.error);
+    expect(named).toMatchObject({ owner: "Bo", createdBy: "Automation" });
+    expect(
+      await createSignal(
+        { ...http, owner: "Automation" },
+        "Automation",
+        machine,
+      ),
+    ).toEqual({ error: "The owner must be a person" });
+    // Edits keep the owner; naming another person moves it.
+    expect(
+      await updateSignal(
+        named.id,
+        { name: "Search API" },
+        "Automation",
+        machine,
+      ),
+    ).toMatchObject({ owner: "Bo" });
+    expect(
+      await updateSignal(named.id, { owner: "ada-acme" }, "Bo", person),
+    ).toMatchObject({ owner: "Ada" });
+    expect(
+      await updateSignal(named.id, { owner: "Automation" }, "Bo", person),
+    ).toEqual({ error: "The owner must be a person" });
+  } finally {
+    __setOwnerRosterForTest(undefined);
+  }
+});
+
+test("an edit gives a signal without an owner the person it falls back to", async () => {
+  __setOwnerRosterForTest([{ name: "Ada Lovelace" }, { name: "Bo Diddley" }]);
+  try {
+    const legacy = await createSignal(http, "Automation", machine);
+    if ("error" in legacy) throw new Error(legacy.error);
+    // Stored before signals had owners.
+    const { owner: _owner, ...stored } = legacy;
+    const before = kit
+      .store()
+      .catalogDocumentGet("incident-signals", legacy.id);
+    const put = kit.store().putCatalogDocument({
+      op: "put",
+      namespace: "incident-signals",
+      key: legacy.id,
+      expectedRev: before?.rev ?? null,
+      value: JSON.stringify(stored),
+      requestId: crypto.randomUUID(),
+    });
+    if (put.status !== "committed") throw new Error(put.status);
+    expect((await getSignal(legacy.id))?.owner).toBeUndefined();
+    expect(
+      await updateSignal(legacy.id, { name: "Search API" }, "Bo", person),
+    ).toMatchObject({ owner: "Ada", createdBy: "Automation" });
+  } finally {
+    __setOwnerRosterForTest(undefined);
+  }
+});
+
+test("with nobody to fall back to, the automation principal names the owner", async () => {
+  __setOwnerRosterForTest([]);
+  try {
+    expect(await createSignal(http, "Automation", machine)).toEqual({
+      error: "Name a person to own this signal",
+    });
+    expect(
+      await createSignal({ ...http, owner: "Ada" }, "Automation", machine),
+    ).toMatchObject({ owner: "Ada" });
+  } finally {
+    __setOwnerRosterForTest(undefined);
   }
 });
