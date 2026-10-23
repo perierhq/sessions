@@ -447,3 +447,13 @@ identity configuration. Personal Claude-account alerts go to that account's
 `integrations.accountHealth.notifyUser`, falling back to the first configured
 team member. Restart after changing that setting. The model-account pools are
 documented in [engines.md](engines.md#configure-model-access).
+
+## Incident owner (`integrations.incidents`)
+
+Every signal, and every incident it opens, is owned by a person on the team
+roster, never by the automation principal. When a signal has no owner and its
+creator is not a person (the automation principal, or `Anonymous` on an
+instance without sign-in), the instance owner owns it and is told about its
+incidents. The instance owner is `integrations.incidents.notifyUser`, else
+`integrations.accountHealth.notifyUser`, as long as that names a directory
+member; otherwise it is the first directory member on the roster.

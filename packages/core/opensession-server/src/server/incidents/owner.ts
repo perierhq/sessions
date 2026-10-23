@@ -5,19 +5,30 @@
 // gives a signed-in person. With a roster, a name nobody on it goes by is
 // no owner; without one, a person's name stays as given.
 //
-// When nobody is left, the instance owner (the first directory member on
-// the roster) owns the signal and is told about its incidents.
+// When nobody is left, the instance owner (the configured notify user,
+// else the first directory member on the roster) owns the signal and is
+// told about its incidents.
 //
 // Reads the in-memory config snapshot only; nothing runs at import.
 import type { Signal } from "../../shared/incidents";
-import { configuredIdentity, type TeamMember } from "../config";
+import {
+  configuredIdentity,
+  configuredIntegration,
+  type TeamMember,
+} from "../config";
 import { humanPrompter } from "../session-actors";
 
 let rosterOverride: TeamMember[] | undefined;
+let notifyUserOverride: string | undefined;
 
-/** Replace the roster (tests); undefined restores the configured one. */
-export function __setOwnerRosterForTest(team: TeamMember[] | undefined): void {
+/** Replace the roster and the configured notify user (tests); undefined
+ *  restores the configured ones. */
+export function __setOwnerRosterForTest(
+  team: TeamMember[] | undefined,
+  notifyUser?: string,
+): void {
   rosterOverride = team;
+  notifyUserOverride = team ? (notifyUser ?? "") : undefined;
 }
 
 function roster(): TeamMember[] {
@@ -80,9 +91,28 @@ export function resolveOwner(
   return firstName(member) || name.trim();
 }
 
-/** The instance owner: the first directory member on the roster, or "" on
- *  an instance without one. */
+/** The person configured to hear about the instance's alerts:
+ *  `integrations.incidents.notifyUser`, else the account-health monitor's
+ *  `integrations.accountHealth.notifyUser`; "" when neither is set. */
+function configuredNotifyUser(): string {
+  if (notifyUserOverride !== undefined) return notifyUserOverride;
+  try {
+    for (const name of ["incidents", "accountHealth"]) {
+      const user = configuredIntegration(name).notifyUser;
+      if (typeof user === "string" && user.trim()) return user;
+    }
+  } catch {
+    // No config loaded: nobody is configured.
+  }
+  return "";
+}
+
+/** The instance owner: the configured notify user when they are a person
+ *  on the roster (a Slack id is passed over), else the first directory
+ *  member, else "" on an instance without one. */
 export function instanceOwner(): string {
+  const configured = personOwner(configuredNotifyUser());
+  if (configured) return configured;
   const member = roster().find((m) => m.directory !== false && firstName(m));
   return member ? firstName(member) : "";
 }
