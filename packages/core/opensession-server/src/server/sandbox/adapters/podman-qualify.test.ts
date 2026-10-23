@@ -13,6 +13,7 @@ import {
   qualifyPodmanConnection,
   type PodmanQualifyDeps,
 } from "./podman";
+import { podmanNames } from "./podman-cli";
 import {
   fakePodman,
   fakeProviderDeps,
@@ -288,6 +289,32 @@ describe("podman terminal", () => {
       `start ${sandbox.id}-ws`,
     ]);
     expect(fake.state.execs.every((e) => e.filtered)).toBe(true);
+  });
+
+  test("a running workload this gateway never verified gets no shell until it passes", async () => {
+    // Running, but its namespace holds no rules (as after a crash between a
+    // failed verify and the stop).
+    const fake = setup({ podExists: true, running: true, rulesInstalled: false });
+    const provider = new PodmanProvider(fakeProviderDeps(fake));
+    const sessionId = `bks-podman-term-${Date.now().toString(36)}-unverified`;
+    const pod = podmanNames(sessionId).pod;
+    writeRemoteState({
+      sandboxId: pod,
+      provider: "podman",
+      sessionId,
+      cwd: "/home/ubuntu/worktrees/acme-main",
+      repoId: "acme",
+      branch: "main",
+      trustProfile: "interactive",
+      egressAllowlist: [],
+      createdAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+    });
+    await expect(podmanTerminalTarget(pod, provider, 1001)).rejects.toThrow(
+      /do not match the policy/,
+    );
+    expect(fake.state.execs).toEqual([]);
+    expect(fake.state.running).toBe(false);
   });
 
   test("an open terminal keeps the sandbox's activity fresh, throttled", async () => {

@@ -284,6 +284,16 @@ async function workloadRun(
  *  after a gateway restart, so every running pod is re-verified once. */
 const verifiedRuns = new Map<string, string>();
 
+/** Whether the workload is running and its current run is the one this
+ *  gateway verified. */
+async function runIsVerified(
+  run: PodmanRunner,
+  names: PodmanNames,
+): Promise<boolean> {
+  const current = await workloadRun(run, names);
+  return !!current && verifiedRuns.get(names.pod) === current;
+}
+
 /**
  * Stop the pod: `pod stop`, then `pod kill` if that fails. With `remove`
  * (a failed verification), a pod that survives both has its workload
@@ -947,8 +957,7 @@ export class PodmanProvider implements SandboxProvider {
           // Trust a running workload only if it is the run this gateway
           // verified; anything else (restarted out of band, or unseen since
           // a gateway restart) goes through the sequence again.
-          const current = await workloadRun(this.run, names);
-          if (current && verifiedRuns.get(names.pod) === current) return;
+          if (await runIsVerified(this.run, names)) return;
           await this.wake(names);
         }),
     });
@@ -1038,6 +1047,29 @@ export class PodmanProvider implements SandboxProvider {
     const woke = await this.wake(names);
     if (woke) await this.d.resumeHook(this.driver(names), names.pod, state);
     return Object.assign(this.handle(names, state), { wokeFromSleep: woke });
+  }
+
+  /**
+   * Make sure the sandbox runs in the run this gateway verified behind its
+   * firewall, as every exec does: a verified run is used as is; a stopped
+   * pod, or a running one this gateway has not verified (restarted out of
+   * band, or unseen since a gateway restart), goes through the whole
+   * firewalled start sequence. Returns null when the sandbox is unknown or
+   * gone; rejects when it cannot be verified (the pod is stopped).
+   */
+  async ensureVerified(
+    sandboxId: string,
+  ): Promise<{ wokeFromSleep: boolean } | null> {
+    const state = readRemoteState(this.id, sandboxId);
+    if (!state) return null;
+    const names = podmanNames(state.sessionId);
+    if (names.pod !== sandboxId) return null;
+    if ((await this.run(["pod", "exists", names.pod])).exitCode !== 0)
+      return null;
+    if (await runIsVerified(this.run, names)) return { wokeFromSleep: false };
+    const woke = await this.wake(names);
+    if (woke) await this.d.resumeHook(this.driver(names), names.pod, state);
+    return { wokeFromSleep: woke };
   }
 
   /** Remove the pod (and its containers) and the session volume: the
@@ -1347,7 +1379,8 @@ export async function qualifyPodmanConnection(
  * A Terminal tab inside the workload: a local PTY running `podman exec -it`
  * as uid 1000, with podman's minimal env (the gateway's env never reaches
  * podman). A sleeping sandbox is woken through the firewall first, as a
- * terminal is an interactive gesture.
+ * terminal is an interactive gesture, and a running one this gateway has not
+ * verified is re-verified before the shell opens.
  */
 const TERMINAL_TOUCH_MS = 60_000;
 
@@ -1370,7 +1403,7 @@ export function podmanActivityToucher(
 
 export async function podmanTerminalTarget(
   sandboxId: string,
-  provider: Pick<PodmanProvider, "status" | "resume"> = new PodmanProvider(),
+  provider: Pick<PodmanProvider, "ensureVerified"> = new PodmanProvider(),
   uid = process.getuid?.(),
 ): Promise<{ argv: string[]; cwd: string; touch: () => void }> {
   const state = readRemoteState("podman", sandboxId);
@@ -1378,10 +1411,9 @@ export async function podmanTerminalTarget(
   const names = podmanNames(state.sessionId);
   if (names.pod !== sandboxId) throw new Error(`Unknown sandbox ${sandboxId}`);
   if (uid === undefined) throw new Error("podman needs a POSIX host");
-  if ((await provider.status(sandboxId)) !== "running") {
-    const woken = await provider.resume(sandboxId);
-    if (!woken) throw new Error("The sandbox could not be woken");
-  }
+  // The same check every exec makes: only the verified run gets a shell.
+  if (!(await provider.ensureVerified(sandboxId)))
+    throw new Error("The sandbox could not be woken");
   const cwd = podmanSandboxCwd(state.cwd) ?? PODMAN_WORKLOAD_HOME;
   const touch = podmanActivityToucher(sandboxId);
   touch();

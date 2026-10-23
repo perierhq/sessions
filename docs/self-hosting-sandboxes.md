@@ -591,9 +591,13 @@ Podman's storage directory is a stronger backstop.
 the user the server runs as. Any process running as that user can control
 them through Podman: start a workload without its firewall, flush the egress
 table, or exec into a container. That includes host-local sessions (no
-sandbox) and anything else running under that account. The provider trusts
-only a workload run it verified itself and re-verifies any other, but it
-cannot stop that user's processes from acting between checks. Run the server
+sandbox) and anything else running under that account. Before a command, a
+file write or a Terminal shell, the provider compares the running workload
+with the run it last verified itself, and puts any other run (restarted out
+of band, or not seen since the server started) through the firewalled start
+sequence again. A quick series of commands repeats that comparison at most
+once a minute. Nothing catches a process that changes the pod between those
+checks. Run the server
 as a dedicated user with nothing else on it, and do not use host-local
 sessions on a server whose container sandboxes must stay isolated.
 
