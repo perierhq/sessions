@@ -136,7 +136,9 @@ test("role default plus signal override, with summary and revision", async () =>
   // The verifier judges the evidence it is given: no web search. The
   // investigator keeps it.
   expect(v.deniedTools.web_search).toBe(VERIFIER_WEB_SEARCH_MESSAGE);
+  expect(v.deniedTools.web_fetch).toBe(VERIFIER_WEB_SEARCH_MESSAGE);
   expect(a.deniedTools.web_search).toBeUndefined();
+  expect(a.deniedTools.web_fetch).toBeUndefined();
   expect(runToolPolicy({ deniedTools: v.deniedTools }).disables).toHaveProperty(
     "web_search",
     false,
