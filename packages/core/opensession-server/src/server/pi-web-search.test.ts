@@ -243,7 +243,7 @@ describe("the Anthropic request loop", () => {
     expect(payloads[0]!.tools).toEqual([
       webSearchServerTool("anthropic-messages", "claude-haiku-5-5"),
     ]);
-    const resent = (payloads[2]!.messages as Array<{ content: unknown }>)[1]!;
+    const resent = (payloads[2]!.messages as unknown[])[1];
     expect(resent).toEqual({
       role: "assistant",
       content: [

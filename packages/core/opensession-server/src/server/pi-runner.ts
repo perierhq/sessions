@@ -86,6 +86,14 @@ import {
 } from "./pi-session-setup";
 import { PiSteerController } from "./pi-steer-controller";
 import {
+  makePiWebSearch,
+  webSearchEnabled,
+  webSearchModelId,
+} from "./pi-web-search";
+import { readWebSearchSetting } from "./web-search-setting";
+import { configuredHaikuFallbackModel } from "./models";
+import { rewriteAnthropicPromptPayload } from "./anthropic-prompt-compat";
+import {
   PiEventPump,
   buildPiPromptForEngine,
   createPiEventMapper,
@@ -430,6 +438,15 @@ async function* runPiAttempt(
       agentGitEnv,
       mergeGuard,
     } = await resolvePiRunAuthority(opts, remote);
+    const bindingDependencies = {
+      readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
+      readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
+      pickOpenaiAccount,
+      buildSeededOpenaiAuth,
+      pickClaudeAccount,
+      buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
+      bindXaiAccount,
+    };
     const binding = await createPiRuntimeBinding({
       providerID: parsed.providerID,
       modelID: parsed.modelID,
@@ -465,15 +482,7 @@ async function* runPiAttempt(
           ...summarizeText(prompt),
         });
       },
-      dependencies: {
-        readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
-        readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
-        pickOpenaiAccount,
-        buildSeededOpenaiAuth,
-        pickClaudeAccount,
-        buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
-        bindXaiAccount,
-      },
+      dependencies: bindingDependencies,
     });
     const { sdk, runtime, model: piModel } = binding;
 
@@ -501,6 +510,8 @@ async function* runPiAttempt(
       disableLocalWorkspaceTools: opts.disableLocalWorkspaceTools,
     });
     const boundary: PiSteerBoundary = { pending: false };
+    // Settings › Models › Web search, read fresh for every turn.
+    const webSearchSetting = await readWebSearchSetting();
     const { customTools, codemode } = buildPiToolset({
       sdk,
       opts,
@@ -517,6 +528,52 @@ async function* runPiAttempt(
       privateTermsGuard,
       abort,
       boundary,
+      webSearch: webSearchEnabled(webSearchSetting, policy.disables)
+        ? makePiWebSearch({
+            setting: webSearchSetting,
+            sessionProvider: parsed.providerID,
+            modelFor: (provider) =>
+              webSearchModelId(provider, configuredHaikuFallbackModel()),
+            // A side request on the same account picking a turn uses. The
+            // session's pin and remembered Claude account apply only when
+            // the search runs on the session's own provider.
+            bind: async (provider, modelID) => {
+              const own = provider === parsed.providerID;
+              const bound = await createPiRuntimeBinding({
+                providerID: provider,
+                modelID,
+                affinityKey: affinity,
+                claudeSessionKey: own ? claudeSessionKey : undefined,
+                unifiedSessionId: unifiedSessionId || runKey,
+                accountUser,
+                ...(own
+                  ? {
+                      accountId: opts.accountId,
+                      accountStrict: opts.accountStrict,
+                    }
+                  : {}),
+                usageCredits: opts.usageCredits,
+                excludedOpenaiAccountIds: walk.excluded,
+                dependencies: bindingDependencies,
+              });
+              return {
+                runtime: bound.runtime,
+                model: bound.model,
+                usesNativeAnthropic: bound.usesNativeAnthropic,
+                account: evidencePoolRef(bound, "picked")?.masked,
+              };
+            },
+            rewritePayload: rewriteAnthropicPromptPayload,
+            onAudit: (event) =>
+              audit({
+                ...event,
+                request_id: requestId,
+                run_key: runKey,
+                session_id: journal?.osSessionId,
+                run_kind: journal?.kind,
+              }),
+          })
+        : undefined,
     });
 
     const { agentDir, sessionDir, settingsManager, loader, sessionContext } =

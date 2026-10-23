@@ -25,6 +25,7 @@ import {
 } from "./pi-guarded-tools";
 import { makePiBashTool } from "./pi-bash-tool";
 import { piSteeringBoundaryTools } from "./pi-steering";
+import { createWebSearchTool } from "./pi-web-search";
 
 /** Whether a steer is queued for the run. Closures read `pending` when they
  *  run, so a steer queued after the tools were built still holds them. */
@@ -114,6 +115,9 @@ export function buildPiToolset(input: {
   privateTermsGuard: PrivateTermsGuard | undefined;
   abort: AbortController;
   boundary: PiSteerBoundary;
+  /** The `web_search` tool's search (pi-web-search.ts); absent when Settings
+   *  or the run's policy turns it off. */
+  webSearch?: (query: string, signal: AbortSignal) => Promise<string>;
 }): { customTools: ToolDefinition<any, any, any>[]; codemode: boolean } {
   const {
     sdk,
@@ -131,6 +135,7 @@ export function buildPiToolset(input: {
     privateTermsGuard,
     abort,
     boundary,
+    webSearch,
   } = input;
   const { cwd, journal } = opts;
   const isAsk = opts.mode === "ask";
@@ -226,6 +231,10 @@ export function buildPiToolset(input: {
         break;
     }
   }
+  // Web search runs on this side of any Sandbox, so it needs no Sandbox
+  // egress. A run without local tools (a tool-less one-shot) gets none.
+  if (webSearch && !opts.disableLocalWorkspaceTools)
+    baseCustomTools.push(createWebSearchTool({ search: webSearch }));
   const customTools = piSteeringBoundaryTools(
     baseCustomTools,
     () => boundary.pending,
