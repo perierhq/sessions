@@ -101,9 +101,12 @@ describe("podman argv", () => {
     expect(hasPair(argv, "--dns-search", ".")).toBe(true);
     expect(hasPair(argv, "--hostname", "sandbox")).toBe(true);
     expect(operands(argv, "--label").sort()).toEqual([
+      "opensession.sandbox.session=sess-1",
       "opensession.sandbox=1",
-      "opensession.session=sess-1",
     ]);
+    // Not session-ownership's key: "Stop everything" acts on containers
+    // carrying that one, and the infra container would inherit it.
+    expect(argv.join(" ")).not.toContain("opensession.session=");
     for (const word of ["-p", "--publish", "host", "--network=host"])
       expect(argv).not.toContain(word);
     expect(argv).toEqual([
@@ -129,7 +132,7 @@ describe("podman argv", () => {
       "--label",
       "opensession.sandbox=1",
       "--label",
-      "opensession.session=sess-1",
+      "opensession.sandbox.session=sess-1",
     ]);
   });
 
@@ -151,7 +154,7 @@ describe("podman argv", () => {
       "--label",
       "opensession.sandbox=1",
       "--label",
-      "opensession.session=sess-1",
+      "opensession.sandbox.session=sess-1",
       "opensession-sbx-sess-1-home",
     ]);
   });

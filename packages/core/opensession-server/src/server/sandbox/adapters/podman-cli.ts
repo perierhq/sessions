@@ -57,7 +57,7 @@ export const PODMAN_LONG_TIMEOUT_MS = 600_000;
  *  names with this prefix AND the sandbox label. */
 export const PODMAN_NAME_PREFIX = "opensession-sbx-";
 export const PODMAN_SANDBOX_LABEL = "opensession.sandbox=1";
-export const PODMAN_SESSION_LABEL_KEY = "opensession.session";
+export const PODMAN_SESSION_LABEL_KEY = "opensession.sandbox.session";
 /** The workload's uid:gid (the image's `ubuntu` user). Container root maps to
  *  the gateway's own host user, so nothing ever runs as it. */
 export const PODMAN_WORKLOAD_USER = "1000:1000";
