@@ -65,9 +65,17 @@ export async function qualifySandboxConnection(
     progress?: number;
     detail?: string;
   }) => void = () => undefined,
+  platform: string = process.platform,
 ): Promise<void> {
   setSandboxConnectionQualification(provider, { status: "checking" });
   try {
+    // Name the real blocker on a host that can never run it, ahead of an
+    // ingress problem it would otherwise hide behind.
+    if (provider === "podman" && platform !== "linux")
+      throw Object.assign(
+        new Error("This machine (container) needs Linux with rootless Podman"),
+        { code: "QUALIFICATION_FAILED" },
+      );
     // Prove ingress before allocating paid provider compute.
     update({ stage: "Checking public ingress", progress: 10 });
     await verifyPublicSandboxIngress();

@@ -28,7 +28,7 @@ const { connectSandboxProvider, getSandboxConnection, sandboxConnectionReady } =
 describe("podman qualification dispatch", () => {
   test("qualifies through the podman adapter and records its facts", async () => {
     connectSandboxProvider("podman", { settings: {} });
-    await qualifySandboxConnection("podman");
+    await qualifySandboxConnection("podman", undefined, "linux");
     expect(calls).toEqual(["ingress", "podman"]);
     expect(getSandboxConnection("podman")?.podman).toEqual(facts);
     expect(sandboxConnectionReady("podman")).toBe(true);
@@ -38,7 +38,9 @@ describe("podman qualification dispatch", () => {
     refusal = new Error(
       "callback base URL resolves to a private or host address (100.101.1.2)",
     );
-    await expect(qualifySandboxConnection("podman")).rejects.toThrow(
+    await expect(
+      qualifySandboxConnection("podman", undefined, "linux"),
+    ).rejects.toThrow(
       "Qualification failed: callback base URL resolves to a private or host address (100.101.1.2)",
     );
     expect(sandboxConnectionReady("podman")).toBe(false);
@@ -49,14 +51,29 @@ describe("podman qualification dispatch", () => {
 
   test("a recheck clears the facts while it runs and records the new ones", async () => {
     refusal = undefined;
-    await qualifySandboxConnection("podman");
+    await qualifySandboxConnection("podman", undefined, "linux");
     expect(getSandboxConnection("podman")?.podman).toEqual(facts);
     const seen: unknown[] = [];
-    await qualifySandboxConnection("podman", () => {
-      seen.push(getSandboxConnection("podman")?.podman);
-    });
+    await qualifySandboxConnection(
+      "podman",
+      () => {
+        seen.push(getSandboxConnection("podman")?.podman);
+      },
+      "linux",
+    );
     expect(seen.length).toBeGreaterThan(0);
     expect(seen[0]).toBeUndefined();
     expect(getSandboxConnection("podman")?.podman).toEqual(facts);
+  });
+
+  test("a non-Linux host is refused before the ingress check", async () => {
+    calls.length = 0;
+    await expect(
+      qualifySandboxConnection("podman", undefined, "darwin"),
+    ).rejects.toThrow(
+      "Qualification failed: This machine (container) needs Linux with rootless Podman",
+    );
+    expect(calls).toEqual([]);
+    expect(sandboxConnectionReady("podman")).toBe(false);
   });
 });
