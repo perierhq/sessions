@@ -294,7 +294,11 @@ describe("podman terminal", () => {
   test("a running workload this gateway never verified gets no shell until it passes", async () => {
     // Running, but its namespace holds no rules (as after a crash between a
     // failed verify and the stop).
-    const fake = setup({ podExists: true, running: true, rulesInstalled: false });
+    const fake = setup({
+      podExists: true,
+      running: true,
+      rulesInstalled: false,
+    });
     const provider = new PodmanProvider(fakeProviderDeps(fake));
     const sessionId = `bks-podman-term-${Date.now().toString(36)}-unverified`;
     const pod = podmanNames(sessionId).pod;

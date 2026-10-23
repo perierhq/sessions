@@ -58,9 +58,9 @@ describe("podman qualification dispatch", () => {
     await expect(
       qualifySandboxConnection("podman", undefined, "linux"),
     ).rejects.toThrow(probes);
-    expect(
-      getSandboxConnection("podman")?.qualification?.failureSummary,
-    ).toBe(`Qualification failed: isolation self-test failed: ${probes}`);
+    expect(getSandboxConnection("podman")?.qualification?.failureSummary).toBe(
+      `Qualification failed: isolation self-test failed: ${probes}`,
+    );
   });
 
   test("a recheck clears the facts while it runs and records the new ones", async () => {

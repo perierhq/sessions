@@ -958,7 +958,9 @@ export class PodmanProvider implements SandboxProvider {
     for (const pod of over) {
       try {
         if (await this.pauseIfIdle(pod, () => true))
-          console.log(`${LOG} stopped ${pod}: its home volume is over the quota`);
+          console.log(
+            `${LOG} stopped ${pod}: its home volume is over the quota`,
+          );
       } catch (error) {
         console.warn(`${LOG} could not stop ${pod} over quota:`, error);
       }
@@ -995,7 +997,10 @@ export class PodmanProvider implements SandboxProvider {
         );
         return;
       } catch (error) {
-        console.warn(`${LOG} could not stop ${names.pod} for low space:`, error);
+        console.warn(
+          `${LOG} could not stop ${names.pod} for low space:`,
+          error,
+        );
       }
     }
   }

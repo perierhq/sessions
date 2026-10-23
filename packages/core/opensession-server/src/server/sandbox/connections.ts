@@ -427,7 +427,8 @@ export function safeSandboxConnections(
       podman: podmanFacts,
       ...safe
     } = connection;
-    const diskWarnings = provider === "podman" ? podmanDiskWarnings(podmanDiskReport()) : [];
+    const diskWarnings =
+      provider === "podman" ? podmanDiskWarnings(podmanDiskReport()) : [];
     return {
       ...safe,
       ...(podmanFacts

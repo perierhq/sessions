@@ -97,7 +97,10 @@ async function loadOverQuota(): Promise<Map<string, number>> {
     raw = await readFile(overQuotaPath(), "utf-8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-      console.warn("[sandbox:podman] could not read the over-quota list:", error);
+      console.warn(
+        "[sandbox:podman] could not read the over-quota list:",
+        error,
+      );
     return pods;
   }
   try {
@@ -130,7 +133,10 @@ export async function setPodmanOverQuota(
   const snapshot = { pods: Object.fromEntries(pods) };
   overQuotaWrite = overQuotaWrite.then(() =>
     writeJsonAtomicAsync(overQuotaPath(), snapshot).catch((error) =>
-      console.warn("[sandbox:podman] could not save the over-quota list:", error),
+      console.warn(
+        "[sandbox:podman] could not save the over-quota list:",
+        error,
+      ),
     ),
   );
   await overQuotaWrite;
