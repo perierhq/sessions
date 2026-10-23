@@ -510,3 +510,89 @@ export function createWebSearchTool(deps: {
     },
   };
 }
+
+/** The small model a provider searches with: Haiku for Claude, the
+ *  configured Haiku fallback tier for OpenAI. */
+export function webSearchModelId(
+  provider: SearchProviderId,
+  openaiSmallModel: string | undefined,
+): string {
+  if (provider === "anthropic") return "claude-haiku-5-5";
+  return openaiSmallModel?.replace(/^pi\/openai\//, "") || "gpt-6-luna";
+}
+
+/** What a provider binding gives one search: pi's runtime bound to an
+ *  account, the model, and the account label for the audit. */
+export interface WebSearchBinding {
+  runtime: SearchRuntime;
+  model: SearchModel;
+  /** Native Anthropic on a Claude pool token: the payload gets the same
+   *  prompt rewrite as the turn's own requests. */
+  usesNativeAnthropic: boolean;
+  account?: string;
+}
+
+/**
+ * The `search` a run's tool calls: resolve the providers from the setting,
+ * bind each in turn (the same account picking a turn uses) and make the side
+ * request. Every attempt is audited with the provider, the account and the
+ * number of searches it used; the query text is never recorded.
+ */
+export function makePiWebSearch(input: {
+  setting: WebSearchSetting;
+  sessionProvider: string | undefined;
+  modelFor: (provider: SearchProviderId) => string;
+  bind: (
+    provider: SearchProviderId,
+    modelId: string,
+  ) => Promise<WebSearchBinding>;
+  rewritePayload?: (payload: unknown) => unknown;
+  onAudit: (event: Record<string, unknown>) => void;
+  now?: () => number;
+}): (query: string, signal: AbortSignal) => Promise<string> {
+  const now = input.now ?? Date.now;
+  return (query, signal) => {
+    const { providers, strict } = resolveSearchProviders(
+      input.sessionProvider,
+      input.setting,
+    );
+    return runWebSearch(providers, strict, async (provider) => {
+      const started = now();
+      const modelId = input.modelFor(provider);
+      let account: string | undefined;
+      let result: SearchAttemptResult;
+      try {
+        const binding = await input.bind(provider, modelId);
+        account = binding.account;
+        result = await searchWithModel({
+          runtime: binding.runtime,
+          model: binding.model,
+          query,
+          signal,
+          ...(binding.usesNativeAnthropic && input.rewritePayload
+            ? { basePayload: input.rewritePayload }
+            : {}),
+        });
+      } catch (error) {
+        result = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          searches: 0,
+        };
+      }
+      input.onAudit({
+        msg: "web_search",
+        provider,
+        model: modelId,
+        ...(account ? { account } : {}),
+        searches: result.searches,
+        ...(result.ok ? { continuations: result.continuations } : {}),
+        ok: result.ok && !!result.text.trim(),
+        ms: now() - started,
+        query_bytes: Buffer.byteLength(query, "utf8"),
+        ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
+      });
+      return result;
+    });
+  };
+}

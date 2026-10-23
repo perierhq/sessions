@@ -8,10 +8,12 @@ import {
   findingsFromBlocks,
   formatFindings,
   injectWebSearchTool,
+  makePiWebSearch,
   resolveSearchProviders,
   runWebSearch,
   searchWithModel,
   webSearchEnabled,
+  webSearchModelId,
   webSearchServerTool,
   type SearchRuntime,
 } from "./pi-web-search";
@@ -522,5 +524,88 @@ describe("availability", () => {
     await expect(
       (tool.execute as any)("id", { query: " " }, signal),
     ).rejects.toThrow("A search query is required.");
+  });
+});
+
+describe("makePiWebSearch", () => {
+  test("binds the session's provider first, audits without the query", async () => {
+    const audits: Record<string, unknown>[] = [];
+    const bound: string[] = [];
+    const rewritten: unknown[] = [];
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "openai",
+      modelFor: (p) => webSearchModelId(p, "pi/openai/gpt-6-luna"),
+      bind: async (provider, modelId) => {
+        bound.push(`${provider}/${modelId}`);
+        if (provider === "openai") throw new Error("no usable codex account");
+        return {
+          runtime: scriptedRuntime([
+            {
+              events: response(
+                [{ type: "text", text: "[Acme](https://example.test/a)" }],
+                "end_turn",
+                2,
+              ),
+            },
+          ]).runtime,
+          model: haiku,
+          usesNativeAnthropic: true,
+          account: "acme (12345678, claude)",
+        };
+      },
+      rewritePayload: (payload) => {
+        rewritten.push(payload);
+        return payload;
+      },
+      onAudit: (event) => audits.push(event),
+      now: () => 0,
+    });
+    const out = await search("secret acme query", signal);
+    expect(out).toBe("[Acme](https://example.test/a)");
+    expect(bound).toEqual(["openai/gpt-6-luna", "anthropic/claude-haiku-5-5"]);
+    expect(rewritten).toHaveLength(1);
+    expect(audits).toEqual([
+      {
+        msg: "web_search",
+        provider: "openai",
+        model: "gpt-6-luna",
+        searches: 0,
+        ok: false,
+        ms: 0,
+        query_bytes: 17,
+        error: "no usable codex account",
+      },
+      {
+        msg: "web_search",
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        account: "acme (12345678, claude)",
+        searches: 2,
+        continuations: 0,
+        ok: true,
+        ms: 0,
+        query_bytes: 17,
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain("secret");
+  });
+
+  test("a strict choice binds only that provider", async () => {
+    const bound: string[] = [];
+    const search = makePiWebSearch({
+      setting: "anthropic",
+      sessionProvider: "openai",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async (provider) => {
+        bound.push(provider);
+        throw new Error("no Claude accounts configured");
+      },
+      onAudit: () => {},
+    });
+    await expect(search("acme", signal)).rejects.toThrow(
+      "The web search provider chosen in Settings (Claude) could not search: no Claude accounts configured.",
+    );
+    expect(bound).toEqual(["anthropic"]);
   });
 });
