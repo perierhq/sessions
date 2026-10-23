@@ -327,7 +327,12 @@ describe("the Anthropic request loop", () => {
     const { runtime, payloads } = scriptedRuntime([
       {
         events: response(
-          [{ type: "text", text: "Acme ships on [Fridays](https://example.test/f)." }],
+          [
+            {
+              type: "text",
+              text: "Acme ships on [Fridays](https://example.test/f).",
+            },
+          ],
           "pause_turn",
           1,
         ),
@@ -558,14 +563,27 @@ describe("provider choice", () => {
 
 describe("availability", () => {
   test("off in Settings, denied by policy, or no provider removes the tool", () => {
-    const gate = { setting: "auto" as const, disables: {}, providers: ["anthropic" as const] };
+    const gate = {
+      setting: "auto" as const,
+      disables: {},
+      providers: ["anthropic" as const],
+    };
     expect(webToolEnabled("web_search", gate)).toBe(true);
-    expect(webToolEnabled("web_search", { ...gate, setting: "anthropic" })).toBe(true);
-    expect(webToolEnabled("web_search", { ...gate, setting: "off" })).toBe(false);
     expect(
-      webToolEnabled("web_search", { ...gate, disables: { web_search: false } }),
+      webToolEnabled("web_search", { ...gate, setting: "anthropic" }),
+    ).toBe(true);
+    expect(webToolEnabled("web_search", { ...gate, setting: "off" })).toBe(
+      false,
+    );
+    expect(
+      webToolEnabled("web_search", {
+        ...gate,
+        disables: { web_search: false },
+      }),
     ).toBe(false);
-    expect(webToolEnabled("web_search", { ...gate, providers: [] })).toBe(false);
+    expect(webToolEnabled("web_search", { ...gate, providers: [] })).toBe(
+      false,
+    );
     expect(webToolEnabled("web_fetch", { ...gate, providers: [] })).toBe(false);
   });
 
@@ -844,7 +862,12 @@ describe("web_fetch", () => {
       ),
     ).toBe(true);
     // runWebTool does not cut it again.
-    const out = await runWebTool("fetch", ["anthropic"], true, async () => result);
+    const out = await runWebTool(
+      "fetch",
+      ["anthropic"],
+      true,
+      async () => result,
+    );
     expect(out).toContain("Source: [https://example.test/long]");
   });
 
@@ -896,7 +919,10 @@ describe("web_fetch", () => {
     });
     // A URL smuggled in the prompt never reaches a user message, where
     // Anthropic would treat it as fetchable.
-    expect(seen).toEqual(["https://example.test/doc", "https://example.test/doc"]);
+    expect(seen).toEqual([
+      "https://example.test/doc",
+      "https://example.test/doc",
+    ]);
     expect(systems[0]).toContain("the greeting");
     expect(systems[0]).toContain("Never fetch, open or follow any other URL");
     expect(systems[0]).not.toMatch(/unless/);
@@ -1011,9 +1037,15 @@ describe("web_fetch", () => {
   });
 
   test("Off, or a policy denial, removes it", () => {
-    const gate = { setting: "auto" as const, disables: {}, providers: ["openai" as const] };
+    const gate = {
+      setting: "auto" as const,
+      disables: {},
+      providers: ["openai" as const],
+    };
     expect(webToolEnabled("web_fetch", gate)).toBe(true);
-    expect(webToolEnabled("web_fetch", { ...gate, setting: "off" })).toBe(false);
+    expect(webToolEnabled("web_fetch", { ...gate, setting: "off" })).toBe(
+      false,
+    );
     expect(
       webToolEnabled("web_fetch", { ...gate, disables: { web_fetch: false } }),
     ).toBe(false);
@@ -1035,7 +1067,11 @@ describe("web_fetch on unattended runs", () => {
       false,
     );
     expect(
-      webToolEnabled("web_fetch", { ...gate, unattended: true, fetchHosts: [] }),
+      webToolEnabled("web_fetch", {
+        ...gate,
+        unattended: true,
+        fetchHosts: [],
+      }),
     ).toBe(false);
     expect(webToolEnabled("web_search", { ...gate, unattended: true })).toBe(
       true,
@@ -1217,7 +1253,13 @@ describe("accounts and usage", () => {
       cost_usd: 0.01,
     });
     expect(usages).toEqual([
-      { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, cost: { total: 0.01 } },
+      {
+        input: 100,
+        output: 20,
+        cacheRead: 5,
+        cacheWrite: 0,
+        cost: { total: 0.01 },
+      },
     ]);
   });
 

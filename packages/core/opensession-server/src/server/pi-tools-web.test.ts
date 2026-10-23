@@ -23,7 +23,10 @@ function toolNames(
     requestId: "req-1",
     model: "pi/anthropic/claude-haiku-5-5",
     localTools: [],
-    mcpBridge: { discoveryTools: [], directTools: [] } as unknown as PiMcpBridge,
+    mcpBridge: {
+      discoveryTools: [],
+      directTools: [],
+    } as unknown as PiMcpBridge,
     policy: { unattended: false, disables: {}, noteGroups: [] },
     bashGated: false,
     mergeGuard: undefined,

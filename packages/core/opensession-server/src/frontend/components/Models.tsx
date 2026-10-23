@@ -54,8 +54,8 @@ export function ModelDefaultsSection({
       </SettingCard>
       <SettingsHint>
         Applies from each session's next turn. Automations and incident agents
-        can search, but read only pages on their egress allowlist, and no
-        pages without one.
+        can search, but read only pages on their egress allowlist, and no pages
+        without one.
       </SettingsHint>
     </>
   );

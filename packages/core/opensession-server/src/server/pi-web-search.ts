@@ -20,6 +20,12 @@
  *   Responses `web_search` tool.
  * - Which provider: Settings (web-search-setting.ts). Automatic uses the
  *   session's own provider only; a specific provider is strict.
+ * - web_fetch sends only the URL as the user message, fetches it once, and
+ *   lets no tool result add a fetchable URL. An unattended run gets it only
+ *   with an egress allowlist, which holds the URL and the provider's tool.
+ * - A call is bounded by WEB_TOOL_TIMEOUT_MS. A usage limit benches the
+ *   account as a turn does; the tokens count toward the turn's usage.
+ *   Findings come back marked as untrusted web content.
  *
  * The helpers here are pure and unit-tested with a mocked runtime; the
  * binding and audit wiring is in makePiWebSearch.
@@ -998,7 +1004,9 @@ function runPiWebTool(
         const onUsage = (usage: SideRequestUsage) => {
           used.seen = true;
           used.input +=
-            (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+            (usage.input ?? 0) +
+            (usage.cacheRead ?? 0) +
+            (usage.cacheWrite ?? 0);
           used.output += usage.output ?? 0;
           used.cost += usage.cost?.total ?? 0;
           input.onUsage?.(usage);
@@ -1023,11 +1031,12 @@ function runPiWebTool(
           result = { ...result, error: abortedMessage(kind, callSignal) };
         // A usage limit benches the account, as on a turn, and the call
         // moves to another account of the same provider once.
+        const failure = result.ok ? undefined : result.error;
         const limited =
-          !result.ok &&
+          failure !== undefined &&
           !callSignal.aborted &&
-          !!binding?.usageLimited?.(result.error);
-        if (limited) binding?.sideline?.(result.error);
+          !!binding?.usageLimited?.(failure);
+        if (limited && failure !== undefined) binding?.sideline?.(failure);
         input.onAudit({
           msg: KINDS[kind].name,
           provider,

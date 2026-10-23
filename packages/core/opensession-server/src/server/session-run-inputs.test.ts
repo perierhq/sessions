@@ -434,7 +434,9 @@ describe("resolveSessionRunInputs", () => {
       expect(
         (await resolveSessionRunInputs(session)).webFetchHosts,
       ).toBeUndefined();
-      expect((await resolveSessionRunInputs(plain)).webFetchHosts).toBeUndefined();
+      expect(
+        (await resolveSessionRunInputs(plain)).webFetchHosts,
+      ).toBeUndefined();
     } finally {
       __setBindingResolverForTest(undefined);
       __setIncidentAuditForTest(previousAudit);
