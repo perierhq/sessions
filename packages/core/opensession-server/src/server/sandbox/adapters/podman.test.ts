@@ -319,6 +319,35 @@ describe("podman provider sleep and wake", () => {
     expect(fake.state.running).toBe(true);
   });
 
+  test("a burst exec re-verifies a pod whose verified run was dropped", async () => {
+    const options: Parameters<typeof fakePodman>[0] = {};
+    const fake = fakePodman(options);
+    const provider = new PodmanProvider(deps(fake));
+    const sandbox = await provider.ensure({ sessionId: sessionId() });
+    const burst = { assumeStarted: true, workloadIdentity: false } as const;
+    expect((await sandbox.exec(["true"], burst)).exitCode).toBe(0);
+    // A stop that fails outright drops the verified run but leaves the
+    // workload running.
+    options.stopFails = true;
+    options.killFails = true;
+    await expect(provider.pause(sandbox.id)).rejects.toThrow(/could not stop/);
+    expect(fake.state.running).toBe(true);
+    options.stopFails = false;
+    options.killFails = false;
+    fake.calls.length = 0;
+    // Within the burst window: the driver still re-verifies first.
+    expect((await sandbox.exec(["true"], burst)).exitCode).toBe(0);
+    const seen = verbs(fake.calls);
+    expect(seen.indexOf("nft list")).toBeGreaterThan(-1);
+    expect(seen.lastIndexOf("exec")).toBeGreaterThan(
+      seen.indexOf("exec selftest"),
+    );
+    // Verified again: the next burst exec goes straight through.
+    fake.calls.length = 0;
+    expect((await sandbox.exec(["true"], burst)).exitCode).toBe(0);
+    expect(verbs(fake.calls)).toEqual(["exec"]);
+  });
+
   test("status maps pod states", async () => {
     const id = sessionId();
     for (const [podState, expected] of [

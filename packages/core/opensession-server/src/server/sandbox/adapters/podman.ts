@@ -154,18 +154,31 @@ function httpBase(callbackBaseUrl: string): string {
 /**
  * Commands in the workload: `podman exec` as uid 1000 with the caller's env
  * in a private env file (never argv), under an in-container `timeout`.
+ *
+ * Each command and file write first calls `ensureStarted` when the pod has
+ * no verified run, even for burst callers that skip it (an in-memory check).
+ * `selfTest` drivers run inside the start sequence, before the run is
+ * recorded, and skip it.
  */
 export function podmanDriver(
   run: PodmanRunner,
   names: PodmanNames,
-  o: { ensureStarted: () => Promise<void>; runtimeDir?: string },
+  o: {
+    ensureStarted: () => Promise<void>;
+    runtimeDir?: string;
+    selfTest?: boolean;
+  },
 ): RemoteDriver {
+  const ready = async () => {
+    if (!o.selfTest && !verifiedRuns.has(names.pod)) await o.ensureStarted();
+  };
   return {
     async exec(cmd: string, opts?: RemoteExecOpts) {
       if (opts?.detached) {
         await this.execBackground(cmd, opts);
         return { exitCode: 0, stdout: "", stderr: "" };
       }
+      await ready();
       const timeoutMs = opts?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
       try {
         return await podmanExec(run, {
@@ -187,6 +200,7 @@ export function podmanDriver(
     },
 
     async execBackground(cmd: string, opts?: RemoteExecOpts) {
+      await ready();
       const result = await podmanExec(run, {
         workload: names.workload,
         cwd: opts?.cwd,
@@ -205,6 +219,7 @@ export function podmanDriver(
     async writeFile(path: string, content: string) {
       if (!path.startsWith("/") || /[\0\r\n]/.test(path))
         throw new Error(`sandbox file path must be absolute: ${path}`);
+      await ready();
       // Written by a process inside the container: `podman cp` would follow
       // container-side symlinks as the host user.
       const result = await podmanExec(run, {
@@ -890,7 +905,7 @@ export class PodmanProvider implements SandboxProvider {
     callbackBaseUrl: string,
   ): Promise<void> {
     const result = await runIsolationSelfTest(
-      this.driver(names, async () => {}),
+      this.selfTestDriver(names),
       this.selfTestTargets(egress, callbackBaseUrl, false),
       { counters: egressCounterProof(this.run, workloadNetns, egress) },
     );
@@ -925,7 +940,7 @@ export class PodmanProvider implements SandboxProvider {
         `${LOG} qualification: not live on this host: ${notLiveOnHost.map((t) => t.name).join(", ")}`,
       );
     const result = await runIsolationSelfTest(
-      this.driver(names, async () => {}),
+      this.selfTestDriver(names),
       targets,
       { counters: egressCounterProof(this.run, netns, egress) },
     );
@@ -957,21 +972,26 @@ export class PodmanProvider implements SandboxProvider {
     return this.startLocked(names, egress, callbackBaseUrl);
   }
 
-  private driver(
-    names: PodmanNames,
-    ensureStarted?: () => Promise<void>,
-  ): RemoteDriver {
+  private driver(names: PodmanNames): RemoteDriver {
     return podmanDriver(this.run, names, {
       runtimeDir: this.d.runtimeDir,
-      ensureStarted:
-        ensureStarted ??
-        (async () => {
-          // Trust a running workload only if it is the run this gateway
-          // verified; anything else (restarted out of band, or unseen since
-          // a gateway restart) goes through the sequence again.
-          if (await runIsVerified(this.run, names)) return;
-          await this.wake(names);
-        }),
+      ensureStarted: async () => {
+        // Trust a running workload only if it is the run this gateway
+        // verified; anything else (restarted out of band, or unseen since
+        // a gateway restart) goes through the sequence again.
+        if (await runIsVerified(this.run, names)) return;
+        await this.wake(names);
+      },
+    });
+  }
+
+  /** For the self-test inside the start sequence and qualification's checks:
+   *  never wakes or re-verifies. */
+  private selfTestDriver(names: PodmanNames): RemoteDriver {
+    return podmanDriver(this.run, names, {
+      runtimeDir: this.d.runtimeDir,
+      ensureStarted: async () => {},
+      selfTest: true,
     });
   }
 
