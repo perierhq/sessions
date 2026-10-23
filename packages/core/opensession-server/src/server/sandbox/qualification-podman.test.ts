@@ -42,5 +42,21 @@ describe("podman qualification dispatch", () => {
       "Qualification failed: callback base URL resolves to a private or host address (100.101.1.2)",
     );
     expect(sandboxConnectionReady("podman")).toBe(false);
+    // The facts from the earlier pass would read "Self-test passed" next to
+    // the failure; they go with it.
+    expect(getSandboxConnection("podman")?.podman).toBeUndefined();
+  });
+
+  test("a recheck clears the facts while it runs and records the new ones", async () => {
+    refusal = undefined;
+    await qualifySandboxConnection("podman");
+    expect(getSandboxConnection("podman")?.podman).toEqual(facts);
+    const seen: unknown[] = [];
+    await qualifySandboxConnection("podman", () => {
+      seen.push(getSandboxConnection("podman")?.podman);
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toBeUndefined();
+    expect(getSandboxConnection("podman")?.podman).toEqual(facts);
   });
 });

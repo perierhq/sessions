@@ -531,10 +531,13 @@ export function setSandboxConnectionQualification(
   provider: WorkspaceSandboxProvider,
   result: Omit<SandboxConnectionQualification, "adapterSignature">,
 ): SandboxConnection {
-  const previous = getSandboxConnection(provider);
-  if (!previous) throw new Error(`${provider} is not connected`);
+  const found = getSandboxConnection(provider);
+  if (!found) throw new Error(`${provider} is not connected`);
+  // What a podman qualification found describes the last pass only; a
+  // recheck that starts or fails must not leave it beside the new status.
+  const { podman: _staleFacts, ...previous } = found;
   const next: SandboxConnection = {
-    ...previous,
+    ...(result.status === "ready" ? found : previous),
     qualification: {
       ...result,
       adapterSignature: sandboxAdapterSignature(provider),
