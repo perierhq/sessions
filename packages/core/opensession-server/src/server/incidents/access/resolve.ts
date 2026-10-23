@@ -79,6 +79,11 @@ export { AGENT_INCIDENT_STATES, incidentAllowsAgents };
 export const INCIDENT_DENIED_MESSAGE =
   "This tool is turned off for incident agents in this project's access settings.";
 
+/** The verifier judges the evidence it is given, so it does not search the
+ *  web (pi-web-search.ts); the investigator does. */
+export const VERIFIER_WEB_SEARCH_MESSAGE =
+  "The verifier judges the evidence in front of it and does not search the web.";
+
 export interface ResolveOptions {
   /** Settings to resolve against (a draft or a test); default: stored. */
   settings?: IncidentAccessSettings;
@@ -451,6 +456,7 @@ export async function resolveAgentAccess(
   const deniedTools: Record<string, string> = { ...AUTOMATION_DENIED_TOOLS };
   for (const name of profile.deniedTools)
     deniedTools[name] = INCIDENT_DENIED_MESSAGE;
+  if (role === "verifier") deniedTools.web_search = VERIFIER_WEB_SEARCH_MESSAGE;
 
   const base = {
     incidentId: incident.id,

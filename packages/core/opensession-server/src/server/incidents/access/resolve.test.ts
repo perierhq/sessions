@@ -15,7 +15,9 @@ import {
   registerAccessGate,
   resolveAgentAccess,
   resolveAgentAccessForBinding,
+  VERIFIER_WEB_SEARCH_MESSAGE,
 } from "./resolve";
+import { runToolPolicy } from "../../run-policy";
 
 const kit = useIncidentTestKernel();
 const t = useAccessTestEnv();
@@ -131,6 +133,14 @@ test("role default plus signal override, with summary and revision", async () =>
     hosts: [],
     egress: { route: "server", hosts: ["search.example.test"] },
   });
+  // The verifier judges the evidence it is given: no web search. The
+  // investigator keeps it.
+  expect(v.deniedTools.web_search).toBe(VERIFIER_WEB_SEARCH_MESSAGE);
+  expect(a.deniedTools.web_search).toBeUndefined();
+  expect(runToolPolicy({ deniedTools: v.deniedTools }).disables).toHaveProperty(
+    "web_search",
+    false,
+  );
 });
 test("another signal gets the role default; an override from another project is ignored", async () => {
   const other = {
