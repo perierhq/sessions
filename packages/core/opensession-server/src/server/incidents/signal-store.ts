@@ -9,12 +9,7 @@ import {
 import { configuredRepos } from "../config";
 import { incidentAudit } from "./audit-sink";
 import { forgetObservations } from "./observation-store";
-import {
-  instanceOwner,
-  personOwner,
-  resolveOwner,
-  signalOwner,
-} from "./owner";
+import { instanceOwner, personOwner, resolveOwner, signalOwner } from "./owner";
 import {
   type SignalValidationContext,
   generateHookSecret,

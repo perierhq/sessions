@@ -29,7 +29,7 @@ test("an attribution-only identity is no owner", () => {
   ]);
   expect(personOwner("Acme Bot")).toBeNull();
   expect(personOwner("acmebot")).toBeNull();
-  expect(signalOwner({ owner: "Acme Bot" })).toBe("Ada");
+  expect(signalOwner({ owner: "Acme Bot", createdBy: "Acme Bot" })).toBe("Ada");
 });
 
 test("the anonymous placeholder is no person", () => {
