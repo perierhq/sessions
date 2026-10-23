@@ -110,7 +110,7 @@ export function formatAnthropicReset(at: number): string {
   return `${month} ${d.getUTCDate()}, ${time}${hour24 < 12 ? "am" : "pm"} (UTC)`;
 }
 
-type FetchLike = (input: any, init?: any) => Promise<Response>;
+export type FetchLike = (input: any, init?: any) => Promise<Response>;
 type StreamFunction = (
   model: any,
   context: any,
@@ -142,16 +142,26 @@ export function enableAnthropicRateLimitCapture(
     if ((model as { provider?: unknown } | undefined)?.provider !== "anthropic")
       return base(model, context, options);
     const inner = (options as { fetch?: FetchLike } | undefined)?.fetch;
-    const fetch: FetchLike = async (input, init) => {
-      const response = await (inner ?? (globalThis.fetch as FetchLike))(
-        input,
-        init,
-      );
-      try {
-        record(readAnthropicRateLimit(response.status, response.headers));
-      } catch {}
-      return response;
-    };
+    const fetch = anthropicRateLimitFetch(inner, record);
     return base(model, context, { ...options, fetch });
+  };
+}
+
+/** A fetch that records each response's rate-limit headers before handing
+ *  it back unchanged. `inner` is kept when given; the global fetch is
+ *  looked up per request otherwise. */
+export function anthropicRateLimitFetch(
+  inner: FetchLike | undefined,
+  record: (snapshot: AnthropicRateLimitSnapshot) => void,
+): FetchLike {
+  return async (input, init) => {
+    const response = await (inner ?? (globalThis.fetch as FetchLike))(
+      input,
+      init,
+    );
+    try {
+      record(readAnthropicRateLimit(response.status, response.headers));
+    } catch {}
+    return response;
   };
 }

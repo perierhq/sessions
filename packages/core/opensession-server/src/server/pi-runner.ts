@@ -594,8 +594,11 @@ async function* runPiAttempt(
           usesNativeAnthropic: bound.usesNativeAnthropic,
           account: sideAccounts.pickedAccount?.masked,
           accountId: sideAccounts.pickedAccount?.id,
-          usageLimited: (error) => sideAccounts.isUsageLimit(error),
+          usageLimited: (error) => sideAccounts.isSideRequestUsageLimit(error),
           sideline: (error) => sideAccounts.sideline(error),
+          onRateLimit: (snapshot) => {
+            sideAccounts.rateLimit = snapshot;
+          },
           canRotate: side.canRotate,
         };
       },

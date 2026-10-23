@@ -87,6 +87,28 @@ export function isPiUsageLimitShape(
   );
 }
 
+/** Usage-limit classification for a web tool's side request. On Anthropic
+ *  a 429 benches the account only when its unified status is "rejected";
+ *  without that header, only an explicit usage-limit or subscription
+ *  message does, and a bare 429 is a throttle. The turn's own fallback
+ *  (a header-less 429 counts) would bench a healthy pool account for a
+ *  transient throttle on a short side request. Other providers classify as
+ *  a turn does. */
+export function isPiSideRequestUsageLimit(
+  message: string,
+  providerID: string,
+  anthropicUnifiedStatus?: string,
+): boolean {
+  if (providerID !== "anthropic")
+    return isPiUsageLimitShape(message, providerID, anthropicUnifiedStatus);
+  if (anthropicUnifiedStatus === "rejected")
+    return isPiUsageLimitShape(message, providerID, anthropicUnifiedStatus);
+  return (
+    isClaudeUsageLimitError(message, false) ||
+    isClaudeSubscriptionError(message)
+  );
+}
+
 /** Terminal error text for a pi run, with an actionable hint appended when
  *  the SuperGrok proxy rejected our pinned Grok client version. Exported for
  *  tests. */

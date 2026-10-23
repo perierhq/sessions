@@ -15,7 +15,10 @@ import {
   supportsOpenaiUltrafast,
   ULTRAFAST_CHATGPT_PLAN,
 } from "./openai-service-tier";
-import { isPiUsageLimitShape } from "./pi-usage-limit";
+import {
+  isPiSideRequestUsageLimit,
+  isPiUsageLimitShape,
+} from "./pi-usage-limit";
 import {
   rememberNativeClaudeAccount,
   type PiRuntimeAccountEvidence,
@@ -234,6 +237,16 @@ export class PiAttemptAccounts {
 
   isUsageLimit(message: string): boolean {
     return isPiUsageLimitShape(
+      message,
+      this.providerID,
+      this.limit429()?.unifiedStatus,
+    );
+  }
+
+  /** isUsageLimit for a web tool's side request: a 429 without a
+   *  "rejected" unified status is a throttle, not the account's limit. */
+  isSideRequestUsageLimit(message: string): boolean {
+    return isPiSideRequestUsageLimit(
       message,
       this.providerID,
       this.limit429()?.unifiedStatus,

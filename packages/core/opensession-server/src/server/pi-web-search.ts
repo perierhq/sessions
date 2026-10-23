@@ -32,6 +32,11 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { isIP } from "node:net";
+import {
+  anthropicRateLimitFetch,
+  type AnthropicRateLimitSnapshot,
+  type FetchLike,
+} from "./anthropic-rate-limit";
 import { isBlockedAddress, isPrivateHostName } from "./shared/network-address";
 import type { WebSearchSetting } from "./web-search-setting";
 
@@ -407,6 +412,7 @@ export interface SearchRuntime {
       signal?: AbortSignal;
       maxTokens?: number;
       onPayload?: (payload: unknown, model: any) => unknown | Promise<unknown>;
+      fetch?: FetchLike;
       onProviderStreamEvent?: (
         data: unknown,
         model: any,
@@ -445,9 +451,16 @@ export async function requestWithServerTool(input: {
   allowedDomains?: readonly string[];
   /** Each request's token usage, failed ones included. */
   onUsage?: (usage: SideRequestUsage) => void;
+  /** Each Anthropic response's rate-limit headers, so a 429 can be read
+   *  as a throttle or the subscription's limit. */
+  onRateLimit?: (snapshot: AnthropicRateLimitSnapshot) => void;
 }): Promise<SearchAttemptResult> {
   const { kind, runtime, model, signal } = input;
   const anthropic = model.api === "anthropic-messages";
+  const fetch =
+    anthropic && input.onRateLimit
+      ? anthropicRateLimitFetch(undefined, input.onRateLimit)
+      : undefined;
   let direct = false;
   let uses = 0;
   let continuations = 0;
@@ -476,6 +489,7 @@ export async function requestWithServerTool(input: {
       {
         signal,
         maxTokens: SEARCH_MAX_TOKENS,
+        ...(fetch ? { fetch } : {}),
         onPayload: (payload) =>
           injectWebSearchTool(
             input.basePayload ? input.basePayload(payload) : payload,
@@ -530,7 +544,10 @@ export async function searchWithModel(input: {
   query: string;
   signal: AbortSignal;
   basePayload?: (payload: unknown) => unknown;
+  /** Domains the search may reach (an unattended OpenAI run's allowlist). */
+  allowedDomains?: readonly string[];
   onUsage?: (usage: SideRequestUsage) => void;
+  onRateLimit?: (snapshot: AnthropicRateLimitSnapshot) => void;
 }): Promise<SearchAttemptResult> {
   const result = await requestWithServerTool({
     ...input,
@@ -552,6 +569,7 @@ export async function fetchWithModel(input: {
   basePayload?: (payload: unknown) => unknown;
   allowedDomains?: readonly string[];
   onUsage?: (usage: SideRequestUsage) => void;
+  onRateLimit?: (snapshot: AnthropicRateLimitSnapshot) => void;
 }): Promise<SearchAttemptResult> {
   const result = await requestWithServerTool({
     ...input,
@@ -878,6 +896,8 @@ export interface WebSearchBinding {
   usageLimited?: (error: string) => boolean;
   /** Bench the account the way a turn does on a usage limit. */
   sideline?: (error: string) => void;
+  /** Each Anthropic response's rate-limit headers, read by usageLimited. */
+  onRateLimit?: (snapshot: AnthropicRateLimitSnapshot) => void;
   /** False for a strict pin, which never moves to another account. */
   canRotate?: boolean;
 }
@@ -1089,6 +1109,7 @@ export function makePiWebSearch(
           query,
           signal: callSignal,
           onUsage,
+          ...(binding.onRateLimit ? { onRateLimit: binding.onRateLimit } : {}),
           ...(basePayload ? { basePayload } : {}),
         }),
       { query_bytes: Buffer.byteLength(query, "utf8") },
@@ -1118,6 +1139,7 @@ export function makePiWebFetch(
           model: binding.model,
           url,
           onUsage,
+          ...(binding.onRateLimit ? { onRateLimit: binding.onRateLimit } : {}),
           ...(page.prompt ? { prompt: page.prompt } : {}),
           signal: callSignal,
           ...(basePayload ? { basePayload } : {}),
