@@ -1106,7 +1106,12 @@ describe("web_search on unattended runs", () => {
         : [
             {
               events: response(
-                [{ type: "text", text: "See [A](https://docs.example.test/a)." }],
+                [
+                  {
+                    type: "text",
+                    text: "See [A](https://docs.example.test/a).",
+                  },
+                ],
                 "end_turn",
                 1,
               ),
