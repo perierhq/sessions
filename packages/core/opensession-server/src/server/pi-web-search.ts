@@ -467,6 +467,9 @@ export async function requestWithServerTool(input: {
         direct = true;
         continue;
       }
+      // A continuation that fails keeps what earlier rounds found.
+      const partial = anthropic ? findingsFromBlocks(paused) : "";
+      if (partial) return { ok: true, text: partial, uses, continuations };
       return { ok: false, error, uses };
     }
     uses += collector.uses;
@@ -489,22 +492,24 @@ export async function requestWithServerTool(input: {
 }
 
 /** A web search on one provider. */
-export function searchWithModel(input: {
+export async function searchWithModel(input: {
   runtime: SearchRuntime;
   model: SearchModel;
   query: string;
   signal: AbortSignal;
   basePayload?: (payload: unknown) => unknown;
 }): Promise<SearchAttemptResult> {
-  return requestWithServerTool({
+  const result = await requestWithServerTool({
     ...input,
     kind: "search",
     system: WEB_SEARCH_SYSTEM,
     request: buildSearchRequest(input.query),
   });
+  return result.ok ? { ...result, text: formatFindings(result.text) } : result;
 }
 
-/** A page fetch on one provider. The answer always links its source. */
+/** A page fetch on one provider. The answer is capped first, then always
+ *  links its source, so truncation cannot cut the link. */
 export async function fetchWithModel(input: {
   runtime: SearchRuntime;
   model: SearchModel;
@@ -519,17 +524,18 @@ export async function fetchWithModel(input: {
     system: webFetchSystem(input.prompt),
     request: buildFetchRequest(input.url),
   });
-  if (!result.ok || !result.text.trim() || result.text.includes(input.url))
-    return result;
+  if (!result.ok) return result;
+  const text = formatFindings(result.text);
+  if (!text || text.includes(input.url)) return { ...result, text };
   return {
     ...result,
-    text: `${result.text.trim()}\n\nSource: [${input.url}](${input.url})`,
+    text: `${text}\n\nSource: [${input.url}](${input.url})`,
   };
 }
 
 /**
- * The URL a fetch may ask a provider for: http or https, and not a host
- * that names something internal (an IP literal in a private, loopback,
+ * The URL a fetch may ask a provider for: http or https, no user name or
+ * password, and not a host that names something internal (an IP literal in a private, loopback,
  * link-local or tailnet range, localhost, *.internal, *.local, *.ts.net, a
  * single-label name). The name is not resolved: the provider fetches, and
  * the point is that an internal hostname never leaves in a request.
@@ -545,6 +551,9 @@ export function checkFetchUrl(raw: string): URL {
     throw new Error(
       `Only http and https URLs can be fetched (got ${url.protocol})`,
     );
+  // A credential in the URL would leave in the provider's request.
+  if (url.username || url.password)
+    throw new Error("URLs with a user name or password cannot be fetched.");
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (!host) throw new Error("The URL has no host.");
   if (isIP(host) ? isBlockedAddress(host) : isPrivateHostName(host))
@@ -606,7 +615,8 @@ export async function runWebTool(
     }
     let reason: string;
     if (result.ok) {
-      const findings = formatFindings(result.text);
+      // Capped by the attempt (searchWithModel, fetchWithModel).
+      const findings = result.text.trim();
       if (findings) return findings;
       reason = "returned no findings";
     } else {

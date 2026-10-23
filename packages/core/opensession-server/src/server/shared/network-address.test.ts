@@ -197,6 +197,14 @@ describe("isPrivateHostName", () => {
       "nas.home.arpa",
       "box.acme.ts.net",
       "intranet-server",
+      "router.lan",
+      "box.localdomain",
+      "mail.acme.corp",
+      "nas.home",
+      "1.0.0.127.in-addr.arpa",
+      ".",
+      "..",
+      "",
     ])
       expect(isPrivateHostName(host)).toBe(true);
   });
@@ -206,6 +214,8 @@ describe("isPrivateHostName", () => {
       "example.test",
       "docs.example.com",
       "internal.example.com",
+      "lan.example.com",
+      "home.example.com",
     ])
       expect(isPrivateHostName(host)).toBe(false);
   });

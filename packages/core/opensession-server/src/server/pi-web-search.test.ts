@@ -317,6 +317,32 @@ describe("the Anthropic request loop", () => {
     expect(result).toMatchObject({ ok: true, text: "Done.", uses: 1 });
   });
 
+  test("a continuation that fails keeps what earlier rounds found", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      {
+        events: response(
+          [{ type: "text", text: "Acme ships on [Fridays](https://example.test/f)." }],
+          "pause_turn",
+          1,
+        ),
+      },
+      { stopReason: "error", errorMessage: "529 overloaded" },
+    ]);
+    const result = await searchWithModel({
+      runtime,
+      model: haiku,
+      query: "acme",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
+    expect(result).toMatchObject({
+      ok: true,
+      text: "Acme ships on [Fridays](https://example.test/f).",
+      uses: 1,
+      continuations: 1,
+    });
+  });
+
   test("other errors fail the attempt without a retry", async () => {
     const { runtime, payloads } = scriptedRuntime([
       { stopReason: "error", errorMessage: "529 overloaded" },
@@ -752,11 +778,66 @@ describe("web_fetch", () => {
       "https://printer.local/",
       "https://box.acme.ts.net/",
       "https://intranet-server/",
+      // IPv4-mapped and NAT64 IPv6 forms of loopback.
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:7f00:1]/",
+      "http://[64:ff9b::7f00:1]/",
+      // Decimal, hex and short IPv4 forms (URL parsing normalises them).
+      "http://2130706433/",
+      "http://0x7f000001/",
+      "http://0x7f.1/",
+      "http://127.1/",
+      "http://0177.0.0.1/",
+      // A trailing root dot does not hide an internal name.
+      "http://localhost./",
+      "https://db.internal./",
+      "http://./",
+      "https://router.lan/",
+      "https://nas.home.arpa/",
     ])
       expect(() => checkFetchUrl(url)).toThrow();
     expect(checkFetchUrl("https://example.test/a?b=1").href).toBe(
       "https://example.test/a?b=1",
     );
+    expect(checkFetchUrl("https://example.test./a").hostname).toBe(
+      "example.test.",
+    );
+  });
+
+  test("refuses URLs that carry a user name or password", () => {
+    for (const url of [
+      "https://user:pw@example.test/",
+      "https://user@example.test/",
+      "https://:pw@example.test/",
+    ])
+      expect(() => checkFetchUrl(url)).toThrow("user name or password");
+  });
+
+  test("a long extraction is capped before the source link is added", async () => {
+    const { runtime } = scriptedRuntime([
+      {
+        events: response(
+          [{ type: "text", text: "y".repeat(MAX_FINDINGS_CHARS + 500) }],
+          "end_turn",
+        ),
+      },
+    ]);
+    const result = await fetchWithModel({
+      runtime,
+      model: haiku,
+      url: "https://example.test/long",
+      signal,
+    });
+    if (!result.ok) throw new Error("expected findings");
+    expect(result.text).toContain("[Findings truncated.]");
+    expect(
+      result.text.endsWith(
+        "Source: [https://example.test/long](https://example.test/long)",
+      ),
+    ).toBe(true);
+    // runWebTool does not cut it again.
+    const out = await runWebTool("fetch", ["anthropic"], true, async () => result);
+    expect(out).toContain("Source: [https://example.test/long]");
   });
 
   test("the user message is only the URL; the ask goes in the system prompt", async () => {
