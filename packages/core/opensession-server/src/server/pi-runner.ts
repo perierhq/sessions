@@ -94,10 +94,15 @@ import {
   webSearchModelId,
   webSideAccountPlan,
   webToolEnabled,
+  type WebToolGate,
 } from "./pi-web-search";
 import { hasAccounts as hasClaudeAccounts } from "./claude-accounts";
 import { hasCodexAccounts } from "./codex-accounts";
-import { readWebSearchSetting } from "./web-search-setting";
+import type { RunToolPolicy } from "./run-policy";
+import {
+  readWebSearchSetting,
+  type WebSearchSetting,
+} from "./web-search-setting";
 import { configuredHaikuFallbackModel } from "./models";
 import { rewriteAnthropicPromptPayload } from "./anthropic-prompt-compat";
 import {
@@ -182,6 +187,46 @@ const PROVIDER = PI_PROVIDER;
  * intentionally deferred until this extraction is reviewed; turns still load
  * the SDK on demand through createPiRuntimeBinding.
  */
+/**
+ * The web tools a run is offered and the allowlist they hold to. An
+ * unattended run reads only its egress allowlist (a sandboxed automation's,
+ * an incident agent's) and, without one, gets no web_fetch and no OpenAI
+ * web_search. Interactive runs read any public page. Exported for the
+ * wiring test.
+ */
+export function piWebTools(input: {
+  policy: Pick<RunToolPolicy, "unattended" | "disables">;
+  webFetchHosts: readonly string[] | undefined;
+  setting: WebSearchSetting;
+  sessionProvider: string | undefined;
+  connected: (provider: SearchProviderId) => boolean;
+}): {
+  fetchHosts: readonly string[] | undefined;
+  search: boolean;
+  fetch: boolean;
+} {
+  const { policy, setting } = input;
+  const fetchHosts = policy.unattended
+    ? (input.webFetchHosts ?? [])
+    : undefined;
+  const gate: WebToolGate = {
+    setting,
+    disables: policy.disables,
+    providers: resolveSearchProviders(
+      input.sessionProvider,
+      setting,
+      input.connected,
+    ).providers,
+    unattended: policy.unattended,
+    ...(fetchHosts ? { fetchHosts } : {}),
+  };
+  return {
+    fetchHosts,
+    search: webToolEnabled("web_search", gate),
+    fetch: webToolEnabled("web_fetch", gate),
+  };
+}
+
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
 }
@@ -524,23 +569,14 @@ async function* runPiAttempt(
     const webConnected = (provider: SearchProviderId) =>
       provider === parsed.providerID ||
       (provider === "anthropic" ? hasClaudeAccounts() : hasCodexAccounts());
-    // An unattended run reads only its egress allowlist (a sandboxed
-    // automation's, an incident agent's) and, without one, gets no
-    // web_fetch. Interactive runs read any public page.
-    const webFetchHosts = policy.unattended
-      ? (opts.webFetchHosts ?? [])
-      : undefined;
-    const webGate = {
+    const webTools = piWebTools({
+      policy,
+      webFetchHosts: opts.webFetchHosts,
       setting: webSearchSetting,
-      disables: policy.disables,
-      providers: resolveSearchProviders(
-        parsed.providerID,
-        webSearchSetting,
-        webConnected,
-      ).providers,
-      unattended: policy.unattended,
-      ...(webFetchHosts ? { fetchHosts: webFetchHosts } : {}),
-    };
+      sessionProvider: parsed.providerID,
+      connected: webConnected,
+    });
+    const webFetchHosts = webTools.fetchHosts;
     const webToolInput: PiWebToolInput = {
       setting: webSearchSetting,
       sessionProvider: parsed.providerID,
@@ -631,12 +667,8 @@ async function* runPiAttempt(
       privateTermsGuard,
       abort,
       boundary,
-      webSearch: webToolEnabled("web_search", webGate)
-        ? makePiWebSearch(webToolInput)
-        : undefined,
-      webFetch: webToolEnabled("web_fetch", webGate)
-        ? makePiWebFetch(webToolInput)
-        : undefined,
+      webSearch: webTools.search ? makePiWebSearch(webToolInput) : undefined,
+      webFetch: webTools.fetch ? makePiWebFetch(webToolInput) : undefined,
     });
 
     const { agentDir, sessionDir, settingsManager, loader, sessionContext } =

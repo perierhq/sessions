@@ -46,6 +46,7 @@ import {
   interruptPiThinkingForSteer,
   piLocalToolNames,
   piToolNames,
+  piWebTools,
   resolvePiRoutedModel,
   retractPendingSteer,
   runPi,
@@ -59,6 +60,7 @@ import { __setCodexAccountsPathForTest } from "./codex-accounts";
 import { __setUsageCacheForTest } from "./claude-accounts";
 import { ANTHROPIC_PROMPT_COMPAT_REWRITES } from "./anthropic-prompt-compat";
 import { formatAnthropicReset } from "./anthropic-rate-limit";
+import { runToolPolicy } from "./run-policy";
 
 describe("acceptSteerOnce", () => {
   test("records only successful acceptance and deduplicates retries", () => {
@@ -657,6 +659,71 @@ describe("piToolNames", () => {
         expect(enabled.filter((name) => rejected.test(name))).toEqual([]);
       }
     }
+  });
+});
+
+describe("piWebTools (run policy to web tool gate)", () => {
+  const connected = () => true;
+  const tools = (
+    journalKind: string | undefined,
+    sessionProvider: string,
+    webFetchHosts?: string[],
+    deniedTools?: Record<string, string>,
+  ) =>
+    piWebTools({
+      policy: runToolPolicy({
+        ...(journalKind ? { journalKind } : {}),
+        ...(deniedTools ? { deniedTools } : {}),
+      }),
+      webFetchHosts,
+      setting: "auto",
+      sessionProvider,
+      connected,
+    });
+
+  test("an interactive run gets both tools and no allowlist", () => {
+    expect(tools(undefined, "anthropic", ["docs.example.test"])).toEqual({
+      fetchHosts: undefined,
+      search: true,
+      fetch: true,
+    });
+    expect(tools(undefined, "openai")).toEqual({
+      fetchHosts: undefined,
+      search: true,
+      fetch: true,
+    });
+  });
+
+  test("an unattended run without an allowlist gets no web_fetch and no OpenAI search", () => {
+    expect(tools("automation", "anthropic")).toEqual({
+      fetchHosts: [],
+      search: true,
+      fetch: false,
+    });
+    expect(tools("automation", "openai")).toEqual({
+      fetchHosts: [],
+      search: false,
+      fetch: false,
+    });
+  });
+
+  test("an unattended run's allowlist reaches the gate", () => {
+    expect(tools("automation", "openai", ["docs.example.test"])).toEqual({
+      fetchHosts: ["docs.example.test"],
+      search: true,
+      fetch: true,
+    });
+  });
+
+  test("denied tools make a run unattended and strip the web tool", () => {
+    const denied = tools(undefined, "anthropic", ["docs.example.test"], {
+      web_fetch: "Not for this run.",
+    });
+    expect(denied).toEqual({
+      fetchHosts: ["docs.example.test"],
+      search: true,
+      fetch: false,
+    });
   });
 });
 
