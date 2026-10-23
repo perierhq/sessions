@@ -1878,7 +1878,7 @@ export interface RemoteSandboxParts {
 
 /** stderr of a provider exec whose machine or command plane is not there. */
 const TRANSPORT_FAILURE =
-  /not running|not started|stopped|archived|timed out|ECONN|socket|HTTP 5\d\d|did not accept commands|machine_not_running/i;
+  /not running|not started|stopped|archived|timed out|ECONN|socket|HTTP 5\d\d|did not accept commands|machine_not_running|container state improper|no such container/i;
 
 export function makeRemoteSandbox(parts: RemoteSandboxParts): Sandbox {
   let touchedAt = 0;

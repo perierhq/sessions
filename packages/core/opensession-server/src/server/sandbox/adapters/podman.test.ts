@@ -303,6 +303,22 @@ describe("podman provider sleep and wake", () => {
     );
   });
 
+  test("a burst exec after an out-of-band stop wakes on the next call", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    const sandbox = await provider.ensure({ sessionId: id });
+    const burst = { assumeStarted: true, workloadIdentity: false } as const;
+    expect((await sandbox.exec(["true"], burst)).exitCode).toBe(0);
+    await fake.run(["pod", "stop", names.pod]);
+    const missed = await sandbox.exec(["true"], burst);
+    expect(missed.exitCode).toBe(125);
+    expect(missed.stderr).toContain("container state improper");
+    expect((await sandbox.exec(["true"], burst)).exitCode).toBe(0);
+    expect(fake.state.running).toBe(true);
+  });
+
   test("status maps pod states", async () => {
     const id = sessionId();
     for (const [podState, expected] of [
