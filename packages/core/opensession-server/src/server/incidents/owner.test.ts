@@ -1,5 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { __setOwnerRosterForTest, personOwner, signalOwner } from "./owner";
+import {
+  __setOwnerRosterForTest,
+  isPersonName,
+  personOwner,
+  signalOwner,
+} from "./owner";
 
 afterEach(() => __setOwnerRosterForTest(undefined));
 
@@ -24,4 +29,14 @@ test("an attribution-only identity is no owner", () => {
   expect(personOwner("Acme Bot")).toBeNull();
   expect(personOwner("acmebot")).toBeNull();
   expect(signalOwner({ owner: "Acme Bot" })).toBe("Ada");
+});
+
+test("the anonymous placeholder is no person", () => {
+  __setOwnerRosterForTest([]);
+  expect(isPersonName("Anonymous")).toBe(false);
+  expect(isPersonName(" anonymous ")).toBe(false);
+  expect(personOwner("ANONYMOUS")).toBeNull();
+  __setOwnerRosterForTest([{ name: "Ada Lovelace" }]);
+  // A signal created without sign-in falls back to the instance owner.
+  expect(signalOwner({ createdBy: "Anonymous" })).toBe("Ada");
 });

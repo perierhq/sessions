@@ -11,7 +11,7 @@
 // Reads the in-memory config snapshot only; nothing runs at import.
 import type { Signal } from "../../shared/incidents";
 import { configuredIdentity, type TeamMember } from "../config";
-import { isMachineActor } from "../session-actors";
+import { humanPrompter } from "../session-actors";
 
 let rosterOverride: TeamMember[] | undefined;
 
@@ -50,11 +50,11 @@ function memberFor(name: string, team: TeamMember[]): TeamMember | undefined {
   );
 }
 
-/** Whether `name` could be a person at all: not blank, not a machine
- *  principal. */
+/** Whether `name` could be a person at all: not blank, not the
+ *  "Anonymous" placeholder of an instance without sign-in, not a machine
+ *  principal (as `humanPrompter` in session-actors.ts). */
 export function isPersonName(name: string | null | undefined): name is string {
-  const trimmed = (name ?? "").trim();
-  return trimmed !== "" && !isMachineActor(trimmed);
+  return humanPrompter(name) !== null;
 }
 
 /** `name` as an owner (the roster's first name for a member, the name as
