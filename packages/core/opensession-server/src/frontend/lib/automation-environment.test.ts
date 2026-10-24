@@ -3,6 +3,7 @@ import {
   LEGACY_SANDBOX_COPY,
   automationDefaultModelLabel,
   automationPlaceCopy,
+  automationProject,
   visibleAutomations,
 } from "./automation-environment";
 
@@ -32,7 +33,7 @@ describe("automationPlaceCopy", () => {
           source: "default",
         },
       ),
-    ).toBe("Runs on Daytona eu · set by acme-web → Where agents run");
+    ).toBe("Runs on Daytona eu. Set in acme-web → Where agents run");
   });
 
   test("says why it can't start", () => {
@@ -42,7 +43,7 @@ describe("automationPlaceCopy", () => {
         { state: "cant-start", reason: "no sandbox can run it unattended" },
       ),
     ).toBe(
-      "Can't start: no sandbox can run it unattended · set by acme-web → Where agents run",
+      "Can't start: no sandbox can run it unattended. Set in acme-web → Where agents run",
     );
   });
 
@@ -52,8 +53,31 @@ describe("automationPlaceCopy", () => {
     ).toBe(LEGACY_SANDBOX_COPY);
   });
 
-  test("without a project, the global default", () => {
-    expect(automationPlaceCopy({}, undefined)).toContain("Projects → Defaults");
+  test("without a repo, the instance default repo's place", () => {
+    expect(
+      automationPlaceCopy({}, undefined, "acme-web"),
+    ).toBe("Runs where acme-web says. Set in acme-web → Where agents run");
+    expect(automationPlaceCopy({}, undefined)).toBe(
+      "Runs where the default project says",
+    );
+  });
+});
+
+describe("automationProject", () => {
+  const repos = [{ id: "acme-api" }, { id: "acme-web", default: true }];
+
+  test("an automation's own repo", () => {
+    expect(automationProject({ repo: "acme-api" }, repos)).toBe("acme-api");
+  });
+
+  test("without one, the instance default repo, as the server picks it", () => {
+    expect(automationProject({}, repos)).toBe("acme-web");
+    expect(automationProject({}, [{ id: "docs-site" }])).toBe("docs-site");
+    expect(automationProject({}, undefined)).toBeNull();
+  });
+
+  test("an old disposable sandbox has no project place", () => {
+    expect(automationProject({ sandbox: true }, repos)).toBeNull();
   });
 });
 

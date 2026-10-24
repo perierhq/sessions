@@ -24,24 +24,36 @@ export const LEGACY_SANDBOX_COPY =
   "Disposable sandbox (set before projects had their own)";
 
 /**
- * One line on where an automation runs. `place` is the project's
- * automations cell once it has loaded; `undefined` while it loads or when
- * the automation has no project.
+ * The project whose place an automation runs in: its own repo, else the
+ * instance default repo (the server's `getRepo(undefined)`: the repo marked
+ * default, else the first). `null` for a kept disposable sandbox, or while
+ * the repos load.
+ */
+export function automationProject(
+  automation: AutomationPlaceInput,
+  repos: ReadonlyArray<{ id: string; default?: boolean }> | undefined,
+): string | null {
+  if (automation.sandbox) return null;
+  if (automation.repo) return automation.repo;
+  return (repos?.find((r) => r.default) ?? repos?.[0])?.id ?? null;
+}
+
+/**
+ * One line on where an automation runs. `project` is `automationProject`;
+ * `place` is that project's automations cell once it has loaded.
  */
 export function automationPlaceCopy(
   automation: AutomationPlaceInput,
   place: RunPlace | undefined,
+  project: string | null = automation.repo ?? null,
 ): string {
   if (automation.sandbox) return LEGACY_SANDBOX_COPY;
-  const repo = automation.repo;
-  if (!repo) {
-    return "Runs on the default sandbox when it can run unattended, else on this machine · set in Projects → Defaults";
-  }
-  const where = `set by ${repo} → Where agents run`;
-  if (!place) return `Runs where ${repo} says · ${where}`;
+  if (!project) return "Runs where the default project says";
+  const where = `Set in ${project} → Where agents run`;
+  if (!place) return `Runs where ${project} says. ${where}`;
   if (place.state === "cant-start")
-    return `Can't start: ${place.reason} · ${where}`;
-  return `Runs on ${place.label} · ${where}`;
+    return `Can't start: ${place.reason}. ${where}`;
+  return `Runs on ${place.label}. ${where}`;
 }
 
 /** The empty choice in the model field: the model a run gets without one. */

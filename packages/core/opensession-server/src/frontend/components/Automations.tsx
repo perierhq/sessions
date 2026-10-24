@@ -68,9 +68,11 @@ import {
 import { AutomationDataFlowEditor } from "./AutomationDataFlowEditor";
 import { useNavigation } from "../hooks/useNavigation";
 import { useProjectSettings } from "../hooks/useProjects";
+import { useRepoList } from "../hooks/useSettingsResources";
 import {
   automationDefaultModelLabel,
   automationPlaceCopy,
+  automationProject,
   visibleAutomations,
 } from "../lib/automation-environment";
 
@@ -823,10 +825,11 @@ function AutomationPlace({
   link?: boolean;
 }) {
   const navigation = useNavigation();
-  const repo = automation.sandbox ? null : (automation.repo ?? null);
+  const repos = useRepoList();
+  const repo = automationProject(automation, repos.data);
   const place = useProjectSettings(repo).data?.effective.sandbox.automations;
-  const copy = automationPlaceCopy(automation, place);
-  if (!link || automation.sandbox) return <>{copy}</>;
+  const copy = automationPlaceCopy(automation, place, repo);
+  if (!link || automation.sandbox || !repo) return <>{copy}</>;
   return (
     <>
       {copy}{" "}
@@ -835,11 +838,7 @@ function AutomationPlace({
           LINK,
           "relative border-0 bg-transparent p-0 text-supporting before:absolute before:-inset-x-1 before:-inset-y-3 before:content-['']",
         )}
-        onClick={() =>
-          repo
-            ? navigation.openProjectSettings(repo, "where")
-            : navigation.openProjectDefaults()
-        }
+        onClick={() => navigation.openProjectSettings(repo, "where")}
       >
         Change
       </PlainButton>
@@ -1489,8 +1488,10 @@ function AutomationForm({
   // automation saved with `sandbox: true` before that keeps its disposable
   // profile; there is no control to set it any more.
   const sandbox = !!initial?.sandbox;
-  const projectModel = useProjectSettings(initial?.repo ?? null).data?.effective
-    .models.automations;
+  const repoList = useRepoList();
+  const projectModel = useProjectSettings(
+    automationProject({ sandbox: false, repo: initial?.repo }, repoList.data),
+  ).data?.effective.models.automations;
   const [models, setModels] = useState<ModelOption[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
