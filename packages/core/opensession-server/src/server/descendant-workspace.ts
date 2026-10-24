@@ -2,9 +2,13 @@
 // or an isolation-approved Runner, except an incident agent without a
 // sandbox: it works in a host worktree with its bash run as the incident
 // agent user (incidents/response/host-agents.ts). Of the descendants, only
-// incident agents may use This machine (container). Checked when the
-// session is created, before its opening turn and before every later turn.
-import { INCIDENT_AGENT_ROLES } from "../shared/incident-access";
+// incident agents may use This machine (container): both roles, the
+// investigator and the verifier, so the fix loop can still verify a
+// candidate when the host path is off. The verifier stays read-only there
+// by its tool policy: its access profile is locked to ask mode, which gives
+// it no edit or write tools and a read-only bash. Checked when the session
+// is created, before its opening turn and before every later turn.
+import { isIncidentAgentRole } from "../shared/incident-access";
 import type { AutomationDescendantPolicy } from "./types";
 
 export const HOST_WORKTREE_MISUSE =
@@ -17,8 +21,8 @@ export const PODMAN_DESCENDANT_REFUSED =
   "Automation descendants cannot run in This machine (container); choose another sandbox or a Runner";
 
 /**
- * Whether the policy is an incident agent's: it carries an incident binding
- * with an incident id and an agent role. Only server-side callers set the
+ * Whether the policy is an incident agent's (investigator or verifier): it
+ * carries an incident binding with an incident id and an agent role. Only server-side callers set the
  * binding (incidents/access/session-policy.ts; the workflow controller's
  * server-only spawn option), never an HTTP body, MCP tool or WebSocket
  * message, and session creation and every turn re-resolve it against the
@@ -32,7 +36,7 @@ export function isIncidentAgentPolicy(
     !!binding &&
     typeof binding.incidentId === "string" &&
     binding.incidentId.length > 0 &&
-    (INCIDENT_AGENT_ROLES as readonly string[]).includes(binding.role)
+    isIncidentAgentRole(binding.role)
   );
 }
 
