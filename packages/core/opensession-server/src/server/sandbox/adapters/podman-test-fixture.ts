@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { ExecResult } from "../provider";
 import { podmanSettings, type PodmanProviderDeps } from "./podman";
 import type { PodmanRunOpts } from "./podman-cli";
+import { isVerifiedPodmanArgv } from "./podman-verified-argv";
 import {
   EGRESS_FIXTURE_INPUT,
   EGRESS_FIXTURE_LISTING,
@@ -194,6 +195,9 @@ export function fakePodman(o: FakeOptions = {}) {
     opts?: PodmanRunOpts,
   ): Promise<ExecResult> => {
     calls.push({ argv, opts });
+    // Only commands checked against a real podman (podman-verified-argv.ts).
+    if (!isVerifiedPodmanArgv(argv))
+      throw new Error(`podman argv not verified on a host: ${argv.join(" ")}`);
     const [a, b] = argv;
     const last = argv.at(-1)!;
     if (a === "info")

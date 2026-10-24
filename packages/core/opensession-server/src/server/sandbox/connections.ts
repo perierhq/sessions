@@ -144,7 +144,10 @@ export interface SafeSandboxConnection extends Omit<
   "credentialRef" | "podman"
 > {
   podman?: SafePodmanConnection;
+  /** A stored credential exists (false for a provider that takes none). */
   hasCredentials: boolean;
+  /** Whether the provider takes a credential at all. */
+  needsCredential: boolean;
   state:
     | "not_configured"
     | "checking"
@@ -403,12 +406,14 @@ export function safeSandboxConnections(
         createdAt: new Date(0).toISOString(),
         updatedAt: new Date(0).toISOString(),
         hasCredentials: false,
+        needsCredential: sandboxProviderNeedsCredential(provider),
         state: "not_configured" as const,
       };
     }
+    const needsCredential = sandboxProviderNeedsCredential(provider);
     const hasCredentials = connection.credentialRef
       ? workspaceSecretExists(connection.credentialRef)
-      : !sandboxProviderNeedsCredential(provider);
+      : false;
     const signatureCurrent = sandboxAdapterSignatureCurrent(
       provider,
       connection.qualification?.adapterSignature,
@@ -418,7 +423,7 @@ export function safeSandboxConnections(
       : connection.qualification?.status === "checking"
         ? "checking"
         : connection.qualification?.status === "ready" &&
-            hasCredentials &&
+            (hasCredentials || !needsCredential) &&
             signatureCurrent
           ? "ready"
           : "needs_attention";
@@ -443,6 +448,7 @@ export function safeSandboxConnections(
           }
         : {}),
       hasCredentials,
+      needsCredential,
       state,
     };
   });

@@ -424,6 +424,8 @@ export interface SandboxConnectionInfo {
   createdAt: string;
   updatedAt: string;
   hasCredentials: boolean;
+  /** Whether the provider takes a credential at all. */
+  needsCredential?: boolean;
   state: SandboxConnectionState;
   /** This machine (container), once qualified. */
   podman?: PodmanConnectionSummary;

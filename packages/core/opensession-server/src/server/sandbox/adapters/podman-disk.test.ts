@@ -1,23 +1,56 @@
 import { describe, expect, test } from "bun:test";
-import { GIB, parseSystemDfVolumes, podmanDiskWarnings } from "./podman-disk";
+import { PODMAN_NAME_PREFIX } from "./podman-cli";
+import {
+  duErrorsOnlyVanished,
+  GIB,
+  parseDuTotals,
+  parseVolumeMountpoints,
+  podmanDiskWarnings,
+} from "./podman-disk";
+import {
+  HOST_DU_DENIED_STDERR,
+  HOST_DU_OUTPUT,
+  HOST_DU_VANISHED_STDERR,
+  HOST_MOUNTPOINT,
+  HOST_VOLUME_LS_EMPTY,
+  HOST_VOLUME_LS_JSON,
+} from "./podman-host-fixture";
 
 describe("podman disk", () => {
-  test("reads volume sizes from podman system df", () => {
-    const output = JSON.stringify({
-      Images: [],
-      Containers: [],
-      Volumes: [
-        { VolumeName: "os-a-home", Links: 1, Size: 1234, ReclaimableSize: 0 },
-        { VolumeName: "other", Links: 0, Size: 5, ReclaimableSize: 5 },
-        { VolumeName: "broken" },
-      ],
-    });
-    expect([...parseSystemDfVolumes(output)]).toEqual([
-      ["os-a-home", 1234],
-      ["other", 5],
+  test("reads sandbox volume mountpoints from podman volume ls", () => {
+    expect([
+      ...parseVolumeMountpoints(HOST_VOLUME_LS_JSON, PODMAN_NAME_PREFIX),
+    ]).toEqual([["opensession-sbx-sess-1-home", HOST_MOUNTPOINT]]);
+    expect(
+      parseVolumeMountpoints(HOST_VOLUME_LS_EMPTY, PODMAN_NAME_PREFIX).size,
+    ).toBe(0);
+    // Not ours, or no usable mountpoint: left out.
+    const odd = JSON.stringify([
+      { Name: "someone-else", Mountpoint: "/data/a" },
+      { Name: "opensession-sbx-a-home", Mountpoint: "relative/_data" },
+      { Name: "opensession-sbx-b-home", Mountpoint: "/x\n/_data" },
+      { Name: "opensession-sbx-c-home" },
     ]);
-    expect(() => parseSystemDfVolumes("nope")).toThrow(/JSON/);
-    expect(() => parseSystemDfVolumes("{}")).toThrow(/no volume list/);
+    expect(parseVolumeMountpoints(odd, PODMAN_NAME_PREFIX).size).toBe(0);
+    expect(() => parseVolumeMountpoints("nope", PODMAN_NAME_PREFIX)).toThrow(
+      /JSON/,
+    );
+    expect(() => parseVolumeMountpoints("{}", PODMAN_NAME_PREFIX)).toThrow(
+      /no volume list/,
+    );
+  });
+
+  test("reads du totals and tells vanished files from real errors", () => {
+    expect([...parseDuTotals(HOST_DU_OUTPUT)]).toEqual([
+      [HOST_MOUNTPOINT, 3002368],
+    ]);
+    expect(parseDuTotals("garbage\n\n12x\t/a\n").size).toBe(0);
+    expect(duErrorsOnlyVanished(HOST_DU_VANISHED_STDERR)).toBe(true);
+    expect(duErrorsOnlyVanished(HOST_DU_DENIED_STDERR)).toBe(false);
+    expect(
+      duErrorsOnlyVanished(HOST_DU_VANISHED_STDERR + HOST_DU_DENIED_STDERR),
+    ).toBe(false);
+    expect(duErrorsOnlyVanished("")).toBe(false);
   });
 
   test("warnings name low space and large volumes, largest first", () => {

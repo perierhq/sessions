@@ -240,6 +240,14 @@ describe("This machine (container)", () => {
     expect(sandboxConnectionReady("podman")).toBe(false);
     setSandboxConnectionQualification("podman", { status: "ready" });
     expect(sandboxConnectionReady("podman")).toBe(true);
+    const card = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    );
+    expect(card).toMatchObject({
+      hasCredentials: false,
+      needsCredential: false,
+      state: "ready",
+    });
     updateSandboxConnection("podman", { enabled: false });
     expect(sandboxConnectionReady("podman")).toBe(false);
   });
@@ -294,7 +302,9 @@ describe("This machine (container) in Settings", () => {
       (c) => c.provider === "podman",
     );
     expect(before?.podman).toBeUndefined();
-    expect(before?.hasCredentials).toBe(true);
+    // It takes no credential, so it has none, and that does not hold it back.
+    expect(before?.hasCredentials).toBe(false);
+    expect(before?.needsCredential).toBe(false);
     setPodmanConnectionFacts({
       imageTag: "localhost/opensession-sandbox:0123456789abcdef",
       cpuLimited: false,

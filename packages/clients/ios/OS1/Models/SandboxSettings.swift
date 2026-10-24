@@ -32,6 +32,9 @@ struct SandboxSettingsStatus: Codable, Sendable, Equatable {
         var provider: String?
         var enabled: Bool?
         var hasCredentials: Bool?
+        /// Whether the provider takes a credential at all (This machine
+        /// (container) does not).
+        var needsCredential: Bool?
         var qualification: Qualification?
         /// The computed readiness the clients gate on. Deliberately stricter
         /// than `qualification.status`: the two routinely disagree, and this is
@@ -103,7 +106,7 @@ extension SandboxSettingsStatus.Connection {
     var summary: String {
         var parts: [String] = []
         if enabled == false { parts.append("Disabled") }
-        if hasCredentials == false { parts.append("No credentials") }
+        if hasCredentials == false && needsCredential != false { parts.append("No credentials") }
         if let failure = qualification?.failureSummary, failure.isEmpty == false {
             parts.append(failure)
         } else if let code = qualification?.failureCode, code.isEmpty == false {
