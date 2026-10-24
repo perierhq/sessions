@@ -155,7 +155,7 @@ test("the list: rows by signal, or an empty state that adds one", () => {
   );
   expect(list).toContain("Search");
   expect(list).toContain("Check · every minute · 3 failures in a row");
-  expect(list).toContain("no data");
+  expect(list).toContain(">No data<");
   const empty = renderToStaticMarkup(
     <SignalsList
       project="acme"
