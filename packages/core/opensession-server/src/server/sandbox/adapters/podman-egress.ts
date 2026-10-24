@@ -278,9 +278,56 @@ export async function workloadNetnsPath(
   return `/proc/${pid}/ns/net`;
 }
 
+/**
+ * The bash script every nft call runs inside `podman unshare`. nft must not
+ * touch the gateway's own file descriptors: Bun hands a child a unix socket
+ * as stdout and stderr and a memfd as stdin, and on SELinux hosts nft runs
+ * as `iptables_t`, which may neither write to the gateway's socket nor read
+ * its memfd. Both fail silently (the denials are dontaudit) and nft still
+ * exits 0, so a listing comes back empty, an error message is lost, and
+ * `nft -f -` loads an empty ruleset. Here nft's stdin, stdout and stderr are
+ * pipes made inside the user namespace, and `cat` (which keeps podman's
+ * domain) copies through them: stdin in through the first `cat`, stdout out
+ * through fd 3 to the outer pipe, stderr through the inner pipe to bash's
+ * stderr. Every pipeline is waited for, so nothing is cut short, and
+ * `pipefail` keeps nft's (or nsenter's) exit status. The namespace path is
+ * `$1` and the nft arguments are `$2…`, passed as argv and never spliced
+ * into the script.
+ */
+export const NFT_PIPE_SCRIPT =
+  'set -o pipefail; { cat | nsenter --net="$1" nft "${@:2}" 2>&1 >&3 3>&- | cat >&2 3>&-; } 3>&1 | cat';
+
 /** `nft` inside a namespace, as the rootless user's user-namespace root. */
 function nftArgs(netns: string, args: string[]): string[] {
-  return ["unshare", "nsenter", `--net=${netns}`, "nft", ...args];
+  return [
+    "unshare",
+    "/bin/bash",
+    "-c",
+    NFT_PIPE_SCRIPT,
+    "bash",
+    netns,
+    ...args,
+  ];
+}
+
+/**
+ * An nft JSON listing of a namespace. A clean exit with nothing printed is
+ * its own error: nft lists at least its metainfo, so its output never
+ * reached this process.
+ */
+async function nftListing(
+  run: PodmanRunner,
+  netns: string,
+  args: string[],
+  what: string,
+): Promise<string> {
+  const result = await run(nftArgs(netns, args));
+  if (result.exitCode !== 0) throw failure(what, result);
+  if (!result.stdout.trim())
+    throw new Error(
+      `${what}: nft exited 0 but printed nothing; its output did not reach the gateway (an SELinux policy that stops nft writing to the caller's stdout does this)`,
+    );
+  return result.stdout;
 }
 
 /** Install the ruleset into the infra container's namespace. Returns the
@@ -446,9 +493,14 @@ export async function verifyEgressRulesAt(
 ): Promise<void> {
   const expected = expectedEgressListing(input);
   assertNetnsPath(netns, "verify egress rules");
-  const result = await run(nftArgs(netns, ["-j", "list", "ruleset"]));
-  if (result.exitCode !== 0) throw failure("list egress rules", result);
-  const actual = normalizeNftListing(result.stdout);
+  const actual = normalizeNftListing(
+    await nftListing(
+      run,
+      netns,
+      ["-j", "list", "ruleset"],
+      "list egress rules",
+    ),
+  );
   const missing = expected.filter((line) => !actual.includes(line));
   const extra = actual.filter((line) => !expected.includes(line));
   const ordered =
@@ -541,13 +593,15 @@ export async function readEgressCounters(
   netns: string,
 ): Promise<Map<EgressRuleKey, number>> {
   assertNetnsPath(netns, "read egress counters");
-  const result = await run(
-    nftArgs(netns, ["-j", "list", "table", "inet", EGRESS_TABLE]),
+  const listing = await nftListing(
+    run,
+    netns,
+    ["-j", "list", "table", "inet", EGRESS_TABLE],
+    "list egress counters",
   );
-  if (result.exitCode !== 0) throw failure("list egress counters", result);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(result.stdout);
+    parsed = JSON.parse(listing);
   } catch {
     throw new Error("nft listing is not JSON");
   }

@@ -167,9 +167,10 @@ export function fakePodman(o: FakeOptions = {}) {
     stopWorkload();
     stopInfra();
   };
-  /** The namespace an `nsenter --net=<path>` lands in, if any. */
+  /** The namespace the nft wrapper's `nsenter --net="$1"` lands in, if any
+   *  (`unshare /bin/bash -c <script> bash <netns> <nft args>`). */
   const resolveNetns = (argv: string[]): string | null => {
-    const path = argv.find((a) => a.startsWith("--net="))?.slice(6);
+    const path = argv[1] === "/bin/bash" ? argv[5] : undefined;
     if (!path) return null;
     const proc = /^\/proc\/(\d+)\/ns\/net$/.exec(path);
     if (proc)
