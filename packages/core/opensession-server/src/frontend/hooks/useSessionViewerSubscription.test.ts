@@ -71,7 +71,7 @@ function options(): Options {
       followingLive: ref(true),
       acceptRange: noop,
       projectAppend: noop,
-    } as unknown as Options["index"],
+    },
     history: {
       backgroundRef: ref(false),
       revealRef: ref(null),
@@ -129,7 +129,7 @@ function frame(message: WSServerMessage) {
 
 const toolUse = (
   id: string,
-  toolInput: Record<string, unknown> = {},
+  toolInput: TranscriptEntry["toolInput"] = {},
 ): TranscriptEntry => ({
   id,
   type: "tool_use",

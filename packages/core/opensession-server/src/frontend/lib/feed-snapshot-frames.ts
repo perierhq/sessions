@@ -22,13 +22,14 @@ export function feedSnapshotFrames(msg: FeedSnapshot): WSServerMessage[] {
   if (active.blocks?.length) {
     for (const block of active.blocks) {
       if (!block.text) continue;
-      frames.push({
+      const frame: Extract<WSServerMessage, { type: "stream_text" }> = {
         type: "stream_text",
         sessionId,
         text: block.text,
-        ...(block.id ? { blockId: block.id } : {}),
-        ...(block.kind ? { kind: block.kind } : {}),
-      });
+      };
+      if (block.id) frame.blockId = block.id;
+      if (block.kind) frame.kind = block.kind;
+      frames.push(frame);
     }
   } else if (active.text) {
     frames.push({ type: "stream_text", sessionId, text: active.text });
