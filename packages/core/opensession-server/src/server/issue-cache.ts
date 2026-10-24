@@ -75,10 +75,7 @@ export function invalidateIssueCache(): void {
 
 /** Demo mode: rows for a repo GitHub will never be asked about. A refresh
  *  without App authority leaves seeded rows in place. */
-export function seedIssueCache(
-  repoId: string,
-  rows: CachedIssueEntry[],
-): void {
+export function seedIssueCache(repoId: string, rows: CachedIssueEntry[]): void {
   cache.data.set(repoId, rows);
 }
 
