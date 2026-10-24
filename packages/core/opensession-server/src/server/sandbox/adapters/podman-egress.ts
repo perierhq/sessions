@@ -280,20 +280,22 @@ export async function workloadNetnsPath(
 
 /**
  * The bash script every nft call runs inside `podman unshare`. nft must not
- * write straight to the gateway: Bun hands a child a unix socket as stdout
- * and stderr, and on SELinux hosts nft runs as `iptables_t`, which may not
- * write to the gateway's socket. The write fails silently (the denial is
- * dontaudit) and nft still exits 0, so a listing comes back empty and an
- * error message is lost. Here nft's stdout and stderr are pipes made inside
- * the user namespace, and `cat` (which keeps podman's domain) copies them
- * out: nft's stdout leaves through fd 3 to the outer pipe, its stderr through
- * the inner pipe to bash's stderr. Both pipelines are waited for, so nothing
- * is cut short, and `pipefail` keeps nft's (or nsenter's) exit status. The
- * namespace path is `$1` and the nft arguments are `$2…`, passed as argv and
- * never spliced into the script. stdin reaches nft untouched (`nft -f -`).
+ * touch the gateway's own file descriptors: Bun hands a child a unix socket
+ * as stdout and stderr and a memfd as stdin, and on SELinux hosts nft runs
+ * as `iptables_t`, which may neither write to the gateway's socket nor read
+ * its memfd. Both fail silently (the denials are dontaudit) and nft still
+ * exits 0, so a listing comes back empty, an error message is lost, and
+ * `nft -f -` loads an empty ruleset. Here nft's stdin, stdout and stderr are
+ * pipes made inside the user namespace, and `cat` (which keeps podman's
+ * domain) copies through them: stdin in through the first `cat`, stdout out
+ * through fd 3 to the outer pipe, stderr through the inner pipe to bash's
+ * stderr. Every pipeline is waited for, so nothing is cut short, and
+ * `pipefail` keeps nft's (or nsenter's) exit status. The namespace path is
+ * `$1` and the nft arguments are `$2…`, passed as argv and never spliced
+ * into the script.
  */
 export const NFT_PIPE_SCRIPT =
-  'set -o pipefail; { nsenter --net="$1" nft "${@:2}" 2>&1 >&3 3>&- | cat >&2 3>&-; } 3>&1 | cat';
+  'set -o pipefail; { cat | nsenter --net="$1" nft "${@:2}" 2>&1 >&3 3>&- | cat >&2 3>&-; } 3>&1 | cat';
 
 /** `nft` inside a namespace, as the rootless user's user-namespace root. */
 function nftArgs(netns: string, args: string[]): string[] {

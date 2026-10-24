@@ -24,7 +24,7 @@ const FORMAT_FIELDS = [
 /** A copy of podman-egress.ts's NFT_PIPE_SCRIPT, kept here on purpose: a
  *  changed script fails the tests until it has been run on a host. */
 const NFT_PIPE_SCRIPT =
-  'set -o pipefail; { nsenter --net="$1" nft "${@:2}" 2>&1 >&3 3>&- | cat >&2 3>&-; } 3>&1 | cat';
+  'set -o pipefail; { cat | nsenter --net="$1" nft "${@:2}" 2>&1 >&3 3>&- | cat >&2 3>&-; } 3>&1 | cat';
 
 function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
