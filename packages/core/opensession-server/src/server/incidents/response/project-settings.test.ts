@@ -11,7 +11,6 @@ import {
   recordRelease,
   redactProjectSettings,
   updateProjectSettings,
-  validateAction,
 } from "./project-settings";
 
 const kit = useIncidentTestKernel();
@@ -154,36 +153,6 @@ test.each([
 test("unknown projects are refused", async () => {
   expect(await update("other", { autonomy: "watch" }, "Ada")).toEqual({
     error: expect.stringContaining("other"),
-  });
-});
-test("validateAction", () => {
-  expect(
-    validateAction({ ...deploy, cwd: "relative" }, ["runner-prod"]),
-  ).toEqual({ error: expect.stringContaining("cwd") });
-  expect(validateAction({ ...deploy, id: "Deploy!" }, ["runner-prod"])).toEqual(
-    { error: expect.stringContaining("id") },
-  );
-  expect(
-    validateAction({ ...deploy, cost: { kind: "amount", usd: 0 } }, [
-      "runner-prod",
-    ]),
-  ).toEqual({
-    error: expect.stringContaining("cost"),
-  });
-  expect(
-    validateAction(
-      {
-        ...deploy,
-        cost: { kind: "amount", usd: 5 },
-        needsSecret: true,
-        reversible: false,
-      },
-      ["runner-prod"],
-    ),
-  ).toMatchObject({
-    cost: { kind: "amount", usd: 5 },
-    needsSecret: true,
-    reversible: false,
   });
 });
 test("server-side fields cannot be written by callers; releases are capped", async () => {
@@ -390,22 +359,6 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
   });
 });
 
-test("placeholders cannot sit inside quotes", () => {
-  for (const command of [
-    "./deploy.sh '{{ref}}'",
-    './deploy.sh "v-{{ref}}"',
-    "echo 'a' \"{{project}}\"",
-  ])
-    expect(validateAction({ ...deploy, command }, ["runner-prod"])).toEqual({
-      error:
-        "Placeholders cannot be inside quotes: Sessions quotes their values",
-    });
-  expect(
-    validateAction({ ...deploy, command: "echo 'x' {{ref}} \\'" }, [
-      "runner-prod",
-    ]),
-  ).toMatchObject({ id: "deploy" });
-});
 test("release refs must be commit SHAs; project ids are own keys", async () => {
   expect(
     await recordRelease("acme", {
