@@ -32,6 +32,7 @@ import {
 } from "../../lib/ready-sandbox-providers";
 import { Button } from "../../ui/button";
 import { PlainButton } from "../../ui/plain-button";
+import { TextLink } from "../../ui/text-link";
 import { cn } from "../../ui/cn";
 import { Input } from "../../ui/input";
 import { OptionSelect, Select } from "../../ui/select";
@@ -331,12 +332,11 @@ export function DefaultsPanel({
       <SettingsHint>
         Sandbox providers are connected in{" "}
         {onOpenSandboxes ? (
-          <PlainButton
-            className="relative text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+          <TextLink
             onClick={onOpenSandboxes}
           >
             Organization → Sandboxes
-          </PlainButton>
+          </TextLink>
         ) : (
           "Organization → Sandboxes"
         )}

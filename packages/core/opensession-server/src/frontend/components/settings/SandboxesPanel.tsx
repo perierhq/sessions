@@ -1,4 +1,4 @@
-import { PlainButton } from "../../ui/plain-button";
+import { TextLink } from "../../ui/text-link";
 import { useEffect, useRef, useState } from "react";
 import type {
   SandboxConnectionInfo,
@@ -1264,12 +1264,11 @@ export function SandboxesPanel({
       <SettingsHint>
         Each project picks its sandbox on its own page, and the default is in{" "}
         {onOpenDefaults ? (
-          <PlainButton
-            className="relative text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+          <TextLink
             onClick={onOpenDefaults}
           >
             Projects → Defaults
-          </PlainButton>
+          </TextLink>
         ) : (
           "Projects → Defaults"
         )}
