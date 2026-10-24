@@ -16,6 +16,7 @@ import {
   type AccessTableView,
   type EffectiveSandbox,
   type ProjectReadiness,
+  type ProjectRole,
   type ProjectSettingsPatch,
   type ProjectSettingsView,
   type ReadinessFix,
@@ -322,6 +323,23 @@ export function applyIncidentsPatch(
   if (night === null) delete incidents.night;
   else if (night) incidents.night = night;
   return { ...view, document: { ...view.document, incidents } };
+}
+
+/** The role an arrow, Home or End key moves a role radio group to, wrapping
+ *  at the ends; `null` for any other key. */
+export function roleForKey(
+  current: ProjectRole,
+  key: string,
+): ProjectRole | null {
+  const i = PROJECT_ROLES.indexOf(current);
+  const n = PROJECT_ROLES.length;
+  if (key === "ArrowRight" || key === "ArrowDown")
+    return PROJECT_ROLES[(i + 1) % n]!;
+  if (key === "ArrowLeft" || key === "ArrowUp")
+    return PROJECT_ROLES[(i - 1 + n) % n]!;
+  if (key === "Home") return PROJECT_ROLES[0]!;
+  if (key === "End") return PROJECT_ROLES[n - 1]!;
+  return null;
 }
 
 /** "4 of 5 roles": how many roles a row is on for, You included. */

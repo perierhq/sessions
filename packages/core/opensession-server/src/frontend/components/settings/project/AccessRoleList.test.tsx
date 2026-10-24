@@ -24,7 +24,7 @@ const { PlainButton } = await import("../../../ui/plain-button");
 
 afterEach(() => harness.unmountAll());
 
-type ButtonProps = React.ComponentProps<"button">;
+type ButtonProps = React.ComponentProps<"button"> & { "data-role"?: string };
 
 /** The text inside a tree, children only. */
 function text(node: ReactNode): string {
@@ -43,11 +43,9 @@ function buttons(tree: ReactNode): ButtonProps[] {
   return out;
 }
 
-/** The role chips: pressed or not, named by their words. */
+/** The role chips: a radio group, named by their words. */
 function chips(tree: ReactNode): ButtonProps[] {
-  return buttons(tree).filter(
-    (p) => p["aria-pressed"] !== undefined && !p["aria-label"],
-  );
+  return buttons(tree).filter((p) => p.role === "radio");
 }
 
 /** The element a screen reader calls `name`. */
@@ -96,7 +94,7 @@ describe("AccessRoleList", () => {
     click(verifier);
     await settle();
     const tree = list.output();
-    expect(chips(tree).find((c) => c["aria-pressed"])?.children).toBe(
+    expect(chips(tree).find((c) => c["aria-checked"])?.children).toBe(
       "Verifier",
     );
     const code = named(
@@ -126,6 +124,48 @@ describe("AccessRoleList", () => {
         role: "reviews",
         value: false,
       },
+    ]);
+  });
+
+  test("the chips are one radio group: one tab stop, arrows move", async () => {
+    const focused: string[] = [];
+    const list = mount();
+    const group = elements(list.output()).find(
+      (e) =>
+        isValidElement<{ role?: string }>(e) && e.props.role === "radiogroup",
+    );
+    expect(group).toBeDefined();
+    const tabbable = () =>
+      chips(list.output())
+        .filter((c) => c.tabIndex === 0)
+        .map((c) => text(c.children));
+    expect(tabbable()).toEqual(["Investigator"]);
+    const key = (chip: ButtonProps | undefined, k: string) =>
+      chip?.onKeyDown?.({
+        key: k,
+        preventDefault: () => {},
+        currentTarget: {
+          parentElement: {
+            querySelector: (sel: string) => ({
+              focus: () => focused.push(sel),
+            }),
+          },
+        },
+      } as unknown as React.KeyboardEvent<HTMLButtonElement>);
+    const current = () => chips(list.output()).find((c) => c.tabIndex === 0);
+    key(current(), "ArrowRight");
+    await settle();
+    expect(tabbable()).toEqual(["Verifier"]);
+    key(current(), "End");
+    await settle();
+    expect(tabbable()).toEqual(["Reviews"]);
+    key(current(), "ArrowRight");
+    await settle();
+    expect(tabbable()).toEqual(["You"]);
+    expect(focused).toEqual([
+      '[data-role="verifier"]',
+      '[data-role="reviews"]',
+      '[data-role="you"]',
     ]);
   });
 

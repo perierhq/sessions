@@ -31,6 +31,7 @@ import {
   nextCellValue,
   rowIsBoolean,
   rowKeyId,
+  roleForKey,
   rowSummary,
 } from "../../../lib/project-settings/page-model";
 import { Button } from "../../../ui/button";
@@ -59,14 +60,28 @@ export function AccessRoleList({
   const [role, setRole] = useState<ProjectRole>(initialRole);
   return (
     <div>
-      <div className={ROLE_CHIPS} role="toolbar" aria-label="Role">
+      {/* One choice of five: a radio group, so it is one tab stop and the
+          arrow keys move the choice (and the focus) between roles. */}
+      <div className={ROLE_CHIPS} role="radiogroup" aria-label="Role">
         {PROJECT_ROLES.map((r) => (
           <PlainButton
             key={r}
             type="button"
-            aria-pressed={r === role}
+            role="radio"
+            aria-checked={r === role}
+            tabIndex={r === role ? 0 : -1}
+            data-role={r}
             className={r === role ? ROLE_CHIP_ON : ROLE_CHIP_OFF}
             onClick={() => setRole(r)}
+            onKeyDown={(event) => {
+              const next = roleForKey(role, event.key);
+              if (!next) return;
+              event.preventDefault();
+              setRole(next);
+              event.currentTarget.parentElement
+                ?.querySelector<HTMLElement>(`[data-role="${next}"]`)
+                ?.focus();
+            }}
           >
             {ROLE_LABELS[r]}
           </PlainButton>
