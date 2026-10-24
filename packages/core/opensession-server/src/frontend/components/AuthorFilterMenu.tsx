@@ -51,7 +51,11 @@ export function AuthorFilterMenu({
             <Menu.Check on={value === ANYONE} />
           </Menu.RadioItem>
           <Menu.RadioItem value={OUTSIDE_TEAM} closeOnClick>
-            <IconGlobe size={18} className="shrink-0 text-dim" />
+            {/* The glyph floors at 20px; its box stays the faces' 18 so the
+                label keeps their edge. */}
+            <span className="flex size-[18px] shrink-0 items-center justify-center text-dim">
+              <IconGlobe size={20} />
+            </span>
             <span className="min-w-0 flex-1 truncate">Outside the team</span>
             <Menu.Check on={value === OUTSIDE_TEAM} />
           </Menu.RadioItem>
