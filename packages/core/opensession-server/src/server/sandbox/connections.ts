@@ -73,6 +73,24 @@ export {
   PODMAN_DEFAULT_PIDS_LIMIT,
 } from "./adapters/podman-settings";
 
+/** A passing self-test probe kept as evidence: its name, what it expected
+ *  and what it got. */
+export type PodmanSelfTestRow = [name: string, expect: string, got: string];
+
+/** At most this many rows, each field at most this long, are stored. */
+export const PODMAN_SELF_TEST_ROWS_MAX = 64;
+const PODMAN_SELF_TEST_FIELD_MAX = 80;
+
+/** A passing self-test's results as bounded rows for storage. */
+export function podmanSelfTestRows(
+  results: readonly { name: string; expect: string; got: string }[],
+): PodmanSelfTestRow[] {
+  const cut = (text: string) => text.slice(0, PODMAN_SELF_TEST_FIELD_MAX);
+  return results
+    .slice(0, PODMAN_SELF_TEST_ROWS_MAX)
+    .map((r) => [cut(r.name), cut(r.expect), cut(r.got)]);
+}
+
 /** What the last successful podman qualification found on this host. */
 export interface PodmanConnectionFacts {
   /** The sandbox image new sandboxes start from. */
@@ -82,6 +100,11 @@ export interface PodmanConnectionFacts {
   cpuLimited: boolean;
   /** When the full isolation self-test last passed. */
   selfTestAt: string;
+  /** That self-test's rows (probe, expected, got), so a pass is auditable.
+   *  Bounded; never sent to the browser. */
+  selfTestRows?: PodmanSelfTestRow[];
+  /** The rows of the network self-test the test sandbox passed on start. */
+  ensureSelfTestRows?: PodmanSelfTestRow[];
 }
 
 export interface SandboxHostSetting {
@@ -132,7 +155,12 @@ export interface SandboxConnection {
 
 /** The This machine (container) card's summary: the qualification facts and
  *  the limits new sandboxes get. */
-export interface SafePodmanConnection extends PodmanConnectionFacts {
+export interface SafePodmanConnection extends Omit<
+  PodmanConnectionFacts,
+  "selfTestRows" | "ensureSelfTestRows"
+> {
+  /** How many probes the last qualification self-test passed. */
+  selfTestProbes?: number;
   memoryMb: number;
   pidsLimit: number;
   /** The CPUs a sandbox may use; absent when this host cannot limit CPU. */
@@ -268,11 +296,31 @@ function podmanFacts(value: unknown): PodmanConnectionFacts | undefined {
       : null;
   if (!raw || !string(raw.imageTag) || typeof raw.cpuLimited !== "boolean")
     return undefined;
+  const selfTestRows = selfTestRowsOf(raw.selfTestRows);
+  const ensureSelfTestRows = selfTestRowsOf(raw.ensureSelfTestRows);
   return {
     imageTag: string(raw.imageTag)!,
     cpuLimited: raw.cpuLimited,
     selfTestAt: string(raw.selfTestAt) || new Date(0).toISOString(),
+    ...(selfTestRows ? { selfTestRows } : {}),
+    ...(ensureSelfTestRows ? { ensureSelfTestRows } : {}),
   };
+}
+
+/** Stored self-test rows, malformed ones dropped and the list bounded. */
+function selfTestRowsOf(value: unknown): PodmanSelfTestRow[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows = value.filter(
+    (row): row is PodmanSelfTestRow =>
+      Array.isArray(row) &&
+      row.length === 3 &&
+      row.every((field) => typeof field === "string"),
+  );
+  return rows.length
+    ? podmanSelfTestRows(
+        rows.map(([name, expect, got]) => ({ name, expect, got })),
+      )
+    : undefined;
 }
 
 /** One entry per Runner, in the order given; malformed entries are dropped. */
@@ -442,7 +490,7 @@ export function safeSandboxConnections(
       ...(podmanFacts
         ? {
             podman: {
-              ...podmanFacts,
+              ...podmanCardFacts(podmanFacts),
               // What a sandbox actually gets, not the raw stored value.
               memoryMb: effective.memoryMb,
               pidsLimit: effective.pidsLimit,
@@ -456,6 +504,22 @@ export function safeSandboxConnections(
       state,
     };
   });
+}
+
+/** The facts the card shows: the self-test rows stay on the server, the card
+ *  gets their count. */
+function podmanCardFacts({
+  selfTestRows,
+  ensureSelfTestRows: _ensureSelfTestRows,
+  ...facts
+}: PodmanConnectionFacts): Omit<
+  SafePodmanConnection,
+  "memoryMb" | "pidsLimit" | "cpu" | "diskWarnings"
+> {
+  return {
+    ...facts,
+    ...(selfTestRows ? { selfTestProbes: selfTestRows.length } : {}),
+  };
 }
 
 function replaceConnection(connection: SandboxConnection): void {
@@ -590,7 +654,8 @@ export function setPodmanConnectionFacts(
   if (!previous) throw new Error("podman is not connected");
   const next: SandboxConnection = {
     ...previous,
-    podman: facts,
+    // Through the reader, so the stored rows are bounded however they came.
+    podman: podmanFacts(facts) ?? facts,
     updatedAt: new Date().toISOString(),
   };
   replaceConnection(next);

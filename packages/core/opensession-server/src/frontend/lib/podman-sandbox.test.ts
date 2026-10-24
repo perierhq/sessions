@@ -52,6 +52,19 @@ describe("This machine (container) card", () => {
     expect(lines.join("\n")).not.toContain("Self-test");
   });
 
+  test("counts the checks the last self-test passed", () => {
+    const lines = podmanSummaryLines({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      memoryMb: 4096,
+      pidsLimit: 4096,
+      cpuLimited: true,
+      cpu: 2,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+      selfTestProbes: 24,
+    });
+    expect(lines.at(-1)).toEndWith(" · 24 checks");
+  });
+
   test("ends with the disk warnings", () => {
     const lines = podmanSummaryLines({
       imageTag: "localhost/opensession-sandbox:0123456789abcdef",

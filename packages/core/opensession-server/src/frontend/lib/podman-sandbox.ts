@@ -20,6 +20,8 @@ export interface PodmanConnectionSummary {
   cpu?: number;
   /** When the full isolation self-test last passed. */
   selfTestAt?: string;
+  /** How many probes that self-test passed. */
+  selfTestProbes?: number;
   /** The last disk check's findings (low space, large home volumes). */
   diskWarnings?: string[];
 }
@@ -41,7 +43,12 @@ export function podmanSummaryLines(summary: PodmanConnectionSummary): string[] {
     `${memory(summary.memoryMb)} memory · ${summary.pidsLimit} processes`,
     cpuLimit(summary),
     ...(summary.selfTestAt && Date.parse(summary.selfTestAt) > 0
-      ? [`Self-test passed ${new Date(summary.selfTestAt).toLocaleString()}`]
+      ? [
+          `Self-test passed ${new Date(summary.selfTestAt).toLocaleString()}` +
+            (summary.selfTestProbes
+              ? ` · ${summary.selfTestProbes} checks`
+              : ""),
+        ]
       : []),
     ...(summary.diskWarnings ?? []),
   ];

@@ -32,6 +32,7 @@ import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
 import {
   getSandboxConnection,
+  podmanSelfTestRows,
   type PodmanConnectionFacts,
 } from "../connections";
 import type {
@@ -1068,6 +1069,15 @@ export class PodmanProvider implements SandboxProvider {
     });
   }
 
+  /** The rows of this provider's last passing network self-test. */
+  private lastNetworkSelfTest: IsolationResult[] = [];
+
+  /** The rows of the last network self-test that passed on an ensure or
+   *  wake through this provider (qualification's test sandbox). */
+  lastEnsureSelfTest(): IsolationResult[] {
+    return this.lastNetworkSelfTest;
+  }
+
   /** The network half of the self-test, on every ensure and wake. */
   private async networkSelfTest(
     names: PodmanNames,
@@ -1081,13 +1091,15 @@ export class PodmanProvider implements SandboxProvider {
       { counters: egressCounterProof(this.run, workloadNetns, egress) },
     );
     if (!result.ok) throw selfTestFailure(result);
+    this.lastNetworkSelfTest = result.results;
   }
 
   /**
    * Qualification's checks on a running sandbox: the full self-test (file
    * and process probes too, each blocked target first proven live from the
    * host) and the workload's cgroup, which must sit under the user's systemd
-   * manager so a gateway restart cannot kill it.
+   * manager so a gateway restart cannot kill it. Returns the self-test's
+   * rows.
    */
   async qualificationChecks(
     sandboxId: string,
@@ -1096,7 +1108,7 @@ export class PodmanProvider implements SandboxProvider {
       hostPaths: string[];
       hostControl?: (host: string, port: number) => Promise<boolean>;
     },
-  ): Promise<void> {
+  ): Promise<IsolationResult[]> {
     const names = namesForPod(sandboxId);
     const callbackBaseUrl = this.d.callbackBaseUrl();
     const egress = await this.egressInput(callbackBaseUrl);
@@ -1134,6 +1146,7 @@ export class PodmanProvider implements SandboxProvider {
         `sandbox containers land in ${cgroup || "an unknown cgroup"}, not under user@${o.uid}.service: ` +
           "give podman the user's XDG_RUNTIME_DIR and D-Bus session (enable linger), or a gateway restart would kill every sandbox",
       );
+    return result.results;
   }
 
   /** Start a stopped pod behind its firewall (any wake path). */
@@ -1553,11 +1566,12 @@ export async function qualifyPodmanConnection(
   const sessionId = `qual-${randomBytes(6).toString("hex")}`;
   const { pod } = podmanNames(sessionId);
   let failure: unknown;
+  let checks: IsolationResult[] = [];
   try {
     progress("Starting a test sandbox behind its firewall", 60);
     await provider.ensure({ sessionId });
     progress("Running the isolation self-test", 80);
-    await provider.qualificationChecks(pod, {
+    checks = await provider.qualificationChecks(pod, {
       uid,
       hostPaths: deps.hostPaths ?? stateHostPaths(),
       hostControl: deps.hostControl,
@@ -1581,6 +1595,9 @@ export async function qualifyPodmanConnection(
     imageTag,
     cpuLimited: (deps.cpuDelegated ?? (() => hostCpuDelegated(uid)))(),
     selfTestAt: new Date().toISOString(),
+    // The evidence behind the pass, kept small: each probe and what it got.
+    selfTestRows: podmanSelfTestRows(checks),
+    ensureSelfTestRows: podmanSelfTestRows(provider.lastEnsureSelfTest()),
     warnings,
   };
 }

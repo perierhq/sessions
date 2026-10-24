@@ -6,6 +6,8 @@ import {
   connectSandboxProvider,
   disconnectSandboxProvider,
   getSandboxConnection,
+  PODMAN_SELF_TEST_ROWS_MAX,
+  type PodmanSelfTestRow,
   safeSandboxConnections,
   sandboxConnectionReady,
   sandboxHostSettings,
@@ -281,6 +283,38 @@ describe("This machine (container)", () => {
     });
     disconnectSandboxProvider("podman");
     expect(getSandboxConnection("podman")).toBeUndefined();
+  });
+
+  test("self-test rows are stored bounded, and only their count reaches the card", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    const rows: PodmanSelfTestRow[] = Array.from({ length: 100 }, (_, i) => [
+      `tcp:10.0.0.${i}:22`,
+      "filtered",
+      "x".repeat(500),
+    ]);
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+      selfTestRows: rows,
+      ensureSelfTestRows: [["dns:example.test", "reachable", "resolved"]],
+    });
+    const stored = getSandboxConnection("podman")?.podman;
+    expect(stored?.selfTestRows).toHaveLength(PODMAN_SELF_TEST_ROWS_MAX);
+    expect(stored?.selfTestRows?.[0]).toEqual([
+      "tcp:10.0.0.0:22",
+      "filtered",
+      "x".repeat(80),
+    ]);
+    expect(stored?.ensureSelfTestRows).toEqual([
+      ["dns:example.test", "reachable", "resolved"],
+    ]);
+    const card = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    )?.podman;
+    expect(card?.selfTestProbes).toBe(PODMAN_SELF_TEST_ROWS_MAX);
+    expect(card).not.toHaveProperty("selfTestRows");
+    expect(card).not.toHaveProperty("ensureSelfTestRows");
   });
 });
 
