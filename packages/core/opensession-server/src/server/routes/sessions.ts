@@ -99,6 +99,7 @@ import {
   removeTombstonedSessionArtifacts,
 } from "../sessions";
 import { publicSessionSafety } from "../session-safety";
+import { removeWorkspaceAfterSessionDelete } from "../session-workspace-cleanup";
 import type { DurableSessionQuarantine } from "../session-kernel/store";
 import {
   getStatusOverride,
@@ -2005,16 +2006,24 @@ export async function handleSessionsRoutes(
       // (it finds no session and skips). Best-effort: a refused push is
       // logged there and never blocks the delete.
       await deleteSessionCheckpoint(session).catch(() => {});
-      // If that was the workspace's last session, delete the workspace too.
-      // Otherwise auto-wrapped 1:1 workspaces linger as undeletable empty
-      // sidebar rows. PR-backed workspaces (`key`) stay because they regroup new
-      // sessions for the same PR.
+      // If that was the workspace's last session, delete the workspace and
+      // its scratch dir too, when the workspace only existed for its sessions
+      // (no key, or a `session-create:` key). Otherwise they linger as empty
+      // sidebar rows. PR-backed and other keyed workspaces stay because they
+      // regroup new sessions for the same PR. Detached: removing a scratch
+      // dir must not hold the session lock.
       if (session.workspaceId) {
-        const ws = await getWorkspace(session.workspaceId);
-        const members = (await getSessionListSnapshotAsync()).filter(
-          (s) => s.id !== session.id && s.workspaceId === session.workspaceId,
+        const workspaceId = session.workspaceId;
+        void removeWorkspaceAfterSessionDelete(session.id, workspaceId, {
+          getWorkspace,
+          listSessions: () => getSessionListSnapshotAsync(),
+          deleteWorkspace,
+        }).catch((error) =>
+          console.warn(
+            `[workspaces] Workspace ${workspaceId} retained after deleting ${session.id}:`,
+            error,
+          ),
         );
-        if (ws && !ws.key && members.length === 0) await deleteWorkspace(ws.id);
       }
       // Setup still running for the session's worktree goes with it, unless
       // a live sibling session still works in that tree, and so do the
