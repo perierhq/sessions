@@ -1,8 +1,9 @@
 /**
  * Open GitHub issues across the registered repos, for the Issues page.
  *
- * One REST list per GitHub-backed repo, refreshed at most once a minute and
- * only when something asks for it (no timer at import). An `issues` or
+ * A REST list per GitHub-backed repo (up to ISSUE_PAGE_LIMIT pages, every
+ * author), refreshed at most once a minute and only when something asks for
+ * it (no timer at import). An `issues` or
  * `issue_comment` webhook marks the snapshot stale so the next request
  * refreshes early. Rows carry the deterministic id of the issue's session so
  * the page can tell which issues already have one without a second lookup.
@@ -17,6 +18,7 @@ import {
 import { fetchWithTimeout } from "./shared/fetch-with-timeout";
 import { githubLoginToPersonKey } from "./shared/user-mappings";
 import { LABEL_ISSUE } from "../agents/github/constants";
+import { githubAuthorKind, type AuthorKind } from "./author-kind";
 
 export interface OpenIssueEntry {
   repo: string;
@@ -37,14 +39,23 @@ export interface OpenIssueEntry {
   sessionId: string;
   /** The `os` label is on the issue: a session was asked for. */
   assigned: boolean;
+  /** Who opened it: the team (or its agent), a bot, or someone outside.
+   *  Read against the roster when served, so a roster edit applies at once. */
+  authorKind: AuthorKind;
 }
 
+export type CachedIssueEntry = Omit<OpenIssueEntry, "authorKind">;
+
 const ISSUE_CACHE_TTL = 60_000;
-const PER_REPO_LIMIT = 100;
+const PER_PAGE = 100;
+// The list endpoint returns pull requests too, so one page of a busy repo can
+// hold few issues. Three pages reach the older ones, outsiders' included,
+// for at most three requests per repo a minute while the page is open.
+export const ISSUE_PAGE_LIMIT = 3;
 // Issue bodies are shown in the page's preview; a novel-length one is cut.
 const BODY_LIMIT = 20_000;
 
-const cache: { data: Map<string, OpenIssueEntry[]>; ts: number } = {
+const cache: { data: Map<string, CachedIssueEntry[]>; ts: number } = {
   data: new Map(),
   ts: 0,
 };
@@ -64,7 +75,10 @@ export function invalidateIssueCache(): void {
 
 /** Demo mode: rows for a repo GitHub will never be asked about. A refresh
  *  without App authority leaves seeded rows in place. */
-export function seedIssueCache(repoId: string, rows: OpenIssueEntry[]): void {
+export function seedIssueCache(
+  repoId: string,
+  rows: CachedIssueEntry[],
+): void {
   cache.data.set(repoId, rows);
 }
 
@@ -75,9 +89,38 @@ export async function getOpenIssues(): Promise<OpenIssueEntry[]> {
     const refresh = refreshIssueCache();
     if (cache.data.size === 0) await refresh;
   }
-  return [...cache.data.values()]
+  return servedIssues(cache.data.values());
+}
+
+/** Cached rows as served: author classified, newest activity first. */
+export function servedIssues(
+  repos: Iterable<CachedIssueEntry[]>,
+): OpenIssueEntry[] {
+  return [...repos]
     .flat()
+    .map((issue) => ({ ...issue, authorKind: githubAuthorKind(issue.author) }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * Read pages until one says it is the last or the limit is reached. A failed
+ * page fails the whole read, so the repo keeps its previous snapshot instead
+ * of shrinking to a partial one.
+ */
+export async function collectIssuePages(
+  fetchPage: (
+    page: number,
+  ) => Promise<{ items: unknown[]; hasNext: boolean } | null>,
+  maxPages = ISSUE_PAGE_LIMIT,
+): Promise<unknown[] | null> {
+  const items: unknown[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const result = await fetchPage(page);
+    if (!result) return null;
+    items.push(...result.items);
+    if (!result.hasNext) break;
+  }
+  return items;
 }
 
 export function refreshIssueCache(): Promise<void> {
@@ -108,7 +151,7 @@ function entryFrom(
   repo: Repo,
   d: any,
   sessionIdFor: (number: number) => string,
-): OpenIssueEntry | null {
+): CachedIssueEntry | null {
   // The issues endpoint lists pull requests too; those have their own page.
   if (!d || typeof d.number !== "number" || d.pull_request) return null;
   const labels: string[] = Array.isArray(d.labels)
@@ -147,46 +190,56 @@ function entryFrom(
 async function listRepoIssues(
   repo: Repo,
   sessionIdFor: (number: number) => string,
-): Promise<OpenIssueEntry[] | null> {
+): Promise<CachedIssueEntry[] | null> {
   const credential = await githubInstallationCredential({ repo: repo.ghRepo });
-  if (!credential || (await ghRateLimited("rest", credential))) return null;
-  try {
-    const resp = await fetchWithTimeout(
-      `https://api.github.com/repos/${repo.ghRepo}/issues?state=open&sort=updated&direction=desc&per_page=${PER_REPO_LIMIT}`,
-      {
-        headers: {
-          Authorization: `Bearer ${credential.token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
+  if (!credential) return null;
+  const data = await collectIssuePages(async (page) => {
+    if (await ghRateLimited("rest", credential)) return null;
+    try {
+      const resp = await fetchWithTimeout(
+        `https://api.github.com/repos/${repo.ghRepo}/issues?state=open&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${credential.token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
         },
-      },
-    );
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      if (
-        (resp.status === 403 || resp.status === 429) &&
-        (resp.headers.get("x-ratelimit-remaining") === "0" ||
-          isGhRateLimitMsg(body))
-      ) {
-        await noteGhRateLimited(
-          "issue-cache",
-          Number(resp.headers.get("x-ratelimit-reset")) * 1000,
-          "rest",
-          credential,
-        );
-      } else {
-        console.warn(`[issues] ${repo.ghRepo}: HTTP ${resp.status}`);
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        if (
+          (resp.status === 403 || resp.status === 429) &&
+          (resp.headers.get("x-ratelimit-remaining") === "0" ||
+            isGhRateLimitMsg(body))
+        ) {
+          await noteGhRateLimited(
+            "issue-cache",
+            Number(resp.headers.get("x-ratelimit-reset")) * 1000,
+            "rest",
+            credential,
+          );
+        } else {
+          console.warn(`[issues] ${repo.ghRepo}: HTTP ${resp.status}`);
+        }
+        return null;
       }
+      const items: unknown = await resp.json();
+      if (!Array.isArray(items)) return null;
+      return {
+        items,
+        hasNext:
+          items.length >= PER_PAGE &&
+          /rel="next"/.test(resp.headers.get("link") || ""),
+      };
+    } catch (e) {
+      console.warn(`[issues] ${repo.ghRepo}: list failed:`, e);
       return null;
     }
-    const data: unknown = await resp.json();
-    if (!Array.isArray(data)) return null;
-    return data.flatMap((d) => {
-      const entry = entryFrom(repo, d, sessionIdFor);
-      return entry ? [entry] : [];
-    });
-  } catch (e) {
-    console.warn(`[issues] ${repo.ghRepo}: list failed:`, e);
-    return null;
-  }
+  });
+  if (!data) return null;
+  return data.flatMap((d) => {
+    const entry = entryFrom(repo, d, sessionIdFor);
+    return entry ? [entry] : [];
+  });
 }

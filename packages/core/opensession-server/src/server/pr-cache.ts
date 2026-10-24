@@ -27,6 +27,7 @@ import {
   type PrHostCapabilities,
 } from "./pr-host";
 import { writeJsonAtomic } from "./shared/atomic-write";
+import { githubAuthorKind, type AuthorKind } from "./author-kind";
 import {
   cachedReviewTeamLogins,
   fetchReviewTeamLogins,
@@ -1270,6 +1271,8 @@ export interface RecentPrEntry extends Omit<
   deletions: number;
   /** The session named by the trusted attribution footer, when there is one. */
   sessionId?: string;
+  /** Who opened it: the team (or its agent), a bot, or someone outside. */
+  authorKind: AuthorKind;
 }
 
 /** Only trusted authors may turn a PR-body link into an in-app session route. */
@@ -1283,10 +1286,25 @@ function trustedPrSessionId(
     : undefined;
 }
 
+/** Who opened the PR, relative to the team. code.storage has no public
+ *  accounts, so everything there is the team's. */
+function prAuthorKind(repoId: string, author: string): AuthorKind {
+  return configuredRepos()[repoId]?.host === "codestorage"
+    ? "team"
+    : githubAuthorKind(author);
+}
+
 /** The recent repo-wide PR window, including PRs created outside Open Session. */
 export function getRecentPrs(): RecentPrEntry[] {
+  return recentPrRows(getPrsByRepo());
+}
+
+/** getRecentPrs over a given bulk cache. Exported for tests. */
+export function recentPrRows(
+  data: Map<string, Map<string, PrInfo>>,
+): RecentPrEntry[] {
   const out: RecentPrEntry[] = [];
-  for (const [repoId, byBranch] of getPrsByRepo()) {
+  for (const [repoId, byBranch] of data) {
     const repoCfg = configuredRepos()[repoId];
     // GitHub is the client default. Only alternate hosts need to repeat a
     // capability object on every row.
@@ -1306,6 +1324,7 @@ export function getRecentPrs(): RecentPrEntry[] {
         isDraft: pr.isDraft,
         reviewDecision: pr.reviewDecision,
         author: pr.author,
+        authorKind: prAuthorKind(repoId, pr.author),
         person:
           githubLoginToPersonKey(pr.author) ??
           pr.assignees
@@ -1403,6 +1422,7 @@ export async function getRecentPrsForPerson(
         isDraft: pr.isDraft,
         reviewDecision: "",
         author,
+        authorKind: prAuthorKind(repo.id, author),
         person:
           githubLoginToPersonKey(author) ??
           assignees.map(githubLoginToPersonKey).find(Boolean) ??
