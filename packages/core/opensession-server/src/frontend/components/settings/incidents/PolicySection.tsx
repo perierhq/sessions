@@ -95,7 +95,6 @@ export function PolicySection({
   settings,
   spend,
   onSave,
-  showPause = true,
   autonomyLabel = "Autonomy",
   monthDescription,
 }: {
@@ -103,8 +102,6 @@ export function PolicySection({
   settings: PolicyValue;
   spend?: ProjectSpend;
   onSave: Save;
-  /** Off when the page shows the pause switch elsewhere. */
-  showPause?: boolean;
   /** The label over the autonomy rows. */
   autonomyLabel?: string;
   /** The per month row's description, in place of the default. */
@@ -120,47 +117,12 @@ export function PolicySection({
   };
   const close = () => setDialog(null);
 
-  const setPaused = (paused: boolean) => {
-    onSave({ agentsPaused: paused }).then(
-      () =>
-        toast(
-          paused ? `Agents paused for ${label}` : `Agents resumed for ${label}`,
-          {
-            action: {
-              label: "Undo",
-              onClick: () => saveNow(onSave, { agentsPaused: !paused }),
-            },
-          },
-        ),
-      (error) =>
-        toast(errorMessage(error, "Couldn't save the setting"), {
-          variant: "error",
-        }),
-    );
-  };
-
   const never = NEVER_WITHOUT_YOU.filter((item) =>
     settings.neverWithoutYou.includes(item),
   );
 
   return (
     <>
-      {showPause && (
-        <SettingCard className="mt-2">
-          <SettingRow
-            title="Pause all agents"
-            desc={`Stops every incident run for ${label} right now. Signals keep running`}
-            control={
-              <Switch
-                checked={settings.agentsPaused}
-                onCheckedChange={setPaused}
-                aria-label="Pause all agents"
-              />
-            }
-          />
-        </SettingCard>
-      )}
-
       <SettingsGroupLabel>{autonomyLabel}</SettingsGroupLabel>
       <SettingCard>
         <SettingRow

@@ -63,7 +63,6 @@ test("policy rows in order, with defaults", () => {
     />,
   );
   const order = [
-    "Pause all agents",
     "Deploy after veto",
     "10 min",
     "Spending money",
@@ -72,7 +71,6 @@ test("policy rows in order, with defaults", () => {
   ].map((text) => html.indexOf(text));
   expect(order.every((i) => i >= 0)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
-  expect(html).toContain("Stops every incident run for acme right now");
   expect(html).toContain("Spent this month: $6.50");
   // At night says Off once, as its value.
   expect(html).toContain("Fixes can wait for you overnight");

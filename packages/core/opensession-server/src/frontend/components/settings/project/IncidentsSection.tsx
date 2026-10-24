@@ -94,7 +94,6 @@ export function IncidentsSection({
       <PolicySection
         project={project}
         settings={incidents}
-        showPause={false}
         autonomyLabel="On their own"
         monthDescription={monthSpendCopy(view.monthSpendUsd, new Date())}
         onSave={(input) => onSave({ incidents: input })}
