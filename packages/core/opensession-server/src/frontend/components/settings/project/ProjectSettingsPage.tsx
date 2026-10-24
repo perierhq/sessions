@@ -31,6 +31,7 @@ import {
   type ProjectSectionId,
 } from "../../../lib/project-settings/page-model";
 import {
+  isStaleRevision,
   type ProjectPatchBody,
   STALE_SETTINGS_MESSAGE,
   sendProjectPatch,
@@ -58,8 +59,9 @@ const TITLES = new Map<ProjectSectionId, string>(PROJECT_SECTIONS);
 /**
  * One project's settings: the readiness checklist, where its agents run,
  * their models, production, what they may use, and its incident policy.
- * Every control saves at once against the revision the page loaded; a stale
- * revision refetches and re-sends the same change once.
+ * Every control saves at once against the revision the page loaded. A stale
+ * revision refetches; a small change is sent once more, a whole list or
+ * object is refused so the person sees the other tab's edit first.
  */
 export function ProjectSettingsPage({
   project,
@@ -106,17 +108,17 @@ export function ProjectSettingsPage({
     try {
       const next = await sendProjectPatch(body, revision, {
         send: (patch) => patchProjectSettings(project, patch),
-        refetch: async () => {
-          const fresh = await settings.mutate();
-          if (fresh && optimistic)
+        refetch: () => settings.mutate(),
+        onRetry: async (fresh) => {
+          toast(STALE_SETTINGS_MESSAGE);
+          if (optimistic)
             await settings.mutate(optimistic(fresh), { revalidate: false });
-          return fresh;
         },
-        onStale: () => toast(STALE_SETTINGS_MESSAGE),
       });
       await settings.mutate(next, { revalidate: false });
     } catch (error) {
-      void settings.mutate();
+      // A stale revision has already been refetched.
+      if (!isStaleRevision(error)) void settings.mutate();
       throw error;
     }
   };

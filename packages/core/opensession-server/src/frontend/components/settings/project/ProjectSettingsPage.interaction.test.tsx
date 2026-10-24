@@ -108,6 +108,7 @@ const { ProjectSettingsPage } = await import("./ProjectSettingsPage");
 const { AccessSection } = await import("./AccessSection");
 const { AccessRoleList } = await import("./AccessRoleList");
 const { AccessTable } = await import("./AccessTable");
+const { ProductionSection } = await import("./ProductionSection");
 
 const LINEAR_REVIEWS: AccessCellChange = {
   row: { kind: "connection", server: "linear" },
@@ -197,6 +198,26 @@ describe("saving a cell", () => {
       { message: "Settings changed since you loaded them", variant: undefined },
     ]);
     expect(cached.document.revision).toBe(10);
+  });
+
+  test("a stale action list refetches and is refused, not re-sent", async () => {
+    onServer = at(9);
+    respond = () => {
+      throw new ApiError("Settings changed since you loaded them", 409);
+    };
+    const page = mountPage();
+    const production = find(page.output(), ProductionSection);
+    if (!production) throw new Error("No production section");
+    const actions = READY_4_OF_6.document.production.actions;
+    const saved = production.props.onSave({ production: { actions } });
+    await expect(saved).rejects.toThrow(
+      "Settings changed since you loaded them",
+    );
+    await settle(20);
+    expect(patches).toHaveLength(1);
+    expect(refetches).toBe(1);
+    expect(cached.document.revision).toBe(9);
+    expect(toasts).toEqual([]);
   });
 
   test("a refusal toasts and reloads the settings", async () => {
