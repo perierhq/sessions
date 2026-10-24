@@ -18,14 +18,10 @@ export { ApiError } from "./request";
 
 const seg = encodeURIComponent;
 
-export async function fetchProjects(): Promise<ProjectListItem[]> {
-  const list = await request<ProjectListItem[]>("/projects", {
+export function fetchProjects(): Promise<ProjectListItem[]> {
+  return request<ProjectListItem[]>("/project-settings", {
     label: "Failed to load projects",
   });
-  // A server whose /api/projects is the older feeds list answers an
-  // object; treat it as a failed load rather than a list.
-  if (!Array.isArray(list)) throw new Error("Failed to load projects");
-  return list;
 }
 
 export function fetchProjectSettings(

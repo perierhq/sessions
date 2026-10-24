@@ -6,13 +6,16 @@
  * a 403. Previews live in sandbox config, outside the revision; they are
  * saved first and put back when the document refuses.
  *
- *   GET   /api/projects                          ProjectListItem[]
+ *   GET   /api/project-settings                  ProjectListItem[]
  *   GET   /api/projects/:id/settings             ProjectSettingsView
  *   PATCH /api/projects/:id/settings             ProjectSettingsPatch → view
  *   POST  /api/projects/:id/production/runners   {runnerId, shared?} → view
  *   POST  /api/projects/migrate                  {dryRun?} → MigrationResult
  *   POST  /api/projects/:id/migrate              {force?} → ProjectRemigrateResult
  *   POST  /api/connections/:server/allow-unattended {on} → {ok:true}
+ *
+ * The list is not at `/api/projects`: that path is the feeds union view
+ * (routes/feeds.ts), registered earlier in the chain.
  *
  * Identity is the verified sign-in only; a claimed `user` is never taken.
  * Binding a Runner, allowing agents on a connector and migrating need a
@@ -87,7 +90,7 @@ function deps(): ProjectRouteDeps {
   return override ? { ...live, ...override } : live;
 }
 
-const LIST_PATH = "/api/projects";
+const LIST_PATH = "/api/project-settings";
 const MIGRATE_PATH = "/api/projects/migrate";
 const SETTINGS_PATH = /^\/api\/projects\/([^/]+)\/settings$/;
 const REMIGRATE_PATH = /^\/api\/projects\/([^/]+)\/migrate$/;

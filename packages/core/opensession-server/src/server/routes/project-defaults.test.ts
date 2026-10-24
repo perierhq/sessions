@@ -167,6 +167,25 @@ test("other paths fall through; registered in the chain", async () => {
   expect(routeHandlers).toContain(handleProjectDefaultsRoutes);
 });
 
+test("through the route chain, GET /api/project-defaults reaches its handler", async () => {
+  const url = new URL("http://localhost/api/project-defaults");
+  const ctx: RouteContext = {
+    req: new Request(url),
+    url,
+    path: url.pathname,
+    publicPrefix: "/backstage",
+    authUser: ADA,
+  };
+  for (const handler of routeHandlers) {
+    const res = await handler(ctx);
+    if (!res) continue;
+    expect(handler).toBe(handleProjectDefaultsRoutes);
+    expect(await res.json()).toEqual(DEFAULTS_VIEW);
+    return;
+  }
+  throw new Error("No handler answered GET /api/project-defaults");
+});
+
 test("a sandbox that fails to save answers 400, not 200", async () => {
   const out = await call("PATCH", { sandbox: "offline" });
   expect(out).toMatchObject({
