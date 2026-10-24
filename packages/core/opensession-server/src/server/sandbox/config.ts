@@ -1158,3 +1158,55 @@ export function remoteSandboxCallbackBaseUrl(): string {
   if (ingress) return normalizeWsBase(ingress);
   return sandboxCallbackBaseUrl();
 }
+
+// ── Global defaults for the project settings Defaults page ─────────────────
+
+/** Where previews (Portals) run for projects that don't choose: a provider,
+ *  or null when they run beside the session. Stored as `portalDefault`. */
+export function portalSandboxDefault(): RunnableSandboxProviderId | null {
+  const raw = readJsonFileCopy<{ portalDefault?: unknown }>(configPath());
+  return isRunnableSandboxProvider(raw?.portalDefault)
+    ? raw.portalDefault
+    : null;
+}
+
+/** Set the global previews default; `"same"` or `"none"` runs them beside
+ *  the session. */
+export function setPortalSandboxDefault(
+  value: string,
+): RunnableSandboxProviderId | null {
+  const normalized = value.trim().toLowerCase();
+  const beside = normalized === "same" || normalized === "none";
+  if (!beside && !isRunnableSandboxProvider(normalized))
+    throw new Error(`Unknown sandbox provider "${value}"`);
+  if (!beside && sandboxProviderUsability(normalized).state !== "usable")
+    throw new Error(
+      `Sandbox provider "${normalized}" is not currently available`,
+    );
+  if (beside && !existsSync(configPath())) return null;
+  updateSandboxConfigFile((raw) => {
+    if (beside) delete raw.portalDefault;
+    else raw.portalDefault = normalized;
+  });
+  return beside ? null : (normalized as RunnableSandboxProviderId);
+}
+
+/** Replace the hosts every unattended run may open (`automation.
+ *  egressAllowlist`). Callers validate each entry first. */
+export function setAutomationEgressAllowlist(hosts: string[]): string[] {
+  const list = [...new Set(hosts.map((h) => h.trim()).filter(Boolean))];
+  if (!list.length && !existsSync(configPath())) return [];
+  updateSandboxConfigFile((raw) => {
+    const automation =
+      raw.automation &&
+      typeof raw.automation === "object" &&
+      !Array.isArray(raw.automation)
+        ? { ...(raw.automation as Record<string, unknown>) }
+        : {};
+    if (list.length) automation.egressAllowlist = list;
+    else delete automation.egressAllowlist;
+    if (Object.keys(automation).length) raw.automation = automation;
+    else delete raw.automation;
+  });
+  return list;
+}

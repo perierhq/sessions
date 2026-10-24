@@ -5,7 +5,6 @@ import { sandboxCapabilityStatus } from "../sandbox/config";
 import { sandboxIngressStatus } from "../sandbox/caddy-ingress";
 import {
   sandboxDefaultsStatus,
-  savePersonalSandboxDefault,
   saveRepoPortalSandbox,
   saveRepoSandboxDefault,
   saveWorkspaceSandboxDefault,
@@ -140,8 +139,6 @@ export async function handleSandboxesRoutes(
     try {
       if (body.scope === "workspace") {
         saveWorkspaceSandboxDefault(body.value);
-      } else if (body.scope === "personal") {
-        savePersonalSandboxDefault(user, body.value);
       } else if (body.scope === "repo") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
@@ -151,9 +148,7 @@ export async function handleSandboxesRoutes(
           return errorResponse("repo must name a registered repository");
         saveRepoPortalSandbox(body.repo, body.value);
       } else {
-        return errorResponse(
-          "scope must be workspace, personal, repo, or repo-portals",
-        );
+        return errorResponse("scope must be workspace, repo, or repo-portals");
       }
       return Response.json({
         defaults: sandboxDefaultsStatus(

@@ -1,15 +1,14 @@
 /**
- * Incident response API: per-project fix loop settings (redacted), pairing
- * a production Runner or binding a paired one, owner decisions on an incident, and "What the agents
- * did" (the ledger plus each agent's access and tool calls).
+ * Incident response API: per-project fix loop settings (redacted, read
+ * only), pairing a new production Runner, owner decisions on an incident,
+ * and "What the agents did" (the ledger plus each agent's access and tool
+ * calls). Writing the settings and binding a paired Runner moved to the
+ * project settings API (routes/projects.ts); the old paths answer 410.
  *
  * Identity is the verified sign-in only; a claimed `user` in a body is
- * never taken. Changing actions or production Runners, loosening the
- * policy (autonomy, never without you, veto, budgets, max rounds, kill
- * switch off, night rule), pairing or binding a Runner, and decisions that act on
- * production (deploy now, approve, roll back) need a signed-in person
- * (`verifiedPerson`), even with web sign-in off. Tightening the policy
- * stays open.
+ * never taken. Pairing a Runner and decisions that act on production
+ * (deploy now, approve, roll back) need a signed-in person
+ * (`verifiedPerson`), even with web sign-in off.
  * The release hook path carries its secret, so only a signed-in person
  * sees it.
  *
@@ -39,10 +38,8 @@ import {
   incidentProjectExists,
   listProjectSettings,
   redactProjectSettings,
-  updateProjectSettings,
 } from "../incidents/response/project-settings";
 import {
-  bindProductionRunner,
   listProductionRunnerCandidates,
   startProductionPairing,
 } from "../incidents/response/runners";
@@ -220,21 +217,9 @@ export async function handleIncidentResponseRoutes(
     const project = decodeSegment(projectMatch[1]!);
     if (project === null) return notFound();
     if (req.method === "GET") return projectDetail(project, person);
-    if (req.method === "PUT") {
-      if (!incidentProjectExists(project)) return notFound();
-      const body = await readObject(req);
-      if (body instanceof Response) return body;
-      const { user: _claimed, ...input } = body;
-      const result = await updateProjectSettings(
-        project,
-        input,
-        requestUser(ctx) || "Anonymous",
-        { signedInPerson: person },
-      );
-      if ("error" in result)
-        return error(result.error, result.forbidden ? 403 : 400);
-      return Response.json(view(result, person));
-    }
+    // Settings are written through /api/projects/:id/settings now.
+    if (req.method === "PUT" || req.method === "PATCH")
+      return error(`Moved to /api/projects/${project}/settings`, 410);
     return undefined;
   }
 
@@ -256,26 +241,8 @@ export async function handleIncidentResponseRoutes(
     const project = decodeSegment(bindMatch[1]!);
     const runnerId = decodeSegment(bindMatch[2]!);
     if (project === null || runnerId === null) return notFound();
-    if (!incidentProjectExists(project)) return notFound();
-    const body = await readObject(req);
-    if (body instanceof Response) return body;
-    if (!person)
-      return error("Only a signed-in person can bind a production Runner", 403);
-    try {
-      await bindProductionRunner(
-        project,
-        runnerId,
-        requestUser(ctx) || "Anonymous",
-        { signedInPerson: person },
-        { confirmShared: body.confirm === true },
-      );
-    } catch (cause) {
-      return error(
-        cause instanceof Error ? cause.message : "Couldn't bind the Runner",
-        400,
-      );
-    }
-    return projectDetail(project, person);
+    // Binding moved to /api/projects/:id/production/runners.
+    return error(`Moved to /api/projects/${project}/production/runners`, 410);
   }
 
   const decisionMatch = DECISIONS_PATH.exec(path);
