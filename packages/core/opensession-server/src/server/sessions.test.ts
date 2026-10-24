@@ -193,6 +193,40 @@ describe("nativeSessionRow", () => {
       sandboxId: "sb-portals",
     });
   });
+
+  it("carries an automation descendant's policy through", async () => {
+    // Every run path reads the policy from this row. Without it an incident
+    // agent's later turns look like its automation's own session.
+    const { nativeSessionRow } = await import("./sessions");
+    const policy = {
+      automationId: "auto-acme",
+      automationName: "Incidents · acme",
+      mcpServers: [],
+      repo: "acme",
+      publicationRepo: "acme/acme",
+      baseBranch: "main",
+      allowedRunners: [],
+      publication: "branch-pr-only" as const,
+      incident: {
+        incidentId: "inc-acme",
+        role: "investigator" as const,
+        signalId: null,
+        accessRevision: "r1",
+        spawn: { hosts: [], credentials: [], egress: null },
+      },
+    };
+    const row = nativeSessionRow({
+      id: "bks-row-descendant",
+      branch: "incident/acme",
+      worktreeDir: "/tmp/bks-row-descendant",
+      mode: "code",
+      createdAt: "2026-10-24T00:00:00.000Z",
+      automation: policy.automationName,
+      automationId: policy.automationId,
+      automationDescendantPolicy: policy,
+    } as never);
+    expect(row.automationDescendantPolicy).toEqual(policy);
+  });
 });
 
 describe("getAllSessions", () => {

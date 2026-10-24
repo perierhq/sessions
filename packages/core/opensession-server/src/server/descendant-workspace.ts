@@ -9,6 +9,7 @@
 // it no edit or write tools and a read-only bash. Checked when the session
 // is created, before its opening turn and before every later turn.
 import { isIncidentAgentRole } from "../shared/incident-access";
+import { RunSetupRefusedError } from "./run-setup-refusal";
 import type { AutomationDescendantPolicy } from "./types";
 
 export const HOST_WORKTREE_MISUSE =
@@ -68,12 +69,13 @@ export function descendantBashRunAs(
 ): string | undefined {
   if (!policy) return undefined;
   if (where.sandbox === "podman" && !isIncidentAgentPolicy(policy))
-    throw new Error(PODMAN_DESCENDANT_REFUSED);
+    throw new RunSetupRefusedError(PODMAN_DESCENDANT_REFUSED);
   if (policy.hostAgentUser !== undefined) {
     if (!policy.incident || where.runner || where.sandbox)
-      throw new Error(HOST_WORKTREE_MISUSE);
+      throw new RunSetupRefusedError(HOST_WORKTREE_MISUSE);
     return policy.hostAgentUser;
   }
-  if (!where.runner && !where.sandbox) throw new Error(isolationMessage);
+  if (!where.runner && !where.sandbox)
+    throw new RunSetupRefusedError(isolationMessage);
   return undefined;
 }

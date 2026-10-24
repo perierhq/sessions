@@ -1129,6 +1129,11 @@ export function nativeSessionRow(data: NativeSessionFile): UnifiedSession {
         ? data.createdBy.slice(0, -" (automation)".length)
         : undefined),
     automationId: data.automationId,
+    // The descendant's immutable trust policy. Every run path reads it from
+    // this row: without it an incident agent or workflow descendant looks
+    // like its automation's own session, and a Sandbox turn is refused as a
+    // disposable automation resume.
+    automationDescendantPolicy: data.automationDescendantPolicy,
     archived: archived || undefined,
     archivedReason:
       data.archivedReason ||
