@@ -13,6 +13,7 @@ import {
   projectStatusPhrase,
   roleScopeCopy,
   sandboxUsedByCopy,
+  splitNames,
 } from "./defaults-model";
 
 describe("projectStatusPhrase", () => {
@@ -235,5 +236,26 @@ describe("model overrides from the project documents", () => {
     expect(
       roleScopeCopyFor("reviews", PROJECT_LIST, { "acme-web": ["reviews"] }),
     ).toBe("acme-api and docs-site. acme-web sets its own");
+  });
+});
+
+describe("splitNames", () => {
+  test("marks each project name so it can't break at its hyphen", () => {
+    expect(
+      splitNames("Used by perier-site and acme-web-v2, not acme", [
+        "acme",
+        "perier-site",
+        "acme-web-v2",
+      ]),
+    ).toEqual([
+      { text: "Used by ", name: false },
+      { text: "perier-site", name: true },
+      { text: " and ", name: false },
+      { text: "acme-web-v2", name: true },
+      { text: ", not acme", name: false },
+    ]);
+    expect(splitNames("All 3 projects", ["a-b"])).toEqual([
+      { text: "All 3 projects", name: false },
+    ]);
   });
 });
