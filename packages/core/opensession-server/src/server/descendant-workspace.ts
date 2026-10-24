@@ -8,13 +8,20 @@ import type { AutomationDescendantPolicy } from "./types";
 export const HOST_WORKTREE_MISUSE =
   "Host worktrees are only for incident agents without a sandbox";
 
+/** This machine (container) runs only a person's own interactive work: its
+ *  sandbox shares this server's kernel, so automation-spawned sessions must
+ *  use a remote sandbox or a Runner. */
+export const PODMAN_DESCENDANT_REFUSED =
+  "Automation descendants cannot run in This machine (container); choose another sandbox or a Runner";
+
 /**
  * The user a descendant's bash runs as in a host worktree, or undefined when
  * it is not a descendant or works in a sandbox or on a Runner. Throws
  * `isolationMessage` for a descendant with none of those, and
  * HOST_WORKTREE_MISUSE for a host user on anything but an incident agent
- * without a sandbox or Runner. The caller still checks that the user is
- * ready (host-agents.ts assertHostAgentReady).
+ * without a sandbox or Runner, and PODMAN_DESCENDANT_REFUSED for a
+ * descendant in This machine (container). The caller still checks that the
+ * user is ready (host-agents.ts assertHostAgentReady).
  */
 export function descendantBashRunAs(
   policy: AutomationDescendantPolicy | undefined,
@@ -22,6 +29,7 @@ export function descendantBashRunAs(
   isolationMessage: string,
 ): string | undefined {
   if (!policy) return undefined;
+  if (where.sandbox === "podman") throw new Error(PODMAN_DESCENDANT_REFUSED);
   if (policy.hostAgentUser !== undefined) {
     if (!policy.incident || where.runner || where.sandbox)
       throw new Error(HOST_WORKTREE_MISUSE);

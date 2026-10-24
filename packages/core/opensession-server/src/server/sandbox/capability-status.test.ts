@@ -104,8 +104,11 @@ const writeIngress = async (publicBaseUrl: string) => {
   );
   await getConfigAsync();
 };
-const ready = (provider: "daytona" | "box") => {
-  connectSandboxProvider(provider, { secret: `test-${provider}-key` });
+const ready = (provider: "daytona" | "box" | "podman") => {
+  connectSandboxProvider(
+    provider,
+    provider === "podman" ? {} : { secret: `test-${provider}-key` },
+  );
   setSandboxConnectionQualification(provider, { status: "ready" });
 };
 
@@ -200,6 +203,7 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
       "box",
       "tart",
       "usecomputer",
+      "podman",
     ]);
     expect(s.providers.every((p) => !p.configured)).toBe(true);
     expect(s.providers.filter((p) => p.certified).map((p) => p.id)).toEqual([
@@ -428,6 +432,16 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     expect(r.ok).toBe(false);
     if (!r.ok && sandboxesEnabled())
       expect(r.error).toContain("needs attention in Workspace > Sandboxes");
+  });
+
+  test("a qualified This machine (container) stays off until it is live-certified", () => {
+    write({});
+    ready("podman");
+    expect(SANDBOX_PROVIDER_CERTIFICATIONS.podman.certified).toBe(false);
+    expect(sandboxProviderUsability("podman").state).toBe("unavailable");
+    expect(anySandboxProvider()).toBe(null);
+    const r = resolveRequestedSandbox("podman");
+    expect(r.ok).toBe(false);
   });
 
   test("true with no ready provider fails with a pointed error", () => {

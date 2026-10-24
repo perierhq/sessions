@@ -10,9 +10,13 @@ import {
   sandboxConnectionReady,
   sandboxHostSettings,
   sandboxProviderCredential,
+  sandboxAdapterSignature,
+  setPodmanConnectionFacts,
   setSandboxConnectionQualification,
   updateSandboxConnection,
 } from "./connections";
+import { sandboxProviderNeedsCredential } from "./adapter-signature";
+import { GIB, recordPodmanDiskReport } from "./adapters/podman-disk";
 
 let scratch = "";
 let oldConfig: string | undefined;
@@ -216,5 +220,146 @@ describe("workspace sandbox connections", () => {
     expect(
       safeSandboxConnections().find((value) => value.provider === "box")?.state,
     ).toBe("needs_attention");
+  });
+});
+
+describe("This machine (container)", () => {
+  test("needs no credential and is not ready until qualified", () => {
+    expect(sandboxProviderNeedsCredential("podman")).toBe(false);
+    expect(sandboxAdapterSignature("podman")).toBe("podman:connection-v1");
+    expect(sandboxConnectionReady("podman")).toBe(false);
+    const connection = connectSandboxProvider("podman", {
+      settings: { memoryMb: 2048, pidsLimit: 512, dns: ["8.8.8.8", "bad"] },
+    });
+    expect(connection.credentialRef).toBeUndefined();
+    expect(connection.settings).toMatchObject({
+      memoryMb: 2048,
+      pidsLimit: 512,
+      dns: ["8.8.8.8"],
+    });
+    expect(sandboxConnectionReady("podman")).toBe(false);
+    setSandboxConnectionQualification("podman", { status: "ready" });
+    expect(sandboxConnectionReady("podman")).toBe(true);
+    updateSandboxConnection("podman", { enabled: false });
+    expect(sandboxConnectionReady("podman")).toBe(false);
+  });
+
+  test("an API key sent anyway is never stored", () => {
+    const connection = connectSandboxProvider("podman", {
+      secret: "sk-should-not-be-kept",
+      settings: {},
+    });
+    expect(connection.credentialRef).toBeUndefined();
+    expect(sandboxProviderCredential("podman")).toBeUndefined();
+    expect(
+      readFileSync(process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!, {
+        encoding: "utf8",
+        flag: "a+",
+      }),
+    ).not.toContain("sk-should-not-be-kept");
+  });
+
+  test("qualification facts are kept on the connection", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    expect(getSandboxConnection("podman")?.podman).toEqual({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    disconnectSandboxProvider("podman");
+    expect(getSandboxConnection("podman")).toBeUndefined();
+  });
+});
+
+describe("This machine (container) in Settings", () => {
+  test("is offered only on Linux until it is connected", () => {
+    const ids = (platform: string) =>
+      safeSandboxConnections(platform).map((c) => c.provider);
+    expect(ids("linux")).toContain("podman");
+    expect(ids("darwin")).not.toContain("podman");
+    connectSandboxProvider("podman", { settings: {} });
+    expect(ids("darwin")).toContain("podman");
+  });
+
+  test("the card summary carries the facts and the effective limits", () => {
+    // Another test file's disk checks may have recorded a report.
+    recordPodmanDiskReport(undefined);
+    connectSandboxProvider("podman", { settings: { pidsLimit: 256 } });
+    const before = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    );
+    expect(before?.podman).toBeUndefined();
+    expect(before?.hasCredentials).toBe(true);
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const after = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    );
+    expect(after?.podman).toEqual({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: false,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+      memoryMb: 4096,
+      pidsLimit: 256,
+    });
+  });
+
+  test("limits are clamped on save and the card shows what applies", () => {
+    const connection = connectSandboxProvider("podman", {
+      settings: { memoryMb: 10, pidsLimit: 1e9, cpu: 1e6 },
+    });
+    expect(connection.settings.memoryMb).toBe(512);
+    expect(connection.settings.pidsLimit).toBe(65_536);
+    expect(connection.settings.cpu).toBeLessThan(1e6);
+    updateSandboxConnection("podman", { settings: { pidsLimit: 3 } });
+    expect(getSandboxConnection("podman")?.settings.pidsLimit).toBe(64);
+    // A value stored before the bounds existed is shown as it applies.
+    const path = process.env.OPENSESSION_SANDBOX_CONFIG!;
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    raw.connections[0].settings.pidsLimit = 1e9;
+    writeFileSync(path, JSON.stringify(raw));
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const card = safeSandboxConnections("linux").find(
+      (c) => c.provider === "podman",
+    )?.podman;
+    expect(card?.pidsLimit).toBe(65_536);
+    expect(card?.memoryMb).toBe(512);
+  });
+
+  test("the card summary carries the last disk check's warnings", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const podman = () =>
+      safeSandboxConnections("linux").find((c) => c.provider === "podman")
+        ?.podman;
+    expect(podman()?.diskWarnings).toBeUndefined();
+    try {
+      recordPodmanDiskReport({
+        checkedAt: "2026-10-22T10:00:00.000Z",
+        freeBytes: 50 * GIB,
+        volumes: [{ sandboxId: "os-a", sessionId: "a", bytes: 11 * GIB }],
+      });
+      expect(podman()?.diskWarnings).toEqual([
+        "Session a uses 11.0 GiB (stops at 20.0 GiB)",
+      ]);
+    } finally {
+      recordPodmanDiskReport(undefined);
+    }
   });
 });

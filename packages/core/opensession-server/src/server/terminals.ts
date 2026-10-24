@@ -127,6 +127,7 @@ type TermTargetKind =
   | "box"
   | "tart"
   | "usecomputer"
+  | "podman"
   | "microvm"
   | "runner";
 
@@ -146,6 +147,8 @@ interface SpawnTarget {
   notice?: string;
   /** Extra env for the spawned process (e.g. the shared ssh-agent sock). */
   env?: Record<string, string>;
+  /** Called on terminal input and output (the target throttles it). */
+  onActivity?: () => void;
   dispose?: () => void;
 }
 
@@ -158,7 +161,14 @@ interface RemoteTarget {
   connect: (io: RemotePtyIo) => Promise<RemotePtyHandle>;
 }
 
-type TermTarget = SpawnTarget | RemoteTarget;
+/** No shell: the sandbox is unavailable and must not be replaced by a host
+ *  shell. The message is shown and the tab exits. */
+interface RefusedTarget {
+  kind: "refused";
+  message: string;
+}
+
+type TermTarget = SpawnTarget | RemoteTarget | RefusedTarget;
 
 function clampCols(cols: number | undefined): number {
   return Math.max(20, Math.min(500, Math.round(cols || 100)));
@@ -219,10 +229,22 @@ function hostShellTarget(
 }
 
 /**
+ * This machine (container) exists to keep work off the host, so its terminal
+ * fails closed: never a host shell in its place.
+ */
+function podmanTerminalRefused(why: string): RefusedTarget {
+  return {
+    kind: "refused",
+    message: `This machine (container) terminal unavailable (${why.slice(0, 160)}). No host shell was opened.`,
+  };
+}
+
+/**
  * Decide where the session's shell runs. Never throws — every failure mode
  * degrades to the host shell with a notice (same fail-open shape as
  * workspace-exec, except a terminal deliberately WAKES a stopped docker
- * container: it's an interactive gesture, not a background read).
+ * container: it's an interactive gesture, not a background read). The one
+ * exception is This machine (container), which refuses instead.
  */
 async function resolveTarget(
   session: TerminalSessionInfo | null | undefined,
@@ -238,6 +260,9 @@ async function resolveTarget(
     });
   }
   const sb = session?.sandbox;
+  const containedOnly = sb?.provider === "podman";
+  if (containedOnly && !sb?.sandboxId)
+    return podmanTerminalRefused("the sandbox has not started yet");
   if (!sb?.sandboxId || !sb.provider || sb.provider === "local") {
     return hostShellTarget(session);
   }
@@ -245,7 +270,10 @@ async function resolveTarget(
   try {
     const { sandboxesEnabled, sandboxProviderConfigured } =
       await import("./sandbox/config");
-    if (!sandboxesEnabled()) return hostShellTarget(session); // kill-switch
+    if (!sandboxesEnabled())
+      return containedOnly
+        ? podmanTerminalRefused("sandboxes are turned off")
+        : hostShellTarget(session); // kill-switch
 
     if (sb.provider === "daytona" && sandboxProviderConfigured("daytona")) {
       const { daytonaPtySession } = await import("./sandbox/adapters/daytona");
@@ -291,6 +319,22 @@ async function resolveTarget(
       };
     }
 
+    if (sb.provider === "podman" && sandboxProviderConfigured("podman")) {
+      // A local PTY running `podman exec -it` as the workload user, with
+      // podman's minimal env (the gateway's env is cleared by `env -i`).
+      const { podmanTerminalTarget } =
+        await import("./sandbox/adapters/podman");
+      const target = await podmanTerminalTarget(sb.sandboxId);
+      return {
+        kind: "spawn",
+        target: "podman",
+        displayCwd: target.cwd,
+        argv: target.argv,
+        // Keeps the idle sweep off a pod with an open shell.
+        onActivity: target.touch,
+      };
+    }
+
     if (sb.provider === "box" && sandboxProviderConfigured("box")) {
       const { boxSshTarget } = await import("./sandbox/adapters/box");
       const target = await boxSshTarget(sb.sandboxId);
@@ -317,11 +361,14 @@ async function resolveTarget(
       };
     }
   } catch (e: any) {
+    if (containedOnly) return podmanTerminalRefused(String(e?.message || e));
     return hostShellTarget(
       session,
       `sandbox terminal unavailable (${String(e?.message || e).slice(0, 160)}) — opened a host shell instead`,
     );
   }
+  if (containedOnly)
+    return podmanTerminalRefused("its connection is not Ready");
   return hostShellTarget(session);
 }
 
@@ -428,6 +475,12 @@ export async function startSessionTerminal(
   try {
     target = await resolveTarget(session);
 
+    if (target.kind === "refused") {
+      deletePending(ws, termId);
+      opts.send({ type: "term_notice", message: target.message });
+      opts.send({ type: "term_exit", code: 1 });
+      return;
+    }
     if (target.kind === "remote") {
       try {
         await connectRemote(ws, termId, token, target, opts);
@@ -534,6 +587,7 @@ function spawnPty(
       cols: clampCols(opts.cols),
       rows: clampRows(opts.rows),
       data: (_term: unknown, chunk: Uint8Array) => {
+        target.onActivity?.();
         opts.send({
           type: "term_data",
           data: Buffer.from(chunk).toString("base64"),
@@ -544,6 +598,7 @@ function spawnPty(
 
   const entry: TermEntry = {
     write: (data) => {
+      target.onActivity?.();
       try {
         (proc as any).terminal?.write(data);
       } catch {}

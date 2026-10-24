@@ -195,7 +195,8 @@ async function derivedEnvironment(
 ): Promise<SandboxEnvironment> {
   const stored = storedEnvironment(repo, provider);
   const now = new Date().toISOString();
-  if (!sandboxConnectionReady(provider)) {
+  // This machine (container) has no repo templates or prewarms.
+  if (provider === "podman" || !sandboxConnectionReady(provider)) {
     return {
       repo,
       provider,
@@ -287,6 +288,8 @@ async function removeTemplate(
   repo: string,
   provider: WorkspaceSandboxProvider,
 ): Promise<void> {
+  // This machine (container) has no repo templates.
+  if (provider === "podman") return;
   const previous = invalidateRemoteRepoTemplate(provider, repo);
   if (previous?.artifactId) {
     if (provider === "daytona") {
@@ -510,6 +513,7 @@ let maintenanceTimer: ReturnType<typeof setInterval> | undefined = (
 function maintainSandboxEnvironments(): void {
   for (const environment of readStored()) {
     if (
+      environment.provider === "podman" ||
       !["daytona", "box", "usecomputer"].includes(environment.provider) ||
       (environment.mode !== "template" && environment.state !== "preparing") ||
       !sandboxConnectionReady(environment.provider)

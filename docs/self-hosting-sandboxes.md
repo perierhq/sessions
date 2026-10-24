@@ -552,6 +552,65 @@ password reaches `ssh` through `SSH_ASKPASS`, never argv. Portals ride the
 outbound relay. Automations never run here: the guest network is not
 policy-enforced.
 
+### This machine (container)
+
+Each session gets a rootless Podman pod on this host: a private pasta network
+namespace with an nftables egress table installed from the host before the
+workload starts, and verified, with an isolation self-test, on every start.
+The table allows the public internet, the callback origin on its port and the
+configured DNS resolvers. It refuses IPv6, private, CGNAT, link-local and
+reserved IPv4 ranges, and every IPv4 address on this host's interfaces.
+
+**Extra host addresses.** An address can reach this host without being on any
+of its interfaces: a public IP behind 1:1 NAT (common on cloud VMs), a load
+balancer or a port forward in front of the host. The firewall cannot discover
+those. List them in `~/.opensession/sandbox.json`:
+
+```json
+{ "podman": { "extraHostAddresses": ["198.51.100.20"] } }
+```
+
+Each IPv4 entry joins the refused host set (`hostaddrs4`), and the self-test
+probes it on port 22 and the app port and requires the firewall to refuse the
+connect (a closed port is not enough). An entry that is also a configured DNS
+resolver is an error. IPv6 entries are ignored: IPv6 is refused entirely.
+
+**Disk limits.** Rootless Podman volumes have no size limit, so the provider
+enforces its own. A sandbox does not start while the filesystem holding
+Podman's storage (its graphroot, where rootless volumes live) has less than
+5 GiB free. Every five minutes, and a minute after the server starts, the
+sweep measures each session's home volume with `podman system df`. From
+10 GiB the session is listed on the This machine (container) card in
+Settings; over 20 GiB its pod is stopped and does not start again until a
+later check finds the volume under the limit. The list of sandboxes over the
+limit is saved in the sandbox state directory, so it survives a restart, and
+a volume the check cannot find keeps whatever state it had. If
+free space falls below half the floor (2.5 GiB), the sweep also stops the
+running sandbox with the largest home volume.
+
+The limit fails closed. A failed check is shown on the card. Sandboxes do not
+start until a check has succeeded since the server started; the first start
+after a restart runs one, and waits up to a minute for it. Starts are refused
+again after three checks in a row fail, until one succeeds. Running sandboxes
+keep running. To recover the space, delete
+the session's sandbox, which deletes its workspace. Where the storage
+filesystem supports it (XFS with project quotas), a filesystem quota on
+Podman's storage directory is a stronger backstop.
+
+**Same-user processes (accepted risk).** The pods are rootless and belong to
+the user the server runs as. Any process running as that user can control
+them through Podman: start a workload without its firewall, flush the egress
+table, or exec into a container. That includes host-local sessions (no
+sandbox) and anything else running under that account. Before a command, a
+file write or a Terminal shell, the provider compares the running workload
+with the run it last verified itself, and puts any other run (restarted out
+of band, or not seen since the server started) through the firewalled start
+sequence again. A quick series of commands repeats that comparison at most
+once a minute. Nothing catches a process that changes the pod between those
+checks. Run the server
+as a dedicated user with nothing else on it, and do not use host-local
+sessions on a server whose container sandboxes must stay isolated.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this

@@ -159,6 +159,15 @@ export interface SandboxConfig {
   /** Warm-on-typing prewarm pool. Absent = defaults, with `enabled` true
    *  whenever a provider connection is configured. */
   prewarm?: Partial<SandboxPrewarmConfig>;
+  /** "This machine (container)" (adapters/podman.ts). */
+  podman?: SandboxPodmanConfig;
+}
+
+export interface SandboxPodmanConfig {
+  /** Addresses that reach this host without being on any of its interfaces
+   *  (a NAT'd public IP, a load balancer in front of it). The egress firewall
+   *  refuses them and the isolation self-test probes them. */
+  extraHostAddresses?: string[];
 }
 
 const PROVIDER_IDS = new Set<string>([
@@ -167,6 +176,7 @@ const PROVIDER_IDS = new Set<string>([
   "box",
   "tart",
   "usecomputer",
+  "podman",
 ]);
 
 function asProviderId(v: unknown): SandboxProviderId | undefined {
@@ -301,6 +311,22 @@ export function sandboxConfig(): SandboxConfig {
                   : undefined,
               }
             : undefined,
+        podman:
+          raw?.podman && typeof raw.podman === "object"
+            ? {
+                extraHostAddresses: Array.isArray(raw.podman.extraHostAddresses)
+                  ? raw.podman.extraHostAddresses
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" &&
+                          value.trim().length > 0 &&
+                          value.trim().length <= 64,
+                      )
+                      .map((value: string) => value.trim())
+                      .slice(0, 64)
+                  : undefined,
+              }
+            : undefined,
       };
     }
   } catch {}
@@ -381,6 +407,7 @@ export const RUNNABLE_SANDBOX_PROVIDERS = [
   "box",
   "tart",
   "usecomputer",
+  "podman",
 ] as const;
 export type RunnableSandboxProviderId =
   (typeof RUNNABLE_SANDBOX_PROVIDERS)[number];
@@ -451,6 +478,10 @@ export const SANDBOX_PROVIDER_CERTIFICATIONS: Record<
     behavioralPassedAt: "2026-09-21",
     warmRestorePassedAt: "2026-09-21",
     note: "macOS VM on a reserved use.computer Mac: live qualification, remote run, snapshot sleep/wake, desktop, and terminal passed",
+  }),
+  // Undated until the live conformance run and red-team pass on a real host.
+  podman: certification({
+    note: "This machine (container) has not passed its live conformance run yet",
   }),
 };
 
@@ -919,7 +950,7 @@ function sandboxProviderSelectionError(
     }
     return `Sandbox provider "${id}" is not currently available.`;
   }
-  return `Sandbox provider "${id}" is not configured: connect ${id === "box" ? "Boat" : id === "tart" ? "a Mac VM host" : id === "usecomputer" ? "use.computer" : "Daytona"} in Workspace > Sandboxes.`;
+  return `Sandbox provider "${id}" is not configured: connect ${id === "box" ? "Boat" : id === "tart" ? "a Mac VM host" : id === "usecomputer" ? "use.computer" : id === "podman" ? "This machine (container)" : "Daytona"} in Workspace > Sandboxes.`;
 }
 
 /** Whether the provider has enabled connection configuration. */

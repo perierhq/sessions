@@ -11,6 +11,7 @@ export function sandboxProviderLabel(id: string): string {
   if (id === "box") return "Boat";
   if (id === "tart") return "Mac VM";
   if (id === "usecomputer") return "use.computer";
+  if (id === "podman") return "This machine (container)";
   if (id === "modal") return "Modal";
   if (id === "lambda-microvm") return "AWS Lambda MicroVM";
   return id;

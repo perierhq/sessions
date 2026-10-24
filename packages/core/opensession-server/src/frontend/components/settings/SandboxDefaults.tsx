@@ -6,6 +6,7 @@ import {
 } from "../../lib/api";
 import { fetchRepos, type RepoInfo } from "../../lib/api/repos";
 import { errorMessage } from "../../lib/error-message";
+import { readySandboxProviders } from "../../lib/ready-sandbox-providers";
 import {
   SettingCard,
   SettingsGroupLabel,
@@ -23,6 +24,7 @@ function providerLabel(id: string): string {
   if (id === "box") return "Sandbox · Boat";
   if (id === "tart") return "Sandbox · Mac VM";
   if (id === "usecomputer") return "Sandbox · use.computer";
+  if (id === "podman") return "Sandbox · This machine (container)";
   return id;
 }
 
@@ -55,17 +57,11 @@ function SandboxDefaultRow({ scope }: { scope: Scope }) {
     );
   }
 
-  const providers = status.connections?.length
-    ? status.connections
-        .filter((connection) => connection.state === "ready")
-        .map((connection) => ({ id: connection.provider }))
-    : status.providers.filter(
-        (provider) => provider.configured && provider.certified,
-      );
+  const providers = readySandboxProviders(status);
   const workspace = status.defaults.workspace || "none";
   const value =
     scope === "workspace" ? workspace : status.defaults.personal || "workspace";
-  const available = new Set<string>(providers.map((provider) => provider.id));
+  const available = new Set<string>(providers);
   const unavailableSelection =
     value !== "workspace" && value !== "none" && !available.has(value)
       ? [
@@ -87,10 +83,7 @@ function SandboxDefaultRow({ scope }: { scope: Scope }) {
       : []),
     { value: "none", label: "This machine" },
     ...unavailableSelection,
-    ...providers.map((provider) => ({
-      value: provider.id,
-      label: providerLabel(provider.id),
-    })),
+    ...providers.map((id) => ({ value: id, label: providerLabel(id) })),
   ];
 
   async function save(next: string) {
@@ -162,13 +155,7 @@ function ProjectSandboxDefaults() {
   }, [user]);
   if (!status?.defaults || !repos.length) return null;
   const defaults = status.defaults;
-  const providers: string[] = status.connections?.length
-    ? status.connections
-        .filter((connection) => connection.state === "ready")
-        .map((connection) => connection.provider)
-    : status.providers
-        .filter((provider) => provider.configured && provider.certified)
-        .map((provider) => provider.id);
+  const providers = readySandboxProviders(status);
   if (!providers.length) return null;
 
   async function save(

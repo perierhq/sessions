@@ -64,9 +64,26 @@ export const REMOTE_HOME = "/home/ubuntu";
  * revision are part of baseRuntimeSignature, so changing this contract
  * invalidates old prewarms and provider templates instead of calling them
  * Ready. */
-const REMOTE_NODE_VERSION = "24.18.1";
-const REMOTE_JUST_VERSION = "1.43.1";
-const REMOTE_GH_VERSION = "2.83.1";
+export const REMOTE_NODE_VERSION = "24.18.1";
+export const REMOTE_JUST_VERSION = "1.43.1";
+export const REMOTE_GH_VERSION = "2.83.1";
+/** The Debian/Ubuntu packages behind the workspace tools (`git`, `rg`,
+ *  native build tools, `direnv`, `lsof`, ...). The podman image bakes the
+ *  same list (podman-image.ts). */
+export const REMOTE_LINUX_PACKAGES = [
+  "ca-certificates",
+  "git",
+  "curl",
+  "unzip",
+  "xz-utils",
+  "ripgrep",
+  "coreutils",
+  "sed",
+  "python3",
+  "build-essential",
+  "direnv",
+  "lsof",
+] as const;
 const REMOTE_RUNTIME_REVISION = "workspace-runtime-v8";
 const REMOTE_PATH = `${REMOTE_HOME}/.bun/bin:${REMOTE_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
 
@@ -893,7 +910,7 @@ async function bootstrapRemoteBaseRuntime(
           `elif command -v sudo >/dev/null 2>&1; then sudo -n "$@"; ` +
           `else echo "root privileges are required to install workspace tools" >&2; return 1; fi; }; ` +
           `if command -v apt-get >/dev/null 2>&1; then ` +
-          `run_root apt-get update -qq && run_root apt-get install -y -qq ca-certificates git curl unzip xz-utils ripgrep coreutils sed python3 build-essential direnv lsof; ` +
+          `run_root apt-get update -qq && run_root apt-get install -y -qq ${REMOTE_LINUX_PACKAGES.join(" ")}; ` +
           `elif command -v apk >/dev/null 2>&1; then ` +
           `run_root apk add --no-cache ca-certificates git curl unzip xz ripgrep coreutils sed python3 build-base direnv lsof; ` +
           `elif command -v dnf >/dev/null 2>&1; then ` +
@@ -1861,7 +1878,7 @@ export interface RemoteSandboxParts {
 
 /** stderr of a provider exec whose machine or command plane is not there. */
 const TRANSPORT_FAILURE =
-  /not running|not started|stopped|archived|timed out|ECONN|socket|HTTP 5\d\d|did not accept commands|machine_not_running/i;
+  /not running|not started|stopped|archived|timed out|ECONN|socket|HTTP 5\d\d|did not accept commands|machine_not_running|container state improper|no such container/i;
 
 export function makeRemoteSandbox(parts: RemoteSandboxParts): Sandbox {
   let touchedAt = 0;

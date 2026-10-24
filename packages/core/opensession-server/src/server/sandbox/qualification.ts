@@ -2,6 +2,7 @@
 
 import { audit } from "../audit";
 import {
+  setPodmanConnectionFacts,
   setSandboxConnectionQualification,
   type WorkspaceSandboxProvider,
 } from "./connections";
@@ -47,6 +48,9 @@ function failureSummary(code: string): string {
   );
 }
 
+/** Enough for a podman refusal that lists every failed self-test probe. */
+const FAILURE_DETAIL_MAX = 4000;
+
 function safeFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message
@@ -54,7 +58,7 @@ function safeFailureDetail(error: unknown): string {
     .replace(/\b(?:boat|box)_[A-Za-z0-9_-]+\b/g, "Boat")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 400);
+    .slice(0, FAILURE_DETAIL_MAX);
 }
 
 export async function qualifySandboxConnection(
@@ -64,9 +68,17 @@ export async function qualifySandboxConnection(
     progress?: number;
     detail?: string;
   }) => void = () => undefined,
+  platform: string = process.platform,
 ): Promise<void> {
   setSandboxConnectionQualification(provider, { status: "checking" });
   try {
+    // Name the real blocker on a host that can never run it, ahead of an
+    // ingress problem it would otherwise hide behind.
+    if (provider === "podman" && platform !== "linux")
+      throw Object.assign(
+        new Error("This machine (container) needs Linux with rootless Podman"),
+        { code: "QUALIFICATION_FAILED" },
+      );
     // Prove ingress before allocating paid provider compute.
     update({ stage: "Checking public ingress", progress: 10 });
     await verifyPublicSandboxIngress();
@@ -79,6 +91,21 @@ export async function qualifySandboxConnection(
       await qualifyTartConnection((stage, progress) =>
         update({ stage, progress }),
       );
+    } else if (provider === "podman") {
+      const { qualifyPodmanConnection } = await import("./adapters/podman");
+      // Every refusal here names its own fix; show it rather than a
+      // keyword-guessed cloud-provider summary.
+      const { warnings, ...facts } = await qualifyPodmanConnection(
+        (stage, progress) => update({ stage, progress }),
+      ).catch((error: unknown) => {
+        throw Object.assign(
+          error instanceof Error ? error : new Error(String(error)),
+          { code: "QUALIFICATION_FAILED" },
+        );
+      });
+      for (const warning of warnings)
+        console.warn(`[sandbox:qualification] podman: ${warning}`);
+      setPodmanConnectionFacts(facts);
     } else if (provider === "usecomputer") {
       const { qualifyUseComputerConnection } =
         await import("./adapters/usecomputer");

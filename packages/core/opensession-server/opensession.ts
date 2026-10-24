@@ -841,6 +841,9 @@ if (!g.__opensessionBooted) {
         const { startUseComputerIdleSweep } =
           await import("./src/server/sandbox/adapters/usecomputer");
         startUseComputerIdleSweep();
+        const { startPodmanIdleSweep } =
+          await import("./src/server/sandbox/adapters/podman");
+        startPodmanIdleSweep();
         await poolStartup;
       })
       .catch((e) => console.error("[sandbox-prewarm] startup failed:", e));

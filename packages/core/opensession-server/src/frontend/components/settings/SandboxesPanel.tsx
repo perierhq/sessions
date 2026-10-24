@@ -21,6 +21,10 @@ import {
 } from "../../lib/api/sandboxes";
 import { fetchRunners, type RunnerInfo } from "../../lib/api/runners";
 import { errorMessage } from "../../lib/error-message";
+import {
+  podmanSummaryLines,
+  providerNeedsCredential,
+} from "../../lib/podman-sandbox";
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
 import { Field, Input, Select } from "../../ui/input";
@@ -68,6 +72,12 @@ const PROVIDERS: Array<{
     label: "use.computer",
     description:
       "macOS virtual machines with Xcode on Mac minis reserved in your use.computer account, connected with your account API key.",
+  },
+  {
+    id: "podman",
+    label: "This machine (container)",
+    description:
+      "A rootless Podman container on this server for each session, behind a firewall that keeps it away from this server and its private networks. No credential needed.",
   },
 ];
 
@@ -261,6 +271,8 @@ const MACHINE_PROFILES: Record<
       settings: { cpu: 6, memoryMb: 10_240 },
     },
   ],
+  // No project snapshots: a container starts from the local image.
+  podman: [],
   usecomputer: [
     {
       id: "split",
@@ -367,6 +379,10 @@ function ConnectDialog({
   );
   const isMac = connection.provider === "tart";
   const isUseComputer = connection.provider === "usecomputer";
+  const isPodman = connection.provider === "podman";
+  const [pidsLimit, setPidsLimit] = useState(
+    String(connection.settings.pidsLimit || ""),
+  );
   const [reservation, setReservation] = useState(
     String(connection.settings.reservation || ""),
   );
@@ -420,6 +436,7 @@ function ConnectDialog({
       if (cpu) settings.cpu = Number(cpu);
       if (memoryMb) settings.memoryMb = Number(memoryMb);
       if (isUseComputer && reservation) settings.reservation = reservation;
+      if (isPodman && pidsLimit) settings.pidsLimit = Number(pidsLimit);
       if (isMac) {
         const chosen = hosts.filter((row) => row.runner);
         if (!chosen.length) throw new Error("Add at least one Mac");
@@ -481,13 +498,15 @@ function ConnectDialog({
         <Modal.Header
           title={`${exists ? "Configure" : "Connect"} ${provider.label}`}
           description={
-            isMac
-              ? "No credential needed: each Mac is a paired Runner. Open Session installs Tart on it, pulls the image once (about 70 GB, up to an hour), prepares a base VM, then proves a disposable VM and deletes it. Sessions land on whichever Mac has a free slot."
-              : connection.provider === "box"
-                ? "Credentials stay on this server. Open Session tests ingress, creates a disposable Boat sandbox, verifies archive/resume and snapshot restore, then archives it."
-                : isUseComputer
-                  ? "Credentials stay on this server. Open Session tests ingress, checks your active Mac reservation, creates a disposable sandbox on it, proves a snapshot restore (about six minutes), and deletes everything."
-                  : "Credentials stay on this server. Open Session tests ingress, creates a disposable sandbox, restores a snapshot, and cleans up."
+            isPodman
+              ? "No credential needed. Open Session checks rootless Podman on this server, builds the sandbox image (a few minutes the first time), then starts a disposable container that must pass the isolation self-test, and removes it."
+              : isMac
+                ? "No credential needed: each Mac is a paired Runner. Open Session installs Tart on it, pulls the image once (about 70 GB, up to an hour), prepares a base VM, then proves a disposable VM and deletes it. Sessions land on whichever Mac has a free slot."
+                : connection.provider === "box"
+                  ? "Credentials stay on this server. Open Session tests ingress, creates a disposable Boat sandbox, verifies archive/resume and snapshot restore, then archives it."
+                  : isUseComputer
+                    ? "Credentials stay on this server. Open Session tests ingress, checks your active Mac reservation, creates a disposable sandbox on it, proves a snapshot restore (about six minutes), and deletes everything."
+                    : "Credentials stay on this server. Open Session tests ingress, creates a disposable sandbox, restores a snapshot, and cleans up."
           }
         />
 
@@ -527,7 +546,38 @@ function ConnectDialog({
               </Field>
             </div>
           </>
-        ) : (
+        ) : isPodman ? (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="Memory (MB)">
+              <Input
+                ref={firstFieldRef}
+                type="number"
+                min="512"
+                value={memoryMb}
+                onChange={(event) => setMemoryMb(event.target.value)}
+                placeholder="4096"
+              />
+            </Field>
+            <Field label="Processes">
+              <Input
+                type="number"
+                min="64"
+                value={pidsLimit}
+                onChange={(event) => setPidsLimit(event.target.value)}
+                placeholder="4096"
+              />
+            </Field>
+            <Field label="CPU">
+              <Input
+                type="number"
+                min="1"
+                value={cpu}
+                onChange={(event) => setCpu(event.target.value)}
+                placeholder="No limit"
+              />
+            </Field>
+          </div>
+        ) : providerNeedsCredential(connection.provider) ? (
           <Field
             label={
               connection.provider === "box"
@@ -550,12 +600,14 @@ function ConnectDialog({
               onChange={(event) => setApiKey(event.target.value)}
             />
           </Field>
-        )}
+        ) : null}
 
         <>
           <p className="m-0 text-supporting text-dim">
             Sandboxes reach this server through Public callback under Domains
             for run streaming and workload identity.
+            {isPodman &&
+              " Containers need a public callback address. An address on the tailnet, a private network or this server is refused."}
           </p>
           {isUseComputer && (
             <details className="rounded-lg bg-surface p-3 text-supporting text-dim">
@@ -761,10 +813,19 @@ function ConnectionCard({
                     .join(", ")}
                 </p>
               )}
+              {connection.podman && (
+                <div className="mt-1 grid gap-0.5 text-meta text-faint">
+                  {podmanSummaryLines(connection.podman).map((line) => (
+                    <span key={line} className="break-all">
+                      {line}
+                    </span>
+                  ))}
+                </div>
+              )}
               {summary && (
                 <p
                   className={cn(
-                    "m-0 mt-2 text-supporting",
+                    "m-0 mt-2 text-supporting break-words",
                     connection.state === "needs_attention"
                       ? "text-red"
                       : "text-dim",

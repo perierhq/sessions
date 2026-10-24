@@ -65,6 +65,27 @@ export function SandboxProviderLogo({
     );
   }
 
+  if (provider === "podman") {
+    // This machine (container): a sealed box.
+    return (
+      <SandboxProviderTile className="bg-surface text-fg">
+        <svg
+          viewBox="0 0 32 32"
+          className="size-7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M16 4.5l10.5 5.75v11.5L16 27.5 5.5 21.75v-11.5z" />
+          <path d="M5.5 10.25L16 16l10.5-5.75M16 16v11.5" />
+        </svg>
+      </SandboxProviderTile>
+    );
+  }
+
   if (provider === "tart") {
     // A Mac VM: a rounded display with a smaller window inside it.
     return (

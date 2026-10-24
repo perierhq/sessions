@@ -13,6 +13,8 @@ import {
   sandboxAdapterSignatureCurrent,
   sandboxProviderNeedsCredential,
 } from "./adapter-signature";
+import { podmanDiskReport, podmanDiskWarnings } from "./adapters/podman-disk";
+import { clampPodmanLimits, podmanSettings } from "./adapters/podman-settings";
 import { stateDir } from "../paths";
 import { writeJsonAtomic } from "../shared/atomic-write";
 import {
@@ -28,6 +30,7 @@ export const WORKSPACE_SANDBOX_PROVIDERS = [
   "box",
   "tart",
   "usecomputer",
+  "podman",
 ] as const;
 export type WorkspaceSandboxProvider =
   (typeof WORKSPACE_SANDBOX_PROVIDERS)[number];
@@ -59,6 +62,26 @@ export interface SandboxConnectionSettings {
   /** usecomputer: the Mac reservation to use when the account holds more
    *  than one active reservation. */
   reservation?: string;
+  /** podman: the workload's pids limit. */
+  pidsLimit?: number;
+  /** podman: the only DNS resolvers a sandbox may reach (public IPv4). */
+  dns?: string[];
+}
+
+export {
+  PODMAN_DEFAULT_MEMORY_MB,
+  PODMAN_DEFAULT_PIDS_LIMIT,
+} from "./adapters/podman-settings";
+
+/** What the last successful podman qualification found on this host. */
+export interface PodmanConnectionFacts {
+  /** The sandbox image new sandboxes start from. */
+  imageTag: string;
+  /** False when the host does not delegate the cgroup `cpu` controller, so
+   *  `cpu` cannot be applied. */
+  cpuLimited: boolean;
+  /** When the full isolation self-test last passed. */
+  selfTestAt: string;
 }
 
 export interface SandboxHostSetting {
@@ -101,14 +124,26 @@ export interface SandboxConnection {
   credentialRef?: string;
   settings: SandboxConnectionSettings;
   qualification?: SandboxConnectionQualification;
+  /** podman only: written by qualification. */
+  podman?: PodmanConnectionFacts;
   createdAt: string;
   updatedAt: string;
 }
 
+/** The This machine (container) card's summary: the qualification facts and
+ *  the limits new sandboxes get. */
+export interface SafePodmanConnection extends PodmanConnectionFacts {
+  memoryMb: number;
+  pidsLimit: number;
+  /** The last disk check's findings (low space, large home volumes). */
+  diskWarnings?: string[];
+}
+
 export interface SafeSandboxConnection extends Omit<
   SandboxConnection,
-  "credentialRef"
+  "credentialRef" | "podman"
 > {
+  podman?: SafePodmanConnection;
   hasCredentials: boolean;
   state:
     | "not_configured"
@@ -188,6 +223,50 @@ function settings(value: unknown): SandboxConnectionSettings {
     ...(string(raw.reservation)
       ? { reservation: string(raw.reservation) }
       : {}),
+    ...(number(raw.pidsLimit)
+      ? { pidsLimit: Math.round(number(raw.pidsLimit)!) }
+      : {}),
+    ...(Array.isArray(raw.dns)
+      ? {
+          dns: raw.dns
+            .map(string)
+            .filter((value): value is string =>
+              Boolean(value && /^\d{1,3}(\.\d{1,3}){3}$/.test(value)),
+            )
+            .slice(0, 4),
+        }
+      : {}),
+  };
+}
+
+/** Settings as saved: a podman machine shape is clamped to what this host
+ *  can honour, so a huge pids limit cannot undo the fork-bomb guard. */
+function providerSettings(
+  provider: WorkspaceSandboxProvider,
+  value: unknown,
+): SandboxConnectionSettings {
+  const parsed = settings(value);
+  if (provider !== "podman") return parsed;
+  const {
+    memoryMb: _memoryMb,
+    pidsLimit: _pidsLimit,
+    cpu: _cpu,
+    ...rest
+  } = parsed;
+  return { ...rest, ...clampPodmanLimits(parsed) };
+}
+
+function podmanFacts(value: unknown): PodmanConnectionFacts | undefined {
+  const raw =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!raw || !string(raw.imageTag) || typeof raw.cpuLimited !== "boolean")
+    return undefined;
+  return {
+    imageTag: string(raw.imageTag)!,
+    cpuLimited: raw.cpuLimited,
+    selfTestAt: string(raw.selfTestAt) || new Date(0).toISOString(),
   };
 }
 
@@ -275,6 +354,9 @@ function parseConnection(value: unknown): SandboxConnection | undefined {
     ...(qualification(raw.qualification)
       ? { qualification: qualification(raw.qualification) }
       : {}),
+    ...(provider === "podman" && podmanFacts(raw.podman)
+      ? { podman: podmanFacts(raw.podman) }
+      : {}),
     createdAt: string(raw.createdAt) || now,
     updatedAt: string(raw.updatedAt) || string(raw.createdAt) || now,
   };
@@ -303,9 +385,15 @@ export function getSandboxConnection(
   );
 }
 
-export function safeSandboxConnections(): SafeSandboxConnection[] {
-  return WORKSPACE_SANDBOX_PROVIDERS.map((provider) => {
+/** Every provider's connection for Settings. This machine (container) is
+ *  offered only on a Linux host (podman sandboxes run here), unless one is
+ *  already stored. */
+export function safeSandboxConnections(
+  platform: string = process.platform,
+): SafeSandboxConnection[] {
+  return WORKSPACE_SANDBOX_PROVIDERS.flatMap((provider) => {
     const connection = getSandboxConnection(provider);
+    if (!connection && provider === "podman" && platform !== "linux") return [];
     if (!connection) {
       return {
         id: `unconfigured-${provider}`,
@@ -334,8 +422,29 @@ export function safeSandboxConnections(): SafeSandboxConnection[] {
             signatureCurrent
           ? "ready"
           : "needs_attention";
-    const { credentialRef: _credentialRef, ...safe } = connection;
-    return { ...safe, hasCredentials, state };
+    const {
+      credentialRef: _credentialRef,
+      podman: podmanFacts,
+      ...safe
+    } = connection;
+    const diskWarnings =
+      provider === "podman" ? podmanDiskWarnings(podmanDiskReport()) : [];
+    return {
+      ...safe,
+      ...(podmanFacts
+        ? {
+            podman: {
+              ...podmanFacts,
+              // What a sandbox actually gets, not the raw stored value.
+              memoryMb: podmanSettings(connection.settings).memoryMb,
+              pidsLimit: podmanSettings(connection.settings).pidsLimit,
+              ...(diskWarnings.length ? { diskWarnings } : {}),
+            },
+          }
+        : {}),
+      hasCredentials,
+      state,
+    };
   });
 }
 
@@ -360,7 +469,9 @@ export function connectSandboxProvider(
 ): SandboxConnection {
   const previous = getSandboxConnection(provider);
   let credentialRef = previous?.credentialRef;
-  if (input.secret) {
+  // A provider that takes no credential never stores one, whatever a client
+  // sends.
+  if (input.secret && sandboxProviderNeedsCredential(provider)) {
     credentialRef = putWorkspaceSecret(
       `sandbox.${provider}`,
       input.secret.trim(),
@@ -374,7 +485,7 @@ export function connectSandboxProvider(
   }
   const nextSettings = mergeSettings(
     previous?.settings,
-    settings(input.settings),
+    providerSettings(provider, input.settings),
   );
   if (provider === "tart" && !sandboxHostSettings(nextSettings).length) {
     throw new Error("Choose at least one paired macOS Runner to host Mac VMs");
@@ -417,7 +528,10 @@ export function updateSandboxConnection(
   const next: SandboxConnection = {
     ...previous,
     enabled: patch.enabled ?? previous.enabled,
-    settings: mergeSettings(previous.settings, settings(patch.settings)),
+    settings: mergeSettings(
+      previous.settings,
+      providerSettings(provider, patch.settings),
+    ),
     updatedAt: new Date().toISOString(),
   };
   const raw = readRaw();
@@ -441,14 +555,32 @@ export function setSandboxConnectionQualification(
   provider: WorkspaceSandboxProvider,
   result: Omit<SandboxConnectionQualification, "adapterSignature">,
 ): SandboxConnection {
-  const previous = getSandboxConnection(provider);
-  if (!previous) throw new Error(`${provider} is not connected`);
+  const found = getSandboxConnection(provider);
+  if (!found) throw new Error(`${provider} is not connected`);
+  // What a podman qualification found describes the last pass only; a
+  // recheck that starts or fails must not leave it beside the new status.
+  const { podman: _staleFacts, ...previous } = found;
   const next: SandboxConnection = {
-    ...previous,
+    ...(result.status === "ready" ? found : previous),
     qualification: {
       ...result,
       adapterSignature: sandboxAdapterSignature(provider),
     },
+    updatedAt: new Date().toISOString(),
+  };
+  replaceConnection(next);
+  return next;
+}
+
+/** Record what a successful podman qualification found. */
+export function setPodmanConnectionFacts(
+  facts: PodmanConnectionFacts,
+): SandboxConnection {
+  const previous = getSandboxConnection("podman");
+  if (!previous) throw new Error("podman is not connected");
+  const next: SandboxConnection = {
+    ...previous,
+    podman: facts,
     updatedAt: new Date().toISOString(),
   };
   replaceConnection(next);

@@ -82,7 +82,8 @@ export type SandboxRequest =
   | "daytona"
   | "box"
   | "tart"
-  | "usecomputer";
+  | "usecomputer"
+  | "podman";
 
 export interface CreateSessionOpts {
   prompt: string;
