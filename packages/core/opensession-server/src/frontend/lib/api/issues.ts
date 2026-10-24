@@ -1,4 +1,5 @@
 import { request } from "./request";
+import type { AuthorKind } from "./prs";
 
 /** One open GitHub issue from the repo-wide list (session or not). */
 export interface OpenIssue {
@@ -21,6 +22,8 @@ export interface OpenIssue {
   sessionId: string;
   /** The `os` label is on the issue: a session was asked for. */
   assigned: boolean;
+  /** Who opened it. Absent from servers older than the field. */
+  authorKind?: AuthorKind;
 }
 
 /** Every open issue across the registered GitHub repos. */

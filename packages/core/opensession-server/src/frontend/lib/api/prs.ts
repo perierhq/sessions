@@ -98,12 +98,18 @@ export async function fetchOpenPrs(): Promise<OpenPr[]> {
   return data?.prs || [];
 }
 
+/** Who opened a PR or issue: the team (or its agent), a bot, or someone
+ *  outside the team. Classified by the server against the roster. */
+export type AuthorKind = "team" | "outside" | "bot";
+
 export interface RecentPr extends OpenPr {
   state: "OPEN" | "MERGED" | "CLOSED";
   additions: number;
   deletions: number;
   /** The Open Session session that created this PR, when attributed. */
   sessionId?: string;
+  /** Absent from servers older than the field. */
+  authorKind?: AuthorKind;
 }
 
 /** Recent PRs across repos, including PRs merged outside Open Session. */
