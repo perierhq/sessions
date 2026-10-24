@@ -1,6 +1,10 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
 import type { OwnerDecision } from "../../shared/incident-response";
 import { BASE_PATH, stripBasePath } from "./base";
+import {
+  isProjectSectionId,
+  type ProjectSectionId,
+} from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
 
@@ -29,23 +33,19 @@ export type Route =
   | { view: "security" }
   | { view: "goals"; id?: string }
   | { view: "incidents"; id?: string; intent?: OwnerDecision }
-  | { view: "incidentSettings"; project?: string }
+  | { view: "projectSettings"; project: string; section?: ProjectSectionId }
   | { view: "settings"; section?: SettingsSectionKey }
   | { view: "archived" }
   | { view: "inbox" }
   | { view: "catchup" };
 
-const TOOL_VIEWS = new Set([
-  "automations",
-  "security",
-  "goals",
-  "incidentSettings",
-]);
+const TOOL_VIEWS = new Set(["automations", "security", "goals"]);
 const SETTINGS_SECTIONS: ReadonlySet<string> = new Set<SettingsSectionKey>([
   "myAccounts",
   "preferences",
   "notifications",
   "shortcuts",
+  "projectDefaults",
   "general",
   "setup",
   "repos",
@@ -85,7 +85,7 @@ const LEGACY_SETTINGS_SECTIONS = new Map<string, SettingsSectionKey>([
 
 export function isToolView(
   view: string,
-): view is "automations" | "security" | "goals" | "incidentSettings" {
+): view is "automations" | "security" | "goals" {
   return TOOL_VIEWS.has(view);
 }
 
@@ -191,14 +191,21 @@ export function parseRoute(pathname: string): Route {
     if (incident[1]) route.id = decodeURIComponent(incident[1]);
     return route;
   }
-  // Before the generic /settings/<key>: a project rides after the key.
-  const incidentSettings = path.match(/^\/settings\/incidents(?:\/([^/]+))?$/);
-  if (incidentSettings) {
-    const route: Extract<Route, { view: "incidentSettings" }> = {
-      view: "incidentSettings",
+  // Before the generic /settings/<key>: a project and its section ride
+  // after the key. /settings/incidents is the old incident settings page,
+  // now the project pages.
+  const projects = path.match(
+    /^\/settings\/(projects|incidents)(?:\/([^/]+)(?:\/([^/]+))?)?$/,
+  );
+  if (projects) {
+    const [, kind, project, section] = projects;
+    if (!project) return { view: "settings", section: "projectDefaults" };
+    const route: Extract<Route, { view: "projectSettings" }> = {
+      view: "projectSettings",
+      project: decodeURIComponent(project),
     };
-    if (incidentSettings[1])
-      route.project = decodeURIComponent(incidentSettings[1]);
+    if (kind === "incidents") route.section = "incidents";
+    else if (isProjectSectionId(section)) route.section = section;
     return route;
   }
   if (path === "/connections") {
@@ -291,11 +298,12 @@ export function routePath(route: Route): string {
       return route.id
         ? `${BASE_PATH}/incidents/${encodeURIComponent(route.id)}${route.intent ? `?intent=${route.intent}` : ""}`
         : `${BASE_PATH}/incidents`;
-    case "incidentSettings":
-      return route.project
-        ? `${BASE_PATH}/settings/incidents/${encodeURIComponent(route.project)}`
-        : `${BASE_PATH}/settings/incidents`;
+    case "projectSettings":
+      return `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}${route.section ? `/${route.section}` : ""}`;
     case "settings":
+      if (route.section === "projectDefaults") {
+        return `${BASE_PATH}/settings/projects`;
+      }
       return route.section
         ? `${BASE_PATH}/settings/${route.section}`
         : `${BASE_PATH}/settings`;
@@ -316,8 +324,29 @@ export function routePath(route: Route): string {
   }
 }
 
+/**
+ * Where an incident's settings links go: its project's Incidents section,
+ * or, for a setup problem, the section that fixes it. A missing sandbox is
+ * fixed on the project's page (Where agents run); anything else stays in
+ * the app's settings.
+ */
+export function incidentSettingsRoute(
+  project: string,
+  fix?: SettingsSectionKey,
+): Route {
+  if (!fix) return { view: "projectSettings", project, section: "incidents" };
+  if (fix === "sandboxes") {
+    return { view: "projectSettings", project, section: "where" };
+  }
+  return { view: "settings", section: fix };
+}
+
 export function isSettingsRoute(route: Route): boolean {
-  return route.view === "settings" || isToolView(route.view);
+  return (
+    route.view === "settings" ||
+    route.view === "projectSettings" ||
+    isToolView(route.view)
+  );
 }
 
 export function samePanel(a: Route, b: Route): boolean {

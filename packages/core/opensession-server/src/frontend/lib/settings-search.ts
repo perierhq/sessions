@@ -14,7 +14,22 @@
  * someone would type, not a summary of the page.
  */
 
+import {
+  PROJECT_SECTIONS,
+  type ProjectSectionId,
+} from "./project-settings/page-model";
+
 export const SETTINGS_KEYWORDS = {
+  projectDefaults: [
+    "defaults",
+    "default model",
+    "default sandbox",
+    "websites",
+    "previews",
+    "projects",
+    "egress",
+    "allowlist",
+  ],
   myAccounts: [
     // Your profile lives at the top of this page, so its words have to find
     // it here.
@@ -179,14 +194,6 @@ export const SETTINGS_KEYWORDS = {
   memory: ["facts", "remember", "scopes"],
   automations: ["scheduled", "cron", "triggers", "watchers", "jobs"],
   goals: ["standing goals", "objectives"],
-  incidentSettings: [
-    "signals",
-    "outages",
-    "alerts",
-    "autonomy",
-    "veto",
-    "on-call",
-  ],
   security: ["scans", "deepsec", "vulnerabilities", "findings"],
   ingress: [
     "webhooks",
@@ -260,4 +267,118 @@ export function matchSections<T extends SectionLike>(
     if (hint) hits.push({ item, hint });
   }
   return hits;
+}
+
+/**
+ * The words that find a section of a project's settings page. The page is
+ * one per project, so these are searched per project: "veto" offers
+ * "acme-web · Incidents" for every project, and a project's name in the
+ * query narrows it to that one.
+ */
+export const PROJECT_SECTION_KEYWORDS: Record<ProjectSectionId, string[]> = {
+  where: [
+    "sandbox",
+    "previews",
+    "portal",
+    "this machine",
+    "container",
+    "daytona",
+  ],
+  models: ["models", "model", "investigator", "verifier"],
+  production: ["production", "runner", "deploy", "rollback", "release"],
+  access: [
+    "access",
+    "keychain",
+    "credentials",
+    "connectors",
+    "websites",
+    "web search",
+    "allow agents",
+  ],
+  incidents: [
+    "incidents",
+    "signals",
+    "veto",
+    "budget",
+    "autonomy",
+    "maintenance",
+    "pause all agents",
+    "on-call",
+  ],
+};
+
+export type ProjectSectionHit = {
+  project: string;
+  section: ProjectSectionId;
+  /** "acme-web · Incidents" */
+  label: string;
+  hint?: string;
+};
+
+/**
+ * Project page sections that match a query. Every word has to match the
+ * project's name, the section's name or one of its keywords, and at least
+ * one has to match the section: a project's name alone finds the project's
+ * row, not each of its sections.
+ */
+export function matchProjectSections(
+  projects: ReadonlyArray<{ id: string; label: string }>,
+  query: string,
+): ProjectSectionHit[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const hits: ProjectSectionHit[] = [];
+  for (const project of projects) {
+    const name = project.label.toLowerCase();
+    for (const [section, title] of PROJECT_SECTIONS) {
+      const keywords = PROJECT_SECTION_KEYWORDS[section];
+      let hint: string | undefined;
+      let matchesSection = false;
+      const every = words.every((word) => {
+        if (title.toLowerCase().includes(word)) {
+          matchesSection = true;
+          return true;
+        }
+        const keyword = keywords.find((k) => k.includes(word));
+        if (keyword) {
+          matchesSection = true;
+          hint ??= keyword;
+          return true;
+        }
+        return name.includes(word);
+      });
+      if (!every || !matchesSection) continue;
+      const hit: ProjectSectionHit = {
+        project: project.id,
+        section,
+        label: `${project.label} · ${title}`,
+      };
+      if (hint) hit.hint = hint;
+      hits.push(hit);
+    }
+  }
+  return hits;
+}
+
+/** Projects whose name matches the query; all of them when it is empty. */
+export function matchProjects<T extends { label: string }>(
+  projects: readonly T[],
+  query: string,
+): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...projects];
+  return projects.filter((p) => p.label.toLowerCase().includes(q));
+}
+
+/** Where Enter in the settings search goes when no section matched: the
+ *  first matching project, else the first matching project section. */
+export function firstProjectHit(
+  projects: ReadonlyArray<{ id: string; label: string }>,
+  query: string,
+): { project: string; section?: ProjectSectionId } | null {
+  if (!query.trim()) return null;
+  const project = matchProjects(projects, query)[0];
+  if (project) return { project: project.id };
+  const hit = matchProjectSections(projects, query)[0];
+  return hit ? { project: hit.project, section: hit.section } : null;
 }

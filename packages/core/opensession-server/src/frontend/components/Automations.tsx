@@ -48,6 +48,7 @@ import {
   docTitle,
   DEFAULT_DOC_TITLE,
 } from "../lib/brand";
+import { PlainButton } from "../ui/plain-button";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { cn } from "../ui/cn";
@@ -65,6 +66,13 @@ import {
   sandboxProviderLabel,
 } from "../lib/automation-form";
 import { AutomationDataFlowEditor } from "./AutomationDataFlowEditor";
+import { useNavigation } from "../hooks/useNavigation";
+import { useProjectSettings } from "../hooks/useProjects";
+import {
+  automationDefaultModelLabel,
+  automationPlaceCopy,
+  visibleAutomations,
+} from "../lib/automation-environment";
 
 /* The old .automation-form family, as utilities. Two of its rules reached in
    from the form to the fields inside it and have to stay descendant selectors:
@@ -175,7 +183,7 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
     try {
       const next = await fetchAutomations();
       setAutomations(
-        next.map((automation) => {
+        visibleAutomations(next).map((automation) => {
           const pending = pendingToggles.current.get(automation.id);
           return pending
             ? { ...automation, enabled: pending.enabled }
@@ -618,11 +626,7 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
 
                     <DetailKey>Environment</DetailKey>
                     <span className="text-dim">
-                      {sel.sandbox
-                        ? sandboxStatus?.automation?.available
-                          ? `${sandboxProviderLabel(sandboxStatus.automation.provider)} · fresh disposable Executor`
-                          : `Sandbox unavailable${sandboxStatus?.automation?.reason ? ` · ${sandboxStatus.automation.reason}` : ""}`
-                        : "Host worktree"}
+                      <AutomationPlace automation={sel} />
                     </span>
 
                     <DetailKey>Model</DetailKey>
@@ -806,6 +810,43 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
  * watched channel) are what you scan for, and they now show up without
  * reading the line under the name.
  */
+/**
+ * Where an automation runs, in one line: its project's place for
+ * automations, or the disposable sandbox it kept from before projects had
+ * their own. `link` adds the way to change it.
+ */
+function AutomationPlace({
+  automation,
+  link = false,
+}: {
+  automation: Pick<Automation, "sandbox" | "repo">;
+  link?: boolean;
+}) {
+  const navigation = useNavigation();
+  const repo = automation.sandbox ? null : (automation.repo ?? null);
+  const place = useProjectSettings(repo).data?.effective.sandbox.automations;
+  const copy = automationPlaceCopy(automation, place);
+  if (!link || automation.sandbox) return <>{copy}</>;
+  return (
+    <>
+      {copy}{" "}
+      <PlainButton
+        className={cn(
+          LINK,
+          "relative border-0 bg-transparent p-0 text-supporting before:absolute before:-inset-x-1 before:-inset-y-3 before:content-['']",
+        )}
+        onClick={() =>
+          repo
+            ? navigation.openProjectSettings(repo, "where")
+            : navigation.openProjectDefaults()
+        }
+      >
+        Change
+      </PlainButton>
+    </>
+  );
+}
+
 function TriggerIcon({ automation }: { automation: Automation }) {
   // Normalize each glyph's drawn height, not just its SVG box. These icons
   // occupy different proportions of the shared 24px viewBox.
@@ -1444,13 +1485,12 @@ function AutomationForm({
     initial?.accountStrict !== false,
   );
   const [usageCredits, setUsageCredits] = useState(!!initial?.usageCredits);
-  const [sandbox, setSandbox] = useState(!!initial?.sandbox);
-  const [sandboxAvailability, setSandboxAvailability] = useState<
-    SandboxStatusInfo["automation"] | null
-  >(null);
-  const [sandboxProviders, setSandboxProviders] = useState<
-    SandboxStatusInfo["providers"]
-  >([]);
+  // Where a run goes is the project's choice now (Where agents run). An
+  // automation saved with `sandbox: true` before that keeps its disposable
+  // profile; there is no control to set it any more.
+  const sandbox = !!initial?.sandbox;
+  const projectModel = useProjectSettings(initial?.repo ?? null).data?.effective
+    .models.automations;
   const [models, setModels] = useState<ModelOption[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
@@ -1476,27 +1516,6 @@ function AutomationForm({
       onError: (cause) =>
         setWorkspaceLoadError(errorMessage(cause, "Could not load workspaces")),
     }).then(setWorkspaces);
-    fetchSandboxStatus(getCurrentUser())
-      .then((status) => {
-        setSandboxProviders(status.providers);
-        setSandboxAvailability(
-          status.automation || {
-            provider: "daytona",
-            available: false,
-            reason: "The server does not support sandbox automations yet.",
-          },
-        );
-      })
-      .catch((cause: unknown) =>
-        setSandboxAvailability({
-          provider: "daytona",
-          available: false,
-          reason: errorMessage(
-            cause,
-            "Could not check sandbox automation availability",
-          ),
-        }),
-      );
   }, []);
   const effectiveModel = model || defaultModel;
   const accountProvider = models.find(
@@ -1767,51 +1786,21 @@ function AutomationForm({
             </Select>
           </label>
 
-          <label
-            className={cn(FIELD_LABEL, "desktop:w-full desktop:flex-none")}
-          >
-            Execution environment
-            <Select
-              value={sandbox ? "daytona" : ""}
-              onChange={(event) => {
-                const checked = event.target.value === "daytona";
-                setSandbox(checked);
-                if (checked) {
-                  setAccountStrict(true);
-                  setFallbackModel("");
-                  setMcpServers((current) => current ?? []);
-                }
-              }}
-            >
-              <option value="">Host worktree</option>
-              <option
-                value="daytona"
-                disabled={!sandbox && !sandboxAvailability?.available}
-              >
-                Daytona
-                {sandboxAvailability?.available ? "" : " · unavailable"}
-              </option>
-              {sandboxProviders
-                .filter((provider) => provider.id !== "daytona")
-                .map((provider) => (
-                  <option key={provider.id} value={provider.id} disabled>
-                    {sandboxProviderLabel(provider.id)} · unavailable for
-                    automations
-                  </option>
-                ))}
-            </Select>
-            <span className="mt-1 text-supporting leading-snug text-faint">
-              {sandboxAvailability?.available
-                ? "Daytona uses a fresh disposable Executor with pinned credentials and restricted network access."
-                : sandboxAvailability?.reason || "Checking availability"}
+          <div className={cn(FIELD_LABEL, "desktop:w-full desktop:flex-none")}>
+            Where it runs
+            <span className="text-supporting font-normal leading-snug text-dim">
+              <AutomationPlace
+                automation={{ sandbox, repo: initial?.repo }}
+                link
+              />
             </span>
-          </label>
+          </div>
 
           <label className={FIELD_LABEL}>
             Model
             <Select value={model} onChange={(e) => setModel(e.target.value)}>
               <option value="">
-                Default{defaultModel ? ` · ${defaultModel}` : ""}
+                {automationDefaultModelLabel(projectModel?.label, defaultModel)}
               </option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -1942,7 +1931,7 @@ function AutomationForm({
             !prompt.trim() ||
             !scheduleValid ||
             !watchValid ||
-            (sandbox && (!accountId || sandboxAvailability?.available !== true))
+            (sandbox && !accountId)
           }
         >
           {saving ? "Saving…" : initial ? "Save changes" : "Create automation"}
