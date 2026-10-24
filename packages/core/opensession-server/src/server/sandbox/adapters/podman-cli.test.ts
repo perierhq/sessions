@@ -280,6 +280,19 @@ describe("podman argv", () => {
     ]);
   });
 
+  test("workload create grants no swap beyond the memory limit", () => {
+    for (const memoryMb of [512, 2048, 4096, 10_240]) {
+      const argv = workloadCreateArgs({
+        names,
+        image: "localhost/opensession-sandbox:0123456789abcdef",
+        memoryMb,
+        pidsLimit: 4096,
+      });
+      expect(operands(argv, "--memory-swap")).toEqual([`${memoryMb}m`]);
+      expect(operands(argv, "--memory")).toEqual([`${memoryMb}m`]);
+    }
+  });
+
   test("workload create refuses bad limits and option-like images", () => {
     const base = {
       names,

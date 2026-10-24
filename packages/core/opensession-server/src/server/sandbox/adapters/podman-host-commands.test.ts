@@ -130,6 +130,14 @@ describe("podman argv checked on a host", () => {
         pidsLimit: 256,
         cpu: 1.5,
       }),
+      // The default CPU limit on a host that delegates `cpu`.
+      workloadCreateArgs({
+        names,
+        image: "localhost/opensession-sandbox:0123456789abcdef",
+        memoryMb: 4096,
+        pidsLimit: 4096,
+        cpu: 2,
+      }),
       execArgs({ workload: names.workload, timeoutSec: 30, cmd: "echo a b" }),
       execArgs({
         workload: names.workload,
@@ -147,6 +155,19 @@ describe("podman argv checked on a host", () => {
       }),
     ];
     for (const argv of argvs) expect(isVerifiedPodmanArgv(argv)).toBe(true);
+  });
+
+  test("a workload with swap beyond its memory is not a verified shape", () => {
+    const argv = workloadCreateArgs({
+      names,
+      image: "localhost/opensession-sandbox:0123456789abcdef",
+      memoryMb: 4096,
+      pidsLimit: 4096,
+    });
+    expect(isVerifiedPodmanArgv(argv)).toBe(true);
+    const more = [...argv];
+    more[more.indexOf("--memory-swap") + 1] = "8192m";
+    expect(isVerifiedPodmanArgv(more)).toBe(false);
   });
 
   test("argv podman 5.8 rejects are not verified shapes", () => {

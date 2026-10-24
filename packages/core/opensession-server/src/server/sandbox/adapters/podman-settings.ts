@@ -6,6 +6,8 @@ import { isIpv4 } from "./podman-cli";
 
 export const PODMAN_DEFAULT_MEMORY_MB = 4096;
 export const PODMAN_DEFAULT_PIDS_LIMIT = 4096;
+/** CPUs a sandbox may use when none is set, at most the host's count. */
+export const PODMAN_DEFAULT_CPU = 2;
 export const PODMAN_DEFAULT_DNS = ["1.1.1.1", "9.9.9.9"];
 
 /** Below this a sandbox cannot run the agent's tools at all. */
@@ -18,8 +20,9 @@ export const PODMAN_MIN_CPU = 0.1;
 export interface PodmanSettings {
   memoryMb: number;
   pidsLimit: number;
-  /** Applied only when this host delegates the cgroup `cpu` controller. */
-  cpu?: number;
+  /** CPUs (fractional allowed). Applied only when this host delegates the
+   *  cgroup `cpu` controller. */
+  cpu: number;
   /** The only resolvers the sandbox may reach (IPv4, public). */
   dns: string[];
 }
@@ -98,7 +101,7 @@ export function podmanSettings(
   return {
     memoryMb: limits.memoryMb ?? PODMAN_DEFAULT_MEMORY_MB,
     pidsLimit: limits.pidsLimit ?? PODMAN_DEFAULT_PIDS_LIMIT,
-    ...(limits.cpu !== undefined ? { cpu: limits.cpu } : {}),
+    cpu: limits.cpu ?? Math.min(PODMAN_DEFAULT_CPU, Math.max(1, host.cpus)),
     dns: dns.length ? dns : [...PODMAN_DEFAULT_DNS],
   };
 }

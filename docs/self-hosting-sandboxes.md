@@ -617,15 +617,22 @@ fix when one is missing:
 - SELinux enforcing is recommended. Without it qualification passes with a
   warning, and containers rely on namespaces and seccomp alone.
 
-**Limits.** Each sandbox gets a memory limit (default 4096 MB) and a
-process limit (default 4096), set on the This machine (container) card. A
-CPU limit applies only when it is set there and the host delegates the
-`cpu` controller; the card says "CPU not limited on this host" when it does
-not. Without one, a busy sandbox can use every CPU this server has. Podman
-writes the `--memory-swap` value (equal to the memory limit) into the
-cgroup's `memory.swap.max`, so on a host with swap a sandbox may also use
-that much swap on top of its memory: 4 GiB of RAM plus up to 4 GiB of swap
-by default. Podman overrides `--cgroup-conf memory.swap.max=0`, so size or
+**Limits.** Each sandbox gets a memory limit (default 4096 MB), a process
+limit (default 4096) and a CPU limit (default 2 CPUs, or every CPU on a
+smaller host), set on the This machine (container) card. The CPU limit
+applies only when the host delegates the `cpu` controller; the card shows
+the limit a sandbox gets ("2 CPUs"), or "CPU not limited on this host" when
+it cannot apply one. Without it, a busy sandbox can use every CPU this
+server has. The
+workload is created with `--memory-swap` equal to `--memory`. That value is
+memory plus swap, so it grants no swap beyond the memory limit. crun 1.30.1
+and earlier, under the systemd cgroup manager that rootless Podman uses, pass
+it to systemd unconverted as the swap-only `MemorySwapMax`, so the
+cgroup's `memory.swap.max` reads the memory limit and a sandbox on a host
+with swap may still use that much swap on top of its memory (4 GiB by
+default). The crun fix (containers/crun@cbb32ce) converts the value, so
+with a crun release that includes it `memory.swap.max` should read 0. `--cgroup-conf memory.swap.max=0` does not
+help, as the swap limit takes precedence over it; on an older crun, size or
 disable host swap if that matters.
 
 **Not available here.** Automations and public review are refused (they need
