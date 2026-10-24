@@ -211,6 +211,7 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
       "box",
       "tart",
       "usecomputer",
+      "podman",
     ]);
     expect(s.killSwitch).toBe(!sandboxesEnabled());
   });
@@ -434,14 +435,32 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       expect(r.error).toContain("needs attention in Workspace > Sandboxes");
   });
 
-  test("a qualified This machine (container) stays off until it is live-certified", () => {
+  test("a qualified This machine (container) is selectable now it is live-certified", () => {
     write({});
     ready("podman");
-    expect(SANDBOX_PROVIDER_CERTIFICATIONS.podman.certified).toBe(false);
-    expect(sandboxProviderUsability("podman").state).toBe("unavailable");
-    expect(anySandboxProvider()).toBe(null);
-    const r = resolveRequestedSandbox("podman");
-    expect(r.ok).toBe(false);
+    expect(SANDBOX_PROVIDER_CERTIFICATIONS.podman.certified).toBe(true);
+    expect(sandboxProviderUsability("podman").state).toBe(
+      sandboxesEnabled() ? "usable" : "unavailable",
+    );
+    expect(anySandboxProvider()).toBe(sandboxesEnabled() ? "podman" : null);
+    expect(resolveRequestedSandbox("podman").ok).toBe(sandboxesEnabled());
+  });
+
+  test("a qualified This machine (container) stays off without live certification", () => {
+    const certification = SANDBOX_PROVIDER_CERTIFICATIONS.podman;
+    SANDBOX_PROVIDER_CERTIFICATIONS.podman = {
+      certified: false,
+      note: "not live-certified",
+    };
+    try {
+      write({});
+      ready("podman");
+      expect(sandboxProviderUsability("podman").state).toBe("unavailable");
+      expect(anySandboxProvider()).toBe(null);
+      expect(resolveRequestedSandbox("podman").ok).toBe(false);
+    } finally {
+      SANDBOX_PROVIDER_CERTIFICATIONS.podman = certification;
+    }
   });
 
   test("true with no ready provider fails with a pointed error", () => {
