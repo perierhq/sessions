@@ -6,7 +6,6 @@
 // has no effect.
 import type { IncidentState, SignalState } from "../../shared/incidents";
 import { broadcastToAll } from "../ws-hub";
-import { onIncidentAccessChange } from "./access/settings-store";
 import { onIncidentChange } from "./incident-store";
 import { onProjectSettingsChange } from "./response/project-settings";
 import { onSignalStateChange } from "./signal-runtime";
@@ -68,10 +67,9 @@ export function startIncidentBroadcasts(): void {
       project: signal.project,
     });
   });
+  // Incident and access settings are one project document now: one
+  // listener hears both.
   onProjectSettingsChange((project) => {
-    send({ type: "incident_settings_changed", project });
-  });
-  onIncidentAccessChange((project) => {
     send({ type: "incident_settings_changed", project });
   });
 }

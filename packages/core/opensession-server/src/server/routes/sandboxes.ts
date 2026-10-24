@@ -65,7 +65,7 @@ export async function handleSandboxesRoutes(
     return Response.json({
       ...sandboxCapabilityStatus(),
       ...(await connectionPayload(ctx)),
-      defaults: sandboxDefaultsStatus(user, repo),
+      defaults: await sandboxDefaultsStatus(repo),
     });
   }
 
@@ -138,21 +138,20 @@ export async function handleSandboxesRoutes(
     const user = requestUser(ctx, body.user) || "Anonymous";
     try {
       if (body.scope === "workspace") {
-        saveWorkspaceSandboxDefault(body.value);
+        await saveWorkspaceSandboxDefault(body.value);
       } else if (body.scope === "repo") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
-        saveRepoSandboxDefault(body.repo, body.value);
+        await saveRepoSandboxDefault(body.repo, body.value, user);
       } else if (body.scope === "repo-portals") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
-        saveRepoPortalSandbox(body.repo, body.value);
+        await saveRepoPortalSandbox(body.repo, body.value);
       } else {
         return errorResponse("scope must be workspace, repo, or repo-portals");
       }
       return Response.json({
-        defaults: sandboxDefaultsStatus(
-          user,
+        defaults: await sandboxDefaultsStatus(
           typeof body.repo === "string" ? body.repo : undefined,
         ),
       });

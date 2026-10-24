@@ -571,6 +571,8 @@ const FALLBACK_AUTO_STORE = stateDir("model-fallback.json");
 // undefined = not yet loaded from disk; null = no override set.
 let overrideCache: string | null | undefined;
 let interactiveOverrideCache: string | null | undefined;
+/** Per-role global defaults (Defaults page): undefined = not yet loaded. */
+const roleOverrideCache = new Map<RoleDefaultModelKey, string | null>();
 
 /** Test seam (bun tests only) — mirrors codex-accounts's __setXForTest naming.
  *  Drops the memoized default-model override reads so a test's scratch
@@ -580,9 +582,21 @@ let interactiveOverrideCache: string | null | undefined;
 export function __resetModelCachesForTest(): void {
   overrideCache = undefined;
   interactiveOverrideCache = undefined;
+  roleOverrideCache.clear();
 }
 
-function loadStoredDefault(field: "model" | "interactiveModel"): string | null {
+/** The model-store keys of the per-role global defaults. */
+export const ROLE_DEFAULT_MODEL_KEYS = [
+  "automationsModel",
+  "investigatorModel",
+  "verifierModel",
+  "reviewsModel",
+] as const;
+export type RoleDefaultModelKey = (typeof ROLE_DEFAULT_MODEL_KEYS)[number];
+
+function loadStoredDefault(
+  field: "model" | "interactiveModel" | RoleDefaultModelKey,
+): string | null {
   try {
     if (existsSync(defaultModelStore())) {
       const raw = JSON.parse(readFileSync(defaultModelStore(), "utf8"));
@@ -667,6 +681,39 @@ export function setInteractiveDefaultModel(input: string | null): string {
   if (!m) throw new Error(`Unknown model: ${input}`);
   interactiveOverrideCache = m.id;
   patchDefaultModelStore({ interactiveModel: m.id });
+  return m.id;
+}
+
+/** A role's global default from the model store, or null when unset. */
+export function roleDefaultModel(key: RoleDefaultModelKey): string | null {
+  let cached = roleOverrideCache.get(key);
+  if (cached === undefined) {
+    cached = loadStoredDefault(key);
+    roleOverrideCache.set(key, cached);
+  }
+  return cached;
+}
+
+/**
+ * Persist a role's global default (Automations, Investigator, Verifier,
+ * Reviews), or clear it with null. Returns the stored id or null; throws
+ * on an unknown model id.
+ */
+export function setRoleDefaultModel(
+  key: RoleDefaultModelKey,
+  input: string | null,
+): string | null {
+  if (input === null || input.trim() === "") {
+    roleOverrideCache.set(key, null);
+    try {
+      patchDefaultModelStore({ [key]: null });
+    } catch {}
+    return null;
+  }
+  const m = resolveModel(input);
+  if (!m) throw new Error(`Unknown model: ${input}`);
+  roleOverrideCache.set(key, m.id);
+  patchDefaultModelStore({ [key]: m.id });
   return m.id;
 }
 

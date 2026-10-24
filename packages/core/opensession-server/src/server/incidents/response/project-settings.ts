@@ -1,9 +1,9 @@
-// Per-project incident settings on the `incident-projects` application
-// catalog namespace: autonomy, veto and watch windows, the night rule,
-// never-without-you, budgets, agent models, production Runners, typed
-// actions and recent releases. Configuration lives here only; nothing reads
-// it from a repository.
-import { randomBytes } from "node:crypto";
+// Per-project incident settings: the incident policy, agent models,
+// production Runners, typed actions and recent releases, read and written
+// as a projection of the project settings document (projects/store.ts).
+// Every export keeps its name and shape for the coordinator, policy,
+// actions and routes; the legacy `incident-projects` namespace is read only
+// by projects/legacy.ts.
 import {
   ACTION_PLACEHOLDERS,
   ACTION_TEMPLATES,
@@ -17,25 +17,26 @@ import {
   type IncidentAction,
   type IncidentProjectSettings,
   type IncidentRelease,
-  type NightRule,
   type RedactedProjectSettings,
 } from "../../../shared/incident-response";
-import { catalogDocuments } from "../../catalog-documents";
-import { configuredRepos } from "../../config";
-import { resolveModel } from "../../models";
+import type {
+  ProjectSettingsDocument,
+  ProjectSettingsPatch,
+} from "../../../shared/project-settings";
+import { legacyProjectDocuments } from "../../projects/legacy";
 import {
-  type Result,
-  failed,
-  isRecord,
-  loosenedFields,
-  productionRunnerProblem,
-  settingsInvariantProblem,
-  validateActionList,
-  validatePolicyFields,
-  validateProductionRunners,
-} from "../../projects/validate";
+  __setProjectStoreContextForTest,
+  getProjectDocument,
+  listProjectDocuments,
+  onProjectDocumentChange,
+  patchProjectDocumentAsServer,
+  peekProjectDocument,
+  projectExists,
+  STALE_REVISION_ERROR,
+  updateProjectDocument,
+} from "../../projects/store";
+import { isRecord } from "../../projects/validate";
 import { incidentAudit } from "../audit-sink";
-import { canonicalModelId, sameModel } from "./models";
 
 export { ACTION_PLACEHOLDERS, ACTION_TEMPLATES };
 export {
@@ -46,7 +47,6 @@ export {
   validateAction,
 } from "../../projects/validate";
 
-const NAMESPACE = "incident-projects";
 const MAX_RELEASES = 20;
 
 export interface ProjectSettingsContext {
@@ -55,37 +55,18 @@ export interface ProjectSettingsContext {
   modelProblem(id: string): string | null;
 }
 
-// Bound on first use, never at import: the catalog client is a live effect.
-let documents: ReturnType<typeof catalogDocuments> | undefined;
-function settingsDocuments(): ReturnType<typeof catalogDocuments> {
-  return (documents ??= catalogDocuments(NAMESPACE));
-}
-
-let contextOverride: Partial<ProjectSettingsContext> | undefined;
-
-/** Replace parts of the validation context (undefined restores production). */
+/** Replace parts of the validation context (undefined restores production).
+ *  The project settings document validates every write. */
 export function __setProjectSettingsContextForTest(
   ctx: Partial<ProjectSettingsContext> | undefined,
 ): void {
-  contextOverride = ctx;
-}
-
-function context(): ProjectSettingsContext {
-  return {
-    projectExists:
-      contextOverride?.projectExists ??
-      ((id) => Object.hasOwn(configuredRepos(), id)),
-    runnerProblem: contextOverride?.runnerProblem ?? productionRunnerProblem,
-    modelProblem:
-      contextOverride?.modelProblem ??
-      ((id) => (resolveModel(id) ? null : `Unknown model ${id}`)),
-  };
+  __setProjectStoreContextForTest(ctx);
 }
 
 /** Whether `project` is a registered project (the test context may say
  *  otherwise). */
 export function incidentProjectExists(project: string): boolean {
-  return context().projectExists(project);
+  return projectExists(project);
 }
 
 export function defaultProjectSettings(
@@ -107,90 +88,121 @@ export function defaultProjectSettings(
   };
 }
 
-/** A stored record merged over the defaults. */
-function withDefaults(
-  project: string,
-  stored: unknown,
+/** The incident settings a project document holds. */
+export function settingsFromDocument(
+  doc: ProjectSettingsDocument,
 ): IncidentProjectSettings {
-  const base = defaultProjectSettings(project);
-  if (!isRecord(stored)) return base;
-  const s = stored as Partial<IncidentProjectSettings>;
+  const agents: IncidentProjectSettings["agents"] = {};
+  if (doc.models.investigator)
+    agents.investigatorModel = doc.models.investigator;
+  if (doc.models.verifier) agents.verifierModel = doc.models.verifier;
+  const { night, ...policy } = doc.incidents;
   return {
-    ...base,
-    ...s,
-    project,
-    budget: { ...base.budget, ...(isRecord(s.budget) ? s.budget : {}) },
-    agents: { ...(isRecord(s.agents) ? s.agents : {}) },
-    neverWithoutYou: Array.isArray(s.neverWithoutYou)
-      ? s.neverWithoutYou
-      : base.neverWithoutYou,
-    productionRunners: Array.isArray(s.productionRunners)
-      ? s.productionRunners
-      : [],
-    actions: Array.isArray(s.actions) ? s.actions : [],
-    releases: Array.isArray(s.releases) ? s.releases : [],
+    project: doc.project,
+    ...policy,
+    ...(night ? { night } : {}),
+    neverWithoutYou: [...doc.incidents.neverWithoutYou],
+    budget: { ...doc.incidents.budget },
+    agents,
+    productionRunners: [...doc.production.runners],
+    actions: [...doc.production.actions],
+    releases: [...doc.production.releases],
+    ...(doc.automationId ? { automationId: doc.automationId } : {}),
+    ...(doc.releaseHookSecret
+      ? { releaseHookSecret: doc.releaseHookSecret }
+      : {}),
+    updatedAt: doc.updatedAt,
+    updatedBy: doc.updatedBy,
   };
 }
 
-const cache = new Map<string, IncidentProjectSettings>();
-function remember(s: IncidentProjectSettings): IncidentProjectSettings {
-  cache.set(s.project, s);
-  return s;
+/** `doc` holding what `s` says, for a server-side write. */
+function documentWithSettings(
+  doc: ProjectSettingsDocument,
+  s: IncidentProjectSettings,
+): ProjectSettingsDocument {
+  const models = { ...doc.models };
+  if (s.agents.investigatorModel)
+    models.investigator = s.agents.investigatorModel;
+  else delete models.investigator;
+  if (s.agents.verifierModel) models.verifier = s.agents.verifierModel;
+  else delete models.verifier;
+  const next: ProjectSettingsDocument = {
+    ...doc,
+    models,
+    incidents: {
+      agentsPaused: s.agentsPaused,
+      autonomy: s.autonomy,
+      vetoMs: s.vetoMs,
+      watchMs: s.watchMs,
+      maxRounds: s.maxRounds,
+      ...(s.night ? { night: s.night } : {}),
+      neverWithoutYou: [...s.neverWithoutYou],
+      budget: { ...s.budget },
+    },
+    production: {
+      runners: [...s.productionRunners],
+      actions: [...s.actions],
+      releases: [...s.releases],
+    },
+  };
+  if (s.automationId) next.automationId = s.automationId;
+  else delete next.automationId;
+  if (s.releaseHookSecret) next.releaseHookSecret = s.releaseHookSecret;
+  return next;
 }
-
-const listeners = new Set<(project: string) => void>();
 
 /** Subscribe to committed settings writes, the caller's and the server's
  *  own (releases, pairing); returns the unsubscribe function. */
 export function onProjectSettingsChange(
   listener: (project: string) => void,
 ): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** Each listener on its own microtask, so none can fail or hold the write. */
-function notify(project: string): void {
-  for (const listener of [...listeners])
-    void Promise.resolve()
-      .then(() => listener(project))
-      .catch((error: unknown) => {
-        console.warn(
-          "[incident-settings] change listener failed:",
-          error instanceof Error ? error.message : error,
-        );
-      });
+  return onProjectDocumentChange(listener);
 }
 
 /** The last settings this process read or wrote for the project. */
 export function peekProjectSettings(
   project: string,
 ): IncidentProjectSettings | undefined {
-  return cache.get(project);
+  const doc = peekProjectDocument(project);
+  return doc && settingsFromDocument(doc);
 }
 
 export async function getProjectSettings(
   project: string,
 ): Promise<IncidentProjectSettings> {
-  return remember(
-    withDefaults(project, await settingsDocuments().get(project)),
-  );
+  return settingsFromDocument(await getProjectDocument(project));
 }
 
+/** Projects with settings of their own: a stored document, or legacy
+ *  incident settings not yet migrated. */
 export async function listProjectSettings(): Promise<
   IncidentProjectSettings[]
 > {
-  const rows = await settingsDocuments().list();
-  return rows.map((row) => remember(withDefaults(row.key, row.value)));
+  const [docs, legacy] = await Promise.all([
+    listProjectDocuments(),
+    legacyProjectDocuments().list(),
+  ]);
+  const out = docs.map(settingsFromDocument);
+  for (const row of legacy)
+    if (!docs.some((d) => d.project === row.key))
+      out.push(await getProjectSettings(row.key));
+  return out;
 }
 
-function newHookSecret(): string {
-  return randomBytes(24).toString("hex");
+/** Fields only a signed-in person may change: never an agent, an
+ *  automation or a claimed name. */
+export interface SettingsWriter {
+  /** A verified sign-in that is not an automation (the route's
+   *  `verifiedPerson(ctx)`). Without it actions and production Runners
+   *  cannot change, and the policy cannot be loosened. */
+  signedInPerson?: boolean;
 }
 
-const CALLER_FIELDS = [
+/** A refused write. `forbidden`: only a signed-in person may make it. */
+export type SettingsRefusal = { error: string; forbidden?: true };
+
+const POLICY_KEYS = [
   "agentsPaused",
   "autonomy",
   "vetoMs",
@@ -199,120 +211,43 @@ const CALLER_FIELDS = [
   "night",
   "neverWithoutYou",
   "budget",
-  "agents",
-  "productionRunners",
-  "actions",
 ] as const;
-type CallerField = (typeof CALLER_FIELDS)[number];
-type SettingsPatch = Partial<
-  Pick<IncidentProjectSettings, Exclude<CallerField, "night">>
-> & {
-  night?: NightRule | null;
-};
 
-function validatePatch(
-  project: string,
+/** The legacy settings body as a document patch (without its revision). */
+function patchFromInput(
   input: Record<string, unknown>,
-  current: IncidentProjectSettings,
-  ctx: ProjectSettingsContext,
-): Result<SettingsPatch> {
-  const policy = validatePolicyFields(input, current);
-  if (failed(policy)) return policy;
-  const patch: SettingsPatch = { ...policy };
+): Omit<ProjectSettingsPatch, "expectedRevision"> | SettingsRefusal {
+  const patch: Omit<ProjectSettingsPatch, "expectedRevision"> = {};
+  const incidents: Record<string, unknown> = {};
+  for (const key of POLICY_KEYS) if (key in input) incidents[key] = input[key];
+  if (Object.keys(incidents).length)
+    patch.incidents = incidents as ProjectSettingsPatch["incidents"];
   if ("agents" in input) {
     if (!isRecord(input.agents))
       return { error: "Agent models (agents) must be an object" };
-    const agents: IncidentProjectSettings["agents"] = { ...current.agents };
-    for (const key of ["investigatorModel", "verifierModel"] as const) {
+    const models: Record<string, string | null> = {};
+    for (const [key, role] of [
+      ["investigatorModel", "investigator"],
+      ["verifierModel", "verifier"],
+    ] as const) {
       if (!(key in input.agents)) continue;
       const v = input.agents[key];
-      if (v === undefined || v === null || v === "") {
-        delete agents[key];
-        continue;
-      }
-      if (typeof v !== "string")
+      if (v === undefined || v === null || v === "") models[role] = null;
+      else if (typeof v !== "string")
         return { error: `Agent model (${key}) must be a model id` };
-      const problem = ctx.modelProblem(v);
-      if (problem) return { error: problem };
-      agents[key] = canonicalModelId(v);
+      else models[role] = v;
     }
-    if (
-      agents.investigatorModel &&
-      agents.verifierModel &&
-      sameModel(agents.investigatorModel, agents.verifierModel)
-    )
-      return { error: "Pick a different model for the verifier" };
-    patch.agents = agents;
+    patch.models = models;
   }
-  if ("productionRunners" in input) {
-    const runners = validateProductionRunners(
-      input.productionRunners,
-      project,
-      ctx.runnerProblem,
-    );
-    if (failed(runners)) return runners;
-    patch.productionRunners = runners;
-  }
-  if ("actions" in input) {
-    const actions = validateActionList(
-      input.actions,
-      patch.productionRunners ?? current.productionRunners,
-    );
-    if (failed(actions)) return actions;
-    patch.actions = actions;
+  if ("productionRunners" in input || "actions" in input) {
+    patch.production = {};
+    if ("productionRunners" in input)
+      patch.production.runners = input.productionRunners as string[];
+    if ("actions" in input)
+      patch.production.actions = input.actions as IncidentAction[];
   }
   return patch;
 }
-
-function applyPatch(
-  current: IncidentProjectSettings,
-  patch: SettingsPatch,
-): IncidentProjectSettings {
-  const { night, ...rest } = patch;
-  const next: IncidentProjectSettings = { ...current, ...rest };
-  if (night === null) delete next.night;
-  else if (night) next.night = night;
-  return next;
-}
-
-function changedFields(
-  before: IncidentProjectSettings,
-  after: IncidentProjectSettings,
-): CallerField[] {
-  return CALLER_FIELDS.filter(
-    (f) => JSON.stringify(before[f]) !== JSON.stringify(after[f]),
-  ).sort();
-}
-
-/** Fields only a signed-in person may change: never an agent, an
- *  automation or a claimed name. */
-const PERSON_ONLY_FIELDS: readonly CallerField[] = [
-  "actions",
-  "productionRunners",
-];
-
-export interface SettingsWriter {
-  /** A verified sign-in that is not an automation (the route's
-   *  `verifiedPerson(ctx)`). Without it actions and production Runners
-   *  cannot change, and the policy cannot be loosened. */
-  signedInPerson?: boolean;
-}
-
-const PERSON_ONLY_ERROR =
-  "Only a signed-in person can change actions or production Runners";
-const LOOSEN_ERROR = "Only a signed-in person can loosen the incident policy";
-
-class SettingsRefused extends Error {
-  constructor(
-    readonly reason: string,
-    readonly forbidden = false,
-  ) {
-    super(reason);
-  }
-}
-
-/** A refused write. `forbidden`: only a signed-in person may make it. */
-export type SettingsRefusal = { error: string; forbidden?: true };
 
 export async function updateProjectSettings(
   project: string,
@@ -320,76 +255,26 @@ export async function updateProjectSettings(
   by: string,
   writer: SettingsWriter = {},
 ): Promise<IncidentProjectSettings | SettingsRefusal> {
-  const ctx = context();
-  if (!ctx.projectExists(project))
-    return { error: `Unknown project ${project}` };
+  if (!projectExists(project)) return { error: `Unknown project ${project}` };
   if (!isRecord(input)) return { error: "Settings must be an object" };
-  const snapshot = await getProjectSettings(project);
-  const early = validatePatch(project, input, snapshot, ctx);
-  if (failed(early)) return early;
-  const personOnly = (fields: CallerField[]) =>
-    writer.signedInPerson
-      ? []
-      : fields.filter((f) => PERSON_ONLY_FIELDS.includes(f));
-  const loosened = (
-    before: IncidentProjectSettings,
-    after: IncidentProjectSettings,
-  ) => (writer.signedInPerson ? [] : loosenedFields(before, after));
-  const planned = changedFields(snapshot, applyPatch(snapshot, early));
-  if (planned.length === 0) return snapshot;
-  const refusedEarly = personOnly(planned);
-  const looserEarly = loosened(snapshot, applyPatch(snapshot, early));
-  if (refusedEarly.length || looserEarly.length) {
-    incidentAudit({
-      kind: "incident_settings_refused",
+  const patch = patchFromInput(input);
+  if ("error" in patch) return patch;
+  // The legacy API carries no revision: write against the current one, and
+  // try again when a concurrent write moved it.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const { revision } = await getProjectDocument(project);
+    const out = await updateProjectDocument(
       project,
-      by,
-      fields: refusedEarly.length ? refusedEarly : looserEarly,
-    });
-    return {
-      error: refusedEarly.length ? PERSON_ONLY_ERROR : LOOSEN_ERROR,
-      forbidden: true,
-    };
+      { expectedRevision: revision, ...patch },
+      { name: by, verified: writer.signedInPerson === true },
+    );
+    if (!("error" in out)) return settingsFromDocument(out);
+    if (out.status === 409 && out.error === STALE_REVISION_ERROR) continue;
+    return out.status === 403
+      ? { error: out.error, forbidden: true }
+      : { error: out.error };
   }
-  let fields: CallerField[] = [];
-  let committed: unknown;
-  try {
-    committed = await settingsDocuments().update(project, (stored) => {
-      // Validate again against the record this write commits to: a
-      // concurrent edit may have changed what the patch depends on.
-      const current = withDefaults(project, stored);
-      const patch = validatePatch(project, input, current, ctx);
-      if (failed(patch)) throw new SettingsRefused(patch.error);
-      const next = applyPatch(current, patch);
-      fields = changedFields(current, next);
-      if (fields.length === 0 && stored !== null)
-        return stored as IncidentProjectSettings;
-      if (personOnly(fields).length)
-        throw new SettingsRefused(PERSON_ONLY_ERROR, true);
-      if (loosened(current, next).length)
-        throw new SettingsRefused(LOOSEN_ERROR, true);
-      const problem = settingsInvariantProblem(next);
-      if (problem) throw new SettingsRefused(problem);
-      return {
-        ...next,
-        releaseHookSecret: current.releaseHookSecret ?? newHookSecret(),
-        updatedAt: new Date().toISOString(),
-        updatedBy: by,
-      };
-    });
-  } catch (error) {
-    if (error instanceof SettingsRefused)
-      return error.forbidden
-        ? { error: error.reason, forbidden: true }
-        : { error: error.reason };
-    throw error;
-  }
-  const result = remember(withDefaults(project, committed));
-  if (fields.length) {
-    incidentAudit({ kind: "incident_settings_updated", project, by, fields });
-    notify(project);
-  }
-  return result;
+  return { error: STALE_REVISION_ERROR };
 }
 
 /** Server-side writes (`automationId`, pairing, releases): no caller
@@ -400,22 +285,10 @@ export async function patchProjectSettings(
   project: string,
   mutate: (s: IncidentProjectSettings) => IncidentProjectSettings,
 ): Promise<IncidentProjectSettings> {
-  if (!context().projectExists(project))
-    throw new Error(`Unknown project ${project}`);
-  const committed = await settingsDocuments().update(project, (stored) => {
-    const current = withDefaults(project, stored);
-    const next = mutate(current);
-    const problem = settingsInvariantProblem(next);
-    if (problem) throw new Error(problem);
-    return {
-      ...next,
-      project,
-      releaseHookSecret: next.releaseHookSecret ?? newHookSecret(),
-    };
-  });
-  const result = remember(withDefaults(project, committed));
-  notify(project);
-  return result;
+  const doc = await patchProjectDocumentAsServer(project, (d) =>
+    documentWithSettings(d, mutate(settingsFromDocument(d))),
+  );
+  return settingsFromDocument(doc);
 }
 
 export function redactProjectSettings(
@@ -441,8 +314,7 @@ export async function recordRelease(
 ): Promise<{ error: string } | undefined> {
   if (release.ref !== undefined && !RELEASE_REF.test(release.ref))
     return { error: "Invalid ref" };
-  if (!context().projectExists(project))
-    return { error: `Unknown project ${project}` };
+  if (!projectExists(project)) return { error: `Unknown project ${project}` };
   await patchProjectSettings(project, (s) => ({
     ...s,
     releases: [release, ...s.releases]

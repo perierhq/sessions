@@ -75,21 +75,14 @@ test("incident and signal changes broadcast ids and states only", async () => {
 
 test("access settings changes broadcast the project", async () => {
   startIncidentBroadcasts();
-  const { updateIncidentAccess } = await import("./access/settings-store");
-  const { defaultProjectGrants } = await import("../../shared/incident-access");
-  const out = await updateIncidentAccess(
-    "acme",
-    {
-      kind: "grants",
-      grants: { ...defaultProjectGrants("acme"), connections: ["sentry"] },
-    },
-    { name: "Ada", login: "ada", verified: true },
-  );
-  expect("error" in out).toBe(false);
-  expect(sent).toContainEqual({
-    type: "incident_settings_changed",
-    project: "acme",
+  const { setProjectAccessForTest } = await import("./testing/project-access");
+  await setProjectAccessForTest("acme", (access) => {
+    access.connections = [{ server: "sentry", roles: ["investigator"] }];
   });
+  await Bun.sleep(0);
+  expect(sent).toEqual([
+    { type: "incident_settings_changed", project: "acme" },
+  ]);
 });
 
 test("signal edits broadcast the signal and its project, no state", async () => {
