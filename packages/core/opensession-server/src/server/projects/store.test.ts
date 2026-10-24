@@ -330,3 +330,116 @@ test("server writes keep the revision and the document's rules", async () => {
     patchProjectDocumentAsServer("acme-gone", (d) => d),
   ).rejects.toThrow("Unknown project acme-gone");
 });
+
+const WIDEN = {
+  error: "Only a signed-in person can give agents more access",
+  status: 403,
+};
+
+test("only a signed-in person widens what agents may use", async () => {
+  const cell = (
+    row: NonNullable<
+      NonNullable<ProjectSettingsPatch["access"]>["cells"]
+    >[number]["row"],
+    role: "automations" | "investigator" | "verifier" | "reviews",
+    value: boolean | "code" | "ask",
+  ) => ({ access: { cells: [{ row, role, value }] } });
+  // Narrow first, so turning these back on is a widening.
+  await written({
+    access: {
+      cells: [
+        { row: { kind: "webSearch" }, role: "reviews", value: false },
+        { row: { kind: "mode" }, role: "investigator", value: "ask" },
+      ],
+    },
+  });
+  const widenings: Array<
+    [Omit<ProjectSettingsPatch, "expectedRevision">, string]
+  > = [
+    [
+      cell({ kind: "website", host: "docs.example.test" }, "automations", true),
+      "access.websites.docs.example.test.automations",
+    ],
+    [
+      cell({ kind: "connection", server: "linear" }, "automations", true),
+      "access.connections.linear.automations",
+    ],
+    [
+      cell({ kind: "connection", server: "linear" }, "reviews", true),
+      "access.connections.linear.reviews",
+    ],
+    [
+      cell({ kind: "host", runner: "runner-prod" }, "investigator", true),
+      "access.hosts.runner-prod.investigator",
+    ],
+    [cell({ kind: "webSearch" }, "reviews", true), "access.webSearch.reviews"],
+    [
+      cell({ kind: "mode" }, "investigator", "code"),
+      "access.modes.investigator",
+    ],
+    [{ sandbox: "local" }, "sandbox"],
+  ];
+  for (const [patch, field] of widenings) {
+    expect(await write(patch, agent)).toEqual(WIDEN);
+    expect(kit.audits.at(-1)).toEqual({
+      kind: "project_settings_refused",
+      project: "acme-web",
+      by: "agent",
+      fields: [field],
+    });
+  }
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.revision).toBe(1);
+  expect(doc.sandbox).toBe("default");
+  expect(doc.access.modes.investigator).toBe("ask");
+  expect(doc.access.websites).toEqual([]);
+  expect(doc.access.hosts).toEqual([]);
+  expect(doc.access.webSearch).not.toContain("reviews");
+  // The same changes from a person go through.
+  for (const [patch] of widenings) await written(patch);
+});
+
+test("narrowing what agents may use stays open", async () => {
+  await written({
+    sandbox: "podman",
+    access: {
+      cells: [
+        {
+          row: { kind: "website", host: "docs.example.test" },
+          role: "automations",
+          value: true,
+        },
+        {
+          row: { kind: "connection", server: "linear" },
+          role: "reviews",
+          value: true,
+        },
+      ],
+    },
+  });
+  const doc = await written(
+    {
+      access: {
+        cells: [
+          {
+            row: { kind: "connection", server: "linear" },
+            role: "reviews",
+            value: false,
+          },
+          { row: { kind: "mode" }, role: "investigator", value: "ask" },
+          { row: { kind: "webSearch" }, role: "automations", value: false },
+        ],
+        removeRows: [{ kind: "website", host: "docs.example.test" }],
+      },
+    },
+    agent,
+  );
+  expect(doc.access.websites).toEqual([]);
+  expect(doc.access.connections).toEqual([{ server: "linear", roles: [] }]);
+  expect(doc.access.modes.investigator).toBe("ask");
+  expect(doc.access.webSearch).not.toContain("automations");
+  // Models are not access: anyone may set them.
+  expect(
+    (await written({ models: { reviews: "opus" } }, agent)).models.reviews,
+  ).toBeString();
+});

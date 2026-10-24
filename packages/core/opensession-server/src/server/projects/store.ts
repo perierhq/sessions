@@ -69,6 +69,7 @@ export const STALE_REVISION_ERROR = "Settings changed since you loaded them";
 const PERSON_ONLY_ERROR =
   "Only a signed-in person can change actions or production Runners";
 const LOOSEN_ERROR = "Only a signed-in person can loosen the incident policy";
+const WIDEN_ERROR = "Only a signed-in person can give agents more access";
 const SIGN_IN = "Sign in to grant credentials to incident agents";
 const OWNER_NOT_ON_ROSTER =
   "The owner needs a team roster entry with a GitHub login to lend this credential";
@@ -884,6 +885,73 @@ export function changedFieldPaths(
   return out.sort();
 }
 
+/**
+ * Dotted paths of every change that gives agents more than they had: a
+ * role added to a connector, host or website row, web search turned on, a
+ * mode from ask to code, a new egress route, a tool no longer denied, a
+ * new or changed signal exception, or a different project sandbox.
+ * Credential cells have their own owner rules. Narrowing is not listed.
+ */
+export function widenedFieldPaths(
+  before: ProjectSettingsDocument,
+  after: ProjectSettingsDocument,
+): string[] {
+  const out: string[] = [];
+  if (before.sandbox !== after.sandbox) out.push("sandbox");
+  const ba = before.access;
+  const aa = after.access;
+  const added = <R>(
+    group: string,
+    was: R[],
+    now: R[],
+    keyOf: (r: R) => string,
+    rolesOf: (r: R) => readonly string[],
+  ) => {
+    for (const row of now) {
+      const prev = was.find((r) => keyOf(r) === keyOf(row));
+      const had = new Set(prev ? rolesOf(prev) : []);
+      for (const role of rolesOf(row))
+        if (!had.has(role)) out.push(`access.${group}.${keyOf(row)}.${role}`);
+    }
+  };
+  added(
+    "connections",
+    ba.connections,
+    aa.connections,
+    (r) => r.server,
+    (r) => r.roles,
+  );
+  added("hosts", ba.hosts, aa.hosts, hostKey, (r) => r.roles);
+  added(
+    "websites",
+    ba.websites,
+    aa.websites,
+    (r) => r.host,
+    (r) => r.roles,
+  );
+  for (const role of aa.webSearch)
+    if (!(ba.webSearch as string[]).includes(role))
+      out.push(`access.webSearch.${role}`);
+  for (const role of UNATTENDED_ROLES)
+    if (ba.modes[role] === "ask" && aa.modes[role] === "code")
+      out.push(`access.modes.${role}`);
+  for (const role of ["investigator", "verifier"] as const) {
+    if (aa.routes[role] !== null && !same(ba.routes[role], aa.routes[role]))
+      out.push(`access.routes.${role}`);
+    const denied = new Set(aa.deniedTools[role] ?? []);
+    if ((ba.deniedTools[role] ?? []).some((t) => !denied.has(t)))
+      out.push(`access.deniedTools.${role}`);
+  }
+  for (const e of aa.signalExceptions) {
+    const prev = ba.signalExceptions.find(
+      (p) => p.signalId === e.signalId && p.role === e.role,
+    );
+    if (!prev || !same(prev.fields, e.fields))
+      out.push(`access.signalExceptions.${e.signalId}.${e.role}`);
+  }
+  return out.sort();
+}
+
 // ── Writes ──────────────────────────────────────────────────────────────────
 
 function validPatchShape(patch: unknown): patch is ProjectSettingsPatch {
@@ -949,6 +1017,8 @@ export async function updateProjectDocument(
             403,
             looser.map((f) => `incidents.${f}`),
           );
+        const wider = widenedFieldPaths(current, next);
+        if (wider.length) throw new Refused(WIDEN_ERROR, 403, wider);
       }
       const problem = documentInvariantProblem(next);
       if (problem) throw new Refused(problem, 400);
