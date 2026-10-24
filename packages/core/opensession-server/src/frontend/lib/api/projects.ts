@@ -8,6 +8,7 @@ import type {
   ProjectDefaultsPatch,
   ProjectDefaultsView,
   ProjectListItem,
+  ProjectRemigrateResult,
   ProjectSettingsPatch,
   ProjectSettingsView,
 } from "../../../shared/project-settings";
@@ -102,5 +103,18 @@ export function migrateProjects(opts: {
     method: "POST",
     body: { dryRun: opts.dryRun },
     label: "Failed to migrate project settings",
+  });
+}
+
+/** Compose one project from its legacy settings again, after they changed
+ *  during an upgrade. Confirmed (`force`): the server backs up the current
+ *  settings, then replaces them. */
+export function remigrateProject(
+  project: string,
+): Promise<ProjectRemigrateResult> {
+  return request<ProjectRemigrateResult>(`/projects/${seg(project)}/migrate`, {
+    method: "POST",
+    body: { force: true },
+    label: "Failed to re-run the migration",
   });
 }

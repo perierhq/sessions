@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
   AccessCellChange,
+  ProjectRemigrateResult,
   ProjectSettingsPatch,
   ProjectSettingsView,
 } from "../../../../shared/project-settings";
@@ -87,6 +88,14 @@ mock.module("../../../hooks/useProjects", () => ({
 }));
 
 const patches: ProjectSettingsPatch[] = [];
+const remigrations: string[] = [];
+let remigrateFails = false;
+const REMIGRATED: ProjectRemigrateResult = {
+  project: "acme-web",
+  report: { project: "acme-web", dropped: [], access: "migrated" },
+  backupPath: "/data/backups/acme-web.json",
+  overwritten: true,
+};
 let respond: (patch: ProjectSettingsPatch) => ProjectSettingsView = () =>
   onServer;
 /** A response that waits, when set. */
@@ -98,7 +107,11 @@ mock.module("../../../lib/api/projects", () => ({
     return respondLater ? respondLater() : respond(patch);
   },
   allowAgentsOnConnector: async () => ({ ok: true }),
-  migrateProjects: async () => ({}),
+  remigrateProject: async (project: string) => {
+    remigrations.push(project);
+    if (remigrateFails) throw new ApiError("Forbidden", 403);
+    return REMIGRATED;
+  },
   bindProjectRunner: async () => onServer,
   patchProjectDefaults: async () => DEFAULTS_VIEW,
 }));
@@ -119,6 +132,7 @@ const { AccessRoleList } = await import("./AccessRoleList");
 const { AccessTable } = await import("./AccessTable");
 const { ProductionSection } = await import("./ProductionSection");
 const { IncidentsSection } = await import("./IncidentsSection");
+const { DriftNotice } = await import("./DriftNotice");
 const { nextCellValue } =
   await import("../../../lib/project-settings/page-model");
 
@@ -142,6 +156,8 @@ beforeEach(() => {
   respond = () => onServer;
   respondLater = null;
   revalidations.length = 0;
+  remigrations.length = 0;
+  remigrateFails = false;
 });
 afterEach(() => harness.unmountAll());
 
@@ -303,6 +319,35 @@ describe("saves waiting their turn", () => {
     await settle(20);
     expect(cached.document.revision).toBe(5);
     expect(cached.document.incidents.agentsPaused).toBe(true);
+  });
+});
+
+describe("drift", () => {
+  const drifted = () => {
+    cached = { ...READY_4_OF_6, drift: true };
+    return mountPage();
+  };
+
+  test("re-running the migration asks for this project only and refreshes", async () => {
+    const page = drifted();
+    const notice = find(page.output(), DriftNotice);
+    if (!notice) throw new Error("No drift notice");
+    expect(await notice.props.onRemigrate()).toEqual(REMIGRATED);
+    expect(remigrations).toEqual(["acme-web"]);
+    expect(revalidations).toEqual([undefined]);
+    expect(toasts).toEqual([]);
+  });
+
+  test("a refusal answers null and says why", async () => {
+    remigrateFails = true;
+    const page = drifted();
+    const notice = find(page.output(), DriftNotice);
+    if (!notice) throw new Error("No drift notice");
+    expect(await notice.props.onRemigrate()).toBeNull();
+    expect(revalidations).toEqual([]);
+    expect(toasts).toEqual([
+      { message: "Only a signed-in person can change this", variant: "error" },
+    ]);
   });
 });
 

@@ -17,8 +17,8 @@ import { routePath } from "../../../lib/app-route";
 import {
   allowAgentsOnConnector,
   ApiError,
-  migrateProjects,
   patchProjectSettings,
+  remigrateProject,
 } from "../../../lib/api/projects";
 import { errorMessage } from "../../../lib/error-message";
 import {
@@ -254,11 +254,16 @@ export function ProjectSettingsPage({
       <>
         {view.drift && (
           <DriftNotice
-            onMigrate={() =>
-              migrateProjects({ dryRun: false }).then(
-                () => revalidateProjects(),
+            project={project}
+            onRemigrate={() =>
+              remigrateProject(project).then(
+                (result) => {
+                  revalidateProjects();
+                  return result;
+                },
                 (error) => {
                   toast(saveErrorText(error), { variant: "error" });
+                  return null;
                 },
               )
             }

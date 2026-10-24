@@ -1,7 +1,7 @@
 // The project list must be a list: a server whose /api/projects still
 // answers the feeds shape is a failed load, not a crash further on.
 import { afterEach, expect, test } from "bun:test";
-import { fetchProjects } from "./projects";
+import { fetchProjects, remigrateProject } from "./projects";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -26,5 +26,28 @@ test("a list is the list", async () => {
   expect(await fetchProjects()).toEqual([
     // SAFETY: the fake answers only an id.
     { id: "acme-web" } as Awaited<ReturnType<typeof fetchProjects>>[number],
+  ]);
+});
+
+test("re-running one project's migration posts force to its own endpoint", async () => {
+  const sent: Array<{ url: string; method?: string; body: unknown }> = [];
+  globalThis.fetch = Object.assign(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({
+        url: String(input),
+        method: init?.method,
+        body: JSON.parse(String(init?.body)),
+      });
+      return Response.json({ project: "acme web", overwritten: true });
+    },
+    realFetch,
+  );
+  await remigrateProject("acme web");
+  expect(sent).toEqual([
+    {
+      url: expect.stringMatching(/\/api\/projects\/acme%20web\/migrate$/),
+      method: "POST",
+      body: { force: true },
+    },
   ]);
 });
