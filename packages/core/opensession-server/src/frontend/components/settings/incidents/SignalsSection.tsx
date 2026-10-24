@@ -10,7 +10,7 @@ import {
   signalCaption,
   sortSignals,
 } from "../../../lib/incidents/signal-summary";
-import { signalStateWord } from "../../../lib/incidents/tone";
+import { signalStateLabel } from "../../../lib/incidents/tone";
 import { repoLabel } from "../../../lib/repo-label";
 import { Button } from "../../../ui/button";
 import {
@@ -33,7 +33,7 @@ function rowCaption(signal: SignalView): string {
 
 function stateWord(signal: SignalView): string {
   if (!signal.enabled) return "Off";
-  return signalStateWord(signal.evaluation?.state ?? "unknown");
+  return signalStateLabel(signal.evaluation?.state ?? "unknown");
 }
 
 /**

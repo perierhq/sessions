@@ -55,6 +55,14 @@ export function signalStateWord(state: SignalState): string {
   return SIGNAL_WORD[state];
 }
 
+/** The state as a standalone value, in sentence case like "Off" beside it:
+ *  "OK", "Failing", "No data". */
+export function signalStateLabel(state: SignalState): string {
+  if (state === "ok") return "OK";
+  const word = SIGNAL_WORD[state];
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
 /** Any agent of the incident is running now. */
 export function agentsWorking(response: IncidentResponse | undefined): boolean {
   return !!response?.agents.some((agent) => agent.status === "running");

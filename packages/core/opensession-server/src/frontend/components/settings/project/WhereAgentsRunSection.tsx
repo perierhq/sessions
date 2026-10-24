@@ -32,7 +32,7 @@ import {
   SettingRowText,
   SettingRowTitle,
 } from "../../../ui/settings";
-import { IconCheck, IconReturn, IconX } from "../../icons";
+import { IconCheck, IconX } from "../../icons";
 import { SettingChip } from "./SettingChip";
 
 /**
@@ -73,11 +73,15 @@ export function WhereAgentsRunSection({
             <SettingRowDescription>{copy.description}</SettingRowDescription>
           </SettingRowText>
           <div className={ROW_CONTROLS}>
-            <SettingChip
-              chip={copy.chip}
-              subject="the sandbox"
-              onReset={() => onSave({ sandbox: "default" })}
-            />
+            {/* On the default, the select already reads "Use default
+                (…)"; only the way back from a choice of its own shows. */}
+            {copy.chip === "Set here" && (
+              <SettingChip
+                chip={copy.chip}
+                subject="the sandbox"
+                onReset={() => onSave({ sandbox: "default" })}
+              />
+            )}
             <OptionSelect
               label="Sandbox"
               value={sandbox}
@@ -124,8 +128,9 @@ export function WhereAgentsRunSection({
   );
 }
 
-/** One role's place: a check where it runs as set, a return arrow where
- *  it falls back to the default, a cross where it can't start. */
+/** One role's place: a check where it can run, a cross where it can't
+ *  start. Where it comes from the global default, screen readers hear so;
+ *  the Sandbox row above already shows it. */
 function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
   let mark;
   let text: string;
@@ -133,12 +138,7 @@ function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
     mark = <IconX size={14} dense className="text-red" />;
     text = "Can't start";
   } else {
-    mark =
-      place.source === "default" ? (
-        <IconReturn size={14} dense className="text-dim" />
-      ) : (
-        <IconCheck size={14} dense className="text-green" />
-      );
+    mark = <IconCheck size={14} dense className="text-green" />;
     text = joinDots(place.label);
   }
   return (
