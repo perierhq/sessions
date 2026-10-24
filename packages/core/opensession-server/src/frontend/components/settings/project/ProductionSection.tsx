@@ -56,7 +56,7 @@ const PLATFORM = new Map([
 ]);
 
 /** A phone row has room for about this much of a command. */
-const PHONE_COMMAND_CHARS = 34;
+const PHONE_COMMAND_CHARS = 24;
 
 /**
  * The project's production: the Runners its actions and checks run on,
@@ -103,10 +103,10 @@ export function ProductionSection({
     const full = action.command.split("\n")[0] ?? "";
     return (
       <span className={PRODUCTION_COMMAND}>
-        <code className="min-w-0 truncate phone:overflow-visible phone:whitespace-nowrap">
+        <code className="min-w-0 truncate">
           {phone ? middleTruncate(full, PHONE_COMMAND_CHARS) : full}
         </code>
-        <span className="shrink-0 font-sans">
+        <span className="shrink-0 font-sans phone:hidden">
           {`· ${timeoutCopy(action.timeoutMs)}`}
         </span>
       </span>

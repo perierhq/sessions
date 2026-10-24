@@ -155,7 +155,7 @@ function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
         <span aria-hidden className="flex shrink-0">
           {mark}
         </span>
-        <span className="min-w-0 truncate">{text}</span>
+        <span className="min-w-0">{text}</span>
         {place.state === "ok" && place.source === "default" && (
           <span className="sr-only">, from the global default</span>
         )}

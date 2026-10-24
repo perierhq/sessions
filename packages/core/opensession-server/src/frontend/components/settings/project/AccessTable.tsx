@@ -53,8 +53,8 @@ export function AccessTable({
   return (
     <SettingCard role="table" aria-label="What agents may use">
       <div role="row" className={ACCESS_GRID}>
-        <span role="columnheader" className="sr-only">
-          Capability
+        <span role="columnheader">
+          <span className="sr-only">Capability</span>
         </span>
         {PROJECT_ROLES.map((role) => (
           <span key={role} role="columnheader" className={ACCESS_HEAD_CELL}>
@@ -87,7 +87,7 @@ function accessRow(
     <div key={rowKeyId(row.key)} role="row" className={ACCESS_GRID}>
       <div role="rowheader" className={ACCESS_TITLE_CELL}>
         <div className={ACCESS_ROW_TITLE}>
-          <span className="min-w-0 truncate">{row.title}</span>
+          <span className="min-w-0">{row.title}</span>
           {row.warning && (
             <IconWarningTriangle
               size={15}

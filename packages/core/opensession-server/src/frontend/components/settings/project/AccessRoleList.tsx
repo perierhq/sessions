@@ -101,7 +101,7 @@ function roleRow(
       ? null
       : nextCellValue(row.key, role, cell);
   let control: React.ReactNode;
-  if (change && rowIsBoolean(row.key)) {
+  if (change && rowIsBoolean(row.key) && cell.value !== "blocked") {
     const on = cellIsOn(cell.value);
     control = (
       <button
@@ -159,7 +159,7 @@ function roleRow(
                 aria-hidden
               />
             )}
-            <span className="min-w-0 truncate">{row.title}</span>
+            <span className="min-w-0">{row.title}</span>
           </div>
           {row.warning ? (
             <div className={ACCESS_ROW_WARNING}>{row.warning.text}</div>

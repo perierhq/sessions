@@ -46,6 +46,7 @@ export function ConnectSandboxForm({
   const [apiKey, setApiKey] = useState("");
   const [region, setRegion] = useState(() => nearestRegion(browserTimeZone()));
   const [busy, setBusy] = useState(false);
+  const [missing, setMissing] = useState(false);
   const name = provider === "daytona" ? "Daytona" : "Boat";
   const group = useId();
 
@@ -74,7 +75,9 @@ export function ConnectSandboxForm({
       noValidate
       onSubmit={(event) => {
         event.preventDefault();
-        if (apiKey.trim() && !busy) void connect();
+        if (busy) return;
+        if (!apiKey.trim()) return setMissing(true);
+        void connect();
       }}
     >
       <div className={CONNECT_CHOICES} role="radiogroup" aria-label="Provider">
@@ -86,7 +89,7 @@ export function ConnectSandboxForm({
               value={choice.id}
               checked={provider === choice.id}
               onChange={() => setProvider(choice.id)}
-              className="size-4 accent-[var(--fg)]"
+              className="size-4 accent-fg"
             />
             <span className="min-w-0">
               <span className="block text-item-title font-medium text-fg">
@@ -105,7 +108,11 @@ export function ConnectSandboxForm({
             placeholder={provider === "daytona" ? "dtn_…" : "boat_…"}
             value={apiKey}
             className={CONNECT_INPUT}
-            onChange={(event) => setApiKey(event.currentTarget.value)}
+            aria-invalid={missing || undefined}
+            onChange={(event) => {
+              setApiKey(event.currentTarget.value);
+              setMissing(false);
+            }}
           />
         </Field>
         {provider === "daytona" ? (
@@ -125,11 +132,16 @@ export function ConnectSandboxForm({
           type="submit"
           variant="primary"
           className={CONNECT_BUTTON}
-          disabled={!apiKey.trim() || busy}
+          disabled={busy}
         >
           {`Connect ${name}`}
         </Button>
       </div>
+      {missing && (
+        <p role="alert" className="m-0 text-meta text-red">
+          {`Paste your ${name} API key first`}
+        </p>
+      )}
       {!hasGlobalDefault && (
         <p className="m-0 text-meta text-faint">
           {`Once connected, ${name} becomes the global default, so other projects can use it too`}
