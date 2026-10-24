@@ -931,7 +931,7 @@ export function changedFieldPaths(
  * Dotted paths of every change that gives agents more than they had: a
  * role added to a connector, host or website row, web search turned on, a
  * mode from ask to code, a new egress route, a tool no longer denied, a
- * new or changed signal exception, or a different project sandbox.
+ * new, changed or removed signal exception, or a different project sandbox.
  * Credential cells have their own owner rules. Narrowing is not listed.
  */
 export function widenedFieldPaths(
@@ -991,6 +991,15 @@ export function widenedFieldPaths(
     if (!prev || !same(prev.fields, e.fields))
       out.push(`access.signalExceptions.${e.signalId}.${e.role}`);
   }
+  // An exception overlays the table, so one that narrowed a signal gives it
+  // the whole column back once it is gone.
+  for (const e of ba.signalExceptions)
+    if (
+      !aa.signalExceptions.some(
+        (n) => n.signalId === e.signalId && n.role === e.role,
+      )
+    )
+      out.push(`access.signalExceptions.${e.signalId}.${e.role}`);
   return out.sort();
 }
 

@@ -443,3 +443,39 @@ test("narrowing what agents may use stays open", async () => {
     (await written({ models: { reviews: "opus" } }, agent)).models.reviews,
   ).toBeString();
 });
+
+test("removing a signal exception is a widening: it may have narrowed", async () => {
+  await patchProjectDocumentAsServer("acme-web", (d) => ({
+    ...d,
+    access: {
+      ...d.access,
+      signalExceptions: [
+        {
+          signalId: "sig-errors",
+          role: "investigator",
+          fields: { mode: "ask" },
+          updatedBy: "Ada",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    },
+  }));
+  const remove = {
+    access: {
+      removeSignalExceptions: [
+        { signalId: "sig-errors", role: "investigator" as const },
+      ],
+    },
+  };
+  expect(await write(remove, agent)).toEqual(WIDEN);
+  expect(kit.audits.at(-1)).toEqual({
+    kind: "project_settings_refused",
+    project: "acme-web",
+    by: "agent",
+    fields: ["access.signalExceptions.sig-errors.investigator"],
+  });
+  expect(
+    (await getProjectDocument("acme-web")).access.signalExceptions,
+  ).toHaveLength(1);
+  expect((await written(remove)).access.signalExceptions).toEqual([]);
+});
