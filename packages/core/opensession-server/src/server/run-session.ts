@@ -212,6 +212,7 @@ import { scheduleSessionHistoryIndex } from "./session-index";
 import { broadcastToSession, sessionWatchers } from "./ws-hub";
 import {
   earlyToolUseFrame,
+  recoveredEventOpensLiveTurn,
   streamDiscardFrame,
   streamPhaseFrame,
 } from "./live-stream-frames";
@@ -1236,12 +1237,7 @@ export async function recordRecoveredRunEvent(
   // adopted run's own event stream instead of persisting high-frequency feed
   // frames. The transcript backfill remains authoritative for committed text;
   // this path carries only the active phase and text produced after adoption.
-  const carriesFeedState =
-    event.type === "init" ||
-    event.type === "text_chunk" ||
-    event.type === "tool_call_start" ||
-    event.type === "tool_use" ||
-    event.type === "tool_result";
+  const carriesFeedState = recoveredEventOpensLiveTurn(event);
   if (carriesFeedState && !recoveredFeedStarted.has(osSessionId)) {
     recoveredFeedStarted.add(osSessionId);
     broadcastToSession(osSessionId, {

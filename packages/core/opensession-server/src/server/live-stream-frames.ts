@@ -66,3 +66,22 @@ export function streamDiscardFrame(
     ...(event.toolUseIds?.length ? { toolUseIds: event.toolUseIds } : {}),
   };
 }
+
+/**
+ * Whether an adopted run's event (after a gateway restart) shows its turn is
+ * live, so the gateway opens the turn for viewers (a synthetic stream_start)
+ * before relaying it. A phase counts: an adopted run is often mid-tool, and
+ * its phase frame must follow that stream_start, which resets the phase.
+ */
+export function recoveredEventOpensLiveTurn(
+  event: Pick<StreamEvent, "type" | "phase">,
+): boolean {
+  return (
+    event.type === "init" ||
+    event.type === "text_chunk" ||
+    (event.type === "phase" && event.phase !== "idle") ||
+    event.type === "tool_call_start" ||
+    event.type === "tool_use" ||
+    event.type === "tool_result"
+  );
+}
