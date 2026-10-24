@@ -27,6 +27,7 @@ import {
   type ActiveRunRecord,
 } from "../../server/run-journal";
 import { listAutomations } from "../../server/automations";
+import { withoutPeopleRestricted } from "../../server/connections";
 import {
   automaticFallbackModel,
   providerFor,
@@ -107,7 +108,11 @@ export async function githubFlowMcpServers(
   const automation = (await listAutomations()).find(
     (a) => a.eventKey === PR_EVENT_KEY,
   );
-  return automation?.mcpServers ?? DEFAULT_GITHUB_FLOW_MCP_SERVERS;
+  // Not from a project's table: no connector open only through "Allow
+  // agents".
+  return withoutPeopleRestricted(
+    automation?.mcpServers ?? DEFAULT_GITHUB_FLOW_MCP_SERVERS,
+  );
 }
 
 /** The Reviews model a project (else the global default) sets, if any. */

@@ -340,13 +340,19 @@ describe("askBashDenyReason", () => {
 });
 
 test("Allow agents opens a people-restricted server to runs without a user only", () => {
+  expect(
+    mcpServerAllowedForRun("logs", ["Ada"], undefined, [], true, true),
+  ).toBe(true);
+  // Only where the run's project ticks it for the run's role.
   expect(mcpServerAllowedForRun("logs", ["Ada"], undefined, [], true)).toBe(
-    true,
+    false,
   );
   expect(mcpServerAllowedForRun("logs", ["Ada"], undefined, [])).toBe(false);
   // A person who isn't listed still doesn't get it.
-  expect(mcpServerAllowedForRun("logs", ["Ada"], "Bo", [], true)).toBe(false);
+  expect(mcpServerAllowedForRun("logs", ["Ada"], "Bo", [], true, true)).toBe(
+    false,
+  );
   expect(
-    mcpServerAllowedForRun("apple-release", ["Ada"], undefined, [], true),
+    mcpServerAllowedForRun("apple-release", ["Ada"], undefined, [], true, true),
   ).toBe(false);
 });

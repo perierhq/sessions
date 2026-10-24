@@ -50,6 +50,7 @@ import {
   modelLabel,
   toPiModel,
 } from "./models";
+import { withoutPeopleRestricted } from "./connections";
 import { INTERNAL_MCP_CAPABILITIES } from "./mcp-capabilities";
 import { globalRoleDefault } from "./projects/global-defaults";
 import {
@@ -1839,7 +1840,11 @@ export async function automationUnderProject(
       "[automations] project settings unreadable, keeping the automation's own connectors:",
       error instanceof Error ? error.message : error,
     );
-    return a;
+    // Not from the project's table: nothing open only through "Allow
+    // agents" ("all" never gets those anyway).
+    return a.mcpServers === undefined
+      ? a
+      : { ...a, mcpServers: withoutPeopleRestricted(a.mcpServers) };
   }
   const mcpServers =
     a.mcpServers === undefined

@@ -12,7 +12,7 @@ import {
   type ProjectSettingsDocument,
 } from "../../shared/project-settings";
 import { configuredPaths, configuredRepos } from "../config";
-import { readMcpConfig, replaceMcpServerEntries } from "../connections";
+import { setMcpAllowUnattended } from "../connections";
 import { incidentAudit } from "../incidents/audit-sink";
 import { connectionStatusFrom } from "../incidents/access/environment";
 import { projectMonthSpend } from "../incidents/response/coordinator";
@@ -251,16 +251,8 @@ export function liveProjectRouteDeps(): ProjectRouteDeps {
         { signedInPerson: true },
         { confirmShared: opts.confirmShared },
       ),
-    allowUnattended: (server, on) => {
-      const entry = readMcpConfig().mcpServers[server] as
-        | Record<string, unknown>
-        | undefined;
-      if (!entry) return { error: `Server "${server}" not found` };
-      const next = { ...entry };
-      if (on) next.allowUnattended = true;
-      else delete next.allowUnattended;
-      return replaceMcpServerEntries({ [server]: next });
-    },
+    // Through setMcpAllowUnattended, so a protected server is refused.
+    allowUnattended: (server, on) => setMcpAllowUnattended(server, on),
     migrate: migrateProjectSettings,
     remigrate: remigrateProject,
     audit: incidentAudit,

@@ -301,7 +301,13 @@ export function addMcpServerEntry(
   if (config.mcpServers[clean]) {
     return { error: `Server "${clean}" already exists, remove it first` };
   }
-  const { allowedUsers: _ignored, ...rest } = entry;
+  // "Allow agents" is a signed-in person's switch (setMcpAllowUnattended),
+  // never the package's.
+  const {
+    allowedUsers: _ignored,
+    allowUnattended: _notThePackages,
+    ...rest
+  } = entry;
   config.mcpServers[clean] = allowedUsers ? { ...rest, allowedUsers } : rest;
   writeMcpConfig(config);
   return { ok: true };
@@ -329,6 +335,20 @@ export function setMcpAllowedUsers(
   else delete entry.allowedUsers;
   writeMcpConfig(config);
   return { ok: true, allowedUsers: cleaned };
+}
+
+/**
+ * `names` without the servers limited to named people. For an unattended
+ * run's connector list that doesn't come from a project's access table:
+ * such a server could reach that run only through "Allow agents", which a
+ * project grants by ticking it.
+ */
+export function withoutPeopleRestricted(names: readonly string[]): string[] {
+  const servers = readMcpConfig().mcpServers;
+  return names.filter((name) => {
+    const users = servers[name]?.allowedUsers;
+    return !(Array.isArray(users) && users.length > 0);
+  });
 }
 
 /**
@@ -369,8 +389,15 @@ export function replaceMcpServerEntries(
     }
   }
   for (const [name, entry] of Object.entries(updates)) {
-    if (entry) config.mcpServers[name] = entry;
-    else delete config.mcpServers[name];
+    if (!entry) {
+      delete config.mcpServers[name];
+      continue;
+    }
+    // "Allow agents" changes only through setMcpAllowUnattended: keep the
+    // stored switch, whatever the update carries.
+    const { allowUnattended: _ignored, ...rest } = entry;
+    const kept = config.mcpServers[name]?.allowUnattended === true;
+    config.mcpServers[name] = kept ? { ...rest, allowUnattended: true } : rest;
   }
   writeMcpConfig(config);
   return { ok: true };
