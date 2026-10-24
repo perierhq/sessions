@@ -3,6 +3,7 @@ import type {
   AgentRun,
   IncidentResponse,
 } from "../../shared/incident-response";
+import { SEND_BACK_NOTE_MAX } from "../../shared/incident-response";
 import type { Incident } from "../../shared/incidents";
 import { createIncident, updateIncident } from "../incidents/incident-store";
 import { transitionIncident } from "../incidents/lifecycle";
@@ -311,6 +312,81 @@ test("production decisions need a signed-in person, never a claimed name", async
       { authUser: null },
     ),
   ).toEqual({ status: 409, json: { error: "Nothing to retry" } });
+});
+
+/** The card in the report: the investigator stopped, and the owner picks
+ *  Try again, Mark as fixed or Close without action. */
+function seedAgentErrorNeedsYou(): Promise<Incident> {
+  return seed((c, at) => ({
+    ...moved(c, "needs-you", at),
+    response: {
+      ...emptyResponse({ now: at, maxRounds: 2, phase: "needs-you" }),
+      coordinatorSessionId: "coord-1",
+      needsYou: {
+        kind: "agent-error",
+        reason: "The investigator stopped: Session setup failed",
+        since: at,
+        resumePhase: "investigating",
+      },
+    },
+  }));
+}
+
+test("Try again, Mark as fixed and Close without action need no note", async () => {
+  const decide = async (decision: string) => {
+    const inc = await seedAgentErrorNeedsYou();
+    return call("POST", `/api/incidents/${inc.id}/decisions`, { decision });
+  };
+  const retry = await decide("retry");
+  expect(retry?.status).toBe(200);
+  expect(retry?.json).toMatchObject({
+    state: "investigating",
+    response: { retryRequested: true },
+  });
+  const resolve = await decide("resolve");
+  expect(resolve?.status).toBe(200);
+  expect(resolve?.json).toMatchObject({ state: "resolved" });
+  const close = await decide("close");
+  expect(close?.status).toBe(200);
+  expect(close?.json).toMatchObject({ state: "closed-without-action" });
+});
+
+test("Send it back needs a note, and says so when it is missing or too long", async () => {
+  const inc = await seedAgentErrorNeedsYou();
+  const path = `/api/incidents/${inc.id}/decisions`;
+  const missing = {
+    status: 400,
+    json: { error: "Send it back needs a note for the investigator" },
+  };
+  expect(await call("POST", path, { decision: "send-back" })).toEqual(missing);
+  expect(
+    await call("POST", path, { decision: "send-back", note: "   " }),
+  ).toEqual(missing);
+  expect(
+    await call("POST", path, {
+      decision: "send-back",
+      note: "x".repeat(SEND_BACK_NOTE_MAX + 1),
+    }),
+  ).toEqual({
+    status: 400,
+    json: { error: "The note is too long: 2,000 characters at most" },
+  });
+  const sent = await call("POST", path, {
+    decision: "send-back",
+    note: "Check the sandbox resume policy first",
+  });
+  expect(sent?.status).toBe(200);
+  expect(sent?.json).toMatchObject({
+    state: "investigating",
+    response: {
+      round: 2,
+      sendBack: {
+        kind: "owner",
+        by: "Ada",
+        note: "Check the sandbox resume policy first",
+      },
+    },
+  });
 });
 
 test("agent audit lists the ledger, each agent's access and its tool calls", async () => {

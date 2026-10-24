@@ -1296,7 +1296,10 @@ test("stop and deploy now during the veto", async () => {
   ).toEqual({ error: "No veto window is open", status: 409 });
   expect(
     await applyOwnerDecision(w.incident.id, "send-back", "Bo", "", w.deps),
-  ).toEqual({ error: "A note is required", status: 400 });
+  ).toEqual({
+    error: "Send it back needs a note for the investigator",
+    status: 400,
+  });
   expect(
     await applyOwnerDecision(
       w.incident.id,
