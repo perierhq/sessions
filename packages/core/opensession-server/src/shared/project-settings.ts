@@ -66,6 +66,13 @@ export const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   reviews: "Pull request reviews and fixes",
 };
 
+/** The line over one role's access on a phone. You differs from the Models
+ *  copy: what your sessions may use isn't set on this page. */
+export const ACCESS_ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
+  ...ROLE_DESCRIPTIONS,
+  you: "Your own sessions. They follow Organization → Connections, not this page",
+};
+
 /** The collective label when Investigator and Verifier share one value. */
 export const INCIDENT_AGENTS_LABEL = "Incident agents";
 

@@ -13,7 +13,7 @@ import { AddAccessRowDialog } from "./AddAccessRowDialog";
 const KEY =
   "A dash means no. Ask once: lent for one request, then asked again. Click a cell to change it";
 const PHONE_KEY =
-  "Switch roles to compare. Each row says how many roles have it";
+  "Switch roles to compare. Under each row: how many roles have it, or why it can't change";
 
 /**
  * What agents may use: the role-by-capability table on a desktop, one role

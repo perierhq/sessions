@@ -1,8 +1,8 @@
 import type * as React from "react";
 import { useState } from "react";
 import {
+  ACCESS_ROLE_DESCRIPTIONS,
   PROJECT_ROLES,
-  ROLE_DESCRIPTIONS,
   ROLE_LABELS,
   type AccessCellChange,
   type AccessRowView,
@@ -43,8 +43,8 @@ import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * What agents may use, on a phone: one role at a time, picked from a sticky
- * row of all five roles. Each row carries how many roles have it, so the
- * differences stay visible while one role is shown.
+ * row of all five roles. Each row carries how many roles have it, or why
+ * it can't change, so the differences stay visible while one role is shown.
  */
 export function AccessRoleList({
   access,
@@ -88,7 +88,7 @@ export function AccessRoleList({
         ))}
       </div>
       <SettingCard className="mt-1.5">
-        <p className={ROLE_LIST_HINT}>{ROLE_DESCRIPTIONS[role]}</p>
+        <p className={ROLE_LIST_HINT}>{ACCESS_ROLE_DESCRIPTIONS[role]}</p>
         {access.groups.map((group) => (
           <div key={group.id} className={ACCESS_RULES}>
             {group.label && (
