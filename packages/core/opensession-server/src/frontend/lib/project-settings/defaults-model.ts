@@ -49,9 +49,11 @@ export function roleScopeCopy(
       ? projects[0]!.label
       : `All ${projects.length} projects`;
   }
-  const users = using.length
-    ? joinNames(using.map((p) => p.label))
-    : "No project";
+  if (using.length === 0)
+    return projects.length === 1
+      ? `${projects[0]!.label} sets its own`
+      : "Every project sets its own";
+  const users = joinNames(using.map((p) => p.label));
   const setters = joinNames(own.map((p) => p.label));
   return `${users}. ${setters} ${own.length === 1 ? "sets its own" : "set their own"}`;
 }

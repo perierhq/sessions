@@ -411,6 +411,9 @@ export interface MigrationResult {
   projects: ProjectMigrationReport[];
   personalDefaultsCleared: number;
   alreadyMigrated: string[];
+  /** The global Reviews default the review automation's model became (or
+   *  would become, on a dry run), when there was none. */
+  reviewsDefaultSet?: string;
 }
 
 /** One project composed from its legacy settings again (after drift). */

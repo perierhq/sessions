@@ -5,7 +5,8 @@
 // key. A project whose legacy access was unreadable starts from the default
 // access; its raw value stays in the backup. `legacyDrift` names projects
 // whose legacy settings changed after they were migrated (an old gateway
-// still draining during an upgrade).
+// still draining during an upgrade). The review automation's model, one for
+// every project, becomes the global Reviews default when there is none.
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,7 @@ import type {
   ProjectSettingsDocument,
 } from "../../shared/project-settings";
 import { incidentAudit } from "../incidents/audit-sink";
+import { canonicalModelId } from "../incidents/response/models";
 import { forgetUiPrefKey, readUiPrefKey } from "../ui-prefs";
 import {
   composeFromLegacy,
@@ -23,6 +25,7 @@ import {
   legacyEnvironment,
   legacyProjectDocuments,
   loadLegacySources,
+  reviewAutomationModel,
 } from "./legacy";
 import {
   MIGRATION_MARKER_KEY,
@@ -43,7 +46,10 @@ function backupDirectory(): string {
   return join(process.env.HOME || homedir(), ".opensession", "backups");
 }
 
-async function writeBackup(at: string): Promise<string> {
+async function writeBackup(
+  at: string,
+  reviewsDefault: string | null,
+): Promise<string> {
   const env = legacyEnvironment();
   const [projects, access, prefs] = await Promise.all([
     legacyProjectDocuments().list(),
@@ -71,6 +77,8 @@ async function writeBackup(at: string): Promise<string> {
           perRepo: sandbox.perRepo,
         },
         [`ui-prefs:${PERSONAL_SANDBOX_PREF_KEY}`]: prefs,
+        // The global Reviews default before the run, which may set it.
+        reviewsDefault,
       },
       null,
       2,
@@ -110,6 +118,17 @@ export async function migrateProjectSettings(opts: {
     (await projectDocuments().getMany(projects)).map((row) => row.key),
   );
   const alreadyMigrated = projects.filter((p) => stored.has(p));
+  // The review automation is one for every project: its model becomes the
+  // global Reviews default when there is none, and projects follow it.
+  const env = legacyEnvironment();
+  const reviewsDefaultBefore = env.reviewsDefault();
+  const pinnedReviewModel =
+    reviewsDefaultBefore === null && projects.some((p) => !stored.has(p))
+      ? await reviewAutomationModel()
+      : null;
+  let reviewsDefaultSet = pinnedReviewModel
+    ? canonicalModelId(pinnedReviewModel)
+    : undefined;
   const composed: Array<{
     project: string;
     document: ProjectSettingsDocument | null;
@@ -118,11 +137,9 @@ export async function migrateProjectSettings(opts: {
   for (const project of projects) {
     if (stored.has(project)) continue;
     try {
-      const { document, report } = composeFromLegacy(
-        project,
-        await loadLegacySources(project),
-        at,
-      );
+      const sources = await loadLegacySources(project);
+      if (reviewsDefaultSet) sources.reviewsDefault = reviewsDefaultSet;
+      const { document, report } = composeFromLegacy(project, sources, at);
       composed.push({ project, document, report });
     } catch (error) {
       composed.push({
@@ -140,10 +157,25 @@ export async function migrateProjectSettings(opts: {
       projects: reports,
       personalDefaultsCleared: Object.keys(prefs).length,
       alreadyMigrated,
+      ...(reviewsDefaultSet ? { reviewsDefaultSet } : {}),
     };
   }
 
-  const backupPath = await writeBackup(at);
+  const backupPath = await writeBackup(at, reviewsDefaultBefore);
+  if (reviewsDefaultSet) {
+    try {
+      env.setReviewsDefault(reviewsDefaultSet);
+    } catch (error) {
+      // The default store refused it: pin it per project, as before.
+      console.warn(
+        "[project-settings] couldn't set the Reviews default, pinning it per project:",
+        error instanceof Error ? error.message : error,
+      );
+      for (const c of composed)
+        if (c.document) c.document.models.reviews = reviewsDefaultSet;
+      reviewsDefaultSet = undefined;
+    }
+  }
   for (const { project, document } of composed) {
     if (!document) continue;
     let existed = false;
@@ -182,12 +214,14 @@ export async function migrateProjectSettings(opts: {
     projects: migrated,
     alreadyMigrated,
     backupPath,
+    ...(reviewsDefaultSet ? { reviewsDefaultSet } : {}),
   });
   return {
     backupPath,
     projects: reports,
     personalDefaultsCleared,
     alreadyMigrated,
+    ...(reviewsDefaultSet ? { reviewsDefaultSet } : {}),
   };
 }
 

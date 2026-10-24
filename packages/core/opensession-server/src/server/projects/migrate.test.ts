@@ -21,8 +21,15 @@ const kit = useIncidentTestKernel();
 const legacyProjects = () => catalogDocuments("incident-projects");
 const legacyAccess = () => catalogDocuments("incident-access");
 
+let reviewsDefault: string | null = null;
+
 beforeEach(() => {
+  reviewsDefault = null;
   __setLegacyEnvironmentForTest({
+    reviewsDefault: () => reviewsDefault,
+    setReviewsDefault: (id) => {
+      reviewsDefault = id;
+    },
     projects: () => ["acme-web", "acme-api"],
     sandbox: () => ({ perRepo: { "acme-web": { sessionDefault: "podman" } } }),
     automations: async () => [],
@@ -113,6 +120,58 @@ test("a run migrates, backs up, clears personal defaults; a second run writes no
   expect(second.alreadyMigrated).toEqual(["acme-web", "acme-api"]);
   expect(second.projects).toEqual([]);
   expect((await getProjectDocument("acme-web")).revision).toBe(1);
+});
+
+const OPUS = "pi/anthropic/claude-opus-5-5";
+const GPT = "pi/openai/gpt-5.5";
+const reviewAutomation = (model: string) => async () => [
+  { eventKey: "github:pull_request", model },
+];
+
+test("the review automation's model becomes the global Reviews default, not every project's", async () => {
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme-web", "acme-api"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: reviewAutomation("opus"),
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+    reviewsDefault: () => reviewsDefault,
+    setReviewsDefault: (id) => {
+      reviewsDefault = id;
+    },
+  });
+  const dry = await migrateProjectSettings({ dryRun: true, by: "Ada" });
+  expect(dry.reviewsDefaultSet).toBe(OPUS);
+  expect(reviewsDefault).toBeNull();
+
+  const result = await migrateProjectSettings({ dryRun: false, by: "Ada" });
+  expect(result.reviewsDefaultSet).toBe(OPUS);
+  expect(reviewsDefault).toBe(OPUS);
+  for (const project of ["acme-web", "acme-api"])
+    expect((await getProjectDocument(project)).models.reviews).toBeUndefined();
+  const backup = JSON.parse(await readFile(result.backupPath!, "utf8"));
+  expect(backup.reviewsDefault).toBeNull();
+});
+
+test("a global Reviews default that differs keeps the review model per project", async () => {
+  reviewsDefault = GPT;
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme-web"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: reviewAutomation("opus"),
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+    reviewsDefault: () => reviewsDefault,
+    setReviewsDefault: (id) => {
+      reviewsDefault = id;
+    },
+  });
+  const result = await migrateProjectSettings({ dryRun: false, by: "Ada" });
+  expect(result.reviewsDefaultSet).toBeUndefined();
+  expect(reviewsDefault).toBe(GPT);
+  expect((await getProjectDocument("acme-web")).models.reviews).toBe(OPUS);
 });
 
 test("unreadable access resets to defaults, the run goes on, the raw value is backed up", async () => {

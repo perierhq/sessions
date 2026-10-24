@@ -20,6 +20,7 @@ function sources(over: Partial<LegacySources> = {}): LegacySources {
     automationServers: [],
     reviewServers: ["grafana", "linear"],
     reviewModel: null,
+    reviewsDefault: null,
     mcpServers: ["grafana", "linear", "sentry"],
     webSearch: "auto",
     ...over,
@@ -252,6 +253,21 @@ test("named automation servers, the review model and web search off", () => {
   expect(document.models.reviews).toBe(OPUS);
   expect(document.access.webSearch).toEqual(["investigator", "reviews"]);
   expect(document.sandbox).toBe("local");
+});
+
+test("a review model equal to the global Reviews default stays unset", () => {
+  const same = composeFromLegacy(
+    "acme-web",
+    sources({ reviewModel: "opus", reviewsDefault: OPUS }),
+    NOW,
+  );
+  expect(same.document.models.reviews).toBeUndefined();
+  const differs = composeFromLegacy(
+    "acme-web",
+    sources({ reviewModel: "opus", reviewsDefault: GPT }),
+    NOW,
+  );
+  expect(differs.document.models.reviews).toBe(OPUS);
 });
 
 test("signal overrides keep everything but the model and Runners", () => {
