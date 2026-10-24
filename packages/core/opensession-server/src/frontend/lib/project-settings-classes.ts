@@ -71,7 +71,8 @@ export const CONNECT_CHOICE =
 export const CONNECT_FIELDS =
   "grid grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)_auto] items-end gap-2 phone:grid-cols-1";
 export const CONNECT_INPUT = "phone:min-h-11 phone:text-input-phone";
-export const CONNECT_BUTTON = "phone:min-h-11 phone:w-full";
+export const CONNECT_BUTTON = "phone:order-2 phone:min-h-11 phone:w-full";
+export const CONNECT_ERROR = "col-start-1 m-0 text-meta text-red phone:order-1";
 
 // ── Where agents run ─────────────────────────────────────────────────────
 

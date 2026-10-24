@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { connectSandbox } from "../../../lib/api/sandboxes";
 import { patchProjectDefaults } from "../../../lib/api/projects";
 import { errorMessage } from "../../../lib/error-message";
@@ -6,6 +6,7 @@ import {
   CONNECT_BUTTON,
   CONNECT_CHOICE,
   CONNECT_CHOICES,
+  CONNECT_ERROR,
   CONNECT_FIELDS,
   CONNECT_FORM,
   CONNECT_INPUT,
@@ -48,6 +49,7 @@ export function ConnectSandboxForm({
   const [region, setRegion] = useState(() => nearestRegion(browserTimeZone()));
   const [busy, setBusy] = useState(false);
   const [missing, setMissing] = useState(false);
+  const errorId = useId();
   const name = provider === "daytona" ? "Daytona" : "Boat";
 
   const connect = async () => {
@@ -113,6 +115,7 @@ export function ConnectSandboxForm({
             value={apiKey}
             className={CONNECT_INPUT}
             aria-invalid={missing || undefined}
+            aria-describedby={missing ? errorId : undefined}
             onChange={(event) => {
               setApiKey(event.currentTarget.value);
               setMissing(false);
@@ -120,7 +123,7 @@ export function ConnectSandboxForm({
           />
         </Field>
         {provider === "daytona" ? (
-          <Field label="Region">
+          <Field label="Region" className="phone:order-2">
             <OptionSelect
               label="Region"
               value={region}
@@ -140,12 +143,14 @@ export function ConnectSandboxForm({
         >
           {`Connect ${name}`}
         </Button>
+        {/* Under the key field: the grid's next row, first column (right
+            after the field on a phone). */}
+        {missing && (
+          <p id={errorId} role="alert" className={CONNECT_ERROR}>
+            {`Paste your ${name} API key first`}
+          </p>
+        )}
       </div>
-      {missing && (
-        <p role="alert" className="m-0 text-meta text-red">
-          {`Paste your ${name} API key first`}
-        </p>
-      )}
       {!hasGlobalDefault && (
         <p className="m-0 text-meta text-faint">
           {`Once connected, ${name} becomes the global default, so other projects can use it too`}

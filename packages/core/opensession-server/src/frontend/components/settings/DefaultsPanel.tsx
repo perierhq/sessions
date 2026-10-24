@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   PROJECT_ROLES,
   ROLE_LABELS,
@@ -104,6 +104,7 @@ export function DefaultsPanel({
   const sandbox = useSandboxStatus();
   const [website, setWebsite] = useState("");
   const [websiteError, setWebsiteError] = useState<string | null>(null);
+  const websiteErrorId = useId();
 
   const view = defaults.data;
   const ownModels = useProjectModelOverrides(
@@ -419,6 +420,7 @@ export function DefaultsPanel({
                 autoCorrect="off"
                 inputMode="url"
                 aria-invalid={websiteError ? true : undefined}
+                aria-describedby={websiteError ? websiteErrorId : undefined}
                 className={cn(
                   "phone:h-11 phone:text-input-phone",
                   websiteError && "border-red",
@@ -429,7 +431,11 @@ export function DefaultsPanel({
                 }}
               />
               {websiteError && (
-                <div className="mt-1.5 text-supporting text-red" role="alert">
+                <div
+                  id={websiteErrorId}
+                  className="mt-1.5 text-supporting text-red"
+                  role="alert"
+                >
                   {websiteError}
                 </div>
               )}

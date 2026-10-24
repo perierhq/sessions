@@ -302,6 +302,14 @@ test("a website that isn't one shows an error and sends nothing", async () => {
   await settle();
   expect(patches).toEqual([]);
   expect(text(tree)).toContain("Enter a website name");
+  // The error is tied to the field it is about.
+  const input = find(tree.output(), Input, (p) => p["aria-label"] === "Website");
+  const described = input?.props["aria-describedby"];
+  expect(described).toBeTruthy();
+  const error = elements(tree.output()).find(
+    (e) => (e.props as { id?: string }).id === described,
+  );
+  expect(JSON.stringify(error?.props)).toContain("Enter a website name");
 });
 
 test("adding a website sends the whole list", async () => {
