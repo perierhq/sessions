@@ -54,7 +54,15 @@ function fakeRunner(reply: (argv: string[]) => ExecResult): {
 
 /** The argv of an nft call through the pipe wrapper. */
 function nftArgv(netns: string, ...args: string[]): string[] {
-  return ["unshare", "/bin/bash", "-c", NFT_PIPE_SCRIPT, "bash", netns, ...args];
+  return [
+    "unshare",
+    "/bin/bash",
+    "-c",
+    NFT_PIPE_SCRIPT,
+    "bash",
+    netns,
+    ...args,
+  ];
 }
 
 function listingReply(listing: string) {
@@ -556,7 +564,9 @@ describe("egress verify", () => {
         "opensession-sbx-a-infra",
         EGRESS_FIXTURE_INPUT,
       ),
-    ).rejects.toThrow(/list egress rules: nft exited 0 but printed nothing.*SELinux/);
+    ).rejects.toThrow(
+      /list egress rules: nft exited 0 but printed nothing.*SELinux/,
+    );
     await expect(
       readEgressCounters(fakeRunner(listingReply("")).run, "/proc/1/ns/net"),
     ).rejects.toThrow(/list egress counters: nft exited 0 but printed nothing/);
@@ -617,7 +627,14 @@ describe("egress counters", () => {
     const { run, calls } = fakeRunner(listingReply(EGRESS_FIXTURE_LISTING));
     const counters = await readEgressCounters(run, "/proc/4242/ns/net");
     expect(calls[0]!.argv).toEqual(
-      nftArgv("/proc/4242/ns/net", "-j", "list", "table", "inet", "opensession"),
+      nftArgv(
+        "/proc/4242/ns/net",
+        "-j",
+        "list",
+        "table",
+        "inet",
+        "opensession",
+      ),
     );
     expect(Object.fromEntries(counters)).toEqual({
       ipv6: 0,

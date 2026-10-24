@@ -299,7 +299,15 @@ export const NFT_PIPE_SCRIPT =
 
 /** `nft` inside a namespace, as the rootless user's user-namespace root. */
 function nftArgs(netns: string, args: string[]): string[] {
-  return ["unshare", "/bin/bash", "-c", NFT_PIPE_SCRIPT, "bash", netns, ...args];
+  return [
+    "unshare",
+    "/bin/bash",
+    "-c",
+    NFT_PIPE_SCRIPT,
+    "bash",
+    netns,
+    ...args,
+  ];
 }
 
 /**
