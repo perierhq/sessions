@@ -67,10 +67,10 @@ export const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
 };
 
 /** The line over one role's access on a phone. You differs from the Models
- *  copy: what your sessions may use isn't set on this page. */
+ *  copy; each of its rows says where its access comes from. */
 export const ACCESS_ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   ...ROLE_DESCRIPTIONS,
-  you: "Your own sessions. They follow Organization → Connections, not this page",
+  you: "Your own sessions",
 };
 
 /** The collective label when Investigator and Verifier share one value. */
