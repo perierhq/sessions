@@ -30,6 +30,7 @@ import {
   modelLabel,
   setInteractiveDefaultModel,
 } from "../models";
+import { globalPreviewsDefault } from "../projects/global-defaults";
 import { legacyDrift, migrateProjectSettings } from "../projects/migrate";
 import {
   getProjectDocument,
@@ -45,7 +46,6 @@ import {
 import type { ConnectorState } from "../projects/readiness";
 import { listRunners } from "../runners";
 import {
-  portalSandboxDefault,
   repoPortalSandbox,
   sandboxAutomationAvailability,
   sandboxAutomationConfig,
@@ -314,7 +314,7 @@ export function liveProjectDefaultsDeps(): ProjectDefaultsDeps {
     setSandbox: (value) => {
       saveWorkspaceSandboxDefault(value);
     },
-    previews: () => portalSandboxDefault() ?? "same",
+    previews: () => globalPreviewsDefault(),
     setPreviews: (value) => {
       setPortalSandboxDefault(value);
     },

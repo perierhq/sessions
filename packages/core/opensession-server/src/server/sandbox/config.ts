@@ -523,46 +523,6 @@ export function setWorkspaceSandboxDefault(
   return normalized as RunnableSandboxProviderId | "none";
 }
 
-/** Persist where Portals run for projects that don't choose. "same" (or
- * "none") runs them beside the session. */
-export function setPortalSandboxDefault(
-  value: string,
-): RunnableSandboxProviderId | "same" {
-  const normalized = value.trim().toLowerCase();
-  const beside = normalized === "same" || normalized === "none";
-  if (!beside && !isRunnableSandboxProvider(normalized))
-    throw new Error(`Unknown sandbox provider "${value}"`);
-  if (!beside && sandboxProviderUsability(normalized).state !== "usable")
-    throw new Error(
-      `Sandbox provider "${normalized}" is not currently available`,
-    );
-  if (beside && !existsSync(configPath())) return "same";
-  updateSandboxConfigFile((raw) => {
-    if (beside) delete raw.portalDefault;
-    else raw.portalDefault = normalized;
-  });
-  return beside ? "same" : (normalized as RunnableSandboxProviderId);
-}
-
-/** Persist the websites unattended runs may reach (validated by the
- * caller). An empty list removes the key. */
-export function setAutomationEgressAllowlist(hosts: string[]): string[] {
-  const list = [...new Set(hosts.map((h) => h.trim()).filter(Boolean))];
-  if (!list.length && !existsSync(configPath())) return [];
-  updateSandboxConfigFile((raw) => {
-    const automation: Record<string, unknown> =
-      raw.automation &&
-      typeof raw.automation === "object" &&
-      !Array.isArray(raw.automation)
-        ? { ...(raw.automation as Record<string, unknown>) }
-        : { provider: "daytona" };
-    if (list.length) automation.egressAllowlist = list;
-    else delete automation.egressAllowlist;
-    raw.automation = automation;
-  });
-  return list;
-}
-
 /** Rewrite one key of the config file in place, keeping every other key
  * (provider secrets, connections, operator settings) byte-for-byte. */
 function updateSandboxConfigFile(
@@ -1206,15 +1166,6 @@ export function remoteSandboxCallbackBaseUrl(): string {
 }
 
 // ── Global defaults for the project settings Defaults page ─────────────────
-
-/** Where previews (Portals) run for projects that don't choose: a provider,
- *  or null when they run beside the session. Stored as `portalDefault`. */
-export function portalSandboxDefault(): RunnableSandboxProviderId | null {
-  const raw = readJsonFileCopy<{ portalDefault?: unknown }>(configPath());
-  return isRunnableSandboxProvider(raw?.portalDefault)
-    ? raw.portalDefault
-    : null;
-}
 
 /** Set the global previews default; `"same"` or `"none"` runs them beside
  *  the session. */
