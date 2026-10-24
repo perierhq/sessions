@@ -35,6 +35,7 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 let view: ProjectDefaultsView = DEFAULTS_VIEW;
 const mutations: Array<ProjectDefaultsView | undefined> = [];
 const revalidations: Array<readonly unknown[] | undefined> = [];
+let ownModels: Record<string, string[]> | undefined;
 mock.module("../../hooks/useProjects", () => ({
   projectSWRKey: {
     projects: () => ["api", "projects"],
@@ -44,6 +45,7 @@ mock.module("../../hooks/useProjects", () => ({
   revalidateProjects: (except?: readonly unknown[]) => {
     revalidations.push(except);
   },
+  useProjectModelOverrides: () => ({ data: ownModels }),
   useProjectDefaults: () => ({
     data: view,
     error: undefined,
@@ -142,6 +144,7 @@ beforeEach(() => {
   opened.length = 0;
   patchError = null;
   revalidations.length = 0;
+  ownModels = undefined;
 });
 afterEach(() => harness.unmountAll());
 
@@ -197,6 +200,21 @@ test("a saved default refreshes every project page and the list", async () => {
   selectByLabel(tree, "Previews").onChange("daytona");
   await settle();
   expect(revalidations).toEqual([["api", "project-defaults"]]);
+});
+
+test("a role's scope names the projects that set their own", async () => {
+  ownModels = { "acme-web": ["reviews"] };
+  const tree = await mountPanel();
+  const all = text(tree);
+  expect(all).toContain("acme-api and docs-site. acme-web sets its own");
+  expect(all).toContain("All 3 projects");
+});
+
+test("until the projects load, a role's scope says so neutrally", async () => {
+  const tree = await mountPanel();
+  expect(text(tree)).toContain(
+    "Used by every project that doesn't set its own",
+  );
 });
 
 test("a failed save says why and reloads", async () => {

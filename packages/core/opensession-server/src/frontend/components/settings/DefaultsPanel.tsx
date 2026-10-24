@@ -10,6 +10,7 @@ import {
   projectSWRKey,
   revalidateProjects,
   useProjectDefaults,
+  useProjectModelOverrides,
 } from "../../hooks/useProjects";
 import {
   useModelCatalog,
@@ -22,6 +23,7 @@ import {
   parseWebsite,
   projectStatusPhrase,
   roleScopeCopy,
+  roleScopeCopyFor,
   sandboxUsedByCopy,
 } from "../../lib/project-settings/defaults-model";
 import {
@@ -103,6 +105,9 @@ export function DefaultsPanel({
   const [websiteError, setWebsiteError] = useState<string | null>(null);
 
   const view = defaults.data;
+  const ownModels = useProjectModelOverrides(
+    view ? view.projects.map((p) => p.id) : null,
+  );
 
   async function save(patch: ProjectDefaultsPatch) {
     if (!view) return;
@@ -210,7 +215,12 @@ export function DefaultsPanel({
           ...modelOptions,
           { value: current, label: shortModelLabel(current, catalogModels) },
         ];
-  const overrides = modelOverrides(view);
+  // Who sets its own model: the projects' documents once they load; until
+  // then the list knows You, and the other roles say so neutrally.
+  const scopeCopy = (role: ProjectRole) =>
+    !ownModels.data && role === "you"
+      ? roleScopeCopy(role, view.projects, modelOverrides(view))
+      : roleScopeCopyFor(role, view.projects, ownModels.data ?? null);
 
   return (
     <SettingsPanel>
@@ -337,7 +347,7 @@ export function DefaultsPanel({
             <SettingRowText>
               <SettingRowTitle>{ROLE_LABELS[role]}</SettingRowTitle>
               <SettingRowDescription>
-                {roleScopeCopy(role, view.projects, overrides)}
+                {scopeCopy(role)}
               </SettingRowDescription>
             </SettingRowText>
             <SettingRowControl>

@@ -7,10 +7,11 @@ import {
   readySandboxProviders,
   type SandboxAvailability,
 } from "../ready-sandbox-providers";
-import type {
-  ProjectDefaultsView,
-  ProjectListItem,
-  ProjectRole,
+import {
+  PROJECT_ROLES,
+  type ProjectDefaultsView,
+  type ProjectListItem,
+  type ProjectRole,
 } from "../../../shared/project-settings";
 
 /** The one status phrase for a project: the nav, the Projects card and the
@@ -55,13 +56,45 @@ export function roleScopeCopy(
   return `${users}. ${setters} ${own.length === 1 ? "sets its own" : "set their own"}`;
 }
 
+/** The copy while the page doesn't yet know which projects set their own
+ *  model for a role. */
+export const UNKNOWN_SCOPE_COPY =
+  "Used by every project that doesn't set its own";
+
+/** `roleScopeCopy`, or the neutral line when `overrides` is unknown. */
+export function roleScopeCopyFor(
+  role: ProjectRole,
+  projects: ProjectListItem[],
+  overrides: ModelOverrides | null,
+): string {
+  return overrides
+    ? roleScopeCopy(role, projects, overrides)
+    : UNKNOWN_SCOPE_COPY;
+}
+
+/** Every role each project's own document sets a model for. */
+export function modelOverridesFromDocuments(
+  documents: Array<{
+    project: string;
+    models: Partial<Record<ProjectRole, string>>;
+  }>,
+): ModelOverrides {
+  const out: ModelOverrides = {};
+  for (const doc of documents) {
+    const roles = PROJECT_ROLES.filter((role) => !!doc.models[role]);
+    if (roles.length) out[doc.project] = roles;
+  }
+  return out;
+}
+
 /** Project id → the roles that project sets its own model for. */
 export interface ModelOverrides {
   [project: string]: ProjectRole[];
 }
 
 /** The roles each project has set its own model for, as far as the list
- *  says: today only the model for You travels with a project. */
+ *  says: only the model for You travels with a project, so the page
+ *  reads the project documents for the other roles. */
 export function modelOverrides(view: ProjectDefaultsView): ModelOverrides {
   const out: ModelOverrides = {};
   for (const project of view.projects) {

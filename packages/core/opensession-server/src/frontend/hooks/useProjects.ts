@@ -12,6 +12,10 @@ import {
   fetchProjectSettings,
 } from "../lib/api/projects";
 import { apiResourceSWRConfig } from "../lib/api-swr";
+import {
+  type ModelOverrides,
+  modelOverridesFromDocuments,
+} from "../lib/project-settings/defaults-model";
 import type {
   ProjectDefaultsView,
   ProjectListItem,
@@ -25,6 +29,8 @@ export const projectSWRKey = {
   projectSettings: (project: string) =>
     ["api", "project-settings", project] as const,
   projectDefaults: () => ["api", "project-defaults"] as const,
+  projectModelOverrides: (projects: readonly string[]) =>
+    ["api", "project-model-overrides", ...projects] as const,
 };
 
 /** A project settings resource key. */
@@ -70,6 +76,27 @@ export function useProjectSettings(
     project ? projectSWRKey.projectSettings(project) : null,
     () => fetchProjectSettings(project!),
     apiResourceSWRConfig<ProjectSettingsView>(0),
+  );
+}
+
+/** Which roles each project sets its own model for, read from the
+ *  projects' own documents (the list only carries the model for You). */
+export function useProjectModelOverrides(
+  projects: readonly string[] | null,
+): SWRResponse<ModelOverrides> {
+  return useSWR<ModelOverrides>(
+    projects ? projectSWRKey.projectModelOverrides(projects) : null,
+    async () => {
+      const ids = projects ?? [];
+      const views = await Promise.all(ids.map(fetchProjectSettings));
+      return modelOverridesFromDocuments(
+        views.map((view, i) => ({
+          project: ids[i]!,
+          models: view.document.models,
+        })),
+      );
+    },
+    apiResourceSWRConfig<ModelOverrides>(0),
   );
 }
 

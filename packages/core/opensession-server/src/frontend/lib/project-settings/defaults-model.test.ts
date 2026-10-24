@@ -5,6 +5,8 @@ import {
 } from "../../../shared/project-settings-fixtures";
 import {
   modelOverrides,
+  modelOverridesFromDocuments,
+  roleScopeCopyFor,
   newSessionSandboxDefault,
   newSessionSandboxPreselect,
   parseWebsite,
@@ -200,5 +202,29 @@ describe("newSessionSandboxPreselect", () => {
   test("a default that isn't ready falls back to this machine", () => {
     const s = status({}, "daytona", ["box"]);
     expect(newSessionSandboxPreselect(s, "acme-web")).toBe("");
+  });
+});
+
+describe("model overrides from the project documents", () => {
+  test("every role a project sets is an override, not just You", () => {
+    expect(
+      modelOverridesFromDocuments([
+        { project: "acme-web", models: { reviews: "pi/openai/gpt-5.5" } },
+        { project: "acme-api", models: {} },
+        {
+          project: "docs-site",
+          models: { you: "pi/anthropic/claude-sonnet-5", verifier: "" },
+        },
+      ]),
+    ).toEqual({ "acme-web": ["reviews"], "docs-site": ["you"] });
+  });
+
+  test("a role the page can't know yet says so neutrally", () => {
+    expect(roleScopeCopyFor("reviews", PROJECT_LIST, null)).toBe(
+      "Used by every project that doesn't set its own",
+    );
+    expect(
+      roleScopeCopyFor("reviews", PROJECT_LIST, { "acme-web": ["reviews"] }),
+    ).toBe("acme-api and docs-site. acme-web sets its own");
   });
 });
