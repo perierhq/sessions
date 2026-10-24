@@ -174,18 +174,13 @@ export function projectExists(project: string): boolean {
 
 // ── Reading ─────────────────────────────────────────────────────────────────
 
-type ComposeFallback = (
+/** What a project without a stored document reads as: its legacy
+ *  settings, composed (legacy.ts imports this module, so it loads late). */
+async function composeFallback(
   project: string,
   now: string,
-) => Promise<ProjectSettingsDocument>;
-
-/** What a project without a stored document reads as. */
-let composeFallback: ComposeFallback = async (project, now) =>
-  defaultProjectDocument(project, now);
-
-/** Set by the legacy composer on first use (see legacy.ts). */
-export function setProjectDocumentFallback(fallback: ComposeFallback): void {
-  composeFallback = fallback;
+): Promise<ProjectSettingsDocument> {
+  return (await import("./legacy")).composeProjectFromLegacy(project, now);
 }
 
 function list<T>(v: unknown, fallback: T[]): T[] {
@@ -317,6 +312,17 @@ function notify(project: string): void {
           error instanceof Error ? error.message : error,
         );
       });
+}
+
+/** A document the bulk migration committed: cached and announced like any
+ *  other write. */
+export function noteMigratedDocument(
+  project: string,
+  raw: unknown,
+): ProjectSettingsDocument {
+  const doc = remember(withDocumentDefaults(project, raw));
+  notify(project);
+  return doc;
 }
 
 function newHookSecret(): string {
