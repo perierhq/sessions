@@ -48,6 +48,7 @@ import { toast } from "../../../ui/toast";
 import { IconPlus } from "../../icons";
 import { AccessSection } from "./AccessSection";
 import { ConnectSandboxForm } from "./ConnectSandboxForm";
+import { DriftNotice } from "./DriftNotice";
 import { IncidentsSection } from "./IncidentsSection";
 import { ModelsSection } from "./ModelsSection";
 import { ProductionSection, type ProductionDialog } from "./ProductionSection";
@@ -218,26 +219,16 @@ export function ProjectSettingsPage({
     body = (
       <>
         {view.drift && (
-          <InlineAlert variant="warn" className="mb-3">
-            <span className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              Settings changed during the upgrade. Re-run migration
-              <Button
-                type="button"
-                size="sm"
-                variant="soft"
-                className="phone:min-h-11"
-                onClick={() =>
-                  migrateProjects({ dryRun: false }).then(
-                    () => revalidateProjects(),
-                    (error) =>
-                      toast(saveErrorText(error), { variant: "error" }),
-                  )
-                }
-              >
-                Re-run migration
-              </Button>
-            </span>
-          </InlineAlert>
+          <DriftNotice
+            onMigrate={() =>
+              migrateProjects({ dryRun: false }).then(
+                () => revalidateProjects(),
+                (error) => {
+                  toast(saveErrorText(error), { variant: "error" });
+                },
+              )
+            }
+          />
         )}
         <ReadinessChecklist
           project={project}
