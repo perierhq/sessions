@@ -37,7 +37,9 @@ import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
 import { type AccessRunnerInfo, loadAccessEnvironment } from "./environment";
 import {
+  checkWithinGrants,
   egressHostProblem,
+  exceptionOutsideGrants,
   mergeProfile,
   roleLockProblem,
   runsPosixShell,
@@ -284,11 +286,26 @@ export async function resolveAgentAccess(
         )
       : undefined;
   const profile = mergeProfile(settings.profiles[role], override?.fields);
-  // The access table is the ceiling now: only the role locks remain.
-  const violation = roleLockProblem(role, profile);
+  const lock = roleLockProblem(role, profile);
+  if (lock)
+    throw new AgentAccessError(
+      `Access settings for ${incident.project} break a role rule: ${lock}`,
+      "settings",
+    );
+  // The access table is the ceiling: the grants are its union, so a
+  // per-signal exception can't reach what the table doesn't list. Fail
+  // closed rather than run with access the page doesn't show.
+  const outside = override
+    ? exceptionOutsideGrants(override.fields, settings.grants)[0]
+    : undefined;
+  const violation =
+    checkWithinGrants(profile, settings.grants) ??
+    (outside
+      ? `The exception for signal ${override!.signalId} lists ${outside.field} ${outside.item}, which the access table doesn't allow`
+      : null);
   if (violation)
     throw new AgentAccessError(
-      `Access settings for ${incident.project} break a role rule: ${violation}`,
+      `Access settings for ${incident.project} exceed their grants: ${violation}`,
       "settings",
     );
 

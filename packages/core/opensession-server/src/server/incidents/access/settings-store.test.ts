@@ -82,7 +82,8 @@ test("the incident agents' rows project into grants, profiles and overrides", as
         grantedAt: "2026-10-20T10:00:00Z",
       },
     ],
-    egress: [{ route: "server" }],
+    // The route's grant reaches the websites of the roles that use it.
+    egress: [{ route: "server", hosts: ["status.example.test"] }],
     maxMode: "code",
   });
   expect(view.profiles.investigator).toMatchObject({

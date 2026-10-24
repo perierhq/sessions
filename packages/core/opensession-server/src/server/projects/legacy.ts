@@ -26,7 +26,12 @@ import {
 } from "../../shared/project-settings";
 import { catalogDocuments } from "../catalog-documents";
 import { configuredPaths, configuredRepos } from "../config";
-import { isFieldError, parseStoredSettings } from "../incidents/access/fields";
+import {
+  exceptionOutsideGrants,
+  isFieldError,
+  parseStoredSettings,
+} from "../incidents/access/fields";
+import { accessSettingsFromDocument } from "../incidents/access/settings-store";
 import { canonicalModelId, sameModel } from "../incidents/response/models";
 import { sandboxConfig } from "../sandbox/config";
 import { isRecord } from "./validate";
@@ -314,7 +319,12 @@ function migrateAccess(
     if (repo !== project)
       drop("access.repos", repo, "Agents work on this project's repository");
 
-  // Per-signal overrides keep everything but the model and Runners.
+  // Per-signal overrides keep everything but the model and Runners, and
+  // only what the table now allows: the table is their ceiling.
+  const table = accessSettingsFromDocument({
+    ...defaultProjectDocument(project, settings.updatedAt),
+    access,
+  }).grants;
   for (const o of settings.overrides) {
     const { model, runners, ...fields } = o.fields as AccessProfileFields;
     if (model) {
@@ -326,6 +336,15 @@ function migrateAccess(
     }
     for (const runner of runners ?? [])
       drop("access.runners", runner, "Runners had no effect");
+    for (const { field, item } of exceptionOutsideGrants(fields, table)) {
+      drop(
+        `access.signalExceptions.${o.signalId}.${o.role}.${field}`,
+        item,
+        "Outside the project's access table",
+      );
+      withoutItem(fields, field, item);
+    }
+    if (!Object.values(fields).some((v) => v !== undefined)) continue;
     const exception: ProjectSignalException = {
       signalId: o.signalId,
       role: o.role,
@@ -334,6 +353,41 @@ function migrateAccess(
       updatedAt: o.updatedAt,
     };
     access.signalExceptions.push(exception);
+  }
+}
+
+/** Remove one item `exceptionOutsideGrants` reported from `fields`. */
+function withoutItem(
+  fields: AccessProfileFields,
+  field: keyof AccessProfileFields,
+  item: string,
+): void {
+  switch (field) {
+    case "connections":
+    case "repos":
+      fields[field] = fields[field]?.filter((v) => v !== item);
+      return;
+    case "hosts":
+      fields.hosts = fields.hosts?.filter((h) => hostGrantKey(h) !== item);
+      return;
+    case "credentials":
+      fields.credentials = fields.credentials?.filter(
+        (c) => c.credential !== item,
+      );
+      return;
+    case "egress": {
+      const egress = fields.egress;
+      if (!egress) return;
+      const hosts = (egress.hosts ?? []).filter((h) => h !== item);
+      // Without hosts of its own the route would reach the signal's hosts:
+      // fall back to the role's row in the table instead.
+      if (egressRouteKey(egress) === item || !hosts.length)
+        delete fields.egress;
+      else fields.egress = { ...egress, hosts };
+      return;
+    }
+    default:
+      delete fields[field];
   }
 }
 

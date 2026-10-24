@@ -99,11 +99,17 @@ export function accessSettingsFromDocument(
     verifier: profile("verifier"),
   };
 
+  // One grant per route, reaching the websites of the roles that use it.
   const egress: EgressGrant[] = [];
   for (const role of INCIDENT_AGENT_ROLES) {
     const route = access.routes[role];
-    if (!egress.some((g) => egressRouteKey(g) === egressRouteKey(route)))
-      egress.push({ ...route });
+    const hosts = profiles[role].egress?.hosts ?? [];
+    const grant = egress.find(
+      (g) => egressRouteKey(g) === egressRouteKey(route),
+    );
+    if (!grant) egress.push({ ...route, ...(hosts.length ? { hosts } : {}) });
+    else if (hosts.length)
+      grant.hosts = [...new Set([...(grant.hosts ?? []), ...hosts])];
   }
   return {
     project,
@@ -139,7 +145,9 @@ export function accessSettingsFromDocument(
         ];
       }),
       egress,
-      maxMode: "code",
+      maxMode: INCIDENT_AGENT_ROLES.some((r) => access.modes[r] === "code")
+        ? "code"
+        : "ask",
     },
     profiles,
     overrides: access.signalExceptions.map((e) => ({

@@ -840,3 +840,59 @@ test("the access table decides: a connector ticked only for automations, web sea
       .web_search,
   ).toBeUndefined();
 });
+
+test("a signal exception never exceeds the access table", async () => {
+  const exception = (fields: Record<string, unknown>) => ({
+    signalId: "sig-search",
+    role: "investigator" as const,
+    fields,
+    updatedBy: "Ada",
+    updatedAt: "x",
+  });
+  await setProjectAccessForTest("acme", (access) => {
+    access.connections = [{ server: "logs", roles: ["investigator"] }];
+    access.signalExceptions = [exception({ connections: ["sentry"] })];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow('Connection "sentry" is not in the project\'s grants');
+  // A connector ticked only for automations is not in the table for agents.
+  await setProjectAccessForTest("acme", (access) => {
+    access.connections = [
+      { server: "logs", roles: ["investigator"] },
+      { server: "sentry", roles: ["automations"] },
+    ];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow("sentry");
+  // A credential removed from the table is revoked for the exception too.
+  await setProjectAccessForTest("acme", (access) => {
+    access.credentials = [];
+    access.signalExceptions = [
+      exception({
+        credentials: [{ credential: "kc-proxy", mode: "standing" }],
+      }),
+    ];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow("kc-proxy");
+  // Websites the table doesn't list stay out of reach.
+  await setProjectAccessForTest("acme", (access) => {
+    access.signalExceptions = [
+      exception({
+        egress: { route: "server", hosts: ["elsewhere.example.test"] },
+      }),
+    ];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow("elsewhere.example.test");
+  // Within the table, the exception applies.
+  await setProjectAccessForTest("acme", (access) => {
+    access.signalExceptions = [exception({ connections: ["logs"] })];
+  });
+  const a = await resolveAgentAccess("investigator", incident(), signal);
+  expect(a).toMatchObject({ overrideApplied: true, connections: ["logs"] });
+});

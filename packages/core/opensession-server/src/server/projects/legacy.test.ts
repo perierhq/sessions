@@ -281,6 +281,63 @@ test("signal overrides keep everything but the model and Runners", () => {
   });
 });
 
+test("signal exceptions keep only what the access table allows", () => {
+  const { document, report } = composeFromLegacy(
+    "acme-web",
+    sources({
+      access: legacyAccess((s) => {
+        s.overrides = [
+          {
+            signalId: "sig-1",
+            role: "investigator",
+            fields: {
+              // sentry was granted but no agent used it, so the table
+              // doesn't list it.
+              connections: ["linear", "sentry"],
+              hosts: [
+                { runner: "rn-prod", access: "read-only" },
+                { runner: "rn-prod", ssh: "db", access: "read-only" },
+              ],
+              egress: {
+                route: "server",
+                hosts: ["api.example.test", "elsewhere.example.test"],
+              },
+            },
+            updatedBy: "Ada",
+            updatedAt: NOW,
+          },
+          {
+            signalId: "sig-2",
+            role: "verifier",
+            fields: { egress: { route: "runner", runner: "rn-prod" } },
+            updatedBy: "Ada",
+            updatedAt: NOW,
+          },
+        ];
+      }),
+    }),
+    NOW,
+  );
+  expect(document.access.signalExceptions.map((e) => e.fields)).toEqual([
+    {
+      connections: ["linear"],
+      hosts: [{ runner: "rn-prod", access: "read-only" }],
+      egress: { route: "server", hosts: ["api.example.test"] },
+    },
+  ]);
+  const why = "Outside the project's access table";
+  for (const [field, item] of [
+    ["access.signalExceptions.sig-1.investigator.connections", "sentry"],
+    ["access.signalExceptions.sig-1.investigator.hosts", "rn-prod>db"],
+    [
+      "access.signalExceptions.sig-1.investigator.egress",
+      "elsewhere.example.test",
+    ],
+    ["access.signalExceptions.sig-2.verifier.egress", "runner:rn-prod"],
+  ])
+    expect(report.dropped).toContainEqual({ field, item, why });
+});
+
 test("unreadable access composes the default access", () => {
   const { document, report } = composeFromLegacy(
     "acme-web",
