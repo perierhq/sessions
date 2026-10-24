@@ -7,8 +7,11 @@
 // a kill switch. Off means the live bubble stays quiet and the transcript
 // fills in from the durable entries, which land as each block completes.
 //
-// Default off. Typing text moves the page while you are reading it, and the
-// reply is no faster for having been watched.
+// Default on. Each live block streams into its own row by blockId and is
+// swapped for its durable row by the same id, so the text you are reading is
+// never rewritten under you, and the transcript only follows while you are at
+// the bottom (follow mode). An explicit "off", here or on another device,
+// still wins: the server keeps it, and hydration brings it back.
 //
 // A makeUserPref instance, so the answer follows you across devices (see
 // lib/user-pref).
@@ -19,7 +22,7 @@ const pref = UserPref.makeUserPref<boolean>({
   localKey: "opensession-live-typing",
   prefKey: "live-typing",
   changeEvent: "opensession-live-typing-changed",
-  defaultValue: false,
+  defaultValue: true,
   decode: (v) => (v === "on" ? true : v === "off" ? false : null),
   encode: (on) => (on ? "on" : "off"),
 });

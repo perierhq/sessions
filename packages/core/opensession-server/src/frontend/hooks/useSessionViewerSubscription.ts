@@ -616,7 +616,7 @@ export function useSessionViewerSubscription({
           break;
         case "stream_text": {
           if (isTimelineOnlyRunnerNotice(msg.text)) break;
-          // Live typing is per viewer (Settings > Preferences), default off.
+          // Live typing is per viewer (Settings > Preferences), default on.
           // Dropping the frame is the whole implementation: the durable
           // entry for the block still lands over the transcript feed, which
           // is what filled the transcript before streaming existed. Read per
