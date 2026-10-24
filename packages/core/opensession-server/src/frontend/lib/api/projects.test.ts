@@ -8,7 +8,11 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-const answer = (body: object) => {
+const answer = (
+  body:
+    | { projects: Array<{ id: string; kind: string }> }
+    | Array<{ id: string }>,
+) => {
   globalThis.fetch = Object.assign(async () => Response.json(body), realFetch);
 };
 
