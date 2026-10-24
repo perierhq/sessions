@@ -100,13 +100,15 @@ describe("buildAccessTable", () => {
     // Nothing reads these at run time: each automation sets its own mode,
     // and the GitHub flow picks one per kind of run.
     expect(mode.cells.automations).toEqual({
-      value: "locked",
+      value: "elsewhere",
       editable: false,
+      label: "Set per automation",
       reason: "Each automation sets its own mode",
     });
     expect(mode.cells.reviews).toEqual({
-      value: "locked",
+      value: "elsewhere",
       editable: false,
+      label: "Pushes to the PR branch",
       reason:
         "Set per run: reviews only read; fixes and replies to mentions push to the pull request's branch",
     });

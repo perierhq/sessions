@@ -186,6 +186,14 @@ export const MODE_NOT_SET_HERE: Partial<Record<UnattendedRole, string>> = {
     "Set per run: reviews only read; fixes and replies to mentions push to the pull request's branch",
 };
 
+/** What the "Changes code" cell reads for those roles, instead of a value:
+ *  the truth at run time, decided outside this table. */
+export const MODE_SET_ELSEWHERE_LABEL: Partial<Record<UnattendedRole, string>> =
+  {
+    automations: "Set per automation",
+    reviews: "Pushes to the PR branch",
+  };
+
 /** `null` clears the cell (a credential not lent to that role). */
 export type AccessCellChange = {
   row: AccessRowKey;
@@ -241,11 +249,15 @@ export type AccessCellValue =
   | "ask-each"
   | "standing"
   | "locked"
-  | "blocked";
+  | "blocked"
+  /** Decided somewhere else; `label` says how. */
+  | "elsewhere";
 
 export interface AccessCellView {
   value: AccessCellValue;
   editable: boolean;
+  /** What an `elsewhere` cell reads, in place of a value. */
+  label?: string;
   /** Why the cell can't be edited, or why it is blocked. */
   reason?: string;
 }

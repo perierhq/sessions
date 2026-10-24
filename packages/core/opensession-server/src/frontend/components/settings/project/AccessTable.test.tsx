@@ -119,4 +119,17 @@ describe("AccessTable", () => {
     expect(html).toContain(">Read only<");
     expect(html).toContain(">Branch<");
   });
+
+  test("Changes code for Automations and Reviews says where it is set", () => {
+    const html = renderToStaticMarkup(table());
+    expect(html).toContain(">Set per automation<");
+    expect(html).toContain(">Pushes to the PR branch<");
+    expect(html).toContain(
+      'aria-label="Changes code in acme-web for Automations: Set per automation. Each automation sets its own mode"',
+    );
+    expect(html).toContain(
+      "Changes code in acme-web for Reviews: Pushes to the PR branch.",
+    );
+    expect(html).not.toContain("Not allowed. Each automation");
+  });
 });

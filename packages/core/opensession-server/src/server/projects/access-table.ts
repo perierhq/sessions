@@ -13,6 +13,7 @@ import {
   type AccessRowView,
   type AccessTableView,
   MODE_NOT_SET_HERE,
+  MODE_SET_ELSEWHERE_LABEL,
   type ProjectRole,
   type ProjectSettingsDocument,
   type UnattendedRole,
@@ -49,6 +50,11 @@ function cell(
   return reason ? { value, editable, reason } : { value, editable };
 }
 
+/** A cell decided outside this table: it reads `label`, not a value. */
+function elsewhere(label: string, reason: string): AccessCellView {
+  return { value: "elsewhere", editable: false, label, reason };
+}
+
 function tick(on: boolean): AccessCellView {
   return cell(on ? "yes" : "no");
 }
@@ -77,7 +83,8 @@ function modeRow(doc: AccessTableDocument): AccessRowView {
     YOU_YES,
     (role) => {
       const notHere = MODE_NOT_SET_HERE[role];
-      if (notHere) return cell("locked", false, notHere);
+      const label = MODE_SET_ELSEWHERE_LABEL[role];
+      if (notHere && label) return elsewhere(label, notHere);
       const mode = modes[role];
       if (mode === "ask") return cell("read");
       // Incident runs publish a branch and a pull request, never main.

@@ -140,7 +140,7 @@ export const ACCESS_CELL_BUTTON =
   "focus-ring relative flex min-h-11 w-full items-center justify-center rounded-control text-supporting hover:bg-hover";
 /** A cell that can't change: words, with why on hover, focus or tap. */
 export const ACCESS_CELL_STATIC =
-  "focus-ring relative flex min-h-11 w-full cursor-default items-center justify-center rounded-control text-supporting before:absolute before:inset-0 before:content-['']";
+  "focus-ring relative flex min-h-11 w-full cursor-default items-center justify-center rounded-control text-center text-balance text-supporting before:absolute before:inset-0 before:content-['']";
 export const ACCESS_KEY = "mt-2 px-5 text-supporting text-faint";
 
 /** The phone role picker: sticky, wrapping, every chip a 44px target. */

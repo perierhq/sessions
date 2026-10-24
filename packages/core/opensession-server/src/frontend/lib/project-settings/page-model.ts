@@ -118,26 +118,34 @@ const CELL_LABELS: Record<AccessCellValue, string> = {
   "ask-each": "Ask each time",
   standing: "Always",
   locked: "Not allowed",
+  elsewhere: "Set elsewhere",
 };
 
 /** What a cell shows. `locked` renders as a lock icon carrying this as its
- *  accessible name. */
-export function cellLabel(v: AccessCellValue): string {
+ *  accessible name; an `elsewhere` cell reads its own `label`. */
+export function cellLabel(v: AccessCellValue, label?: string): string {
+  if (v === "elsewhere" && label) return label;
   return CELL_LABELS[v];
 }
 
 /** What a cell is called to a screen reader: words, never a symbol. */
-export function cellSpokenLabel(v: AccessCellValue): string {
+export function cellSpokenLabel(v: AccessCellValue, label?: string): string {
   if (v === "yes") return "Yes";
   if (v === "no") return "No";
   if (v === "blocked") return "Blocked";
-  return CELL_LABELS[v];
+  return cellLabel(v, label);
 }
 
 /** Whether a cell is on, for `aria-pressed`, the phone checkmark and a
  *  row's count. Read only is the "Changes code" row's off value. */
 export function cellIsOn(v: AccessCellValue): boolean {
-  return v !== "no" && v !== "locked" && v !== "blocked" && v !== "read";
+  return (
+    v !== "no" &&
+    v !== "locked" &&
+    v !== "blocked" &&
+    v !== "read" &&
+    v !== "elsewhere"
+  );
 }
 
 /** Whether clicking the cell flips a boolean (so it gets `aria-pressed`). */

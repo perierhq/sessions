@@ -120,6 +120,12 @@ describe("cell labels", () => {
     expect(cellSpokenLabel("locked")).toBe("Not allowed");
     expect(cellSpokenLabel("blocked")).toBe("Blocked");
     expect(cellSpokenLabel("ask-once")).toBe("Ask once");
+    expect(cellSpokenLabel("elsewhere", "Set per automation")).toBe(
+      "Set per automation",
+    );
+    expect(cellLabel("elsewhere", "Set per automation")).toBe(
+      "Set per automation",
+    );
   });
 });
 
