@@ -295,7 +295,18 @@ export async function resolveSessionSandbox(
   // unless the automation itself asks for the disposable sandbox, which
   // the automation runner provisions.
   if (kind === "automation") return { ok: true, provider: null };
-  const doc = await getProjectDocument(project);
+  let doc: ProjectSettingsDocument;
+  try {
+    doc = await getProjectDocument(project);
+  } catch (error) {
+    // Starting a session must not depend on the project settings being
+    // readable: use the global default, as a project that sets none does.
+    console.warn(
+      `[project-settings] ${project} settings unreadable, using the global sandbox:`,
+      error instanceof Error ? error.message : error,
+    );
+    doc = defaultProjectDocument(project, "");
+  }
   if (kind === "descendant") {
     const own = projectChoice(doc);
     const chosen = own === undefined ? globalChoice(d) : own;

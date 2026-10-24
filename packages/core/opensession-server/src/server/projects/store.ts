@@ -264,6 +264,37 @@ function remember(d: ProjectSettingsDocument): ProjectSettingsDocument {
 /** Forget every cached document (tests start from a fresh kernel). */
 export function __clearProjectDocumentCacheForTest(): void {
   cache.clear();
+  composed.clear();
+}
+
+/** How long what an unmigrated project's legacy settings compose to is
+ *  reused. Composing reads the automations, the connectors and the web
+ *  search setting, too much for every session start; the legacy stores
+ *  themselves are only written by an older gateway. */
+const COMPOSED_TTL_MS = 30_000;
+const composed = new Map<
+  string,
+  { at: number; doc: Promise<ProjectSettingsDocument> }
+>();
+
+/** Drop what the legacy settings composed to: for `project`, or for every
+ *  project when a shared input (automations, connectors) changed. */
+export function invalidateComposedProjectDocument(project?: string): void {
+  if (project === undefined) composed.clear();
+  else composed.delete(project);
+}
+
+function composedFallback(project: string): Promise<ProjectSettingsDocument> {
+  const now = Date.now();
+  const hit = composed.get(project);
+  if (hit && now - hit.at < COMPOSED_TTL_MS) return hit.doc;
+  const doc = composeFallback(project, new Date(now).toISOString());
+  composed.set(project, { at: now, doc });
+  // A failure is not remembered: the next read tries again.
+  doc.catch(() => {
+    if (composed.get(project)?.doc === doc) composed.delete(project);
+  });
+  return doc;
 }
 
 /** The last document this process read or wrote for the project. */
@@ -280,7 +311,7 @@ export async function getProjectDocument(
 ): Promise<ProjectSettingsDocument> {
   const stored = await projectDocuments().get(project);
   if (stored !== null) return remember(withDocumentDefaults(project, stored));
-  return remember(await composeFallback(project, new Date().toISOString()));
+  return remember(await composedFallback(project));
 }
 
 /** Whether the project has a stored document of its own. */
@@ -318,6 +349,7 @@ export function onProjectDocumentChange(
 
 /** Each listener on its own microtask, so none can fail or hold the write. */
 function notify(project: string): void {
+  composed.delete(project);
   for (const listener of [...listeners])
     void Promise.resolve()
       .then(() => listener(project))

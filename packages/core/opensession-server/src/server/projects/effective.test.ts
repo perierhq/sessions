@@ -183,3 +183,44 @@ test("new sessions ignore a personal default; the project and then the global de
     await resolveSessionSandbox("local", "acme-web", MODEL, "interactive"),
   ).toEqual({ ok: true, provider: null });
 });
+
+test("unreadable project settings fall back to the global default for new sessions", async () => {
+  deps({ global: () => "daytona" });
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme-web"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: async () => {
+      throw new Error("catalog unavailable");
+    },
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+  });
+  expect(
+    await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive"),
+  ).toEqual({ ok: true, provider: "daytona" });
+});
+
+test("an unmigrated project's composed settings are reused, not recomposed per session", async () => {
+  deps({ global: () => "none" });
+  let composed = 0;
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme-web"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: async () => {
+      composed++;
+      return [];
+    },
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+  });
+  for (let i = 0; i < 3; i++)
+    await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive");
+  expect(composed).toBe(1);
+  // The first write stores the project's own document.
+  await setSandbox("podman");
+  expect(
+    await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive"),
+  ).toEqual({ ok: true, provider: "podman" });
+});
