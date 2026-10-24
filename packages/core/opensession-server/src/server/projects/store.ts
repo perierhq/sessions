@@ -260,6 +260,11 @@ function remember(d: ProjectSettingsDocument): ProjectSettingsDocument {
   return d;
 }
 
+/** Forget every cached document (tests start from a fresh kernel). */
+export function __clearProjectDocumentCacheForTest(): void {
+  cache.clear();
+}
+
 /** The last document this process read or wrote for the project. */
 export function peekProjectDocument(
   project: string,

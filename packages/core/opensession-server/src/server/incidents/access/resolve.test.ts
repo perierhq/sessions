@@ -16,7 +16,9 @@ import {
   resolveAgentAccess,
   resolveAgentAccessForBinding,
   VERIFIER_WEB_SEARCH_MESSAGE,
+  WEB_SEARCH_OFF_MESSAGE,
 } from "./resolve";
+import { setProjectAccessForTest } from "../testing/project-access";
 import { runToolPolicy } from "../../run-policy";
 
 const kit = useIncidentTestKernel();
@@ -323,14 +325,13 @@ test("live state narrows instead of failing, and each narrowing is audited once"
     "credentials:Credential was deleted",
     "egress:Egress Runner was removed",
     "hosts:Runner was removed",
-    "runners:Runner was removed",
   ]);
   await resolveAgentAccess("investigator", incident(), signal, {
     settings: settings(),
   });
   expect(
     kit.audits.filter((e) => e.kind === "incident_access_narrowed"),
-  ).toHaveLength(5);
+  ).toHaveLength(4);
 });
 test.each([
   [{ platform: "win32" as const }, "Runner does not run on Linux or macOS"],
@@ -411,27 +412,23 @@ test("the owner's own grant survives", async () => {
   });
   expect(access.credentials.map((c) => c.credential)).toEqual(["kc-proxy"]);
 });
-test("settings beyond their grants fail closed", async () => {
+test("settings breaking a role lock fail closed", async () => {
   const s = settings();
-  s.profiles.investigator.connections = ["sentry", "people-only"];
+  s.profiles.verifier.mode = "code";
   await expect(
-    resolveAgentAccess("investigator", incident(), signal, { settings: s }),
+    resolveAgentAccess("verifier", incident(), signal, { settings: s }),
   ).rejects.toMatchObject({
     code: "settings",
-    message: expect.stringContaining("exceed their grants"),
+    message: expect.stringContaining("break a role rule"),
   });
 });
-test("stored settings are read when none are passed; unreadable ones refuse", async () => {
+test("stored settings are read when none are passed; unreadable legacy ones read as the defaults", async () => {
   expect(
     (await resolveAgentAccess("verifier", incident(), signal)).defaults,
   ).toBe(true);
   await catalogDocuments("incident-access").set("acme", { nope: 1 });
-  await expect(
-    resolveAgentAccess("verifier", incident(), signal),
-  ).rejects.toMatchObject({
-    code: "settings",
-    message: expect.stringContaining("unreadable"),
-  });
+  const a = await resolveAgentAccess("verifier", incident(), signal);
+  expect(a).toMatchObject({ defaults: true, connections: [], mode: "ask" });
 });
 test("binding resolution reads the incident and signal; a missing incident refuses", async () => {
   await expect(
@@ -807,11 +804,6 @@ test("a Runner reserved for this project's incidents serves hosts and egress onl
   ]);
   expect(a.egress).toMatchObject({ route: "runner", runner: "rn-prod" });
   expect(a.runners).toEqual([]);
-  expect(a.narrowed).toContainEqual({
-    field: "runners",
-    item: "rn-prod",
-    reason: "Runner is reserved for incidents",
-  });
   // Reserved for another project's incidents: nothing.
   Object.assign(
     t.spec.runners.find((r) => r.id === "rn-prod")!,
@@ -823,4 +815,28 @@ test("a Runner reserved for this project's incidents serves hosts and egress onl
     settings: settings(),
   });
   expect(b).toMatchObject({ hosts: [], egress: null, runners: [] });
+});
+
+test("the access table decides: a connector ticked only for automations, web search off", async () => {
+  await setProjectAccessForTest("acme", (access) => {
+    access.connections = [
+      { server: "sentry", roles: ["automations"] },
+      { server: "logs", roles: ["investigator", "reviews"] },
+    ];
+    access.webSearch = ["automations"];
+  });
+  const a = await resolveAgentAccess("investigator", incident(), signal);
+  expect(a.connections).toEqual(["logs"]);
+  expect(a.deniedTools.web_search).toBe(WEB_SEARCH_OFF_MESSAGE);
+  expect(a.deniedTools.web_fetch).toBeUndefined();
+  const v = await resolveAgentAccess("verifier", incident(), signal);
+  expect(v.connections).toEqual([]);
+  expect(v.deniedTools.web_search).toBe(VERIFIER_WEB_SEARCH_MESSAGE);
+  await setProjectAccessForTest("acme", (access) => {
+    access.webSearch = ["investigator"];
+  });
+  expect(
+    (await resolveAgentAccess("investigator", incident(), signal)).deniedTools
+      .web_search,
+  ).toBeUndefined();
 });

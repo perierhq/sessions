@@ -135,6 +135,17 @@ export function chooseRoleModels(
   };
 }
 
+type LiveInputs = Pick<
+  RoleModelInput,
+  "candidates" | "configuredProviders" | "defaultModel" | "providerOf"
+>;
+let inputsOverride: LiveInputs | undefined;
+
+/** Replace the configured models and providers (undefined restores them). */
+export function __setRoleModelInputsForTest(inputs?: LiveInputs): void {
+  inputsOverride = inputs;
+}
+
 /** Role models: the project's own (`agents`), else the role's global
  *  default (Defaults page), else chosen from the configured providers. */
 export function resolveRoleModels(
@@ -143,8 +154,10 @@ export function resolveRoleModels(
 ): RoleModels | { error: string } {
   const normalize = (id: string | undefined) =>
     id === undefined ? undefined : canonicalModelId(id);
-  const candidates = selectableModels();
-  const configuredProviders = configuredModelProviders();
+  const live = inputsOverride;
+  const candidates = live?.candidates ?? selectableModels();
+  const configuredProviders =
+    live?.configuredProviders ?? configuredModelProviders();
   const preferred = automationModel();
   const investigatorModel = normalize(
     override?.investigator ??
@@ -169,12 +182,14 @@ export function resolveRoleModels(
     verifierModel,
     candidates,
     configuredProviders,
-    defaultModel: chooseConfiguredDefaultModel(
-      preferred!,
-      configuredProviders,
-      candidates.map((c) => c.id),
-    ),
-    providerOf: modelUpstreamProvider,
+    defaultModel:
+      live?.defaultModel ??
+      chooseConfiguredDefaultModel(
+        preferred!,
+        configuredProviders,
+        candidates.map((c) => c.id),
+      ),
+    providerOf: live?.providerOf ?? modelUpstreamProvider,
   });
 }
 

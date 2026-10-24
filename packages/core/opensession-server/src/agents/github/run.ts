@@ -91,9 +91,8 @@ export async function githubFlowMcpServers(
   // (an unmigrated project composes them from the review automation).
   if (repoId) {
     try {
-      const { getProjectDocument } = await import(
-        "../../server/projects/store"
-      );
+      const { getProjectDocument } =
+        await import("../../server/projects/store");
       const doc = await getProjectDocument(repoId);
       return doc.access.connections
         .filter((c) => c.roles.includes("reviews"))
@@ -112,15 +111,15 @@ export async function githubFlowMcpServers(
 }
 
 /** The Reviews model a project (else the global default) sets, if any. */
-async function reviewsModel(repoId: string | null): Promise<string | undefined> {
+async function reviewsModel(
+  repoId: string | null,
+): Promise<string | undefined> {
   try {
-    const { globalRoleDefault } = await import(
-      "../../server/projects/global-defaults"
-    );
+    const { globalRoleDefault } =
+      await import("../../server/projects/global-defaults");
     if (repoId) {
-      const { getProjectDocument } = await import(
-        "../../server/projects/store"
-      );
+      const { getProjectDocument } =
+        await import("../../server/projects/store");
       const own = (await getProjectDocument(repoId)).models.reviews;
       if (own) return own;
     }

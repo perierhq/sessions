@@ -2129,9 +2129,7 @@ export async function maybeLaunchSandboxedRun(
           ...sandboxAutomationConfig(),
           egressAllowlist: await (
             await import("./projects/effective")
-          ).automationEgressHosts(
-            getRepo(owningAutomation?.repo).id,
-          ),
+          ).automationEgressHosts(getRepo(owningAutomation?.repo).id),
         }
       : undefined;
     const sandbox = await ensureSandboxWithTransientRetry(

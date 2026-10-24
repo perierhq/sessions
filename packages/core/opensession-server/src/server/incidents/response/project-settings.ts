@@ -314,8 +314,7 @@ export async function recordRelease(
 ): Promise<{ error: string } | undefined> {
   if (release.ref !== undefined && !RELEASE_REF.test(release.ref))
     return { error: "Invalid ref" };
-  if (!projectExists(project))
-    return { error: `Unknown project ${project}` };
+  if (!projectExists(project)) return { error: `Unknown project ${project}` };
   await patchProjectSettings(project, (s) => ({
     ...s,
     releases: [release, ...s.releases]

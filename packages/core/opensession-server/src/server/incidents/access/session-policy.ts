@@ -103,10 +103,8 @@ export async function enforceIncidentSpawn(
     refuse("Incident agents work in a repository");
   if (request.mode === "code" && access.mode === "ask")
     refuse("This agent may only read (mode ask)");
-  // Incident agents work in the project's sandbox, never on a Runner; their
-  // model comes from the project's roles, not from access.
-  if (request.runner !== undefined)
-    refuse("Incident agents run in the project's sandbox, not on a Runner");
+  // Runners and models are no longer part of access: the policy's
+  // allowedRunners (narrowed below) and the project's role models decide.
   // The session does not exist yet: this records the decision, and
   // auditIncidentSpawned records the session once it is created.
   incidentAudit({

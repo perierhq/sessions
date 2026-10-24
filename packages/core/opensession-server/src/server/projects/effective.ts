@@ -38,7 +38,11 @@ export const NO_SANDBOX_REASON =
 const PODMAN_FOR_AUTOMATIONS =
   "This machine (container) runs sessions and incident agents only; automations and their runs need Daytona";
 
-export type SessionKind = "interactive" | "incident" | "automation" | "descendant";
+export type SessionKind =
+  | "interactive"
+  | "incident"
+  | "automation"
+  | "descendant";
 
 export interface EffectiveDeps {
   global: () => string;
@@ -96,7 +100,9 @@ export function sandboxLabel(provider: string | null): string {
 
 /** The project's own choice as a provider (`null` = this machine), or
  *  undefined when it follows the global default. */
-function projectChoice(doc: ProjectSettingsDocument): string | null | undefined {
+function projectChoice(
+  doc: ProjectSettingsDocument,
+): string | null | undefined {
   if (doc.sandbox === "default") return undefined;
   return doc.sandbox === "local" ? null : doc.sandbox;
 }
@@ -114,7 +120,10 @@ function place(
 }
 
 /** Where automations run (D3). */
-function automationPlace(doc: ProjectSettingsDocument, d: EffectiveDeps): RunPlace {
+function automationPlace(
+  doc: ProjectSettingsDocument,
+  d: EffectiveDeps,
+): RunPlace {
   const own = projectChoice(doc);
   if (own && d.automationCapable(own)) return place(own, "project");
   const global = globalChoice(d);
@@ -253,7 +262,9 @@ export async function resolveSessionSandbox(
 
 /** The websites an automation on `project` may reach: the global list and
  *  the project's websites ticked for Automations. */
-export async function automationEgressHosts(project: string): Promise<string[]> {
+export async function automationEgressHosts(
+  project: string,
+): Promise<string[]> {
   const out = globalWebsites();
   try {
     const doc = await getProjectDocument(project);

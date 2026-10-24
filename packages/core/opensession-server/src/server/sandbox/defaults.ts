@@ -148,9 +148,8 @@ export async function saveRepoSandboxDefault(
       : normalized === "none"
         ? "local"
         : normalized;
-  const { getProjectDocument, updateProjectDocument } = await import(
-    "../projects/store"
-  );
+  const { getProjectDocument, updateProjectDocument } =
+    await import("../projects/store");
   const { revision } = await getProjectDocument(repoId);
   const out = await updateProjectDocument(
     repoId,
