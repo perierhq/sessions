@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { assertTranscriptActorRequest } from "./session-kernel/transcript-protocol";
 import type { TranscriptPage } from "./transcript-store";
 import type { TranscriptEntry } from "./types";
 
@@ -29,10 +30,18 @@ Object.assign(transcript, {
   getLastResetChangeSeq: async () => epoch,
   getLastChangeSeq: async () => nextChange - 1,
   readChangesSince: async (
-    _id: string,
+    id: string,
     since: number,
     limit: number,
   ): Promise<TranscriptPage> => {
+    // Tests skip the actor, so hold the read to the actor's own request
+    // rules: a limit it refuses fails every live index run.
+    assertTranscriptActorRequest({
+      op: "changes_since",
+      sessionId: id,
+      changeSeq: since,
+      limit,
+    });
     reads++;
     const entries = [...rows.values()]
       .filter((row) => row.changeSeq > since)
@@ -76,7 +85,8 @@ test("pages through a long transcript, then applies only what changed", async ()
   expect(await indexSessionTranscript("s", Date.now())).toEqual({
     applied: 1_201,
   });
-  expect(reads).toBe(3);
+  // 200-change pages: six full ones and the last one short.
+  expect(reads).toBe(7);
   expect(ids("pi-durable")).toEqual(["s"]);
 
   reads = 0;
