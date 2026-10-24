@@ -263,6 +263,33 @@ describe("LiveTurnStore", () => {
     store.clear();
   });
 
+  test("a durable entry under another id still replaces the live text it repeats", () => {
+    // An engine whose durable row does not reuse the live block ids (the
+    // motion fixture's answer, older engines): the string fallback that the
+    // shared LiveTextBuffer applies still clears the bubble.
+    const store = new LiveTurnStore();
+    store.start(undefined, "run-other-id");
+    const parts = ["Intro.", "\n\nTool 1 settled.", "\n\nAll done."];
+    store.append(parts[0]!, "s-intro");
+    store.append(parts[1]!, "s-0");
+    store.append(parts[2]!, "s-final");
+    store.finish();
+    store.land([{ id: "answer", content: parts.join("") }]);
+    expect(store.getSnapshot().blocks).toEqual([]);
+    expect(store.getSnapshot().text).toBe("");
+
+    // Only the repeated span leaves; text the entry does not say stays.
+    store.start(undefined, "run-partial");
+    store.append("First paragraph.", "p-1");
+    store.append(" Second paragraph.", "p-2");
+    store.finish();
+    store.land([{ id: "answer-2", content: "First paragraph." }]);
+    expect(store.getSnapshot().blocks.map((block) => block.text)).toEqual([
+      " Second paragraph.",
+    ]);
+    store.clear();
+  });
+
   test("holds an early tool card under the live text it follows", async () => {
     const store = new LiveTurnStore();
     store.start(undefined, "run-13");

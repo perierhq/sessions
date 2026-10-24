@@ -259,6 +259,10 @@ export class LiveTurnStore {
       // text unless some is on screen (a reconnect snapshot of the same run).
       if (!matched || !this.anon.isEmpty)
         this.anon.land(entry.content, entry.id);
+      // No block carries this id (an engine whose durable rows do not reuse
+      // its live block ids): cancel the text it repeats, as LiveTextBuffer's
+      // string fallback does for anonymous text.
+      if (!matched) this.landByText(entry.content);
     }
     // The durable entry supersedes the bubble: snap the reveal so no tail of
     // a landed block keeps typing under the entry that already says it.
@@ -330,6 +334,32 @@ export class LiveTurnStore {
       revision: this.snapshot.revision + 1,
     };
     this.emit();
+  }
+
+  /** Remove the first span of the named blocks' joined text that equals
+   * `content`, trimming blocks it covers in part. */
+  private landByText(content: string) {
+    if (!content || this.blocks.length === 0) return;
+    const joined = this.blocks.map((block) => block.text).join("");
+    const start = joined.indexOf(content);
+    if (start === -1) return;
+    const end = start + content.length;
+    let offset = 0;
+    const kept: LiveBlock[] = [];
+    for (const block of this.blocks) {
+      const from = offset;
+      const to = offset + block.text.length;
+      offset = to;
+      if (to <= start || from >= end) {
+        kept.push(block);
+        continue;
+      }
+      const text =
+        block.text.slice(0, Math.max(0, start - from)) +
+        block.text.slice(Math.max(0, end - from));
+      if (text) kept.push({ ...block, text });
+    }
+    this.blocks = kept;
   }
 
   private anonRecent: Array<{ at: number; length: number }> = [];
