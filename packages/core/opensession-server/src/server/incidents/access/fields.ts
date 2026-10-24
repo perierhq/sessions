@@ -639,6 +639,35 @@ export function exceptionOutsideGrants(
   return out;
 }
 
+/**
+ * One role's column of the access table as grants: the ceiling for that
+ * role's per-signal exceptions. A connector, host, credential or website
+ * ticked only for the other role is outside it, the mode is the column's,
+ * and a role whose route is off has no egress grant at all.
+ */
+export function roleAccessGrants(
+  settings: Pick<IncidentAccessSettings, "grants" | "profiles">,
+  role: IncidentAgentRole,
+): ProjectAccessGrants {
+  const profile = settings.profiles[role];
+  return {
+    connections: [...profile.connections],
+    repos: [...profile.repos],
+    runners: [...profile.runners],
+    hosts: profile.hosts.map((h) => ({ ...h })),
+    credentials: profile.credentials.flatMap((c) => {
+      const grant = settings.grants.credentials.find(
+        (g) => g.credential === c.credential,
+      );
+      if (!grant) return [];
+      const mode = grantModeWithin(c.mode, grant.mode) ? c.mode : grant.mode;
+      return [{ ...grant, mode }];
+    }),
+    egress: profile.egress ? [structuredClone(profile.egress)] : [],
+    maxMode: profile.mode,
+  };
+}
+
 // ── Stored documents ────────────────────────────────────────────────────────
 
 const GRANT_KEYS = [

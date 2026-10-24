@@ -40,6 +40,7 @@ import {
   checkWithinGrants,
   egressHostProblem,
   exceptionOutsideGrants,
+  roleAccessGrants,
   mergeProfile,
   roleLockProblem,
   runsPosixShell,
@@ -292,11 +293,14 @@ export async function resolveAgentAccess(
       `Access settings for ${incident.project} break a role rule: ${lock}`,
       "settings",
     );
-  // The access table is the ceiling: the grants are its union, so a
-  // per-signal exception can't reach what the table doesn't list. Fail
-  // closed rather than run with access the page doesn't show.
+  // The access table is the ceiling, column by column: a per-signal
+  // exception can't reach what the table doesn't tick for its own role.
+  // Fail closed rather than run with access the page doesn't show.
   const outside = override
-    ? exceptionOutsideGrants(override.fields, settings.grants)[0]
+    ? exceptionOutsideGrants(
+        override.fields,
+        roleAccessGrants(settings, role),
+      )[0]
     : undefined;
   const violation =
     checkWithinGrants(profile, settings.grants) ??

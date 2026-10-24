@@ -71,10 +71,15 @@ const settings = (): IncidentAccessSettings => {
     ],
     egress: [{ route: "server" }, { route: "runner", runner: "rn-prod" }],
   };
+  // The investigator's column ticks the host and the credential; the
+  // search signal's exception picks them (an exception stays within its
+  // role's column).
   s.profiles.investigator = {
     ...s.profiles.investigator,
     connections: ["sentry", "logs"],
     runners: ["rn-prod"],
+    hosts: [{ runner: "rn-prod", access: "read-only" }],
+    credentials: [{ credential: "kc-proxy", mode: "standing" }],
     egress: { route: "runner", runner: "rn-prod" },
   };
   s.overrides = [
@@ -158,9 +163,14 @@ test("another signal gets the role default; an override from another project is 
     id: "sig-errors",
     source: { kind: "webhook" },
   } as Signal;
+  const s = settings();
+  s.profiles.investigator.hosts = [];
+  s.profiles.investigator.credentials = [];
+  s.overrides = [];
   const a = await resolveAgentAccess("investigator", incident(), other, {
-    settings: settings(),
+    settings: s,
   });
+  expect(a.overrideApplied).toBe(false);
   expect(a.hosts).toEqual([]);
   expect(a.egress).toBeNull();
   expect(a.narrowed).toContainEqual({
@@ -895,6 +905,75 @@ test("a signal exception never exceeds the access table", async () => {
   });
   const a = await resolveAgentAccess("investigator", incident(), signal);
   expect(a).toMatchObject({ overrideApplied: true, connections: ["logs"] });
+});
+
+test("a signal exception stays within its own role's column", async () => {
+  const exception = (
+    role: "investigator" | "verifier",
+    fields: Record<string, unknown>,
+  ) => ({
+    signalId: "sig-search",
+    role,
+    fields,
+    updatedBy: "Ada",
+    updatedAt: "x",
+  });
+  // A connector ticked only for the verifier.
+  await setProjectAccessForTest("acme", (access) => {
+    access.connections = [
+      { server: "logs", roles: ["investigator"] },
+      { server: "sentry", roles: ["verifier"] },
+    ];
+    access.signalExceptions = [
+      exception("investigator", { connections: ["sentry"] }),
+    ];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow("sentry");
+  // A host ticked only for the investigator.
+  await setProjectAccessForTest("acme", (access) => {
+    access.hosts = [
+      { runner: "rn-prod", access: "read-only", roles: ["investigator"] },
+    ];
+    access.signalExceptions = [
+      exception("verifier", {
+        hosts: [{ runner: "rn-prod", access: "read-only" }],
+      }),
+    ];
+  });
+  await expect(
+    resolveAgentAccess("verifier", incident(), signal),
+  ).rejects.toThrow("rn-prod");
+  // The investigator's column is ask: an exception can't make it code.
+  await setProjectAccessForTest("acme", (access) => {
+    access.hosts = [];
+    access.modes.investigator = "ask";
+    access.signalExceptions = [exception("investigator", { mode: "code" })];
+  });
+  await expect(
+    resolveAgentAccess("investigator", incident(), signal),
+  ).rejects.toThrow("Mode code");
+  // The verifier's route is off: no egress, whatever the investigator has.
+  await setProjectAccessForTest("acme", (access) => {
+    access.modes.investigator = "code";
+    access.routes.verifier = null;
+    access.signalExceptions = [
+      exception("verifier", { egress: { route: "server" } }),
+    ];
+  });
+  await expect(
+    resolveAgentAccess("verifier", incident(), signal),
+  ).rejects.toThrow("server");
+  // Within the role's own column, the exception applies.
+  await setProjectAccessForTest("acme", (access) => {
+    access.signalExceptions = [
+      exception("investigator", { connections: ["logs"] }),
+    ];
+  });
+  expect(
+    await resolveAgentAccess("investigator", incident(), signal),
+  ).toMatchObject({ overrideApplied: true, connections: ["logs"] });
 });
 
 test("egress off in the access table resolves to no egress", async () => {

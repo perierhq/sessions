@@ -339,6 +339,46 @@ test("signal exceptions keep only what the access table allows", () => {
     expect(report.dropped).toContainEqual({ field, item, why });
 });
 
+test("a signal exception keeps only what its own role's column allows", () => {
+  const { document, report } = composeFromLegacy(
+    "acme-web",
+    sources({
+      access: legacyAccess((s) => {
+        s.profiles.verifier = { ...s.profiles.verifier, egress: null };
+        s.overrides = [
+          {
+            signalId: "sig-1",
+            role: "verifier",
+            // linear, the host and the credential are the investigator's;
+            // the verifier's route is off.
+            fields: {
+              connections: ["grafana", "linear"],
+              hosts: [{ runner: "rn-prod", access: "read-only" }],
+              credentials: [{ credential: "cred-grafana", mode: "once" }],
+              egress: { route: "server" },
+            },
+            updatedBy: "Ada",
+            updatedAt: NOW,
+          },
+        ];
+      }),
+    }),
+    NOW,
+  );
+  // An emptied list stays: the exception narrowed to items it can't have.
+  expect(document.access.signalExceptions.map((e) => e.fields)).toEqual([
+    { connections: ["grafana"], hosts: [], credentials: [] },
+  ]);
+  const why = "Outside the project's access table";
+  for (const [field, item] of [
+    ["access.signalExceptions.sig-1.verifier.connections", "linear"],
+    ["access.signalExceptions.sig-1.verifier.hosts", "rn-prod"],
+    ["access.signalExceptions.sig-1.verifier.credentials", "cred-grafana"],
+    ["access.signalExceptions.sig-1.verifier.egress", "server"],
+  ])
+    expect(report.dropped).toContainEqual({ field, item, why });
+});
+
 test("a role without egress keeps no egress", () => {
   const { document, report } = composeFromLegacy(
     "acme-web",

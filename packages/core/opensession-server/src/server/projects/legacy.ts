@@ -28,6 +28,7 @@ import { catalogDocuments } from "../catalog-documents";
 import { configuredPaths, configuredRepos } from "../config";
 import {
   exceptionOutsideGrants,
+  roleAccessGrants,
   isFieldError,
   parseStoredSettings,
 } from "../incidents/access/fields";
@@ -324,11 +325,12 @@ function migrateAccess(
       drop("access.repos", repo, "Agents work on this project's repository");
 
   // Per-signal overrides keep everything but the model and Runners, and
-  // only what the table now allows: the table is their ceiling.
+  // only what the table now allows for their role: its column is their
+  // ceiling.
   const table = accessSettingsFromDocument({
     ...defaultProjectDocument(project, settings.updatedAt),
     access,
-  }).grants;
+  });
   for (const o of settings.overrides) {
     const { model, runners, ...fields } = o.fields as AccessProfileFields;
     if (model) {
@@ -340,7 +342,10 @@ function migrateAccess(
     }
     for (const runner of runners ?? [])
       drop("access.runners", runner, "Runners had no effect");
-    for (const { field, item } of exceptionOutsideGrants(fields, table)) {
+    for (const { field, item } of exceptionOutsideGrants(
+      fields,
+      roleAccessGrants(table, o.role),
+    )) {
       drop(
         `access.signalExceptions.${o.signalId}.${o.role}.${field}`,
         item,
