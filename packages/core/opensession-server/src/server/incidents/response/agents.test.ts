@@ -334,6 +334,8 @@ test("agents start under plan 3's policy, on their own model, never reporting in
   expect(h.creates[0]!.automationDescendantPolicy).not.toHaveProperty(
     "hostAgentUser",
   );
+  // A default sandbox is left to the session's own resolution.
+  expect(h.creates[0]).not.toHaveProperty("sandbox");
   await agents.spawn({
     role: "verifier",
     round: 1,
@@ -356,6 +358,32 @@ test("agents start under plan 3's policy, on their own model, never reporting in
   expect(h.creates[1]!.isolatedWorktree).toBeFalsy();
   expect(h.creates[1]!.stackedOnBranch).toBeUndefined();
   expect(sessionId).not.toBe(h.creates[1]!.id);
+});
+
+test("an agent in This machine (container) asks for it by name", async () => {
+  const h = fakeWorld();
+  const agents = createIncidentAgents(
+    incident,
+    { coordinatorSessionId: "coord", automation },
+    h.deps,
+  );
+  await agents.spawn({
+    role: "investigator",
+    round: 1,
+    attempt: 1,
+    prompt: "Investigate",
+    model: "pi/anthropic/claude-opus-5-5",
+    branch: "incident/x",
+    access: access("investigator"),
+    workspace: { kind: "sandbox", provider: "podman" },
+  });
+  expect(h.creates[0]).toMatchObject({
+    sandbox: "podman",
+    automationDescendantPolicy: { incident: { role: "investigator" } },
+  });
+  expect(h.creates[0]!.automationDescendantPolicy).not.toHaveProperty(
+    "hostAgentUser",
+  );
 });
 
 test("an existing coordinator session is reused", async () => {

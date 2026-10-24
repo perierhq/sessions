@@ -633,6 +633,40 @@ describe("server-built descendant policies", () => {
       automationDescendantPolicy: { allowedRunners: ["runner-a"] },
     });
   });
+  test("a server-chosen sandbox reaches the create, never with a Runner", async () => {
+    const { controller, creates } = harness({ automationSessionPolicy });
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-7", {
+      descendantPolicy: policy(),
+      sandbox: "podman",
+    });
+    expect(creates[0]).toMatchObject({ sandbox: "podman" });
+    await expect(
+      controller.spawn(
+        { prompt: "x", repo: "renderer", runner: "runner-a" },
+        "req-8",
+        {
+          descendantPolicy: policy({ allowedRunners: ["runner-a"] }),
+          sandbox: "podman",
+        },
+      ),
+    ).rejects.toThrow("Choose either a sandbox or a Runner for the child");
+    expect(creates).toHaveLength(1);
+    // Without a server-built policy there is nothing to choose it for.
+    const plain = harness();
+    await expect(
+      plain.controller.spawn({ prompt: "x", repo: "renderer" }, "req-9", {
+        sandbox: "podman",
+      }),
+    ).rejects.toThrow(
+      "A server-chosen sandbox needs a server-built descendant policy",
+    );
+    expect(plain.creates).toHaveLength(0);
+    // A spawn without one leaves the sandbox to the session's defaults.
+    await controller.spawn({ prompt: "x", repo: "renderer" }, "req-10", {
+      descendantPolicy: policy(),
+    });
+    expect(creates[1]).not.toHaveProperty("sandbox");
+  });
   test("a child's Runner must be one the descendant policy allows", async () => {
     const { controller, creates } = harness({ automationSessionPolicy });
     await expect(
