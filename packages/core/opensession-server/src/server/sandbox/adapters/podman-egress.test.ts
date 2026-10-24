@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExecResult } from "../provider";
 import type { PodmanRunner, PodmanRunOpts } from "./podman-cli";
 import {
@@ -8,6 +11,7 @@ import {
   egressCounterProof,
   egressRuleFor,
   expectedEgressListing,
+  NFT_PIPE_SCRIPT,
   normalizeNftListing,
   readEgressCounters,
   podmanEgressRuleset,
@@ -46,6 +50,11 @@ function fakeRunner(reply: (argv: string[]) => ExecResult): {
     return reply(argv);
   };
   return { run, calls };
+}
+
+/** The argv of an nft call through the pipe wrapper. */
+function nftArgv(netns: string, ...args: string[]): string[] {
+  return ["unshare", "/bin/bash", "-c", NFT_PIPE_SCRIPT, "bash", netns, ...args];
 }
 
 function listingReply(listing: string) {
@@ -313,14 +322,7 @@ describe("egress install", () => {
         "{{.NetworkSettings.SandboxKey}}",
         "opensession-sbx-a-infra",
       ],
-      [
-        "unshare",
-        "nsenter",
-        "--net=/run/user/1000/netns/netns-0123",
-        "nft",
-        "-f",
-        "-",
-      ],
+      nftArgv("/run/user/1000/netns/netns-0123", "-f", "-"),
     ]);
     expect(calls[1]!.opts?.stdin).toBe(ruleset);
   });
@@ -357,6 +359,67 @@ describe("egress install", () => {
   });
 });
 
+describe("nft pipe wrapper", () => {
+  // Runs NFT_PIPE_SCRIPT under a real bash with a stand-in `nsenter` that
+  // echoes its argv and stdin to stdout, writes to stderr, and exits with
+  // the code it is given.
+  async function runWrapper(
+    netns: string,
+    args: string[],
+    stdin: string,
+    exit: number,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "nft-pipe-"));
+    try {
+      const stub = join(dir, "nsenter");
+      await writeFile(
+        stub,
+        `#!/bin/sh\nprintf '[%s]\\n' "$@"\ncat\necho "nft: complaint" >&2\nexit ${exit}\n`,
+      );
+      await chmod(stub, 0o755);
+      const proc = Bun.spawn(
+        ["/bin/bash", "-c", NFT_PIPE_SCRIPT, "bash", netns, ...args],
+        {
+          cwd: dir,
+          env: { PATH: `${dir}:/usr/bin:/bin` },
+          stdin: Buffer.from(stdin),
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { exitCode, stdout, stderr };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("passes the namespace and arguments as argv, with stdin, stdout and stderr intact", async () => {
+    const netns = "/run/a b/$(touch pwned);`id`";
+    const result = await runWrapper(
+      netns,
+      ["-j", "list", "a b", "$HOME", "*"],
+      "flush ruleset\n",
+      0,
+    );
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: `[--net=${netns}]\n[nft]\n[-j]\n[list]\n[a b]\n[$HOME]\n[*]\nflush ruleset\n`,
+      stderr: "nft: complaint\n",
+    });
+  });
+
+  test("keeps nft's exit status", async () => {
+    const result = await runWrapper("/proc/1/ns/net", ["-f", "-"], "", 3);
+    expect(result.exitCode).toBe(3);
+    expect(result.stderr).toBe("nft: complaint\n");
+  });
+});
+
 describe("egress verify", () => {
   test("the captured nft 1.0.9 listing matches its policy", async () => {
     const { run, calls } = fakeRunner(listingReply(EGRESS_FIXTURE_LISTING));
@@ -365,15 +428,9 @@ describe("egress verify", () => {
       "opensession-sbx-a-infra",
       EGRESS_FIXTURE_INPUT,
     );
-    expect(calls.at(-1)!.argv).toEqual([
-      "unshare",
-      "nsenter",
-      "--net=/run/user/1000/netns/netns-0123",
-      "nft",
-      "-j",
-      "list",
-      "ruleset",
-    ]);
+    expect(calls.at(-1)!.argv).toEqual(
+      nftArgv("/run/user/1000/netns/netns-0123", "-j", "list", "ruleset"),
+    );
   });
 
   test("handles and counter values do not matter", async () => {
@@ -492,6 +549,19 @@ describe("egress verify", () => {
     ).rejects.toThrow("not JSON");
   });
 
+  test("a clean nft exit with nothing printed names the likely cause", async () => {
+    await expect(
+      verifyEgressRules(
+        fakeRunner(listingReply("\n")).run,
+        "opensession-sbx-a-infra",
+        EGRESS_FIXTURE_INPUT,
+      ),
+    ).rejects.toThrow(/list egress rules: nft exited 0 but printed nothing.*SELinux/);
+    await expect(
+      readEgressCounters(fakeRunner(listingReply("")).run, "/proc/1/ns/net"),
+    ).rejects.toThrow(/list egress counters: nft exited 0 but printed nothing/);
+  });
+
   test("the workload's own namespace is verified through its pid", async () => {
     const { run, calls } = fakeRunner((argv) =>
       argv[0] === "container" ? ok("4242\n") : ok(EGRESS_FIXTURE_LISTING),
@@ -506,7 +576,7 @@ describe("egress verify", () => {
       "{{.State.Pid}}",
       "opensession-sbx-a-ws",
     ]);
-    expect(calls[1]!.argv[2]).toBe("--net=/proc/4242/ns/net");
+    expect(calls[1]!.argv[5]).toBe("/proc/4242/ns/net");
 
     const stopped = fakeRunner(() => ok("0\n"));
     await expect(
@@ -546,17 +616,9 @@ describe("egress counters", () => {
   test("reads every reject rule's packet counter from the namespace", async () => {
     const { run, calls } = fakeRunner(listingReply(EGRESS_FIXTURE_LISTING));
     const counters = await readEgressCounters(run, "/proc/4242/ns/net");
-    expect(calls[0]!.argv).toEqual([
-      "unshare",
-      "nsenter",
-      "--net=/proc/4242/ns/net",
-      "nft",
-      "-j",
-      "list",
-      "table",
-      "inet",
-      "opensession",
-    ]);
+    expect(calls[0]!.argv).toEqual(
+      nftArgv("/proc/4242/ns/net", "-j", "list", "table", "inet", "opensession"),
+    );
     expect(Object.fromEntries(counters)).toEqual({
       ipv6: 0,
       "callback-reject:203.0.113.7": 0,

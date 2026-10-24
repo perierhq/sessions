@@ -113,7 +113,7 @@ describe("podman provider ensure", () => {
       fake.calls.some(
         ({ argv }) =>
           argv[0] === "unshare" &&
-          argv.includes("--net=/proc/4242/ns/net") &&
+          argv[5] === "/proc/4242/ns/net" &&
           argv.includes("-j"),
       ),
     ).toBe(true);
