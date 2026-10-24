@@ -45,7 +45,8 @@ export interface ChecklistModel {
   title: string;
   /** The count under a blocked title; `null` when the title already says it. */
   subtitle: string | null;
-  /** One per step, in step order, so a red segment sits where its step is. */
+  /** One per step, in the rows' order, so a red segment sits where its
+   *  step is. */
   segments: SegmentState[];
   /** The step whose fix is the screen's one ink button. */
   primary: ReadinessStep | null;
@@ -66,12 +67,24 @@ export function checklistModel(
   r: ProjectReadiness,
   project: string,
 ): ChecklistModel {
-  const segments = READINESS_STEP_IDS.map((id): SegmentState => {
-    const step = r.steps.find((s) => s.id === id);
-    return step?.state ?? "todo";
-  });
   const ready = r.steps.filter((s) => s.state === "ready" && s.id !== "paused");
   const open = r.steps.filter((s) => s.state !== "ready");
+  // In the order the rows read: the blocking step, the other to-dos, then
+  // the ready ones. A step the server didn't send counts as a to-do.
+  const isStep = (s: ReadinessStep) =>
+    (READINESS_STEP_IDS as readonly string[]).includes(s.id);
+  const missing = READINESS_STEP_IDS.filter(
+    (id) => !r.steps.some((s) => s.id === id),
+  );
+  const todo = [
+    ...(r.blocking ? [r.blocking] : []),
+    ...open.filter((s) => s.id !== r.blocking?.id),
+  ].filter(isStep);
+  const segments: SegmentState[] = [
+    ...todo.map((s) => s.state),
+    ...missing.map((): SegmentState => "todo"),
+    ...ready.filter(isStep).map((s) => s.state),
+  ];
   const count = `${r.readyCount} of ${READINESS_TOTAL} ready`;
   if (r.blocking) {
     const blocking = r.blocking;

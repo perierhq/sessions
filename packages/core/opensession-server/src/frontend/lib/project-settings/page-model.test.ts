@@ -36,13 +36,14 @@ describe("checklistModel", () => {
     expect(m.collapsedReady.length).toBe(4);
     expect(m.collapsedTodo.length).toBe(0);
     expect(m.primary?.id).toBe("deploy");
+    // In the rows' order: the two to-dos, then the ready steps.
     expect(m.segments).toEqual([
-      "ready",
-      "ready",
-      "ready",
-      "ready",
       "todo",
       "todo",
+      "ready",
+      "ready",
+      "ready",
+      "ready",
     ]);
   });
 
@@ -55,8 +56,8 @@ describe("checklistModel", () => {
     expect(m.collapsedTodo.length).toBe(2);
     expect(m.collapsedReady.length).toBe(3);
     expect(m.primary?.id).toBe("where");
-    // The red segment sits in the step's own position (fable #20).
-    expect(m.segments[1]).toBe("blocked");
+    // The red segment sits where its step is: first, like its row.
+    expect(m.segments.slice(0, 3)).toEqual(["blocked", "todo", "todo"]);
     expect(m.segments.filter((s) => s === "blocked").length).toBe(1);
   });
 
