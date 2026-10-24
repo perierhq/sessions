@@ -33,6 +33,7 @@ import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { SettingCard } from "../../../ui/settings";
 import { IconCheck, IconChevronDown } from "../../icons";
+import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * The first card on a project page: what stands between the project and
@@ -160,8 +161,7 @@ function Fold({
   onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <PlainButton
       className={CHECKLIST_FOLD}
       aria-expanded={open}
       onClick={onToggle}
@@ -179,6 +179,6 @@ function Fold({
           className={cn("transition-transform", open && "rotate-180")}
         />
       </span>
-    </button>
+    </PlainButton>
   );
 }

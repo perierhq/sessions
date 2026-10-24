@@ -44,6 +44,8 @@ import { handlePreviewRoutes } from "./preview";
 import { handleWorkspaceRoutes } from "./workspace";
 import { handleWorkspaceCollaboratorRoutes } from "./workspace-collaborators";
 import { handleAutomationsRoutes } from "./automations";
+import { handleProjectsRoutes } from "./projects";
+import { handleProjectDefaultsRoutes } from "./project-defaults";
 import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
@@ -125,6 +127,10 @@ export const routeHandlers: RouteHandler[] = [
   handleWorkspaceCollaboratorRoutes,
   handleWorkspaceRoutes,
   handleAutomationsRoutes,
+  // Project settings: before the incidents routes, and before the
+  // connections routes for /api/connections/:server/allow-unattended.
+  handleProjectsRoutes,
+  handleProjectDefaultsRoutes,
   // Before the incidents routes, so /api/incidents/:id/access is answered here.
   handleIncidentAccessRoutes,
   handleIncidentsRoutes,

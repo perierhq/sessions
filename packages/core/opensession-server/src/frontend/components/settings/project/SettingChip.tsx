@@ -6,6 +6,7 @@ import {
 } from "../../../lib/project-settings-classes";
 import { cn } from "../../../ui/cn";
 import { Tooltip } from "../../../ui/tooltip";
+import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * "Default" or "Set here", in one slot of one shape: only the paint
@@ -26,14 +27,13 @@ export function SettingChip({
     return <span className={SETTING_CHIP_DEFAULT}>Default</span>;
   return (
     <Tooltip label="Use the default">
-      <button
-        type="button"
+      <PlainButton
         className={cn(SETTING_CHIP_SET, SETTING_CHIP_BUTTON)}
         aria-label={`Set here. Use the default for ${subject}`}
         onClick={onReset}
       >
         Set here
-      </button>
+      </PlainButton>
     </Tooltip>
   );
 }

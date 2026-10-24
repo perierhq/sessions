@@ -2,13 +2,27 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultProjectGrants } from "../../../shared/incident-access";
 import { createIncident, updateIncident } from "../incident-store";
 import { createSignal } from "../signal-store";
 import { transitionIncident } from "../lifecycle";
 import { useAccessTestEnv } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { updateIncidentAccess } from "./settings-store";
+import { setProjectAccessForTest } from "../testing/project-access";
+
+/** Lend `credential` to the investigator at `mode` (null: not at all). */
+function lend(credential: string, mode: "once" | "standing" | null) {
+  return setProjectAccessForTest("acme", (access) => {
+    access.credentials = [
+      {
+        credential,
+        roles: mode ? { investigator: mode } : {},
+        grantedBy: "Ada",
+        grantedByLogin: "ada",
+        grantedAt: "2026-10-20T10:00:00Z",
+      },
+    ];
+  });
+}
 
 const STORE = join(mkdtempSync(join(tmpdir(), "kc-incident-life-")), "kc.json");
 process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
@@ -19,7 +33,6 @@ const { startIncidentAccess, __incidentAccessIdleForTest } =
 
 useIncidentTestKernel();
 const t = useAccessTestEnv();
-const ada = { name: "Ada", login: "ada", verified: true };
 
 function reset(): void {
   if (existsSync(STORE)) rmSync(STORE);
@@ -53,28 +66,7 @@ async function seedIncidentWithGrantedCredential(mode: "once" | "standing") {
     scope: "personal",
     injectionHeader: "Authorization",
   });
-  const g = await updateIncidentAccess(
-    "acme",
-    {
-      kind: "grants",
-      grants: {
-        ...defaultProjectGrants("acme"),
-        credentials: [{ credential: cred.id, mode }],
-      },
-    },
-    ada,
-  );
-  if ("error" in g) throw new Error(g.error);
-  const p = await updateIncidentAccess(
-    "acme",
-    {
-      kind: "profile",
-      role: "investigator",
-      fields: { credentials: [{ credential: cred.id, mode }] },
-    },
-    ada,
-  );
-  if ("error" in p) throw new Error(p.error);
+  await lend(cred.id, mode);
   const incident = await createIncident({
     project: "acme",
     title: "Search",
@@ -109,16 +101,7 @@ test("standing narrowed to once is revoked; an unchanged grant survives", async 
   const { incident, credentialId } =
     await seedIncidentWithGrantedCredential("standing");
   expect(await reconcileIncidentGrants("acme")).toBe(0);
-  const narrowed = await updateIncidentAccess(
-    "acme",
-    {
-      kind: "profile",
-      role: "investigator",
-      fields: { credentials: [{ credential: credentialId, mode: "once" }] },
-    },
-    ada,
-  );
-  expect(narrowed).not.toHaveProperty("error");
+  await lend(credentialId, "once");
   expect(await reconcileIncidentGrants("acme")).toBe(1);
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
 });
@@ -205,11 +188,9 @@ test("narrowing the settings revokes what the agent no longer has", async () => 
   const { incident } = await seedIncidentWithGrantedCredential("standing");
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toHaveLength(1);
-  await updateIncidentAccess(
-    "acme",
-    { kind: "profile", role: "investigator", fields: { credentials: [] } },
-    ada,
-  );
+  await setProjectAccessForTest("acme", (access) => {
+    access.credentials = [];
+  });
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
 });
@@ -219,16 +200,11 @@ test("changing a standing grant to once in the settings revokes the live standin
     await seedIncidentWithGrantedCredential("standing");
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toHaveLength(1);
-  const once = [{ credential: credentialId, mode: "once" as const }];
-  const p = await updateIncidentAccess(
-    "acme",
-    { kind: "profile", role: "investigator", fields: { credentials: once } },
-    ada,
-  );
-  expect(p).not.toHaveProperty("error");
+  await lend(credentialId, "once");
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
-  // The project grant itself narrowed to once revokes as well.
+  // A later settings write that still lends it once revokes a standing
+  // grant taken meanwhile.
   const again = await kc.incidentGrantFor({
     credentialId,
     sessionId: "os-3",
@@ -242,15 +218,7 @@ test("changing a standing grant to once in the settings revokes the live standin
     purpose: "Check the pool",
   });
   if ("error" in again) throw new Error(again.error);
-  const g = await updateIncidentAccess(
-    "acme",
-    {
-      kind: "grants",
-      grants: { ...defaultProjectGrants("acme"), credentials: once },
-    },
-    ada,
-  );
-  expect(g).not.toHaveProperty("error");
+  await lend(credentialId, "once");
   await __incidentAccessIdleForTest();
   expect(kc.listIncidentGrants({ incidentId: incident.id })).toEqual([]);
 });

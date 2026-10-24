@@ -67,7 +67,7 @@ export const CHECKLIST_FOLD_TOGGLE =
 export const CONNECT_FORM = "flex w-full flex-col gap-3 pl-8 phone:pl-0";
 export const CONNECT_CHOICES = "grid grid-cols-2 gap-2";
 export const CONNECT_CHOICE =
-  "focus-ring flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5 text-left has-[:checked]:border-fg";
+  "focus-ring flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5 text-left data-[checked]:border-fg";
 export const CONNECT_FIELDS =
   "grid grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)_auto] items-end gap-2 phone:grid-cols-1";
 export const CONNECT_INPUT = "phone:min-h-11 phone:text-input-phone";
@@ -85,13 +85,13 @@ export const SETTING_CHIP_SET = `${SETTING_CHIP} bg-fg/10 text-fg`;
 export const SETTING_CHIP_BUTTON =
   "focus-ring relative before:absolute before:-inset-x-1 before:-inset-y-2.5 before:content-[''] hover:bg-fg/14";
 export const ROW_CONTROLS =
-  "ml-auto flex shrink-0 items-center gap-2 phone:max-w-[60%] phone:flex-wrap phone:justify-end";
+  "ml-auto flex shrink-0 items-center gap-2 phone:ml-0 phone:min-w-0 phone:basis-full phone:justify-end [&>*:last-child]:min-w-0";
 
 export const ROLE_GRID =
-  "grid grid-cols-4 gap-x-4 gap-y-3 px-5 pb-3 phone:grid-cols-2";
+  "grid grid-cols-4 gap-x-4 gap-y-3 px-5 pb-2.5 phone:grid-cols-2";
 export const ROLE_GRID_LABEL = "text-meta text-faint";
 export const ROLE_GRID_VALUE =
-  "mt-0.5 flex items-center gap-1.5 text-supporting text-fg";
+  "mt-0.5 flex items-start gap-1.5 text-supporting text-fg [&>span:first-child]:mt-0.5";
 export const ROLE_GRID_VALUE_BAD = "text-red";
 /** The note under the role grid: plain secondary text, never a banner. */
 export const ROLE_GRID_NOTE =
@@ -128,7 +128,7 @@ export const ACCESS_GROUP_LABEL =
 export const ACCESS_ROW_RULE = "col-span-6 mx-5 h-px bg-line";
 export const ACCESS_TITLE_CELL = "min-w-0 py-2.5 pl-5 pr-3";
 export const ACCESS_ROW_TITLE =
-  "flex items-center gap-1.5 text-body font-medium text-fg";
+  "flex items-center gap-1.5 text-item-title font-medium text-fg";
 export const ACCESS_ROW_DETAIL = "mt-0.5 text-meta text-faint";
 export const ACCESS_ROW_WARNING = "mt-0.5 text-meta text-yellow";
 export const ACCESS_ALLOW = "mt-1.5 phone:min-h-11";

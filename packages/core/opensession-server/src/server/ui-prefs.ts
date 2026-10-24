@@ -166,3 +166,67 @@ export async function forgetRepoInUiPrefs(repoId: string): Promise<number> {
   }
   return changed;
 }
+
+/** Every person's value for one pref key (file stem → value), for a
+ *  backup before the key is forgotten. */
+export async function readUiPrefKey(
+  key: string,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const root = store.dir();
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const parsed: unknown = JSON.parse(
+        await readFile(join(root, name), "utf8"),
+      );
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        continue;
+      const value = clean((parsed as Record<string, unknown>).prefs)[key];
+      if (value !== undefined) out[name.slice(0, -5)] = value;
+    } catch {
+      // An unreadable file holds nothing to back up.
+    }
+  }
+  return out;
+}
+
+/**
+ * Forget one pref key in every person's UI prefs (a retired setting).
+ * Rewrites only the files that hold it, and keeps every other field in
+ * them. Returns how many changed.
+ */
+export async function forgetUiPrefKey(key: string): Promise<number> {
+  const root = store.dir();
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch {
+    return 0;
+  }
+  let changed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = join(root, name);
+    try {
+      const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        continue;
+      const doc = parsed as Record<string, unknown>;
+      const prefs = clean(doc.prefs);
+      if (!(key in prefs)) continue;
+      const { [key]: _forgotten, ...next } = prefs;
+      await writeJsonAtomicAsync(file, { ...doc, prefs: next });
+      changed++;
+    } catch {
+      // One unreadable file must not stop the others from being cleaned.
+    }
+  }
+  return changed;
+}

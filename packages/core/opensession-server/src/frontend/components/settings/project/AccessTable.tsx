@@ -35,6 +35,7 @@ import { Popover } from "../../../ui/popover";
 import { SettingCard } from "../../../ui/settings";
 import { IconWarningTriangle } from "../../icons";
 import { CellFace } from "./CellFace";
+import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * What agents may use, on a desktop: a row per capability and a column per
@@ -53,8 +54,8 @@ export function AccessTable({
   return (
     <SettingCard role="table" aria-label="What agents may use">
       <div role="row" className={ACCESS_GRID}>
-        <span role="columnheader" className="sr-only">
-          Capability
+        <span role="columnheader">
+          <span className="sr-only">Capability</span>
         </span>
         {PROJECT_ROLES.map((role) => (
           <span key={role} role="columnheader" className={ACCESS_HEAD_CELL}>
@@ -87,7 +88,7 @@ function accessRow(
     <div key={rowKeyId(row.key)} role="row" className={ACCESS_GRID}>
       <div role="rowheader" className={ACCESS_TITLE_CELL}>
         <div className={ACCESS_ROW_TITLE}>
-          <span className="min-w-0 truncate">{row.title}</span>
+          <span className="min-w-0">{row.title}</span>
           {row.warning && (
             <IconWarningTriangle
               size={15}
@@ -136,15 +137,14 @@ function accessCell(
       : nextCellValue(row.key, role, cell);
   if (change)
     return (
-      <button
-        type="button"
+      <PlainButton
         className={cn(ACCESS_CELL_BUTTON, cellTone(cell.value))}
         aria-label={name}
         aria-pressed={rowIsBoolean(row.key) ? cellIsOn(cell.value) : undefined}
         onClick={() => onCellChange(change)}
       >
         <CellFace cell={cell} />
-      </button>
+      </PlainButton>
     );
   const reason = cell.reason;
   if (!reason)
