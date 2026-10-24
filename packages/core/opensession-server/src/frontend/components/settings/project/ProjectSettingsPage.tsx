@@ -18,6 +18,7 @@ import {
   allowAgentsOnConnector,
   ApiError,
   patchProjectSettings,
+  previewRemigration,
   remigrateProject,
 } from "../../../lib/api/projects";
 import { errorMessage } from "../../../lib/error-message";
@@ -255,6 +256,12 @@ export function ProjectSettingsPage({
         {view.drift && (
           <DriftNotice
             project={project}
+            onPreview={() =>
+              previewRemigration(project).catch((error) => {
+                toast(saveErrorText(error), { variant: "error" });
+                return null;
+              })
+            }
             onRemigrate={() =>
               remigrateProject(project).then(
                 (result) => {

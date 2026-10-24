@@ -213,7 +213,14 @@ test("re-migrating one project needs a confirm, backs up, then recomposes it", a
   await migrateProjectSettings({ dryRun: false, by: "Ada" });
   const edited = await updateProjectDocument(
     "acme-web",
-    { expectedRevision: 1, incidents: { maxRounds: 1 } },
+    {
+      expectedRevision: 1,
+      incidents: { maxRounds: 1 },
+      // A narrowing made on the page since the migration.
+      access: {
+        cells: [{ row: { kind: "webSearch" }, role: "reviews", value: false }],
+      },
+    },
     { name: "Ada", verified: true, login: "ada" },
   );
   if ("error" in edited) throw new Error(edited.error);
@@ -238,6 +245,8 @@ test("re-migrating one project needs a confirm, backs up, then recomposes it", a
     project: "acme-web",
     overwritten: false,
     backupPath: null,
+    // Re-running undoes that narrowing: the confirm names it.
+    widened: ["access.webSearch.reviews"],
   });
   expect((await backups()).length).toBe(before);
   expect((await getProjectDocument("acme-web")).revision).toBe(2);
@@ -265,5 +274,7 @@ test("re-migrating one project needs a confirm, backs up, then recomposes it", a
     project: "acme-web",
     by: "Ada",
     backupPath: done.backupPath,
+    widened: ["access.webSearch.reviews"],
   });
+  expect(done.widened).toEqual(["access.webSearch.reviews"]);
 });

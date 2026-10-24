@@ -124,6 +124,7 @@ beforeEach(() => {
         report: { project, dropped: [], access: "migrated" },
         backupPath: opts.force ? "/state/backups/acme-web.json" : null,
         overwritten: opts.force,
+        widened: [],
       };
     },
     audit: (e) => calls.audits.push(e),

@@ -402,6 +402,10 @@ export interface ProjectRemigrateResult {
   backupPath: string | null;
   /** Whether the stored document was replaced. */
   overwritten: boolean;
+  /** Dotted paths where the old settings give agents more than the
+   *  current ones do (narrowings made since the migration that a re-run
+   *  undoes). */
+  widened: string[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

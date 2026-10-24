@@ -28,6 +28,7 @@ import {
   MIGRATION_MARKER_KEY,
   noteMigratedDocument,
   projectDocuments,
+  widenedFieldPaths,
   withDocumentDefaults,
 } from "./store";
 
@@ -231,7 +232,8 @@ async function writeProjectBackup(
 /**
  * Compose one project from its legacy settings again, after they changed
  * during an upgrade. Without `force` it only reports what the legacy
- * settings compose to. With it, it backs up the stored document and the
+ * settings compose to, and which fields that gives agents more of than the
+ * current document (`widened`: narrowings a re-run undoes). With it, it backs up the stored document and the
  * legacy settings first, then replaces the document (a new revision,
  * `migratedAt` now), keeping its release hook secret when the legacy
  * settings have none. Callers make sure a signed-in person confirmed it.
@@ -246,9 +248,13 @@ export async function remigrateProject(
     await loadLegacySources(project),
     at,
   );
-  if (!opts.force)
-    return { project, report, backupPath: null, overwritten: false };
   const stored = await projectDocuments().get(project);
+  const widened =
+    stored === null
+      ? []
+      : widenedFieldPaths(withDocumentDefaults(project, stored), document);
+  if (!opts.force)
+    return { project, report, backupPath: null, overwritten: false, widened };
   const backupPath = await writeProjectBackup(project, at, stored);
   const committed = await projectDocuments().update(project, (current) => {
     const previous =
@@ -271,8 +277,9 @@ export async function remigrateProject(
     by: opts.by,
     backupPath,
     dropped: report.dropped.length,
+    widened,
   });
-  return { project, report, backupPath, overwritten: true };
+  return { project, report, backupPath, overwritten: true, widened };
 }
 
 /** When a legacy record was last written: its `updatedAt`, or a release

@@ -106,15 +106,30 @@ export function migrateProjects(opts: {
   });
 }
 
+function remigrate(
+  project: string,
+  force: boolean,
+): Promise<ProjectRemigrateResult> {
+  return request<ProjectRemigrateResult>(`/projects/${seg(project)}/migrate`, {
+    method: "POST",
+    body: { force },
+    label: "Failed to re-run the migration",
+  });
+}
+
+/** What re-running one project's migration would do, nothing written:
+ *  `widened` lists what it gives agents more of than they have now. */
+export function previewRemigration(
+  project: string,
+): Promise<ProjectRemigrateResult> {
+  return remigrate(project, false);
+}
+
 /** Compose one project from its legacy settings again, after they changed
  *  during an upgrade. Confirmed (`force`): the server backs up the current
  *  settings, then replaces them. */
 export function remigrateProject(
   project: string,
 ): Promise<ProjectRemigrateResult> {
-  return request<ProjectRemigrateResult>(`/projects/${seg(project)}/migrate`, {
-    method: "POST",
-    body: { force: true },
-    label: "Failed to re-run the migration",
-  });
+  return remigrate(project, true);
 }

@@ -89,12 +89,14 @@ mock.module("../../../hooks/useProjects", () => ({
 
 const patches: ProjectSettingsPatch[] = [];
 const remigrations: string[] = [];
+const previews: string[] = [];
 let remigrateFails = false;
 const REMIGRATED: ProjectRemigrateResult = {
   project: "acme-web",
   report: { project: "acme-web", dropped: [], access: "migrated" },
   backupPath: "/data/backups/acme-web.json",
   overwritten: true,
+  widened: [],
 };
 let respond: (patch: ProjectSettingsPatch) => ProjectSettingsView = () =>
   onServer;
@@ -107,6 +109,11 @@ mock.module("../../../lib/api/projects", () => ({
     return respondLater ? respondLater() : respond(patch);
   },
   allowAgentsOnConnector: async () => ({ ok: true }),
+  previewRemigration: async (project: string) => {
+    previews.push(project);
+    if (remigrateFails) throw new ApiError("Forbidden", 403);
+    return { ...REMIGRATED, overwritten: false, backupPath: null };
+  },
   remigrateProject: async (project: string) => {
     remigrations.push(project);
     if (remigrateFails) throw new ApiError("Forbidden", 403);
@@ -157,6 +164,7 @@ beforeEach(() => {
   respondLater = null;
   revalidations.length = 0;
   remigrations.length = 0;
+  previews.length = 0;
   remigrateFails = false;
 });
 afterEach(() => harness.unmountAll());
@@ -332,6 +340,11 @@ describe("drift", () => {
     const page = drifted();
     const notice = find(page.output(), DriftNotice);
     if (!notice) throw new Error("No drift notice");
+    expect(await notice.props.onPreview()).toMatchObject({
+      overwritten: false,
+    });
+    expect(previews).toEqual(["acme-web"]);
+    expect(revalidations).toEqual([]);
     expect(await notice.props.onRemigrate()).toEqual(REMIGRATED);
     expect(remigrations).toEqual(["acme-web"]);
     expect(revalidations).toEqual([undefined]);
@@ -343,11 +356,14 @@ describe("drift", () => {
     const page = drifted();
     const notice = find(page.output(), DriftNotice);
     if (!notice) throw new Error("No drift notice");
+    expect(await notice.props.onPreview()).toBeNull();
     expect(await notice.props.onRemigrate()).toBeNull();
     expect(revalidations).toEqual([]);
-    expect(toasts).toEqual([
-      { message: "Only a signed-in person can change this", variant: "error" },
-    ]);
+    const refused = {
+      message: "Only a signed-in person can change this",
+      variant: "error",
+    };
+    expect(toasts).toEqual([refused, refused]);
   });
 });
 

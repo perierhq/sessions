@@ -43,6 +43,13 @@ const RESULT: ProjectRemigrateResult = {
   },
   backupPath: "/data/backups/acme-web.json",
   overwritten: true,
+  widened: [],
+};
+const PREVIEW: ProjectRemigrateResult = {
+  ...RESULT,
+  backupPath: null,
+  overwritten: false,
+  widened: ["access.webSearch.reviews", "access.modes.investigator"],
 };
 
 const text = (tree: React.ReactNode) =>
@@ -53,8 +60,13 @@ const text = (tree: React.ReactNode) =>
 test("one message, a confirm that names this project, busy, then the result", async () => {
   let runs = 0;
   let finish: (result: ProjectRemigrateResult | null) => void = () => {};
+  let previews = 0;
   const notice = harness.mount(DriftNotice, {
     project: "acme-web",
+    onPreview: async () => {
+      previews++;
+      return PREVIEW;
+    },
     onRemigrate: () => {
       runs++;
       return new Promise<ProjectRemigrateResult | null>(
@@ -71,9 +83,14 @@ test("one message, a confirm that names this project, busy, then the result", as
   // SAFETY: the Button's click handler ignores its event.
   (button().props as { onClick: () => void }).onClick();
   await settle();
+  expect(previews).toBe(1);
   expect(runs).toBe(0);
   const request = find(notice.output(), ConfirmDialog)!.props.request!;
   expect(String(request.title)).toContain("acme-web");
+  // The dry run's widenings: what the re-run gives agents back.
+  expect(String(request.description)).toContain(
+    "gives agents more than they have now: webSearch.reviews, modes.investigator",
+  );
   expect(String(request.description)).toContain("re-reads acme-web's old");
   expect(String(request.description)).toContain("replaces its current");
   expect(String(request.description)).toContain("backed up first");
@@ -100,6 +117,7 @@ test("one message, a confirm that names this project, busy, then the result", as
 test("a failed run frees the button and claims nothing", async () => {
   const notice = harness.mount(DriftNotice, {
     project: "acme-web",
+    onPreview: async () => RESULT,
     onRemigrate: async () => null,
   });
   // SAFETY: the Button's click handler ignores its event.
@@ -109,4 +127,24 @@ test("a failed run frees the button and claims nothing", async () => {
   await settle();
   expect(find(notice.output(), Button)!.props.disabled).toBeFalsy();
   expect(toasts).toEqual([]);
+});
+
+test("a failed dry run asks nothing and frees the button", async () => {
+  let runs = 0;
+  const notice = harness.mount(DriftNotice, {
+    project: "acme-web",
+    onPreview: async () => null,
+    onRemigrate: async () => {
+      runs++;
+      return RESULT;
+    },
+  });
+  // SAFETY: the Button's click handler ignores its event.
+  (find(notice.output(), Button)!.props as { onClick: () => void }).onClick();
+  await settle();
+  expect(
+    find(notice.output(), ConfirmDialog)?.props.request ?? null,
+  ).toBeNull();
+  expect(find(notice.output(), Button)!.props.disabled).toBeFalsy();
+  expect(runs).toBe(0);
 });
