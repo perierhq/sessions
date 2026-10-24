@@ -56,8 +56,10 @@ import {
   arrangeThinkingMessages,
   getThinkingMessagesPref,
   onThinkingMessagesChanged,
+  quietsEarlierThoughts,
   type ThinkingMessagesPref,
 } from "../lib/thinking-messages-pref";
+import type { LivePhaseKind } from "../lib/live-phase";
 
 type RenderBlock =
   | { kind: "entry"; entry: TranscriptEntry; reasoning?: boolean }
@@ -143,6 +145,8 @@ interface Props {
   turnMountScope?: string;
   /** Which thinking rows each work rail shows; see arrangeThinkingMessages. */
   thinkingMessages?: ThinkingMessagesPref;
+  /** What the running turn is doing (stream_phase), null until known. */
+  livePhase?: LivePhaseKind | null;
 }
 
 type ReviewBlockRole =
@@ -483,6 +487,7 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
   shouldMaintainEnd,
   onLayout,
   thinkingMessages = getThinkingMessagesPref(),
+  livePhase = null,
 }: Props) {
   // Top level only (nested per-range instances pass virtualize={false} and are
   // suppressed): without an outline every block renders real content, so the
@@ -813,6 +818,11 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
             expandWhileRunning={block.expandWhileRunning}
             onOpenSubagent={onOpenSubagent}
             sessionId={sessionId}
+            livePhase={isLiveTail ? livePhase : null}
+            quietEarlierThoughts={quietsEarlierThoughts(
+              thinkingMessages,
+              isLiveTail,
+            )}
           />
         ) : block.kind === "walkthrough" ? (
           <WalkthroughCard walkthrough={block.walkthrough} variant="session" />

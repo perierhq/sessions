@@ -63,6 +63,7 @@ import {
 } from "./TurnFooter";
 import { transcriptDisclosureLedger } from "../lib/transcript-disclosures";
 import { turnScrollAnchor } from "../lib/transcript-block-identity";
+import { activeThought, type LivePhaseKind } from "../lib/live-phase";
 
 interface Props {
   /** One turn's tool calls, provider reasoning, and intermediate narration.
@@ -76,6 +77,12 @@ interface Props {
   onOpenSubagent?: (agentId: string, label: string) => void;
   /** Lets wire-clamped intermediate notes fetch their full content. */
   sessionId?: string;
+  /** What the running turn is doing, from the server's phase frames; null
+   * until one arrives. Only an open model request lets a thought shimmer. */
+  livePhase?: LivePhaseKind | null;
+  /** "Thinking messages: latest" on a live rail: every thought stays where it
+   * happened, and all but the newest fold to one dim line. */
+  quietEarlierThoughts?: boolean;
 }
 
 /** The two Settings → Preferences answers for how work folds, kept live. */
@@ -118,6 +125,8 @@ export const TurnBlock = function TurnBlock({
   expandWhileRunning = false,
   onOpenSubagent,
   sessionId,
+  livePhase = null,
+  quietEarlierThoughts = false,
 }: Props) {
   const pathRoots = useToolPathRoots();
   const allTools = items.filter((it) => it.type === "tool_use");
@@ -125,10 +134,7 @@ export const TurnBlock = function TurnBlock({
   const agentMessages = items.filter((it) => agentMessageText(it) !== null);
   const messages = items.filter((it) => it.type === "assistant");
   const lastMessage = messages[messages.length - 1];
-  const activeReasoning =
-    live && lastMessage && reasoningEntry(lastMessage)
-      ? lastMessage
-      : undefined;
+  const activeReasoning = activeThought(items, live, livePhase);
   const hasNarration = messages.length > 0;
 
   // Default fold state follows the two preferences (Settings → Preferences),
@@ -178,14 +184,13 @@ export const TurnBlock = function TurnBlock({
   const timing = blockTiming(items, toolResults);
   const duration = timing.duration;
   const lastTool = allTools[allTools.length - 1];
-  // The collapsed live line names the current activity: the thought the rail
-  // ends on, otherwise its newest step.
-  const lastItem = items[items.length - 1];
+  // The collapsed live line names the current activity: the thought while it
+  // is still current, otherwise the newest step.
   const activity =
-    !live || !hasNarration || !lastItem
+    !live || !hasNarration || !lastMessage
       ? null
-      : lastItem.type === "assistant" && reasoningEntry(lastItem)
-        ? reasoningDisplay(lastItem.content).title || "Thinking"
+      : activeReasoning
+        ? reasoningDisplay(activeReasoning.content).title || "Thinking"
         : lastTool
           ? `${toolDisplayName(lastTool.toolName)}: ${toolSummary(
               lastTool.toolName || "Tool",
@@ -255,6 +260,9 @@ export const TurnBlock = function TurnBlock({
       sections.push({ kind: "narration", entry });
     }
   }
+  // "Latest" keeps one thought in full: the newest. Earlier ones stay in
+  // place, folded, so nothing above the reader is removed or reordered.
+  const newestReasoning = sections.findLast((sec) => sec.kind === "reasoning");
   // Survives the fold: a marked screenshot is the answer to "show me", so
   // closing the turn takes the steps and leaves the picture. Only while the
   // steps are hidden — expanded, the media renders in the row that produced
@@ -375,6 +383,7 @@ export const TurnBlock = function TurnBlock({
                   activeReasoning !== undefined &&
                   sec.items.includes(activeReasoning)
                 }
+                quiet={quietEarlierThoughts && sec !== newestReasoning}
                 sessionId={sessionId}
               />
             ) : sec.kind === "narration" ? (
@@ -805,10 +814,14 @@ function NarrationMessage({
 function ReasoningMessage({
   entries,
   active,
+  quiet = false,
   sessionId,
 }: {
   entries: TranscriptEntry[];
   active: boolean;
+  /** An earlier thought under "Thinking messages: latest": one dim line that
+   * opens to the full text, in the place it happened. */
+  quiet?: boolean;
   sessionId?: string;
 }) {
   const displays = entries.map((entry) => reasoningDisplay(entry.content));
@@ -816,6 +829,26 @@ function ReasoningMessage({
     displays.findLast((display) => display.title)?.title ?? "";
   const title = batchedTitle.split("\n").at(-1) ?? "";
   const last = entries[entries.length - 1];
+  if (quiet && !active) {
+    const body = displays
+      .map((display) => display.body)
+      .filter(Boolean)
+      .join("\n\n");
+    const preview = title || body.split("\n").find((line) => line.trim()) || "";
+    if (!preview) return null;
+    return (
+      <div className="my-1 -ml-1.5" data-eid={last.id} data-reasoning="quiet">
+        <ClampedBody
+          className={cn(msgReasoningBody, "markdown")}
+          content={body || title}
+          entry={entries.length === 1 ? last : undefined}
+          sessionId={sessionId}
+          transformContent={entries.length === 1 ? reasoningBody : undefined}
+          summary={{ text: preview, label: "Thought" }}
+        />
+      </div>
+    );
+  }
   return (
     <div className="my-2 px-1" data-eid={last.id} data-reasoning="">
       {title ? (

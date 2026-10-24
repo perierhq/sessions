@@ -105,14 +105,24 @@ describe("arrangeThinkingMessages", () => {
     ]);
   });
 
-  test("latest pins the newest thought after the last live step", () => {
-    expect(ids(pref.arrangeThinkingMessages(work, "latest", true))).toEqual([
-      "tool-1",
-      "tool-2",
-      "note",
-      "tool-3",
-      "think-2",
-    ]);
+  test("latest keeps every live thought in place, above the steps it led to", () => {
+    const arranged = pref.arrangeThinkingMessages(work, "latest", true);
+    expect(ids(arranged)).toEqual(ids(work));
+    expect(pref.quietsEarlierThoughts("latest", true)).toBe(true);
+  });
+
+  test("never moves a thought below a later step as the turn grows", () => {
+    const rail: TranscriptEntry[] = [];
+    for (const next of work) {
+      rail.push(next);
+      for (const mode of ["none", "latest", "all"] as const) {
+        const arranged = ids(pref.arrangeThinkingMessages(rail, mode, true));
+        // Whatever survives keeps its transcript order: a thought is never
+        // re-placed after a step that came later than it.
+        const order = ids(rail).filter((id) => arranged.includes(id));
+        expect(arranged).toEqual(order);
+      }
+    }
   });
 
   test("latest shows nothing once the turn has settled", () => {
@@ -132,5 +142,11 @@ describe("arrangeThinkingMessages", () => {
 
   test("all keeps the trace in transcript order", () => {
     expect(pref.arrangeThinkingMessages(work, "all", false)).toBe(work);
+    expect(pref.quietsEarlierThoughts("all", true)).toBe(false);
+  });
+
+  test("only a live latest rail folds its earlier thoughts", () => {
+    expect(pref.quietsEarlierThoughts("latest", false)).toBe(false);
+    expect(pref.quietsEarlierThoughts("none", true)).toBe(false);
   });
 });

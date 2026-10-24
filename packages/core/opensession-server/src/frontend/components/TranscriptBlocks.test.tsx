@@ -1151,7 +1151,9 @@ describe("TranscriptBlocks turn work and tool call preferences", () => {
       <TranscriptBlocks live entries={entries} />,
     );
     expect(running).toContain('aria-expanded="true"');
-    expect(running).toContain('data-text-shimmer=""');
+    // The last thought already led to a later step: it is history, not the
+    // model thinking right now.
+    expect(running).not.toContain('data-text-shimmer=""');
 
     const proseReasoning = renderToStaticMarkup(
       <TranscriptBlocks
@@ -1182,16 +1184,48 @@ describe("TranscriptBlocks turn work and tool call preferences", () => {
         ]}
       />,
     );
-    expect(proseReasoning.match(/>Thinking<\/span>/g)).toHaveLength(2);
     expect(proseReasoning).toContain(
       "I should inspect the current state first.",
     );
-    expect(proseReasoning).toContain('data-text-shimmer=""');
+    expect(proseReasoning).not.toContain('data-text-shimmer=""');
+
+    // Prose thinking with nothing after it yet is still the current status.
+    const proseThinking = renderToStaticMarkup(
+      <TranscriptBlocks
+        live
+        entries={[
+          {
+            id: "prompt-3",
+            type: "user",
+            content: "Check it",
+            timestamp: "2026-08-28T07:10:00Z",
+          },
+          {
+            id: "tool-4",
+            type: "tool_use",
+            toolUseId: "tool-call-4",
+            toolName: "read",
+            toolInput: { path: "README.md" },
+            content: "Using read",
+            timestamp: "2026-08-28T07:10:01Z",
+          },
+          {
+            id: "reasoning-3",
+            type: "assistant",
+            content: "I should inspect the current state first.",
+            isReasoning: true,
+            timestamp: "2026-08-28T07:10:02Z",
+          },
+        ]}
+      />,
+    );
+    expect(proseThinking.match(/>Thinking<\/span>/g)).toHaveLength(2);
+    expect(proseThinking).toContain('data-text-shimmer=""');
     setTurnPrefs(null);
     setThinkingMessagesPref(null);
   });
 
-  test("latest keeps one thought at the tail of the live turn", () => {
+  test("latest keeps thoughts in place and folds the earlier ones", () => {
     setTurnPrefs("open", "folded");
     // Thought, step, thought, step: in transcript order each thought sits
     // above the step it produced.
@@ -1234,18 +1268,42 @@ describe("TranscriptBlocks turn work and tool call preferences", () => {
       },
     ];
 
-    // Live, the default shows the newest thought only, after the last step,
-    // shimmering as the turn's current status.
+    // Live, the default keeps every thought where it happened. The newest
+    // stays open above the step it led to; the earlier one folds to a dim
+    // line instead of disappearing. Neither shimmers: a later step exists.
     const latest = renderToStaticMarkup(
       <TranscriptBlocks entries={entries} live />,
     );
-    expect(latest).not.toContain("Reading the current state");
-    expect(latest).toContain("Verifying the result");
+    expect(latest).toContain("Reading the current state");
+    expect(latest.match(/data-reasoning="quiet"/g)).toHaveLength(1);
     expect(latest.match(/data-reasoning=""/g)).toHaveLength(1);
+    expect(latest.indexOf("Reading the current state")).toBeLessThan(
+      latest.indexOf('data-eid="tool#sec"'),
+    );
     expect(latest.indexOf("Verifying the result")).toBeGreaterThan(
+      latest.indexOf('data-eid="tool#sec"'),
+    );
+    expect(latest.indexOf("Verifying the result")).toBeLessThan(
       latest.indexOf('data-eid="tool-2#sec"'),
     );
-    expect(latest).toContain('data-text-shimmer=""');
+    expect(latest).not.toContain('data-text-shimmer=""');
+
+    // A rail that ends on its thought is thinking, until the server says a
+    // tool is running.
+    const thinking = entries.slice(0, -1);
+    expect(
+      renderToStaticMarkup(<TranscriptBlocks entries={thinking} live />),
+    ).toContain('data-text-shimmer=""');
+    expect(
+      renderToStaticMarkup(
+        <TranscriptBlocks entries={thinking} live livePhase="model" />,
+      ),
+    ).toContain('data-text-shimmer=""');
+    expect(
+      renderToStaticMarkup(
+        <TranscriptBlocks entries={thinking} live livePhase="tool" />,
+      ),
+    ).not.toContain('data-text-shimmer=""');
 
     // Settled, the status has done its job and the rail keeps the steps.
     const settled = renderToStaticMarkup(

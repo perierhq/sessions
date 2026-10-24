@@ -33,25 +33,32 @@ export function isThinkingEntry(entry: TranscriptEntry): boolean {
 /**
  * Lay out the thinking rows of one turn's work rail.
  *
- * Thinking has two jobs. While the turn is live it is a status: what the
- * model is doing right now. A status belongs at the tail of the rail as one
- * row that is replaced in place and never sits above later steps. Once the
- * turn settles, thinking is a trace: why each step happened. A trace belongs
- * where it happened.
+ * A thought belongs where it happened: above the steps it led to. It is never
+ * moved, so nothing the reader has already passed is rewritten under them.
+ * While the turn is live the newest thought doubles as the status of what the
+ * model is doing; once the turn settles, thinking is the trace of why each
+ * step happened.
  *
  * - none: no thinking rows.
- * - latest: status only. The newest thought of a live turn follows its last
- *   step; a settled turn shows none.
- * - all: the trace. Every thought stays in transcript order.
+ * - latest: every thought of a live turn stays in place (the rail folds all
+ *   but the newest to one dim line, see quietEarlierThoughts); a settled turn
+ *   shows none.
+ * - all: the trace. Every thought stays in transcript order, in full.
  */
 export function arrangeThinkingMessages(
   work: TranscriptEntry[],
   mode: ThinkingMessagesPref,
   live: boolean,
 ): TranscriptEntry[] {
-  if (mode === "all") return work;
-  const steps = work.filter((entry) => !isThinkingEntry(entry));
-  if (mode === "none" || !live) return steps;
-  const newest = work.findLast(isThinkingEntry);
-  return newest ? [...steps, newest] : steps;
+  if (mode === "all" || (mode === "latest" && live)) return work;
+  return work.filter((entry) => !isThinkingEntry(entry));
+}
+
+/** Whether a rail laid out by arrangeThinkingMessages folds its earlier
+ * thoughts, keeping only the newest one open. */
+export function quietsEarlierThoughts(
+  mode: ThinkingMessagesPref,
+  live: boolean,
+): boolean {
+  return mode === "latest" && live;
 }
