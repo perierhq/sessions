@@ -222,6 +222,10 @@ export interface Automation {
   accountStrict?: boolean;
   usageCredits?: boolean;
   sandbox?: boolean;
+  /** The project the automation runs in, when it has one. */
+  repo?: string;
+  /** Set on a project's built-in incident automation. */
+  incidentResponse?: { project: string };
   lastRunAt?: string;
   lastRunSessionId?: string;
   lastRunStatus?: "running" | "ok" | "error";

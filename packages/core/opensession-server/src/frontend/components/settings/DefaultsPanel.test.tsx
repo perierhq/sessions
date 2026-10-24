@@ -7,6 +7,7 @@ import {
   DEFAULTS_VIEW,
   PROJECT_LIST,
 } from "../../../shared/project-settings-fixtures";
+import type * as React from "react";
 import type {
   ProjectDefaultsPatch,
   ProjectDefaultsView,
@@ -14,6 +15,7 @@ import type {
 import {
   createHookHarness,
   elements,
+  find,
   reactWithHarness,
   settle,
 } from "../../tools/hook-harness";
@@ -31,18 +33,15 @@ const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
 let view: ProjectDefaultsView = DEFAULTS_VIEW;
-const mutations: unknown[] = [];
+const mutations: Array<ProjectDefaultsView | undefined> = [];
 mock.module("../../hooks/useProjects", () => ({
   useProjectDefaults: () => ({
     data: view,
     error: undefined,
     isLoading: false,
-    mutate: (next?: unknown) => {
+    mutate: (next?: ProjectDefaultsView) => {
       mutations.push(next);
-      if (next && typeof next === "object") {
-        // SAFETY: the panel only ever mutates with a whole view.
-        view = next as ProjectDefaultsView;
-      }
+      if (next) view = next;
       return Promise.resolve(view);
     },
   }),
@@ -86,7 +85,7 @@ const catalog = {
     },
   ],
 };
-const sandboxStatus = {
+let sandboxStatus = {
   enabled: true,
   providers: [
     { id: "daytona", configured: true, certified: true },
@@ -98,8 +97,8 @@ const sandboxStatus = {
   ],
 };
 mock.module("swr", () => ({
-  default: (key: unknown) => {
-    const name = Array.isArray(key) ? String(key[1]) : "";
+  default: (key: readonly string[]) => {
+    const name = key[1] ?? "";
     if (name.includes("models")) return { data: catalog };
     if (name.includes("sandbox")) return { data: sandboxStatus };
     return { data: undefined };
@@ -145,41 +144,25 @@ async function mountPanel() {
 type Tree = ReturnType<typeof harness.mount>;
 
 function selectByLabel(tree: Tree, label: string) {
-  const el = elements(tree.output()).find(
-    (e) =>
-      e.type === OptionSelect &&
-      (e.props as { label?: string }).label === label,
-  );
+  const el = find(tree.output(), OptionSelect, (p) => p.label === label);
   if (!el) throw new Error(`No select ${label}`);
-  // SAFETY: an element whose type is OptionSelect carries its props.
-  return el.props as {
-    value: string;
-    options: Array<{ value: string; label: string }>;
-    onChange: (v: string) => void;
-  };
+  return el.props;
 }
 
+/** Everything the panel rendered, as text to search: element props and
+ *  children, functions and React's own fields left out. */
 function text(tree: Tree): string {
-  const out: string[] = [];
-  for (const el of elements(tree.output())) {
-    const children = (el.props as { children?: unknown }).children;
-    for (const c of [children].flat()) {
-      if (typeof c === "string" || typeof c === "number") out.push(String(c));
-    }
-    for (const key of ["title", "value", "description", "desc"]) {
-      const v = (el.props as Record<string, unknown>)[key];
-      if (typeof v === "string") out.push(v);
-    }
-  }
-  return out.join("\n");
+  return JSON.stringify(tree.output(), (key, value) =>
+    key.startsWith("_") ? undefined : value,
+  );
 }
 
 test("one row per project, with the nav's phrase", async () => {
   const tree = await mountPanel();
-  const rows = elements(tree.output())
-    .filter((e) => e.type === SettingLinkRow)
-    // SAFETY: SettingLinkRow elements carry its props.
-    .map((e) => e.props as { value?: unknown; onClick: () => void });
+  const rows = elements(tree.output()).flatMap((e) => {
+    const row = find(e, SettingLinkRow);
+    return row && row === e ? [row.props] : [];
+  });
   expect(rows).toHaveLength(3);
   expect(rows.map((r) => r.value)).toEqual(
     PROJECT_LIST.map((p) => p.status.label),
@@ -219,15 +202,13 @@ test("a 403 asks for a signed-in person", async () => {
 });
 
 function websiteInput(tree: Tree) {
-  const el = elements(tree.output()).find(
-    (e) =>
-      e.type === Input &&
-      (e.props as { "aria-label"?: string })["aria-label"] === "Website",
-  );
-  if (!el) throw new Error("No website input");
-  // SAFETY: Input elements carry input props.
-  return el.props as {
-    onChange: (e: { target: { value: string } }) => void;
+  const el = find(tree.output(), Input, (p) => p["aria-label"] === "Website");
+  if (!el?.props.onChange) throw new Error("No website input");
+  const onChange = el.props.onChange;
+  return {
+    onChange: (event: { target: { value: string } }) =>
+      // SAFETY: the panel's handler reads only `target.value`.
+      onChange(event as React.ChangeEvent<HTMLInputElement>),
   };
 }
 
@@ -280,6 +261,44 @@ test("the sandbox options: this machine, the container, ready providers", async 
   expect(items.map((i) => i.value)).toEqual(["none", "podman", "daytona"]);
 });
 
+test("an uncertified container is not offered", async () => {
+  const ready = sandboxStatus;
+  sandboxStatus = {
+    ...ready,
+    providers: [
+      { id: "daytona", configured: true, certified: true },
+      { id: "podman", configured: true, certified: false },
+    ],
+  };
+  try {
+    const tree = await mountPanel();
+    const root = elements(tree.output()).find((e) => e.type === Select.Root);
+    // SAFETY: Select.Root carries `items`.
+    const items = (root!.props as { items: Array<{ value: string }> }).items;
+    expect(items.map((i) => i.value)).toEqual(["none", "daytona"]);
+  } finally {
+    sandboxStatus = ready;
+  }
+});
+
+test("New session reads Ready providers only through readySandboxProviders", async () => {
+  // NewSession is too large to mount here; its picker and the default it
+  // marks must share the filter tested in lib/ready-sandbox-providers.test.ts
+  // rather than copy it.
+  const source = await Bun.file(
+    new URL("../NewSession.tsx", import.meta.url),
+  ).text();
+  expect(source).not.toContain('connection.state === "ready"');
+  expect(source).not.toContain("p.configured && p.certified");
+  expect(source.match(/readySandboxProviders\(sandboxStatus\)/g)).toHaveLength(
+    2,
+  );
+  // There is no personal default any more: the menu marks the project's
+  // sandbox, else the global default.
+  expect(source).toContain("newSessionSandboxDefault(sandboxStatus, repo)");
+  expect(source).not.toContain("defaults?.effective");
+});
+
 test("every button and select trigger is a 44px target on a phone", async () => {
   const tree = await mountPanel();
   const controls = elements(tree.output()).filter(
@@ -291,9 +310,9 @@ test("every button and select trigger is a 44px target on a phone", async () => 
   );
   expect(controls.length).toBeGreaterThan(5);
   for (const el of controls) {
-    const className = String(
-      (el.props as { className?: string }).className ?? "",
-    );
+    // SAFETY: every control matched above takes an optional className.
+    const props = el.props as { className?: string };
+    const className = props.className ?? "";
     expect(
       className.includes("min-h-11") || className.includes("before:"),
     ).toBe(true);

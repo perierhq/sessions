@@ -280,7 +280,9 @@ function SectionPanel({
       {section === "audit" && <AuditPanel />}
       {section === "downloads" && <DownloadsPanel />}
       {section === "providers" && <ProvidersPanel />}
-      {section === "sandboxes" && <SandboxesPanel />}
+      {section === "sandboxes" && (
+        <SandboxesPanel onOpenDefaults={() => onSelect("projectDefaults")} />
+      )}
       {section === "runners" && <RunnersPanel />}
       {section === "connections" && <Connections />}
       {section === "myAccounts" && <MyAccountsPanel />}
@@ -524,12 +526,9 @@ function MobileSettings({
   const [lastSection, setLastSection] = useState<
     SettingsSectionKey | "project" | null
   >(current);
-  const [lastProjectLabel, setLastProjectLabel] = useState<string | null>(
-    null,
-  );
+  const [lastProjectLabel, setLastProjectLabel] = useState<string | null>(null);
   const projectLabel = project
-    ? (projects.find((p) => p.id === project.project)?.label ??
-      project.project)
+    ? (projects.find((p) => p.id === project.project)?.label ?? project.project)
     : null;
   useEffect(() => {
     if (current) setLastSection(current);
@@ -650,10 +649,10 @@ function MobileSettings({
                 value={query}
                 onChange={setQuery}
                 onSubmit={() => {
-            if (firstHit) return onSelect(firstHit.key);
-            const hit = firstProjectHit(projects, query);
-            if (hit) onOpenProject(hit.project, hit.section);
-          }}
+                  if (firstHit) return onSelect(firstHit.key);
+                  const hit = firstProjectHit(projects, query);
+                  if (hit) onOpenProject(hit.project, hit.section);
+                }}
                 className={SETTINGS_SHEET_SEARCH_BAR}
               />
             </div>

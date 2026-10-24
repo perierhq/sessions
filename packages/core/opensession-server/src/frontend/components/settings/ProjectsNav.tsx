@@ -8,10 +8,7 @@ import {
   SETTINGS_NAV_ICON,
   SETTINGS_NAV_ROW,
 } from "../../lib/settings-classes";
-import {
-  matchProjectSections,
-  matchProjects,
-} from "../../lib/settings-search";
+import { matchProjectSections, matchProjects } from "../../lib/settings-search";
 import { cn } from "../../ui/cn";
 import { IconChevronRight } from "../icons";
 import { RepoTile } from "../RepoTile";
@@ -110,6 +107,17 @@ export function ProjectNavRows({
   );
 }
 
+/** A row of the phone list: a project, or one section of one. */
+interface SheetRow {
+  key: string;
+  project: string;
+  section?: ProjectSectionId;
+  label: string;
+  hint?: string;
+  /** The project's status phrase; a section row has none. */
+  value?: string;
+}
+
 /** The phone sheet's rows, inside the Projects card under Defaults. */
 export function ProjectSheetRows({
   projects,
@@ -125,13 +133,11 @@ export function ProjectSheetRows({
 }) {
   const shown = matchProjects(projects, query);
   const sectionHits = matchProjectSections(projects, query);
-  const rows = [
+  const rows: SheetRow[] = [
     ...shown.map((item) => ({
       key: item.id,
       project: item.id,
-      section: undefined,
       label: item.label,
-      hint: undefined as string | undefined,
       value: projectStatusPhrase(item),
     })),
     ...sectionHits.map((hit) => ({
@@ -140,7 +146,6 @@ export function ProjectSheetRows({
       section: hit.section,
       label: hit.label,
       hint: hit.hint,
-      value: null,
     })),
   ];
   return (

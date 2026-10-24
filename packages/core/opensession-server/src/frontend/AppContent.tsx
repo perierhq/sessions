@@ -1338,7 +1338,11 @@ export function AppContent({
                     section={route.section}
                     onOpenSection={(section) =>
                       navigate(
-                        { view: "projectSettings", project: route.project, section },
+                        {
+                          view: "projectSettings",
+                          project: route.project,
+                          section,
+                        },
                         { replace: true },
                       )
                     }

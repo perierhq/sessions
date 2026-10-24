@@ -41,7 +41,6 @@ import { InlineAlert } from "../../ui/state";
 import { Switch } from "../../ui/switch";
 import { toast } from "../../ui/toast";
 import { IconCheck, IconPlus, IconX } from "../icons";
-import { WorkspaceSandboxDefaults } from "./SandboxDefaults";
 import { SandboxProviderLogo } from "./SandboxProviderLogo";
 
 const PROVIDERS: Array<{
@@ -1113,7 +1112,12 @@ function ProjectEnvironmentDialog({
   );
 }
 
-export function SandboxesPanel() {
+export function SandboxesPanel({
+  onOpenDefaults,
+}: {
+  /** Settings → Projects → Defaults, where the default sandbox is set. */
+  onOpenDefaults?: () => void;
+} = {}) {
   const [connections, setConnections] = useState<SandboxConnectionInfo[]>([]);
   const [operations, setOperations] = useState<SandboxOperationInfo[]>([]);
   const [environments, setEnvironments] = useState<SandboxEnvironmentInfo[]>(
@@ -1236,7 +1240,20 @@ export function SandboxesPanel() {
         title="Sandboxes"
         description="Connect compute you already pay for. Each session gets an isolated sandbox; project snapshots make new sandboxes start faster."
       />
-      <WorkspaceSandboxDefaults />
+      <SettingsHint className="mt-0 mb-2">
+        Each project picks its sandbox on its own page. The default is in{" "}
+        {onOpenDefaults ? (
+          <button
+            type="button"
+            className="relative cursor-pointer border-0 bg-transparent p-0 text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+            onClick={onOpenDefaults}
+          >
+            Projects → Defaults
+          </button>
+        ) : (
+          "Projects → Defaults"
+        )}
+      </SettingsHint>
       {connectionsError && <InlineAlert>{connectionsError}</InlineAlert>}
       {environmentsError && <InlineAlert>{environmentsError}</InlineAlert>}
       <SettingsGroupLabel>Connections</SettingsGroupLabel>
@@ -1258,8 +1275,8 @@ export function SandboxesPanel() {
         ))}
       </div>
       <SettingsHint>
-        This machine remains the default. Personal and per-session choices can
-        override the workspace default.
+        A choice in the new session menu beats the project's sandbox, and a
+        project's sandbox beats the default.
       </SettingsHint>
       {reusableEnvironments.length > 0 && (
         <>

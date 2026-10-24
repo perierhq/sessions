@@ -34,7 +34,7 @@ function joinNames(names: string[]): string {
 export function roleScopeCopy(
   role: ProjectRole,
   projects: ProjectListItem[],
-  overrides: Record<string, ProjectRole[]>,
+  overrides: ModelOverrides,
 ): string {
   if (projects.length === 0) return "No projects yet";
   const own = projects.filter((p) => overrides[p.id]?.includes(role));
@@ -51,12 +51,15 @@ export function roleScopeCopy(
   return `${users}. ${setters} ${own.length === 1 ? "sets its own" : "set their own"}`;
 }
 
+/** Project id → the roles that project sets its own model for. */
+export interface ModelOverrides {
+  [project: string]: ProjectRole[];
+}
+
 /** The roles each project has set its own model for, as far as the list
  *  says: today only the model for You travels with a project. */
-export function modelOverrides(
-  view: ProjectDefaultsView,
-): Record<string, ProjectRole[]> {
-  const out: Record<string, ProjectRole[]> = {};
+export function modelOverrides(view: ProjectDefaultsView): ModelOverrides {
+  const out: ModelOverrides = {};
   for (const project of view.projects) {
     if (project.modelForYou && project.modelForYou !== view.models.you) {
       out[project.id] = ["you"];
@@ -82,4 +85,30 @@ export function parseWebsite(
         "Enter a website name, like status.example.test, with no path or port",
     };
   }
+}
+
+/** The slice of `/api/sandbox/status` that says where a project's new
+ *  sessions start. */
+export interface SandboxDefaultsSlice {
+  defaults?: {
+    workspace: string;
+    repos?: Record<string, string>;
+  };
+}
+
+/**
+ * Where a new session in `repo` starts unless the person picks: the
+ * project's sandbox, else the global default. `""` is this machine. A
+ * personal default no longer exists, so a stored one is ignored.
+ */
+export function newSessionSandboxDefault(
+  status: SandboxDefaultsSlice | null | undefined,
+  repo: string,
+): string {
+  const defaults = status?.defaults;
+  if (!defaults) return "";
+  const own = defaults.repos?.[repo];
+  const value =
+    own && own !== "workspace" && own !== "default" ? own : defaults.workspace;
+  return !value || value === "none" ? "" : value;
 }

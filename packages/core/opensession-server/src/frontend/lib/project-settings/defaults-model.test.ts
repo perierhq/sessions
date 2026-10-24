@@ -5,6 +5,7 @@ import {
 } from "../../../shared/project-settings-fixtures";
 import {
   modelOverrides,
+  newSessionSandboxDefault,
   parseWebsite,
   projectStatusPhrase,
   roleScopeCopy,
@@ -124,5 +125,35 @@ describe("parseWebsite", () => {
     for (const bad of ["bad host", "", "10.0.0.1", "*", "example"]) {
       expect(parseWebsite(bad)).toHaveProperty("error");
     }
+  });
+});
+
+describe("newSessionSandboxDefault", () => {
+  const status = (repos: Record<string, string>, workspace = "box") => ({
+    defaults: { workspace, personal: "tart", effective: "tart", repos },
+  });
+
+  test("the project's sandbox wins over the global default", () => {
+    expect(
+      newSessionSandboxDefault(status({ "acme-web": "daytona" }), "acme-web"),
+    ).toBe("daytona");
+  });
+
+  test("a project on the default uses the global default, never a personal one", () => {
+    expect(newSessionSandboxDefault(status({}), "acme-web")).toBe("box");
+    expect(
+      newSessionSandboxDefault(status({ "acme-web": "default" }), "acme-web"),
+    ).toBe("box");
+    expect(
+      newSessionSandboxDefault(status({ "acme-web": "workspace" }), "acme-web"),
+    ).toBe("box");
+  });
+
+  test("this machine is the empty choice", () => {
+    expect(
+      newSessionSandboxDefault(status({ "acme-web": "none" }), "acme-web"),
+    ).toBe("");
+    expect(newSessionSandboxDefault(status({}, "none"), "acme-web")).toBe("");
+    expect(newSessionSandboxDefault(null, "acme-web")).toBe("");
   });
 });

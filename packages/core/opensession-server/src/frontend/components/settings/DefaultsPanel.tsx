@@ -63,13 +63,6 @@ function sandboxChoiceLabel(id: string): string {
   return sandboxProviderLabel(id);
 }
 
-function saveErrorMessage(error: unknown): string {
-  if (error instanceof ApiError && error.status === 403) {
-    return "Only a signed-in person can change this";
-  }
-  return errorMessage(error, "Failed to save defaults");
-}
-
 /** The stored view with a patch laid over it, for the optimistic paint. */
 function applyPatch(
   view: ProjectDefaultsView,
@@ -78,7 +71,7 @@ function applyPatch(
   const models = { ...view.models };
   for (const role of PROJECT_ROLES) {
     const next = patch.models?.[role];
-    if (typeof next === "string") models[role] = next;
+    if (next) models[role] = next;
   }
   return {
     ...view,
@@ -113,8 +106,13 @@ export function DefaultsPanel({
     void defaults.mutate(applyPatch(view, patch), { revalidate: false });
     await patchProjectDefaults(patch)
       .then((next) => defaults.mutate(next, { revalidate: false }))
-      .catch((error: unknown) => {
-        toast(saveErrorMessage(error), { variant: "error" });
+      .catch((error) => {
+        toast(
+          error instanceof ApiError && error.status === 403
+            ? "Only a signed-in person can change this"
+            : errorMessage(error, "Failed to save defaults"),
+          { variant: "error" },
+        );
         void defaults.mutate();
       });
   }
@@ -159,10 +157,10 @@ export function DefaultsPanel({
   // longer ready stays visible, marked, so the select never lies.
   const ready = readySandboxProviders(sandbox.data);
   const region = (provider: string) => {
-    const value = sandbox.data?.connections?.find(
+    const connection = sandbox.data?.connections?.find(
       (c) => c.provider === provider,
-    )?.settings?.region;
-    return typeof value === "string" && value ? value : null;
+    );
+    return connection?.settings?.region || null;
   };
   const sandboxIds = [
     "none",

@@ -227,14 +227,18 @@ describe("project settings routes", () => {
       project: "acme-web",
     });
     expect(
-      routePath({ view: "projectSettings", project: "acme-web", section: "access" }),
+      routePath({
+        view: "projectSettings",
+        project: "acme-web",
+        section: "access",
+      }),
     ).toBe(`${BASE_PATH}/settings/projects/acme-web/access`);
     expect(routePath({ view: "projectSettings", project: "acme web" })).toBe(
       `${BASE_PATH}/settings/projects/acme%20web`,
     );
-    expect(isSettingsRoute({ view: "projectSettings", project: "acme-web" })).toBe(
-      true,
-    );
+    expect(
+      isSettingsRoute({ view: "projectSettings", project: "acme-web" }),
+    ).toBe(true);
   });
 
   test("round trips", () => {
