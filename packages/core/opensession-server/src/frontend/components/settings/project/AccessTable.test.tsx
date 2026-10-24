@@ -9,6 +9,8 @@ import type { AccessCellChange } from "../../../../shared/project-settings";
 import { READY_4_OF_6 } from "../../../../shared/project-settings-fixtures";
 import { elements, find } from "../../../tools/hook-harness";
 import { Button } from "../../../ui/button";
+import { PlainButton } from "../../../ui/plain-button";
+
 import { AccessTable } from "./AccessTable";
 
 type ButtonProps = React.ComponentProps<"button">;
@@ -24,11 +26,11 @@ function table(
   });
 }
 
-/** Every native button in the tree, with its props. */
+/** Every row, cell or chip button in the tree, with its props. */
 function buttons(tree: React.ReactNode): ButtonProps[] {
   const out: ButtonProps[] = [];
   for (const el of elements(tree))
-    if (el.type === "button" && isValidElement<ButtonProps>(el))
+    if (el.type === PlainButton && isValidElement<ButtonProps>(el))
       out.push(el.props);
   return out;
 }

@@ -20,6 +20,7 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
 const { AccessRoleList } = await import("./AccessRoleList");
 const { CellFace } = await import("./CellFace");
+const { PlainButton } = await import("../../../ui/plain-button");
 
 afterEach(() => harness.unmountAll());
 
@@ -37,7 +38,7 @@ function text(node: ReactNode): string {
 function buttons(tree: ReactNode): ButtonProps[] {
   const out: ButtonProps[] = [];
   for (const el of elements(tree))
-    if (el.type === "button" && isValidElement<ButtonProps>(el))
+    if (el.type === PlainButton && isValidElement<ButtonProps>(el))
       out.push(el.props);
   return out;
 }

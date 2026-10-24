@@ -67,7 +67,7 @@ export const CHECKLIST_FOLD_TOGGLE =
 export const CONNECT_FORM = "flex w-full flex-col gap-3 pl-8 phone:pl-0";
 export const CONNECT_CHOICES = "grid grid-cols-2 gap-2";
 export const CONNECT_CHOICE =
-  "focus-ring flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5 text-left has-[:checked]:border-fg";
+  "focus-ring flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5 text-left data-[checked]:border-fg";
 export const CONNECT_FIELDS =
   "grid grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)_auto] items-end gap-2 phone:grid-cols-1";
 export const CONNECT_INPUT = "phone:min-h-11 phone:text-input-phone";

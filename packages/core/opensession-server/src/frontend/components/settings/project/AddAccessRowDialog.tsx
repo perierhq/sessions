@@ -26,6 +26,7 @@ import { SkeletonBar } from "../../../ui/state";
 import { toast } from "../../../ui/toast";
 import { IconChevronRight } from "../../icons";
 import { SettingsDialog } from "../incidents/SettingsDialog";
+import { PlainButton } from "../../../ui/plain-button";
 
 type Kind = "connection" | "credential" | "host" | "website";
 
@@ -170,7 +171,7 @@ export function AddAccessRowDialog({
       {!kind ? (
         <div className="-mx-3 flex flex-col">
           {KINDS.map((k) => (
-            <button
+            <PlainButton
               key={k.kind}
               type="button"
               className={SHEET_CHOICE}
@@ -181,7 +182,7 @@ export function AddAccessRowDialog({
                 <span className={SHEET_CHOICE_DESC}>{k.desc}</span>
               </span>
               <IconChevronRight size={18} dense className="text-faint" />
-            </button>
+            </PlainButton>
           ))}
         </div>
       ) : kind === "website" ? (

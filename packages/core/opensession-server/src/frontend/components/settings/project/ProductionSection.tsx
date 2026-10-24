@@ -38,6 +38,7 @@ import {
 } from "../../icons";
 import { ActionDialog } from "../incidents/ActionsSection";
 import { PairRunnerDialog } from "./PairRunnerDialog";
+import { PlainButton } from "../../../ui/plain-button";
 
 /** Which production dialog is open; `key` starts each from stored values. */
 export type ProductionDialog =
@@ -117,7 +118,7 @@ export function ProductionSection({
     action: IncidentAction,
     icon: React.ReactNode,
   ): React.ReactNode => (
-    <button
+    <PlainButton
       key={action.id}
       type="button"
       className={PRODUCTION_ROW_BUTTON}
@@ -134,7 +135,7 @@ export function ProductionSection({
         Edit
         <IconChevronRight size={18} dense className="text-faint" />
       </span>
-    </button>
+    </PlainButton>
   );
 
   return (
@@ -142,7 +143,7 @@ export function ProductionSection({
       <SettingCard>
         {bound.length ? (
           bound.map((runner) => (
-            <button
+            <PlainButton
               key={runner.id}
               type="button"
               className={PRODUCTION_ROW_BUTTON}
@@ -162,7 +163,7 @@ export function ProductionSection({
                 {runner.online ? "Online" : "Offline"}
                 <IconChevronRight size={18} dense className="text-faint" />
               </span>
-            </button>
+            </PlainButton>
           ))
         ) : (
           <div className={PRODUCTION_ROW}>

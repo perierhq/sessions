@@ -38,6 +38,7 @@ import { cn } from "../../../ui/cn";
 import { SettingCard } from "../../../ui/settings";
 import { IconCheck, IconWarningTriangle } from "../../icons";
 import { CellFace } from "./CellFace";
+import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * What agents may use, on a phone: one role at a time, picked from a sticky
@@ -60,7 +61,7 @@ export function AccessRoleList({
     <div>
       <div className={ROLE_CHIPS} role="toolbar" aria-label="Role">
         {PROJECT_ROLES.map((r) => (
-          <button
+          <PlainButton
             key={r}
             type="button"
             aria-pressed={r === role}
@@ -68,7 +69,7 @@ export function AccessRoleList({
             onClick={() => setRole(r)}
           >
             {ROLE_LABELS[r]}
-          </button>
+          </PlainButton>
         ))}
       </div>
       <SettingCard className="mt-1.5">
@@ -104,8 +105,7 @@ function roleRow(
   if (change && rowIsBoolean(row.key) && cell.value !== "blocked") {
     const on = cellIsOn(cell.value);
     control = (
-      <button
-        type="button"
+      <PlainButton
         className={ROLE_LIST_TOGGLE}
         aria-label={name}
         aria-pressed={on}
@@ -118,18 +118,17 @@ function roleRow(
         ) : (
           <span className={ROLE_LIST_CHECK_OFF} />
         )}
-      </button>
+      </PlainButton>
     );
   } else if (change) {
     control = (
-      <button
-        type="button"
+      <PlainButton
         className={cn(ROLE_LIST_VALUE_BUTTON, cellTone(cell.value))}
         aria-label={name}
         onClick={() => onCellChange(change)}
       >
         <CellFace cell={cell} />
-      </button>
+      </PlainButton>
     );
   } else {
     control = (

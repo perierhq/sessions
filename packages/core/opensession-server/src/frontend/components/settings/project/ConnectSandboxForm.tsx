@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { connectSandbox } from "../../../lib/api/sandboxes";
 import { patchProjectDefaults } from "../../../lib/api/projects";
 import { errorMessage } from "../../../lib/error-message";
@@ -14,6 +14,7 @@ import { nearestRegion } from "../../../lib/project-settings/page-model";
 import { browserTimeZone } from "../../../lib/time-of-day";
 import { Button } from "../../../ui/button";
 import { Field, Input } from "../../../ui/input";
+import { Radio, RadioGroup } from "../../../ui/radio";
 import { OptionSelect } from "../../../ui/select";
 import { toast } from "../../../ui/toast";
 
@@ -48,7 +49,6 @@ export function ConnectSandboxForm({
   const [busy, setBusy] = useState(false);
   const [missing, setMissing] = useState(false);
   const name = provider === "daytona" ? "Daytona" : "Boat";
-  const group = useId();
 
   const connect = async () => {
     setBusy(true);
@@ -80,17 +80,21 @@ export function ConnectSandboxForm({
         void connect();
       }}
     >
-      <div className={CONNECT_CHOICES} role="radiogroup" aria-label="Provider">
+      <RadioGroup
+        className={CONNECT_CHOICES}
+        aria-label="Provider"
+        value={provider}
+        onValueChange={(next) =>
+          setProvider(next === "box" ? "box" : "daytona")
+        }
+      >
         {CHOICES.map((choice) => (
-          <label key={choice.id} className={CONNECT_CHOICE}>
-            <input
-              type="radio"
-              name={group}
-              value={choice.id}
-              checked={provider === choice.id}
-              onChange={() => setProvider(choice.id)}
-              className="size-4 accent-fg"
-            />
+          <label
+            key={choice.id}
+            className={CONNECT_CHOICE}
+            data-checked={provider === choice.id ? "" : undefined}
+          >
+            <Radio value={choice.id} />
             <span className="min-w-0">
               <span className="block text-item-title font-medium text-fg">
                 {choice.label}
@@ -99,7 +103,7 @@ export function ConnectSandboxForm({
             </span>
           </label>
         ))}
-      </div>
+      </RadioGroup>
       <div className={CONNECT_FIELDS}>
         <Field label={`${name} API key`}>
           <Input
