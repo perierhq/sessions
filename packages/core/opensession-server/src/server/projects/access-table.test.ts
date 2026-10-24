@@ -213,4 +213,17 @@ describe("buildAccessTable", () => {
       "search",
     ]);
   });
+
+  test("a group with no rows is left out", () => {
+    const doc = structuredClone(READY_4_OF_6.document);
+    doc.access.credentials = [];
+    doc.access.hosts = [];
+    doc.access.connections = [];
+    const table = buildAccessTable(doc, env());
+    expect(table.groups.map((g) => g.id)).toEqual([
+      "code",
+      "websites",
+      "search",
+    ]);
+  });
 });

@@ -2,7 +2,7 @@
 // role. The You column is computed from what interactive sessions get
 // today, never stored. Keychain and production cells apply only to the
 // incident agents; for Automations and Reviews they read "no" and can't be
-// edited. Pure: plain data in, view out.
+// edited. A group with no rows is left out. Pure: plain data in, view out.
 
 import type { CredentialInfo } from "../../shared/incident-access";
 import {
@@ -217,7 +217,11 @@ export function buildAccessTable(
     id: AccessGroupId,
     label: string | null,
     rows: AccessRowView[],
-  ) => groups.push({ id, label, rows });
+  ) => {
+    // A labelled group with no rows would be a bare heading; the section's
+    // Add action is where a first row comes from.
+    if (rows.length) groups.push({ id, label, rows });
+  };
   add("code", null, [modeRow(doc)]);
   add("connectors", "Connectors", connectionRows(doc, env));
   add("keychain", "Keychain", credentialRows(doc, env));
