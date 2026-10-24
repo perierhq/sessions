@@ -19,6 +19,7 @@ import {
   type OwnerDecision,
   type ProjectSpend,
   type ResponsePhase,
+  SEND_BACK_NOTE_MAX,
   type SetupFix,
 } from "../../../shared/incident-response";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
@@ -2124,7 +2125,6 @@ const APPROVABLE: ReadonlySet<string> = new Set([
   "protection",
   "stopped",
 ]);
-export const SEND_BACK_NOTE_MAX = 2000;
 
 function isOwnerDecision(value: unknown): value is OwnerDecision {
   return (OWNER_DECISIONS as readonly unknown[]).includes(value);
@@ -2379,8 +2379,17 @@ async function ownerDecision(
   const incident = await d.getIncident(incidentId);
   if (!incident) return { error: "Not found", status: 404 };
   const text = (note ?? "").trim();
-  if (decision === "send-back" && (!text || text.length > SEND_BACK_NOTE_MAX))
-    return { error: "A note is required", status: 400 };
+  // Only Send it back reads the note; any other decision ignores one.
+  if (decision === "send-back" && !text)
+    return {
+      error: "Send it back needs a note for the investigator",
+      status: 400,
+    };
+  if (decision === "send-back" && text.length > SEND_BACK_NOTE_MAX)
+    return {
+      error: `The note is too long: ${SEND_BACK_NOTE_MAX.toLocaleString("en-US")} characters at most`,
+      status: 400,
+    };
   const refused: DecisionError = { error: REFUSALS[decision], status: 409 };
   // A repeat (a double tap, a retried request) gets the incident it made.
   if (alreadyDecided(incident, decision, by)) return incident;

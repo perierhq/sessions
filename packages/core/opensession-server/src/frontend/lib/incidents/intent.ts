@@ -13,7 +13,10 @@ export type IntentPlan =
       description: string;
       confirmLabel: string;
     }
-  | { kind: "stale"; message: string };
+  | { kind: "stale"; message: string }
+  /** A decision that needs a note: no confirm can carry one, so the page
+   *  says where to write it, on the card. */
+  | { kind: "on-card"; message: string };
 
 function offers(card: NextCard, decision: OwnerDecision): boolean {
   if (!card) return false;
@@ -37,6 +40,11 @@ export function intentPlan(
           : `Already handled: ${stateWord}`;
     return { kind: "stale", message };
   }
+  if (intent === "send-back")
+    return {
+      kind: "on-card",
+      message: `Pick ${DECISION_COPY["send-back"].label} on the card and write the investigator a note`,
+    };
   if (intent === "stop")
     return {
       kind: "confirm",

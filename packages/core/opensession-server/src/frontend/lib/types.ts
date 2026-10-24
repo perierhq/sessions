@@ -25,6 +25,18 @@ import type {
   AskQuestion,
 } from "@tellahq/opensession-protocol/session";
 
+/**
+ * A written note an ask option needs before it can be sent: picking the
+ * option opens this field in the card, and the answer waits for it.
+ */
+export interface AskNoteField {
+  /** The field's visible label: what the note is for. */
+  label: string;
+  placeholder?: string;
+  /** The longest note the receiver keeps. */
+  maxLength?: number;
+}
+
 export type SessionSource = "slack" | "linear" | "opensession" | "cli";
 
 /**

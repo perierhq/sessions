@@ -42,10 +42,11 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 mock.module("./MarkdownBody", () => ({ useMarkdownRepo: () => undefined }));
 
 let AskCard: typeof import("./AskCard").AskCard;
+let AskNote: typeof import("./AskCard").AskNote;
 let Questionnaire: typeof import("@shadcn/react/questionnaire").Questionnaire;
 
 beforeAll(async () => {
-  AskCard = (await import("./AskCard")).AskCard;
+  ({ AskCard, AskNote } = await import("./AskCard"));
   Questionnaire = (await import("@shadcn/react/questionnaire")).Questionnaire;
 });
 
@@ -59,11 +60,19 @@ const SHIP: AskQuestion = {
   options: [{ label: "Ship" }, { label: "Hold" }, { label: "Revert" }],
 };
 
-function mountCard(questions: AskQuestion[] = [SHIP]) {
+function mountCard(
+  questions: AskQuestion[] = [SHIP],
+  extra: Partial<Parameters<typeof AskCard>[0]> = {},
+) {
   const sent: Array<Record<string, string>> = [];
+  const notes: Array<Record<string, string>> = [];
   const card = harness.mount(AskCard, {
     questions,
-    onAnswer: (answers: Record<string, string>) => void sent.push(answers),
+    onAnswer: (answers: Record<string, string>, n: Record<string, string>) => {
+      sent.push(answers);
+      notes.push(n);
+    },
+    ...extra,
   });
   const tree = (): ReactNode => card.output();
   const choice = (label: string) => {
@@ -77,10 +86,21 @@ function mountCard(questions: AskQuestion[] = [SHIP]) {
     return el;
   };
   const submit = () => find(tree(), Questionnaire.Submit);
+  const note = () => find(tree(), AskNote);
   return {
     sent,
+    notes,
     choice,
     submit,
+    note,
+    /** Typing into a picked option's note field. */
+    write: async (value: string) => {
+      const field = note();
+      if (!field) throw new Error("no note field");
+      field.props.onChange(value);
+      await settle();
+    },
+    input: () => find(tree(), Questionnaire.Input),
     /** A click on a row: a pointer press, then the radio's change event. */
     click: async (label: string) => {
       // SAFETY: the card's handlers read nothing off the pointer event, and
@@ -226,4 +246,59 @@ test("a multi-select letter toggles, and nothing sends until Answer", async () =
   await card.send();
 
   expect(card.sent).toEqual([{ "Ship it?": "Revert" }]);
+});
+
+const SEND_BACK: AskQuestion = {
+  question: "Stopped by Ada",
+  options: [{ label: "Send it back" }, { label: "Close without action" }],
+};
+const NOTES = {
+  "Send it back": { label: "Note for the investigator", maxLength: 20 },
+};
+
+test("an option that needs a note asks for it in the card, labelled", async () => {
+  const card = mountCard([SEND_BACK], { notes: NOTES });
+  expect(card.note()).toBeUndefined();
+  await card.click("Send it back");
+
+  expect(card.note()?.props.field.label).toBe("Note for the investigator");
+  // Picked, but not an answer until the note is written.
+  expect(card.submit()?.props.disabled).toBe(true);
+  await card.write("   ");
+  expect(card.submit()?.props.disabled).toBe(true);
+  await card.write("Check the resume policy");
+  // Over the limit the field allows: still not ready.
+  expect(card.submit()?.props.disabled).toBe(true);
+  await card.write("Check the policy");
+  expect(card.submit()?.props.disabled).toBe(false);
+  await card.send();
+
+  expect(card.sent).toEqual([{ "Stopped by Ada": "Send it back" }]);
+  expect(card.notes).toEqual([{ "Stopped by Ada": "Check the policy" }]);
+});
+
+test("Enter on a pick whose note is empty sends nothing", async () => {
+  const card = mountCard([SEND_BACK], { notes: NOTES });
+  await card.press("a");
+  await card.send();
+  expect(card.sent).toEqual([]);
+  expect(card.submit()?.props.disabled).toBe(true);
+});
+
+test("an option without a note sends on its own, and leaves no note", async () => {
+  const card = mountCard([SEND_BACK], { notes: NOTES });
+  await card.click("Send it back");
+  await card.write("Changed my mind");
+  await card.click("Close without action");
+
+  expect(card.note()).toBeUndefined();
+  expect(card.submit()?.props.disabled).toBe(false);
+  await card.send();
+  expect(card.sent).toEqual([{ "Stopped by Ada": "Close without action" }]);
+  expect(card.notes).toEqual([{}]);
+});
+
+test("without free text the card offers only its options", () => {
+  expect(mountCard([SHIP], { freeText: false }).input()).toBeUndefined();
+  expect(mountCard([SHIP]).input()).toBeDefined();
 });

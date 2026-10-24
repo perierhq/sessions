@@ -424,6 +424,13 @@ export const OWNER_DECISIONS = [
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
 /**
+ * Send it back is the one decision that carries a note: what the
+ * investigator should do differently in its next round. Every other
+ * decision is complete on its own. The longest note the server keeps.
+ */
+export const SEND_BACK_NOTE_MAX = 2000;
+
+/**
  * `options` on `watching` and `done` is `["roll-back"]` when a manual
  * rollback is available, else `[]`.
  */

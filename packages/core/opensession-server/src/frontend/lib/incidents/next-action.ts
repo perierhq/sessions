@@ -15,6 +15,7 @@ import {
   type OwnerDecision,
   type RedactedProjectSettings,
   type ResponsePhase,
+  SEND_BACK_NOTE_MAX,
   type SetupFix,
 } from "../../../shared/incident-response";
 import {
@@ -26,7 +27,7 @@ import {
 import { ApiError } from "../api/request";
 import { repoLabel } from "../repo-label";
 import { clockTime } from "../time";
-import type { AskQuestion } from "../types";
+import type { AskNoteField, AskQuestion } from "../types";
 import { formatSpan } from "./copy";
 import { type DotTone, signalDotTone } from "./tone";
 
@@ -80,6 +81,9 @@ export interface ChoiceCard {
   eyebrow: string;
   question: AskQuestion;
   decisions: OwnerDecision[];
+  /** The options that need a note, by label (Send it back): the card asks
+   *  for it in a labelled field once that option is picked. */
+  notes: Record<string, AskNoteField>;
 }
 
 export type NextCard = ShellCard | ChoiceCard | null;
@@ -380,6 +384,7 @@ export function nextCard(input: {
             options: decisions.map((d) => DECISION_COPY[d]),
             multiSelect: false,
           },
+          notes: decisionNotes(decisions),
         };
       return shell({
         tone: "blue",
@@ -431,6 +436,26 @@ export function orderButtons(buttons: CardButton[]): CardButton[] {
         a.i - b.i,
     )
     .map(({ button }) => button);
+}
+
+/** The decisions that carry a note, and the field that asks for it. The
+ *  server refuses Send it back without one; nothing else takes a note. */
+export const DECISION_NOTE: Partial<Record<OwnerDecision, AskNoteField>> = {
+  "send-back": {
+    label: "Note for the investigator",
+    placeholder: "What should it look at or try differently?",
+    maxLength: SEND_BACK_NOTE_MAX,
+  },
+};
+
+/** The note fields of a choice card's options, keyed by option label. */
+export function decisionNotes(decisions: readonly OwnerDecision[]) {
+  return Object.fromEntries(
+    decisions.flatMap((d) => {
+      const field = DECISION_NOTE[d];
+      return field ? [[DECISION_COPY[d].label, field] as const] : [];
+    }),
+  );
 }
 
 /** The decision an AskCard answer picked: the answer is one option's
