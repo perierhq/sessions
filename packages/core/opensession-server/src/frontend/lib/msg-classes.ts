@@ -90,6 +90,11 @@ export const msgStreamingRow = "msg-streaming [overflow-anchor:none]";
 export const msgBodyStreaming =
   "msg-body msg-body-assistant block text-body leading-6 break-words text-fg";
 
+/** A live answer block that is no longer the newest one: the same prose
+ *  without the caret hook, so a bubble shows one caret. */
+export const msgBodyLive =
+  "msg-body block text-body leading-6 break-words text-fg";
+
 /** Provider reasoning summaries are activity, not answer hierarchy. Codex
  * Desktop treats the generated `**title**` as chrome and keeps the body quiet;
  * these do the same while leaving every summary visible in the timeline. */

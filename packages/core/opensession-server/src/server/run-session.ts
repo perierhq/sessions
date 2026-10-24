@@ -210,6 +210,12 @@ import { markRecapPendingIfUnwatched } from "./recap";
 import { noteYouShouldKnowStep } from "./you-should-know";
 import { scheduleSessionHistoryIndex } from "./session-index";
 import { broadcastToSession, sessionWatchers } from "./ws-hub";
+import {
+  earlyToolUseFrame,
+  recoveredEventOpensLiveTurn,
+  streamDiscardFrame,
+  streamPhaseFrame,
+} from "./live-stream-frames";
 import { peekWorkspace } from "./workspaces";
 import {
   broadcastQueue,
@@ -1231,11 +1237,7 @@ export async function recordRecoveredRunEvent(
   // adopted run's own event stream instead of persisting high-frequency feed
   // frames. The transcript backfill remains authoritative for committed text;
   // this path carries only the active phase and text produced after adoption.
-  const carriesFeedState =
-    event.type === "init" ||
-    event.type === "text_chunk" ||
-    event.type === "tool_use" ||
-    event.type === "tool_result";
+  const carriesFeedState = recoveredEventOpensLiveTurn(event);
   if (carriesFeedState && !recoveredFeedStarted.has(osSessionId)) {
     recoveredFeedStarted.add(osSessionId);
     broadcastToSession(osSessionId, {
@@ -1265,7 +1267,17 @@ export async function recordRecoveredRunEvent(
       sessionId: osSessionId,
       text: event.text,
       ...(event.blockId ? { blockId: event.blockId } : {}),
+      ...(event.kind ? { kind: event.kind } : {}),
     });
+  } else if (event.type === "phase") {
+    const frame = streamPhaseFrame(osSessionId, event);
+    if (frame) broadcastToSession(osSessionId, frame);
+  } else if (event.type === "tool_call_start") {
+    const frame = earlyToolUseFrame(osSessionId, event);
+    if (frame) broadcastToSession(osSessionId, frame);
+  } else if (event.type === "discard") {
+    const frame = streamDiscardFrame(osSessionId, event);
+    if (frame) broadcastToSession(osSessionId, frame);
   } else if (event.type === "tool_use") {
     broadcastToSession(osSessionId, {
       type: "stream_tool_use",
@@ -3753,8 +3765,31 @@ async function runSessionPromptInner(
           // them: a viewer cancels the live copy by id the moment the
           // durable entry lands (see LiveTextBuffer).
           ...(event.blockId ? { blockId: event.blockId } : {}),
+          ...(event.kind ? { kind: event.kind } : {}),
         });
         break;
+      case "phase": {
+        // What the run is doing now: a model request is open, a tool is
+        // running, or the turn ended. Lets a viewer stop saying "Thinking"
+        // while a tool runs.
+        const frame = streamPhaseFrame(sessionId, event);
+        if (frame) broadcastToSession(sessionId, frame);
+        break;
+      }
+      case "tool_call_start": {
+        // The model started writing a tool call. Not a step yet: the step
+        // counters and side agents wait for the tool_use that follows.
+        const frame = earlyToolUseFrame(sessionId, event);
+        if (frame) broadcastToSession(sessionId, frame);
+        break;
+      }
+      case "discard": {
+        // A failed or superseded model message that will never be saved:
+        // viewers drop its live blocks and early cards.
+        const frame = streamDiscardFrame(sessionId, event);
+        if (frame) broadcastToSession(sessionId, frame);
+        break;
+      }
       case "model_switch": {
         // Every fallback changes the model driving this turn. Only a usage
         // fallback changes the user's selection; transient infra recovery is

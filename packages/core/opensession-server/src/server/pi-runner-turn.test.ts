@@ -380,10 +380,11 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
     const piSessionId = turn.session()!.sessionId;
     expect(turn.events).toEqual([
       { type: "init", sessionId: piSessionId, provider: "pi", model: MODEL },
-      // characterization: thinking and reply text share one prose stream.
-      { type: "text_chunk", text: "Let me " },
-      { type: "text_chunk", text: "think. " },
-      { type: "text_chunk", text: "Done." },
+      // Thinking and reply text stream in arrival order, each with its kind
+      // (no blockId: these deltas carry no content index).
+      { type: "text_chunk", text: "Let me ", kind: "reasoning" },
+      { type: "text_chunk", text: "think. ", kind: "text" },
+      { type: "text_chunk", text: "Done.", kind: "reasoning" },
       // No usage on any message: done carries no usage field at all.
       {
         type: "done",
@@ -1227,6 +1228,8 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
     });
     expect(turn.events.map((e) => e.type)).toEqual([
       "init",
+      // The assistant message_start opens the model phase.
+      "phase",
       "text_chunk",
       "usage_snapshot",
     ]);
@@ -1258,9 +1261,14 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
     installSdk(fake.sdk);
     const turn = runPi(turnOpts() as any, MODEL);
     expect((await turn.next()).value).toMatchObject({ type: "init" });
+    expect((await turn.next()).value).toMatchObject({
+      type: "phase",
+      phase: "model",
+    });
     expect((await turn.next()).value).toEqual({
       type: "text_chunk",
       text: "streaming",
+      kind: "text",
     });
     const piSessionId = fake.session()!.sessionId;
     expect(isPiSessionBusy(key)).toBe(true);

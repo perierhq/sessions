@@ -1,6 +1,11 @@
 import { stripBasePath } from "./base";
 import type { TranscriptIndexEntry } from "@tellahq/opensession-protocol/session";
 import type { TranscriptEntry } from "./types";
+import type {
+  StreamPhase,
+  StreamPhaseTool,
+  StreamTextKind,
+} from "@tellahq/opensession-protocol/events";
 import type { OptimisticTranscriptEntry } from "./transcript-state";
 import * as sessionPerformanceFixtures from "./session-performance-fixtures";
 
@@ -24,9 +29,18 @@ type TranscriptMotionScenarioAction =
     }
   | { kind: "set-busy"; busy: boolean }
   | { kind: "stream-start" }
-  | { kind: "stream-append"; text: string; blockId: string }
+  | {
+      kind: "stream-append";
+      text: string;
+      blockId: string;
+      textKind?: StreamTextKind;
+    }
   | { kind: "stream-land"; id: string; content: string }
-  | { kind: "stream-finish" };
+  | { kind: "stream-finish" }
+  /** A stream_phase frame; the player stamps `since` when it plays it. */
+  | { kind: "stream-phase"; phase: StreamPhase; tool?: StreamPhaseTool }
+  /** A stream_tool_use frame (`early` = the call is still being written). */
+  | { kind: "stream-tool"; entry: TranscriptEntry; early: boolean };
 
 export type TranscriptMotionScenarioEvent = TranscriptMotionScenarioAction & {
   atMs: number;
@@ -381,6 +395,191 @@ export function makeTranscriptStreamPerformanceScenario(): TranscriptMotionScena
   };
 }
 
+/**
+ * One live turn with the server's honest-streaming frames: reasoning and reply
+ * deltas by blockId and kind, early tool cards, and stream_phase. Shaped on a
+ * real rebase turn: two short model steps, a 45s build in between.
+ */
+export function makeHonestStreamingScenario(): TranscriptMotionScenario {
+  const entries = initialEntries(1);
+  const events: TranscriptMotionScenarioEvent[] = [];
+  let sequence = entries.length + 1;
+  const at = (atMs: number, event: TranscriptMotionScenarioAction) =>
+    events.push({ ...event, atMs });
+  const durable = (
+    entry: Omit<TranscriptEntry, "timestamp" | "seq" | "changeSeq">,
+  ): TranscriptEntry => {
+    sequence++;
+    return {
+      ...entry,
+      timestamp: timestamp(sequence),
+      seq: sequence,
+      changeSeq: sequence,
+    };
+  };
+  const deltas = (
+    fromMs: number,
+    toMs: number,
+    blockId: string,
+    textKind: StreamTextKind,
+    text: string,
+  ) => {
+    const words = text.match(/\S+\s*/g) ?? [];
+    words.forEach((word, index) =>
+      at(fromMs + ((toMs - fromMs) * index) / words.length, {
+        kind: "stream-append",
+        text: word,
+        blockId,
+        textKind,
+      }),
+    );
+  };
+  const bash = (id: string, command: string, input = true) => ({
+    id,
+    type: "tool_use" as const,
+    toolUseId: id,
+    toolName: "bash",
+    toolInput: input ? { command } : {},
+    content: "Using bash",
+  });
+
+  const prompt = "Rebase this branch onto main and check that it still builds.";
+  at(100, {
+    kind: "begin-turn",
+    entry: {
+      id: "honest-optimistic",
+      type: "user",
+      content: prompt,
+      timestamp: timestamp(sequence),
+      optimisticAfterEntryId: entries.at(-1)?.id ?? null,
+    },
+  });
+  at(140, { kind: "set-busy", busy: true });
+  at(220, {
+    kind: "reconcile-turn",
+    entry: {
+      ...durable({ id: "honest-prompt", type: "user", content: prompt }),
+      sourceMessageIds: ["honest-optimistic"],
+    },
+  });
+  at(260, { kind: "stream-start" });
+
+  // Step 1: think, then fetch.
+  const think1 =
+    "The user wants this branch on top of main. I'll fetch first and look at what changed upstream before rebasing.";
+  at(300, { kind: "stream-phase", phase: "model" });
+  deltas(500, 2_300, "honest-m1", "reasoning", think1);
+  at(2_400, {
+    kind: "stream-tool",
+    entry: {
+      ...bash("honest-call-1", "", false),
+      timestamp: timestamp(sequence),
+    },
+    early: true,
+  });
+  const fetch = "git fetch origin && git log --oneline -5 origin/main";
+  at(2_700, {
+    kind: "append-entry",
+    entry: durable({
+      id: "honest-m1",
+      type: "assistant",
+      content: think1,
+      isReasoning: true,
+    }),
+  });
+  at(2_700, {
+    kind: "append-entry",
+    entry: durable(bash("honest-call-1", fetch)),
+  });
+  at(2_700, { kind: "stream-land", id: "honest-m1", content: think1 });
+  at(2_700, { kind: "stream-land", id: "honest-call-1", content: "" });
+  at(2_720, {
+    kind: "stream-phase",
+    phase: "tool",
+    tool: { id: "honest-call-1", name: "bash", summary: fetch },
+  });
+  at(5_800, {
+    kind: "append-entry",
+    entry: durable({
+      id: "honest-res-1",
+      type: "tool_result",
+      toolUseId: "honest-call-1",
+      content: "a1b2c3d Tighten session cookies\n9f8e7d6 Bump dependencies",
+    }),
+  });
+
+  // Step 2: think, say what happened, start the build.
+  const think2 =
+    "I should verify the security changes still apply cleanly after the rebase, then run the typecheck.";
+  const note = "Rebased onto main. Checking that it still builds.";
+  at(5_820, { kind: "stream-phase", phase: "model" });
+  deltas(6_000, 7_600, "honest-m2", "reasoning", think2);
+  deltas(7_700, 8_600, "honest-m2-b1", "text", note);
+  at(8_700, {
+    kind: "stream-tool",
+    entry: {
+      ...bash("honest-call-2", "", false),
+      timestamp: timestamp(sequence),
+    },
+    early: true,
+  });
+  const build = "pnpm install && tsc -p apps/web";
+  at(9_000, {
+    kind: "append-entry",
+    entry: durable({
+      id: "honest-m2",
+      type: "assistant",
+      content: think2,
+      isReasoning: true,
+    }),
+  });
+  at(9_000, {
+    kind: "append-entry",
+    entry: durable({ id: "honest-m2-b1", type: "assistant", content: note }),
+  });
+  at(9_000, {
+    kind: "append-entry",
+    entry: durable(bash("honest-call-2", build)),
+  });
+  at(9_000, { kind: "stream-land", id: "honest-m2", content: think2 });
+  at(9_000, { kind: "stream-land", id: "honest-m2-b1", content: note });
+  at(9_000, { kind: "stream-land", id: "honest-call-2", content: "" });
+  at(9_020, {
+    kind: "stream-phase",
+    phase: "tool",
+    tool: { id: "honest-call-2", name: "bash", summary: build },
+  });
+  at(54_000, {
+    kind: "append-entry",
+    entry: durable({
+      id: "honest-res-2",
+      type: "tool_result",
+      toolUseId: "honest-call-2",
+      content: "Done in 44.6s",
+    }),
+  });
+
+  // Step 3: the answer.
+  const answer =
+    "Rebased onto main. The two conflicts in the session cookie code are resolved, and the web app typechecks.";
+  at(54_020, { kind: "stream-phase", phase: "model" });
+  deltas(54_300, 56_000, "honest-m3", "text", answer);
+  at(56_200, {
+    kind: "append-entry",
+    entry: durable({ id: "honest-m3", type: "assistant", content: answer }),
+  });
+  at(56_200, { kind: "stream-land", id: "honest-m3", content: answer });
+  at(56_220, { kind: "stream-phase", phase: "idle" });
+  at(56_240, { kind: "stream-finish" });
+  at(56_300, { kind: "set-busy", busy: false });
+  return {
+    seed: 0,
+    initial: { entries, optimisticEntries: [], busy: false },
+    events,
+    durationMs: 56_300,
+  };
+}
+
 export function applyTranscriptMotionEvent(
   state: TranscriptMotionScenarioState,
   event: TranscriptMotionScenarioEvent,
@@ -400,7 +599,15 @@ export function applyTranscriptMotionEvent(
         ),
       };
     case "append-entry":
-      return { ...state, entries: [...state.entries, event.entry] };
+      // Upsert: a live card may already hold this id (stream-tool).
+      return state.entries.some((entry) => entry.id === event.entry.id)
+        ? {
+            ...state,
+            entries: state.entries.map((entry) =>
+              entry.id === event.entry.id ? event.entry : entry,
+            ),
+          }
+        : { ...state, entries: [...state.entries, event.entry] };
     case "hydrate-entries": {
       const byId = new Map(state.entries.map((entry) => [entry.id, entry]));
       for (const entry of event.entries) byId.set(entry.id, entry);
@@ -426,6 +633,8 @@ export function applyTranscriptMotionEvent(
     case "stream-append":
     case "stream-land":
     case "stream-finish":
+    case "stream-phase":
+    case "stream-tool":
       return state;
   }
 }
@@ -436,7 +645,7 @@ export function transcriptMotionFixtureOptions(
 ): {
   seed: number;
   speed: number;
-  profile: "motion" | "stream" | "hydration";
+  profile: "motion" | "stream" | "hydration" | "honest";
 } | null {
   if (stripBasePath(pathname) !== "/__fixtures/transcript-motion") return null;
   const params = new URLSearchParams(search);
@@ -450,6 +659,8 @@ export function transcriptMotionFixtureOptions(
         ? "stream"
         : params.get("profile") === "hydration"
           ? "hydration"
-          : "motion",
+          : params.get("profile") === "honest"
+            ? "honest"
+            : "motion",
   };
 }

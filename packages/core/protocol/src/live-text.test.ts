@@ -81,4 +81,19 @@ describe("LiveTextBuffer without block ids", () => {
     buffer.land("Replayed block. ", "prt_1");
     expect(buffer.text).toBe("");
   });
+
+  test("keeps each block's kind for snapshots and lands them by id", () => {
+    const buffer = new LiveTextBuffer();
+    buffer.append("I should ", "m1", "reasoning");
+    buffer.append("check.", "m1", "reasoning");
+    buffer.append("Done.", "m2-b1", "text");
+    expect(buffer.blockSnapshots).toEqual([
+      { id: "m1", text: "I should check.", kind: "reasoning" },
+      { id: "m2-b1", text: "Done.", kind: "text" },
+    ]);
+    buffer.land("I should check.", "m1");
+    expect(buffer.blockSnapshots).toEqual([
+      { id: "m2-b1", text: "Done.", kind: "text" },
+    ]);
+  });
 });

@@ -474,6 +474,11 @@ export function useSessionViewerSubscription({
               landed.map((e) => ({ id: e.id, content: e.content })),
             );
           }
+          // A durable tool call releases the early card the bubble held for
+          // it; otherwise the call shows twice until the turn ends.
+          liveTurnStore.landIds(
+            msg.entries.flatMap((e) => (e.type === "tool_use" ? [e.id] : [])),
+          );
           break;
         }
         case "presence":
@@ -616,18 +621,42 @@ export function useSessionViewerSubscription({
           break;
         case "stream_text": {
           if (isTimelineOnlyRunnerNotice(msg.text)) break;
-          // Live typing is per viewer (Settings > Preferences), default off.
+          // Live typing is per viewer (Settings > Preferences), default on.
           // Dropping the frame is the whole implementation: the durable
           // entry for the block still lands over the transcript feed, which
           // is what filled the transcript before streaming existed. Read per
           // frame rather than captured, so a toggle takes on the running turn.
           if (!getLiveTypingPref()) break;
-          liveTurnStore.append(msg.text, msg.blockId);
+          liveTurnStore.append(msg.text, msg.blockId, msg.kind);
           break;
         }
+        case "stream_phase":
+          liveTurnStore.setPhase({
+            phase: msg.phase,
+            since: msg.since,
+            tool: msg.tool,
+            toolCount: msg.toolCount,
+            reason: msg.reason,
+          });
+          break;
         case "stream_tool_use":
+          // An early card follows the live text of its own message, which is
+          // still in the bubble below the transcript; merging it now would
+          // show the call above the thought that led to it.
+          if (liveTurnStore.holdTool(msg.entry, msg.inputPending === true))
+            break;
+          transcriptViewStore.merge([msg.entry]);
+          break;
         case "stream_tool_result":
           transcriptViewStore.merge([msg.entry]);
+          break;
+        case "stream_discard":
+          // A failed or steer-cut model message that will never be saved:
+          // its live rows and early cards would otherwise sit there until
+          // the turn ends (or, for a card in the transcript, until reload).
+          liveTurnStore.discard(msg.messageId, msg.toolUseIds);
+          if (msg.toolUseIds?.length)
+            transcriptViewStore.remove(msg.toolUseIds);
           break;
         case "stream_done": {
           dispatchSessionRuntime({ type: "frame", frame: msg });

@@ -19,6 +19,18 @@ paths = [
 regexTarget = "secret"
 regexes = ['''^C0EMPTY\-1789056158\.000010$''']
 
+[[rules]]
+id = "curl-auth-header"
+
+[[rules.allowlists]]
+description = "Synthetic bearer value in the tool-summary redaction test"
+condition = "AND"
+paths = [
+  '''(^|/)packages/core/opensession-server/src/server/pi-events\.test\.ts$''',
+]
+regexTarget = "match"
+regexes = ['''Bearer abc\.def-123''']
+
 [[allowlists]]
 description = "Known public identifiers and synthetic test values misclassified as generic API keys"
 regexTarget = "secret"

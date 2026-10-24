@@ -1,4 +1,7 @@
-import { LiveTextBuffer } from "@tellahq/opensession-protocol/live-text";
+import {
+  LiveTextBuffer,
+  type LiveTextBlockSnapshot,
+} from "@tellahq/opensession-protocol/live-text";
 import type { SessionLiveEvent } from "@tellahq/opensession-protocol/session";
 import { setPrimarySessionRunning } from "./session-state-events";
 
@@ -29,6 +32,12 @@ export interface SessionFeedFrame {
   event: SessionLiveEvent;
 }
 
+/** The latest `stream_phase` of the active run, minus its envelope. */
+export type SessionFeedPhaseState = Omit<
+  Extract<SessionLiveEvent, { type: "stream_phase" }>,
+  "type" | "sessionId"
+>;
+
 export interface SessionFeedSnapshot {
   type: "feed_snapshot";
   sessionId: string;
@@ -41,6 +50,11 @@ export interface SessionFeedSnapshot {
     by?: string;
     text: string;
     startedAt: number;
+    /** The live text per block, with ids and kinds (see LiveTextBuffer). */
+    blocks?: LiveTextBlockSnapshot[];
+    /** What the run is doing now (absent before its first phase frame). A
+     *  viewer joining mid-tool can label the tool and its elapsed time. */
+    phase?: SessionFeedPhaseState;
   };
 }
 
@@ -51,6 +65,7 @@ interface ActiveTurn {
   entryId: string;
   by?: string;
   startedAt: number;
+  phase?: SessionFeedPhaseState;
 }
 
 interface FeedState {
@@ -140,8 +155,14 @@ export function appendSessionFeed(
       startedAt: Date.now(),
     };
     state.live.reset();
+  } else if (event.type === "stream_phase" && state.active) {
+    const { type: _type, sessionId: _sessionId, ...phase } = event;
+    state.active.phase = phase;
+  } else if (event.type === "stream_discard" && state.active) {
+    // That message will never land; a joiner must not be handed its text.
+    state.live.discardMessage(event.messageId);
   } else if (event.type === "stream_text" && state.active) {
-    state.live.append(event.text ?? "", event.blockId);
+    state.live.append(event.text ?? "", event.blockId, event.kind);
   } else if (event.type === "transcript_append" && state.active) {
     // A block that landed durably is in the transcript this viewer will
     // also receive, so it must leave the live text a fresh viewer is
@@ -193,7 +214,13 @@ export function sessionFeedSnapshot(sessionId: string): SessionFeedSnapshot {
     sessionId,
     feedEpoch: state.epoch,
     feedSeq: state.nextSeq - 1,
-    active: state.active ? { ...state.active, text: state.live.text } : null,
+    active: state.active
+      ? {
+          ...state.active,
+          text: state.live.text,
+          blocks: state.live.blockSnapshots,
+        }
+      : null,
   };
 }
 
@@ -240,6 +267,8 @@ export function isFeedEvent(msg: object): msg is SessionLiveEvent {
     type === "stream_text" ||
     type === "stream_tool_use" ||
     type === "stream_tool_result" ||
+    type === "stream_phase" ||
+    type === "stream_discard" ||
     type === "stream_done" ||
     type === "session_status"
   );

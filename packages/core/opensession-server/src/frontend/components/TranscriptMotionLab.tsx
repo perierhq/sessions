@@ -47,7 +47,7 @@ export function TranscriptMotionLab({
 }: {
   initialSeed: number;
   speed: number;
-  profile: "motion" | "stream" | "hydration";
+  profile: "motion" | "stream" | "hydration" | "honest";
 }) {
   const [seed, setSeed] = useState(initialSeed);
   const [run, setRun] = useState(0);
@@ -59,7 +59,9 @@ export function TranscriptMotionLab({
       ? transcriptMotionScenarios.makeTranscriptStreamPerformanceScenario()
       : profile === "hydration"
         ? transcriptMotionScenarios.makeTranscriptHydrationScenario()
-        : transcriptMotionScenarios.makeTranscriptMotionScenario(seed);
+        : profile === "honest"
+          ? transcriptMotionScenarios.makeHonestStreamingScenario()
+          : transcriptMotionScenarios.makeTranscriptMotionScenario(seed);
 
   useEffect(() => {
     const splash = document.getElementById("splash");
@@ -89,7 +91,9 @@ export function TranscriptMotionLab({
               ? "10k · 100 deltas/s"
               : profile === "hydration"
                 ? "incremental history"
-                : `seed ${seed}`}{" "}
+                : profile === "honest"
+                  ? "phases and live thinking"
+                  : `seed ${seed}`}{" "}
             · {speed}×
           </p>
         </div>
@@ -168,7 +172,24 @@ function TranscriptMotionPlayer({
         liveTurnStore.start("Fixture", `fixture-run-${scenario.seed}`);
         break;
       case "stream-append":
-        liveTurnStore.append(event.text, event.blockId);
+        liveTurnStore.append(event.text, event.blockId, event.textKind);
+        break;
+      case "stream-phase":
+        liveTurnStore.setPhase({
+          phase: event.phase,
+          since: Date.now(),
+          tool: event.tool,
+        });
+        break;
+      case "stream-tool":
+        if (!liveTurnStore.holdTool(event.entry, event.early))
+          setState((current) => ({
+            ...current,
+            entries: [
+              ...current.entries.filter((entry) => entry.id !== event.entry.id),
+              event.entry,
+            ],
+          }));
         break;
       case "stream-land":
         liveTurnStore.land([{ id: event.id, content: event.content }]);

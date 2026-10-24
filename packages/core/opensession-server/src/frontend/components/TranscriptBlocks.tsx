@@ -56,8 +56,10 @@ import {
   arrangeThinkingMessages,
   getThinkingMessagesPref,
   onThinkingMessagesChanged,
+  quietThoughts,
   type ThinkingMessagesPref,
 } from "../lib/thinking-messages-pref";
+import type { LivePhaseKind } from "../lib/live-phase";
 
 type RenderBlock =
   | { kind: "entry"; entry: TranscriptEntry; reasoning?: boolean }
@@ -143,6 +145,8 @@ interface Props {
   turnMountScope?: string;
   /** Which thinking rows each work rail shows; see arrangeThinkingMessages. */
   thinkingMessages?: ThinkingMessagesPref;
+  /** What the running turn is doing (stream_phase), null until known. */
+  livePhase?: LivePhaseKind | null;
 }
 
 type ReviewBlockRole =
@@ -483,6 +487,7 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
   shouldMaintainEnd,
   onLayout,
   thinkingMessages = getThinkingMessagesPref(),
+  livePhase = null,
 }: Props) {
   // Top level only (nested per-range instances pass virtualize={false} and are
   // suppressed): without an outline every block renders real content, so the
@@ -545,7 +550,6 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
       const before = arrangeThinkingMessages(
         turn.slice(0, reply),
         thinkingMessages,
-        false,
       );
       if (before.length > 0) {
         blocks.push({
@@ -581,7 +585,6 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
     const work = arrangeThinkingMessages(
       final ? turn.slice(0, -1) : turn,
       thinkingMessages,
-      Boolean(live) && trailing,
     );
     if (work.length > 0) {
       blocks.push({
@@ -813,6 +816,8 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
             expandWhileRunning={block.expandWhileRunning}
             onOpenSubagent={onOpenSubagent}
             sessionId={sessionId}
+            livePhase={isLiveTail ? livePhase : null}
+            quietThoughts={quietThoughts(thinkingMessages, isLiveTail)}
           />
         ) : block.kind === "walkthrough" ? (
           <WalkthroughCard walkthrough={block.walkthrough} variant="session" />
@@ -1028,7 +1033,7 @@ function IndexedTranscriptBlocks(props: Props) {
   // every height on screen is a real measurement.
   const renderedTimeline = timeline
     .map((item, index) => ({ item, index }))
-    .filter(({ item, index }) => {
+    .filter(({ item }) => {
       // A loose thinking atom renders as a one-row rail of its own. Skip it
       // when arrangement would leave that rail empty, so it never occupies an
       // empty measured row.
@@ -1038,7 +1043,6 @@ function IndexedTranscriptBlocks(props: Props) {
         arrangeThinkingMessages(
           [item.entry],
           props.thinkingMessages ?? getThinkingMessagesPref(),
-          Boolean(props.live) && index === timeline.length - 1,
         ).length === 0
       ) {
         return false;

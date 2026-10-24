@@ -23,6 +23,13 @@
 
 import type { AnsweredAskData, EntryNotice, NoticeKind } from "./notices";
 import type { ToolPresentation } from "./tool-presentation";
+import type {
+  StreamPhase,
+  StreamPhaseTool,
+  StreamTextKind,
+  StreamWaitReason,
+} from "./events";
+import type { LiveTextBlockSnapshot } from "./live-text";
 
 /** The complete set of managed Executor providers. */
 /** Service speed for ChatGPT subscription runs. "fast" is OpenAI's priority
@@ -596,8 +603,54 @@ export type SessionLiveEvent =
        *  blocks. The durable entry that lands it carries the same id — see
        *  `LiveTextBuffer`, which every live surface dedups with. */
       blockId?: string;
+      /** "reasoning" for the model's thinking, "text" for its reply. Absent
+       *  means "text" (older servers, engines that do not split the two).
+       *  The durable entry for a reasoning block has `isReasoning: true`. */
+      kind?: StreamTextKind;
     }
-  | { type: "stream_tool_use"; sessionId?: string; entry: TranscriptEntry }
+  | {
+      type: "stream_tool_use";
+      sessionId?: string;
+      entry: TranscriptEntry;
+      /** An early card: the model has started writing this call but its
+       *  arguments are still streaming, so `entry.toolInput` is `{}`. A later
+       *  `stream_tool_use` (and then the durable entry) with the same
+       *  `entry.id` carries the real input; upsert by id. */
+      inputPending?: boolean;
+    }
+  | {
+      /**
+       * What the run is doing right now. Sent when a model request opens or
+       * closes, when a tool starts or ends, and "idle" when the turn ends.
+       * Show "Thinking"/"Writing" only while `phase` is "model"; while it is
+       * "tool", label the running tool (`tool.summary`) with the time since
+       * `since`. Clients that ignore this frame keep today's behaviour.
+       */
+      type: "stream_phase";
+      sessionId?: string;
+      phase: StreamPhase;
+      /** Epoch ms this phase began (server clock). */
+      since: number;
+      /** With phase "tool": the running tool (latest started if several). */
+      tool?: StreamPhaseTool;
+      /** With phase "tool": how many tools are running (>= 1). */
+      toolCount?: number;
+      /** With phase "wait": a retry backoff or a context compaction. */
+      reason?: StreamWaitReason;
+    }
+  | {
+      /**
+       * An assistant message that will never be saved (it ended in an error
+       * that the engine retries, or a steer cut it before any output). Drop
+       * its live blocks (`blockId` equal to `messageId` or starting with
+       * `${messageId}-b`) and the early cards of `toolUseIds`: no durable
+       * row will land to replace them.
+       */
+      type: "stream_discard";
+      sessionId?: string;
+      messageId: string;
+      toolUseIds?: string[];
+    }
   | { type: "stream_tool_result"; sessionId?: string; entry: TranscriptEntry }
   | { type: "stream_done"; sessionId?: string }
   | {
@@ -708,8 +761,21 @@ export type ProtocolServerMessage =
         turnId: string;
         entryId: string;
         by?: string;
+        /** All live text not yet landed, blocks joined. */
         text: string;
         startedAt: number;
+        /** The same text per block, with each block's id and kind when the
+         *  engine names them (pi does). Absent on older servers. */
+        blocks?: LiveTextBlockSnapshot[];
+        /** The run's latest `stream_phase` (absent before the first one):
+         *  a viewer joining mid-tool can label the tool and its elapsed time. */
+        phase?: {
+          phase: StreamPhase;
+          since: number;
+          tool?: StreamPhaseTool;
+          toolCount?: number;
+          reason?: StreamWaitReason;
+        };
       };
     }
   // The same live-turn frames a feed server wraps in session_feed.event.

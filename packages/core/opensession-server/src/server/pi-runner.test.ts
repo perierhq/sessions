@@ -53,6 +53,8 @@ import {
   steerPiRun,
 } from "./pi-runner";
 import { runPiSmokeTurn } from "./pi-smoke";
+import { PiEventPump } from "./pi-events";
+import { PiTurnLedger } from "./pi-turn-ledger";
 import type { PiBashAuditEvent } from "./pi-runner";
 import { createPiMcpBridge, DIRECT_MCP_TOOLS } from "./pi-mcp-bridge";
 import type { McpRuntime } from "./mcp-runtime";
@@ -322,7 +324,7 @@ describe("assistant transcript output", () => {
         toolUseId: "t1",
       },
       {
-        id: "message-1-b1",
+        id: "message-1-b2",
         type: "assistant",
         content: "The repository is ready.",
         timestamp: "2026-08-24T12:00:00.000Z",
@@ -871,6 +873,22 @@ describe("pi/openai in-band account rotation gate", () => {
     expect(
       piStreamEventRequiresAccountContinuation({ type: "runner_notice" }),
     ).toBe(true);
+  });
+
+  test("an early tool card is output, a phase or a discard is not", () => {
+    // A response that opens with a tool call and then fails mid-stream has
+    // already shown that call's card. Replaying the prompt on another
+    // account would show the call again, so the walk continues instead.
+    expect(
+      piStreamEventRequiresAccountContinuation({ type: "tool_call_start" }),
+    ).toBe(true);
+    const ledger = new PiTurnLedger({}, Date.now());
+    const pump = new PiEventPump(ledger);
+    pump.push({ type: "phase", phase: "model", since: Date.now() });
+    pump.push({ type: "discard", messageId: "m1" });
+    expect(ledger.sawStreamedOutput).toBe(false);
+    pump.push({ type: "tool_call_start", toolUseId: "t1", toolName: "bash" });
+    expect(ledger.sawStreamedOutput).toBe(true);
   });
 });
 

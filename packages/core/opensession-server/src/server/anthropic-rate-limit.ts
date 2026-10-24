@@ -18,6 +18,8 @@
  * reads the headers there.
  */
 
+import { streamTimingEnabled, streamTimingFetch } from "./stream-timing";
+
 /** What the latest Anthropic response said about the account's limit. */
 export interface AnthropicRateLimitSnapshot {
   /** HTTP status of the response. */
@@ -142,7 +144,11 @@ export function enableAnthropicRateLimitCapture(
     if ((model as { provider?: unknown } | undefined)?.provider !== "anthropic")
       return base(model, context, options);
     const inner = (options as { fetch?: FetchLike } | undefined)?.fetch;
-    const fetch = anthropicRateLimitFetch(inner, record);
+    const recorded = anthropicRateLimitFetch(inner, record);
+    // Debug only (OPENSESSION_STREAM_TIMING=1): timestamp the raw SSE body.
+    const fetch = streamTimingEnabled()
+      ? streamTimingFetch(recorded, "anthropic")
+      : recorded;
     return base(model, context, { ...options, fetch });
   };
 }
