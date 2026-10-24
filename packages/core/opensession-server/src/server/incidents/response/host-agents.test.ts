@@ -124,6 +124,69 @@ test("without a sandbox, host agents on: the host user, or a clear setup error",
   ).toEqual({ error: "Daytona is not qualified" });
 });
 
+test("without a default sandbox, a Ready container sandbox comes before the host", async () => {
+  let probed = false;
+  expect(
+    await incidentWorkspaceFor("acme", "m", {
+      sandbox: () => ({ ok: true, provider: null }),
+      podmanReady: () => true,
+      hostEnabled: () => true,
+      hostProblem: async () => {
+        probed = true;
+        return null;
+      },
+    }),
+  ).toEqual({ kind: "sandbox", provider: "podman" });
+  expect(probed).toBe(false);
+  // A configured default sandbox still wins.
+  expect(
+    await incidentWorkspaceFor("acme", "m", {
+      sandbox: () => ({ ok: true, provider: "daytona" }),
+      podmanReady: () => true,
+      hostEnabled: () => true,
+      hostProblem: async () => null,
+    }),
+  ).toEqual({ kind: "sandbox", provider: "daytona" });
+  // So does a default that can't be used: its error is not papered over.
+  expect(
+    await incidentWorkspaceFor("acme", "m", {
+      sandbox: () => ({ ok: false, error: "Daytona is not qualified" }),
+      podmanReady: () => true,
+    }),
+  ).toEqual({ error: "Daytona is not qualified" });
+});
+
+test("the container sandbox is checked for the project and model", async () => {
+  const seen: unknown[] = [];
+  await incidentWorkspaceFor("acme", "pi/openai/gpt-6.1-sol", {
+    sandbox: () => ({ ok: true, provider: null }),
+    podmanReady: (...args) => {
+      seen.push(args);
+      return false;
+    },
+    hostEnabled: () => false,
+  });
+  expect(seen).toEqual([["acme", "pi/openai/gpt-6.1-sol"]]);
+});
+
+test("without the container sandbox the host path is unchanged", async () => {
+  expect(
+    await incidentWorkspaceFor("acme", "m", {
+      sandbox: () => ({ ok: true, provider: null }),
+      podmanReady: () => false,
+      hostEnabled: () => false,
+    }),
+  ).toEqual({ error: "Agents can't start: this project has no sandbox" });
+  expect(
+    await incidentWorkspaceFor("acme", "m", {
+      sandbox: () => ({ ok: true, provider: null }),
+      podmanReady: () => false,
+      hostEnabled: () => true,
+      hostProblem: async () => null,
+    }),
+  ).toEqual({ kind: "host", user: "opensession-incident" });
+});
+
 test("the sandbox is resolved for the project and model", async () => {
   const seen: unknown[] = [];
   await incidentWorkspaceFor("acme", "pi/openai/gpt-6.1-sol", {

@@ -53,6 +53,11 @@ export interface WorkflowServerSpawnOpts {
   /** Builds the child's descendant policy from the controller's base. Only
    *  valid with an `automationSessionPolicy`. */
   descendantPolicy?: (base: DescendantPolicyBase) => AutomationDescendantPolicy;
+  /** The sandbox the child runs in, asked for by name instead of left to
+   *  the session defaults: This machine (container) for an incident agent
+   *  when no default sandbox is set. Only with `descendantPolicy`, never
+   *  with a Runner; session creation still checks the policy may use it. */
+  sandbox?: "podman";
 }
 
 export interface ServerWorkflowSessionController extends WorkflowSessionController {
@@ -367,6 +372,20 @@ export function createWorkflowSessionController(
         throw new Error(
           "A server-built descendant policy needs an automation session policy",
         );
+      if (server?.sandbox !== undefined) {
+        // Typed as "podman", but checked here too: the controller refuses
+        // any other provider by itself.
+        if ((server.sandbox as unknown) !== "podman")
+          throw new Error(
+            "A server-chosen sandbox can only be This machine (container)",
+          );
+        if (!server.descendantPolicy)
+          throw new Error(
+            "A server-chosen sandbox needs a server-built descendant policy",
+          );
+        if (input.runner)
+          throw new Error("Choose either a sandbox or a Runner for the child");
+      }
       if (automationPolicy) {
         if (parent.automationId !== automationPolicy.automationId)
           throw new Error(
@@ -459,6 +478,11 @@ export function createWorkflowSessionController(
             throw new Error(
               "Descendant policy allows a Runner the automation does not",
             );
+          // Only an incident agent may be put in This machine (container).
+          if (server.sandbox !== undefined && !built.incident)
+            throw new Error(
+              "A server-chosen sandbox is only for an incident agent",
+            );
           descendantPolicy = {
             ...built,
             mcpServers: [...built.mcpServers],
@@ -521,6 +545,7 @@ export function createWorkflowSessionController(
         accountId: inherit ? parent.accountId : undefined,
         mcpServers: inheritedMcp,
         runner: input.runner,
+        ...(server?.sandbox ? { sandbox: server.sandbox } : {}),
         ...(descendantPolicy
           ? { automationDescendantPolicy: descendantPolicy }
           : {}),

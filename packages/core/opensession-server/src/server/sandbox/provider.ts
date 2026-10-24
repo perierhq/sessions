@@ -69,6 +69,10 @@ export interface SandboxSessionSpec {
    * verification. Skips templates, private seed files, runner bootstrap,
    * dial-back, and repository lifecycle hooks. */
   sourceVerification?: boolean;
+  /** `false` skips the repository's private seed files even in an
+   *  interactive Sandbox. Incident agents read untrusted incident text, so
+   *  their Sandboxes never get them. */
+  seedPrivateFiles?: boolean;
   /** A workspace checkpoint on origin (sandbox/checkpoint.ts) to restore when
    * this ensure() materializes a FRESH workspace: the branch lands on the
    * checkpoint's head with its uncommitted changes in place. A workspace

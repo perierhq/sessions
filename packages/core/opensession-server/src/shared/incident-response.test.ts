@@ -57,6 +57,9 @@ describe("incident response wire types", () => {
     expect(describeWorkspace({ kind: "sandbox", provider: "daytona" })).toBe(
       "Runs in the daytona sandbox",
     );
+    expect(describeWorkspace({ kind: "sandbox", provider: "podman" })).toBe(
+      "Runs in a container on this server",
+    );
   });
   test("decisions include the manual rollback; templates are shared", () => {
     expect(OWNER_DECISIONS).toContain("roll-back");

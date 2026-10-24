@@ -239,9 +239,10 @@ export type AgentWorkspace =
   | { kind: "host"; user: string };
 
 export function describeWorkspace(w: AgentWorkspace): string {
-  return w.kind === "sandbox"
-    ? `Runs in the ${w.provider} sandbox`
-    : "Runs on this server, not in a sandbox";
+  if (w.kind === "host") return "Runs on this server, not in a sandbox";
+  return w.provider === "podman"
+    ? "Runs in a container on this server"
+    : `Runs in the ${w.provider} sandbox`;
 }
 
 export type CancelReason =

@@ -1,9 +1,10 @@
-// Where an incident agent works: the project's sandbox. The host path is
-// experimental and off by default: only with OPENSESSION_INCIDENT_HOST_AGENTS=1
-// may an agent without a sandbox work in an ordinary worktree on this
-// server, its shell commands run as a separate low-privilege system user
-// (the incident agent user) that can write the worktrees but cannot read the
-// Sessions state directory, and only when that user is set up
+// Where an incident agent works: the project's sandbox, else This machine
+// (container) when it is Ready. The host path is experimental and off by
+// default: only with OPENSESSION_INCIDENT_HOST_AGENTS=1, and only when the
+// container sandbox is not Ready, may an agent work in an ordinary worktree
+// on this server, its shell commands run as a separate low-privilege system
+// user (the incident agent user) that can write the worktrees but cannot
+// read the Sessions state directory, and only when that user is set up
 // (docs/incident-host-agents.md). Otherwise the agent does not start.
 //
 // The readiness probe runs only when called, never at import, and every
@@ -13,6 +14,8 @@ import { dirname } from "node:path";
 import type { AgentWorkspace } from "../../../shared/incident-response";
 import { legacyCatalogDirectory } from "../../catalog-documents";
 import { configuredPaths } from "../../config";
+import { resolveRequestedSandbox } from "../../sandbox/config";
+import { sandboxConnectionReady } from "../../sandbox/connections";
 import { resolveInteractiveSandbox } from "../../sandbox/defaults";
 import {
   SYSTEMD_USER_RUNTIME,
@@ -220,17 +223,31 @@ export async function hostAgentUserProblem(
   return problem;
 }
 
+/** Whether This machine (container) is qualified and Ready, and a session
+ *  for `project` on `model` could be created in it now. */
+export function podmanReadyForIncident(
+  project: string,
+  model: string,
+): boolean {
+  return (
+    sandboxConnectionReady("podman") &&
+    resolveRequestedSandbox("podman", project, model).ok
+  );
+}
+
 /**
  * The workspace for an incident agent: the project's sandbox when it has
- * one, whatever the host offers; otherwise, only with the experimental host
- * path turned on, this server as the incident agent user; otherwise an error
- * the incident shows as a setup problem.
+ * one, whatever the host offers; otherwise This machine (container) when it
+ * is Ready; otherwise, only with the experimental host path turned on, this
+ * server as the incident agent user; otherwise an error the incident shows
+ * as a setup problem.
  */
 export async function incidentWorkspaceFor(
   project: string,
   model: string,
   deps: {
     sandbox?: typeof resolveInteractiveSandbox;
+    podmanReady?: (project: string, model: string) => boolean;
     hostProblem?: () => Promise<string | null>;
     hostEnabled?: () => boolean;
     automationUser?: string;
@@ -241,6 +258,8 @@ export async function incidentWorkspaceFor(
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.provider)
     return { kind: "sandbox", provider: resolved.provider };
+  if ((deps.podmanReady ?? podmanReadyForIncident)(project, model))
+    return { kind: "sandbox", provider: "podman" };
   if (!(deps.hostEnabled ?? incidentHostAgentsEnabled)())
     return { error: NO_SANDBOX };
   const problem = await (deps.hostProblem ?? (() => hostAgentUserProblem()))();

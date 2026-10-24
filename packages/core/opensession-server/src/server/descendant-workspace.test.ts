@@ -6,6 +6,7 @@ import {
   HOST_WORKTREE_MISUSE,
   PODMAN_DESCENDANT_REFUSED,
   descendantBashRunAs,
+  descendantSeedsPrivateFiles,
 } from "./descendant-workspace";
 import { assertHostAgentReady } from "./incidents/response/host-agents";
 import type { AutomationDescendantPolicy } from "./types";
@@ -68,13 +69,13 @@ describe("descendant workspace", () => {
     expect(descendantBashRunAs(undefined, {}, ISOLATION)).toBeUndefined();
   });
 
-  test("no descendant may run in This machine (container)", () => {
+  test("only an incident agent may run in This machine (container)", () => {
     // Checked at create before anything is written, before the opening turn
-    // and before every later turn, so a podman sandbox is never ensured.
-    for (const policy of [descendant, hostAgent])
-      expect(() =>
-        descendantBashRunAs(policy, { sandbox: "podman" }, ISOLATION),
-      ).toThrow(PODMAN_DESCENDANT_REFUSED);
+    // and before every later turn, so a podman sandbox is never ensured for
+    // any other descendant.
+    expect(() =>
+      descendantBashRunAs(descendant, { sandbox: "podman" }, ISOLATION),
+    ).toThrow(PODMAN_DESCENDANT_REFUSED);
     expect(() =>
       descendantBashRunAs(
         descendant,
@@ -82,6 +83,25 @@ describe("descendant workspace", () => {
         ISOLATION,
       ),
     ).toThrow(PODMAN_DESCENDANT_REFUSED);
+    // An incident agent works there with its bash in the container.
+    expect(
+      descendantBashRunAs(
+        { ...descendant, incident },
+        { sandbox: "podman" },
+        ISOLATION,
+      ),
+    ).toBeUndefined();
+    expect(
+      descendantBashRunAs(
+        { ...descendant, incident: { ...incident, role: "verifier" } },
+        { sandbox: "podman" },
+        ISOLATION,
+      ),
+    ).toBeUndefined();
+    // ...but never with a host user as well.
+    expect(() =>
+      descendantBashRunAs(hostAgent, { sandbox: "podman" }, ISOLATION),
+    ).toThrow(HOST_WORKTREE_MISUSE);
     expect(
       descendantBashRunAs(descendant, { sandbox: "daytona" }, ISOLATION),
     ).toBeUndefined();
@@ -89,6 +109,26 @@ describe("descendant workspace", () => {
     expect(
       descendantBashRunAs(undefined, { sandbox: "podman" }, ISOLATION),
     ).toBeUndefined();
+  });
+
+  test("a binding without an incident and role is not an incident agent", () => {
+    for (const forged of [
+      {},
+      { incidentId: "", role: "investigator" },
+      { incidentId: "inc-1", role: "coordinator" },
+      { incidentId: 7, role: "investigator" },
+    ])
+      expect(() =>
+        descendantBashRunAs(
+          {
+            ...descendant,
+            incident:
+              forged as unknown as AutomationDescendantPolicy["incident"],
+          },
+          { sandbox: "podman" },
+          ISOLATION,
+        ),
+      ).toThrow(PODMAN_DESCENDANT_REFUSED);
   });
 
   test("the host path needs the configured user, ready right now", async () => {
@@ -106,5 +146,24 @@ describe("descendant workspace", () => {
     await expect(
       assertHostAgentReady("root", ISOLATION, async () => null),
     ).rejects.toThrow(ISOLATION);
+  });
+});
+
+describe("descendant private seed files", () => {
+  test("an incident agent's Sandbox gets none", () => {
+    expect(descendantSeedsPrivateFiles({ ...descendant, incident })).toBe(
+      false,
+    );
+    expect(
+      descendantSeedsPrivateFiles({
+        ...descendant,
+        incident: { ...incident, role: "verifier" },
+      }),
+    ).toBe(false);
+  });
+
+  test("other sessions keep the default", () => {
+    expect(descendantSeedsPrivateFiles(undefined)).toBe(true);
+    expect(descendantSeedsPrivateFiles(descendant)).toBe(true);
   });
 });

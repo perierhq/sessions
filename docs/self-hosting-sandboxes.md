@@ -611,6 +611,18 @@ checks. Run the server
 as a dedicated user with nothing else on it, and do not use host-local
 sessions on a server whose container sandboxes must stay isolated.
 
+**Incident agents.** Of the sessions an automation starts, only incident
+agents may run here, and both roles may: the investigator and the verifier
+(without a workspace the fix loop cannot verify a candidate when the host
+path is off). The verifier stays read-only by its tool policy: its access
+profile is locked to ask mode, so it has no edit or write tools and its bash
+is read-only. Every other automation-spawned session, and automation runs
+themselves, are refused. An incident agent starts here when its project has
+no default sandbox and This machine (container) is Ready, before the
+experimental host path ([incident-host-agents.md](incident-host-agents.md)).
+See [Security posture](#security-posture) for what it holds and what it can
+reach.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this
@@ -620,3 +632,24 @@ and short-lived workload identity leases enter it; model credentials, the
 instance config, other users' credentials, and the session store do not. Portal routes forward-authenticate every request
 against Open Session before proxying. Portals inherit the instance's team
 boundary; there is no narrower per-session ACL yet.
+
+**Incident agents.** An incident agent's Sandbox is treated as interactive:
+it does not get the automation trust profile. The repository's setup hooks
+run in it, and it holds the run's GitHub token, the repository clone
+credential and workload identity leases. Its public egress is open. The
+agent also reads untrusted incident text (signal payloads, logs, error
+messages), so a prompt injection in that text could make it send those
+credentials out. The repository's private seed files are kept out of
+incident agents' Sandboxes for this reason. Scope the GitHub token the
+instance uses to the repositories incident agents work on.
+
+In This machine (container) the agent gets the container's firewall: this
+host, the tailnet (CGNAT range), private ranges and the cloud metadata
+address are blocked; everything else on the public internet is reachable.
+The incident access profile's host allowlist is not enforced on the agent's
+raw network traffic; `web_fetch` is still held to that allowlist by the
+server. The same holds on other providers: outside automation runs no
+provider applies a domain allowlist, so an incident agent in Daytona, for
+example, also has open public egress.
+
+Follow-up: a domain-allowlist egress proxy for incident agents.

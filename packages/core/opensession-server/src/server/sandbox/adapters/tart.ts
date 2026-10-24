@@ -1234,9 +1234,12 @@ export class TartProvider implements SandboxProvider {
         repoId: repo.id,
         trustProfile: trust.trustProfile,
       },
-      spec.restoreCheckpoint
-        ? { restoreCheckpoint: spec.restoreCheckpoint }
-        : {},
+      {
+        seedPrivateFiles: spec.seedPrivateFiles !== false,
+        ...(spec.restoreCheckpoint
+          ? { restoreCheckpoint: spec.restoreCheckpoint }
+          : {}),
+      },
     );
     mark("workspace ready");
     if (resuming) {

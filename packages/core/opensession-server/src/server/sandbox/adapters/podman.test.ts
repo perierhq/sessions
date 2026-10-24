@@ -22,6 +22,7 @@ import {
   podmanSandboxCwd,
   podmanSettings,
   podmanWorkspaceCwd,
+  podmanWorkspaceOptions,
 } from "./podman";
 
 // Disk checks here record a report and a check history other files read.
@@ -917,5 +918,29 @@ describe("podman driver", () => {
     const call = fake.calls.find(({ argv }) => argv[0] === "exec")!;
     expect(call.argv).toContain("-d");
     expect(call.argv).not.toContain("/usr/bin/timeout");
+  });
+});
+
+describe("podman workspace options", () => {
+  test("seeds the repository's private files by default", () => {
+    expect(podmanWorkspaceOptions({ sessionId: "bks-1" })).toEqual({
+      seedPrivateFiles: true,
+      runLifecycleHooks: true,
+    });
+  });
+
+  test("skips them when the spec opts out, as for an incident agent", () => {
+    const checkpoint = { ref: "refs/x", commit: "abc", branch: "fix" };
+    expect(
+      podmanWorkspaceOptions({
+        sessionId: "bks-1",
+        seedPrivateFiles: false,
+        restoreCheckpoint: checkpoint,
+      }),
+    ).toEqual({
+      seedPrivateFiles: false,
+      runLifecycleHooks: true,
+      restoreCheckpoint: checkpoint,
+    });
   });
 });
