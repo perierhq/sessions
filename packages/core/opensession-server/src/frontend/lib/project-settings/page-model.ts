@@ -72,7 +72,7 @@ export function checklistModel(
   // In the order the rows read: the blocking step, the other to-dos, then
   // the ready ones. A step the server didn't send counts as a to-do.
   const isStep = (s: ReadinessStep) =>
-    (READINESS_STEP_IDS as readonly string[]).includes(s.id);
+    READINESS_STEP_IDS.some((id) => id === s.id);
   const missing = READINESS_STEP_IDS.filter(
     (id) => !r.steps.some((s) => s.id === id),
   );

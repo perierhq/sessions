@@ -139,8 +139,7 @@ export class AppRouteController {
   private rewriteLegacyPath(): void {
     const { pathname, search, hash } = this.browser.location;
     const current = legacyRoutePath(pathname);
-    if (current)
-      this.canonicalizePath(`${current}${search}${hash}`);
+    if (current) this.canonicalizePath(`${current}${search}${hash}`);
   }
 
   snapshot(): RouteSnapshot {

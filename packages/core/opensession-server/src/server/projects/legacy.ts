@@ -491,8 +491,7 @@ export function legacyEnvironment(): LegacyEnvironment {
     reviewsDefault:
       o.reviewsDefault ?? (() => globalRoleDefault("reviews") ?? null),
     setReviewsDefault:
-      o.setReviewsDefault ??
-      ((id) => void setGlobalRoleDefault("reviews", id)),
+      o.setReviewsDefault ?? ((id) => void setGlobalRoleDefault("reviews", id)),
   };
 }
 

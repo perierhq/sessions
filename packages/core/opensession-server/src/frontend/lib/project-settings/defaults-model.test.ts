@@ -36,7 +36,7 @@ describe("roleScopeCopy", () => {
     expect(roleScopeCopy("verifier", PROJECT_LIST, {})).toBe("All 3 projects");
   });
 
-  test("every project setting its own says so, not \"No project\"", () => {
+  test('every project setting its own says so, not "No project"', () => {
     const all = Object.fromEntries(
       PROJECT_LIST.map((p) => [p.id, ["reviews" as const]]),
     );

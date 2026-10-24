@@ -41,8 +41,13 @@ export function splitNames(
     (a, b) => b.length - a.length,
   );
   if (!hyphenated.length) return [{ text, name: false }];
-  const escaped = hyphenated.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`(?<![\\w-])(?:${escaped.join("|")})(?![\\w-])`, "g");
+  const escaped = hyphenated.map((n) =>
+    n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const pattern = new RegExp(
+    `(?<![\\w-])(?:${escaped.join("|")})(?![\\w-])`,
+    "g",
+  );
   const out: Array<{ text: string; name: boolean }> = [];
   let at = 0;
   for (const match of text.matchAll(pattern)) {
