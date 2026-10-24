@@ -23,7 +23,6 @@ export const Feed = deferredExport(panes, "Feed");
 export const Goals = deferredExport(panes, "Goals");
 export const IncidentsPane = deferredExport(panes, "IncidentsPane");
 export const Issues = deferredExport(panes, "Issues");
-export const ProjectSettingsPage = deferredExport(panes, "ProjectSettingsPage");
 export const Prs = deferredExport(panes, "Prs");
 export const Reports = deferredExport(panes, "Reports");
 export const Reviews = deferredExport(panes, "Reviews");

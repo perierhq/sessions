@@ -23,6 +23,7 @@ import {
   sandboxProviderLabel,
 } from "../../lib/ready-sandbox-providers";
 import { Button } from "../../ui/button";
+import { PlainButton } from "../../ui/plain-button";
 import { cn } from "../../ui/cn";
 import { Input } from "../../ui/input";
 import { OptionSelect, Select } from "../../ui/select";
@@ -311,13 +312,12 @@ export function DefaultsPanel({
       <SettingsHint>
         Sandbox providers are connected in{" "}
         {onOpenSandboxes ? (
-          <button
-            type="button"
-            className="relative cursor-pointer border-0 bg-transparent p-0 text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+          <PlainButton
+            className="relative text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
             onClick={onOpenSandboxes}
           >
             Organization → Sandboxes
-          </button>
+          </PlainButton>
         ) : (
           "Organization → Sandboxes"
         )}
@@ -364,8 +364,7 @@ export function DefaultsPanel({
                   <span className="min-w-0 [overflow-wrap:anywhere]">
                     {host}
                   </span>
-                  <button
-                    type="button"
+                  <PlainButton
                     aria-label={`Remove ${host}`}
                     className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-faint before:absolute before:-inset-2.5 before:content-[''] hover:bg-hover hover:text-fg"
                     onClick={() =>
@@ -375,7 +374,7 @@ export function DefaultsPanel({
                     }
                   >
                     <IconX size={16} />
-                  </button>
+                  </PlainButton>
                 </li>
               ))}
             </ul>

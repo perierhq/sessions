@@ -48,6 +48,7 @@ import {
   docTitle,
   DEFAULT_DOC_TITLE,
 } from "../lib/brand";
+import { PlainButton } from "../ui/plain-button";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { cn } from "../ui/cn";
@@ -829,8 +830,7 @@ function AutomationPlace({
   return (
     <>
       {copy}{" "}
-      <button
-        type="button"
+      <PlainButton
         className={cn(
           LINK,
           "relative border-0 bg-transparent p-0 text-supporting before:absolute before:-inset-x-1 before:-inset-y-3 before:content-['']",
@@ -842,7 +842,7 @@ function AutomationPlace({
         }
       >
         Change
-      </button>
+      </PlainButton>
     </>
   );
 }

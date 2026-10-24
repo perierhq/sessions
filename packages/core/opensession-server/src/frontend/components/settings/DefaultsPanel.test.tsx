@@ -118,6 +118,7 @@ mock.module("../../ui/toast", () => ({
 const { DefaultsPanel } = await import("./DefaultsPanel");
 const { OptionSelect, Select } = await import("../../ui/select");
 const { Button } = await import("../../ui/button");
+const { PlainButton } = await import("../../ui/plain-button");
 const { Input } = await import("../../ui/input");
 const { SettingLinkRow } = await import("./incidents/SettingLinkRow");
 
@@ -304,6 +305,7 @@ test("every button and select trigger is a 44px target on a phone", async () => 
   const controls = elements(tree.output()).filter(
     (e) =>
       e.type === "button" ||
+      e.type === PlainButton ||
       e.type === Button ||
       e.type === OptionSelect ||
       e.type === Select.Trigger,

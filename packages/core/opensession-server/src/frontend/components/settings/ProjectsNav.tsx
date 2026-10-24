@@ -9,6 +9,7 @@ import {
   SETTINGS_NAV_ROW,
 } from "../../lib/settings-classes";
 import { matchProjectSections, matchProjects } from "../../lib/settings-search";
+import { PlainButton } from "../../ui/plain-button";
 import { cn } from "../../ui/cn";
 import { IconChevronRight } from "../icons";
 import { RepoTile } from "../RepoTile";
@@ -49,8 +50,7 @@ export function ProjectNavRows({
         const open = active?.project === item.id;
         return (
           <div key={item.id}>
-            <button
-              type="button"
+            <PlainButton
               className={SETTINGS_NAV_ROW}
               data-active={(open && !active?.section) || undefined}
               aria-current={open && !active?.section ? "page" : undefined}
@@ -61,11 +61,11 @@ export function ProjectNavRows({
               </span>
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
               <StatusPhrase item={item} />
-            </button>
+            </PlainButton>
             {open && !query && (
               <div className="flex flex-col">
                 {PROJECT_SECTIONS.map(([id, label]) => (
-                  <button
+                  <PlainButton
                     key={id}
                     type="button"
                     className={cn(SETTINGS_NAV_ROW, "pl-[38px] phone:min-h-11")}
@@ -76,7 +76,7 @@ export function ProjectNavRows({
                     onClick={() => onOpen(item.id, id)}
                   >
                     {label}
-                  </button>
+                  </PlainButton>
                 ))}
               </div>
             )}
@@ -84,7 +84,7 @@ export function ProjectNavRows({
         );
       })}
       {sectionHits.map((hit) => (
-        <button
+        <PlainButton
           key={`${hit.project}:${hit.section}`}
           type="button"
           className={SETTINGS_NAV_ROW}
@@ -101,7 +101,7 @@ export function ProjectNavRows({
               </span>
             )}
           </span>
-        </button>
+        </PlainButton>
       ))}
     </>
   );
@@ -151,7 +151,7 @@ export function ProjectSheetRows({
   return (
     <>
       {rows.map((row) => (
-        <button
+        <PlainButton
           key={row.key}
           type="button"
           className={cn(
@@ -177,7 +177,7 @@ export function ProjectSheetRows({
             </span>
           )}
           <IconChevronRight size={20} className="shrink-0 text-faint" />
-        </button>
+        </PlainButton>
       ))}
     </>
   );

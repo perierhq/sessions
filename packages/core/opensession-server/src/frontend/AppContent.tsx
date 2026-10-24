@@ -24,7 +24,6 @@ import {
   Goals,
   IncidentsPane,
   Issues,
-  ProjectSettingsPage,
   Prs,
   Reports,
   Reviews,
@@ -961,9 +960,6 @@ export function AppContent({
     navigate({ view: "session", id });
   };
   const currentTheme = effectiveTheme();
-  // One "<project> settings" palette action per project; the Settings nav
-  // reads the same list from the same cache.
-  const projectList = useProjects();
   const commandActions = buildAppCommandActions({
     currentSession,
     currentTheme,
@@ -982,7 +978,7 @@ export function AppContent({
     setDeskOverlay,
     toggleSidebarCollapsed,
     showToast,
-    projects: projectList.data,
+    projects: useProjects().data,
   });
   const openSession = (id: string, created?: UnifiedSession | null) => {
     // Opening a session means foregrounding its chat tab. Callers inside a
@@ -1296,11 +1292,7 @@ export function AppContent({
                       ? route.view
                       : undefined
                 }
-                project={
-                  route.view === "projectSettings"
-                    ? { project: route.project, section: route.section }
-                    : undefined
-                }
+                project={route.view === "projectSettings" ? route : undefined}
                 onShowRoot={() => navigate({ view: "settings" })}
                 onSelect={(key) =>
                   isToolView(key)
@@ -1327,24 +1319,6 @@ export function AppContent({
                     selectedId={route.id}
                     onSelect={(id) =>
                       navigate({ view: "goals", id: id || undefined })
-                    }
-                  />
-                ) : route.view === "projectSettings" ? (
-                  <ProjectSettingsPage
-                    // A new project is a new page: its scroll and pending
-                    // edits do not carry over.
-                    key={route.project}
-                    project={route.project}
-                    section={route.section}
-                    onOpenSection={(section) =>
-                      navigate(
-                        {
-                          view: "projectSettings",
-                          project: route.project,
-                          section,
-                        },
-                        { replace: true },
-                      )
                     }
                   />
                 ) : null}

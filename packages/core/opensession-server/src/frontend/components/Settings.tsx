@@ -47,6 +47,7 @@ import { MyAccountsPanel } from "./MyAccounts";
 import { AuditPanel } from "./settings/AuditPanel";
 import { AuthenticationPanel } from "./settings/AuthenticationPanel";
 import { DefaultsPanel } from "./settings/DefaultsPanel";
+import { ProjectSettingsPage } from "./settings/project/ProjectSettingsPage";
 import { DeploysPanel } from "./settings/DeploysPanel";
 import { DownloadsPanel } from "./settings/DownloadsPanel";
 import { GeneralPanel } from "./settings/GeneralPanel";
@@ -311,8 +312,7 @@ export function Settings({
    * Undefined = no explicit section: desktop defaults to Account, while the
    * phone sheet stays on its root list of sections. */
   section?: SettingsSectionKey;
-  /** The open project's page, when the route is one: its panel comes in
-   *  through `children`, like a tool's. */
+  /** The open project's page, when the route is one. */
   project?: ActiveProject;
   /** Navigate to a section — App maps tool keys to their own routes. */
   onSelect: (key: SettingsSectionKey) => void;
@@ -365,17 +365,17 @@ export function Settings({
 
   // A bare /settings lands on Account, the first personal section, on desktop.
   // Keep the section out of the URL so phones can stay at the nav root. A
-  // project's page is no section at all.
-  const active: SettingsSectionKey | null = project
-    ? null
-    : (section ?? "myAccounts");
+  // project's page is no section, so no section row is marked on it.
+  const active = section ?? "myAccounts";
   const shown = filterGroups(groups, query, projects);
   const firstHit = shown[0]?.hits[0]?.item;
-  const tool = active !== null && TOOL_SECTIONS.has(active);
+  const tool = !project && TOOL_SECTIONS.has(active);
 
   return (
     <div className={cn(SETTINGS_PAGE, SETTINGS_LEADING)}>
-      {!tool && <div aria-hidden="true" className={SETTINGS_DRAG_HANDLE} />}
+      {!TOOL_SECTIONS.has(active) && (
+        <div aria-hidden="true" className={SETTINGS_DRAG_HANDLE} />
+      )}
       {/* Back and search stay put; only the section list scrolls, so neither
 			    they nor the account footer are lost once the list outgrows the nav. */}
       <aside className={SETTINGS_NAV}>
@@ -405,7 +405,7 @@ export function Settings({
                 <button
                   key={s.key}
                   className={SETTINGS_NAV_ROW}
-                  data-active={active === s.key || undefined}
+                  data-active={(!project && active === s.key) || undefined}
                   onClick={() => onSelect(s.key)}
                 >
                   <span className={SETTINGS_NAV_ICON}>{s.icon}</span>
@@ -445,8 +445,10 @@ export function Settings({
         data-settings-scroll
         className={cn(SETTINGS_CONTENT, tool && SETTINGS_CONTENT_TOOL)}
       >
-        {active === null ? (
-          <div className={SETTINGS_PANEL_FRAME}>{children}</div>
+        {project ? (
+          <div className={SETTINGS_PANEL_FRAME}>
+            <ProjectPane project={project} onOpenProject={onOpenProject} />
+          </div>
         ) : tool ? (
           <SectionPanel
             section={active}
@@ -476,6 +478,25 @@ export function Settings({
         )}
       </div>
     </div>
+  );
+}
+
+/** A project's settings page. A new project is a new page: its scroll and
+ *  pending edits do not carry over. */
+function ProjectPane({
+  project,
+  onOpenProject,
+}: {
+  project: ActiveProject;
+  onOpenProject: (project: string, section?: ProjectSectionId) => void;
+}) {
+  return (
+    <ProjectSettingsPage
+      key={project.project}
+      project={project.project}
+      section={project.section}
+      onOpenSection={(section) => onOpenProject(project.project, section)}
+    />
   );
 }
 
@@ -516,8 +537,7 @@ function MobileSettings({
   const [query, setQuery] = useState("");
   const shown = filterGroups(groups, query, projects);
   const firstHit = shown[0]?.hits[0]?.item;
-  // A project's page is a detail page too, keyed "project" here; its panel
-  // comes in through `children`.
+  // A project's page is a detail page too, keyed "project" here.
   const current: SettingsSectionKey | "project" | null = project
     ? "project"
     : (section ?? null);
@@ -526,22 +546,23 @@ function MobileSettings({
   const [lastSection, setLastSection] = useState<
     SettingsSectionKey | "project" | null
   >(current);
-  const [lastProjectLabel, setLastProjectLabel] = useState<string | null>(null);
-  const projectLabel = project
-    ? (projects.find((p) => p.id === project.project)?.label ?? project.project)
-    : null;
+  const [lastProject, setLastProject] = useState<ActiveProject | null>(
+    project ?? null,
+  );
   useEffect(() => {
     if (current) setLastSection(current);
   }, [current]);
   useEffect(() => {
-    if (projectLabel) setLastProjectLabel(projectLabel);
-  }, [projectLabel]);
+    if (project) setLastProject(project);
+  }, [project]);
 
   const detail = current;
   const shownSection = detail ?? lastSection;
+  const shownProject = project ?? lastProject;
   const shownLabel =
     shownSection === "project"
-      ? (projectLabel ?? lastProjectLabel)
+      ? (projects.find((p) => p.id === shownProject?.project)?.label ??
+        shownProject?.project)
       : SECTIONS.find((s) => s.key === shownSection)?.label;
   const pageEase =
     "transition-transform duration-[var(--dur-lg)] ease-[var(--ease)]";
@@ -669,7 +690,14 @@ function MobileSettings({
               {shownSection && (
                 <div data-settings-scroll className={SETTINGS_CONTENT_SHEET}>
                   {shownSection === "project" ? (
-                    <div className={SETTINGS_PANEL_FRAME_SHEET}>{children}</div>
+                    <div className={SETTINGS_PANEL_FRAME_SHEET}>
+                      {shownProject && (
+                        <ProjectPane
+                          project={shownProject}
+                          onOpenProject={onOpenProject}
+                        />
+                      )}
+                    </div>
                   ) : TOOL_SECTIONS.has(shownSection) ? (
                     <SectionPanel
                       section={shownSection}

@@ -1,3 +1,4 @@
+import { PlainButton } from "../../ui/plain-button";
 import { useEffect, useRef, useState } from "react";
 import type {
   SandboxConnectionInfo,
@@ -1240,23 +1241,9 @@ export function SandboxesPanel({
         title="Sandboxes"
         description="Connect compute you already pay for. Each session gets an isolated sandbox; project snapshots make new sandboxes start faster."
       />
-      <SettingsHint className="mt-0 mb-2">
-        Each project picks its sandbox on its own page. The default is in{" "}
-        {onOpenDefaults ? (
-          <button
-            type="button"
-            className="relative cursor-pointer border-0 bg-transparent p-0 text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
-            onClick={onOpenDefaults}
-          >
-            Projects → Defaults
-          </button>
-        ) : (
-          "Projects → Defaults"
-        )}
-      </SettingsHint>
       {connectionsError && <InlineAlert>{connectionsError}</InlineAlert>}
       {environmentsError && <InlineAlert>{environmentsError}</InlineAlert>}
-      <SettingsGroupLabel>Connections</SettingsGroupLabel>
+      <SettingsGroupLabel className="mt-0">Connections</SettingsGroupLabel>
       <div className="grid gap-3">
         {loading && (
           <SettingCardSkeleton
@@ -1275,8 +1262,18 @@ export function SandboxesPanel({
         ))}
       </div>
       <SettingsHint>
-        A choice in the new session menu beats the project's sandbox, and a
-        project's sandbox beats the default.
+        Each project picks its sandbox on its own page, and the default is in{" "}
+        {onOpenDefaults ? (
+          <PlainButton
+            className="relative text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+            onClick={onOpenDefaults}
+          >
+            Projects → Defaults
+          </PlainButton>
+        ) : (
+          "Projects → Defaults"
+        )}
+        . A choice in the new session menu beats both.
       </SettingsHint>
       {reusableEnvironments.length > 0 && (
         <>
