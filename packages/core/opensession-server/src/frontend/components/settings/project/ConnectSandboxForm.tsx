@@ -1,5 +1,9 @@
 import { useId, useState } from "react";
-import { connectSandbox } from "../../../lib/api/sandboxes";
+import {
+  connectSandbox,
+  fetchSandboxConnections,
+} from "../../../lib/api/sandboxes";
+import { waitForConnection } from "../../../lib/project-settings/connect";
 import { patchProjectDefaults } from "../../../lib/api/projects";
 import { errorMessage } from "../../../lib/error-message";
 import {
@@ -55,13 +59,30 @@ export function ConnectSandboxForm({
   const connect = async () => {
     setBusy(true);
     try {
-      await connectSandbox(provider, {
+      const first = await connectSandbox(provider, {
         apiKey: apiKey.trim(),
         settings: provider === "daytona" ? { region } : {},
       });
-      if (!hasGlobalDefault) await patchProjectDefaults({ sandbox: provider });
-      toast(`${name} connection check started`, { variant: "success" });
       setApiKey("");
+      onConnected();
+      // Only a connection that passed its check becomes the global
+      // default; until then nothing else changes.
+      const result = await waitForConnection(provider, first, {
+        fetch: fetchSandboxConnections,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      if (result?.state === "ready") {
+        if (!hasGlobalDefault)
+          await patchProjectDefaults({ sandbox: provider });
+        toast(`${name} is connected`, { variant: "success" });
+      } else if (result) {
+        toast(
+          `${name} couldn't connect. ${result.qualification?.failureSummary ?? "See Organization → Sandboxes"}`,
+          { variant: "error" },
+        );
+      } else {
+        toast(`${name} is still being checked. See Organization → Sandboxes`);
+      }
       onConnected();
     } catch (error) {
       toast(errorMessage(error, `Couldn't connect ${name}`), {
@@ -141,7 +162,7 @@ export function ConnectSandboxForm({
           className={CONNECT_BUTTON}
           disabled={busy}
         >
-          {`Connect ${name}`}
+          {busy ? `Checking ${name}` : `Connect ${name}`}
         </Button>
         {/* Under the key field: the grid's next row, first column (right
             after the field on a phone). */}
@@ -153,7 +174,7 @@ export function ConnectSandboxForm({
       </div>
       {!hasGlobalDefault && (
         <p className="m-0 text-meta text-faint">
-          {`Once connected, ${name} becomes the global default, so other projects can use it too`}
+          {`Once its check passes, ${name} becomes the global default, so other projects can use it too`}
         </p>
       )}
     </form>
