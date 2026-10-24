@@ -9,7 +9,10 @@
  */
 
 import { incidentAccessMcpForSession } from "./incidents/access/mcp";
-import { descendantBashRunAs } from "./descendant-workspace";
+import {
+  descendantBashRunAs,
+  descendantSeedsPrivateFiles,
+} from "./descendant-workspace";
 import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
@@ -2131,6 +2134,11 @@ export async function maybeLaunchSandboxedRun(
             }
           : {
               cwd: opts.cwd,
+              // An incident agent reads untrusted incident text: no private
+              // seed files in its Sandbox.
+              ...(descendantSeedsPrivateFiles(session.automationDescendantPolicy)
+                ? {}
+                : { seedPrivateFiles: false }),
               // Bind-mode containers mount attached repos too (a changed set
               // recreates the container); volume mode rejects them in ensure().
               attachedDirs: (session.attachedRepos || [])

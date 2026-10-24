@@ -41,6 +41,17 @@ export function isIncidentAgentPolicy(
 }
 
 /**
+ * Whether a descendant's Sandbox gets the repository's private seed files.
+ * Not for an incident agent: it reads untrusted incident text, so a prompt
+ * injection could send those files out over its open egress.
+ */
+export function descendantSeedsPrivateFiles(
+  policy: AutomationDescendantPolicy | undefined,
+): boolean {
+  return !policy?.incident;
+}
+
+/**
  * The user a descendant's bash runs as in a host worktree, or undefined when
  * it is not a descendant or works in a sandbox or on a Runner. Throws
  * `isolationMessage` for a descendant with none of those, and

@@ -577,14 +577,25 @@ async function defaultPrepare(ctx: PodmanPrepareContext): Promise<void> {
       repoId: repo.id,
       trustProfile: ctx.trust.trustProfile,
     },
-    {
-      seedPrivateFiles: true,
-      runLifecycleHooks: true,
-      ...(ctx.spec.restoreCheckpoint
-        ? { restoreCheckpoint: ctx.spec.restoreCheckpoint }
-        : {}),
-    },
+    podmanWorkspaceOptions(ctx.spec),
   );
+}
+
+/** How this provider sets up a fresh workspace: the repository's private
+ *  seed files unless the spec opts out (an incident agent), its lifecycle
+ *  hooks, and the checkpoint to restore. */
+export function podmanWorkspaceOptions(spec: SandboxSessionSpec): {
+  seedPrivateFiles: boolean;
+  runLifecycleHooks: boolean;
+  restoreCheckpoint?: { ref: string; commit: string; branch: string };
+} {
+  return {
+    seedPrivateFiles: spec.seedPrivateFiles !== false,
+    runLifecycleHooks: true,
+    ...(spec.restoreCheckpoint
+      ? { restoreCheckpoint: spec.restoreCheckpoint }
+      : {}),
+  };
 }
 
 /** Names for a pod this provider created, from its id. */

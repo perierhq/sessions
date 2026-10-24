@@ -6,6 +6,7 @@ import {
   HOST_WORKTREE_MISUSE,
   PODMAN_DESCENDANT_REFUSED,
   descendantBashRunAs,
+  descendantSeedsPrivateFiles,
 } from "./descendant-workspace";
 import { assertHostAgentReady } from "./incidents/response/host-agents";
 import type { AutomationDescendantPolicy } from "./types";
@@ -145,5 +146,24 @@ describe("descendant workspace", () => {
     await expect(
       assertHostAgentReady("root", ISOLATION, async () => null),
     ).rejects.toThrow(ISOLATION);
+  });
+});
+
+describe("descendant private seed files", () => {
+  test("an incident agent's Sandbox gets none", () => {
+    expect(descendantSeedsPrivateFiles({ ...descendant, incident })).toBe(
+      false,
+    );
+    expect(
+      descendantSeedsPrivateFiles({
+        ...descendant,
+        incident: { ...incident, role: "verifier" },
+      }),
+    ).toBe(false);
+  });
+
+  test("other sessions keep the default", () => {
+    expect(descendantSeedsPrivateFiles(undefined)).toBe(true);
+    expect(descendantSeedsPrivateFiles(descendant)).toBe(true);
   });
 });
