@@ -449,15 +449,13 @@ export const DECISION_NOTE: Partial<Record<OwnerDecision, AskNoteField>> = {
 };
 
 /** The note fields of a choice card's options, keyed by option label. */
-export function decisionNotes(
-  decisions: readonly OwnerDecision[],
-): Record<string, AskNoteField> {
-  const notes: Record<string, AskNoteField> = {};
-  for (const d of decisions) {
-    const field = DECISION_NOTE[d];
-    if (field) notes[DECISION_COPY[d].label] = field;
-  }
-  return notes;
+export function decisionNotes(decisions: readonly OwnerDecision[]) {
+  return Object.fromEntries(
+    decisions.flatMap((d) => {
+      const field = DECISION_NOTE[d];
+      return field ? [[DECISION_COPY[d].label, field] as const] : [];
+    }),
+  );
 }
 
 /** The decision an AskCard answer picked: the answer is one option's
