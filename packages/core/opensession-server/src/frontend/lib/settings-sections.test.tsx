@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { PROJECT_LIST } from "../../shared/project-settings-fixtures";
 import {
   SECTIONS,
   TOOL_SECTIONS,
+  projectPaletteActions,
   settingsPaletteActions,
 } from "./settings-sections";
 import { SETTINGS_KEYWORDS } from "./settings-search";
@@ -85,10 +87,34 @@ describe("settingsPaletteActions", () => {
   });
 });
 
-test("Incidents sits in Automation, after Goals", () => {
+test("Projects sits between Personal and Organization, with Defaults", () => {
+  const groups = [...new Set(SECTIONS.map((section) => section.group))];
+  expect(groups.slice(0, 3)).toEqual(["Personal", "Projects", "Organization"]);
+  expect(SECTIONS.find((s) => s.key === "projectDefaults")).toMatchObject({
+    label: "Defaults",
+    group: "Projects",
+  });
+  expect(TOOL_SECTIONS.has("projectDefaults")).toBe(false);
+});
+
+test("the old Incidents item is gone", () => {
   const keys = SECTIONS.map((section) => String(section.key));
-  const incidents = SECTIONS.find((s) => s.key === "incidentSettings");
-  expect(incidents).toMatchObject({ label: "Incidents", group: "Automation" });
-  expect(keys.indexOf("incidentSettings")).toBe(keys.indexOf("goals") + 1);
-  expect(TOOL_SECTIONS.has("incidentSettings")).toBe(true);
+  expect(keys).not.toContain("incidentSettings");
+  expect([...TOOL_SECTIONS].map(String)).not.toContain("incidentSettings");
+  expect(SECTIONS.map((s) => s.label)).not.toContain("Incidents");
+});
+
+test("the palette reaches Defaults and every project", () => {
+  expect(settingsPaletteActions().map((a) => a.section)).toContain(
+    "projectDefaults",
+  );
+  const actions = projectPaletteActions(PROJECT_LIST);
+  expect(actions.map((a) => [a.label, a.description, a.project])).toEqual([
+    ["acme-web settings", "Settings · Projects", "acme-web"],
+    ["acme-api settings", "Settings · Projects", "acme-api"],
+    ["docs-site settings", "Settings · Projects", "docs-site"],
+  ]);
+  const ids = actions.map((a) => a.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  for (const id of ids) expect(id.startsWith("settings-project-")).toBe(true);
 });

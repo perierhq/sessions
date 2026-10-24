@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
+import type { ProjectListItem } from "../../shared/project-settings";
 import { useIsPhone } from "../hooks/useIsPhone";
+import { useProjects } from "../hooks/useProjects";
 import { useScrollEdge } from "../hooks/useScrollEdge";
 import { cn } from "../ui/cn";
 import {
@@ -22,7 +24,14 @@ import {
   SETTINGS_NAV_ROW,
   SETTINGS_NAV_SEARCH,
 } from "../lib/settings-classes";
-import { matchSections, type SectionHit } from "../lib/settings-search";
+import type { ProjectSectionId } from "../lib/project-settings/page-model";
+import {
+  firstProjectHit,
+  matchProjectSections,
+  matchProjects,
+  matchSections,
+  type SectionHit,
+} from "../lib/settings-search";
 import {
   SECTIONS,
   TOOL_SECTIONS,
@@ -37,6 +46,7 @@ import { IconChevronLeft, IconChevronRight, IconSearch, IconX } from "./icons";
 import { MyAccountsPanel } from "./MyAccounts";
 import { AuditPanel } from "./settings/AuditPanel";
 import { AuthenticationPanel } from "./settings/AuthenticationPanel";
+import { DefaultsPanel } from "./settings/DefaultsPanel";
 import { DeploysPanel } from "./settings/DeploysPanel";
 import { DownloadsPanel } from "./settings/DownloadsPanel";
 import { GeneralPanel } from "./settings/GeneralPanel";
@@ -51,6 +61,11 @@ import { PapercutsPanel } from "./settings/PapercutsPanel";
 import { PreferencesPanel } from "./settings/PreferencesPanel";
 import { ShortcutsPanel } from "./settings/ShortcutsPanel";
 import { PrewarmingPanel } from "./settings/PrewarmingPanel";
+import {
+  ProjectNavRows,
+  ProjectSheetRows,
+  type ActiveProject,
+} from "./settings/ProjectsNav";
 import { ReposPanel } from "./settings/ReposPanel";
 import { SandboxesPanel } from "./settings/SandboxesPanel";
 import { StoragePanel } from "./settings/StoragePanel";
@@ -99,13 +114,28 @@ type Section = (typeof SECTIONS)[number];
 type SectionGroup = { group: string; items: Section[] };
 type FilteredGroup = { group: string; hits: SectionHit<Section>[] };
 
+/** The nav group that also lists every project under its Defaults row. */
+const PROJECTS_GROUP = "Projects";
+
 /** Groups with their non-matching rows dropped, and empty groups gone with
- *  them. An empty query filters nothing, so both surfaces render one list. */
-function filterGroups(groups: SectionGroup[], query: string): FilteredGroup[] {
+ *  them. An empty query filters nothing, so both surfaces render one list.
+ *  The Projects group stays while a project or one of its sections
+ *  matches, even when Defaults does not. */
+function filterGroups(
+  groups: SectionGroup[],
+  query: string,
+  projects: ProjectListItem[],
+): FilteredGroup[] {
   const out: FilteredGroup[] = [];
   for (const g of groups) {
     const hits = matchSections(g.items, query);
-    if (hits.length) out.push({ group: g.group, hits });
+    if (
+      hits.length ||
+      (g.group === PROJECTS_GROUP &&
+        (matchProjects(projects, query).length > 0 ||
+          matchProjectSections(projects, query).length > 0))
+    )
+      out.push({ group: g.group, hits });
   }
   return out;
 }
@@ -216,15 +246,25 @@ function NavSearch({
 function SectionPanel({
   section,
   onOpenOnboarding,
+  onSelect,
+  onOpenProject,
   children,
 }: {
   section: SettingsSectionKey;
   onOpenOnboarding: () => void;
+  onSelect: (key: SettingsSectionKey) => void;
+  onOpenProject: (project: string) => void;
   children?: React.ReactNode;
 }) {
   return (
     <>
       {TOOL_SECTIONS.has(section) && children}
+      {section === "projectDefaults" && (
+        <DefaultsPanel
+          onOpenProject={onOpenProject}
+          onOpenSandboxes={() => onSelect("sandboxes")}
+        />
+      )}
       {section === "notifications" && <NotificationsPanel />}
       {section === "preferences" && <PreferencesPanel />}
       {section === "shortcuts" && <ShortcutsPanel />}
@@ -257,7 +297,9 @@ function SectionPanel({
 export function Settings({
   onBack,
   section,
+  project,
   onSelect,
+  onOpenProject,
   onShowRoot,
   onOpenOnboarding,
   children,
@@ -267,8 +309,13 @@ export function Settings({
    * Undefined = no explicit section: desktop defaults to Account, while the
    * phone sheet stays on its root list of sections. */
   section?: SettingsSectionKey;
+  /** The open project's page, when the route is one: its panel comes in
+   *  through `children`, like a tool's. */
+  project?: ActiveProject;
   /** Navigate to a section — App maps tool keys to their own routes. */
   onSelect: (key: SettingsSectionKey) => void;
+  /** Open a project's settings page, at one of its sections. */
+  onOpenProject: (project: string, section?: ProjectSectionId) => void;
   /** Phone sheet's back-to-root (navigate to sectionless /settings). */
   onShowRoot?: () => void;
   onOpenOnboarding: () => void;
@@ -276,6 +323,7 @@ export function Settings({
   children?: React.ReactNode;
 }) {
   const isPhone = useIsPhone();
+  const projects = useProjects().data ?? [];
 
   // No page-level Esc handler: Esc belongs to whatever is focused (cancelling
   // an inline edit, closing a menu), not to the settings page itself — losing
@@ -301,7 +349,10 @@ export function Settings({
       <MobileSettings
         groups={groups}
         section={section}
+        project={project}
+        projects={projects}
         onSelect={onSelect}
+        onOpenProject={onOpenProject}
         onShowRoot={onShowRoot}
         onBack={onBack}
         onOpenOnboarding={onOpenOnboarding}
@@ -311,16 +362,18 @@ export function Settings({
     );
 
   // A bare /settings lands on Account, the first personal section, on desktop.
-  // Keep the section out of the URL so phones can stay at the nav root.
-  const active = section ?? "myAccounts";
-  const shown = filterGroups(groups, query);
+  // Keep the section out of the URL so phones can stay at the nav root. A
+  // project's page is no section at all.
+  const active: SettingsSectionKey | null = project
+    ? null
+    : (section ?? "myAccounts");
+  const shown = filterGroups(groups, query, projects);
   const firstHit = shown[0]?.hits[0]?.item;
+  const tool = active !== null && TOOL_SECTIONS.has(active);
 
   return (
     <div className={cn(SETTINGS_PAGE, SETTINGS_LEADING)}>
-      {!TOOL_SECTIONS.has(active) && (
-        <div aria-hidden="true" className={SETTINGS_DRAG_HANDLE} />
-      )}
+      {!tool && <div aria-hidden="true" className={SETTINGS_DRAG_HANDLE} />}
       {/* Back and search stay put; only the section list scrolls, so neither
 			    they nor the account footer are lost once the list outgrows the nav. */}
       <aside className={SETTINGS_NAV}>
@@ -334,7 +387,11 @@ export function Settings({
           ref={setSearchBar}
           value={query}
           onChange={setQuery}
-          onSubmit={() => firstHit && onSelect(firstHit.key)}
+          onSubmit={() => {
+            if (firstHit) return onSelect(firstHit.key);
+            const hit = firstProjectHit(projects, query);
+            if (hit) onOpenProject(hit.project, hit.section);
+          }}
           className={SETTINGS_NAV_SEARCH}
         />
         {/* The attribute is what useScrollEdge finds the scrollport by. */}
@@ -360,6 +417,14 @@ export function Settings({
                   </span>
                 </button>
               ))}
+              {g.group === PROJECTS_GROUP && (
+                <ProjectNavRows
+                  projects={projects}
+                  active={project ?? null}
+                  query={query}
+                  onOpen={onOpenProject}
+                />
+              )}
             </div>
           ))}
           {shown.length === 0 && (
@@ -376,13 +441,17 @@ export function Settings({
 			    padded reading column. */}
       <div
         data-settings-scroll
-        className={cn(
-          SETTINGS_CONTENT,
-          TOOL_SECTIONS.has(active) && SETTINGS_CONTENT_TOOL,
-        )}
+        className={cn(SETTINGS_CONTENT, tool && SETTINGS_CONTENT_TOOL)}
       >
-        {TOOL_SECTIONS.has(active) ? (
-          <SectionPanel section={active} onOpenOnboarding={onOpenOnboarding}>
+        {active === null ? (
+          <div className={SETTINGS_PANEL_FRAME}>{children}</div>
+        ) : tool ? (
+          <SectionPanel
+            section={active}
+            onOpenOnboarding={onOpenOnboarding}
+            onSelect={onSelect}
+            onOpenProject={onOpenProject}
+          >
             {children}
           </SectionPanel>
         ) : (
@@ -393,7 +462,12 @@ export function Settings({
                 : SETTINGS_PANEL_FRAME
             }
           >
-            <SectionPanel section={active} onOpenOnboarding={onOpenOnboarding}>
+            <SectionPanel
+              section={active}
+              onOpenOnboarding={onOpenOnboarding}
+              onSelect={onSelect}
+              onOpenProject={onOpenProject}
+            >
               {children}
             </SectionPanel>
           </div>
@@ -402,6 +476,11 @@ export function Settings({
     </div>
   );
 }
+
+/** A row of the phone sheet's grouped section list; its hairline starts
+ *  past the glyph and stops at the last row. */
+const SHEET_ROW =
+  "relative flex min-h-11 w-full items-center gap-3 border-0 bg-transparent px-3.5 py-3 text-left after:absolute after:bottom-0 after:left-[54px] after:right-0 after:h-px after:bg-divider-soft last:after:hidden active:bg-hover";
 
 /**
  * Phone Settings: a bottom sheet sliding up over the root page, with iOS-style
@@ -412,7 +491,10 @@ export function Settings({
 function MobileSettings({
   groups,
   section,
+  project,
+  projects,
   onSelect,
+  onOpenProject,
   onShowRoot,
   onBack,
   onOpenOnboarding,
@@ -420,27 +502,48 @@ function MobileSettings({
 }: {
   groups: SectionGroup[];
   section?: SettingsSectionKey;
+  project?: ActiveProject;
+  projects: ProjectListItem[];
   onSelect: (key: SettingsSectionKey) => void;
+  onOpenProject: (project: string, section?: ProjectSectionId) => void;
   onShowRoot?: () => void;
   onBack: () => void;
   onOpenOnboarding: () => void;
   children?: React.ReactNode;
 }) {
   const [query, setQuery] = useState("");
-  const shown = filterGroups(groups, query);
+  const shown = filterGroups(groups, query, projects);
   const firstHit = shown[0]?.hits[0]?.item;
-  // Keep the last opened section mounted while popping back to the root, so
+  // A project's page is a detail page too, keyed "project" here; its panel
+  // comes in through `children`.
+  const current: SettingsSectionKey | "project" | null = project
+    ? "project"
+    : (section ?? null);
+  // Keep the last opened page mounted while popping back to the root, so
   // the detail page has content during its slide-out.
-  const [lastSection, setLastSection] = useState<SettingsSectionKey | null>(
-    section ?? null,
+  const [lastSection, setLastSection] = useState<
+    SettingsSectionKey | "project" | null
+  >(current);
+  const [lastProjectLabel, setLastProjectLabel] = useState<string | null>(
+    null,
   );
+  const projectLabel = project
+    ? (projects.find((p) => p.id === project.project)?.label ??
+      project.project)
+    : null;
   useEffect(() => {
-    if (section) setLastSection(section);
-  }, [section]);
+    if (current) setLastSection(current);
+  }, [current]);
+  useEffect(() => {
+    if (projectLabel) setLastProjectLabel(projectLabel);
+  }, [projectLabel]);
 
-  const detail = section ?? null;
+  const detail = current;
   const shownSection = detail ?? lastSection;
-  const shownLabel = SECTIONS.find((s) => s.key === shownSection)?.label;
+  const shownLabel =
+    shownSection === "project"
+      ? (projectLabel ?? lastProjectLabel)
+      : SECTIONS.find((s) => s.key === shownSection)?.label;
   const pageEase =
     "transition-transform duration-[var(--dur-lg)] ease-[var(--ease)]";
 
@@ -499,7 +602,7 @@ function MobileSettings({
                       {g.hits.map(({ item: s, hint }) => (
                         <button
                           key={s.key}
-                          className="relative flex w-full items-center gap-3 border-0 bg-transparent px-3.5 py-3 text-left after:absolute after:bottom-0 after:left-[54px] after:right-0 after:h-px after:bg-divider-soft last:after:hidden active:bg-hover"
+                          className={SHEET_ROW}
                           onClick={() => onSelect(s.key)}
                         >
                           <span className="flex h-7 w-7 shrink-0 items-center justify-center text-dim">
@@ -519,6 +622,14 @@ function MobileSettings({
                           />
                         </button>
                       ))}
+                      {g.group === PROJECTS_GROUP && (
+                        <ProjectSheetRows
+                          projects={projects}
+                          query={query}
+                          onOpen={onOpenProject}
+                          rowClassName={SHEET_ROW}
+                        />
+                      )}
                     </div>
                   </div>
                 ))}
@@ -538,7 +649,11 @@ function MobileSettings({
                 sheet
                 value={query}
                 onChange={setQuery}
-                onSubmit={() => firstHit && onSelect(firstHit.key)}
+                onSubmit={() => {
+            if (firstHit) return onSelect(firstHit.key);
+            const hit = firstProjectHit(projects, query);
+            if (hit) onOpenProject(hit.project, hit.section);
+          }}
                 className={SETTINGS_SHEET_SEARCH_BAR}
               />
             </div>
@@ -554,10 +669,14 @@ function MobileSettings({
             >
               {shownSection && (
                 <div data-settings-scroll className={SETTINGS_CONTENT_SHEET}>
-                  {TOOL_SECTIONS.has(shownSection) ? (
+                  {shownSection === "project" ? (
+                    <div className={SETTINGS_PANEL_FRAME_SHEET}>{children}</div>
+                  ) : TOOL_SECTIONS.has(shownSection) ? (
                     <SectionPanel
                       section={shownSection}
                       onOpenOnboarding={onOpenOnboarding}
+                      onSelect={onSelect}
+                      onOpenProject={onOpenProject}
                     >
                       {children}
                     </SectionPanel>
@@ -566,6 +685,8 @@ function MobileSettings({
                       <SectionPanel
                         section={shownSection}
                         onOpenOnboarding={onOpenOnboarding}
+                        onSelect={onSelect}
+                        onOpenProject={onOpenProject}
                       >
                         {children}
                       </SectionPanel>

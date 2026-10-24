@@ -2,6 +2,7 @@ import type { UnreadChat } from "./unread-chats";
 import type { NewSessionPrefill } from "./new-session-link";
 import type { PortalTarget } from "./portals";
 import type { ReviewQueueItem } from "./review-queue";
+import type { ProjectSectionId } from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
 import type {
   FeedDescriptor,
@@ -45,7 +46,10 @@ export interface NavigationActions {
   openArchived(): void;
   openIncidents(): void;
   openIncident(id: string): void;
-  openIncidentSettings(project?: string): void;
+  /** A project's settings page, scrolled to `section` when given. */
+  openProjectSettings(project: string, section?: ProjectSectionId): void;
+  /** Settings → Projects → Defaults. */
+  openProjectDefaults(): void;
   openCatchUp(): void;
 
   openSession(id: string, created?: UnifiedSession | null): void;
