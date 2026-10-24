@@ -155,7 +155,7 @@ export function ProductionSection({
               <span className={PRODUCTION_TEXT}>
                 <span className={PRODUCTION_TITLE}>{runner.name}</span>
                 <span className={PRODUCTION_DESC}>
-                  {`${PLATFORM.get(runner.platform) ?? runner.platform} · reserved for ${project} · checks and actions run here`}
+                  {`${PLATFORM.get(runner.platform) ?? runner.platform}, reserved for ${project}. Checks and actions run here`}
                 </span>
               </span>
               <span className={PRODUCTION_VALUE}>

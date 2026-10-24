@@ -609,7 +609,7 @@ export function NewSession({
   );
   const sandboxModelWarning = (() => {
     if (sandboxProvider && !selectedSandboxAvailable) {
-      return "The Sandbox is unavailable. Choose This machine or connect a provider in Workspace > Sandboxes.";
+      return "The Sandbox is unavailable. Pick this machine or connect a provider in Organization → Sandboxes.";
     }
     if (!sandboxProvider || !modelFamily) return null;
     if (modelFamily.sandboxable) return null;
@@ -1823,7 +1823,7 @@ export function NewSession({
                             id,
                             note: available
                               ? sandboxProviderNote(id)
-                              : "Unavailable. Choose This machine or connect it in Workspace > Sandboxes.",
+                              : "Unavailable. Pick this machine or connect it in Organization → Sandboxes.",
                           };
                           const selected = sandboxProvider === opt.id;
                           return (
