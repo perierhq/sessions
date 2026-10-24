@@ -4,6 +4,7 @@ import {
   toolDetail,
 } from "@tellahq/opensession-protocol/tool-presentation";
 import { audit, summarizeText } from "./audit";
+import { redactSecrets } from "./shared/redact";
 import { wrapContext } from "./prompt-context";
 import {
   interruptedReplyNote,
@@ -70,13 +71,14 @@ export class PiEventPump {
 const TOOL_SUMMARY_MAX = 120;
 
 /** One short line naming what a running tool does: the bash command, the
- *  path, the query. Empty when the input says nothing useful. */
+ *  path, the query, with credentials masked (redactSecrets). Empty when the
+ *  input says nothing useful. */
 export function piToolSummary(toolName: string, args: unknown): string {
   let line = "";
   try {
     line = formatToolDetail(toolDetail(toolName, args));
   } catch {}
-  line = line.replace(/\s+/g, " ").trim();
+  line = redactSecrets(line.replace(/\s+/g, " ").trim());
   return line.length > TOOL_SUMMARY_MAX
     ? `${line.slice(0, TOOL_SUMMARY_MAX - 1)}…`
     : line;

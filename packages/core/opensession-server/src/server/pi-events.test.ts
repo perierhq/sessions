@@ -481,4 +481,31 @@ describe("pi live events", () => {
     );
     expect(piToolSummary("bash", undefined)).toBe("");
   });
+
+  test("a tool summary masks credentials before it is shown", () => {
+    const summary = (command: string) => piToolSummary("bash", { command });
+    expect(
+      summary('curl -H "Authorization: Bearer abc.def-123" https://x.test'),
+    ).toBe('curl -H "Authorization: Bearer ***" https://x.test');
+    expect(summary("GH_TOKEN=ghx123 OPENAI_API_KEY='k 1' gh pr list")).toBe(
+      "GH_TOKEN=*** OPENAI_API_KEY=*** gh pr list",
+    );
+    expect(summary("AWS_SECRET_ACCESS_KEY=abc DB_PASSWORD=pw make")).toBe(
+      "AWS_SECRET_ACCESS_KEY=*** DB_PASSWORD=*** make",
+    );
+    expect(
+      summary(`echo ghp_${"a".repeat(36)} github_pat_${"B1_".repeat(10)}`),
+    ).toBe("echo *** ***");
+    expect(
+      summary(`export K=sk-ant-${"x".repeat(30)}; slack xoxb-1234-abcdefghij`),
+    ).toBe("export K=***; slack ***");
+    expect(
+      summary("git push https://x-access-token:t0k3n@github.com/acme/app.git"),
+    ).toBe("git push https://github.com/acme/app.git");
+    // Ordinary words that merely contain the names stay.
+    expect(summary("grep -r token_count src")).toBe("grep -r token_count src");
+    expect(summary('echo "count token frequencies"')).toBe(
+      'echo "count token frequencies"',
+    );
+  });
 });
