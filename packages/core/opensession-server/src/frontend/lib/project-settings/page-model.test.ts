@@ -15,6 +15,7 @@ import {
   checklistModel,
   joinDots,
   modelChip,
+  monthSpendCopy,
   nextCellValue,
   sandboxRowCopy,
   stepSummary,
@@ -323,5 +324,13 @@ describe("joinDots", () => {
       "This machine\u00a0·\u00a0container",
     );
     expect(joinDots("Daytona")).toBe("Daytona");
+  });
+});
+
+describe("monthSpendCopy", () => {
+  test("groups thousands", () => {
+    expect(monthSpendCopy(1234.5, new Date(2026, 9, 3))).toBe(
+      "$1,234.50 spent in October",
+    );
   });
 });

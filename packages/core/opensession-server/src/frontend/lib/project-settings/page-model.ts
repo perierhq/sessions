@@ -24,6 +24,7 @@ import {
   type RunPlace,
   type UnattendedRole,
 } from "../../../shared/project-settings";
+import { formatUsd } from "../incidents/copy";
 
 export const PROJECT_SECTIONS = [
   ["where", "Where agents run"],
@@ -471,7 +472,7 @@ export function nearestRegion(timeZone: string): "eu" | "us" {
 /** "$6.50 spent in October". */
 export function monthSpendCopy(usd: number, now: Date): string {
   const month = now.toLocaleString("en", { month: "long" });
-  return `$${usd.toFixed(2)} spent in ${month}`;
+  return `${formatUsd(usd)} spent in ${month}`;
 }
 
 /** The deploy row's caption: the timeout in minutes. */

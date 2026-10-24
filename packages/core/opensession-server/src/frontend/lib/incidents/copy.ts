@@ -53,9 +53,19 @@ export function formatSpan(ms: number, precise = false): string {
 }
 
 /** "$3.80"; `whole` drops ".00" ("$20"). */
+const USD = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+});
+const USD_WHOLE = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+});
+
+/** "$1,234.50"; `whole` drops the cents of a whole amount ("$10,000"). */
 export function formatUsd(n: number, opts: { whole?: boolean } = {}): string {
-  if (opts.whole && Number.isInteger(n)) return `$${n}`;
-  return `$${n.toFixed(2)}`;
+  return (opts.whole && Number.isInteger(n) ? USD_WHOLE : USD).format(n);
 }
 
 export function relativeAgo(iso: string, now: number): string {
