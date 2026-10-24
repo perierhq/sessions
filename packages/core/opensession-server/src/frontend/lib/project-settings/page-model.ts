@@ -134,9 +134,10 @@ export function cellSpokenLabel(v: AccessCellValue): string {
   return CELL_LABELS[v];
 }
 
-/** Whether a cell is on, for `aria-pressed` and the phone checkmark. */
+/** Whether a cell is on, for `aria-pressed`, the phone checkmark and a
+ *  row's count. Read only is the "Changes code" row's off value. */
 export function cellIsOn(v: AccessCellValue): boolean {
-  return v !== "no" && v !== "locked" && v !== "blocked";
+  return v !== "no" && v !== "locked" && v !== "blocked" && v !== "read";
 }
 
 /** Whether clicking the cell flips a boolean (so it gets `aria-pressed`). */

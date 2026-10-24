@@ -283,6 +283,12 @@ describe("optimistic cells", () => {
     expect(rowSummary(find(READY_4_OF_6, "Sentry"))).toBe("Every role");
     expect(rowSummary(find(READY_4_OF_6, "Grafana"))).toBe("1 of 5 roles");
   });
+
+  test("rowSummary counts only the roles that change code on the mode row", () => {
+    // You and the investigator (Branch); the verifier's Read only doesn't.
+    const mode = find(READY_4_OF_6, "Changes code in acme-web");
+    expect(rowSummary(mode)).toBe("2 of 5 roles");
+  });
 });
 
 describe("applyIncidentsPatch", () => {
