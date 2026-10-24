@@ -127,6 +127,7 @@ test("the current section scrolls again when clicked after scrolling away", asyn
       PlainButton,
       (p: { children?: unknown }) => p.children === "Models",
     );
+    // SAFETY: the row's click handler ignores its event.
     (models!.props as { onClick: () => void }).onClick();
     expect(opened).toEqual([["acme-web", "models"]]);
     expect(scrolled).toEqual(["project-models"]);

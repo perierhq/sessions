@@ -125,8 +125,9 @@ describe("a stale whole list or object", () => {
     expect(isRetrySafePatch({ sandbox: "podman", previews: "same" })).toBe(
       true,
     );
-    expect(isRetrySafePatch({ models: { you: "claude/opus", reviews: null } }))
-      .toBe(true);
+    expect(
+      isRetrySafePatch({ models: { you: "claude/opus", reviews: null } }),
+    ).toBe(true);
     expect(
       isRetrySafePatch({ incidents: { agentsPaused: true, vetoMs: 60_000 } }),
     ).toBe(true);

@@ -119,9 +119,8 @@ const { AccessRoleList } = await import("./AccessRoleList");
 const { AccessTable } = await import("./AccessTable");
 const { ProductionSection } = await import("./ProductionSection");
 const { IncidentsSection } = await import("./IncidentsSection");
-const { nextCellValue } = await import(
-  "../../../lib/project-settings/page-model"
-);
+const { nextCellValue } =
+  await import("../../../lib/project-settings/page-model");
 
 const LINEAR_REVIEWS: AccessCellChange = {
   row: { kind: "connection", server: "linear" },
@@ -285,7 +284,7 @@ describe("saves waiting their turn", () => {
     expect(patches).toHaveLength(2);
     expect(patches[1]).toEqual({
       expectedRevision: 5,
-      access: { cells: [again] },
+      access: { cells: [again!] },
     });
   });
 

@@ -1,7 +1,10 @@
 // Instance-wide reads shared by the project settings page and Defaults:
 // one cache entry each, so a write (connecting a sandbox) refreshes every
 // surface at once instead of each keeping its own copy.
-import useSWR, { mutate as revalidateApiResources, type SWRResponse } from "swr";
+import useSWR, {
+  mutate as revalidateApiResources,
+  type SWRResponse,
+} from "swr";
 import {
   fetchModels,
   fetchSandboxStatus,

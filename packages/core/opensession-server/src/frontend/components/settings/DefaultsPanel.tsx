@@ -332,9 +332,7 @@ export function DefaultsPanel({
       <SettingsHint>
         Sandbox providers are connected in{" "}
         {onOpenSandboxes ? (
-          <TextLink
-            onClick={onOpenSandboxes}
-          >
+          <TextLink onClick={onOpenSandboxes}>
             Organization → Sandboxes
           </TextLink>
         ) : (
@@ -353,9 +351,7 @@ export function DefaultsPanel({
           <SettingRow key={role}>
             <SettingRowText>
               <SettingRowTitle>{ROLE_LABELS[role]}</SettingRowTitle>
-              <SettingRowDescription>
-                {scopeCopy(role)}
-              </SettingRowDescription>
+              <SettingRowDescription>{scopeCopy(role)}</SettingRowDescription>
             </SettingRowText>
             <SettingRowControl>
               <OptionSelect

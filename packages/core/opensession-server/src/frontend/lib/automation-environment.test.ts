@@ -54,9 +54,9 @@ describe("automationPlaceCopy", () => {
   });
 
   test("without a repo, the instance default repo's place", () => {
-    expect(
-      automationPlaceCopy({}, undefined, "acme-web"),
-    ).toBe("Runs where acme-web says. Set in acme-web → Where agents run");
+    expect(automationPlaceCopy({}, undefined, "acme-web")).toBe(
+      "Runs where acme-web says. Set in acme-web → Where agents run",
+    );
     expect(automationPlaceCopy({}, undefined)).toBe(
       "Runs where the default project says",
     );

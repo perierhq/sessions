@@ -1,11 +1,13 @@
 // The command palette's project actions read the project list from the
 // cache and load it when the palette opens, never on every window focus.
 import { expect, mock, test } from "bun:test";
+import type { ProjectListItem } from "../../shared/project-settings";
 
 const mutations: unknown[][] = [];
-const hooks: Array<{ key: unknown; fetcher: unknown }> = [];
+type Fetcher = (() => Promise<ProjectListItem[]>) | null;
+const hooks: Array<{ key: readonly string[] | null; fetcher: Fetcher }> = [];
 mock.module("swr", () => ({
-  default: (key: unknown, fetcher: unknown) => {
+  default: (key: readonly string[] | null, fetcher: Fetcher) => {
     hooks.push({ key, fetcher });
     return { data: undefined };
   },
@@ -24,9 +26,8 @@ mock.module("../lib/api/projects", () => ({
   fetchProjectSettings: async () => ({}),
 }));
 
-const { loadProjects, projectSWRKey, useCachedProjects } = await import(
-  "./useProjects"
-);
+const { loadProjects, projectSWRKey, useCachedProjects } =
+  await import("./useProjects");
 
 test("the cached list never fetches on its own", () => {
   useCachedProjects();

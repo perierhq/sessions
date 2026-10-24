@@ -3,6 +3,7 @@
 // connection check has passed.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import type * as React from "react";
+import type { ProjectDefaultsPatch } from "../../../../shared/project-settings";
 import {
   createHookHarness,
   elements,
@@ -36,7 +37,7 @@ mock.module("../../../lib/api/sandboxes", () => ({
 const realProjectsApi = await import("../../../lib/api/projects");
 mock.module("../../../lib/api/projects", () => ({
   ...realProjectsApi,
-  patchProjectDefaults: async (patch: unknown) => {
+  patchProjectDefaults: async (patch: ProjectDefaultsPatch) => {
     defaultsPatches.push(patch);
     return {};
   },
@@ -62,14 +63,16 @@ beforeEach(() => {
 /** Type a key and press Connect. */
 async function connect(form: ReturnType<typeof mountForm>) {
   const input = find(form.output(), Input)!;
+  // SAFETY: the key field's handler reads only currentTarget.value.
   input.props.onChange!({
     currentTarget: { value: "dtn_key" },
   } as React.ChangeEvent<HTMLInputElement>);
   await settle();
   const el = find(form.output(), "form")!;
-  (el.props as { onSubmit: (e: { preventDefault(): void }) => void }).onSubmit(
-    { preventDefault() {} },
-  );
+  // SAFETY: the form's submit handler reads only preventDefault.
+  (el.props as { onSubmit: (e: { preventDefault(): void }) => void }).onSubmit({
+    preventDefault() {},
+  });
   await settle();
 }
 
@@ -103,15 +106,17 @@ const mountForm = () =>
 test("a missing key is said under the key field and tied to it", async () => {
   const form = mountForm();
   const el = find(form.output(), "form")!;
-  (el.props as { onSubmit: (e: { preventDefault(): void }) => void }).onSubmit(
-    { preventDefault() {} },
-  );
+  // SAFETY: the form's submit handler reads only preventDefault.
+  (el.props as { onSubmit: (e: { preventDefault(): void }) => void }).onSubmit({
+    preventDefault() {},
+  });
   await settle();
   const input = find(form.output(), Input)!;
   const described = input.props["aria-describedby"];
   expect(described).toBeTruthy();
   expect(input.props["aria-invalid"]).toBe(true);
   const error = elements(form.output()).find(
+    // SAFETY: reading an optional id off any element's props.
     (e) => (e.props as { id?: string }).id === described,
   );
   expect(JSON.stringify(error?.props)).toContain("Paste your Daytona API key");

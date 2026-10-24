@@ -1264,11 +1264,7 @@ export function SandboxesPanel({
       <SettingsHint>
         Each project picks its sandbox on its own page, and the default is in{" "}
         {onOpenDefaults ? (
-          <TextLink
-            onClick={onOpenDefaults}
-          >
-            Projects → Defaults
-          </TextLink>
+          <TextLink onClick={onOpenDefaults}>Projects → Defaults</TextLink>
         ) : (
           "Projects → Defaults"
         )}

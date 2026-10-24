@@ -2,6 +2,7 @@
 // new one), so Remove asks first and only the confirm sends the patch.
 import { afterEach, expect, mock, test } from "bun:test";
 import type { ProjectSignalException } from "../../../../shared/project-settings";
+import type { ProjectPatchBody } from "../../../lib/project-settings/save";
 import {
   createHookHarness,
   find,
@@ -27,6 +28,7 @@ afterEach(() => harness.unmountAll());
 const EXCEPTION: ProjectSignalException = {
   signalId: "sig-1",
   role: "investigator",
+  // SAFETY: the list never reads an exception's fields.
   fields: {} as ProjectSignalException["fields"],
   updatedBy: "sam",
   updatedAt: "2026-01-01T00:00:00Z",
@@ -36,7 +38,7 @@ test("Remove asks first; only the confirm sends the patch", async () => {
   const saved: unknown[] = [];
   const view = harness.mount(SignalExceptions, {
     exceptions: [EXCEPTION],
-    onSave: async (body: unknown) => {
+    onSave: async (body: ProjectPatchBody) => {
       saved.push(body);
     },
   });
@@ -45,6 +47,7 @@ test("Remove asks first; only the confirm sends the patch", async () => {
     Button,
     (p: { children?: unknown }) => p.children === "Remove",
   );
+  // SAFETY: the Button's click handler ignores its event.
   (remove!.props as { onClick: () => void }).onClick();
   await settle();
   expect(saved).toEqual([]);

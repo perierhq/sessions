@@ -240,6 +240,7 @@ test("defaults that fail to load say so in place, with Retry", async () => {
   const alert = find(tree.output(), InlineAlert);
   expect(alert).toBeDefined();
   expect(text(tree)).toContain("offline");
+  // SAFETY: an InlineAlert given onRetry renders it as its Retry press.
   (alert!.props as { onRetry: () => void }).onRetry();
   expect(retried).toBe(1);
 });
@@ -251,6 +252,7 @@ test("models that fail to load say so, with Retry", async () => {
   const alert = find(tree.output(), InlineAlert);
   expect(alert).toBeDefined();
   expect(text(tree)).toContain("Couldn't load the models");
+  // SAFETY: an InlineAlert given onRetry renders it as its Retry press.
   (alert!.props as { onRetry: () => void }).onRetry();
   expect(retried).toBe(1);
 });
@@ -303,10 +305,15 @@ test("a website that isn't one shows an error and sends nothing", async () => {
   expect(patches).toEqual([]);
   expect(text(tree)).toContain("Enter a website name");
   // The error is tied to the field it is about.
-  const input = find(tree.output(), Input, (p) => p["aria-label"] === "Website");
+  const input = find(
+    tree.output(),
+    Input,
+    (p) => p["aria-label"] === "Website",
+  );
   const described = input?.props["aria-describedby"];
   expect(described).toBeTruthy();
   const error = elements(tree.output()).find(
+    // SAFETY: reading an optional id off any element's props.
     (e) => (e.props as { id?: string }).id === described,
   );
   expect(JSON.stringify(error?.props)).toContain("Enter a website name");

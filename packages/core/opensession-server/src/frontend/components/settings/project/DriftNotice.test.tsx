@@ -2,6 +2,7 @@
 // project on this instance, so it confirms first and shows it is working
 // until the run answers (a double click sends one run).
 import { afterEach, expect, mock, test } from "bun:test";
+import type * as React from "react";
 import {
   createHookHarness,
   find,
@@ -21,8 +22,10 @@ const { ConfirmDialog } = await import("../../../ui/confirm");
 
 afterEach(() => harness.unmountAll());
 
-const text = (tree: unknown) =>
-  JSON.stringify(tree, (key, value) => (key.startsWith("_") ? undefined : value));
+const text = (tree: React.ReactNode) =>
+  JSON.stringify(tree, (key, value) =>
+    key.startsWith("_") ? undefined : value,
+  );
 
 test("one message, a confirm that names every project, then busy", async () => {
   let runs = 0;
@@ -39,6 +42,7 @@ test("one message, a confirm that names every project, then busy", async () => {
   expect(text(notice.output()).match(/Migrate/g)?.length).toBe(1);
 
   const button = () => find(notice.output(), Button)!;
+  // SAFETY: the Button's click handler ignores its event.
   (button().props as { onClick: () => void }).onClick();
   await settle();
   expect(runs).toBe(0);

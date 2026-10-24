@@ -140,8 +140,10 @@ describe("AccessRoleList", () => {
         .filter((c) => c.tabIndex === 0)
         .map((c) => text(c.children));
     expect(tabbable()).toEqual(["Investigator"]);
-    const key = (chip: ButtonProps | undefined, k: string) =>
-      chip?.onKeyDown?.({
+    const key = (chip: ButtonProps | undefined, k: string) => {
+      // Object.create gives the untyped event the handler reads: its key,
+      // preventDefault, and the chip's group to move the focus in.
+      const event = Object.assign(Object.create(null), {
         key: k,
         preventDefault: () => {},
         currentTarget: {
@@ -151,7 +153,9 @@ describe("AccessRoleList", () => {
             }),
           },
         },
-      } as unknown as React.KeyboardEvent<HTMLButtonElement>);
+      });
+      chip?.onKeyDown?.(event);
+    };
     const current = () => chips(list.output()).find((c) => c.tabIndex === 0);
     key(current(), "ArrowRight");
     await settle();

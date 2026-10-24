@@ -3,6 +3,7 @@ import type { SandboxConnectionInfo } from "../api/automations";
 import { waitForConnection } from "./connect";
 
 const conn = (state: SandboxConnectionInfo["state"]) =>
+  // SAFETY: waitForConnection reads only provider and state.
   ({ provider: "daytona", state }) as SandboxConnectionInfo;
 
 describe("waitForConnection", () => {
