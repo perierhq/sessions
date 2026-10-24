@@ -18,7 +18,7 @@ export const PROJECT_SECTION = "scroll-mt-6";
 export const PROJECT_SECTION_HEAD =
   "mt-10 mb-2.5 flex min-h-11 items-center justify-between gap-3 px-5";
 export const PROJECT_SECTION_TITLE =
-  "m-0 text-section-title font-semibold tracking-[-0.01em] text-fg";
+  "m-0 text-section-title font-title tracking-[-0.01em] text-fg";
 
 // ── Readiness checklist ───────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ export const CHECKLIST_HEAD =
   "flex items-start justify-between gap-4 px-5 py-4";
 /** The title at section-heading weight, so the checklist reads first. */
 export const CHECKLIST_TITLE =
-  "m-0 text-section-title font-semibold tracking-[-0.01em] text-fg";
+  "m-0 text-section-title font-title tracking-[-0.01em] text-fg";
 export const CHECKLIST_SUB = "m-0 mt-1 text-supporting text-dim";
 export const CHECKLIST_SEGMENTS = "mt-1.5 flex shrink-0 gap-1";
 const SEGMENT = "h-3.5 w-2.5 rounded-sm";
@@ -43,10 +43,11 @@ export const CHECKLIST_MARK =
   "mt-0.5 flex size-5 shrink-0 items-center justify-center";
 export const CHECKLIST_TODO_MARK =
   "size-[18px] rounded-full border-[1.5px] border-dashed border-faint";
+/** The soft tones the badges use, with a glyph in the status colour. */
 export const CHECKLIST_BLOCKED_MARK =
-  "flex size-[18px] items-center justify-center rounded-full bg-red text-[11px] font-bold leading-none text-white";
+  "flex size-[18px] items-center justify-center rounded-full bg-red-soft text-red";
 export const CHECKLIST_READY_MARK =
-  "flex size-[18px] items-center justify-center rounded-full bg-green text-white";
+  "flex size-[18px] items-center justify-center rounded-full bg-green-soft text-green";
 export const CHECKLIST_TEXT = "min-w-0 flex-1";
 export const CHECKLIST_STEP_TITLE = "text-item-title font-medium text-fg";
 export const CHECKLIST_STEP_DETAIL =

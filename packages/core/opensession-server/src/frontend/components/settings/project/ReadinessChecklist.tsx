@@ -32,7 +32,7 @@ import {
 import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { SettingCard } from "../../../ui/settings";
-import { IconCheck, IconChevronDown } from "../../icons";
+import { IconCheck, IconChevronDown, IconX } from "../../icons";
 import { PlainButton } from "../../../ui/plain-button";
 
 /**
@@ -137,7 +137,11 @@ export function ReadinessChecklist({
 
 function StepMark({ state }: { state: ReadinessStep["state"] }) {
   if (state === "blocked")
-    return <span className={CHECKLIST_BLOCKED_MARK}>!</span>;
+    return (
+      <span className={CHECKLIST_BLOCKED_MARK}>
+        <IconX size={12} dense />
+      </span>
+    );
   if (state === "ready")
     return (
       <span className={CHECKLIST_READY_MARK}>
