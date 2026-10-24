@@ -37,6 +37,9 @@ import {
   demoGoal,
   demoPrDetails,
   demoPrInfo,
+  demoOtherPrs,
+  DEMO_BOT_LOGIN,
+  DEMO_TEAM,
   demoSessions,
 } from "./fixtures";
 import { encodePng, type PngRect, type Rgb } from "./png";
@@ -194,6 +197,7 @@ function registerDemoRepo(repoDir: string, worktreesDir: string): void {
   } catch {}
   const repos = (config.repos as Record<string, unknown>) || {};
   const paths = (config.paths as Record<string, unknown>) || {};
+  const policy = (config.policy as Record<string, unknown>) || {};
   const next = {
     ...config,
     repos: {
@@ -212,6 +216,22 @@ function registerDemoRepo(repoDir: string, worktreesDir: string): void {
       },
     },
     paths: { ...paths, worktreesDir },
+    // A roster, so the Pull requests and Issues pages can tell the team's
+    // work from the public's. A config that already names a team keeps it.
+    identity: (config.identity as Record<string, unknown> | undefined)?.team
+      ? config.identity
+      : { ...(config.identity as object), team: DEMO_TEAM },
+    policy: {
+      ...policy,
+      githubBotLogins: [
+        ...new Set([
+          ...(Array.isArray(policy.githubBotLogins)
+            ? policy.githubBotLogins
+            : []),
+          DEMO_BOT_LOGIN,
+        ]),
+      ],
+    },
   };
   writeJson(path, next);
   publishConfigSnapshot(path, JSON.stringify(next));
@@ -296,6 +316,7 @@ export function generateDemoData(
       repos: {
         [DEMO_REPO_ID]: {
           [DEMO_BRANCH]: demoPrInfo(now, DEMO_GH_REPO, "bks-demo-pr"),
+          ...demoOtherPrs(now, DEMO_GH_REPO),
         },
       },
       recentLimits: { [DEMO_REPO_ID]: 500 },

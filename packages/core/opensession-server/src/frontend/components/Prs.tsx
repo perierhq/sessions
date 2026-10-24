@@ -38,6 +38,18 @@ import { RepoTile, repoLabel } from "./RepoTile";
 import { usePeople } from "../lib/people";
 import { Menu } from "../ui/menu";
 import { Tooltip } from "../ui/tooltip";
+import { Badge } from "../ui/badge";
+import {
+  ANYONE,
+  OUTSIDE_TEAM,
+  authorMarker,
+  isPersonFilter,
+  matchesAuthorFilter,
+  readAuthorFilter,
+  resolveAuthorFilter,
+  writeAuthorFilter,
+} from "../lib/author-filter";
+import { AuthorFilterMenu } from "./AuthorFilterMenu";
 import { Input } from "../ui/input";
 import { EmptyState } from "../ui/state";
 import { cn } from "../ui/cn";
@@ -52,7 +64,6 @@ import {
   IconArchive,
   IconDotsHorizontal,
   IconGitMerge,
-  IconPeople,
   IconPlus,
   IconPullRequest,
   IconRepo,
@@ -297,11 +308,22 @@ export function Prs({
   // Whose pull requests to show, and nothing more. This used to be the app's
   // person lens, so narrowing the list here also swapped the sidebar out from
   // under you. It is an ordinary filter now, alongside repo: switching whose
-  // work the app is showing is the People page's job.
-  const [person, setPerson] = useState("all");
+  // work the app is showing is the People page's job. Besides one person it
+  // can be everyone outside the team, and the choice is remembered.
+  const [storedPerson, setStoredPerson] = useState(() =>
+    readAuthorFilter("prs"),
+  );
+  function setPerson(value: string) {
+    setStoredPerson(value);
+    writeAuthorFilter("prs", value);
+  }
   // Everyone, not only whoever the default request happened to return, because
   // picking someone fetches their pull requests below.
   const roster = usePeople();
+  const person = resolveAuthorFilter(
+    storedPerson,
+    roster.map((who) => who.name.toLowerCase()),
+  );
   const people = [...roster].sort(
     (a, b) =>
       Number(b.name.toLowerCase() === currentUser.toLowerCase()) -
@@ -380,7 +402,7 @@ export function Prs({
   }, [showArchived]);
 
   useEffect(() => {
-    if (person === "all") {
+    if (!isPersonFilter(person)) {
       setPersonPrs([]);
       return;
     }
@@ -404,7 +426,7 @@ export function Prs({
     return allWorktrees.filter((row) => {
       if (!showArchived && row.archived) return false;
       if (repo !== "all" && row.repo !== repo) return false;
-      if (person !== "all" && row.person !== person) return false;
+      if (!matchesAuthorFilter(row, person)) return false;
       if (!needle) return true;
       return [
         row.title,
@@ -524,49 +546,12 @@ export function Prs({
           jobs instead of separating the field from its heading. */}
       <div className="ml-auto flex min-w-0 items-center gap-2">
         {people.length > 0 && (
-          <Menu.Root>
-            <Menu.Trigger
-              render={
-                <Button
-                  variant="ghost"
-                  className="min-w-0"
-                  icon={<IconPeople size={18} />}
-                  caret
-                >
-                  <span className="max-w-[150px] truncate">
-                    {person === "all" ? "Anyone" : personLabel(person)}
-                  </span>
-                </Button>
-              }
-            />
-            <Menu.Popup align="end" className="min-w-[200px] max-w-[320px]">
-              <Menu.RadioGroup
-                value={person}
-                onValueChange={(value) => setPerson(String(value))}
-              >
-                <Menu.RadioItem value="all" closeOnClick>
-                  {/* Sized to the faces below so every label shares one edge. */}
-                  <span className="size-[18px] shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">Anyone</span>
-                  <Menu.Check on={person === "all"} />
-                </Menu.RadioItem>
-                {people.map((who) => {
-                  const key = who.name.toLowerCase();
-                  return (
-                    <Menu.RadioItem key={key} value={key} closeOnClick>
-                      <UserAvatar name={who.name} size={18} />
-                      <span className="min-w-0 flex-1 truncate">
-                        {key === currentUser.toLowerCase()
-                          ? `${who.fullName} (you)`
-                          : who.fullName}
-                      </span>
-                      <Menu.Check on={person === key} />
-                    </Menu.RadioItem>
-                  );
-                })}
-              </Menu.RadioGroup>
-            </Menu.Popup>
-          </Menu.Root>
+          <AuthorFilterMenu
+            value={person}
+            onChange={setPerson}
+            people={people}
+            currentUser={currentUser}
+          />
         )}
 
         {repoOptions.length > 1 && (
@@ -686,16 +671,20 @@ export function Prs({
             title={
               query
                 ? "No matching pull requests"
-                : person === "all"
+                : person === ANYONE
                   ? "No pull requests yet"
-                  : `Nothing open for ${personLabel(person)}`
+                  : person === OUTSIDE_TEAM
+                    ? "Nothing from outside the team"
+                    : `Nothing open for ${personLabel(person)}`
             }
           >
             {query
               ? "Try another search or filter."
-              : person === "all"
+              : person === ANYONE
                 ? "Pull requests appear here."
-                : "Pick someone else, or set the filter back to anyone."}
+                : person === OUTSIDE_TEAM
+                  ? "Pull requests opened by people outside the team and by bots appear here."
+                  : "Pick someone else, or set the filter back to anyone."}
           </EmptyState>
         ) : (
           <div className={PR_LIST}>
@@ -716,6 +705,7 @@ export function Prs({
                     <div>
                       {rows.map((row) => {
                         const status = prStatusMark(row);
+                        const marker = authorMarker(row.authorKind);
                         return (
                           <button
                             key={row.key}
@@ -733,7 +723,7 @@ export function Prs({
                             >
                               <StateIcon state={row.state} />
                             </span>
-                            {person === "all" && row.person ? (
+                            {!isPersonFilter(person) && row.person ? (
                               <UserAvatar
                                 name={personLabel(row.person)}
                                 size={20}
@@ -754,6 +744,9 @@ export function Prs({
                                 <span className="shrink-0 text-meta tabular-nums text-faint">
                                   #{row.number}
                                 </span>
+                              )}
+                              {marker && (
+                                <Badge className="self-center">{marker}</Badge>
                               )}
                             </span>
                             {/* Added and removed keep diff's own green and red.
