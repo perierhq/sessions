@@ -1,8 +1,9 @@
 # Self-hosting sandboxes
 
 How to run Open Session sessions inside their own machines. A **Sandbox** is a
-Linux VM in your Daytona or Boat account, or a macOS VM on a Mac you pair as
-a Runner, with the repository checked out, its `.agents/setup` already run,
+Linux VM in your Daytona or Boat account, a macOS VM on a Mac you pair as
+a Runner, or a rootless container on this server (**This machine
+(container)**), with the repository checked out, its `.agents/setup` already run,
 and a durable disk. It sleeps between turns,
 wakes when the next message arrives, and comes back with files, running
 Portals, and the conversation intact. Companion to
@@ -11,7 +12,8 @@ Portals, and the conversation intact. Companion to
 
 **Default = This machine.** The new-session menu's **Machine** row offers
 This machine plus every Ready Sandbox provider by name (Boat, Daytona,
-use.computer, Mac VM), each with a line saying whether it is Linux or a Mac.
+use.computer, Mac VM, This machine (container)), each with a line saying
+whether it is Linux or a Mac.
 The workspace or personal default is marked there and can make a Sandbox the
 norm, and a project can be pinned under **Workspace → Sandboxes → Projects** so
 every new session on it starts in a Sandbox whatever the workspace or person
@@ -36,12 +38,15 @@ only the workspace is in the Sandbox (see [Where the agent runs](#where-the-agen
    Boat, or **use.computer** (macOS on reserved Macs; see
    [use.computer](#usecomputer) below) with an API key, or **Mac VM** with a
    paired macOS Runner (no credential; see
-   [Mac VM](#mac-vm-tart-on-a-mac-runner) below). Credentials
+   [Mac VM](#mac-vm-tart-on-a-mac-runner) below), or **This machine
+   (container)** on a Linux server with rootless Podman (no credential; see
+   [This machine (container)](#this-machine-container) below). Credentials
    are written once to the server-side workspace secret store and never
    returned to the browser or placed in a Sandbox. Connecting runs a
    qualification: ingress is verified, a disposable sandbox is created, a
-   snapshot restore is proven, and everything is cleaned up. Only a **Ready**
-   connection is offered to sessions.
+   snapshot restore is proven (This machine (container) has no snapshots and
+   proves its firewall and isolation self-test instead), and everything is
+   cleaned up. Only a **Ready** connection is offered to sessions.
 3. **Pick the default.** Still in Workspace → Sandboxes, set **New sessions
    run in** to the provider you connected. With one Ready connection this is
    also what an explicit per-session "Sandbox" choice resolves to.
@@ -320,6 +325,9 @@ Each project snapshot carries a **machine size** (Small, Medium, Large),
 mapped to the provider's shapes. Daytona sizes require a base snapshot created
 with those resources; Boat exposes three fixed machine types.
 
+This machine (container) has no project snapshots, prewarms or Keep one
+ready: every session starts from the sandbox image and clones on first use.
+
 ## Repo lifecycle hooks
 
 Sandboxes honor the repository contract in [repo-lifecycle.md](repo-lifecycle.md):
@@ -341,7 +349,9 @@ Model credentials never enter a Sandbox: the agent loop runs on this server.
 
 Unattended runs (automations and public review) use disposable Daytona
 sandboxes with a per-sandbox egress allowlist enforced by the provider. They
-never adopt a prewarm or project snapshot. See
+never adopt a prewarm or project snapshot. This machine (container) refuses
+them; of the sessions an automation starts, only incident agents run there
+(see [This machine (container)](#this-machine-container)). See
 [security-model.md](security-model.md).
 
 ## Runtime config — `~/.opensession/sandbox.json`
@@ -352,7 +362,7 @@ settings below. Read fresh per call, no restart needed except where noted.
 | Key                                 | Meaning                                                                                                                                                                 |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `connections`                       | Provider connections and their qualification state. Managed by Workspace → Sandboxes.                                                                                   |
-| `sessionDefault`                    | `"daytona"`, `"box"`, `"tart"`, or `"none"`: where new sessions run when nobody chose.                                                                                  |
+| `sessionDefault`                    | `"daytona"`, `"box"`, `"tart"`, `"usecomputer"`, `"podman"`, or `"none"`: where new sessions run when nobody chose.                                                     |
 | `provider`, `perRepo.<id>.provider` | Legacy default and per-repo override for API creates that pass `sandbox: true`.                                                                                         |
 | `perRepo.<id>.sessionDefault`       | `"daytona"`, `"box"`, or `"none"`: where new sessions on that repo run, ahead of the workspace and personal defaults. Managed by Workspace → Sandboxes → Projects.      |
 | `idleStopMinutes`                   | Sleep after this much idle time (default 30).                                                                                                                           |
@@ -362,6 +372,7 @@ settings below. Read fresh per call, no restart needed except where noted.
 | `cloneCredential`                   | `{type: "none"}` or `{type: "https-token", token}` for repository clones inside Sandboxes. The live GitHub App wins.                                                    |
 | `prewarm`                           | `enabled`, `ttlMinutes`, `maxLive` for the warm-on-typing pool; `keepReady` lists `{provider, repoId}` targets kept prepared (Keep one ready in Workspace → Sandboxes). |
 | `automation.egressAllowlist`        | Extra hosts unattended runs may reach.                                                                                                                                  |
+| `podman.extraHostAddresses`         | IPv4 addresses that reach this host without being on its interfaces; This machine (container) refuses them too (see its notes).                                         |
 
 Retired keys (`image`, `workspace`, `transport`, `previewPorts`, `snapshots`,
 `e2b`, `modal`, `awsLambdaMicrovm`, and the runner payload's
@@ -379,7 +390,9 @@ touch ~/.opensession-sessions/disable-sandboxes
 
 forces every new run onto the host regardless of config. Remove the file to
 re-enable. Existing sessions keep their recorded provider; their next turn
-fails clearly rather than silently running on the host.
+fails clearly rather than silently running on the host. This machine
+(container) is covered the same way: while the file exists it is not offered
+and incident agents do not start in it.
 
 ## Certification
 
@@ -391,6 +404,15 @@ restore with credential scrub, and cleanup.
 Re-run it with `bun run deploy/sandbox/conformance.ts [daytona] [box]`; it
 uses scratch state and never touches live sessions. The certification dates in
 `src/server/sandbox/config.ts` gate which providers can be selected.
+
+This machine (container) was certified 2026-10-24 by its live qualification
+on a rootless Podman 5 host with SELinux enforcing: prerequisites, image,
+a firewalled start with the egress table verified in the workload's own
+namespace, the full isolation self-test with host-side nft counter proof,
+cgroup placement under the user's systemd service, and cleanup. It has no
+snapshots, so its wake is a fresh firewalled start of the stopped pod. The
+conformance script does not cover it; requalifying the connection reruns
+the same checks on your host.
 
 ## Provider notes
 
@@ -560,6 +582,57 @@ workload starts, and verified, with an isolation self-test, on every start.
 The table allows the public internet, the callback origin on its port and the
 configured DNS resolvers. It refuses IPv6, private, CGNAT, link-local and
 reserved IPv4 ranges, and every IPv4 address on this host's interfaces.
+The workload runs as uid 1000 with no capabilities, `no-new-privileges`, a
+read-only root filesystem and the session's home on its own volume; it
+cannot see this server's files, the Podman socket or other sandboxes. Sleep
+is `podman pod stop` after `idleStopMinutes` (the home volume is kept), and
+every wake goes through the firewalled start again. A Terminal tab is
+`podman exec -it` as uid 1000. Portals ride the outbound relay.
+
+**Host prerequisites.** Qualification checks each of these and names the
+fix when one is missing:
+
+- Linux with Podman 5.0 or newer, running rootless: the server runs as an
+  unprivileged user, and the sandboxes belong to that user.
+- cgroups v2 with the `memory` and `pids` controllers delegated to that user.
+  For a CPU cap, also delegate `cpu`: as root, create
+  `/etc/systemd/system/user@.service.d/delegate.conf` with
+  `[Service]` and `Delegate=cpu cpuset io memory pids`, run
+  `systemctl daemon-reload`, then restart the user's manager (or reboot).
+- Linger for that user (`loginctl enable-linger <user>`), so the pods live
+  under the user's systemd service and survive a server restart or deploy.
+  Qualification fails if the test sandbox lands anywhere else.
+- The `nft` binary on the host (nftables), plus `bash` and `nsenter`
+  (util-linux). The egress table is installed from the host into each pod's
+  network namespace through `podman unshare`; the container gets no
+  capability to change it.
+- Podman's default rootless network, pasta (passt).
+- Public ingress whose callback origin resolves to a public address. A
+  `callbackBaseUrl` on the tailnet, a private range or loopback is refused,
+  since the firewall would have to open that address to the sandbox.
+- Registry access and about 1 GB free on Podman's storage for the sandbox
+  image (`localhost/opensession-sandbox:<tag>`, built from a pinned
+  `ubuntu:24.04` at qualification, never during a session), and at least
+  5 GiB free there for sandboxes to start (see Disk limits).
+- SELinux enforcing is recommended. Without it qualification passes with a
+  warning, and containers rely on namespaces and seccomp alone.
+
+**Limits.** Each sandbox gets a memory limit (default 4096 MB) and a
+process limit (default 4096), set on the This machine (container) card. A
+CPU limit applies only when it is set there and the host delegates the
+`cpu` controller; the card says "CPU not limited on this host" when it does
+not. Without one, a busy sandbox can use every CPU this server has. Podman
+writes the `--memory-swap` value (equal to the memory limit) into the
+cgroup's `memory.swap.max`, so on a host with swap a sandbox may also use
+that much swap on top of its memory: 4 GiB of RAM plus up to 4 GiB of swap
+by default. Podman overrides `--cgroup-conf memory.swap.max=0`, so size or
+disable host swap if that matters.
+
+**Not available here.** Automations and public review are refused (they need
+an allowlist-only egress mode this provider does not have yet); of the
+sessions an automation starts, only incident agents run here (see Incident
+agents below). There are no prewarms, Keep one ready, project snapshots or
+Desktop tab, and the agent's `opensession-desktop` tools are not available.
 
 **Extra host addresses.** An address can reach this host without being on any
 of its interfaces: a public IP behind 1:1 NAT (common on cloud VMs), a load
@@ -579,7 +652,8 @@ resolver is an error. IPv6 entries are ignored: IPv6 is refused entirely.
 enforces its own. A sandbox does not start while the filesystem holding
 Podman's storage (its graphroot, where rootless volumes live) has less than
 5 GiB free. Every five minutes, and a minute after the server starts, the
-sweep measures each session's home volume with `podman system df`. From
+sweep measures each session's home volume (`podman volume ls`, then `du`
+inside `podman unshare`, counting allocated blocks). From
 10 GiB the session is listed on the This machine (container) card in
 Settings; over 20 GiB its pod is stopped and does not start again until a
 later check finds the volume under the limit. The list of sandboxes over the

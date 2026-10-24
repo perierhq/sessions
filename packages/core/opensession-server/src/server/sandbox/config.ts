@@ -479,9 +479,10 @@ export const SANDBOX_PROVIDER_CERTIFICATIONS: Record<
     warmRestorePassedAt: "2026-09-21",
     note: "macOS VM on a reserved use.computer Mac: live qualification, remote run, snapshot sleep/wake, desktop, and terminal passed",
   }),
-  // Undated until the live conformance run and red-team pass on a real host.
   podman: certification({
-    note: "This machine (container) has not passed its live conformance run yet",
+    behavioralPassedAt: "2026-10-24",
+    warmRestorePassedAt: "2026-10-24",
+    note: "rootless Podman 5 with SELinux enforcing: live qualification passed (prerequisites, image, firewalled start with the egress table verified in the workload's namespace, full isolation self-test with host-side nft counter proof, user-service cgroup placement, cleanup); no snapshots, so a warm restore is a fresh firewalled start of the stopped pod",
   }),
 };
 
