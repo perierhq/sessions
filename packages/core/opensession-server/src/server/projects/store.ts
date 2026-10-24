@@ -14,6 +14,7 @@ import {
   type CredentialGrantMode,
   grantModeWithin,
   isIncidentAgentRole,
+  modeWithin,
 } from "../../shared/incident-access";
 import {
   ANY_WEBSITE_HOST,
@@ -977,7 +978,7 @@ export function widenedFieldPaths(
     if (!(ba.webSearch as string[]).includes(role))
       out.push(`access.webSearch.${role}`);
   for (const role of UNATTENDED_ROLES)
-    if (ba.modes[role] === "ask" && aa.modes[role] === "code")
+    if (!modeWithin(aa.modes[role], ba.modes[role]))
       out.push(`access.modes.${role}`);
   for (const role of ["investigator", "verifier"] as const) {
     if (aa.routes[role] !== null && !same(ba.routes[role], aa.routes[role]))
