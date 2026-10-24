@@ -2136,7 +2136,9 @@ export async function maybeLaunchSandboxedRun(
               cwd: opts.cwd,
               // An incident agent reads untrusted incident text: no private
               // seed files in its Sandbox.
-              ...(descendantSeedsPrivateFiles(session.automationDescendantPolicy)
+              ...(descendantSeedsPrivateFiles(
+                session.automationDescendantPolicy,
+              )
                 ? {}
                 : { seedPrivateFiles: false }),
               // Bind-mode containers mount attached repos too (a changed set
