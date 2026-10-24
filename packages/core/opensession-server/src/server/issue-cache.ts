@@ -40,7 +40,7 @@ export interface OpenIssueEntry {
   /** The `os` label is on the issue: a session was asked for. */
   assigned: boolean;
   /** Who opened it: the team (or its agent), a bot, or someone outside.
-   *  Read against the roster when served, so a roster edit applies at once. */
+   *  Read against the roster when served, never stored with the row. */
   authorKind: AuthorKind;
 }
 

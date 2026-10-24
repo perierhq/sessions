@@ -4,8 +4,9 @@
  * outside the team. The Pull requests and Issues pages read it to list and
  * mark work that came from the public.
  *
- * Classified when a row is served rather than when it is fetched, so a roster
- * edit applies to cached rows at once.
+ * Classified when a row is served rather than stored with it, so cached rows
+ * and the on-disk PR snapshot follow the roster in force, not the one they
+ * were fetched under.
  */
 import { githubBotLogins } from "./config";
 import { githubLoginToPersonKey } from "./shared/user-mappings";
