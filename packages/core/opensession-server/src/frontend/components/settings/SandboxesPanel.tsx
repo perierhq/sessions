@@ -573,7 +573,7 @@ function ConnectDialog({
                 min="1"
                 value={cpu}
                 onChange={(event) => setCpu(event.target.value)}
-                placeholder="No limit"
+                placeholder="2"
               />
             </Field>
           </div>

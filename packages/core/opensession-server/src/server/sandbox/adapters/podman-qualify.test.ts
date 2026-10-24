@@ -13,6 +13,7 @@ import {
   qualifyPodmanConnection,
   type PodmanQualifyDeps,
 } from "./podman";
+import { PODMAN_SELF_TEST_ROWS_MAX } from "../connections";
 import { podmanNames } from "./podman-cli";
 import { isVerifiedPodmanArgv } from "./podman-verified-argv";
 import {
@@ -135,6 +136,24 @@ describe("podman qualification", () => {
       ({ argv }) => argv[0] === "pod" && argv[1] === "create",
     )!.argv;
     expect(pod[pod.indexOf("--name") + 1]).toMatch(/^opensession-sbx-qual-/);
+  });
+
+  test("keeps the passing self-tests' rows, bounded, as evidence", async () => {
+    const facts = await qualifyPodmanConnection(() => {}, qualifyDeps(setup()));
+    const checks = facts.selfTestRows ?? [];
+    const ensure = facts.ensureSelfTestRows ?? [];
+    // The full test adds file and process probes to the network ones.
+    expect(checks.length).toBeGreaterThan(ensure.length);
+    expect(ensure.length).toBeGreaterThan(0);
+    expect(checks.length).toBeLessThanOrEqual(PODMAN_SELF_TEST_ROWS_MAX);
+    expect(checks.map(([name]) => name)).toContain("proc:NoNewPrivs");
+    expect(ensure.map(([name]) => name)).not.toContain("proc:NoNewPrivs");
+    for (const row of [...checks, ...ensure]) {
+      expect(row).toHaveLength(3);
+      for (const field of row) expect(field.length).toBeLessThanOrEqual(80);
+    }
+    // Small enough to sit in the connection record.
+    expect(JSON.stringify([checks, ensure]).length).toBeLessThan(8192);
   });
 
   test("a progress callback that throws does not skip the cleanup", async () => {

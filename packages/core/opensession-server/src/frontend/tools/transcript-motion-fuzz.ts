@@ -187,41 +187,71 @@ async function setAuthCookie(send: ReturnType<typeof cdpSender>) {
     });
 }
 
+/** The viewport a seed is measured in. */
+function seedViewport(seed: number) {
+  const width = [390, 720, 1_440][(seed - 1) % 3] ?? 390;
+  return { width, height: width <= 720 ? 844 : 900 };
+}
+
 /**
- * Load the fixture once before anything is measured. The first page a fresh
- * browser opens pays for compiling the bundle, loading fonts and bringing up
- * the GPU process, and on a shared CI runner that surfaced as a 500ms long
- * task inside seed 1 while every later seed stayed under 200ms. The budgets
+ * Load the fixture before anything is measured, once at each width the seeds
+ * use and at their speed. The first pages a fresh browser opens pay for
+ * compiling the bundle, loading fonts, bringing up the GPU process and the
+ * first code highlighter load, and on a shared CI runner that surfaced as a
+ * 500ms long task inside seed 1 while every later seed stayed under 200ms.
+ * One warm-up page at the browser's default size and a faster speed was not
+ * enough: in CI, seed 1 (the first phone-width page) was still the only seed
+ * with a second long task, and it crossed the 300ms budget twice. The budgets
  * describe the transcript in steady state, so the cold start is spent here,
- * unrecorded. Nothing here can fail the run: a page that never settles just
- * hands the deadline back to the seeds.
+ * unrecorded, with the longest task of each warm-up page logged so a cold
+ * browser shows up in the log. Nothing here can fail the run: a page that
+ * never settles just hands the deadline back to the seeds.
  */
 async function warmUp(port: number) {
-  const { target, socket } = await openTarget(port);
-  const send = cdpSender(socket);
-  try {
-    await send("Page.enable");
-    await send("Runtime.enable");
-    await setAuthCookie(send);
-    await send("Page.navigate", {
-      url: `${APP}/__fixtures/transcript-motion?seed=1&speed=20&profile=${PROFILE}`,
-    });
-    const deadline = performance.now() + 30_000;
-    while (performance.now() < deadline) {
-      const response = await send("Runtime.evaluate", {
-        expression: `document.querySelector("[data-transcript-motion-state]")?.dataset.transcriptMotionState || ""`,
+  for (let seed = 1; seed <= 3; seed++) {
+    const { width, height } = seedViewport(seed);
+    const { target, socket } = await openTarget(port);
+    const send = cdpSender(socket);
+    try {
+      await send("Page.enable");
+      await send("Runtime.enable");
+      await send("Emulation.setDeviceMetricsOverride", {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      await setAuthCookie(send);
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `window.__warmLongTask = 0; try { new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__warmLongTask = Math.max(window.__warmLongTask, entry.duration); }).observe({ type: "longtask", buffered: true }); } catch {}`,
+      });
+      await send("Page.navigate", {
+        url: `${APP}/__fixtures/transcript-motion?seed=${seed}&speed=${SPEED}&profile=${PROFILE}`,
+      });
+      const deadline = performance.now() + 30_000;
+      while (performance.now() < deadline) {
+        const response = await send("Runtime.evaluate", {
+          expression: `document.querySelector("[data-transcript-motion-state]")?.dataset.transcriptMotionState || ""`,
+          returnByValue: true,
+        });
+        if (response.result.value === "done") break;
+        await Bun.sleep(40);
+      }
+      const longest = await send("Runtime.evaluate", {
+        expression: `Math.round(window.__warmLongTask || 0)`,
         returnByValue: true,
       });
-      if (response.result.value === "done") break;
-      await Bun.sleep(40);
+      console.error(
+        `warm-up ${width}px: longest task ${Number(longest.result.value) || 0}ms`,
+      );
+    } catch (error) {
+      console.error(
+        `warm-up ${width}px skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      socket.close();
+      await closeCdpTarget(port, target.id);
     }
-  } catch (error) {
-    console.error(
-      `warm-up skipped: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  } finally {
-    socket.close();
-    await closeCdpTarget(port, target.id);
   }
 }
 
@@ -230,8 +260,7 @@ const results: Result[] = [];
 try {
   await warmUp(lease.port);
   for (let seed = 1; seed <= SEEDS; seed++) {
-    const width = [390, 720, 1_440][(seed - 1) % 3] ?? 390;
-    const height = width <= 720 ? 844 : 900;
+    const { width, height } = seedViewport(seed);
     const reducedMotion = seed % 5 === 0;
     const cpuRate = seed % 4 === 0 ? 6 : 1;
     const { target, socket } = await openTarget(lease.port);
@@ -509,7 +538,7 @@ try {
       };
       results.push(result);
       console.error(
-        `seed ${seed} ${width}px${reducedMotion ? " reduced" : ""}${cpuRate > 1 ? ` ${cpuRate}xCPU` : ""}: ${result.passed ? "ok" : "FAIL"} · CLS ${result.cls.toFixed(4)} · jump ${result.maxSampledJump}px`,
+        `seed ${seed} ${width}px${reducedMotion ? " reduced" : ""}${cpuRate > 1 ? ` ${cpuRate}xCPU` : ""}: ${result.passed ? "ok" : `FAIL (${failures.join(", ")})`} · CLS ${result.cls.toFixed(4)} · jump ${result.maxSampledJump}px (content ${result.maxContentJump}px) · long task ${result.maxLongTaskMs}ms`,
       );
     } catch (error) {
       results.push({

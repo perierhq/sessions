@@ -69,13 +69,14 @@ function readyPodman(certified = true) {
   writeFileSync(cfgPath(), "{}");
   connectSandboxProvider("podman", {});
   setSandboxConnectionQualification("podman", { status: "ready" });
-  if (certified)
-    SANDBOX_PROVIDER_CERTIFICATIONS.podman = {
-      ...certification,
-      certified: true,
-      behavioralPassedAt: "2026-10-01",
-      warmRestorePassedAt: "2026-10-01",
-    };
+  SANDBOX_PROVIDER_CERTIFICATIONS.podman = certified
+    ? {
+        ...certification,
+        certified: true,
+        behavioralPassedAt: "2026-10-01",
+        warmRestorePassedAt: "2026-10-01",
+      }
+    : { certified: false, note: "not live-certified" };
 }
 
 test("true when the connection is qualified, certified and switched on", () => {
