@@ -136,7 +136,11 @@ import {
 } from "./sandbox/config";
 import { disposeAutomationSandbox } from "./sandbox/automation-disposal";
 import { ensureSandboxWithTransientRetry } from "./sandbox/reliability";
-import { getAutomation, validateSandboxAutomation } from "./automations";
+import {
+  automationUnderProject,
+  getAutomation,
+  validateSandboxAutomation,
+} from "./automations";
 import { getTitleOverride } from "./title-overrides";
 import {
   applyPendingWorkspaceTitle,
@@ -2061,10 +2065,14 @@ export async function maybeLaunchSandboxedRun(
   }
   const disposableAutomationResume =
     opts.isAutomationSession && !session.automationDescendantPolicy;
-  const owningAutomation = disposableAutomationResume
-    ? session.automationId
+  const storedAutomation =
+    disposableAutomationResume && session.automationId
       ? await getAutomation(session.automationId)
-      : null
+      : null;
+  // The automation under its project's settings: the connectors the
+  // project allows. Its sandbox is its own setting (D3 as built).
+  const owningAutomation = storedAutomation
+    ? await automationUnderProject(storedAutomation)
     : null;
   if (disposableAutomationResume) {
     if (
@@ -2114,7 +2122,12 @@ export async function maybeLaunchSandboxedRun(
     }
     const provider = getSandboxProvider(sbProvider);
     const automationSandbox = disposableAutomationResume
-      ? sandboxAutomationConfig()
+      ? {
+          ...sandboxAutomationConfig(),
+          egressAllowlist: await (
+            await import("./projects/effective")
+          ).automationEgressHosts(getRepo(owningAutomation?.repo).id),
+        }
       : undefined;
     const sandbox = await ensureSandboxWithTransientRetry(
       provider,

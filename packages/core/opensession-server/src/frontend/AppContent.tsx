@@ -22,7 +22,6 @@ import {
   Feed,
   FirstMile,
   Goals,
-  IncidentSettings,
   IncidentsPane,
   Issues,
   Prs,
@@ -58,6 +57,7 @@ import {
 import { useActiveSession } from "./hooks/useActiveSession";
 import { useAppDocumentInteractions } from "./hooks/useAppDocumentInteractions";
 import { useAppGlobalHotkeys } from "./hooks/useAppGlobalHotkeys";
+import { useCachedProjects } from "./hooks/useProjects";
 import { useAppRegistries } from "./hooks/useAppRegistries";
 import { useAppRoute } from "./hooks/useAppRoute";
 import { useAppShell } from "./hooks/useAppShell";
@@ -978,6 +978,9 @@ export function AppContent({
     setDeskOverlay,
     toggleSidebarCollapsed,
     showToast,
+    // Cached only: the palette loads the list when it opens, so this
+    // doesn't fetch every project's readiness on each window focus.
+    projects: useCachedProjects().data,
   });
   const openSession = (id: string, created?: UnifiedSession | null) => {
     // Opening a session means foregrounding its chat tab. Callers inside a
@@ -1195,8 +1198,10 @@ export function AppContent({
     openCatchUp: () => navigate({ view: "catchup" }),
     openIncidents: () => navigate({ view: "incidents" }),
     openIncident: (id) => navigate({ view: "incidents", id }),
-    openIncidentSettings: (project) =>
-      navigate({ view: "incidentSettings", project }),
+    openProjectSettings: (project, section) =>
+      navigate({ view: "projectSettings", project, section }),
+    openProjectDefaults: () =>
+      navigate({ view: "settings", section: "projectDefaults" }),
     openSession,
     openWorkspace,
     openSessionReview: openReviewForSession,
@@ -1289,12 +1294,14 @@ export function AppContent({
                       ? route.view
                       : undefined
                 }
+                project={route.view === "projectSettings" ? route : undefined}
                 onShowRoot={() => navigate({ view: "settings" })}
                 onSelect={(key) =>
                   isToolView(key)
                     ? navigate({ view: key })
                     : navigate({ view: "settings", section: key })
                 }
+                onOpenProject={navigationActions.openProjectSettings}
               >
                 {route.view === "automations" ? (
                   <Automations
@@ -1315,11 +1322,6 @@ export function AppContent({
                     onSelect={(id) =>
                       navigate({ view: "goals", id: id || undefined })
                     }
-                  />
-                ) : route.view === "incidentSettings" ? (
-                  <IncidentSettings
-                    project={route.project}
-                    onOpenProject={navigationActions.openIncidentSettings}
                   />
                 ) : null}
               </Settings>

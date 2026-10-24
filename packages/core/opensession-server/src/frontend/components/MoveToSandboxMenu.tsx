@@ -195,7 +195,7 @@ export function MoveToSandboxMenu({
           <div className="px-2.5 py-2 text-meta text-dim">
             {current
               ? "No other Sandbox provider is ready."
-              : "No Sandbox is ready. Connect Daytona or Boat in Workspace > Sandboxes."}
+              : "No Sandbox is ready. Connect Daytona or Boat in Organization → Sandboxes."}
           </div>
         ) : (
           destinations.map((provider) => (

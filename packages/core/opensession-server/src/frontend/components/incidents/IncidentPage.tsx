@@ -18,7 +18,7 @@ import {
   useSignals,
 } from "../../hooks/useIncidents";
 import { isSeamMissing } from "../../lib/api/incidents";
-import type { Route } from "../../lib/app-route";
+import { incidentSettingsRoute, type Route } from "../../lib/app-route";
 import { DEFAULT_DOC_TITLE, docTitle } from "../../lib/brand";
 import { causeOf } from "../../lib/incidents/cause";
 import type { DetailTarget } from "../../lib/incidents/details";
@@ -320,9 +320,13 @@ export function IncidentPage({
       else navigate({ view: "pr", repo: target.repo, number: target.number });
     },
     onOpenIncident: (other) => navigate({ view: "incidents", id: other }),
-    onOpenSettings: (name) =>
-      navigate({ view: "incidentSettings", project: name }),
-    onOpenAppSettings: (section) => navigate({ view: "settings", section }),
+    onOpenSettings: (name) => navigate(incidentSettingsRoute(name)),
+    onOpenAppSettings: (section) =>
+      navigate(
+        project
+          ? incidentSettingsRoute(project, section)
+          : { view: "settings", section },
+      ),
     onIntentHandled: () =>
       navigate({ view: "incidents", id }, { replace: true }),
   };

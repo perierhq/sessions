@@ -8,6 +8,7 @@
 import { readFile } from "node:fs/promises";
 import { writeJsonAtomicAsync } from "./shared/atomic-write";
 import { stateDir } from "./paths";
+import { legacyInputsChanged } from "./projects/legacy-inputs";
 
 export const WEB_SEARCH_SETTINGS = [
   "auto",
@@ -45,5 +46,6 @@ export async function writeWebSearchSetting(
   path = storePath(),
 ): Promise<WebSearchSetting> {
   await writeJsonAtomicAsync(path, { provider: setting });
+  legacyInputsChanged();
   return setting;
 }

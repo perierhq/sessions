@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { BASE_PATH } from "./base";
 import {
   firstMileRequested,
+  incidentSettingsRoute,
   isSettingsRoute,
   parseRoute,
   parseRouteWithSearch,
@@ -128,31 +129,46 @@ describe("issues route", () => {
 });
 
 describe("incident routes", () => {
-  test("home, page and settings", () => {
+  test("home and page", () => {
     expect(parseRoute("/incidents")).toEqual({ view: "incidents" });
     expect(parseRoute("/incidents/inc-1")).toEqual({
       view: "incidents",
       id: "inc-1",
     });
-    expect(parseRoute("/settings/incidents")).toEqual({
-      view: "incidentSettings",
-    });
-    expect(parseRoute("/settings/incidents/acme-api")).toEqual({
-      view: "incidentSettings",
-      project: "acme-api",
-    });
     expect(routePath({ view: "incidents" })).toBe(`${BASE_PATH}/incidents`);
     expect(routePath({ view: "incidents", id: "inc 1" })).toBe(
       `${BASE_PATH}/incidents/inc%201`,
     );
-    expect(routePath({ view: "incidentSettings" })).toBe(
-      `${BASE_PATH}/settings/incidents`,
-    );
-    expect(routePath({ view: "incidentSettings", project: "acme" })).toBe(
-      `${BASE_PATH}/settings/incidents/acme`,
-    );
-    expect(isSettingsRoute({ view: "incidentSettings" })).toBe(true);
     expect(isSettingsRoute({ view: "incidents" })).toBe(false);
+  });
+
+  test("an incident's settings links open its project's page", () => {
+    expect(incidentSettingsRoute("acme-web")).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "incidents",
+    });
+    expect(incidentSettingsRoute("acme-web", "sandboxes")).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "where",
+    });
+    expect(incidentSettingsRoute("acme-web", "providers")).toEqual({
+      view: "settings",
+      section: "providers",
+    });
+  });
+
+  test("old incident settings links open the project pages", () => {
+    expect(parseRoute("/settings/incidents")).toEqual({
+      view: "settings",
+      section: "projectDefaults",
+    });
+    expect(parseRoute("/settings/incidents/acme-web")).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "incidents",
+    });
   });
 
   test("push intents are owner decisions", () => {
@@ -177,5 +193,64 @@ describe("incident routes", () => {
     expect(routePath({ view: "incidents", id: "inc-1", intent: "retry" })).toBe(
       `${BASE_PATH}/incidents/inc-1?intent=retry`,
     );
+  });
+});
+
+describe("project settings routes", () => {
+  test("Defaults", () => {
+    expect(parseRoute("/settings/projects")).toEqual({
+      view: "settings",
+      section: "projectDefaults",
+    });
+    expect(parseRoute("/settings/projectDefaults")).toEqual({
+      view: "settings",
+      section: "projectDefaults",
+    });
+    expect(routePath({ view: "settings", section: "projectDefaults" })).toBe(
+      `${BASE_PATH}/settings/projects`,
+    );
+  });
+
+  test("a project and its sections", () => {
+    expect(parseRoute("/settings/projects/acme-web")).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+    });
+    expect(parseRoute("/settings/projects/acme%20web/access")).toEqual({
+      view: "projectSettings",
+      project: "acme web",
+      section: "access",
+    });
+    // An unknown section still opens the project.
+    expect(parseRoute("/settings/projects/acme-web/nope")).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+    });
+    expect(
+      routePath({
+        view: "projectSettings",
+        project: "acme-web",
+        section: "access",
+      }),
+    ).toBe(`${BASE_PATH}/settings/projects/acme-web/access`);
+    expect(routePath({ view: "projectSettings", project: "acme web" })).toBe(
+      `${BASE_PATH}/settings/projects/acme%20web`,
+    );
+    expect(
+      isSettingsRoute({ view: "projectSettings", project: "acme-web" }),
+    ).toBe(true);
+  });
+
+  test("round trips", () => {
+    const routes: Route[] = [
+      { view: "settings", section: "projectDefaults" },
+      { view: "projectSettings", project: "acme-web" },
+      { view: "projectSettings", project: "docs-site", section: "incidents" },
+    ];
+    for (const route of routes) {
+      expect(parseRoute(routePath(route).slice(BASE_PATH.length))).toEqual(
+        route,
+      );
+    }
   });
 });

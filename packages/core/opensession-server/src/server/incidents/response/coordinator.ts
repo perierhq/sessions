@@ -32,7 +32,6 @@ import {
   isOpenIncident,
 } from "../../../shared/incidents";
 import type { Automation } from "../../automations";
-import { modelUpstreamProvider } from "../../model-catalog";
 import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
@@ -902,12 +901,9 @@ async function startAgent(
     }
     return problem(errorMessage(error));
   }
-  const model = access.model ?? models[role].model;
-  const provider =
-    model === models[role].model
-      ? models[role].provider
-      : (modelUpstreamProvider(model) ?? models[role].provider);
-  const label = model === models[role].model ? models[role].label : model;
+  // The role's model comes from the project (resolveRoleModels); access no
+  // longer carries one.
+  const { model, provider, label } = models[role];
   const investigator = currentAgent(r, "investigator");
   const independence =
     role === "verifier"

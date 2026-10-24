@@ -9,7 +9,6 @@ import type {
   AgentAccess,
   IncidentAgentBinding,
 } from "../../../shared/incident-access";
-import { resolveModel } from "../../models";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentAudit } from "../audit-sink";
 import {
@@ -52,10 +51,6 @@ export function incidentDescendantPolicy(
       spawn: accessSpawnSnapshot(access),
     },
   };
-}
-
-function canonicalModel(id: string): string {
-  return resolveModel(id)?.id ?? id;
 }
 
 function refused(binding: IncidentAgentBinding, reason: string): void {
@@ -108,14 +103,8 @@ export async function enforceIncidentSpawn(
     refuse("Incident agents work in a repository");
   if (request.mode === "code" && access.mode === "ask")
     refuse("This agent may only read (mode ask)");
-  if (request.runner !== undefined && !access.runners.includes(request.runner))
-    refuse(`Runner ${request.runner} is not in this agent's access`);
-  if (
-    access.model &&
-    (request.model === undefined ||
-      canonicalModel(request.model) !== canonicalModel(access.model))
-  )
-    refuse(`This agent must use ${access.model}`);
+  // Runners and models are no longer part of access: the policy's
+  // allowedRunners (narrowed below) and the project's role models decide.
   // The session does not exist yet: this records the decision, and
   // auditIncidentSpawned records the session once it is created.
   incidentAudit({

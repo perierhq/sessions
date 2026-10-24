@@ -27,6 +27,7 @@ import {
   type ActiveRunRecord,
 } from "../../server/run-journal";
 import { listAutomations } from "../../server/automations";
+import { withoutPeopleRestricted } from "../../server/connections";
 import {
   automaticFallbackModel,
   providerFor,
@@ -84,11 +85,75 @@ export const DEFAULT_GITHUB_FLOW_MCP_SERVERS = ["grafana", "linear"];
  * default is applied here rather than by passing the automation's value
  * straight through.
  */
-export async function githubFlowMcpServers(): Promise<string[]> {
+export async function githubFlowMcpServers(
+  repoId?: string | null,
+): Promise<string[]> {
+  // The project's access table decides: its connectors ticked for Reviews
+  // (an unmigrated project composes them from the review automation).
+  if (repoId) {
+    try {
+      const { getProjectDocument } =
+        await import("../../server/projects/store");
+      const doc = await getProjectDocument(repoId);
+      return doc.access.connections
+        .filter((c) => c.roles.includes("reviews"))
+        .map((c) => c.server);
+    } catch (error) {
+      console.warn(
+        "[github-run] project settings unreadable, using the review automation's connectors:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
   const automation = (await listAutomations()).find(
     (a) => a.eventKey === PR_EVENT_KEY,
   );
-  return automation?.mcpServers ?? DEFAULT_GITHUB_FLOW_MCP_SERVERS;
+  // Not from a project's table: no connector open only through "Allow
+  // agents".
+  return withoutPeopleRestricted(
+    automation?.mcpServers ?? DEFAULT_GITHUB_FLOW_MCP_SERVERS,
+  );
+}
+
+/** What the project's access table lets Reviews do on the web: no
+ *  web_search when its cell is off, and web_fetch to the global websites
+ *  plus the project's websites ticked for Reviews. */
+async function reviewWebAccess(repoId: string | null | undefined): Promise<{
+  deniedTools: Record<string, string> | undefined;
+  webFetchHosts: string[] | undefined;
+}> {
+  if (!repoId) return { deniedTools: undefined, webFetchHosts: undefined };
+  const [{ roleWebAccess }, { globalWebsites }] = await Promise.all([
+    import("../../server/projects/effective"),
+    import("../../server/projects/global-defaults"),
+  ]);
+  const web = await roleWebAccess(repoId, "reviews");
+  const hosts = [...new Set([...globalWebsites(), ...web.websites])];
+  return {
+    deniedTools: Object.keys(web.deniedTools).length
+      ? web.deniedTools
+      : undefined,
+    webFetchHosts: hosts.length ? hosts : undefined,
+  };
+}
+
+/** The Reviews model a project (else the global default) sets, if any. */
+async function reviewsModel(
+  repoId: string | null,
+): Promise<string | undefined> {
+  try {
+    const { globalRoleDefault } =
+      await import("../../server/projects/global-defaults");
+    if (repoId) {
+      const { getProjectDocument } =
+        await import("../../server/projects/store");
+      const own = (await getProjectDocument(repoId)).models.reviews;
+      if (own) return own;
+    }
+    return globalRoleDefault("reviews");
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -430,7 +495,8 @@ async function runGithubAgentTurn(
       ? readEngineSessionId(existingSessionFile, opts.model)
       : "";
 
-  let effectiveModel = opts.model || existingSessionFile?.model;
+  let effectiveModel =
+    opts.model || existingSessionFile?.model || (await reviewsModel(repoId));
   let selectedModel = effectiveModel;
   let effectiveProvider = providerFor(effectiveModel);
   const modelHistory: NonNullable<NativeSessionFile["modelHistory"]> = [
@@ -500,6 +566,7 @@ async function runGithubAgentTurn(
       await discardGithubRunRecord(existingDetachedRun, bksId);
     }
 
+    const reviewWeb = await reviewWebAccess(repoId);
     let events: AsyncIterable<StreamEvent>;
     if (recoveredRun) {
       recoveredRun = journalStartRecovery(recoveredRun);
@@ -538,7 +605,9 @@ async function runGithubAgentTurn(
           aws: true,
           author: opts.author,
           fallbackModel: automaticFallbackModel(effectiveModel),
-          mcpServers: await githubFlowMcpServers(),
+          mcpServers: await githubFlowMcpServers(repoId),
+          deniedTools: reviewWeb.deniedTools,
+          webFetchHosts: reviewWeb.webFetchHosts,
           trustProfile: "automation",
           journalKind: `github-${opts.kind}`,
           firstJournaledAt: recoveredRun.firstJournaledAt,
@@ -558,7 +627,9 @@ async function runGithubAgentTurn(
         aws: true,
         author: opts.author,
         fallbackModel: automaticFallbackModel(effectiveModel),
-        mcpServers: await githubFlowMcpServers(),
+        mcpServers: await githubFlowMcpServers(repoId),
+        deniedTools: reviewWeb.deniedTools,
+        webFetchHosts: reviewWeb.webFetchHosts,
         trustProfile: "automation",
         journalKind: `github-${opts.kind}`,
       });
@@ -573,7 +644,9 @@ async function runGithubAgentTurn(
         aws: true,
         author: opts.author,
         fallbackModel: automaticFallbackModel(effectiveModel),
-        mcpServers: await githubFlowMcpServers(),
+        mcpServers: await githubFlowMcpServers(repoId),
+        deniedTools: reviewWeb.deniedTools,
+        webFetchHosts: reviewWeb.webFetchHosts,
         githubEnv,
         journal: { osSessionId: bksId, kind: `github-${opts.kind}` },
       });

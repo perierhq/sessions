@@ -155,7 +155,6 @@ import {
   SidebarDisplayRows,
   SidebarItemsSection,
 } from "./AppearancePanel";
-import { PersonalSandboxDefaultRow } from "./SandboxDefaults";
 import { PendingSendsSection } from "./PendingSendsSection";
 import { RepoTile } from "../RepoTile";
 import { ModelEffortSelect } from "../ModelEffortSelect";
@@ -897,7 +896,6 @@ export function PreferencesPanel() {
               />
             }
           />
-          <PersonalSandboxDefaultRow />
           <PersonalOutputStyleRow />
           <YouShouldKnowRow />
         </SettingGroup>

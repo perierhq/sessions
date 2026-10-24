@@ -17,16 +17,17 @@ import {
   IconHome,
   IconGlobe,
   IconKeyboard,
-  IconOctagonAlert,
   IconPeople,
   IconPlug,
   IconRocket,
   IconServer,
   IconShieldCheck,
   IconSliders,
+  IconStack,
   IconTarget,
   IconUser,
 } from "../components/icons";
+import type { ProjectListItem } from "../../shared/project-settings";
 import { SETTINGS_KEYWORDS } from "./settings-search";
 
 const IconProviders = IconLibrary["IconShapes"];
@@ -38,11 +39,7 @@ const IconProviders = IconLibrary["IconShapes"];
 // table, two surfaces, no drift.
 
 /** Tool surfaces hosted inside Settings — App renders their panel as children. */
-export type ToolSectionKey =
-  | "automations"
-  | "goals"
-  | "incidentSettings"
-  | "security";
+export type ToolSectionKey = "automations" | "goals" | "security";
 
 /** Listed in nav order (SECTIONS below). */
 export type SettingsSectionKey =
@@ -50,6 +47,7 @@ export type SettingsSectionKey =
   | "preferences"
   | "notifications"
   | "shortcuts"
+  | "projectDefaults"
   | "general"
   | "setup"
   | "repos"
@@ -74,7 +72,6 @@ export type SettingsSectionKey =
 export const TOOL_SECTIONS = new Set<SettingsSectionKey>([
   "automations",
   "goals",
-  "incidentSettings",
   "security",
 ]);
 
@@ -109,6 +106,15 @@ export const SECTIONS: SettingsSection[] = [
     label: "Shortcuts",
     group: "Personal",
     icon: <IconKeyboard />,
+  },
+  // Projects: the defaults every project starts from. Each project's own
+  // page follows in the nav, read from /api/projects rather than this table
+  // (Settings.tsx), so a project is not a SettingsSectionKey.
+  {
+    key: "projectDefaults",
+    label: "Defaults",
+    group: "Projects",
+    icon: <IconStack />,
   },
   {
     key: "general",
@@ -193,12 +199,6 @@ export const SECTIONS: SettingsSection[] = [
     label: "Goals",
     group: "Automation",
     icon: <IconTarget />,
-  },
-  {
-    key: "incidentSettings",
-    label: "Incidents",
-    group: "Automation",
-    icon: <IconOctagonAlert />,
   },
   {
     key: "security",
@@ -287,4 +287,24 @@ export function settingsPaletteActions(): SettingsPaletteAction[] {
       section: section.key,
     }),
   );
+}
+
+export type ProjectPaletteAction = Omit<SettingsPaletteAction, "section"> & {
+  /** The project whose settings page to open. */
+  project: string;
+};
+
+/** One palette action per project: "acme-web settings". */
+export function projectPaletteActions(
+  projects: ReadonlyArray<Pick<ProjectListItem, "id" | "label">>,
+): ProjectPaletteAction[] {
+  return projects.map((project) => ({
+    id: `settings-project-${project.id}`,
+    label: `${project.label} settings`,
+    description: "Settings · Projects",
+    category: "Navigate" as const,
+    keywords: [project.id, "project", "incidents", "sandbox", "access"],
+    icon: <IconBranches size={PALETTE_ICON_SIZE} />,
+    project: project.id,
+  }));
 }

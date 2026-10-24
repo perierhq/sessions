@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_GITHUB_FLOW_MCP_SERVERS } from "./run";
+import { useIncidentTestKernel } from "../../server/incidents/testing/kernel-fixture";
+import { setProjectAccessForTest } from "../../server/incidents/testing/project-access";
+import { DEFAULT_GITHUB_FLOW_MCP_SERVERS, githubFlowMcpServers } from "./run";
+
+useIncidentTestKernel();
 
 /**
  * The PR flows mount an explicit MCP allowlist instead of every connector
@@ -25,4 +29,14 @@ describe("github flow MCP scope", () => {
       "linear",
     ]);
   });
+});
+
+test("a project's Reviews connectors decide what its PR flows mount", async () => {
+  await setProjectAccessForTest("acme-web", (access) => {
+    access.connections = [
+      { server: "sentry", roles: ["reviews"] },
+      { server: "linear", roles: ["automations"] },
+    ];
+  });
+  expect(await githubFlowMcpServers("acme-web")).toEqual(["sentry"]);
 });

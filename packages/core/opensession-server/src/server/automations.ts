@@ -50,6 +50,9 @@ import {
   modelLabel,
   toPiModel,
 } from "./models";
+import { withoutPeopleRestricted } from "./connections";
+import { INTERNAL_MCP_CAPABILITIES } from "./mcp-capabilities";
+import { globalRoleDefault } from "./projects/global-defaults";
 import {
   createWorktree,
   ensureAskCheckout,
@@ -120,6 +123,7 @@ import {
   type AutomationOutput,
 } from "./automation-outputs";
 import { automationIntentAlreadySettled } from "./automation-intent-recovery";
+import { legacyInputsChanged } from "./projects/legacy-inputs";
 import {
   openTriageDiscussion,
   triageDiscussionThread,
@@ -473,6 +477,7 @@ export async function getAutomation(id: string): Promise<Automation | null> {
  *  starts from a stored copy, so an overlapping writer is not clobbered. */
 export async function saveAutomation(a: Automation): Promise<void> {
   await automationStore().set(a.id, a);
+  legacyInputsChanged();
 }
 
 /**
@@ -1184,6 +1189,7 @@ export async function updateAutomation(
   });
   if (rejected) return rejected;
   if (!next) return { error: "Automation not found" };
+  legacyInputsChanged();
   return next;
 }
 
@@ -1557,6 +1563,7 @@ export async function automationResumeMcpForSession(
 export async function deleteAutomation(id: string): Promise<boolean> {
   if (!isAutomationId(id)) return false;
   if (!(await automationStore().delete(id))) return false;
+  legacyInputsChanged();
   deleteAutomationInputState(id);
   deleteAutomationOutputState(id);
   return true;
@@ -1779,8 +1786,75 @@ export const DEFAULT_PI_AUTOMATION_MODEL = "pi/anthropic/claude-opus-5-5";
  * ids migrate in place, so old records cannot silently keep the old engine. */
 export function automationModel(model?: string): string | undefined {
   const requested = (model || "").trim();
-  if (!requested) return DEFAULT_PI_AUTOMATION_MODEL;
+  if (!requested) {
+    // The Automations default from Settings → Defaults, else the built-in.
+    const fallback = globalRoleDefault("automations");
+    return fallback
+      ? toPiModel(fallback) || fallback
+      : DEFAULT_PI_AUTOMATION_MODEL;
+  }
   return toPiModel(requested) || requested;
+}
+
+/** The model an automation runs on: its own, else its project's
+ *  Automations model, else the global default. */
+export async function automationRunModel(
+  a: Pick<Automation, "model" | "repo">,
+): Promise<string> {
+  if (a.model?.trim()) return automationModel(a.model)!;
+  try {
+    const { getProjectDocument } = await import("./projects/store");
+    const doc = await getProjectDocument(getRepo(a.repo).id);
+    if (doc.models.automations) return automationModel(doc.models.automations)!;
+  } catch (error) {
+    console.warn(
+      "[automations] project settings unreadable, using the default model:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  return automationModel()!;
+}
+
+function internalMcpServer(name: string): boolean {
+  return (
+    name.startsWith("opensession-") ||
+    Object.hasOwn(INTERNAL_MCP_CAPABILITIES, name)
+  );
+}
+
+/**
+ * The automation as this run sees it under its project's settings: its
+ * connectors narrowed to the ones the project lets automations use
+ * (built-in servers stay). Where it runs is unchanged (D3 as built): on
+ * this machine, or the disposable sandbox when its own `sandbox` is set;
+ * the project's and the global sandbox never move it.
+ */
+export async function automationUnderProject(
+  a: Automation,
+): Promise<Automation> {
+  let allowed: string[];
+  try {
+    const { getProjectDocument } = await import("./projects/store");
+    const doc = await getProjectDocument(getRepo(a.repo).id);
+    allowed = doc.access.connections
+      .filter((c) => c.roles.includes("automations"))
+      .map((c) => c.server);
+  } catch (error) {
+    console.warn(
+      "[automations] project settings unreadable, keeping the automation's own connectors:",
+      error instanceof Error ? error.message : error,
+    );
+    // Not from the project's table: nothing open only through "Allow
+    // agents" ("all" never gets those anyway).
+    return a.mcpServers === undefined
+      ? a
+      : { ...a, mcpServers: withoutPeopleRestricted(a.mcpServers) };
+  }
+  const mcpServers =
+    a.mcpServers === undefined
+      ? allowed
+      : a.mcpServers.filter((n) => internalMcpServer(n) || allowed.includes(n));
+  return { ...a, mcpServers };
 }
 
 const automationPreparations = new Set<string>();
@@ -2153,9 +2227,13 @@ export async function runAutomation(
         (id) => recordAutomationIntentDiscussion(bksId, id),
       );
 
-    const runModel = automationModel(
-      options?.modelOverride || automation.model,
-    );
+    const runModel = options?.modelOverride
+      ? automationModel(options.modelOverride)
+      : await automationRunModel(automation);
+    automation = await automationUnderProject(automation);
+    const web = await (
+      await import("./projects/effective")
+    ).roleWebAccess(getRepo(automation.repo).id, "automations");
     const runtimeSandboxValidation = validateSandboxAutomation({
       ...automation,
       model: options?.modelOverride || automation.model,
@@ -2204,7 +2282,12 @@ export async function runAutomation(
       // prewarm/template adoption, project only the pinned account and the
       // explicit MCP allowlist, and install the egress allowlist before the
       // run host launches. It is destroyed in the finally below.
-      const automationSandbox = sandboxAutomationConfig();
+      const automationSandbox = {
+        ...sandboxAutomationConfig(),
+        egressAllowlist: await (
+          await import("./projects/effective")
+        ).automationEgressHosts(repo.id),
+      };
       const provider = getSandboxProvider(automationSandbox.provider);
       sandbox = await provider.ensure({
         sessionId: bksId,
@@ -2240,9 +2323,7 @@ export async function runAutomation(
     // a mid-run usage-limit fallback can swap it (tracked in modelHistory), so
     // word it as "started on".
     {
-      const runModelForPrompt = automationModel(
-        options?.modelOverride || automation.model,
-      );
+      const runModelForPrompt = runModel;
       const displayModel = (runModelForPrompt || "").replace(
         /^(?:pi|pi)\/[^/]+\//,
         "",
@@ -2538,10 +2619,12 @@ export async function runAutomation(
         model: runModel,
         mcpServers: automation.mcpServers || [],
         proxyMcpServers: Object.keys(inProcessMcp),
-        deniedTools: AUTOMATION_DENIED_TOOLS,
+        deniedTools: { ...AUTOMATION_DENIED_TOOLS, ...web.deniedTools },
         // web_fetch reads only what the disposable Executor may reach.
         webFetchHosts: automationWebFetchHosts(
-          sandboxAutomationConfig().egressAllowlist,
+          await (
+            await import("./projects/effective")
+          ).automationEgressHosts(repo.id),
         ),
         confirmTools: STRIPE_CONFIRM_TOOLS,
         aws: false,
@@ -2564,7 +2647,8 @@ export async function runAutomation(
         mode: automation.mode,
         model: runModel,
         mcpServers: (automation.mcpServers ?? "all") as "all" | string[],
-        deniedTools: AUTOMATION_DENIED_TOOLS,
+        // Web search follows the project's access table.
+        deniedTools: { ...AUTOMATION_DENIED_TOOLS, ...web.deniedTools },
         // No onAskUser here, so confirm tools deny with "propose it for a human".
         confirmTools: STRIPE_CONFIRM_TOOLS,
         aws: true, // host automations keep short-lived instance-role read creds

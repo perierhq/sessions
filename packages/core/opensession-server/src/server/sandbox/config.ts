@@ -29,6 +29,7 @@ import {
 } from "./adapter-signature";
 import type { SandboxProviderId, SandboxProviderUsability } from "./provider";
 import { readJsonFileCopy } from "../shared/json-file-cache";
+import { legacyInputsChanged } from "../projects/legacy-inputs";
 
 // Env-overridable so the verify suite (and unit tests) can point a scratch
 // config at a scratch setup without touching the live file (which is read
@@ -130,6 +131,9 @@ export interface SandboxConfig {
   provider: SandboxProviderId;
   /** Shared default for NEW interactive sessions. Absent/"none" = host. */
   sessionDefault?: RunnableSandboxProviderId | "none";
+  /** Where Portals (previews) run for projects that don't choose: a provider,
+   *  or absent to run them beside the session. */
+  portalDefault?: RunnableSandboxProviderId;
   /** Stop idle sandboxes after this many minutes; unset = provider default (30). */
   idleStopMinutes?: number;
   /** Machine shape overlaid from a provider connection's settings, never read
@@ -229,6 +233,9 @@ export function sandboxConfig(): SandboxConfig {
             : isRunnableSandboxProvider(raw?.sessionDefault)
               ? raw.sessionDefault
               : undefined,
+        ...(isRunnableSandboxProvider(raw?.portalDefault)
+          ? { portalDefault: raw.portalDefault }
+          : {}),
         idleStopMinutes:
           typeof raw?.idleStopMinutes === "number" && raw.idleStopMinutes > 0
             ? raw.idleStopMinutes
@@ -632,6 +639,7 @@ export function setRepoSandboxDefault(
     if (Object.keys(perRepo).length) raw.perRepo = perRepo;
     else delete raw.perRepo;
   });
+  legacyInputsChanged();
   return normalized === "workspace"
     ? null
     : (normalized as RunnableSandboxProviderId | "none");
@@ -1158,4 +1166,47 @@ export function remoteSandboxCallbackBaseUrl(): string {
   const ingress = configuredIngress().publicBaseUrl;
   if (ingress) return normalizeWsBase(ingress);
   return sandboxCallbackBaseUrl();
+}
+
+// ── Global defaults for the project settings Defaults page ─────────────────
+
+/** Set the global previews default; `"same"` or `"none"` runs them beside
+ *  the session. */
+export function setPortalSandboxDefault(
+  value: string,
+): RunnableSandboxProviderId | null {
+  const normalized = value.trim().toLowerCase();
+  const beside = normalized === "same" || normalized === "none";
+  if (!beside && !isRunnableSandboxProvider(normalized))
+    throw new Error(`Unknown sandbox provider "${value}"`);
+  if (!beside && sandboxProviderUsability(normalized).state !== "usable")
+    throw new Error(
+      `Sandbox provider "${normalized}" is not currently available`,
+    );
+  if (beside && !existsSync(configPath())) return null;
+  updateSandboxConfigFile((raw) => {
+    if (beside) delete raw.portalDefault;
+    else raw.portalDefault = normalized;
+  });
+  return beside ? null : (normalized as RunnableSandboxProviderId);
+}
+
+/** Replace the hosts every unattended run may open (`automation.
+ *  egressAllowlist`). Callers validate each entry first. */
+export function setAutomationEgressAllowlist(hosts: string[]): string[] {
+  const list = [...new Set(hosts.map((h) => h.trim()).filter(Boolean))];
+  if (!list.length && !existsSync(configPath())) return [];
+  updateSandboxConfigFile((raw) => {
+    const automation =
+      raw.automation &&
+      typeof raw.automation === "object" &&
+      !Array.isArray(raw.automation)
+        ? { ...(raw.automation as Record<string, unknown>) }
+        : {};
+    if (list.length) automation.egressAllowlist = list;
+    else delete automation.egressAllowlist;
+    if (Object.keys(automation).length) raw.automation = automation;
+    else delete raw.automation;
+  });
+  return list;
 }

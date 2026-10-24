@@ -43,12 +43,19 @@ function stateWord(signal: SignalView): string {
 export function SignalsSection({
   project,
   runners,
+  onSaved,
 }: {
   project: string;
   /** The project's bound production Runners ("Check from"). */
   runners: ProductionRunnerView[];
+  /** A signal or maintenance window was saved (readiness counts them). */
+  onSaved?: () => void;
 }) {
   const signals = useSignals();
+  const saved = () => {
+    void signals.mutate();
+    onSaved?.();
+  };
   // `key` starts every open from the signal as stored.
   const [editor, setEditor] = useState<{
     key: number;
@@ -100,7 +107,7 @@ export function SignalsSection({
           onClose={() => setMaintenanceOpen(false)}
           project={project}
           signals={sortSignals(own)}
-          onSaved={() => void signals.mutate()}
+          onSaved={saved}
         />
       )}
       {editor && (
@@ -112,7 +119,7 @@ export function SignalsSection({
           signal={editor.signal}
           runners={runners}
           signals={all}
-          onSaved={() => void signals.mutate()}
+          onSaved={saved}
         />
       )}
     </>

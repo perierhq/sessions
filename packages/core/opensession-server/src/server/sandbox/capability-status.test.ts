@@ -336,11 +336,11 @@ describe("provider-independent model-family sandboxability", () => {
 });
 
 describe("resolveRequestedSandbox (create-path validation)", () => {
-  test("omitted interactive choice uses defaults; explicit Host still wins", () => {
+  test("omitted interactive choice uses defaults; explicit Host still wins", async () => {
     write({ provider: "daytona", sessionDefault: "daytona" });
     ready("daytona");
     expect(
-      resolveInteractiveSandbox(
+      await resolveInteractiveSandbox(
         undefined,
         "sandbox-default-test-user",
         undefined,
@@ -348,7 +348,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       ),
     ).toEqual({ ok: true, provider: "daytona" });
     expect(
-      resolveInteractiveSandbox(
+      await resolveInteractiveSandbox(
         "local",
         "sandbox-default-test-user",
         undefined,
@@ -357,7 +357,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     ).toEqual({ ok: true, provider: null });
   });
 
-  test("a repo default sends omitted choices to its Sandbox, explicit Host still wins", () => {
+  test("a repo default sends omitted choices to its Sandbox, explicit Host still wins", async () => {
     write({
       provider: "daytona",
       sessionDefault: "none",
@@ -365,7 +365,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     });
     ready("daytona");
     expect(
-      resolveInteractiveSandbox(
+      await resolveInteractiveSandbox(
         undefined,
         "sandbox-default-test-user",
         "tella",
@@ -373,7 +373,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       ),
     ).toEqual({ ok: true, provider: "daytona" });
     expect(
-      resolveInteractiveSandbox(
+      await resolveInteractiveSandbox(
         undefined,
         "sandbox-default-test-user",
         "other",
@@ -381,7 +381,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       ),
     ).toEqual({ ok: true, provider: null });
     expect(
-      resolveInteractiveSandbox(
+      await resolveInteractiveSandbox(
         "local",
         "sandbox-default-test-user",
         "tella",

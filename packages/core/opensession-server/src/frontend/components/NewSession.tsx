@@ -69,6 +69,10 @@ import {
   sandboxProviderNote,
 } from "../lib/ready-sandbox-providers";
 import {
+  newSessionSandboxDefault,
+  newSessionSandboxPreselect,
+} from "../lib/project-settings/defaults-model";
+import {
   getSessionCheckoutPrefs,
   onSessionCheckoutPrefChanged,
   resolveSessionCheckoutPref,
@@ -553,27 +557,18 @@ export function NewSession({
     fetchSandboxStatus(getCurrentUser())
       .then((status) => {
         setSandboxStatus(status);
-        // This machine remains the clear default. Sandbox configuration belongs
-        // behind the explicit Sandbox choice, never in an invisible default.
-        if (!sandboxSelectionTouched.current) setSandboxProvider("");
       })
       .catch(() => {});
   }, []);
-  // A project can be set to always start in a Sandbox (Workspace >
-  // Sandboxes > Projects). Follow it whenever the project changes until the
-  // person picks for themselves; the choice stays visible in "Machine".
-  const repoSandboxDefault = sandboxStatus?.defaults?.repos?.[repo];
+  // Where a session starts unless the person picks: the project's sandbox
+  // (Settings → Projects → the project → Where agents run), else the global
+  // default. Follow it whenever the project changes until the person picks
+  // for themselves; the choice stays visible in "Machine".
+  const preselect = newSessionSandboxPreselect(sandboxStatus, repo);
   useEffect(() => {
     if (sandboxSelectionTouched.current || !sandboxStatus) return;
-    const ready = readySandboxProviders(sandboxStatus);
-    setSandboxProvider(
-      repoSandboxDefault &&
-        repoSandboxDefault !== "none" &&
-        ready.includes(repoSandboxDefault)
-        ? repoSandboxDefault
-        : "",
-    );
-  }, [repo, repoSandboxDefault, sandboxStatus]);
+    setSandboxProvider(preselect);
+  }, [preselect, sandboxStatus]);
   const readyProviders = readySandboxProviders(sandboxStatus);
   const sandboxAvailable = readyProviders.length > 0;
   const selectedSandboxAvailable =
@@ -581,9 +576,13 @@ export function NewSession({
   const showSandboxPicker =
     !!sandboxStatus && (sandboxAvailable || !!sandboxProvider);
   const sandboxLabel = (id: string) =>
-    id === "" ? "This machine" : sandboxProviderLabel(id);
-  // The configured personal or workspace default, marked in the menu.
-  const workspaceDefault = sandboxStatus?.defaults?.effective;
+    id === ""
+      ? "This machine"
+      : id === "podman"
+        ? "This machine · container"
+        : sandboxProviderLabel(id);
+  // The project's sandbox, else the global default, marked in the menu.
+  const workspaceDefault = newSessionSandboxDefault(sandboxStatus, repo);
   // This machine, every ready provider by name, and a selected provider that
   // is no longer ready (a project default), so the choice stays visible.
   const sandboxChoices = [
@@ -610,7 +609,7 @@ export function NewSession({
   );
   const sandboxModelWarning = (() => {
     if (sandboxProvider && !selectedSandboxAvailable) {
-      return "The Sandbox is unavailable. Choose This machine or connect a provider in Workspace > Sandboxes.";
+      return "The Sandbox is unavailable. Pick this machine or connect a provider in Organization → Sandboxes.";
     }
     if (!sandboxProvider || !modelFamily) return null;
     if (modelFamily.sandboxable) return null;
@@ -1824,7 +1823,7 @@ export function NewSession({
                             id,
                             note: available
                               ? sandboxProviderNote(id)
-                              : "Unavailable. Choose This machine or connect it in Workspace > Sandboxes.",
+                              : "Unavailable. Pick this machine or connect it in Organization → Sandboxes.",
                           };
                           const selected = sandboxProvider === opt.id;
                           return (

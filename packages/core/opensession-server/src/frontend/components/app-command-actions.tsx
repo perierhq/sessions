@@ -1,7 +1,11 @@
 import type { useAppRoute } from "../hooks/useAppRoute";
 import type { useSessionTabs } from "../hooks/useSessionTabs";
 import { PRODUCT_NAME } from "../lib/brand";
-import { settingsPaletteActions } from "../lib/settings-sections";
+import type { ProjectListItem } from "../../shared/project-settings";
+import {
+  projectPaletteActions,
+  settingsPaletteActions,
+} from "../lib/settings-sections";
 import { absoluteLink, copyToClipboard } from "../lib/share-link";
 import { shortcutPrimaryKeys } from "../lib/shortcuts";
 import { setThemePref, type EffectiveTheme } from "../lib/theme";
@@ -64,6 +68,8 @@ interface BuildAppCommandActionsOptions {
   }) => void;
   toggleSidebarCollapsed: () => void;
   showToast: (message: string) => void;
+  /** Every project, for one "<project> settings" action each. */
+  projects?: ReadonlyArray<Pick<ProjectListItem, "id" | "label">>;
 }
 
 export function buildAppCommandActions({
@@ -84,6 +90,7 @@ export function buildAppCommandActions({
   setDeskOverlay,
   toggleSidebarCollapsed,
   showToast,
+  projects = [],
 }: BuildAppCommandActionsOptions): CommandPaletteAction[] {
   // Same target as the ⌘G/⌘⇧G chords: the primary branch's PR, else the
   // first linked repo PR on a multi-repo session.
@@ -432,6 +439,10 @@ export function buildAppCommandActions({
     ...settingsPaletteActions().map(({ section, ...action }) => ({
       ...action,
       run: () => navigate({ view: "settings", section }),
+    })),
+    ...projectPaletteActions(projects).map(({ project, ...action }) => ({
+      ...action,
+      run: () => navigate({ view: "projectSettings", project }),
     })),
   ];
 }

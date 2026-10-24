@@ -11,6 +11,7 @@ import {
   unwatchFile,
   watchFile,
 } from "fs";
+import { legacyInputsChanged } from "./projects/legacy-inputs";
 import { writeFileAtomic } from "./shared/atomic-write";
 import { configuredPaths } from "./config";
 import { resolveTeammate } from "./shared/user-mappings";
@@ -175,6 +176,7 @@ function writeMcpConfig(config: { mcpServers: Record<string, any> }): void {
     copyFileSync(configPath, `${configPath}.bak`);
   } catch {}
   writeFileAtomic(configPath, JSON.stringify(config, null, 2) + "\n");
+  legacyInputsChanged();
   cachedMcpConfig = config;
   cachedMcpConfigPath = configPath;
   cache = null;
@@ -301,7 +303,13 @@ export function addMcpServerEntry(
   if (config.mcpServers[clean]) {
     return { error: `Server "${clean}" already exists, remove it first` };
   }
-  const { allowedUsers: _ignored, ...rest } = entry;
+  // "Allow agents" is a signed-in person's switch (setMcpAllowUnattended),
+  // never the package's.
+  const {
+    allowedUsers: _ignored,
+    allowUnattended: _notThePackages,
+    ...rest
+  } = entry;
   config.mcpServers[clean] = allowedUsers ? { ...rest, allowedUsers } : rest;
   writeMcpConfig(config);
   return { ok: true };
@@ -331,6 +339,41 @@ export function setMcpAllowedUsers(
   return { ok: true, allowedUsers: cleaned };
 }
 
+/**
+ * `names` without the servers limited to named people. For an unattended
+ * run's connector list that doesn't come from a project's access table:
+ * such a server could reach that run only through "Allow agents", which a
+ * project grants by ticking it.
+ */
+export function withoutPeopleRestricted(names: readonly string[]): string[] {
+  const servers = readMcpConfig().mcpServers;
+  return names.filter((name) => {
+    const users = servers[name]?.allowedUsers;
+    return !(Array.isArray(users) && users.length > 0);
+  });
+}
+
+/**
+ * Let runs that carry no user (incident agents, automations, reviews) use a
+ * server restricted to named people (`allowUnattended: true`), or stop them
+ * (`false`). Person-only: the route checks the caller. `apple-release`
+ * stays restricted to its prompter.
+ */
+export function setMcpAllowUnattended(
+  name: string,
+  on: boolean,
+): { ok: true } | { error: string } {
+  const config = readMcpConfig();
+  const entry = config.mcpServers[name];
+  if (!entry) return { error: `Server "${name}" not found` };
+  if (on && requiresAllowedUsers(name))
+    return { error: `Server "${name}" is never available to agents` };
+  if (on) entry.allowUnattended = true;
+  else delete entry.allowUnattended;
+  writeMcpConfig(config);
+  return { ok: true };
+}
+
 export function replaceMcpServerEntries(
   updates: Record<string, Record<string, unknown> | undefined>,
 ): { ok: true } | { error: string } {
@@ -348,8 +391,15 @@ export function replaceMcpServerEntries(
     }
   }
   for (const [name, entry] of Object.entries(updates)) {
-    if (entry) config.mcpServers[name] = entry;
-    else delete config.mcpServers[name];
+    if (!entry) {
+      delete config.mcpServers[name];
+      continue;
+    }
+    // "Allow agents" changes only through setMcpAllowUnattended: keep the
+    // stored switch, whatever the update carries.
+    const { allowUnattended: _ignored, ...rest } = entry;
+    const kept = config.mcpServers[name]?.allowUnattended === true;
+    config.mcpServers[name] = kept ? { ...rest, allowUnattended: true } : rest;
   }
   writeMcpConfig(config);
   return { ok: true };

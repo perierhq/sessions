@@ -1,3 +1,4 @@
+import { TextLink } from "../../ui/text-link";
 import { useEffect, useRef, useState } from "react";
 import type {
   SandboxConnectionInfo,
@@ -41,7 +42,6 @@ import { InlineAlert } from "../../ui/state";
 import { Switch } from "../../ui/switch";
 import { toast } from "../../ui/toast";
 import { IconCheck, IconPlus, IconX } from "../icons";
-import { WorkspaceSandboxDefaults } from "./SandboxDefaults";
 import { SandboxProviderLogo } from "./SandboxProviderLogo";
 
 const PROVIDERS: Array<{
@@ -1113,7 +1113,12 @@ function ProjectEnvironmentDialog({
   );
 }
 
-export function SandboxesPanel() {
+export function SandboxesPanel({
+  onOpenDefaults,
+}: {
+  /** Settings → Projects → Defaults, where the default sandbox is set. */
+  onOpenDefaults?: () => void;
+} = {}) {
   const [connections, setConnections] = useState<SandboxConnectionInfo[]>([]);
   const [operations, setOperations] = useState<SandboxOperationInfo[]>([]);
   const [environments, setEnvironments] = useState<SandboxEnvironmentInfo[]>(
@@ -1236,10 +1241,9 @@ export function SandboxesPanel() {
         title="Sandboxes"
         description="Connect compute you already pay for. Each session gets an isolated sandbox; project snapshots make new sandboxes start faster."
       />
-      <WorkspaceSandboxDefaults />
       {connectionsError && <InlineAlert>{connectionsError}</InlineAlert>}
       {environmentsError && <InlineAlert>{environmentsError}</InlineAlert>}
-      <SettingsGroupLabel>Connections</SettingsGroupLabel>
+      <SettingsGroupLabel className="mt-0">Connections</SettingsGroupLabel>
       <div className="grid gap-3">
         {loading && (
           <SettingCardSkeleton
@@ -1258,8 +1262,13 @@ export function SandboxesPanel() {
         ))}
       </div>
       <SettingsHint>
-        This machine remains the default. Personal and per-session choices can
-        override the workspace default.
+        Each project picks its sandbox on its own page, and the default is in{" "}
+        {onOpenDefaults ? (
+          <TextLink onClick={onOpenDefaults}>Projects → Defaults</TextLink>
+        ) : (
+          "Projects → Defaults"
+        )}
+        . A choice in the new session menu beats both.
       </SettingsHint>
       {reusableEnvironments.length > 0 && (
         <>

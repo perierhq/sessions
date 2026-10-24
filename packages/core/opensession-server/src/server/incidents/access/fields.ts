@@ -594,6 +594,80 @@ export function checkWithinGrants(
   return null;
 }
 
+/**
+ * Every item of a per-signal exception that its project's access table
+ * doesn't allow: connectors, hosts, credentials and repos outside the
+ * grants, a wider mode or credential mode, an egress route the table has
+ * no row for, and egress hosts that aren't one of the table's websites
+ * (stricter than `checkWithinGrants`, where a grant without hosts lets a
+ * route reach any). Runners never apply. Empty when it fits.
+ */
+export function exceptionOutsideGrants(
+  fields: AccessProfileFields,
+  grants: ProjectAccessGrants,
+): Array<{ field: keyof AccessProfileFields; item: string }> {
+  const out: Array<{ field: keyof AccessProfileFields; item: string }> = [];
+  for (const name of fields.connections ?? [])
+    if (!grants.connections.includes(name))
+      out.push({ field: "connections", item: name });
+  if (fields.mode && !modeWithin(fields.mode, grants.maxMode))
+    out.push({ field: "mode", item: fields.mode });
+  for (const repo of fields.repos ?? [])
+    if (!grants.repos.includes(repo)) out.push({ field: "repos", item: repo });
+  for (const runner of fields.runners ?? [])
+    out.push({ field: "runners", item: runner });
+  const hostKeys = new Set(grants.hosts.map(hostGrantKey));
+  for (const host of fields.hosts ?? [])
+    if (!hostKeys.has(hostGrantKey(host)))
+      out.push({ field: "hosts", item: hostGrantKey(host) });
+  for (const cred of fields.credentials ?? []) {
+    const grant = grants.credentials.find(
+      (g) => g.credential === cred.credential,
+    );
+    if (!grant || !grantModeWithin(cred.mode, grant.mode))
+      out.push({ field: "credentials", item: cred.credential });
+  }
+  if (fields.egress) {
+    const key = egressRouteKey(fields.egress);
+    const grant = grants.egress.find((g) => egressRouteKey(g) === key);
+    if (!grant) out.push({ field: "egress", item: key });
+    else
+      for (const host of fields.egress.hosts ?? [])
+        if (!(grant.hosts ?? []).includes(host))
+          out.push({ field: "egress", item: host });
+  }
+  return out;
+}
+
+/**
+ * One role's column of the access table as grants: the ceiling for that
+ * role's per-signal exceptions. A connector, host, credential or website
+ * ticked only for the other role is outside it, the mode is the column's,
+ * and a role whose route is off has no egress grant at all.
+ */
+export function roleAccessGrants(
+  settings: Pick<IncidentAccessSettings, "grants" | "profiles">,
+  role: IncidentAgentRole,
+): ProjectAccessGrants {
+  const profile = settings.profiles[role];
+  return {
+    connections: [...profile.connections],
+    repos: [...profile.repos],
+    runners: [...profile.runners],
+    hosts: profile.hosts.map((h) => ({ ...h })),
+    credentials: profile.credentials.flatMap((c) => {
+      const grant = settings.grants.credentials.find(
+        (g) => g.credential === c.credential,
+      );
+      if (!grant) return [];
+      const mode = grantModeWithin(c.mode, grant.mode) ? c.mode : grant.mode;
+      return [{ ...grant, mode }];
+    }),
+    egress: profile.egress ? [structuredClone(profile.egress)] : [],
+    maxMode: profile.mode,
+  };
+}
+
 // ── Stored documents ────────────────────────────────────────────────────────
 
 const GRANT_KEYS = [

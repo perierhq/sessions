@@ -1,5 +1,6 @@
-// What the policy controls do when a save fails (and when it lands): the
-// pause switch and a select toast, a dialog keeps its error inside. The
+// What the policy controls do when a save fails (and when it lands): a
+// select toasts, a dialog keeps its error inside. The pause switch lives on
+// the project page (project/IncidentsSection.interaction.test.tsx). The
 // sections' own hooks run in the hook harness; children are read, not
 // rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
@@ -66,8 +67,6 @@ mock.module("../../../ui/toast", () => ({
 }));
 
 const { BudgetDialog, PolicySection } = await import("./PolicySection");
-const { Switch } = await import("../../../ui/switch");
-type SwitchProps = Parameters<typeof Switch>[0];
 const { OptionSelect } = await import("../../../ui/select");
 const { SettingsDialog } = await import("./SettingsDialog");
 
@@ -102,45 +101,6 @@ afterEach(() => harness.unmountAll());
 
 const mountSection = () =>
   harness.mount(PolicySection, { project: "acme", settings, onSave });
-
-type SwitchChange = NonNullable<SwitchProps["onCheckedChange"]>;
-
-/** Flip the pause switch the way Base UI reports a change. */
-const pause = (tree: React.ReactNode, on: boolean) => {
-  const el = find(tree, Switch, (p) => p["aria-label"] === "Pause all agents");
-  if (!el?.props.onCheckedChange) throw new Error("No pause switch");
-  // SAFETY: PolicySection's handler reads only the checked value.
-  el.props.onCheckedChange(on, {} as Parameters<SwitchChange>[1]);
-};
-
-test("a refused pause toasts the server's reason", async () => {
-  refuse = new Error("Only a signed-in person may change this");
-  const section = mountSection();
-  pause(section.output(), true);
-  await settle();
-  expect(saves).toEqual([{ agentsPaused: true }]);
-  expect(toasts).toEqual([
-    {
-      message: "Only a signed-in person may change this",
-      options: { variant: "error" },
-    },
-  ]);
-});
-
-test("a pause that lands offers Undo, and a failed Undo toasts too", async () => {
-  const section = mountSection();
-  pause(section.output(), true);
-  await settle();
-  expect(toasts[0]?.message).toBe("Agents paused for acme");
-  refuse = new Error("offline");
-  toasts[0]?.options?.action?.onClick();
-  await settle();
-  expect(saves).toEqual([{ agentsPaused: true }, { agentsPaused: false }]);
-  expect(toasts[1]).toEqual({
-    message: "offline",
-    options: { variant: "error" },
-  });
-});
 
 test("a refused select change toasts, with a fallback message", async () => {
   refuse = new Error("");

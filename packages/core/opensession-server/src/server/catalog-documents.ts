@@ -59,6 +59,12 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // Per-project access settings for incident agents, written only through
   // the settings API (incidents/access/settings-store.ts).
   "incident-access",
+  // One settings document per project: sandbox, models per role, incident
+  // policy, production and the access table (projects/store.ts). New, so
+  // its legacy directory is missing and imports as empty; it is composed
+  // from incident-projects, incident-access and the sandbox config instead
+  // (projects/migrate.ts).
+  "projects",
 ] as const;
 
 export type ApplicationCatalogNamespace =

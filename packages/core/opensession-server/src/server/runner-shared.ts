@@ -34,6 +34,10 @@ export function mcpServerAllowedForRun(
   allowedUsers: unknown,
   user?: string,
   grantUsers?: Array<string | undefined>,
+  allowUnattended?: unknown,
+  /** The run's project ticks this connector for the run's unattended role
+   *  (never true for runs that mount every connector). */
+  agentConnector?: boolean,
 ): boolean {
   const protectedServer = requiresAllowedUsers(name);
   if (protectedServer && !hasValidRequiredAllowedUsers(allowedUsers)) {
@@ -41,6 +45,16 @@ export function mcpServerAllowedForRun(
   }
   if (!Array.isArray(allowedUsers) || allowedUsers.length === 0) return true;
   const gateUsers = protectedServer ? [user] : [user, ...(grantUsers || [])];
+  // "Allow agents" (mcp-config `allowUnattended`): a run with nobody behind
+  // it may use a server otherwise limited to named people, but only where
+  // its project's access table ticks the server for the run's role.
+  if (
+    allowUnattended === true &&
+    agentConnector === true &&
+    !protectedServer &&
+    !gateUsers.some((candidate) => !!candidate)
+  )
+    return true;
   return gateUsers
     .filter((candidate): candidate is string => !!candidate)
     .some((candidate) => userMatchesAny(candidate, allowedUsers));
@@ -53,6 +67,14 @@ export function filterMcpServers(
    *  allowedUsers VISIBILITY gate below always uses `user` (the prompter) —
    *  that's least-privilege, not identity preference. */
   grantUsers?: Array<string | undefined>,
+  opts: {
+    /** The connectors the run's project ticks for its unattended role,
+     *  when the caller knows them: only these may use "Allow agents".
+     *  Without it, an explicit allowlist is trusted to come from the
+     *  project's access table: incident access, `automationUnderProject`
+     *  and `githubFlowMcpServers` build every unattended list from it. */
+    agentConnectors?: readonly string[];
+  } = {},
 ): Record<string, unknown> {
   const all = withDynamicCredentials(
     readMcpConfig().mcpServers,
@@ -70,8 +92,20 @@ export function filterMcpServers(
         );
       continue;
     }
-    const { allowedUsers, oauthUrl, ...entry } = cfg;
-    if (!mcpServerAllowedForRun(name, allowedUsers, user, grantUsers)) {
+    const { allowedUsers, oauthUrl, allowUnattended, ...entry } = cfg;
+    if (
+      !mcpServerAllowedForRun(
+        name,
+        allowedUsers,
+        user,
+        grantUsers,
+        allowUnattended,
+        // Never for a run that mounts every connector.
+        allowlist !== undefined &&
+          (opts.agentConnectors === undefined ||
+            opts.agentConnectors.includes(name)),
+      )
+    ) {
       continue;
     }
     out[name] = entry;

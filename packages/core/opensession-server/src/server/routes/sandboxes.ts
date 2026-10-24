@@ -1,11 +1,10 @@
 /** Workspace sandbox connections, defaults, qualification and environments. */
 
-import { requestUser, type RouteContext } from "./context";
+import { requestUser, type RouteContext, verifiedPerson } from "./context";
 import { sandboxCapabilityStatus } from "../sandbox/config";
 import { sandboxIngressStatus } from "../sandbox/caddy-ingress";
 import {
   sandboxDefaultsStatus,
-  savePersonalSandboxDefault,
   saveRepoPortalSandbox,
   saveRepoSandboxDefault,
   saveWorkspaceSandboxDefault,
@@ -66,7 +65,7 @@ export async function handleSandboxesRoutes(
     return Response.json({
       ...sandboxCapabilityStatus(),
       ...(await connectionPayload(ctx)),
-      defaults: sandboxDefaultsStatus(user, repo),
+      defaults: await sandboxDefaultsStatus(repo),
     });
   }
 
@@ -136,28 +135,34 @@ export async function handleSandboxesRoutes(
     ) {
       return errorResponse("scope and value are required");
     }
-    const user = requestUser(ctx, body.user) || "Anonymous";
+    // Where agents run is the person gate of the project settings page:
+    // never a claimed name or the automation principal.
+    const person = verifiedPerson(ctx);
+    if ((body.scope === "workspace" || body.scope === "repo") && !person)
+      return errorResponse(
+        "Only a signed-in person can change where agents run",
+        403,
+      );
     try {
       if (body.scope === "workspace") {
-        saveWorkspaceSandboxDefault(body.value);
-      } else if (body.scope === "personal") {
-        savePersonalSandboxDefault(user, body.value);
+        await saveWorkspaceSandboxDefault(body.value);
       } else if (body.scope === "repo") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
-        saveRepoSandboxDefault(body.repo, body.value);
+        await saveRepoSandboxDefault(body.repo, body.value, {
+          name: person,
+          verified: true,
+          ...(ctx.authUser?.login ? { login: ctx.authUser.login } : {}),
+        });
       } else if (body.scope === "repo-portals") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
-        saveRepoPortalSandbox(body.repo, body.value);
+        await saveRepoPortalSandbox(body.repo, body.value);
       } else {
-        return errorResponse(
-          "scope must be workspace, personal, repo, or repo-portals",
-        );
+        return errorResponse("scope must be workspace, repo, or repo-portals");
       }
       return Response.json({
-        defaults: sandboxDefaultsStatus(
-          user,
+        defaults: await sandboxDefaultsStatus(
           typeof body.repo === "string" ? body.repo : undefined,
         ),
       });

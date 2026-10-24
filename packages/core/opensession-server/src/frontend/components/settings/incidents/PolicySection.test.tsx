@@ -35,7 +35,6 @@ Object.assign(globalThis, {
   },
 });
 
-const { IncidentSettingsView } = await import("./IncidentSettings");
 const { PolicySection } = await import("./PolicySection");
 
 const settings: RedactedProjectSettings = {
@@ -54,40 +53,6 @@ const settings: RedactedProjectSettings = {
 };
 const save = async () => {};
 
-test("without the fix loop: one info notice, signals still render", () => {
-  const html = renderToStaticMarkup(
-    <IncidentSettingsView
-      project="acme"
-      label="acme"
-      view={null}
-      onSave={save}
-      sections={{ signals: <div>Signals</div> }}
-    />,
-  );
-  expect(html).toContain(
-    "Autonomy, budget and actions need the incident fix loop on this server. Signals work now",
-  );
-  expect(html).toContain("border-blue/40");
-  expect(html).not.toContain("border-red/40");
-  expect(html).toContain("Signals");
-  expect(html).not.toContain("Pause all agents");
-});
-
-test("while loading, each group keeps its final shape", () => {
-  const html = renderToStaticMarkup(
-    <IncidentSettingsView
-      project="acme"
-      label="acme"
-      view={undefined}
-      onSave={save}
-      sections={{}}
-    />,
-  );
-  expect(html).toContain("Autonomy");
-  expect(html).toContain("Budget");
-  expect(html).toContain("What agents may do in acme when something breaks");
-});
-
 test("policy rows in order, with defaults", () => {
   const html = renderToStaticMarkup(
     <PolicySection
@@ -98,7 +63,6 @@ test("policy rows in order, with defaults", () => {
     />,
   );
   const order = [
-    "Pause all agents",
     "Deploy after veto",
     "10 min",
     "Spending money",
@@ -107,7 +71,6 @@ test("policy rows in order, with defaults", () => {
   ].map((text) => html.indexOf(text));
   expect(order.every((i) => i >= 0)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
-  expect(html).toContain("Stops every incident run for acme right now");
   expect(html).toContain("Spent this month: $6.50");
   // At night says Off once, as its value.
   expect(html).toContain("Fixes can wait for you overnight");

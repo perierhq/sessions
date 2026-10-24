@@ -7,6 +7,7 @@ import { afterEach, beforeEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { __clearProjectDocumentCacheForTest } from "../../projects/store";
 import { __setSessionKernelStoreForTest } from "../../session-kernel/kernel";
 import { SessionKernelStore } from "../../session-kernel/store";
 import { type AuditSink, __setIncidentAuditForTest } from "../audit-sink";
@@ -35,6 +36,7 @@ export function useIncidentTestKernel(): {
     previousRoot = process.env.OPENSESSION_STATE_DIR;
     process.env.OPENSESSION_STATE_DIR = root;
     store = new SessionKernelStore(":memory:");
+    __clearProjectDocumentCacheForTest();
     previousStore = __setSessionKernelStoreForTest(store);
     previousAudit = __setIncidentAuditForTest((event) => {
       audits.push(event);

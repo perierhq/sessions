@@ -51,9 +51,9 @@ const ROUTES: [string, string][] = [
   ["reviews", "/reviews"],
   ["automations", "/automations"],
   // The incidents home (status line, signal rows with mini strips, the past
-  // incidents table that folds on a phone) and its settings.
+  // incidents table that folds on a phone), and the project defaults.
   ["incidents", "/incidents"],
-  ["incident-settings", "/settings/incidents"],
+  ["project-defaults", "/settings/projects"],
 ];
 const VIEWPORTS: [string, number, number][] = [
   ["desktop", 1440, 900],

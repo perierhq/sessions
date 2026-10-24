@@ -2719,7 +2719,7 @@ export async function handleCreateSessionMessage(
   // they share/fork the source session's engine state and cwd.
   const sandboxResolved = forkSource
     ? resolveRequestedSandbox(undefined, repo.id, model)
-    : resolveInteractiveSandbox(
+    : await resolveInteractiveSandbox(
         msg.sandbox as boolean | string | undefined,
         user,
         repo.id,

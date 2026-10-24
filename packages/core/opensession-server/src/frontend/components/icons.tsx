@@ -1296,6 +1296,18 @@ export function IconShieldCheck(p: IconProps) {
   );
 }
 
+export function IconLock(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect {...stroke} x="5.75" y="10.75" width="12.5" height="8.5" rx="2" />
+      <path
+        {...stroke}
+        d="M8.75 10.75V8C8.75 6.20507 10.2051 4.75 12 4.75C13.7949 4.75 15.25 6.20507 15.25 8V10.75"
+      />
+    </Svg>
+  );
+}
+
 export function IconRocket(p: IconProps) {
   return (
     <Svg {...p}>

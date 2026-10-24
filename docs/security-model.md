@@ -657,6 +657,29 @@ addresses, GitHub logins, and Slack ids resolve to the configured person.
   Adding, removing, or re-scoping a server in `mcp-config.json` is picked up on
   the next run/message and does not require a restart.
 
+### Connectors open to agents (`allowUnattended`)
+
+A connector limited to named people can still be used by runs that carry no
+user (automations, incident agents, reviews) when a signed-in person turns on
+"Allow agents" for it (`allowUnattended: true` on the server entry).
+
+- Only a verified person can change it: `POST
+/api/connections/:server/allow-unattended` goes through
+  `setMcpAllowUnattended`, which refuses `apple-release`, and is audited as
+  `connection_allow_unattended`. A package install (`addMcpServerEntry`) and
+  an entry replacement (`replaceMcpServerEntries`) never set or clear it.
+- It applies per project, not globally. A run that mounts every connector
+  (`"all"`) never gets such a server through it. Unattended runs get explicit
+  lists built from their project's access table: incident access, the
+  automation's connectors narrowed to the table (`automationUnderProject`) and
+  the review connectors (`githubFlowMcpServers`). Where a list doesn't come
+  from a table (unreadable settings, the review automation's fallback), the
+  servers limited to named people are dropped (`withoutPeopleRestricted`).
+- The risk: unattended runs read untrusted text (tickets, pull requests,
+  alerts), so anything the connector can read becomes reachable through
+  prompt injection. Prefer read-only connector credentials.
+- Undo it with the same switch, or remove the field from `mcp-config.json`.
+
 ## GitHub webhook actor trust (public repositories)
 
 A valid webhook signature proves that GitHub sent an event. It does **not**
