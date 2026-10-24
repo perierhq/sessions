@@ -1,6 +1,7 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { ProjectSettingsPatch } from "../../shared/project-settings";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
+import { __setLegacyEnvironmentForTest } from "./legacy";
 import {
   __setProjectStoreContextForTest,
   getProjectDocument,
@@ -16,7 +17,19 @@ const kit = useIncidentTestKernel();
 const person: ProjectActor = { name: "Ada", verified: true, login: "ada" };
 const agent: ProjectActor = { name: "agent", verified: false };
 
-beforeEach(() =>
+afterEach(() => {
+  __setLegacyEnvironmentForTest(undefined);
+  __setProjectStoreContextForTest(undefined);
+});
+beforeEach(() => {
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme-web"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: async () => [],
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+  });
   __setProjectStoreContextForTest({
     projectExists: (id) => id === "acme-web",
     runnerProblem: (id) =>
@@ -38,8 +51,8 @@ beforeEach(() =>
     isOwner: (login) => login === "ada",
     ownerRoster: () => "one",
     hostProblem: () => null,
-  }),
-);
+  });
+});
 
 async function write(
   patch: Omit<ProjectSettingsPatch, "expectedRevision">,
