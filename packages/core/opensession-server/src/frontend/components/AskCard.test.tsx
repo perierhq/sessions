@@ -224,8 +224,8 @@ test("the send action is held back until the ask has an answer", () => {
     />,
   );
 
-  // Answer is on screen from the start here, because a multi-select pick is not
-  // a send. Nothing has been answered yet though, so it must not be pressable:
+  // Answer is on screen from the start, because no pick is a send. Nothing has
+  // been answered yet though, so it must not be pressable:
   // the primitive shows the action on the last question and leaves it live, and
   // pressing it would validate, refuse, and jump focus back with an error.
   const submit = (html.match(/<button[^>]*>/g) ?? []).find((b) =>
