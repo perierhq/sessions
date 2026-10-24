@@ -7,6 +7,7 @@
 // sandbox, else This machine (container) when Ready, else the experimental
 // host path, else they can't start.
 import {
+  defaultProjectDocument,
   type EffectiveSandbox,
   type ProjectRole,
   type ProjectSettingsDocument,
@@ -208,6 +209,11 @@ export async function effectiveRoleModel(
   if (own) return own;
   if (role === "you") return globalRoleDefault("you")!;
   return globalRoleDefault(role) ?? automationModel()!;
+}
+
+/** A role's model in a project that sets none of its own. */
+export function defaultRoleModel(role: ProjectRole): Promise<string> {
+  return effectiveRoleModel("", role, defaultProjectDocument("", ""));
 }
 
 /**

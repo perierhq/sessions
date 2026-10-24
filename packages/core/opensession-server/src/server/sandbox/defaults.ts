@@ -123,6 +123,25 @@ function assertAvailable(
   }
 }
 
+/** Why `value` can't be the workspace default ("none" always can). */
+export function workspaceSandboxProblem(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "none") return null;
+  try {
+    assertAvailable(normalized);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** Why `value` can't be where previews run by default ("same" or "none"
+ *  runs them beside the session). */
+export function previewsDefaultProblem(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "same" ? null : workspaceSandboxProblem(normalized);
+}
+
 export async function saveWorkspaceSandboxDefault(
   value: string,
 ): Promise<SandboxDefaultsStatus> {

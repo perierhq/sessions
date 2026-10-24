@@ -35,15 +35,22 @@ import { type RouteContext, verifiedPerson } from "./context";
 import { readJsonObject } from "./projects";
 
 export interface ProjectDefaultsDeps {
-  models(): Record<ProjectRole, string>;
+  /** Every role's model where a project sets none: the role's default,
+   *  else what the runtime falls back to. */
+  models(): Record<ProjectRole, string> | Promise<Record<ProjectRole, string>>;
+  /** Why these model changes can't be saved together, or null. */
+  modelsProblem(changes: Array<[ProjectRole, string | null]>): string | null;
   /** `null` clears the role back to the built-in default. Throws for an
    *  unknown model. */
   setModel(role: ProjectRole, id: string | null): void;
   /** Provider id or `"none"`. */
   sandbox(): string;
+  /** Why the sandbox can't be the default (unknown or not available). */
+  sandboxProblem(value: string): string | null;
   /** Throws for a provider that isn't available. */
   setSandbox(value: string): void;
   previews(): "same" | (string & {});
+  previewsProblem(value: string): string | null;
   setPreviews(value: string): void;
   websites(): string[];
   setWebsites(hosts: string[]): void;
@@ -77,7 +84,7 @@ async function view(): Promise<ProjectDefaultsView> {
     defaultSandboxUsedBy(viewDeps),
   ]);
   return {
-    models: d.models(),
+    models: await d.models(),
     sandbox: d.sandbox(),
     sandboxUsedBy,
     previews: d.previews(),
@@ -146,7 +153,14 @@ async function patch(ctx: RouteContext): Promise<Response> {
       403,
     );
 
+  // Validate every field against the live stores before the first write,
+  // so a patch is all or nothing.
   const d = deps();
+  const problem =
+    (modelChanges.length ? d.modelsProblem(modelChanges) : null) ??
+    (typeof sandbox === "string" ? d.sandboxProblem(sandbox) : null) ??
+    (typeof previews === "string" ? d.previewsProblem(previews) : null);
+  if (problem) return error(problem, 400);
   try {
     for (const [role, id] of modelChanges) d.setModel(role, id);
     if (typeof sandbox === "string") d.setSandbox(sandbox);

@@ -30,6 +30,10 @@ beforeEach(() => {
   __setProjectViewDepsForTest(testProjectViewDeps().deps);
   __setProjectDefaultsRoutesForTest({
     models: () => ({ ...state.models }),
+    modelsProblem: (changes) =>
+      changes.some(([, id]) => id === "nope") ? "Unknown model: nope" : null,
+    sandboxProblem: () => null,
+    previewsProblem: () => null,
     setModel: (role, id) => {
       if (id === "nope") throw new Error("Unknown model: nope");
       state.models[role] = id ?? "pi/anthropic/claude-opus-5-5";

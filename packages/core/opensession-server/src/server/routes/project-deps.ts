@@ -7,30 +7,35 @@ import { readFile } from "node:fs/promises";
 import type { CredentialInfo } from "../../shared/incident-access";
 import {
   PROJECT_ROLES,
-  type EffectiveSandbox,
+  type EffectiveRoleModel,
   type ProjectRole,
   type ProjectSettingsDocument,
-  type RunPlace,
 } from "../../shared/project-settings";
-import { automationModel } from "../automations";
 import { configuredPaths, configuredRepos } from "../config";
 import { readMcpConfig, replaceMcpServerEntries } from "../connections";
 import { incidentAudit } from "../incidents/audit-sink";
 import { connectionStatusFrom } from "../incidents/access/environment";
 import { projectMonthSpend } from "../incidents/response/coordinator";
-import { resolveRoleModels } from "../incidents/response/models";
+import { resolveRoleModels, sameModel } from "../incidents/response/models";
 import {
   bindProductionRunner,
   listProductionRunnerCandidates,
 } from "../incidents/response/runners";
 import { listSignals } from "../incidents/signal-store";
 import { ensureKeychainLoaded, listCredentials } from "../keychain";
+import { modelLabel, resolveModel } from "../models";
 import {
-  interactiveDefaultModel,
-  modelLabel,
-  setInteractiveDefaultModel,
-} from "../models";
-import { globalPreviewsDefault } from "../projects/global-defaults";
+  defaultRoleModel,
+  effectiveRoleModel,
+  effectiveSandboxes,
+  sandboxLabel,
+} from "../projects/effective";
+import {
+  globalPreviewsDefault,
+  globalRoleDefault,
+  globalWebsites,
+  setGlobalRoleDefault,
+} from "../projects/global-defaults";
 import { legacyDrift, migrateProjectSettings } from "../projects/migrate";
 import {
   getProjectDocument,
@@ -38,31 +43,23 @@ import {
   projectExists,
   updateProjectDocument,
 } from "../projects/store";
-import {
-  effectiveModelsFrom,
-  setProjectViewDeps,
-  type ProjectViewDeps,
-} from "../projects/view";
+import { setProjectViewDeps, type ProjectViewDeps } from "../projects/view";
 import type { ConnectorState } from "../projects/readiness";
 import { listRunners } from "../runners";
 import {
   repoPortalSandbox,
-  sandboxAutomationAvailability,
-  sandboxAutomationConfig,
-  sandboxConfig,
   setAutomationEgressAllowlist,
   setPortalSandboxDefault,
 } from "../sandbox/config";
 import {
+  previewsDefaultProblem,
   saveRepoPortalSandbox,
   saveWorkspaceSandboxDefault,
   workspaceSandboxDefault,
+  workspaceSandboxProblem,
 } from "../sandbox/defaults";
 import type { ProjectDefaultsDeps } from "./project-defaults";
 import type { ProjectRouteDeps } from "./projects";
-
-const THIS_MACHINE = "This machine";
-const CONTAINER = "This machine · container";
 
 /** Connector names as people know them. */
 const CONNECTOR_LABELS: Record<string, string> = {
@@ -76,80 +73,44 @@ function connectorLabel(server: string): string {
   );
 }
 
-/** How a sandbox provider id reads ("Daytona eu"). */
-export function sandboxProviderLabel(provider: string): string {
-  if (provider === "podman") return CONTAINER;
-  if (provider === "daytona") {
-    const target = sandboxConfig().daytona?.target?.trim();
-    return target ? `Daytona ${target}` : "Daytona";
-  }
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
-}
-
-function place(
-  provider: string | null,
-  source: Extract<RunPlace, { state: "ok" }>["source"],
-): RunPlace {
-  return {
-    state: "ok",
-    provider,
-    label: provider === null ? THIS_MACHINE : sandboxProviderLabel(provider),
-    source,
-  };
-}
-
-/**
- * Where each role runs, until projects/effective.ts (Task 3) replaces it:
- * the project's sandbox, else the global default. Automations need a
- * provider that runs unattended, else the global one, else this machine
- * (D3). Reviews run on this machine (D4).
- */
-function interimEffectiveSandboxes(
+/** Every role's model in `project`: its own, else what the runtime falls
+ *  back to (the role's global default, else today's built-in choice). */
+async function liveEffectiveModels(
+  project: string,
   doc: ProjectSettingsDocument,
-): EffectiveSandbox {
-  const global = workspaceSandboxDefault();
-  const globalProvider = global === "none" ? null : global;
-  const own =
-    doc.sandbox === "default"
-      ? undefined
-      : doc.sandbox === "local"
-        ? null
-        : doc.sandbox;
-  const unattended = (p: string | null | undefined) =>
-    p === sandboxAutomationConfig().provider &&
-    sandboxAutomationAvailability().available;
-  const agents = own !== undefined ? own : globalProvider;
-  return {
-    you:
-      own !== undefined
-        ? place(own, "project")
-        : place(globalProvider, "default"),
-    reviews: place(null, "fallback"),
-    automations: unattended(own)
-      ? place(own!, "project")
-      : unattended(globalProvider)
-        ? place(globalProvider, "default")
-        : place(null, "fallback"),
-    incidentAgents: agents
-      ? place(agents, own !== undefined ? "project" : "default")
-      : {
-          state: "cant-start",
-          reason: "Agents can't start: this project has no sandbox",
-        },
-    note: null,
-  };
+): Promise<Record<ProjectRole, EffectiveRoleModel>> {
+  const entries = await Promise.all(
+    PROJECT_ROLES.map(async (role) => {
+      const model = await effectiveRoleModel(project, role, doc);
+      return [
+        role,
+        {
+          model,
+          label: modelLabel(model),
+          source: doc.models[role] ? "project" : "default",
+        } satisfies EffectiveRoleModel,
+      ] as const;
+    }),
+  );
+  return Object.fromEntries(entries) as Record<ProjectRole, EffectiveRoleModel>;
 }
 
-/** The global default model per role, until projects/global-defaults.ts
- *  (Task 3) stores one per role. */
-function interimGlobalModel(role: ProjectRole): string {
-  const automations = automationModel() ?? interactiveDefaultModel();
-  if (role === "automations") return automations;
-  if (role === "investigator" || role === "verifier") {
-    const models = resolveRoleModels({});
-    return "error" in models ? automations : models[role].model;
-  }
-  return interactiveDefaultModel();
+/** Why a set of default model changes can't be saved, before any write:
+ *  an unknown model, or a verifier equal to the investigator. */
+function defaultModelsProblem(
+  changes: Array<[ProjectRole, string | null]>,
+): string | null {
+  for (const [, id] of changes)
+    if (id !== null && !resolveModel(id)) return `Unknown model: ${id}`;
+  const next = (role: ProjectRole) => {
+    const change = changes.find(([r]) => r === role);
+    return change ? (change[1] ?? undefined) : globalRoleDefault(role);
+  };
+  const investigator = next("investigator");
+  const verifier = next("verifier");
+  if (investigator && verifier && sameModel(investigator, verifier))
+    return "Pick a different model for the verifier";
+  return null;
 }
 
 async function readMcpServers(): Promise<Record<string, unknown>> {
@@ -212,9 +173,8 @@ function liveViewDeps(): ProjectViewDeps {
     projectExists,
     getDocument: getProjectDocument,
     previews: (project) => repoPortalSandbox(project) ?? "default",
-    effectiveSandboxes: async (_project, doc) => interimEffectiveSandboxes(doc),
-    effectiveModels: async (_project, doc) =>
-      effectiveModelsFrom(doc, interimGlobalModel, (m) => modelLabel(m)),
+    effectiveSandboxes: (project, doc) => effectiveSandboxes(project, doc),
+    effectiveModels: liveEffectiveModels,
     roleModels: async (_project, doc) =>
       resolveRoleModels({
         ...(doc.models.investigator
@@ -250,7 +210,7 @@ function liveViewDeps(): ProjectViewDeps {
     monthSpendUsd: async (project) =>
       (await projectMonthSpend(project, Date.now())).monthUsd,
     drift: legacyDrift,
-    sandboxLabel: sandboxProviderLabel,
+    sandboxLabel: (provider) => sandboxLabel(provider),
   };
 }
 
@@ -300,25 +260,29 @@ export function liveProjectRouteDeps(): ProjectRouteDeps {
 
 export function liveProjectDefaultsDeps(): ProjectDefaultsDeps {
   return {
-    models: () =>
+    models: async () =>
       Object.fromEntries(
-        PROJECT_ROLES.map((role) => [role, interimGlobalModel(role)]),
+        await Promise.all(
+          PROJECT_ROLES.map(
+            async (role) => [role, await defaultRoleModel(role)] as const,
+          ),
+        ),
       ) as Record<ProjectRole, string>,
+    modelsProblem: defaultModelsProblem,
     setModel: (role, id) => {
-      // Task 3's setGlobalRoleDefault() stores the other roles.
-      if (role !== "you")
-        throw new Error("Only the default for You can be changed for now");
-      setInteractiveDefaultModel(id);
+      setGlobalRoleDefault(role, id);
     },
     sandbox: () => workspaceSandboxDefault(),
+    sandboxProblem: workspaceSandboxProblem,
     setSandbox: (value) => {
       saveWorkspaceSandboxDefault(value);
     },
     previews: () => globalPreviewsDefault(),
+    previewsProblem: previewsDefaultProblem,
     setPreviews: (value) => {
       setPortalSandboxDefault(value);
     },
-    websites: () => [...(sandboxAutomationConfig().egressAllowlist ?? [])],
+    websites: () => globalWebsites(),
     setWebsites: (hosts) => {
       setAutomationEgressAllowlist(hosts);
     },
