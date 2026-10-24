@@ -344,6 +344,12 @@ sandboxes with a per-sandbox egress allowlist enforced by the provider. They
 never adopt a prewarm or project snapshot. See
 [security-model.md](security-model.md).
 
+An automation runs where it ran before projects had their own settings: on
+this machine, or in the disposable sandbox when the automation's own
+`sandbox` setting is on. A project's sandbox and the global default never
+move it. The project page's "Where agents run" shows this per project as
+"This machine, as before" or "Disposable sandbox".
+
 ## Runtime config — `~/.opensession/sandbox.json`
 
 Workspace → Sandboxes writes this file; hand-edit only for the operator

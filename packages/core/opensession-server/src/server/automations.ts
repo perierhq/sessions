@@ -1820,20 +1820,17 @@ function internalMcpServer(name: string): boolean {
 /**
  * The automation as this run sees it under its project's settings: its
  * connectors narrowed to the ones the project lets automations use
- * (built-in servers stay), and run in the project's (else the global)
- * unattended sandbox when it can run there (D3). An automation that
- * doesn't qualify for the disposable profile keeps running on this machine.
+ * (built-in servers stay). Where it runs is unchanged (D3 as built): on
+ * this machine, or the disposable sandbox when its own `sandbox` is set;
+ * the project's and the global sandbox never move it.
  */
 export async function automationUnderProject(
   a: Automation,
-  model: string | undefined,
 ): Promise<Automation> {
-  let repoId: string;
   let allowed: string[];
   try {
-    repoId = getRepo(a.repo).id;
     const { getProjectDocument } = await import("./projects/store");
-    const doc = await getProjectDocument(repoId);
+    const doc = await getProjectDocument(getRepo(a.repo).id);
     allowed = doc.access.connections
       .filter((c) => c.roles.includes("automations"))
       .map((c) => c.server);
@@ -1848,18 +1845,7 @@ export async function automationUnderProject(
     a.mcpServers === undefined
       ? allowed
       : a.mcpServers.filter((n) => internalMcpServer(n) || allowed.includes(n));
-  let sandbox = a.sandbox;
-  if (!sandbox && !validateSandboxAutomation({ ...a, sandbox: true, model })) {
-    const { resolveSessionSandbox } = await import("./projects/effective");
-    const where = await resolveSessionSandbox(
-      undefined,
-      repoId,
-      model,
-      "automation",
-    );
-    if (where.ok && where.provider) sandbox = true;
-  }
-  return { ...a, mcpServers, ...(sandbox ? { sandbox: true } : {}) };
+  return { ...a, mcpServers };
 }
 
 const automationPreparations = new Set<string>();
@@ -2235,7 +2221,7 @@ export async function runAutomation(
     const runModel = options?.modelOverride
       ? automationModel(options.modelOverride)
       : await automationRunModel(automation);
-    automation = await automationUnderProject(automation, runModel);
+    automation = await automationUnderProject(automation);
     const runtimeSandboxValidation = validateSandboxAutomation({
       ...automation,
       model: options?.modelOverride || automation.model,

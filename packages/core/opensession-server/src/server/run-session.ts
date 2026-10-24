@@ -2069,13 +2069,10 @@ export async function maybeLaunchSandboxedRun(
     disposableAutomationResume && session.automationId
       ? await getAutomation(session.automationId)
       : null;
-  // The automation under its project's settings: the sandbox its runs got
-  // (D3) and the connectors the project allows.
+  // The automation under its project's settings: the connectors the
+  // project allows. Its sandbox is its own setting (D3 as built).
   const owningAutomation = storedAutomation
-    ? await automationUnderProject(
-        storedAutomation,
-        session.model || storedAutomation.model,
-      )
+    ? await automationUnderProject(storedAutomation)
     : null;
   if (disposableAutomationResume) {
     if (

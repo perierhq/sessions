@@ -1,9 +1,10 @@
 // What each role of a project actually gets: its model and where its runs
 // happen. Sandbox precedence is a per-session choice, then the project,
-// then the global default; the personal default is gone. Automations need a
-// sandbox that can run unattended (Daytona today): the project's when it
-// can, else the global default's, else this machine as before (D3).
-// Reviews run on this machine (D4). Incident agents use the project's
+// then the global default; the personal default is gone. Automations keep
+// running where they ran before projects had settings (D3 as built): on
+// this machine, or in the disposable sandbox when the automation's own
+// sandbox setting asks for it; neither the project's nor the global
+// sandbox moves them. Reviews run on this machine (D4). Incident agents use the project's
 // sandbox, else This machine (container) when Ready, else the experimental
 // host path, else they can't start.
 import {
@@ -52,6 +53,24 @@ export interface EffectiveDeps {
   hostEnabled: () => boolean;
   hostProblem: () => Promise<string | null>;
   requested: typeof resolveRequestedSandbox;
+  /** The project's automations (not reviews or incident response). */
+  automations: (project: string) => Promise<Array<{ sandbox?: boolean }>>;
+  /** The provider of the disposable automation sandbox. */
+  automationProvider: () => string;
+}
+
+const REVIEW_EVENT_KEY = "github:pull_request";
+
+async function projectAutomations(
+  project: string,
+): Promise<Array<{ sandbox?: boolean }>> {
+  const { listAutomations } = await import("../automations");
+  return (await listAutomations()).filter(
+    (a) =>
+      a.repo === project &&
+      a.eventKey !== REVIEW_EVENT_KEY &&
+      !a.incidentResponse,
+  );
 }
 
 let depsOverride: Partial<EffectiveDeps> | undefined;
@@ -73,6 +92,10 @@ function deps(): EffectiveDeps {
     hostEnabled: depsOverride?.hostEnabled ?? incidentHostAgentsEnabled,
     hostProblem: depsOverride?.hostProblem ?? (() => hostAgentUserProblem()),
     requested: depsOverride?.requested ?? resolveRequestedSandbox,
+    automations: depsOverride?.automations ?? projectAutomations,
+    automationProvider:
+      depsOverride?.automationProvider ??
+      (() => sandboxAutomationAvailability().provider),
   };
 }
 
@@ -120,16 +143,40 @@ function place(
   return { state: "ok", provider, label: sandboxLabel(provider), source };
 }
 
-/** Where automations run (D3). */
-function automationPlace(
-  doc: ProjectSettingsDocument,
+export const AUTOMATIONS_AS_BEFORE = "This machine, as before";
+export const AUTOMATIONS_DISPOSABLE = "Disposable sandbox";
+
+/** Where the project's automations run (D3 as built): each where its own
+ *  sandbox setting says, never moved by the project or global sandbox. */
+async function automationPlace(
+  project: string,
   d: EffectiveDeps,
-): RunPlace {
-  const own = projectChoice(doc);
-  if (own && d.automationCapable(own)) return place(own, "project");
-  const global = globalChoice(d);
-  if (global && d.automationCapable(global)) return place(global, "default");
-  return place(null, "fallback");
+): Promise<RunPlace> {
+  let automations: Array<{ sandbox?: boolean }> = [];
+  try {
+    automations = await d.automations(project);
+  } catch (error) {
+    console.warn(
+      "[project-settings] automations unreadable for the sandbox view:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  const boxed = automations.filter((a) => a.sandbox === true).length;
+  if (boxed > 0 && boxed === automations.length)
+    return {
+      state: "ok",
+      provider: d.automationProvider(),
+      label: AUTOMATIONS_DISPOSABLE,
+      source: "fallback",
+    };
+  return {
+    state: "ok",
+    provider: null,
+    label: boxed
+      ? `${AUTOMATIONS_AS_BEFORE} (${boxed} of ${automations.length} in a disposable sandbox)`
+      : AUTOMATIONS_AS_BEFORE,
+    source: "fallback",
+  };
 }
 
 /** Where interactive sessions start when nobody chose. */
@@ -160,14 +207,9 @@ function sameProvider(a: RunPlace, b: RunPlace): boolean {
 function sandboxNote(s: Omit<EffectiveSandbox, "note">): string | null {
   if (s.incidentAgents.state === "cant-start")
     return "No sandbox provider is connected, so incident agents can't start. Connect one in the checklist above";
-  if (s.automations.state !== "ok" || s.automations.source === "project")
-    return null;
   if (s.you.state !== "ok" || s.you.provider === null) return null;
   if (!sameProvider(s.you, s.incidentAgents)) return null;
-  const who = "Sessions, reviews and incident agents run here";
-  return s.automations.source === "default"
-    ? `${who}. Automations use the global default`
-    : `${who}. Automations run on this machine`;
+  return "Sessions and incident agents run here. Reviews run on this machine, and automations where they ran before";
 }
 
 /** Where each role of the project runs. */
@@ -182,7 +224,7 @@ export async function effectiveSandboxes(
   const incidentAgents = await incidentPlace(document, model, d);
   // Reviews run on this machine in v1 (D4).
   const reviews = place(null, "fallback");
-  const automations = automationPlace(document, d);
+  const automations = await automationPlace(project, d);
   const base = { you, reviews, automations, incidentAgents };
   return { ...base, note: sandboxNote(base) };
 }
@@ -242,24 +284,28 @@ export async function resolveSessionSandbox(
   }
   if (!project) {
     const global = globalChoice(d);
-    if (unattended)
+    if (kind === "automation") return { ok: true, provider: null };
+    if (kind === "descendant")
       return global && d.automationCapable(global)
         ? d.requested(global, project, model)
         : { ok: true, provider: null };
     return d.requested(global ?? "local", project, model);
   }
+  // Automations run where they ran before (D3 as built): this machine
+  // unless the automation itself asks for the disposable sandbox, which
+  // the automation runner provisions.
+  if (kind === "automation") return { ok: true, provider: null };
   const doc = await getProjectDocument(project);
-  if (unattended) {
-    const at = automationPlace(doc, d);
-    if (at.state === "ok" && at.provider)
-      return d.requested(at.provider, project, model);
-    if (kind === "descendant")
-      return {
-        ok: false,
-        error:
-          "Can't start: runs started by automations need a sandbox that runs unattended (Daytona)",
-      };
-    return { ok: true, provider: null };
+  if (kind === "descendant") {
+    const own = projectChoice(doc);
+    const chosen = own === undefined ? globalChoice(d) : own;
+    if (chosen && d.automationCapable(chosen))
+      return d.requested(chosen, project, model);
+    return {
+      ok: false,
+      error:
+        "Can't start: runs started by automations need a sandbox that runs unattended (Daytona)",
+    };
   }
   const own = projectChoice(doc);
   const chosen = own === undefined ? globalChoice(d) : own;

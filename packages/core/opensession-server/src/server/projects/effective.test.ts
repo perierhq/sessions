@@ -24,6 +24,8 @@ function deps(over: Partial<EffectiveDeps>): void {
     podmanReady: () => false,
     hostEnabled: () => false,
     hostProblem: async () => "no user",
+    automations: async () => [],
+    automationProvider: () => "daytona",
     requested: (r) => ({
       ok: true,
       provider: !r || r === "local" ? null : (r as never),
@@ -63,7 +65,7 @@ afterEach(() => {
   __setProjectStoreContextForTest(undefined);
 });
 
-test("a container project with a Daytona default: automations use the default", async () => {
+test("a container project with a Daytona default: automations keep running where they did", async () => {
   deps({ global: () => "daytona" });
   await setSandbox("podman");
   expect(await effectiveSandboxes("acme-web")).toEqual({
@@ -81,9 +83,9 @@ test("a container project with a Daytona default: automations use the default", 
     },
     automations: {
       state: "ok",
-      provider: "daytona",
-      label: "Daytona",
-      source: "default",
+      provider: null,
+      label: "This machine, as before",
+      source: "fallback",
     },
     reviews: {
       state: "ok",
@@ -91,24 +93,40 @@ test("a container project with a Daytona default: automations use the default", 
       label: "This machine",
       source: "fallback",
     },
-    note: "Sessions, reviews and incident agents run here. Automations use the global default",
+    note: "Sessions and incident agents run here. Reviews run on this machine, and automations where they ran before",
   });
 });
 
-test("a container project without an unattended default: automations stay on this machine", async () => {
-  deps({ global: () => "none", podmanReady: () => true });
-  await setSandbox("podman");
-  const s = await effectiveSandboxes("acme-web");
-  expect(s.automations).toEqual({
-    state: "ok",
+test("automations run where their own sandbox setting says, whatever the project's", async () => {
+  deps({ global: () => "daytona" });
+  await setSandbox("daytona");
+  // No automation asked for a sandbox: this machine, even on a Daytona
+  // project with a Daytona default.
+  expect((await effectiveSandboxes("acme-web")).automations).toMatchObject({
     provider: null,
-    label: "This machine",
+    label: "This machine, as before",
+  });
+  expect(
+    await resolveSessionSandbox(undefined, "acme-web", MODEL, "automation"),
+  ).toEqual({ ok: true, provider: null });
+  deps({
+    global: () => "none",
+    automations: async () => [{ sandbox: true }, { sandbox: true }],
+  });
+  await setSandbox("podman");
+  expect((await effectiveSandboxes("acme-web")).automations).toEqual({
+    state: "ok",
+    provider: "daytona",
+    label: "Disposable sandbox",
     source: "fallback",
   });
-  expect(s.incidentAgents).toMatchObject({ state: "ok", provider: "podman" });
-  expect(s.note).toBe(
-    "Sessions, reviews and incident agents run here. Automations run on this machine",
-  );
+  deps({ automations: async () => [{ sandbox: true }, {}] });
+  expect((await effectiveSandboxes("acme-web")).automations).toEqual({
+    state: "ok",
+    provider: null,
+    label: "This machine, as before (1 of 2 in a disposable sandbox)",
+    source: "fallback",
+  });
 });
 
 test("no sandbox anywhere: incident agents can't start", async () => {
