@@ -30,6 +30,7 @@ import {
   modelLabel,
   setInteractiveDefaultModel,
 } from "../models";
+import { legacyDrift, migrateProjectSettings } from "../projects/migrate";
 import {
   getProjectDocument,
   patchProjectDocumentAsServer,
@@ -248,8 +249,7 @@ function liveViewDeps(): ProjectViewDeps {
     credentials: liveCredentials,
     monthSpendUsd: async (project) =>
       (await projectMonthSpend(project, Date.now())).monthUsd,
-    // Task 2's legacyDrift() replaces this.
-    drift: async () => [],
+    drift: legacyDrift,
     sandboxLabel: sandboxProviderLabel,
   };
 }
@@ -293,10 +293,7 @@ export function liveProjectRouteDeps(): ProjectRouteDeps {
       else delete next.allowUnattended;
       return replaceMcpServerEntries({ [server]: next });
     },
-    migrate: async () => {
-      // Task 2's migrateProjectSettings() replaces this.
-      throw new Error("Project settings migration isn't available yet");
-    },
+    migrate: migrateProjectSettings,
     audit: incidentAudit,
   };
 }
