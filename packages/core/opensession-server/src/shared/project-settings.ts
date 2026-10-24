@@ -177,6 +177,15 @@ export type AccessRowKey =
  *  any website; unattended runs need a list, so their cells are locked. */
 export const ANY_WEBSITE_HOST = "*";
 
+/** Why "Changes code" can't be set for Automations or Reviews: nothing
+ *  reads it at run time. Each automation carries its own mode, and the
+ *  GitHub flow picks one per kind of run. */
+export const MODE_NOT_SET_HERE: Partial<Record<UnattendedRole, string>> = {
+  automations: "Each automation sets its own mode",
+  reviews:
+    "Set per run: reviews only read; fixes and replies to mentions push to the pull request's branch",
+};
+
 /** `null` clears the cell (a credential not lent to that role). */
 export type AccessCellChange = {
   row: AccessRowKey;

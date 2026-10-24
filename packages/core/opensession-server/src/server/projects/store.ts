@@ -23,6 +23,7 @@ import {
   type IncidentRole,
   isProjectRole,
   isUnattendedRole,
+  MODE_NOT_SET_HERE,
   type ProjectAccess,
   type ProjectCredentialRow,
   type ProjectHostRow,
@@ -640,6 +641,8 @@ function applyCell(s: PatchState, change: unknown): void {
     case "mode": {
       if (!(ACCESS_MODES as readonly unknown[]).includes(value))
         refuse("Mode must be ask or code");
+      const notHere = MODE_NOT_SET_HERE[role];
+      if (notHere) refuse(notHere);
       const mode = value as AccessMode;
       if (isIncidentAgentRole(role)) {
         const lock = roleLockProblem(role, { mode });

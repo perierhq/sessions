@@ -12,6 +12,7 @@ import {
   type AccessGroupId,
   type AccessRowView,
   type AccessTableView,
+  MODE_NOT_SET_HERE,
   type ProjectRole,
   type ProjectSettingsDocument,
   type UnattendedRole,
@@ -75,12 +76,12 @@ function modeRow(doc: AccessTableDocument): AccessRowView {
     { key: { kind: "mode" }, title: `Changes code in ${doc.project}` },
     YOU_YES,
     (role) => {
+      const notHere = MODE_NOT_SET_HERE[role];
+      if (notHere) return cell("locked", false, notHere);
       const mode = modes[role];
       if (mode === "ask") return cell("read");
       // Incident runs publish a branch and a pull request, never main.
-      return cell(
-        role === "investigator" || role === "verifier" ? "branch" : "yes",
-      );
+      return cell("branch");
     },
   );
 }

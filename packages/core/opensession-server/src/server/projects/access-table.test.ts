@@ -97,7 +97,19 @@ describe("buildAccessTable", () => {
     const mode = row(table, (r) => r.key.kind === "mode");
     expect(mode.cells.verifier.value).toBe("read");
     expect(mode.cells.investigator.value).toBe("branch");
-    expect(mode.cells.automations.value).toBe("yes");
+    // Nothing reads these at run time: each automation sets its own mode,
+    // and the GitHub flow picks one per kind of run.
+    expect(mode.cells.automations).toEqual({
+      value: "locked",
+      editable: false,
+      reason: "Each automation sets its own mode",
+    });
+    expect(mode.cells.reviews).toEqual({
+      value: "locked",
+      editable: false,
+      reason:
+        "Set per run: reviews only read; fixes and replies to mentions push to the pull request's branch",
+    });
     const search = row(table, (r) => r.key.kind === "webSearch");
     expect(search.cells.verifier).toEqual({
       value: "locked",

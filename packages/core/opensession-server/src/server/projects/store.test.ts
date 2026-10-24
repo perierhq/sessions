@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { ProjectSettingsPatch } from "../../shared/project-settings";
+import {
+  MODE_NOT_SET_HERE,
+  type ProjectSettingsPatch,
+} from "../../shared/project-settings";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { __setLegacyEnvironmentForTest } from "./legacy";
 import {
@@ -478,4 +481,14 @@ test("removing a signal exception is a widening: it may have narrowed", async ()
     (await getProjectDocument("acme-web")).access.signalExceptions,
   ).toHaveLength(1);
   expect((await written(remove)).access.signalExceptions).toEqual([]);
+});
+
+test("Changes code for Automations and Reviews is not set here", async () => {
+  for (const role of ["automations", "reviews"] as const) {
+    const out = await write({
+      access: { cells: [{ row: { kind: "mode" }, role, value: "ask" }] },
+    });
+    expect(out).toEqual({ error: MODE_NOT_SET_HERE[role]!, status: 400 });
+  }
+  expect((await getProjectDocument("acme-web")).revision).toBe(0);
 });

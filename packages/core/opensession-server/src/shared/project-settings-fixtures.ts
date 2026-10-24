@@ -8,6 +8,7 @@
 import type { IncidentAction } from "./incident-response";
 import {
   ANY_WEBSITE_HOST,
+  MODE_NOT_SET_HERE,
   PROJECT_ROLES,
   defaultProjectDocument,
   type AccessCellView,
@@ -233,10 +234,10 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
             key: { kind: "mode" },
             title: "Changes code in acme-web",
             cells: cells(cell("yes", false, YOU_COMPUTED), {
-              automations: cell("yes"),
+              automations: cell("locked", false, MODE_NOT_SET_HERE.automations),
               investigator: cell("branch"),
               verifier: cell("read"),
-              reviews: cell("yes"),
+              reviews: cell("locked", false, MODE_NOT_SET_HERE.reviews),
             }),
           },
         ],
