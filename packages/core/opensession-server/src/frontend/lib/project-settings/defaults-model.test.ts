@@ -6,6 +6,7 @@ import {
 import {
   modelOverrides,
   newSessionSandboxDefault,
+  newSessionSandboxPreselect,
   parseWebsite,
   projectStatusPhrase,
   roleScopeCopy,
@@ -155,5 +156,49 @@ describe("newSessionSandboxDefault", () => {
     ).toBe("");
     expect(newSessionSandboxDefault(status({}, "none"), "acme-web")).toBe("");
     expect(newSessionSandboxDefault(null, "acme-web")).toBe("");
+  });
+});
+
+// New Session preselects where a session starts: its own pick, else the
+// project's sandbox, else the global default. The picker marks the same
+// value "Default".
+describe("newSessionSandboxPreselect", () => {
+  const status = (
+    repos: Record<string, string>,
+    workspace = "daytona",
+    ready = ["daytona", "box"],
+  ) => ({
+    defaults: { workspace, personal: "box", effective: "box", repos },
+    connections: ready.map((provider) => ({ provider, state: "ready" })),
+  });
+
+  test("a project on the global default starts there, not on this machine", () => {
+    const s = status({});
+    expect(newSessionSandboxPreselect(s, "acme-web")).toBe("daytona");
+    expect(newSessionSandboxPreselect(s, "acme-web")).toBe(
+      newSessionSandboxDefault(s, "acme-web"),
+    );
+  });
+
+  test("the project's own sandbox is marked and preselected", () => {
+    const s = status({ "acme-web": "box" });
+    expect(newSessionSandboxDefault(s, "acme-web")).toBe("box");
+    expect(newSessionSandboxPreselect(s, "acme-web")).toBe("box");
+  });
+
+  test("a project set to this machine starts on this machine", () => {
+    expect(
+      newSessionSandboxPreselect(status({ "acme-web": "none" }), "acme-web"),
+    ).toBe("");
+  });
+
+  test("a stored personal default has no effect", () => {
+    const s = status({}, "none");
+    expect(newSessionSandboxPreselect(s, "acme-web")).toBe("");
+  });
+
+  test("a default that isn't ready falls back to this machine", () => {
+    const s = status({}, "daytona", ["box"]);
+    expect(newSessionSandboxPreselect(s, "acme-web")).toBe("");
   });
 });

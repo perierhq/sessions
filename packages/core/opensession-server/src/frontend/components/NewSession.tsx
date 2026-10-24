@@ -68,7 +68,10 @@ import {
   sandboxProviderLabel,
   sandboxProviderNote,
 } from "../lib/ready-sandbox-providers";
-import { newSessionSandboxDefault } from "../lib/project-settings/defaults-model";
+import {
+  newSessionSandboxDefault,
+  newSessionSandboxPreselect,
+} from "../lib/project-settings/defaults-model";
 import {
   getSessionCheckoutPrefs,
   onSessionCheckoutPrefChanged,
@@ -554,28 +557,18 @@ export function NewSession({
     fetchSandboxStatus(getCurrentUser())
       .then((status) => {
         setSandboxStatus(status);
-        // This machine remains the clear default. Sandbox configuration belongs
-        // behind the explicit Sandbox choice, never in an invisible default.
-        if (!sandboxSelectionTouched.current) setSandboxProvider("");
       })
       .catch(() => {});
   }, []);
-  // A project can be set to always start in a Sandbox (Settings → Projects
-  // → the project → Where agents run). Follow it whenever the project
-  // changes until the person picks for themselves; the choice stays visible
-  // in "Machine".
-  const repoSandboxDefault = sandboxStatus?.defaults?.repos?.[repo];
+  // Where a session starts unless the person picks: the project's sandbox
+  // (Settings → Projects → the project → Where agents run), else the global
+  // default. Follow it whenever the project changes until the person picks
+  // for themselves; the choice stays visible in "Machine".
+  const preselect = newSessionSandboxPreselect(sandboxStatus, repo);
   useEffect(() => {
     if (sandboxSelectionTouched.current || !sandboxStatus) return;
-    const ready = readySandboxProviders(sandboxStatus);
-    setSandboxProvider(
-      repoSandboxDefault &&
-        repoSandboxDefault !== "none" &&
-        ready.includes(repoSandboxDefault)
-        ? repoSandboxDefault
-        : "",
-    );
-  }, [repo, repoSandboxDefault, sandboxStatus]);
+    setSandboxProvider(preselect);
+  }, [preselect, sandboxStatus]);
   const readyProviders = readySandboxProviders(sandboxStatus);
   const sandboxAvailable = readyProviders.length > 0;
   const selectedSandboxAvailable =

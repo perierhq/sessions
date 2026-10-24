@@ -3,6 +3,10 @@
 // from here, so a project never carries two different statuses.
 
 import { parseAutomationEgressDomain } from "../../../server/sandbox/automation-egress";
+import {
+  readySandboxProviders,
+  type SandboxAvailability,
+} from "../ready-sandbox-providers";
 import type {
   ProjectDefaultsView,
   ProjectListItem,
@@ -111,4 +115,17 @@ export function newSessionSandboxDefault(
   const value =
     own && own !== "workspace" && own !== "default" ? own : defaults.workspace;
   return !value || value === "none" ? "" : value;
+}
+
+/**
+ * What New Session starts with before the person picks: the default above
+ * when it can run now, else this machine. The picker marks the same value
+ * "Default", so what it shows and what it sends agree.
+ */
+export function newSessionSandboxPreselect(
+  status: (SandboxDefaultsSlice & SandboxAvailability) | null | undefined,
+  repo: string,
+): string {
+  const value = newSessionSandboxDefault(status, repo);
+  return value && readySandboxProviders(status).includes(value) ? value : "";
 }
