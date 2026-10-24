@@ -268,13 +268,14 @@ export function __clearProjectDocumentCacheForTest(): void {
 }
 
 /** How long what an unmigrated project's legacy settings compose to is
- *  reused. Composing reads the automations, the connectors and the web
- *  search setting, too much for every session start; the legacy stores
- *  themselves are only written by an older gateway. */
+ *  reused while those settings are unchanged. Composing reads the
+ *  automations, the connectors and the web search setting, too much for
+ *  every session start. A change to the project's legacy records
+ *  recomposes at once. */
 const COMPOSED_TTL_MS = 30_000;
 const composed = new Map<
   string,
-  { at: number; doc: Promise<ProjectSettingsDocument> }
+  { at: number; stamp: string; doc: Promise<ProjectSettingsDocument> }
 >();
 
 /** Drop what the legacy settings composed to: for `project`, or for every
@@ -284,12 +285,21 @@ export function invalidateComposedProjectDocument(project?: string): void {
   else composed.delete(project);
 }
 
-function composedFallback(project: string): Promise<ProjectSettingsDocument> {
+async function composedFallback(
+  project: string,
+): Promise<ProjectSettingsDocument> {
+  const legacy = await import("./legacy");
+  const [incidentProject, access] = await Promise.all([
+    legacy.legacyProjectDocuments().get(project),
+    legacy.legacyAccessDocuments().get(project),
+  ]);
+  const stamp = JSON.stringify([incidentProject, access]);
   const now = Date.now();
   const hit = composed.get(project);
-  if (hit && now - hit.at < COMPOSED_TTL_MS) return hit.doc;
+  if (hit && hit.stamp === stamp && now - hit.at < COMPOSED_TTL_MS)
+    return hit.doc;
   const doc = composeFallback(project, new Date(now).toISOString());
-  composed.set(project, { at: now, doc });
+  composed.set(project, { at: now, stamp, doc });
   // A failure is not remembered: the next read tries again.
   doc.catch(() => {
     if (composed.get(project)?.doc === doc) composed.delete(project);
