@@ -83,17 +83,17 @@ function mountCard(questions: AskQuestion[] = [SHIP]) {
     submit,
     /** A click on a row: a pointer press, then the radio's change event. */
     click: async (label: string) => {
-      const row = choice(label).props as {
-        onPointerDown?: (e: unknown) => void;
-      };
-      row.onPointerDown?.({});
-      choice(label).props.onChange?.({
-        target: { checked: true },
-      } as never);
+      // SAFETY: the card's handlers read nothing off the pointer event, and
+      // only `target.checked` off the change.
+      choice(label).props.onPointerDown?.({} as never);
+      // SAFETY: as above, the change handler reads only `target.checked`.
+      choice(label).props.onChange?.({ target: { checked: true } } as never);
       await settle();
     },
     /** A letter typed while the card holds focus. */
     press: async (key: string) => {
+      // SAFETY: the capture handler reads `defaultPrevented`, `target`, the
+      // native key and its modifiers, and calls `preventDefault`.
       root().props.onKeyDownCapture?.({
         defaultPrevented: false,
         target: {},
@@ -104,6 +104,7 @@ function mountCard(questions: AskQuestion[] = [SHIP]) {
     },
     /** Typing into the "Or type your own answer" field. */
     type: async (value: string) => {
+      // SAFETY: the field's change handler reads only `target.value`.
       find(tree(), Questionnaire.Input)?.props.onChange?.({
         target: { value },
       } as never);
@@ -111,12 +112,19 @@ function mountCard(questions: AskQuestion[] = [SHIP]) {
     },
     /** Give the card the form element its window handler reads. */
     attachForm: () => {
-      const ref = root().props.ref as { current: unknown };
-      ref.current = { contains: () => false, querySelector: () => null };
+      const ref = root().props.ref;
+      if (!ref || ref instanceof Function) throw new Error("no form ref");
+      // SAFETY: the window handler calls only `contains` and `querySelector`
+      // on the form, and the harness never attaches a real one.
+      ref.current = {
+        contains: () => false,
+        querySelector: () => null,
+      } as never;
     },
     /** Answer, Enter and Cmd/Ctrl+Enter all reach the form's submit: the
      *  primitive validates, then calls requestSubmit. */
     send: async () => {
+      // SAFETY: the submit handler only calls `preventDefault`.
       root().props.onSubmit?.({ preventDefault() {} } as never);
       await settle();
     },
@@ -159,6 +167,8 @@ test("a letter from outside the card selects too", async () => {
   card.attachForm();
   const keydown = windowKeys.at(-1);
   expect(keydown).toBeDefined();
+  // SAFETY: the window handler reads the key, its modifiers,
+  // `defaultPrevented` and `target`, and calls `preventDefault`.
   keydown?.({
     key: "a",
     metaKey: false,
@@ -168,7 +178,7 @@ test("a letter from outside the card selects too", async () => {
     defaultPrevented: false,
     target: {},
     preventDefault() {},
-  } as unknown as KeyboardEvent);
+  } as never);
   await settle();
 
   expect(card.sent).toEqual([]);
