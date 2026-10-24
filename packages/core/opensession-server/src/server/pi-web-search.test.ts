@@ -15,7 +15,8 @@ import {
   webToolEnabled,
   MAX_FINDINGS_CHARS,
   MAX_PAUSE_CONTINUATIONS,
-  anthropicSupportsDynamicFiltering,
+  anthropicWebToolFailure,
+  serverToolErrorCodes,
   createWebSearchTool,
   findingsFromBlocks,
   formatFindings,
@@ -36,65 +37,37 @@ const haiku = {
 };
 
 describe("server tool shaping", () => {
-  test("Anthropic gets the newest search tool, capped and without raw results", () => {
-    expect(
-      webSearchServerTool("anthropic-messages", "claude-haiku-5-5"),
-    ).toEqual({
+  test("Anthropic gets the newest search tool, called directly, capped and without raw results", () => {
+    expect(webSearchServerTool("anthropic-messages")).toEqual({
       type: ANTHROPIC_WEB_SEARCH_TYPE,
       name: "web_search",
       max_uses: 5,
       response_inclusion: "excluded",
+      allowed_callers: ["direct"],
     });
     expect(ANTHROPIC_WEB_SEARCH_TYPE).toBe("web_search_20260318");
   });
 
-  test("models older than Claude 4.6 call the tool directly", () => {
-    for (const id of [
-      "claude-haiku-4-5",
-      "claude-sonnet-4-5-20250929",
-      "claude-sonnet-4-20250514",
-      "claude-3-5-sonnet-20241022",
-      "claude-opus-4-1",
-    ]) {
-      expect(anthropicSupportsDynamicFiltering(id)).toBe(false);
-      expect(
-        webSearchServerTool("anthropic-messages", id)?.allowed_callers,
-      ).toEqual(["direct"]);
-    }
-  });
-
-  test("4.6 and newer, and unknown ids, keep dynamic filtering", () => {
-    for (const id of [
-      "claude-opus-4-6",
-      "claude-sonnet-4-7",
-      "claude-haiku-5-5",
-      "claude-opus-5",
-      "claude-next",
-    ]) {
-      expect(anthropicSupportsDynamicFiltering(id)).toBe(true);
-      expect(
-        webSearchServerTool("anthropic-messages", id)?.allowed_callers,
-      ).toBeUndefined();
-    }
-  });
-
-  test("a forced direct call adds allowed_callers on any model", () => {
-    expect(
-      webSearchServerTool("anthropic-messages", "claude-haiku-5-5", {
-        direct: true,
-      })?.allowed_callers,
-    ).toEqual(["direct"]);
+  test("Anthropic tools never go through code execution (dynamic filtering)", () => {
+    // Subscription accounts refuse the code execution caller with
+    // too_many_requests, so both tools are always called directly.
+    expect(webSearchServerTool("anthropic-messages")?.allowed_callers).toEqual([
+      "direct",
+    ]);
+    expect(webFetchServerTool("anthropic-messages")?.allowed_callers).toEqual([
+      "direct",
+    ]);
   });
 
   test("OpenAI Responses APIs get their search tool; others none", () => {
-    expect(webSearchServerTool("openai-codex-responses", "gpt-6-luna")).toEqual(
-      { type: "web_search" },
-    );
-    expect(webSearchServerTool("openai-responses", "gpt-6-luna")).toEqual({
+    expect(webSearchServerTool("openai-codex-responses")).toEqual({
       type: "web_search",
     });
-    expect(webSearchServerTool("openai-completions", "x")).toBeNull();
-    expect(webSearchServerTool(undefined, "x")).toBeNull();
+    expect(webSearchServerTool("openai-responses")).toEqual({
+      type: "web_search",
+    });
+    expect(webSearchServerTool("openai-completions")).toBeNull();
+    expect(webSearchServerTool(undefined)).toBeNull();
   });
 
   test("the side request carries only the server tool", () => {
@@ -166,6 +139,7 @@ function response(
   blocks: Array<Record<string, unknown>>,
   stop: string,
   searches = 0,
+  usageKey = "web_search_requests",
 ): unknown[] {
   const events: unknown[] = [
     { type: "message_start", message: { id: "m", usage: {} } },
@@ -210,12 +184,39 @@ function response(
   events.push({
     type: "message_delta",
     delta: { stop_reason: stop },
-    usage: { server_tool_use: { web_search_requests: searches } },
+    usage: { server_tool_use: { [usageKey]: searches } },
   });
   return events;
 }
 
 const signal = new AbortController().signal;
+
+// What a subscription account returned live for dynamic filtering: the
+// code execution caller refused, no search, and prose saying so.
+const refusedByCodeExecution = (kind: "search" | "fetch") =>
+  response(
+    [
+      { type: "text", text: "Let me look." },
+      {
+        type: "server_tool_use",
+        id: "srvtoolu_c",
+        name: "code_execution",
+        input: { code: "x" },
+      },
+      {
+        type: "code_execution_tool_result",
+        tool_use_id: "srvtoolu_c",
+        content: {
+          type: "code_execution_tool_result_error",
+          error_code: "too_many_requests",
+        },
+      },
+      { type: "text", text: "I couldn't search: no remaining calls." },
+    ],
+    "end_turn",
+    0,
+    kind === "search" ? "web_search_requests" : "web_fetch_requests",
+  );
 
 describe("the Anthropic request loop", () => {
   test("pause_turn resends the paused turn until the answer arrives", async () => {
@@ -254,7 +255,7 @@ describe("the Anthropic request loop", () => {
     });
     expect(payloads).toHaveLength(3);
     expect(payloads[0]!.tools).toEqual([
-      webSearchServerTool("anthropic-messages", "claude-haiku-5-5"),
+      webSearchServerTool("anthropic-messages"),
     ]);
     const resent = (payloads[2]!.messages as unknown[])[1];
     expect(resent).toEqual({
@@ -296,14 +297,16 @@ describe("the Anthropic request loop", () => {
     if (result.ok) expect(result.text).toContain("Partial answer.");
   });
 
-  test("a 400 asking for allowed_callers retries once with direct calls", async () => {
+  test("a refused tool call is a failure and is retried once", async () => {
     const { runtime, payloads } = scriptedRuntime([
+      { events: refusedByCodeExecution("search") },
       {
-        stopReason: "error",
-        errorMessage:
-          '400 {"type":"error","error":{"type":"invalid_request_error","message":"set allowed_callers to [\\"direct\\"] for this model"}}',
+        events: response(
+          [{ type: "text", text: "[Acme](https://example.test/a)" }],
+          "end_turn",
+          1,
+        ),
       },
-      { events: response([{ type: "text", text: "Done." }], "end_turn", 1) },
     ]);
     const result = await searchWithModel({
       runtime,
@@ -312,15 +315,131 @@ describe("the Anthropic request loop", () => {
       signal,
     });
     expect(payloads).toHaveLength(2);
-    expect(
-      (payloads[0]!.tools as Array<Record<string, unknown>>)[0]!
-        .allowed_callers,
-    ).toBeUndefined();
-    expect(
-      (payloads[1]!.tools as Array<Record<string, unknown>>)[0]!
-        .allowed_callers,
-    ).toEqual(["direct"]);
-    expect(result).toMatchObject({ ok: true, text: "Done.", uses: 1 });
+    for (const payload of payloads)
+      expect(
+        (payload.tools as Array<Record<string, unknown>>)[0]!.allowed_callers,
+      ).toEqual(["direct"]);
+    // The retry starts over: the failed turn is not resent.
+    expect(payloads[1]!.messages).toEqual(payloads[0]!.messages);
+    expect(result).toEqual({
+      ok: true,
+      text: "[Acme](https://example.test/a)",
+      uses: 1,
+      continuations: 0,
+      retried: true,
+    });
+  });
+
+  test("a second failure is an error with the tool's error code", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      { events: refusedByCodeExecution("search") },
+    ]);
+    const result = await searchWithModel({
+      runtime,
+      model: haiku,
+      query: "acme",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
+    expect(result).toEqual({
+      ok: false,
+      error: "the search tool returned an error (too_many_requests)",
+      errorCode: "too_many_requests",
+      uses: 0,
+      retried: true,
+    });
+  });
+
+  test("an answer without any search is a failure", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      {
+        events: response(
+          [{ type: "text", text: "From memory, it is 1.x." }],
+          "end_turn",
+          0,
+        ),
+      },
+    ]);
+    const result = await searchWithModel({
+      runtime,
+      model: haiku,
+      query: "acme",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
+    expect(result).toMatchObject({
+      ok: false,
+      error: "no search ran",
+      errorCode: "no_search",
+      uses: 0,
+    });
+  });
+
+  test("a search result error fails the response even when a search counted", async () => {
+    const failed = response(
+      [
+        { type: "server_tool_use", id: "s", name: "web_search", input: {} },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "s",
+          content: {
+            type: "web_search_tool_result_error",
+            error_code: "unavailable",
+          },
+        },
+        { type: "text", text: "The search failed." },
+      ],
+      "end_turn",
+      1,
+    );
+    const { runtime, payloads } = scriptedRuntime([
+      { events: failed },
+      { events: failed },
+    ]);
+    const result = await searchWithModel({
+      runtime,
+      model: haiku,
+      query: "acme",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "unavailable",
+      uses: 2,
+      retried: true,
+    });
+  });
+
+  test("hitting the search cap after searches ran is not a failure", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      {
+        events: response(
+          [
+            { type: "server_tool_use", id: "s", name: "web_search", input: {} },
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "s",
+              content: {
+                type: "web_search_tool_result_error",
+                error_code: "max_uses_exceeded",
+              },
+            },
+            { type: "text", text: "Acme [ships](https://example.test/s)." },
+          ],
+          "end_turn",
+          5,
+        ),
+      },
+    ]);
+    const result = await searchWithModel({
+      runtime,
+      model: haiku,
+      query: "acme",
+      signal,
+    });
+    expect(payloads).toHaveLength(1);
+    expect(result).toMatchObject({ ok: true, uses: 5 });
   });
 
   test("a continuation that fails keeps what earlier rounds found", async () => {
@@ -664,6 +783,77 @@ describe("makePiWebSearch", () => {
     expect(JSON.stringify(audits)).not.toContain("secret");
   });
 
+  test("a search whose tool did no work is a tool error, audited with its code", async () => {
+    const audits: Record<string, unknown>[] = [];
+    const sidelined: string[] = [];
+    const search = makePiWebSearch({
+      setting: "auto",
+      sessionProvider: "anthropic",
+      modelFor: (p) => webSearchModelId(p, undefined),
+      bind: async () => ({
+        runtime: scriptedRuntime([{ events: refusedByCodeExecution("search") }])
+          .runtime,
+        model: haiku,
+        usesNativeAnthropic: false,
+        account: "acme (12345678, claude)",
+        accountId: "12345678",
+        usageLimited: () => true,
+        sideline: (error) => sidelined.push(error),
+      }),
+      onAudit: (event) => audits.push(event),
+      now: () => 0,
+    });
+    await expect(search("secret acme query", signal)).rejects.toThrow(
+      "Web search failed on every provider (Claude: the search tool returned an error (too_many_requests)). Try again later.",
+    );
+    // A tool error inside a successful response is not a usage limit.
+    expect(sidelined).toEqual([]);
+    expect(audits).toEqual([
+      {
+        msg: "web_search",
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        account: "acme (12345678, claude)",
+        searches: 0,
+        ok: false,
+        ms: 0,
+        query_bytes: 17,
+        retried: true,
+        error_code: "too_many_requests",
+        error: "the search tool returned an error (too_many_requests)",
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain("secret");
+  });
+
+  test("server tool error codes are read from any tool result error block", () => {
+    expect(
+      serverToolErrorCodes([
+        { type: "text", text: "x" },
+        {
+          type: "web_search_tool_result",
+          content: [{ type: "web_search_result", url: "https://example.test" }],
+        },
+        {
+          type: "web_fetch_tool_result",
+          content: {
+            type: "web_fetch_tool_error",
+            error_code: "url_not_accessible",
+          },
+        },
+        {
+          type: "code_execution_tool_result",
+          content: { type: "code_execution_tool_result_error" },
+        },
+      ]),
+    ).toEqual(["url_not_accessible", "code_execution_tool_result_error"]);
+    expect(anthropicWebToolFailure("search", [], 2)).toBeUndefined();
+    expect(anthropicWebToolFailure("search", [], 0)).toMatchObject({
+      code: "no_search",
+      retry: true,
+    });
+  });
+
   test("Automatic never falls through to another vendor", async () => {
     const bound: string[] = [];
     const search = makePiWebSearch({
@@ -764,9 +954,7 @@ describe("makePiWebSearch", () => {
 
 describe("web_fetch", () => {
   test("Anthropic gets the newest fetch tool, capped and without raw results", () => {
-    expect(
-      webFetchServerTool("anthropic-messages", "claude-haiku-5-5"),
-    ).toEqual({
+    expect(webFetchServerTool("anthropic-messages")).toEqual({
       type: "web_fetch_20260318",
       name: "web_fetch",
       max_uses: 1,
@@ -777,12 +965,9 @@ describe("web_fetch", () => {
         client_tool_results: { type: "none" },
         server_tool_results: { type: "none" },
       },
+      allowed_callers: ["direct"],
     });
-    expect(
-      webFetchServerTool("anthropic-messages", "claude-haiku-4-5")
-        ?.allowed_callers,
-    ).toEqual(["direct"]);
-    expect(webFetchServerTool("openai-codex-responses", "gpt-6-luna")).toEqual({
+    expect(webFetchServerTool("openai-codex-responses")).toEqual({
       type: "web_search",
     });
   });
@@ -845,6 +1030,8 @@ describe("web_fetch", () => {
         events: response(
           [{ type: "text", text: "y".repeat(MAX_FINDINGS_CHARS + 500) }],
           "end_turn",
+          1,
+          "web_fetch_requests",
         ),
       },
     ]);
@@ -927,7 +1114,7 @@ describe("web_fetch", () => {
     expect(systems[0]).toContain("Never fetch, open or follow any other URL");
     expect(systems[0]).not.toMatch(/unless/);
     expect(payloads[0]!.tools).toEqual([
-      webFetchServerTool("anthropic-messages", "claude-haiku-5-5"),
+      webFetchServerTool("anthropic-messages"),
     ]);
     expect(payloads).toHaveLength(2);
     expect(result).toMatchObject({ ok: true, uses: 1, continuations: 1 });
@@ -937,13 +1124,50 @@ describe("web_fetch", () => {
     );
   });
 
-  test("a 400 asking for allowed_callers retries the fetch once with direct calls", async () => {
+  test("a refused fetch is retried once, then reported with its code", async () => {
     const { runtime, payloads } = scriptedRuntime([
-      { stopReason: "error", errorMessage: "400 allowed_callers required" },
+      { events: refusedByCodeExecution("fetch") },
+    ]);
+    const result = await fetchWithModel({
+      runtime,
+      model: haiku,
+      url: "https://example.test/x",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
+    expect(result).toEqual({
+      ok: false,
+      error: "the fetch tool returned an error (too_many_requests)",
+      errorCode: "too_many_requests",
+      uses: 0,
+      retried: true,
+    });
+  });
+
+  test("a fetch error about the page is reported without a retry", async () => {
+    const { runtime, payloads } = scriptedRuntime([
       {
         events: response(
-          [{ type: "text", text: "From [the page](https://example.test/x)." }],
+          [
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_f",
+              name: "web_fetch",
+              input: { url: "https://example.test/x" },
+            },
+            {
+              type: "web_fetch_tool_result",
+              tool_use_id: "srvtoolu_f",
+              content: {
+                type: "web_fetch_tool_error",
+                error_code: "url_not_accessible",
+              },
+            },
+            { type: "text", text: "The page could not be fetched." },
+          ],
           "end_turn",
+          1,
+          "web_fetch_requests",
         ),
       },
     ]);
@@ -953,13 +1177,37 @@ describe("web_fetch", () => {
       url: "https://example.test/x",
       signal,
     });
-    expect(
-      (payloads[1]!.tools as Array<Record<string, unknown>>)[0]!
-        .allowed_callers,
-    ).toEqual(["direct"]);
+    expect(payloads).toHaveLength(1);
+    expect(result).toEqual({
+      ok: false,
+      error: "the fetch tool returned an error (url_not_accessible)",
+      errorCode: "url_not_accessible",
+      uses: 1,
+    });
+  });
+
+  test("an answer without a fetch is a failure", async () => {
+    const { runtime, payloads } = scriptedRuntime([
+      {
+        events: response(
+          [{ type: "text", text: "I can't fetch pages." }],
+          "end_turn",
+          0,
+          "web_fetch_requests",
+        ),
+      },
+    ]);
+    const result = await fetchWithModel({
+      runtime,
+      model: haiku,
+      url: "https://example.test/x",
+      signal,
+    });
+    expect(payloads).toHaveLength(2);
     expect(result).toMatchObject({
-      ok: true,
-      text: "From [the page](https://example.test/x).",
+      ok: false,
+      error: "the page was not fetched",
+      errorCode: "no_fetch",
     });
   });
 
@@ -1240,6 +1488,8 @@ describe("web_fetch on unattended runs", () => {
         events: response(
           [{ type: "text", text: "Page [x](https://docs.example.test/a)" }],
           "end_turn",
+          1,
+          "web_fetch_requests",
         ),
       },
     ]);
@@ -1325,7 +1575,7 @@ describe("web_fetch on unattended runs", () => {
 
   test("OpenAI gets the allowlist as its search filter", () => {
     expect(
-      webServerTool("fetch", "openai-codex-responses", "gpt-6-luna", {
+      webServerTool("fetch", "openai-codex-responses", {
         allowedDomains: ["docs.example.test"],
       }),
     ).toEqual({
