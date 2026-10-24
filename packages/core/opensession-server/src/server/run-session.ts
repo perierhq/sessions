@@ -2445,6 +2445,10 @@ export async function maybeLaunchSandboxedRun(
       type: "notice",
       message: `Sandbox unavailable (${reason}) — the prompt was not run. Retry when ${sbProvider} is healthy or explicitly choose another environment for a new session.${dialBackHint}`,
     });
+    // A provider's refusal (a workspace it cannot hold, an unsupported run)
+    // stays a refusal, so the queue reports it once instead of retrying it.
+    if (isRunSetupRefusal(e))
+      throw new RunSetupRefusedError(`Sandbox unavailable: ${reason}`);
     throw new Error(`Sandbox unavailable: ${reason}`);
   }
 }
