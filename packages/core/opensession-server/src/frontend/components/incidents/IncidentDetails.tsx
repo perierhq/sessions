@@ -8,6 +8,7 @@ import { useSessionPrResource } from "../../hooks/useApiResources";
 import { useIncidentAccess } from "../../hooks/useIncidents";
 import { useIsPhone } from "../../hooks/useIsPhone";
 import { dayMonth, FIXED_BY_LABEL, formatUsd } from "../../lib/incidents/copy";
+import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import {
   agentsWorkspaceNote,
   type DetailRow,
@@ -398,7 +399,7 @@ export function IncidentDetails({
   onOpenSession: (sessionId: string) => void;
   onOpenPr: (target: PrTarget) => void;
   onOpenIncident: (id: string) => void;
-  onOpenSettings: (project: string) => void;
+  onOpenSettings: (project: string, section?: ProjectSectionId) => void;
 }) {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [shown, setShown] = useState<Sheet>("cost");
@@ -458,7 +459,7 @@ export function IncidentDetails({
               access={access}
               onEdit={() => {
                 close();
-                onOpenSettings(incident.project);
+                onOpenSettings(incident.project, "access");
               }}
             />
           )

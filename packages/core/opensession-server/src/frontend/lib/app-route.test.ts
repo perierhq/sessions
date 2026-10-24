@@ -148,12 +148,17 @@ describe("incident routes", () => {
       project: "acme-web",
       section: "incidents",
     });
-    expect(incidentSettingsRoute("acme-web", "sandboxes")).toEqual({
+    expect(incidentSettingsRoute("acme-web", { section: "access" })).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "access",
+    });
+    expect(incidentSettingsRoute("acme-web", { fix: "sandboxes" })).toEqual({
       view: "projectSettings",
       project: "acme-web",
       section: "where",
     });
-    expect(incidentSettingsRoute("acme-web", "providers")).toEqual({
+    expect(incidentSettingsRoute("acme-web", { fix: "providers" })).toEqual({
       view: "settings",
       section: "providers",
     });

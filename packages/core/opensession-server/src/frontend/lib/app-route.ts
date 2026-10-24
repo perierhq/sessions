@@ -330,11 +330,18 @@ export function routePath(route: Route): string {
  * fixed on the project's page (Where agents run); anything else stays in
  * the app's settings.
  */
+/**
+ * Where an incident's settings link lands: the project's page, at `section`
+ * (Incidents unless named), or the global section that fixes `fix`.
+ */
 export function incidentSettingsRoute(
   project: string,
-  fix?: SettingsSectionKey,
+  {
+    fix,
+    section = "incidents",
+  }: { fix?: SettingsSectionKey; section?: ProjectSectionId } = {},
 ): Route {
-  if (!fix) return { view: "projectSettings", project, section: "incidents" };
+  if (!fix) return { view: "projectSettings", project, section };
   if (fix === "sandboxes") {
     return { view: "projectSettings", project, section: "where" };
   }

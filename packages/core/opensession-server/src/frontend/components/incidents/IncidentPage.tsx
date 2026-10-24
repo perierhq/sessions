@@ -28,6 +28,7 @@ import {
   pageModel,
 } from "../../lib/incidents/page-model";
 import { proofLane } from "../../lib/incidents/strip-layout";
+import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import { watchIncidentNotifications } from "../../lib/notifications";
 import {
   INCIDENT_COLUMN,
@@ -92,7 +93,8 @@ export interface IncidentPageActions {
   onOpenSession: (sessionId: string) => void;
   onOpenPr: (target: PrTarget) => void;
   onOpenIncident: (id: string) => void;
-  onOpenSettings: (project: string) => void;
+  /** The project's settings page, at `section` (Incidents unless named). */
+  onOpenSettings: (project: string, section?: ProjectSectionId) => void;
   /** A settings section, where a setup problem is fixed. */
   onOpenAppSettings: (section: SettingsSectionKey) => void;
   onIntentHandled: () => void;
@@ -320,11 +322,12 @@ export function IncidentPage({
       else navigate({ view: "pr", repo: target.repo, number: target.number });
     },
     onOpenIncident: (other) => navigate({ view: "incidents", id: other }),
-    onOpenSettings: (name) => navigate(incidentSettingsRoute(name)),
+    onOpenSettings: (name, section) =>
+      navigate(incidentSettingsRoute(name, { section })),
     onOpenAppSettings: (section) =>
       navigate(
         project
-          ? incidentSettingsRoute(project, section)
+          ? incidentSettingsRoute(project, { fix: section })
           : { view: "settings", section },
       ),
     onIntentHandled: () =>
