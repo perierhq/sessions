@@ -299,11 +299,22 @@ export async function resolveSessionSandbox(
   try {
     doc = await getProjectDocument(project);
   } catch (error) {
+    const why = error instanceof Error ? error.message : error;
+    // An incident agent or an automation run may be pinned to a sandbox
+    // the global default isn't: stop, so the incident shows a setup
+    // problem, rather than run somewhere looser.
+    if (kind !== "interactive") {
+      console.warn(`[project-settings] ${project} settings unreadable:`, why);
+      return {
+        ok: false,
+        error: `Can't start: the settings for ${project} could not be read`,
+      };
+    }
     // Starting a session must not depend on the project settings being
     // readable: use the global default, as a project that sets none does.
     console.warn(
       `[project-settings] ${project} settings unreadable, using the global sandbox:`,
-      error instanceof Error ? error.message : error,
+      why,
     );
     doc = defaultProjectDocument(project, "");
   }

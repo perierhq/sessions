@@ -200,6 +200,15 @@ test("unreadable project settings fall back to the global default for new sessio
   expect(
     await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive"),
   ).toEqual({ ok: true, provider: "daytona" });
+  // Incident agents and automation runs don't guess: the project may have
+  // pinned a sandbox, so they stop with a setup problem instead.
+  for (const kind of ["incident", "descendant"] as const)
+    expect(
+      await resolveSessionSandbox(undefined, "acme-web", MODEL, kind),
+    ).toEqual({
+      ok: false,
+      error: "Can't start: the settings for acme-web could not be read",
+    });
 });
 
 test("an unmigrated project's composed settings are reused, not recomposed per session", async () => {
