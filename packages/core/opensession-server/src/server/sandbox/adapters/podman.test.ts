@@ -235,12 +235,60 @@ describe("podman provider ensure", () => {
 
 describe("podman workspace path", () => {
   test("the workspace lives on the volume, whatever the host layout", () => {
+    const root = "/opt/opensession/worktrees";
     expect(podmanWorkspaceCwd("/tmp/opensession/worktrees/acme-main")).toBe(
       "/home/ubuntu/worktrees/acme-main",
     );
     expect(podmanWorkspaceCwd("/Users/x/.opensession/wt/acme-feat")).toBe(
       "/home/ubuntu/worktrees/acme-feat",
     );
+    // A host worktree keeps its place below the worktrees root, so a branch
+    // with a slash keeps its directories.
+    expect(
+      podmanWorkspaceCwd(
+        "/opt/opensession/worktrees/acme-incident/2026-10-24-outage",
+        root,
+      ),
+    ).toBe("/home/ubuntu/worktrees/acme-incident/2026-10-24-outage");
+    expect(
+      podmanWorkspaceCwd("/opt/opensession/worktrees/acme-main/", `${root}/`),
+    ).toBe("/home/ubuntu/worktrees/acme-main");
+    // Elsewhere on the host (a main checkout): its last component.
+    expect(podmanWorkspaceCwd("/opt/opensession/repos/acme", root)).toBe(
+      "/home/ubuntu/worktrees/acme",
+    );
+    // The sandbox's own path (a stored state) stays, and mapping is stable.
+    expect(
+      podmanWorkspaceCwd("/home/ubuntu/worktrees/acme-incident/x", root),
+    ).toBe("/home/ubuntu/worktrees/acme-incident/x");
+    // A worktrees root inside the sandbox home's path maps the same way.
+    expect(
+      podmanWorkspaceCwd(
+        "/home/ubuntu/.opensession/worktrees/acme-a/b",
+        "/home/ubuntu/.opensession/worktrees",
+      ),
+    ).toBe("/home/ubuntu/worktrees/acme-a/b");
+  });
+
+  test("a path that would leave the sandbox home is refused", () => {
+    const root = "/opt/opensession/worktrees";
+    for (const bad of [
+      "/opt/opensession/worktrees/../../etc",
+      "/opt/opensession/worktrees/acme/../../x",
+      "/home/ubuntu/../etc",
+      "/home/ubuntu/..",
+      "/home/ubuntu/",
+      "/",
+      "worktrees/acme",
+      "../acme",
+      "",
+      "/opt/opensession/worktrees/acme\0x",
+      "/opt/opensession/worktrees/acme\nx",
+    ])
+      expect({ bad, cwd: podmanWorkspaceCwd(bad, root) }).toEqual({
+        bad,
+        cwd: null,
+      });
   });
 
   test("only paths under the sandbox home are accepted", () => {
@@ -263,7 +311,7 @@ describe("podman workspace path", () => {
       expect({ bad, cwd: podmanSandboxCwd(bad) }).toEqual({ bad, cwd: null });
   });
 
-  test("a cwd outside the sandbox home is refused before anything is created", async () => {
+  test("a planned cwd outside the sandbox home is refused before anything is created", async () => {
     for (const cwd of ["/tmp/worktrees/acme-main", "/home/ubuntu/../etc"]) {
       const fake = fakePodman();
       const provider = new PodmanProvider(

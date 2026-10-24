@@ -28,6 +28,8 @@ import { statfs } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { basename, posix } from "node:path";
 import { sessionsDir } from "../../paths";
+import { configuredPaths } from "../../config";
+import { RunSetupRefusedError } from "../../run-setup-refusal";
 import { getRepo, worktreePathFor } from "../../worktree";
 import { remoteSandboxCallbackBaseUrl, sandboxConfig } from "../config";
 import {
@@ -540,13 +542,49 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const SANDBOX_WORKTREES = `${PODMAN_WORKLOAD_HOME}/worktrees`;
+
+function strictlyUnder(path: string, root: string): boolean {
+  return path.startsWith(`${root.replace(/\/+$/, "")}/`);
+}
+
 /**
- * The workspace path inside the sandbox for a host worktree path. Only the
- * home volume persists (the rootfs is read-only and /tmp is tmpfs), so the
- * workspace always lives under it, whatever the host's layout.
+ * The workspace path inside the sandbox for a session's working directory.
+ *
+ * The launcher passes the session's host worktree path (`worktreeDir`, e.g.
+ * `<worktrees root>/<repo>-<branch>`). Only the home volume persists in the
+ * container (the rootfs is read-only and /tmp is tmpfs), so the workspace
+ * lives at the same place under `~/worktrees`: the path below the host's
+ * worktrees root when it is under it (a branch with a slash keeps its
+ * directories), else the last path component. A path already under the
+ * sandbox home is the sandbox's own (a stored state) and stays.
+ *
+ * Null for anything else: not absolute, a control character, or a path that
+ * names the sandbox home or the worktrees root but resolves outside it.
  */
-export function podmanWorkspaceCwd(hostWorktreePath: string): string {
-  return `${PODMAN_WORKLOAD_HOME}/worktrees/${basename(hostWorktreePath)}`;
+export function podmanWorkspaceCwd(
+  path: string,
+  hostWorktreesRoot: string = configuredPaths().worktreesDir,
+): string | null {
+  if (!path.startsWith("/") || /[\0\r\n]/.test(path)) return null;
+  const normalized = posix.normalize(path).replace(/\/+$/, "");
+  const root = hostWorktreesRoot
+    ? posix.normalize(hostWorktreesRoot).replace(/\/+$/, "")
+    : "";
+  let mapped: string;
+  if (root && root.startsWith("/") && strictlyUnder(path, root)) {
+    // `<root>/../x` names the root but leaves it.
+    if (!strictlyUnder(normalized, root)) return null;
+    mapped = `${SANDBOX_WORKTREES}/${normalized.slice(root.length + 1)}`;
+  } else if (strictlyUnder(path, PODMAN_WORKLOAD_HOME)) {
+    return podmanSandboxCwd(path);
+  } else {
+    const name = basename(normalized);
+    if (!name) return null;
+    mapped = `${SANDBOX_WORKTREES}/${name}`;
+  }
+  const result = posix.normalize(mapped);
+  return strictlyUnder(result, SANDBOX_WORKTREES) ? result : null;
 }
 
 /** `cwd` normalized, or null unless it is an absolute path strictly under the
@@ -557,10 +595,21 @@ export function podmanSandboxCwd(cwd: string): string | null {
   return normalized.startsWith(`${PODMAN_WORKLOAD_HOME}/`) ? normalized : null;
 }
 
+/** A session's working directory mapped into the sandbox home, or a
+ *  refusal: the same directory refuses every turn, so it is not retried. */
+function requireWorkspaceCwd(cwd: string, what: string): string {
+  const mapped = podmanWorkspaceCwd(cwd);
+  if (!mapped)
+    throw new RunSetupRefusedError(
+      `${what} ${JSON.stringify(cwd.slice(0, 200))} cannot be placed under ${PODMAN_WORKLOAD_HOME}/: only the sandbox home persists in ${PODMAN_PROVIDER_LABEL}`,
+    );
+  return mapped;
+}
+
 function requireSandboxCwd(cwd: string, what: string): string {
   const normalized = podmanSandboxCwd(cwd);
   if (!normalized)
-    throw new Error(
+    throw new RunSetupRefusedError(
       `${what} ${JSON.stringify(cwd.slice(0, 200))} is not under ${PODMAN_WORKLOAD_HOME}/: only the sandbox home persists in ${PODMAN_PROVIDER_LABEL}`,
     );
   return normalized;
@@ -577,11 +626,12 @@ async function defaultWorkspacePlan(
     branch,
     defaultBranch: repo.defaultBranch,
     cwd: spec.cwd
-      ? requireSandboxCwd(spec.cwd, "the requested working directory")
+      ? requireWorkspaceCwd(spec.cwd, "the requested working directory")
       : previous?.cwd
         ? requireSandboxCwd(previous.cwd, "the session's working directory")
-        : podmanWorkspaceCwd(
+        : requireWorkspaceCwd(
             worktreePathFor(branch, repo.id, { isolated: true }),
+            "the working directory",
           ),
   };
 }
@@ -718,13 +768,13 @@ export class PodmanProvider implements SandboxProvider {
         `${LOG} ${spec.sessionId}: ${stage} (+${Date.now() - startedAt}ms)`,
       );
     if (spec.attachedDirs?.length)
-      throw new Error(
+      throw new RunSetupRefusedError(
         "attached repos are not supported in remote sandboxes — detach them or use docker/local",
       );
     const prevState = findRemoteStateBySession(this.id, spec.sessionId);
     const trust = resolveTrustPolicy(spec, prevState);
     if (trust.trustProfile === "automation" || spec.sourceVerification)
-      throw new Error(
+      throw new RunSetupRefusedError(
         `automation runs are not supported on ${PODMAN_PROVIDER_LABEL}`,
       );
     const planned = await this.d.workspacePlan(spec, prevState);
@@ -805,7 +855,7 @@ export class PodmanProvider implements SandboxProvider {
   ): Promise<void> {
     const image = this.d.imageTag();
     if ((await this.run(["image", "exists", image])).exitCode !== 0)
-      throw new Error(
+      throw new RunSetupRefusedError(
         `the sandbox image ${image} is missing. Requalify ${PODMAN_PROVIDER_LABEL} in Workspace → Sandboxes.`,
       );
     const { dns } = this.d.settings();
