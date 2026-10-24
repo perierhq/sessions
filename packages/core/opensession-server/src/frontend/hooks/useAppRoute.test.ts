@@ -595,6 +595,27 @@ describe("external navigation and canonicalization", () => {
     expect(controller.getCurrentRoute()).toEqual({ view: "prs" });
   });
 
+  test("rewrites an old incident settings link to the project page", () => {
+    const state = { d: 2 };
+    const fake = fakeBrowser({
+      path: "/settings/incidents/acme-web?x=1#top",
+      state,
+    });
+    const controller = new AppRouteController(fake.browser);
+
+    expect(fake.calls.at(-1)).toEqual({
+      type: "replace",
+      state,
+      path: "/settings/projects/acme-web/incidents?x=1#top",
+    });
+    expect(fake.browser.history.state).toBe(state);
+    expect(controller.getCurrentRoute()).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "incidents",
+    });
+  });
+
   test("canonicalizes without replacing the history state object", () => {
     const state = { d: 4, restoredSession: "one", extra: { keep: true } };
     const fake = fakeBrowser({ path: "/session/one", state });

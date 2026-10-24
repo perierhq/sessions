@@ -239,6 +239,17 @@ export function parseRoute(pathname: string): Route {
 }
 
 /** parseRoute plus what the query carries: a push intent on an incident. */
+/**
+ * The current path of a link written in an old form, or `null` when the
+ * path is already current. /settings/incidents/<project> became the
+ * project's page, so a copied link should read the new path.
+ */
+export function legacyRoutePath(pathname: string): string | null {
+  if (!/^\/settings\/incidents(?:\/[^/]+)?$/.test(stripBasePath(pathname)))
+    return null;
+  return routePath(parseRoute(pathname));
+}
+
 export function parseRouteWithSearch(pathname: string, search: string): Route {
   const route = parseRoute(pathname);
   if (route.view !== "incidents" || !route.id) return route;
