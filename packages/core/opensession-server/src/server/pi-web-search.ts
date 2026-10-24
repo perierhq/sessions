@@ -13,11 +13,14 @@
  *   pi-session-setup.ts uses for the turn's own requests. The side request
  *   carries only that server tool; the turn's `web_search` function tool is
  *   never in it, so the two names cannot collide.
- * - Anthropic: `web_search_20260318` with dynamic filtering (Claude filters
- *   results in server-side code execution before they reach its context;
- *   needs Claude 4.6 or newer, older models call the tool directly), and
- *   `pause_turn` continuations. OpenAI (Codex and API key accounts): the
- *   Responses `web_search` tool.
+ * - Anthropic: `web_search_20260318` and `web_fetch_20260318`, always called
+ *   directly (`allowed_callers: ["direct"]`), and `pause_turn`
+ *   continuations. Dynamic filtering calls the tools from server-side code
+ *   execution, which Claude subscription accounts refuse
+ *   (`too_many_requests`) while the request itself succeeds. A response that
+ *   ran no search or fetch, or holds a tool error block, is a failure: it is
+ *   retried once, then reported to the agent as a tool error. OpenAI (Codex
+ *   and API key accounts): the Responses `web_search` tool.
  * - Which provider: Settings (web-search-setting.ts). Automatic uses the
  *   session's own provider only; a specific provider is strict.
  * - web_fetch sends only the URL as the user message, fetches it once, and
@@ -42,8 +45,8 @@ import {
 import { isBlockedAddress, isPrivateHostName } from "./shared/network-address";
 import type { WebSearchSetting } from "./web-search-setting";
 
-/** Latest Anthropic server web-search tool version (dynamic filtering on by
- *  default, and `response_inclusion`). */
+/** Latest Anthropic server web-search tool version (`response_inclusion`;
+ *  called directly, see webServerTool). */
 export const ANTHROPIC_WEB_SEARCH_TYPE = "web_search_20260318";
 /** Cap on the provider's own search loop, so one call cannot spend a plan. */
 export const MAX_SEARCH_USES = 5;
@@ -59,8 +62,8 @@ const SEARCH_MAX_TOKENS = 8_192;
 export const WEB_SEARCH_TOOL = "web_search";
 export const WEB_FETCH_TOOL = "web_fetch";
 
-/** Latest Anthropic server web-fetch tool version (dynamic filtering,
- *  cache bypass and `response_inclusion`). */
+/** Latest Anthropic server web-fetch tool version (cache bypass and
+ *  `response_inclusion`; called directly, see webServerTool). */
 export const ANTHROPIC_WEB_FETCH_TYPE = "web_fetch_20260318";
 /** Cap on the provider's own fetches for one call: the one URL asked for. */
 export const MAX_FETCH_USES = 1;
@@ -143,32 +146,21 @@ export function buildFetchRequest(url: string): string {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
-/**
- * Whether an Anthropic model can run the search tool's dynamic filtering
- * (Claude 4.6 and newer). Parsed from the id: `claude-<family>-<major>-<minor>`
- * or `claude-<major>-<minor>-<family>`; a date suffix is not a minor version.
- * An id without a readable version is treated as new.
- */
-export function anthropicSupportsDynamicFiltering(modelId: string): boolean {
-  const match = modelId
-    .toLowerCase()
-    .match(/^claude-(?:[a-z]+-)*?(\d+)(?:[-.](\d{1,2}))?(?=-|$)/);
-  if (!match) return true;
-  const major = Number(match[1]);
-  const minor = match[2] === undefined ? 0 : Number(match[2]);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
 /** The server-side tool of a kind for a pi model API, or null when the API
  *  has none. OpenAI has no separate fetch tool: its search tool opens pages,
  *  so a fetch on OpenAI uses it with the URL in the request.
  *  `allowedDomains` holds the tool to those domains (Anthropic
- *  `allowed_domains`, OpenAI `filters.allowed_domains`). */
+ *  `allowed_domains`, OpenAI `filters.allowed_domains`).
+ *
+ *  Anthropic's tools are always called directly. Without
+ *  `allowed_callers: ["direct"]` the newest versions run through server-side
+ *  code execution (dynamic filtering), which Claude subscription accounts
+ *  refuse with `too_many_requests` inside an otherwise successful response,
+ *  so no search or fetch ever runs. */
 export function webServerTool(
   kind: WebToolKind,
   api: string | undefined,
-  modelId: string,
-  opts: { direct?: boolean; allowedDomains?: readonly string[] } = {},
+  opts: { allowedDomains?: readonly string[] } = {},
 ): Record<string, unknown> | null {
   const domains = opts.allowedDomains?.length
     ? [...opts.allowedDomains]
@@ -188,9 +180,7 @@ export function webServerTool(
           }
         : {}),
       ...(domains ? { allowed_domains: domains } : {}),
-      ...(opts.direct || !anthropicSupportsDynamicFiltering(modelId)
-        ? { allowed_callers: ["direct"] }
-        : {}),
+      allowed_callers: ["direct"],
     };
   }
   if (api === "openai-responses" || api === "openai-codex-responses")
@@ -200,17 +190,11 @@ export function webServerTool(
   return null;
 }
 
-export const webSearchServerTool = (
-  api: string | undefined,
-  modelId: string,
-  opts: { direct?: boolean } = {},
-) => webServerTool("search", api, modelId, opts);
+export const webSearchServerTool = (api: string | undefined) =>
+  webServerTool("search", api);
 
-export const webFetchServerTool = (
-  api: string | undefined,
-  modelId: string,
-  opts: { direct?: boolean } = {},
-) => webServerTool("fetch", api, modelId, opts);
+export const webFetchServerTool = (api: string | undefined) =>
+  webServerTool("fetch", api);
 
 /**
  * Shape a side-request payload: the server tool is its only tool, and a
@@ -370,6 +354,72 @@ export function findingsFromBlocks(
   return `${text}\n\nSources:\n${list.join("\n")}`;
 }
 
+/**
+ * The error codes of a response's server tool result blocks: a
+ * `web_search_tool_result_error`, a `web_fetch_tool_error`, a
+ * `code_execution_tool_result_error` and the like, read from any
+ * `*_tool_result` block whose content is an error. A block without an
+ * `error_code` gives its content type.
+ */
+export function serverToolErrorCodes(
+  blocks: ReadonlyArray<Record<string, unknown>>,
+): string[] {
+  const codes: string[] = [];
+  for (const block of blocks) {
+    if (typeof block.type !== "string" || !block.type.endsWith("_tool_result"))
+      continue;
+    const content = block.content;
+    if (
+      !isRecord(content) ||
+      typeof content.type !== "string" ||
+      !content.type.includes("error")
+    )
+      continue;
+    codes.push(
+      typeof content.error_code === "string" && content.error_code
+        ? content.error_code
+        : content.type,
+    );
+  }
+  return codes;
+}
+
+/** Error codes about the input itself (the query or URL): asking again
+ *  gets the same answer, so they are not retried. */
+const NO_RETRY_CODES: ReadonlySet<string> = new Set([
+  "invalid_input",
+  "invalid_tool_input",
+  "query_too_long",
+  "url_too_long",
+  "url_not_allowed",
+  "url_not_accessible",
+  "unsupported_content_type",
+]);
+
+/** Why an Anthropic web tool response did no work, or undefined when it
+ *  did: a server tool result error block (`max_uses_exceeded` after the
+ *  tool already ran is only the cap), or no search or fetch at all (the
+ *  model answered without the tool). */
+export function anthropicWebToolFailure(
+  kind: WebToolKind,
+  blocks: ReadonlyArray<Record<string, unknown>>,
+  uses: number,
+): { code: string; error: string; retry: boolean } | undefined {
+  const code = serverToolErrorCodes(blocks).find(
+    (c) => !(c === "max_uses_exceeded" && uses > 0),
+  );
+  if (code)
+    return {
+      code,
+      error: `the ${kind} tool returned an error (${code})`,
+      retry: !NO_RETRY_CODES.has(code),
+    };
+  if (uses > 0) return undefined;
+  return kind === "search"
+    ? { code: "no_search", error: "no search ran", retry: true }
+    : { code: "no_fetch", error: "the page was not fetched", retry: true };
+}
+
 /** Trim findings to the cap, with a note when truncated. */
 export function formatFindings(text: string): string {
   const trimmed = text.trim();
@@ -424,8 +474,23 @@ export interface SearchRuntime {
 }
 
 export type SearchAttemptResult =
-  | { ok: true; text: string; uses: number; continuations: number }
-  | { ok: false; error: string; uses: number };
+  | {
+      ok: true;
+      text: string;
+      uses: number;
+      continuations: number;
+      /** Succeeded on the retry after a failed response. */
+      retried?: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+      uses: number;
+      /** The server tool's error code (or `no_search` / `no_fetch`) when
+       *  the response succeeded but its tool did no work. */
+      errorCode?: string;
+      retried?: boolean;
+    };
 
 const piText = (message: AssistantLike) =>
   (message.content ?? [])
@@ -437,8 +502,9 @@ const piText = (message: AssistantLike) =>
 /**
  * One provider's side request with a server tool: the request, its
  * `pause_turn` continuations (Anthropic, up to MAX_PAUSE_CONTINUATIONS, then
- * whatever exists), and one retry with direct calls when the API asks for
- * `allowed_callers`.
+ * whatever exists), and on Anthropic a failure check: a response whose tool
+ * did no work (anthropicWebToolFailure) is retried once from the start, and
+ * a second one is an error carrying the tool's error code.
  */
 export async function requestWithServerTool(input: {
   kind: WebToolKind;
@@ -463,19 +529,23 @@ export async function requestWithServerTool(input: {
     anthropic && input.onRateLimit
       ? anthropicRateLimitFetch(undefined, input.onRateLimit)
       : undefined;
-  let direct = false;
+  const tool = webServerTool(
+    kind,
+    model.api,
+    input.allowedDomains ? { allowedDomains: input.allowedDomains } : {},
+  );
+  if (!tool)
+    return { ok: false, error: `${model.api} has no web ${kind}`, uses: 0 };
+  let retried = false;
+  // Every attempt's uses, for the audit; `roundUses` is this attempt's.
   let uses = 0;
+  let roundUses = 0;
   let continuations = 0;
-  const paused: Array<Record<string, unknown>> = [];
+  let paused: Array<Record<string, unknown>> = [];
   let container: string | undefined;
   let fallbackText = "";
+  const retriedField = () => (retried ? { retried: true } : {});
   for (;;) {
-    const tool = webServerTool(kind, model.api, model.id, {
-      direct,
-      ...(input.allowedDomains ? { allowedDomains: input.allowedDomains } : {}),
-    });
-    if (!tool)
-      return { ok: false, error: `${model.api} has no web ${kind}`, uses };
     const collector = new AnthropicResponseCollector(KINDS[kind].usageKey);
     const continuation = paused.length
       ? { content: [...paused], container }
@@ -506,21 +576,23 @@ export async function requestWithServerTool(input: {
     if (message.usage) input.onUsage?.(message.usage);
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       const error = message.errorMessage || "the request failed";
-      if (
-        anthropic &&
-        !direct &&
-        !signal.aborted &&
-        /allowed_callers/.test(error)
-      ) {
-        direct = true;
-        continue;
-      }
       // A continuation that fails keeps what earlier rounds found.
-      const partial = anthropic ? findingsFromBlocks(paused) : "";
-      if (partial) return { ok: true, text: partial, uses, continuations };
-      return { ok: false, error, uses };
+      const partial =
+        anthropic && !anthropicWebToolFailure(kind, paused, roundUses)
+          ? findingsFromBlocks(paused)
+          : "";
+      if (partial)
+        return {
+          ok: true,
+          text: partial,
+          uses,
+          continuations,
+          ...retriedField(),
+        };
+      return { ok: false, error, uses, ...retriedField() };
     }
     uses += collector.uses;
+    roundUses += collector.uses;
     if (!anthropic)
       return { ok: true, text: piText(message), uses, continuations };
     if (!collector.blocks.length) fallbackText = piText(message);
@@ -534,8 +606,29 @@ export async function requestWithServerTool(input: {
       continuations++;
       continue;
     }
+    // A 200 whose tool did no work (an error block, or no search or fetch
+    // at all) is a failure: the model's prose about it is not findings.
+    const failure = anthropicWebToolFailure(kind, paused, roundUses);
+    if (failure) {
+      if (!retried && failure.retry && !signal.aborted) {
+        retried = true;
+        roundUses = 0;
+        continuations = 0;
+        paused = [];
+        container = undefined;
+        fallbackText = "";
+        continue;
+      }
+      return {
+        ok: false,
+        error: failure.error,
+        errorCode: failure.code,
+        uses,
+        ...retriedField(),
+      };
+    }
     const text = findingsFromBlocks(paused) || fallbackText;
-    return { ok: true, text, uses, continuations };
+    return { ok: true, text, uses, continuations, ...retriedField() };
   }
 }
 
@@ -1095,8 +1188,12 @@ function runPiWebTool(
         if (!result.ok && callSignal.aborted)
           result = { ...result, error: abortedMessage(kind, callSignal) };
         // A usage limit benches the account, as on a turn, and the call
-        // moves to another account of the same provider once.
-        const failure = result.ok ? undefined : result.error;
+        // moves to another account of the same provider once. A tool error
+        // inside a successful response is not the account's limit.
+        const failure =
+          result.ok || result.errorCode !== undefined
+            ? undefined
+            : result.error;
         const limited =
           failure !== undefined &&
           !callSignal.aborted &&
@@ -1119,7 +1216,11 @@ function runPiWebTool(
               }
             : {}),
           ...extraAudit,
+          ...(result.retried ? { retried: true } : {}),
           ...(limited ? { sidelined: true } : {}),
+          ...(!result.ok && result.errorCode
+            ? { error_code: result.errorCode.slice(0, 64) }
+            : {}),
           ...(result.ok ? {} : { error: result.error.slice(0, 300) }),
         });
         if (
