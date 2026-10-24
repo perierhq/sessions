@@ -89,8 +89,10 @@ import {
 } from "./podman-egress";
 import {
   formatGib,
+  duErrorsOnlyVanished,
   notePodmanDiskCheck,
-  parseSystemDfVolumes,
+  parseDuTotals,
+  parseVolumeMountpoints,
   PODMAN_MIN_FREE_BYTES,
   PODMAN_VOLUME_QUOTA_BYTES,
   PODMAN_VOLUME_WARN_BYTES,
@@ -473,19 +475,50 @@ async function defaultStorageFree(run: PodmanRunner): Promise<number> {
   return Number(stats.bavail) * Number(stats.bsize);
 }
 
-const SYSTEM_DF_TIMEOUT_MS = 120_000;
+const VOLUME_LIST_TIMEOUT_MS = 30_000;
+const DISK_USAGE_TIMEOUT_MS = 120_000;
 
-async function defaultVolumeUsage(
+/**
+ * Sandbox volume name -> bytes on disk. Lists the labelled volumes and their
+ * mountpoints, then sums each with one `du` inside podman's user namespace
+ * (the volumes hold files owned by subordinate uids the gateway user cannot
+ * read). Block usage, not apparent size: a sparse file does not fill the
+ * disk. A volume du could not reach is left out (its session is reported
+ * unknown).
+ */
+export async function podmanVolumeUsage(
   run: PodmanRunner,
 ): Promise<Map<string, number>> {
-  return parseSystemDfVolumes(
+  const mounts = parseVolumeMountpoints(
     await must(
       run,
-      ["system", "df", "-v", "--format", "json"],
-      "podman system df",
-      SYSTEM_DF_TIMEOUT_MS,
+      [
+        "volume",
+        "ls",
+        "--filter",
+        `label=${PODMAN_SANDBOX_LABEL}`,
+        "--format",
+        "json",
+      ],
+      "podman volume ls",
+      VOLUME_LIST_TIMEOUT_MS,
     ),
+    PODMAN_NAME_PREFIX,
   );
+  const usage = new Map<string, number>();
+  if (!mounts.size) return usage;
+  const result = await run(
+    ["unshare", "du", "-s", "-x", "-B1", "--", ...mounts.values()],
+    { timeoutMs: DISK_USAGE_TIMEOUT_MS },
+  );
+  if (result.exitCode !== 0 && !duErrorsOnlyVanished(result.stderr))
+    throw failure("podman unshare du", result);
+  const totals = parseDuTotals(result.stdout);
+  for (const [name, mountpoint] of mounts) {
+    const bytes = totals.get(mountpoint);
+    if (bytes !== undefined) usage.set(name, bytes);
+  }
+  return usage;
 }
 
 /** A cold start with no disk check since boot waits this long for one. */
@@ -654,7 +687,7 @@ export class PodmanProvider implements SandboxProvider {
         ((driver, sandboxId, state) =>
           runResumeHook(driver, "podman", sandboxId, state)),
       storageFree: deps.storageFree ?? defaultStorageFree,
-      volumeUsage: deps.volumeUsage ?? defaultVolumeUsage,
+      volumeUsage: deps.volumeUsage ?? podmanVolumeUsage,
       diskCheckTimeoutMs:
         deps.diskCheckTimeoutMs ?? COLD_START_DISK_CHECK_TIMEOUT_MS,
     };
@@ -1425,10 +1458,10 @@ async function removeLeftoverTestSandboxes(
   provider: PodmanProvider,
 ): Promise<void> {
   const label = `label=${PODMAN_SANDBOX_LABEL}`;
+  // `pod ps` lists every pod, stopped ones too (it has no -a).
   const pods = await listLabelled(run, [
     "pod",
     "ps",
-    "-a",
     "--filter",
     label,
     "--format",

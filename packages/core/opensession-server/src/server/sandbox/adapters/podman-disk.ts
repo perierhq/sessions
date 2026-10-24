@@ -202,27 +202,61 @@ export function podmanDiskWarnings(
   return lines;
 }
 
-/** Volume name -> bytes, from `podman system df -v --format json`. Throws
- *  on output that is not that report. */
-export function parseSystemDfVolumes(output: string): Map<string, number> {
+/**
+ * Volume name -> mountpoint, from `podman volume ls --format json` (an
+ * array of `{Name, Mountpoint, ...}`). Only names starting with `prefix`
+ * and absolute single-line mountpoints are kept. Throws on output that is
+ * not a volume list.
+ */
+export function parseVolumeMountpoints(
+  output: string,
+  prefix: string,
+): Map<string, string> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
   } catch {
-    throw new Error("podman system df did not return JSON");
+    throw new Error("podman volume ls did not return JSON");
   }
-  const volumes =
-    parsed && typeof parsed === "object"
-      ? (parsed as Record<string, unknown>).Volumes
-      : undefined;
-  if (!Array.isArray(volumes))
-    throw new Error("podman system df returned no volume list");
-  const sizes = new Map<string, number>();
-  for (const entry of volumes) {
+  if (!Array.isArray(parsed))
+    throw new Error("podman volume ls returned no volume list");
+  const mounts = new Map<string, string>();
+  for (const entry of parsed) {
     if (!entry || typeof entry !== "object") continue;
-    const { VolumeName, Size } = entry as Record<string, unknown>;
-    if (typeof VolumeName === "string" && typeof Size === "number")
-      sizes.set(VolumeName, Size);
+    const { Name, Mountpoint } = entry as Record<string, unknown>;
+    if (
+      typeof Name === "string" &&
+      Name.startsWith(prefix) &&
+      typeof Mountpoint === "string" &&
+      Mountpoint.startsWith("/") &&
+      !/[\0\r\n\t]/.test(Mountpoint)
+    )
+      mounts.set(Name, Mountpoint);
   }
-  return sizes;
+  return mounts;
+}
+
+/** Path -> bytes, from `du -s -B1` output (`<bytes>\t<path>` per line). */
+export function parseDuTotals(output: string): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const line of output.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab <= 0) continue;
+    const bytes = line.slice(0, tab);
+    if (/^\d+$/.test(bytes)) totals.set(line.slice(tab + 1), Number(bytes));
+  }
+  return totals;
+}
+
+/** Whether du's errors only name files removed while it walked (a busy
+ *  sandbox), which leave its totals usable. */
+export function duErrorsOnlyVanished(stderr: string): boolean {
+  const lines = stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return (
+    lines.length > 0 &&
+    lines.every((line) => /: No such file or directory$/.test(line))
+  );
 }

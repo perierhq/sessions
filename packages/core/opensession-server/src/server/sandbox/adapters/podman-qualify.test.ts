@@ -14,6 +14,7 @@ import {
   type PodmanQualifyDeps,
 } from "./podman";
 import { podmanNames } from "./podman-cli";
+import { isVerifiedPodmanArgv } from "./podman-verified-argv";
 import {
   fakePodman,
   fakeProviderDeps,
@@ -192,7 +193,17 @@ describe("podman qualification", () => {
     );
     // Listed by the sandbox label only.
     const ps = fake.calls.find(({ argv }) => argv[1] === "ps")!.argv;
-    expect(ps).toContain("label=opensession.sandbox=1");
+    expect(ps).toEqual([
+      "pod",
+      "ps",
+      "--filter",
+      "label=opensession.sandbox=1",
+      "--format",
+      "{{.Name}}",
+    ]);
+    expect(isVerifiedPodmanArgv(ps)).toBe(true);
+    const ls = fake.calls.find(({ argv }) => argv[1] === "ls")!.argv;
+    expect(isVerifiedPodmanArgv(ls)).toBe(true);
     // Before the new test sandbox is created.
     const first = fake.calls.findIndex(({ argv }) => argv[1] === "rm");
     const create = fake.calls.findIndex(
