@@ -69,6 +69,19 @@ export function useProjects(): SWRResponse<ProjectListItem[]> {
   );
 }
 
+/** The project list as cached, without fetching it: for surfaces that
+ *  only need it on demand (the command palette's per-project actions). */
+export function useCachedProjects(): SWRResponse<ProjectListItem[]> {
+  return useSWR<ProjectListItem[]>(projectSWRKey.projects(), null);
+}
+
+/** Load the project list into the shared key (the palette, on open). */
+export function loadProjects(): void {
+  void revalidateApiResources(projectSWRKey.projects(), fetchProjects(), {
+    revalidate: false,
+  }).catch(() => {});
+}
+
 export function useProjectSettings(
   project: string | null,
 ): SWRResponse<ProjectSettingsView> {

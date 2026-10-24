@@ -57,7 +57,7 @@ import {
 import { useActiveSession } from "./hooks/useActiveSession";
 import { useAppDocumentInteractions } from "./hooks/useAppDocumentInteractions";
 import { useAppGlobalHotkeys } from "./hooks/useAppGlobalHotkeys";
-import { useProjects } from "./hooks/useProjects";
+import { useCachedProjects } from "./hooks/useProjects";
 import { useAppRegistries } from "./hooks/useAppRegistries";
 import { useAppRoute } from "./hooks/useAppRoute";
 import { useAppShell } from "./hooks/useAppShell";
@@ -978,7 +978,9 @@ export function AppContent({
     setDeskOverlay,
     toggleSidebarCollapsed,
     showToast,
-    projects: useProjects().data,
+    // Cached only: the palette loads the list when it opens, so this
+    // doesn't fetch every project's readiness on each window focus.
+    projects: useCachedProjects().data,
   });
   const openSession = (id: string, created?: UnifiedSession | null) => {
     // Opening a session means foregrounding its chat tab. Callers inside a

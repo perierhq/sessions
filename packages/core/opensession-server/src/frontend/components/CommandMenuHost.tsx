@@ -6,6 +6,7 @@ import {
   knownToolAccounts,
   type OpenPr,
 } from "../lib/api";
+import { loadProjects } from "../hooks/useProjects";
 import { ARCHIVED_QUERY } from "../lib/session-list-state";
 import type { UnifiedSession } from "../lib/types";
 import { IconTile } from "./BrandTile";
@@ -76,6 +77,7 @@ export const CommandMenuHost = React.forwardRef<CommandMenuHandle, Props>(
 
     useEffect(() => {
       if (!open) return;
+      loadProjects();
       let live = true;
       fetchToolAccounts()
         .then(({ servers }) => {
