@@ -5,8 +5,9 @@
 // descendant policy, built from the access resolved for it
 // (incidentDescendantPolicy) and passed through the controller's server-only
 // argument; session creation re-resolves that access before the session
-// exists. Without a sandbox, the child's policy also names the incident agent
-// user its bash runs as (host-agents.ts). Children never report back into the
+// exists. In This machine (container) the child asks for that sandbox by
+// name; on the host path its policy names the incident agent user its bash
+// runs as (host-agents.ts). Children never report back into the
 // coordinator: the coordinator reads their status and final text.
 import type { TranscriptEntry } from "@tellahq/opensession-protocol/session";
 import type { AgentAccess } from "../../../shared/incident-access";
@@ -329,6 +330,13 @@ export function createIncidentAgents(
               ? { ...policy, hostAgentUser: workspace.user }
               : policy;
           },
+          // This machine (container) may be chosen without being the
+          // session default, so the child asks for it by name; any other
+          // sandbox is the project's default and the session resolves it
+          // the same way.
+          ...(workspace.kind === "sandbox" && workspace.provider === "podman"
+            ? { sandbox: "podman" as const }
+            : {}),
         },
       );
       return { sessionId: spawned.id };
