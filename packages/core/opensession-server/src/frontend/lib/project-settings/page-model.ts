@@ -4,14 +4,19 @@
 // testable without rendering.
 
 import {
+  INCIDENT_AGENTS_LABEL,
+  PROJECT_ROLES,
   READINESS_STEP_IDS,
   READINESS_TOTAL,
   type AccessCellChange,
   type AccessCellValue,
   type AccessCellView,
   type AccessRowKey,
+  type AccessRowView,
+  type AccessTableView,
   type EffectiveSandbox,
   type ProjectReadiness,
+  type ReadinessFix,
   type ReadinessStep,
   type RunPlace,
   type UnattendedRole,
@@ -223,4 +228,225 @@ export function sandboxRowCopy(e: EffectiveSandbox): {
     return { chip, description: `${head} No global default is set` };
   }
   return { chip, description: head.slice(0, -1) };
+}
+
+/** Two access table rows are the same row. */
+export function sameRowKey(a: AccessRowKey, b: AccessRowKey): boolean {
+  switch (a.kind) {
+    case "mode":
+    case "webSearch":
+      return b.kind === a.kind;
+    case "connection":
+      return b.kind === "connection" && b.server === a.server;
+    case "credential":
+      return b.kind === "credential" && b.credential === a.credential;
+    case "website":
+      return b.kind === "website" && b.host === a.host;
+    case "host":
+      return (
+        b.kind === "host" &&
+        b.runner === a.runner &&
+        (b.ssh ?? "") === (a.ssh ?? "")
+      );
+  }
+}
+
+/** A stable string for a row, for React keys. */
+export function rowKeyId(key: AccessRowKey): string {
+  switch (key.kind) {
+    case "mode":
+    case "webSearch":
+      return key.kind;
+    case "connection":
+      return `connection:${key.server}`;
+    case "credential":
+      return `credential:${key.credential}`;
+    case "website":
+      return `website:${key.host}`;
+    case "host":
+      return `host:${key.runner}:${key.ssh ?? ""}`;
+  }
+}
+
+/** What a cell will read once the change lands, for the optimistic view. */
+export function cellAfter(
+  row: AccessRowView,
+  change: AccessCellChange,
+): AccessCellValue {
+  const { value, role } = change;
+  if (value === true) return row.warning ? "blocked" : "yes";
+  if (value === false || value === null) return "no";
+  if (value === "code") return isIncidentRole(role) ? "branch" : "yes";
+  if (value === "ask") return "read";
+  if (value === "once") return "ask-once";
+  return "standing";
+}
+
+/** The view with a cell change applied, before the server answers. */
+export function applyCellChange<
+  V extends { access: { groups: AccessTableView["groups"] } },
+>(view: V, change: AccessCellChange): V {
+  const groups = view.access.groups.map((group) => ({
+    ...group,
+    rows: group.rows.map((row) =>
+      sameRowKey(row.key, change.row)
+        ? {
+            ...row,
+            cells: {
+              ...row.cells,
+              [change.role]: {
+                ...row.cells[change.role],
+                value: cellAfter(row, change),
+              },
+            },
+          }
+        : row,
+    ),
+  }));
+  return { ...view, access: { ...view.access, groups } };
+}
+
+/** "4 of 5 roles": how many roles a row is on for, You included. */
+export function rowSummary(row: AccessRowView): string {
+  const on = PROJECT_ROLES.filter((role) => cellIsOn(row.cells[role].value));
+  if (on.length === PROJECT_ROLES.length) return "Every role";
+  if (on.length === 0) return "No role";
+  return `${on.length} of ${PROJECT_ROLES.length} roles`;
+}
+
+/** The 4 places in the "Where agents run" grid, in the design's order. */
+export const RUN_PLACES = [
+  ["you", "You"],
+  ["reviews", "Reviews"],
+  ["automations", "Automations"],
+  ["incidentAgents", INCIDENT_AGENTS_LABEL],
+] as const;
+
+/** The words on a step's fix button. */
+export function fixLabel(fix: ReadinessFix): string {
+  switch (fix.kind) {
+    case "providers":
+      return "Add a model provider";
+    case "connect-sandbox":
+      return "Connect a sandbox";
+    case "pair-runner":
+      return "Pair a Runner";
+    case "add-signal":
+      return "Add a signal";
+    case "add-action":
+      return fix.action === "rollback" ? "Add rollback" : "Add deploy";
+    case "allow-agents":
+      return "Allow agents";
+    case "unpause":
+      return "Resume agents";
+  }
+}
+
+const PROVIDER_NAMES: Record<string, string> = {
+  daytona: "Daytona",
+  box: "Boat",
+  tart: "Mac VM",
+  usecomputer: "use.computer",
+  podman: "This machine · container",
+};
+
+/** A sandbox provider by name, with its region when it has one
+ *  ("Daytona eu"). `none` and `local` are this machine. */
+export function sandboxName(id: string, region?: string): string {
+  if (id === "none" || id === "local" || id === "") return "This machine";
+  const name = PROVIDER_NAMES[id] ?? id;
+  return region && id !== "podman" ? `${name} ${region}` : name;
+}
+
+/** The project's sandbox choices: the default, this machine, the
+ *  container when it is ready, and each other ready provider. The current
+ *  choice stays listed even when it is no longer ready. */
+export function sandboxOptions(opts: {
+  ready: string[];
+  current: string;
+  defaultLabel: string | null;
+  regions?: Record<string, string | undefined>;
+}): Array<{ value: string; label: string }> {
+  const out = [
+    {
+      value: "default",
+      label: opts.defaultLabel
+        ? `Use default (${opts.defaultLabel})`
+        : "Use default",
+    },
+    { value: "local", label: "This machine" },
+  ];
+  const providers = [...opts.ready];
+  if (
+    opts.current !== "default" &&
+    opts.current !== "local" &&
+    !providers.includes(opts.current)
+  )
+    providers.push(opts.current);
+  // The container sits beside this machine, then the remote providers.
+  providers.sort((a, b) => Number(b === "podman") - Number(a === "podman"));
+  for (const id of providers)
+    out.push({ value: id, label: sandboxName(id, opts.regions?.[id]) });
+  return out;
+}
+
+/** The previews choices: beside the session, or a provider of their own. */
+export function previewsOptions(opts: {
+  ready: string[];
+  current: string;
+  regions?: Record<string, string | undefined>;
+}): Array<{ value: string; label: string }> {
+  const out: Array<{ value: string; label: string }> = [];
+  if (opts.current === "default")
+    out.push({ value: "default", label: "Use default" });
+  out.push({ value: "same", label: "Same as agents" });
+  const providers = opts.ready.filter((id) => id !== "podman");
+  if (
+    !["default", "same"].includes(opts.current) &&
+    !providers.includes(opts.current)
+  )
+    providers.push(opts.current);
+  for (const id of providers)
+    out.push({ value: id, label: sandboxName(id, opts.regions?.[id]) });
+  return out;
+}
+
+/** The region a new Daytona connection starts with: the one nearest the
+ *  browser's time zone. */
+export function nearestRegion(timeZone: string): "eu" | "us" {
+  return timeZone.startsWith("America/") ? "us" : "eu";
+}
+
+/** "$6.50 spent in October". */
+export function monthSpendCopy(usd: number, now: Date): string {
+  const month = now.toLocaleString("en", { month: "long" });
+  return `$${usd.toFixed(2)} spent in ${month}`;
+}
+
+/** The deploy row's caption: the timeout in minutes. */
+export function timeoutCopy(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  return `${minutes} min limit`;
+}
+
+/** A long command with its middle dropped, both ends kept. */
+export function middleTruncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const keep = max - 1;
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
+/** A cell's colour: ink when on, faint when off, amber when blocked. */
+export function cellTone(v: AccessCellValue): string {
+  if (v === "blocked") return "text-yellow";
+  if (v === "yes") return "text-fg";
+  if (v === "no" || v === "locked") return "text-faint";
+  return "text-dim";
+}
+
+/** The DOM id a section is anchored at. */
+export function sectionAnchorId(id: ProjectSectionId): string {
+  return `project-${id}`;
 }
