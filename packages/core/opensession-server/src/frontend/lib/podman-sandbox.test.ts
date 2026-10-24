@@ -16,14 +16,28 @@ describe("This machine (container) card", () => {
       memoryMb: 4096,
       pidsLimit: 4096,
       cpuLimited: true,
+      cpu: 2,
       selfTestAt: "2026-10-22T10:00:00.000Z",
     });
     expect(lines[0]).toBe(
       "Image localhost/opensession-sandbox:0123456789abcdef",
     );
     expect(lines[1]).toBe("4 GB memory · 4096 processes");
+    expect(lines[2]).toBe("2 CPUs");
     expect(lines.join("\n")).not.toContain("CPU not limited");
     expect(lines.at(-1)).toStartWith("Self-test passed ");
+  });
+
+  test("states the CPU limit a sandbox actually gets", () => {
+    const base = {
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      memoryMb: 4096,
+      pidsLimit: 4096,
+      cpuLimited: true,
+    };
+    expect(podmanSummaryLines({ ...base, cpu: 1 })[2]).toBe("1 CPU");
+    expect(podmanSummaryLines({ ...base, cpu: 0.5 })[2]).toBe("0.5 CPUs");
+    expect(podmanSummaryLines(base)[2]).toBe("CPU not limited on this host");
   });
 
   test("says when the host cannot limit CPU", () => {

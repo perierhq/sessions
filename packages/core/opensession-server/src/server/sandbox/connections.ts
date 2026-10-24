@@ -135,6 +135,8 @@ export interface SandboxConnection {
 export interface SafePodmanConnection extends PodmanConnectionFacts {
   memoryMb: number;
   pidsLimit: number;
+  /** The CPUs a sandbox may use; absent when this host cannot limit CPU. */
+  cpu?: number;
   /** The last disk check's findings (low space, large home volumes). */
   diskWarnings?: string[];
 }
@@ -434,6 +436,7 @@ export function safeSandboxConnections(
     } = connection;
     const diskWarnings =
       provider === "podman" ? podmanDiskWarnings(podmanDiskReport()) : [];
+    const effective = podmanSettings(connection.settings);
     return {
       ...safe,
       ...(podmanFacts
@@ -441,8 +444,9 @@ export function safeSandboxConnections(
             podman: {
               ...podmanFacts,
               // What a sandbox actually gets, not the raw stored value.
-              memoryMb: podmanSettings(connection.settings).memoryMb,
-              pidsLimit: podmanSettings(connection.settings).pidsLimit,
+              memoryMb: effective.memoryMb,
+              pidsLimit: effective.pidsLimit,
+              ...(podmanFacts.cpuLimited ? { cpu: effective.cpu } : {}),
               ...(diskWarnings.length ? { diskWarnings } : {}),
             },
           }

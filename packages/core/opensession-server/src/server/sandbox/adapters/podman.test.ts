@@ -50,23 +50,33 @@ function verbs(calls: { argv: string[] }[]): string[] {
 }
 
 describe("podman settings", () => {
+  const host = { memoryMb: 8192, cpus: 4 };
   test("defaults and validation", () => {
-    expect(podmanSettings(undefined)).toEqual({
+    expect(podmanSettings(undefined, host)).toEqual({
       memoryMb: 4096,
       pidsLimit: 4096,
+      cpu: 2,
       dns: ["1.1.1.1", "9.9.9.9"],
     });
     expect(
-      podmanSettings({
-        memoryMb: 2048,
-        pidsLimit: 512,
-        cpu: 2,
-        dns: ["8.8.8.8"],
-      }),
-    ).toEqual({ memoryMb: 2048, pidsLimit: 512, cpu: 2, dns: ["8.8.8.8"] });
+      podmanSettings(
+        {
+          memoryMb: 2048,
+          pidsLimit: 512,
+          cpu: 3,
+          dns: ["8.8.8.8"],
+        },
+        host,
+      ),
+    ).toEqual({ memoryMb: 2048, pidsLimit: 512, cpu: 3, dns: ["8.8.8.8"] });
     expect(
-      podmanSettings({ memoryMb: -1, cpu: "x", dns: ["not-an-ip"] }),
-    ).toEqual({ memoryMb: 4096, pidsLimit: 4096, dns: ["1.1.1.1", "9.9.9.9"] });
+      podmanSettings({ memoryMb: -1, cpu: "x", dns: ["not-an-ip"] }, host),
+    ).toEqual({
+      memoryMb: 4096,
+      pidsLimit: 4096,
+      cpu: 2,
+      dns: ["1.1.1.1", "9.9.9.9"],
+    });
   });
 });
 
@@ -192,6 +202,19 @@ describe("podman provider ensure", () => {
       expect(create.argv.includes("--cpus")).toBe(delegated);
       expect(create.argv).toContain(IMAGE);
     }
+  });
+
+  test("with no CPU limit set, a delegated host still caps a sandbox at 2 CPUs", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(
+      deps(fake, {
+        cpuDelegated: () => true,
+        settings: () => podmanSettings({}, { memoryMb: 8192, cpus: 8 }),
+      }),
+    );
+    await provider.ensure({ sessionId: sessionId() });
+    const { argv } = fake.calls.find(({ argv }) => argv[0] === "create")!;
+    expect(argv[argv.indexOf("--cpus") + 1]).toBe("2");
   });
 
   test("a running pod is reverified, not restarted", async () => {

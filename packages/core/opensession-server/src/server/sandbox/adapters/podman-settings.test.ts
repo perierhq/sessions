@@ -26,6 +26,12 @@ describe("podman machine shape bounds", () => {
     ).toEqual({});
   });
 
+  test("CPU defaults to 2, or every CPU on a smaller host", () => {
+    expect(podmanSettings({}, host).cpu).toBe(2);
+    expect(podmanSettings({}, { memoryMb: 8192, cpus: 1 }).cpu).toBe(1);
+    expect(podmanSettings({ cpu: 0.5 }, host).cpu).toBe(0.5);
+  });
+
   test("the effective shape clamps a stored value and defaults the rest", () => {
     expect(podmanSettings({ pidsLimit: 1e9, cpu: 32 }, host)).toEqual({
       memoryMb: 4096,

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { availableParallelism, tmpdir } from "os";
 import { join } from "path";
 import {
   connectSandboxProvider,
@@ -320,6 +320,21 @@ describe("This machine (container) in Settings", () => {
       memoryMb: 4096,
       pidsLimit: 256,
     });
+  });
+
+  test("the card summary carries the effective CPU limit when the host can apply it", () => {
+    connectSandboxProvider("podman", { settings: {} });
+    setPodmanConnectionFacts({
+      imageTag: "localhost/opensession-sandbox:0123456789abcdef",
+      cpuLimited: true,
+      selfTestAt: "2026-10-22T10:00:00.000Z",
+    });
+    const card = () =>
+      safeSandboxConnections("linux").find((c) => c.provider === "podman")
+        ?.podman;
+    expect(card()?.cpu).toBe(Math.min(2, availableParallelism()));
+    updateSandboxConnection("podman", { settings: { cpu: 0.5 } });
+    expect(card()?.cpu).toBe(0.5);
   });
 
   test("limits are clamped on save and the card shows what applies", () => {

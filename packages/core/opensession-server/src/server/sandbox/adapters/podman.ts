@@ -834,9 +834,7 @@ export class PodmanProvider implements SandboxProvider {
         image,
         memoryMb: settings.memoryMb,
         pidsLimit: settings.pidsLimit,
-        ...(settings.cpu !== undefined && this.d.cpuDelegated()
-          ? { cpu: settings.cpu }
-          : {}),
+        ...(this.d.cpuDelegated() ? { cpu: settings.cpu } : {}),
       }),
       `create ${names.workload}`,
     );

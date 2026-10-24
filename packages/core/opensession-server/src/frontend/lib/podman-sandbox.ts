@@ -16,6 +16,8 @@ export interface PodmanConnectionSummary {
   pidsLimit: number;
   /** False when this host cannot apply a CPU limit. */
   cpuLimited: boolean;
+  /** The CPUs a sandbox may use, when this host can limit CPU. */
+  cpu?: number;
   /** When the full isolation self-test last passed. */
   selfTestAt?: string;
   /** The last disk check's findings (low space, large home volumes). */
@@ -26,12 +28,18 @@ function memory(mb: number): string {
   return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
 }
 
+function cpuLimit(summary: PodmanConnectionSummary): string {
+  if (!summary.cpuLimited || summary.cpu === undefined)
+    return "CPU not limited on this host";
+  return `${summary.cpu} ${summary.cpu === 1 ? "CPU" : "CPUs"}`;
+}
+
 /** The card's detail lines, in display order. */
 export function podmanSummaryLines(summary: PodmanConnectionSummary): string[] {
   return [
     `Image ${summary.imageTag}`,
     `${memory(summary.memoryMb)} memory · ${summary.pidsLimit} processes`,
-    ...(summary.cpuLimited ? [] : ["CPU not limited on this host"]),
+    cpuLimit(summary),
     ...(summary.selfTestAt && Date.parse(summary.selfTestAt) > 0
       ? [`Self-test passed ${new Date(summary.selfTestAt).toLocaleString()}`]
       : []),

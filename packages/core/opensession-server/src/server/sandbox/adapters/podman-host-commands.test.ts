@@ -130,6 +130,14 @@ describe("podman argv checked on a host", () => {
         pidsLimit: 256,
         cpu: 1.5,
       }),
+      // The default CPU limit on a host that delegates `cpu`.
+      workloadCreateArgs({
+        names,
+        image: "localhost/opensession-sandbox:0123456789abcdef",
+        memoryMb: 4096,
+        pidsLimit: 4096,
+        cpu: 2,
+      }),
       execArgs({ workload: names.workload, timeoutSec: 30, cmd: "echo a b" }),
       execArgs({
         workload: names.workload,
