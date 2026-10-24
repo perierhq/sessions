@@ -27,6 +27,7 @@ import {
   webSocketReconnectDelay,
 } from "../lib/ws-reconnect";
 import { TYPING_PREVIEW_MAX } from "../lib/typing";
+import { feedSnapshotFrames } from "../lib/feed-snapshot-frames";
 import { IGNORE_WS_MESSAGES, type SessionSocket } from "./useSessionSocket";
 import * as SessionSocketRuntime from "../lib/session-socket-runtime";
 
@@ -334,22 +335,8 @@ export function useWebSocket(presenceActive = true) {
           // A stale cursor gets one cumulative active snapshot. Recreate the
           // ordinary stream events so every conversation surface shares the
           // same rendering path.
-          if (msg.active) {
-            const start: WSServerMessage = {
-              type: "stream_start",
-              sessionId: msg.sessionId,
-              by: msg.active.by,
-            };
-            for (const handler of handlersRef.current) handler(start);
-            if (msg.active.text) {
-              const text: WSServerMessage = {
-                type: "stream_text",
-                sessionId: msg.sessionId,
-                text: msg.active.text,
-              };
-              for (const handler of handlersRef.current) handler(text);
-            }
-          }
+          for (const frame of feedSnapshotFrames(msg))
+            for (const handler of handlersRef.current) handler(frame);
           delivered = null;
         }
         if (delivered) {
