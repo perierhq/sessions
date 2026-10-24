@@ -920,7 +920,7 @@ registerSessionControl({
     const sandboxResolved =
       fork || requestedRunnerId
         ? resolveRequestedSandbox(undefined, repo.id, model)
-        : resolveInteractiveSandbox(sandbox, user, repo.id, model);
+        : await resolveInteractiveSandbox(sandbox, user, repo.id, model);
     if (!sandboxResolved.ok) throw new Error(sandboxResolved.error);
     const sandboxProvider = sandboxResolved.provider;
     // A descendant needs a sandbox or an isolated Runner; only an incident

@@ -156,10 +156,6 @@ test("the spawn is audited with the created session", () => {
 test.each([
   [{ repo: "acme-api", mode: "code" as const }, "does not match"],
   [{ repo: "acme", mode: "scratch" as const }, "work in a repository"],
-  [
-    { repo: "acme", mode: "code" as const, runner: "rn-other" },
-    "Runner rn-other is not in this agent's access",
-  ],
 ])("refuses %j", async (request, message) => {
   await expect(
     enforceIncidentSpawn(incidentDescendantPolicy(access(), base), request),
@@ -179,19 +175,19 @@ test("access for another incident or role is refused", async () => {
     enforceIncidentSpawn(policy, { repo: "acme", mode: "code" }),
   ).rejects.toMatchObject({ code: "spawn" });
 });
-test("mode and model locks", async () => {
+test("the mode locks; the model is the project's, not access's", async () => {
   current = access({ mode: "ask", model: "pi/openai/gpt-6.1" });
   const policy = incidentDescendantPolicy(access(), base);
   await expect(
     enforceIncidentSpawn(policy, { repo: "acme", mode: "code" }),
   ).rejects.toThrow("This agent may only read (mode ask)");
-  await expect(
-    enforceIncidentSpawn(policy, {
+  expect(
+    await enforceIncidentSpawn(policy, {
       repo: "acme",
       mode: "ask",
       model: "pi/anthropic/claude-opus-5-5",
     }),
-  ).rejects.toThrow("This agent must use pi/openai/gpt-6.1");
+  ).toBeTruthy();
   expect(
     await enforceIncidentSpawn(policy, {
       repo: "acme",

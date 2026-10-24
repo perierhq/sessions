@@ -331,6 +331,27 @@ export function setMcpAllowedUsers(
   return { ok: true, allowedUsers: cleaned };
 }
 
+/**
+ * Let runs that carry no user (incident agents, automations, reviews) use a
+ * server restricted to named people (`allowUnattended: true`), or stop them
+ * (`false`). Person-only: the route checks the caller. `apple-release`
+ * stays restricted to its prompter.
+ */
+export function setMcpAllowUnattended(
+  name: string,
+  on: boolean,
+): { ok: true } | { error: string } {
+  const config = readMcpConfig();
+  const entry = config.mcpServers[name];
+  if (!entry) return { error: `Server "${name}" not found` };
+  if (on && requiresAllowedUsers(name))
+    return { error: `Server "${name}" is never available to agents` };
+  if (on) entry.allowUnattended = true;
+  else delete entry.allowUnattended;
+  writeMcpConfig(config);
+  return { ok: true };
+}
+
 export function replaceMcpServerEntries(
   updates: Record<string, Record<string, unknown> | undefined>,
 ): { ok: true } | { error: string } {

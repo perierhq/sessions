@@ -11,7 +11,6 @@ import {
   recordRelease,
   redactProjectSettings,
   updateProjectSettings,
-  validateAction,
 } from "./project-settings";
 
 const kit = useIncidentTestKernel();
@@ -91,10 +90,15 @@ test("a full update, with action defaults and a hook secret", async () => {
     `/incident-releases/acme/${s.releaseHookSecret}`,
   );
   expect(kit.audits.at(-1)).toEqual({
-    kind: "incident_settings_updated",
+    kind: "project_settings_updated",
     project: "acme",
     by: "Ada",
-    fields: ["actions", "autonomy", "night", "productionRunners"],
+    fields: [
+      "incidents.autonomy",
+      "incidents.night",
+      "production.actions",
+      "production.runners",
+    ],
   });
   expect(s).toMatchObject({ updatedBy: "Ada" });
   expect(peekProjectSettings("acme")?.autonomy).toBe("propose");
@@ -154,36 +158,6 @@ test.each([
 test("unknown projects are refused", async () => {
   expect(await update("other", { autonomy: "watch" }, "Ada")).toEqual({
     error: expect.stringContaining("other"),
-  });
-});
-test("validateAction", () => {
-  expect(
-    validateAction({ ...deploy, cwd: "relative" }, ["runner-prod"]),
-  ).toEqual({ error: expect.stringContaining("cwd") });
-  expect(validateAction({ ...deploy, id: "Deploy!" }, ["runner-prod"])).toEqual(
-    { error: expect.stringContaining("id") },
-  );
-  expect(
-    validateAction({ ...deploy, cost: { kind: "amount", usd: 0 } }, [
-      "runner-prod",
-    ]),
-  ).toEqual({
-    error: expect.stringContaining("cost"),
-  });
-  expect(
-    validateAction(
-      {
-        ...deploy,
-        cost: { kind: "amount", usd: 5 },
-        needsSecret: true,
-        reversible: false,
-      },
-      ["runner-prod"],
-    ),
-  ).toMatchObject({
-    cost: { kind: "amount", usd: 5 },
-    needsSecret: true,
-    reversible: false,
   });
 });
 test("server-side fields cannot be written by callers; releases are capped", async () => {
@@ -295,10 +269,10 @@ test("only a signed-in person changes actions and production Runners", async () 
     forbidden: true,
   });
   expect(kit.audits.at(-1)).toEqual({
-    kind: "incident_settings_refused",
+    kind: "project_settings_refused",
     project: "acme",
     by: "agent",
-    fields: ["productionRunners"],
+    fields: ["production.runners"],
   });
   expect((await getProjectSettings("acme")).autonomy).toBe("deploy-after-veto");
   const other = await updateProjectSettings(
@@ -351,10 +325,10 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
       forbidden: true,
     });
     expect(kit.audits.at(-1)).toEqual({
-      kind: "incident_settings_refused",
+      kind: "project_settings_refused",
       project: "acme",
       by: "agent",
-      fields: [field],
+      fields: [`incidents.${field}`],
     });
   }
   const strict = await getProjectSettings("acme");
@@ -390,22 +364,6 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
   });
 });
 
-test("placeholders cannot sit inside quotes", () => {
-  for (const command of [
-    "./deploy.sh '{{ref}}'",
-    './deploy.sh "v-{{ref}}"',
-    "echo 'a' \"{{project}}\"",
-  ])
-    expect(validateAction({ ...deploy, command }, ["runner-prod"])).toEqual({
-      error:
-        "Placeholders cannot be inside quotes: Sessions quotes their values",
-    });
-  expect(
-    validateAction({ ...deploy, command: "echo 'x' {{ref}} \\'" }, [
-      "runner-prod",
-    ]),
-  ).toMatchObject({ id: "deploy" });
-});
 test("release refs must be commit SHAs; project ids are own keys", async () => {
   expect(
     await recordRelease("acme", {

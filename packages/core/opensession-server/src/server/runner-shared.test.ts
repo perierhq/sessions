@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  mcpServerAllowedForRun,
   askBashDenyReason,
   declaredRunFailure,
   describeUsageLimitReset,
@@ -336,4 +337,16 @@ describe("askBashDenyReason", () => {
     // Literal $( inside single quotes is data too.
     expect(askBashDenyReason("grep -n '$(x)' file")).toBeNull();
   });
+});
+
+test("Allow agents opens a people-restricted server to runs without a user only", () => {
+  expect(mcpServerAllowedForRun("logs", ["Ada"], undefined, [], true)).toBe(
+    true,
+  );
+  expect(mcpServerAllowedForRun("logs", ["Ada"], undefined, [])).toBe(false);
+  // A person who isn't listed still doesn't get it.
+  expect(mcpServerAllowedForRun("logs", ["Ada"], "Bo", [], true)).toBe(false);
+  expect(
+    mcpServerAllowedForRun("apple-release", ["Ada"], undefined, [], true),
+  ).toBe(false);
 });
