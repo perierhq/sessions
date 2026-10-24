@@ -133,11 +133,11 @@ export async function saveWorkspaceSandboxDefault(
 }
 
 /** Writes the project settings' sandbox ("workspace" follows the default,
- *  "none" is this machine). */
+ *  "none" is this machine) as `actor`; changing it needs a verified person. */
 export async function saveRepoSandboxDefault(
   repoId: string,
   value: string,
-  by = "Anonymous",
+  actor: { name: string; verified: boolean; login?: string },
 ): Promise<SandboxDefaultsStatus> {
   const normalized = value.trim().toLowerCase();
   if (normalized !== "workspace" && normalized !== "none")
@@ -154,7 +154,7 @@ export async function saveRepoSandboxDefault(
   const out = await updateProjectDocument(
     repoId,
     { expectedRevision: revision, sandbox },
-    { name: by, verified: false },
+    actor,
   );
   if ("error" in out) throw new Error(out.error);
   return sandboxDefaultsStatus(repoId);

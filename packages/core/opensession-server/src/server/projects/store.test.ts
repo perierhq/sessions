@@ -333,7 +333,7 @@ test("server writes keep the revision and the document's rules", async () => {
 
 const WIDEN = {
   error: "Only a signed-in person can give agents more access",
-  status: 403,
+  status: 403 as const,
 };
 
 test("only a signed-in person widens what agents may use", async () => {

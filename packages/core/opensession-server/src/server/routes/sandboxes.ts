@@ -1,6 +1,6 @@
 /** Workspace sandbox connections, defaults, qualification and environments. */
 
-import { requestUser, type RouteContext } from "./context";
+import { requestUser, type RouteContext, verifiedPerson } from "./context";
 import { sandboxCapabilityStatus } from "../sandbox/config";
 import { sandboxIngressStatus } from "../sandbox/caddy-ingress";
 import {
@@ -135,14 +135,25 @@ export async function handleSandboxesRoutes(
     ) {
       return errorResponse("scope and value are required");
     }
-    const user = requestUser(ctx, body.user) || "Anonymous";
+    // Where agents run is the person gate of the project settings page:
+    // never a claimed name or the automation principal.
+    const person = verifiedPerson(ctx);
+    if ((body.scope === "workspace" || body.scope === "repo") && !person)
+      return errorResponse(
+        "Only a signed-in person can change where agents run",
+        403,
+      );
     try {
       if (body.scope === "workspace") {
         await saveWorkspaceSandboxDefault(body.value);
       } else if (body.scope === "repo") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
-        await saveRepoSandboxDefault(body.repo, body.value, user);
+        await saveRepoSandboxDefault(body.repo, body.value, {
+          name: person,
+          verified: true,
+          ...(ctx.authUser?.login ? { login: ctx.authUser.login } : {}),
+        });
       } else if (body.scope === "repo-portals") {
         if (typeof body.repo !== "string" || !(body.repo in REPOS))
           return errorResponse("repo must name a registered repository");
