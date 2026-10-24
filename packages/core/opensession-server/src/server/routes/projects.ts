@@ -44,8 +44,10 @@ export interface ProjectRouteDeps {
     project: string,
     mutate: (doc: ProjectSettingsDocument) => ProjectSettingsDocument,
   ): Promise<ProjectSettingsDocument>;
-  /** Throws with the reason when the value can't be used. */
-  savePreviews(project: string, value: PreviewsChoice): void;
+  /** Why the previews value can't be used, checked before any write. */
+  previewsProblem(value: PreviewsChoice): string | null;
+  /** Rejects with the reason when the value can't be saved. */
+  savePreviews(project: string, value: PreviewsChoice): Promise<void>;
   /** Throws with the reason the Runner can't be bound. */
   bindRunner(
     project: string,
@@ -159,11 +161,16 @@ async function patchSettings(
   const actor = actorOf(ctx);
   const { previews, ...documentPatch } =
     patch as unknown as ProjectSettingsPatch;
+  // Previews live outside the document: check them first, so a bad value
+  // leaves the document untouched.
+  const previewsProblem =
+    previews === undefined ? null : d.previewsProblem(previews);
+  if (previewsProblem) return error(previewsProblem, 400);
   const out = await d.update(project, documentPatch, actor);
   if ("error" in out) return error(out.error, out.status);
   if (previews !== undefined) {
     try {
-      d.savePreviews(project, previews);
+      await d.savePreviews(project, previews);
     } catch (cause) {
       return error(
         cause instanceof Error ? cause.message : "Couldn't save previews",

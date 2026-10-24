@@ -47,8 +47,8 @@ export interface ProjectDefaultsDeps {
   sandbox(): string;
   /** Why the sandbox can't be the default (unknown or not available). */
   sandboxProblem(value: string): string | null;
-  /** Throws for a provider that isn't available. */
-  setSandbox(value: string): void;
+  /** Rejects for a provider that isn't available. */
+  setSandbox(value: string): Promise<void>;
   previews(): "same" | (string & {});
   previewsProblem(value: string): string | null;
   setPreviews(value: string): void;
@@ -163,7 +163,7 @@ async function patch(ctx: RouteContext): Promise<Response> {
   if (problem) return error(problem, 400);
   try {
     for (const [role, id] of modelChanges) d.setModel(role, id);
-    if (typeof sandbox === "string") d.setSandbox(sandbox);
+    if (typeof sandbox === "string") await d.setSandbox(sandbox);
     if (typeof previews === "string") d.setPreviews(previews);
     if (hosts) d.setWebsites(hosts);
   } catch (cause) {

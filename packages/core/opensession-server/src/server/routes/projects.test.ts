@@ -83,9 +83,14 @@ beforeEach(() => {
       docs.set(project, next);
       return next;
     },
-    savePreviews: (_project, value) => {
-      if (value === "nowhere")
-        throw new Error('Unknown sandbox provider "nowhere"');
+    previewsProblem: (value) =>
+      value === "nowhere" ? 'Unknown sandbox provider "nowhere"' : null,
+    savePreviews: async (_project, value) => {
+      await Promise.resolve();
+      if (value === "offline")
+        throw new Error(
+          'Sandbox provider "offline" is not currently available',
+        );
       calls.previews.push(value);
     },
     bindRunner: async (_project, runnerId, _by, opts) => {
@@ -213,6 +218,24 @@ test("PATCH previews saves beside the document; a bad one is a 400", async () =>
       })
     )?.json,
   ).toEqual({ error: 'Unknown sandbox provider "nowhere"' });
+});
+
+test("a bad previews value writes nothing; a failed save is not a 200", async () => {
+  const bad = await call("PATCH", "/api/projects/acme-web/settings", {
+    expectedRevision: 4,
+    sandbox: "podman",
+    previews: "nowhere",
+  });
+  expect(bad?.status).toBe(400);
+  expect(calls.update).toEqual([]);
+  const failed = await call("PATCH", "/api/projects/acme-web/settings", {
+    expectedRevision: 4,
+    previews: "offline",
+  });
+  expect(failed).toMatchObject({
+    status: 400,
+    json: { error: 'Sandbox provider "offline" is not currently available' },
+  });
 });
 
 test("PATCH input errors", async () => {

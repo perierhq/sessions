@@ -227,10 +227,14 @@ export function liveProjectRouteDeps(): ProjectRouteDeps {
   return {
     update: updateProjectDocument,
     patchAsServer: patchProjectDocumentAsServer,
-    savePreviews: (project, value) => {
+    previewsProblem: (value) =>
+      value === "same" || value === "default"
+        ? null
+        : workspaceSandboxProblem(value),
+    savePreviews: async (project, value) => {
       // "same" and "default" both clear the project's own choice until
       // sandbox config can record "beside the session" per project.
-      saveRepoPortalSandbox(
+      await saveRepoPortalSandbox(
         project,
         value === "same" || value === "default" ? "none" : value,
       );
@@ -274,8 +278,8 @@ export function liveProjectDefaultsDeps(): ProjectDefaultsDeps {
     },
     sandbox: () => workspaceSandboxDefault(),
     sandboxProblem: workspaceSandboxProblem,
-    setSandbox: (value) => {
-      saveWorkspaceSandboxDefault(value);
+    setSandbox: async (value) => {
+      await saveWorkspaceSandboxDefault(value);
     },
     previews: () => globalPreviewsDefault(),
     previewsProblem: previewsDefaultProblem,

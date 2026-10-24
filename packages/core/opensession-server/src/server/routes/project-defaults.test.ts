@@ -39,7 +39,12 @@ beforeEach(() => {
       state.models[role] = id ?? "pi/anthropic/claude-opus-5-5";
     },
     sandbox: () => state.sandbox,
-    setSandbox: (v) => {
+    setSandbox: async (v) => {
+      await Promise.resolve();
+      if (v === "offline")
+        throw new Error(
+          'Sandbox provider "offline" is not currently available',
+        );
       state.sandbox = v;
     },
     previews: () => state.previews,
@@ -160,4 +165,13 @@ test("other paths fall through; registered in the chain", async () => {
     await call("GET", undefined, ADA, "/api/project-defaults/x"),
   ).toBeUndefined();
   expect(routeHandlers).toContain(handleProjectDefaultsRoutes);
+});
+
+test("a sandbox that fails to save answers 400, not 200", async () => {
+  const out = await call("PATCH", { sandbox: "offline" });
+  expect(out).toMatchObject({
+    status: 400,
+    json: { error: 'Sandbox provider "offline" is not currently available' },
+  });
+  expect(state.sandbox).toBe("daytona");
 });
