@@ -352,10 +352,15 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
         case "tool_execution_end": {
           const t = ev as any;
           if (t.parentToolCallId) break;
-          // Parallel tools: the phase falls back to one still running. The
-          // last one to end sends nothing; the next model request (or the
-          // turn's end) follows within milliseconds.
-          if (runningTools.delete(String(t.toolCallId))) pushToolPhase();
+          // Parallel tools: the phase falls back to one still running. When
+          // the last one ends the model has the turn again: pi either opens
+          // the next request or ends the turn (agent_end → idle). Say so
+          // now; the request's message_start only fires once its response
+          // headers arrive, and a finished tool must not tick until then.
+          if (runningTools.delete(String(t.toolCallId))) {
+            if (runningTools.size > 0) pushToolPhase();
+            else push({ type: "phase", phase: "model", since: Date.now() });
+          }
           const { text, images } = contentToTextAndImages(t.result?.content);
           // `content`, not `result`: stream consumers read event.content
           // (run-session's stream_tool_result). 500-char preview like

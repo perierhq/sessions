@@ -144,12 +144,15 @@ describe("pi live events", () => {
     expect(phases.map((ev) => ev.phase)).toEqual([
       "model",
       "tool",
+      // The last tool ended: pi calls the model next (or ends the turn).
+      "model",
+      // The request's message_start restates it with its precise start.
       "model",
       "idle",
     ]);
     // A model phase starts when its request did (pi's message timestamp).
     expect(phases[0].since).toBe(T0);
-    expect(phases[2].since).toBe(T1);
+    expect(phases[3].since).toBe(T1);
     expect(phases[1].tool).toEqual({
       id: "toolu_1",
       name: "bash",
@@ -195,8 +198,11 @@ describe("pi live events", () => {
       ["b", 2],
       ["a", 1],
     ]);
-    // The last tool to end sends nothing: the next request follows at once.
+    // The last tool to end hands back to the model at once: pi opens the
+    // next request (its headers can take a while) or ends the turn. A
+    // finished tool must not keep ticking until then.
     const before = pushed.length;
+    const endedAt = Date.now();
     emit({
       type: "tool_execution_end",
       toolCallId: "a",
@@ -204,7 +210,9 @@ describe("pi live events", () => {
       result: { content: [] },
       isError: false,
     });
-    expect(pushed.slice(before).some((ev) => ev.type === "phase")).toBe(false);
+    const after = pushed.slice(before).filter((ev) => ev.type === "phase");
+    expect(after.map((ev) => ev.phase)).toEqual(["model"]);
+    expect(after[0]!.since).toBeGreaterThanOrEqual(endedAt);
   });
 
   test("reasoning and text deltas carry their kind and the durable row's id", () => {
