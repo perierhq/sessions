@@ -4,6 +4,7 @@ import { revalidateProjects } from "../../../hooks/useProjects";
 import type { ProductionRunnerView } from "../../../lib/api/incidents";
 import { errorMessage } from "../../../lib/error-message";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
+import { SETTING_SWITCH_HIT } from "../../../lib/incident-settings-classes";
 import { monthSpendCopy } from "../../../lib/project-settings/page-model";
 import { SettingCard } from "../../../ui/settings";
 import { Switch } from "../../../ui/switch";
@@ -82,6 +83,7 @@ export function IncidentsSection({
               checked={incidents.agentsPaused}
               onCheckedChange={setPaused}
               aria-label="Pause all agents"
+              className={SETTING_SWITCH_HIT}
             />
           }
         />

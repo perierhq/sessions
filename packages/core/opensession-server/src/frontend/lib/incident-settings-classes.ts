@@ -10,7 +10,14 @@ export const INCIDENT_SETTINGS_FRAME =
  *  it takes the full width under the text instead of truncating. */
 export const SETTING_WIDE_CONTROL =
   "phone:ml-0 phone:max-w-none phone:basis-full";
-export const SETTING_WIDE_SELECT = "phone:w-full phone:justify-between";
+export const SETTING_WIDE_SELECT =
+  "phone:min-h-11 phone:w-full phone:justify-between";
+/** A row's select, a 44px target on a phone like the rest of the page's. */
+export const SETTING_SELECT = "phone:min-h-11";
+/** A settings switch grown to a 44px target: its 24px track gains 10px of
+ *  invisible hit area above and below, so nothing around it moves. */
+export const SETTING_SWITCH_HIT =
+  "before:absolute before:inset-x-0 before:-inset-y-2.5 before:content-['']";
 
 /** A settings row that opens something: the whole row is the button, 44px
  *  at least, washing on hover inside the card's corner. Mirrors
