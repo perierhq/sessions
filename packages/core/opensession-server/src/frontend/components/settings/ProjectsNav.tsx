@@ -8,6 +8,7 @@ import {
   SETTINGS_NAV_ICON,
   SETTINGS_NAV_ROW,
 } from "../../lib/settings-classes";
+import { scrollToProjectSection } from "../../lib/project-settings/scroll";
 import { matchProjectSections, matchProjects } from "../../lib/settings-search";
 import { PlainButton } from "../../ui/plain-button";
 import { cn } from "../../ui/cn";
@@ -73,7 +74,12 @@ export function ProjectNavRows({
                     aria-current={
                       active?.section === id ? "location" : undefined
                     }
-                    onClick={() => onOpen(item.id, id)}
+                    onClick={() => {
+                      onOpen(item.id, id);
+                      // Already on this route after scrolling away: the
+                      // route doesn't change, so scroll here.
+                      scrollToProjectSection(id);
+                    }}
                   >
                     {label}
                   </PlainButton>

@@ -101,3 +101,36 @@ test("phone rows: the same phrase, 44px rows", () => {
   expect(buttons).toHaveLength(3);
   for (const button of buttons) expect(button).toContain("min-h-11");
 });
+
+test("the current section scrolls again when clicked after scrolling away", async () => {
+  const { find } = await import("../../tools/hook-harness");
+  const { PlainButton } = await import("../../ui/plain-button");
+  const scrolled: string[] = [];
+  const opened: Array<[string, string | undefined]> = [];
+  const realDocument = globalThis.document;
+  Object.assign(globalThis, {
+    document: {
+      getElementById: (id: string) => ({
+        scrollIntoView: () => scrolled.push(id),
+      }),
+    },
+  });
+  try {
+    const tree = ProjectNavRows({
+      projects: PROJECT_LIST,
+      active: { project: "acme-web", section: "models" },
+      query: "",
+      onOpen: (project, section) => opened.push([project, section]),
+    });
+    const models = find(
+      tree,
+      PlainButton,
+      (p: { children?: unknown }) => p.children === "Models",
+    );
+    (models!.props as { onClick: () => void }).onClick();
+    expect(opened).toEqual([["acme-web", "models"]]);
+    expect(scrolled).toEqual(["project-models"]);
+  } finally {
+    Object.assign(globalThis, { document: realDocument });
+  }
+});

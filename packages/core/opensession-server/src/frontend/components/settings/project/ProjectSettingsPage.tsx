@@ -39,6 +39,7 @@ import {
   STALE_SETTINGS_MESSAGE,
   sendProjectPatch,
 } from "../../../lib/project-settings/save";
+import { scrollToProjectSection } from "../../../lib/project-settings/scroll";
 import { Button } from "../../../ui/button";
 import { useConfirm } from "../../../ui/confirm";
 import { SettingCardSkeleton, SettingsPanel } from "../../../ui/settings";
@@ -91,11 +92,15 @@ export function ProjectSettingsPage({
 
   const loaded = view !== undefined;
   useEffect(() => {
-    if (!section || !loaded) return;
-    document
-      .getElementById(sectionAnchorId(section))
-      ?.scrollIntoView({ block: "start" });
+    if (section && loaded) scrollToProjectSection(section);
   }, [section, loaded]);
+
+  /** Open a section from a fix: the route, and the scroll for when the
+   *  route already names it. */
+  const openSection = (id: ProjectSectionId) => {
+    onOpenSection(id);
+    scrollToProjectSection(id);
+  };
 
   const send = async (body: ProjectPatchBody, optimistic?: Optimistic) => {
     let revision: number | null = null;
@@ -172,10 +177,10 @@ export function ProjectSettingsPage({
       case "connect-sandbox":
         return openSettings("sandboxes");
       case "pair-runner":
-        onOpenSection("production");
+        openSection("production");
         return setProduction({ kind: "pair", key: Date.now() });
       case "add-action":
-        onOpenSection("production");
+        openSection("production");
         return setProduction({
           kind: "action",
           key: Date.now(),
@@ -183,7 +188,7 @@ export function ProjectSettingsPage({
           nextKind: next.action,
         });
       case "add-signal":
-        onOpenSection("incidents");
+        openSection("incidents");
         return setAddSignal(Date.now());
       case "allow-agents":
         return allowAgents(next.server);
