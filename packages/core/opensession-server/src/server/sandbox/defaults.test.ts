@@ -2,20 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { effectiveSandboxDefault } from "./defaults";
 
 describe("sandbox default precedence", () => {
-  test("workspace and personal omissions resolve to None", () => {
-    expect(effectiveSandboxDefault("none", "workspace")).toBe("none");
+  test("the workspace default applies when the project has none", () => {
+    expect(effectiveSandboxDefault("none")).toBe("none");
+    expect(effectiveSandboxDefault("daytona", null)).toBe("daytona");
+    expect(effectiveSandboxDefault("daytona", undefined)).toBe("daytona");
   });
 
-  test("workspace applies until a person overrides it", () => {
-    expect(effectiveSandboxDefault("daytona", "workspace")).toBe("daytona");
+  test("a project's own default beats it, in either direction", () => {
+    expect(effectiveSandboxDefault("none", "daytona")).toBe("daytona");
     expect(effectiveSandboxDefault("daytona", "none")).toBe("none");
-    expect(effectiveSandboxDefault("daytona", "box")).toBe("box");
-  });
-
-  test("a project's own default beats both, in either direction", () => {
-    expect(effectiveSandboxDefault("none", "none", "daytona")).toBe("daytona");
-    expect(effectiveSandboxDefault("daytona", "box", "none")).toBe("none");
-    expect(effectiveSandboxDefault("daytona", "box", null)).toBe("box");
-    expect(effectiveSandboxDefault("daytona", "box", undefined)).toBe("box");
   });
 });

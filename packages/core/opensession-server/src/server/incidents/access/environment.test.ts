@@ -9,6 +9,7 @@ import { staticAccessEnvironment } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   __setAccessEnvironmentForTest,
+  connectionStatusFrom,
   loadAccessEnvironment,
 } from "./environment";
 
@@ -139,4 +140,20 @@ test("the test seam replaces the live snapshot", async () => {
 });
 test("listRunnersAsync reads the same store", async () => {
   expect((await listRunnersAsync()).map((r) => r.id)).toEqual(["rn-prod"]);
+});
+
+test("a people-restricted connector marked Allow agents is open to agents", () => {
+  expect(
+    connectionStatusFrom("logs", {
+      logs: { allowedUsers: ["Ada"], allowUnattended: true },
+    }),
+  ).toBe("ok");
+  expect(
+    connectionStatusFrom("logs", { logs: { allowedUsers: ["Ada"] } }),
+  ).toBe("user-gated");
+  expect(
+    connectionStatusFrom("apple-release", {
+      "apple-release": { allowedUsers: ["Ada"], allowUnattended: true },
+    }),
+  ).toBe("user-gated");
 });

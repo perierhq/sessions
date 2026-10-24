@@ -211,7 +211,7 @@ test("settings round trip, redacted, attributed", async () => {
     list?.json.projects.map((p: { project: string }) => p.project),
   ).toEqual(["acme"]);
   expect(kit.audits).toContainEqual(
-    expect.objectContaining({ kind: "incident_settings_updated", by: "Ada" }),
+    expect.objectContaining({ kind: "project_settings_updated", by: "Ada" }),
   );
 });
 

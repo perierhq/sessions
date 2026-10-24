@@ -15,8 +15,8 @@ import type { AgentWorkspace } from "../../../shared/incident-response";
 import { legacyCatalogDirectory } from "../../catalog-documents";
 import { configuredPaths } from "../../config";
 import { resolveRequestedSandbox } from "../../sandbox/config";
+import type { SandboxProviderId } from "../../sandbox/provider";
 import { sandboxConnectionReady } from "../../sandbox/connections";
-import { resolveInteractiveSandbox } from "../../sandbox/defaults";
 import {
   SYSTEMD_USER_RUNTIME,
   processRunsInControlPlane,
@@ -235,6 +235,24 @@ export function podmanReadyForIncident(
   );
 }
 
+type SandboxResolution =
+  | { ok: true; provider: SandboxProviderId | null }
+  | { ok: false; error: string };
+export type IncidentSandboxResolver = (
+  project: string,
+  model: string,
+) => SandboxResolution | Promise<SandboxResolution>;
+
+/** The project's sandbox, else the global default (projects/effective.ts);
+ *  This machine (container) is allowed. */
+async function incidentSandbox(
+  project: string,
+  model: string,
+): Promise<SandboxResolution> {
+  const { resolveSessionSandbox } = await import("../../projects/effective");
+  return resolveSessionSandbox(undefined, project, model, "incident");
+}
+
 /**
  * The workspace for an incident agent: the project's sandbox when it has
  * one, whatever the host offers; otherwise This machine (container) when it
@@ -246,15 +264,14 @@ export async function incidentWorkspaceFor(
   project: string,
   model: string,
   deps: {
-    sandbox?: typeof resolveInteractiveSandbox;
+    sandbox?: IncidentSandboxResolver;
     podmanReady?: (project: string, model: string) => boolean;
     hostProblem?: () => Promise<string | null>;
     hostEnabled?: () => boolean;
-    automationUser?: string;
   } = {},
 ): Promise<AgentWorkspace | { error: string }> {
-  const sandbox = deps.sandbox ?? resolveInteractiveSandbox;
-  const resolved = sandbox(undefined, deps.automationUser, project, model);
+  const sandbox = deps.sandbox ?? incidentSandbox;
+  const resolved = await sandbox(project, model);
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.provider)
     return { kind: "sandbox", provider: resolved.provider };

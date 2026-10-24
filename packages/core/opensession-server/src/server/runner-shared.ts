@@ -34,6 +34,7 @@ export function mcpServerAllowedForRun(
   allowedUsers: unknown,
   user?: string,
   grantUsers?: Array<string | undefined>,
+  allowUnattended?: unknown,
 ): boolean {
   const protectedServer = requiresAllowedUsers(name);
   if (protectedServer && !hasValidRequiredAllowedUsers(allowedUsers)) {
@@ -41,6 +42,14 @@ export function mcpServerAllowedForRun(
   }
   if (!Array.isArray(allowedUsers) || allowedUsers.length === 0) return true;
   const gateUsers = protectedServer ? [user] : [user, ...(grantUsers || [])];
+  // "Allow agents" (mcp-config `allowUnattended`): a run with nobody behind
+  // it may use a server otherwise limited to named people.
+  if (
+    allowUnattended === true &&
+    !protectedServer &&
+    !gateUsers.some((candidate) => !!candidate)
+  )
+    return true;
   return gateUsers
     .filter((candidate): candidate is string => !!candidate)
     .some((candidate) => userMatchesAny(candidate, allowedUsers));
@@ -70,8 +79,16 @@ export function filterMcpServers(
         );
       continue;
     }
-    const { allowedUsers, oauthUrl, ...entry } = cfg;
-    if (!mcpServerAllowedForRun(name, allowedUsers, user, grantUsers)) {
+    const { allowedUsers, oauthUrl, allowUnattended, ...entry } = cfg;
+    if (
+      !mcpServerAllowedForRun(
+        name,
+        allowedUsers,
+        user,
+        grantUsers,
+        allowUnattended,
+      )
+    ) {
       continue;
     }
     out[name] = entry;

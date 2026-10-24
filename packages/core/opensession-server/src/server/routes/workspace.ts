@@ -896,7 +896,7 @@ export async function handleWorkspaceRoutes(
     const siblingModel = body.model
       ? resolveModel(String(body.model))?.id
       : undefined;
-    const sandboxResolved = resolveInteractiveSandbox(
+    const sandboxResolved = await resolveInteractiveSandbox(
       body.sandbox,
       requestUser(ctx, body.user),
       repoId,

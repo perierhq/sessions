@@ -1,10 +1,23 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { __resetModelCachesForTest, setRoleDefaultModel } from "../../models";
+import { __setLegacyEnvironmentForTest } from "../../projects/legacy";
+import { useIncidentTestKernel } from "../testing/kernel-fixture";
+import { setProjectDocumentForTest } from "../testing/project-access";
 import {
+  __setRoleModelInputsForTest,
   canonicalModelId,
   chooseRoleModels,
   independenceBetween,
+  resolveProjectRoleModels,
   sameModel,
 } from "./models";
+
+useIncidentTestKernel();
+afterEach(() => {
+  __setRoleModelInputsForTest(undefined);
+  __setLegacyEnvironmentForTest(undefined);
+  __resetModelCachesForTest();
+});
 
 const candidates = [
   { id: "pi/anthropic/claude-opus-5-5", label: "Opus 5.5" },
@@ -167,5 +180,40 @@ test("the default verifier is never the same model through another provider", ()
       model: "pi/anthropic/claude-fable-5-1",
       independence: "same-provider",
     },
+  });
+});
+
+test("project role models: the project's, else the global default, else chosen", async () => {
+  __resetModelCachesForTest();
+  __setLegacyEnvironmentForTest({
+    projects: () => ["acme"],
+    sandbox: () => ({ perRepo: {} }),
+    automations: async () => [],
+    mcpServers: async () => [],
+    webSearch: async () => "auto",
+    defaultReviewServers: async () => [],
+  });
+  __setRoleModelInputsForTest({
+    ...base,
+    configuredProviders: new Set(["anthropic", "openai"]),
+  });
+  const chosen = await resolveProjectRoleModels("acme");
+  if ("error" in chosen) throw new Error(chosen.error);
+  // Independence choosing, as before.
+  expect(chosen.verifier.model).toBe("pi/openai/gpt-6.1-sol");
+
+  setRoleDefaultModel("verifierModel", "claude-fable-5-1");
+  const global = await resolveProjectRoleModels("acme");
+  if ("error" in global) throw new Error(global.error);
+  expect(global.verifier.model).toBe("pi/anthropic/claude-fable-5-1");
+
+  await setProjectDocumentForTest("acme", (doc) => {
+    doc.models.verifier = "pi/openai/gpt-6.1-sol";
+  });
+  const own = await resolveProjectRoleModels("acme");
+  if ("error" in own) throw new Error(own.error);
+  expect(own.verifier).toMatchObject({
+    model: "pi/openai/gpt-6.1-sol",
+    independence: "other-provider",
   });
 });
