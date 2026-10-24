@@ -1,4 +1,3 @@
-import useSWR from "swr";
 import {
   PROJECT_ROLES,
   ROLE_DESCRIPTIONS,
@@ -6,7 +5,7 @@ import {
   type ProjectRole,
   type ProjectSettingsView,
 } from "../../../../shared/project-settings";
-import { fetchModels } from "../../../lib/api/automations";
+import { useModelCatalog } from "../../../hooks/useSettingsResources";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
 import { ROW_CONTROLS } from "../../../lib/project-settings-classes";
 import { modelChip } from "../../../lib/project-settings/page-model";
@@ -31,7 +30,7 @@ export function ModelsSection({
   view: ProjectSettingsView;
   onSave: (body: ProjectPatchBody) => void;
 }) {
-  const catalog = useSWR(["api", "models-for-project-settings"], fetchModels);
+  const catalog = useModelCatalog();
   const models = catalog.data?.models ?? [];
   const optionsFor = (role: ProjectRole) => {
     const current = view.effective.models[role];

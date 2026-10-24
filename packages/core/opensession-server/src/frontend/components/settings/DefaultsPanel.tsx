@@ -1,5 +1,4 @@
 import { useState } from "react";
-import useSWR from "swr";
 import {
   PROJECT_ROLES,
   ROLE_LABELS,
@@ -12,7 +11,10 @@ import {
   revalidateProjects,
   useProjectDefaults,
 } from "../../hooks/useProjects";
-import { fetchModels, fetchSandboxStatus } from "../../lib/api/automations";
+import {
+  useModelCatalog,
+  useSandboxStatus,
+} from "../../hooks/useSettingsResources";
 import { ApiError, patchProjectDefaults } from "../../lib/api/projects";
 import { errorMessage } from "../../lib/error-message";
 import {
@@ -48,7 +50,6 @@ import { toast } from "../../ui/toast";
 import { IconX } from "../icons";
 import { shortModelLabel, splitModelOptions } from "../ModelEffortSelect";
 import { RepoTile } from "../RepoTile";
-import { getCurrentUser } from "../UserPicker";
 import { SettingLinkRow } from "./incidents/SettingLinkRow";
 
 // Settings → Projects → Defaults: what every project uses until it sets its
@@ -96,11 +97,8 @@ export function DefaultsPanel({
   onOpenSandboxes?(): void;
 }) {
   const defaults = useProjectDefaults();
-  const user = getCurrentUser();
-  const catalog = useSWR(["api", "models-for-project-defaults"], fetchModels);
-  const sandbox = useSWR(["api", "sandbox-status-for-project-defaults"], () =>
-    fetchSandboxStatus(user),
-  );
+  const catalog = useModelCatalog();
+  const sandbox = useSandboxStatus();
   const [website, setWebsite] = useState("");
   const [websiteError, setWebsiteError] = useState<string | null>(null);
 

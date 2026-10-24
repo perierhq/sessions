@@ -31,6 +31,11 @@ export function apiResourceSWRConfig<Data>(
 // Keep resource identities in one place so separate surfaces share both the
 // cached value and an in-flight revalidation instead of merely looking alike.
 export const apiSWRKey = {
+  // Instance-wide reads the settings pages share: connecting a provider
+  // revalidates `sandboxStatus` once for every page that shows it.
+  sandboxStatus: () => ["api", "sandbox-status"] as const,
+  modelCatalog: () => ["api", "models"] as const,
+  repos: () => ["api", "repos"] as const,
   session: (sessionId: string) => ["api", "session", sessionId] as const,
   workspaceOverview: (workspaceKey: string) =>
     ["api", "workspace-overview", workspaceKey] as const,

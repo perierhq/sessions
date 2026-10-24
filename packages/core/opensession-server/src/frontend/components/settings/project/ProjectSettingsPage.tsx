@@ -6,6 +6,7 @@ import type {
   ReadinessFix,
 } from "../../../../shared/project-settings";
 import { useIsPhone } from "../../../hooks/useIsPhone";
+import { revalidateSandboxStatus } from "../../../hooks/useSettingsResources";
 import {
   projectSWRKey,
   revalidateProjects,
@@ -242,7 +243,10 @@ export function ProjectSettingsPage({
               hasGlobalDefault={
                 defaults.data ? defaults.data.sandbox !== "none" : true
               }
-              onConnected={() => revalidateProjects()}
+              onConnected={() => {
+                revalidateSandboxStatus();
+                revalidateProjects();
+              }}
             />
           }
         />

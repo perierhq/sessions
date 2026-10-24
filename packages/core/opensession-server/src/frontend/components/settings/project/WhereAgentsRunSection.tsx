@@ -1,10 +1,9 @@
-import useSWR from "swr";
 import type {
   ProjectDefaultsView,
   ProjectSettingsView,
   RunPlace,
 } from "../../../../shared/project-settings";
-import { fetchSandboxStatus } from "../../../lib/api/automations";
+import { useSandboxStatus } from "../../../hooks/useSettingsResources";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
 import {
   ROLE_GRID,
@@ -48,9 +47,7 @@ export function WhereAgentsRunSection({
   defaults: ProjectDefaultsView | undefined;
   onSave: (body: ProjectPatchBody) => void;
 }) {
-  const status = useSWR(["api", "sandbox-status-for-project"], () =>
-    fetchSandboxStatus(),
-  );
+  const status = useSandboxStatus();
   const ready = readySandboxProviders(status.data);
   const regions: Record<string, string | undefined> = {};
   for (const connection of status.data?.connections ?? []) {

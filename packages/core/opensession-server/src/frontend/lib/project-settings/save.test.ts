@@ -50,7 +50,9 @@ describe("sendProjectPatch", () => {
         refetched++;
         return fresh(6);
       },
-      onRetry: () => stale++,
+      onRetry: () => {
+        stale++;
+      },
     });
     expect(stale).toBe(1);
     expect(refetched).toBe(1);
@@ -108,7 +110,9 @@ describe("a stale whole list or object", () => {
         refetched++;
         return fresh(6);
       },
-      onRetry: () => retried++,
+      onRetry: () => {
+        retried++;
+      },
     });
     await expect(run).rejects.toThrow("Settings changed since you loaded them");
     expect(sent).toHaveLength(1);

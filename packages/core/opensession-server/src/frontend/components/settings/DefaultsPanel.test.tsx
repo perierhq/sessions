@@ -106,6 +106,7 @@ let sandboxStatus = {
   ],
 };
 mock.module("swr", () => ({
+  mutate: async () => undefined,
   default: (key: readonly string[]) => {
     const name = key[1] ?? "";
     if (name.includes("models")) return { data: catalog };
