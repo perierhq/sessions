@@ -14,7 +14,6 @@ import {
 import { emptyResponse } from "../incidents/response/ledger";
 import { __setProjectSettingsContextForTest } from "../incidents/response/project-settings";
 import { __setRunnerActivityForTest } from "../incidents/response/runners";
-import { createRunnerPairing, getRunner, registerRunner } from "../runners";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import type { RouteContext } from "./context";
 import {
@@ -173,31 +172,13 @@ function seedIncidentWithAgents(): Promise<Incident> {
   });
 }
 
-test("settings round trip, redacted, attributed", async () => {
-  const put = await call("PUT", "/api/incident-projects/acme", {
-    autonomy: "propose",
-    vetoMs: 300_000,
-  });
-  expect(put?.status).toBe(200);
-  expect(put?.json).toMatchObject({
-    autonomy: "propose",
-    vetoMs: 300_000,
-    updatedBy: "Ada",
-    releaseHookPath: expect.stringMatching(
-      /^\/incident-releases\/acme\/[0-9a-f]{48}$/,
-    ),
-  });
-  expect(put?.json).not.toHaveProperty("releaseHookSecret");
-  expect(
-    (await call("PUT", "/api/incident-projects/acme", { autonomy: "yolo" }))
-      ?.status,
-  ).toBe(400);
+test("settings are read here, redacted; writes and binding have moved", async () => {
   expect((await call("GET", "/api/incident-projects/globex"))?.status).toBe(
     404,
   );
   const got = await call("GET", "/api/incident-projects/acme");
   expect(got?.json).toMatchObject({
-    settings: { autonomy: "propose" },
+    settings: { project: "acme" },
     runners: expect.any(Array),
     models: expect.any(Object),
     spend: {
@@ -206,67 +187,32 @@ test("settings round trip, redacted, attributed", async () => {
       perMonthUsd: 200,
     },
   });
+  expect(got?.json.settings).not.toHaveProperty("releaseHookSecret");
   const list = await call("GET", "/api/incident-projects");
+  expect(list?.json.projects).toEqual(expect.any(Array));
   expect(
-    list?.json.projects.map((p: { project: string }) => p.project),
-  ).toEqual(["acme"]);
-  expect(kit.audits).toContainEqual(
-    expect.objectContaining({ kind: "project_settings_updated", by: "Ada" }),
-  );
+    await call("PUT", "/api/incident-projects/acme", { autonomy: "propose" }),
+  ).toEqual({
+    status: 410,
+    json: { error: "Moved to /api/projects/acme/settings" },
+  });
+  expect(
+    await call("POST", "/api/incident-projects/acme/runners/rn-1/bind", {
+      confirm: true,
+    }),
+  ).toEqual({
+    status: 410,
+    json: { error: "Moved to /api/projects/acme/production/runners" },
+  });
 });
 
-test("a claimed user is never taken, and only a person changes actions or sees the hook", async () => {
-  const anonymous = { authUser: null };
-  const put = await call(
-    "PUT",
-    "/api/incident-projects/acme",
-    { autonomy: "propose", user: "Mallory" },
-    anonymous,
-  );
-  expect(put?.json).toMatchObject({ updatedBy: "Anonymous" });
-  expect(put?.json).not.toHaveProperty("releaseHookPath");
-  expect(
-    await call(
-      "PUT",
-      "/api/incident-projects/acme",
-      { productionRunners: ["runner-prod"], user: "Ada" },
-      anonymous,
-    ),
-  ).toEqual({
-    status: 403,
-    json: {
-      error: "Only a signed-in person can change actions or production Runners",
-    },
-  });
-  expect(
-    await call(
-      "PUT",
-      "/api/incident-projects/acme",
-      { autonomy: "deploy-right-away" },
-      anonymous,
-    ),
-  ).toEqual({
-    status: 403,
-    json: { error: "Only a signed-in person can loosen the incident policy" },
-  });
-  // A bad value is still a bad request.
-  expect(
-    await call(
-      "PUT",
-      "/api/incident-projects/acme",
-      { maxRounds: 9 },
-      anonymous,
-    ),
-  ).toEqual({
-    status: 400,
-    json: { error: "Max rounds (maxRounds) must be from 1 to 5" },
-  });
+test("only a signed-in person pairs a production Runner", async () => {
   expect(
     await call(
       "POST",
       "/api/incident-projects/acme/runner-pairing",
       {},
-      anonymous,
+      { authUser: null },
     ),
   ).toEqual({
     status: 403,
@@ -282,44 +228,6 @@ test("a claimed user is never taken, and only a person changes actions or sees t
     expiresAt: expect.any(Number),
     command: expect.stringContaining("opensession runner connect"),
   });
-});
-
-test("binding a paired Runner: a signed-in person, confirmed when shared", async () => {
-  __setRunnerActivityForTest({
-    terminals: () => 0,
-    portals: async () => 0,
-    dropPortals: async () => {},
-    disconnect: () => true,
-  });
-  const out = registerRunner({
-    code: createRunnerPairing("Ada").code,
-    name: "shared",
-    platform: "linux",
-    arch: "x64",
-    address: "100.64.0.9",
-  });
-  if (!out.ok) throw new Error(out.error);
-  const path = `/api/incident-projects/acme/runners/${out.runner.id}/bind`;
-  expect(await call("POST", path, {}, { authUser: null })).toEqual({
-    status: 403,
-    json: { error: "Only a signed-in person can bind a production Runner" },
-  });
-  expect(await call("POST", path, {})).toEqual({
-    status: 400,
-    json: {
-      error:
-        "Runner shared serves every repository. Confirm to reserve it for acme incidents only",
-    },
-  });
-  expect(getRunner(out.runner.id)?.incidentReserved).toBeUndefined();
-  const bound = await call("POST", path, { confirm: true });
-  expect(bound?.status).toBe(200);
-  expect(bound?.json.settings.productionRunners).toEqual([out.runner.id]);
-  expect(getRunner(out.runner.id)?.incidentReserved).toBe(true);
-  expect(
-    (await call("POST", "/api/incident-projects/nope/runners/x/bind", {}))
-      ?.status,
-  ).toBe(404);
 });
 
 test("decisions need a verified sign-in when sign-in is on", async () => {
