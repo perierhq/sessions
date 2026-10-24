@@ -2,7 +2,11 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 const store = new Map<string, string>();
 const listeners = new Map<string, Set<() => void>>();
-let serverPrefs: Record<string, string> = {};
+/** The ui-prefs map this fake server returns: only the key under test. */
+interface FakeServerPrefs {
+  "live-typing"?: "on" | "off";
+}
+let serverPrefs: FakeServerPrefs = {};
 Object.assign(globalThis, {
   localStorage: {
     getItem: (key: string) => store.get(key) ?? null,
