@@ -41,8 +41,9 @@ export const CHECKLIST_ROW =
   "flex flex-wrap items-start gap-x-3 gap-y-3 px-5 py-3.5";
 export const CHECKLIST_MARK =
   "mt-0.5 flex size-5 shrink-0 items-center justify-center";
+/** An empty, solid ring: a dashed one read as a spinner at 1x. */
 export const CHECKLIST_TODO_MARK =
-  "size-[18px] rounded-full border-[1.5px] border-dashed border-faint";
+  "size-[18px] rounded-full border-[1.5px] border-line-strong";
 /** The soft tones the badges use, with a glyph in the status colour. */
 export const CHECKLIST_BLOCKED_MARK =
   "flex size-[18px] items-center justify-center rounded-full bg-red-soft text-red";
