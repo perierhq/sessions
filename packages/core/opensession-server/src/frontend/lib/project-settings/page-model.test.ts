@@ -13,6 +13,7 @@ import {
   cellLabel,
   cellSpokenLabel,
   checklistModel,
+  joinDots,
   modelChip,
   nextCellValue,
   sandboxRowCopy,
@@ -313,5 +314,14 @@ describe("applyIncidentsPatch", () => {
     const cleared = applyIncidentsPatch(base, { night: null });
     expect(cleared.document.incidents.night).toBeUndefined();
     expect(base.document.incidents.night).toEqual(night);
+  });
+});
+
+describe("joinDots", () => {
+  test("a middle dot never starts or ends a line", () => {
+    expect(joinDots("This machine · container")).toBe(
+      "This machine\u00a0·\u00a0container",
+    );
+    expect(joinDots("Daytona")).toBe("Daytona");
   });
 });

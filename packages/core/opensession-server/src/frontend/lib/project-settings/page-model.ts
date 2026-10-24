@@ -359,6 +359,12 @@ export function rowSummary(row: AccessRowView): string {
   return `${on.length} of ${PROJECT_ROLES.length} roles`;
 }
 
+/** A label with its middle dots held to both neighbours, so a narrow
+ *  column wraps between words and never leaves "·" at a line's edge. */
+export function joinDots(label: string): string {
+  return label.replaceAll(" · ", "\u00a0·\u00a0");
+}
+
 /** The 4 places in the "Where agents run" grid, in the design's order. */
 export const RUN_PLACES = [
   ["you", "You"],

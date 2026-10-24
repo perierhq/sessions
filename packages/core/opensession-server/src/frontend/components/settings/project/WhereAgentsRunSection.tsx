@@ -14,6 +14,7 @@ import {
   ROW_CONTROLS,
 } from "../../../lib/project-settings-classes";
 import {
+  joinDots,
   RUN_PLACES,
   previewsOptions,
   sandboxName,
@@ -138,7 +139,7 @@ function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
       ) : (
         <IconCheck size={14} dense className="text-green" />
       );
-    text = place.label;
+    text = joinDots(place.label);
   }
   return (
     <div className="min-w-0">
@@ -152,7 +153,7 @@ function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
         <span aria-hidden className="flex shrink-0">
           {mark}
         </span>
-        <span className="min-w-0">{text}</span>
+        <span className="min-w-0 text-balance">{text}</span>
         {place.state === "ok" && place.source === "default" && (
           <span className="sr-only">, from the global default</span>
         )}
