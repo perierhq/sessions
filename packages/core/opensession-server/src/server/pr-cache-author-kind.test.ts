@@ -82,10 +82,19 @@ describe("recentPrRows", () => {
       ]),
     );
     const byNumber = new Map(rows.map((row) => [row.number, row]));
-    expect(byNumber.get(1)).toMatchObject({ authorKind: "team", person: "alex" });
+    expect(byNumber.get(1)).toMatchObject({
+      authorKind: "team",
+      person: "alex",
+    });
     // The instance's own agent account is the team's, attributed by assignee.
-    expect(byNumber.get(2)).toMatchObject({ authorKind: "team", person: "alex" });
-    expect(byNumber.get(3)).toMatchObject({ authorKind: "outside", person: null });
+    expect(byNumber.get(2)).toMatchObject({
+      authorKind: "team",
+      person: "alex",
+    });
+    expect(byNumber.get(3)).toMatchObject({
+      authorKind: "outside",
+      person: null,
+    });
     expect(byNumber.get(4)).toMatchObject({ authorKind: "bot", person: null });
     // Assigning a teammate does not make the opener one of the team.
     expect(byNumber.get(5)).toMatchObject({

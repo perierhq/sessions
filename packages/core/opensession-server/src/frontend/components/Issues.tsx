@@ -30,6 +30,18 @@ import { useCurrentUser } from "./UserPicker";
 import { UserAvatar } from "./UserAvatar";
 import { RepoTile, repoLabel } from "./RepoTile";
 import { IconIssue, IconRepo, IconSearch, IconX } from "./icons";
+import { AuthorFilterMenu } from "./AuthorFilterMenu";
+import { Badge } from "../ui/badge";
+import { usePeople } from "../lib/people";
+import {
+  ANYONE,
+  OUTSIDE_TEAM,
+  authorMarker,
+  matchesAuthorFilter,
+  readAuthorFilter,
+  resolveAuthorFilter,
+  writeAuthorFilter,
+} from "../lib/author-filter";
 
 interface Props {
   sessions: UnifiedSession[];
@@ -63,6 +75,25 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchExpanded = searchActive || query.length > 0;
   const [repo, setRepo] = useState("all");
+  // Whose issues: anyone, one teammate, or everyone outside the team. The
+  // same scope as the pull request list, remembered separately.
+  const [storedPerson, setStoredPerson] = useState(() =>
+    readAuthorFilter("issues"),
+  );
+  function setPerson(value: string) {
+    setStoredPerson(value);
+    writeAuthorFilter("issues", value);
+  }
+  const roster = usePeople();
+  const person = resolveAuthorFilter(
+    storedPerson,
+    roster.map((who) => who.name.toLowerCase()),
+  );
+  const people = [...roster].sort(
+    (a, b) =>
+      Number(b.name.toLowerCase() === currentUser.toLowerCase()) -
+      Number(a.name.toLowerCase() === currentUser.toLowerCase()),
+  );
   const [preview, setPreview] = useState<OpenIssue | null>(null);
   // Sessions asked for from this page whose row has not caught up yet.
   const [started, setStarted] = useState<Set<string>>(() => new Set());
@@ -103,6 +134,7 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
     const needle = query.trim().toLowerCase();
     return (issues || []).filter((issue) => {
       if (repo !== "all" && issue.repo !== repo) return false;
+      if (!matchesAuthorFilter(issue, person)) return false;
       if (!needle) return true;
       return [
         issue.title,
@@ -115,7 +147,7 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
         .toLowerCase()
         .includes(needle);
     });
-  }, [issues, query, repo]);
+  }, [issues, query, repo, person]);
 
   const groups = useMemo(() => {
     const byDay = new Map<string, OpenIssue[]>();
@@ -205,8 +237,16 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
         </Tooltip>
       </div>
 
-      {repoOptions.length > 1 && (
-        <div className="ml-auto flex min-w-0 items-center gap-2">
+      <div className="ml-auto flex min-w-0 items-center gap-2">
+        {people.length > 0 && (
+          <AuthorFilterMenu
+            value={person}
+            onChange={setPerson}
+            people={people}
+            currentUser={currentUser}
+          />
+        )}
+        {repoOptions.length > 1 && (
           <Menu.Root>
             <Menu.Trigger
               render={
@@ -244,8 +284,8 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
               </Menu.RadioGroup>
             </Menu.Popup>
           </Menu.Root>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 
@@ -289,10 +329,24 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
             <LoadingState>Loading issues</LoadingState>
           )
         ) : groups.length === 0 ? (
-          <EmptyState title={query ? "No matching issues" : "No open issues"}>
+          <EmptyState
+            title={
+              query
+                ? "No matching issues"
+                : person === ANYONE
+                  ? "No open issues"
+                  : person === OUTSIDE_TEAM
+                    ? "Nothing from outside the team"
+                    : `Nothing open for ${personLabel(person)}`
+            }
+          >
             {query
               ? "Try another search or filter."
-              : "Open issues from the registered repos appear here."}
+              : person === ANYONE
+                ? "Open issues from the registered repos appear here."
+                : person === OUTSIDE_TEAM
+                  ? "Issues opened by people outside the team and by bots appear here."
+                  : "Pick someone else, or set the filter back to anyone."}
           </EmptyState>
         ) : (
           <div className={PR_LIST}>
@@ -316,6 +370,7 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
                         sessionById.get(issue.sessionId),
                         started.has(issue.sessionId),
                       );
+                      const marker = authorMarker(issue.authorKind);
                       return (
                         <button
                           key={`${issue.repo}#${issue.number}`}
@@ -342,6 +397,9 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
                             <span className="shrink-0 text-meta tabular-nums text-faint">
                               #{issue.number}
                             </span>
+                            {marker && (
+                              <Badge className="self-center">{marker}</Badge>
+                            )}
                           </span>
                           <span
                             className={cn(
@@ -438,6 +496,9 @@ export function Issues({ sessions, onOpenSession, topbarActionsEl }: Props) {
                     <UserAvatar name={personLabel(preview.person)} size={16} />
                   )}
                   {preview.author}
+                  {authorMarker(preview.authorKind) && (
+                    <Badge>{authorMarker(preview.authorKind)}</Badge>
+                  )}
                 </span>
                 <span
                   className="text-faint"

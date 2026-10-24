@@ -1440,7 +1440,10 @@ export function demoIssues(now: number) {
     url: `https://github.com/${DEMO_GH_REPO}/issues/${number}`,
     body,
     author: opts.author,
-    person: null,
+    // Demo logins are the teammates' first names, which are their person keys.
+    person: DEMO_TEAM.some((member) => member.github === opts.author)
+      ? opts.author
+      : null,
     labels: opts.labels ?? [],
     assignees: [],
     comments: opts.comments ?? 0,
@@ -1759,7 +1762,14 @@ export function demoOtherPrs(now: number, ghRepo: string) {
     assignees: [],
   });
   return {
-    "patch-1": pr(135, "Fix typo in the install steps", "jun-park-dev", 95, 2, 2),
+    "patch-1": pr(
+      135,
+      "Fix typo in the install steps",
+      "jun-park-dev",
+      95,
+      2,
+      2,
+    ),
     "dependabot/npm_and_yarn/vite-6.4.1": pr(
       134,
       "Bump vite from 6.3.5 to 6.4.1",
