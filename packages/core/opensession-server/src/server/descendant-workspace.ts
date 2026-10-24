@@ -75,6 +75,7 @@ export function descendantBashRunAs(
       throw new RunSetupRefusedError(HOST_WORKTREE_MISUSE);
     return policy.hostAgentUser;
   }
-  if (!where.runner && !where.sandbox) throw new RunSetupRefusedError(isolationMessage);
+  if (!where.runner && !where.sandbox)
+    throw new RunSetupRefusedError(isolationMessage);
   return undefined;
 }
