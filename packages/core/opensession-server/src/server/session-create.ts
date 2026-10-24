@@ -243,6 +243,8 @@ import {
 } from "./command-replay";
 import { sessionIdForRequest } from "./session-request-id";
 import { isClientSessionId } from "./paths";
+import { earlyToolUseFrame, streamPhaseFrame } from "./live-stream-frames";
+import { timeStreamSpan } from "./stream-timing";
 import {
   clearCreatePlan,
   createPlanWorkspaceId,
@@ -1111,7 +1113,7 @@ export function actorWorktreeMaterializer(input: {
     timeoutMs: CREATION_SETUP_TIMEOUT_MS,
     pollMs: CREATION_SETUP_POLL_MS,
   };
-  return async () => {
+  const materialize = async () => {
     if (input.credentialPrincipal) {
       await requestCreationCredential(
         {
@@ -1139,6 +1141,9 @@ export function actorWorktreeMaterializer(input: {
     );
     return input.worktreePath;
   };
+  // Debug only (OPENSESSION_STREAM_TIMING=1): how long the workspace took.
+  return () =>
+    timeStreamSpan("workspace", { sessionId: input.sessionId }, materialize);
 }
 
 async function restorePlannedOpening(sessionId: string): Promise<{
@@ -2245,7 +2250,20 @@ export async function openCreatedSession(
         }
         if (event.type === "text_chunk") {
           assistantText += event.text;
-          io.emit({ type: "stream_text", text: event.text });
+          io.emit({
+            type: "stream_text",
+            text: event.text,
+            ...(event.blockId ? { blockId: event.blockId } : {}),
+            ...(event.kind ? { kind: event.kind } : {}),
+          });
+        }
+        if (event.type === "phase") {
+          const frame = streamPhaseFrame(undefined, event);
+          if (frame) io.emit(frame);
+        }
+        if (event.type === "tool_call_start") {
+          const frame = earlyToolUseFrame(undefined, event);
+          if (frame) io.emit(frame);
         }
         if (event.type === "tool_use") {
           toolUseCount++;

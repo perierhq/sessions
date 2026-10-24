@@ -121,6 +121,45 @@ describe("session feed", () => {
     expect(resumed.snapshot.active).toBeNull();
   });
 
+  test("the snapshot carries the latest phase and the live blocks", () => {
+    const sessionId = `feed-${crypto.randomUUID()}`;
+    appendSessionFeed(sessionId, { type: "stream_start", sessionId });
+    const model = appendSessionFeed(sessionId, {
+      type: "stream_phase",
+      sessionId,
+      phase: "model",
+      since: 1_000,
+    });
+    expect(model.phase).toBe("status");
+    appendSessionFeed(sessionId, {
+      type: "stream_text",
+      sessionId,
+      text: "Thinking it over.",
+      blockId: "m1",
+      kind: "reasoning",
+    });
+    appendSessionFeed(sessionId, {
+      type: "stream_phase",
+      sessionId,
+      phase: "tool",
+      since: 2_000,
+      tool: { id: "t1", name: "bash", summary: "bun test" },
+      toolCount: 1,
+    });
+    const active = sessionFeedSnapshot(sessionId).active;
+    expect(active?.phase).toEqual({
+      phase: "tool",
+      since: 2_000,
+      tool: { id: "t1", name: "bash", summary: "bun test" },
+      toolCount: 1,
+    });
+    expect(active?.blocks).toEqual([
+      { id: "m1", text: "Thinking it over.", kind: "reasoning" },
+    ]);
+    appendSessionFeed(sessionId, { type: "stream_done", sessionId });
+    expect(sessionFeedSnapshot(sessionId).active).toBeNull();
+  });
+
   test("active snapshot contains only text not yet committed", () => {
     const sessionId = `feed-${crypto.randomUUID()}`;
     appendSessionFeed(sessionId, { type: "stream_start", sessionId });

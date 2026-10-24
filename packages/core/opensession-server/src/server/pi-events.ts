@@ -1,4 +1,8 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import {
+  formatToolDetail,
+  toolDetail,
+} from "@tellahq/opensession-protocol/tool-presentation";
 import { audit, summarizeText } from "./audit";
 import { wrapContext } from "./prompt-context";
 import {
@@ -8,13 +12,15 @@ import {
 } from "./pi-turn-checkpoint";
 import { transcriptLineCompactionSummary } from "./transcript-persistence";
 import type { TranscriptEntry } from "./types";
-import type { StreamEvent } from "./run-events";
+import type { StreamEvent, StreamPhaseTool } from "./run-events";
 import { nowIso } from "./pi-common";
 import {
   assistantRenderableBlockCount,
   contentToTextAndImages,
+  piAssistantBlockId,
   piAssistantTranscriptEntries,
 } from "./pi-transcript";
+import { ModelMessageTiming, streamTimingEnabled } from "./stream-timing";
 import { piResponseHasOutput } from "./pi-steering";
 import { piStreamEventRequiresAccountContinuation } from "./pi-account-walk";
 import type { PiTurnLedger } from "./pi-turn-ledger";
@@ -58,6 +64,22 @@ export class PiEventPump {
       this.waker = resolve;
     });
   }
+}
+
+/** Longest tool summary a phase frame carries. */
+const TOOL_SUMMARY_MAX = 120;
+
+/** One short line naming what a running tool does: the bash command, the
+ *  path, the query. Empty when the input says nothing useful. */
+export function piToolSummary(toolName: string, args: unknown): string {
+  let line = "";
+  try {
+    line = formatToolDetail(toolDetail(toolName, args));
+  } catch {}
+  line = line.replace(/\s+/g, " ").trim();
+  return line.length > TOOL_SUMMARY_MAX
+    ? `${line.slice(0, TOOL_SUMMARY_MAX - 1)}…`
+    : line;
 }
 
 /** A visible system row. */
@@ -211,26 +233,83 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
     lastErrorMessage: undefined,
     lastAssistantRenderableBlocks: -1,
   };
+  // The open assistant message's id, assigned at its message_start (pi's
+  // messages carry none). Its blocks' live frames and durable entries both
+  // derive their ids from it (piAssistantBlockId).
+  let assistantMessageId: string | undefined;
+  let messageTiming: ModelMessageTiming | undefined;
+  // Tools running now, in start order, for the "tool" phase frame.
+  const runningTools = new Map<string, StreamPhaseTool & { since: number }>();
+  const pushToolPhase = () => {
+    const tools = [...runningTools.values()];
+    const latest = tools[tools.length - 1];
+    if (!latest) return;
+    const { since, ...tool } = latest;
+    push({
+      type: "phase",
+      phase: "tool",
+      since,
+      tool,
+      toolCount: tools.length,
+    });
+  };
   const handle = (ev: AgentSessionEvent) => {
     try {
       checkpointWriter()?.observe(ev);
       switch (ev.type) {
-        case "message_start":
+        case "message_start": {
+          const msg = (ev as any).message;
+          if (msg?.role !== "assistant") break;
+          assistantMessageId = crypto.randomUUID();
+          // pi stamps the message with the time its request started.
+          const requestStartedAt =
+            typeof msg.timestamp === "number" ? msg.timestamp : Date.now();
+          messageTiming = streamTimingEnabled()
+            ? new ModelMessageTiming(requestStartedAt)
+            : undefined;
+          push({ type: "phase", phase: "model", since: requestStartedAt });
           // A steer queued while the request was in flight, before its
           // first token, cuts the response as soon as it starts.
-          if ((ev as any).message?.role === "assistant")
-            steering.interruptForSteer();
+          steering.interruptForSteer();
           break;
+        }
         case "message_update": {
           const ame = (ev as any).assistantMessageEvent;
+          messageTiming?.update(
+            String(ame?.type),
+            typeof ame?.delta === "string" ? ame.delta.length : 0,
+          );
           if (
             (ame?.type === "text_delta" || ame?.type === "thinking_delta") &&
             typeof ame.delta === "string"
           ) {
-            // The live transcript has one prose stream. Thinking and ordinary
-            // model output both ride it rather than leaving reasoning blank
-            // until message_end persists the provider's separate blocks.
-            push({ type: "text_chunk", text: ame.delta });
+            // Each prose block streams under its own id and kind, so a
+            // viewer can show thinking apart from the reply and swap either
+            // for its durable entry (same id) when the message ends.
+            const blockId =
+              assistantMessageId && typeof ame.contentIndex === "number"
+                ? piAssistantBlockId(assistantMessageId, ame.contentIndex)
+                : undefined;
+            push({
+              type: "text_chunk",
+              text: ame.delta,
+              ...(blockId ? { blockId } : {}),
+              kind: ame.type === "thinking_delta" ? "reasoning" : "text",
+            });
+          } else if (ame?.type === "toolcall_start") {
+            // The model started writing a tool call: show its card now
+            // rather than after the whole message, arguments included, ends.
+            const block =
+              typeof ame.contentIndex === "number"
+                ? ame.partial?.content?.[ame.contentIndex]
+                : undefined;
+            if (block?.type === "toolCall" && block.id) {
+              push({
+                type: "tool_call_start",
+                toolUseId: String(block.id),
+                toolName: String(block.name || "tool"),
+              });
+            }
           }
           break;
         }
@@ -240,17 +319,31 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
           // a live card for one would vanish on reload. The codemode
           // call's card stands for them.
           if (t.parentToolCallId) break;
+          const toolName = String(t.toolName || "tool");
+          const toolUseId = String(t.toolCallId);
           push({
             type: "tool_use",
-            toolName: String(t.toolName || "tool"),
+            toolName,
             toolInput: t.args ?? {},
-            toolUseId: String(t.toolCallId),
+            toolUseId,
           });
+          runningTools.delete(toolUseId);
+          runningTools.set(toolUseId, {
+            id: toolUseId,
+            name: toolName,
+            summary: piToolSummary(toolName, t.args),
+            since: Date.now(),
+          });
+          pushToolPhase();
           break;
         }
         case "tool_execution_end": {
           const t = ev as any;
           if (t.parentToolCallId) break;
+          // Parallel tools: the phase falls back to one still running. The
+          // last one to end sends nothing; the next model request (or the
+          // turn's end) follows within milliseconds.
+          if (runningTools.delete(String(t.toolCallId))) pushToolPhase();
           const { text, images } = contentToTextAndImages(t.result?.content);
           // `content`, not `result`: stream consumers read event.content
           // (run-session's stream_tool_result). 500-char preview like
@@ -271,6 +364,14 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
             typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
           ).toISOString();
           if (msg.role === "assistant") {
+            const messageId = assistantMessageId ?? crypto.randomUUID();
+            assistantMessageId = undefined;
+            messageTiming?.end({
+              messageId,
+              stopReason: msg.stopReason,
+              blocks: Array.isArray(msg.content) ? msg.content.length : 0,
+            });
+            messageTiming = undefined;
             outcome.lastStopReason = msg.stopReason;
             outcome.lastErrorMessage = msg.errorMessage;
             outcome.lastAssistantRenderableBlocks =
@@ -294,7 +395,12 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
               // Superseded thinking: keep it out of the transcript.
             } else if (msg.stopReason !== "error") {
               persistRunEntries(
-                piAssistantTranscriptEntries(msg.content, ts, modelID),
+                piAssistantTranscriptEntries(
+                  msg.content,
+                  ts,
+                  modelID,
+                  messageId,
+                ),
               );
             }
           } else if (msg.role === "toolResult" && msg.toolCallId) {
@@ -405,6 +511,12 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
           }
           break;
         }
+        case "agent_end":
+          // pi is about to retry the request: the model phase stays open.
+          if ((ev as any).willRetry) break;
+          runningTools.clear();
+          push({ type: "phase", phase: "idle", since: Date.now() });
+          break;
         case "agent_settled":
           ledger.sawSettled = true;
           break;

@@ -322,7 +322,7 @@ describe("assistant transcript output", () => {
         toolUseId: "t1",
       },
       {
-        id: "message-1-b1",
+        id: "message-1-b2",
         type: "assistant",
         content: "The repository is ready.",
         timestamp: "2026-08-24T12:00:00.000Z",

@@ -119,6 +119,7 @@ import {
   piOutcomeTerminal,
   piPoolDryTerminal,
 } from "./pi-terminal";
+import { streamTimingMarks } from "./stream-timing";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -430,6 +431,11 @@ async function* runPiAttempt(
     return true;
   };
 
+  // Debug only (OPENSESSION_STREAM_TIMING=1): where run start-up time goes.
+  const setupTiming = streamTimingMarks("pi_setup", {
+    sessionId: unifiedSessionId,
+    runKey,
+  });
   // Everything from here on runs inside the try: a throw anywhere after the
   // registry writes above must still deregister in the finally, or the
   // session would report busy until the next restart.
@@ -476,6 +482,7 @@ async function* runPiAttempt(
         required: true,
       });
     }
+    setupTiming.mark("journal_user_line");
 
     const {
       stripeApprovals,
@@ -490,6 +497,7 @@ async function* runPiAttempt(
       agentGitEnv,
       mergeGuard,
     } = await resolvePiRunAuthority(opts, remote);
+    setupTiming.mark("authority");
     const bindingDependencies = {
       readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
       readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
@@ -651,6 +659,7 @@ async function* runPiAttempt(
           run_kind: journal?.kind,
         }),
     };
+    setupTiming.mark("binding_mcp_web");
     const { customTools, codemode } = buildPiToolset({
       sdk,
       opts,
@@ -694,6 +703,7 @@ async function* runPiAttempt(
         codemode,
         boundary,
       });
+    setupTiming.mark("resources");
 
     const { resumeMissNote, sessionManager, checkpointPath, turnRepair } =
       await planPiResume({
@@ -706,6 +716,7 @@ async function* runPiAttempt(
         userLine,
       });
 
+    setupTiming.mark("resume");
     const thinkingLevel = piThinkingLevel(opts.effort);
 
     const created = await sdk.createAgentSession({
@@ -724,6 +735,7 @@ async function* runPiAttempt(
       settingsManager,
     });
     session = created.session;
+    setupTiming.mark("create_session");
     installPiPayloadHooks(session, {
       binding,
       parsed,
@@ -884,6 +896,8 @@ async function* runPiAttempt(
       auditBase,
     });
     const unsubscribe = session.subscribe(events.handle);
+    setupTiming.mark("before_prompt");
+    setupTiming.end();
 
     const { result: failed, emptyFinishRetries } = yield* drivePiPrompt({
       session,

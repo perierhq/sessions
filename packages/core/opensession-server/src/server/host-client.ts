@@ -100,6 +100,7 @@ import {
   launchHostUnitDirect,
   stopHostUnitDirect,
 } from "../executor/host-unit";
+import { logStreamTiming, streamTimingEnabled } from "./stream-timing";
 
 const HOSTED_KERNEL_RETRY_ATTEMPTS = 3;
 // The actor client's sync breaker stays open for ten seconds after a timeout.
@@ -333,12 +334,19 @@ export async function* runAgentHosted(
   }
 
   let spawned: { handle: HostHandle; spec: RunHostSpec };
+  const launchStartedAt = Date.now();
   try {
     // spawnHostRun reserves activeHostedRunKeys synchronously before its first
     // await. Transfer the admission reservation without opening a race.
     const launch = spawnHostRun(opts);
     pendingRunHostAdmissions.delete(admission);
     spawned = await launch;
+    logStreamTiming("span", {
+      name: "run_host_launch",
+      sessionId: opts.osSessionId,
+      startedAt: launchStartedAt,
+      ms: Date.now() - launchStartedAt,
+    });
   } catch (error) {
     pendingRunHostAdmissions.delete(admission);
     throw error;
@@ -353,7 +361,29 @@ export async function* runAgentHosted(
       }
       return;
     }
-    yield* hostedEventsWithJournal(spawned.handle, spawned.spec);
+    if (!streamTimingEnabled()) {
+      yield* hostedEventsWithJournal(spawned.handle, spawned.spec);
+      return;
+    }
+    let firstEvent = true;
+    for await (const event of hostedEventsWithJournal(
+      spawned.handle,
+      spawned.spec,
+    )) {
+      if (firstEvent) {
+        // Launch → the host's first event (normally pi's init): the run
+        // host's own start-up plus pi session setup, seen from here.
+        firstEvent = false;
+        logStreamTiming("span", {
+          name: "run_host_first_event",
+          sessionId: opts.osSessionId,
+          event: event.type,
+          startedAt: launchStartedAt,
+          ms: Date.now() - launchStartedAt,
+        });
+      }
+      yield event;
+    }
   } finally {
     activeHostedRunKeys.delete(spawned.spec.hostId);
   }

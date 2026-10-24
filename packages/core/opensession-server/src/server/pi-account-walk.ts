@@ -115,7 +115,13 @@ export interface PiAccountWalk {
 export function piStreamEventRequiresAccountContinuation(
   event: Pick<StreamEvent, "type">,
 ): boolean {
-  return event.type !== "init" && event.type !== "usage_snapshot";
+  // A phase says what the run is doing, not that it produced anything: a
+  // request that opens and then fails still rotates freely.
+  return (
+    event.type !== "init" &&
+    event.type !== "usage_snapshot" &&
+    event.type !== "phase"
+  );
 }
 
 /** One attempt's usage on top of the turn's earlier attempts. */

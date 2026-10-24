@@ -24,6 +24,7 @@
 import type { AnsweredAskData, EntryNotice, NoticeKind } from "./notices";
 import type { ToolPresentation } from "./tool-presentation";
 import type { StreamPhase, StreamPhaseTool, StreamTextKind } from "./events";
+import type { LiveTextBlockSnapshot } from "./live-text";
 
 /** The complete set of managed Executor providers. */
 /** Service speed for ChatGPT subscription runs. "fast" is OpenAI's priority
@@ -740,8 +741,20 @@ export type ProtocolServerMessage =
         turnId: string;
         entryId: string;
         by?: string;
+        /** All live text not yet landed, blocks joined. */
         text: string;
         startedAt: number;
+        /** The same text per block, with each block's id and kind when the
+         *  engine names them (pi does). Absent on older servers. */
+        blocks?: LiveTextBlockSnapshot[];
+        /** The run's latest `stream_phase` (absent before the first one):
+         *  a viewer joining mid-tool can label the tool and its elapsed time. */
+        phase?: {
+          phase: StreamPhase;
+          since: number;
+          tool?: StreamPhaseTool;
+          toolCount?: number;
+        };
       };
     }
   // The same live-turn frames a feed server wraps in session_feed.event.

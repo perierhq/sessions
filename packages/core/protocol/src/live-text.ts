@@ -24,9 +24,20 @@
  * as one anonymous run of text), and that copy still has to be cancellable.
  */
 
+import type { StreamTextKind } from "./events";
+
 interface LiveTextBlock {
   id?: string;
   text: string;
+  kind?: StreamTextKind;
+}
+
+/** One live block as a reconnect snapshot carries it. */
+export interface LiveTextBlockSnapshot {
+  id?: string;
+  text: string;
+  /** "reasoning" or "text"; absent when the engine did not say. */
+  kind?: StreamTextKind;
 }
 
 /** How many outstanding landed remainders to remember (a turn's worth). */
@@ -55,6 +66,17 @@ export class LiveTextBuffer {
     return !this.text;
   }
 
+  /** The same text per block, with ids and kinds, in arrival order. */
+  get blockSnapshots(): LiveTextBlockSnapshot[] {
+    return this.blocks
+      .filter((block) => block.text)
+      .map((block) => ({
+        ...(block.id ? { id: block.id } : {}),
+        text: block.text,
+        ...(block.kind ? { kind: block.kind } : {}),
+      }));
+  }
+
   /** A new turn: nothing is outstanding and nothing has landed yet. */
   reset(): void {
     this.blocks = [];
@@ -65,9 +87,10 @@ export class LiveTextBuffer {
   /**
    * Take one stream frame. Returns false when the frame was swallowed as
    * something the transcript already carries, so a caller can skip the work
-   * of repainting.
+   * of repainting. `kind` is the frame's kind ("reasoning" or "text"), kept
+   * per block for snapshots.
    */
-  append(text: string, blockId?: string): boolean {
+  append(text: string, blockId?: string, kind?: StreamTextKind): boolean {
     if (!text) return false;
     if (blockId) {
       if (this.landedIds.has(blockId)) return false;
@@ -84,8 +107,8 @@ export class LiveTextBuffer {
       }
     }
     const last = this.blocks[this.blocks.length - 1];
-    if (last && last.id === blockId) last.text += text;
-    else this.blocks.push({ id: blockId, text });
+    if (last && last.id === blockId && last.kind === kind) last.text += text;
+    else this.blocks.push({ id: blockId, text, ...(kind ? { kind } : {}) });
     return true;
   }
 

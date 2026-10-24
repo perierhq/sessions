@@ -39,9 +39,23 @@ export function assistantRenderableBlockCount(content: unknown): number {
   return n;
 }
 
+/**
+ * The id of one prose block of an assistant message: the message id for the
+ * first content block, `<messageId>-b<contentIndex>` for the rest. The live
+ * `stream_text` frames of a block and its durable transcript entry both use
+ * it, so a viewer swaps the live copy for the durable one by id.
+ */
+export function piAssistantBlockId(
+  messageId: string,
+  contentIndex: number,
+): string {
+  return contentIndex === 0 ? messageId : `${messageId}-b${contentIndex}`;
+}
+
 /** Preserve every model-authored prose block in provider order. Pi exposes
  * reasoning as `thinking` blocks and ordinary output as `text`; both become
- * visible assistant transcript entries, while tool calls keep their own rows. */
+ * visible assistant transcript entries, while tool calls keep their own rows.
+ * Prose entry ids come from `piAssistantBlockId`. */
 export function piAssistantTranscriptEntries(
   content: unknown,
   timestamp: string,
@@ -50,8 +64,7 @@ export function piAssistantTranscriptEntries(
 ): TranscriptEntry[] {
   if (!Array.isArray(content)) return [];
   const entries: TranscriptEntry[] = [];
-  let proseIndex = 0;
-  for (const raw of content) {
+  for (const [contentIndex, raw] of content.entries()) {
     if (!raw || typeof raw !== "object") continue;
     const block = raw as {
       type?: string;
@@ -72,14 +85,13 @@ export function piAssistantTranscriptEntries(
         : reasoning;
     if (prose.trim()) {
       entries.push({
-        id: proseIndex === 0 ? messageId : `${messageId}-b${proseIndex}`,
+        id: piAssistantBlockId(messageId, contentIndex),
         type: "assistant",
         timestamp,
         model,
         ...(isReasoning ? { isReasoning: true } : {}),
         ...assistantProseFields(prose),
       });
-      proseIndex++;
     } else if (block.type === "toolCall" && block.id) {
       entries.push({
         id: String(block.id),
