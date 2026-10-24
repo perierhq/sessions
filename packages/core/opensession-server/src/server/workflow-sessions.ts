@@ -373,6 +373,12 @@ export function createWorkflowSessionController(
           "A server-built descendant policy needs an automation session policy",
         );
       if (server?.sandbox !== undefined) {
+        // Typed as "podman", but checked here too: the controller refuses
+        // any other provider by itself.
+        if ((server.sandbox as unknown) !== "podman")
+          throw new Error(
+            "A server-chosen sandbox can only be This machine (container)",
+          );
         if (!server.descendantPolicy)
           throw new Error(
             "A server-chosen sandbox needs a server-built descendant policy",
@@ -471,6 +477,11 @@ export function createWorkflowSessionController(
           )
             throw new Error(
               "Descendant policy allows a Runner the automation does not",
+            );
+          // Only an incident agent may be put in This machine (container).
+          if (server.sandbox !== undefined && !built.incident)
+            throw new Error(
+              "A server-chosen sandbox is only for an incident agent",
             );
           descendantPolicy = {
             ...built,
