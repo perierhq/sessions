@@ -427,3 +427,91 @@ test("Set up a sandbox opens Settings, Sandboxes, and decides nothing", async ()
   expect(sections).toEqual(["sandboxes"]);
   expect(decide).not.toHaveBeenCalled();
 });
+
+const { AskCard } = await import("../AskCard");
+
+/** The card in the report: the investigator stopped, three ways on. */
+const agentError = incident(
+  {
+    kind: "needs-you",
+    reason: "The investigator stopped: Session setup failed",
+    needsYou: "agent-error",
+    options: ["retry", "resolve", "close"],
+  },
+  "needs-you",
+);
+const askOf = (tree: React.ReactNode) => {
+  const el = find(tree, AskCard);
+  if (!el) throw new Error("No choice card");
+  return el.props;
+};
+
+test("Try again, Mark as fixed and Close without action go without a note", async () => {
+  decide.mockResolvedValue(agentError);
+  for (const [label, decision] of [
+    ["Try again", "retry"],
+    ["Mark as fixed", "resolve"],
+    ["Close without action", "close"],
+  ] as const) {
+    decide.mockClear();
+    const card = harness.mount(NextAction, props({ incident: agentError }));
+    const ask = askOf(card.output());
+    // Nothing on this card needs more than the pick, and there is no
+    // free-text answer that would have nowhere to go.
+    expect(ask.notes).toEqual({});
+    expect(ask.freeText).toBe(false);
+    ask.onAnswer({ [ask.questions[0]!.question]: label }, {});
+    await settle();
+    expect(decide).toHaveBeenCalledWith("inc-1", decision, undefined);
+    harness.unmountAll();
+  }
+  expect(toasts).toEqual([]);
+});
+
+test("Send it back carries the note written in the card", async () => {
+  const stopped = incident(
+    {
+      kind: "needs-you",
+      reason: "Stopped by Ada",
+      needsYou: "stopped",
+      options: ["send-back", "close"],
+    },
+    "needs-you",
+  );
+  decide.mockResolvedValue(stopped);
+  const card = harness.mount(NextAction, props({ incident: stopped }));
+  const ask = askOf(card.output());
+  expect(Object.keys(ask.notes ?? {})).toEqual(["Send it back"]);
+  ask.onAnswer(
+    { "Stopped by Ada": "Send it back" },
+    { "Stopped by Ada": "Check the resume policy" },
+  );
+  await settle();
+  expect(decide).toHaveBeenCalledWith(
+    "inc-1",
+    "send-back",
+    "Check the resume policy",
+  );
+});
+
+test("a Send it back intent points at the card instead of a confirm", async () => {
+  const stopped = incident(
+    {
+      kind: "needs-you",
+      reason: "Stopped by Ada",
+      needsYou: "stopped",
+      options: ["send-back", "close"],
+    },
+    "needs-you",
+  );
+  const card = harness.mount(
+    NextAction,
+    props({ incident: stopped, intent: "send-back" }),
+  );
+  await settle();
+  expect(confirmOf(card.output())?.open).toBeFalsy();
+  expect(toasts.map((t) => t.message)).toEqual([
+    "Pick Send it back on the card and write the investigator a note",
+  ]);
+  expect(decide).not.toHaveBeenCalled();
+});

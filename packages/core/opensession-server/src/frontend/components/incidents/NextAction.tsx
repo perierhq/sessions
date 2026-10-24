@@ -290,9 +290,6 @@ export function NextAction({
   const deferDeadline = useDeferredMergeDeadline(deferKey);
   const project = repoLabel(incident.project);
   const incidentKey = apiSWRKey.incident(incident.id);
-  const investigatorSession = incident.response?.agents
-    .filter((run) => run.role === "investigator")
-    .at(-1)?.sessionId;
 
   const decide = async (
     decision: OwnerDecision,
@@ -386,34 +383,23 @@ export function NextAction({
     }
   };
 
-  const onAnswer = async (answers: Record<string, string>) => {
+  // The card offers only its options, and asks in place for the note a
+  // decision needs (Send it back), so an answer is always one decision.
+  const onAnswer = async (
+    answers: Record<string, string>,
+    notes: Record<string, string>,
+  ) => {
     if (card?.mode !== "choice") return;
-    const answer = Object.values(answers)[0] ?? "";
+    const [question = "", answer = ""] = Object.entries(answers)[0] ?? [];
     const decision = decisionFromAnswer(answer, card.decisions);
-    let ok = true;
-    if (decision)
-      ok = await decide(
-        decision,
-        DECISION_COPY[decision].label,
-        `choice:${decision}`,
-      );
-    else if (card.decisions.includes("send-back"))
-      ok = await decide(
-        "send-back",
-        DECISION_COPY["send-back"].label,
-        "choice:send-back",
-        answer.trim(),
-      );
-    else {
-      ok = false;
-      const open = investigatorSession;
-      toast(
-        "Pick one of the options. Notes to the agents go in the investigator's session",
-        open
-          ? { action: { label: "Open", onClick: () => onOpenSession(open) } }
-          : {},
-      );
-    }
+    const ok = decision
+      ? await decide(
+          decision,
+          DECISION_COPY[decision].label,
+          `choice:${decision}`,
+          notes[question],
+        )
+      : false;
     // A refused answer gets a fresh card to answer again.
     if (!ok) setChoiceAttempt((n) => n + 1);
   };
@@ -502,7 +488,9 @@ export function NextAction({
           // The reason is agent text from what it read: never markdown
           // that could load from another host.
           plainText
-          onAnswer={(answers) => void onAnswer(answers)}
+          freeText={false}
+          notes={card.notes}
+          onAnswer={(answers, notes) => void onAnswer(answers, notes)}
         />
       )}
       {incident.response && (

@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { DECISION_COPY } from "../../../shared/incident-decision-copy";
-import type {
-  AgentRun,
-  IncidentResponse,
-  ProofResult,
-  RedactedProjectSettings,
+import {
+  type AgentRun,
+  type IncidentResponse,
+  OWNER_DECISIONS,
+  type ProofResult,
+  type RedactedProjectSettings,
+  SEND_BACK_NOTE_MAX,
 } from "../../../shared/incident-response";
 import type {
   Incident,
@@ -16,6 +18,7 @@ import { clockTime } from "../time";
 import {
   decisionErrorText,
   decisionFromAnswer,
+  decisionNotes,
   incidentDecisionKey,
   nextCard,
   orderButtons,
@@ -233,6 +236,34 @@ test("working pulses and offers to pause", () => {
   ).toMatchObject({ eyebrow: "Round 2 · measuring the fix", body: "" });
 });
 
+test("needs you: only Send it back asks for a note, in the card", () => {
+  const card = nextCard({
+    ...base,
+    incident: inc("needs-you", {
+      next: {
+        kind: "needs-you",
+        reason: "Stopped by Ada",
+        needsYou: "stopped",
+        options: ["send-back", "close"],
+      },
+    }),
+  });
+  expect(card).toMatchObject({
+    mode: "choice",
+    decisions: ["send-back", "close"],
+    notes: {
+      "Send it back": {
+        label: "Note for the investigator",
+        maxLength: SEND_BACK_NOTE_MAX,
+      },
+    },
+  });
+  // Every other decision is complete on its own.
+  expect(
+    decisionNotes(OWNER_DECISIONS.filter((d) => d !== "send-back")),
+  ).toEqual({});
+});
+
 test("needs you: several ways forward go to AskCard, one goes to a primary button", () => {
   const many = nextCard({
     ...base,
@@ -255,6 +286,8 @@ test("needs you: several ways forward go to AskCard, one goes to a primary butto
       multiSelect: false,
       options: [DECISION_COPY.retry, DECISION_COPY.close],
     },
+    // Try again and Close without action need nothing more.
+    notes: {},
   });
   const one = nextCard({
     ...base,

@@ -2,13 +2,18 @@ import * as React from "react";
 import { Questionnaire } from "@shadcn/react/questionnaire";
 import { AGENT_NAME } from "../lib/brand";
 import { renderMarkdown } from "../lib/markdown";
-import type { AskQuestion } from "../lib/types";
+import type { AskNoteField, AskQuestion } from "../lib/types";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import { cn } from "../ui/cn";
 import { IconCheck, IconReturn, IconX } from "./icons";
 import { useMarkdownRepo } from "./MarkdownBody";
-import { ASK_CARD_SHELL, ASK_CHOICE_ROW } from "../lib/ask-card-classes";
+import {
+  ASK_CARD_SHELL,
+  ASK_CHOICE_ROW,
+  ASK_NOTE_FIELD,
+  ASK_NOTE_LABEL,
+} from "../lib/ask-card-classes";
 import {
   askLetterFromKey,
   askOptionForLetter,
@@ -19,7 +24,12 @@ import { matchesShortcut } from "../lib/shortcuts";
 
 interface Props {
   questions: AskQuestion[];
-  onAnswer: (answers: Record<string, string>) => void;
+  /** The answers by question text, and the notes their picked options
+   *  needed (see `notes`), by question text too. */
+  onAnswer: (
+    answers: Record<string, string>,
+    notes: Record<string, string>,
+  ) => void;
   /**
    * Whether this card's session is the one the keyboard belongs to. Split
    * tabs can show two live questions at once, and one keystroke must answer
@@ -45,6 +55,19 @@ interface Props {
    * text an agent wrote from what it read (an incident's needs-you card).
    */
   plainText?: boolean;
+  /**
+   * Options that need a written note before they can be sent, by label.
+   * Picking one opens a labelled field under the options, and Answer waits
+   * until it is filled in: the card asks for the note where the choice is
+   * made, instead of refusing the answer afterwards.
+   */
+  notes?: Readonly<Record<string, AskNoteField>>;
+  /**
+   * Offer "Or type your own answer…". Off for a card where only its options
+   * mean anything (an incident decision): a typed answer there would have
+   * nowhere to go.
+   */
+  freeText?: boolean;
 }
 
 /**
@@ -116,14 +139,18 @@ export function AskCard({
   active = true,
   status,
   plainText = false,
+  notes,
+  freeText = true,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
   const [picks, setPicks] = React.useState<Record<string, string[]>>({});
   const [custom, setCustom] = React.useState<Record<string, string>>({});
+  const [noteText, setNoteText] = React.useState<Record<string, string>>({});
   const [submitted, setSubmitted] = React.useState(false);
   const formRef = React.useRef<HTMLFormElement>(null);
   const itemRefs = React.useRef<Array<HTMLFieldSetElement | null>>([]);
+  const noteRefs = React.useRef<Array<HTMLTextAreaElement | null>>([]);
   // Which question the primitive is showing. It steps through them itself;
   // this only mirrors that so a letter from outside the form resolves against
   // the question on screen rather than the first one.
@@ -148,6 +175,23 @@ export function AskCard({
     const typed = (custom[name] ?? "").trim();
     if (typed) parts.push(typed);
     return parts.join(", ");
+  }
+
+  /** The note field the question's pick needs, if it needs one. Only a
+   *  lone pick can: a typed answer or several picks name no one option. */
+  function noteFieldFor(index: number): AskNoteField | undefined {
+    const picked = picks[itemName(index)] ?? [];
+    if (picked.length !== 1 || (custom[itemName(index)] ?? "").trim())
+      return undefined;
+    return notes?.[picked[0]!];
+  }
+
+  /** Whether the question's note, if its pick needs one, can be sent. */
+  function noteReady(index: number): boolean {
+    const field = noteFieldFor(index);
+    if (!field) return true;
+    const text = (noteText[itemName(index)] ?? "").trim();
+    return text !== "" && (!field.maxLength || text.length <= field.maxLength);
   }
 
   function choose(
@@ -203,7 +247,10 @@ export function AskCard({
   //
   // Cmd/Ctrl+Enter is unaffected and still routes through the primitive's own
   // validation, so a keyboard user gets the spoken error rather than silence.
-  const allAnswered = questions.every((_, i) => answerFor(i) !== "");
+  // A pick that needs a note is not an answer until the note is written.
+  const allAnswered = questions.every(
+    (_, i) => answerFor(i) !== "" && noteReady(i),
+  );
 
   /**
    * Answer a letter the way a click on that row would: pick it (or toggle it,
@@ -275,12 +322,22 @@ export function AskCard({
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitted) return;
+    // The primitive knows nothing of the note: Enter on a picked row or
+    // Cmd/Ctrl+Enter gets here with it still empty. Take them to it.
+    const unwritten = questions.findIndex((_, i) => !noteReady(i));
+    if (unwritten >= 0) {
+      noteRefs.current[unwritten]?.focus();
+      return;
+    }
     setSubmitted(true);
     const answers: Record<string, string> = {};
+    const written: Record<string, string> = {};
     questions.forEach((q, i) => {
       answers[q.question] = answerFor(i);
+      if (noteFieldFor(i))
+        written[q.question] = (noteText[itemName(i)] ?? "").trim();
     });
-    onAnswer(answers);
+    onAnswer(answers, written);
   }
 
   return (
@@ -454,9 +511,10 @@ export function AskCard({
                 </Questionnaire.Choice>
               );
             })}
-            <Questionnaire.Input
-              aria-label={q.options?.length ? "Custom answer" : "Answer"}
-              /* border-0 is load-bearing, not tidying: this app deliberately
+            {freeText && (
+              <Questionnaire.Input
+                aria-label={q.options?.length ? "Custom answer" : "Answer"}
+                /* border-0 is load-bearing, not tidying: this app deliberately
 							   doesn't ship Tailwind's Preflight (see styles/tailwind.css), so
 							   an <input> with no border utility keeps the UA's 2px inset
 							   border — the dark outline this field used to wear. Any borderless
@@ -465,19 +523,34 @@ export function AskCard({
 							   No ring on focus either — same call the composer makes: it read
 							   as an error state on a field you're simply typing in, and the
 							   caret is affordance enough. */
-              className={cn(
-                "h-11 w-full rounded-[calc(12px*var(--rf))] border-0 bg-control px-3 text-base text-fg outline-none placeholder:text-faint disabled:opacity-60 sm:text-control-label [corner-shape:var(--cs)]",
-                q.options?.length && "mt-1.5",
-              )}
-              placeholder={
-                q.options?.length
-                  ? "Or type your own answer…"
-                  : "Type your answer…"
-              }
-              value={custom[itemName(i)] ?? ""}
-              onChange={(e) => write(i, q, e.target.value)}
-            />
+                className={cn(
+                  "h-11 w-full rounded-[calc(12px*var(--rf))] border-0 bg-control px-3 text-base text-fg outline-none placeholder:text-faint disabled:opacity-60 sm:text-control-label [corner-shape:var(--cs)]",
+                  q.options?.length && "mt-1.5",
+                )}
+                placeholder={
+                  q.options?.length
+                    ? "Or type your own answer…"
+                    : "Type your answer…"
+                }
+                value={custom[itemName(i)] ?? ""}
+                onChange={(e) => write(i, q, e.target.value)}
+              />
+            )}
           </Questionnaire.Choices>
+          {noteFieldFor(i) && (
+            <AskNote
+              field={noteFieldFor(i)!}
+              id={`${titleBase}-note${i}`}
+              value={noteText[itemName(i)] ?? ""}
+              disabled={submitted}
+              textareaRef={(el) => {
+                noteRefs.current[i] = el;
+              }}
+              onChange={(value) =>
+                setNoteText((prev) => ({ ...prev, [itemName(i)]: value }))
+              }
+            />
+          )}
           <Questionnaire.Error className="text-meta text-red" />
         </Questionnaire.Item>
       ))}
@@ -575,5 +648,54 @@ export function AskCard({
         </Questionnaire.Submit>
       </div>
     </Questionnaire.Root>
+  );
+}
+
+/**
+ * The note a picked option needs, asked for in the card: a labelled field
+ * under the options. It takes the caret when it opens, since the pick that
+ * opened it cannot be sent without it; Enter is a new line, and the answer
+ * goes on Answer or Cmd/Ctrl+Enter.
+ */
+export function AskNote({
+  field,
+  id,
+  value,
+  disabled,
+  textareaRef,
+  onChange,
+}: {
+  field: AskNoteField;
+  id: string;
+  value: string;
+  disabled: boolean;
+  textareaRef: (el: HTMLTextAreaElement | null) => void;
+  onChange: (value: string) => void;
+}) {
+  const inner = React.useRef<HTMLTextAreaElement | null>(null);
+  React.useEffect(() => {
+    inner.current?.focus();
+  }, []);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className={ASK_NOTE_LABEL}>
+        {field.label}
+      </label>
+      <textarea
+        id={id}
+        ref={(el) => {
+          inner.current = el;
+          textareaRef(el);
+        }}
+        rows={3}
+        aria-required
+        placeholder={field.placeholder}
+        maxLength={field.maxLength}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={ASK_NOTE_FIELD}
+      />
+    </div>
   );
 }

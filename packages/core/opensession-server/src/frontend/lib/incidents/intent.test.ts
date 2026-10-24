@@ -86,10 +86,30 @@ test("a needs-you top option confirms with the page's own words", () => {
       multiSelect: false,
       options: [DECISION_COPY.retry, DECISION_COPY.close],
     },
+    notes: {},
   };
   expect(intentPlan(choice, "retry", "needs you")).toMatchObject({
     kind: "confirm",
     title: "Try again?",
+  });
+});
+
+test("Send it back from a notification points at the card's note field", () => {
+  const choice: NextCard = {
+    mode: "choice",
+    eyebrow: "Needs you",
+    decisions: ["send-back", "close"],
+    question: {
+      header: "Needs you",
+      question: "q",
+      multiSelect: false,
+      options: [DECISION_COPY["send-back"], DECISION_COPY.close],
+    },
+    notes: {},
+  };
+  expect(intentPlan(choice, "send-back", "needs you")).toEqual({
+    kind: "on-card",
+    message: "Pick Send it back on the card and write the investigator a note",
   });
 });
 
