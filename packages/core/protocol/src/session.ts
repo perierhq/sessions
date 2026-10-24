@@ -23,6 +23,7 @@
 
 import type { AnsweredAskData, EntryNotice, NoticeKind } from "./notices";
 import type { ToolPresentation } from "./tool-presentation";
+import type { StreamPhase, StreamPhaseTool, StreamTextKind } from "./events";
 
 /** The complete set of managed Executor providers. */
 /** Service speed for ChatGPT subscription runs. "fast" is OpenAI's priority
@@ -596,8 +597,39 @@ export type SessionLiveEvent =
        *  blocks. The durable entry that lands it carries the same id — see
        *  `LiveTextBuffer`, which every live surface dedups with. */
       blockId?: string;
+      /** "reasoning" for the model's thinking, "text" for its reply. Absent
+       *  means "text" (older servers, engines that do not split the two).
+       *  The durable entry for a reasoning block has `isReasoning: true`. */
+      kind?: StreamTextKind;
     }
-  | { type: "stream_tool_use"; sessionId?: string; entry: TranscriptEntry }
+  | {
+      type: "stream_tool_use";
+      sessionId?: string;
+      entry: TranscriptEntry;
+      /** An early card: the model has started writing this call but its
+       *  arguments are still streaming, so `entry.toolInput` is `{}`. A later
+       *  `stream_tool_use` (and then the durable entry) with the same
+       *  `entry.id` carries the real input; upsert by id. */
+      inputPending?: boolean;
+    }
+  | {
+      /**
+       * What the run is doing right now. Sent when a model request opens or
+       * closes, when a tool starts or ends, and "idle" when the turn ends.
+       * Show "Thinking"/"Writing" only while `phase` is "model"; while it is
+       * "tool", label the running tool (`tool.summary`) with the time since
+       * `since`. Clients that ignore this frame keep today's behaviour.
+       */
+      type: "stream_phase";
+      sessionId?: string;
+      phase: StreamPhase;
+      /** Epoch ms this phase began (server clock). */
+      since: number;
+      /** With phase "tool": the running tool (latest started if several). */
+      tool?: StreamPhaseTool;
+      /** With phase "tool": how many tools are running (>= 1). */
+      toolCount?: number;
+    }
   | { type: "stream_tool_result"; sessionId?: string; entry: TranscriptEntry }
   | { type: "stream_done"; sessionId?: string }
   | {

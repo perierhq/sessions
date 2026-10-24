@@ -88,10 +88,41 @@ export function contextRebuildNotice(
   );
 }
 
+/** Which stream a live text delta belongs to. */
+export type StreamTextKind = "text" | "reasoning";
+
+/**
+ * What a running turn is doing at this moment:
+ * - "model": a model request is open (between the assistant message's start
+ *   and end). Only this phase may be labelled "Thinking" or "Writing".
+ * - "tool": the model is idle and at least one tool is running.
+ * - "idle": the turn ended (also implied by `stream_done`).
+ */
+export type StreamPhase = "model" | "tool" | "idle";
+
+/** The running tool named by a "tool" phase. */
+export interface StreamPhaseTool {
+  /** The tool call id (same as the tool_use entry's id / toolUseId). */
+  id: string;
+  name: string;
+  /** One short line for a label: the bash command, a path, a title.
+   *  Truncated server-side; may be empty. */
+  summary: string;
+}
+
 export interface StreamEvent {
   type:
     | "init"
     | "text_chunk"
+    // What the run is doing right now (model request open, tool running, or
+    // idle). See `StreamPhase`; the gateway relays it as a `stream_phase`
+    // frame. Carries no transcript content.
+    | "phase"
+    // The model started writing a tool call (pi's toolcall_start), before its
+    // arguments finish streaming. `toolUseId` + `toolName`; the gateway sends
+    // it as an early `stream_tool_use` card with `inputPending: true`. The
+    // ordinary `tool_use` event for the same id follows when the tool runs.
+    | "tool_call_start"
     | "tool_use"
     | "tool_result"
     | "usage_snapshot"
@@ -117,6 +148,22 @@ export interface StreamEvent {
    * subtracting strings (see LiveTextBuffer in the protocol package).
    */
   blockId?: string;
+  /**
+   * On a text_chunk: whether the text is the model's reasoning ("thinking")
+   * or its visible reply. Absent means "text" (engines that do not split the
+   * two). The durable entry for a reasoning block has `isReasoning: true`.
+   */
+  kind?: StreamTextKind;
+  /** On a phase event: the run's current phase (see `StreamPhase`). */
+  phase?: StreamPhase;
+  /** On a phase event: epoch ms the phase began (for a model phase, when the
+   *  model request started; for a tool phase, when the tool started). */
+  since?: number;
+  /** On a phase event with phase "tool": the tool that is running (the most
+   *  recently started one when several run in parallel). */
+  tool?: StreamPhaseTool;
+  /** On a phase event with phase "tool": how many tools are running. */
+  toolCount?: number;
   /** On a model_switch: the exhausted model and the fallback it switched to. */
   fromModel?: string;
   toModel?: string;
