@@ -440,7 +440,7 @@ export function DefaultsPanel({
                 aria-invalid={websiteError ? true : undefined}
                 aria-describedby={websiteError ? websiteErrorId : undefined}
                 className={cn(
-                  "phone:h-11 phone:text-input-phone",
+                  "phone:min-h-11 phone:text-input-phone",
                   websiteError && "border-red",
                 )}
                 onChange={(e) => {

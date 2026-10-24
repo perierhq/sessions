@@ -412,3 +412,10 @@ test("every button and select trigger is a 44px target on a phone", async () => 
     ).toBe(true);
   }
 });
+
+test("the website field is a 44px target on a phone", async () => {
+  const tree = await mountPanel();
+  const el = find(tree.output(), Input, (p) => p["aria-label"] === "Website");
+  // min-height, so the field's fixed h-8 can't win over it.
+  expect(String(el?.props.className)).toContain("phone:min-h-11");
+});
