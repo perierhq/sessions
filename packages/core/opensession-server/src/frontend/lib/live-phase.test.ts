@@ -41,6 +41,7 @@ describe("activeThought", () => {
     expect(activeThought([bash, thought], true, "model")).toBe(thought);
     expect(activeThought([bash, thought], true, "tool")).toBeUndefined();
     expect(activeThought([bash, thought], true, "idle")).toBeUndefined();
+    expect(activeThought([bash, thought], true, "wait")).toBeUndefined();
   });
 
   test("a settled rail never thinks", () => {
@@ -98,6 +99,21 @@ describe("livePhaseStatus", () => {
     };
     expect(livePhaseStatus(phase, since)?.label).toBe(
       "Running pnpm install && tsc and 1 more",
+    );
+  });
+
+  test("a retry backoff or a compaction says so, with its time, without shimmer", () => {
+    expect(
+      livePhaseStatus({ phase: "wait", since, reason: "retry" }, since + 8_000),
+    ).toEqual({ label: "Retrying", elapsed: "8s", shimmer: false });
+    expect(
+      livePhaseStatus(
+        { phase: "wait", since, reason: "compaction" },
+        since + 3_000,
+      ),
+    ).toEqual({ label: "Compacting context", elapsed: "3s", shimmer: false });
+    expect(livePhaseStatus({ phase: "wait", since }, since)?.label).toBe(
+      "Waiting",
     );
   });
 

@@ -487,8 +487,21 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
           }
           break;
         }
+        case "compaction_start":
+          // pi compacts the context: before an overflow retry, or after a
+          // turn crossed the threshold. Neither is the model thinking.
+          push({
+            type: "phase",
+            phase: "wait",
+            since: Date.now(),
+            reason: "compaction",
+          });
+          break;
         case "compaction_end": {
           const ce = ev as any;
+          // A retry keeps waiting until its request opens (message_start).
+          if (!ce.willRetry)
+            push({ type: "phase", phase: "idle", since: Date.now() });
           if (!ce.aborted && ce.result?.summary) {
             try {
               appendRunLines([
@@ -533,11 +546,25 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
             )}s — ${errText.slice(0, 300)}`;
             push({ type: "runner_notice", text: notice });
             persistRunEntries([piSystemEntry(notice)]);
+            // The backoff is a wait, not the model thinking; the retried
+            // request's message_start puts the model phase back.
+            push({
+              type: "phase",
+              phase: "wait",
+              since: Date.now(),
+              reason: "retry",
+            });
           }
           break;
         }
+        case "auto_retry_end":
+          // A cancelled retry: nothing more is coming from this attempt.
+          if (!(ev as any).success)
+            push({ type: "phase", phase: "idle", since: Date.now() });
+          break;
         case "agent_end":
-          // pi is about to retry the request: the model phase stays open.
+          // pi is about to retry the request: auto_retry_start or
+          // compaction_start says what the wait is.
           if ((ev as any).willRetry) break;
           runningTools.clear();
           push({ type: "phase", phase: "idle", since: Date.now() });

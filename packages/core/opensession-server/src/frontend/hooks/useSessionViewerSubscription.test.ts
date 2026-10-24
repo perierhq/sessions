@@ -261,3 +261,19 @@ test("a steer-cut message's early card leaves the transcript too", () => {
   expect(viewStore.getSnapshot()).toEqual([]);
   expect(liveTurnStore.getSnapshot().tools).toEqual([]);
 });
+
+test("a wait phase reaches the store with its reason", () => {
+  frame({ type: "stream_start", sessionId: SESSION, by: "acme" });
+  frame({
+    type: "stream_phase",
+    sessionId: SESSION,
+    phase: "wait",
+    since: 1_000,
+    reason: "retry",
+  });
+  expect(liveTurnStore.getPhase()).toEqual({
+    phase: "wait",
+    since: 1_000,
+    reason: "retry",
+  });
+});

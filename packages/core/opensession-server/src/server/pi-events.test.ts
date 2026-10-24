@@ -411,6 +411,60 @@ describe("pi live events", () => {
     expect(pushed.some((ev) => ev.type === "discard")).toBe(false);
   });
 
+  test("pi's retry backoff and compaction are a wait, never Thinking", () => {
+    const { pushed, emit } = harness();
+    const lastPhase = () => pushed.filter((ev) => ev.type === "phase").at(-1);
+    emit({
+      type: "message_start",
+      message: { role: "assistant", timestamp: T0, content: [] },
+    });
+    emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        timestamp: T0,
+        content: [],
+        stopReason: "error",
+        errorMessage: "overloaded",
+      },
+    });
+    emit({ type: "agent_end", messages: [], willRetry: true });
+    expect(lastPhase()?.phase).toBe("model");
+    emit({
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 8_000,
+      errorMessage: "overloaded",
+    });
+    expect(lastPhase()).toMatchObject({ phase: "wait", reason: "retry" });
+    // The retried request opens: back to the model.
+    emit({
+      type: "message_start",
+      message: { role: "assistant", timestamp: T1, content: [] },
+    });
+    expect(lastPhase()).toEqual({ type: "phase", phase: "model", since: T1 });
+
+    emit({ type: "compaction_start", reason: "overflow" });
+    expect(lastPhase()).toMatchObject({ phase: "wait", reason: "compaction" });
+    emit({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      willRetry: true,
+    });
+    // A compaction that retries keeps waiting until the request opens.
+    expect(lastPhase()?.phase).toBe("wait");
+    emit({ type: "compaction_start", reason: "threshold" });
+    emit({
+      type: "compaction_end",
+      reason: "threshold",
+      aborted: false,
+      willRetry: false,
+    });
+    expect(lastPhase()?.phase).toBe("idle");
+  });
+
   test("a tool summary is one short line", () => {
     expect(piToolSummary("bash", { command: "a\n  b" })).toBe("a ⏎ b");
     expect(piToolSummary("read", { path: "src/x.ts" })).toBe("src/x.ts");

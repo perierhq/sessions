@@ -14,6 +14,7 @@
 import type {
   StreamPhase,
   StreamPhaseTool,
+  StreamWaitReason,
 } from "@tellahq/opensession-protocol/events";
 import type { TranscriptEntry } from "./types";
 import { isLegacyReasoningHeading } from "./reasoning-display";
@@ -27,7 +28,14 @@ export interface LivePhase {
   tool?: StreamPhaseTool;
   /** With phase "tool": how many tools are running. */
   toolCount?: number;
+  /** With phase "wait": a retry backoff or a context compaction. */
+  reason?: StreamWaitReason;
 }
+
+const WAIT_LABELS: Record<StreamWaitReason, string> = {
+  retry: "Retrying",
+  compaction: "Compacting context",
+};
 
 function isThought(entry: TranscriptEntry): boolean {
   return (
@@ -99,6 +107,13 @@ export function livePhaseStatus(
     const base = what ? `Running ${what}` : "Running a tool";
     return {
       label: others > 0 ? `${base} and ${others} more` : base,
+      elapsed: phaseElapsed(phase.since, nowMs),
+      shimmer: false,
+    };
+  }
+  if (phase.phase === "wait") {
+    return {
+      label: (phase.reason && WAIT_LABELS[phase.reason]) || "Waiting",
       elapsed: phaseElapsed(phase.since, nowMs),
       shimmer: false,
     };

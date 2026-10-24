@@ -96,9 +96,15 @@ export type StreamTextKind = "text" | "reasoning";
  * - "model": a model request is open (between the assistant message's start
  *   and end). Only this phase may be labelled "Thinking" or "Writing".
  * - "tool": the model is idle and at least one tool is running.
+ * - "wait": neither: the engine is backing off before retrying a failed
+ *   request, or compacting the context (`reason`).
  * - "idle": the turn ended (also implied by `stream_done`).
  */
-export type StreamPhase = "model" | "tool" | "idle";
+export type StreamPhase = "model" | "tool" | "wait" | "idle";
+
+/** Why a "wait" phase waits: the engine's backoff before retrying a failed
+ *  request, or a context compaction. */
+export type StreamWaitReason = "retry" | "compaction";
 
 /** The running tool named by a "tool" phase. */
 export interface StreamPhaseTool {
@@ -171,6 +177,8 @@ export interface StreamEvent {
   tool?: StreamPhaseTool;
   /** On a phase event with phase "tool": how many tools are running. */
   toolCount?: number;
+  /** On a phase event with phase "wait": what the run is waiting on. */
+  reason?: StreamWaitReason;
   /** On a discard event: the discarded assistant message's id. */
   messageId?: string;
   /** On a discard event: the tool calls the message had started writing. */

@@ -23,7 +23,12 @@
 
 import type { AnsweredAskData, EntryNotice, NoticeKind } from "./notices";
 import type { ToolPresentation } from "./tool-presentation";
-import type { StreamPhase, StreamPhaseTool, StreamTextKind } from "./events";
+import type {
+  StreamPhase,
+  StreamPhaseTool,
+  StreamTextKind,
+  StreamWaitReason,
+} from "./events";
 import type { LiveTextBlockSnapshot } from "./live-text";
 
 /** The complete set of managed Executor providers. */
@@ -630,6 +635,8 @@ export type SessionLiveEvent =
       tool?: StreamPhaseTool;
       /** With phase "tool": how many tools are running (>= 1). */
       toolCount?: number;
+      /** With phase "wait": a retry backoff or a context compaction. */
+      reason?: StreamWaitReason;
     }
   | {
       /**
@@ -767,6 +774,7 @@ export type ProtocolServerMessage =
           since: number;
           tool?: StreamPhaseTool;
           toolCount?: number;
+          reason?: StreamWaitReason;
         };
       };
     }

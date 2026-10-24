@@ -636,6 +636,7 @@ export function useSessionViewerSubscription({
             since: msg.since,
             tool: msg.tool,
             toolCount: msg.toolCount,
+            reason: msg.reason,
           });
           break;
         case "stream_tool_use":

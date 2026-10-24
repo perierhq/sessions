@@ -215,12 +215,13 @@ const getFalse = () => false;
 
 /**
  * The tail's words while the server reports phases: "Thinking" only while a
- * model request is open, the running tool and its time while one runs. The
- * ticker re-renders this node alone.
+ * model request is open, the running tool and its time while one runs, and
+ * a retry backoff or a compaction with its time. The ticker re-renders this
+ * node alone.
  */
 function BusyPhase({ phase }: { phase: LivePhase }) {
   const [now, setNow] = useState(() => Date.now());
-  const ticking = phase.phase === "tool";
+  const ticking = phase.phase === "tool" || phase.phase === "wait";
   useEffect(() => {
     if (!ticking) return;
     setNow(Date.now());

@@ -24,6 +24,7 @@ export function streamPhaseFrame(
     ...(event.phase === "tool" && event.toolCount
       ? { toolCount: event.toolCount }
       : {}),
+    ...(event.phase === "wait" && event.reason ? { reason: event.reason } : {}),
   };
 }
 
