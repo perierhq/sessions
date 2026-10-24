@@ -64,6 +64,7 @@ import {
 import { transcriptDisclosureLedger } from "../lib/transcript-disclosures";
 import { turnScrollAnchor } from "../lib/transcript-block-identity";
 import { activeThought, type LivePhaseKind } from "../lib/live-phase";
+import type { QuietThoughts } from "../lib/thinking-messages-pref";
 
 interface Props {
   /** One turn's tool calls, provider reasoning, and intermediate narration.
@@ -80,9 +81,10 @@ interface Props {
   /** What the running turn is doing, from the server's phase frames; null
    * until one arrives. Only an open model request lets a thought shimmer. */
   livePhase?: LivePhaseKind | null;
-  /** "Thinking messages: latest" on a live rail: every thought stays where it
-   * happened, and all but the newest fold to one dim line. */
-  quietEarlierThoughts?: boolean;
+  /** "Thinking messages: latest": every thought stays where it happened, and
+   * all but the newest (a live rail) or every one (a settled rail) fold to
+   * one dim line. See quietThoughts. */
+  quietThoughts?: QuietThoughts;
 }
 
 /** The two Settings → Preferences answers for how work folds, kept live. */
@@ -126,7 +128,7 @@ export const TurnBlock = function TurnBlock({
   onOpenSubagent,
   sessionId,
   livePhase = null,
-  quietEarlierThoughts = false,
+  quietThoughts = "none",
 }: Props) {
   const pathRoots = useToolPathRoots();
   const allTools = items.filter((it) => it.type === "tool_use");
@@ -383,7 +385,10 @@ export const TurnBlock = function TurnBlock({
                   activeReasoning !== undefined &&
                   sec.items.includes(activeReasoning)
                 }
-                quiet={quietEarlierThoughts && sec !== newestReasoning}
+                quiet={
+                  quietThoughts === "all" ||
+                  (quietThoughts === "earlier" && sec !== newestReasoning)
+                }
                 sessionId={sessionId}
               />
             ) : sec.kind === "narration" ? (

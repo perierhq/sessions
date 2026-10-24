@@ -1305,11 +1305,16 @@ describe("TranscriptBlocks turn work and tool call preferences", () => {
       ),
     ).not.toContain('data-text-shimmer=""');
 
-    // Settled, the status has done its job and the rail keeps the steps.
+    // Settled, the status has done its job: every thought folds to its dim
+    // line in place (none vanish above the reader), and the steps stay.
     const settled = renderToStaticMarkup(
       <TranscriptBlocks entries={entries} />,
     );
     expect(settled).not.toContain('data-reasoning=""');
+    expect(settled.match(/data-reasoning="quiet"/g)).toHaveLength(2);
+    expect(settled.indexOf("Reading the current state")).toBeLessThan(
+      settled.indexOf('data-eid="tool#sec"'),
+    );
     expect(settled).toContain('data-eid="tool-2#sec"');
 
     setThinkingMessagesPref("none");

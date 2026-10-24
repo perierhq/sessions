@@ -40,25 +40,28 @@ export function isThinkingEntry(entry: TranscriptEntry): boolean {
  * step happened.
  *
  * - none: no thinking rows.
- * - latest: every thought of a live turn stays in place (the rail folds all
- *   but the newest to one dim line, see quietEarlierThoughts); a settled turn
- *   shows none.
+ * - latest: every thought stays in place. A live rail folds all but the
+ *   newest to one dim line; a settled one folds them all (see quietThoughts),
+ *   so nothing the reader passed vanishes when the turn ends.
  * - all: the trace. Every thought stays in transcript order, in full.
  */
 export function arrangeThinkingMessages(
   work: TranscriptEntry[],
   mode: ThinkingMessagesPref,
-  live: boolean,
 ): TranscriptEntry[] {
-  if (mode === "all" || (mode === "latest" && live)) return work;
+  if (mode !== "none") return work;
   return work.filter((entry) => !isThinkingEntry(entry));
 }
 
-/** Whether a rail laid out by arrangeThinkingMessages folds its earlier
- * thoughts, keeping only the newest one open. */
-export function quietsEarlierThoughts(
+/** Which thoughts a rail laid out by arrangeThinkingMessages folds to one dim
+ * line: none, all but the newest (a live "latest" rail), or every one (a
+ * settled "latest" rail). */
+export type QuietThoughts = "none" | "earlier" | "all";
+
+export function quietThoughts(
   mode: ThinkingMessagesPref,
   live: boolean,
-): boolean {
-  return mode === "latest" && live;
+): QuietThoughts {
+  if (mode !== "latest") return "none";
+  return live ? "earlier" : "all";
 }
