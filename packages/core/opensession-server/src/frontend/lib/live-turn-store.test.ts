@@ -244,6 +244,25 @@ describe("LiveTurnStore", () => {
     store.clear();
   });
 
+  test("never shows a whitespace-only block, which no durable row replaces", async () => {
+    const store = new LiveTurnStore();
+    store.start(undefined, "run-blank");
+    store.append("\n\n", "msg-1-b1", "text");
+    await Bun.sleep(50);
+    expect(store.getSnapshot().blocks).toEqual([]);
+    expect(store.hasText()).toBe(false);
+    store.append("Checking the config.", "msg-1-b2", "reasoning");
+    store.finish();
+    expect(store.getSnapshot().blocks.map((block) => block.key)).toEqual([
+      "msg-1-b2",
+    ]);
+    // The thought lands; nothing is left in the bubble.
+    store.land([{ id: "msg-1-b2", content: "Checking the config." }]);
+    expect(store.getSnapshot().blocks).toEqual([]);
+    expect(store.getSnapshot().text).toBe("");
+    store.clear();
+  });
+
   test("holds an early tool card under the live text it follows", async () => {
     const store = new LiveTurnStore();
     store.start(undefined, "run-13");

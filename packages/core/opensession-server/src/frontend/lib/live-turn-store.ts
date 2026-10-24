@@ -369,15 +369,18 @@ export class LiveTurnStore {
     const out: Array<{ key: string; kind: StreamTextKind; text: string }> = [];
     const anonText = this.anon.text;
     if (anonText) out.push({ key: ANON, kind: "text", text: anonText });
+    // A named block that is only whitespace so far is not shown: the engine
+    // writes no durable row for one, so nothing would ever replace it.
     for (const block of this.blocks)
-      if (block.text)
+      if (block.text.trim())
         out.push({ key: block.id, kind: block.kind, text: block.text });
     return out;
   }
 
+  /** Everything the bubble may show, in display order (see segments). */
   private heldText(): string {
-    let out = this.anon.text;
-    for (const block of this.blocks) out += block.text;
+    let out = "";
+    for (const segment of this.segments()) out += segment.text;
     return out;
   }
 
