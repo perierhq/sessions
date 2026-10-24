@@ -6,6 +6,7 @@ import {
 } from "../../../shared/project-settings-fixtures";
 import type { AccessCellView } from "../../../shared/project-settings";
 import {
+  applyIncidentsPatch,
   PROJECT_SECTIONS,
   applyCellChange,
   rowSummary,
@@ -281,5 +282,24 @@ describe("optimistic cells", () => {
     expect(rowSummary(find(READY_4_OF_6, "Linear"))).toBe("4 of 5 roles");
     expect(rowSummary(find(READY_4_OF_6, "Sentry"))).toBe("Every role");
     expect(rowSummary(find(READY_4_OF_6, "Grafana"))).toBe("1 of 5 roles");
+  });
+});
+
+describe("applyIncidentsPatch", () => {
+  test("lays scalar fields over the stored policy and clears the night rule", () => {
+    const night = { start: "23:00", end: "07:00", timeZone: "UTC" };
+    const base = {
+      ...READY_4_OF_6,
+      document: {
+        ...READY_4_OF_6.document,
+        incidents: { ...READY_4_OF_6.document.incidents, night },
+      },
+    };
+    const paused = applyIncidentsPatch(base, { agentsPaused: true });
+    expect(paused.document.incidents.agentsPaused).toBe(true);
+    expect(paused.document.incidents.night).toEqual(night);
+    const cleared = applyIncidentsPatch(base, { night: null });
+    expect(cleared.document.incidents.night).toBeUndefined();
+    expect(base.document.incidents.night).toEqual(night);
   });
 });

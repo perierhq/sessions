@@ -118,6 +118,10 @@ const { AccessSection } = await import("./AccessSection");
 const { AccessRoleList } = await import("./AccessRoleList");
 const { AccessTable } = await import("./AccessTable");
 const { ProductionSection } = await import("./ProductionSection");
+const { IncidentsSection } = await import("./IncidentsSection");
+const { nextCellValue } = await import(
+  "../../../lib/project-settings/page-model"
+);
 
 const LINEAR_REVIEWS: AccessCellChange = {
   row: { kind: "connection", server: "linear" },
@@ -249,6 +253,57 @@ describe("saving a cell", () => {
       { message: "Only a signed-in person can change this", variant: "error" },
     ]);
     expect(refetches).toBe(1);
+  });
+});
+
+const linearRow = (view: ProjectSettingsView) =>
+  view.access.groups.flatMap((g) => g.rows).find((r) => r.title === "Linear")!;
+
+describe("saves waiting their turn", () => {
+  test("a second change paints at once, before the first save answers", async () => {
+    let release: (v: ProjectSettingsView) => void = () => {};
+    const first = new Promise<ProjectSettingsView>((r) => (release = r));
+    respondLater = () => first;
+    const page = mountPage();
+    clickCell(page.output());
+    // The same cell again, worked out from what the page now shows.
+    page.update({ project: "acme-web", onOpenSection: () => {} });
+    const view = find(page.output(), AccessSection)!.props.view;
+    const again = nextCellValue(
+      LINEAR_REVIEWS.row,
+      "reviews",
+      linearRow(view).cells.reviews,
+    );
+    expect(again?.value).not.toBe(LINEAR_REVIEWS.value);
+    find(page.output(), AccessSection)!.props.onCellChange(again!);
+    await settle(10);
+    // Painted back, though only the first save has been sent.
+    expect(patches).toHaveLength(1);
+    expect(linearRow(cached).cells.reviews.value).toBe("yes");
+    release(at(5));
+    await settle(40);
+    expect(patches).toHaveLength(2);
+    expect(patches[1]).toEqual({
+      expectedRevision: 5,
+      access: { cells: [again] },
+    });
+  });
+
+  test("the waiting change stays painted over the first answer", async () => {
+    let release: (v: ProjectSettingsView) => void = () => {};
+    const first = new Promise<ProjectSettingsView>((r) => (release = r));
+    let calls = 0;
+    respondLater = () => (calls++ === 0 ? first : new Promise(() => {}));
+    const page = mountPage();
+    clickCell(page.output());
+    const pause = find(page.output(), IncidentsSection)!;
+    void pause.props.onSave({ incidents: { agentsPaused: true } });
+    await settle(10);
+    expect(cached.document.incidents.agentsPaused).toBe(true);
+    release(at(5));
+    await settle(20);
+    expect(cached.document.revision).toBe(5);
+    expect(cached.document.incidents.agentsPaused).toBe(true);
   });
 });
 

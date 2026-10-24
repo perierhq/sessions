@@ -30,6 +30,7 @@ import {
 import {
   PROJECT_SECTIONS,
   applyCellChange,
+  applyIncidentsPatch,
   sectionAnchorId,
   type ProjectSectionId,
 } from "../../../lib/project-settings/page-model";
@@ -103,39 +104,70 @@ export function ProjectSettingsPage({
     scrollToProjectSection(id);
   };
 
-  const send = async (body: ProjectPatchBody, optimistic?: Optimistic) => {
+  // Changes painted on click but not yet confirmed, oldest first. Each
+  // server answer is painted over with the ones still waiting, so a queued
+  // change shows at once and never flickers back while it waits its turn.
+  const waiting = useRef<Optimistic[]>([]);
+  const paint = (base: ProjectSettingsView) =>
+    waiting.current.reduce((view, change) => change(view), base);
+  const done = (change: Optimistic) => {
+    waiting.current = waiting.current.filter((c) => c !== change);
+  };
+
+  const send = async (body: ProjectPatchBody, change: Optimistic) => {
+    // The revision the last save left in the cache (painting never
+    // changes it).
     let revision: number | null = null;
     await settings.mutate(
       (current) => {
-        if (!current) return current;
-        revision = current.document.revision;
-        return optimistic ? optimistic(current) : current;
+        if (current) revision = current.document.revision;
+        return current;
       },
       { revalidate: false },
     );
-    if (revision === null) throw new Error("Settings haven't loaded yet");
+    if (revision === null) {
+      done(change);
+      throw new Error("Settings haven't loaded yet");
+    }
     try {
       const next = await sendProjectPatch(body, revision, {
         send: (patch) => patchProjectSettings(project, patch),
         refetch: () => settings.mutate(),
         onRetry: async (fresh) => {
           toast(STALE_SETTINGS_MESSAGE);
-          if (optimistic)
-            await settings.mutate(optimistic(fresh), { revalidate: false });
+          await settings.mutate(paint(fresh), { revalidate: false });
         },
       });
-      await settings.mutate(next, { revalidate: false });
+      done(change);
+      await settings.mutate(paint(next), { revalidate: false });
       revalidateProjects(projectSWRKey.projectSettings(project));
     } catch (error) {
-      // A stale revision has already been refetched.
-      if (!isStaleRevision(error)) void settings.mutate();
+      done(change);
+      // A stale revision has already been refetched; anything else loads
+      // the stored settings again. Either way the waiting changes stay.
+      if (isStaleRevision(error))
+        void settings.mutate((current) => current && paint(current), {
+          revalidate: false,
+        });
+      else
+        void settings.mutate().then((fresh) => {
+          if (fresh && waiting.current.length)
+            void settings.mutate(paint(fresh), { revalidate: false });
+        });
       throw error;
     }
   };
 
-  /** Save, rejecting with the server's reason (dialogs show it). */
+  /** Save, rejecting with the server's reason (dialogs show it). The
+   *  change paints now; the request waits for the saves before it. */
   const save = (body: ProjectPatchBody, optimistic?: Optimistic) => {
-    const run = queue.current.then(() => send(body, optimistic));
+    const change: Optimistic = optimistic ?? ((view) => view);
+    waiting.current = [...waiting.current, change];
+    if (optimistic)
+      void settings.mutate((current) => current && optimistic(current), {
+        revalidate: false,
+      });
+    const run = queue.current.then(() => send(body, change));
     queue.current = run.catch(() => {});
     return run;
   };
@@ -194,7 +226,9 @@ export function ProjectSettingsPage({
       case "allow-agents":
         return allowAgents(next.server);
       case "unpause":
-        return saveNow({ incidents: { agentsPaused: false } });
+        return saveNow({ incidents: { agentsPaused: false } }, (v) =>
+          applyIncidentsPatch(v, { agentsPaused: false }),
+        );
     }
   };
 
@@ -318,7 +352,12 @@ export function ProjectSettingsPage({
             view={view}
             addSignal={addSignal}
             onAddSignalClose={() => setAddSignal(null)}
-            onSave={(b) => save(b)}
+            onSave={(b) =>
+              save(
+                b,
+                b.incidents && ((v) => applyIncidentsPatch(v, b.incidents!)),
+              )
+            }
           />
         </Section>
       </>

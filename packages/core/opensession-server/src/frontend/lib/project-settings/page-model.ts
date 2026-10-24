@@ -16,6 +16,8 @@ import {
   type AccessTableView,
   type EffectiveSandbox,
   type ProjectReadiness,
+  type ProjectSettingsPatch,
+  type ProjectSettingsView,
   type ReadinessFix,
   type ReadinessStep,
   type RunPlace,
@@ -307,6 +309,19 @@ export function applyCellChange<
     ),
   }));
   return { ...view, access: { ...view.access, groups } };
+}
+
+/** The view with an incident policy patch laid over it, for the paint
+ *  before the server answers. `night: null` clears the night rule. */
+export function applyIncidentsPatch(
+  view: ProjectSettingsView,
+  patch: NonNullable<ProjectSettingsPatch["incidents"]>,
+): ProjectSettingsView {
+  const { night, ...rest } = patch;
+  const incidents = { ...view.document.incidents, ...rest };
+  if (night === null) delete incidents.night;
+  else if (night) incidents.night = night;
+  return { ...view, document: { ...view.document, incidents } };
 }
 
 /** "4 of 5 roles": how many roles a row is on for, You included. */
