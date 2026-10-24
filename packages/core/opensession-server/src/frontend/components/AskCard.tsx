@@ -94,15 +94,18 @@ const HIDE_WHEN_INERT = "[&[hidden]]:hidden";
  *    beats the UA's `[hidden]` rule. `[&[hidden]]:hidden` is a class plus an
  *    attribute, so it wins back.
  *
- * A lone single-select question still answers on the first click — that is the
- * hot path (96% of recorded asks are one question) and it stays one
- * interaction, not select-then-send.
+ * Picking is never sending. A click on an option, or its letter, only selects
+ * it, on a lone question exactly as on a stepped one: the pick can still be
+ * changed, or replaced by a typed answer, before anything leaves. Sending is
+ * always a second, deliberate act: the Answer button, Enter on the picked row
+ * or in the field, or Cmd/Ctrl+Enter. A single click that answered on the
+ * spot made a slip of the pointer an answer the agent had already acted on.
  *
  * The letters are the keyboard's click. The primitive answers to A, B, C…
  * only while the form holds focus, but a question lands while you are reading
  * the transcript or sitting in the composer, so the card also listens on the
  * window: a bare letter from anywhere that is not a text field picks that
- * option, and on a lone single-select it sends, exactly as a click would. The
+ * option and moves focus to its row, so Enter sends it from there. The
  * composer is the one place the letters cannot reach (they are typing there),
  * so the `ask-focus` chord brings the keyboard to the card instead.
  */
@@ -125,13 +128,6 @@ export function AskCard({
   // this only mirrors that so a letter from outside the form resolves against
   // the question on screen rather than the first one.
   const [activeName, setActiveName] = React.useState(itemName(0));
-  // Only a pointer answers on the spot through the change handler. Arrow keys
-  // pick by calling click() on the radio, which is indistinguishable from a
-  // real click by the time the change lands — so a keyboard user browsing the
-  // options with ArrowDown would send the first one they touched. A pointer
-  // press always precedes its change; a synthesised click never does. (The
-  // letters are the other deliberate pick, and take their own path below.)
-  const pointerPick = React.useRef(false);
 
   // Mirrors what we render below. Handing the collection to the root is what
   // gets item order and answer shortcuts into the first paint, rather than
@@ -162,8 +158,6 @@ export function AskCard({
   ) {
     if (submitted) return;
     const name = itemName(index);
-    const byPointer = pointerPick.current;
-    pointerPick.current = false;
 
     if (q.multiSelect) {
       setPicks((prev) => {
@@ -178,15 +172,10 @@ export function AskCard({
       return;
     }
 
-    // One single-select question is the common ask: clicking IS answering.
-    if (lone && byPointer) {
-      answerLone(q, label);
-      return;
-    }
-
-    // Otherwise a pick replaces the pick and clears anything typed: the
-    // field says "Or type your own answer…", and the primitive treats the
-    // two as one answer slot.
+    // A pick replaces the pick and clears anything typed: the field says
+    // "Or type your own answer…", and the primitive treats the two as one
+    // answer slot. It never sends, not even on a lone question: that waits
+    // for Answer or Enter (see handleSubmit).
     setPicks((prev) => ({ ...prev, [name]: [label] }));
     setCustom((prev) => ({ ...prev, [name]: "" }));
   }
@@ -216,17 +205,11 @@ export function AskCard({
   // validation, so a keyboard user gets the spoken error rather than silence.
   const allAnswered = questions.every((_, i) => answerFor(i) !== "");
 
-  function answerLone(q: AskQuestion, label: string) {
-    setPicks({ [itemName(0)]: [label] });
-    setSubmitted(true);
-    onAnswer({ [q.question]: label });
-  }
-
   /**
-   * Answer a letter the way a click on that row would: a lone single-select
-   * sends, anything else picks (or toggles) and moves focus to the row so
-   * Enter and the arrows carry on from there. False when the letter names
-   * nothing on the current question, so the keystroke stays the browser's.
+   * Answer a letter the way a click on that row would: pick it (or toggle it,
+   * on a multi-select) and move focus to the row, so Enter sends from there
+   * and the arrows carry on. False when the letter names nothing on the
+   * current question, so the keystroke stays the browser's.
    */
   function pressLetter(letter: string): boolean {
     if (submitted) return false;
@@ -235,18 +218,17 @@ export function AskCard({
     if (!q) return false;
     const option = askOptionForLetter(q, letter);
     if (!option) return false;
-    if (lone && !q.multiSelect) {
-      answerLone(q, option.label);
-      return true;
-    }
-    const input = Array.from(
+    const picked = (picks[itemName(index)] ?? []).includes(option.label);
+    // Set through the same path a click takes rather than by clicking the
+    // radio: the choices are controlled, so the primitive follows `checked`.
+    choose(index, q, option.label, q.multiSelect ? !picked : true);
+    Array.from(
       itemRefs.current[index]?.querySelectorAll<HTMLInputElement>(
         "input[type=radio], input[type=checkbox]",
       ) ?? [],
-    ).find((el) => el.value === option.label);
-    if (!input) return false;
-    input.focus();
-    input.click();
+    )
+      .find((el) => el.value === option.label)
+      ?.focus();
     return true;
   }
 
@@ -422,9 +404,6 @@ export function AskCard({
                   key={opt.label}
                   value={opt.label}
                   checked={active}
-                  onPointerDown={() => {
-                    pointerPick.current = true;
-                  }}
                   onChange={(e) => choose(i, q, opt.label, e.target.checked)}
                   // No hairline: the row's own surface against the card is the
                   // edge. And a pick doesn't tint the row — the filled
