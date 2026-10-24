@@ -121,7 +121,8 @@ describe("descendant workspace", () => {
         descendantBashRunAs(
           {
             ...descendant,
-            incident: forged as unknown as AutomationDescendantPolicy["incident"],
+            incident:
+              forged as unknown as AutomationDescendantPolicy["incident"],
           },
           { sandbox: "podman" },
           ISOLATION,

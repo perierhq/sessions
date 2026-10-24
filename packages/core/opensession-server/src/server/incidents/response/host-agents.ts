@@ -1,10 +1,10 @@
 // Where an incident agent works: the project's sandbox, else This machine
 // (container) when it is Ready. The host path is experimental and off by
 // default: only with OPENSESSION_INCIDENT_HOST_AGENTS=1, and only when the
-// container sandbox is not Ready, may an agent work in an ordinary worktree on this
-// server, its shell commands run as a separate low-privilege system user
-// (the incident agent user) that can write the worktrees but cannot read the
-// Sessions state directory, and only when that user is set up
+// container sandbox is not Ready, may an agent work in an ordinary worktree
+// on this server, its shell commands run as a separate low-privilege system
+// user (the incident agent user) that can write the worktrees but cannot
+// read the Sessions state directory, and only when that user is set up
 // (docs/incident-host-agents.md). Otherwise the agent does not start.
 //
 // The readiness probe runs only when called, never at import, and every
@@ -225,7 +225,10 @@ export async function hostAgentUserProblem(
 
 /** Whether This machine (container) is qualified and Ready, and a session
  *  for `project` on `model` could be created in it now. */
-export function podmanReadyForIncident(project: string, model: string): boolean {
+export function podmanReadyForIncident(
+  project: string,
+  model: string,
+): boolean {
   return (
     sandboxConnectionReady("podman") &&
     resolveRequestedSandbox("podman", project, model).ok
