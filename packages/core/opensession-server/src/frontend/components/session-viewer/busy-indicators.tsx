@@ -8,6 +8,7 @@ import { PulseDot } from "../../ui/status";
 import { cn } from "../../ui/cn";
 import { TextShimmer } from "../../ui/text-shimmer";
 import { busyActivityStatus } from "../../lib/busy-activity";
+import { livePhaseStatus, type LivePhase } from "../../lib/live-phase";
 import { msgActivityShimmer, msgRow } from "../../lib/msg-classes";
 import { TRANSCRIPT_SYNC_SPOT } from "../../lib/session-viewer-classes";
 import type { LiveTurnStore } from "../../lib/live-turn-store";
@@ -212,6 +213,51 @@ function BusyStopping({ since }: { since: number }) {
 
 const getFalse = () => false;
 
+/**
+ * The tail's words while the server reports phases: "Thinking" only while a
+ * model request is open, the running tool and its time while one runs. The
+ * ticker re-renders this node alone.
+ */
+function BusyPhase({ phase }: { phase: LivePhase }) {
+  const [now, setNow] = useState(() => Date.now());
+  const ticking = phase.phase === "tool";
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ticking, phase.since]);
+  const status = livePhaseStatus(phase, now);
+  if (!status) {
+    return <span className="text-meta font-medium text-dim">Working</span>;
+  }
+  return (
+    <>
+      <span role="status" aria-live="polite" className="inline-flex min-w-0">
+        {status.shimmer ? (
+          <TextShimmer
+            className={cn("text-meta font-medium", msgActivityShimmer)}
+          >
+            {status.label}
+          </TextShimmer>
+        ) : (
+          <span className="min-w-0 truncate text-meta font-medium text-dim">
+            {status.label}
+          </span>
+        )}
+      </span>
+      {status.elapsed && (
+        <span
+          aria-hidden="true"
+          className="shrink-0 text-meta text-faint tabular-nums"
+        >
+          · {status.elapsed}
+        </span>
+      )}
+    </>
+  );
+}
+
 export function BusyInline({
   since,
   stoppingSince,
@@ -229,12 +275,26 @@ export function BusyInline({
     liveTurnStore.hasPaintedText,
     getFalse,
   );
-  // Once words are visible, the stream itself and its caret are the progress
-  // indicator. Keeping a second status row under a growing answer makes every
-  // line wrap relocate that row, and under reduced motion those relocations are
-  // intentionally instant. Collapse it once instead; stopping always remains
-  // explicit even when streamed text is still present.
-  const shown = !hasPaintedText || stoppingSince != null;
+  const phase = useSyncExternalStore(
+    liveTurnStore.subscribe,
+    liveTurnStore.getPhase,
+    liveTurnStore.getPhase,
+  );
+  const tailKind = useSyncExternalStore(
+    liveTurnStore.subscribe,
+    liveTurnStore.getTailKind,
+    liveTurnStore.getTailKind,
+  );
+  // While an answer is being typed, the words and their caret are the
+  // progress indicator. Keeping a second status row under a growing answer
+  // makes every line wrap relocate that row, and under reduced motion those
+  // relocations are intentionally instant. With phases known the row returns
+  // for everything else (thinking, a running tool); without them it retires
+  // once words have been painted, as before. Stopping always stays explicit.
+  const writing = phase
+    ? phase.phase === "model" && tailKind === "text"
+    : hasPaintedText;
+  const shown = !writing || stoppingSince != null;
   return (
     <motion.div
       initial={reducedMotion ? false : { height: 0, opacity: 0 }}
@@ -266,6 +326,8 @@ export function BusyInline({
         </span>
         {stoppingSince != null ? (
           <BusyStopping since={stoppingSince} />
+        ) : phase ? (
+          <BusyPhase phase={phase} />
         ) : (
           <BusyWorking since={since} />
         )}

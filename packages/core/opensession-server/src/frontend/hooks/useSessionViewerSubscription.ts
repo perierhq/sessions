@@ -622,10 +622,25 @@ export function useSessionViewerSubscription({
           // is what filled the transcript before streaming existed. Read per
           // frame rather than captured, so a toggle takes on the running turn.
           if (!getLiveTypingPref()) break;
-          liveTurnStore.append(msg.text, msg.blockId);
+          liveTurnStore.append(msg.text, msg.blockId, msg.kind);
           break;
         }
+        case "stream_phase":
+          liveTurnStore.setPhase({
+            phase: msg.phase,
+            since: msg.since,
+            tool: msg.tool,
+            toolCount: msg.toolCount,
+          });
+          break;
         case "stream_tool_use":
+          // An early card follows the live text of its own message, which is
+          // still in the bubble below the transcript; merging it now would
+          // show the call above the thought that led to it.
+          if (liveTurnStore.holdTool(msg.entry, msg.inputPending === true))
+            break;
+          transcriptViewStore.merge([msg.entry]);
+          break;
         case "stream_tool_result":
           transcriptViewStore.merge([msg.entry]);
           break;

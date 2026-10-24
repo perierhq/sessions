@@ -347,12 +347,26 @@ export function DeskConversation({
           setPending(null);
           break;
         case "stream_text":
-          // Live typing is per viewer (Settings > Preferences), default off;
+          // Live typing is per viewer (Settings > Preferences), default on;
           // with it off the reply appears as each block's durable entry lands.
           if (!isTimelineOnlyRunnerNotice(msg.text) && getLiveTypingPref())
-            liveTurnStore.append(msg.text, msg.blockId);
+            liveTurnStore.append(msg.text, msg.blockId, msg.kind);
+          break;
+        case "stream_phase":
+          liveTurnStore.setPhase({
+            phase: msg.phase,
+            since: msg.since,
+            tool: msg.tool,
+            toolCount: msg.toolCount,
+          });
           break;
         case "stream_tool_use":
+          // An early card waits under the live text it follows (see
+          // LiveTurnStore.holdTool) instead of jumping above it.
+          if (liveTurnStore.holdTool(msg.entry, msg.inputPending === true))
+            break;
+          setEntries((prev) => mergeTranscriptEntries(prev, [msg.entry]));
+          break;
         case "stream_tool_result":
           setEntries((prev) => mergeTranscriptEntries(prev, [msg.entry]));
           break;
