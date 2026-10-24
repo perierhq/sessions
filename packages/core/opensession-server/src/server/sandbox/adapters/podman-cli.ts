@@ -392,7 +392,8 @@ function positiveInt(value: number, what: string): string {
  * it starts). No host mounts, no capabilities, no new privileges, the
  * default seccomp profile and SELinux type, a read-only rootfs and the
  * session volume (nosuid, nodev) as the only writable disk. No restart policy: a restart
- * outside the firewall sequence would start it unfiltered.
+ * outside the firewall sequence would start it unfiltered. `--memory-swap`
+ * (memory plus swap) equals `--memory`, so the limit grants no swap.
  */
 export function workloadCreateArgs(o: {
   names: PodmanNames;
