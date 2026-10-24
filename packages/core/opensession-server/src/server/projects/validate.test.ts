@@ -135,3 +135,17 @@ test("a document keeps its whole-record rules", () => {
     }),
   ).toBe("Pick a different model for the verifier");
 });
+
+test("an incident agent's egress is a route or off", () => {
+  const doc = defaultProjectDocument("acme-web", "2026-10-01T00:00:00Z");
+  doc.access.routes.verifier = null;
+  expect(documentInvariantProblem(doc)).toBeNull();
+  doc.access.routes.investigator = { route: "runner" } as never;
+  expect(documentInvariantProblem(doc)).toBe(
+    "Egress for the investigator: a Runner route needs the Runner",
+  );
+  doc.access.routes.investigator = { route: "anywhere" } as never;
+  expect(documentInvariantProblem(doc)).toBe(
+    'Egress for the investigator: unknown route "anywhere"',
+  );
+});

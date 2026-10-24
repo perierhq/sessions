@@ -4,6 +4,7 @@ import {
   defaultRoleProfile,
   type IncidentAccessSettings,
 } from "../../shared/incident-access";
+import { accessSettingsFromDocument } from "../incidents/access/settings-store";
 import { canonicalModelId } from "../incidents/response/models";
 import { composeFromLegacy, type LegacySources } from "./legacy";
 
@@ -336,6 +337,31 @@ test("signal exceptions keep only what the access table allows", () => {
     ["access.signalExceptions.sig-2.verifier.egress", "runner:rn-prod"],
   ])
     expect(report.dropped).toContainEqual({ field, item, why });
+});
+
+test("a role without egress keeps no egress", () => {
+  const { document, report } = composeFromLegacy(
+    "acme-web",
+    sources({
+      access: legacyAccess((s) => {
+        s.profiles.verifier = { ...s.profiles.verifier, egress: null };
+      }),
+    }),
+    NOW,
+  );
+  expect(document.access.routes).toEqual({
+    investigator: { route: "server" },
+    verifier: null,
+  });
+  expect(report.dropped.map((d) => d.field)).not.toContain("access.routes");
+  const projected = accessSettingsFromDocument(document);
+  expect(projected.profiles.verifier.egress).toBeNull();
+  expect(projected.profiles.investigator.egress).toMatchObject({
+    route: "server",
+  });
+  expect(projected.grants.egress).toEqual([
+    { route: "server", hosts: ["api.example.test"] },
+  ]);
 });
 
 test("unreadable access composes the default access", () => {

@@ -292,7 +292,11 @@ function migrateAccess(
   // profile's own hosts, else those of the matching project route).
   for (const role of roles) {
     const egress = profiles[role].egress;
-    if (!egress) continue;
+    if (!egress) {
+      // No egress before the upgrade stays no egress.
+      access.routes[role] = null;
+      continue;
+    }
     const { hosts: own, ...route } = egress;
     access.routes[role] = route as EgressRoute;
     const grantRoute = grants.egress.find(

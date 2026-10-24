@@ -88,10 +88,13 @@ export function accessSettingsFromDocument(
         return mode ? [{ credential: c.credential, mode }] : [];
       }),
       model: null,
-      egress: {
-        ...access.routes[role],
-        ...(websites.length ? { hosts: websites } : {}),
-      } as EgressGrant,
+      egress:
+        access.routes[role] === null
+          ? null
+          : ({
+              ...access.routes[role],
+              ...(websites.length ? { hosts: websites } : {}),
+            } as EgressGrant),
     };
   };
   const profiles = {
@@ -103,6 +106,7 @@ export function accessSettingsFromDocument(
   const egress: EgressGrant[] = [];
   for (const role of INCIDENT_AGENT_ROLES) {
     const route = access.routes[role];
+    if (route === null) continue;
     const hosts = profiles[role].egress?.hosts ?? [];
     const grant = egress.find(
       (g) => egressRouteKey(g) === egressRouteKey(route),

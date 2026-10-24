@@ -896,3 +896,13 @@ test("a signal exception never exceeds the access table", async () => {
   const a = await resolveAgentAccess("investigator", incident(), signal);
   expect(a).toMatchObject({ overrideApplied: true, connections: ["logs"] });
 });
+
+test("egress off in the access table resolves to no egress", async () => {
+  await setProjectAccessForTest("acme", (access) => {
+    access.routes.investigator = null;
+  });
+  const a = await resolveAgentAccess("investigator", incident(), signal);
+  expect(a.egress).toBeNull();
+  const v = await resolveAgentAccess("verifier", incident(), signal);
+  expect(v.egress).toMatchObject({ route: "server" });
+});

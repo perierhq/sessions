@@ -564,5 +564,30 @@ export function documentInvariantProblem(
     return "Pick a different model for the verifier";
   if ((d.access.webSearch as string[]).includes("verifier"))
     return "The verifier never searches the web";
+  for (const role of ["investigator", "verifier"] as const) {
+    const problem = egressRouteProblem(d.access.routes[role]);
+    if (problem) return `Egress for the ${role}: ${problem}`;
+  }
   return null;
+}
+
+/** Why a stored egress route is malformed: null (no egress) or one of
+ *  server, a Runner by id, or a proxy URL. */
+export function egressRouteProblem(route: unknown): string | null {
+  if (route === null) return null;
+  if (!isRecord(route)) return "must be a route or off (null)";
+  switch (route.route) {
+    case "server":
+      return null;
+    case "runner":
+      return typeof route.runner === "string" && route.runner.trim()
+        ? null
+        : "a Runner route needs the Runner";
+    case "proxy":
+      return typeof route.url === "string" && route.url.trim()
+        ? null
+        : "a proxy route needs its URL";
+    default:
+      return `unknown route ${JSON.stringify(route.route)}`;
+  }
 }

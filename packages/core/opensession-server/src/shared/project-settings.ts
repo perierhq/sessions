@@ -141,7 +141,8 @@ export interface ProjectAccess {
   hosts: ProjectHostRow[];
   websites: Array<{ host: string; roles: UnattendedRole[] }>;
   webSearch: WebSearchRole[];
-  routes: Record<IncidentRole, EgressRoute>;
+  /** How each incident agent reaches the web; null means no egress. */
+  routes: Record<IncidentRole, EgressRoute | null>;
   deniedTools: Record<IncidentRole, string[]>;
   signalExceptions: ProjectSignalException[];
 }
