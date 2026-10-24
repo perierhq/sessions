@@ -447,7 +447,7 @@ export function ProductionHostsList({
 }
 
 /** Add or edit one action. Save sends the project's whole list. */
-function ActionDialog({
+export function ActionDialog({
   open,
   onClose,
   action,

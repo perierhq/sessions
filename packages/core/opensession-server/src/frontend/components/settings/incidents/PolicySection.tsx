@@ -44,7 +44,32 @@ import { SettingRow } from "../shared";
 import { SettingLinkRow } from "./SettingLinkRow";
 import { SettingsDialog } from "./SettingsDialog";
 
-type Save = (input: ProjectSettingsInput) => Promise<void>;
+/** The policy fields this section shows: a project's incident settings,
+ *  or the incident policy in its project settings document. */
+export type PolicyValue = Pick<
+  RedactedProjectSettings,
+  | "agentsPaused"
+  | "autonomy"
+  | "vetoMs"
+  | "watchMs"
+  | "maxRounds"
+  | "night"
+  | "neverWithoutYou"
+  | "budget"
+>;
+/** The policy fields this section writes. */
+export type PolicyInput = Pick<
+  ProjectSettingsInput,
+  | "agentsPaused"
+  | "autonomy"
+  | "vetoMs"
+  | "watchMs"
+  | "maxRounds"
+  | "neverWithoutYou"
+  | "budget"
+  | "night"
+>;
+type Save = (input: PolicyInput) => Promise<void>;
 type DialogKind = "night" | "never" | "per-incident" | "per-month";
 
 const PER_INCIDENT_MAX = 1000;
@@ -52,7 +77,7 @@ const PER_MONTH_MAX = 100_000;
 
 /** Saves a one-control change at once; a refusal is a toast, and the
  *  control falls back to the stored value. */
-function saveNow(onSave: Save, input: ProjectSettingsInput) {
+function saveNow(onSave: Save, input: PolicyInput) {
   onSave(input).catch((error) =>
     toast(errorMessage(error, "Couldn't save the setting"), {
       variant: "error",
@@ -70,11 +95,20 @@ export function PolicySection({
   settings,
   spend,
   onSave,
+  showPause = true,
+  autonomyLabel = "Autonomy",
+  monthDescription,
 }: {
   project: string;
-  settings: RedactedProjectSettings;
+  settings: PolicyValue;
   spend?: ProjectSpend;
   onSave: Save;
+  /** Off when the page shows the pause switch elsewhere. */
+  showPause?: boolean;
+  /** The label over the autonomy rows. */
+  autonomyLabel?: string;
+  /** The per month row's description, in place of the default. */
+  monthDescription?: string;
 }) {
   const label = repoLabel(project);
   const [dialog, setDialog] = useState<DialogKind | null>(null);
@@ -111,21 +145,23 @@ export function PolicySection({
 
   return (
     <>
-      <SettingCard className="mt-2">
-        <SettingRow
-          title="Pause all agents"
-          desc={`Stops every incident run for ${label} right now. Signals keep running`}
-          control={
-            <Switch
-              checked={settings.agentsPaused}
-              onCheckedChange={setPaused}
-              aria-label="Pause all agents"
-            />
-          }
-        />
-      </SettingCard>
+      {showPause && (
+        <SettingCard className="mt-2">
+          <SettingRow
+            title="Pause all agents"
+            desc={`Stops every incident run for ${label} right now. Signals keep running`}
+            control={
+              <Switch
+                checked={settings.agentsPaused}
+                onCheckedChange={setPaused}
+                aria-label="Pause all agents"
+              />
+            }
+          />
+        </SettingCard>
+      )}
 
-      <SettingsGroupLabel>Autonomy</SettingsGroupLabel>
+      <SettingsGroupLabel>{autonomyLabel}</SettingsGroupLabel>
       <SettingCard>
         <SettingRow
           title="What agents may do without you"
@@ -218,9 +254,10 @@ export function PolicySection({
         <SettingLinkRow
           title="Per month"
           description={
-            spend
+            monthDescription ??
+            (spend
               ? `Across every incident in ${label}. Spent this month: ${formatUsd(spend.monthUsd)}`
-              : `Across every incident in ${label}`
+              : `Across every incident in ${label}`)
           }
           value={formatUsd(settings.budget.perMonthUsd, { whole: true })}
           onClick={() => open("per-month")}
@@ -258,7 +295,7 @@ export function PolicySection({
 function useDialogSave(onSave: Save, onClose: () => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const save = (input: ProjectSettingsInput) => {
+  const save = (input: PolicyInput) => {
     setBusy(true);
     setError(null);
     onSave(input).then(

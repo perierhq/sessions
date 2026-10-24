@@ -7,6 +7,8 @@ import {
 import type { AccessCellView } from "../../../shared/project-settings";
 import {
   PROJECT_SECTIONS,
+  applyCellChange,
+  rowSummary,
   cellLabel,
   cellSpokenLabel,
   checklistModel,
@@ -224,5 +226,60 @@ describe("chips and copy", () => {
       "access",
       "incidents",
     ]);
+  });
+});
+
+describe("optimistic cells", () => {
+  const find = (view: typeof READY_4_OF_6, title: string) =>
+    view.access.groups.flatMap((g) => g.rows).find((r) => r.title === title)!;
+
+  test("unticking Linear for reviews reads – before the server answers", () => {
+    const next = applyCellChange(READY_4_OF_6, {
+      row: { kind: "connection", server: "linear" },
+      role: "reviews",
+      value: false,
+    });
+    expect(find(next, "Linear").cells.reviews.value).toBe("no");
+    expect(find(READY_4_OF_6, "Linear").cells.reviews.value).toBe("yes");
+    expect(find(next, "Sentry").cells.reviews.value).toBe("yes");
+  });
+
+  test("ticking a blocked connector stays blocked", () => {
+    const off = applyCellChange(READY_4_OF_6, {
+      row: { kind: "connection", server: "grafana" },
+      role: "reviews",
+      value: false,
+    });
+    const on = applyCellChange(off, {
+      row: { kind: "connection", server: "grafana" },
+      role: "reviews",
+      value: true,
+    });
+    expect(find(on, "Grafana").cells.reviews.value).toBe("blocked");
+  });
+
+  test("mode and credential values map to their cells", () => {
+    const code = applyCellChange(READY_4_OF_6, {
+      row: { kind: "mode" },
+      role: "verifier",
+      value: "code",
+    });
+    expect(find(code, "Changes code in acme-web").cells.verifier.value).toBe(
+      "branch",
+    );
+    const always = applyCellChange(READY_4_OF_6, {
+      row: { kind: "credential", credential: "cred-cloudflare" },
+      role: "investigator",
+      value: "standing",
+    });
+    expect(find(always, "Cloudflare token").cells.investigator.value).toBe(
+      "standing",
+    );
+  });
+
+  test("rowSummary counts the roles a row is on for", () => {
+    expect(rowSummary(find(READY_4_OF_6, "Linear"))).toBe("4 of 5 roles");
+    expect(rowSummary(find(READY_4_OF_6, "Sentry"))).toBe("Every role");
+    expect(rowSummary(find(READY_4_OF_6, "Grafana"))).toBe("1 of 5 roles");
   });
 });
