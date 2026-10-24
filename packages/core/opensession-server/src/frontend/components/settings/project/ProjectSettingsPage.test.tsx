@@ -11,7 +11,16 @@ import {
 } from "../../../../shared/project-settings-fixtures";
 
 let current: ProjectSettingsView = READY_4_OF_6;
+const revalidations: Array<readonly unknown[] | undefined> = [];
 mock.module("../../../hooks/useProjects", () => ({
+  projectSWRKey: {
+    projects: () => ["api", "projects"],
+    projectSettings: (project: string) => ["api", "project-settings", project],
+    projectDefaults: () => ["api", "project-defaults"],
+  },
+  revalidateProjects: (except?: readonly unknown[]) => {
+    revalidations.push(except);
+  },
   useProjectSettings: () => ({
     data: current,
     error: undefined,

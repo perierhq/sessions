@@ -68,7 +68,16 @@ const mutate = async (next?: ProjectSettingsView | Updater) => {
   } else cached = next;
   return cached;
 };
+const revalidations: Array<readonly unknown[] | undefined> = [];
 mock.module("../../../hooks/useProjects", () => ({
+  projectSWRKey: {
+    projects: () => ["api", "projects"],
+    projectSettings: (project: string) => ["api", "project-settings", project],
+    projectDefaults: () => ["api", "project-defaults"],
+  },
+  revalidateProjects: (except?: readonly unknown[]) => {
+    revalidations.push(except);
+  },
   useProjectSettings: () => ({ data: cached, error: undefined, mutate }),
   useProjectDefaults: () => ({
     data: DEFAULTS_VIEW,
@@ -129,6 +138,7 @@ beforeEach(() => {
   phone = false;
   respond = () => onServer;
   respondLater = null;
+  revalidations.length = 0;
 });
 afterEach(() => harness.unmountAll());
 
@@ -158,6 +168,14 @@ describe("saving a cell", () => {
     ]);
     expect(cached.document.revision).toBe(5);
     expect(toasts).toEqual([]);
+  });
+
+  test("a saved cell refreshes the project list, other pages and defaults", async () => {
+    respond = () => at(5);
+    const page = mountPage();
+    clickCell(page.output());
+    await settle(40);
+    expect(revalidations).toEqual([["api", "project-settings", "acme-web"]]);
   });
 
   test("the cell reads – before the server answers", async () => {

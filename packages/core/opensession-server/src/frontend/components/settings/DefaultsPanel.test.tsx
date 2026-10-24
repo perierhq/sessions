@@ -34,7 +34,16 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
 let view: ProjectDefaultsView = DEFAULTS_VIEW;
 const mutations: Array<ProjectDefaultsView | undefined> = [];
+const revalidations: Array<readonly unknown[] | undefined> = [];
 mock.module("../../hooks/useProjects", () => ({
+  projectSWRKey: {
+    projects: () => ["api", "projects"],
+    projectSettings: (project: string) => ["api", "project-settings", project],
+    projectDefaults: () => ["api", "project-defaults"],
+  },
+  revalidateProjects: (except?: readonly unknown[]) => {
+    revalidations.push(except);
+  },
   useProjectDefaults: () => ({
     data: view,
     error: undefined,
@@ -131,6 +140,7 @@ beforeEach(() => {
   toasts.length = 0;
   opened.length = 0;
   patchError = null;
+  revalidations.length = 0;
 });
 afterEach(() => harness.unmountAll());
 
@@ -179,6 +189,13 @@ test("changing a role's model saves just that role", async () => {
   select.onChange("pi/openai/gpt-5.5");
   await settle();
   expect(patches).toEqual([{ models: { automations: "pi/openai/gpt-5.5" } }]);
+});
+
+test("a saved default refreshes every project page and the list", async () => {
+  const tree = await mountPanel();
+  selectByLabel(tree, "Previews").onChange("daytona");
+  await settle();
+  expect(revalidations).toEqual([["api", "project-defaults"]]);
 });
 
 test("a failed save says why and reloads", async () => {
@@ -292,11 +309,14 @@ test("New session reads Ready providers only through readySandboxProviders", asy
   expect(source).not.toContain('connection.state === "ready"');
   expect(source).not.toContain("p.configured && p.certified");
   expect(source.match(/readySandboxProviders\(sandboxStatus\)/g)).toHaveLength(
-    2,
+    1,
   );
   // There is no personal default any more: the menu marks the project's
-  // sandbox, else the global default.
+  // sandbox, else the global default, and preselects the same value
+  // (lib/project-settings/defaults-model.test.ts).
   expect(source).toContain("newSessionSandboxDefault(sandboxStatus, repo)");
+  expect(source).toContain("newSessionSandboxPreselect(sandboxStatus, repo)");
+  expect(source).not.toContain("defaults?.repos?.[repo]");
   expect(source).not.toContain("defaults?.effective");
 });
 

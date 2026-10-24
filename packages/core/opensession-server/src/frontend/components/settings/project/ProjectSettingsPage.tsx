@@ -7,6 +7,8 @@ import type {
 } from "../../../../shared/project-settings";
 import { useIsPhone } from "../../../hooks/useIsPhone";
 import {
+  projectSWRKey,
+  revalidateProjects,
   useProjectDefaults,
   useProjectSettings,
 } from "../../../hooks/useProjects";
@@ -116,6 +118,7 @@ export function ProjectSettingsPage({
         },
       });
       await settings.mutate(next, { revalidate: false });
+      revalidateProjects(projectSWRKey.projectSettings(project));
     } catch (error) {
       // A stale revision has already been refetched.
       if (!isStaleRevision(error)) void settings.mutate();
@@ -149,7 +152,7 @@ export function ProjectSettingsPage({
         allowAgentsOnConnector(server).then(
           () => {
             toast(`Agents can open ${server}`);
-            void settings.mutate();
+            revalidateProjects();
           },
           (error) => toast(saveErrorText(error), { variant: "error" }),
         ),
@@ -219,7 +222,7 @@ export function ProjectSettingsPage({
                 className="phone:min-h-11"
                 onClick={() =>
                   migrateProjects({ dryRun: false }).then(
-                    () => void settings.mutate(),
+                    () => revalidateProjects(),
                     (error) =>
                       toast(saveErrorText(error), { variant: "error" }),
                   )
@@ -239,10 +242,7 @@ export function ProjectSettingsPage({
               hasGlobalDefault={
                 defaults.data ? defaults.data.sandbox !== "none" : true
               }
-              onConnected={() => {
-                void settings.mutate();
-                void defaults.mutate();
-              }}
+              onConnected={() => revalidateProjects()}
             />
           }
         />
@@ -277,8 +277,11 @@ export function ProjectSettingsPage({
             dialog={production}
             onDialog={setProduction}
             onSave={(b) => save(b)}
-            onView={(next) => void settings.mutate(next, { revalidate: false })}
-            onRevalidate={() => void settings.mutate()}
+            onView={(next) => {
+              void settings.mutate(next, { revalidate: false });
+              revalidateProjects(projectSWRKey.projectSettings(project));
+            }}
+            onRevalidate={() => revalidateProjects()}
           />
         </Section>
         <Section

@@ -1,7 +1,11 @@
 // SWR hooks for per-project settings and the global defaults. Reads
 // revalidate on focus and reconnect; a write's response is the new view,
 // so callers pass it to `mutate` instead of refetching.
-import useSWR, { type Arguments, type SWRResponse } from "swr";
+import useSWR, {
+  type Arguments,
+  mutate as revalidateApiResources,
+  type SWRResponse,
+} from "swr";
 import {
   fetchProjectDefaults,
   fetchProjects,
@@ -29,6 +33,25 @@ export function isProjectKey(key: Arguments): boolean {
     Array.isArray(key) &&
     key[0] === "api" &&
     String(key[1] ?? "").startsWith("project")
+  );
+}
+
+/**
+ * Revalidate every project resource after a write: the project list (the
+ * nav and Defaults status phrases), open project pages (effective sandbox
+ * and model labels, readiness) and the defaults. `except` is the key the
+ * write's own response was just cached under.
+ */
+export function revalidateProjects(except?: readonly unknown[]): void {
+  void revalidateApiResources(
+    (key: Arguments) =>
+      isProjectKey(key) &&
+      !(
+        except &&
+        Array.isArray(key) &&
+        key.length === except.length &&
+        key.every((part, i) => part === except[i])
+      ),
   );
 }
 

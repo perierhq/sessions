@@ -1,5 +1,6 @@
 import type { ProjectSettingsView } from "../../../../shared/project-settings";
 import { useSignals } from "../../../hooks/useIncidents";
+import { revalidateProjects } from "../../../hooks/useProjects";
 import type { ProductionRunnerView } from "../../../lib/api/incidents";
 import { errorMessage } from "../../../lib/error-message";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
@@ -85,7 +86,11 @@ export function IncidentsSection({
           }
         />
       </SettingCard>
-      <SignalsSection project={project} runners={runners} />
+      <SignalsSection
+        project={project}
+        runners={runners}
+        onSaved={() => revalidateProjects()}
+      />
       <PolicySection
         project={project}
         settings={incidents}
@@ -103,7 +108,10 @@ export function IncidentsSection({
           signal={null}
           runners={runners}
           signals={signals.data ?? []}
-          onSaved={() => void signals.mutate()}
+          onSaved={() => {
+            void signals.mutate();
+            revalidateProjects();
+          }}
         />
       )}
     </>

@@ -7,7 +7,11 @@ import {
   type ProjectDefaultsView,
   type ProjectRole,
 } from "../../../shared/project-settings";
-import { useProjectDefaults } from "../../hooks/useProjects";
+import {
+  projectSWRKey,
+  revalidateProjects,
+  useProjectDefaults,
+} from "../../hooks/useProjects";
 import { fetchModels, fetchSandboxStatus } from "../../lib/api/automations";
 import { ApiError, patchProjectDefaults } from "../../lib/api/projects";
 import { errorMessage } from "../../lib/error-message";
@@ -106,7 +110,12 @@ export function DefaultsPanel({
     if (!view) return;
     void defaults.mutate(applyPatch(view, patch), { revalidate: false });
     await patchProjectDefaults(patch)
-      .then((next) => defaults.mutate(next, { revalidate: false }))
+      .then((next) => {
+        void defaults.mutate(next, { revalidate: false });
+        // Project pages show the effective sandbox and models, and the
+        // nav shows each project's status.
+        revalidateProjects(projectSWRKey.projectDefaults());
+      })
       .catch((error) => {
         toast(
           error instanceof ApiError && error.status === 403
