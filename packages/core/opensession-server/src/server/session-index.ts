@@ -25,6 +25,7 @@ import {
   sessionKernel,
   type DurableTimer,
 } from "./session-kernel";
+import { TRANSCRIPT_ACTOR_MAX_READ_LIMIT } from "./session-kernel/transcript-protocol";
 import { callSearchIndex } from "./session-search-client";
 import type { SearchHit, SearchRecord } from "./session-search-store";
 import { transcriptIndexRows } from "./transcript-text-index";
@@ -282,7 +283,8 @@ async function boundedIndexEntries(
   return mergedSessionTranscriptAsync(session);
 }
 
-const TRANSCRIPT_PAGE = 500;
+/** One `changes_since` actor read; the actor refuses a larger limit. */
+const TRANSCRIPT_PAGE = TRANSCRIPT_ACTOR_MAX_READ_LIMIT;
 /** Changes one firing applies; a longer backlog continues next turn. */
 const TRANSCRIPT_MAX_CHANGES = 50_000;
 
