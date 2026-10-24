@@ -37,16 +37,12 @@ import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
 import { type AccessRunnerInfo, loadAccessEnvironment } from "./environment";
 import {
-  checkWithinGrants,
   egressHostProblem,
   mergeProfile,
   roleLockProblem,
   runsPosixShell,
 } from "./fields";
-import {
-  AccessSettingsError,
-  getIncidentAccessSettings,
-} from "./settings-store";
+import { AccessSettingsError, getIncidentAccess } from "./settings-store";
 
 export class AgentAccessError extends Error {
   constructor(
@@ -84,6 +80,10 @@ export const INCIDENT_DENIED_MESSAGE =
 export const VERIFIER_WEB_SEARCH_MESSAGE =
   "The verifier judges the evidence in front of it and does not search or read the web.";
 
+/** A role the project's access table does not let search the web. */
+export const WEB_SEARCH_OFF_MESSAGE =
+  "Web search is off for this agent in the project's access settings.";
+
 export interface ResolveOptions {
   /** Settings to resolve against (a draft or a test); default: stored. */
   settings?: IncidentAccessSettings;
@@ -91,6 +91,9 @@ export interface ResolveOptions {
   gates?: boolean;
   /** Audit narrowings (default on). */
   audit?: boolean;
+  /** Whether the role may search the web (default: stored settings, else
+   *  yes; the verifier never does). */
+  webSearch?: boolean;
 }
 
 const ROLE_LABEL: Record<IncidentAgentRole, string> = {
@@ -227,12 +230,14 @@ function auditNarrowing(
   });
 }
 
-async function settingsFor(
-  incident: Incident,
-): Promise<{ settings: IncidentAccessSettings; defaults: boolean }> {
+async function settingsFor(incident: Incident): Promise<{
+  settings: IncidentAccessSettings;
+  defaults: boolean;
+  webSearch: Record<IncidentAgentRole, boolean>;
+}> {
   try {
-    const view = await getIncidentAccessSettings(incident.project);
-    return { settings: view, defaults: view.isDefault };
+    const { view, webSearch } = await getIncidentAccess(incident.project);
+    return { settings: view, defaults: view.isDefault, webSearch };
   } catch (error) {
     if (error instanceof AccessSettingsError)
       throw new AgentAccessError(error.message, "settings");
@@ -267,9 +272,11 @@ export async function resolveAgentAccess(
       if (reason) throw new AgentAccessError(reason, "gate");
     }
 
-  const { settings, defaults } = opts.settings
-    ? { settings: opts.settings, defaults: false }
-    : await settingsFor(incident);
+  const stored = opts.settings ? undefined : await settingsFor(incident);
+  const settings = opts.settings ?? stored!.settings;
+  const defaults = stored?.defaults ?? false;
+  const webSearch =
+    role !== "verifier" && (opts.webSearch ?? stored?.webSearch[role] ?? true);
   const override =
     signal && signal.project === incident.project
       ? settings.overrides.find(
@@ -277,12 +284,11 @@ export async function resolveAgentAccess(
         )
       : undefined;
   const profile = mergeProfile(settings.profiles[role], override?.fields);
-  const violation =
-    checkWithinGrants(profile, settings.grants) ??
-    roleLockProblem(role, profile);
+  // The access table is the ceiling now: only the role locks remain.
+  const violation = roleLockProblem(role, profile);
   if (violation)
     throw new AgentAccessError(
-      `Access settings for ${incident.project} exceed their grants: ${violation}`,
+      `Access settings for ${incident.project} break a role rule: ${violation}`,
       "settings",
     );
 
@@ -310,25 +316,8 @@ export async function resolveAgentAccess(
     return false;
   });
 
-  const runners = profile.runners.filter((id) => {
-    const info = env.runner(id);
-    const reason = !info
-      ? "Runner was removed"
-      : info.reserved
-        ? "Runner is reserved for incidents"
-        : !info.isolated
-          ? "Runner is no longer isolated"
-          : info.userRestricted
-            ? "Runner now only accepts named people"
-            : info.maintenance
-              ? "Runner is in maintenance"
-              : info.allowedRepos.length &&
-                  !info.allowedRepos.some((r) => repos.includes(r))
-                ? "Runner does not serve these repos"
-                : null;
-    if (reason) narrow("runners", id, reason);
-    return !reason;
-  });
+  // Agents never ran on Runners through access; the field stays empty.
+  const runners: string[] = [];
 
   // A Runner that runs host commands or egress for this agent.
   const commandRunnerProblem = (
@@ -400,11 +389,8 @@ export async function resolveAgentAccess(
     });
   }
 
-  let model: string | null = null;
-  if (profile.model) {
-    model = env.model(profile.model);
-    if (!model) narrow("model", profile.model, "Model is no longer available");
-  }
+  // Models come from the project's roles (resolveProjectRoleModels).
+  const model: string | null = null;
 
   let egress: ResolvedEgress | null = null;
   if (profile.egress) {
@@ -459,7 +445,7 @@ export async function resolveAgentAccess(
   if (role === "verifier") {
     deniedTools.web_search = VERIFIER_WEB_SEARCH_MESSAGE;
     deniedTools.web_fetch = VERIFIER_WEB_SEARCH_MESSAGE;
-  }
+  } else if (!webSearch) deniedTools.web_search = WEB_SEARCH_OFF_MESSAGE;
 
   const base = {
     incidentId: incident.id,

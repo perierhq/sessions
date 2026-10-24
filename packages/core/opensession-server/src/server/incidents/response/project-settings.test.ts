@@ -90,10 +90,15 @@ test("a full update, with action defaults and a hook secret", async () => {
     `/incident-releases/acme/${s.releaseHookSecret}`,
   );
   expect(kit.audits.at(-1)).toEqual({
-    kind: "incident_settings_updated",
+    kind: "project_settings_updated",
     project: "acme",
     by: "Ada",
-    fields: ["actions", "autonomy", "night", "productionRunners"],
+    fields: [
+      "incidents.autonomy",
+      "incidents.night",
+      "production.actions",
+      "production.runners",
+    ],
   });
   expect(s).toMatchObject({ updatedBy: "Ada" });
   expect(peekProjectSettings("acme")?.autonomy).toBe("propose");
@@ -264,10 +269,10 @@ test("only a signed-in person changes actions and production Runners", async () 
     forbidden: true,
   });
   expect(kit.audits.at(-1)).toEqual({
-    kind: "incident_settings_refused",
+    kind: "project_settings_refused",
     project: "acme",
     by: "agent",
-    fields: ["productionRunners"],
+    fields: ["production.runners"],
   });
   expect((await getProjectSettings("acme")).autonomy).toBe("deploy-after-veto");
   const other = await updateProjectSettings(
@@ -320,10 +325,10 @@ test("only a signed-in person loosens the policy; anyone may tighten it", async 
       forbidden: true,
     });
     expect(kit.audits.at(-1)).toEqual({
-      kind: "incident_settings_refused",
+      kind: "project_settings_refused",
       project: "acme",
       by: "agent",
-      fields: [field],
+      fields: [`incidents.${field}`],
     });
   }
   const strict = await getProjectSettings("acme");

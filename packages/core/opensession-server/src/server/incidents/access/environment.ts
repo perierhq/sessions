@@ -96,12 +96,14 @@ export function connectionStatusFrom(
   )
     return "internal";
   if (!Object.hasOwn(servers, name)) return "missing";
-  const entry = servers[name] as { allowedUsers?: unknown } | null;
-  if (
-    requiresAllowedUsers(name) ||
-    (Array.isArray(entry?.allowedUsers) && entry.allowedUsers.length > 0)
-  )
-    return "user-gated";
+  const entry = servers[name] as {
+    allowedUsers?: unknown;
+    allowUnattended?: unknown;
+  } | null;
+  if (requiresAllowedUsers(name)) return "user-gated";
+  if (Array.isArray(entry?.allowedUsers) && entry.allowedUsers.length > 0)
+    // "Allow agents" lets runs without a user use it.
+    return entry.allowUnattended === true ? "ok" : "user-gated";
   return "ok";
 }
 

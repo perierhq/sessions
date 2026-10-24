@@ -195,11 +195,8 @@ test("the sandbox is resolved for the project and model", async () => {
       return { ok: true, provider: "box" };
     },
     hostProblem: async () => null,
-    automationUser: "Incidents · acme",
   });
-  expect(seen).toEqual([
-    [undefined, "Incidents · acme", "acme", "pi/openai/gpt-6.1-sol"],
-  ]);
+  expect(seen).toEqual([["acme", "pi/openai/gpt-6.1-sol"]]);
 });
 
 test("the probe refuses a user that can read the state directory", async () => {

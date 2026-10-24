@@ -138,11 +138,17 @@ function hostProblemIn(env: AccessEnvironment, ref: string): string | null {
   return null;
 }
 
-async function context(): Promise<ProjectStoreContext> {
+/** The validation context. The access environment (connections, Runners,
+ *  keychain) is loaded only when the write touches the access table. */
+async function context(needEnv = true): Promise<ProjectStoreContext> {
   const o = contextOverride ?? {};
-  const env = ENV_KEYS.every((k) => o[k])
-    ? undefined
-    : await loadAccessEnvironment();
+  const env =
+    !needEnv || ENV_KEYS.every((k) => o[k])
+      ? undefined
+      : await loadAccessEnvironment();
+  const noEnv = (): never => {
+    throw new Error("The access environment was not loaded");
+  };
   return {
     projectExists:
       o.projectExists ?? ((id) => Object.hasOwn(configuredRepos(), id)),
@@ -153,13 +159,16 @@ async function context(): Promise<ProjectStoreContext> {
     connectionExists:
       o.connectionExists ??
       ((name) => {
-        const status = env!.connection(name);
+        const status = (env ?? noEnv()).connection(name);
         return status === "ok" || status === "user-gated";
       }),
-    credential: o.credential ?? ((id) => env!.credential(id)),
-    isOwner: o.isOwner ?? ((login, owner) => env!.isOwner(login, owner)),
-    ownerRoster: o.ownerRoster ?? ((owner) => env!.ownerRoster(owner)),
-    hostProblem: o.hostProblem ?? ((runner) => hostProblemIn(env!, runner)),
+    credential: o.credential ?? ((id) => (env ?? noEnv()).credential(id)),
+    isOwner:
+      o.isOwner ?? ((login, owner) => (env ?? noEnv()).isOwner(login, owner)),
+    ownerRoster:
+      o.ownerRoster ?? ((owner) => (env ?? noEnv()).ownerRoster(owner)),
+    hostProblem:
+      o.hostProblem ?? ((runner) => hostProblemIn(env ?? noEnv(), runner)),
   };
 }
 
@@ -890,7 +899,7 @@ export async function updateProjectDocument(
   patch: ProjectSettingsPatch,
   actor: ProjectActor,
 ): Promise<ProjectSettingsDocument | ProjectWriteError> {
-  const ctx = await context();
+  const ctx = await context(isRecord(patch) && patch.access !== undefined);
   if (!ctx.projectExists(project))
     return { error: `Unknown project ${project}`, status: 404 };
   if (!validPatchShape(patch))

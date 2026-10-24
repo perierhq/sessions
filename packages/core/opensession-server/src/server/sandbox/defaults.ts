@@ -1,17 +1,15 @@
-/** Workspace + personal defaults for new interactive sandbox sessions. */
+/** Workspace and project defaults for new interactive sandbox sessions. The
+ *  personal default is gone: a session's own choice beats the project's,
+ *  which beats the workspace's (projects/effective.ts). */
 
-import { getUiPrefs, patchUiPrefs } from "../ui-prefs";
 import type { SandboxProviderId } from "./provider";
 import {
   RUNNABLE_SANDBOX_PROVIDERS,
   type RunnableSandboxProviderId,
-  repoSandboxDefault,
-  resolveRequestedSandbox,
   sandboxConfig,
   sandboxProviderCertified,
   sandboxProviderConfigured,
   setRepoPortalSandbox,
-  setRepoSandboxDefault,
   setWorkspaceSandboxDefault,
 } from "./config";
 import {
@@ -21,22 +19,19 @@ import {
 } from "./connections";
 
 export type WorkspaceSandboxDefault = RunnableSandboxProviderId | "none";
-export type PersonalSandboxDefault = WorkspaceSandboxDefault | "workspace";
 
 export interface SandboxDefaultsStatus {
   workspace: WorkspaceSandboxDefault;
-  personal: PersonalSandboxDefault;
   /** What a new session starts in, for `repo` when one was named. */
   effective: WorkspaceSandboxDefault;
-  /** Per-repo overrides; a repo absent here follows workspace and personal. */
+  /** Per-repo overrides (the project settings' sandbox); a repo absent here
+   *  follows the workspace default. */
   repos: Record<string, WorkspaceSandboxDefault>;
   /** Repos whose Portals run in a Sandbox of their own for sessions on this
    * machine (repo id → provider); a repo absent here runs them beside the
    * session. */
   portals: Record<string, RunnableSandboxProviderId>;
 }
-
-const PERSONAL_PREF_KEY = "sandbox-default";
 
 function runnable(value: unknown): value is RunnableSandboxProviderId {
   return (
@@ -50,21 +45,28 @@ export function workspaceSandboxDefault(): WorkspaceSandboxDefault {
   return runnable(value) ? value : "none";
 }
 
-export function personalSandboxDefault(user: string): PersonalSandboxDefault {
-  const value = getUiPrefs(user || "Anonymous")[PERSONAL_PREF_KEY];
-  if (value === "none" || value === "workspace" || runnable(value))
-    return value;
-  return "workspace";
-}
-
-export function repoSandboxDefaults(): Record<string, WorkspaceSandboxDefault> {
+/** The project documents' own sandbox choices, as workspace-style values. */
+async function projectSandboxDefaults(): Promise<
+  Record<string, WorkspaceSandboxDefault>
+> {
+  const { listProjectDocuments } = await import("../projects/store");
   const out: Record<string, WorkspaceSandboxDefault> = {};
-  for (const [repoId, override] of Object.entries(
-    sandboxConfig().perRepo || {},
-  )) {
-    if (override.sessionDefault) out[repoId] = override.sessionDefault;
+  for (const doc of await listProjectDocuments()) {
+    if (doc.sandbox === "local") out[doc.project] = "none";
+    else if (runnable(doc.sandbox)) out[doc.project] = doc.sandbox;
   }
   return out;
+}
+
+/** A project's own sandbox choice, or null when it follows the default. */
+async function projectSandboxDefault(
+  repoId: string | undefined,
+): Promise<WorkspaceSandboxDefault | null> {
+  if (!repoId) return null;
+  const { getProjectDocument } = await import("../projects/store");
+  const doc = await getProjectDocument(repoId);
+  if (doc.sandbox === "local") return "none";
+  return runnable(doc.sandbox) ? doc.sandbox : null;
 }
 
 export function repoPortalSandboxes(): Record<
@@ -80,35 +82,29 @@ export function repoPortalSandboxes(): Record<
   return out;
 }
 
-export function sandboxDefaultsStatus(
-  user: string,
+export async function sandboxDefaultsStatus(
   repoId?: string,
-): SandboxDefaultsStatus {
+): Promise<SandboxDefaultsStatus> {
   const workspace = workspaceSandboxDefault();
-  const personal = personalSandboxDefault(user);
+  const [repos, project] = await Promise.all([
+    projectSandboxDefaults(),
+    projectSandboxDefault(repoId),
+  ]);
   return {
     workspace,
-    personal,
-    effective: effectiveSandboxDefault(
-      workspace,
-      personal,
-      repoSandboxDefault(repoId),
-    ),
-    repos: repoSandboxDefaults(),
+    effective: effectiveSandboxDefault(workspace, project),
+    repos,
     portals: repoPortalSandboxes(),
   };
 }
 
-/** Precedence: the repo's own default, then the person's, then the
- * workspace's. A repo that should always run in a Sandbox therefore does,
- * whatever a person set for themselves; only a per-session choice beats it. */
+/** Precedence: the project's own default, then the workspace's. Only a
+ *  per-session choice beats it. */
 export function effectiveSandboxDefault(
   workspace: WorkspaceSandboxDefault,
-  personal: PersonalSandboxDefault,
-  repo?: WorkspaceSandboxDefault | null,
+  project?: WorkspaceSandboxDefault | null,
 ): WorkspaceSandboxDefault {
-  if (repo) return repo;
-  return personal === "workspace" ? workspace : personal;
+  return project ?? workspace;
 }
 
 function assertAvailable(
@@ -127,65 +123,67 @@ function assertAvailable(
   }
 }
 
-export function saveWorkspaceSandboxDefault(
+export async function saveWorkspaceSandboxDefault(
   value: string,
-): SandboxDefaultsStatus {
+): Promise<SandboxDefaultsStatus> {
   const normalized = value.trim().toLowerCase();
   if (normalized !== "none") assertAvailable(normalized);
   setWorkspaceSandboxDefault(normalized);
-  return sandboxDefaultsStatus("Anonymous");
+  return sandboxDefaultsStatus();
 }
 
-export function saveRepoSandboxDefault(
+/** Writes the project settings' sandbox ("workspace" follows the default,
+ *  "none" is this machine). */
+export async function saveRepoSandboxDefault(
   repoId: string,
   value: string,
-): SandboxDefaultsStatus {
+  by = "Anonymous",
+): Promise<SandboxDefaultsStatus> {
   const normalized = value.trim().toLowerCase();
   if (normalized !== "workspace" && normalized !== "none")
     assertAvailable(normalized);
-  setRepoSandboxDefault(repoId, normalized);
-  return sandboxDefaultsStatus("Anonymous", repoId);
+  const sandbox =
+    normalized === "workspace"
+      ? "default"
+      : normalized === "none"
+        ? "local"
+        : normalized;
+  const { getProjectDocument, updateProjectDocument } = await import(
+    "../projects/store"
+  );
+  const { revision } = await getProjectDocument(repoId);
+  const out = await updateProjectDocument(
+    repoId,
+    { expectedRevision: revision, sandbox },
+    { name: by, verified: false },
+  );
+  if ("error" in out) throw new Error(out.error);
+  return sandboxDefaultsStatus(repoId);
 }
 
 /** `none` runs the repo's Portals beside the session again. */
-export function saveRepoPortalSandbox(
+export async function saveRepoPortalSandbox(
   repoId: string,
   value: string,
-): SandboxDefaultsStatus {
+): Promise<SandboxDefaultsStatus> {
   const normalized = value.trim().toLowerCase();
   if (normalized !== "none") assertAvailable(normalized);
   setRepoPortalSandbox(repoId, normalized);
-  return sandboxDefaultsStatus("Anonymous", repoId);
-}
-
-export function savePersonalSandboxDefault(
-  user: string,
-  value: string,
-): SandboxDefaultsStatus {
-  const normalized = value.trim().toLowerCase();
-  if (normalized !== "workspace" && normalized !== "none")
-    assertAvailable(normalized);
-  patchUiPrefs(user || "Anonymous", { [PERSONAL_PREF_KEY]: normalized });
-  return sandboxDefaultsStatus(user || "Anonymous");
+  return sandboxDefaultsStatus(repoId);
 }
 
 /** Apply defaults only when a caller omitted `sandbox`. false/""/"local"
- * remain explicit Host choices, preserving per-session overrides. */
-export function resolveInteractiveSandbox(
+ * remain explicit Host choices, preserving per-session overrides. The
+ * person who asked no longer matters: the personal default is gone. */
+export async function resolveInteractiveSandbox(
   requested: boolean | string | undefined | null,
-  user: string | undefined | null,
+  _user: string | undefined | null,
   repoId?: string,
   model?: string | null,
-):
+): Promise<
   | { ok: true; provider: SandboxProviderId | null }
-  | { ok: false; error: string } {
-  if (requested !== undefined && requested !== null) {
-    return resolveRequestedSandbox(requested, repoId, model);
-  }
-  const selected = sandboxDefaultsStatus(user || "Anonymous", repoId).effective;
-  return resolveRequestedSandbox(
-    selected === "none" ? "local" : selected,
-    repoId,
-    model,
-  );
+  | { ok: false; error: string }
+> {
+  const { resolveSessionSandbox } = await import("../projects/effective");
+  return resolveSessionSandbox(requested, repoId, model, "interactive");
 }

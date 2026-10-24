@@ -15,6 +15,7 @@ import {
   pickerModelId,
 } from "../../model-catalog";
 import { resolveModel, selectableModels } from "../../models";
+import { globalRoleDefault } from "../../projects/global-defaults";
 
 export interface RoleModel {
   model: string;
@@ -134,8 +135,8 @@ export function chooseRoleModels(
   };
 }
 
-/** Role models from the project settings and the configured providers.
- *  `override` is where plan 3's `AgentAccess.model` lands. */
+/** Role models: the project's own (`agents`), else the role's global
+ *  default (Defaults page), else chosen from the configured providers. */
 export function resolveRoleModels(
   agents: IncidentProjectSettings["agents"],
   override?: { investigator?: string; verifier?: string },
@@ -145,11 +146,27 @@ export function resolveRoleModels(
   const candidates = selectableModels();
   const configuredProviders = configuredModelProviders();
   const preferred = automationModel();
+  const investigatorModel = normalize(
+    override?.investigator ??
+      agents.investigatorModel ??
+      globalRoleDefault("investigator"),
+  );
+  let verifierModel = normalize(
+    override?.verifier ?? agents.verifierModel ?? globalRoleDefault("verifier"),
+  );
+  // A global verifier default equal to the investigator's model would not
+  // verify anything: choose an independent one instead.
+  if (
+    verifierModel &&
+    investigatorModel &&
+    !override?.verifier &&
+    !agents.verifierModel &&
+    sameModel(verifierModel, investigatorModel)
+  )
+    verifierModel = undefined;
   return chooseRoleModels({
-    investigatorModel: normalize(
-      override?.investigator ?? agents.investigatorModel,
-    ),
-    verifierModel: normalize(override?.verifier ?? agents.verifierModel),
+    investigatorModel,
+    verifierModel,
     candidates,
     configuredProviders,
     defaultModel: chooseConfiguredDefaultModel(
@@ -159,4 +176,17 @@ export function resolveRoleModels(
     ),
     providerOf: modelUpstreamProvider,
   });
+}
+
+/** The project's role models, read from its settings document. */
+export async function resolveProjectRoleModels(
+  project: string,
+): Promise<RoleModels | { error: string }> {
+  const { getProjectDocument } = await import("../../projects/store");
+  const doc = await getProjectDocument(project);
+  const agents: IncidentProjectSettings["agents"] = {};
+  if (doc.models.investigator)
+    agents.investigatorModel = doc.models.investigator;
+  if (doc.models.verifier) agents.verifierModel = doc.models.verifier;
+  return resolveRoleModels(agents);
 }
