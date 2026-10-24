@@ -35,6 +35,7 @@ import {
 } from "../../shared/project-settings";
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
+import { legacyInputsGeneration } from "./legacy-inputs";
 import { incidentAudit } from "../incidents/audit-sink";
 import {
   type AccessCredentialInfo,
@@ -271,20 +272,13 @@ export function __clearProjectDocumentCacheForTest(): void {
 /** How long what an unmigrated project's legacy settings compose to is
  *  reused while those settings are unchanged. Composing reads the
  *  automations, the connectors and the web search setting, too much for
- *  every session start. A change to the project's legacy records
- *  recomposes at once. */
+ *  every session start. A change to the project's legacy records, or a
+ *  write to a shared input (legacy-inputs.ts), recomposes at once. */
 const COMPOSED_TTL_MS = 30_000;
 const composed = new Map<
   string,
   { at: number; stamp: string; doc: Promise<ProjectSettingsDocument> }
 >();
-
-/** Drop what the legacy settings composed to: for `project`, or for every
- *  project when a shared input (automations, connectors) changed. */
-export function invalidateComposedProjectDocument(project?: string): void {
-  if (project === undefined) composed.clear();
-  else composed.delete(project);
-}
 
 async function composedFallback(
   project: string,
@@ -294,7 +288,12 @@ async function composedFallback(
     legacy.legacyProjectDocuments().get(project),
     legacy.legacyAccessDocuments().get(project),
   ]);
-  const stamp = JSON.stringify([incidentProject, access]);
+  // A write to a shared input (legacy-inputs.ts) changes the stamp too.
+  const stamp = JSON.stringify([
+    incidentProject,
+    access,
+    legacyInputsGeneration(),
+  ]);
   const now = Date.now();
   const hit = composed.get(project);
   if (hit && hit.stamp === stamp && now - hit.at < COMPOSED_TTL_MS)

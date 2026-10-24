@@ -29,6 +29,7 @@ import {
 } from "./adapter-signature";
 import type { SandboxProviderId, SandboxProviderUsability } from "./provider";
 import { readJsonFileCopy } from "../shared/json-file-cache";
+import { legacyInputsChanged } from "../projects/legacy-inputs";
 
 // Env-overridable so the verify suite (and unit tests) can point a scratch
 // config at a scratch setup without touching the live file (which is read
@@ -638,6 +639,7 @@ export function setRepoSandboxDefault(
     if (Object.keys(perRepo).length) raw.perRepo = perRepo;
     else delete raw.perRepo;
   });
+  legacyInputsChanged();
   return normalized === "workspace"
     ? null
     : (normalized as RunnableSandboxProviderId | "none");

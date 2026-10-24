@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { patchUiPrefs } from "../ui-prefs";
+import { writeWebSearchSetting } from "../web-search-setting";
 import {
   __setEffectiveDepsForTest,
   type EffectiveDeps,
@@ -228,6 +232,15 @@ test("an unmigrated project's composed settings are reused, not recomposed per s
   for (let i = 0; i < 3; i++)
     await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive");
   expect(composed).toBe(1);
+  // A write to a shared input (here web search) recomposes at once.
+  const dir = mkdtempSync(join(tmpdir(), "web-search-"));
+  try {
+    await writeWebSearchSetting("off", join(dir, "web-search.json"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive");
+  expect(composed).toBe(2);
   // The first write stores the project's own document.
   await setSandbox("podman");
   expect(

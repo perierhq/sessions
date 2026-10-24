@@ -11,6 +11,7 @@ import {
   unwatchFile,
   watchFile,
 } from "fs";
+import { legacyInputsChanged } from "./projects/legacy-inputs";
 import { writeFileAtomic } from "./shared/atomic-write";
 import { configuredPaths } from "./config";
 import { resolveTeammate } from "./shared/user-mappings";
@@ -175,6 +176,7 @@ function writeMcpConfig(config: { mcpServers: Record<string, any> }): void {
     copyFileSync(configPath, `${configPath}.bak`);
   } catch {}
   writeFileAtomic(configPath, JSON.stringify(config, null, 2) + "\n");
+  legacyInputsChanged();
   cachedMcpConfig = config;
   cachedMcpConfigPath = configPath;
   cache = null;

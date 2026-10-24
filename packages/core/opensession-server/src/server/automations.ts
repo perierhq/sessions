@@ -123,6 +123,7 @@ import {
   type AutomationOutput,
 } from "./automation-outputs";
 import { automationIntentAlreadySettled } from "./automation-intent-recovery";
+import { legacyInputsChanged } from "./projects/legacy-inputs";
 import {
   openTriageDiscussion,
   triageDiscussionThread,
@@ -476,6 +477,7 @@ export async function getAutomation(id: string): Promise<Automation | null> {
  *  starts from a stored copy, so an overlapping writer is not clobbered. */
 export async function saveAutomation(a: Automation): Promise<void> {
   await automationStore().set(a.id, a);
+  legacyInputsChanged();
 }
 
 /**
@@ -1187,6 +1189,7 @@ export async function updateAutomation(
   });
   if (rejected) return rejected;
   if (!next) return { error: "Automation not found" };
+  legacyInputsChanged();
   return next;
 }
 
@@ -1560,6 +1563,7 @@ export async function automationResumeMcpForSession(
 export async function deleteAutomation(id: string): Promise<boolean> {
   if (!isAutomationId(id)) return false;
   if (!(await automationStore().delete(id))) return false;
+  legacyInputsChanged();
   deleteAutomationInputState(id);
   deleteAutomationOutputState(id);
   return true;
