@@ -108,7 +108,7 @@ export const SECTIONS: SettingsSection[] = [
     icon: <IconKeyboard />,
   },
   // Projects: the defaults every project starts from. Each project's own
-  // page follows in the nav, read from /api/projects rather than this table
+  // page follows in the nav, read from /api/project-settings rather than this table
   // (Settings.tsx), so a project is not a SettingsSectionKey.
   {
     key: "projectDefaults",

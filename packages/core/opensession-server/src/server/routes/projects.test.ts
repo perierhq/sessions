@@ -13,6 +13,7 @@ import type { RouteContext } from "./context";
 import { handleIncidentAccessRoutes } from "./incident-access";
 import { routeHandlers } from "./index";
 import { handleConnectionsRoutes } from "./connections";
+import { handleFeedsRoutes } from "./feeds";
 import { handleIncidentsRoutes } from "./incidents";
 import {
   __setProjectRoutesForTest,
@@ -295,8 +296,8 @@ test("PATCH input errors", async () => {
   expect(calls.update).toEqual([]);
 });
 
-test("GET /api/projects labels match projectStatusLabel", async () => {
-  const out = await call("GET", "/api/projects");
+test("GET /api/project-settings labels match projectStatusLabel", async () => {
+  const out = await call("GET", "/api/project-settings");
   const list = out?.json as ProjectListItem[];
   expect(list.map((p) => p.id)).toEqual(["acme-web", "acme-api", "docs-site"]);
   expect(list[0]?.status).toEqual(
@@ -408,6 +409,8 @@ test("old incident access writes answer 410", async () => {
 });
 
 test("other paths fall through", async () => {
+  // The feeds union view owns /api/projects.
+  expect(await call("GET", "/api/projects")).toBeUndefined();
   expect(await call("GET", "/api/projects/acme-web")).toBeUndefined();
   expect(
     await call("DELETE", "/api/projects/acme-web/settings"),
@@ -420,4 +423,78 @@ test("registered before the incidents and connections routes", () => {
   expect(at).toBeGreaterThan(-1);
   expect(at).toBeLessThan(routeHandlers.indexOf(handleIncidentsRoutes));
   expect(at).toBeLessThan(routeHandlers.indexOf(handleConnectionsRoutes));
+});
+
+/** Dispatch through the real handler chain, as the server does: the first
+ *  handler that answers wins. */
+const dispatch = async (method: string, path: string, body?: unknown) => {
+  const url = new URL(`http://localhost${path}`);
+  const ctx: RouteContext = {
+    req: new Request(url, {
+      method,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+    url,
+    path: url.pathname,
+    publicPrefix: "/backstage",
+    authUser: ADA,
+  };
+  for (const handler of routeHandlers) {
+    const res = await handler(ctx);
+    if (res) return { handler, status: res.status, json: await res.json() };
+  }
+  return undefined;
+};
+
+test("through the route chain, each project settings path reaches its handler", async () => {
+  const list = await dispatch("GET", "/api/project-settings");
+  expect(list?.handler).toBe(handleProjectsRoutes);
+  expect((list?.json as ProjectListItem[]).map((p) => p.id)).toEqual([
+    "acme-web",
+    "acme-api",
+    "docs-site",
+  ]);
+
+  const settings = await dispatch("GET", "/api/projects/acme-web/settings");
+  expect(settings?.handler).toBe(handleProjectsRoutes);
+  expect(settings?.status).toBe(200);
+
+  const reached: Array<[string, string, unknown]> = [
+    ["PATCH", "/api/projects/acme-web/settings", { expectedRevision: 0 }],
+    [
+      "POST",
+      "/api/projects/acme-web/production/runners",
+      { runnerId: "rn-2", shared: true },
+    ],
+    ["POST", "/api/projects/migrate", { dryRun: true }],
+    ["POST", "/api/projects/acme-web/migrate", {}],
+    ["POST", "/api/connections/linear/allow-unattended", { on: true }],
+    // Connector names that are also connections path segments.
+    ["POST", "/api/connections/mcp/allow-unattended", { on: true }],
+    ["POST", "/api/connections/github/allow-unattended", { on: true }],
+  ];
+  for (const [method, path, body] of reached) {
+    const out = await dispatch(method, path, body);
+    expect({ path, handler: out?.handler }).toEqual({
+      path,
+      handler: handleProjectsRoutes,
+    });
+  }
+  expect(calls.bound).toEqual(["rn-2"]);
+  expect(calls.migrations.map((m) => m.dryRun)).toEqual([true]);
+  expect(calls.remigrations.map((m) => m.project)).toEqual(["acme-web"]);
+  expect(calls.allowed).toEqual([
+    ["linear", true],
+    ["mcp", true],
+    ["github", true],
+  ]);
+});
+
+test("through the route chain, /api/projects stays the feeds union view", async () => {
+  const out = await dispatch("GET", "/api/projects");
+  expect(out?.handler).toBe(handleFeedsRoutes);
+  expect(Array.isArray(out?.json)).toBe(false);
+  expect(Array.isArray((out?.json as { projects: unknown }).projects)).toBe(
+    true,
+  );
 });

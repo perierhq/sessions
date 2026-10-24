@@ -18,7 +18,7 @@ import { RepoTile } from "../RepoTile";
 // The projects in the Settings nav, under Defaults in the Projects group:
 // each with its one status phrase (lib/project-settings/defaults-model), and
 // the open one with its page's sections under it. The list comes from
-// /api/projects, so these are not rows of the SECTIONS table.
+// /api/project-settings, so these are not rows of the SECTIONS table.
 
 export type ActiveProject = { project: string; section?: ProjectSectionId };
 
