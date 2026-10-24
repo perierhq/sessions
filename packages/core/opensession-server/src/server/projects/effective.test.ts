@@ -6,6 +6,7 @@ import {
   type EffectiveDeps,
   effectiveSandboxes,
   resolveSessionSandbox,
+  roleWebAccess,
 } from "./effective";
 import { __setLegacyEnvironmentForTest } from "./legacy";
 import {
@@ -223,4 +224,48 @@ test("an unmigrated project's composed settings are reused, not recomposed per s
   expect(
     await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive"),
   ).toEqual({ ok: true, provider: "podman" });
+});
+
+test("web search and websites for automations and reviews come from the table", async () => {
+  deps({});
+  // Defaults: both roles search, no websites of their own.
+  expect(await roleWebAccess("acme-web", "reviews")).toEqual({
+    deniedTools: {},
+    websites: [],
+  });
+  const { revision } = await getProjectDocument("acme-web");
+  const out = await updateProjectDocument(
+    "acme-web",
+    {
+      expectedRevision: revision,
+      access: {
+        cells: [
+          { row: { kind: "webSearch" }, role: "reviews", value: false },
+          {
+            row: { kind: "website", host: "docs.example.test" },
+            role: "reviews",
+            value: true,
+          },
+          {
+            row: { kind: "website", host: "status.example.test" },
+            role: "automations",
+            value: true,
+          },
+        ],
+      },
+    },
+    { name: "Ada", verified: true, login: "ada" },
+  );
+  if ("error" in out) throw new Error(out.error);
+  expect(await roleWebAccess("acme-web", "reviews")).toEqual({
+    deniedTools: {
+      web_search:
+        "Web search is off for this agent in the project's access settings.",
+    },
+    websites: ["docs.example.test"],
+  });
+  expect(await roleWebAccess("acme-web", "automations")).toEqual({
+    deniedTools: {},
+    websites: ["status.example.test"],
+  });
 });

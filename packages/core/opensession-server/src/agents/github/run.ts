@@ -115,6 +115,28 @@ export async function githubFlowMcpServers(
   );
 }
 
+/** What the project's access table lets Reviews do on the web: no
+ *  web_search when its cell is off, and web_fetch to the global websites
+ *  plus the project's websites ticked for Reviews. */
+async function reviewWebAccess(repoId: string | null | undefined): Promise<{
+  deniedTools: Record<string, string> | undefined;
+  webFetchHosts: string[] | undefined;
+}> {
+  if (!repoId) return { deniedTools: undefined, webFetchHosts: undefined };
+  const [{ roleWebAccess }, { globalWebsites }] = await Promise.all([
+    import("../../server/projects/effective"),
+    import("../../server/projects/global-defaults"),
+  ]);
+  const web = await roleWebAccess(repoId, "reviews");
+  const hosts = [...new Set([...globalWebsites(), ...web.websites])];
+  return {
+    deniedTools: Object.keys(web.deniedTools).length
+      ? web.deniedTools
+      : undefined,
+    webFetchHosts: hosts.length ? hosts : undefined,
+  };
+}
+
 /** The Reviews model a project (else the global default) sets, if any. */
 async function reviewsModel(
   repoId: string | null,
@@ -544,6 +566,7 @@ async function runGithubAgentTurn(
       await discardGithubRunRecord(existingDetachedRun, bksId);
     }
 
+    const reviewWeb = await reviewWebAccess(repoId);
     let events: AsyncIterable<StreamEvent>;
     if (recoveredRun) {
       recoveredRun = journalStartRecovery(recoveredRun);
@@ -583,6 +606,8 @@ async function runGithubAgentTurn(
           author: opts.author,
           fallbackModel: automaticFallbackModel(effectiveModel),
           mcpServers: await githubFlowMcpServers(repoId),
+          deniedTools: reviewWeb.deniedTools,
+          webFetchHosts: reviewWeb.webFetchHosts,
           trustProfile: "automation",
           journalKind: `github-${opts.kind}`,
           firstJournaledAt: recoveredRun.firstJournaledAt,
@@ -603,6 +628,8 @@ async function runGithubAgentTurn(
         author: opts.author,
         fallbackModel: automaticFallbackModel(effectiveModel),
         mcpServers: await githubFlowMcpServers(repoId),
+        deniedTools: reviewWeb.deniedTools,
+        webFetchHosts: reviewWeb.webFetchHosts,
         trustProfile: "automation",
         journalKind: `github-${opts.kind}`,
       });
@@ -618,6 +645,8 @@ async function runGithubAgentTurn(
         author: opts.author,
         fallbackModel: automaticFallbackModel(effectiveModel),
         mcpServers: await githubFlowMcpServers(repoId),
+        deniedTools: reviewWeb.deniedTools,
+        webFetchHosts: reviewWeb.webFetchHosts,
         githubEnv,
         journal: { osSessionId: bksId, kind: `github-${opts.kind}` },
       });

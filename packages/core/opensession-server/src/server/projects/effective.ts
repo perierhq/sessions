@@ -323,6 +323,38 @@ export async function resolveSessionSandbox(
   return d.requested(chosen ?? "local", project, model);
 }
 
+export const WEB_SEARCH_OFF =
+  "Web search is off for this agent in the project's access settings.";
+
+/**
+ * What the access table lets Automations or Reviews do on the web: a
+ * `web_search` denial when the role's web search cell is off, and the
+ * project's websites ticked for the role (callers add the global list).
+ * Unreadable settings deny web search and add no websites.
+ */
+export async function roleWebAccess(
+  project: string,
+  role: "automations" | "reviews",
+): Promise<{ deniedTools: Record<string, string>; websites: string[] }> {
+  try {
+    const doc = await getProjectDocument(project);
+    return {
+      deniedTools: (doc.access.webSearch as string[]).includes(role)
+        ? {}
+        : { web_search: WEB_SEARCH_OFF },
+      websites: doc.access.websites
+        .filter((row) => row.roles.includes(role))
+        .map((row) => row.host),
+    };
+  } catch (error) {
+    console.warn(
+      `[project-settings] ${project} settings unreadable, ${role} get no web search:`,
+      error instanceof Error ? error.message : error,
+    );
+    return { deniedTools: { web_search: WEB_SEARCH_OFF }, websites: [] };
+  }
+}
+
 /** The websites an automation on `project` may reach: the global list and
  *  the project's websites ticked for Automations. */
 export async function automationEgressHosts(

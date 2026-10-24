@@ -2227,6 +2227,9 @@ export async function runAutomation(
       ? automationModel(options.modelOverride)
       : await automationRunModel(automation);
     automation = await automationUnderProject(automation);
+    const web = await (
+      await import("./projects/effective")
+    ).roleWebAccess(getRepo(automation.repo).id, "automations");
     const runtimeSandboxValidation = validateSandboxAutomation({
       ...automation,
       model: options?.modelOverride || automation.model,
@@ -2612,7 +2615,7 @@ export async function runAutomation(
         model: runModel,
         mcpServers: automation.mcpServers || [],
         proxyMcpServers: Object.keys(inProcessMcp),
-        deniedTools: AUTOMATION_DENIED_TOOLS,
+        deniedTools: { ...AUTOMATION_DENIED_TOOLS, ...web.deniedTools },
         // web_fetch reads only what the disposable Executor may reach.
         webFetchHosts: automationWebFetchHosts(
           await (
@@ -2640,7 +2643,8 @@ export async function runAutomation(
         mode: automation.mode,
         model: runModel,
         mcpServers: (automation.mcpServers ?? "all") as "all" | string[],
-        deniedTools: AUTOMATION_DENIED_TOOLS,
+        // Web search follows the project's access table.
+        deniedTools: { ...AUTOMATION_DENIED_TOOLS, ...web.deniedTools },
         // No onAskUser here, so confirm tools deny with "propose it for a human".
         confirmTools: STRIPE_CONFIRM_TOOLS,
         aws: true, // host automations keep short-lived instance-role read creds
