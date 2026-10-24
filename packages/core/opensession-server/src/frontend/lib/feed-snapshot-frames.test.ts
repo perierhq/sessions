@@ -13,6 +13,7 @@ const snapshot = (active: Snapshot["active"]): Snapshot => ({
 });
 
 const active = {
+  runId: "r1",
   turnId: "t1",
   entryId: "a1",
   by: "acme",
