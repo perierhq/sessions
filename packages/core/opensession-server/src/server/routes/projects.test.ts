@@ -250,6 +250,25 @@ test("a bad previews value writes nothing; a failed save is not a 200", async ()
   });
 });
 
+test("previews and the document land together or not at all", async () => {
+  // A failed previews save leaves the document untouched.
+  const failed = await call("PATCH", "/api/projects/acme-web/settings", {
+    expectedRevision: 4,
+    sandbox: "podman",
+    previews: "offline",
+  });
+  expect(failed?.status).toBe(400);
+  expect(calls.update).toEqual([]);
+  expect(docs.get("acme-web")?.revision).toBe(4);
+  // A refused document puts the previews back.
+  const stale = await call("PATCH", "/api/projects/acme-web/settings", {
+    expectedRevision: 3,
+    previews: "daytona",
+  });
+  expect(stale?.status).toBe(409);
+  expect(calls.previews).toEqual(["daytona", "same"]);
+});
+
 test("PATCH input errors", async () => {
   expect(
     (await call("PATCH", "/api/projects/acme-web/settings", "{nope"))?.json,

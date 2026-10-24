@@ -3,7 +3,8 @@
  * project page's view (effective sandbox and models, access table,
  * readiness) and written as a patch carrying `expectedRevision`. A stale
  * revision is a 409; changes the store reserves for a signed-in person are
- * a 403. Previews live in sandbox config, outside the revision.
+ * a 403. Previews live in sandbox config, outside the revision; they are
+ * saved first and put back when the document refuses.
  *
  *   GET   /api/projects                          ProjectListItem[]
  *   GET   /api/projects/:id/settings             ProjectSettingsView
@@ -175,8 +176,11 @@ async function patchSettings(
   const previewsProblem =
     previews === undefined ? null : d.previewsProblem(previews);
   if (previewsProblem) return error(previewsProblem, 400);
-  const out = await d.update(project, documentPatch, actor);
-  if ("error" in out) return error(out.error, out.status);
+  // Saved before the document, which can still refuse (a stale revision,
+  // a widening without a person): then the previous value goes back, so
+  // the two land together or not at all.
+  const previous =
+    previews === undefined ? undefined : projectViewDeps().previews(project);
   if (previews !== undefined) {
     try {
       await d.savePreviews(project, previews);
@@ -186,6 +190,28 @@ async function patchSettings(
         400,
       );
     }
+  }
+  const restore = async () => {
+    if (previous === undefined) return;
+    try {
+      await d.savePreviews(project, previous);
+    } catch (cause) {
+      console.warn(
+        `[project-settings] ${project} previews not put back:`,
+        cause instanceof Error ? cause.message : cause,
+      );
+    }
+  };
+  let out: Awaited<ReturnType<ProjectRouteDeps["update"]>>;
+  try {
+    out = await d.update(project, documentPatch, actor);
+  } catch (cause) {
+    await restore();
+    throw cause;
+  }
+  if ("error" in out) {
+    await restore();
+    return error(out.error, out.status);
   }
   return settingsView(project, actor.verified);
 }
