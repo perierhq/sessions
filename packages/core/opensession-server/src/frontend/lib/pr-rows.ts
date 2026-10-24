@@ -7,7 +7,7 @@
  * session whose enrichment lags behind the merge does not overwrite it.
  */
 
-import type { RecentPr } from "./api";
+import type { AuthorKind, RecentPr } from "./api";
 import type { UnifiedSession } from "./types";
 import type { PrStatusInput } from "./pr-status";
 import { sessionPrRefs } from "./session-prs";
@@ -31,6 +31,8 @@ export interface WorktreeRow extends PrStatusInput {
   archived: boolean;
   person: string | null;
   author?: string;
+  /** Who opened it, from GitHub. Absent on rows known only from a session. */
+  authorKind?: AuthorKind;
 }
 
 function worktreesForSession(session: UnifiedSession): WorktreeRow[] {
@@ -146,6 +148,7 @@ export function buildWorktreeRows(
       archived: false,
       person: pr.person,
       author: pr.author,
+      authorKind: pr.authorKind,
     });
   }
   for (const session of sessions) {

@@ -50,6 +50,15 @@ export const DEMO_LIVE_ENGINE_SESSION_ID = "ses_demolive";
 export const DEMO_ASK_SESSION_ID = "bks-demo-ask";
 export const DEMO_ASK_ENGINE_SESSION_ID = "ses_demoask";
 export const DEMO_PR_NUMBER = 128;
+/** The demo's agent account: PRs it opens are the team's. */
+export const DEMO_BOT_LOGIN = "acme-demo-bot";
+/** Who counts as the team. Issue and PR authors not on it are outside. */
+export const DEMO_TEAM = [
+  { name: "Alex Rivera", github: "alex", email: "alex@example.test" },
+  { name: "Sam Okafor", github: "sam", email: "sam@example.test" },
+  { name: "Kent Larsen", github: "kent", email: "kent@example.test" },
+  { name: "Maya Chen", github: "maya", email: "maya@example.test" },
+];
 /** The session that shows an HTML render, and where its page is stored. */
 export const DEMO_RENDER_SESSION_ID = "bks-demo-render";
 export const DEMO_RENDER_ASSET = "html-renders/monitor-arm-clamp-fit-demo.html";
@@ -1471,6 +1480,30 @@ export function demoIssues(now: number) {
       labels: ["docs"],
       comments: 4,
     }),
+    // From outside the team: the public and a bot.
+    issue(
+      133,
+      "CSV export drops emoji from todo titles",
+      "Exporting a list with emoji in the titles writes `?` in their place. Opening the file in a text editor shows the same, so it is not the spreadsheet app.",
+      {
+        hoursAgo: 3,
+        author: "jun-park-dev",
+        labels: ["bug"],
+        comments: 2,
+      },
+    ),
+    issue(
+      122,
+      "Dependency Dashboard",
+      "This issue lists Renovate updates and detected dependencies.",
+      { hoursAgo: 20, author: "renovate[bot]" },
+    ),
+    issue(
+      119,
+      "Support a self-hosted sync server?",
+      "We would like to keep todos on our own server. Is there a sync API we could point at?",
+      { hoursAgo: 54, author: "linnea-s", labels: ["question"], comments: 1 },
+    ),
   ];
 }
 
@@ -1693,6 +1726,72 @@ export function demoPrInfo(now: number, ghRepo: string, sessionId: string) {
     reviewedBy: [],
     assignees: ["acme-demo-bot"],
     sessionRef: sessionId,
+  };
+}
+
+/** Open PRs beside the hero one: a teammate's, the public's and bots'. */
+export function demoOtherPrs(now: number, ghRepo: string) {
+  const repo = ghRepo || "acme/acme-todo";
+  const pr = (
+    number: number,
+    title: string,
+    author: string,
+    minutesAgo: number,
+    additions: number,
+    deletions: number,
+  ) => ({
+    url: `https://github.com/${repo}/pull/${number}`,
+    state: "OPEN" as const,
+    number,
+    title,
+    isDraft: false,
+    additions,
+    deletions,
+    changedFiles: 1,
+    reviewDecision: "",
+    author,
+    createdAt: iso(now - (minutesAgo + 90) * 60_000),
+    updatedAt: iso(now - minutesAgo * 60_000),
+    checks: { total: 5, passed: 5, failed: 0, pending: 0 },
+    mergeable: "MERGEABLE",
+    reviewRequested: [],
+    reviewedBy: [],
+    assignees: [],
+  });
+  return {
+    "patch-1": pr(135, "Fix typo in the install steps", "jun-park-dev", 95, 2, 2),
+    "dependabot/npm_and_yarn/vite-6.4.1": pr(
+      134,
+      "Bump vite from 6.3.5 to 6.4.1",
+      "app/dependabot",
+      300,
+      12,
+      12,
+    ),
+    "maya/archive-shortcut": pr(
+      130,
+      "Archive the focused todo with E",
+      "maya",
+      480,
+      48,
+      6,
+    ),
+    "swedish-translation": pr(
+      126,
+      "Add a Swedish translation",
+      "linnea-s",
+      1800,
+      214,
+      0,
+    ),
+    "renovate/typescript-5.x": pr(
+      125,
+      "Update dependency typescript to v5.9.3",
+      "app/renovate",
+      3100,
+      3,
+      3,
+    ),
   };
 }
 

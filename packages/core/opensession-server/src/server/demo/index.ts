@@ -95,6 +95,10 @@ export async function seedDemoDataset(): Promise<void> {
   if (!process.env.OPENSESSION_STATE_DIR) return;
   try {
     const result = generateDemoData();
+    // The generator may have just written the demo roster into the config.
+    const { reloadIdentityFromConfig } =
+      await import("../shared/user-mappings");
+    reloadIdentityFromConfig();
     console.log(
       result.created
         ? `[demo] dataset generated into ${result.sessionsDir} (${result.sessionIds.length} sessions)`

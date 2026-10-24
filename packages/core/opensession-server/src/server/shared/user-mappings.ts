@@ -459,6 +459,13 @@ export function userMatchesAny(
   });
 }
 
+/** Re-derive the tables from the current config. A demo instance writes its
+ *  roster during boot, after this module has loaded. */
+export function reloadIdentityFromConfig(): void {
+  identity = configuredIdentity();
+  applyDerivedTables(deriveIdentityTables(identity.team, identity.slackNames));
+}
+
 /** Test seam (bun tests only) — mirrors codex-accounts's __setXForTest
  *  naming. The tables above are baked from this host's
  *  ~/.opensession/config.json at module load, which makes roster-dependent
