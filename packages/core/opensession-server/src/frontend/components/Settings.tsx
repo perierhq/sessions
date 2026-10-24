@@ -447,7 +447,11 @@ export function Settings({
       >
         {project ? (
           <div className={SETTINGS_PANEL_FRAME}>
-            <ProjectPane project={project} onOpenProject={onOpenProject} />
+            <ProjectPane
+              project={project}
+              onOpenProject={onOpenProject}
+              onSelect={onSelect}
+            />
           </div>
         ) : tool ? (
           <SectionPanel
@@ -486,9 +490,11 @@ export function Settings({
 function ProjectPane({
   project,
   onOpenProject,
+  onSelect,
 }: {
   project: ActiveProject;
   onOpenProject: (project: string, section?: ProjectSectionId) => void;
+  onSelect: (key: SettingsSectionKey) => void;
 }) {
   return (
     <ProjectSettingsPage
@@ -496,6 +502,7 @@ function ProjectPane({
       project={project.project}
       section={project.section}
       onOpenSection={(section) => onOpenProject(project.project, section)}
+      onOpenSettings={onSelect}
     />
   );
 }
@@ -695,6 +702,7 @@ function MobileSettings({
                         <ProjectPane
                           project={shownProject}
                           onOpenProject={onOpenProject}
+                          onSelect={onSelect}
                         />
                       )}
                     </div>
