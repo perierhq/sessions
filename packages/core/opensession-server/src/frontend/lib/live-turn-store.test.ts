@@ -253,12 +253,11 @@ describe("LiveTurnStore", () => {
     // A card nobody held still goes to the transcript.
     expect(store.holdTool({ ...card, id: "call-2" }, false)).toBe(false);
 
-    // The message's durable rows land together: thought and call leave the
-    // bubble, and a late frame for the call is the transcript's to merge.
-    store.land([
-      { id: "msg-4", content: "I should verify the changes." },
-      { id: "call-1", content: "" },
-    ]);
+    // The message's durable rows land together, the way the viewers route
+    // them: prose through land(), the tool call by id through landIds(). Both
+    // leave the bubble, and a late frame for the call is the transcript's.
+    store.land([{ id: "msg-4", content: "I should verify the changes." }]);
+    store.landIds(["call-1"]);
     expect(store.getSnapshot().tools).toEqual([]);
     expect(store.getSnapshot().text).toBe("");
     expect(store.holdTool(filled, false)).toBe(false);

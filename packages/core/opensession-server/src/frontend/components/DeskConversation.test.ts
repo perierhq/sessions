@@ -41,3 +41,16 @@ test("the Desk transcript opens session pills the way the session viewer does", 
     /onClick=\{\s*onOpenSubagent\s*\?[\s\S]*?sessionIdFromTranscriptClick\(e\);\s*if \(!id\) return;\s*e\.preventDefault\(\);\s*onOpenSubagent\(id\);/,
   );
 });
+
+test("the Desk releases held early tool cards when their durable rows land", async () => {
+  const conversation = await Bun.file(
+    new URL("./DeskConversation.tsx", import.meta.url),
+  ).text();
+  // Same wiring as the session viewer (useSessionViewerSubscription.test.ts
+  // runs it end to end): a durable tool_use in transcript_append lands by id,
+  // or the held pending card renders beside the durable one.
+  const at = conversation.indexOf('case "transcript_append"');
+  const body = conversation.slice(at, conversation.indexOf("break;", at));
+  expect(body).toContain("liveTurnStore.landIds(");
+  expect(body).toContain('e.type === "tool_use" ? [e.id] : []');
+});

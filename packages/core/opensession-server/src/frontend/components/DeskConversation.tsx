@@ -333,6 +333,10 @@ export function DeskConversation({
                 content: entry.content,
               })),
             );
+          // Release held early cards whose durable tool call just landed.
+          liveTurnStore.landIds(
+            msg.entries.flatMap((e) => (e.type === "tool_use" ? [e.id] : [])),
+          );
           break;
         }
         case "session_status":

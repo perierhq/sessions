@@ -474,6 +474,11 @@ export function useSessionViewerSubscription({
               landed.map((e) => ({ id: e.id, content: e.content })),
             );
           }
+          // A durable tool call releases the early card the bubble held for
+          // it; otherwise the call shows twice until the turn ends.
+          liveTurnStore.landIds(
+            msg.entries.flatMap((e) => (e.type === "tool_use" ? [e.id] : [])),
+          );
           break;
         }
         case "presence":

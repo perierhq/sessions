@@ -263,6 +263,22 @@ export class LiveTurnStore {
     this.publish(false);
   }
 
+  /**
+   * Tool calls that just landed as durable `tool_use` rows. Their held early
+   * cards leave the bubble (the durable card now renders in the transcript),
+   * and later frames for them are no longer held. Only the ids are used: a
+   * tool row's content must never be subtracted from the live text.
+   */
+  landIds(ids: Iterable<string>) {
+    const landed = new Set(ids);
+    if (landed.size === 0) return;
+    for (const id of landed) this.landedIds.add(id);
+    const tools = this.tools.filter((tool) => !landed.has(tool.id));
+    if (tools.length === this.tools.length) return;
+    this.tools = tools;
+    this.publish(false);
+  }
+
   finish() {
     // Snap the tail: the durable entry lands next, and a bubble that keeps
     // typing after the turn ended reads as a stuck run.
