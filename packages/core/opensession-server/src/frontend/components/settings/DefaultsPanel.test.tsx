@@ -36,6 +36,9 @@ let view: ProjectDefaultsView = DEFAULTS_VIEW;
 const mutations: Array<ProjectDefaultsView | undefined> = [];
 const revalidations: Array<readonly unknown[] | undefined> = [];
 let ownModels: Record<string, string[]> | undefined;
+let loadError: Error | null = null;
+let catalogError: Error | null = null;
+let retried = 0;
 mock.module("../../hooks/useProjects", () => ({
   projectSWRKey: {
     projects: () => ["api", "projects"],
@@ -47,11 +50,12 @@ mock.module("../../hooks/useProjects", () => ({
   },
   useProjectModelOverrides: () => ({ data: ownModels }),
   useProjectDefaults: () => ({
-    data: view,
-    error: undefined,
+    data: loadError ? undefined : view,
+    error: loadError ?? undefined,
     isLoading: false,
     mutate: (next?: ProjectDefaultsView) => {
       mutations.push(next);
+      if (!next) retried++;
       if (next) view = next;
       return Promise.resolve(view);
     },
@@ -111,7 +115,16 @@ mock.module("swr", () => ({
   mutate: async () => undefined,
   default: (key: readonly string[]) => {
     const name = key[1] ?? "";
-    if (name.includes("models")) return { data: catalog };
+    if (name.includes("models"))
+      return catalogError
+        ? {
+            data: undefined,
+            error: catalogError,
+            mutate: async () => {
+              retried++;
+            },
+          }
+        : { data: catalog };
     if (name.includes("sandbox")) return { data: sandboxStatus };
     return { data: undefined };
   },
@@ -145,6 +158,9 @@ beforeEach(() => {
   patchError = null;
   revalidations.length = 0;
   ownModels = undefined;
+  loadError = null;
+  catalogError = null;
+  retried = 0;
 });
 afterEach(() => harness.unmountAll());
 
@@ -215,6 +231,28 @@ test("until the projects load, a role's scope says so neutrally", async () => {
   expect(text(tree)).toContain(
     "Used by every project that doesn't set its own",
   );
+});
+
+test("defaults that fail to load say so in place, with Retry", async () => {
+  const { InlineAlert } = await import("../../ui/state");
+  loadError = new Error("offline");
+  const tree = await mountPanel();
+  const alert = find(tree.output(), InlineAlert);
+  expect(alert).toBeDefined();
+  expect(text(tree)).toContain("offline");
+  (alert!.props as { onRetry: () => void }).onRetry();
+  expect(retried).toBe(1);
+});
+
+test("models that fail to load say so, with Retry", async () => {
+  const { InlineAlert } = await import("../../ui/state");
+  catalogError = new Error("Failed to fetch models");
+  const tree = await mountPanel();
+  const alert = find(tree.output(), InlineAlert);
+  expect(alert).toBeDefined();
+  expect(text(tree)).toContain("Couldn't load the models");
+  (alert!.props as { onRetry: () => void }).onRetry();
+  expect(retried).toBe(1);
 });
 
 test("a failed save says why and reloads", async () => {

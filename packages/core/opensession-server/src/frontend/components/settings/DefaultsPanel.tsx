@@ -48,6 +48,7 @@ import {
   SettingsHint,
   SettingsPanel,
 } from "../../ui/settings";
+import { InlineAlert } from "../../ui/state";
 import { toast } from "../../ui/toast";
 import { IconX } from "../icons";
 import { shortModelLabel, splitModelOptions } from "../ModelEffortSelect";
@@ -155,9 +156,9 @@ export function DefaultsPanel({
       <SettingsPanel>
         {header}
         {defaults.error ? (
-          <SettingsHint>
-            {errorMessage(defaults.error, "Failed to load defaults")}
-          </SettingsHint>
+          <InlineAlert onRetry={() => void defaults.mutate()}>
+            {errorMessage(defaults.error, "Couldn't load the defaults")}
+          </InlineAlert>
         ) : (
           <SettingCardSkeleton rows={3} label="Loading defaults" />
         )}
@@ -341,6 +342,11 @@ export function DefaultsPanel({
       </SettingsHint>
 
       <SettingsGroupLabel>Models</SettingsGroupLabel>
+      {catalog.error && !catalog.data && (
+        <InlineAlert className="mb-2" onRetry={() => void catalog.mutate()}>
+          Couldn't load the models, so they can't be changed until they do
+        </InlineAlert>
+      )}
       <SettingCard>
         {PROJECT_ROLES.map((role: ProjectRole) => (
           <SettingRow key={role}>
