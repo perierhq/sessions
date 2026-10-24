@@ -631,6 +631,19 @@ export type SessionLiveEvent =
       /** With phase "tool": how many tools are running (>= 1). */
       toolCount?: number;
     }
+  | {
+      /**
+       * An assistant message that will never be saved (it ended in an error
+       * that the engine retries, or a steer cut it before any output). Drop
+       * its live blocks (`blockId` equal to `messageId` or starting with
+       * `${messageId}-b`) and the early cards of `toolUseIds`: no durable
+       * row will land to replace them.
+       */
+      type: "stream_discard";
+      sessionId?: string;
+      messageId: string;
+      toolUseIds?: string[];
+    }
   | { type: "stream_tool_result"; sessionId?: string; entry: TranscriptEntry }
   | { type: "stream_done"; sessionId?: string }
   | {

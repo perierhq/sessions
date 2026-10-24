@@ -40,6 +40,14 @@ export interface LiveTextBlockSnapshot {
   kind?: StreamTextKind;
 }
 
+/**
+ * Whether a live block belongs to an assistant message: the message's first
+ * block carries the message id itself, a later one `${messageId}-b<index>`.
+ */
+export function isMessageBlockId(blockId: string, messageId: string): boolean {
+  return blockId === messageId || blockId.startsWith(`${messageId}-b`);
+}
+
 /** How many outstanding landed remainders to remember (a turn's worth). */
 const MAX_OUTSTANDING = 30;
 
@@ -110,6 +118,14 @@ export class LiveTextBuffer {
     if (last && last.id === blockId && last.kind === kind) last.text += text;
     else this.blocks.push({ id: blockId, text, ...(kind ? { kind } : {}) });
     return true;
+  }
+
+  /** An assistant message that will never land (`stream_discard`): drop
+   *  its blocks. */
+  discardMessage(messageId: string): void {
+    this.blocks = this.blocks.filter(
+      (block) => !block.id || !isMessageBlockId(block.id, messageId),
+    );
   }
 
   /**

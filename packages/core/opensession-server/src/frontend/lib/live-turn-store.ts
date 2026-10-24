@@ -1,4 +1,7 @@
-import { LiveTextBuffer } from "@tellahq/opensession-protocol/live-text";
+import {
+  isMessageBlockId,
+  LiveTextBuffer,
+} from "@tellahq/opensession-protocol/live-text";
 import { advanceReveal } from "@tellahq/opensession-protocol/stream-cuts";
 import type { StreamTextKind } from "@tellahq/opensession-protocol/events";
 import type { TranscriptEntry } from "./types";
@@ -276,6 +279,28 @@ export class LiveTurnStore {
     const tools = this.tools.filter((tool) => !landed.has(tool.id));
     if (tools.length === this.tools.length) return;
     this.tools = tools;
+    this.publish(false);
+  }
+
+  /**
+   * An assistant message that will never be saved (`stream_discard`: it
+   * failed and the engine retries it, or a steer cut it). Its blocks and the
+   * held cards of `toolUseIds` leave the bubble now instead of waiting for
+   * durable rows that never come.
+   */
+  discard(messageId: string, toolUseIds: readonly string[] = []) {
+    const tools = new Set(toolUseIds);
+    for (const id of tools) this.landedIds.add(id);
+    const before = this.heldText().length;
+    this.blocks = this.blocks.filter(
+      (block) => !isMessageBlockId(block.id, messageId),
+    );
+    const removed = before - this.heldText().length;
+    const heldTools = this.tools.filter((tool) => !tools.has(tool.id));
+    if (!removed && heldTools.length === this.tools.length) return;
+    this.tools = heldTools;
+    // Keep the reveal where it was relative to the text that stays.
+    this.shown = Math.max(0, Math.min(this.shown, this.heldText().length));
     this.publish(false);
   }
 

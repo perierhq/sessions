@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ProtocolServerMessage } from "@tellahq/opensession-protocol/session";
 import {
   appendSessionFeed,
+  isFeedEvent,
   resumeSessionFeed,
   sessionFeedSnapshot,
 } from "./session-feed";
@@ -158,6 +159,34 @@ describe("session feed", () => {
     ]);
     appendSessionFeed(sessionId, { type: "stream_done", sessionId });
     expect(sessionFeedSnapshot(sessionId).active).toBeNull();
+  });
+
+  test("a discarded message leaves the snapshot a joiner gets", () => {
+    const sessionId = `feed-${crypto.randomUUID()}`;
+    appendSessionFeed(sessionId, { type: "stream_start", sessionId });
+    for (const [blockId, text] of [
+      ["m1", "First try."],
+      ["m1-b2", " More of it."],
+      ["m2", "Second try."],
+    ])
+      appendSessionFeed(sessionId, {
+        type: "stream_text",
+        sessionId,
+        text,
+        blockId,
+        kind: "text",
+      });
+    const frame = appendSessionFeed(sessionId, {
+      type: "stream_discard",
+      sessionId,
+      messageId: "m1",
+      toolUseIds: ["call-1"],
+    });
+    expect(frame.phase).toBe("status");
+    expect(isFeedEvent({ type: "stream_discard" })).toBe(true);
+    expect(sessionFeedSnapshot(sessionId).active?.blocks).toEqual([
+      { id: "m2", text: "Second try.", kind: "text" },
+    ]);
   });
 
   test("active snapshot contains only text not yet committed", () => {

@@ -267,6 +267,16 @@ export class TranscriptViewStore {
     this.schedulePublish();
   }
 
+  /** Drop entries by id (a live card whose message was discarded). */
+  remove(ids: Iterable<string>) {
+    let changed = false;
+    for (const id of ids) changed = this.byId.delete(id) || changed;
+    if (!changed) return;
+    this.orderedIds = this.orderedIds.filter((id) => this.byId.has(id));
+    this.refreshOrderingMetadata();
+    this.commit(true);
+  }
+
   update(updater: Updater) {
     const current = this.orderedIds
       .map((id) => this.byId.get(id))

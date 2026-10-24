@@ -374,6 +374,15 @@ export function DeskConversation({
         case "stream_tool_result":
           setEntries((prev) => mergeTranscriptEntries(prev, [msg.entry]));
           break;
+        case "stream_discard": {
+          // A model message that will never be saved: drop its live rows
+          // and early cards (see LiveTurnStore.discard).
+          liveTurnStore.discard(msg.messageId, msg.toolUseIds);
+          const discarded = new Set(msg.toolUseIds ?? []);
+          if (discarded.size)
+            setEntries((prev) => prev.filter((e) => !discarded.has(e.id)));
+          break;
+        }
         case "stream_done":
           setIsRunning(false);
           liveTurnStore.finish();

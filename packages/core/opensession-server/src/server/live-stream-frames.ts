@@ -50,3 +50,18 @@ export function earlyToolUseFrame(
     inputPending: true,
   };
 }
+
+/** A `stream_discard` frame for a discard event: an assistant message that
+ *  will never be saved, whose live blocks and early cards viewers drop. */
+export function streamDiscardFrame(
+  sessionId: string | undefined,
+  event: StreamEvent,
+): Extract<SessionLiveEvent, { type: "stream_discard" }> | null {
+  if (event.type !== "discard" || !event.messageId) return null;
+  return {
+    type: "stream_discard",
+    ...(sessionId ? { sessionId } : {}),
+    messageId: event.messageId,
+    ...(event.toolUseIds?.length ? { toolUseIds: event.toolUseIds } : {}),
+  };
+}

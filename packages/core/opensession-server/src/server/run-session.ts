@@ -210,7 +210,11 @@ import { markRecapPendingIfUnwatched } from "./recap";
 import { noteYouShouldKnowStep } from "./you-should-know";
 import { scheduleSessionHistoryIndex } from "./session-index";
 import { broadcastToSession, sessionWatchers } from "./ws-hub";
-import { earlyToolUseFrame, streamPhaseFrame } from "./live-stream-frames";
+import {
+  earlyToolUseFrame,
+  streamDiscardFrame,
+  streamPhaseFrame,
+} from "./live-stream-frames";
 import { peekWorkspace } from "./workspaces";
 import {
   broadcastQueue,
@@ -1274,6 +1278,9 @@ export async function recordRecoveredRunEvent(
     if (frame) broadcastToSession(osSessionId, frame);
   } else if (event.type === "tool_call_start") {
     const frame = earlyToolUseFrame(osSessionId, event);
+    if (frame) broadcastToSession(osSessionId, frame);
+  } else if (event.type === "discard") {
+    const frame = streamDiscardFrame(osSessionId, event);
     if (frame) broadcastToSession(osSessionId, frame);
   } else if (event.type === "tool_use") {
     broadcastToSession(osSessionId, {
@@ -3773,6 +3780,13 @@ async function runSessionPromptInner(
         // The model started writing a tool call. Not a step yet: the step
         // counters and side agents wait for the tool_use that follows.
         const frame = earlyToolUseFrame(sessionId, event);
+        if (frame) broadcastToSession(sessionId, frame);
+        break;
+      }
+      case "discard": {
+        // A failed or superseded model message that will never be saved:
+        // viewers drop its live blocks and early cards.
+        const frame = streamDiscardFrame(sessionId, event);
         if (frame) broadcastToSession(sessionId, frame);
         break;
       }

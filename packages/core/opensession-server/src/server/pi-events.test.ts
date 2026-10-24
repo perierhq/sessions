@@ -12,12 +12,12 @@ import type { TranscriptEntry } from "./types";
 const T0 = 1_760_000_000_000;
 const T1 = T0 + 9_000;
 
-function harness() {
+function harness(opts: { cutBySteer?: boolean } = {}) {
   const pushed: StreamEvent[] = [];
   const persisted: TranscriptEntry[] = [];
   const steering = {
     interruptForSteer() {},
-    consumeCut: () => false,
+    consumeCut: () => opts.cutBySteer === true,
     takeDelivered: () => undefined,
   };
   const mapper = createPiEventMapper({
@@ -326,6 +326,89 @@ describe("pi live events", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  test("an errored message that pi retries is discarded, early card included", () => {
+    const { pushed, persisted, emit } = harness();
+    const message = {
+      role: "assistant",
+      timestamp: T0,
+      content: [] as unknown[],
+    };
+    emit({ type: "message_start", message });
+    message.content.push({ type: "thinking", thinking: "" });
+    emit({
+      type: "message_update",
+      message,
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "I should list it.",
+        partial: message,
+      },
+    });
+    message.content.push({
+      type: "toolCall",
+      id: "toolu_9",
+      name: "bash",
+      arguments: {},
+    });
+    emit({
+      type: "message_update",
+      message,
+      assistantMessageEvent: {
+        type: "toolcall_start",
+        contentIndex: 1,
+        partial: message,
+      },
+    });
+    emit({
+      type: "message_end",
+      message: { ...message, stopReason: "error", errorMessage: "overloaded" },
+    });
+    const blockId = pushed.find((ev) => ev.type === "text_chunk")?.blockId;
+    expect(blockId).toBeString();
+    expect(persisted).toEqual([]);
+    expect(pushed.filter((ev) => ev.type === "discard")).toEqual([
+      { type: "discard", messageId: blockId, toolUseIds: ["toolu_9"] },
+    ]);
+  });
+
+  test("a message cut by a steer before any output is discarded", () => {
+    const { pushed, persisted, emit } = harness({ cutBySteer: true });
+    const message = {
+      role: "assistant",
+      timestamp: T0,
+      content: [] as unknown[],
+    };
+    emit({ type: "message_start", message });
+    message.content.push({ type: "thinking", thinking: "" });
+    emit({
+      type: "message_update",
+      message,
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "I should",
+        partial: message,
+      },
+    });
+    message.content[0] = { type: "thinking", thinking: "I should" };
+    emit({
+      type: "message_end",
+      message: { ...message, stopReason: "aborted" },
+    });
+    const blockId = pushed.find((ev) => ev.type === "text_chunk")?.blockId;
+    expect(persisted).toEqual([]);
+    expect(pushed.filter((ev) => ev.type === "discard")).toEqual([
+      { type: "discard", messageId: blockId },
+    ]);
+  });
+
+  test("a persisted message is never discarded", () => {
+    const { pushed, emit } = harness();
+    playTurn(emit);
+    expect(pushed.some((ev) => ev.type === "discard")).toBe(false);
   });
 
   test("a tool summary is one short line", () => {

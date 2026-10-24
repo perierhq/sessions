@@ -198,3 +198,66 @@ test("a held early tool card is released when its durable row lands", () => {
   });
   expect(liveTurnStore.getSnapshot().tools).toEqual([]);
 });
+
+test("a retried message's live rows and early card are dropped, not stacked", () => {
+  frame({ type: "stream_start", sessionId: SESSION, by: "acme" });
+  frame({
+    type: "stream_text",
+    sessionId: SESSION,
+    text: "I should run the tests.",
+    blockId: "msg-1",
+    kind: "reasoning",
+  });
+  frame({
+    type: "stream_text",
+    sessionId: SESSION,
+    text: "Running them.",
+    blockId: "msg-1-b1",
+    kind: "text",
+  });
+  frame({
+    type: "stream_tool_use",
+    sessionId: SESSION,
+    entry: toolUse("call-1"),
+    inputPending: true,
+  });
+  // The request failed and pi retries it: the attempt is never saved.
+  frame({
+    type: "stream_discard",
+    sessionId: SESSION,
+    messageId: "msg-1",
+    toolUseIds: ["call-1"],
+  });
+  frame({
+    type: "stream_text",
+    sessionId: SESSION,
+    text: "I should run the tests.",
+    blockId: "msg-2",
+    kind: "reasoning",
+  });
+  liveTurnStore.finish();
+  const live = liveTurnStore.getSnapshot();
+  expect(live.blocks.map((b) => b.key)).toEqual(["msg-2"]);
+  expect(live.tools).toEqual([]);
+  expect(viewStore.getSnapshot()).toEqual([]);
+});
+
+test("a steer-cut message's early card leaves the transcript too", () => {
+  frame({ type: "stream_start", sessionId: SESSION, by: "acme" });
+  // No live text on screen: the early card goes straight to the transcript.
+  frame({
+    type: "stream_tool_use",
+    sessionId: SESSION,
+    entry: toolUse("call-2"),
+    inputPending: true,
+  });
+  expect(viewStore.getSnapshot().map((e) => e.id)).toEqual(["call-2"]);
+  frame({
+    type: "stream_discard",
+    sessionId: SESSION,
+    messageId: "msg-3",
+    toolUseIds: ["call-2"],
+  });
+  expect(viewStore.getSnapshot()).toEqual([]);
+  expect(liveTurnStore.getSnapshot().tools).toEqual([]);
+});

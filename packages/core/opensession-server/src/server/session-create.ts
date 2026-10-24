@@ -243,7 +243,11 @@ import {
 } from "./command-replay";
 import { sessionIdForRequest } from "./session-request-id";
 import { isClientSessionId } from "./paths";
-import { earlyToolUseFrame, streamPhaseFrame } from "./live-stream-frames";
+import {
+  earlyToolUseFrame,
+  streamDiscardFrame,
+  streamPhaseFrame,
+} from "./live-stream-frames";
 import { timeStreamSpan } from "./stream-timing";
 import {
   clearCreatePlan,
@@ -2263,6 +2267,10 @@ export async function openCreatedSession(
         }
         if (event.type === "tool_call_start") {
           const frame = earlyToolUseFrame(undefined, event);
+          if (frame) io.emit(frame);
+        }
+        if (event.type === "discard") {
+          const frame = streamDiscardFrame(undefined, event);
           if (frame) io.emit(frame);
         }
         if (event.type === "tool_use") {

@@ -649,6 +649,14 @@ export function useSessionViewerSubscription({
         case "stream_tool_result":
           transcriptViewStore.merge([msg.entry]);
           break;
+        case "stream_discard":
+          // A failed or steer-cut model message that will never be saved:
+          // its live rows and early cards would otherwise sit there until
+          // the turn ends (or, for a card in the transcript, until reload).
+          liveTurnStore.discard(msg.messageId, msg.toolUseIds);
+          if (msg.toolUseIds?.length)
+            transcriptViewStore.remove(msg.toolUseIds);
+          break;
         case "stream_done": {
           dispatchSessionRuntime({ type: "frame", frame: msg });
           liveTurnStore.finish();

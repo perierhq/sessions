@@ -158,6 +158,9 @@ export function appendSessionFeed(
   } else if (event.type === "stream_phase" && state.active) {
     const { type: _type, sessionId: _sessionId, ...phase } = event;
     state.active.phase = phase;
+  } else if (event.type === "stream_discard" && state.active) {
+    // That message will never land; a joiner must not be handed its text.
+    state.live.discardMessage(event.messageId);
   } else if (event.type === "stream_text" && state.active) {
     state.live.append(event.text ?? "", event.blockId, event.kind);
   } else if (event.type === "transcript_append" && state.active) {
@@ -265,6 +268,7 @@ export function isFeedEvent(msg: object): msg is SessionLiveEvent {
     type === "stream_tool_use" ||
     type === "stream_tool_result" ||
     type === "stream_phase" ||
+    type === "stream_discard" ||
     type === "stream_done" ||
     type === "session_status"
   );

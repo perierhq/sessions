@@ -82,6 +82,14 @@ export function piToolSummary(toolName: string, args: unknown): string {
     : line;
 }
 
+/** The ids of the tool calls in an assistant message's content. */
+function piToolCallIds(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) =>
+    block?.type === "toolCall" && block.id ? [String(block.id)] : [],
+  );
+}
+
 /** A visible system row. */
 export function piSystemEntry(content: string): TranscriptEntry {
   return {
@@ -237,6 +245,8 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
   // messages carry none). Its blocks' live frames and durable entries both
   // derive their ids from it (piAssistantBlockId).
   let assistantMessageId: string | undefined;
+  // Tool calls the open message started writing (early cards went out).
+  let messageToolIds: string[] = [];
   let messageTiming: ModelMessageTiming | undefined;
   // Tools running now, in start order, for the "tool" phase frame.
   const runningTools = new Map<string, StreamPhaseTool & { since: number }>();
@@ -261,6 +271,7 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
           const msg = (ev as any).message;
           if (msg?.role !== "assistant") break;
           assistantMessageId = crypto.randomUUID();
+          messageToolIds = [];
           // pi stamps the message with the time its request started.
           const requestStartedAt =
             typeof msg.timestamp === "number" ? msg.timestamp : Date.now();
@@ -304,6 +315,7 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
                 ? ame.partial?.content?.[ame.contentIndex]
                 : undefined;
             if (block?.type === "toolCall" && block.id) {
+              messageToolIds.push(String(block.id));
               push({
                 type: "tool_call_start",
                 toolUseId: String(block.id),
@@ -364,8 +376,11 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
             typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
           ).toISOString();
           if (msg.role === "assistant") {
-            const messageId = assistantMessageId ?? crypto.randomUUID();
+            const streamedId = assistantMessageId;
+            const messageId = streamedId ?? crypto.randomUUID();
+            const startedToolIds = messageToolIds;
             assistantMessageId = undefined;
+            messageToolIds = [];
             messageTiming?.end({
               messageId,
               stopReason: msg.stopReason,
@@ -387,13 +402,11 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
             // each attempt would stack duplicate partial bubbles. Aborted
             // partials DO persist (parity with pi's own jsonl).
             const cutBySteer = steering.consumeCut();
-            if (
+            const superseded =
               cutBySteer &&
               msg.stopReason === "aborted" &&
-              !piResponseHasOutput(msg.content)
-            ) {
-              // Superseded thinking: keep it out of the transcript.
-            } else if (msg.stopReason !== "error") {
+              !piResponseHasOutput(msg.content);
+            if (!superseded && msg.stopReason !== "error") {
               persistRunEntries(
                 piAssistantTranscriptEntries(
                   msg.content,
@@ -402,6 +415,18 @@ export function createPiEventMapper(deps: PiEventMapperDeps): PiEventMapper {
                   messageId,
                 ),
               );
+            } else if (streamedId) {
+              // Superseded thinking or a failed attempt: kept out of the
+              // transcript, so its live blocks and early cards would wait
+              // for durable rows that never land. Tell viewers to drop them.
+              const toolUseIds = [
+                ...new Set([...startedToolIds, ...piToolCallIds(msg.content)]),
+              ];
+              push({
+                type: "discard",
+                messageId: streamedId,
+                ...(toolUseIds.length ? { toolUseIds } : {}),
+              });
             }
           } else if (msg.role === "toolResult" && msg.toolCallId) {
             const { text, images } = contentToTextAndImages(msg.content);

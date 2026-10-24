@@ -123,6 +123,13 @@ export interface StreamEvent {
     // it as an early `stream_tool_use` card with `inputPending: true`. The
     // ordinary `tool_use` event for the same id follows when the tool runs.
     | "tool_call_start"
+    // An assistant message that will never be saved: it ended in an error
+    // that pi retries, or a steer cut it before any output. `messageId` names
+    // its live blocks (`blockId` is `messageId` or `${messageId}-b<n>`), and
+    // `toolUseIds` the tool calls it had started. The gateway relays it as a
+    // `stream_discard` frame so a viewer drops them instead of waiting for
+    // durable rows that never come.
+    | "discard"
     | "tool_use"
     | "tool_result"
     | "usage_snapshot"
@@ -164,6 +171,10 @@ export interface StreamEvent {
   tool?: StreamPhaseTool;
   /** On a phase event with phase "tool": how many tools are running. */
   toolCount?: number;
+  /** On a discard event: the discarded assistant message's id. */
+  messageId?: string;
+  /** On a discard event: the tool calls the message had started writing. */
+  toolUseIds?: string[];
   /** On a model_switch: the exhausted model and the fallback it switched to. */
   fromModel?: string;
   toModel?: string;
