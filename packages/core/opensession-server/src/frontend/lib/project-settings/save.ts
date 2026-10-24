@@ -20,7 +20,7 @@ export interface SendPatchDeps {
   onStale: () => void;
 }
 
-export function isStaleRevision(error: unknown): boolean {
+export function isStaleRevision<Rejected>(error: Rejected): boolean {
   return error instanceof ApiError && error.status === 409;
 }
 

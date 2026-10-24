@@ -205,10 +205,13 @@ function nothingToFallBackTo(e: EffectiveSandbox): boolean {
   );
 }
 
-export function sandboxRowCopy(e: EffectiveSandbox): {
+/** The sandbox row's description and chip. */
+export interface SandboxRowCopy {
   description: string;
   chip: SettingChip;
-} {
+}
+
+export function sandboxRowCopy(e: EffectiveSandbox): SandboxRowCopy {
   const chip: SettingChip =
     e.you.state === "ok" && e.you.source === "default" ? "Default" : "Set here";
   const fallback = defaultLabel(e);
@@ -342,19 +345,19 @@ export function fixLabel(fix: ReadinessFix): string {
   }
 }
 
-const PROVIDER_NAMES: Record<string, string> = {
-  daytona: "Daytona",
-  box: "Boat",
-  tart: "Mac VM",
-  usecomputer: "use.computer",
-  podman: "This machine · container",
-};
+const PROVIDER_NAMES = new Map([
+  ["daytona", "Daytona"],
+  ["box", "Boat"],
+  ["tart", "Mac VM"],
+  ["usecomputer", "use.computer"],
+  ["podman", "This machine · container"],
+]);
 
 /** A sandbox provider by name, with its region when it has one
  *  ("Daytona eu"). `none` and `local` are this machine. */
 export function sandboxName(id: string, region?: string): string {
   if (id === "none" || id === "local" || id === "") return "This machine";
-  const name = PROVIDER_NAMES[id] ?? id;
+  const name = PROVIDER_NAMES.get(id) ?? id;
   return region && id !== "podman" ? `${name} ${region}` : name;
 }
 

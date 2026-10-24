@@ -53,10 +53,7 @@ import { WhereAgentsRunSection } from "./WhereAgentsRunSection";
 
 type Optimistic = (view: ProjectSettingsView) => ProjectSettingsView;
 
-const TITLES = Object.fromEntries(PROJECT_SECTIONS) as Record<
-  ProjectSectionId,
-  string
->;
+const TITLES = new Map<ProjectSectionId, string>(PROJECT_SECTIONS);
 
 /**
  * One project's settings: the readiness checklist, where its agents run,
@@ -333,7 +330,7 @@ export function ProjectSettingsPage({
   );
 }
 
-function saveErrorText(error: unknown): string {
+function saveErrorText<Rejected>(error: Rejected): string {
   if (error instanceof ApiError && error.status === 403)
     return "Only a signed-in person can change this";
   return errorMessage(error, "Couldn't save the setting");
@@ -357,7 +354,7 @@ function Section({
     >
       <div className={PROJECT_SECTION_HEAD}>
         <h2 id={titleId} className={PROJECT_SECTION_TITLE}>
-          {TITLES[id]}
+          {TITLES.get(id)}
         </h2>
         {action}
       </div>

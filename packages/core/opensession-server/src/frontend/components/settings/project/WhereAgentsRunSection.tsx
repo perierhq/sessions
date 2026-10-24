@@ -55,8 +55,7 @@ export function WhereAgentsRunSection({
   const regions: Record<string, string | undefined> = {};
   for (const connection of status.data?.connections ?? []) {
     const region = connection.settings.region;
-    if (typeof region === "string" && region)
-      regions[connection.provider] = region;
+    if (region) regions[connection.provider] = region;
   }
   const effective = view.effective.sandbox;
   const copy = sandboxRowCopy(effective);

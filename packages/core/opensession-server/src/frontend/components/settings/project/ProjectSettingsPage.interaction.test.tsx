@@ -58,14 +58,13 @@ mock.module("../../../hooks/useIsPhone", () => ({ useIsPhone: () => phone }));
 let cached: ProjectSettingsView = READY_4_OF_6;
 let onServer: ProjectSettingsView = READY_4_OF_6;
 let refetches = 0;
-const mutate = async (
-  next?: ProjectSettingsView | ((v?: ProjectSettingsView) => unknown),
-) => {
+type Updater = (v?: ProjectSettingsView) => ProjectSettingsView | undefined;
+const mutate = async (next?: ProjectSettingsView | Updater) => {
   if (next === undefined) {
     refetches++;
     cached = onServer;
-  } else if (typeof next === "function") {
-    cached = (next(cached) as ProjectSettingsView | undefined) ?? cached;
+  } else if (next instanceof Function) {
+    cached = next(cached) ?? cached;
   } else cached = next;
   return cached;
 };
@@ -81,11 +80,13 @@ mock.module("../../../hooks/useProjects", () => ({
 const patches: ProjectSettingsPatch[] = [];
 let respond: (patch: ProjectSettingsPatch) => ProjectSettingsView = () =>
   onServer;
+/** A response that waits, when set. */
+let respondLater: (() => Promise<ProjectSettingsView>) | null = null;
 mock.module("../../../lib/api/projects", () => ({
   ApiError,
   patchProjectSettings: async (_: string, patch: ProjectSettingsPatch) => {
     patches.push(patch);
-    return respond(patch);
+    return respondLater ? respondLater() : respond(patch);
   },
   allowAgentsOnConnector: async () => ({ ok: true }),
   migrateProjects: async () => ({}),
@@ -126,6 +127,7 @@ beforeEach(() => {
   toasts.length = 0;
   phone = false;
   respond = () => onServer;
+  respondLater = null;
 });
 afterEach(() => harness.unmountAll());
 
@@ -160,8 +162,7 @@ describe("saving a cell", () => {
   test("the cell reads – before the server answers", async () => {
     let release: (v: ProjectSettingsView) => void = () => {};
     const pending = new Promise<ProjectSettingsView>((r) => (release = r));
-    // SAFETY: the mocked client awaits whatever `respond` returns.
-    respond = (() => pending) as unknown as typeof respond;
+    respondLater = () => pending;
     const page = mountPage();
     clickCell(page.output());
     await settle(10);

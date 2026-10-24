@@ -83,10 +83,12 @@ export function PairRunnerDialog({
     setRowError(null);
     setBusy(runner.id);
     const done = () => setBusy(null);
-    const fail = (fallback: string) => (error: unknown) => {
-      setBusy(null);
-      setRowError({ id: runner.id, message: errorMessage(error, fallback) });
-    };
+    const fail =
+      (fallback: string) =>
+      <Rejected,>(error: Rejected) => {
+        setBusy(null);
+        setRowError({ id: runner.id, message: errorMessage(error, fallback) });
+      };
     if (on) {
       bindProjectRunner(project, runner.id).then((next) => {
         done();

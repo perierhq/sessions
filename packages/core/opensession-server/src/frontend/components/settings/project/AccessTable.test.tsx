@@ -3,10 +3,12 @@
 // is hook-free, so a click is its element's own onClick.
 import { describe, expect, test } from "bun:test";
 import type * as React from "react";
+import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AccessCellChange } from "../../../../shared/project-settings";
 import { READY_4_OF_6 } from "../../../../shared/project-settings-fixtures";
-import { elements } from "../../../tools/hook-harness";
+import { elements, find } from "../../../tools/hook-harness";
+import { Button } from "../../../ui/button";
 import { AccessTable } from "./AccessTable";
 
 type ButtonProps = React.ComponentProps<"button">;
@@ -24,9 +26,17 @@ function table(
 
 /** Every native button in the tree, with its props. */
 function buttons(tree: React.ReactNode): ButtonProps[] {
-  return elements(tree)
-    .filter((el) => el.type === "button")
-    .map((el) => el.props as ButtonProps);
+  const out: ButtonProps[] = [];
+  for (const el of elements(tree))
+    if (el.type === "button" && isValidElement<ButtonProps>(el))
+      out.push(el.props);
+  return out;
+}
+
+/** A click, as these handlers read it. */
+function click(props: { onClick?: ButtonProps["onClick"] } | undefined) {
+  // SAFETY: every handler under test ignores its event argument.
+  props?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
 }
 
 describe("AccessTable", () => {
@@ -36,7 +46,7 @@ describe("AccessTable", () => {
       (b) => b["aria-label"] === "Linear for Reviews: Yes",
     );
     expect(cell?.["aria-pressed"]).toBe(true);
-    cell?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+    click(cell);
     expect(changes).toEqual([
       {
         row: { kind: "connection", server: "linear" },
@@ -52,7 +62,7 @@ describe("AccessTable", () => {
       (b) => b["aria-label"] === "Cloudflare token for Investigator: Ask once",
     );
     expect(cell?.["aria-pressed"]).toBeUndefined();
-    cell?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+    click(cell);
     expect(changes[0]?.value).toBe("standing");
   });
 
@@ -69,12 +79,12 @@ describe("AccessTable", () => {
 
   test("Allow agents fixes the Grafana row", () => {
     const allowed: string[] = [];
-    const el = elements(table(undefined, (s) => allowed.push(s))).find(
-      (e) => (e.props as { children?: unknown }).children === "Allow agents",
+    const el = find(
+      table(undefined, (s) => allowed.push(s)),
+      Button,
+      (p) => p.children === "Allow agents",
     );
-    (el?.props as ButtonProps | undefined)?.onClick?.(
-      {} as React.MouseEvent<HTMLButtonElement>,
-    );
+    click(el?.props);
     expect(allowed).toEqual(["grafana"]);
   });
 

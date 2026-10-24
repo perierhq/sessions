@@ -9,6 +9,7 @@ import { READY_4_OF_6 } from "../../../../shared/project-settings-fixtures";
 import {
   createHookHarness,
   elements,
+  find,
   reactWithHarness,
   settle,
 } from "../../../tools/hook-harness";
@@ -18,6 +19,7 @@ const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
 const { AccessRoleList } = await import("./AccessRoleList");
+const { CellFace } = await import("./CellFace");
 
 afterEach(() => harness.unmountAll());
 
@@ -25,19 +27,43 @@ type ButtonProps = React.ComponentProps<"button">;
 
 /** The text inside a tree, children only. */
 function text(node: ReactNode): string {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (node == null || node === true || node === false) return "";
   if (Array.isArray(node)) return node.map(text).join("");
   if (isValidElement<{ children?: ReactNode }>(node))
     return text(node.props.children);
-  return "";
+  return String(node);
 }
 
+function buttons(tree: ReactNode): ButtonProps[] {
+  const out: ButtonProps[] = [];
+  for (const el of elements(tree))
+    if (el.type === "button" && isValidElement<ButtonProps>(el))
+      out.push(el.props);
+  return out;
+}
+
+/** The role chips: pressed or not, named by their words. */
 function chips(tree: ReactNode): ButtonProps[] {
-  return elements(tree)
-    .filter((el) => el.type === "button")
-    .map((el) => el.props as ButtonProps)
-    .filter((p) => p["aria-pressed"] !== undefined && !p["aria-label"]);
+  return buttons(tree).filter(
+    (p) => p["aria-pressed"] !== undefined && !p["aria-label"],
+  );
+}
+
+/** The element a screen reader calls `name`. */
+function named(tree: ReactNode, name: string) {
+  for (const el of elements(tree))
+    if (
+      isValidElement<{ "aria-label"?: string; children?: ReactNode }>(el) &&
+      el.props["aria-label"] === name
+    )
+      return el;
+  return undefined;
+}
+
+/** A click, as these handlers read it. */
+function click(props: ButtonProps | undefined) {
+  // SAFETY: every handler under test ignores its event argument.
+  props?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
 }
 
 const mount = (onCellChange = (_: AccessCellChange) => {}) =>
@@ -66,47 +92,33 @@ describe("AccessRoleList", () => {
     const verifier = chips(list.output()).find(
       (c) => text(c.children) === "Verifier",
     );
-    verifier?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+    click(verifier);
     await settle();
     const tree = list.output();
     expect(chips(tree).find((c) => c["aria-pressed"])?.children).toBe(
       "Verifier",
     );
-    const named = elements(tree).find(
-      (el) =>
-        (el.props as { "aria-label"?: string })["aria-label"] ===
-        "Changes code in acme-web for Verifier: Read only",
+    const code = named(
+      tree,
+      "Changes code in acme-web for Verifier: Read only",
     );
-    expect(named).toBeDefined();
-    expect(text((named!.props as { children?: ReactNode }).children)).toBe("");
+    expect(code).toBeDefined();
     // The value itself renders through CellFace with the cell's value.
-    const face = elements(named).find(
-      (el) => (el.props as { cell?: { value: string } }).cell !== undefined,
-    );
-    expect((face?.props as { cell: { value: string } }).cell.value).toBe(
-      "read",
-    );
+    const face = find(code, CellFace);
+    expect(face?.props.cell.value).toBe("read");
   });
 
   test("a checkmark row toggles its cell for the shown role", async () => {
     const changes: AccessCellChange[] = [];
     const list = mount((c) => changes.push(c));
-    chips(list.output())
-      .find((c) => text(c.children) === "Reviews")
-      ?.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+    click(chips(list.output()).find((c) => text(c.children) === "Reviews"));
     await settle();
-    const linear = elements(list.output()).find(
-      (el) =>
-        (el.props as { "aria-label"?: string })["aria-label"] ===
-        "Linear for Reviews: Yes",
+    const linear = buttons(list.output()).find(
+      (b) => b["aria-label"] === "Linear for Reviews: Yes",
     );
-    expect((linear?.props as ButtonProps)["aria-pressed"]).toBe(true);
-    expect(String((linear?.props as ButtonProps).className)).toContain(
-      "size-11",
-    );
-    (linear?.props as ButtonProps).onClick?.(
-      {} as React.MouseEvent<HTMLButtonElement>,
-    );
+    expect(linear?.["aria-pressed"]).toBe(true);
+    expect(String(linear?.className)).toContain("size-11");
+    click(linear);
     expect(changes).toEqual([
       {
         row: { kind: "connection", server: "linear" },

@@ -64,9 +64,8 @@ export function ConnectSandboxForm({
       toast(errorMessage(error, `Couldn't connect ${name}`), {
         variant: "error",
       });
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   return (

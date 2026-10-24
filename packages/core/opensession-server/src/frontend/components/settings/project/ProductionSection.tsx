@@ -49,11 +49,11 @@ export type ProductionDialog =
       nextKind: ActionKind;
     };
 
-const PLATFORM: Record<string, string> = {
-  linux: "Linux",
-  darwin: "macOS",
-  win32: "Windows",
-};
+const PLATFORM = new Map([
+  ["linux", "Linux"],
+  ["darwin", "macOS"],
+  ["win32", "Windows"],
+]);
 
 /** A phone row has room for about this much of a command. */
 const PHONE_COMMAND_CHARS = 34;
@@ -154,7 +154,7 @@ export function ProductionSection({
               <span className={PRODUCTION_TEXT}>
                 <span className={PRODUCTION_TITLE}>{runner.name}</span>
                 <span className={PRODUCTION_DESC}>
-                  {`${PLATFORM[runner.platform] ?? runner.platform} · reserved for ${project} · checks and actions run here`}
+                  {`${PLATFORM.get(runner.platform) ?? runner.platform} · reserved for ${project} · checks and actions run here`}
                 </span>
               </span>
               <span className={PRODUCTION_VALUE}>
