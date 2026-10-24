@@ -32,6 +32,7 @@ import {
   type Signal,
 } from "../../../shared/incidents";
 import { AUTOMATION_DENIED_TOOLS } from "../../automation-denied-tools";
+import { RunSetupRefusedError } from "../../run-setup-refusal";
 import { incidentAudit } from "../audit-sink";
 import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
@@ -47,7 +48,8 @@ import {
 } from "./fields";
 import { AccessSettingsError, getIncidentAccess } from "./settings-store";
 
-export class AgentAccessError extends Error {
+/** A refusal: the turn or spawn cannot start until the access changes. */
+export class AgentAccessError extends RunSetupRefusedError {
   constructor(
     message: string,
     readonly code: "role" | "incident" | "gate" | "settings" | "spawn" | "turn",

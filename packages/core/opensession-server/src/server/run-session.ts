@@ -135,6 +135,7 @@ import {
   sandboxProviderConfigured,
 } from "./sandbox/config";
 import { disposeAutomationSandbox } from "./sandbox/automation-disposal";
+import { isRunSetupRefusal, RunSetupRefusedError } from "./run-setup-refusal";
 import { ensureSandboxWithTransientRetry } from "./sandbox/reliability";
 import {
   automationUnderProject,
@@ -663,6 +664,9 @@ export async function enqueuePrompt(
   });
   persistQueues();
   await broadcastQueue(sessionId);
+  // A new message is a new reason to try: it lifts a hold left by a refused
+  // setup, and the drain tries the whole queue once more.
+  refusedQueues.delete(sessionId);
   // Queueing is a delivery promise, not just a UI state. Arm the idle
   // watcher only after the durable queue write commits.
   watchExternalRunAndDrain(sessionId);
@@ -1506,6 +1510,27 @@ export function parkQueueForShutdown(sessionId: string): boolean {
   return true;
 }
 
+// Sessions whose queued turn was refused at setup (RunSetupRefusedError).
+// The messages stay queued, but nothing drains them on a timer: the same
+// policy or settings would refuse them again every minute. The next queued
+// message or completed turn lifts the hold. In memory only, so a restart
+// tries each held queue once more.
+const refusedQueues: Set<string> = (g.__asyncRefusedQueues ??= new Set());
+
+/** Hold a session's queue after its turn was refused at setup. */
+function holdRefusedQueue(sessionId: string, error: Error): void {
+  refusedQueues.add(sessionId);
+  console.warn(
+    `[queue] Holding the queue for ${sessionId}; its turn was refused at setup: ${error.message}`,
+  );
+  broadcastToSession(sessionId, {
+    type: "notice",
+    sessionId,
+    message:
+      "Queued messages are on hold because the session could not start. Send a message to try again.",
+  });
+}
+
 /**
  * Serialize queue draining per session. A sleeping Sandbox may take seconds
  * to resume, during which later composer sends must stay behind the first
@@ -1527,6 +1552,8 @@ async function drainQueueInner(sessionId: string): Promise<void> {
     // The user pressed stop: leave the queue visible-but-parked until their
     // next explicit action instead of restarting the run they just stopped.
     if (await isUserStopped(sessionId)) return;
+    // A refused setup holds the queue until something new arrives.
+    if (refusedQueues.has(sessionId)) return;
     // Graceful shutdown: park the queue instead of starting a turn. A turn
     // started after the shutdown snapshot races the drain deadline (an
     // in-process one is SIGKILLed there and redone from the journal), and
@@ -1630,6 +1657,9 @@ async function drainQueueInner(sessionId: string): Promise<void> {
       // The batch was already spliced out and persisted away — put it back at
       // the front of the queue so a throw doesn't lose the messages.
       await failPromptDispatch(sessionId, promptEntryId);
+      // runSessionPrompt already reported the refusal on the session; the
+      // messages wait for the next send instead of a timer.
+      if (isRunSetupRefusal(e)) holdRefusedQueue(sessionId, e);
       throw e;
     }
   }
@@ -1706,7 +1736,7 @@ export function watchExternalRunAndDrain(sessionId: string): void {
   const tick = async (): Promise<void> => {
     try {
       const session = findSession(sessionId);
-      if (!session) {
+      if (!session || refusedQueues.has(sessionId)) {
         stop();
         return;
       }
@@ -1732,6 +1762,12 @@ export function watchExternalRunAndDrain(sessionId: string): void {
       if (remaining.queued.length) schedule(drainWatcherDelay(0));
       else stop();
     } catch (error) {
+      // A refused setup is reported once and holds the queue; retrying it
+      // on a timer would repeat the same refusal indefinitely.
+      if (isRunSetupRefusal(error) || refusedQueues.has(sessionId)) {
+        stop();
+        return;
+      }
       watcher.failures += 1;
       console.error(
         `[queue] Drain after external run failed for ${sessionId}; retrying:`,
@@ -2054,12 +2090,12 @@ export async function maybeLaunchSandboxedRun(
       sandboxReadyMs: Date.now() - sandboxStartedAt,
     });
   if (!sandboxesEnabled()) {
-    throw new Error(
+    throw new RunSetupRefusedError(
       "Sandbox execution is disabled by the operator kill switch",
     );
   }
   if (!sandboxProviderConfigured(sbProvider)) {
-    throw new Error(
+    throw new RunSetupRefusedError(
       `Sandbox provider "${sbProvider}" is not configured and Ready`,
     );
   }
@@ -2082,7 +2118,7 @@ export async function maybeLaunchSandboxedRun(
       owningAutomation.accountId !== session.accountId ||
       !!session.sandbox?.sandboxId
     ) {
-      throw new Error(
+      throw new RunSetupRefusedError(
         "Sandbox automation resume policy is unavailable or has changed",
       );
     }
@@ -2090,7 +2126,7 @@ export async function maybeLaunchSandboxedRun(
       ...owningAutomation,
       model: session.model || owningAutomation.model,
     });
-    if (validation) throw new Error(validation.error);
+    if (validation) throw new RunSetupRefusedError(validation.error);
   }
   // Hoisted so the catch below can dispose a sandbox when launch fails after
   // ensure but before the event stream exists.
@@ -2605,6 +2641,30 @@ export async function maybeQueueAutoContinue(opts: {
   return true;
 }
 
+/** Surface a refused setup on the session, like a failed opening setup. */
+async function reportRunSetupRefusal(
+  sessionId: string,
+  error: Error,
+): Promise<void> {
+  const message = `Session setup failed: ${error.message}`;
+  try {
+    broadcastToSession(sessionId, { type: "error", sessionId, message });
+    await recordRunOutcome(sessionId, message);
+    broadcastToSession(sessionId, { type: "stream_done", sessionId });
+    broadcastToSession(sessionId, {
+      type: "session_status",
+      sessionId,
+      isRunning: false,
+    });
+  } catch (reportError) {
+    // The refusal itself is still rethrown to the caller.
+    console.error(
+      `[run] Could not record the refused setup for ${sessionId}:`,
+      reportError,
+    );
+  }
+}
+
 class RunPreparationDeferredError extends Error {
   constructor(sessionId: string) {
     super(`Session ${sessionId} already has an accepted run preparation`);
@@ -2722,6 +2782,8 @@ export async function runSessionPrompt(
     // Sandboxes and non-standard runners may not create an active-run journal.
     // A completed turn is nevertheless a safe acknowledgement of its dispatch.
     await acknowledgePromptDispatch(sessionId, durablePromptEntryId);
+    // A turn ran, so whatever refused an earlier one has changed.
+    refusedQueues.delete(sessionId);
   } catch (e) {
     // A throw can land before registration (workspace revive, session-note
     // build, …) or after a detached host registered but failed before its
@@ -2736,6 +2798,12 @@ export async function runSessionPrompt(
         transition: transitionRunState,
       }),
     );
+    // A refused setup is the run's outcome: record it on the session (and
+    // in its transcript) so the person, a parent session or the incident
+    // watching this agent sees the real reason. Recorded after the run state
+    // settled above, so this does not start a second transition.
+    if (isRunSetupRefusal(e) && !isAgentSessionCancelled(sessionId, startToken))
+      await reportRunSetupRefusal(sessionId, e);
     // A direct sandbox send owns the dispatch it created above, so a normal
     // start failure retires that recovery record. A queue drain passes its own
     // dispatch in and must retain it for the caller to restore atomically.
@@ -2794,7 +2862,7 @@ async function runSessionPromptInner(
       sessionId,
       message: repoBlocker,
     });
-    throw new Error(repoBlocker);
+    throw new RunSetupRefusedError(repoBlocker);
   }
   if (autoRetry) {
     broadcastToSession(sessionId, {

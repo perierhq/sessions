@@ -23,6 +23,8 @@ import type { SandboxSessionSpec } from "./sandbox/provider";
 const tmp = mkdtempSync(`${tmpdir()}/zz-incident-sandbox-drain-`);
 
 const ensureCalls: SandboxSessionSpec[] = [];
+let providerConfigured = true;
+let configuredChecks = 0;
 let ensureError: Error | null = null;
 const stubSandbox = {
   id: "sbx-incident-stub",
@@ -128,6 +130,16 @@ function writeIncidentAgent(id: string) {
 const sessionJson = (id: string) =>
   JSON.parse(readFileSync(`${tmp}/${id}.json`, "utf-8"));
 
+async function waitForLastRunError(id: string): Promise<{ message: string }> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const error = sessionJson(id).lastRunError;
+    if (error?.message) return error;
+    await Bun.sleep(10);
+  }
+  throw new Error(`lastRunError was not persisted for ${id}`);
+}
+
 beforeAll(async () => {
   process.env.OPENSESSION_PI_DETACH = "0";
   process.env.OPENSESSION_TEST_IN_PROCESS_RUNS = "1";
@@ -150,7 +162,10 @@ beforeAll(async () => {
   mock.module("./sandbox/config", () => ({
     ...sandboxConfig,
     sandboxesEnabled: () => true,
-    sandboxProviderConfigured: () => true,
+    sandboxProviderConfigured: () => {
+      configuredChecks += 1;
+      return providerConfigured;
+    },
   }));
   const sandboxIndex = await import("./sandbox");
   mock.module("./sandbox", () => ({
@@ -284,4 +299,67 @@ describe("incident agent in a podman Sandbox (queue drain)", () => {
     });
     expect(queueState.promptQueues.get(sid)?.length ?? 0).toBe(0);
   });
+
+  test("a refused setup fails once, is reported, and waits for the next message", async () => {
+    if (!redirected) return;
+    const sid = "bks-zz-incident-refused";
+    writeIncidentAgent(sid);
+    sessionCache.invalidateSessionsCache();
+    ensureCalls.length = 0;
+    providerConfigured = false;
+    const fake = fakeEngineMod.makeFakeEngine([
+      { kind: "clean", engineSessionId: "ses_zz_refused", text: ["looking"] },
+      { kind: "clean", text: ["still looking"] },
+    ]);
+    agentRunner.__setEngineForTest(fake.engine);
+    try {
+      // A send: the durable enqueue arms the drain watcher, and the sender
+      // drains at once (ws-handlers).
+      await runSession.enqueuePrompt(
+        sid,
+        queueState.queueItem({ content: "investigate", user: "Operator" }),
+      );
+      const checksBefore = configuredChecks;
+      await expect(runSession.drainQueue(sid)).rejects.toThrow(
+        'Sandbox provider "podman" is not configured and Ready',
+      );
+      const checksAfterFailure = configuredChecks;
+      expect(checksAfterFailure).toBeGreaterThan(checksBefore);
+
+      // Reported once on the session with the real reason, which is what an
+      // incident watching this agent reads as its error.
+      expect((await waitForLastRunError(sid)).message).toBe(
+        'Session setup failed: Sandbox provider "podman" is not configured and Ready',
+      );
+      // The message is kept.
+      expect(queueState.promptQueues.get(sid)?.length ?? 0).toBe(1);
+
+      // The watcher the enqueue armed stops instead of retrying the same
+      // refusal on its backoff.
+      const deadline = Date.now() + 8_000;
+      while (runSession.sessionQueueOwnerActive(sid) && Date.now() < deadline)
+        await Bun.sleep(50);
+      expect(runSession.sessionQueueOwnerActive(sid)).toBe(false);
+      expect(configuredChecks).toBe(checksAfterFailure);
+      expect(ensureCalls).toHaveLength(0);
+      expect(fake.calls).toHaveLength(0);
+
+      // Once the cause is fixed, the next message delivers the whole queue.
+      providerConfigured = true;
+      await runSession.enqueuePrompt(
+        sid,
+        queueState.queueItem({ content: "try again", user: "Operator" }),
+      );
+      await runSession.drainQueue(sid);
+      const delivered = fake.calls.map((call) => call.prompt).join("\n");
+      expect(delivered).toContain("investigate");
+      expect(delivered).toContain("try again");
+      expect(delivered.indexOf("investigate")).toBeLessThan(
+        delivered.indexOf("try again"),
+      );
+      expect(queueState.promptQueues.get(sid)?.length ?? 0).toBe(0);
+    } finally {
+      providerConfigured = true;
+    }
+  }, 20_000);
 });
