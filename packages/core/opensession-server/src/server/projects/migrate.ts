@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type {
   MigrationResult,
   ProjectMigrationReport,
+  ProjectRemigrateResult,
   ProjectSettingsDocument,
 } from "../../shared/project-settings";
 import { incidentAudit } from "../incidents/audit-sink";
@@ -27,6 +28,7 @@ import {
   MIGRATION_MARKER_KEY,
   noteMigratedDocument,
   projectDocuments,
+  withDocumentDefaults,
 } from "./store";
 
 export const PERSONAL_SANDBOX_PREF_KEY = "sandbox-default";
@@ -188,12 +190,112 @@ export async function migrateProjectSettings(opts: {
   };
 }
 
-function later(a: unknown, b: string): boolean {
-  return typeof a === "string" && a > b;
+/** Back up one project's legacy settings and its stored document before a
+ *  re-migration overwrites the document. Owner-only, never overwritten. */
+async function writeProjectBackup(
+  project: string,
+  at: string,
+  document: unknown,
+): Promise<string> {
+  const [incidentProject, access] = await Promise.all([
+    legacyProjectDocuments().get(project),
+    legacyAccessDocuments().get(project),
+  ]);
+  const dir = backupDirectory();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const path = join(
+    dir,
+    `project-settings-v1-${project}-${at.replace(/[:.]/g, "-")}.json`,
+  );
+  await writeFile(
+    path,
+    JSON.stringify(
+      {
+        version: MIGRATION_VERSION,
+        at,
+        project,
+        document,
+        "incident-projects": incidentProject,
+        "incident-access": access,
+        sandbox: legacyEnvironment().sandbox().perRepo[project] ?? null,
+      },
+      null,
+      2,
+    ),
+    { flag: "wx", mode: 0o600 },
+  );
+  await chmod(path, 0o600);
+  return path;
 }
 
+/**
+ * Compose one project from its legacy settings again, after they changed
+ * during an upgrade. Without `force` it only reports what the legacy
+ * settings compose to. With it, it backs up the stored document and the
+ * legacy settings first, then replaces the document (a new revision,
+ * `migratedAt` now), keeping its release hook secret when the legacy
+ * settings have none. Callers make sure a signed-in person confirmed it.
+ */
+export async function remigrateProject(
+  project: string,
+  opts: { force: boolean; by: string },
+): Promise<ProjectRemigrateResult> {
+  const at = new Date().toISOString();
+  const { document, report } = composeFromLegacy(
+    project,
+    await loadLegacySources(project),
+    at,
+  );
+  if (!opts.force)
+    return { project, report, backupPath: null, overwritten: false };
+  const stored = await projectDocuments().get(project);
+  const backupPath = await writeProjectBackup(project, at, stored);
+  const committed = await projectDocuments().update(project, (current) => {
+    const previous =
+      current === null ? null : withDocumentDefaults(project, current);
+    return {
+      ...document,
+      revision: (previous?.revision ?? 0) + 1,
+      releaseHookSecret:
+        document.releaseHookSecret ?? previous?.releaseHookSecret,
+      migratedAt: at,
+      updatedAt: at,
+      updatedBy: opts.by,
+    } satisfies ProjectSettingsDocument;
+  });
+  noteMigratedDocument(project, committed);
+  driftSeen.delete(project);
+  incidentAudit({
+    kind: "project_settings_remigrated",
+    project,
+    by: opts.by,
+    backupPath,
+    dropped: report.dropped.length,
+  });
+  return { project, report, backupPath, overwritten: true };
+}
+
+/** When a legacy record was last written: its `updatedAt`, or a release
+ *  recorded later (an old gateway appends releases without touching
+ *  `updatedAt`). */
+function legacyWrittenAt(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as { updatedAt?: unknown; releases?: unknown };
+  let at = typeof record.updatedAt === "string" ? record.updatedAt : null;
+  if (Array.isArray(record.releases))
+    for (const release of record.releases) {
+      const r = (release as { at?: unknown } | null)?.at;
+      if (typeof r === "string" && (at === null || r > at)) at = r;
+    }
+  return at;
+}
+
+/** Drift already audited, per project, by the legacy write time seen. */
+const driftSeen = new Map<string, string>();
+
 /** Projects whose legacy settings were written after the project was
- *  migrated. */
+ *  migrated. Audits `project_settings_legacy_drift` the first time this
+ *  process sees each such write. */
 export async function legacyDrift(): Promise<string[]> {
   const docs = (await projectDocuments().list()).filter(
     (row) => row.key !== MIGRATION_MARKER_KEY,
@@ -209,14 +311,23 @@ export async function legacyDrift(): Promise<string[]> {
     legacyProjectDocuments().getMany(keys),
     legacyAccessDocuments().getMany(keys),
   ]);
-  const drift = new Set<string>();
+  const drift = new Map<string, string>();
   for (const row of [...projects, ...access]) {
-    const at = migrated.get(row.key);
-    if (
-      at &&
-      later((row.value as { updatedAt?: unknown } | null)?.updatedAt, at)
-    )
-      drift.add(row.key);
+    const migratedAt = migrated.get(row.key);
+    const legacyAt = legacyWrittenAt(row.value);
+    if (!migratedAt || !legacyAt || legacyAt <= migratedAt) continue;
+    const seen = drift.get(row.key);
+    if (!seen || legacyAt > seen) drift.set(row.key, legacyAt);
   }
-  return [...drift].sort();
+  for (const [project, legacyAt] of drift) {
+    if (driftSeen.get(project) === legacyAt) continue;
+    driftSeen.set(project, legacyAt);
+    incidentAudit({
+      kind: "project_settings_legacy_drift",
+      project,
+      legacyAt,
+      migratedAt: migrated.get(project),
+    });
+  }
+  return [...drift.keys()].sort();
 }

@@ -5,7 +5,11 @@ import { catalogDocuments } from "../catalog-documents";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { getUiPrefs, patchUiPrefs } from "../ui-prefs";
 import { __setLegacyEnvironmentForTest } from "./legacy";
-import { legacyDrift, migrateProjectSettings } from "./migrate";
+import {
+  legacyDrift,
+  migrateProjectSettings,
+  remigrateProject,
+} from "./migrate";
 import {
   __setProjectStoreContextForTest,
   getProjectDocument,
@@ -169,4 +173,97 @@ test("an unmigrated project reads through its legacy settings; its first write m
     incidents: { maxRounds: 2 },
   });
   expect(written.migratedAt).toBeString();
+});
+
+test("drift is audited once, and a release the old gateway recorded is drift", async () => {
+  await legacyProjects().set("acme-web", {
+    project: "acme-web",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+  });
+  await migrateProjectSettings({ dryRun: false, by: "Ada" });
+  // An old gateway appends a release without touching updatedAt.
+  const later = new Date(Date.now() + 60_000).toISOString();
+  await legacyProjects().set("acme-web", {
+    project: "acme-web",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    releases: [{ id: "rel-1", ref: "abc123", at: later }],
+  });
+  expect(await legacyDrift()).toEqual(["acme-web"]);
+  expect(await legacyDrift()).toEqual(["acme-web"]);
+  const drifts = kit.audits.filter(
+    (a) => a.kind === "project_settings_legacy_drift",
+  );
+  expect(drifts).toEqual([
+    {
+      kind: "project_settings_legacy_drift",
+      project: "acme-web",
+      legacyAt: later,
+      migratedAt: expect.any(String),
+    },
+  ]);
+});
+
+test("re-migrating one project needs a confirm, backs up, then recomposes it", async () => {
+  await legacyProjects().set("acme-web", {
+    project: "acme-web",
+    autonomy: "propose",
+    releaseHookSecret: "c".repeat(48),
+    updatedAt: "2026-09-01T00:00:00.000Z",
+  });
+  await migrateProjectSettings({ dryRun: false, by: "Ada" });
+  const edited = await updateProjectDocument(
+    "acme-web",
+    { expectedRevision: 1, incidents: { maxRounds: 1 } },
+    { name: "Ada", verified: true, login: "ada" },
+  );
+  if ("error" in edited) throw new Error(edited.error);
+  await Bun.sleep(5);
+  const later = new Date().toISOString();
+  await Bun.sleep(5);
+  await legacyProjects().set("acme-web", {
+    project: "acme-web",
+    autonomy: "watch",
+    releaseHookSecret: "c".repeat(48),
+    updatedAt: later,
+  });
+  expect(await legacyDrift()).toEqual(["acme-web"]);
+  const before = (await backups()).length;
+
+  // Without the confirm: what it would do, and nothing written.
+  const preview = await remigrateProject("acme-web", {
+    force: false,
+    by: "Ada",
+  });
+  expect(preview).toMatchObject({
+    project: "acme-web",
+    overwritten: false,
+    backupPath: null,
+  });
+  expect((await backups()).length).toBe(before);
+  expect((await getProjectDocument("acme-web")).revision).toBe(2);
+
+  const done = await remigrateProject("acme-web", { force: true, by: "Ada" });
+  expect(done.overwritten).toBe(true);
+  const backup = JSON.parse(await readFile(done.backupPath!, "utf8"));
+  expect(backup.project).toBe("acme-web");
+  expect(backup.document).toMatchObject({
+    revision: 2,
+    incidents: { maxRounds: 1 },
+  });
+  expect(backup["incident-projects"]).toMatchObject({ autonomy: "watch" });
+  const doc = await getProjectDocument("acme-web");
+  expect(doc).toMatchObject({
+    revision: 3,
+    updatedBy: "Ada",
+    releaseHookSecret: "c".repeat(48),
+    incidents: { autonomy: "watch" },
+  });
+  expect(doc.incidents.maxRounds).not.toBe(1);
+  expect(await legacyDrift()).toEqual([]);
+  expect(kit.audits.at(-1)).toMatchObject({
+    kind: "project_settings_remigrated",
+    project: "acme-web",
+    by: "Ada",
+    backupPath: done.backupPath,
+  });
 });

@@ -385,6 +385,16 @@ export interface MigrationResult {
   alreadyMigrated: string[];
 }
 
+/** One project composed from its legacy settings again (after drift). */
+export interface ProjectRemigrateResult {
+  project: string;
+  report: ProjectMigrationReport;
+  /** `null` until confirmed (`force`); the backup taken before writing. */
+  backupPath: string | null;
+  /** Whether the stored document was replaced. */
+  overwritten: boolean;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /** A project nobody has set anything for: every role on the global

@@ -10,6 +10,7 @@
  *   PATCH /api/projects/:id/settings             ProjectSettingsPatch → view
  *   POST  /api/projects/:id/production/runners   {runnerId, shared?} → view
  *   POST  /api/projects/migrate                  {dryRun?} → MigrationResult
+ *   POST  /api/projects/:id/migrate              {force?} → ProjectRemigrateResult
  *   POST  /api/connections/:server/allow-unattended {on} → {ok:true}
  *
  * Identity is the verified sign-in only; a claimed `user` is never taken.
@@ -22,6 +23,7 @@
 import type {
   MigrationResult,
   PreviewsChoice,
+  ProjectRemigrateResult,
   ProjectSettingsDocument,
   ProjectSettingsPatch,
 } from "../../shared/project-settings";
@@ -60,6 +62,12 @@ export interface ProjectRouteDeps {
     on: boolean,
   ): { ok: true } | { error: string };
   migrate(opts: { dryRun: boolean; by: string }): Promise<MigrationResult>;
+  /** Compose one project from its legacy settings again; overwrites the
+   *  document (after a backup) only with `force`. */
+  remigrate(
+    project: string,
+    opts: { force: boolean; by: string },
+  ): Promise<ProjectRemigrateResult>;
   audit(event: Record<string, unknown>): void;
 }
 
@@ -81,6 +89,7 @@ function deps(): ProjectRouteDeps {
 const LIST_PATH = "/api/projects";
 const MIGRATE_PATH = "/api/projects/migrate";
 const SETTINGS_PATH = /^\/api\/projects\/([^/]+)\/settings$/;
+const REMIGRATE_PATH = /^\/api\/projects\/([^/]+)\/migrate$/;
 const RUNNERS_PATH = /^\/api\/projects\/([^/]+)\/production\/runners$/;
 const ALLOW_UNATTENDED_PATH = /^\/api\/connections\/([^/]+)\/allow-unattended$/;
 
@@ -266,6 +275,34 @@ async function migrate(ctx: RouteContext): Promise<Response> {
   }
 }
 
+async function remigrate(
+  ctx: RouteContext,
+  project: string,
+): Promise<Response> {
+  installLiveProjectDeps();
+  if (!projectViewDeps().projectExists(project)) return notFound();
+  const body = await readJsonObject(ctx.req);
+  if (body instanceof Response) return body;
+  const person = verifiedPerson(ctx);
+  if (!person)
+    return error("Only a signed-in person can migrate project settings", 403);
+  if (body.force !== undefined && typeof body.force !== "boolean")
+    return error("force must be true or false", 400);
+  try {
+    return Response.json(
+      await deps().remigrate(project, {
+        force: body.force === true,
+        by: person,
+      }),
+    );
+  } catch (cause) {
+    return error(
+      cause instanceof Error ? cause.message : "Couldn't migrate",
+      500,
+    );
+  }
+}
+
 export async function handleProjectsRoutes(
   ctx: RouteContext,
 ): Promise<Response | undefined> {
@@ -288,6 +325,12 @@ export async function handleProjectsRoutes(
       return settingsView(project, verifiedPerson(ctx) !== "");
     if (req.method === "PATCH") return patchSettings(ctx, project);
     return undefined;
+  }
+
+  const again = REMIGRATE_PATH.exec(path);
+  if (again && req.method === "POST") {
+    const project = decodeSegment(again[1]!);
+    return project === null ? notFound() : remigrate(ctx, project);
   }
 
   const runners = RUNNERS_PATH.exec(path);

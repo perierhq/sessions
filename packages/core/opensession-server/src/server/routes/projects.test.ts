@@ -30,6 +30,7 @@ let calls: {
   bound: string[];
   allowed: Array<[string, boolean]>;
   migrations: Array<{ dryRun: boolean; by: string }>;
+  remigrations: Array<{ project: string; force: boolean; by: string }>;
   audits: Array<Record<string, unknown>>;
 };
 
@@ -73,6 +74,7 @@ beforeEach(() => {
     bound: [],
     allowed: [],
     migrations: [],
+    remigrations: [],
     audits: [],
   };
   __setProjectViewDepsForTest(store.deps);
@@ -114,6 +116,15 @@ beforeEach(() => {
         alreadyMigrated: [],
       };
       return out;
+    },
+    remigrate: async (project, opts) => {
+      calls.remigrations.push({ project, ...opts });
+      return {
+        project,
+        report: { project, dropped: [], access: "migrated" },
+        backupPath: opts.force ? "/state/backups/acme-web.json" : null,
+        overwritten: opts.force,
+      };
     },
     audit: (e) => calls.audits.push(e),
   });
@@ -339,6 +350,26 @@ test("migrate: a signed-in person; a dry run only reports", async () => {
   expect(
     (await call("POST", "/api/projects/migrate", { dryRun: "no" }))?.status,
   ).toBe(400);
+});
+
+test("re-migrating one project: a signed-in person, overwriting only on force", async () => {
+  const path = "/api/projects/acme-web/migrate";
+  expect((await call("POST", path, { force: true }, null))?.status).toBe(403);
+  expect((await call("POST", path, { force: "yes" }))?.status).toBe(400);
+  expect(
+    (await call("POST", "/api/projects/acme-gone/migrate", {}))?.status,
+  ).toBe(404);
+  const preview = await call("POST", path, {});
+  expect(preview?.json).toMatchObject({ overwritten: false, backupPath: null });
+  const done = await call("POST", path, { force: true });
+  expect(done?.json).toMatchObject({
+    overwritten: true,
+    backupPath: "/state/backups/acme-web.json",
+  });
+  expect(calls.remigrations).toEqual([
+    { project: "acme-web", force: false, by: "Ada" },
+    { project: "acme-web", force: true, by: "Ada" },
+  ]);
 });
 
 test("old incident access writes answer 410", async () => {

@@ -36,7 +36,11 @@ import {
   globalWebsites,
   setGlobalRoleDefault,
 } from "../projects/global-defaults";
-import { legacyDrift, migrateProjectSettings } from "../projects/migrate";
+import {
+  legacyDrift,
+  migrateProjectSettings,
+  remigrateProject,
+} from "../projects/migrate";
 import {
   getProjectDocument,
   patchProjectDocumentAsServer,
@@ -258,6 +262,7 @@ export function liveProjectRouteDeps(): ProjectRouteDeps {
       return replaceMcpServerEntries({ [server]: next });
     },
     migrate: migrateProjectSettings,
+    remigrate: remigrateProject,
     audit: incidentAudit,
   };
 }
