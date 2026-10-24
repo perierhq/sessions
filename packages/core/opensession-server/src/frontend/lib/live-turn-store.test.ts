@@ -225,6 +225,25 @@ describe("LiveTurnStore", () => {
     store.clear();
   });
 
+  test("keeps an unchanged block's view object across frames", async () => {
+    const store = new LiveTurnStore();
+    store.start(undefined, "run-reuse");
+    store.append("I should check the config first.", "msg-1", "reasoning");
+    await Bun.sleep(600);
+    const thought = store.getSnapshot().blocks[0];
+    expect(thought?.text).toBe("I should check the config first.");
+    store.append("Checking", "msg-1-b1", "text");
+    await Bun.sleep(600);
+    store.append(" it now.", "msg-1-b1", "text");
+    await Bun.sleep(600);
+    const [first, second] = store.getSnapshot().blocks;
+    // Only the growing block is a new object, so a memoized row for the
+    // thought does not re-render its markdown on every frame.
+    expect(first).toBe(thought);
+    expect(second?.text).toBe("Checking it now.");
+    store.clear();
+  });
+
   test("holds an early tool card under the live text it follows", async () => {
     const store = new LiveTurnStore();
     store.start(undefined, "run-13");

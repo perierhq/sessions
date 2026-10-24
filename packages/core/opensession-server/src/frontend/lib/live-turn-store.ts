@@ -407,6 +407,12 @@ export class LiveTurnStore {
   /** Publish what the reveal has reached. */
   private publish(painted: boolean, extra: Partial<LiveTurnSnapshot> = {}) {
     const segments = this.segments();
+    // A block whose visible text did not change keeps its view object, so a
+    // memoized row (and its markdown render) is skipped for it while another
+    // block types.
+    const previous = new Map(
+      this.snapshot.blocks.map((block) => [block.key, block]),
+    );
     const blocks: LiveBlockView[] = [];
     let offset = 0;
     let text = "";
@@ -416,8 +422,13 @@ export class LiveTurnStore {
         Math.min(segment.text.length, this.shown - offset),
       );
       if (visible > 0) {
+        const before = previous.get(segment.key);
         const slice = segment.text.slice(0, visible);
-        blocks.push({ key: segment.key, kind: segment.kind, text: slice });
+        blocks.push(
+          before?.text === slice && before.kind === segment.kind
+            ? before
+            : { key: segment.key, kind: segment.kind, text: slice },
+        );
         text += slice;
       }
       offset += segment.text.length;
