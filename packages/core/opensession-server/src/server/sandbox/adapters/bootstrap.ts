@@ -45,7 +45,7 @@ import {
   createWorkloadIdentityEnv,
   type WorkloadIdentityContext,
 } from "../../workload-identity";
-import { REPO_ROOT } from "../../../runner-host/protocol";
+import { workloadIdentityClientSource } from "./workload-identity-client-source";
 import { sandboxConfig, remoteSandboxCallbackBaseUrl } from "../config";
 import type {
   ExecOpts,
@@ -203,11 +203,6 @@ function layoutFor(driver: {
 }): RemoteLayout {
   return remoteLayout(driver.os, driver.home);
 }
-
-/** The self-contained workload identity client every Sandbox carries. It is
- *  uploaded as one file, so the base runtime never depends on the runner
- *  payload (and a deploy never invalidates it). */
-const WORKLOAD_IDENTITY_CLIENT_SOURCE = `${REPO_ROOT}/scripts/workload-identity-client.ts`;
 
 function workloadIdentityClientPath(L: RemoteLayout): string {
   return `${L.home}/.local/share/opensession/workload-identity-client.ts`;
@@ -1065,7 +1060,10 @@ async function installWorkloadIdentityClient(
   driver: RemoteDriver,
   L: RemoteLayout,
 ): Promise<void> {
-  const source = await readFile(WORKLOAD_IDENTITY_CLIENT_SOURCE, "utf8");
+  // The self-contained client every Sandbox carries, uploaded as one file
+  // so the base runtime never depends on the runner payload (and a deploy
+  // never invalidates it).
+  const source = await workloadIdentityClientSource();
   need(
     await driver.exec(
       `mkdir -p ${shellQuoteWord(dirname(workloadIdentityClientPath(L)))}`,
