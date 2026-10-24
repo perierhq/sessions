@@ -10,8 +10,10 @@
 > signals recover before anyone acts, the incident closes by itself.
 
 An incident's investigator and verifier work in the project's sandbox when it
-has one (Daytona, Boat, and later a Mac VM on a paired Mac). With the host
-path turned on and no sandbox, they can run in an ordinary session worktree
+has one (Daytona, Boat, and later a Mac VM on a paired Mac). Without one, they
+work in This machine (container) when it is Ready
+([self-hosting-sandboxes.md](self-hosting-sandboxes.md#this-machine-container)).
+With the host path turned on and neither available, they can run in an ordinary session worktree
 on the Sessions server, with their shell commands run as a separate
 low-privilege system user: the incident agent user. The incident page then
 says "Runs on this server, not in a sandbox".

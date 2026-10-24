@@ -611,6 +611,14 @@ checks. Run the server
 as a dedicated user with nothing else on it, and do not use host-local
 sessions on a server whose container sandboxes must stay isolated.
 
+**Incident agents.** Of the sessions an automation starts, only incident
+agents (the investigator and the verifier) may run here; every other
+automation-spawned session, and automation runs themselves, are refused. An
+incident agent starts here when its project has no default sandbox and This
+machine (container) is Ready, before the experimental host path
+([incident-host-agents.md](incident-host-agents.md)). See
+[Security posture](#security-posture) for what that means for its network.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this
@@ -620,3 +628,11 @@ and short-lived workload identity leases enter it; model credentials, the
 instance config, other users' credentials, and the session store do not. Portal routes forward-authenticate every request
 against Open Session before proxying. Portals inherit the instance's team
 boundary; there is no narrower per-session ACL yet.
+
+**Incident agents in This machine (container).** An incident agent in This
+machine (container) gets the container's firewall: this host, the tailnet
+(CGNAT range), private ranges and the cloud metadata address are blocked. Its
+public egress is open. The incident access profile's host allowlist is not
+enforced on the agent's raw network traffic in the container; `web_fetch` is
+still held to that allowlist by the server. A domain-allowlist egress proxy
+for these agents is planned as a follow-up.
