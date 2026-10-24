@@ -104,3 +104,21 @@ test("a night rule and a paused project read as themselves", () => {
   expect(html).toContain("Nothing");
   expect(html).not.toContain("Spent this month");
 });
+
+test("every select is a 44px target on a phone", () => {
+  const html = renderToStaticMarkup(
+    <PolicySection project="acme" settings={settings} onSave={save} />,
+  );
+  for (const label of [
+    "What agents may do without you",
+    "Veto window",
+    "Watch after a deploy",
+    "Rounds before it asks you",
+  ]) {
+    const trigger = html.match(
+      new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`),
+    )?.[0];
+    expect(trigger).toBeDefined();
+    expect(trigger).toContain("phone:min-h-11");
+  }
+});

@@ -2,7 +2,7 @@
 // role. The You column is computed from what interactive sessions get
 // today, never stored. Keychain and production cells apply only to the
 // incident agents; for Automations and Reviews they read "no" and can't be
-// edited. Pure: plain data in, view out.
+// edited. A group with no rows is left out. Pure: plain data in, view out.
 
 import type { CredentialInfo } from "../../shared/incident-access";
 import {
@@ -13,6 +13,7 @@ import {
   type AccessRowView,
   type AccessTableView,
   MODE_NOT_SET_HERE,
+  MODE_SET_ELSEWHERE_LABEL,
   type ProjectRole,
   type ProjectSettingsDocument,
   type UnattendedRole,
@@ -49,6 +50,11 @@ function cell(
   return reason ? { value, editable, reason } : { value, editable };
 }
 
+/** A cell decided outside this table: it reads `label`, not a value. */
+function elsewhere(label: string, reason: string): AccessCellView {
+  return { value: "elsewhere", editable: false, label, reason };
+}
+
 function tick(on: boolean): AccessCellView {
   return cell(on ? "yes" : "no");
 }
@@ -77,7 +83,8 @@ function modeRow(doc: AccessTableDocument): AccessRowView {
     YOU_YES,
     (role) => {
       const notHere = MODE_NOT_SET_HERE[role];
-      if (notHere) return cell("locked", false, notHere);
+      const label = MODE_SET_ELSEWHERE_LABEL[role];
+      if (notHere && label) return elsewhere(label, notHere);
       const mode = modes[role];
       if (mode === "ask") return cell("read");
       // Incident runs publish a branch and a pull request, never main.
@@ -210,7 +217,11 @@ export function buildAccessTable(
     id: AccessGroupId,
     label: string | null,
     rows: AccessRowView[],
-  ) => groups.push({ id, label, rows });
+  ) => {
+    // A labelled group with no rows would be a bare heading; the section's
+    // Add action is where a first row comes from.
+    if (rows.length) groups.push({ id, label, rows });
+  };
   add("code", null, [modeRow(doc)]);
   add("connectors", "Connectors", connectionRows(doc, env));
   add("keychain", "Keychain", credentialRows(doc, env));

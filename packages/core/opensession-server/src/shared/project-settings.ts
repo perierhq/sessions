@@ -66,6 +66,13 @@ export const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   reviews: "Pull request reviews and fixes",
 };
 
+/** The line over one role's access on a phone. You differs from the Models
+ *  copy; each of its rows says where its access comes from. */
+export const ACCESS_ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
+  ...ROLE_DESCRIPTIONS,
+  you: "Your own sessions",
+};
+
 /** The collective label when Investigator and Verifier share one value. */
 export const INCIDENT_AGENTS_LABEL = "Incident agents";
 
@@ -186,6 +193,14 @@ export const MODE_NOT_SET_HERE: Partial<Record<UnattendedRole, string>> = {
     "Set per run: reviews only read; fixes and replies to mentions push to the pull request's branch",
 };
 
+/** What the "Changes code" cell reads for those roles, instead of a value:
+ *  the truth at run time, decided outside this table. */
+export const MODE_SET_ELSEWHERE_LABEL: Partial<Record<UnattendedRole, string>> =
+  {
+    automations: "Set per automation",
+    reviews: "Pushes to the PR branch",
+  };
+
 /** `null` clears the cell (a credential not lent to that role). */
 export type AccessCellChange = {
   row: AccessRowKey;
@@ -241,11 +256,15 @@ export type AccessCellValue =
   | "ask-each"
   | "standing"
   | "locked"
-  | "blocked";
+  | "blocked"
+  /** Decided somewhere else; `label` says how. */
+  | "elsewhere";
 
 export interface AccessCellView {
   value: AccessCellValue;
   editable: boolean;
+  /** What an `elsewhere` cell reads, in place of a value. */
+  label?: string;
   /** Why the cell can't be edited, or why it is blocked. */
   reason?: string;
 }
@@ -392,6 +411,9 @@ export interface MigrationResult {
   projects: ProjectMigrationReport[];
   personalDefaultsCleared: number;
   alreadyMigrated: string[];
+  /** The global Reviews default the review automation's model became (or
+   *  would become, on a dry run), when there was none. */
+  reviewsDefaultSet?: string;
 }
 
 /** One project composed from its legacy settings again (after drift). */

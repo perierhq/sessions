@@ -204,7 +204,7 @@ function NavSearch({
             // that gets true round ends rather than a superellipse.
             sheet
               ? cn(
-                  "h-10 rounded-full border-transparent bg-raised pl-11 text-input-phone",
+                  "min-h-11 rounded-full border-transparent bg-raised pl-11 text-input-phone",
                   value && "pr-11",
                 )
               : cn("pl-8", value && "pr-8"),

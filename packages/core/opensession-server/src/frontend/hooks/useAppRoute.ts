@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import {
   firstMileRequested,
   isSettingsRoute,
+  legacyRoutePath,
   parseRouteWithSearch,
   routePath,
   samePanel,
@@ -130,6 +131,15 @@ export class AppRouteController {
     }
 
     this.route = parsed;
+    this.rewriteLegacyPath();
+  }
+
+  /** Swap an old-form URL for its current path in place, keeping the
+   *  entry's state, search and hash. */
+  private rewriteLegacyPath(): void {
+    const { pathname, search, hash } = this.browser.location;
+    const current = legacyRoutePath(pathname);
+    if (current) this.canonicalizePath(`${current}${search}${hash}`);
   }
 
   snapshot(): RouteSnapshot {
@@ -151,6 +161,7 @@ export class AppRouteController {
         this.browser.location.pathname,
         this.browser.location.search,
       );
+      this.rewriteLegacyPath();
       this.publish();
     });
     const stopPush = serviceWorker

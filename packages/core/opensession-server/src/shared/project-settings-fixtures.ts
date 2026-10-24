@@ -9,6 +9,7 @@ import type { IncidentAction } from "./incident-response";
 import {
   ANY_WEBSITE_HOST,
   MODE_NOT_SET_HERE,
+  MODE_SET_ELSEWHERE_LABEL,
   PROJECT_ROLES,
   defaultProjectDocument,
   type AccessCellView,
@@ -234,10 +235,16 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
             key: { kind: "mode" },
             title: "Changes code in acme-web",
             cells: cells(cell("yes", false, YOU_COMPUTED), {
-              automations: cell("locked", false, MODE_NOT_SET_HERE.automations),
+              automations: {
+                ...cell("elsewhere", false, MODE_NOT_SET_HERE.automations),
+                label: MODE_SET_ELSEWHERE_LABEL.automations,
+              },
               investigator: cell("branch"),
               verifier: cell("read"),
-              reviews: cell("locked", false, MODE_NOT_SET_HERE.reviews),
+              reviews: {
+                ...cell("elsewhere", false, MODE_NOT_SET_HERE.reviews),
+                label: MODE_SET_ELSEWHERE_LABEL.reviews,
+              },
             }),
           },
         ],

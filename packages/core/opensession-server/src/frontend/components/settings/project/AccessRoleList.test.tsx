@@ -173,6 +173,15 @@ describe("AccessRoleList", () => {
     ]);
   });
 
+  test("You reads what your sessions may use, not the Models copy", async () => {
+    const list = mount();
+    click(chips(list.output()).find((c) => text(c.children) === "You"));
+    await settle();
+    const all = text(list.output());
+    expect(all).not.toContain("You can still switch in the composer");
+    expect(all).toContain("Your own sessions");
+  });
+
   test("each row says how many roles have it", () => {
     const list = mount();
     const all = text(list.output());

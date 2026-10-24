@@ -5,7 +5,6 @@ import type {
   ProjectSettingsView,
   ReadinessFix,
 } from "../../../../shared/project-settings";
-import { useIsPhone } from "../../../hooks/useIsPhone";
 import { revalidateSandboxStatus } from "../../../hooks/useSettingsResources";
 import {
   projectSWRKey,
@@ -84,7 +83,6 @@ export function ProjectSettingsPage({
 }) {
   const settings = useProjectSettings(project);
   const defaults = useProjectDefaults();
-  const phone = useIsPhone();
   const [production, setProduction] = useState<ProductionDialog | null>(null);
   const [adding, setAdding] = useState<number | null>(null);
   const [addSignal, setAddSignal] = useState<number | null>(null);
@@ -313,7 +311,7 @@ export function ProjectSettingsPage({
               className="min-h-11"
               onClick={() => setProduction({ kind: "pair", key: Date.now() })}
             >
-              {phone ? "Runner" : "Pair a Runner"}
+              Pair a Runner
             </Button>
           }
         >

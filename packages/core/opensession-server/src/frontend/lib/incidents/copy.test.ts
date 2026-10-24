@@ -277,6 +277,9 @@ test("formatters", () => {
   expect(formatUsd(0)).toBe("$0.00");
   expect(formatUsd(20, { whole: true })).toBe("$20");
   expect(formatUsd(20.5, { whole: true })).toBe("$20.50");
+  expect(formatUsd(10000, { whole: true })).toBe("$10,000");
+  expect(formatUsd(1234.5)).toBe("$1,234.50");
+  expect(formatUsd(-3.8)).toBe("-$3.80");
   expect(joinNames([])).toBe("");
   expect(joinNames(["A"])).toBe("A");
   expect(joinNames(["A", "B"])).toBe("A and B");

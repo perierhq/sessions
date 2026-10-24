@@ -13,7 +13,9 @@ import {
   cellLabel,
   cellSpokenLabel,
   checklistModel,
+  joinDots,
   modelChip,
+  monthSpendCopy,
   nextCellValue,
   sandboxRowCopy,
   stepSummary,
@@ -34,13 +36,14 @@ describe("checklistModel", () => {
     expect(m.collapsedReady.length).toBe(4);
     expect(m.collapsedTodo.length).toBe(0);
     expect(m.primary?.id).toBe("deploy");
+    // In the rows' order: the two to-dos, then the ready steps.
     expect(m.segments).toEqual([
-      "ready",
-      "ready",
-      "ready",
-      "ready",
       "todo",
       "todo",
+      "ready",
+      "ready",
+      "ready",
+      "ready",
     ]);
   });
 
@@ -53,8 +56,8 @@ describe("checklistModel", () => {
     expect(m.collapsedTodo.length).toBe(2);
     expect(m.collapsedReady.length).toBe(3);
     expect(m.primary?.id).toBe("where");
-    // The red segment sits in the step's own position (fable #20).
-    expect(m.segments[1]).toBe("blocked");
+    // The red segment sits where its step is: first, like its row.
+    expect(m.segments.slice(0, 3)).toEqual(["blocked", "todo", "todo"]);
     expect(m.segments.filter((s) => s === "blocked").length).toBe(1);
   });
 
@@ -120,6 +123,12 @@ describe("cell labels", () => {
     expect(cellSpokenLabel("locked")).toBe("Not allowed");
     expect(cellSpokenLabel("blocked")).toBe("Blocked");
     expect(cellSpokenLabel("ask-once")).toBe("Ask once");
+    expect(cellSpokenLabel("elsewhere", "Set per automation")).toBe(
+      "Set per automation",
+    );
+    expect(cellLabel("elsewhere", "Set per automation")).toBe(
+      "Set per automation",
+    );
   });
 });
 
@@ -283,6 +292,12 @@ describe("optimistic cells", () => {
     expect(rowSummary(find(READY_4_OF_6, "Sentry"))).toBe("Every role");
     expect(rowSummary(find(READY_4_OF_6, "Grafana"))).toBe("1 of 5 roles");
   });
+
+  test("rowSummary counts only the roles that change code on the mode row", () => {
+    // You and the investigator (Branch); the verifier's Read only doesn't.
+    const mode = find(READY_4_OF_6, "Changes code in acme-web");
+    expect(rowSummary(mode)).toBe("2 of 5 roles");
+  });
 });
 
 describe("applyIncidentsPatch", () => {
@@ -301,5 +316,22 @@ describe("applyIncidentsPatch", () => {
     const cleared = applyIncidentsPatch(base, { night: null });
     expect(cleared.document.incidents.night).toBeUndefined();
     expect(base.document.incidents.night).toEqual(night);
+  });
+});
+
+describe("joinDots", () => {
+  test("a middle dot never starts or ends a line", () => {
+    expect(joinDots("This machine · container")).toBe(
+      "This machine\u00a0·\u00a0container",
+    );
+    expect(joinDots("Daytona")).toBe("Daytona");
+  });
+});
+
+describe("monthSpendCopy", () => {
+  test("groups thousands", () => {
+    expect(monthSpendCopy(1234.5, new Date(2026, 9, 3))).toBe(
+      "$1,234.50 spent in October",
+    );
   });
 });

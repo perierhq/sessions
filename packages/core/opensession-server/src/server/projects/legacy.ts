@@ -35,6 +35,7 @@ import {
 import { accessSettingsFromDocument } from "../incidents/access/settings-store";
 import { canonicalModelId, sameModel } from "../incidents/response/models";
 import { sandboxConfig } from "../sandbox/config";
+import { globalRoleDefault, setGlobalRoleDefault } from "./global-defaults";
 import { isRecord } from "./validate";
 
 export const LEGACY_PROJECTS_NAMESPACE = "incident-projects";
@@ -57,6 +58,9 @@ export interface LegacySources {
   reviewServers: string[];
   /** The review automation's model, when it pins one. */
   reviewModel: string | null;
+  /** The global Reviews default. A review model equal to it isn't pinned
+   *  into the project, so the project follows the default. */
+  reviewsDefault: string | null;
   /** Every configured MCP server. */
   mcpServers: string[];
   /** The global web search choice (Settings, Models). */
@@ -199,7 +203,16 @@ export function composeFromLegacy(
   // Reviews.
   for (const server of sources.reviewServers)
     if (known.has(server)) grant(server, "reviews");
-  if (sources.reviewModel)
+  // The review automation is one for every project, so its model is the
+  // Reviews default (migration makes it so); a project pins it only where
+  // the default says something else.
+  if (
+    sources.reviewModel &&
+    !(
+      sources.reviewsDefault &&
+      sameModel(sources.reviewModel, sources.reviewsDefault)
+    )
+  )
     doc.models.reviews = canonicalModelId(sources.reviewModel);
 
   // Sandbox: the repo's own default. "none" ran the repo on this machine.
@@ -422,6 +435,10 @@ export interface LegacyEnvironment {
   webSearch(): Promise<string>;
   /** The review flow's connectors when its automation pins none. */
   defaultReviewServers(): Promise<string[]>;
+  /** The global Reviews default model, or null. */
+  reviewsDefault(): string | null;
+  /** Set the global Reviews default model. */
+  setReviewsDefault(id: string): void;
 }
 
 let environmentOverride: Partial<LegacyEnvironment> | undefined;
@@ -471,7 +488,17 @@ export function legacyEnvironment(): LegacyEnvironment {
         ...(await import("../../agents/github/run"))
           .DEFAULT_GITHUB_FLOW_MCP_SERVERS,
       ]),
+    reviewsDefault:
+      o.reviewsDefault ?? (() => globalRoleDefault("reviews") ?? null),
+    setReviewsDefault:
+      o.setReviewsDefault ?? ((id) => void setGlobalRoleDefault("reviews", id)),
   };
+}
+
+/** The model the pull request review automation pins, if any. */
+export async function reviewAutomationModel(): Promise<string | null> {
+  const automations = await legacyEnvironment().automations();
+  return automations.find((a) => a.eventKey === PR_EVENT_KEY)?.model ?? null;
 }
 
 // Bound on first use, never at import: the catalog client is a live effect.
@@ -510,6 +537,7 @@ export async function loadLegacySources(
       ? [...review.mcpServers]
       : await env.defaultReviewServers(),
     reviewModel: review?.model ?? null,
+    reviewsDefault: env.reviewsDefault(),
     mcpServers,
     webSearch,
   };

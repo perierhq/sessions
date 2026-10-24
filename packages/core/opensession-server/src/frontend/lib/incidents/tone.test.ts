@@ -12,6 +12,7 @@ import {
   incidentDot,
   incidentStateWord,
   signalDotTone,
+  signalStateLabel,
   signalStateWord,
 } from "./tone";
 
@@ -113,4 +114,10 @@ test("signal words and rank", () => {
   expect(SIGNAL_RANK.flaky).toBeLessThan(SIGNAL_RANK.upcoming);
   expect(SIGNAL_RANK.upcoming).toBeLessThan(SIGNAL_RANK.unknown);
   expect(SIGNAL_RANK.unknown).toBeLessThan(SIGNAL_RANK.ok);
+});
+
+test("a signal's state as a standalone value is sentence case", () => {
+  expect(signalStateLabel("ok")).toBe("OK");
+  expect(signalStateLabel("failing")).toBe("Failing");
+  expect(signalStateLabel("unknown")).toBe("No data");
 });

@@ -25,6 +25,7 @@ import {
   roleScopeCopy,
   roleScopeCopyFor,
   sandboxUsedByCopy,
+  splitNames,
 } from "../../lib/project-settings/defaults-model";
 import {
   readySandboxProviders,
@@ -90,6 +91,19 @@ function applyPatch(
     previews: patch.previews ?? view.previews,
     websites: patch.websites ?? view.websites,
   };
+}
+
+/** A line naming projects, each hyphenated name kept on one line. */
+function WholeNames({ text, names }: { text: string; names: string[] }) {
+  return splitNames(text, names).map((part, i) =>
+    part.name ? (
+      <span key={i} className="whitespace-nowrap">
+        {part.text}
+      </span>
+    ) : (
+      part.text
+    ),
+  );
 }
 
 export function DefaultsPanel({
@@ -258,7 +272,10 @@ export function DefaultsPanel({
           <SettingRowText>
             <SettingRowTitle>Sandbox</SettingRowTitle>
             <SettingRowDescription>
-              {sandboxUsedByCopy(view)}
+              <WholeNames
+                text={sandboxUsedByCopy(view)}
+                names={view.projects.map((p) => p.label)}
+              />
             </SettingRowDescription>
             {view.sandbox === "podman" && (
               <SettingRowDescription>{PODMAN_NOTE}</SettingRowDescription>
@@ -351,7 +368,12 @@ export function DefaultsPanel({
           <SettingRow key={role}>
             <SettingRowText>
               <SettingRowTitle>{ROLE_LABELS[role]}</SettingRowTitle>
-              <SettingRowDescription>{scopeCopy(role)}</SettingRowDescription>
+              <SettingRowDescription>
+                <WholeNames
+                  text={scopeCopy(role)}
+                  names={view.projects.map((p) => p.label)}
+                />
+              </SettingRowDescription>
             </SettingRowText>
             <SettingRowControl>
               <OptionSelect
@@ -418,7 +440,7 @@ export function DefaultsPanel({
                 aria-invalid={websiteError ? true : undefined}
                 aria-describedby={websiteError ? websiteErrorId : undefined}
                 className={cn(
-                  "phone:h-11 phone:text-input-phone",
+                  "phone:min-h-11 phone:text-input-phone",
                   websiteError && "border-red",
                 )}
                 onChange={(e) => {

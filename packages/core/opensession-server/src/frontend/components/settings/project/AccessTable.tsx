@@ -130,7 +130,7 @@ function accessCell(
   onCellChange: (change: AccessCellChange) => void,
 ): React.ReactNode {
   const cell = row.cells[role];
-  const name = `${row.title} for ${ROLE_LABELS[role]}: ${cellSpokenLabel(cell.value)}`;
+  const name = `${row.title} for ${ROLE_LABELS[role]}: ${cellSpokenLabel(cell.value, cell.label)}`;
   const change =
     role === "you" || !cell.editable
       ? null

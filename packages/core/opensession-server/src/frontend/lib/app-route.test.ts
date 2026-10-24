@@ -3,6 +3,7 @@ import { BASE_PATH } from "./base";
 import {
   firstMileRequested,
   incidentSettingsRoute,
+  legacyRoutePath,
   isSettingsRoute,
   parseRoute,
   parseRouteWithSearch,
@@ -148,15 +149,30 @@ describe("incident routes", () => {
       project: "acme-web",
       section: "incidents",
     });
-    expect(incidentSettingsRoute("acme-web", "sandboxes")).toEqual({
+    expect(incidentSettingsRoute("acme-web", { section: "access" })).toEqual({
+      view: "projectSettings",
+      project: "acme-web",
+      section: "access",
+    });
+    expect(incidentSettingsRoute("acme-web", { fix: "sandboxes" })).toEqual({
       view: "projectSettings",
       project: "acme-web",
       section: "where",
     });
-    expect(incidentSettingsRoute("acme-web", "providers")).toEqual({
+    expect(incidentSettingsRoute("acme-web", { fix: "providers" })).toEqual({
       view: "settings",
       section: "providers",
     });
+  });
+
+  test("old incident settings links name their current path", () => {
+    expect(legacyRoutePath("/settings/incidents/acme-web")).toBe(
+      `${BASE_PATH}/settings/projects/acme-web/incidents`,
+    );
+    expect(legacyRoutePath("/settings/incidents")).toBe(
+      routePath({ view: "settings", section: "projectDefaults" }),
+    );
+    expect(legacyRoutePath("/settings/projects/acme-web")).toBeNull();
   });
 
   test("old incident settings links open the project pages", () => {

@@ -174,7 +174,9 @@ import {
   TRIGGER_STRONG,
   type CreateAction,
   type CreateStatus,
+  PHONE_MENU_ROWS,
 } from "../lib/new-session-classes";
+import { type MachineChoice, machineChoices } from "../lib/new-session-machine";
 import {
   consumePendingDraftParks,
   draftParkInFlight,
@@ -583,13 +585,43 @@ export function NewSession({
         : sandboxProviderLabel(id);
   // The project's sandbox, else the global default, marked in the menu.
   const workspaceDefault = newSessionSandboxDefault(sandboxStatus, repo);
-  // This machine, every ready provider by name, and a selected provider that
-  // is no longer ready (a project default), so the choice stays visible.
-  const sandboxChoices = [
-    "",
-    ...readyProviders,
-    ...(sandboxProvider && !selectedSandboxAvailable ? [sandboxProvider] : []),
-  ];
+  const sandboxChoices = machineChoices({
+    ready: readyProviders,
+    selected: sandboxProvider,
+    defaultId: workspaceDefault,
+  });
+  // One Machine row, in the desktop submenu or flat in the phone menu.
+  const machineItem = (choice: MachineChoice) => {
+    const note = choice.available
+      ? sandboxProviderNote(choice.id)
+      : "Unavailable. Pick this machine or connect it in Organization → Sandboxes.";
+    return (
+      <Menu.Item
+        key={choice.id || "host"}
+        onClick={() => {
+          sandboxSelectionTouched.current = true;
+          setSandboxProvider(choice.id);
+        }}
+        className="items-start"
+      >
+        <Menu.Check
+          on={sandboxProvider === choice.id}
+          className="mt-0.5 text-dim"
+        />
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span>
+            {sandboxLabel(choice.id)}
+            {choice.isDefault && <span className="text-faint"> · default</span>}
+          </span>
+          {note && (
+            <span className="whitespace-normal text-supporting leading-snug text-faint">
+              {note}
+            </span>
+          )}
+        </span>
+      </Menu.Item>
+    );
+  };
   // The repo's first declared Portal, offered to start with the session.
   const repoPortal =
     mode === "code" ? repos.find((option) => option.id === repo)?.portal : null;
@@ -1750,7 +1782,10 @@ export function NewSession({
                 <Menu.Popup
                   align="start"
                   sideOffset={6}
-                  className="min-w-[260px] max-w-[min(360px,calc(100vw-1rem))]"
+                  className={cn(
+                    "min-w-[260px] max-w-[min(360px,calc(100vw-1rem))]",
+                    PHONE_MENU_ROWS,
+                  )}
                 >
                   {showBranchPicker && (
                     <Menu.SubmenuRoot>
@@ -1770,7 +1805,12 @@ export function NewSession({
                           />
                         </span>
                       </Menu.SubmenuTrigger>
-                      <Menu.Popup className="max-w-[min(340px,calc(100vw-1rem))]">
+                      <Menu.Popup
+                        className={cn(
+                          PHONE_MENU_ROWS,
+                          "max-w-[min(340px,calc(100vw-1rem))]",
+                        )}
+                      >
                         {createFromOptions.map((opt) => {
                           const selected =
                             opt.point.kind === startPoint.kind &&
@@ -1797,7 +1837,17 @@ export function NewSession({
                     </Menu.SubmenuRoot>
                   )}
                   <NewSessionFolderMenuItem folders={localFolders} />
-                  {showSandboxPicker && (
+                  {showSandboxPicker && phoneBar && (
+                    <>
+                      {/* Flat rows on a phone, like "On create" below: a
+                        submenu there opened over its own parent. */}
+                      <div className="px-2 pb-1 pt-1.5 text-meta font-medium text-faint">
+                        Machine
+                      </div>
+                      {sandboxChoices.map(machineItem)}
+                    </>
+                  )}
+                  {showSandboxPicker && !phoneBar && (
                     <Menu.SubmenuRoot>
                       <Menu.SubmenuTrigger className="justify-between gap-3">
                         <span className="flex min-w-0 items-center gap-2">
@@ -1815,50 +1865,13 @@ export function NewSession({
                           />
                         </span>
                       </Menu.SubmenuTrigger>
-                      <Menu.Popup className="max-w-[min(340px,calc(100vw-1rem))]">
-                        {sandboxChoices.map((id) => {
-                          const available =
-                            id === "" || readyProviders.includes(id);
-                          const opt = {
-                            id,
-                            note: available
-                              ? sandboxProviderNote(id)
-                              : "Unavailable. Pick this machine or connect it in Organization → Sandboxes.",
-                          };
-                          const selected = sandboxProvider === opt.id;
-                          return (
-                            <Menu.Item
-                              key={opt.id || "host"}
-                              onClick={() => {
-                                sandboxSelectionTouched.current = true;
-                                setSandboxProvider(opt.id);
-                              }}
-                              className="items-start"
-                            >
-                              <Menu.Check
-                                on={selected}
-                                className="mt-0.5 text-dim"
-                              />
-                              <span className="flex min-w-0 flex-col gap-0.5">
-                                <span>
-                                  {sandboxLabel(opt.id)}
-                                  {opt.id !== "" &&
-                                    opt.id === workspaceDefault && (
-                                      <span className="text-faint">
-                                        {" "}
-                                        · default
-                                      </span>
-                                    )}
-                                </span>
-                                {opt.note && (
-                                  <span className="whitespace-normal text-supporting leading-snug text-faint">
-                                    {opt.note}
-                                  </span>
-                                )}
-                              </span>
-                            </Menu.Item>
-                          );
-                        })}
+                      <Menu.Popup
+                        className={cn(
+                          PHONE_MENU_ROWS,
+                          "max-w-[min(340px,calc(100vw-1rem))]",
+                        )}
+                      >
+                        {sandboxChoices.map(machineItem)}
                       </Menu.Popup>
                     </Menu.SubmenuRoot>
                   )}
@@ -1915,7 +1928,12 @@ export function NewSession({
                         />
                       </span>
                     </Menu.SubmenuTrigger>
-                    <Menu.Popup className="max-w-[min(360px,calc(100vw-1rem))]">
+                    <Menu.Popup
+                      className={cn(
+                        PHONE_MENU_ROWS,
+                        "max-w-[min(360px,calc(100vw-1rem))]",
+                      )}
+                    >
                       {availableMcpServers.length > 0 && (
                         <div className="max-w-[300px] px-2 pb-1 text-supporting leading-snug text-faint">
                           Picked services are the only ones the session gets.

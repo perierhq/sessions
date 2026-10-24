@@ -137,3 +137,41 @@ describe("where agents run", () => {
     expect(render(BLOCKED_NO_SANDBOX)).toContain("Can&#x27;t start");
   });
 });
+
+describe("where agents run", () => {
+  /** The section's markup, from its anchor to the next one. */
+  const where = (html: string) =>
+    html.slice(
+      html.indexOf('id="project-where"'),
+      html.indexOf('id="project-models"'),
+    );
+  const onDefault: ProjectSettingsView = {
+    ...READY_4_OF_6,
+    document: { ...READY_4_OF_6.document, sandbox: "default" },
+    effective: {
+      ...READY_4_OF_6.effective,
+      sandbox: {
+        ...READY_4_OF_6.effective.sandbox,
+        you: {
+          state: "ok",
+          provider: null,
+          label: "This machine",
+          source: "default",
+        },
+      },
+    },
+  };
+
+  test("a sandbox on the default says so once, in its select", () => {
+    const html = where(render(onDefault));
+    expect(html).not.toContain(">Default<");
+  });
+
+  test("every place that can run reads one mark, the check", () => {
+    const html = where(render(onDefault));
+    // IconReturn draws the old fallback arrow; it said nothing the check
+    // and the screen-reader note don't.
+    expect(html).not.toContain("M17.25 8.25V10.5");
+    expect(html).toContain(", from the global default");
+  });
+});

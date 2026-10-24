@@ -82,6 +82,13 @@ const pause = (tree: React.ReactNode, on: boolean) =>
     {} as Parameters<SwitchChange>[1],
   );
 
+test("the pause switch is a 44px target", () => {
+  const section = mountSection();
+  const className = String(pauseSwitch(section.output()).props.className);
+  // A 24px track grown by 10px above and below.
+  expect(className).toContain("before:-inset-y-2.5");
+});
+
 test("a refused pause toasts the server's reason", async () => {
   refuse = new Error("Only a signed-in person may change this");
   const section = mountSection();

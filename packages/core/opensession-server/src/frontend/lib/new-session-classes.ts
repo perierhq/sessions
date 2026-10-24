@@ -218,3 +218,7 @@ export const INLINE_CARD = cn(
   "max-h-[min(560px,68dvh)]",
   composerBox,
 );
+
+/** Every row of the More options menu and its submenus a 44px target on a
+ *  phone; a desktop keeps the menu's dense rows. */
+export const PHONE_MENU_ROWS = "phone:[&_[role^=menuitem]]:min-h-11";

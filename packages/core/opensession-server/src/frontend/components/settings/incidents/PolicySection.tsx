@@ -16,6 +16,7 @@ import {
   FIELD_ERROR,
   FIELD_HINT,
   SETTING_WIDE_CONTROL,
+  SETTING_SELECT,
   SETTING_WIDE_SELECT,
 } from "../../../lib/incident-settings-classes";
 import { formatUsd } from "../../../lib/incidents/copy";
@@ -148,6 +149,7 @@ export function PolicySection({
           control={
             <OptionSelect
               label="Veto window"
+              className={SETTING_SELECT}
               value={String(settings.vetoMs)}
               options={minutesOptions(
                 withCurrent(VETO_CHOICES, settings.vetoMs),
@@ -162,6 +164,7 @@ export function PolicySection({
           control={
             <OptionSelect
               label="Watch after a deploy"
+              className={SETTING_SELECT}
               value={String(settings.watchMs)}
               options={minutesOptions(
                 withCurrent(WATCH_CHOICES, settings.watchMs),
@@ -176,6 +179,7 @@ export function PolicySection({
           control={
             <OptionSelect
               label="Rounds before it asks you"
+              className={SETTING_SELECT}
               value={String(settings.maxRounds)}
               options={withCurrent(ROUND_CHOICES, settings.maxRounds).map(
                 (n) => ({ value: String(n), label: String(n) }),

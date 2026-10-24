@@ -28,6 +28,38 @@ export function sandboxUsedByCopy(view: ProjectDefaultsView): string {
   return `Used by ${n} ${n === 1 ? "project" : "projects"}`;
 }
 
+/**
+ * A line cut around the hyphenated project names in it, so each can be set
+ * unbreakable: a browser wraps at a hyphen, which splits "perier-site".
+ * Longest names first, and only whole names.
+ */
+export function splitNames(
+  text: string,
+  names: readonly string[],
+): Array<{ text: string; name: boolean }> {
+  const hyphenated = [...new Set(names.filter((n) => n.includes("-")))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (!hyphenated.length) return [{ text, name: false }];
+  const escaped = hyphenated.map((n) =>
+    n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const pattern = new RegExp(
+    `(?<![\\w-])(?:${escaped.join("|")})(?![\\w-])`,
+    "g",
+  );
+  const out: Array<{ text: string; name: boolean }> = [];
+  let at = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > at)
+      out.push({ text: text.slice(at, match.index), name: false });
+    out.push({ text: match[0], name: true });
+    at = match.index + match[0].length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at), name: false });
+  return out;
+}
+
 /** "a", "a and b", "a, b, and c". */
 function joinNames(names: string[]): string {
   if (names.length <= 2) return names.join(" and ");
@@ -49,9 +81,11 @@ export function roleScopeCopy(
       ? projects[0]!.label
       : `All ${projects.length} projects`;
   }
-  const users = using.length
-    ? joinNames(using.map((p) => p.label))
-    : "No project";
+  if (using.length === 0)
+    return projects.length === 1
+      ? `${projects[0]!.label} sets its own`
+      : "Every project sets its own";
+  const users = joinNames(using.map((p) => p.label));
   const setters = joinNames(own.map((p) => p.label));
   return `${users}. ${setters} ${own.length === 1 ? "sets its own" : "set their own"}`;
 }

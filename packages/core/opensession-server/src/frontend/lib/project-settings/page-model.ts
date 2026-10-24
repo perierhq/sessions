@@ -24,6 +24,7 @@ import {
   type RunPlace,
   type UnattendedRole,
 } from "../../../shared/project-settings";
+import { formatUsd } from "../incidents/copy";
 
 export const PROJECT_SECTIONS = [
   ["where", "Where agents run"],
@@ -44,7 +45,8 @@ export interface ChecklistModel {
   title: string;
   /** The count under a blocked title; `null` when the title already says it. */
   subtitle: string | null;
-  /** One per step, in step order, so a red segment sits where its step is. */
+  /** One per step, in the rows' order, so a red segment sits where its
+   *  step is. */
   segments: SegmentState[];
   /** The step whose fix is the screen's one ink button. */
   primary: ReadinessStep | null;
@@ -65,12 +67,24 @@ export function checklistModel(
   r: ProjectReadiness,
   project: string,
 ): ChecklistModel {
-  const segments = READINESS_STEP_IDS.map((id): SegmentState => {
-    const step = r.steps.find((s) => s.id === id);
-    return step?.state ?? "todo";
-  });
   const ready = r.steps.filter((s) => s.state === "ready" && s.id !== "paused");
   const open = r.steps.filter((s) => s.state !== "ready");
+  // In the order the rows read: the blocking step, the other to-dos, then
+  // the ready ones. A step the server didn't send counts as a to-do.
+  const isStep = (s: ReadinessStep) =>
+    READINESS_STEP_IDS.some((id) => id === s.id);
+  const missing = READINESS_STEP_IDS.filter(
+    (id) => !r.steps.some((s) => s.id === id),
+  );
+  const todo = [
+    ...(r.blocking ? [r.blocking] : []),
+    ...open.filter((s) => s.id !== r.blocking?.id),
+  ].filter(isStep);
+  const segments: SegmentState[] = [
+    ...todo.map((s) => s.state),
+    ...missing.map((): SegmentState => "todo"),
+    ...ready.filter(isStep).map((s) => s.state),
+  ];
   const count = `${r.readyCount} of ${READINESS_TOTAL} ready`;
   if (r.blocking) {
     const blocking = r.blocking;
@@ -118,25 +132,34 @@ const CELL_LABELS: Record<AccessCellValue, string> = {
   "ask-each": "Ask each time",
   standing: "Always",
   locked: "Not allowed",
+  elsewhere: "Set elsewhere",
 };
 
 /** What a cell shows. `locked` renders as a lock icon carrying this as its
- *  accessible name. */
-export function cellLabel(v: AccessCellValue): string {
+ *  accessible name; an `elsewhere` cell reads its own `label`. */
+export function cellLabel(v: AccessCellValue, label?: string): string {
+  if (v === "elsewhere" && label) return label;
   return CELL_LABELS[v];
 }
 
 /** What a cell is called to a screen reader: words, never a symbol. */
-export function cellSpokenLabel(v: AccessCellValue): string {
+export function cellSpokenLabel(v: AccessCellValue, label?: string): string {
   if (v === "yes") return "Yes";
   if (v === "no") return "No";
   if (v === "blocked") return "Blocked";
-  return CELL_LABELS[v];
+  return cellLabel(v, label);
 }
 
-/** Whether a cell is on, for `aria-pressed` and the phone checkmark. */
+/** Whether a cell is on, for `aria-pressed`, the phone checkmark and a
+ *  row's count. Read only is the "Changes code" row's off value. */
 export function cellIsOn(v: AccessCellValue): boolean {
-  return v !== "no" && v !== "locked" && v !== "blocked";
+  return (
+    v !== "no" &&
+    v !== "locked" &&
+    v !== "blocked" &&
+    v !== "read" &&
+    v !== "elsewhere"
+  );
 }
 
 /** Whether clicking the cell flips a boolean (so it gets `aria-pressed`). */
@@ -350,6 +373,12 @@ export function rowSummary(row: AccessRowView): string {
   return `${on.length} of ${PROJECT_ROLES.length} roles`;
 }
 
+/** A label with its middle dots held to both neighbours, so a narrow
+ *  column wraps between words and never leaves "·" at a line's edge. */
+export function joinDots(label: string): string {
+  return label.replaceAll(" · ", "\u00a0·\u00a0");
+}
+
 /** The 4 places in the "Where agents run" grid, in the design's order. */
 export const RUN_PLACES = [
   ["you", "You"],
@@ -456,7 +485,7 @@ export function nearestRegion(timeZone: string): "eu" | "us" {
 /** "$6.50 spent in October". */
 export function monthSpendCopy(usd: number, now: Date): string {
   const month = now.toLocaleString("en", { month: "long" });
-  return `$${usd.toFixed(2)} spent in ${month}`;
+  return `${formatUsd(usd)} spent in ${month}`;
 }
 
 /** The deploy row's caption: the timeout in minutes. */
