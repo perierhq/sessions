@@ -85,6 +85,13 @@ export class PiTurnLedger {
     return true;
   }
 
+  /** Fold a helper request's usage (a web tool's side request): its tokens
+   *  and cost count toward the turn, its context does not. True when it
+   *  carried usage. */
+  foldHelperUsage(u: PiReportedUsage | null | undefined): boolean {
+    return this.foldCompactionUsage(u);
+  }
+
   usageAuditFields(): Record<string, unknown> {
     return this.sawUsage
       ? {

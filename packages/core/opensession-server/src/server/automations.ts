@@ -94,6 +94,7 @@ import { createSelfImproveMcpServer } from "../agents/slack/self-improve-tools";
 import { AUTOMATION_DENIED_TOOLS } from "./automation-denied-tools";
 import { audit } from "./audit";
 import { getSandboxProvider, type Sandbox } from "./sandbox";
+import { automationWebFetchHosts } from "./sandbox/automation-egress";
 import {
   sandboxAutomationAvailability,
   sandboxAutomationConfig,
@@ -2538,6 +2539,10 @@ export async function runAutomation(
         mcpServers: automation.mcpServers || [],
         proxyMcpServers: Object.keys(inProcessMcp),
         deniedTools: AUTOMATION_DENIED_TOOLS,
+        // web_fetch reads only what the disposable Executor may reach.
+        webFetchHosts: automationWebFetchHosts(
+          sandboxAutomationConfig().egressAllowlist,
+        ),
         confirmTools: STRIPE_CONFIRM_TOOLS,
         aws: false,
         fallbackModel,

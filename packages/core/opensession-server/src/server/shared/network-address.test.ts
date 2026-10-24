@@ -3,6 +3,7 @@ import {
   embeddedIpv4,
   ipv6Hextets,
   isBlockedAddress,
+  isPrivateHostName,
   isTailnetIpv4,
   normalizeAddress,
 } from "./network-address";
@@ -181,5 +182,41 @@ describe("normalizeAddress", () => {
     // NAT64 and 6to4 are not the tailnet peer itself.
     expect(isTailnetIpv4("64:ff9b::6440:1")).toBe(false);
     expect(isTailnetIpv4("2002:6440:1::1")).toBe(false);
+  });
+});
+
+describe("isPrivateHostName", () => {
+  test("refuses names that only mean something private", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST.",
+      "api.localhost",
+      "printer.local",
+      "db.internal",
+      "wiki.intranet",
+      "nas.home.arpa",
+      "box.acme.ts.net",
+      "intranet-server",
+      "router.lan",
+      "box.localdomain",
+      "mail.acme.corp",
+      "nas.home",
+      "1.0.0.127.in-addr.arpa",
+      ".",
+      "..",
+      "",
+    ])
+      expect(isPrivateHostName(host)).toBe(true);
+  });
+
+  test("allows public names", () => {
+    for (const host of [
+      "example.test",
+      "docs.example.com",
+      "internal.example.com",
+      "lan.example.com",
+      "home.example.com",
+    ])
+      expect(isPrivateHostName(host)).toBe(false);
   });
 });

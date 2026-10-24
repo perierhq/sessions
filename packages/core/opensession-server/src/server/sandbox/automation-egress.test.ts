@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AUTOMATION_BASELINE_EGRESS_DOMAINS,
   automationEgressDomains,
   automationEgressProbeBlockedUrl,
+  automationWebFetchHosts,
   DAYTONA_DOMAIN_ALLOWLIST_MAX,
   parseAutomationEgressDomain,
 } from "./automation-egress";
@@ -54,5 +56,26 @@ describe("sandbox automation egress", () => {
         extra: extras,
       }),
     ).toThrow(`Daytona allows at most ${DAYTONA_DOMAIN_ALLOWLIST_MAX}`);
+  });
+});
+
+describe("automationWebFetchHosts", () => {
+  test("is the Executor's own domains, without IPs or the dial-back", () => {
+    const hosts = automationWebFetchHosts([
+      "https://Docs.Example.test/path",
+      "*.acme.test",
+      "10.0.0.0/8",
+      "127.0.0.1",
+    ]);
+    expect(hosts).toContain("github.com");
+    expect(hosts).toContain("registry.npmjs.org");
+    expect(hosts).toContain("docs.example.test");
+    expect(hosts).toContain("*.acme.test");
+    expect(hosts.some((h) => /\d+\.\d+/.test(h) && !/[a-z]/.test(h))).toBe(
+      false,
+    );
+    expect(automationWebFetchHosts()).toEqual([
+      ...AUTOMATION_BASELINE_EGRESS_DOMAINS,
+    ]);
   });
 });

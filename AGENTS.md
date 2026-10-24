@@ -103,6 +103,9 @@ repo variable is `true`; until then they skip cleanly.
     - `pi-bash-tool.ts`: the guarded bash tool
     - `pi-tools.ts`: the turn's toolset, MCP runtime options and steer boundary
     - `pi-mcp-bridge.ts`: pi's `tool_search`/`tool_call` over the MCP runtime
+    - `pi-web-search.ts`: the `web_search` and `web_fetch` tools, side
+      requests to a provider's small model with its server-side web tools;
+      the choice lives in `web-search-setting.ts` (Settings, Models)
     - `pi-session-setup.ts`: resources and loader (`noExtensions` is set
       here), resume plan, payload hooks, session-start log
     - `pi-runtime-binding.ts`: SDK loading and per-turn account binding

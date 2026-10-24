@@ -589,6 +589,7 @@ try {
     inProcessMcp: opensessionMcp?.mounts,
     reposNote: spec.reposNote,
     deniedTools: spec.deniedTools,
+    webFetchHosts: spec.webFetchHosts,
     publicationPolicy: spec.publicationPolicy,
     bashRunAs: spec.bashRunAs,
     confirmTools: spec.confirmTools,

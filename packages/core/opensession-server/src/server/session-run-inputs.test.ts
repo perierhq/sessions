@@ -401,6 +401,48 @@ describe("resolveSessionRunInputs", () => {
     }
   });
 
+  test("an incident agent's egress hosts become its web_fetch allowlist", async () => {
+    const previousAudit = __setIncidentAuditForTest(() => {});
+    const session: RunInputsSession = {
+      ...plain,
+      id: "os-1",
+      mode: "code",
+      repo: "acme",
+      automationDescendantPolicy: {
+        ...descendantPolicy,
+        repo: "acme",
+        mcpServers: ["sentry"],
+        incident: {
+          incidentId: "inc-1",
+          role: "investigator" as const,
+          signalId: null,
+          accessRevision: "r1",
+          spawn: { hosts: [], credentials: [], egress: null },
+        },
+      },
+    };
+    try {
+      __setBindingResolverForTest(async () => ({
+        ...incidentAccess,
+        egress: { route: "server", hosts: ["status.example.test"] },
+      }));
+      expect((await resolveSessionRunInputs(session)).webFetchHosts).toEqual([
+        "status.example.test",
+      ]);
+      // No egress in the profile: no allowlist, so the run gets no web_fetch.
+      __setBindingResolverForTest(async () => incidentAccess);
+      expect(
+        (await resolveSessionRunInputs(session)).webFetchHosts,
+      ).toBeUndefined();
+      expect(
+        (await resolveSessionRunInputs(plain)).webFetchHosts,
+      ).toBeUndefined();
+    } finally {
+      __setBindingResolverForTest(undefined);
+      __setIncidentAuditForTest(previousAudit);
+    }
+  });
+
   test("a refused incident turn throws instead of running unscoped", async () => {
     const previousAudit = __setIncidentAuditForTest(() => {});
     __setBindingResolverForTest(async () => {

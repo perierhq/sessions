@@ -123,6 +123,7 @@ import {
   hasRemoteWorkspace,
   workspaceExecFor,
 } from "./sandbox";
+import { automationWebFetchHosts } from "./sandbox/automation-egress";
 import {
   isRemoteSandboxProvider,
   isRunnableSandboxProvider,
@@ -2019,6 +2020,8 @@ export async function maybeLaunchSandboxedRun(
     attachments?: StagedAttachment[];
     mcpServers?: McpScope;
     deniedTools?: Record<string, string>;
+    /** An incident agent's egress hosts (SessionRunInputs.webFetchHosts). */
+    webFetchHosts?: string[];
     isAutomationSession: boolean;
     /** See sandboxRunSecuritySpec. */
     automationProxyMcpServers?: string[];
@@ -2275,6 +2278,17 @@ export async function maybeLaunchSandboxedRun(
         ? undefined
         : await buildSessionNote(session, opts.user),
       deniedTools: opts.deniedTools,
+      // An unattended run's web_fetch reads only its egress allowlist: the
+      // disposable Executor's domains, or an incident agent's hosts.
+      ...(disposableAutomationResume
+        ? {
+            webFetchHosts: automationWebFetchHosts(
+              automationSandbox?.egressAllowlist,
+            ),
+          }
+        : opts.webFetchHosts
+          ? { webFetchHosts: opts.webFetchHosts }
+          : {}),
       publicationPolicy: security.publicationPolicy,
       confirmTools: STRIPE_CONFIRM_TOOLS,
       aws: false,
@@ -3318,6 +3332,9 @@ async function runSessionPromptInner(
         attachments,
         mcpServers: mcpServers ?? "all",
         deniedTools,
+        ...(runInputs.webFetchHosts
+          ? { webFetchHosts: runInputs.webFetchHosts }
+          : {}),
         isAutomationSession,
         automationProxyMcpServers,
         incidentProxyMcpServers: runInputs.incidentProxyMcpServers,
@@ -3431,6 +3448,9 @@ async function runSessionPromptInner(
             ? undefined
             : await buildSessionNote(session, user),
           deniedTools,
+          ...(runInputs.webFetchHosts
+            ? { webFetchHosts: runInputs.webFetchHosts }
+            : {}),
           publicationPolicy: session.automationDescendantPolicy
             ? {
                 repo: session.automationDescendantPolicy.publicationRepo,
@@ -3541,6 +3561,9 @@ async function runSessionPromptInner(
         ? undefined
         : await buildSessionNote(session, user),
       deniedTools,
+      ...(runInputs.webFetchHosts
+        ? { webFetchHosts: runInputs.webFetchHosts }
+        : {}),
       publicationPolicy: session.automationDescendantPolicy
         ? {
             repo: session.automationDescendantPolicy.publicationRepo,

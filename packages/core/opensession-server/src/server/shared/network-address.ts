@@ -147,3 +147,20 @@ export function isBlockedAddress(ip: string): boolean {
   if ((h[0]! & 0xff00) === 0xff00) return true;
   return false;
 }
+
+/** Names that only ever mean something private: localhost, the reserved
+ *  *.local / *.internal / *.arpa suffixes, the common private-network
+ *  suffixes (*.lan, *.localdomain, *.corp, *.home, *.intranet), tailnet
+ *  *.ts.net names, single-label names (a bare `intranet-server`), and an
+ *  empty name (`.`, `..`). For a check that does not resolve the name; an IP
+ *  literal is judged by `isBlockedAddress` instead. */
+export function isPrivateHostName(host: string): boolean {
+  // `localhost.` is `localhost`: test the name without its root dot.
+  const name = bareAddress(host).replace(/\.+$/, "");
+  if (!name) return true;
+  if (isIP(name)) return false;
+  if (!name.includes(".")) return true;
+  return /(^|\.)(localhost|local|localdomain|lan|corp|home|internal|intranet|arpa|ts\.net)$/.test(
+    name,
+  );
+}

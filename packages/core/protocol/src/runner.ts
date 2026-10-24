@@ -140,6 +140,8 @@ export interface RunHostSpec {
   wsToken?: string;
   reposNote?: string;
   deniedTools?: Record<string, string>;
+  /** An unattended run's web_fetch allowlist (its egress hosts). */
+  webFetchHosts?: string[];
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
   /** An incident agent in a host worktree: its bash runs as this user. */
   bashRunAs?: string;

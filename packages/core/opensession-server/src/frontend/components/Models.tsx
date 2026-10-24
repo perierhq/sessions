@@ -48,6 +48,15 @@ export function ModelDefaultsSection({
       <SettingsHint>
         Applies to new runs unless the session has its own model.
       </SettingsHint>
+      <SettingsGroupLabel>Web search</SettingsGroupLabel>
+      <SettingCard>
+        <WebSearchRow />
+      </SettingCard>
+      <SettingsHint>
+        Applies from each session's next turn. Automations and incident agents
+        can search, but read only pages on their egress allowlist, and no pages
+        without one.
+      </SettingsHint>
     </>
   );
 }
@@ -245,6 +254,126 @@ function AutoFallbackRow() {
           disabled={auto === null || saving}
           onCheckedChange={toggle}
         />
+      </SettingRowControl>
+    </SettingRow>
+  );
+}
+
+// ── Web search ──────────────────────────────────────────────────────────────
+
+type WebSearchChoice = "auto" | "anthropic" | "openai" | "off";
+
+const WEB_SEARCH_LABELS: Record<WebSearchChoice, string> = {
+  auto: "Automatic",
+  anthropic: "Claude",
+  openai: "OpenAI",
+  off: "Off",
+};
+
+/**
+ * Which provider the agent's web_search and web_fetch tools use. Automatic
+ * uses the session's own provider and never another vendor (a session on
+ * another provider gets no web tools); a specific provider is the only one
+ * used; Off removes both tools. Only connected providers are offered (a
+ * stored choice stays listed).
+ */
+function WebSearchRow() {
+  const [choice, setChoice] = useState<WebSearchChoice | null>(null);
+  const [connected, setConnected] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const load = async (url: string) => {
+      const response = await fetch(url);
+      if (!response.ok)
+        throw new Error(`Failed to load web search (${response.status})`);
+      return response.json();
+    };
+    Promise.all([
+      load(`${BASE_PATH}/api/models/web-search`),
+      load(`${BASE_PATH}/api/models`),
+    ])
+      .then(([setting, catalog]) => {
+        setChoice(setting.provider);
+        setConnected(
+          new Set(
+            (catalog.models || []).map(
+              (m: { accountProvider?: string }) => m.accountProvider,
+            ),
+          ),
+        );
+      })
+      .catch((error) => {
+        setError(errorMessage(error, "Failed to load web search"));
+      });
+  }, []);
+
+  async function change(next: WebSearchChoice) {
+    if (saving || next === choice) return;
+    setSaving(true);
+    setError(null);
+    const prev = choice;
+    setChoice(next);
+    await (async () => {
+      const res = await fetch(`${BASE_PATH}/api/models/web-search`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: next }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Failed: ${res.status}`);
+      setChoice(body.provider);
+    })().catch(async (error) => {
+      setError(errorMessage(error, "Failed to update web search"));
+      setChoice(prev);
+    });
+    setSaving(false);
+  }
+
+  const options: WebSearchChoice[] = [
+    "auto",
+    ...(["anthropic", "openai"] as const).filter(
+      (p) =>
+        choice === p || connected.has(p === "anthropic" ? "claude" : "codex"),
+    ),
+    "off",
+  ];
+  const items = options.map((value) => ({
+    value,
+    label: WEB_SEARCH_LABELS[value],
+  }));
+  return (
+    <SettingRow>
+      <SettingRowText>
+        <SettingRowTitle>Web search</SettingRowTitle>
+        <SettingRowDescription>
+          {error ||
+            "Which provider the agent searches and reads the web through. Automatic uses the session's own provider when it is Claude or OpenAI, and never sends a search to another one."}
+        </SettingRowDescription>
+      </SettingRowText>
+      <SettingRowControl>
+        <Select.Root
+          items={items}
+          value={choice ?? "auto"}
+          disabled={choice === null || saving}
+          onValueChange={(value) => {
+            const next = options.find((option) => option === value);
+            if (next) void change(next);
+          }}
+        >
+          <Select.Trigger
+            aria-label="Web search provider"
+            sizeTo={items.map((item) => item.label)}
+          />
+          <Select.Popup align="end">
+            {items.map((item) => (
+              <Select.Item key={item.value} value={item.value}>
+                {item.label}
+              </Select.Item>
+            ))}
+          </Select.Popup>
+        </Select.Root>
       </SettingRowControl>
     </SettingRow>
   );

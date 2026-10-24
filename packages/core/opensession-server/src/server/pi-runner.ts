@@ -86,6 +86,26 @@ import {
 } from "./pi-session-setup";
 import { PiSteerController } from "./pi-steer-controller";
 import {
+  makePiWebFetch,
+  makePiWebSearch,
+  type PiWebToolInput,
+  resolveSearchProviders,
+  type SearchProviderId,
+  webSearchModelId,
+  webSideAccountPlan,
+  webToolEnabled,
+  type WebToolGate,
+} from "./pi-web-search";
+import { hasAccounts as hasClaudeAccounts } from "./claude-accounts";
+import { hasCodexAccounts } from "./codex-accounts";
+import type { RunToolPolicy } from "./run-policy";
+import {
+  readWebSearchSetting,
+  type WebSearchSetting,
+} from "./web-search-setting";
+import { configuredHaikuFallbackModel } from "./models";
+import { rewriteAnthropicPromptPayload } from "./anthropic-prompt-compat";
+import {
   PiEventPump,
   buildPiPromptForEngine,
   createPiEventMapper,
@@ -167,6 +187,46 @@ const PROVIDER = PI_PROVIDER;
  * intentionally deferred until this extraction is reviewed; turns still load
  * the SDK on demand through createPiRuntimeBinding.
  */
+/**
+ * The web tools a run is offered and the allowlist they hold to. An
+ * unattended run reads only its egress allowlist (a sandboxed automation's,
+ * an incident agent's) and, without one, gets no web_fetch and no OpenAI
+ * web_search. Interactive runs read any public page. Exported for the
+ * wiring test.
+ */
+export function piWebTools(input: {
+  policy: Pick<RunToolPolicy, "unattended" | "disables">;
+  webFetchHosts: readonly string[] | undefined;
+  setting: WebSearchSetting;
+  sessionProvider: string | undefined;
+  connected: (provider: SearchProviderId) => boolean;
+}): {
+  fetchHosts: readonly string[] | undefined;
+  search: boolean;
+  fetch: boolean;
+} {
+  const { policy, setting } = input;
+  const fetchHosts = policy.unattended
+    ? (input.webFetchHosts ?? [])
+    : undefined;
+  const gate: WebToolGate = {
+    setting,
+    disables: policy.disables,
+    providers: resolveSearchProviders(
+      input.sessionProvider,
+      setting,
+      input.connected,
+    ).providers,
+    unattended: policy.unattended,
+    ...(fetchHosts ? { fetchHosts } : {}),
+  };
+  return {
+    fetchHosts,
+    search: webToolEnabled("web_search", gate),
+    fetch: webToolEnabled("web_fetch", gate),
+  };
+}
+
 export function prewarmPiSdk() {
   return prewarmPiSdkBinding();
 }
@@ -430,6 +490,15 @@ async function* runPiAttempt(
       agentGitEnv,
       mergeGuard,
     } = await resolvePiRunAuthority(opts, remote);
+    const bindingDependencies = {
+      readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
+      readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
+      pickOpenaiAccount,
+      buildSeededOpenaiAuth,
+      pickClaudeAccount,
+      buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
+      bindXaiAccount,
+    };
     const binding = await createPiRuntimeBinding({
       providerID: parsed.providerID,
       modelID: parsed.modelID,
@@ -465,15 +534,7 @@ async function* runPiAttempt(
           ...summarizeText(prompt),
         });
       },
-      dependencies: {
-        readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
-        readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
-        pickOpenaiAccount,
-        buildSeededOpenaiAuth,
-        pickClaudeAccount,
-        buildThirdPartyProviderPlan: buildPiThirdPartyProviderPlan,
-        bindXaiAccount,
-      },
+      dependencies: bindingDependencies,
     });
     const { sdk, runtime, model: piModel } = binding;
 
@@ -501,6 +562,95 @@ async function* runPiAttempt(
       disableLocalWorkspaceTools: opts.disableLocalWorkspaceTools,
     });
     const boundary: PiSteerBoundary = { pending: false };
+    // Settings › Models › Web search, read fresh for every turn.
+    const webSearchSetting = await readWebSearchSetting();
+    // The session's own provider is connected (this turn bound it); another
+    // one is when it has accounts.
+    const webConnected = (provider: SearchProviderId) =>
+      provider === parsed.providerID ||
+      (provider === "anthropic" ? hasClaudeAccounts() : hasCodexAccounts());
+    const webTools = piWebTools({
+      policy,
+      webFetchHosts: opts.webFetchHosts,
+      setting: webSearchSetting,
+      sessionProvider: parsed.providerID,
+      connected: webConnected,
+    });
+    const webFetchHosts = webTools.fetchHosts;
+    const webToolInput: PiWebToolInput = {
+      setting: webSearchSetting,
+      sessionProvider: parsed.providerID,
+      connected: webConnected,
+      unattended: policy.unattended,
+      ...(webFetchHosts ? { fetchHosts: webFetchHosts } : {}),
+      modelFor: (provider) =>
+        webSearchModelId(provider, configuredHaikuFallbackModel()),
+      // A side request on the same account picking a turn uses. The
+      // session's pin and remembered Claude account apply only when
+      // the request runs on the session's own provider. A usage limit
+      // benches the account the way the turn's own walk does.
+      bind: async (provider, modelID, excluded) => {
+        const side = webSideAccountPlan({
+          provider,
+          sessionProvider: parsed.providerID,
+          accountUser,
+          claudeSessionKey,
+          accountId: opts.accountId,
+          accountStrict: opts.accountStrict,
+          usageCredits: opts.usageCredits,
+          turnExcluded: walk.excluded,
+          excluded,
+        });
+        const sideAccounts = new PiAttemptAccounts({
+          walk: { excluded: new Set(), rotate: false },
+          providerID: provider,
+          modelID,
+          opts: side.pin,
+          accountUser: side.accountUser,
+          affinity,
+          claudeSessionKey: side.claudeSessionKey,
+          speed,
+          auditBase,
+        });
+        const bound = await createPiRuntimeBinding({
+          providerID: provider,
+          modelID,
+          affinityKey: affinity,
+          claudeSessionKey: side.claudeSessionKey,
+          unifiedSessionId: unifiedSessionId || runKey,
+          accountUser: side.accountUser,
+          ...side.pin,
+          excludedOpenaiAccountIds: side.excludedAccountIds,
+          onAccountEvidence: (evidence) => sideAccounts.onEvidence(evidence),
+          dependencies: bindingDependencies,
+        });
+        sideAccounts.onEvidence(bound);
+        return {
+          runtime: bound.runtime,
+          model: bound.model,
+          usesNativeAnthropic: bound.usesNativeAnthropic,
+          account: sideAccounts.pickedAccount?.masked,
+          accountId: sideAccounts.pickedAccount?.id,
+          usageLimited: (error) => sideAccounts.isSideRequestUsageLimit(error),
+          sideline: (error) => sideAccounts.sideline(error),
+          onRateLimit: (snapshot) => {
+            sideAccounts.rateLimit = snapshot;
+          },
+          canRotate: side.canRotate,
+        };
+      },
+      // The side request's tokens and cost count toward the turn.
+      onUsage: (usage) => ledger.foldHelperUsage(usage),
+      rewritePayload: rewriteAnthropicPromptPayload,
+      onAudit: (event) =>
+        audit({
+          ...event,
+          request_id: requestId,
+          run_key: runKey,
+          session_id: journal?.osSessionId,
+          run_kind: journal?.kind,
+        }),
+    };
     const { customTools, codemode } = buildPiToolset({
       sdk,
       opts,
@@ -517,6 +667,8 @@ async function* runPiAttempt(
       privateTermsGuard,
       abort,
       boundary,
+      webSearch: webTools.search ? makePiWebSearch(webToolInput) : undefined,
+      webFetch: webTools.fetch ? makePiWebFetch(webToolInput) : undefined,
     });
 
     const { agentDir, sessionDir, settingsManager, loader, sessionContext } =
