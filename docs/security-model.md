@@ -770,13 +770,20 @@ The code is in `packages/core/opensession-server/src/server/support/` and
   on the small model (the Plain ticket router) for every customer message;
   it labels the route, the topics, an attempt to instruct the agent, a
   request for a person, anger, a repeated question and thanks only. Its
-  failure routes the mail as work and its topics as unknown, which holds
-  every send for a person. A support session never gets customer text in
-  its prompt: the opening prompt and the notice of a new message carry ids
-  only, and the mail arrives as JSON data in the `get_conversation` tool
-  result, still inside the wrapper. The first message flagged as an attempt
-  to instruct the agent stops automatic sends on its conversation; a second
-  stops the agent and leaves the conversation to a person.
+  failure, or an inbox past its 200 labelling calls in an hour, routes the
+  mail as work and its topics as unknown, which holds every send for a
+  person until a later try labels it. A support session never gets customer
+  text in its prompt: the opening prompt and the notice of a new message
+  carry ids only, and the mail arrives as JSON data in the
+  `get_conversation` tool result (the newest messages, about 60,000
+  characters at most), still inside the wrapper, with the sender address
+  escaped as an attribute. The first message flagged as an attempt to
+  instruct the agent stops automatic sends on its conversation; a second
+  stops the agent (tried again until the stop takes) and leaves the
+  conversation to a person, after which the agent can neither draft nor
+  prepare an issue there. Strikes are kept per sender address in each inbox
+  (under a keyed digest, never the address, and deleted by "Forget a
+  customer"), so a new conversation from that sender starts with them.
   The `support:message_received` event on the automation bus carries ids,
   the subject and the customer address, never the body, and automation
   prompts fence its text as untrusted data. Auto-replies, bounces,
@@ -796,11 +803,26 @@ The code is in `packages/core/opensession-server/src/server/support/` and
 - **One send path.** Every customer-facing send goes through `sendDraft()`
   in `server/support/reply.ts`; no other code calls a channel's `send`. An
   agent's reply sends on its own only on an inbox set to routine replies,
-  when it cites a source (a repository file, a page on the project's
-  Support websites, or a Support connector record), links nowhere else
-  (no HTML, images or other schemes), and nothing it answers is flagged or
-  touches a "never without a person" topic; everything else waits for a
-  person. The triage route alone never permits a send. Each
+  when it answers a customer message not yet answered, cites a source the
+  server verified itself, carries at most two links with no query string,
+  each on a host listed exactly (no `*.` wildcard, never shared hosting such
+  as `github.com` or `*.vercel.app`) on the project's Support websites, has
+  no HTML, images or other schemes, and nothing it answers is flagged or
+  touches a "never without a person" topic. Links are found the way a
+  linkifier finds them: bare names, `www.` after quotes, colons or `>`, and
+  `http:` without slashes count. Sources are checked on the server: a
+  repository path must be a file at the session's checkout HEAD (`git
+cat-file`), a URL must be one this session's `web_fetch` read, and a
+  record id one this session's Support connector call returned (kept in
+  memory per session, bounded, from the run's tool events). The draft text
+  then gets a tool-less small-model check for sensitive topics and
+  promises about policy, prices or deadlines, and a scan for anything that
+  looks like a password, key or token; any hit, or a failed check, waits for
+  a person. The agent learns only that its reply waits for a person, never
+  which rule held it. One short clarifying question per conversation (under
+  600 characters, no links, no promise) may send without a source.
+  Everything else waits for a person. The triage route alone never permits
+  a send. Each
   send writes one `support.reply` audit row with a digest of the text, never
   the text. A reply goes to one address, never to one of our own or a
   machine sender; when it would go somewhere other than the sender's
@@ -831,8 +853,9 @@ The code is in `packages/core/opensession-server/src/server/support/` and
   summary with every email address and the customer's name taken out. A
   person creates the issue (the instance owner, when the repository is
   public or its visibility can't be read) and starts the fix session; the
-  agent can't move a conversation either. The "it's fixed" note prepared
-  when the fix merges or the issue closes always waits for a person.
+  agent can't move a conversation either. An issue creator must be signed
+  in. The "it's fixed" note, prepared when the fix merges or the issue is
+  closed as completed, always waits for a person.
 - **Logs and health carry ids.** Transport logs carry the inbox id, an event
   and an error code or UID; `/health` lists inbox ids, states and reasons
   with any address cut (server alert text can carry one). A refused login

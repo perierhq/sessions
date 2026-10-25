@@ -139,8 +139,9 @@ provider's and your domain's:
 | Send limit per minute     | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                                                                        |
 
 Next to the autonomy choice each inbox shows how many of the agent's drafts in
-the last 30 days were sent unchanged, sent after an edit, or discarded: the
-evidence for moving from Draft to routine replies.
+the last 30 days a person sent unchanged, sent after an edit, or discarded: the
+evidence for moving from Draft to routine replies. Replies that went out on
+their own (routine) are counted apart and never count as sent unchanged.
 
 Any signed-in person can connect and edit inboxes. Only the instance owner can
 let routine replies send right away (no veto window), allow internal mail
@@ -154,29 +155,67 @@ Automatic, whatever the autonomy:
 
 - Auto-replies, bounces and mailing-list mail are dropped; spam is filed.
 - A customer reply that only says thanks closes the conversation without a
-  reply. A later question opens it again.
+  reply, but only when we were waiting on the customer, it is their only
+  message since our reply, it comes from the customer's own verified address,
+  it carries no other label, topic or attachment, it is short (under 300
+  characters), and nothing waits for a person (no draft, prepared issue or fix
+  task). Otherwise it is a normal message. A later question opens a closed
+  conversation again.
 - A conversation waiting on the customer closes after 7 days without a reply
-  from them. No reminder mail goes out.
+  from them, unless something waits for a person there (a draft, a failed
+  send, a prepared issue, a fix task or a fix session). No reminder mail goes
+  out.
 
-A routine reply sends on its own only when the agent cites where its facts come
-from: a file in the project's repository, a page on the project's websites
-ticked for Support, or a record from a Support connector. Its links may point
-only to those websites, with no HTML or images.
+A routine reply sends on its own only when it answers a customer message we
+haven't answered yet and the agent cites where its facts come from. Sessions
+checks every source itself and never takes the agent's word for it:
+
+- a file in the project's repository counts when it exists as a file (not a
+  folder) in the session's checkout at its current commit;
+- a page counts when the session read it with `web_fetch` and it is on one of
+  the project's Support websites;
+- a record (`<connector>:<record id>`) counts when a Support connector call in
+  the same session returned it.
+
+The reply's text is then checked too: a small model looks for a "never without
+a person" topic and for any promise about policy, prices or deadlines, and a
+scan looks for anything that looks like a password, key or token. Any hit
+waits for a person.
+
+Links in a routine reply: at most two, no query strings, no HTML or images, and
+each one must be on a host listed exactly on the project's Support websites (a
+`*.` wildcard entry doesn't count). Shared hosting, where anyone can publish
+(`github.com`, `*.github.io`, `*.vercel.app`, `*.netlify.app` and the like),
+never counts, even when listed. Bare names like `example.com/login` or
+`www.example.com` count as links, as a mail client would make them.
+
+The agent may also ask one short clarifying question per conversation without a
+source (under 600 characters, no links, no promise, nothing sensitive); a
+second one waits for a person.
 
 Always a person's call:
 
 - The customer asks for a person, is upset, or repeats a question that was
   already answered.
-- A "never without a person" topic, a reply without a source, or one that
-  promises anything about policy, prices or deadlines without a source.
+- A "never without a person" topic, a reply without a verified source, a
+  reply that promises anything about policy, prices or deadlines, or one whose
+  check failed. The agent is only told that the reply waits for a person, not
+  which rule held it; the reason shows in the reply box.
+- A message whose labels are unknown: the classifier failed, or the inbox used
+  up its 200 labelling calls for the hour. Sessions tries the label again
+  later, and a good label replaces the failed one.
 - A message that tries to instruct the agent. The first one stops automatic
   sends on that conversation; a second one stops the agent and leaves the
-  conversation to a person.
+  conversation to a person. From then on the agent can neither draft nor
+  prepare an issue there, and if stopping its session didn't take, Sessions
+  tries again. Strikes are kept per sender address in each inbox, so a new
+  conversation from the same sender starts with them.
 - Bug reports: the agent prepares an issue and a fix task on the
   conversation. A person creates the issue (only the instance owner, when the
   repository is public) and starts the fix session. When the fix's pull
-  request merges or the issue closes, Sessions prepares an "it's fixed" note
-  that a person reviews and sends.
+  request merges or the issue is closed as completed (not as not planned or a
+  duplicate), Sessions prepares an "it's fixed" note that a person reviews and
+  sends.
 - Moving a conversation to another project.
 
 When a reply needs a person, will send at the end of its veto window, or
