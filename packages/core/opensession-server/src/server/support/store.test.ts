@@ -19,6 +19,7 @@ import {
   onConversationChange,
   rememberMessageIds,
   updateConversation,
+  newConversationId,
 } from "./store";
 import { catalogDocuments } from "../catalog-documents";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
@@ -81,6 +82,44 @@ async function create(first = message(0)): Promise<SupportConversation> {
     now: NOW,
   });
 }
+
+test("createConversation with an id writes it only when that id is free", async () => {
+  const id = newConversationId();
+  const init = {
+    id,
+    channel: "email",
+    inboxId: INBOX,
+    project: "acme",
+    subject: "Login broken",
+    customer: message(0).from,
+    owner: null,
+    now: NOW,
+  } as const;
+  const first = await createConversation({ ...init, first: message(0) });
+  expect(first.id).toBe(id);
+  const again = await createConversation({ ...init, first: message(1) });
+  expect(again).toEqual(first);
+  expect((await getConversation(id))!.messages.map((m) => m.text)).toEqual([
+    "Message 0",
+  ]);
+  expect(await listIndexRows()).toHaveLength(1);
+});
+
+test("createConversation can file a conversation closed", async () => {
+  const c = await createConversation({
+    channel: "email",
+    inboxId: INBOX,
+    project: "acme",
+    subject: "Out of office",
+    customer: message(0).from,
+    owner: null,
+    first: message(0),
+    now: NOW,
+    status: "closed",
+  });
+  expect(c.status).toBe("closed");
+  expect(c.closedAt).toBe(NOW);
+});
 
 test("createConversation stores an open conversation and its index row", async () => {
   const text = `  Hello,\n\n  I cannot\tlog in.  ${"x".repeat(300)}`;
