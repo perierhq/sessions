@@ -18,10 +18,12 @@ import { enableXaiProxyPayload } from "./xai-payload";
 import { enableOpenaiFastMode } from "./openai-auth";
 import { openaiServiceTier } from "./openai-service-tier";
 import { readLocalInstructions } from "./run-policy";
+import { $ } from "bun";
 import {
   assembleRunSystemPrompt,
   buildRunInstructions,
   buildSessionContext,
+  type BaseCommit,
 } from "./run-instructions";
 import { stripeApprovalsNote } from "./stripe-approvals";
 import {
@@ -132,6 +134,18 @@ export interface PiResourcesInput {
   localTools: string[];
   codemode: boolean;
   boundary: PiSteerBoundary;
+}
+
+/** The commit a checkout is on, or null when it is not a git checkout. */
+export async function readBaseCommit(dir: string): Promise<BaseCommit | null> {
+  const format = "%h%x00%cI";
+  const result =
+    await $`git -C ${dir} log -1 --no-show-signature --format=${format} HEAD`
+      .quiet()
+      .nothrow();
+  if (result.exitCode !== 0) return null;
+  const [sha, committedAt] = result.stdout.toString().trim().split("\0");
+  return sha && committedAt ? { sha, committedAt } : null;
 }
 
 /**
@@ -305,6 +319,13 @@ export async function preparePiResources(input: PiResourcesInput) {
         : systemPrompt;
     },
   });
+  // The commit a new session starts from goes next to its checkout path, so
+  // the agent and the person can see how current the checkout is. Only the
+  // first turn carries it: later turns' HEAD is the session's own work.
+  const baseCommit =
+    !opts.sessionId && !remote && !isScratch && cwdRepo
+      ? await readBaseCommit(cwd)
+      : null;
   // What the system prompt leaves out so it stays byte-identical across
   // sessions (prompt-cache sharing): session link, requester, checkout path.
   const sessionContext = buildSessionContext({
@@ -317,6 +338,7 @@ export async function preparePiResources(input: PiResourcesInput) {
     author,
     githubUserLogin,
     coAuthor: agentGitEnv[GIT_COAUTHOR_ENV],
+    baseCommit,
   });
   await loader.reload();
 
@@ -499,9 +521,11 @@ export async function logPiSessionStart(
     opts: RunAgentOpts;
     walk: PiAccountWalk;
     unifiedSessionId: string | undefined;
+    /** The per-session context the opening prompt carries. */
+    sessionContext?: string;
   },
 ): Promise<void> {
-  const { opts, walk, unifiedSessionId } = input;
+  const { opts, walk, unifiedSessionId, sessionContext } = input;
   // The first complete provider input only exists after Pi has combined its
   // base prompt with Open Session instructions, AGENTS.md, skills and active
   // tool guidance. Record it once for the collapsed transcript-start audit
@@ -521,6 +545,7 @@ export async function logPiSessionStart(
           description: tool.description,
           parameters: tool.parameters,
         })),
+        sessionContext,
       ),
     });
   }

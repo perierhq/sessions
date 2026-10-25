@@ -330,6 +330,22 @@ export function sessionLink(osSessionId: string): string {
   return `${UI_BASE}/session/${osSessionId}`;
 }
 
+export interface BaseCommit {
+  /** Abbreviated commit id. */
+  sha: string;
+  /** Committer date, ISO 8601. */
+  committedAt: string;
+}
+
+/** `abc1234, committed 2026-01-02 03:04 UTC`. */
+export function formatBaseCommit(base: BaseCommit): string {
+  const at = new Date(base.committedAt);
+  const when = Number.isNaN(at.getTime())
+    ? base.committedAt
+    : `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  return `commit ${base.sha}, committed ${when}`;
+}
+
 export function buildSessionContext(input: {
   osSessionId?: string;
   cwd?: string;
@@ -345,13 +361,19 @@ export function buildSessionContext(input: {
   githubUserLogin?: string | null;
   /** `Name <email>` for the Co-authored-by trailer (pi-runner GIT_COAUTHOR_ENV). */
   coAuthor?: string;
+  /** The commit the checkout was on when the session started (first turn
+   * only), so the agent and the person can tell how current it is. */
+  baseCommit?: BaseCommit | null;
 }): string {
   const lines: string[] = [];
   const link = input.osSessionId
     ? `${UI_BASE}/session/${input.osSessionId}`
     : null;
   if (link) lines.push(`${personaName()} session: ${link}`);
-  if (input.cwd) lines.push(`Working directory: ${input.cwd}`);
+  if (input.cwd)
+    lines.push(
+      `Working directory: ${input.cwd}${input.baseCommit ? ` (started from ${formatBaseCommit(input.baseCommit)})` : ""}`,
+    );
   if (
     link &&
     !input.isAsk &&
