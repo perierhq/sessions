@@ -209,15 +209,17 @@ export function markNotSpam(id: string): Promise<SupportConversationView> {
   return conversationAction(id, "not-spam", "Couldn't mark it as not spam");
 }
 
-/** Creates the issue the agent reported and a person was asked to approve.
- *  `expectedRevision`: the conversation revision the person saw (409 when
- *  it changed since). */
+/** Creates the issue the agent prepared. `expectedRevision`: the
+ *  conversation revision the person saw (409 when it changed since).
+ *  `edit`: the person's title or body, scrubbed again on the server. */
 export function approveIssue(
   id: string,
   expectedRevision: number,
+  edit: { title?: string; body?: string } = {},
 ): Promise<SupportConversationView> {
   return conversationAction(id, "issue/approve", "Couldn't create the issue", {
     expectedRevision,
+    ...edit,
   });
 }
 

@@ -245,6 +245,16 @@ describe("support action routes", () => {
       ).status,
     ).toBe(409);
     expect(posted).toBe(0);
+    // An edited title or body must be text.
+    expect(
+      (
+        await call(`${base(c.id)}/issue/approve`, {
+          expectedRevision: again.revision,
+          title: 42,
+        })
+      ).status,
+    ).toBe(400);
+    expect(posted).toBe(0);
     const approved = await call(`${base(c.id)}/issue/approve`, {
       expectedRevision: again.revision,
     });

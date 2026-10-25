@@ -533,17 +533,73 @@ export async function reportBug(
 
 export type ApproveIssueResult =
   | { ok: true }
-  | { ok: false; status: 403 | 404 | 409 | 502; error: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string };
 
-/** A person approves the held issue at the revision they saw: it is
- *  created as stored, in the repository it was held for. An issue for a public repository
+/** A person's edit of the prepared issue: either part, as they typed it. */
+export interface IssueEdit {
+  title?: string;
+  body?: string;
+}
+
+/** Why an edit can't be used, or null. The limits are the agent's. */
+export function issueEditError(edit: IssueEdit): string | null {
+  if (edit.title !== undefined) {
+    const title = edit.title.trim();
+    if (!title) return "Write a title first";
+    if (title.length > MAX_TITLE)
+      return `The title is longer than ${MAX_TITLE} characters`;
+  }
+  if (edit.body !== undefined) {
+    const body = withoutFooter(edit.body).trim();
+    if (!body) return "Write the issue first";
+    if (body.length > MAX_SUMMARY)
+      return `The issue is longer than ${MAX_SUMMARY} characters`;
+  }
+  return null;
+}
+
+function withoutFooter(body: string): string {
+  const trimmed = body.trimEnd();
+  const footer = ISSUE_FOOTER.trim();
+  return trimmed.endsWith(footer) ? trimmed.slice(0, -footer.length) : trimmed;
+}
+
+/** The issue as it will be posted: the prepared one, with a person's
+ *  edits scrubbed again exactly as the agent's summary was. */
+function editedIssue(
+  c: SupportConversation,
+  prepared: { title: string; body: string },
+  edit: IssueEdit,
+  ownAddress?: string,
+): { title: string; body: string } {
+  if (edit.title === undefined && edit.body === undefined) return prepared;
+  const scrubbed = issueText(
+    c,
+    {
+      title: edit.title ?? prepared.title,
+      summary: withoutFooter(edit.body ?? prepared.body),
+    },
+    ownAddress,
+  );
+  return {
+    title: edit.title === undefined ? prepared.title : scrubbed.title,
+    body: edit.body === undefined ? prepared.body : scrubbed.body,
+  };
+}
+
+/** A person creates the prepared issue at the revision they saw: as
+ *  stored, or with their edits of the title or body (scrubbed again), in
+ *  the repository it was prepared for. An issue for a public repository
  *  (or one whose visibility is unknown now) needs the instance owner. */
 export async function approvePendingIssue(
   conversationId: string,
   person: Actor,
   expectedRevision: number,
+  edit: IssueEdit = {},
 ): Promise<ApproveIssueResult> {
   const actor: SupportActor = { kind: "person", name: person.name };
+  const invalid = issueEditError(edit);
+  if (invalid) return { ok: false, status: 400, error: invalid };
   return exclusive<ApproveIssueResult>(
     conversationId,
     { ok: false, status: 409, error: "This issue is already being created" },
@@ -574,9 +630,15 @@ export async function approvePendingIssue(
         return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
       if ((await deps().isPublic(ghRepo)) !== false && !isOwnerActor(person))
         return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
+      const inbox = await getInbox(c.inboxId);
       const result = await create(
         c,
-        { title: c.pendingIssue.title, body: c.pendingIssue.body },
+        editedIssue(
+          c,
+          { title: c.pendingIssue.title, body: c.pendingIssue.body },
+          edit,
+          inbox?.address,
+        ),
         ghRepo,
         actor,
       );

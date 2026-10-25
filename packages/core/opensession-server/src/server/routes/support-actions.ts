@@ -5,7 +5,7 @@
 // never a person here; the person is an actor built with actorFor(), so
 // only the instance owner approves an issue for a public repository.
 // issue/approve needs `expectedRevision`, the conversation revision the
-// person saw; so does fix {expectedRevision, task}, which starts a normal
+// person saw, and may carry the person's edited `title` and `body`; so does fix {expectedRevision, task}, which starts a normal
 // code session as the person (support/bugs.ts startFixSession). Each
 // answers with the conversation as GET
 // /api/support/conversations/:id does. "Forget this customer" is
@@ -131,7 +131,15 @@ export async function handleSupportActionRoutes(
       const expected = body.expectedRevision;
       if (typeof expected !== "number" || !Number.isInteger(expected))
         return json(400, "Say which revision of the issue you approve");
-      const result = await approvePendingIssue(id, actor, expected);
+      const edit: { title?: string; body?: string } = {};
+      for (const field of ["title", "body"] as const) {
+        const value = body[field];
+        if (value === undefined) continue;
+        if (typeof value !== "string")
+          return json(400, `The issue ${field} must be text`);
+        edit[field] = value;
+      }
+      const result = await approvePendingIssue(id, actor, expected, edit);
       if (!result.ok) return json(result.status, result.error);
       break;
     }

@@ -183,6 +183,54 @@ describe("reportBug", () => {
   });
 });
 
+describe("a person edits the prepared issue before creating it", () => {
+  test("the edited title and body are scrubbed again and keep one footer", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    const result = await approvePendingIssue(c.id, OWNER_ACTOR, seen.revision, {
+      title: "Export fails for carol@customer.example.test",
+      body: `Carol's export returns 500. Mail carol@customer.example.test.${"\n\nReported from a support conversation in Sessions."}`,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.title).not.toContain("example.test");
+    expect(posted[0]!.body).not.toContain("example.test");
+    expect(posted[0]!.body).not.toContain("Carol");
+    expect(posted[0]!.body).toContain("export returns 500");
+    expect(
+      posted[0]!.body.split("Reported from a support conversation").length,
+    ).toBe(2);
+  });
+
+  test("only the edited part changes; the rest stays as prepared", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    await approvePendingIssue(c.id, OWNER_ACTOR, seen.revision, {
+      title: "Export returns 500",
+    });
+    expect(posted[0]!.title).toBe("Export returns 500");
+    expect(posted[0]!.body).toBe(seen.pendingIssue!.body);
+  });
+
+  test("an empty or too long edit is refused and nothing is posted", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    for (const edit of [
+      { title: "   " },
+      { body: "  " },
+      { title: "x".repeat(MAX_TITLE + 1) },
+      { body: "x".repeat(MAX_SUMMARY + 1) },
+    ])
+      expect(
+        await approvePendingIssue(c.id, OWNER_ACTOR, seen.revision, edit),
+      ).toMatchObject({ ok: false, status: 400 });
+    expect(posted).toHaveLength(0);
+  });
+});
+
 describe("the it's fixed note", () => {
   let prState: "OPEN" | "MERGED" | "CLOSED" | null = null;
   let issueState: "open" | "closed" | null = "open";
