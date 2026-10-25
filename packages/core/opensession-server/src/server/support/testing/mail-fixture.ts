@@ -225,10 +225,10 @@ export function selfSignedCert(
         "openssl",
         "req",
         "-x509",
+        // RSA: an EC key from some openssl builds now and then has a
+        // private key encoding BoringSSL refuses.
         "-newkey",
-        "ec",
-        "-pkeyopt",
-        "ec_paramgen_curve:prime256v1",
+        "rsa:2048",
         "-nodes",
         "-days",
         "1",
