@@ -83,6 +83,8 @@ export type ResponseStep =
       sessionId: string;
       report?: InvestigatorReport | VerifierReport;
       error?: string;
+      /** Values Sessions repaired in the report instead of refusing it. */
+      warnings?: string[];
     }
   | { step: "cancel-agents"; reason: string; for: CancelReason }
   | { step: "run-proof" }

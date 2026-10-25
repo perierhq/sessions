@@ -598,6 +598,46 @@ test("a certain verdict moves to deciding with the verified SHA", async () => {
   });
 });
 
+test("a report with an unknown attempt result is kept, with the warning on the run", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      attempts: [
+        {
+          step: "Read status page day bars",
+          cost: "free",
+          result: "informative",
+          evidence: "Red bars since 10:30",
+        },
+        { ...investigatorReport.attempts[0], result: "mostly-confirmed" },
+      ],
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends).toEqual([]);
+  const i = await getIncident(w.incident.id);
+  const run = i?.response?.agents.find((a) => a.sessionId === "child-1");
+  const warning =
+    'Attempt 2 (Request with app UA) had result "mostly-confirmed", not one of ruled-out, confirmed, inconclusive, informative; recorded as inconclusive';
+  expect(run?.reportError).toBeUndefined();
+  expect(run?.reportWarnings).toEqual([warning]);
+  expect(
+    run?.report?.role === "investigator" &&
+      run.report.attempts.map((a) => a.result),
+  ).toEqual(["informative", "inconclusive"]);
+  expect(
+    i?.response?.ledger.find((e) =>
+      e.detail.startsWith("Investigator reported"),
+    )?.detail,
+  ).toBe(
+    `Investigator reported: Upstream blocks our user agent. Repaired: ${warning}`,
+  );
+});
+
 test("a missing block gets one reminder, then needs you with Retry", async () => {
   const w = await world();
   await advanceIncident(w.incident.id, w.deps);
@@ -609,7 +649,7 @@ test("a missing block gets one reminder, then needs you with Retry", async () =>
     {
       id: "child-1",
       message:
-        "Your last message did not end with a valid incident-report block: No incident-report block. Reply with only the corrected block.",
+        "Your last message did not end with a valid incident-report block: No incident-report block. Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ruled-out, confirmed, inconclusive, informative. Reply with only the corrected block.",
     },
   ]);
   w.finish("child-1", "Still no block");

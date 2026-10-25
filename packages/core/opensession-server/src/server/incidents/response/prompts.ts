@@ -26,7 +26,7 @@ import type {
   SignalRule,
 } from "../../../shared/incidents";
 import { redactSignal } from "../signal-validation";
-import { REPORT_FENCE, cleanReportText } from "./reports";
+import { REPORT_FENCE, RESULT_VALUES, cleanReportText } from "./reports";
 
 const RUNBOOK = "docs/incidents/runbook.md";
 const RECENT_LINES = 20;
@@ -382,6 +382,7 @@ export function buildInvestigatorPrompt(
   out.push(
     `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
     "List at least one claim when there is a candidate; a claim's source must also be the source of one of your attempts. With nothing to run, set candidate to null and explain noCandidateReason.",
+    `Each attempt's cost is one of: free, cheap, expensive. Its result is one of: ${RESULT_VALUES}. Use ruled-out when the step excluded a cause, confirmed when it backed one, inconclusive when it tried to and could not tell, and informative when it only gathered context.`,
     "",
     jsonBlock(REPORT_FENCE, {
       role: "investigator",
@@ -392,9 +393,15 @@ export function buildInvestigatorPrompt(
         {
           step: "Read the runbook",
           cost: "free",
-          result: "ruled-out",
+          result: "informative",
           evidence: "What you saw",
           source: RUNBOOK,
+        },
+        {
+          step: "A check that excluded a cause",
+          cost: "cheap",
+          result: "ruled-out",
+          evidence: "What you saw",
         },
       ],
       candidate: { pr: true, actions: [] },
@@ -584,6 +591,14 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
   return out.join("\n");
 }
 
-export function buildReminder(error: string): string {
-  return `Your last message did not end with a valid incident-report block: ${error}. Reply with only the corrected block.`;
+/** The allowed values a report's enum fields take, by role. */
+const ALLOWED_VALUES: Record<AgentRole, string> = {
+  investigator: `Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ${RESULT_VALUES}.`,
+  verifier:
+    "Allowed values: verdict is certain or not-certain; claims[].status is verified, refuted or unverifiable.",
+};
+
+export function buildReminder(error: string, role?: AgentRole): string {
+  const allowed = role ? ` ${ALLOWED_VALUES[role]}` : "";
+  return `Your last message did not end with a valid incident-report block: ${error}.${allowed} Reply with only the corrected block.`;
 }
