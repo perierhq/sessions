@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import type { Repo } from "./config";
 import { repoForPathOrNull } from "./worktree";
+import { privateAppCaddyUpstream } from "./private-app-domain";
 import {
   ensureRemoteSandboxPortalAgent,
   forgetRemoteSandboxPortalAgents,
@@ -499,7 +500,11 @@ export function previewServerConfig(
   if (!/^127\.0\.0\.1:\d{1,5}$/.test(upstream)) {
     throw new Error("Portal Caddy routes must target a loopback relay");
   }
-  const authPort = configuredServer().port;
+  // The sign-in check goes to this server where it actually listens. A
+  // server bound to one private address (HOST) has nothing on loopback, and
+  // Caddy then answered every Portal request with 502.
+  const server = configuredServer();
+  const authUpstream = privateAppCaddyUpstream(server.host, server.port);
   const serviceProxy = {
     handler: "reverse_proxy",
     upstreams: [{ dial: upstream }],
@@ -529,7 +534,7 @@ export function previewServerConfig(
                   compress,
                   {
                     handler: "reverse_proxy",
-                    upstreams: [{ dial: `127.0.0.1:${authPort}` }],
+                    upstreams: [{ dial: authUpstream }],
                     rewrite: {
                       method: "GET",
                       uri: `/api/portal-auth/${httpsPort}`,
