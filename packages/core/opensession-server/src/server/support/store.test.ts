@@ -19,9 +19,10 @@ import {
   rememberMessageIds,
   updateConversation,
 } from "./store";
+import { catalogDocuments } from "../catalog-documents";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 
-useSupportTestKernel();
+const kernel = useSupportTestKernel();
 
 const INBOX = "inb_acme";
 const NOW = "2026-10-25T10:00:00.000Z";
@@ -127,7 +128,7 @@ test("updateConversation: null writes nothing, a change bumps revision once", as
   expect(await updateConversation("sc_missing", (cur) => cur)).toBeNull();
 });
 
-test("concurrent appends both land", async () => {
+test("two overlapping updates in one process both land (the per-key queue serialises them)", async () => {
   const c = await create();
   await Promise.all([
     updateConversation(c.id, (cur) => ({
@@ -185,6 +186,56 @@ test("an oversized document clears the oldest texts until it fits", async () => 
     true,
   );
   expect((await getConversation(c.id))?.revision).toBe(1);
+});
+
+test("updateConversation keeps the inbox: mutate cannot move a conversation", async () => {
+  const c = await create();
+  const next = await updateConversation(c.id, (cur) => ({
+    ...cur,
+    inboxId: "inb_other",
+  }));
+  expect(next?.inboxId).toBe(INBOX);
+  expect(next?.revision).toBe(0);
+  expect((await getConversation(c.id))?.inboxId).toBe(INBOX);
+  expect(await listIndexRows({ inboxId: "inb_other" })).toEqual([]);
+});
+
+test("events, moves and auto-sends are trimmed to the newest so the document fits", async () => {
+  const c = await create();
+  const detail = "z".repeat(1_000);
+  const events = Array.from({ length: 5_000 }, (_, i) => ({
+    at: NOW,
+    kind: "note",
+    actor: { kind: "sessions" as const },
+    detail: `${i} ${detail}`,
+  }));
+  const moves = Array.from({ length: 5_000 }, (_, i) => ({
+    at: NOW,
+    from: "acme",
+    to: "acme-api",
+    by: { kind: "sessions" as const },
+    reason: `${i} ${detail}`,
+  }));
+  const autoSends = Array.from({ length: 5_000 }, (_, i) =>
+    new Date(Date.parse(NOW) + i).toISOString(),
+  );
+  const next = await updateConversation(c.id, (cur) => ({
+    ...cur,
+    events,
+    moves,
+    autoSends,
+  }));
+  expect(next).not.toBeNull();
+  expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThanOrEqual(
+    MAX_DOC_BYTES,
+  );
+  expect(next!.events.length).toBeLessThan(events.length);
+  expect(next!.events.at(-1)).toEqual(events.at(-1)!);
+  expect(next!.moves.length).toBeLessThan(moves.length);
+  expect(next!.moves.at(-1)).toEqual(moves.at(-1)!);
+  expect(next!.autoSends.length).toBeLessThan(autoSends.length);
+  expect(next!.autoSends.at(-1)).toBe(autoSends.at(-1)!);
+  expect(next!.messages.at(-1)!.text).toBe("Message 0");
 });
 
 test("message ids and provider ids round-trip, per inbox", async () => {
@@ -258,6 +309,56 @@ test("deleteConversation removes the doc, its index row and its keys", async () 
   expect(calls[0]![1]?.id).toBe(c.id);
 
   expect(await deleteConversation(c.id)).toBe(false);
+});
+
+test("deleteConversation still clears the index row and keys when the document is already gone", async () => {
+  const c = await create();
+  await rememberMessageIds(INBOX, c.id, ["m0@example.test"], ["imap:1:0"]);
+  expect(await catalogDocuments("support-conversations").delete(c.id)).toBe(
+    true,
+  );
+  const calls = record();
+
+  expect(await deleteConversation(c.id)).toBe(true);
+  await settle();
+  expect(await listIndexRows()).toEqual([]);
+  expect((await lookupMessageIds(INBOX, ["m0@example.test"])).size).toBe(0);
+  expect(await lookupProviderId(INBOX, "imap:1:0")).toBeNull();
+  expect(await catalogDocuments("support-message-ids").get(`c:${c.id}`)).toBe(
+    null,
+  );
+  expect(calls).toHaveLength(0);
+  expect(await deleteConversation(c.id)).toBe(false);
+});
+
+test("an index write that lands after a concurrent delete is dropped", async () => {
+  const c = await create();
+  const store = kernel.store();
+  const put = store.putCatalogDocument.bind(store);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held = false;
+  // Hold the update's document commit so the delete runs meanwhile.
+  store.putCatalogDocument = ((input) => {
+    if (input.namespace !== "support-conversations" || held) return put(input);
+    held = true;
+    return gate.then(() => put(input));
+  }) as typeof store.putCatalogDocument;
+
+  const updating = updateConversation(c.id, (cur) => ({
+    ...cur,
+    status: "waiting",
+  }));
+  while (!held) await Bun.sleep(0);
+  const deleting = deleteConversation(c.id);
+  await Bun.sleep(5);
+  release();
+  await Promise.all([updating, deleting]);
+
+  expect(await getConversation(c.id)).toBeNull();
+  expect(await listIndexRows()).toEqual([]);
 });
 
 test("listIndexRows filters by inbox, status and customer (any case)", async () => {

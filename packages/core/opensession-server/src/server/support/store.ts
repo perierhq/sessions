@@ -20,6 +20,10 @@ import {
 import { catalogDocuments } from "../catalog-documents";
 
 const PREVIEW_CHARS = 160;
+/** Newest kept; older entries leave the document. */
+const MAX_EVENTS = 500;
+const MAX_MOVES = 100;
+const MAX_AUTO_SENDS = 50;
 
 type Documents = ReturnType<typeof catalogDocuments>;
 
@@ -42,7 +46,10 @@ export type ConversationListener = (
 const listeners = new Set<ConversationListener>();
 
 /** Highest revision whose index row this process wrote, so a late write
- *  never replaces a newer row. */
+ *  never replaces a newer row. A deleted conversation is pinned at
+ *  +Infinity: an index write that loses the race with its delete is
+ *  dropped. Ids are never reused, so the tombstone never blocks a live
+ *  conversation. */
 const indexedRevision = new Map<string, number>();
 /** Conversations whose last index write failed; the next update retries. */
 const staleIndex = new Set<string>();
@@ -91,22 +98,27 @@ function isConversationRecord(value: unknown): value is SupportConversation {
   );
 }
 
-/** Keep the document under the catalog bound: drop the oldest messages past
- *  MAX_MESSAGES, then clear the oldest texts (never the newest message's)
- *  until the JSON fits MAX_DOC_BYTES. */
+/** Keep the document under the catalog bound: keep the newest messages,
+ *  events, moves and auto-sends up to their caps, then clear the oldest
+ *  texts (never the newest message's), then drop the oldest events and
+ *  moves, until the JSON fits MAX_DOC_BYTES. */
 function fitDocument(c: SupportConversation): SupportConversation {
-  const messages =
-    c.messages.length > MAX_MESSAGES
-      ? c.messages.slice(-MAX_MESSAGES)
-      : [...c.messages];
-  let bytes = Buffer.byteLength(JSON.stringify({ ...c, messages }));
+  const messages = c.messages.slice(-MAX_MESSAGES);
+  const events = c.events.slice(-MAX_EVENTS);
+  const moves = c.moves.slice(-MAX_MOVES);
+  const autoSends = c.autoSends.slice(-MAX_AUTO_SENDS);
+  const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  let bytes = size({ ...c, messages, events, moves, autoSends });
   for (let i = 0; i < messages.length - 1 && bytes > MAX_DOC_BYTES; i++) {
     const m = messages[i]!;
     if (m.text === null) continue;
-    bytes -= Buffer.byteLength(JSON.stringify(m.text)) - "null".length;
+    bytes -= size(m.text) - "null".length;
     messages[i] = { ...m, text: null };
   }
-  return { ...c, messages };
+  // Each entry also costs its separating comma.
+  while (bytes > MAX_DOC_BYTES && events.length) bytes -= size(events.shift()) + 1;
+  while (bytes > MAX_DOC_BYTES && moves.length) bytes -= size(moves.shift()) + 1;
+  return { ...c, messages, events, moves, autoSends };
 }
 
 function collapse(text: string): string {
@@ -163,7 +175,8 @@ async function writeIndexRow(c: SupportConversation): Promise<void> {
       wrote = true;
       return indexRowFor(c);
     });
-    if (wrote) indexedRevision.set(c.id, c.revision);
+    if (wrote && (indexedRevision.get(c.id) ?? -1) < c.revision)
+      indexedRevision.set(c.id, c.revision);
     staleIndex.delete(c.id);
   } catch (error) {
     staleIndex.add(c.id);
@@ -180,6 +193,19 @@ export async function getConversation(
   if (!isConversationId(id)) return null;
   const value = await conversations().get(id);
   return isConversationRecord(value) ? value : null;
+}
+
+/** The ids among `ids` whose conversation document still exists. */
+export async function existingConversations(
+  ids: string[],
+): Promise<Set<string>> {
+  const valid = [...new Set(ids.filter(isConversationId))];
+  if (!valid.length) return new Set();
+  return new Set(
+    (await conversations().getMany(valid))
+      .filter(({ value }) => isConversationRecord(value))
+      .map(({ key }) => key),
+  );
 }
 
 export async function createConversation(init: {
@@ -247,6 +273,7 @@ export async function updateConversation(
       const fitted = fitDocument({
         ...next,
         id: value.id,
+        inboxId: value.inboxId,
         revision: value.revision,
       });
       if (JSON.stringify(fitted) === JSON.stringify(value)) return value;
@@ -264,18 +291,21 @@ export async function updateConversation(
   return committed;
 }
 
-/** Deletes the conversation's message-id keys, its index row and then the
- *  document, so a crash part way leaves something a retry can find. */
+/** Deletes the conversation's message-id keys, then the document, then its
+ *  index row, so a crash part way leaves the row a retry (or the sweep)
+ *  finds. A document already gone still has its row and keys cleared.
+ *  True when anything was removed. */
 export async function deleteConversation(id: string): Promise<boolean> {
-  const current = await getConversation(id);
-  if (!current) return false;
-  await forgetMessageKeys(current);
-  await indexRows().delete(id);
-  indexedRevision.delete(id);
+  if (!isConversationId(id)) return false;
+  // Tombstone first: an index write still in flight is dropped.
+  indexedRevision.set(id, Number.POSITIVE_INFINITY);
   staleIndex.delete(id);
-  const existed = await conversations().delete(id);
-  if (existed) notify(null, current);
-  return existed;
+  const current = await getConversation(id);
+  const keysRemoved = await forgetMessageKeys(id, current);
+  const docRemoved = await conversations().delete(id);
+  const rowRemoved = await indexRows().delete(id);
+  if (docRemoved && current) notify(null, current);
+  return keysRemoved || docRemoved || rowRemoved;
 }
 
 export async function listIndexRows(
@@ -401,25 +431,35 @@ export async function lookupProviderId(
 }
 
 /** Removes the keys this conversation owns: the recorded list plus every
- *  id still in the document. Keys owned by another conversation stay. */
-async function forgetMessageKeys(c: SupportConversation): Promise<void> {
-  const listKey = keyListKey(c.id);
+ *  id still in the document, if there is one. Keys owned by another
+ *  conversation stay. True when any key was removed. */
+async function forgetMessageKeys(
+  id: string,
+  c: SupportConversation | null,
+): Promise<boolean> {
+  const listKey = keyListKey(id);
   const list = await messageIdDocs().get(listKey);
   const keys = new Set(isKeyList(list) ? list.keys : []);
-  for (const m of c.messages) {
-    if (m.keys.messageId) keys.add(messageKey(c.inboxId, m.keys.messageId));
-    if (m.providerId) keys.add(providerKey(c.inboxId, m.providerId));
+  if (c) {
+    for (const m of c.messages) {
+      if (m.keys.messageId) keys.add(messageKey(c.inboxId, m.keys.messageId));
+      if (m.providerId) keys.add(providerKey(c.inboxId, m.providerId));
+    }
+    if (c.draft) keys.add(messageKey(c.inboxId, c.draft.messageId));
   }
-  if (c.draft) keys.add(messageKey(c.inboxId, c.draft.messageId));
   const owned = (await messageIdDocs().getMany([...keys])).filter(
-    ({ value }) => isKeyRef(value) && value.conversationId === c.id,
+    ({ value }) => isKeyRef(value) && value.conversationId === id,
   );
-  await Promise.all(
-    owned.map(({ key }) =>
-      messageIdDocs().update(key, (value) =>
-        isKeyRef(value) && value.conversationId === c.id ? null : value,
-      ),
-    ),
+  const removed = await Promise.all(
+    owned.map(async ({ key }) => {
+      let mine = false;
+      await messageIdDocs().update(key, (value) => {
+        mine = isKeyRef(value) && value.conversationId === id;
+        return mine ? null : value;
+      });
+      return mine;
+    }),
   );
-  if (list !== null) await messageIdDocs().delete(listKey);
+  const listRemoved = list !== null && (await messageIdDocs().delete(listKey));
+  return listRemoved || removed.includes(true);
 }
