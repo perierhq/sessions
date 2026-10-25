@@ -130,17 +130,17 @@ describe("createInbox", () => {
 
   test("an explicit owner wins; a machine principal falls back to the instance owner", async () => {
     expect((await created({ owner: "Grace" })).owner).toBe("Grace");
-    __setOwnerRosterForTest(
-      [{ name: "Grace Hopper" }],
-      "",
-    );
+    __setOwnerRosterForTest([{ name: "Grace Hopper" }], "");
     const result = await createInbox(newInbox(), "automation");
     expect(result.ok && result.inbox.owner).toBe("Grace");
   });
 
   test("an invalid inbox stores no secret", async () => {
     const result = await createInbox(newInbox({ project: "nope" }), "Ada");
-    expect(result).toEqual({ ok: false, error: expect.stringContaining("Project") });
+    expect(result).toEqual({
+      ok: false,
+      error: expect.stringContaining("Project"),
+    });
     expect(await listInboxes()).toEqual([]);
   });
 });
@@ -235,7 +235,11 @@ describe("validateInbox", () => {
   const cases: Array<[string, Partial<InboxConfig>, RegExp]> = [
     ["port 0", { imap: { ...base.imap, port: 0 } }, /IMAP port/],
     ["port 70000", { smtp: { ...base.smtp, port: 70000 } }, /SMTP port/],
-    ["host with a space", { imap: { ...base.imap, host: "imap example" } }, /IMAP host/],
+    [
+      "host with a space",
+      { imap: { ...base.imap, host: "imap example" } },
+      /IMAP host/,
+    ],
     ["address without @", { address: "help.example.test" }, /Address/],
     ["unknown project", { project: "nope" }, /Project/],
     ["veto under a minute", { vetoMs: 59_999 }, /Veto window/],
@@ -247,8 +251,16 @@ describe("validateInbox", () => {
     ],
     ["send limit 0", { sendLimitPerMinute: 0 }, /Send limit/],
     ["send limit 121", { sendLimitPerMinute: 121 }, /Send limit/],
-    ["folder with *", { folders: { done: "Done*", spam: "Spam" } }, /Done folder/],
-    ["folder with %", { folders: { done: "Done", spam: "Sp%am" } }, /Spam folder/],
+    [
+      "folder with *",
+      { folders: { done: "Done*", spam: "Spam" } },
+      /Done folder/,
+    ],
+    [
+      "folder with %",
+      { folders: { done: "Done", spam: "Sp%am" } },
+      /Spam folder/,
+    ],
     [
       "unknown topic",
       { neverWithoutAPerson: ["refund", "weather" as never] },

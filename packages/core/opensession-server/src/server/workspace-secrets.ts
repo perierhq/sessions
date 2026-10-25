@@ -7,9 +7,9 @@
  */
 
 import { chmodSync, existsSync, readFileSync } from "fs";
-import { readFile } from "fs/promises";
+import { chmod, readFile } from "fs/promises";
 import { stateDir } from "./paths";
-import { writeJsonAtomic } from "./shared/atomic-write";
+import { writeFileAtomicAsync, writeJsonAtomic } from "./shared/atomic-write";
 import { readJsonFileCopy } from "./shared/json-file-cache";
 
 interface WorkspaceSecretRecord {
@@ -32,21 +32,26 @@ function storePath(): string {
   );
 }
 
+function normalizeStore(
+  raw: { secrets?: unknown } | undefined,
+): WorkspaceSecretStore {
+  if (!raw || !Array.isArray(raw.secrets)) return { version: 1, secrets: [] };
+  return {
+    version: 1,
+    secrets: raw.secrets.filter(
+      (entry: unknown): entry is WorkspaceSecretRecord => {
+        const value = entry as WorkspaceSecretRecord;
+        return Boolean(
+          value?.id && value?.purpose && typeof value?.value === "string",
+        );
+      },
+    ),
+  };
+}
+
 function readStore(): WorkspaceSecretStore {
   try {
-    const raw = readJsonFileCopy<{ secrets?: unknown }>(storePath());
-    if (!raw || !Array.isArray(raw.secrets)) return { version: 1, secrets: [] };
-    return {
-      version: 1,
-      secrets: raw.secrets.filter(
-        (entry: unknown): entry is WorkspaceSecretRecord => {
-          const value = entry as WorkspaceSecretRecord;
-          return Boolean(
-            value?.id && value?.purpose && typeof value?.value === "string",
-          );
-        },
-      ),
-    };
+    return normalizeStore(readJsonFileCopy<{ secrets?: unknown }>(storePath()));
   } catch {
     return { version: 1, secrets: [] };
   }
@@ -57,14 +62,15 @@ function persist(store: WorkspaceSecretStore): void {
   chmodSync(storePath(), 0o600);
 }
 
-export function putWorkspaceSecret(
+/** Sets `id` in `store` (mutates); shared by the sync and async writers. */
+function upsertSecret(
+  store: WorkspaceSecretStore,
   purpose: string,
   value: string,
-  ref?: string,
+  ref: string | undefined,
 ): string {
   if (!purpose.trim()) throw new Error("workspace secret purpose is required");
   if (!value) throw new Error("workspace secret is empty");
-  const store = readStore();
   const now = new Date().toISOString();
   const id = ref || `wssec-${crypto.randomUUID()}`;
   const existing = store.secrets.find((secret) => secret.id === id);
@@ -81,8 +87,72 @@ export function putWorkspaceSecret(
       updatedAt: now,
     });
   }
+  return id;
+}
+
+export function putWorkspaceSecret(
+  purpose: string,
+  value: string,
+  ref?: string,
+): string {
+  const store = readStore();
+  const id = upsertSecret(store, purpose, value, ref);
   persist(store);
   return id;
+}
+
+// ── Async writers, for request handlers and actor continuations ─────────
+// Every async read-modify-write runs on one promise chain, so two writes
+// started together (two inboxes saved at once) never lose a secret.
+
+let writeChain: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(write: () => Promise<T>): Promise<T> {
+  const next = writeChain.then(write, write);
+  writeChain = next.catch(() => {});
+  return next;
+}
+
+async function readStoreAsync(): Promise<WorkspaceSecretStore> {
+  let text: string;
+  try {
+    text = await readFile(storePath(), "utf-8");
+  } catch {
+    return { version: 1, secrets: [] };
+  }
+  // A store that exists but does not parse is not overwritten with an
+  // empty one: the write fails instead.
+  return normalizeStore(JSON.parse(text));
+}
+
+async function persistAsync(store: WorkspaceSecretStore): Promise<void> {
+  const path = storePath();
+  await writeFileAtomicAsync(path, JSON.stringify(store, null, 2), 0o600);
+  await chmod(path, 0o600);
+}
+
+export function putWorkspaceSecretAsync(
+  purpose: string,
+  value: string,
+  ref?: string,
+): Promise<string> {
+  return serialized(async () => {
+    const store = await readStoreAsync();
+    const id = upsertSecret(store, purpose, value, ref);
+    await persistAsync(store);
+    return id;
+  });
+}
+
+export function deleteWorkspaceSecretAsync(ref: string): Promise<boolean> {
+  return serialized(async () => {
+    const store = await readStoreAsync();
+    const next = store.secrets.filter((secret) => secret.id !== ref);
+    if (next.length === store.secrets.length) return false;
+    store.secrets = next;
+    await persistAsync(store);
+    return true;
+  });
 }
 
 /** resolveWorkspaceSecret for request handlers: never blocks the loop. */
