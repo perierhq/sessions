@@ -60,3 +60,16 @@ paths = [
 ]
 regexTarget = "secret"
 regexes = ['''^ghp_0123456789abcdefABCDEF0123456789abcd$''']
+
+[[allowlists]]
+description = "Synthetic token-shaped text in the support draft secret-scan test, committed as a literal before it was built at run time"
+condition = "AND"
+commits = [
+  "c8031aef1c8ab362f23c27a06f052e6ef87dfcb6",
+  "d3725b21c8785710461613553ca56ca3cf6dd13c",
+]
+paths = [
+  '''(^|/)packages/core/opensession-server/src/server/support/policy\.test\.ts$''',
+]
+regexTarget = "secret"
+regexes = ['''^abc123def456$''']
