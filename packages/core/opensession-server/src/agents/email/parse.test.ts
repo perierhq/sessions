@@ -184,6 +184,29 @@ describe("parseInbound", () => {
     });
   });
 
+  test("a huge References header is cut fast to its ends", async () => {
+    // mailparser refuses a header block over 1 MB, so 50k ids is near the
+    // most a message can carry.
+    const refs = Array.from({ length: 50_000 }, (_, i) => `r${i}@x.test`);
+    const raw = rawMail({ from: "a@example.test", references: refs });
+    const started = performance.now();
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(m.keys.references.length).toBeLessThanOrEqual(21);
+    expect(m.keys.references[0]).toBe("r0@x.test");
+    expect(m.keys.references.at(-1)).toBe("r49999@x.test");
+  });
+
+  test("drops reference ids longer than 998 characters", async () => {
+    const long = `${"a".repeat(1000)}@x.test`;
+    const raw = rawMail({
+      from: "a@example.test",
+      references: ["one@x.test", long, "two@x.test", "one@x.test"],
+    });
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(m.keys.references).toEqual(["one@x.test", "two@x.test"]);
+  });
+
   test("cuts text over MAX_TEXT_CHARS", async () => {
     const raw = rawMail({
       from: "a@example.test",

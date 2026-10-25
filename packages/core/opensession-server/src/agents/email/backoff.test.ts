@@ -70,6 +70,56 @@ describe("classifyImapError", () => {
     ).toBe("too-many-connections");
   });
 
+  test("a refused login with an ALERT is an auth failure", () => {
+    expect(
+      classifyImapError({
+        responseStatus: "NO",
+        authenticationFailed: true,
+        serverResponseCode: "ALERT",
+        response: "Application-specific password required",
+      }).kind,
+    ).toBe("auth");
+    expect(
+      classifyImapError({
+        responseStatus: "NO",
+        serverResponseCode: "ALERT",
+        response: "Application-specific password required",
+      }).kind,
+    ).toBe("auth");
+    expect(
+      classifyImapError({
+        responseStatus: "NO",
+        serverResponseCode: "ALERT",
+        response: "Too many simultaneous connections",
+      }).kind,
+    ).toBe("too-many-connections");
+    expect(
+      classifyImapError({
+        responseStatus: "NO",
+        serverResponseCode: "ALERT",
+        response: "[THROTTLED] slow down",
+      }).kind,
+    ).toBe("throttled");
+  });
+
+  test("an unavailable or broken server on LOGIN is not an auth failure", () => {
+    for (const code of ["UNAVAILABLE", "SERVERBUG"])
+      expect(
+        classifyImapError({
+          responseStatus: "NO",
+          authenticationFailed: true,
+          serverResponseCode: code,
+          response: "Try again later",
+        }).kind,
+      ).toBe("network");
+    expect(
+      classifyImapError({
+        authenticationFailed: true,
+        responseText: "[UNAVAILABLE] Backend down",
+      }).kind,
+    ).toBe("network");
+  });
+
   test("network errors", () => {
     expect(classifyImapError({ code: "ECONNREFUSED" }).kind).toBe("network");
     expect(classifyImapError({ code: "ETIMEOUT" }).kind).toBe("network");

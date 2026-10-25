@@ -47,6 +47,7 @@ function fakeClock() {
         t.fn();
       }
     },
+    pending: () => pending.size,
     advanceTo(at: number) {
       this.advance(Math.max(0, at - now));
     },
@@ -59,6 +60,11 @@ async function waitFor(check: () => boolean, ms = 3000): Promise<void> {
     if (Date.now() > until) throw new Error("waitFor timed out");
     await Bun.sleep(10);
   }
+}
+
+/** Lets socket round trips settle without depending on wall-clock timing. */
+async function flush(rounds = 20): Promise<void> {
+  for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
 }
 
 function inboxFor(fixture: MailFixture): InboxConfig {
@@ -259,11 +265,61 @@ describe("ImapTransport", () => {
     expect(health.state).toBe("paused");
     expect(health.retryAt).toBeNull();
     expect(health.reason).toContain("password");
+    expect(clock.pending()).toBe(0);
     expect(login.count()).toBe(1);
     clock.advance(3_600_000);
-    await Bun.sleep(100);
+    await flush();
     expect(login.count()).toBe(1);
     expect(f.connections()).toBe(0);
+  });
+
+  test("a refused login with an ALERT pauses without retrying", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => ({
+      code: "ALERT",
+      text: "Application-specific password required\x07",
+    }));
+    const clock = fakeClock();
+    const h = harness(f, { timers: clock });
+    await h.transport.start();
+    const health = h.transport.health();
+    expect(health.state).toBe("paused");
+    expect(health.retryAt).toBeNull();
+    expect(health.reason).toContain("Application-specific password required");
+    expect(health.reason).not.toContain("\x07");
+    expect(clock.pending()).toBe(0);
+    expect(login.count()).toBe(1);
+    clock.advance(3_600_000);
+    await flush();
+    expect(login.count()).toBe(1);
+    expect(f.connections()).toBe(0);
+  });
+
+  test("an informational ALERT keeps the connection live", async () => {
+    const f = await fixture();
+    const h = harness(f);
+    await h.transport.start();
+    expect(h.transport.health().state).toBe("live");
+    for (const conn of f.imap.connections)
+      conn.send(
+        {
+          tag: "*",
+          command: "OK",
+          attributes: [
+            { type: "SECTION", section: [{ type: "ATOM", value: "ALERT" }] },
+            { type: "TEXT", value: "Mailbox almost full" },
+          ],
+        },
+        "ALERT",
+      );
+    await waitFor(
+      () => h.transport.health().reason?.includes("Mailbox almost full") ?? false,
+    );
+    expect(h.transport.health().state).toBe("live");
+    f.deliver(mail(1));
+    await waitFor(() => h.received.length === 1);
+    expect(h.transport.health().state).toBe("live");
+    expect(f.connections()).toBe(1);
   });
 
   test("a throttled login backs off and reconnects once", async () => {

@@ -57,17 +57,48 @@ function headerValue(line: string): string {
   return (colon < 0 ? "" : unfolded.slice(colon + 1)).trim();
 }
 
-/** `<a@b> <c@d>` (or bare ids separated by whitespace or commas). */
+/** RFC 5322 line limit: no longer id or header text is legitimate. */
+const MAX_LINE = 998;
+/** References keeps the thread root and the newest ancestors. */
+const REFERENCES_TAIL = 20;
+
+/** `<a@b> <c@d>` (or bare ids separated by whitespace or commas), unique,
+ *  in order. Linear: the header is untrusted and can be a megabyte. */
 function messageIds(value: string | undefined): string[] {
   if (!value) return [];
   const bracketed = value.match(/<[^<>]*>/g);
   const raw = bracketed ?? value.split(/[\s,]+/);
-  const ids: string[] = [];
+  const ids = new Set<string>();
   for (const candidate of raw) {
+    if (candidate.length > MAX_LINE + 2) continue;
     const id = normalizeMessageId(candidate);
-    if (id && !ids.includes(id)) ids.push(id);
+    if (id && id.length <= MAX_LINE) ids.add(id);
   }
-  return ids;
+  return [...ids];
+}
+
+function references(value: string | undefined): string[] {
+  const ids = messageIds(value);
+  if (ids.length <= REFERENCES_TAIL + 1) return ids;
+  return [ids[0]!, ...ids.slice(-REFERENCES_TAIL)];
+}
+
+/** C0 and C1 controls, CR and LF included. */
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/** Cuts at `max` UTF-16 units without splitting a surrogate pair. */
+export function cutText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end);
+}
+
+/** One line of untrusted text for display: controls become spaces,
+ *  whitespace collapses, at most `max` characters. */
+export function cleanLine(text: string, max = MAX_LINE): string {
+  return cutText(text.replace(CONTROLS, " ").replace(/\s+/g, " ").trim(), max);
 }
 
 function capText(text: string): string {
@@ -123,7 +154,7 @@ export async function parseInbound(
     keys: {
       messageId: messageIds(first("message-id"))[0] ?? null,
       inReplyTo: messageIds(first("in-reply-to"))[0] ?? null,
-      references: messageIds(raw.get("references")?.join(" ")),
+      references: references(raw.get("references")?.join(" ")),
     },
     loopHeaders,
     attachments: ctx.oversize

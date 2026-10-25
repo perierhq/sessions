@@ -24,7 +24,7 @@ import {
   classifyImapError,
   nextBackoffMs,
 } from "./backoff";
-import { parseInbound } from "./parse";
+import { cleanLine, parseInbound } from "./parse";
 
 export interface ImapCursor {
   uidValidity: string;
@@ -55,6 +55,8 @@ const MAX_IDLE_MS = 1_500_000;
 const LIVE_RESET_MS = 300_000;
 const PAGE_SIZE = 50;
 const CONNECT_TIMEOUT_MS = 30_000;
+/** Server ALERT text shown on the inbox. */
+const MAX_ALERT_CHARS = 200;
 
 const SINK_FAILED = "Couldn't store a new message. Retrying later";
 
@@ -104,6 +106,8 @@ export class ImapTransport {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private cursor: ImapCursor | null = null;
+  /** The last ALERT text of the current connection, sanitized. */
+  private alertText: string | null = null;
   private catchUpRunning = false;
   private catchUpQueued = false;
   /** Serializes catch-up and withClient on the one connection. */
@@ -219,9 +223,17 @@ export class ImapTransport {
       lastError = err;
     });
     client.on("exists", () => this.scheduleCatchUp(gen));
-    client.on("alert", () =>
-      this.fail(gen, null, { kind: "alert", reason: PAUSE_COPY.alert }),
-    );
+    this.alertText = null;
+    // RFC 9051 7.1: ALERT text is for a person. It never closes the
+    // connection: a refused LOGIN still rejects and is classified there.
+    client.on("alert", (alert: { message?: unknown }) => {
+      if (gen !== this.generation) return;
+      const text = cleanLine(String(alert?.message ?? ""), MAX_ALERT_CHARS);
+      if (!text) return;
+      this.alertText = text;
+      if (this.current.state === "live" || this.current.state === "polling")
+        this.setHealth(this.current.state, text);
+    });
 
     try {
       await client.connect();
@@ -257,7 +269,7 @@ export class ImapTransport {
       if (gen !== this.generation) return;
       this.cursor = cursor;
       this.connectedAt = this.timers.now();
-      this.setHealth(idle ? "live" : "polling");
+      this.setHealth(idle ? "live" : "polling", this.alertText);
       await this.runCatchUp(gen);
       if (!idle && gen === this.generation) this.schedulePoll(gen);
     } catch (err) {
@@ -435,9 +447,12 @@ export class ImapTransport {
     this.connectedAt = null;
 
     const failure = known ?? this.failureOf(err);
+    const reason = this.alertText
+      ? `${failure.reason}. The server said: ${this.alertText}`
+      : failure.reason;
     if (failure.kind === "auth") {
       log(this.inboxId, "imap paused", { kind: failure.kind });
-      this.setHealth("paused", failure.reason, null);
+      this.setHealth("paused", reason, null);
       return;
     }
     const delay = nextBackoffMs(
@@ -452,7 +467,7 @@ export class ImapTransport {
     });
     this.setHealth(
       failure.kind === "alert" ? "paused" : "backing-off",
-      failure.reason,
+      reason,
       this.iso(now + delay),
     );
     this.retryTimer = this.timers.setTimeout(() => {

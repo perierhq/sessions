@@ -108,7 +108,20 @@ export function classifyImapError(err: unknown): {
       kind: "too-many-connections",
       message: PAUSE_COPY["too-many-connections"],
     };
+  // A server that is down or broken refuses LOGIN too; that says nothing
+  // about the password (RFC 5530).
+  if (
+    responseCode === "UNAVAILABLE" ||
+    responseCode === "SERVERBUG" ||
+    /\[(UNAVAILABLE|SERVERBUG)\]/i.test(haystack)
+  )
+    return { kind: "network", message: PAUSE_COPY.network };
   if (field(err, "authenticationFailed") === true)
+    return { kind: "auth", message: PAUSE_COPY.auth };
+  // A refusal with an ALERT needs a person (Gmail: "Application-specific
+  // password required"); retrying it on a timer risks a lockout.
+  const status = text(err, "responseStatus").toUpperCase();
+  if ((status === "NO" || status === "BAD") && responseCode === "ALERT")
     return { kind: "auth", message: PAUSE_COPY.auth };
   if (/\[ALERT\]/i.test(haystack) || responseCode === "ALERT")
     return { kind: "alert", message: PAUSE_COPY.alert };
