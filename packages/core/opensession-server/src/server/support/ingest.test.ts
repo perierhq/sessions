@@ -80,6 +80,8 @@ afterEach(async () => {
   else process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = previousSecrets;
 });
 
+const ADA = { name: "Ada", verified: true, isInstanceOwner: true };
+
 async function newInbox(address: string): Promise<InboxConfig> {
   const server = (host: string, port: number) => ({
     host,
@@ -96,7 +98,7 @@ async function newInbox(address: string): Promise<InboxConfig> {
       imap: server("imap.example.test", 993),
       smtp: server("smtp.example.test", 465),
     },
-    "Ada",
+    ADA,
   );
   if (!result.ok) throw new Error(result.error);
   return result.inbox;
@@ -320,7 +322,7 @@ describe("ingestInbound", () => {
     const updated = await updateInbox(
       inbox.id,
       { expectedRevision: inbox.revision, enabled: false },
-      "Ada",
+      ADA,
     );
     expect(updated.ok).toBe(true);
     expect(await ingested(inbound())).toBe("ignored");

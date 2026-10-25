@@ -26,6 +26,17 @@ import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
 
 const kernel = useSupportTestKernel();
 
+const person = (name: string, isInstanceOwner = false) => ({
+  name,
+  verified: true,
+  isInstanceOwner,
+});
+/** The instance owner. */
+const ADA = person("Ada", true);
+/** A signed-in teammate. */
+const BEA = person("Bea");
+const CLAIMED = { name: "Ada", verified: false, isInstanceOwner: false };
+
 const IMAP_PASSWORD = "imap-pass-4f1c";
 const SMTP_PASSWORD = "smtp-pass-9a2e";
 
@@ -100,7 +111,7 @@ function newInbox(over: Partial<NewInbox> = {}): NewInbox {
 }
 
 async function created(over: Partial<NewInbox> = {}): Promise<InboxConfig> {
-  const result = await createInbox(newInbox(over), "Ada");
+  const result = await createInbox(newInbox(over), ADA);
   if (!result.ok) throw new Error(result.error);
   return result.inbox;
 }
@@ -165,17 +176,18 @@ describe("createInbox", () => {
     expect(inbox).toEqual(expected);
   });
 
-  test("an explicit owner wins; a machine principal falls back to the instance owner", async () => {
+  test("an explicit owner wins; a name nobody goes by falls back to the instance owner", async () => {
     expect((await created({ owner: "Grace" })).owner).toBe("Grace");
     __setOwnerRosterForTest([{ name: "Grace Hopper" }], "");
-    const result = await createInbox(newInbox(), "automation");
+    const result = await createInbox(newInbox(), person("Zed"));
     expect(result.ok && result.inbox.owner).toBe("Grace");
   });
 
   test("an invalid inbox stores no secret", async () => {
-    const result = await createInbox(newInbox({ project: "nope" }), "Ada");
+    const result = await createInbox(newInbox({ project: "nope" }), ADA);
     expect(result).toEqual({
       ok: false,
+      status: 400,
       error: expect.stringContaining("Project"),
     });
     expect(await listInboxes()).toEqual([]);
@@ -187,19 +199,21 @@ describe("createInbox", () => {
     expect(inboxSecrets()).toHaveLength(2);
     // The catalog write fails after both passwords are stored.
     kernel.store().close();
-    await expect(createInbox(newInbox(), "Ada")).rejects.toThrow();
+    await expect(createInbox(newInbox(), ADA)).rejects.toThrow();
     expect(inboxSecrets()).toHaveLength(2);
   });
 
   test("malformed server settings are a validation error, not a crash", async () => {
     const bad = (over: Partial<NewInbox>) =>
-      createInbox({ ...newInbox(), ...over } as NewInbox, "Ada");
+      createInbox({ ...newInbox(), ...over } as NewInbox, ADA);
     expect(await bad({ smtp: {} as never })).toEqual({
       ok: false,
+      status: 400,
       error: expect.stringContaining("SMTP host"),
     });
     expect(await bad({ smtp: undefined as never })).toEqual({
       ok: false,
+      status: 400,
       error: "SMTP settings are missing",
     });
     expect(
@@ -211,8 +225,9 @@ describe("createInbox", () => {
   test("a project name from Object.prototype is not a project", async () => {
     __setInboxProjectCheckForTest(undefined);
     for (const project of ["toString", "constructor", "__proto__"])
-      expect(await createInbox(newInbox({ project }), "Ada")).toEqual({
+      expect(await createInbox(newInbox({ project }), ADA)).toEqual({
         ok: false,
+        status: 400,
         error: expect.stringContaining("Project"),
       });
   });
@@ -221,10 +236,11 @@ describe("createInbox", () => {
     for (const password of ["a\r\nb", "a\nb", "a\u0000b", "x".repeat(1025)]) {
       const result = await createInbox(
         newInbox({ imap: { ...newInbox().imap, password } }),
-        "Ada",
+        ADA,
       );
       expect(result).toEqual({
         ok: false,
+        status: 400,
         error: expect.stringContaining("IMAP password"),
       });
     }
@@ -235,7 +251,7 @@ describe("createInbox", () => {
           newInbox({
             smtp: { ...newInbox().smtp, password: "x".repeat(1024) },
           }),
-          "Ada",
+          ADA,
         )
       ).ok,
     ).toBe(true);
@@ -248,13 +264,13 @@ describe("updateInbox", () => {
     const first = await updateInbox(
       inbox.id,
       { expectedRevision: inbox.revision, label: "Acme support" },
-      "Ada",
+      ADA,
     );
     expect(first.ok && first.inbox.revision).toBe(1);
     const stale = await updateInbox(
       inbox.id,
       { expectedRevision: inbox.revision, label: "Other" },
-      "Ada",
+      ADA,
     );
     expect(stale).toMatchObject({ ok: false, status: 409 });
     expect((await getInbox(inbox.id))?.label).toBe("Acme support");
@@ -262,14 +278,14 @@ describe("updateInbox", () => {
 
   test("unknown inbox is a 404, an invalid patch a 400", async () => {
     expect(
-      await updateInbox("inb_missing", { expectedRevision: 0 }, "Ada"),
+      await updateInbox("inb_missing", { expectedRevision: 0 }, ADA),
     ).toMatchObject({ ok: false, status: 404 });
     const inbox = await created();
     expect(
       await updateInbox(
         inbox.id,
         { expectedRevision: 0, imap: { port: 0 } },
-        "Ada",
+        ADA,
       ),
     ).toMatchObject({ ok: false, status: 400 });
   });
@@ -279,7 +295,7 @@ describe("updateInbox", () => {
     const changed = await updateInbox(
       inbox.id,
       { expectedRevision: 0, imap: { password: "rotated" } },
-      "Grace",
+      person("Grace"),
     );
     if (!changed.ok) throw new Error(changed.error);
     expect(changed.inbox.imap.passwordRef).toBe(inbox.imap.passwordRef);
@@ -294,7 +310,7 @@ describe("updateInbox", () => {
         // The same server settings again are no change.
         imap: { host: "imap.example.test", port: 993 },
       },
-      "Grace",
+      person("Grace"),
     );
     if (!kept.ok) throw new Error(kept.error);
     expect(kept.inbox.label).toBe("Acme support");
@@ -315,7 +331,7 @@ describe("updateInbox", () => {
     ];
     for (const change of changes)
       expect(
-        await updateInbox(inbox.id, { expectedRevision: 0, ...change }, "Ada"),
+        await updateInbox(inbox.id, { expectedRevision: 0, ...change }, ADA),
       ).toEqual({
         ok: false,
         status: 400,
@@ -338,7 +354,7 @@ describe("updateInbox", () => {
         expectedRevision: 0,
         imap: { host: "mail.example.test", password: "new-host-pass" },
       },
-      "Ada",
+      ADA,
     );
     if (!changed.ok) throw new Error(changed.error);
     expect(changed.inbox.imap.host).toBe("mail.example.test");
@@ -363,7 +379,7 @@ describe("updateInbox", () => {
           expectedRevision: 0,
           imap: { host: "a.example.test", password: "pa" },
         },
-        "Ada",
+        ADA,
       ),
       updateInbox(
         inbox.id,
@@ -371,7 +387,7 @@ describe("updateInbox", () => {
           expectedRevision: 0,
           smtp: { host: "b.example.test", password: "pb" },
         },
-        "Grace",
+        person("Grace"),
       ),
     ]);
     expect(results.map((r) => r.ok).sort()).toEqual([false, true]);
@@ -395,7 +411,7 @@ describe("updateInbox", () => {
       await updateInbox(
         inbox.id,
         { expectedRevision: 0, smtp: { password: "a\r\nAUTH" } },
-        "Ada",
+        ADA,
       ),
     ).toMatchObject({
       ok: false,
@@ -585,6 +601,125 @@ describe("validateInbox", () => {
     });
 });
 
+describe("permissions", () => {
+  const FORBIDDEN = { ok: false, status: 403 };
+
+  test("a signed-in teammate may create and edit an inbox", async () => {
+    const result = await createInbox(newInbox(), BEA);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.inbox.createdBy).toBe("Bea");
+    const edited = await updateInbox(
+      result.inbox.id,
+      { expectedRevision: 0, label: "Acme support", autonomy: "watch" },
+      BEA,
+    );
+    expect(edited.ok).toBe(true);
+  });
+
+  test("a claimed name may not create, edit or delete", async () => {
+    expect(await createInbox(newInbox(), CLAIMED)).toMatchObject(FORBIDDEN);
+    expect(inboxSecrets()).toEqual([]);
+    const inbox = await created();
+    expect(
+      await updateInbox(inbox.id, { expectedRevision: 0, label: "X" }, CLAIMED),
+    ).toMatchObject(FORBIDDEN);
+    expect(await deleteInbox(inbox.id, CLAIMED)).toMatchObject(FORBIDDEN);
+    expect(await getInbox(inbox.id)).toEqual(inbox);
+  });
+
+  test("only the instance owner may let Sessions send right away", async () => {
+    const inbox = await created();
+    const patch = {
+      expectedRevision: 0,
+      autonomy: "deploy-right-away" as const,
+    };
+    expect(await updateInbox(inbox.id, patch, BEA)).toEqual({
+      ok: false,
+      status: 403,
+      error: "Only the instance owner can let Sessions send right away",
+    });
+    expect(await getInbox(inbox.id)).toEqual(inbox);
+    const set = await updateInbox(inbox.id, patch, ADA);
+    expect(set.ok && set.inbox.autonomy).toBe("deploy-right-away");
+    // Others may still edit it, resending the level, or lower it.
+    const label = await updateInbox(
+      inbox.id,
+      { ...patch, expectedRevision: 1, label: "Acme support" },
+      BEA,
+    );
+    expect(label.ok).toBe(true);
+    const lowered = await updateInbox(
+      inbox.id,
+      { expectedRevision: 2, autonomy: "propose" },
+      BEA,
+    );
+    expect(lowered.ok && lowered.inbox.autonomy).toBe("propose");
+  });
+
+  test("only the instance owner may allow internal mail servers", async () => {
+    expect(
+      await createInbox(newInbox({ allowInternalHost: true }), BEA),
+    ).toEqual({
+      ok: false,
+      status: 403,
+      error: "Only the instance owner can allow internal mail servers",
+    });
+    expect(inboxSecrets()).toEqual([]);
+    const inbox = await created();
+    expect(
+      await updateInbox(
+        inbox.id,
+        { expectedRevision: 0, allowInternalHost: true },
+        BEA,
+      ),
+    ).toMatchObject(FORBIDDEN);
+    const allowed = await updateInbox(
+      inbox.id,
+      { expectedRevision: 0, allowInternalHost: true },
+      ADA,
+    );
+    expect(allowed.ok && allowed.inbox.allowInternalHost).toBe(true);
+    const owned = await createInbox(newInbox({ allowInternalHost: true }), ADA);
+    expect(owned.ok && owned.inbox.allowInternalHost).toBe(true);
+  });
+
+  test("on an inbox that allows internal servers, only the owner may point it elsewhere", async () => {
+    const inbox = await created({ allowInternalHost: true });
+    const move = {
+      expectedRevision: 0,
+      imap: { host: "10.0.0.5", password: "p" },
+    };
+    expect(await updateInbox(inbox.id, move, BEA)).toEqual({
+      ok: false,
+      status: 403,
+      error:
+        "Only the instance owner can change the mail servers of an inbox that allows internal servers",
+    });
+    expect(
+      await updateInbox(
+        inbox.id,
+        { expectedRevision: 0, imap: { password: "rotated" } },
+        BEA,
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      (await updateInbox(inbox.id, { ...move, expectedRevision: 1 }, ADA)).ok,
+    ).toBe(true);
+  });
+
+  test("only the instance owner may delete an inbox", async () => {
+    const inbox = await created();
+    expect(await deleteInbox(inbox.id, BEA)).toEqual({
+      ok: false,
+      status: 403,
+      error: "Only the instance owner can remove inboxes",
+    });
+    expect(await getInbox(inbox.id)).toEqual(inbox);
+    expect(inboxSecrets()).toHaveLength(2);
+    expect(await deleteInbox(inbox.id, ADA)).toEqual({ ok: true });
+  });
+});
+
 describe("stored inboxes from before TLS modes", () => {
   test("secure on reads as implicit TLS, off as required STARTTLS", async () => {
     const inbox = await created();
@@ -611,7 +746,7 @@ describe("stored inboxes from before TLS modes", () => {
 describe("deleteInbox and listeners", () => {
   test("deleteInbox removes the config and both secrets", async () => {
     const inbox = await created();
-    expect(await deleteInbox(inbox.id, "Ada")).toBe(true);
+    expect(await deleteInbox(inbox.id, ADA)).toEqual({ ok: true });
     expect(await getInbox(inbox.id)).toBeNull();
     expect(await resolveWorkspaceSecretAsync(inbox.imap.passwordRef!)).toBe(
       undefined,
@@ -619,7 +754,10 @@ describe("deleteInbox and listeners", () => {
     expect(await resolveWorkspaceSecretAsync(inbox.smtp.passwordRef!)).toBe(
       undefined,
     );
-    expect(await deleteInbox(inbox.id, "Ada")).toBe(false);
+    expect(await deleteInbox(inbox.id, ADA)).toMatchObject({
+      ok: false,
+      status: 404,
+    });
   });
 
   test("listeners hear a committed update even when the password write after it fails", async () => {
@@ -630,7 +768,7 @@ describe("deleteInbox and listeners", () => {
       updateInbox(
         inbox.id,
         { expectedRevision: 0, label: "B", imap: { password: "rotated" } },
-        "Ada",
+        ADA,
       ),
     ).rejects.toThrow();
     await Bun.sleep(0);
@@ -641,7 +779,7 @@ describe("deleteInbox and listeners", () => {
     const inbox = await created();
     const calls = recordChanges();
     corruptSecrets();
-    expect(await deleteInbox(inbox.id, "Ada")).toBe(true);
+    expect(await deleteInbox(inbox.id, ADA)).toEqual({ ok: true });
     expect(await getInbox(inbox.id)).toBeNull();
     await Bun.sleep(0);
     expect(calls).toEqual([[null, "Acme help"]]);
@@ -653,8 +791,8 @@ describe("deleteInbox and listeners", () => {
       calls.push([next?.label ?? null, previous?.label ?? null]);
     });
     const inbox = await created();
-    await updateInbox(inbox.id, { expectedRevision: 0, label: "B" }, "Ada");
-    await deleteInbox(inbox.id, "Ada");
+    await updateInbox(inbox.id, { expectedRevision: 0, label: "B" }, ADA);
+    await deleteInbox(inbox.id, ADA);
     await Bun.sleep(0);
     expect(calls).toEqual([
       ["Acme help", null],

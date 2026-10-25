@@ -4,12 +4,20 @@
 // sit in the catalog, an API response or a log line; inboxPassword() is the
 // only way back to them, for the transports.
 //
+// Every write takes an Actor (actor.ts): any signed-in person may create
+// and edit an inbox; only the instance owner may let Sessions send right
+// away, allow internal mail servers (and then change where they point),
+// or remove an inbox. Refusals are `{ ok: false, status: 403 }`.
+//
 // Updates are compare-and-swap on the record's revision; change listeners
 // hear every committed create, update and delete (the transports reconnect
 // from them). Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import { isIP } from "node:net";
-import { AUTONOMY_LEVELS } from "../../shared/incident-response";
+import {
+  AUTONOMY_LEVELS,
+  type AutonomyLevel,
+} from "../../shared/incident-response";
 import {
   BUG_HANDLING,
   type InboxConfig,
@@ -25,6 +33,7 @@ import {
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import { instanceOwner, personOwner, resolveOwner } from "../incidents/owner";
+import { type Actor, isOwnerActor } from "./actor";
 import { mailHostLiteralAllowed, noTlsHostAllowed } from "./mail-host";
 import {
   deleteWorkspaceSecretAsync,
@@ -43,6 +52,54 @@ export type NewInbox = Pick<InboxConfig, "label" | "address" | "project"> &
   };
 
 type Which = "imap" | "smtp";
+
+/** The autonomy level only the instance owner may choose. */
+const OWNER_ONLY_AUTONOMY: AutonomyLevel = "deploy-right-away";
+
+const NOT_SIGNED_IN = "Only a signed-in person can change inboxes";
+const OWNER_SENDS = "Only the instance owner can let Sessions send right away";
+const OWNER_INTERNAL =
+  "Only the instance owner can allow internal mail servers";
+const OWNER_INTERNAL_SERVERS =
+  "Only the instance owner can change the mail servers of an inbox that allows internal servers";
+const OWNER_REMOVES = "Only the instance owner can remove inboxes";
+
+type Forbidden = { ok: false; status: 403; error: string };
+const forbidden = (error: string): Forbidden => ({
+  ok: false,
+  status: 403,
+  error,
+});
+
+/** Why `actor` may not turn `current` into `next` (null for a new inbox),
+ *  or null. Only raising autonomy to send right away, turning internal
+ *  servers on, or moving the servers of an inbox that allows internal
+ *  ones needs the owner; lowering either is anyone's. */
+function ownerOnlyChange(
+  actor: Actor,
+  current: InboxConfig | null,
+  next: InboxConfig,
+): string | null {
+  if (isOwnerActor(actor)) return null;
+  if (
+    next.autonomy === OWNER_ONLY_AUTONOMY &&
+    current?.autonomy !== OWNER_ONLY_AUTONOMY
+  )
+    return OWNER_SENDS;
+  if (next.allowInternalHost === true && current?.allowInternalHost !== true)
+    return OWNER_INTERNAL;
+  if (
+    current &&
+    next.allowInternalHost === true &&
+    SERVERS.some(
+      (which) =>
+        current[which].host !== next[which].host ||
+        current[which].port !== next[which].port,
+    )
+  )
+    return OWNER_INTERNAL_SERVERS;
+  return null;
+}
 const SERVERS: Which[] = ["imap", "smtp"];
 const SERVER_NAMES: Record<Which, string> = { imap: "IMAP", smtp: "SMTP" };
 
@@ -342,10 +399,20 @@ const trimServer = (input: ServerInput): MailServerConfig | null =>
 
 export async function createInbox(
   input: NewInbox,
-  by: string,
-): Promise<{ ok: true; inbox: InboxConfig } | { ok: false; error: string }> {
+  actor: Actor,
+): Promise<
+  | { ok: true; inbox: InboxConfig }
+  | { ok: false; status: 400 | 403; error: string }
+> {
+  if (!actor?.verified) return forbidden(NOT_SIGNED_IN);
+  const by = actor.name;
+  const invalidInput = (error: string) => ({
+    ok: false as const,
+    status: 400 as const,
+    error,
+  });
   if (!input || typeof input !== "object")
-    return { ok: false, error: "Inbox settings are missing" };
+    return invalidInput("Inbox settings are missing");
   // Server settings first: defaultInboxConfig reads the SMTP host.
   const servers = {
     imap: trimServer(input.imap),
@@ -357,13 +424,12 @@ export async function createInbox(
       which,
       input.allowInternalHost === true,
     );
-    if (error) return { ok: false, error };
+    if (error) return invalidInput(error);
   }
   let owner: string;
   if (input.owner !== undefined) {
     const resolved = resolveOwner(input.owner);
-    if (typeof resolved !== "string")
-      return { ok: false, error: resolved.error };
+    if (typeof resolved !== "string") return invalidInput(resolved.error);
     owner = resolved;
   } else owner = personOwner(by) ?? instanceOwner();
 
@@ -385,10 +451,12 @@ export async function createInbox(
   if (input.allowInternalHost !== undefined)
     draft.allowInternalHost = input.allowInternalHost;
   const invalid = validateInbox(draft, projectExists);
-  if (invalid) return { ok: false, error: invalid };
+  if (invalid) return invalidInput(invalid);
+  const refused = ownerOnlyChange(actor, null, draft);
+  if (refused) return forbidden(refused);
   for (const which of SERVERS) {
     const error = passwordError(input[which].password, which);
-    if (error) return { ok: false, error };
+    if (error) return invalidInput(error);
   }
 
   const refs: string[] = [];
@@ -413,7 +481,7 @@ export async function createInbox(
 
 type UpdateResult =
   | { ok: true; inbox: InboxConfig }
-  | { ok: false; status: 400 | 404 | 409; error: string };
+  | { ok: false; status: 400 | 403 | 404 | 409; error: string };
 
 const STALE: UpdateResult = {
   ok: false,
@@ -486,14 +554,17 @@ const serverChanged = (current: MailServerConfig, next: MailServerConfig) =>
 export async function updateInbox(
   id: string,
   patch: InboxPatch,
-  by: string,
+  actor: Actor,
 ): Promise<UpdateResult> {
+  if (!actor?.verified) return forbidden(NOT_SIGNED_IN);
   const current = await getInbox(id);
   if (!current)
     return { ok: false, status: 404, error: "That inbox doesn't exist" };
   if (patch.expectedRevision !== current.revision) return STALE;
 
-  const next = applyPatch(current, patch, by, new Date().toISOString());
+  const next = applyPatch(current, patch, actor.name, new Date().toISOString());
+  const refused = ownerOnlyChange(actor, current, next);
+  if (refused) return forbidden(refused);
   if (patch.owner !== undefined && patch.owner !== current.owner) {
     const resolved = resolveOwner(patch.owner);
     if (typeof resolved !== "string")
@@ -592,17 +663,28 @@ export async function updateInbox(
   return { ok: true, inbox: saved };
 }
 
-/** Deletes the config and both secrets. Conversations stay. */
-export async function deleteInbox(id: string, _by: string): Promise<boolean> {
+const NO_INBOX = {
+  ok: false,
+  status: 404,
+  error: "That inbox doesn't exist",
+} as const;
+
+/** Deletes the config and both secrets; instance owner only. Conversations
+ *  stay. */
+export async function deleteInbox(
+  id: string,
+  actor: Actor,
+): Promise<{ ok: true } | Forbidden | typeof NO_INBOX> {
+  if (!isOwnerActor(actor)) return forbidden(OWNER_REMOVES);
   const current = await getInbox(id);
-  if (!current) return false;
+  if (!current) return NO_INBOX;
   let previous: InboxConfig | null = null;
   await inboxes().update(id, (value) => {
     previous = isInboxRecord(value) ? upgradeRecord(value) : null;
     return null;
   });
   const removed = previous as InboxConfig | null;
-  if (!removed) return false;
+  if (!removed) return NO_INBOX;
   // The inbox is gone: listeners hear it whatever happens to the secrets.
   try {
     const refs = SERVERS.map((which) => removed[which].passwordRef).filter(
@@ -618,5 +700,5 @@ export async function deleteInbox(id: string, _by: string): Promise<boolean> {
   } finally {
     notify(null, removed);
   }
-  return true;
+  return { ok: true };
 }

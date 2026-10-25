@@ -36,6 +36,7 @@ import {
   listIndexRows,
   updateConversation,
 } from "./store";
+import { type Actor, requireInstanceOwner } from "./actor";
 
 export const RETENTION_SWEEP_MS = 3_600_000;
 const FIRST_SWEEP_MS = 60_000;
@@ -285,14 +286,15 @@ export function sweepRetention(
   return sweeping;
 }
 
-/** Deletes every conversation with this customer across inboxes, the
+/** Instance owner only (throws ForbiddenError, 403, before anything else).
+ *  Deletes every conversation with this customer across inboxes, the
  *  sessions that worked on them (their transcripts hold the mail) and the
  *  attachments. A conversation whose session refuses to go is kept for a
  *  retry and counted in `failed`; the rest still go. The audit row, written
  *  every time, holds a keyed digest of the address, never the address. */
 export async function forgetCustomer(
   email: string,
-  by: string,
+  actor: Actor,
   overrides: Partial<RetentionDeps> = {},
 ): Promise<{
   conversations: number;
@@ -301,6 +303,8 @@ export async function forgetCustomer(
   failed: number;
   notDeleted: string[];
 }> {
+  requireInstanceOwner(actor, "Only the instance owner can forget a customer");
+  const by = actor.name;
   const deps: RetentionDeps = { ...defaultDeps, ...overrides };
   const customer = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(customer))

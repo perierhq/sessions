@@ -24,6 +24,7 @@ import {
   startSupportRetention,
   sweepRetention,
 } from "./retention";
+import { ForbiddenError } from "./actor";
 import * as store from "./store";
 import {
   createConversation,
@@ -449,7 +450,30 @@ describe("deleteSupportSession", () => {
   });
 });
 
+const OWNER = { name: "kacper", verified: true, isInstanceOwner: true };
+
 describe("forgetCustomer", () => {
+  test("only the instance owner may forget a customer", async () => {
+    const c = await conversation({ customer: "ada@example.test" });
+    const { deps: d, deletedSessions } = deps();
+    for (const actor of [
+      { name: "bea", verified: true, isInstanceOwner: false },
+      { name: "kacper", verified: false, isInstanceOwner: true },
+    ]) {
+      const error = await forgetCustomer("ada@example.test", actor, d).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(ForbiddenError);
+      expect((error as ForbiddenError).status).toBe(403);
+      expect((error as Error).message).toBe(
+        "Only the instance owner can forget a customer",
+      );
+    }
+    expect(await getConversation(c.id)).not.toBeNull();
+    expect(deletedSessions).toEqual([]);
+    expect(kernel.audits).toEqual([]);
+  });
+
   test("deletes everything Sessions holds for the customer and says what stays", async () => {
     const a = await conversation({
       customer: "ada@example.test",
@@ -478,7 +502,7 @@ describe("forgetCustomer", () => {
     });
     const { deps: d, deletedSessions, worktrees } = deps();
 
-    const result = await forgetCustomer("Ada@Example.test", "kacper", d);
+    const result = await forgetCustomer("Ada@Example.test", OWNER, d);
 
     expect(result).toEqual({
       conversations: 2,
@@ -537,7 +561,7 @@ describe("forgetCustomer", () => {
     const c = await conversation({ customer: "" });
     const { deps: d } = deps();
     for (const bad of ["", "   ", "ada", "@example.test", "ada@", "a b@x.test"])
-      await expect(forgetCustomer(bad, "kacper", d)).rejects.toThrow(
+      await expect(forgetCustomer(bad, OWNER, d)).rejects.toThrow(
         "Invalid customer address",
       );
     expect(await getConversation(c.id)).not.toBeNull();
@@ -546,7 +570,7 @@ describe("forgetCustomer", () => {
 
   test("a customer Sessions never saw still gets a record", async () => {
     const { deps: d, deletedSessions } = deps();
-    expect(await forgetCustomer("nobody@example.test", "kacper", d)).toEqual({
+    expect(await forgetCustomer("nobody@example.test", OWNER, d)).toEqual({
       conversations: 0,
       sessions: 0,
       attachments: 0,
@@ -567,7 +591,7 @@ describe("forgetCustomer", () => {
       await deleteSession(id, clean);
     };
 
-    const result = await forgetCustomer("ada@example.test", "kacper", d);
+    const result = await forgetCustomer("ada@example.test", OWNER, d);
 
     expect(result).toEqual({
       conversations: 1,
