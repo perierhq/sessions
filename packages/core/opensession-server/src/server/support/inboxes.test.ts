@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 import {
   type InboxConfig,
   type InboxHealth,
@@ -21,14 +23,17 @@ import {
 } from "./inboxes";
 import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
 
-useSupportTestKernel();
+const kernel = useSupportTestKernel();
 
 const IMAP_PASSWORD = "imap-pass-4f1c";
 const SMTP_PASSWORD = "smtp-pass-9a2e";
 
+let previousSecrets: string | undefined;
 beforeEach(() => {
   __setOwnerRosterForTest([]);
   __setInboxProjectCheckForTest((id) => TEST_PROJECTS.includes(id));
+  previousSecrets = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
+  process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = secretsPath();
 });
 
 let unsubscribe: (() => void) | undefined;
@@ -37,7 +42,38 @@ afterEach(() => {
   unsubscribe = undefined;
   __setInboxProjectCheckForTest(undefined);
   __setOwnerRosterForTest(undefined);
+  if (previousSecrets === undefined)
+    delete process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
+  else process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = previousSecrets;
 });
+
+const secretsPath = () => join(kernel.root(), "workspace-secrets.json");
+
+/** What the secrets file holds, read straight from disk. */
+function storedSecrets(): Array<{
+  id: string;
+  purpose: string;
+  value: string;
+}> {
+  if (!existsSync(secretsPath())) return [];
+  return JSON.parse(readFileSync(secretsPath(), "utf-8")).secrets;
+}
+
+const inboxSecrets = () =>
+  storedSecrets().filter((secret) =>
+    secret.purpose.startsWith("support-inbox:"),
+  );
+
+/** Later reads and writes of the secrets store fail. */
+const corruptSecrets = () => writeFileSync(secretsPath(), "{not json");
+
+function recordChanges(): Array<[string | null, string | null]> {
+  const calls: Array<[string | null, string | null]> = [];
+  unsubscribe = onInboxChange((next, previous) => {
+    calls.push([next?.label ?? null, previous?.label ?? null]);
+  });
+  return calls;
+}
 
 function newInbox(over: Partial<NewInbox> = {}): NewInbox {
   return {
@@ -142,6 +178,66 @@ describe("createInbox", () => {
       error: expect.stringContaining("Project"),
     });
     expect(await listInboxes()).toEqual([]);
+    expect(inboxSecrets()).toEqual([]);
+  });
+
+  test("a failed create deletes the secrets it wrote", async () => {
+    await created();
+    expect(inboxSecrets()).toHaveLength(2);
+    // The catalog write fails after both passwords are stored.
+    kernel.store().close();
+    await expect(createInbox(newInbox(), "Ada")).rejects.toThrow();
+    expect(inboxSecrets()).toHaveLength(2);
+  });
+
+  test("malformed server settings are a validation error, not a crash", async () => {
+    const bad = (over: Partial<NewInbox>) =>
+      createInbox({ ...newInbox(), ...over } as NewInbox, "Ada");
+    expect(await bad({ smtp: {} as never })).toEqual({
+      ok: false,
+      error: expect.stringContaining("SMTP host"),
+    });
+    expect(await bad({ smtp: undefined as never })).toEqual({
+      ok: false,
+      error: "SMTP settings are missing",
+    });
+    expect(
+      await bad({ imap: { ...newInbox().imap, host: 42 as never } }),
+    ).toMatchObject({ ok: false, error: expect.stringContaining("IMAP host") });
+    expect(inboxSecrets()).toEqual([]);
+  });
+
+  test("a project name from Object.prototype is not a project", async () => {
+    __setInboxProjectCheckForTest(undefined);
+    for (const project of ["toString", "constructor", "__proto__"])
+      expect(await createInbox(newInbox({ project }), "Ada")).toEqual({
+        ok: false,
+        error: expect.stringContaining("Project"),
+      });
+  });
+
+  test("passwords are capped and can't contain line breaks", async () => {
+    for (const password of ["a\r\nb", "a\nb", "a\u0000b", "x".repeat(1025)]) {
+      const result = await createInbox(
+        newInbox({ imap: { ...newInbox().imap, password } }),
+        "Ada",
+      );
+      expect(result).toEqual({
+        ok: false,
+        error: expect.stringContaining("IMAP password"),
+      });
+    }
+    expect(inboxSecrets()).toEqual([]);
+    expect(
+      (
+        await createInbox(
+          newInbox({
+            smtp: { ...newInbox().smtp, password: "x".repeat(1024) },
+          }),
+          "Ada",
+        )
+      ).ok,
+    ).toBe(true);
   });
 });
 
@@ -191,14 +287,121 @@ describe("updateInbox", () => {
 
     const kept = await updateInbox(
       inbox.id,
-      { expectedRevision: 1, imap: { host: "mail.example.test" } },
+      {
+        expectedRevision: 1,
+        label: "Acme support",
+        // The same server settings again are no change.
+        imap: { host: "imap.example.test", port: 993 },
+      },
       "Grace",
     );
     if (!kept.ok) throw new Error(kept.error);
-    expect(kept.inbox.imap.host).toBe("mail.example.test");
+    expect(kept.inbox.label).toBe("Acme support");
     expect(kept.inbox.imap.port).toBe(993);
     expect(await inboxPassword(kept.inbox, "imap")).toBe("rotated");
     expect(await inboxPassword(kept.inbox, "smtp")).toBe(SMTP_PASSWORD);
+  });
+
+  test("changing a server without its password again is refused", async () => {
+    const inbox = await created();
+    const changes = [
+      { imap: { host: "attacker.example.test" } },
+      { imap: { port: 143 } },
+      { imap: { secure: false } },
+      { smtp: { user: "someone@example.test" } },
+      // A password for the other server doesn't count.
+      { imap: { host: "attacker.example.test" }, smtp: { password: "s" } },
+    ];
+    for (const change of changes)
+      expect(
+        await updateInbox(inbox.id, { expectedRevision: 0, ...change }, "Ada"),
+      ).toEqual({
+        ok: false,
+        status: 400,
+        error: "Enter the password again when the server changes",
+      });
+    expect(await getInbox(inbox.id)).toEqual(inbox);
+    expect(await inboxPassword(inbox, "imap")).toBe(IMAP_PASSWORD);
+    expect(await inboxPassword(inbox, "smtp")).toBe(SMTP_PASSWORD);
+  });
+
+  test("a new server with its password never pairs with the old password", async () => {
+    const inbox = await created();
+    const seen: Array<string | undefined> = [];
+    unsubscribe = onInboxChange((next) => {
+      if (next) void inboxPassword(next, "imap").then((p) => seen.push(p));
+    });
+    const changed = await updateInbox(
+      inbox.id,
+      {
+        expectedRevision: 0,
+        imap: { host: "mail.example.test", password: "new-host-pass" },
+      },
+      "Ada",
+    );
+    if (!changed.ok) throw new Error(changed.error);
+    expect(changed.inbox.imap.host).toBe("mail.example.test");
+    // A new ref, written before the commit; the old secret is gone.
+    expect(changed.inbox.imap.passwordRef).not.toBe(inbox.imap.passwordRef);
+    expect(await inboxPassword(changed.inbox, "imap")).toBe("new-host-pass");
+    expect(
+      await resolveWorkspaceSecretAsync(inbox.imap.passwordRef!),
+    ).toBeUndefined();
+    expect(changed.inbox.smtp.passwordRef).toBe(inbox.smtp.passwordRef);
+    expect(inboxSecrets()).toHaveLength(2);
+    await Bun.sleep(5);
+    expect(seen).toEqual(["new-host-pass"]);
+  });
+
+  test("of two updates racing on one revision, the loser writes no secret", async () => {
+    const inbox = await created();
+    const results = await Promise.all([
+      updateInbox(
+        inbox.id,
+        {
+          expectedRevision: 0,
+          imap: { host: "a.example.test", password: "pa" },
+        },
+        "Ada",
+      ),
+      updateInbox(
+        inbox.id,
+        {
+          expectedRevision: 0,
+          smtp: { host: "b.example.test", password: "pb" },
+        },
+        "Grace",
+      ),
+    ]);
+    expect(results.map((r) => r.ok).sort()).toEqual([false, true]);
+    const loser = results.find((r) => !r.ok);
+    expect(loser).toMatchObject({ ok: false, status: 409 });
+    const values = inboxSecrets().map((secret) => secret.value);
+    expect(values).toHaveLength(2);
+    const winner = results.find((r) => r.ok);
+    if (!winner?.ok) throw new Error("no winner");
+    expect(await inboxPassword(winner.inbox, "imap")).toBe(
+      winner.inbox.imap.host === "a.example.test" ? "pa" : IMAP_PASSWORD,
+    );
+    expect(values).not.toContain(
+      winner.inbox.imap.host === "a.example.test" ? "pb" : "pa",
+    );
+  });
+
+  test("password limits apply to updates too", async () => {
+    const inbox = await created();
+    expect(
+      await updateInbox(
+        inbox.id,
+        { expectedRevision: 0, smtp: { password: "a\r\nAUTH" } },
+        "Ada",
+      ),
+    ).toMatchObject({
+      ok: false,
+      status: 400,
+      error: expect.stringContaining("SMTP password"),
+    });
+    expect(await inboxPassword(inbox, "smtp")).toBe(SMTP_PASSWORD);
   });
 });
 
@@ -232,6 +435,20 @@ describe("validateInbox", () => {
     expect(validateInbox(base, exists)).toBeNull();
   });
 
+  test("accepts host names and IP literals", () => {
+    for (const host of [
+      "localhost",
+      "mail.example.test",
+      "xn--bcher-kva.example",
+      "127.0.0.1",
+      "::1",
+      "2001:db8::25",
+    ])
+      expect(
+        validateInbox({ ...base, imap: { ...base.imap, host } }, exists),
+      ).toBeNull();
+  });
+
   const cases: Array<[string, Partial<InboxConfig>, RegExp]> = [
     ["port 0", { imap: { ...base.imap, port: 0 } }, /IMAP port/],
     ["port 70000", { smtp: { ...base.smtp, port: 70000 } }, /SMTP port/],
@@ -241,6 +458,34 @@ describe("validateInbox", () => {
       /IMAP host/,
     ],
     ["address without @", { address: "help.example.test" }, /Address/],
+    ["two addresses", { address: "a,b@example.test" }, /Address/],
+    ["address with ;", { address: "a;b@example.test" }, /Address/],
+    ["address with quotes", { address: '"a"@example.test' }, /Address/],
+    ["address with ()", { address: "a(b)@example.test" }, /Address/],
+    ["address list in the domain", { address: "a@x.test,b" }, /Address/],
+    ["label with a line break", { label: "Acme\nhelp" }, /Label/],
+    ["label with a control character", { label: "Acme\u0007" }, /Label/],
+    [
+      "user with a control character",
+      { imap: { ...base.imap, user: "u\r\nx" } },
+      /IMAP user/,
+    ],
+    ["host of dots", { imap: { ...base.imap, host: "..." } }, /IMAP host/],
+    ["host with a colon", { smtp: { ...base.smtp, host: "a:b" } }, /SMTP host/],
+    ["host -", { imap: { ...base.imap, host: "-" } }, /IMAP host/],
+    ["host [", { imap: { ...base.imap, host: "[" } }, /IMAP host/],
+    ["host a..b", { imap: { ...base.imap, host: "a..b" } }, /IMAP host/],
+    [
+      "host label starting -",
+      { imap: { ...base.imap, host: "-a.test" } },
+      /IMAP host/,
+    ],
+    ["bad IPv4", { imap: { ...base.imap, host: "999.1.1.1" } }, /IMAP host/],
+    [
+      "host with a port",
+      { imap: { ...base.imap, host: "imap.example.test:993" } },
+      /IMAP host.*port/,
+    ],
     ["unknown project", { project: "nope" }, /Project/],
     ["veto under a minute", { vetoMs: 59_999 }, /Veto window/],
     ["veto over a day", { vetoMs: 86_400_001 }, /Veto window/],
@@ -290,6 +535,31 @@ describe("deleteInbox and listeners", () => {
     expect(await deleteInbox(inbox.id, "Ada")).toBe(false);
   });
 
+  test("listeners hear a committed update even when the password write after it fails", async () => {
+    const inbox = await created();
+    const calls = recordChanges();
+    corruptSecrets();
+    await expect(
+      updateInbox(
+        inbox.id,
+        { expectedRevision: 0, label: "B", imap: { password: "rotated" } },
+        "Ada",
+      ),
+    ).rejects.toThrow();
+    await Bun.sleep(0);
+    expect(calls).toEqual([["B", "Acme help"]]);
+  });
+
+  test("a delete whose secrets can't be removed still deletes and notifies", async () => {
+    const inbox = await created();
+    const calls = recordChanges();
+    corruptSecrets();
+    expect(await deleteInbox(inbox.id, "Ada")).toBe(true);
+    expect(await getInbox(inbox.id)).toBeNull();
+    await Bun.sleep(0);
+    expect(calls).toEqual([[null, "Acme help"]]);
+  });
+
   test("onInboxChange hears create, update and delete once each", async () => {
     const calls: Array<[string | null, string | null]> = [];
     unsubscribe = onInboxChange((next, previous) => {
@@ -320,5 +590,10 @@ describe("inboxView", () => {
       HEALTH,
     );
     expect(empty.smtp.hasPassword).toBe(false);
+    const missing = inboxView(
+      { ...inbox, imap: { ...inbox.imap, passwordRef: undefined as never } },
+      HEALTH,
+    );
+    expect(missing.imap.hasPassword).toBe(false);
   });
 });

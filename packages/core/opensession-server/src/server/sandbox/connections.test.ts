@@ -19,6 +19,10 @@ import {
 } from "./connections";
 import { sandboxProviderNeedsCredential } from "./adapter-signature";
 import { GIB, recordPodmanDiskReport } from "./adapters/podman-disk";
+import {
+  putWorkspaceSecretAsync,
+  resolveWorkspaceSecretAsync,
+} from "../workspace-secrets";
 
 let scratch = "";
 let oldConfig: string | undefined;
@@ -45,11 +49,11 @@ afterEach(() => {
 });
 
 describe("Mac VM hosts", () => {
-  test("a Mac VM connection needs at least one host and keeps them in order", () => {
-    expect(() => connectSandboxProvider("tart", { settings: {} })).toThrow(
-      /at least one paired macOS Runner/,
-    );
-    const connection = connectSandboxProvider("tart", {
+  test("a Mac VM connection needs at least one host and keeps them in order", async () => {
+    await expect(
+      connectSandboxProvider("tart", { settings: {} }),
+    ).rejects.toThrow(/at least one paired macOS Runner/);
+    const connection = await connectSandboxProvider("tart", {
       settings: {
         hosts: [
           { runner: "mini-1", maxVms: 2 },
@@ -68,8 +72,8 @@ describe("Mac VM hosts", () => {
     );
   });
 
-  test("the single-host form still reads as one host and a host list replaces it", () => {
-    const single = connectSandboxProvider("tart", {
+  test("the single-host form still reads as one host and a host list replaces it", async () => {
+    const single = await connectSandboxProvider("tart", {
       settings: { runner: "mini-1", maxVms: 2 },
     });
     expect(sandboxHostSettings(single.settings)).toEqual([
@@ -87,11 +91,11 @@ describe("Mac VM hosts", () => {
 });
 
 describe("use.computer", () => {
-  test("needs an account key and keeps the reservation setting", () => {
-    expect(() =>
+  test("needs an account key and keeps the reservation setting", async () => {
+    await expect(
       connectSandboxProvider("usecomputer", { settings: {} }),
-    ).toThrow(/use.computer API key is required/);
-    const connection = connectSandboxProvider("usecomputer", {
+    ).rejects.toThrow(/use.computer API key is required/);
+    const connection = await connectSandboxProvider("usecomputer", {
       secret: "uc_live_secret",
       settings: { reservation: " 00000000-0000-4000-8000-000000000001 " },
     });
@@ -108,8 +112,8 @@ describe("use.computer", () => {
 });
 
 describe("workspace sandbox connections", () => {
-  test("stores Daytona credentials behind an opaque reference and never returns it", () => {
-    connectSandboxProvider("daytona", {
+  test("stores Daytona credentials behind an opaque reference and never returns it", async () => {
+    await connectSandboxProvider("daytona", {
       secret: "daytona-secret-value",
       settings: {
         apiUrl: "https://daytona.example.test",
@@ -136,8 +140,8 @@ describe("workspace sandbox connections", () => {
     expect(JSON.stringify(safe)).not.toContain("daytona-secret-value");
   });
 
-  test("stores Box credentials behind an opaque reference and exposes only readiness", () => {
-    connectSandboxProvider("box", {
+  test("stores Box credentials behind an opaque reference and exposes only readiness", async () => {
+    await connectSandboxProvider("box", {
       secret: "box-secret-value",
       settings: { apiUrl: "https://box.example.test/v1" },
     });
@@ -158,21 +162,51 @@ describe("workspace sandbox connections", () => {
     });
   });
 
-  test("rotates Box credentials in place and disconnect deletes the secret", () => {
-    const first = connectSandboxProvider("box", { secret: "box_one" });
+  test("rotates Box credentials in place and disconnect deletes the secret", async () => {
+    const first = await connectSandboxProvider("box", { secret: "box_one" });
     const ref = first.credentialRef;
-    const second = connectSandboxProvider("box", { secret: "box_two" });
+    const second = await connectSandboxProvider("box", { secret: "box_two" });
     expect(second.id).toBe(first.id);
     expect(second.credentialRef).toBe(ref);
     expect(sandboxProviderCredential("box")).toEqual({ apiKey: "box_two" });
 
-    expect(disconnectSandboxProvider("box")).toBe(true);
+    expect(await disconnectSandboxProvider("box")).toBe(true);
     expect(getSandboxConnection("box")).toBeUndefined();
     expect(sandboxProviderCredential("box")).toBeUndefined();
   });
 
-  test("only enabled, successfully qualified connections become Ready", () => {
-    connectSandboxProvider("daytona", {
+  test("a key saved or deleted while another secret is written is never lost", async () => {
+    const turn = () => new Promise((resolve) => setImmediate(resolve));
+    // Land the sandbox write at every point of an in-flight inbox password
+    // write: before its read, between its read and rename, and after.
+    for (let depth = 0; depth < 12; depth++) {
+      const inboxWrite = putWorkspaceSecretAsync(`support-inbox:${depth}`, "a");
+      for (let i = 0; i < depth; i++) await turn();
+      const connection = await connectSandboxProvider("box", {
+        secret: `box_${depth}`,
+      });
+      const inboxRef = await inboxWrite;
+      expect(await resolveWorkspaceSecretAsync(inboxRef)).toBe("a");
+      expect(await resolveWorkspaceSecretAsync(connection.credentialRef!)).toBe(
+        `box_${depth}`,
+      );
+
+      const secondWrite = putWorkspaceSecretAsync(
+        `support-inbox:${depth}`,
+        "b",
+      );
+      for (let i = 0; i < depth; i++) await turn();
+      expect(await disconnectSandboxProvider("box")).toBe(true);
+      const secondRef = await secondWrite;
+      expect(await resolveWorkspaceSecretAsync(secondRef)).toBe("b");
+      expect(
+        await resolveWorkspaceSecretAsync(connection.credentialRef!),
+      ).toBeUndefined();
+    }
+  });
+
+  test("only enabled, successfully qualified connections become Ready", async () => {
+    await connectSandboxProvider("daytona", {
       secret: "daytona-secret",
       settings: { cpu: 4, memoryMb: 8192 },
     });
@@ -188,8 +222,8 @@ describe("workspace sandbox connections", () => {
     ).toBe("ready");
   });
 
-  test("a runner pin change does not invalidate provider qualification", () => {
-    connectSandboxProvider("daytona", { secret: "daytona-secret" });
+  test("a runner pin change does not invalidate provider qualification", async () => {
+    await connectSandboxProvider("daytona", { secret: "daytona-secret" });
     setSandboxConnectionQualification("daytona", {
       status: "ready",
       checkedAt: "2026-08-11T00:00:00.000Z",
@@ -207,8 +241,8 @@ describe("workspace sandbox connections", () => {
     ).toBe("ready");
   });
 
-  test("an adapter signature change makes a previous qualification stale", () => {
-    connectSandboxProvider("box", { secret: "box_key" });
+  test("an adapter signature change makes a previous qualification stale", async () => {
+    await connectSandboxProvider("box", { secret: "box_key" });
     setSandboxConnectionQualification("box", {
       status: "ready",
       checkedAt: "2026-08-11T00:00:00.000Z",
@@ -226,11 +260,11 @@ describe("workspace sandbox connections", () => {
 });
 
 describe("This machine (container)", () => {
-  test("needs no credential and is not ready until qualified", () => {
+  test("needs no credential and is not ready until qualified", async () => {
     expect(sandboxProviderNeedsCredential("podman")).toBe(false);
     expect(sandboxAdapterSignature("podman")).toBe("podman:connection-v1");
     expect(sandboxConnectionReady("podman")).toBe(false);
-    const connection = connectSandboxProvider("podman", {
+    const connection = await connectSandboxProvider("podman", {
       settings: { memoryMb: 2048, pidsLimit: 512, dns: ["8.8.8.8", "bad"] },
     });
     expect(connection.credentialRef).toBeUndefined();
@@ -254,8 +288,8 @@ describe("This machine (container)", () => {
     expect(sandboxConnectionReady("podman")).toBe(false);
   });
 
-  test("an API key sent anyway is never stored", () => {
-    const connection = connectSandboxProvider("podman", {
+  test("an API key sent anyway is never stored", async () => {
+    const connection = await connectSandboxProvider("podman", {
       secret: "sk-should-not-be-kept",
       settings: {},
     });
@@ -269,8 +303,8 @@ describe("This machine (container)", () => {
     ).not.toContain("sk-should-not-be-kept");
   });
 
-  test("qualification facts are kept on the connection", () => {
-    connectSandboxProvider("podman", { settings: {} });
+  test("qualification facts are kept on the connection", async () => {
+    await connectSandboxProvider("podman", { settings: {} });
     setPodmanConnectionFacts({
       imageTag: "localhost/opensession-sandbox:0123456789abcdef",
       cpuLimited: false,
@@ -281,12 +315,12 @@ describe("This machine (container)", () => {
       cpuLimited: false,
       selfTestAt: "2026-10-22T10:00:00.000Z",
     });
-    disconnectSandboxProvider("podman");
+    await disconnectSandboxProvider("podman");
     expect(getSandboxConnection("podman")).toBeUndefined();
   });
 
-  test("self-test rows are stored bounded, and only their count reaches the card", () => {
-    connectSandboxProvider("podman", { settings: {} });
+  test("self-test rows are stored bounded, and only their count reaches the card", async () => {
+    await connectSandboxProvider("podman", { settings: {} });
     const rows: PodmanSelfTestRow[] = Array.from({ length: 100 }, (_, i) => [
       `tcp:10.0.0.${i}:22`,
       "filtered",
@@ -319,19 +353,19 @@ describe("This machine (container)", () => {
 });
 
 describe("This machine (container) in Settings", () => {
-  test("is offered only on Linux until it is connected", () => {
+  test("is offered only on Linux until it is connected", async () => {
     const ids = (platform: string) =>
       safeSandboxConnections(platform).map((c) => c.provider);
     expect(ids("linux")).toContain("podman");
     expect(ids("darwin")).not.toContain("podman");
-    connectSandboxProvider("podman", { settings: {} });
+    await connectSandboxProvider("podman", { settings: {} });
     expect(ids("darwin")).toContain("podman");
   });
 
-  test("the card summary carries the facts and the effective limits", () => {
+  test("the card summary carries the facts and the effective limits", async () => {
     // Another test file's disk checks may have recorded a report.
     recordPodmanDiskReport(undefined);
-    connectSandboxProvider("podman", { settings: { pidsLimit: 256 } });
+    await connectSandboxProvider("podman", { settings: { pidsLimit: 256 } });
     const before = safeSandboxConnections("linux").find(
       (c) => c.provider === "podman",
     );
@@ -356,8 +390,8 @@ describe("This machine (container) in Settings", () => {
     });
   });
 
-  test("the card summary carries the effective CPU limit when the host can apply it", () => {
-    connectSandboxProvider("podman", { settings: {} });
+  test("the card summary carries the effective CPU limit when the host can apply it", async () => {
+    await connectSandboxProvider("podman", { settings: {} });
     setPodmanConnectionFacts({
       imageTag: "localhost/opensession-sandbox:0123456789abcdef",
       cpuLimited: true,
@@ -371,8 +405,8 @@ describe("This machine (container) in Settings", () => {
     expect(card()?.cpu).toBe(0.5);
   });
 
-  test("limits are clamped on save and the card shows what applies", () => {
-    const connection = connectSandboxProvider("podman", {
+  test("limits are clamped on save and the card shows what applies", async () => {
+    const connection = await connectSandboxProvider("podman", {
       settings: { memoryMb: 10, pidsLimit: 1e9, cpu: 1e6 },
     });
     expect(connection.settings.memoryMb).toBe(512);
@@ -397,8 +431,8 @@ describe("This machine (container) in Settings", () => {
     expect(card?.memoryMb).toBe(512);
   });
 
-  test("the card summary carries the last disk check's warnings", () => {
-    connectSandboxProvider("podman", { settings: {} });
+  test("the card summary carries the last disk check's warnings", async () => {
+    await connectSandboxProvider("podman", { settings: {} });
     setPodmanConnectionFacts({
       imageTag: "localhost/opensession-sandbox:0123456789abcdef",
       cpuLimited: true,

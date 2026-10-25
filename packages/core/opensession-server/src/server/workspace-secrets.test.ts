@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import * as secrets from "./workspace-secrets";
 import {
-  deleteWorkspaceSecret,
   deleteWorkspaceSecretAsync,
-  putWorkspaceSecret,
   putWorkspaceSecretAsync,
   resolveWorkspaceSecret,
   resolveWorkspaceSecretAsync,
@@ -32,23 +38,28 @@ afterEach(() => {
 });
 
 describe("workspace secrets", () => {
-  test("creates, rotates, resolves and deletes an opaque 0600 secret", () => {
-    const ref = putWorkspaceSecret("sandbox.daytona", "first");
+  test("only the async writers exist, so every write joins one chain", () => {
+    expect("putWorkspaceSecret" in secrets).toBe(false);
+    expect("deleteWorkspaceSecret" in secrets).toBe(false);
+  });
+
+  test("creates, rotates, resolves and deletes an opaque 0600 secret", async () => {
+    const path = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!;
+    const ref = await putWorkspaceSecretAsync("sandbox.daytona", "first");
     expect(ref).toMatch(/^wssec-/);
     expect(resolveWorkspaceSecret(ref)).toBe("first");
-    expect(
-      statSync(process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!).mode & 0o777,
-    ).toBe(0o600);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
 
-    expect(putWorkspaceSecret("sandbox.daytona", "second", ref)).toBe(ref);
+    expect(
+      await putWorkspaceSecretAsync("sandbox.daytona", "second", ref),
+    ).toBe(ref);
     expect(resolveWorkspaceSecret(ref)).toBe("second");
     expect(workspaceSecretExists(ref)).toBe(true);
-    expect(
-      readFileSync(process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!, "utf-8"),
-    ).not.toContain("daytona-secret");
+    expect(readFileSync(path, "utf-8")).not.toContain("first");
 
-    expect(deleteWorkspaceSecret(ref)).toBe(true);
+    expect(await deleteWorkspaceSecretAsync(ref)).toBe(true);
     expect(workspaceSecretExists(ref)).toBe(false);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   test("async writers create, rotate and delete a 0600 secret", async () => {
@@ -86,5 +97,43 @@ describe("workspace secrets", () => {
   test("async writers reject an empty purpose or value", async () => {
     await expect(putWorkspaceSecretAsync(" ", "v")).rejects.toThrow();
     await expect(putWorkspaceSecretAsync("p", "")).rejects.toThrow();
+  });
+
+  // Root reads a 0000 file anyway, so the unreadable case needs a normal user.
+  const asRoot = process.getuid?.() === 0;
+  test.skipIf(asRoot)(
+    "an unreadable store fails every read and write, never empties the store",
+    async () => {
+      const path = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!;
+      const ref = await putWorkspaceSecretAsync("p", "kept");
+      chmodSync(path, 0o000);
+      try {
+        await expect(putWorkspaceSecretAsync("q", "new")).rejects.toThrow();
+        await expect(deleteWorkspaceSecretAsync(ref)).rejects.toThrow();
+        await expect(resolveWorkspaceSecretAsync(ref)).rejects.toThrow();
+        expect(() => resolveWorkspaceSecret(ref)).toThrow();
+        expect(() => workspaceSecretExists(ref)).toThrow();
+      } finally {
+        chmodSync(path, 0o600);
+      }
+      expect(await resolveWorkspaceSecretAsync(ref)).toBe("kept");
+      expect(JSON.parse(readFileSync(path, "utf-8")).secrets).toHaveLength(1);
+    },
+  );
+
+  test("a store that doesn't parse fails reads instead of reading as empty", async () => {
+    const path = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!;
+    writeFileSync(path, "{not json", { mode: 0o600 });
+    await expect(putWorkspaceSecretAsync("p", "v")).rejects.toThrow();
+    await expect(resolveWorkspaceSecretAsync("wssec-x")).rejects.toThrow();
+    expect(() => resolveWorkspaceSecret("wssec-x")).toThrow();
+    expect(readFileSync(path, "utf-8")).toBe("{not json");
+  });
+
+  test("a missing store reads as empty", async () => {
+    expect(await resolveWorkspaceSecretAsync("wssec-x")).toBeUndefined();
+    expect(resolveWorkspaceSecret("wssec-x")).toBeUndefined();
+    expect(workspaceSecretExists("wssec-x")).toBe(false);
+    expect(await deleteWorkspaceSecretAsync("wssec-x")).toBe(false);
   });
 });
