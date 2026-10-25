@@ -648,9 +648,13 @@ export function ensureScratchDir(key: string): string {
  * unless config `selfDev: "worktree"` opts the instance out of self-hosting
  * semantics, in which case they get the pinned ask checkout like everyone else.
  *
- * The tree is re-pinned to origin/<defaultBranch> in the background at most
- * once per ASK_REFRESH_MS so it tracks the default branch instead of
- * drifting; only the first-ever create pays the worktree-add. Detached HEAD
+ * A new Ask session never starts on an old default branch: when the tree was
+ * last checked more than ASK_FRESH_MS ago, or a push to the default branch
+ * (or a default-branch change) invalidated it, the session waits up to
+ * ASK_REFRESH_WAIT_MS for a `git fetch` and, only when origin moved, a reset
+ * to the new origin/<defaultBranch>. A slower refresh keeps running in the
+ * background and the session starts on the current tree, which is logged.
+ * Only the first-ever create pays the worktree-add. Detached HEAD
  * means listWorktrees() (branch-keyed) never offers it to code sessions.
  * Falls back to the main checkout if the worktree can't be created, so a git
  * hiccup degrades to the old behavior instead of failing the session.
@@ -662,10 +666,32 @@ const askCheckoutRefreshes = new Map<
   string,
   { version: number; promise: Promise<void> }
 >();
-const ASK_REFRESH_MS = 5 * 60_000;
+/** How long a checked Ask checkout counts as current. */
+let ASK_FRESH_MS = 60_000;
+/** How long a new Ask session waits for its checkout to catch up. */
+let ASK_REFRESH_WAIT_MS = 15_000;
 
-/** Force the next Ask session to wait until this repo's read-only checkout is
- * pinned to the newly configured default branch. */
+export function __setAskCheckoutTimingForTest(timing: {
+  freshMs?: number;
+  waitMs?: number;
+}): () => void {
+  const previous = { freshMs: ASK_FRESH_MS, waitMs: ASK_REFRESH_WAIT_MS };
+  if (timing.freshMs !== undefined) ASK_FRESH_MS = timing.freshMs;
+  if (timing.waitMs !== undefined) ASK_REFRESH_WAIT_MS = timing.waitMs;
+  return () => {
+    ASK_FRESH_MS = previous.freshMs;
+    ASK_REFRESH_WAIT_MS = previous.waitMs;
+  };
+}
+
+/** The invalidation generation this repo's Ask checkout must reach. */
+export function askCheckoutInvalidationGeneration(repoId: string): number {
+  return askCheckoutInvalidationVersion.get(repoId) || 0;
+}
+
+/** Make the next Ask session wait until this repo's read-only checkout has
+ * caught up with origin: its default branch moved (a push or a merge) or the
+ * configured default branch changed. */
 export function invalidateAskCheckoutRefresh(repoId: string): void {
   askCheckoutInvalidationVersion.set(
     repoId,
@@ -674,12 +700,22 @@ export function invalidateAskCheckoutRefresh(repoId: string): void {
   askCheckoutRefreshedAt.delete(repoId);
 }
 
+async function revParse(dir: string, ref: string): Promise<string> {
+  const result =
+    await $`git -C ${dir} rev-parse --verify --quiet ${`${ref}^{commit}`}`
+      .quiet()
+      .nothrow();
+  return result.exitCode === 0 ? result.stdout.toString().trim() : "";
+}
+
 async function refreshAskCheckoutLocked(
   repo: Repo,
   dir: string,
 ): Promise<void> {
+  // Explicit refspec: a single-branch clone's remote config would otherwise
+  // update only FETCH_HEAD (see fetchBranchesWithTracking).
   const fetch =
-    await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+    await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", `+refs/heads/${repo.defaultBranch}:refs/remotes/origin/${repo.defaultBranch}`, "--quiet"], "git")}`
       .quiet()
       .nothrow();
   if (fetch.exitCode !== 0) {
@@ -687,6 +723,10 @@ async function refreshAskCheckoutLocked(
       `Could not fetch ${repo.id}'s default branch ${repo.defaultBranch}: ${fetch.stderr.toString().trim()}`,
     );
   }
+  const target = await revParse(dir, `origin/${repo.defaultBranch}`);
+  // Nothing moved: leave the tree alone. Readers in the middle of a turn keep
+  // their files, and the common case costs one fetch and two rev-parses.
+  if (target && target === (await revParse(dir, "HEAD"))) return;
   const reset =
     await $`${workloadArgv(["git", "-C", dir, "reset", "--hard", `origin/${repo.defaultBranch}`], "git")}`
       .quiet()
@@ -706,15 +746,50 @@ function refreshAskCheckout(
   const existing = askCheckoutRefreshes.get(repo.id);
   if (existing && existing.version >= version) return existing.promise;
 
-  const promise = withGitLock(() =>
-    refreshAskCheckoutLocked(repo, dir),
-  ).finally(() => {
-    if (askCheckoutRefreshes.get(repo.id)?.promise === promise) {
-      askCheckoutRefreshes.delete(repo.id);
-    }
-  });
+  const promise = withGitLock(() => refreshAskCheckoutLocked(repo, dir))
+    .then(() => {
+      askCheckoutRefreshedAt.set(repo.id, Date.now());
+      if (version > (askCheckoutAppliedVersion.get(repo.id) || 0))
+        askCheckoutAppliedVersion.set(repo.id, version);
+    })
+    .finally(() => {
+      if (askCheckoutRefreshes.get(repo.id)?.promise === promise) {
+        askCheckoutRefreshes.delete(repo.id);
+      }
+    });
   askCheckoutRefreshes.set(repo.id, { version, promise });
+  // Whoever stops waiting early must not leave an unhandled rejection.
+  promise.catch(() => {});
   return promise;
+}
+
+/** Wait for a refresh, at most ASK_REFRESH_WAIT_MS. A failed or slow refresh
+ * never fails the session: it starts on the tree as it is, and the log says
+ * so. A slow refresh finishes in the background. */
+async function awaitAskCheckoutRefresh(
+  repo: Repo,
+  refresh: Promise<void>,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ASK_REFRESH_WAIT_MS);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([refresh, timedOut]);
+    if (outcome === "timeout") {
+      console.warn(
+        `[worktree] Ask checkout refresh for ${repo.id} still running after ${ASK_REFRESH_WAIT_MS}ms; the session starts on the current checkout`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[worktree] Ask checkout refresh failed for ${repo.id}; the session starts on the current checkout:`,
+      error,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function ensureAskCheckout(repoId?: string): Promise<string> {
@@ -726,24 +801,21 @@ export async function ensureAskCheckout(repoId?: string): Promise<string> {
   const dir = `${worktreesDir()}/${repo.wtPrefix}-ask-checkout`;
   const requiredVersion = askCheckoutInvalidationVersion.get(repo.id) || 0;
   if (existsSync(dir)) {
-    const last = askCheckoutRefreshedAt.get(repo.id) || 0;
-    const force =
+    const invalidated =
       requiredVersion > (askCheckoutAppliedVersion.get(repo.id) || 0);
-    if (force || Date.now() - last > ASK_REFRESH_MS) {
-      askCheckoutRefreshedAt.set(repo.id, Date.now());
-      const refresh = refreshAskCheckout(repo, dir, requiredVersion);
-      if (force) {
-        await refresh;
-        askCheckoutAppliedVersion.set(repo.id, requiredVersion);
-      } else {
-        void refresh.catch((error) => {
-          console.warn(
-            `[worktree] Ask checkout refresh failed for ${repo.id}:`,
-            error,
-          );
-        });
-      }
-    }
+    const stale =
+      invalidated ||
+      Date.now() - (askCheckoutRefreshedAt.get(repo.id) || 0) > ASK_FRESH_MS;
+    const inFlight = askCheckoutRefreshes.get(repo.id);
+    if (!stale && !inFlight) return dir;
+    // Throttle: a refresh that fails (origin unreachable) is retried after
+    // the fresh window, not by every session in between. An invalidation is
+    // retried until it lands.
+    if (stale) askCheckoutRefreshedAt.set(repo.id, Date.now());
+    const refresh = stale
+      ? refreshAskCheckout(repo, dir, requiredVersion)
+      : inFlight!.promise;
+    await awaitAskCheckoutRefresh(repo, refresh);
     return dir;
   }
   return withGitLock(async () => {
@@ -898,7 +970,8 @@ export function gitFailureReason(stderr: string): string {
 /**
  * Recreate a worktree that was cleaned up while its session lives on. Reuses
  * the local branch when it still exists (uncommitted work is gone, but the
- * branch history survives); otherwise starts the branch fresh from main. The
+ * branch history survives), fast-forwarded first when origin is strictly
+ * ahead of it; otherwise starts the branch fresh from main. The
  * path is identical to the original, so claude session resume keeps working
  * (transcripts are keyed by cwd).
  */
@@ -933,6 +1006,7 @@ export async function reviveWorktree(
       ).exitCode === 0;
     let add;
     if (hasBranch) {
+      await fastForwardBranchFromOrigin(repo.repo, branch);
       add =
         await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", wtPath, branch], "git")}`
           .quiet()
@@ -963,6 +1037,58 @@ export async function reviveWorktree(
     }
     return wtPath;
   });
+}
+
+/**
+ * Bring a local branch that is about to be checked out up to date with
+ * origin, so a session reusing it does not start behind work pushed from
+ * elsewhere. Only a strict fast-forward moves the ref: a branch that is
+ * ahead of origin, or has diverged from it, keeps its commits (a divergence
+ * is logged). No remote branch, or no network, leaves it as it is. Call
+ * under the git lock, before the branch is checked out anywhere.
+ */
+export async function fastForwardBranchFromOrigin(
+  repoDir: string,
+  branch: string,
+  shell: typeof $ = $,
+): Promise<"fast-forwarded" | "current" | "ahead" | "diverged" | "no-remote"> {
+  const fetch =
+    await shell`${workloadArgv(["git", "-C", repoDir, "fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`, "--quiet"], "git")}`
+      .quiet()
+      .nothrow();
+  if (fetch.exitCode !== 0) return "no-remote";
+  const local = await revParse(repoDir, `refs/heads/${branch}`);
+  const remote = await revParse(repoDir, `refs/remotes/origin/${branch}`);
+  if (!local || !remote) return "no-remote";
+  if (local === remote) return "current";
+  const isAncestor = async (a: string, b: string) =>
+    (
+      await $`git -C ${repoDir} merge-base --is-ancestor ${a} ${b}`
+        .quiet()
+        .nothrow()
+    ).exitCode === 0;
+  if (await isAncestor(local, remote)) {
+    // Compare-and-swap on the old value: never overwrite a ref that moved.
+    const update =
+      await $`git -C ${repoDir} update-ref refs/heads/${branch} ${remote} ${local}`
+        .quiet()
+        .nothrow();
+    if (update.exitCode === 0) {
+      console.log(
+        `[worktree] fast-forwarded ${branch} ${local.slice(0, 7)}..${remote.slice(0, 7)} to match origin`,
+      );
+      return "fast-forwarded";
+    }
+    console.warn(
+      `[worktree] could not fast-forward ${branch}: ${update.stderr.toString().trim()}`,
+    );
+    return "diverged";
+  }
+  if (await isAncestor(remote, local)) return "ahead";
+  console.warn(
+    `[worktree] ${branch} has diverged from origin/${branch} (local ${local.slice(0, 7)}, origin ${remote.slice(0, 7)}); keeping the local branch`,
+  );
+  return "diverged";
 }
 
 /**
@@ -1137,7 +1263,8 @@ export async function createWorktreeForFollowup(
  * have un-pushed work there — and it checks out the branch itself (not a
  * `-os` copy), so commits/pushes land straight on the PR. Reuses an
  * existing worktree for the branch when one exists; prefers the local branch
- * (it may be ahead of origin), falling back to a fresh tracking branch off
+ * (it may be ahead of origin; when it is strictly behind, it is
+ * fast-forwarded first), falling back to a fresh tracking branch off
  * `origin/<branch>`. Works for shared-checkout repos too (opensession): a PR
  * branch must never be checked out in the live main checkout, so it always
  * gets an isolated worktree.
@@ -1167,6 +1294,7 @@ export async function createWorktreeForExistingBranch(
         await $`git -C ${repo.repo} show-ref --verify --quiet refs/heads/${branch}`.nothrow()
       ).exitCode === 0;
     if (hasLocal) {
+      await fastForwardBranchFromOrigin(repo.repo, branch, shell);
       await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", wtPath, branch], "git")}`;
     } else {
       await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", "-b", branch, wtPath, `origin/${branch}`], "git")}`;
