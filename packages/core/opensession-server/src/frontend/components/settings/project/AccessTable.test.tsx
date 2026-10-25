@@ -96,10 +96,13 @@ describe("AccessTable", () => {
     click(all.find((b) => b["aria-label"] === "Linear for Support: No"));
     click(
       all.find(
-        (b) => b["aria-label"] === "Changes code in acme-web for Support: Read only",
+        (b) =>
+          b["aria-label"] === "Changes code in acme-web for Support: Read only",
       ),
     );
-    click(all.find((b) => b["aria-label"] === "Search the web for Support: No"));
+    click(
+      all.find((b) => b["aria-label"] === "Search the web for Support: No"),
+    );
     expect(changes).toEqual([
       {
         row: { kind: "connection", server: "linear" },

@@ -43,7 +43,7 @@ import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * What agents may use, on a phone: one role at a time, picked from a sticky
- * row of all five roles. Each row carries how many roles have it, or why
+ * row of all six roles. Each row carries how many roles have it, or why
  * it can't change, so the differences stay visible while one role is shown.
  */
 export function AccessRoleList({
@@ -60,7 +60,7 @@ export function AccessRoleList({
   const [role, setRole] = useState<ProjectRole>(initialRole);
   return (
     <div>
-      {/* One choice of five: a radio group, so it is one tab stop and the
+      {/* One choice of six: a radio group, so it is one tab stop and the
           arrow keys move the choice (and the focus) between roles. */}
       <div className={ROLE_CHIPS} role="radiogroup" aria-label="Role">
         {PROJECT_ROLES.map((r) => (

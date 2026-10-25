@@ -317,10 +317,16 @@ test("Support runs where incident agents run", async () => {
   });
   // This machine (container) when Ready.
   deps({ global: () => "none", podmanReady: () => true });
-  expect(await same()).toMatchObject({ provider: "podman", source: "fallback" });
+  expect(await same()).toMatchObject({
+    provider: "podman",
+    source: "fallback",
+  });
   // The global default.
   deps({ global: () => "daytona" });
-  expect(await same()).toMatchObject({ provider: "daytona", source: "default" });
+  expect(await same()).toMatchObject({
+    provider: "daytona",
+    source: "default",
+  });
   // The project's own sandbox.
   await setSandbox("podman");
   expect(await same()).toMatchObject({ provider: "podman", source: "project" });

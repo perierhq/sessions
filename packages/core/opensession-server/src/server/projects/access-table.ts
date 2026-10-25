@@ -72,6 +72,7 @@ function row(
     investigator: unattended("investigator"),
     verifier: unattended("verifier"),
     reviews: unattended("reviews"),
+    support: unattended("support"),
   };
   return { ...base, cells };
 }

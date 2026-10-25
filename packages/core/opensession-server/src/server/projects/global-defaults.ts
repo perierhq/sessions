@@ -22,6 +22,7 @@ const ROLE_KEYS: Record<Exclude<ProjectRole, "you">, RoleDefaultModelKey> = {
   investigator: "investigatorModel",
   verifier: "verifierModel",
   reviews: "reviewsModel",
+  support: "supportModel",
 };
 
 /** A role's global default model, or undefined when the role has none of

@@ -139,6 +139,7 @@ test("a full legacy pair composes field by field", () => {
     investigator: "code",
     verifier: "ask",
     reviews: "code",
+    support: "ask",
   });
   expect(d.access.connections).toEqual([
     { server: "grafana", roles: ["investigator", "verifier", "reviews"] },

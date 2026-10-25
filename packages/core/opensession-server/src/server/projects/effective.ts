@@ -6,7 +6,8 @@
 // sandbox setting asks for it; neither the project's nor the global
 // sandbox moves them. Reviews run on this machine (D4). Incident agents use the project's
 // sandbox, else This machine (container) when Ready, else the experimental
-// host path, else they can't start.
+// host path, else they can't start. Support runs where incident agents
+// run: it reads untrusted mail, so never unsandboxed by default.
 import {
   defaultProjectDocument,
   type EffectiveSandbox,
@@ -222,10 +223,12 @@ export async function effectiveSandboxes(
   const model = await effectiveRoleModel(project, "investigator", document);
   const you = youPlace(document, d);
   const incidentAgents = await incidentPlace(document, model, d);
+  const supportModel = await effectiveRoleModel(project, "support", document);
+  const support = await incidentPlace(document, supportModel, d);
   // Reviews run on this machine in v1 (D4).
   const reviews = place(null, "fallback");
   const automations = await automationPlace(project, d);
-  const base = { you, reviews, automations, incidentAgents };
+  const base = { you, reviews, automations, incidentAgents, support };
   return { ...base, note: sandboxNote(base) };
 }
 

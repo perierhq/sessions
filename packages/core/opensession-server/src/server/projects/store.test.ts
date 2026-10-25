@@ -128,7 +128,10 @@ test("a document stored before the Support role reads it as read-only, without s
   ).toBe(false);
   expect(doc.access.webSearch as string[]).not.toContain("support");
   expect(doc.models.support).toBeUndefined();
-  expect(((await projectDocuments().get("acme-web")) as { revision: number }).revision).toBe(3);
+  expect(
+    ((await projectDocuments().get("acme-web")) as { revision: number })
+      .revision,
+  ).toBe(3);
 });
 
 test("Support's Changes code and connector cells are set here", async () => {
