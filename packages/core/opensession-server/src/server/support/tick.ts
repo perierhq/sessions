@@ -2,7 +2,9 @@
 // while, fails sends a restart interrupted, and retries pipeline hand-offs
 // (ingest.ts). It reads only the `support-pending` work index, never the
 // conversations at large: `veto:<id>` (a window's deadline),
-// `send:<id>:<draftId>` (a send under way or waiting for its retry) and `triage:<id>` (ingest's).
+// `send:<id>:<draftId>` (a send under way or waiting for its retry),
+// `triage:<id>` (ingest's), and `relabel:<id>` / `stop:<id>` (routing's:
+// failed labels and a stop after the second strike that didn't take).
 // Once an hour it also closes conversations that waited on the customer
 // for 7 days, from the support-index projection, and prepares the "it's
 // fixed" note for conversations whose fix merged or issue closed
@@ -14,6 +16,7 @@ import { isShuttingDown } from "../shutdown-state";
 import { closeQuietConversations } from "./actions";
 import { checkFixes } from "./bugs";
 import { retryPendingInbound } from "./ingest";
+import { retrySupportRouting } from "./routing";
 import {
   INTERRUPTED_AFTER_MS,
   INTERRUPTED_SEND,
@@ -55,6 +58,7 @@ export async function runSupportTick(now: number): Promise<{
   retried: number;
   interrupted: number;
   triaged: number;
+  routingRetried: number;
   quietClosed: number;
   fixedNotes: number;
 }> {
@@ -63,6 +67,7 @@ export async function runSupportTick(now: number): Promise<{
     retried: 0,
     interrupted: 0,
     triaged: 0,
+    routingRetried: 0,
     quietClosed: 0,
     fixedNotes: 0,
   };
@@ -145,6 +150,14 @@ export async function runSupportTick(now: number): Promise<{
     }),
   );
   out.triaged = await retryPendingInbound(now);
+  try {
+    out.routingRetried = await retrySupportRouting(now);
+  } catch (error) {
+    console.warn(
+      "[support] tick: routing retries failed:",
+      error instanceof Error ? error.name : typeof error,
+    );
+  }
   if (now - lastQuietSweep >= QUIET_SWEEP_MS) {
     lastQuietSweep = now;
     try {

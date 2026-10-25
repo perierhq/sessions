@@ -379,6 +379,12 @@ export async function forgetCustomer(
         console.warn(`[support] forget for ${row.id} failed:`, message(error));
       }
     }
+    try {
+      await (await import("./strikes")).forgetSenderStrikes(customer);
+    } catch (error) {
+      failed += 1;
+      console.warn("[support] forgetting strikes failed:", message(error));
+    }
   } finally {
     await deps.audit({
       type: "support.forget",

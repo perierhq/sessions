@@ -10,9 +10,14 @@
 // queued behind a running turn; one that arrived while the conversation was
 // being routed is announced once the session exists. Topics only ever add
 // up (reply.ts holds automatic sends until every message a reply answers is
-// labelled). A reply that only says thanks closes the conversation; a
-// second injection flag stops the agent and leaves the conversation to a
-// person.
+// labelled). Labelling is capped per inbox and hour (TRIAGE_CALLS_PER_HOUR):
+// over it, a message is stored as failed and waits for a person; failed
+// labels are tried again from the tick (`relabel:<id>` keys). A reply that
+// only says thanks closes the conversation when nothing else is going on
+// (thanksOnlyClose); a second injection flag, counted with the sender's
+// earlier ones in this inbox (strikes.ts), stops the agent and leaves the
+// conversation to a person. A stop that didn't take is tried again from
+// the tick (`stop:<id>` keys).
 //
 // No customer text reaches the session's prompt: the opening prompt and
 // each notice carry ids only, and the session reads the mail as JSON data
@@ -37,8 +42,10 @@ import { channelAdapterFor } from "./channel";
 import { getInbox } from "./inboxes";
 import { setSupportPipeline } from "./ingest";
 import { type SupportRunSpec, supportRunSpec } from "./session-policy";
+import { catalogDocuments } from "../catalog-documents";
 import { getConversation, updateConversation } from "./store";
-import { classifyMessage } from "./triage";
+import { addSenderStrike, senderStrikes } from "./strikes";
+import { classifyMessage, failedTriage } from "./triage";
 import { wrapAttribute } from "./wrap";
 
 /** New support sessions one inbox may start in an hour; the rest wait for
@@ -73,7 +80,40 @@ let override: Partial<RoutingDeps> | undefined;
 export function __setRoutingDepsForTest(deps?: Partial<RoutingDeps>): void {
   override = deps;
   recentStarts.clear();
+  recentTriage.clear();
 }
+
+/** Triage calls one inbox may make in an hour; past it, messages are
+ *  stored as failed (a person decides) and tried again later. */
+export const TRIAGE_CALLS_PER_HOUR = 200;
+export const TRIAGE_BUDGET_SPENT =
+  "Too many messages to label this hour. A person decides";
+
+/** Triage call times by inbox, within the last hour. */
+const recentTriage = new Map<string, number[]>();
+
+let triageBudget = TRIAGE_CALLS_PER_HOUR;
+
+/** Lower the hourly triage budget (tests); undefined restores it. */
+export function __setTriageBudgetForTest(calls: number | undefined): void {
+  triageBudget = calls ?? TRIAGE_CALLS_PER_HOUR;
+}
+
+/** Takes one of the inbox's hourly triage calls; false when none is left. */
+function takeTriage(inboxId: string, now: number): boolean {
+  const live = (recentTriage.get(inboxId) ?? []).filter(
+    (t) => now - t < HOUR_MS,
+  );
+  const ok = live.length < triageBudget;
+  if (ok) live.push(now);
+  recentTriage.set(inboxId, live);
+  return ok;
+}
+
+// Bound on first use, never at import.
+let pendingDocs: ReturnType<typeof catalogDocuments> | undefined;
+const pendingIndex = () =>
+  (pendingDocs ??= catalogDocuments("support-pending"));
 
 function deps(): RoutingDeps {
   return {
@@ -453,6 +493,8 @@ function applyTriage(
   t: MessageTriage,
   reason: string,
   at: string,
+  /** The sender's strikes in this inbox, this message's included. */
+  senderFlags = 0,
 ): SupportConversation | null {
   const i = x.messages.findIndex((y) => y.id === id);
   const old = x.messages[i]?.triage;
@@ -460,7 +502,8 @@ function applyTriage(
   const messages = [...x.messages];
   messages[i] = { ...messages[i]!, triage: t };
   let triage = x.triage;
-  if (!triage)
+  // A good label replaces a failed verdict (a later try worked).
+  if (!triage || (triage.failed && !t.failed))
     triage = {
       route: t.route,
       reason,
@@ -468,6 +511,7 @@ function applyTriage(
       bug: t.bug,
       at: t.at,
       ...(t.failed ? { failed: true as const } : {}),
+      ...(x.triage?.bug ? { bug: true } : {}),
     };
   else {
     const known = triage.topics;
@@ -476,40 +520,42 @@ function applyTriage(
     triage = { ...triage, topics, bug: triage.bug || t.bug };
   }
   const events = [...x.events];
-  let injectionFlags = x.injectionFlags ?? 0;
+  const before = x.injectionFlags ?? 0;
+  // The conversation's own flags, or the sender's in this inbox when more:
+  // a new thread from the same sender carries them.
+  const injectionFlags = Math.max(before + (t.injection ? 1 : 0), senderFlags);
   let personOnly = x.personOnly ?? null;
-  if (t.injection) {
-    injectionFlags++;
-    const by = SESSIONS_ACTOR;
-    if (injectionFlags >= 2 && !personOnly) {
-      personOnly = { at, reason: STRIKE_TWO };
-      events.push({
-        at,
-        kind: "handed-to-person",
-        actor: by,
-        detail: STRIKE_TWO,
-      });
-    } else if (injectionFlags === 1)
-      events.push({
-        at,
-        kind: "injection-flagged",
-        actor: by,
-        detail: STRIKE_ONE,
-      });
-  }
+  const by = SESSIONS_ACTOR;
+  if (injectionFlags >= 2 && !personOnly) {
+    personOnly = { at, reason: STRIKE_TWO };
+    events.push({
+      at,
+      kind: "handed-to-person",
+      actor: by,
+      detail: STRIKE_TWO,
+    });
+  } else if (before === 0 && injectionFlags === 1)
+    events.push({
+      at,
+      kind: "injection-flagged",
+      actor: by,
+      detail: STRIKE_ONE,
+    });
   return { ...x, messages, triage, injectionFlags, personOnly, events };
 }
 
 /** Classifies the conversation's customer messages since our last reply
- *  that have no labels yet (or whose labelling failed), `m` first. */
+ *  that have no labels yet (or whose labelling failed), `m` first. Each
+ *  call takes one of the inbox's hourly triage calls; without one the
+ *  message is stored as failed. */
 async function classifyPending(
   conversationId: string,
-  m: SupportMessage,
+  m: SupportMessage | null,
 ): Promise<SupportConversation | null> {
   let c = await getConversation(conversationId);
   if (!c) return null;
   const pending = new Map<string, SupportMessage>();
-  if (isCustomerMail(m)) pending.set(m.id, m);
+  if (m && isCustomerMail(m)) pending.set(m.id, m);
   for (const y of sinceLastReply(c).reverse())
     if (!y.triage || y.triage.failed) pending.set(y.id, y);
   const d = deps();
@@ -517,35 +563,250 @@ async function classifyPending(
     const current = c.messages.find((z) => z.id === y.id) ?? y;
     if (current.triage && !current.triage.failed) continue;
     const now = new Date(d.now()).toISOString();
-    const { triage, reason } = await d.classify({
-      subject: current.subject,
-      text: current.text ?? "",
-      from: current.from.address,
-      earlierReply: replyBefore(c, current.id),
-      now,
-    });
+    const { triage, reason } = takeTriage(c.inboxId, d.now())
+      ? await d.classify({
+          subject: current.subject,
+          text: current.text ?? "",
+          from: current.from.address,
+          earlierReply: replyBefore(c, current.id),
+          now,
+        })
+      : failedTriage(now, TRIAGE_BUDGET_SPENT);
+    // The sender's strikes in this inbox, this message's added.
+    const senderFlags = triage.injection
+      ? await addSenderStrike(c.inboxId, current.from.address)
+      : await senderStrikes(c.inboxId, current.from.address);
     const stored = await updateConversation(c.id, (x) =>
-      applyTriage(x, current.id, triage, reason, now),
+      applyTriage(x, current.id, triage, reason, now, senderFlags),
     );
     if (stored) c = stored;
   }
   return c;
 }
 
-/** Cancels the support session's run after the second strike. */
-async function stopAgent(sessionId: string): Promise<void> {
+/** Cancels the support session's run after the second strike; when the
+ *  cancel didn't take, the tick tries again (`stop:<id>`). */
+async function stopAgent(
+  conversationId: string,
+  sessionId: string,
+): Promise<void> {
+  if (await cancel(sessionId)) {
+    await pendingIndex()
+      .delete(stopKey(conversationId))
+      .catch(() => {});
+    return;
+  }
+  await pendingIndex()
+    .update<PendingStop>(stopKey(conversationId), (value) =>
+      isPendingStop(value) && value.sessionId === sessionId
+        ? value
+        : {
+            conversationId,
+            sessionId,
+            attempts: 1,
+            nextAttemptAt: deps().now() + STOP_RETRY_MS,
+          },
+    )
+    .catch((error: unknown) => {
+      console.warn(
+        "[support] stop retry not recorded:",
+        error instanceof Error ? error.name : typeof error,
+      );
+    });
+}
+
+async function cancel(sessionId: string): Promise<boolean> {
   try {
-    await deps().control().cancelSession(sessionId);
+    return (await deps().control().cancelSession(sessionId)) === true;
   } catch (error) {
     console.warn(
       `[support] couldn't stop ${sessionId}:`,
-      error instanceof Error ? error.message : error,
+      error instanceof Error ? error.name : typeof error,
     );
+    return false;
   }
+}
+
+// ── Retries from the tick ────────────────────────────────────────────────
+
+interface PendingStop {
+  conversationId: string;
+  sessionId: string;
+  attempts: number;
+  nextAttemptAt: number;
+}
+
+interface PendingRelabel {
+  conversationId: string;
+  attempts: number;
+  nextAttemptAt: number;
+}
+
+const stopKey = (id: string) => `stop:${id}`;
+const relabelKey = (id: string) => `relabel:${id}`;
+const STOP_RETRY_MS = 60_000;
+const MAX_STOP_ATTEMPTS = 10;
+const RELABEL_MIN_MS = 300_000;
+const RELABEL_MAX_MS = 3_600_000;
+const MAX_RELABEL_ATTEMPTS = 8;
+/** Keys of each kind one tick handles at most. */
+const RETRY_BATCH = 10;
+
+function isPendingStop(value: unknown): value is PendingStop {
+  const v = value as PendingStop | null;
+  return (
+    !!v &&
+    typeof v.conversationId === "string" &&
+    typeof v.sessionId === "string" &&
+    typeof v.attempts === "number" &&
+    typeof v.nextAttemptAt === "number"
+  );
+}
+
+function isPendingRelabel(value: unknown): value is PendingRelabel {
+  const v = value as PendingRelabel | null;
+  return (
+    !!v &&
+    typeof v.conversationId === "string" &&
+    typeof v.attempts === "number" &&
+    typeof v.nextAttemptAt === "number"
+  );
+}
+
+/** Customer messages since our last reply whose labelling failed. */
+const failedLabels = (c: SupportConversation) =>
+  sinceLastReply(c).filter((y) => y.triage?.failed === true);
+
+/** Keeps (or drops) the conversation's relabel key to match it. */
+async function scheduleRelabel(c: SupportConversation): Promise<void> {
+  const failed = failedLabels(c).length > 0 && !c.personOnly;
+  await pendingIndex()
+    .update<PendingRelabel>(relabelKey(c.id), (value) => {
+      if (!failed) return null;
+      if (isPendingRelabel(value)) return value;
+      return {
+        conversationId: c.id,
+        attempts: 0,
+        nextAttemptAt: deps().now() + RELABEL_MIN_MS,
+      };
+    })
+    .catch(() => {});
+}
+
+/** The tick's part: stops that didn't take and labels that failed, each
+ *  with backoff and a bounded number of tries. Returns how many keys it
+ *  worked on. */
+export async function retrySupportRouting(now: number): Promise<number> {
+  let worked = 0;
+  const stops: PendingStop[] = [];
+  const relabels: PendingRelabel[] = [];
+  for (const { key, value } of await pendingIndex().list()) {
+    if (key.startsWith("stop:")) {
+      if (!isPendingStop(value)) await pendingIndex().delete(key);
+      else if (value.nextAttemptAt <= now && stops.length < RETRY_BATCH)
+        stops.push(value);
+    } else if (key.startsWith("relabel:")) {
+      if (!isPendingRelabel(value)) await pendingIndex().delete(key);
+      else if (value.nextAttemptAt <= now && relabels.length < RETRY_BATCH)
+        relabels.push(value);
+    }
+  }
+  for (const stop of stops) {
+    worked++;
+    const c = await getConversation(stop.conversationId);
+    const key = stopKey(stop.conversationId);
+    if (!c || !c.personOnly || (await cancel(stop.sessionId))) {
+      await pendingIndex().delete(key);
+      continue;
+    }
+    if (stop.attempts + 1 >= MAX_STOP_ATTEMPTS) {
+      await pendingIndex().delete(key);
+      await addEvent(
+        c.id,
+        "agent-stop-failed",
+        "Couldn't stop the agent. Stop its session by hand",
+      );
+      continue;
+    }
+    await pendingIndex().update<PendingStop>(key, () => ({
+      ...stop,
+      attempts: stop.attempts + 1,
+      nextAttemptAt: now + STOP_RETRY_MS,
+    }));
+  }
+  for (const relabel of relabels) {
+    worked++;
+    const key = relabelKey(relabel.conversationId);
+    const before = await getConversation(relabel.conversationId);
+    if (!before || before.personOnly || failedLabels(before).length === 0) {
+      await pendingIndex().delete(key);
+      continue;
+    }
+    const after = (await classifyPending(before.id, null)) ?? before;
+    if (after.personOnly && !before.personOnly && after.sessionId)
+      await stopAgent(after.id, after.sessionId);
+    if (failedLabels(after).length === 0 || after.personOnly) {
+      await pendingIndex().delete(key);
+      continue;
+    }
+    const attempts = relabel.attempts + 1;
+    if (attempts >= MAX_RELABEL_ATTEMPTS) {
+      await pendingIndex().delete(key);
+      continue;
+    }
+    await pendingIndex().update<PendingRelabel>(key, () => ({
+      ...relabel,
+      attempts,
+      nextAttemptAt:
+        now + Math.min(RELABEL_MAX_MS, RELABEL_MIN_MS * 2 ** attempts),
+    }));
+  }
+  return worked;
 }
 
 export const THANKS_CLOSED =
   "The customer only said thanks. Closed without a reply";
+
+/** Longest thanks that closes a conversation on its own. */
+export const THANKS_MAX_CHARS = 300;
+
+const sameAddress = (a: string, b: string) =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Whether message `id` closes the conversation without a reply: we were
+ *  waiting on the customer (our reply is the newest before it, and the
+ *  conversation wasn't closed), it is the only customer message since,
+ *  the customer wrote it from their verified address, it only says thanks
+ *  (no other label, no topic, no attachment, short), and nothing waits for
+ *  a person (no draft, prepared issue or fix task). Anything else is a
+ *  normal message. */
+export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
+  const m = c.messages.find((y) => y.id === id);
+  const t = m?.triage;
+  if (!m || !t || t.failed || !t.thanksOnly) return false;
+  if (c.status !== "open" && c.status !== "waiting") return false;
+  if (!c.messages.some((y) => y.direction === "out")) return false;
+  const since = sinceLastReply(c);
+  if (since.length !== 1 || since[0]!.id !== id) return false;
+  // A customer reopening a closed conversation is not one we waited on.
+  if (
+    c.events.some(
+      (e) =>
+        e.kind === "reopened" && e.actor.kind === "customer" && e.at === m.at,
+    )
+  )
+    return false;
+  if (!sameAddress(m.from.address, c.customer.address)) return false;
+  if (m.trust?.authVerified !== true) return false;
+  if (!Array.isArray(t.topics) || t.topics.length > 0) return false;
+  if (t.injection || t.wantsHuman || t.angry || t.repeat || t.bug) return false;
+  if (m.attachments.length > 0) return false;
+  if ((m.text ?? "").trim().length >= THANKS_MAX_CHARS) return false;
+  const d = c.draft;
+  if (d && d.state !== "sent" && d.state !== "discarded") return false;
+  if (c.pendingIssue || c.fixTask) return false;
+  return true;
+}
 
 /** The pipeline step for one stored customer message. */
 export async function onInbound(
@@ -556,9 +817,10 @@ export async function onInbound(
   if (!isNew && c.status === "spam") return;
   const wasPersonOnly = Boolean(c.personOnly);
   const labelled = (await classifyPending(c.id, m)) ?? c;
+  await scheduleRelabel(labelled);
   if (labelled.personOnly) {
     if (!wasPersonOnly && labelled.sessionId)
-      await stopAgent(labelled.sessionId);
+      await stopAgent(labelled.id, labelled.sessionId);
     return;
   }
   if (isNew) {
@@ -579,12 +841,7 @@ export async function onInbound(
       await deliver(now.sessionId, m);
     return;
   }
-  const own = labelled.messages.find((y) => y.id === m.id)?.triage;
-  if (
-    own?.thanksOnly &&
-    !own.failed &&
-    (labelled.status === "open" || labelled.status === "waiting")
-  ) {
+  if (thanksOnlyClose(labelled, m.id)) {
     await deps().close(labelled.id, THANKS_CLOSED);
     return;
   }
