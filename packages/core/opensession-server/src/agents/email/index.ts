@@ -103,7 +103,7 @@ export class EmailAgent implements AgentModule {
   }
 
   getRoutes(): Map<string, never> {
-    return new Map();
+    return new Map<string, never>();
   }
 
   async startup(): Promise<void> {
