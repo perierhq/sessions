@@ -241,6 +241,45 @@ describe("migrateInboxRecord", () => {
     expect(migrateInboxRecord(legacy("watch")).autonomy).toBe("watch");
   });
 
+  test("an unknown autonomy becomes draft, never routine", () => {
+    for (const odd of ["deploy", "auto", "", "ROUTINE-ish"]) {
+      const next = migrateInboxRecord(legacy(odd));
+      expect(next.autonomy).toBe("draft");
+    }
+    const bare = {
+      ...current,
+      autonomy: "send-everything",
+    } as unknown as InboxConfig;
+    expect(migrateInboxRecord(bare).autonomy).toBe("draft");
+  });
+
+  test("deploy-after-veto without a usable window becomes draft", () => {
+    const next = migrateInboxRecord(
+      legacy("deploy-after-veto", { vetoMs: "soon" }),
+    );
+    expect(next.autonomy).toBe("draft");
+  });
+
+  test("a current autonomy is kept when only removed settings go", () => {
+    const next = migrateInboxRecord(legacy("routine"));
+    expect(next.autonomy).toBe("routine");
+    expect(next.vetoMs).toBe(600_000);
+  });
+
+  test("topics that aren't a list become every topic", () => {
+    const next = migrateInboxRecord(
+      legacy("propose", { neverWithoutAPerson: "refund" }),
+    );
+    expect(next.neverWithoutAPerson).toEqual([...SUPPORT_TOPICS]);
+    const bare = {
+      ...current,
+      neverWithoutAPerson: null,
+    } as unknown as InboxConfig;
+    expect(migrateInboxRecord(bare).neverWithoutAPerson).toEqual([
+      ...SUPPORT_TOPICS,
+    ]);
+  });
+
   test("old topics keep their choice, angry goes, new topics are added", () => {
     const next = migrateInboxRecord(legacy("propose"));
     expect(next.neverWithoutAPerson).toEqual([

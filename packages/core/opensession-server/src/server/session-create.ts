@@ -118,6 +118,7 @@ import {
   supportTurnScope,
 } from "./session-run-inputs";
 import { supportSessionMcp } from "./support/mcp";
+import { supportToolResult, supportToolUse } from "./support/evidence";
 import {
   mirrorTurnToPlainDiscussion,
   plainDiscussionToolResult,
@@ -2318,6 +2319,7 @@ export async function openCreatedSession(
         if (event.type === "tool_use") {
           toolUseCount++;
           plainDiscussionToolUse(spec.plainDiscussionId, event);
+          supportToolUse(bksId, isSupportSession(spec), event);
           const entry = {
             id: event.toolUseId || crypto.randomUUID(),
             type: "tool_use" as const,
@@ -2331,6 +2333,7 @@ export async function openCreatedSession(
         }
         if (event.type === "tool_result") {
           plainDiscussionToolResult(spec.plainDiscussionId, event);
+          supportToolResult(event);
           const entry = {
             id: event.toolUseId ? `tr-${event.toolUseId}` : crypto.randomUUID(),
             type: "tool_result" as const,

@@ -113,7 +113,7 @@ function normaliseTopic(value: string): string {
  * person) when the field is missing, not a list, or lists only topics this
  * code doesn't know.
  */
-function readTopics(value: unknown): SupportTopic[] | null {
+export function readTopics(value: unknown): SupportTopic[] | null {
   if (!Array.isArray(value)) return null;
   const topics = new Set<SupportTopic>();
   for (const t of value) {
@@ -133,6 +133,26 @@ export interface ClassifiedMessage {
 
 const flag = (value: unknown) => value === true;
 
+/** A message whose labelling failed (or was not tried): work, unknown
+ *  topics, so every send waits for a person until a later try works. */
+export function failedTriage(now: string, reason: string): ClassifiedMessage {
+  return {
+    reason,
+    triage: {
+      route: "work",
+      topics: null,
+      bug: false,
+      injection: false,
+      wantsHuman: false,
+      angry: false,
+      repeat: false,
+      thanksOnly: false,
+      at: now,
+      failed: true,
+    },
+  };
+}
+
 /** Labels one inbound customer message. `earlierReply` is our newest
  *  reply before it (for "repeat"); it is quoted in its own wrapper. */
 export async function classifyMessage(input: {
@@ -151,21 +171,7 @@ export async function classifyMessage(input: {
     model: process.env.SUPPORT_TRIAGE_MODEL || ROUTE_CLASSIFIER_MODEL,
   });
   if (!verdict)
-    return {
-      reason: "Triage failed, treated as work",
-      triage: {
-        route: "work",
-        topics: null,
-        bug: false,
-        injection: false,
-        wantsHuman: false,
-        angry: false,
-        repeat: false,
-        thanksOnly: false,
-        at: input.now,
-        failed: true,
-      },
-    };
+    return failedTriage(input.now, "Triage failed, treated as work");
   const raw = verdict.raw;
   return {
     reason: verdict.reason,

@@ -25,6 +25,7 @@ import {
 } from "./testing/reply-testbed";
 import { runSupportTick } from "./tick";
 import { draftStats } from "./draft-stats";
+import { __setDraftCheckForTest } from "./verify";
 
 const tb = useReplyTestbed();
 
@@ -84,6 +85,7 @@ describe("proposeDraft", () => {
     await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     for (let i = 0; i < 3; i++) {
+      if (i > 0) await tb.customerReply(c.id);
       const sent = await proposeDraft(
         c.id,
         `${DRAFT} (${i})`,
@@ -93,6 +95,7 @@ describe("proposeDraft", () => {
       );
       expect(sent.ok && sent.draft.state).toBe("sent");
     }
+    await tb.customerReply(c.id);
     const fourth = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(fourth.ok).toBe(true);
     if (fourth.ok) {
@@ -531,6 +534,7 @@ describe("after a person stopped the agent", () => {
     // A person sends: the hold ends.
     if (!third.ok) throw new Error(third.error);
     expect((await sendDraft(c.id, third.draft.id, ADA)).ok).toBe(true);
+    await tb.customerReply(c.id);
     const fourth = await proposeDraft(
       c.id,
       "Anything else?",
@@ -812,6 +816,79 @@ describe("draft figures", () => {
       sentUnchanged: 1,
       sentEdited: 1,
       discarded: 1,
+      sentAutomatically: 0,
     });
+  });
+
+  test("an automatic send counts apart, never as sent unchanged", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const sent = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(sent.ok && sent.draft.state).toBe("sent");
+    expect(await draftStats(tb.inbox().id)).toEqual({
+      days: 30,
+      sentUnchanged: 0,
+      sentEdited: 0,
+      discarded: 0,
+      sentAutomatically: 1,
+    });
+  });
+});
+
+describe("automatic sends answer the customer", () => {
+  test("a second automatic reply without a new customer message waits", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const first = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(first.ok && first.draft.state).toBe("sent");
+    const second = await proposeDraft(
+      c.id,
+      `${DRAFT} And more.`,
+      AGENT,
+      undefined,
+      CITED,
+    );
+    expect(second.ok && second.draft.rule).toBe(
+      "No new customer message to answer",
+    );
+    expect(tb.fixture().sent).toHaveLength(1);
+  });
+
+  test("one clarifying question sends without a source, the second waits", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const ask = await proposeDraft(
+      c.id,
+      "Which browser do you use?",
+      AGENT,
+      undefined,
+      {
+        purpose: "clarify",
+      },
+    );
+    expect(ask.ok && ask.draft.state).toBe("sent");
+    expect((await getConversation(c.id))!.autoClarified).toBe(true);
+    await tb.customerReply(c.id, "Firefox.");
+    const again = await proposeDraft(c.id, "Which version?", AGENT, undefined, {
+      purpose: "clarify",
+    });
+    expect(again.ok && again.draft.rule).toBe(
+      "Only one clarifying question sends on its own",
+    );
+  });
+
+  test("a draft whose sources the server couldn't verify waits", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    __setDraftCheckForTest(async (input) => ({
+      verified: [],
+      topics: [],
+      promises: false,
+      at: new Date(input.now).toISOString(),
+    }));
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(result.ok && result.draft.rule).toBe("No source cited");
+    expect(result.ok && result.draft.check?.verified).toEqual([]);
+    expect(tb.fixture().sent).toHaveLength(0);
   });
 });

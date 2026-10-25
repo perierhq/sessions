@@ -27,6 +27,7 @@ import {
   __setProjectSitesForTest,
 } from "../reply";
 import { createConversation, updateConversation } from "../store";
+import { __setDraftCheckForTest } from "../verify";
 import { TEST_PROJECTS, useSupportTestKernel } from "./kernel-fixture";
 import {
   MAIL_PASSWORD,
@@ -96,6 +97,14 @@ export function useReplyTestbed() {
   beforeEach(async () => {
     __resetReplyStateForTest();
     __setProjectSitesForTest(async () => ({ ...TEST_SITES }));
+    // Every cited source checks out and the text is clean, unless a test
+    // says otherwise (verify.test.ts covers the check itself).
+    __setDraftCheckForTest(async (input) => ({
+      verified: input.sources,
+      topics: [],
+      promises: false,
+      at: new Date(input.now).toISOString(),
+    }));
     __setInboxProjectCheckForTest((id) => TEST_PROJECTS.includes(id));
     previousSecrets = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
     process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = join(
@@ -129,6 +138,7 @@ export function useReplyTestbed() {
     inbox = undefined;
     __resetReplyStateForTest();
     __setProjectSitesForTest(undefined);
+    __setDraftCheckForTest(undefined);
     __setInboxProjectCheckForTest(undefined);
     if (previousSecrets === undefined)
       delete process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
@@ -161,6 +171,39 @@ export function useReplyTestbed() {
       // As EmailAgent does for fields that need no new connection.
       adapter?.update(result.inbox);
       return inbox;
+    },
+
+    /** A later customer message on `conversationId`, labelled clean. */
+    async customerReply(
+      conversationId: string,
+      text = "Thanks, one more question.",
+    ): Promise<SupportConversation> {
+      counter++;
+      const m: SupportMessage = {
+        id: `sm_test-${counter}`,
+        direction: "in",
+        at: new Date().toISOString(),
+        from: CUSTOMER,
+        to: [{ name: null, address: INBOX_ADDRESS }],
+        cc: [],
+        subject: "Re: Export is broken",
+        text,
+        keys: {
+          messageId: `m${counter}@customer.example.test`,
+          inReplyTo: null,
+          references: [],
+        },
+        providerId: `imap:1:${counter}`,
+        attachments: [],
+        trust: { replyToDiffers: false, authFailed: false, authVerified: true },
+        triage: cleanLabels(),
+      };
+      return (await updateConversation(conversationId, (x) => ({
+        ...x,
+        messages: [...x.messages, m],
+        status: x.status === "waiting" ? "open" : x.status,
+        lastMessageAt: m.at,
+      })))!;
     },
 
     /** One customer email, triaged with `triage` (topics [] by default). */

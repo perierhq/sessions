@@ -34,6 +34,8 @@ import {
   type MailAddress,
   type SupportActor,
   type SupportConversation,
+  type DraftCheck,
+  type DraftPurpose,
   type DraftSource,
   type SupportDraft,
   type SupportMessage,
@@ -52,6 +54,7 @@ import {
 } from "./channel";
 import { getInbox, listInboxes } from "./inboxes";
 import { recordDraftOutcome } from "./draft-stats";
+import { checkDraft } from "./verify";
 import {
   type ProjectSites,
   type ReplyDecision,
@@ -302,7 +305,20 @@ function answeredMessages(
 export interface DraftMeta {
   sources?: DraftSource[];
   promises?: boolean;
-  purpose?: NonNullable<SupportDraft["purpose"]>;
+  purpose?: DraftPurpose;
+}
+
+/** The purpose as stored: `reply` unless a known other one. */
+function draftPurpose(raw: unknown): DraftPurpose {
+  return raw === "fixed-note" || raw === "clarify" ? raw : "reply";
+}
+
+/** A customer message arrived since our last reply. */
+function hasUnanswered(c: SupportConversation): boolean {
+  const lastOut = c.messages.findLastIndex((m) => m.direction === "out");
+  return c.messages
+    .slice(lastOut + 1)
+    .some((m) => m.direction === "in" && !m.automated);
 }
 
 const MAX_SOURCES = 10;
@@ -370,7 +386,7 @@ function decide(
   pin: ReplyPin,
   now: number,
   inboxSends: number,
-  draft: { text: string } & DraftMeta,
+  draft: { text: string; check?: DraftCheck | null } & DraftMeta,
   sites: ProjectSites,
 ): ReplyDecision {
   return decideReply({
@@ -389,8 +405,11 @@ function decide(
       text: draft.text,
       sources: draft.sources ?? [],
       promises: draft.promises === true,
-      purpose: draft.purpose ?? "reply",
+      purpose: draftPurpose(draft.purpose),
+      check: draft.check ?? null,
     },
+    unanswered: hasUnanswered(c),
+    clarifyUsed: c.autoClarified === true,
     sites,
     autoSendsLastHour: autoSendsSince(c, now),
     inboxAutoSendsLastHour: inboxSends,
@@ -464,11 +483,26 @@ async function propose(
   if (current.draft?.state === "sending")
     return fail(409, "A reply is being sent");
   const { inbox, others, own, sites } = await context(current);
-  const meta: DraftMeta = {
+  const meta: DraftMeta & { check?: DraftCheck } = {
     sources: cleanSources(rawMeta.sources),
     promises: rawMeta.promises === true,
-    purpose: rawMeta.purpose === "fixed-note" ? "fixed-note" : "reply",
+    purpose: draftPurpose(rawMeta.purpose),
   };
+  // An agent's draft on a routine inbox may send on its own: the server
+  // checks its sources and its text first (verify.ts).
+  if (
+    author.kind === "agent" &&
+    inbox?.autonomy === "routine" &&
+    meta.purpose !== "fixed-note"
+  )
+    meta.check = await checkDraft({
+      sessionId: author.sessionId,
+      project: current.project,
+      text,
+      sources: meta.sources ?? [],
+      sites,
+      now,
+    });
   const draftId = `sd_${randomUUIDv7()}`;
   const messageId = newMessageId(inbox?.address ?? "");
 
@@ -531,10 +565,11 @@ async function propose(
     }
     draft = {
       id: draftId,
-      ...(meta.purpose === "fixed-note" ? { purpose: meta.purpose } : {}),
+      ...(meta.purpose !== "reply" ? { purpose: meta.purpose } : {}),
       text,
       ...(meta.sources?.length ? { sources: meta.sources } : {}),
       ...(meta.promises ? { promises: true } : {}),
+      ...(meta.check ? { check: meta.check } : {}),
       author,
       createdAt: iso(now),
       state: decision.kind === "send" ? "sending" : decision.kind,
@@ -1029,6 +1064,9 @@ async function deliverInFlight(
     status: x.status === "spam" ? "spam" : "waiting",
     lastMessageAt: message.at > x.lastMessageAt ? message.at : x.lastMessageAt,
     autoSends: automatic ? [...x.autoSends, message.at] : x.autoSends,
+    ...(automatic && draft.purpose === "clarify"
+      ? { autoClarified: true }
+      : {}),
   }));
   await Promise.allSettled([
     ourId !== draft.messageId
@@ -1056,10 +1094,16 @@ async function deliverInFlight(
     textDigest: digest(draft.text),
     messageId: ourId,
   });
+  // Only what a person approved counts as "sent unchanged"; sends that
+  // went out on their own are counted apart.
   if (draft.author.kind === "agent" && draft.purpose !== "fixed-note")
     await recordDraftOutcome(
       c.inboxId,
-      opts.edited || draft.edited ? "edited" : "unchanged",
+      automatic
+        ? "automatic"
+        : opts.edited || draft.edited
+          ? "edited"
+          : "unchanged",
       opts.now,
     );
   return { ok: true, message };

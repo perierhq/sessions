@@ -8,10 +8,15 @@ import {
   RULES,
   type ReplyDecision,
   decideReply,
+  draftHasSecret,
   draftLinkProblem,
+  draftLinks,
+  replyLabels,
 } from "./policy";
 
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
+/** A made-up key in the AWS format, built so no scanner reads it as one. */
+const FAKE_AWS_KEY = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 const AGENT = { kind: "agent" as const, sessionId: "os-1" };
 
 type Inbox = Pick<
@@ -52,13 +57,31 @@ function labels(): Input["labels"] {
   };
 }
 
-const draft = (over: Partial<Input["draft"]>): Input["draft"] => ({
-  text: "Export from Settings, then Data.",
-  sources: [{ kind: "repo", ref: "docs/export.md" }],
+/** The server's check: every source verified, clean text. */
+const checked = (
+  sources: Input["draft"]["sources"],
+  over: Partial<NonNullable<Input["draft"]["check"]>> = {},
+): NonNullable<Input["draft"]["check"]> => ({
+  verified: sources,
+  topics: [],
   promises: false,
-  purpose: "reply",
+  at: "2026-10-25T09:59:30.000Z",
   ...over,
 });
+
+const draft = (over: Partial<Input["draft"]>): Input["draft"] => {
+  const sources = over.sources ?? [
+    { kind: "repo" as const, ref: "docs/export.md" },
+  ];
+  return {
+    text: "Export from Settings, then Data.",
+    promises: false,
+    purpose: "reply",
+    check: checked(sources),
+    ...over,
+    sources,
+  };
+};
 
 function input(over: Partial<Input> = {}): Input {
   return {
@@ -81,12 +104,11 @@ function input(over: Partial<Input> = {}): Input {
     },
     injectionFlags: 0,
     personOnly: false,
-    draft: {
+    draft: draft({
       text: "Export from Settings, then Data. See https://docs.acme.example.test/export",
-      sources: [{ kind: "repo", ref: "docs/export.md" }],
-      promises: false,
-      purpose: "reply",
-    },
+    }),
+    unanswered: true,
+    clarifyUsed: false,
     sites: { hosts: ["docs.acme.example.test"], connectors: ["acme-crm"] },
     inboxAutoSendsLastHour: 0,
     status: "open",
@@ -424,13 +446,217 @@ describe("decideReply", () => {
 });
 
 describe("draftLinkProblem", () => {
+  const SITES = ["docs.acme.example.test"];
+
   test("allows plain text and links on the project's sites", () => {
     expect(
-      draftLinkProblem("See https://docs.acme.example.test/a?b=1.", [
-        "docs.acme.example.test",
-      ]),
+      draftLinkProblem("See https://docs.acme.example.test/a#b.", SITES),
     ).toBe(false);
     expect(draftLinkProblem("2 < 3 and 4 > 1", [])).toBe(false);
+  });
+
+  test.each([
+    "Log in at evil.example.test/login",
+    'Open "www.evil.example.test" now',
+    "Go to:evil.example.test",
+    "Reply here>www.evil.example.test",
+    "Open http:evil.example.test",
+    "Open https:evil.example.test/x",
+    "javascript:alert(1)",
+    "Open evil.example.test",
+    "See docs.acme.example.test.evil.test/x",
+    "Visit evil\u200b.example.test",
+    "Visit evil\uff0eexample\uff0etest",
+    "foo://docs.acme.example.test/x",
+  ])("a link elsewhere, as a linkifier finds it: %s", (text) => {
+    expect(draftLinkProblem(text, SITES)).toBe(true);
+  });
+
+  test.each([
+    "Run npm install, then restart Node.js.",
+    "Edit package.json and docs/setup.md.",
+    "Write to ada@customer.example.test.",
+    "This is in v1.2.3, e.g. today.",
+    "Note: it works.",
+    "Call tel:+15550100 or mail mailto:help@acme.example.test.",
+  ])("not a link: %s", (text) => {
+    expect(draftLinks(text)).toEqual([]);
+    expect(draftLinkProblem(text, SITES)).toBe(false);
+  });
+
+  test("a bare host on the project's sites is fine", () => {
+    expect(draftLinkProblem("See docs.acme.example.test/export.", SITES)).toBe(
+      false,
+    );
+  });
+
+  test("at most two links, none with a query string", () => {
+    const a = "https://docs.acme.example.test/a";
+    expect(draftLinkProblem(`${a} ${a}/b`, SITES)).toBe(false);
+    expect(draftLinkProblem(`${a} ${a}/b ${a}/c`, SITES)).toBe(true);
+    expect(draftLinkProblem(`${a}?next=x`, SITES)).toBe(true);
+  });
+
+  test("only an exact host that isn't shared hosting", () => {
+    expect(
+      draftLinkProblem("https://help.acme.example.test/x", [
+        "*.acme.example.test",
+      ]),
+    ).toBe(true);
+    for (const host of ["acme.github.io", "acme.vercel.app", "github.com"])
+      expect(draftLinkProblem(`https://${host}/x`, [host])).toBe(true);
+    expect(
+      draftLinkProblem("https://docs.acme.example.test:8443/x", [
+        "docs.acme.example.test:8443",
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("draftHasSecret", () => {
+  test.each([
+    `Your key is ${FAKE_AWS_KEY}`,
+    "password: hunter2hunter",
+    "Use token=abc123def456",
+    // Built at run time, so no secret scanner reads them as keys.
+    ["sk", "test", "abcdefghijklmnopqrstuvwx"].join("_"),
+    [
+      "eyJ" + "hbGciOiJIUzI1NiJ9",
+      "eyJ" + "zdWIiOiIxMjM0In0",
+      "abcdefghijklmnop",
+    ].join("."),
+    "Here: 9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZ",
+  ])("flags %s", (text) => {
+    expect(draftHasSecret(text)).toBe(true);
+  });
+
+  test.each([
+    "Export from Settings, then Data.",
+    "Your order 3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e shipped.",
+    "Fixed in 0123456789abcdef0123456789abcdef01234567.",
+    "See docs/guides/exporting-your-account-data-to-csv.md",
+    "Your password is reset by the link in the email.",
+  ])("leaves %s", (text) => {
+    expect(draftHasSecret(text)).toBe(false);
+  });
+});
+
+describe("replyLabels", () => {
+  test("a message whose topics are unknown holds automatic sends", () => {
+    const at = "2026-10-25T09:59:00.000Z";
+    const base = {
+      route: "work" as const,
+      injection: false,
+      wantsHuman: false,
+      angry: false,
+      repeat: false,
+      bug: false,
+      thanksOnly: false,
+      at,
+    };
+    const message = (topics: string[] | null) =>
+      ({ triage: { ...base, topics } }) as never;
+    expect(replyLabels([message([])]).pending).toBe(false);
+    expect(replyLabels([message(null)]).pending).toBe(true);
+  });
+});
+
+describe("the server's draft check", () => {
+  test.each<[string, Partial<Input>, string]>([
+    [
+      "a source the server couldn't verify",
+      {
+        draft: draft({
+          check: checked([]),
+        }),
+      },
+      RULES.noSource,
+    ],
+    ["no check", { draft: draft({ check: null }) }, RULES.draftUnchecked],
+    [
+      "a check whose topics are unknown",
+      { draft: draft({ check: checked([], { topics: null }) }) },
+      RULES.draftUnchecked,
+    ],
+    [
+      "the reply touches a never-without-a-person topic",
+      {
+        draft: draft({
+          check: checked([{ kind: "repo", ref: "docs/export.md" }], {
+            topics: ["legal"],
+          }),
+        }),
+      },
+      "Legal needs a person",
+    ],
+    [
+      "the reply promises something",
+      {
+        draft: draft({
+          check: checked([{ kind: "repo", ref: "docs/export.md" }], {
+            promises: true,
+          }),
+        }),
+      },
+      RULES.draftPromise,
+    ],
+    [
+      "the reply holds a secret",
+      { draft: draft({ text: `Use the key ${FAKE_AWS_KEY}` }) },
+      RULES.secret,
+    ],
+    [
+      "no customer message waits for an answer",
+      { unanswered: false },
+      RULES.nothingToAnswer,
+    ],
+  ])("needs a person: %s", (_name, over, rule) => {
+    expect(decideReply(input(over))).toEqual({ kind: "needs-person", rule });
+  });
+});
+
+describe("one clarifying question", () => {
+  const question = (over: Partial<Input["draft"]> = {}) =>
+    draft({
+      text: "Which browser do you use?",
+      sources: [],
+      purpose: "clarify",
+      ...over,
+    });
+
+  test("sends without a source once", () => {
+    expect(decideReply(input({ draft: question() }))).toEqual({
+      kind: "send",
+      rule: "Sent by the agent",
+    });
+    expect(
+      decideReply(input({ draft: question(), clarifyUsed: true })),
+    ).toEqual({ kind: "needs-person", rule: RULES.clarifyUsed });
+  });
+
+  test.each<[string, Partial<Input["draft"]>, string]>([
+    ["too long", { text: `${"Which one? ".repeat(60)}` }, RULES.noSource],
+    [
+      "with a link",
+      { text: "Is it https://docs.acme.example.test/a?" },
+      RULES.noSource,
+    ],
+    ["flagged as a promise", { promises: true }, RULES.promise],
+    [
+      "the check finds a promise",
+      { check: checked([], { promises: true }) },
+      RULES.draftPromise,
+    ],
+    [
+      "the check finds a sensitive topic",
+      { check: checked([], { topics: ["refund"] }) },
+      "Money and refunds needs a person",
+    ],
+  ])("waits when %s", (_name, over, rule) => {
+    expect(decideReply(input({ draft: question(over) }))).toEqual({
+      kind: "needs-person",
+      rule,
+    });
   });
 });
 

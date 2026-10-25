@@ -10,6 +10,8 @@ import {
 import { __setActionDepsForTest } from "./actions";
 import { __setBugDepsForTest, MAX_SUMMARY, MAX_TITLE } from "./bugs";
 import {
+  MAX_CONVERSATION_CHARS,
+  PERSON_ONLY,
   SUPPORT_MCP_SERVER,
   __setSupportSessionLookupForTest,
   conversationForSession,
@@ -25,6 +27,7 @@ import {
 import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
 import { TEST_SITES, cleanLabels } from "./testing/reply-testbed";
 import { __setProjectSitesForTest } from "./reply";
+import { __setDraftCheckForTest } from "./verify";
 
 const kernel = useSupportTestKernel();
 const INBOX = "help@acme.example.test";
@@ -183,9 +186,11 @@ test("draft_reply drafts on the session's own conversation", async () => {
     "text",
     "sources",
     "promises",
+    "purpose",
   ]);
   const out = await tool.handler({ text: "Fixed, please retry." }, {});
-  expect(textOf(out)).toBe("Waiting for a person: Drafts wait for a person");
+  // Which rule held it is for people only.
+  expect(textOf(out)).toBe("Waiting for a person.");
   const draft = (await getConversation(mine.id))!.draft!;
   expect(draft.text).toBe("Fixed, please retry.");
   expect(draft.author).toEqual({ kind: "agent", sessionId: "os-1" });
@@ -218,10 +223,19 @@ test("draft_reply says when a veto window ends", async () => {
     },
   }));
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
-  const out = await draftReplyTool("os-1").handler(
-    { text: "Fixed.", sources: [{ kind: "repo", ref: "docs/export.md" }] },
-    {},
-  );
+  // The server confirms the cited file (verify.test.ts covers how).
+  __setDraftCheckForTest(async (input) => ({
+    verified: input.sources,
+    topics: [],
+    promises: false,
+    at: new Date(input.now).toISOString(),
+  }));
+  const out = await draftReplyTool("os-1")
+    .handler(
+      { text: "Fixed.", sources: [{ kind: "repo", ref: "docs/export.md" }] },
+      {},
+    )
+    .finally(() => __setDraftCheckForTest(undefined));
   expect(textOf(out)).toMatch(/^Sends at \d\d:\d\d unless someone stops it\.$/);
   expect((await getConversation(mine.id))!.draft!.sources).toEqual([
     { kind: "repo", ref: "docs/export.md" },
@@ -334,4 +348,54 @@ test("report_bug refuses oversized fields before anything runs", () => {
     schema.safeParse({ title: "t", summary: "s".repeat(MAX_SUMMARY + 1) })
       .success,
   ).toBe(false);
+});
+
+test("draft_reply and report_bug are refused once a person handles the conversation", async () => {
+  const mine = await conversation(1);
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+    personOnly: { at: new Date().toISOString(), reason: "test" },
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const tools = supportToolDefinitions({ sessionId: "os-1" });
+  const draft = tools.find((t) => t.name === "draft_reply")!;
+  const report = tools.find((t) => t.name === "report_bug")!;
+  expect(textOf(await draft.handler({ text: "Hi" }, {}))).toBe(PERSON_ONLY);
+  expect(
+    textOf(await report.handler({ title: "Bug", summary: "It fails" }, {})),
+  ).toBe(PERSON_ONLY);
+  const after = (await getConversation(mine.id))!;
+  expect(after.draft).toBeNull();
+  expect(after.pendingIssue).toBeNull();
+});
+
+test("get_conversation shows only the newest messages that fit", async () => {
+  const mine = await conversation(1);
+  const long = "x".repeat(18_000);
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+    messages: [
+      ...c.messages,
+      ...[2, 3, 4, 5].map((n) => ({
+        ...message(n, `${long} message ${n}`),
+        from: { name: "Carol", address: 'carol"><x@customer.example.test' },
+      })),
+    ],
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const raw = textOf(await getConversationTool("os-1").handler({}, {}));
+  const out = JSON.parse(raw);
+  expect(raw.length).toBeLessThan(MAX_CONVERSATION_CHARS + 5_000);
+  expect(out.messages.map((m: { id: string }) => m.id)).toEqual([
+    "sm_test-3",
+    "sm_test-4",
+    "sm_test-5",
+  ]);
+  expect(out.olderMessagesNotShown).toBe(2);
+  // The sender goes through the attribute escape.
+  expect(out.messages[0].from).toBe(
+    "carol&quot;&gt;&lt;x@customer.example.test",
+  );
 });

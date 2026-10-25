@@ -1,6 +1,7 @@
 // How an inbox's agent drafts were settled in the last 30 days: sent as
-// the agent wrote them, sent after a person edited them, or discarded
-// (Front's "draft drift"). The evidence an operator reads next to the
+// the agent wrote them after a person approved them, sent after a person
+// edited them, discarded (Front's "draft drift"), or sent on their own
+// (routine, counted apart so they don't inflate "sent unchanged"). The evidence an operator reads next to the
 // autonomy choice. One small record per inbox in the `support-inboxes`
 // namespace (key `draft-stats:<inboxId>`, which listInboxes skips and
 // deleteInbox removes): times and outcomes only, never text, ids or
@@ -8,7 +9,7 @@
 import { DRAFT_STATS_DAYS, type InboxDraftStats } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
 
-export type DraftOutcome = "unchanged" | "edited" | "discarded";
+export type DraftOutcome = "unchanged" | "edited" | "discarded" | "automatic";
 
 interface StatsRecord {
   inboxId: string;
@@ -33,7 +34,8 @@ function live(value: unknown, now: number): StatsRecord["entries"] {
       e.at > now - WINDOW_MS &&
       (e.outcome === "unchanged" ||
         e.outcome === "edited" ||
-        e.outcome === "discarded"),
+        e.outcome === "discarded" ||
+        e.outcome === "automatic"),
   );
 }
 
@@ -67,6 +69,7 @@ export async function draftStats(
     sentUnchanged: 0,
     sentEdited: 0,
     discarded: 0,
+    sentAutomatically: 0,
   };
   let value: unknown = null;
   try {
@@ -77,6 +80,8 @@ export async function draftStats(
   for (const e of live(value, now)) {
     if (e.outcome === "unchanged") stats.sentUnchanged++;
     else if (e.outcome === "edited") stats.sentEdited++;
+    else if (e.outcome === "automatic")
+      stats.sentAutomatically = (stats.sentAutomatically ?? 0) + 1;
     else stats.discarded++;
   }
   return stats;

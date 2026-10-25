@@ -187,6 +187,7 @@ describe("support inbox routes", () => {
       sentUnchanged: 2,
       sentEdited: 1,
       discarded: 0,
+      sentAutomatically: 0,
     });
   });
 
@@ -466,6 +467,20 @@ describe("support inbox routes: audit and failures", () => {
     ]);
     expect(JSON.stringify(rows)).not.toContain("new-imap-pass");
     expect(JSON.stringify(rows)).not.toContain("Acme support");
+  });
+
+  test("removed settings are never listed as changed", async () => {
+    const inbox = await created();
+    await call("PATCH", `/api/support/inboxes/${inbox.id}`, {
+      expectedRevision: inbox.revision,
+      label: "Acme support",
+      moveLock: "people",
+      bugHandling: "issue",
+    });
+    const row = kernel.audits.find(
+      (a) => a.type === "support_inbox_updated",
+    ) as { fields?: string[] } | undefined;
+    expect(row?.fields).toEqual(["label"]);
   });
 
   test("a store failure answers 500 without its message", async () => {

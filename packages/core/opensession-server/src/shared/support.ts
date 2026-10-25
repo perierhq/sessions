@@ -193,12 +193,34 @@ export interface DraftSource {
   ref: string;
 }
 
+/** What the server found when it checked an agent's draft on a routine
+ *  inbox (reply.ts, verify.ts). Shown to people only, never to the agent. */
+export interface DraftCheck {
+  /** The cited sources the server could confirm: a repo file that exists
+   *  at the session's HEAD, a URL a web_fetch of this session read, a
+   *  record a Support connector call of this session returned. */
+  verified: DraftSource[];
+  /** Topics the small model found in the draft text; null when the check
+   *  failed (the draft then waits for a person). */
+  topics: SupportTopic[] | null;
+  /** The small model says the draft promises something about policy, a
+   *  price or a deadline. */
+  promises: boolean;
+  at: string;
+}
+
+export const DRAFT_PURPOSES = ["reply", "clarify", "fixed-note"] as const;
+export type DraftPurpose = (typeof DRAFT_PURPOSES)[number];
+
 export interface SupportDraft {
   id: string;
-  /** `reply` (absent on older drafts) or the "it's fixed" note the server
-   *  prepares when the linked fix merges or issue closes; that one always
-   *  needs a person. */
-  purpose?: "reply" | "fixed-note";
+  /** `reply` (absent on older drafts), `clarify` (the agent's one
+   *  clarifying question, which may send on its own without a source), or
+   *  the "it's fixed" note the server prepares when the linked fix merges
+   *  or issue closes; that one always needs a person. */
+  purpose?: DraftPurpose;
+  /** The server's check of an agent draft on a routine inbox. */
+  check?: DraftCheck;
   text: string;
   /** The sources the agent cited (draft_reply). Absent or empty: none. */
   sources?: DraftSource[];
@@ -296,8 +318,12 @@ export interface SupportConversation {
     text: string;
     draftId: string | null;
   } | null;
-  /** Injection flags seen on this conversation's customer messages. */
+  /** Injection flags seen on this conversation's customer messages, and
+   *  earlier ones of the same sender in this inbox. */
   injectionFlags?: number;
+  /** An automatic clarifying question already went out (one per
+   *  conversation). */
+  autoClarified?: boolean;
   /** Set when the conversation was handed to a person for good (second
    *  injection flag): no automatic send and no agent session from then
    *  on. */
@@ -343,13 +369,6 @@ export type MailboxBehaviour = (typeof MAILBOX_BEHAVIOURS)[number];
  *    everything else waits for a person */
 export const SUPPORT_AUTONOMY = ["watch", "draft", "routine"] as const;
 export type SupportAutonomy = (typeof SUPPORT_AUTONOMY)[number];
-
-/** Autonomy names stored before the redesign, read by migrateInboxRecord. */
-const LEGACY_AUTONOMY = [
-  "propose",
-  "deploy-after-veto",
-  "deploy-right-away",
-] as const;
 
 export interface InboxRetention {
   conversationDays: number;
@@ -474,12 +493,15 @@ type ServerView = Omit<MailServerConfig, "passwordRef"> & {
   hasPassword: boolean;
 };
 /** Agent drafts of one inbox settled in the last `days` days: sent as
- *  the agent wrote them, sent after a person edited them, discarded. */
+ *  the agent wrote them after a person approved them, sent after a person
+ *  edited them, discarded, and sent on their own (routine, no person). */
 export interface InboxDraftStats {
   days: number;
   sentUnchanged: number;
   sentEdited: number;
   discarded: number;
+  /** Always filled by the server; optional for older clients. */
+  sentAutomatically?: number;
 }
 export const DRAFT_STATS_DAYS = 30;
 
@@ -724,41 +746,83 @@ export function defaultInboxConfig(input: {
 }
 
 /** An inbox record as stored before the redesign upgraded to the current
- *  shape; current records come back unchanged (same object). Old autonomy
- *  names map: propose → draft, deploy-after-veto → routine with its veto
- *  window, deploy-right-away → routine without one. moveLock and
- *  bugHandling are dropped. An upgraded record's topics lose
- *  "angry-customer" (anger always needs a person now) and gain the new
- *  default topics. */
+ *  shape; current records come back unchanged (same object). Each old
+ *  autonomy value maps explicitly: propose → draft, deploy-after-veto →
+ *  routine with its veto window (draft when the window isn't a usable
+ *  number), deploy-right-away → routine without one, a current value stays,
+ *  and anything else → draft. moveLock and bugHandling are dropped. An
+ *  upgraded record's topics lose "angry-customer" (anger always needs a
+ *  person now) and gain the new default topics; topics that aren't a list
+ *  become every topic. */
 export function migrateInboxRecord(stored: InboxConfig): InboxConfig {
-  const raw = stored as unknown as Omit<InboxConfig, "autonomy"> & {
-    autonomy: string;
+  const raw = stored as unknown as Omit<
+    InboxConfig,
+    "autonomy" | "neverWithoutAPerson" | "vetoMs"
+  > & {
+    autonomy: unknown;
+    vetoMs: unknown;
+    neverWithoutAPerson: unknown;
     moveLock?: unknown;
     bugHandling?: unknown;
   };
+  const current = (SUPPORT_AUTONOMY as readonly unknown[]).includes(
+    raw.autonomy,
+  );
+  const topicsOk = Array.isArray(raw.neverWithoutAPerson);
   const legacy =
-    (LEGACY_AUTONOMY as readonly string[]).includes(raw.autonomy) ||
-    "moveLock" in raw ||
-    "bugHandling" in raw;
+    !current || !topicsOk || "moveLock" in raw || "bugHandling" in raw;
   if (!legacy) return stored;
   const { moveLock: _moveLock, bugHandling: _bugHandling, ...rest } = raw;
-  const next = { ...rest } as InboxConfig;
-  next.autonomy =
-    raw.autonomy === "propose"
-      ? "draft"
-      : raw.autonomy === "watch"
-        ? "watch"
-        : "routine";
-  if (raw.autonomy === "deploy-right-away") next.vetoMs = null;
-  const kept = (raw.neverWithoutAPerson as string[]).filter(
+  const next = { ...rest } as unknown as InboxConfig;
+  const usableVeto =
+    typeof raw.vetoMs === "number" &&
+    Number.isInteger(raw.vetoMs) &&
+    raw.vetoMs >= MIGRATED_VETO_MIN_MS &&
+    raw.vetoMs <= MIGRATED_VETO_MAX_MS;
+  switch (raw.autonomy) {
+    case "watch":
+    case "draft":
+      next.autonomy = raw.autonomy;
+      break;
+    case "routine":
+      next.autonomy = raw.vetoMs === null || usableVeto ? "routine" : "draft";
+      break;
+    case "propose":
+      next.autonomy = "draft";
+      break;
+    case "deploy-after-veto":
+      next.autonomy = usableVeto ? "routine" : "draft";
+      break;
+    case "deploy-right-away":
+      next.autonomy = "routine";
+      next.vetoMs = null;
+      break;
+    default:
+      next.autonomy = "draft";
+  }
+  if (next.autonomy !== "routine" && !usableVeto && raw.vetoMs !== null)
+    next.vetoMs = DEFAULT_VETO_MS;
+  if (!topicsOk) {
+    next.neverWithoutAPerson = [...SUPPORT_TOPICS];
+    return next;
+  }
+  const kept = (raw.neverWithoutAPerson as unknown[]).filter(
     (topic): topic is SupportTopic =>
+      typeof topic === "string" &&
       (SUPPORT_TOPICS as readonly string[]).includes(topic),
   );
-  next.neverWithoutAPerson = SUPPORT_TOPICS.filter(
-    (topic) => kept.includes(topic) || !LEGACY_TOPICS.includes(topic as never),
-  );
+  next.neverWithoutAPerson = current
+    ? SUPPORT_TOPICS.filter((topic) => kept.includes(topic))
+    : SUPPORT_TOPICS.filter(
+        (topic) =>
+          kept.includes(topic) || !LEGACY_TOPICS.includes(topic as never),
+      );
   return next;
 }
+
+/** The veto window range the inbox store accepts (inboxes.ts). */
+const MIGRATED_VETO_MIN_MS = 60_000;
+const MIGRATED_VETO_MAX_MS = 86_400_000;
 
 /** Topics that existed before the redesign; an upgraded record keeps its
  *  choice for these and gets every newer one. */

@@ -56,6 +56,7 @@ import {
   runAccountSpec,
 } from "./session-run-inputs";
 import { supportSessionMcp } from "./support/mcp";
+import { supportToolResult, supportToolUse } from "./support/evidence";
 import { defaultRepo } from "./config";
 import { agentAwsCredsForUntrustedRuns } from "./aws-creds";
 import { isDevInstance } from "./dev-mode";
@@ -3893,6 +3894,7 @@ async function runSessionPromptInner(
             model: session.model,
           });
         plainDiscussionToolUse(session.plainDiscussionId, event);
+        supportToolUse(sessionId, supportSession, event);
         broadcastToSession(sessionId, {
           type: "stream_tool_use",
           sessionId,
@@ -3909,6 +3911,7 @@ async function runSessionPromptInner(
         break;
       case "tool_result":
         plainDiscussionToolResult(session.plainDiscussionId, event);
+        supportToolResult(event);
         broadcastToSession(sessionId, {
           type: "stream_tool_result",
           sessionId,

@@ -2,28 +2,34 @@
 // person: the incidents policy shape (response/policy.ts `evaluatePolicy`),
 // ordered rules that each name the rule text the reply box shows.
 // "Autonomous = repetitive, judgement = a person": an agent's draft sends on
-// its own only on a routine inbox, when it cites a source (a repo file, a
-// page on the project's Support websites, or a Support connector record),
-// links only to those websites, and nothing in the conversation needs a
-// person: an injection flag, a request for a person, anger, a repeated
-// question, a never-without-a-person topic, unknown labels, unverified mail
-// or a reply address that differs. The triage route ("simple" included)
-// never permits a send. A person's reply always goes; an automatic one
-// never on a spam or closed conversation, nor after a person stopped the
-// last one. Pure.
+// its own only on a routine inbox, when it answers a customer message still
+// unanswered, cites a source the server verified (a repo file at the
+// session's HEAD, a page this session's web_fetch read, a record this
+// session's Support connector call returned), links to at most two pages
+// on exact, non-shared hosts of the project's Support websites, passes the
+// draft check (no sensitive topic, no promise, nothing that looks like a
+// secret), and nothing in the conversation needs a person: an injection
+// flag, a request for a person, anger, a repeated question, a
+// never-without-a-person topic, unknown labels, unverified mail or a reply
+// address that differs. One short clarifying question per conversation may
+// send without a source. The triage route ("simple" included) never
+// permits a send. A person's reply always goes; an automatic one never on
+// a spam or closed conversation, nor after a person stopped the last one.
+// Pure.
 import { SUPPORT_TOPIC_LABELS } from "../../shared/support-copy";
 import {
   AUTO_SENDS_PER_HOUR,
   AUTO_SENDS_PER_INBOX_PER_HOUR,
   type ConversationStatus,
+  type DraftCheck,
+  type DraftPurpose,
   type DraftSource,
   type InboxConfig,
   type SupportActor,
-  type SupportDraft,
   type SupportMessage,
   type TriageVerdict,
 } from "../../shared/support";
-import { fetchHostAllowed } from "../pi-web-search";
+import { findSecrets } from "../memory-repo/secrets";
 
 export type ReplyDecision =
   | { kind: "needs-person"; rule: string }
@@ -47,6 +53,12 @@ export const RULES = {
   links: "Links outside the project's sites",
   promise: "A promise without a source needs a person",
   noSource: "No source cited",
+  nothingToAnswer: "No new customer message to answer",
+  draftUnchecked: "The reply couldn't be checked",
+  secret: "The reply may contain a password, key or token",
+  draftPromise:
+    "The reply promises something about policy, a price or a deadline",
+  clarifyUsed: "Only one clarifying question sends on its own",
   authFailed: "The sender could not be verified",
   replyToDiffers: "Replies would go to a different address than the sender",
   authUnverified: "The sender's mail wasn't authenticated",
@@ -77,13 +89,19 @@ export function decideReply(input: {
    *  handed to a person for good. */
   injectionFlags: number;
   personOnly: boolean;
-  /** The reply itself (agent drafts are checked; a person's are not). */
+  /** The reply itself (agent drafts are checked; a person's are not).
+   *  `check` is the server's check (verify.ts); null when there is none. */
   draft: {
     text: string;
     sources: DraftSource[];
     promises: boolean;
-    purpose: NonNullable<SupportDraft["purpose"]>;
+    purpose: DraftPurpose;
+    check: DraftCheck | null;
   };
+  /** A customer message arrived since our last reply. */
+  unanswered: boolean;
+  /** An automatic clarifying question already went out. */
+  clarifyUsed: boolean;
   /** The project's Support websites (hosts, `*.` wildcards allowed) and
    *  Support connectors: where sources and links may point. */
   sites: ProjectSites;
@@ -126,13 +144,26 @@ export function decideReply(input: {
     return needsPerson(RULES.angry);
   if (input.labels.repeat) return needsPerson(RULES.repeat);
   const held = triage.topics.find((t) => inbox.neverWithoutAPerson.includes(t));
-  if (held)
-    return needsPerson(`${SUPPORT_TOPIC_LABELS[held] ?? held} needs a person`);
-  if (draftLinkProblem(input.draft.text, input.sites.hosts))
+  if (held) return needsPerson(topicRule(held));
+  if (!input.unanswered) return needsPerson(RULES.nothingToAnswer);
+  const { draft } = input;
+  if (draftHasSecret(draft.text)) return needsPerson(RULES.secret);
+  if (draftLinkProblem(draft.text, input.sites.hosts))
     return needsPerson(RULES.links);
-  const cited = input.draft.sources.some((x) => validSource(x, input.sites));
-  if (!cited)
-    return needsPerson(input.draft.promises ? RULES.promise : RULES.noSource);
+  const check = draft.check;
+  if (!check || !Array.isArray(check.topics))
+    return needsPerson(RULES.draftUnchecked);
+  const heldInDraft = check.topics.find((t) =>
+    inbox.neverWithoutAPerson.includes(t),
+  );
+  if (heldInDraft) return needsPerson(topicRule(heldInDraft));
+  if (check.promises) return needsPerson(RULES.draftPromise);
+  const cited = check.verified.some((x) => validSource(x, input.sites));
+  if (!cited) {
+    if (!isClarifyingQuestion(draft))
+      return needsPerson(draft.promises ? RULES.promise : RULES.noSource);
+    if (input.clarifyUsed) return needsPerson(RULES.clarifyUsed);
+  }
   if (input.autoSendsLastHour >= AUTO_SENDS_PER_HOUR)
     return needsPerson(RULES.autoSendCap);
   if (input.inboxAutoSendsLastHour >= AUTO_SENDS_PER_INBOX_PER_HOUR)
@@ -144,6 +175,26 @@ export function decideReply(input: {
       rule: RULES.veto,
     };
   return { kind: "send", rule: RULES.agentSent };
+}
+
+function topicRule(topic: string): string {
+  return `${SUPPORT_TOPIC_LABELS[topic as keyof typeof SUPPORT_TOPIC_LABELS] ?? topic} needs a person`;
+}
+
+/** The longest clarifying question that may send without a source. */
+export const CLARIFY_MAX_CHARS = 600;
+
+/** A short clarifying question without links or promises: the one reply
+ *  per conversation that may send without a source. */
+function isClarifyingQuestion(draft: {
+  text: string;
+  promises: boolean;
+  purpose: DraftPurpose;
+}): boolean {
+  if (draft.purpose !== "clarify" || draft.promises) return false;
+  if (draft.text.length >= CLARIFY_MAX_CHARS) return false;
+  const links = draftLinks(draft.text);
+  return links !== null && links.length === 0;
 }
 
 export interface ReplyLabels {
@@ -166,7 +217,10 @@ const LEGACY_ANGRY_TOPIC = "angry-customer";
 export function replyLabels(answered: readonly SupportMessage[]): ReplyLabels {
   const all = answered.map((m) => m.triage);
   return {
-    pending: all.some((t) => !t || t.failed === true),
+    // Unknown topics (a failed or partial labelling) hold the send too.
+    pending: all.some(
+      (t) => !t || t.failed === true || !Array.isArray(t.topics),
+    ),
     injection: all.some((t) => t?.injection === true),
     wantsHuman: all.some((t) => t?.wantsHuman === true),
     angry: all.some((t) => t?.angry === true),
@@ -174,64 +228,271 @@ export function replyLabels(answered: readonly SupportMessage[]): ReplyLabels {
   };
 }
 
-const URL_LIKE = /\b([a-z][a-z0-9+.-]*):(?:\/\/)?[^\s<>"'()[\]]+/gi;
+// ── Links ────────────────────────────────────────────────────────────────
+
+/** Links an automatic reply may carry at most. */
+export const MAX_DRAFT_LINKS = 2;
+
 const HTML_TAG = /<\s*(?:[a-z][a-z0-9-]*|!|\/\s*[a-z])[^>]*>/i;
 const MARKDOWN_IMAGE = /!\[[^\]]*\]\(/;
+/** `scheme:` anywhere a word starts, with or without `//`. */
+const SCHEME_LIKE = /\b([a-z][a-z0-9+.-]*):(\/\/)?[^\s<>"'`()[\]{}]*/gi;
 /** Schemes that never reach anything remote and can stay in plain text. */
-const HARMLESS_SCHEMES = new Set(["mailto"]);
+const HARMLESS_SCHEMES = new Set(["mailto", "tel"]);
+/** Schemes a mail client opens even without `//` (`http:evil.test`). */
+const LINK_SCHEMES = new Set([
+  "http",
+  "https",
+  "ftp",
+  "ftps",
+  "sftp",
+  "file",
+  "data",
+  "javascript",
+  "vbscript",
+  "blob",
+  "ws",
+  "wss",
+  "ssh",
+  "git",
+  "irc",
+  "news",
+  "nntp",
+  "smb",
+  "telnet",
+  "gopher",
+  "ldap",
+]);
+const EMAIL_LIKE = /[^\s<>"'`()[\]{},;]+@[^\s<>"'`()[\]{},;]+/gu;
+/** A bare host name as linkifiers find it (`evil.test/x`, `www.evil.test`),
+ *  not inside a word, a path or an address. */
+const BARE_HOST =
+  /(?<![\p{L}\p{N}_@.\-/\\])((?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(\p{L}{2,63}|xn--[a-z0-9-]{1,59}))(?![\p{L}\p{N}_-])(:\d{1,5})?([/?#][^\s<>"'`()[\]{}]*)?/giu;
+/** File name endings that are no top-level domain, so `package.json` or
+ *  `Node.js` don't read as links. Anything else counts as a host (a mail
+ *  client may link it), so an unknown ending holds the send. */
+const NOT_A_TLD = new Set(
+  (
+    "js ts jsx tsx mjs cjs json jsonc yml yaml toml ini cfg conf env txt csv tsv " +
+    "log lock html htm css scss sass less xml svg png jpg jpeg gif webp ico pdf " +
+    "doc docx xls xlsx ppt pptx sql db sqlite tar gz tgz bz2 xz rar exe dll bin " +
+    "dmg deb rpm jar kt kts swift rb php cpp hpp cs vue svelte lua erl hs scala " +
+    "clj dart bat cmd ps1 sln csproj gradle cmake proto graphql gql prisma wasm " +
+    "map mod sum bak tmp swp orig patch diff md5 sha256 mdx rst adoc"
+  ).split(" "),
+);
+/** Hosting where anyone can publish: a link there never sends on its own,
+ *  even when the Support websites list names it. */
+const SHARED_HOSTS = [
+  "github.com",
+  "githubusercontent.com",
+  "github.io",
+  "gitlab.com",
+  "gitlab.io",
+  "bitbucket.org",
+  "bitbucket.io",
+  "vercel.app",
+  "now.sh",
+  "netlify.app",
+  "netlify.com",
+  "pages.dev",
+  "workers.dev",
+  "herokuapp.com",
+  "web.app",
+  "firebaseapp.com",
+  "appspot.com",
+  "azurewebsites.net",
+  "azurestaticapps.net",
+  "cloudfront.net",
+  "amazonaws.com",
+  "windows.net",
+  "googleapis.com",
+  "googleusercontent.com",
+  "sites.google.com",
+  "docs.google.com",
+  "drive.google.com",
+  "forms.gle",
+  "notion.site",
+  "notion.so",
+  "medium.com",
+  "substack.com",
+  "gitbook.io",
+  "readthedocs.io",
+  "blogspot.com",
+  "wordpress.com",
+  "wixsite.com",
+  "squarespace.com",
+  "carrd.co",
+  "glitch.me",
+  "replit.app",
+  "repl.co",
+  "onrender.com",
+  "fly.dev",
+  "railway.app",
+  "surge.sh",
+  "ngrok.io",
+  "ngrok.app",
+  "ngrok-free.app",
+  "trycloudflare.com",
+  "codesandbox.io",
+  "csb.app",
+  "stackblitz.io",
+  "deno.dev",
+  "dropbox.com",
+  "dropboxusercontent.com",
+  "bit.ly",
+  "tinyurl.com",
+  "t.co",
+  "goo.gl",
+  "pastebin.com",
+];
 
-/** The http(s) URL's host and port when it is on `hosts`, else null. */
-function allowedUrl(raw: string, hosts: readonly string[]): URL | null {
-  let url: URL;
-  try {
-    url = new URL(raw.replace(/[.,;:!?]+$/, ""));
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-  if (url.username || url.password) return null;
-  return fetchHostAllowed(url.hostname, hosts, url.port) ? url : null;
+/** Whether `host` is on shared hosting (SHARED_HOSTS or under one). */
+export function isSharedHost(host: string): boolean {
+  const name = host.toLowerCase().replace(/\.+$/, "");
+  return SHARED_HOSTS.some((s) => name === s || name.endsWith(`.${s}`));
 }
 
-/** Whether an outgoing draft carries anything but plain text and links to
- *  the project's sites: HTML, an image, a link elsewhere, any scheme but
- *  http(s) (and mailto), or a data URI. */
+/** Text as a mail client shows it: compatibility forms folded, invisible
+ *  format characters gone. */
+function visible(text: string): string {
+  return text.normalize("NFKC").replace(/\p{Cf}/gu, "");
+}
+
+/** Every link a mail client may make of `text`, as URLs to check: scheme
+ *  links (`https://`, `http:evil.test`, `javascript:`), bare host names
+ *  (`evil.test/x`, `www.evil.test`, after quotes, colons or `>`). null when
+ *  a link can't be read. mailto and tel are left out. */
+export function draftLinks(text: string): string[] | null {
+  let rest = visible(text);
+  const links: string[] = [];
+  let unreadable = false;
+  rest = rest.replace(SCHEME_LIKE, (match, scheme: string, slashes) => {
+    const name = scheme.toLowerCase();
+    if (HARMLESS_SCHEMES.has(name)) return " ";
+    if (!slashes && !LINK_SCHEMES.has(name)) return match;
+    if (!LINK_SCHEMES.has(name) && name !== "http" && name !== "https")
+      unreadable = true;
+    links.push(match);
+    return " ";
+  });
+  rest = rest.replace(EMAIL_LIKE, " ");
+  for (const m of rest.matchAll(BARE_HOST)) {
+    const host = m[1]!;
+    const tld = m[2]!.toLowerCase();
+    if (!host.toLowerCase().startsWith("www.") && NOT_A_TLD.has(tld)) continue;
+    links.push(`https://${host}${m[3] ?? ""}${m[4] ?? ""}`);
+  }
+  return unreadable ? null : links;
+}
+
+/** Whether an automatic reply may carry this link: http(s), no user or
+ *  password, no query string, a default port (or the entry's own), and a
+ *  host that is exactly a non-wildcard entry of `hosts` and not shared
+ *  hosting. */
+export function linkAllowed(raw: string, hosts: readonly string[]): boolean {
+  const trimmed = raw.replace(/[.,;:!?'")\]]+$/, "");
+  if (trimmed.includes("?")) return false;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.username || url.password || url.search) return false;
+  const name = url.hostname.toLowerCase().replace(/\.+$/, "");
+  if (!name || isSharedHost(name)) return false;
+  return hosts.some((entry) => {
+    const e = entry.trim().toLowerCase();
+    if (!e || e.startsWith("*.")) return false;
+    const m = /^(.+?)(?::(\d+))?$/.exec(e);
+    const host = m?.[1]?.replace(/\.+$/, "");
+    if (host !== name) return false;
+    return m?.[2] ? url.port === m[2] : url.port === "";
+  });
+}
+
+/** Whether an outgoing agent draft carries anything but plain text and at
+ *  most MAX_DRAFT_LINKS links an automatic reply may carry (linkAllowed):
+ *  HTML, an image, a link elsewhere, any other scheme or a data URI. */
 export function draftLinkProblem(
   text: string,
   hosts: readonly string[],
 ): boolean {
-  if (HTML_TAG.test(text) || MARKDOWN_IMAGE.test(text)) return true;
-  for (const match of text.matchAll(URL_LIKE)) {
-    const scheme = match[1]!.toLowerCase();
-    const isUrl = match[0].includes("//") || scheme === "data";
-    if (!isUrl) continue;
-    if (HARMLESS_SCHEMES.has(scheme)) continue;
-    if (!allowedUrl(match[0], hosts)) return true;
+  const shown = visible(text);
+  if (HTML_TAG.test(shown) || MARKDOWN_IMAGE.test(shown)) return true;
+  const links = draftLinks(text);
+  if (links === null || links.length > MAX_DRAFT_LINKS) return true;
+  return links.some((link) => !linkAllowed(link, hosts));
+}
+
+// ── Secrets ──────────────────────────────────────────────────────────────
+
+/** Beyond the credential formats memory refuses (memory-repo/secrets.ts):
+ *  a password, key or token written out, test keys, JWTs and long
+ *  random-looking strings. Fail closed: a hit only makes a person look. */
+const SECRET_PATTERNS = [
+  /\b(?:password|passwd|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|client[ _-]?secret|private[ _-]?key)\s*[:=]\s*["'`]?\S{6,}/i,
+  /\b(?:[rs]k_test_|whsec_|xapp-|glpat-|npm_|pypi-)[A-Za-z0-9_-]{16,}/,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+];
+const LONG_TOKEN = /[A-Za-z0-9_+/=-]{32,}/g;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const GIT_SHA = /^[0-9a-f]{40}$/i;
+
+/** Whether `text` holds something that looks like a token, key or
+ *  password. */
+export function draftHasSecret(text: string): boolean {
+  const shown = visible(text);
+  if (findSecrets(shown).length > 0) return true;
+  if (SECRET_PATTERNS.some((p) => p.test(shown))) return true;
+  for (const [token] of shown.matchAll(LONG_TOKEN)) {
+    if (UUID.test(token) || GIT_SHA.test(token)) continue;
+    // A path or a URL is no secret; its parts are checked above.
+    if (token.includes("/")) continue;
+    if (/\d/.test(token) && /[A-Za-z]/.test(token)) return true;
   }
-  // A bare www. name is a link in most mail clients too.
-  for (const match of text.matchAll(/(?:^|[\s(])(www\.[^\s<>"'()]+)/gi))
-    if (!allowedUrl(`https://${match[1]}`, hosts)) return true;
   return false;
 }
 
-const REPO_PATH =
-  /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[\w@+.,/-]{1,300}(?:#L\d+(?:-L?\d+)?)?$/;
+// ── Sources ──────────────────────────────────────────────────────────────
 
-/** Whether a cited source points where the policy accepts: a relative
- *  path in the project's repository, an http(s) URL on its Support
- *  websites, or `<connector>:<record id>` of one of its Support
- *  connectors. */
+const REPO_PATH =
+  /^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[\w@+.,/-]{1,300}(?:#L\d+(?:-L?\d+)?)?$/;
+
+/** The file path of a repo source without its `#L10-L20` anchor, or null
+ *  when it isn't a relative path to a file (no `.` or `..` parts, no
+ *  scheme, no trailing slash). */
+export function repoSourcePath(ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!REPO_PATH.test(trimmed) || /^[a-z][a-z0-9+.-]*:/i.test(trimmed))
+    return null;
+  return trimmed.replace(/#L\d+(?:-L?\d+)?$/, "");
+}
+
+/** `<connector>:<record id>` split, or null. */
+export function recordSource(
+  ref: string,
+): { connector: string; id: string } | null {
+  const trimmed = ref.trim();
+  const colon = trimmed.indexOf(":");
+  if (colon <= 0 || colon === trimmed.length - 1 || trimmed.length > 300)
+    return null;
+  return { connector: trimmed.slice(0, colon), id: trimmed.slice(colon + 1) };
+}
+
+/** Whether a cited source has a shape the policy accepts: a relative file
+ *  path in the project's repository, an http(s) URL an automatic reply may
+ *  link to (linkAllowed), or `<connector>:<record id>` of one of its
+ *  Support connectors. Whether it exists is verify.ts's check. */
 export function validSource(source: DraftSource, sites: ProjectSites): boolean {
   if (!source || typeof source.ref !== "string") return false;
-  const ref = source.ref.trim();
-  if (source.kind === "repo")
-    return REPO_PATH.test(ref) && !/^[a-z][a-z0-9+.-]*:/i.test(ref);
-  if (source.kind === "url") return allowedUrl(ref, sites.hosts) !== null;
+  if (source.kind === "repo") return repoSourcePath(source.ref) !== null;
+  if (source.kind === "url") return linkAllowed(source.ref.trim(), sites.hosts);
   if (source.kind === "record") {
-    const colon = ref.indexOf(":");
-    if (colon <= 0 || colon === ref.length - 1 || ref.length > 300)
-      return false;
-    return sites.connectors.includes(ref.slice(0, colon));
+    const record = recordSource(source.ref);
+    return record !== null && sites.connectors.includes(record.connector);
   }
   return false;
 }
