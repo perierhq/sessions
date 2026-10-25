@@ -111,8 +111,7 @@ function uidsOf(c: SupportConversation, uidValidity: string): number[] {
 async function ensureFolder(client: ImapFlow, folder: string): Promise<string> {
   const segments = folder.split("/").filter(Boolean);
   const existing = (await client.list()).find(
-    (f) =>
-      f.path === folder || f.path === segments.join(f.delimiter || "/"),
+    (f) => f.path === folder || f.path === segments.join(f.delimiter || "/"),
   );
   if (existing) return existing.path;
   // An array is joined with the server's delimiter, under its namespace.

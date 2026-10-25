@@ -148,8 +148,7 @@ export class EmailAgent implements AgentModule {
     if (this.stopped) return;
     const id = (next ?? previous)?.id;
     if (!id) return;
-    const immediate =
-      !next || !next.enabled || !previous || !previous.enabled;
+    const immediate = !next || !next.enabled || !previous || !previous.enabled;
     if (immediate) {
       const timer = this.timers.get(id);
       if (timer) clearTimeout(timer);

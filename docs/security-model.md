@@ -759,6 +759,69 @@ mint sets. Changing and auditing public-intake settings remains a one-time
 human-admin task. See [GitHub authority](github-authority.md) for the
 connected-user and host-private-key implications.
 
+## Support mail
+
+Email support ([setup/email.md](setup/email.md)) reads mail anyone can send.
+The code is in `packages/core/opensession-server/src/server/support/` and
+`packages/core/opensession-server/src/agents/email/`.
+
+- **Mail is data, never instructions.** Subject, sender and body reach a
+  model only inside the untrusted-data wrapper. Triage is a tool-less call
+  on the small model (the Plain ticket router); its failure routes the mail
+  as work and its topics as unknown, which holds every send for a person.
+  The `support:message_received` event on the automation bus carries ids,
+  the subject and the customer address, never the body, and automation
+  prompts fence its text as untrusted data. Auto-replies, bounces,
+  mailing-list mail and our own sent copies never start an agent or a send,
+  and a conversation gets at most 3 automatic sends an hour.
+- **Support sessions run like Plain discussion sessions.** A support session
+  is a normal session with a `support` external ref, no user and the
+  automation deny-set, plus the Stripe money movers and other ways to mail
+  someone. Its connectors are the ones the project ticks for the Support
+  role, never one restricted to named people, and web search follows
+  Support's cell; both are read again for every turn. The session itself
+  is always in ask mode. It writes to the customer only through the
+  in-process `opensession-support` server's draft tool. Support runs where
+  incident agents run (the project's sandbox, else the default one), but
+  never unsandboxed on this machine: without a sandbox it can't start and
+  the conversation waits for a person. Watch only starts no session at all.
+- **One send path.** Every customer-facing send goes through `sendDraft()`
+  in `server/support/reply.ts`; no other code calls a channel's `send`. The
+  inbox's autonomy and its "never without a person" topics decide whether a
+  person approves first; the triage route alone never permits a send. Each
+  send writes one `support.reply` audit row with a digest of the text, never
+  the text. A reply goes to one address, never to one of our own or a
+  machine sender; when it would go somewhere other than the sender's
+  address, or the sender failed authentication, a person decides.
+- **Passwords are workspace secrets.** IMAP and SMTP passwords live in
+  `workspace-secrets.ts` behind opaque refs on the inbox record. They are
+  resolved only by the transports, never put in a prompt, a log line, an API
+  response or the catalog. Changing a server's host, port, security or user
+  needs its password again, so a saved password is never sent to a server it
+  wasn't entered for.
+- **Mail servers are checked when Sessions connects.** The host name is
+  resolved and Sessions connects to the checked address. Link-local and
+  cloud metadata addresses are always refused; loopback, private and tailnet
+  addresses only when the inbox allows internal servers, which only the
+  instance owner can turn on. STARTTLS is required when chosen, and no TLS
+  is allowed only on loopback. Server error text is never shown or logged;
+  a fixed message is.
+- **Who may do what.** Any signed-in person may connect and edit inboxes.
+  Only the instance owner may let an inbox send right away, allow internal
+  servers, remove an inbox, or forget a customer.
+- **A push says nothing about the customer.** Support pushes use fixed
+  wording ("A support reply is ready", "A support reply will send"); no
+  customer name, address, subject or text reaches a lock screen.
+- **Issues in public repositories need a person.** Bug handling may turn a
+  customer email into a GitHub issue. When the project's repository is
+  public (or its visibility can't be read), the issue waits on the
+  conversation until a person approves it, whatever the inbox's autonomy.
+- **Logs and health carry ids.** Transport logs carry the inbox id, an event
+  and an error code or UID; `/health` lists inbox ids, states and reasons
+  with any address cut. Conversations themselves are customer data: they are
+  stored in the catalog and mirrored as JSON under the state directory, and
+  retention and "Forget a customer" delete them there.
+
 ## Private information and public repositories
 
 A run's inputs are the organization's private record: session context, memory,
