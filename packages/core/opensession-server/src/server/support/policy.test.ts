@@ -433,3 +433,10 @@ describe("draftLinkProblem", () => {
     expect(draftLinkProblem("2 < 3 and 4 > 1", [])).toBe(false);
   });
 });
+
+test("rule copy has no semicolons or em dashes", () => {
+  for (const rule of Object.values(RULES)) {
+    expect(rule).not.toContain(";");
+    expect(rule).not.toContain("\u2014");
+  }
+});

@@ -128,7 +128,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
     ),
     tool(
       "draft_reply",
-      "Write the reply to the customer of this conversation: plain text, no HTML, no images, links only to the project's own websites. Cite every source the facts come from: a file path in this repository, a URL on the project's websites, or a Support connector record as <connector>:<record id>. A reply without a source, or one that promises anything about policy, prices or deadlines without a source, waits for a person. The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it; the answer says which. A new draft replaces your earlier one unless that one is already being sent.",
+      "Write the reply to the customer of this conversation: plain text, no HTML, no images, links only to the project's own websites. Cite every source the facts come from: a file path in this repository, a URL on the project's websites, or a Support connector record as <connector>:<record id>. A reply without a source, or one that promises anything about policy, prices or deadlines without a source, waits for a person. The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it. The answer says which. A new draft replaces your earlier one unless that one is already being sent.",
       {
         text: z.string().describe("The reply, as plain text"),
         sources: z
@@ -138,7 +138,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
               ref: z
                 .string()
                 .describe(
-                  "repo: a path like docs/setup.md; url: an https URL; record: <connector>:<record id>",
+                  "repo: a path like docs/setup.md. url: an https URL. record: <connector>:<record id>",
                 ),
             }),
           )
@@ -189,7 +189,7 @@ function bugTools(ctx: { sessionId: string }): AnyTool[] {
   return [
     tool(
       "report_bug",
-      "Report the bug this customer hit, in your own words: what fails, where, how to reproduce it, what you found in the code. Never paste the customer's email, name or address; addresses are removed anyway. This prepares an issue and a fix task for a person, who creates the issue and starts a fix session; nothing is filed or started on its own. Keep the customer posted with draft_reply.",
+      "Report the bug this customer hit, in your own words: what fails, where, how to reproduce it, what you found in the code. Never paste the customer's email, name or address. Addresses are removed anyway. This prepares an issue and a fix task for a person, who creates the issue and starts a fix session. Nothing is filed or started on its own. Keep the customer posted with draft_reply.",
       {
         title: z.string().max(MAX_TITLE).describe("A short issue title"),
         summary: z

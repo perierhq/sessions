@@ -279,7 +279,7 @@ describe("new conversations", () => {
     expect(created).toEqual([]);
     expect(after.status).toBe("open");
     expect(after.triage?.route).toBe("work");
-    expect(eventDetails(after)).toContain("Watch only: no agent");
+    expect(eventDetails(after)).toContain("Watch: no agent");
   });
 
   for (const r of ["simple", "work"] as const) {
@@ -542,7 +542,7 @@ describe("Watch only and the hourly cap", () => {
     const c = await conversation();
     expect(await startSupportSession(c, "moved")).toBeNull();
     expect(created).toEqual([]);
-    expect(eventDetails(await fresh(c.id))).toContain("Watch only: no agent");
+    expect(eventDetails(await fresh(c.id))).toContain("Watch: no agent");
   });
 
   test("a person may start the agent on a Watch only inbox", async () => {
@@ -687,4 +687,19 @@ describe("every customer message is labelled", () => {
     await started();
     expect(closes).toEqual([]);
   });
+});
+
+test("strike copy is plain sentences", () => {
+  expect(STRIKE_TWO).toBe(
+    "Possible manipulation attempt. The agent stopped and a person handles this conversation.",
+  );
+  for (const text of [
+    STRIKE_ONE,
+    STRIKE_TWO,
+    THANKS_CLOSED,
+    supportDelivery(message("x")),
+  ]) {
+    expect(text).not.toContain(";");
+    expect(text).not.toContain("\u2014");
+  }
 });

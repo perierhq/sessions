@@ -580,3 +580,10 @@ describe("holds and refusals", () => {
     expect(posted[0]!.ghRepo).toBe("acme/acme");
   });
 });
+
+test("bug copy has no semicolons or em dashes", () => {
+  for (const text of [FIXED_NOTE, HELD_PREPARED, HELD_PUBLIC, HELD_QUOTE]) {
+    expect(text).not.toContain(";");
+    expect(text).not.toContain("\u2014");
+  }
+});

@@ -526,7 +526,7 @@ async function propose(
     );
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
-      failure = fail(409, "The conversation changed; try again");
+      failure = fail(409, "The conversation changed. Try again");
       return null;
     }
     draft = {
