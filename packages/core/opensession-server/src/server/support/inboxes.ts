@@ -27,6 +27,7 @@ import {
   MAILBOX_BEHAVIOURS,
   MAIL_TLS_MODES,
   type MailServerConfig,
+  type NewInboxInput,
   SUPPORT_TOPICS,
   defaultInboxConfig,
   smtpSavesSentItself,
@@ -46,11 +47,23 @@ type ServerInput = Omit<MailServerConfig, "passwordRef"> & {
   password: string;
 };
 
-export type NewInbox = Pick<InboxConfig, "label" | "address" | "project"> &
-  Partial<Pick<InboxConfig, "owner" | "allowInternalHost">> & {
-    imap: ServerInput;
-    smtp: ServerInput;
-  };
+/** Handling fields a create may set in the same call (the inbox form's
+ *  one Save); each is validated as on update. */
+const CREATE_FIELDS = [
+  "enabled",
+  "moveLock",
+  "autonomy",
+  "vetoMs",
+  "neverWithoutAPerson",
+  "bugHandling",
+  "mailbox",
+  "folders",
+  "copyToSent",
+  "retention",
+  "sendLimitPerMinute",
+] as const satisfies ReadonlyArray<keyof InboxConfig>;
+
+export type NewInbox = NewInboxInput;
 
 type Which = "imap" | "smtp";
 
@@ -469,6 +482,9 @@ export async function createInbox(
   });
   if (input.allowInternalHost !== undefined)
     draft.allowInternalHost = input.allowInternalHost;
+  const target = draft as unknown as Record<string, unknown>;
+  for (const key of CREATE_FIELDS)
+    if (input[key] !== undefined) target[key] = structuredClone(input[key]);
   const invalid = validateInbox(draft, projectExists);
   if (invalid) return invalidInput(invalid);
   const refused = ownerOnlyChange(actor, null, draft);

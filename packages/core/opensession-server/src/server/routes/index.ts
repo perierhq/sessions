@@ -50,6 +50,7 @@ import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
 import { handleSupportRoutes } from "./support";
+import { handleSupportInboxRoutes } from "./support-inboxes";
 import { handleHumanAsksRoutes } from "./human-asks";
 import { handleKeychainRoutes } from "./keychain";
 import { handleMacKeychainRoutes } from "./mac-keychain";
@@ -136,6 +137,7 @@ export const routeHandlers: RouteHandler[] = [
   handleIncidentAccessRoutes,
   handleIncidentsRoutes,
   handleSupportRoutes,
+  handleSupportInboxRoutes,
   handleIncidentResponseRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,

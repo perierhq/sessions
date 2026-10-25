@@ -514,3 +514,78 @@ export function defaultInboxConfig(input: {
     revision: 0,
   };
 }
+
+// ── Inboxes settings page (/api/support/inboxes) ───────────────────────
+
+export type MailServerInput = Omit<MailServerConfig, "passwordRef"> & {
+  password: string;
+};
+
+/** POST /api/support/inboxes: the servers with both passwords, and any
+ *  handling fields the form set (the rest take the defaults). */
+export type NewInboxInput = Pick<InboxConfig, "label" | "address" | "project"> &
+  Partial<
+    Pick<
+      InboxConfig,
+      | "owner"
+      | "allowInternalHost"
+      | "enabled"
+      | "moveLock"
+      | "autonomy"
+      | "vetoMs"
+      | "neverWithoutAPerson"
+      | "bugHandling"
+      | "mailbox"
+      | "folders"
+      | "copyToSent"
+      | "retention"
+      | "sendLimitPerMinute"
+    >
+  > & {
+    imap: MailServerInput;
+    smtp: MailServerInput;
+  };
+
+/** One project the inbox form can pick, and whether its Support role has
+ *  any connector (the form warns before a send level then). */
+export interface InboxProjectOption {
+  id: string;
+  supportConnectors: boolean;
+}
+
+export interface InboxesResponse {
+  /** Whether the email integration loads (ENABLE_EMAIL_SUPPORT). */
+  enabled: boolean;
+  /** The signed-in person is the instance owner, so the owner-only
+   *  choices are theirs. */
+  isInstanceOwner: boolean;
+  projects: InboxProjectOption[];
+  inboxes: InboxView[];
+}
+
+/** POST /api/support/inboxes/test: a saved inbox (`inboxId`), the form's
+ *  two servers with passwords, or a saved inbox with one or both servers
+ *  as edited (a stored password is only used for an unchanged server). */
+export interface InboxTestBody {
+  inboxId?: string;
+  address?: string;
+  allowInternalHost?: boolean;
+  imap?: Omit<MailServerInput, "password"> & { password?: string };
+  smtp?: Omit<MailServerInput, "password"> & { password?: string };
+}
+
+export interface InboxTestResult {
+  imap:
+    | { ok: true; idle: boolean; condstore: boolean; sentFolder: string | null }
+    | { ok: false; kind: string; error: string };
+  smtp: { ok: true } | { ok: false; permanent: boolean; error: string };
+}
+
+/** POST /api/support/customers/forget. */
+export interface ForgetCustomerResult {
+  conversations: number;
+  sessions: number;
+  attachments: number;
+  failed: number;
+  notDeleted: string[];
+}
