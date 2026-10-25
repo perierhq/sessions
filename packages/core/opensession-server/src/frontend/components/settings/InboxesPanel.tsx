@@ -230,61 +230,65 @@ export function InboxesPanel() {
         </SettingCard>
       )}
 
-      <SettingsGroupLabel>Forget a customer</SettingsGroupLabel>
-      <SettingsSection>
-        <form
-          className={FORGET_ROW}
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault();
-            forget();
-          }}
-        >
-          <Input
-            aria-label="Customer address"
-            type="email"
-            placeholder="customer@example.test"
-            autoCapitalize="off"
-            spellCheck={false}
-            className={FORGET_INPUT}
-            value={customer}
-            disabled={!isOwner || forgetting}
-            onChange={(event) => setCustomer(event.target.value)}
-          />
-          <Button
-            type="button"
-            variant="danger"
-            className={INBOX_ROW_BUTTON}
-            disabled={!isOwner || forgetting || !address}
-            onClick={forget}
-          >
-            Forget
-          </Button>
-        </form>
-        {forgetError && (
-          <InlineAlert className="mt-3">{forgetError}</InlineAlert>
-        )}
-        {forgotten && (
-          <ul className={FORGET_RESULT} aria-live="polite">
-            <li className="text-fg">{forgetSummary(forgotten)}</li>
-            {forgotten.failed > 0 && (
-              <li>
-                {forgotten.failed === 1
-                  ? "1 conversation couldn't be deleted. Try again"
-                  : `${forgotten.failed} conversations couldn't be deleted. Try again`}
-              </li>
+      {!signedOut && (
+        <>
+          <SettingsGroupLabel>Forget a customer</SettingsGroupLabel>
+          <SettingsSection>
+            <form
+              className={FORGET_ROW}
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault();
+                forget();
+              }}
+            >
+              <Input
+                aria-label="Customer address"
+                type="email"
+                placeholder="customer@example.test"
+                autoCapitalize="off"
+                spellCheck={false}
+                className={FORGET_INPUT}
+                value={customer}
+                disabled={!isOwner || forgetting}
+                onChange={(event) => setCustomer(event.target.value)}
+              />
+              <Button
+                type="button"
+                variant="danger"
+                className={INBOX_ROW_BUTTON}
+                disabled={!isOwner || forgetting || !address}
+                onClick={forget}
+              >
+                Forget
+              </Button>
+            </form>
+            {forgetError && (
+              <InlineAlert className="mt-3">{forgetError}</InlineAlert>
             )}
-            {forgotten.notDeleted.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-        )}
-      </SettingsSection>
-      <SettingsHint>
-        {isOwner
-          ? "Deletes everything Sessions holds for one customer. The mailbox is not changed"
-          : "Only the instance owner can forget a customer"}
-      </SettingsHint>
+            {forgotten && (
+              <ul className={FORGET_RESULT} aria-live="polite">
+                <li className="text-fg">{forgetSummary(forgotten)}</li>
+                {forgotten.failed > 0 && (
+                  <li>
+                    {forgotten.failed === 1
+                      ? "1 conversation couldn't be deleted. Try again"
+                      : `${forgotten.failed} conversations couldn't be deleted. Try again`}
+                  </li>
+                )}
+                {forgotten.notDeleted.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </SettingsSection>
+          <SettingsHint>
+            {isOwner
+              ? "Deletes everything Sessions holds for one customer. The mailbox is not changed"
+              : "Only the instance owner can forget a customer"}
+          </SettingsHint>
+        </>
+      )}
 
       {editing !== undefined && data && (
         <InboxForm

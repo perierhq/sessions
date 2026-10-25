@@ -184,6 +184,7 @@ test("signed out, the page asks to sign in without a retry", async () => {
   loadError = new ApiError("Sign in to change support inboxes", 401);
   const tree = await mountPanel();
   expect(text(tree)).toContain("Sign in to manage inboxes");
+  expect(text(tree)).not.toContain("Forget a customer");
   expect(find(tree.output(), InlineAlert)).toBeUndefined();
 });
 
