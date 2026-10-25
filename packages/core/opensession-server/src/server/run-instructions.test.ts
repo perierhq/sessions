@@ -367,6 +367,21 @@ describe("buildSessionContext", () => {
     );
   });
 
+  test("names the commit the session started from next to the checkout", () => {
+    const ctx = buildSessionContext({
+      osSessionId: "os-test",
+      cwd: "/w",
+      isAsk: true,
+      baseCommit: { sha: "abc1234", committedAt: "2026-01-02T03:04:05+01:00" },
+    });
+    expect(ctx).toContain(
+      "Working directory: /w (started from commit abc1234, committed 2026-01-02 02:04 UTC)",
+    );
+    expect(
+      buildSessionContext({ cwd: "/w", isAsk: true, baseCommit: null }),
+    ).toBe("Working directory: /w");
+  });
+
   test("links commits to the session even without a co-author", () => {
     const ctx = buildSessionContext({
       osSessionId: "os-test",

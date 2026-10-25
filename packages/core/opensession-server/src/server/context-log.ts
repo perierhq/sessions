@@ -235,10 +235,14 @@ export interface SessionStartTool {
 export function sessionStartContext(
   systemPrompt: string,
   tools: SessionStartTool[],
+  /** The per-session context the opening prompt carries (checkout path and
+   * the commit it started from, session link). */
+  sessionContext?: string,
 ): string {
   return [
     "# System prompt",
     systemPrompt,
+    ...(sessionContext?.trim() ? ["# Session", sessionContext.trim()] : []),
     "# Tools",
     canonicalJson(
       tools.map((tool) => ({

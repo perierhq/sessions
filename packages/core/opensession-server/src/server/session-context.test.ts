@@ -38,6 +38,18 @@ describe("session context snapshot", () => {
     expect(content).toContain('"path"');
   });
 
+  test("shows the session context, with the commit the session started from", () => {
+    const content = sessionStartContext(
+      "You are the effective prompt.",
+      [],
+      "Working directory: /w (started from commit abc1234, committed 2026-01-02 02:04 UTC)",
+    );
+    expect(content).toContain(
+      "# Session\n\nWorking directory: /w (started from commit abc1234",
+    );
+    expect(sessionStartContext("prompt", [])).not.toContain("# Session");
+  });
+
   test("prefers the exact initial provider snapshot", () => {
     const result = sessionContextSnapshot([
       context("instructions", "instructions", "partial", 2),

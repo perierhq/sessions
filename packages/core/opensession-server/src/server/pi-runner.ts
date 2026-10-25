@@ -747,7 +747,12 @@ async function* runPiAttempt(
         accounts.rateLimit = snapshot;
       },
     });
-    await logPiSessionStart(session, { opts, walk, unifiedSessionId });
+    await logPiSessionStart(session, {
+      opts,
+      walk,
+      unifiedSessionId,
+      sessionContext,
+    });
     // previous runner appends every pending noReply steer before its next LLM step.
     // Match that behavior instead of Pi's one-message-per-step default.
     session.setSteeringMode("all");
