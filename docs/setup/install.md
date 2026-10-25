@@ -412,7 +412,7 @@ credentials its setup page marks as required. Common operator-facing variables:
 
 **Feature flags** — `ENABLE_SLACK_AGENT`, `ENABLE_LINEAR_AGENT`,
 `ENABLE_PLAIN_AGENT`, `ENABLE_GITHUB_AGENT`, `ENABLE_STRIPE_AGENT`,
-`ENABLE_GRAFANA_POLLER`, and `ENABLE_CODESTORAGE`. All **default OFF**; only
+`ENABLE_GRAFANA_POLLER`, `ENABLE_CODESTORAGE`, and `ENABLE_EMAIL_SUPPORT`. All **default OFF**; only
 the literal string `true` enables (not `1`). The env flag wins when set,
 otherwise `integrations.<id>.enabled` decides. Changes require a restart. See
 [integrations-misc.md](integrations-misc.md#boot-guards).

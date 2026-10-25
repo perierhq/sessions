@@ -111,7 +111,7 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 }
 
 async function started(): Promise<EmailAgent> {
-  agent = new EmailAgent({ coalesceMs: 100 });
+  agent = new EmailAgent({ coalesceMs: 100, imap: { autoIdleDelayMs: 50 } });
   await agent.startup();
   return agent;
 }
@@ -131,9 +131,10 @@ async function update(
 
 describe("EmailAgent", () => {
   test("one enabled inbox gets one connection, and its mail is stored", async () => {
-    await newInbox("help@acme.example.test");
+    const inbox = await newInbox("help@acme.example.test");
     await started();
-    await until(() => f.connections() === 1);
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    expect(f.connections()).toBe(1);
     f.deliver(
       rawMail({
         from: "Ada <ada@example.test>",

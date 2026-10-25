@@ -71,6 +71,7 @@ function adapterFor(over: Partial<InboxConfig> = {}): EmailChannelAdapter {
   const adapter = new EmailChannelAdapter(inboxFor(over), {
     password: async () => MAIL_PASSWORD,
     otherInboxAddresses: async () => [],
+    imap: { autoIdleDelayMs: 50 },
   });
   adapters.push(adapter);
   return adapter;
