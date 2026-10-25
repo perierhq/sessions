@@ -10,6 +10,7 @@ import {
   normalizeMessageId,
   parseSupportItemId,
   smtpSavesSentItself,
+  SUPPORT_CHANNELS,
   supportItemId,
 } from "./support";
 
@@ -49,6 +50,11 @@ describe("support item ids", () => {
 
   test("an id without a colon is null", () => {
     expect(parseSupportItemId("nocolon")).toBeNull();
+  });
+
+  test("an unknown channel is null", () => {
+    expect(SUPPORT_CHANNELS).toEqual(["email", "plain"]);
+    expect(parseSupportItemId("sms:x1")).toBeNull();
   });
 
   test("colons after the first stay in the id", () => {

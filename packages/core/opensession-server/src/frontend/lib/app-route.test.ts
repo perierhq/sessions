@@ -89,6 +89,17 @@ describe("routePath", () => {
     }
   });
 
+  test("support item ids keep their colon in the path", () => {
+    expect(routePath({ view: "support", threadId: "email:sc_1" })).toBe(
+      `${BASE_PATH}/support/email:sc_1`,
+    );
+    // Only known channels prefix an id; anything else is a bare Plain id.
+    expect(parseRoute("/support/sms:x1")).toEqual({
+      view: "support",
+      threadId: "plain:sms:x1",
+    });
+  });
+
   test("writes the root and prompt routes", () => {
     expect(routePath({ view: "prs" })).toBe(`${BASE_PATH}/`);
     expect(routePath({ view: "new", prompt: "Fix this" })).toBe(

@@ -332,6 +332,24 @@ test("Support runs where incident agents run", async () => {
   expect(await same()).toMatchObject({ provider: "podman", source: "project" });
 });
 
+test("Support never runs unsandboxed on the host, where incident agents may", async () => {
+  deps({
+    global: () => "none",
+    podmanReady: () => false,
+    hostEnabled: () => true,
+    hostProblem: async () => null,
+  });
+  const s = await effectiveSandboxes("acme-web");
+  expect(s.incidentAgents).toMatchObject({ state: "ok", provider: null });
+  expect(s.support).toEqual({
+    state: "cant-start",
+    reason: "Agents can't start: this project has no sandbox",
+  });
+  expect(s.note).toBe(
+    "Support reads customer mail, so it never runs on this machine without a sandbox and can't start. Connect a sandbox provider in the checklist above",
+  );
+});
+
 test("Support's model: the project's, else the global Support default, else the automation model", async () => {
   __resetModelCachesForTest();
   expect(await effectiveRoleModel("acme-web", "support")).toBe(

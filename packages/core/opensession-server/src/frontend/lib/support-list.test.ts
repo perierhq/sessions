@@ -68,6 +68,45 @@ describe("supportLanes", () => {
     ]);
   });
 
+  test("needs you: the soonest veto first, then the longest-waiting drafts", () => {
+    const lanes = supportLanes([
+      item({
+        id: "email:needs-new",
+        draftState: "needs-person",
+        at: "2026-10-25T10:00:00.000Z",
+      }),
+      item({
+        id: "email:veto-late",
+        draftState: "veto",
+        at: "2026-10-25T07:00:00.000Z",
+        vetoDeadline: "2026-10-25T10:05:00.000Z",
+      }),
+      item({
+        id: "email:failed-old",
+        draftState: "failed",
+        at: "2026-10-25T08:00:00.000Z",
+      }),
+      item({
+        id: "email:veto-soon",
+        draftState: "veto",
+        at: "2026-10-25T09:00:00.000Z",
+        vetoDeadline: "2026-10-25T10:01:00.000Z",
+      }),
+      item({
+        id: "email:needs-old",
+        draftState: "needs-person",
+        at: "2026-10-25T06:00:00.000Z",
+      }),
+    ]);
+    expect(lanes[0]!.items.map((i) => i.id)).toEqual([
+      "email:veto-soon",
+      "email:veto-late",
+      "email:needs-old",
+      "email:failed-old",
+      "email:needs-new",
+    ]);
+  });
+
   test("newest first within a lane, across channels", () => {
     const lanes = supportLanes([
       item({ id: "email:sc_1", at: "2026-10-25T08:00:00.000Z" }),

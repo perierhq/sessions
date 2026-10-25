@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachmentMeta, SupportMessage } from "../../shared/support";
 import { saveAttachment } from "../support/attachments";
+import { __setPlainThreadsForTest } from "../support/list";
 import { createConversation, updateConversation } from "../support/store";
 import { useSupportTestKernel } from "../support/testing/kernel-fixture";
 import type { RouteContext } from "./context";
@@ -97,13 +98,47 @@ test("other paths fall through", async () => {
 
 describe("auth", () => {
   test.each([
-    "/api/support/conversations",
     "/api/support/conversations/sc_0190",
     "/api/support/conversations/sc_0190/attachments/att_1",
   ])("401 without a signed-in person: %s", async (path) => {
     expect((await call(path, null))?.status).toBe(401);
     expect((await call(path, AUTOMATION))?.status).toBe(401);
   });
+});
+
+test("the list without a signed-in person: Plain rows, and email says why", async () => {
+  await conversationWith([]);
+  __setPlainThreadsForTest(async () => [
+    {
+      id: "th_1",
+      title: "Refund please",
+      previewText: null,
+      status: "TODO",
+      statusChangedAt: null,
+      createdAt: "2026-10-24T09:00:00.000Z",
+      priority: 2,
+      labels: [],
+      customer: { name: "Grace", email: "grace@example.test" },
+      assignee: null,
+    },
+  ]);
+  try {
+    for (const auth of [null, AUTOMATION]) {
+      const res = await call("/api/support/conversations", auth);
+      expect(res?.status).toBe(200);
+      const body = await res!.json();
+      expect(body.items.map((i: { id: string }) => i.id)).toEqual([
+        "plain:th_1",
+      ]);
+      expect(body.channels).toContainEqual({
+        channel: "email",
+        label: "Email",
+        error: "Sign in to read support mail",
+      });
+    }
+  } finally {
+    __setPlainThreadsForTest(undefined);
+  }
 });
 
 test("the list returns items and channels", async () => {

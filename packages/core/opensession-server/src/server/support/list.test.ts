@@ -1,17 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { SupportIndexRow, SupportMessage } from "../../shared/support";
 import type { SupportThreadSummary } from "../../agents/plain/api";
 import {
   __setPlainThreadsForTest,
   emailItem,
-  listSupportItems,
+  listSupportItems as listAs,
   plainItem,
+  SUPPORT_EMAIL_LIST_LIMIT,
 } from "./list";
 import { createConversation, updateConversation } from "./store";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 
 useSupportTestKernel();
 afterEach(() => __setPlainThreadsForTest(undefined));
+
+const listSupportItems = () => listAs({ person: "Ada" });
 
 let seq = 0;
 function message(at: string, address: string): SupportMessage {
@@ -85,6 +88,34 @@ describe("listSupportItems", () => {
     ]);
   });
 
+  test("without a signed-in person: Plain rows only, and email says why", async () => {
+    await conversation("2026-10-25T08:00:00.000Z");
+    __setPlainThreadsForTest(async () => [thread()]);
+    const { items, channels } = await listAs({ person: null });
+    expect(items.map((i) => i.id)).toEqual(["plain:th_1"]);
+    expect(channels).toEqual([
+      {
+        channel: "email",
+        label: "Email",
+        error: "Sign in to read support mail",
+      },
+      { channel: "plain", label: "Plain", error: null },
+    ]);
+  });
+
+  test("the email list stops at the newest conversations and says so", async () => {
+    const first = await conversation("2026-10-25T08:00:00.000Z");
+    for (let i = 0; i < SUPPORT_EMAIL_LIST_LIMIT; i++)
+      await conversation(
+        new Date(Date.parse("2026-10-25T09:00:00.000Z") + i * 1000).toISOString(),
+      );
+    const out = await listSupportItems();
+    expect(SUPPORT_EMAIL_LIST_LIMIT).toBe(200);
+    expect(out.items).toHaveLength(SUPPORT_EMAIL_LIST_LIMIT);
+    expect(out.items.some((i) => i.id === `email:${first.id}`)).toBe(false);
+    expect(out.truncated).toBe(true);
+  });
+
   test("Plain rows join the list when the integration is loaded", async () => {
     const email = await conversation("2026-10-25T08:00:00.000Z");
     __setPlainThreadsForTest(async () => [thread()]);
@@ -93,18 +124,31 @@ describe("listSupportItems", () => {
     expect(channels.map((c) => c.channel)).toEqual(["email", "plain"]);
   });
 
-  test("a Plain failure keeps the email rows and names the error", async () => {
+  test("a Plain failure keeps the email rows and gives fixed copy", async () => {
     const email = await conversation("2026-10-25T08:00:00.000Z");
-    __setPlainThreadsForTest(async () => {
-      throw new Error("Plain is down");
-    });
-    const { items, channels } = await listSupportItems();
-    expect(items.map((i) => i.id)).toEqual([`email:${email.id}`]);
-    expect(channels).toContainEqual({
-      channel: "plain",
-      label: "Plain",
-      error: "Plain is down",
-    });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const reason of [
+        new Error("GraphQL: token xyz rejected"),
+        { code: 500 },
+      ]) {
+        __setPlainThreadsForTest(async () => {
+          throw reason;
+        });
+        const { items, channels, truncated } = await listSupportItems();
+        expect(items.map((i) => i.id)).toEqual([`email:${email.id}`]);
+        expect(truncated).toBe(false);
+        expect(channels).toContainEqual({
+          channel: "plain",
+          label: "Plain",
+          error: "Plain could not be reached",
+        });
+        // The raw error goes to the log, not the page.
+        expect(warn.mock.calls.at(-1)).toContain(reason);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

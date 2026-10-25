@@ -564,6 +564,76 @@ test("removing a signal exception is a widening: it may have narrowed", async ()
   expect((await written(remove)).access.signalExceptions).toEqual([]);
 });
 
+test("only a signed-in person widens what Support may use", async () => {
+  const widenings: Array<
+    [Omit<ProjectSettingsPatch, "expectedRevision">, string]
+  > = [
+    [
+      {
+        access: {
+          cells: [{ row: { kind: "webSearch" }, role: "support", value: true }],
+        },
+      },
+      "access.webSearch.support",
+    ],
+    [
+      {
+        access: {
+          cells: [
+            {
+              row: { kind: "connection", server: "linear" },
+              role: "support",
+              value: true,
+            },
+          ],
+        },
+      },
+      "access.connections.linear.support",
+    ],
+    [
+      {
+        access: {
+          cells: [{ row: { kind: "mode" }, role: "support", value: "code" }],
+        },
+      },
+      "access.modes.support",
+    ],
+  ];
+  for (const [patch, field] of widenings) {
+    expect(await write(patch, agent)).toEqual(WIDEN);
+    expect(kit.audits.at(-1)).toEqual({
+      kind: "project_settings_refused",
+      project: "acme-web",
+      by: "agent",
+      fields: [field],
+    });
+  }
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.revision).toBe(0);
+  expect(doc.access.modes.support).toBe("ask");
+  expect(doc.access.webSearch as string[]).not.toContain("support");
+  expect(doc.access.connections).toEqual([]);
+});
+
+test("Support gets no websites by default", async () => {
+  expect((await getProjectDocument("acme-web")).access.websites).toEqual([]);
+  // A website added for Automations is not ticked for Support.
+  const doc = await written({
+    access: {
+      cells: [
+        {
+          row: { kind: "website", host: "docs.example.test" },
+          role: "automations",
+          value: true,
+        },
+      ],
+    },
+  });
+  expect(doc.access.websites).toEqual([
+    { host: "docs.example.test", roles: ["automations"] },
+  ]);
+});
+
 test("Changes code for Automations and Reviews is not set here", async () => {
   for (const role of ["automations", "reviews"] as const) {
     const out = await write({
