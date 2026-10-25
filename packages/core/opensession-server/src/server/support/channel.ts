@@ -30,6 +30,12 @@ export interface SentReceipt {
   sentAt: string;
 }
 
+/** A send that may have reached the server (the connection broke or timed
+ *  out once the message was on its way): permanent, never sent again
+ *  automatically. Also the copy for a send a restart cut off. */
+export const INTERRUPTED_SEND =
+  "Interrupted while sending. Check the mailbox's Sent folder before sending again";
+
 /** A failed send. `permanent` failures are never retried. */
 export class SendError extends Error {
   constructor(

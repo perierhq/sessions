@@ -1,16 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { SupportActor } from "../../shared/support";
+import type { SupportActor, SupportMessage } from "../../shared/support";
 import {
+  INTERRUPTED_SEND,
   discardDraft,
   proposeDraft,
   replyAsPerson,
   sendDraft,
   stopVeto,
 } from "./reply";
-import { getConversation, lookupMessageIds } from "./store";
-import { INBOX_ADDRESS, useReplyTestbed } from "./testing/reply-testbed";
+import { getConversation, lookupMessageIds, updateConversation } from "./store";
+import {
+  CUSTOMER,
+  INBOX_ADDRESS,
+  useReplyTestbed,
+} from "./testing/reply-testbed";
+import { runSupportTick } from "./tick";
 
 const tb = useReplyTestbed();
 
@@ -356,5 +362,84 @@ describe("one send path", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/** A later customer message on `c`, as ingest stores it. */
+async function customerWritesAgain(
+  conversationId: string,
+  over: Partial<SupportMessage> = {},
+): Promise<SupportMessage> {
+  const m: SupportMessage = {
+    id: `sm_later-${Math.random().toString(16).slice(2)}`,
+    direction: "in",
+    at: new Date().toISOString(),
+    from: { name: "Carol", address: "carol@customer.example.test" },
+    to: [{ name: null, address: INBOX_ADDRESS }],
+    cc: [],
+    subject: "Re: Export is broken",
+    text: "Any news?",
+    keys: {
+      messageId: `later-${Math.random()}@customer.example.test`,
+      inReplyTo: null,
+      references: [],
+    },
+    providerId: null,
+    attachments: [],
+    trust: { replyToDiffers: false, authFailed: false, authVerified: true },
+    topicsChecked: true,
+    ...over,
+  };
+  await updateConversation(conversationId, (x) => ({
+    ...x,
+    messages: [...x.messages, m],
+  }));
+  return m;
+}
+
+describe("pinned target", () => {
+  test("a draft is pinned to the message it answers and its one address", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect(draft.answersMessageId).toBe(c.messages[0]!.id);
+    expect(draft.to).toEqual([CUSTOMER]);
+  });
+
+  test("a person's send after a newer message asks the person to look again", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const later = await customerWritesAgain(c.id, {
+      replyTo: [{ name: null, address: "billing@other.example.test" }],
+    });
+    const first = await sendDraft(c.id, draft.id, ADA);
+    expect(first).toMatchObject({
+      ok: false,
+      status: 409,
+      error: "A newer message arrived",
+    });
+    expect(tb.fixture().sent).toHaveLength(0);
+    const held = (await getConversation(c.id))!.draft!;
+    expect(held.state).toBe("needs-person");
+    expect(held.rule).toBe("A newer message arrived");
+    expect(held.answersMessageId).toBe(later.id);
+    // The person looked again: it goes where the newer message asks.
+    expect((await sendDraft(c.id, draft.id, ADA)).ok).toBe(true);
+    expect(tb.fixture().sent[0]!.envelope.to).toEqual([
+      "billing@other.example.test",
+    ]);
+  });
+});
+
+describe("sends that may have gone out", () => {
+  test("a connection dropped after DATA fails the draft; it is never resent", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    tb.fixture().smtpDropAfterData = true;
+    const result = await sendDraft(c.id, draft.id, ADA);
+    expect(result).toMatchObject({ ok: false, status: 502 });
+    const after = (await getConversation(c.id))!.draft!;
+    expect(after.state).toBe("failed");
+    expect(after.lastError).toBe(INTERRUPTED_SEND);
+    expect(after.nextAttemptAt).toBeNull();
+    tb.fixture().smtpDropAfterData = false;
+    expect((await runSupportTick(Date.now() + 3_600_000)).retried).toBe(0);
+    expect(tb.fixture().sent.length).toBeLessThanOrEqual(1);
   });
 });

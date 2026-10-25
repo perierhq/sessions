@@ -192,3 +192,62 @@ describe("runSupportTick", () => {
     }
   });
 });
+
+describe("retries and the pinned target", () => {
+  test("a veto whose conversation got a newer message waits for a person", async () => {
+    const { c, deadline } = await vetoDraft();
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [
+        ...x.messages,
+        {
+          ...x.messages[0]!,
+          id: "sm_newer",
+          keys: { messageId: "newer@customer.example.test", inReplyTo: null, references: [] },
+          replyTo: [{ name: null, address: "billing@other.example.test" }],
+        },
+      ],
+    }));
+    expect((await runSupportTick(deadline + 1)).vetoSent).toBe(0);
+    expect(tb.fixture().sent).toHaveLength(0);
+    const draft = (await getConversation(c.id))!.draft!;
+    expect(draft.state).toBe("needs-person");
+    expect(draft.rule).toBe("A newer message arrived");
+  });
+
+  test("an automatic retry checks the policy again", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    tb.fixture().smtpReply = { code: 451, message: "Try again later" };
+    const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    expect(proposed.ok).toBe(false);
+    const waiting = (await getConversation(c.id))!.draft!;
+    expect(waiting.state).toBe("sending");
+    await tb.setInbox({ autonomy: "propose" });
+    const sentBefore = tb.fixture().sent.length;
+    await runSupportTick(Date.parse(waiting.nextAttemptAt!) + 1);
+    expect(tb.fixture().sent.length).toBe(sentBefore);
+    const draft = (await getConversation(c.id))!.draft!;
+    expect(draft.state).toBe("needs-person");
+    expect(draft.rule).toBe("Drafts wait for a person");
+  });
+
+  test("an automatic retry after a newer message waits for a person", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    tb.fixture().smtpReply = { code: 451, message: "Try again later" };
+    await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    const waiting = (await getConversation(c.id))!.draft!;
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [
+        ...x.messages,
+        { ...x.messages[0]!, id: "sm_newer2", keys: { messageId: "n2@customer.example.test", inReplyTo: null, references: [] } },
+      ],
+    }));
+    await runSupportTick(Date.parse(waiting.nextAttemptAt!) + 1);
+    const draft = (await getConversation(c.id))!.draft!;
+    expect(draft.state).toBe("needs-person");
+    expect(draft.rule).toBe("A newer message arrived");
+  });
+});

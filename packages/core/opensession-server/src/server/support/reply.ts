@@ -16,13 +16,20 @@
 // callers never send one draft twice; a send that a restart interrupted is
 // failed by the tick, never resent blindly.
 //
-// Trust is checked on the message mime.ts `replyTarget` answers, the same
-// one the email adapter replies to. Nothing runs at import.
+// A draft is pinned to its target when its send is decided: the message
+// mime.ts `replyTarget` answers and its one address (draft.answersMessageId
+// + draft.to); the mail goes only there. Trust is checked on that message.
+// Every later send of the draft (a person's, a veto's end, a retry) first
+// compares the pin with the conversation's current target: a newer target
+// sends the draft back to a person, re-pinned, so nobody's reply is
+// redirected by mail that came after they decided. An automatic retry
+// also runs the policy again. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import { buildReply, newMessageId, replyTarget } from "../../agents/email/mime";
 import {
   MAX_TEXT_CHARS,
   type InboxConfig,
+  type MailAddress,
   type SupportActor,
   type SupportConversation,
   type SupportDraft,
@@ -33,9 +40,14 @@ import {
 import { digest } from "../audit";
 import { catalogDocuments } from "../catalog-documents";
 import { supportAudit } from "./audit-sink";
-import { SendError, type SentReceipt, channelAdapterFor } from "./channel";
+import {
+  INTERRUPTED_SEND,
+  SendError,
+  type SentReceipt,
+  channelAdapterFor,
+} from "./channel";
 import { getInbox, listInboxes } from "./inboxes";
-import { decideReply } from "./policy";
+import { type ReplyDecision, RULES, decideReply } from "./policy";
 import {
   getConversation,
   rememberMessageIds,
@@ -51,11 +63,11 @@ export const SEND_BACKOFF_MS = [60_000, 300_000, 900_000] as const;
 /** Attempts before a transient failure fails the draft. */
 export const MAX_SEND_ATTEMPTS = 3;
 
-export const INTERRUPTED_SEND =
-  "Interrupted while sending. Check the mailbox's Sent folder before sending again";
+export { INTERRUPTED_SEND };
 const NOT_CONNECTED = "The inbox isn't connected";
 const INBOX_REMOVED = "The inbox was removed";
 const SEND_FAILED = "Couldn't send the message";
+const SMTP_NO_PIN = "Open the reply again to check who it goes to";
 
 const SESSIONS: SupportActor = { kind: "sessions" };
 
@@ -174,21 +186,59 @@ async function otherInboxAddresses(inbox: InboxConfig): Promise<string[]> {
     .map((i) => i.address);
 }
 
-/** The trust the policy checks: of the message replyTarget answers. A reply
- *  that would go somewhere its sender didn't write from (a Reply-To, or no
- *  person's message at all) counts as `replyToDiffers`. */
+/** Where a reply goes and what it answers, as pinned on a draft. */
+export interface ReplyPin {
+  answersMessageId: string | null;
+  to: MailAddress[];
+}
+
+/** The conversation's target now (mime.ts replyTarget). */
+export function currentPin(
+  c: SupportConversation,
+  own: readonly string[],
+): ReplyPin {
+  const { message, to } = replyTarget(c, own);
+  return { answersMessageId: message?.id ?? null, to };
+}
+
+/** Whether `d` is pinned to `pin`. A draft from before pinning never is. */
+function pinnedTo(d: SupportDraft, pin: ReplyPin): boolean {
+  if (d.to === undefined || d.answersMessageId === undefined) return false;
+  if ((d.answersMessageId ?? null) !== pin.answersMessageId) return false;
+  const key = (list: MailAddress[]) =>
+    list.map((a) => a.address.toLowerCase()).join(",");
+  return key(d.to) === key(pin.to);
+}
+
+/** The trust the policy checks, of a pinned target: of the message it
+ *  answers. A reply that would go somewhere its sender didn't write from (a
+ *  Reply-To, or no person's message at all) counts as `replyToDiffers`. */
+function pinTrust(
+  c: SupportConversation,
+  pin: ReplyPin,
+): NonNullable<SupportMessage["trust"]> {
+  const message = pin.answersMessageId
+    ? c.messages.find((m) => m.id === pin.answersMessageId)
+    : undefined;
+  const to = pin.to[0];
+  if (!message || !to)
+    return { replyToDiffers: true, authFailed: false, authVerified: false };
+  return {
+    replyToDiffers:
+      message.trust?.replyToDiffers === true ||
+      to.address.toLowerCase() !== message.from.address.toLowerCase(),
+    authFailed: message.trust?.authFailed === true,
+    authVerified: message.trust?.authVerified === true,
+  };
+}
+
+/** The trust the policy checks for a reply decided now: of the message
+ *  replyTarget answers (see pinTrust). */
 export function answeredTrust(
   c: SupportConversation,
   own: readonly string[],
 ): NonNullable<SupportMessage["trust"]> {
-  const { message, to } = replyTarget(c, own);
-  if (!message || !to[0]) return { replyToDiffers: true, authFailed: false };
-  return {
-    replyToDiffers:
-      message.trust?.replyToDiffers === true ||
-      to[0].address.toLowerCase() !== message.from.address.toLowerCase(),
-    authFailed: message.trust?.authFailed === true,
-  };
+  return pinTrust(c, currentPin(c, own));
 }
 
 function autoSendsSince(c: SupportConversation, now: number): number {
@@ -198,15 +248,15 @@ function autoSendsSince(c: SupportConversation, now: number): number {
   }).length;
 }
 
-/** decideReply for `author` on `c` as it stands. A removed inbox counts as
- *  off. */
+/** decideReply for `author` on `c` answering `pin`. A removed inbox counts
+ *  as off. */
 function decide(
   c: SupportConversation,
   author: SupportActor,
   inbox: InboxConfig | null,
-  own: readonly string[],
+  pin: ReplyPin,
   now: number,
-) {
+): ReplyDecision {
   return decideReply({
     author,
     inbox: inbox ?? {
@@ -218,7 +268,7 @@ function decide(
     triage: c.triage,
     autoSendsLastHour: autoSendsSince(c, now),
     now,
-    lastInboundTrust: answeredTrust(c, own),
+    lastInboundTrust: pinTrust(c, pin),
   });
 }
 
@@ -281,7 +331,13 @@ async function propose(
 
   // The work index first, from the decision on what we just read: a crash
   // after it leaves a key the tick drops, never a window nobody ends.
-  const provisional = decide(current, author, inbox, own, now);
+  const provisional = decide(
+    current,
+    author,
+    inbox,
+    currentPin(current, own),
+    now,
+  );
   if (provisional.kind === "veto")
     await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
       conversationId,
@@ -304,7 +360,8 @@ async function propose(
       failure = fail(409, "A reply is being sent");
       return null;
     }
-    const decision = decide(c, author, inbox, own, now);
+    const pin = currentPin(c, own);
+    const decision = decide(c, author, inbox, pin, now);
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
       failure = fail(409, "The conversation changed; try again");
@@ -328,6 +385,9 @@ async function propose(
             ? author
             : SESSIONS
           : null,
+      answersMessageId: pin.answersMessageId,
+      to: pin.to,
+      attemptStartedAt: decision.kind === "send" ? iso(now) : null,
     };
     return { ...c, draft };
   });
@@ -462,6 +522,23 @@ async function claimAndDeliver(
     let attempts = d.attempts + 1;
     let decidedBy: SupportActor = by;
     let rule = d.rule;
+    const pin = currentPin(c, own);
+    /** Back to a person, re-pinned to the target as it is now. */
+    const toPerson = (why: string) => {
+      failure = fail(409, why);
+      return {
+        ...c,
+        draft: {
+          ...d,
+          state: "needs-person" as const,
+          rule: why,
+          vetoDeadline: null,
+          nextAttemptAt: null,
+          answersMessageId: pin.answersMessageId,
+          to: pin.to,
+        },
+      };
+    };
     if (opts.mode === "retry") {
       if (
         d.state !== "sending" ||
@@ -472,6 +549,12 @@ async function claimAndDeliver(
         return null;
       }
       decidedBy = d.decidedBy ?? by;
+      if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
+      if (decidedBy.kind !== "person") {
+        // An automatic send: the policy must still let it go.
+        const decision = decide(c, d.author, inbox, pin, now);
+        if (decision.kind === "needs-person") return toPerson(decision.rule);
+      }
     } else {
       switch (d.state) {
         case "sending":
@@ -490,6 +573,7 @@ async function claimAndDeliver(
             return null;
           }
           if (d.state === "failed") attempts = 1;
+          if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
           break;
         case "veto":
           if (by.kind === "sessions") {
@@ -497,20 +581,10 @@ async function claimAndDeliver(
               failure = fail(409, "The veto window is still open");
               return null;
             }
-            const decision = decide(c, d.author, inbox, own, now);
-            if (decision.kind === "needs-person") {
-              failure = fail(409, decision.rule);
-              return {
-                ...c,
-                draft: {
-                  ...d,
-                  state: "needs-person",
-                  rule: decision.rule,
-                  vetoDeadline: null,
-                },
-              };
-            }
-          }
+            if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
+            const decision = decide(c, d.author, inbox, pin, now);
+            if (decision.kind === "needs-person") return toPerson(decision.rule);
+          } else if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
           break;
         default:
           failure = fail(409, "This draft can't be sent");
@@ -529,6 +603,7 @@ async function claimAndDeliver(
       nextAttemptAt: null,
       lastError: null,
       decidedBy,
+      attemptStartedAt: iso(now),
     };
     return { ...c, draft: claimed };
   });
@@ -571,14 +646,41 @@ async function deliver(
   const by = draft.decidedBy ?? SESSIONS;
   if (!inbox)
     return failed(c, draft, new SendError(INBOX_REMOVED, true), opts.now);
+  // Only a pinned draft goes out (see the header).
+  if (draft.to === undefined || draft.answersMessageId === undefined)
+    return failed(c, draft, new SendError(SMTP_NO_PIN, true), opts.now);
+  inFlight.add(c.id);
+  try {
+    return await deliverInFlight(c, draft, inbox, otherInboxes, by, opts);
+  } finally {
+    // Only once the outcome is recorded: until then the tick must not
+    // take this send for one a restart cut off.
+    inFlight.delete(c.id);
+  }
+}
+
+async function deliverInFlight(
+  c: SupportConversation,
+  draft: SupportDraft,
+  inbox: InboxConfig,
+  otherInboxes: string[],
+  by: SupportActor,
+  opts: { edited: boolean; now: number },
+): Promise<Result<{ message: SupportMessage }>> {
   const adapter = channelAdapterFor(c.inboxId);
-  const sent = await attempt(async () => {
-    // Our id first: a reply to it threads here even if we crash after the
-    // send.
+  // Our id first: a reply to it threads here even if we crash after the
+  // send. Nothing went out yet when this fails, so it may be retried.
+  try {
     await rememberMessageIds(c.inboxId, c.id, [draft.messageId], []);
-    if (!adapter) throw new SendError(NOT_CONNECTED, false);
-    return adapter.send({ conversation: c, draft, inbox });
-  }, c.id);
+  } catch (error) {
+    console.warn("[support] message id not stored:", errorName(error));
+    return failed(c, draft, new SendError(SEND_FAILED, false), opts.now);
+  }
+  if (!adapter)
+    return failed(c, draft, new SendError(NOT_CONNECTED, false), opts.now);
+  const sent = await attempt(() =>
+    adapter.send({ conversation: c, draft, inbox }),
+  );
   if (!sent.ok) return failed(c, draft, sent.error, opts.now);
   const receipt = sent.receipt;
 
@@ -592,7 +694,7 @@ async function deliver(
     direction: "out",
     at: receipt.sentAt,
     from: { name: inbox.label, address: inbox.address },
-    to: mail?.to ?? [],
+    to: mail?.to ?? draft.to ?? [],
     cc: [],
     subject: mail?.subject ?? c.subject,
     text: draft.text,
@@ -648,23 +750,21 @@ async function deliver(
   return { ok: true, message };
 }
 
-/** Runs one send with the conversation marked in flight in this process. */
+/** Runs the adapter's send. */
 async function attempt(
   send: () => Promise<SentReceipt>,
-  conversationId: string,
 ): Promise<{ ok: true; receipt: SentReceipt } | { ok: false; error: unknown }> {
-  inFlight.add(conversationId);
   try {
     return { ok: true, receipt: await send() };
   } catch (error) {
     return { ok: false, error };
-  } finally {
-    inFlight.delete(conversationId);
   }
 }
 
 /** Records a failed attempt: transient → still `sending` with the next
- *  attempt's time; permanent, or the last attempt → `failed`. */
+ *  attempt's time; permanent, or the last attempt → `failed`. Anything an
+ *  adapter throws that is not a SendError may have gone out: failed as
+ *  INTERRUPTED_SEND, never retried. */
 async function failed(
   c: SupportConversation,
   draft: SupportDraft,
@@ -672,7 +772,7 @@ async function failed(
   now: number,
 ): Promise<Failure> {
   const err =
-    error instanceof SendError ? error : new SendError(SEND_FAILED, false);
+    error instanceof SendError ? error : new SendError(INTERRUPTED_SEND, true);
   if (!(error instanceof SendError))
     console.warn("[support] send failed:", errorName(error));
   const permanent = err.permanent || draft.attempts >= MAX_SEND_ATTEMPTS;

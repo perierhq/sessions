@@ -98,6 +98,23 @@ export function replyTarget(
   return { message, to: [] };
 }
 
+/** The draft's pinned target (answersMessageId + to), the only one a
+ *  pinned draft goes to; replyTarget for a draft from before pinning. */
+function pinnedTarget(
+  out: OutboundDraft,
+  own: Iterable<string>,
+): { message: SupportMessage | null; to: MailAddress[] } {
+  const { conversation, draft } = out;
+  if (draft.to === undefined) return replyTarget(conversation, own);
+  const id = draft.answersMessageId;
+  return {
+    message: id
+      ? (conversation.messages.find((m) => m.id === id) ?? null)
+      : null,
+    to: draft.to,
+  };
+}
+
 /** `chain` without repeats (a repeat keeps its last place), at most
  *  MAX_OUTGOING_REFERENCES: the thread root and the newest ids. Repeats
  *  are found by the normalized id; the form kept is the last one. */
@@ -116,7 +133,8 @@ function referencesOf(chain: string[]): string[] {
   return [unique[0]!, ...unique.slice(-(MAX_OUTGOING_REFERENCES - 1))];
 }
 
-/** To: replyTarget's one address. Subject: one "Re: " (case-insensitive,
+/** To: the draft's pinned address (replyTarget's one address for a draft
+ *  from before pinning). Subject: one "Re: " (case-insensitive,
  *  no "Re: Re:"). In-Reply-To: the answered message's Message-ID as it was
  *  written; none when only machine mail came in. References: its
  *  references + its Message-ID, without repeats, at most 20 (the root and
@@ -129,8 +147,8 @@ export function buildReply(
   otherInboxAddresses: readonly string[] = [],
 ): OutgoingMail {
   const { conversation, draft, inbox } = out;
-  const { message: last, to } = replyTarget(
-    conversation,
+  const { message: last, to } = pinnedTarget(
+    out,
     ownMailAddresses(inbox, otherInboxAddresses),
   );
   const inReplyTo = last?.keys.rawMessageId ?? last?.keys.messageId ?? null;

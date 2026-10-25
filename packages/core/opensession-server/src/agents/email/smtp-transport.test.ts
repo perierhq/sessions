@@ -5,7 +5,7 @@ import {
   type MailServerConfig,
   defaultInboxConfig,
 } from "../../shared/support";
-import { SendError } from "../../server/support/channel";
+import { INTERRUPTED_SEND, SendError } from "../../server/support/channel";
 import {
   MAIL_HOST_REFUSED,
   MAIL_TLS_NONE_REFUSED,
@@ -191,7 +191,7 @@ describe("SmtpTransport.send", () => {
     expect(f.sent).toHaveLength(1);
   });
 
-  test("a send that takes too long fails as transient", async () => {
+  test("a send that takes too long after DATA may have gone out: never retried", async () => {
     const f = await fixture();
     f.smtpHoldData = true;
     const t = transport(f, {}, undefined, 300);
@@ -199,7 +199,8 @@ describe("SmtpTransport.send", () => {
     const error = await t.send(mail()).catch((e: unknown) => e);
     expect(performance.now() - started).toBeLessThan(3_000);
     expect(error).toBeInstanceOf(SendError);
-    expect((error as SendError).permanent).toBe(false);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(INTERRUPTED_SEND);
   });
 
   test("a connection dropped after DATA is not sent again", async () => {
@@ -211,7 +212,8 @@ describe("SmtpTransport.send", () => {
     // Give a requeue (if any) time to reconnect and send again.
     await Bun.sleep(300);
     expect(error).toBeInstanceOf(SendError);
-    expect((error as SendError).permanent).toBe(false);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(INTERRUPTED_SEND);
     expect(f.sent.length).toBeLessThanOrEqual(1);
   });
 
@@ -380,16 +382,34 @@ describe("classifySmtpError", () => {
   const err = (props: Record<string, unknown>) =>
     Object.assign(new Error("x"), props);
 
-  test("4xx, connection and timeout errors are transient", () => {
+  test("4xx answers and failures before DATA are transient", () => {
     for (const e of [
       err({ responseCode: 421 }),
-      err({ responseCode: 451 }),
-      err({ code: "ECONNECTION" }),
-      err({ code: "ETIMEDOUT" }),
-      err({ code: "ESOCKET" }),
-      new Error("anything else"),
+      err({ responseCode: 451, code: "EENVELOPE", command: "MAIL FROM" }),
+      err({ responseCode: 450, code: "EENVELOPE", command: "RCPT TO" }),
+      err({ responseCode: 451, code: "EMESSAGE", command: "DATA" }),
+      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "CONNECT_TIMEOUT" }),
+      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "GREETING_TIMEOUT" }),
+      err({ code: "EDNS", command: "CONN" }),
+      err({ code: "ECONNECTION", originalCode: "ECONNREFUSED" }),
+      err({ code: "ESOCKET", originalCode: "EHOSTUNREACH" }),
     ])
       expect(classifySmtpError(e).permanent).toBe(false);
+  });
+
+  test("a timeout or broken connection without an answer may have sent: never retried", () => {
+    for (const e of [
+      err({ code: "ECONNECTION", command: "CONN" }),
+      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "SOCKET_TIMEOUT" }),
+      err({ code: "ETIMEDOUT" }),
+      err({ code: "ESOCKET", command: "CONN" }),
+      err({ code: "EPIPE" }),
+      new Error("anything else"),
+    ]) {
+      const classified = classifySmtpError(e);
+      expect(classified.permanent).toBe(true);
+      expect(classified.message).toBe(INTERRUPTED_SEND);
+    }
   });
 
   test("5xx, auth and envelope errors are permanent", () => {

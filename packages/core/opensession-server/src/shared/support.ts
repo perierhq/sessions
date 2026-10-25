@@ -76,7 +76,9 @@ export interface InboundMessage {
 export type SupportActor =
   | { kind: "customer" }
   | { kind: "agent"; sessionId: string }
-  | { kind: "person"; name: string }
+  /** `name` is the display name; `login` the signed-in account, when the
+   *  person acted through a signed-in request (audit rows record it). */
+  | { kind: "person"; name: string; login?: string }
   | { kind: "sessions" };
 
 export interface SupportMessage {
@@ -98,8 +100,15 @@ export interface SupportMessage {
   draftId?: string;
   automated?: true;
   /** Inbound only. Set by ingest from headers; a send to this message needs
-   *  a person when either is true. */
-  trust?: { replyToDiffers: boolean; authFailed: boolean };
+   *  a person when either is true. `authVerified`: the receiving server's
+   *  Authentication-Results showed dmarc=pass or a dkim/spf pass aligned
+   *  with the From domain; an automatic send needs it (absent = not
+   *  verified). */
+  trust?: { replyToDiffers: boolean; authFailed: boolean; authVerified?: boolean };
+  /** Inbound only: this message's topics were classified and are in the
+   *  conversation's triage.topics (routing.ts). An automatic send waits
+   *  for a person until every message it answers has this. */
+  topicsChecked?: true;
 }
 
 export const TRIAGE_ROUTES = ["spam", "simple", "work"] as const;
@@ -148,6 +157,14 @@ export interface SupportDraft {
   /** Our Message-ID, fixed at draft time. */
   messageId: string;
   decidedBy: SupportActor | null;
+  /** The target, pinned when the send was decided (mime.ts replyTarget):
+   *  the message the reply answers (null: machine mail only) and its one
+   *  address. The mail goes only there; a newer target sends the draft
+   *  back to a person. Absent on drafts from before pinning. */
+  answersMessageId?: string | null;
+  to?: MailAddress[];
+  /** When the current send attempt started (state `sending`). */
+  attemptStartedAt?: string | null;
 }
 
 export type ConversationStatus = "open" | "waiting" | "closed" | "spam";

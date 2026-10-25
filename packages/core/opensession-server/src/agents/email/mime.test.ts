@@ -335,6 +335,39 @@ describe("buildReply", () => {
   });
 });
 
+describe("buildReply with a pinned target", () => {
+  test("goes only to the pinned address and answers the pinned message", () => {
+    const first = message();
+    const second = message({
+      id: "sm_2",
+      replyTo: [{ name: null, address: "billing@other.example.test" }],
+      keys: { messageId: "m2@example.test", inReplyTo: null, references: [] },
+    });
+    const out = outbound([first, second]);
+    const pinned = {
+      ...out,
+      draft: {
+        ...out.draft,
+        answersMessageId: "sm_1",
+        to: [{ name: "Ada", address: "ada@example.test" }],
+      },
+    };
+    const mail = buildReply(pinned);
+    expect(mail.to.map((a) => a.address)).toEqual(["ada@example.test"]);
+    expect(mail.inReplyTo).toBe("m1@example.test");
+  });
+
+  test("a pin with no recipient sends to nobody", () => {
+    const out = outbound([message()]);
+    const mail = buildReply({
+      ...out,
+      draft: { ...out.draft, answersMessageId: null, to: [] },
+    });
+    expect(mail.to).toEqual([]);
+    expect(mail.inReplyTo).toBeNull();
+  });
+});
+
 describe("replyTarget", () => {
   test("is the answered message and its one recipient", () => {
     const desk = { name: "Desk", address: "desk@example.test" };

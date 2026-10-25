@@ -17,7 +17,7 @@
 import { connect, type Socket } from "node:net";
 import { createTransport } from "nodemailer";
 import type { MailServerConfig, InboxConfig } from "../../shared/support";
-import { SendError } from "../../server/support/channel";
+import { INTERRUPTED_SEND, SendError } from "../../server/support/channel";
 import {
   MAIL_HOST_REFUSED,
   MAIL_TLS_NONE_REFUSED,
@@ -55,7 +55,6 @@ const COPY = {
   tls: "The mail server didn't offer a secure connection",
   network: "Can't reach the mail server",
   timeout: "The mail server didn't answer in time",
-  other: "Couldn't send the message",
 };
 
 function field(err: unknown, name: string): unknown {
@@ -64,9 +63,41 @@ function field(err: unknown, name: string): unknown {
     : undefined;
 }
 
-/** 4xx, connection and timeout errors → transient; 5xx, auth, envelope,
- *  TLS and refused-address errors → permanent. Anything unknown is
- *  transient (the caller's retries are bounded). */
+/** Timeouts of the phases before any command (nodemailer's
+ *  `timeoutType`): connecting, the greeting, the TLS upgrade. */
+const SETUP_TIMEOUTS = new Set([
+  "CONNECT_TIMEOUT",
+  "GREETING_TIMEOUT",
+  "UPGRADE_TIMEOUT",
+]);
+/** System codes that mean the connection was never made. */
+const NO_CONNECTION =
+  /^(ECONNREFUSED|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETDOWN|ENOTFOUND|EAI_)/;
+
+/** Whether a failure without an SMTP answer certainly came before the
+ *  message was on its way: no connection was made (our pinned dial, DNS,
+ *  a refused or unreachable address) or a setup phase timed out. */
+function beforeData(err: unknown): boolean {
+  if (field(err, "beforeData") === true) return true;
+  const code = String(field(err, "code") ?? "");
+  if (code === "EDNS") return true;
+  if (
+    code === "ETIMEDOUT" &&
+    SETUP_TIMEOUTS.has(String(field(err, "timeoutType") ?? ""))
+  )
+    return true;
+  return (
+    NO_CONNECTION.test(String(field(err, "originalCode") ?? "")) ||
+    NO_CONNECTION.test(code)
+  );
+}
+
+/** An SMTP answer of 4xx (the server said it did not take the message, at
+ *  whatever command) and failures certainly before DATA (see beforeData)
+ *  → transient; 5xx, auth, envelope, TLS and refused-address errors →
+ *  permanent. Anything else — a timeout or broken connection with no
+ *  answer, which may come after the server took the message — is
+ *  INTERRUPTED_SEND: permanent, never sent again on its own. */
 export function classifySmtpError(err: unknown): SendError {
   if (err instanceof SendError) return err;
   const code = String(field(err, "code") ?? "");
@@ -107,15 +138,12 @@ export function classifySmtpError(err: unknown): SendError {
     );
   if (code === "EENVELOPE" || code === "EMESSAGE")
     return new SendError("The mail server refused the message", true);
-  if (code === "ETIMEDOUT") return new SendError(COPY.timeout, false);
-  if (
-    code === "ECONNECTION" ||
-    code === "ESOCKET" ||
-    code === "EDNS" ||
-    /^(ECONN|EHOST|ENET|ENOTFOUND|EAI_|EPIPE)/.test(code)
-  )
-    return new SendError(COPY.network, false);
-  return new SendError(COPY.other, false);
+  if (beforeData(err))
+    return new SendError(
+      code === "ETIMEDOUT" ? COPY.timeout : COPY.network,
+      false,
+    );
+  return new SendError(INTERRUPTED_SEND, true);
 }
 
 /** Opens a TCP connection to the checked address of `server.host`. */
@@ -201,9 +229,10 @@ function connectionOptions(
       _options: unknown,
       callback: (err: Error | null, socket?: { connection: Socket }) => void,
     ) {
+      // No connection yet, so nothing was sent: safe to try again.
       pinnedSocket(server, policy).then(
         (connection) => callback(null, { connection }),
-        (err: Error) => callback(err),
+        (err: Error) => callback(Object.assign(err, { beforeData: true })),
       );
     },
   };

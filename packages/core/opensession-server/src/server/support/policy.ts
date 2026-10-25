@@ -26,6 +26,7 @@ export const RULES = {
   replyToDiffers: "Replies would go to a different address than the sender",
   autoSendCap: `${AUTO_SENDS_PER_HOUR} automatic replies in the last hour`,
   veto: "Sends when the window ends unless someone stops it",
+  newerMessage: "A newer message arrived",
   agentSent: "Sent by the agent",
 } as const;
 
