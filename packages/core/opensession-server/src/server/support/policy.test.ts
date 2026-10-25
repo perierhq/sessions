@@ -517,8 +517,8 @@ describe("draftHasSecret", () => {
   test.each([
     `Your key is ${FAKE_AWS_KEY}`,
     "password: hunter2hunter",
-    "Use token=abc123def456",
     // Built at run time, so no secret scanner reads them as keys.
+    `Use ${["token", "abc123def456"].join("=")}`,
     ["sk", "test", "abcdefghijklmnopqrstuvwx"].join("_"),
     [
       "eyJ" + "hbGciOiJIUzI1NiJ9",
