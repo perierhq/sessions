@@ -18,11 +18,11 @@
 
 import type {
   InboxConfig,
+  MessageTriage,
   SupportActor,
   SupportConversation,
   SupportMessage,
   SupportTopic,
-  TriageVerdict,
 } from "../../shared/support";
 import {
   type CreateSessionOpts,
@@ -35,7 +35,7 @@ import { getInbox } from "./inboxes";
 import { setSupportPipeline } from "./ingest";
 import { type SupportRunSpec, supportRunSpec } from "./session-policy";
 import { getConversation, updateConversation } from "./store";
-import { classifyTopics, triageMessage } from "./triage";
+import { classifyMessage } from "./triage";
 import { wrapAttribute, wrapCustomerMessage, wrapSupportMessage } from "./wrap";
 
 /** New support sessions one inbox may start in an hour; the rest wait for
@@ -49,15 +49,19 @@ const SESSIONS_USER = "Sessions";
 const SESSIONS_ACTOR: SupportActor = { kind: "sessions" };
 
 export interface RoutingDeps {
-  triage: typeof triageMessage;
-  topics: typeof classifyTopics;
+  classify: typeof classifyMessage;
   runSpec: (project: string) => Promise<SupportRunSpec>;
   resolveWorkspace: (input: {
     ref: ExternalRef;
     createdBy: string;
     repo?: string;
   }) => Promise<{ workspace: { id: string } }>;
-  control: () => Pick<SessionControl, "createSession" | "deliverToSession">;
+  control: () => Pick<
+    SessionControl,
+    "createSession" | "deliverToSession" | "cancelSession"
+  >;
+  /** Closes a conversation as Sessions (actions.ts closeConversation). */
+  close: (id: string, detail: string) => Promise<void>;
   now: () => number;
 }
 
@@ -72,8 +76,7 @@ export function __setRoutingDepsForTest(deps?: Partial<RoutingDeps>): void {
 
 function deps(): RoutingDeps {
   return {
-    triage: override?.triage ?? triageMessage,
-    topics: override?.topics ?? classifyTopics,
+    classify: override?.classify ?? classifyMessage,
     runSpec: override?.runSpec ?? supportRunSpec,
     resolveWorkspace:
       override?.resolveWorkspace ??
@@ -81,6 +84,13 @@ function deps(): RoutingDeps {
         (await import("../workspace-resolve")).resolveExternalWorkspace(input)),
     // Registered by opensession.ts at boot.
     control: override?.control ?? getSessionControl,
+    close:
+      override?.close ??
+      (async (id, detail) => {
+        await (
+          await import("./actions")
+        ).closeConversation(id, SESSIONS_ACTOR, detail);
+      }),
     now: override?.now ?? Date.now,
   };
 }
@@ -275,6 +285,9 @@ export async function startSupportSession(
     return null;
   }
   const byPerson = why === "person";
+  // Handed to a person for good (second injection flag): only a person
+  // starts an agent again.
+  if (!byPerson && current.personOnly) return null;
   if (!byPerson && inbox.autonomy === "watch") {
     if (!current.events.some((e) => e.kind === "watch-only"))
       await addEvent(current.id, "watch-only", "Watch only: no agent");
@@ -384,47 +397,6 @@ async function fileAsSpam(c: SupportConversation): Promise<void> {
   }
 }
 
-async function routeNew(
-  c: SupportConversation,
-  m: SupportMessage,
-): Promise<void> {
-  const d = deps();
-  let triage: TriageVerdict | null = c.triage;
-  if (!triage) {
-    const verdict = await d.triage({
-      subject: m.subject,
-      text: m.text ?? "",
-      from: m.from.address,
-      now: new Date(d.now()).toISOString(),
-    });
-    // The triaged message's topics are in the verdict: checked, unless
-    // they are unknown.
-    const stored = await updateConversation(c.id, (x) =>
-      x.triage
-        ? null
-        : {
-            ...x,
-            triage: verdict,
-            messages:
-              verdict.topics === null
-                ? x.messages
-                : x.messages.map((y) =>
-                    y.id === m.id ? { ...y, topicsChecked: true as const } : y,
-                  ),
-          },
-    );
-    if (!stored) return;
-    c = stored;
-    triage = stored.triage ?? verdict;
-  }
-  if (triage.route === "spam") {
-    await fileAsSpam(c);
-    return;
-  }
-  if (c.sessionId) return;
-  await startSupportSession(c, "new");
-}
-
 /** Hands one customer message to the session. Thrown, so the pipeline
  *  retries the hand-off with backoff; the delivery id is the message's, so
  *  a retry doesn't queue it twice. */
@@ -449,43 +421,133 @@ function afterOpening(c: SupportConversation, m: SupportMessage): boolean {
   return from >= 0 && at(m.id) > from;
 }
 
-/** Unchecked messages one hand-off classifies at most, newest first. */
-const MAX_TOPIC_CHECKS = 5;
+/** Customer messages one hand-off classifies at most, newest first. */
+const MAX_CLASSIFY = 5;
 
-/** Classifies the topics of the conversation's customer messages that
- *  have none yet (since our last reply, the ones a reply answers) and adds
- *  them to triage.topics: union only, never shrinking. A failed check
- *  leaves its message unchecked; nothing is checked before triage, nor
- *  added to unknown topics, nor on spam. */
-async function checkTopics(conversationId: string): Promise<void> {
-  const c = await getConversation(conversationId);
-  if (!c || c.status === "spam" || !c.triage || c.triage.topics === null)
-    return;
+const isCustomerMail = (m: SupportMessage) =>
+  m.direction === "in" && !m.automated;
+
+/** Since our newest reply: the customer messages a reply answers. */
+function sinceLastReply(c: SupportConversation): SupportMessage[] {
   const lastOut = c.messages.findLastIndex((m) => m.direction === "out");
-  const unchecked = c.messages
-    .slice(lastOut + 1)
-    .filter((m) => m.direction === "in" && !m.automated && !m.topicsChecked)
-    .slice(-MAX_TOPIC_CHECKS);
+  return c.messages.slice(lastOut + 1).filter(isCustomerMail);
+}
+
+/** Our newest reply before `id`, for the classifier's "repeat". */
+function replyBefore(c: SupportConversation, id: string): string | null {
+  const at = c.messages.findIndex((m) => m.id === id);
+  const before = at < 0 ? c.messages : c.messages.slice(0, at);
+  return before.findLast((m) => m.direction === "out")?.text ?? null;
+}
+
+export const STRIKE_ONE =
+  "The customer's message tries to instruct the agent. Nothing sends on its own";
+export const STRIKE_TWO =
+  "A second message tries to instruct the agent. The agent stopped; a person handles this conversation";
+
+/** Stores one message's labels and folds them into the conversation: the
+ *  first labelled message sets the conversation's verdict, later ones only
+ *  add topics and the bug flag; an injection flag counts a strike, and the
+ *  second strike hands the conversation to a person for good. */
+function applyTriage(
+  x: SupportConversation,
+  id: string,
+  t: MessageTriage,
+  reason: string,
+  at: string,
+): SupportConversation | null {
+  const i = x.messages.findIndex((y) => y.id === id);
+  const old = x.messages[i]?.triage;
+  if (i < 0 || (old && !old.failed)) return null;
+  const messages = [...x.messages];
+  messages[i] = { ...messages[i]!, triage: t };
+  let triage = x.triage;
+  if (!triage)
+    triage = {
+      route: t.route,
+      reason,
+      topics: t.topics,
+      bug: t.bug,
+      at: t.at,
+      ...(t.failed ? { failed: true as const } : {}),
+    };
+  else {
+    const known = triage.topics;
+    const topics: SupportTopic[] | null =
+      known && t.topics ? [...new Set([...known, ...t.topics])] : known;
+    triage = { ...triage, topics, bug: triage.bug || t.bug };
+  }
+  const events = [...x.events];
+  let injectionFlags = x.injectionFlags ?? 0;
+  let personOnly = x.personOnly ?? null;
+  if (t.injection) {
+    injectionFlags++;
+    const by = SESSIONS_ACTOR;
+    if (injectionFlags >= 2 && !personOnly) {
+      personOnly = { at, reason: STRIKE_TWO };
+      events.push({
+        at,
+        kind: "handed-to-person",
+        actor: by,
+        detail: STRIKE_TWO,
+      });
+    } else if (injectionFlags === 1)
+      events.push({
+        at,
+        kind: "injection-flagged",
+        actor: by,
+        detail: STRIKE_ONE,
+      });
+  }
+  return { ...x, messages, triage, injectionFlags, personOnly, events };
+}
+
+/** Classifies the conversation's customer messages since our last reply
+ *  that have no labels yet (or whose labelling failed), `m` first. */
+async function classifyPending(
+  conversationId: string,
+  m: SupportMessage,
+): Promise<SupportConversation | null> {
+  let c = await getConversation(conversationId);
+  if (!c) return null;
+  const pending = new Map<string, SupportMessage>();
+  if (isCustomerMail(m)) pending.set(m.id, m);
+  for (const y of sinceLastReply(c).reverse())
+    if (!y.triage || y.triage.failed) pending.set(y.id, y);
   const d = deps();
-  for (const m of unchecked) {
-    const topics = await d.topics({
-      subject: m.subject,
-      text: m.text ?? "",
-      from: m.from.address,
+  for (const y of [...pending.values()].slice(0, MAX_CLASSIFY)) {
+    const current = c.messages.find((z) => z.id === y.id) ?? y;
+    if (current.triage && !current.triage.failed) continue;
+    const now = new Date(d.now()).toISOString();
+    const { triage, reason } = await d.classify({
+      subject: current.subject,
+      text: current.text ?? "",
+      from: current.from.address,
+      earlierReply: replyBefore(c, current.id),
+      now,
     });
-    if (topics === null) continue;
-    await updateConversation(c.id, (x) => {
-      const at = x.messages.findIndex((y) => y.id === m.id);
-      const known = x.triage?.topics;
-      if (at < 0 || x.messages[at]!.topicsChecked || !x.triage || !known)
-        return null;
-      const messages = [...x.messages];
-      messages[at] = { ...messages[at]!, topicsChecked: true };
-      const union: SupportTopic[] = [...new Set([...known, ...topics])];
-      return { ...x, messages, triage: { ...x.triage, topics: union } };
-    });
+    const stored = await updateConversation(c.id, (x) =>
+      applyTriage(x, current.id, triage, reason, now),
+    );
+    if (stored) c = stored;
+  }
+  return c;
+}
+
+/** Cancels the support session's run after the second strike. */
+async function stopAgent(sessionId: string): Promise<void> {
+  try {
+    await deps().control().cancelSession(sessionId);
+  } catch (error) {
+    console.warn(
+      `[support] couldn't stop ${sessionId}:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 }
+
+export const THANKS_CLOSED =
+  "The customer only said thanks. Closed without a reply";
 
 /** The pipeline step for one stored customer message. */
 export async function onInbound(
@@ -493,28 +555,43 @@ export async function onInbound(
   m: SupportMessage,
   isNew: boolean,
 ): Promise<void> {
+  if (!isNew && c.status === "spam") return;
+  const wasPersonOnly = Boolean(c.personOnly);
+  const labelled = (await classifyPending(c.id, m)) ?? c;
+  if (labelled.personOnly) {
+    if (!wasPersonOnly && labelled.sessionId)
+      await stopAgent(labelled.sessionId);
+    return;
+  }
   if (isNew) {
-    await routeNew(c, m);
-    await checkTopics(c.id);
+    if (labelled.triage?.route === "spam") {
+      await fileAsSpam(labelled);
+      return;
+    }
+    if (!labelled.sessionId) await startSupportSession(labelled, "new");
     // A reply that arrived while the conversation was being routed shares
     // its hand-off: if the opening prompt didn't show it, deliver it.
     const now = await getConversation(c.id);
     if (
       now?.sessionId &&
       now.status !== "spam" &&
-      m.direction === "in" &&
-      !m.automated &&
+      isCustomerMail(m) &&
       afterOpening(now, m)
     )
       await deliver(now.sessionId, m);
     return;
   }
-  // Triage runs once per conversation, never on a reply; a reply's topics
-  // are checked before the session sees it.
-  if (c.status === "spam") return;
-  await checkTopics(c.id);
-  if (!c.sessionId) return;
-  await deliver(c.sessionId, m);
+  const own = labelled.messages.find((y) => y.id === m.id)?.triage;
+  if (
+    own?.thanksOnly &&
+    !own.failed &&
+    (labelled.status === "open" || labelled.status === "waiting")
+  ) {
+    await deps().close(labelled.id, THANKS_CLOSED);
+    return;
+  }
+  if (!labelled.sessionId) return;
+  await deliver(labelled.sessionId, m);
 }
 
 /** Boot: route every customer message ingest stores. */

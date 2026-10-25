@@ -57,6 +57,9 @@ beforeEach(() => {
       async deliverToSession() {
         return { status: "queued", message: "Queued" };
       },
+      async cancelSession() {
+        return true;
+      },
     }),
   });
   __setActionDepsForTest({ cancelSession: async () => true });

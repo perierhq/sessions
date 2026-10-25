@@ -202,6 +202,8 @@ async function stopSending(
 export async function closeConversation(
   id: string,
   by: SupportActor,
+  /** What the event says; "<actor> closed this" by default. */
+  detail?: string,
 ): Promise<{ ok: boolean }> {
   let changed = false;
   const closed = await updateConversation(id, (c) => {
@@ -213,7 +215,7 @@ export async function closeConversation(
       closedAt: iso(),
       events: [
         ...c.events,
-        event("closed", by, `${actorName(by)} closed this`),
+        event("closed", by, detail ?? `${actorName(by)} closed this`),
       ],
     };
   });

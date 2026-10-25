@@ -68,6 +68,9 @@ beforeEach(() => {
       async deliverToSession() {
         return { status: "queued", message: "Queued" };
       },
+      async cancelSession() {
+        return true;
+      },
     }),
   });
   __setActionDepsForTest({
@@ -93,8 +96,7 @@ async function answered() {
 }
 
 describe("moveConversation", () => {
-  test("an agent can't move when only people may", async () => {
-    await tb.setInbox({ moveLock: "people" });
+  test("an agent can never move a conversation", async () => {
     const c = await answered();
     expect(
       await moveConversation(c.id, "acme-api", AGENT, "It's about the API"),
@@ -106,8 +108,7 @@ describe("moveConversation", () => {
     expect((await getConversation(c.id))!.project).toBe("acme");
   });
 
-  test("a person may move even when only people may", async () => {
-    await tb.setInbox({ moveLock: "people" });
+  test("a person may move", async () => {
     const c = await answered();
     expect(
       await moveConversation(c.id, "acme-api", ADA, "It's about the API"),
@@ -117,7 +118,7 @@ describe("moveConversation", () => {
   test("a move cancels the old session and starts one under the target's Support settings", async () => {
     const c = await answered();
     expect(
-      await moveConversation(c.id, "acme-api", AGENT, "It's about the API"),
+      await moveConversation(c.id, "acme-api", ADA, "It's about the API"),
     ).toEqual({ ok: true });
     expect(cancelled).toEqual(["os-old"]);
     expect(created).toHaveLength(1);
@@ -139,7 +140,7 @@ describe("moveConversation", () => {
     expect(moved.moves[0]).toMatchObject({
       from: "acme",
       to: "acme-api",
-      by: AGENT,
+      by: ADA,
       reason: "It's about the API",
     });
   });
