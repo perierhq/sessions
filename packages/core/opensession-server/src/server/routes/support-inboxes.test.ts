@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { InboxHealth, InboxView } from "../../shared/support";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import { registerChannelAdapter } from "../support/channel";
+import { recordDraftOutcome } from "../support/draft-stats";
 import { __setMailHostResolverForTest } from "../support/mail-host";
 import {
   type NewInbox,
@@ -169,15 +170,33 @@ describe("support inbox routes", () => {
     expect(body.inboxes[0]!.health.state).toBe("off");
   });
 
+  test("each inbox lists its draft figures for the last 30 days", async () => {
+    const inbox = await created();
+    await recordDraftOutcome(inbox.id, "unchanged");
+    await recordDraftOutcome(inbox.id, "unchanged");
+    await recordDraftOutcome(inbox.id, "edited");
+    await recordDraftOutcome(
+      inbox.id,
+      "discarded",
+      Date.now() - 31 * 86_400_000,
+    );
+    const res = await call("GET", "/api/support/inboxes");
+    const body = (await res.json()) as { inboxes: InboxView[] };
+    expect(body.inboxes[0]!.draftStats).toEqual({
+      days: 30,
+      sentUnchanged: 2,
+      sentEdited: 1,
+      discarded: 0,
+    });
+  });
+
   test("a create may set the handling fields in the same call", async () => {
     const inbox = await created({
       autonomy: "routine",
       vetoMs: 600_000,
-      bugHandling: "issue",
     } as Partial<NewInbox>);
-    expect(inbox.autonomy).toBe("deploy-after-veto");
+    expect(inbox.autonomy).toBe("routine");
     expect(inbox.vetoMs).toBe(600_000);
-    expect(inbox.bugHandling).toBe("issue");
   });
 
   test("health comes from the inbox's channel adapter", async () => {

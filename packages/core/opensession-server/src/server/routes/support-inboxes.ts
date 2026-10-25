@@ -41,6 +41,7 @@ import {
   isOwnerActor,
 } from "../support/actor";
 import { supportAudit } from "../support/audit-sink";
+import { draftStats } from "../support/draft-stats";
 import {
   type SupportChannelAdapter,
   channelAdapterFor,
@@ -541,7 +542,12 @@ export async function handleSupportInboxRoutes(
         enabled: emailSupportEnabled(),
         isInstanceOwner: isOwnerActor(actor),
         projects: await projectOptions(),
-        inboxes: inboxes.map(viewOf),
+        inboxes: await Promise.all(
+          inboxes.map(async (inbox) => ({
+            ...viewOf(inbox),
+            draftStats: await draftStats(inbox.id),
+          })),
+        ),
       };
       return Response.json(response);
     }

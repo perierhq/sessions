@@ -756,6 +756,9 @@ export async function deleteInbox(
         String(e?.code ?? e?.name ?? "error"),
       );
     });
+    await inboxes()
+      .update(`draft-stats:${id}`, () => null)
+      .catch(() => {});
   } finally {
     notify(null, removed);
   }

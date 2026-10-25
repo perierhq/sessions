@@ -2,8 +2,9 @@
 // the agent wrote them, sent after a person edited them, or discarded
 // (Front's "draft drift"). The evidence an operator reads next to the
 // autonomy choice. One small record per inbox in the `support-inboxes`
-// namespace (key `draft-stats:<inboxId>`, which listInboxes skips): times
-// and outcomes only, never text, ids or addresses. Nothing runs at import.
+// namespace (key `draft-stats:<inboxId>`, which listInboxes skips and
+// deleteInbox removes): times and outcomes only, never text, ids or
+// addresses. Nothing runs at import.
 import { DRAFT_STATS_DAYS, type InboxDraftStats } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
 
@@ -79,9 +80,4 @@ export async function draftStats(
     else stats.discarded++;
   }
   return stats;
-}
-
-/** Drops an inbox's figures (the inbox was removed). */
-export async function deleteDraftStats(inboxId: string): Promise<void> {
-  await store().update(key(inboxId), () => null);
 }

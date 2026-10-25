@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SupportConversationView } from "../../shared/support";
 import { proposeDraft } from "../support/reply";
 import { getConversation } from "../support/store";
-import { useReplyTestbed } from "../support/testing/reply-testbed";
+import { CITED, useReplyTestbed } from "../support/testing/reply-testbed";
 import type { RouteContext } from "./context";
 import { routeHandlers } from "./index";
 import { handleSupportReplyRoutes } from "./support-replies";
@@ -44,10 +44,13 @@ async function call(
 
 async function waitingDraft() {
   const c = await tb.conversation();
-  const proposed = await proposeDraft(c.id, "Fixed, please retry.", {
-    kind: "agent",
-    sessionId: "os-1",
-  });
+  const proposed = await proposeDraft(
+    c.id,
+    "Fixed, please retry.",
+    { kind: "agent", sessionId: "os-1" },
+    undefined,
+    CITED,
+  );
   if (!proposed.ok) throw new Error(proposed.error);
   return { c, draft: proposed.draft };
 }

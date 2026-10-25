@@ -662,8 +662,8 @@ describe("permissions", () => {
     const inbox = await created();
     const patch = {
       expectedRevision: 0,
-      autonomy: "routine",
-      vetoMs: null as const,
+      autonomy: "routine" as const,
+      vetoMs: null,
     };
     expect(await updateInbox(inbox.id, patch, BEA)).toEqual({
       ok: false,
@@ -672,7 +672,8 @@ describe("permissions", () => {
     });
     expect(await getInbox(inbox.id)).toEqual(inbox);
     const set = await updateInbox(inbox.id, patch, ADA);
-    expect(set.ok && set.inbox.autonomy).toBe("deploy-right-away");
+    expect(set.ok && set.inbox.autonomy).toBe("routine");
+    expect(set.ok && set.inbox.vetoMs).toBeNull();
     // Others may still edit it, resending the level, or lower it.
     const label = await updateInbox(
       inbox.id,
@@ -685,7 +686,7 @@ describe("permissions", () => {
       { expectedRevision: 2, autonomy: "draft" },
       BEA,
     );
-    expect(lowered.ok && lowered.inbox.autonomy).toBe("propose");
+    expect(lowered.ok && lowered.inbox.autonomy).toBe("draft");
   });
 
   test("on an inbox that sends right away, only the owner may drop topics or move its project or address", async () => {
