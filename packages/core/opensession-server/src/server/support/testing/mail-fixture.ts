@@ -40,6 +40,8 @@ export interface MailFixture {
   smtpReply: { code: number; message: string } | null;
   /** Live IMAP connections. */
   connections(): number;
+  /** SMTP connections opened so far, and the most open at once. */
+  smtpConnections: { opened: number; maxLive: number };
   close(): Promise<void>;
 }
 
@@ -105,6 +107,7 @@ export async function startMailFixture(
     sent,
     smtpReply: null,
     connections: () => imap.connections.size,
+    smtpConnections: { opened: 0, maxLive: 0 },
     async close() {
       await Promise.all([
         new Promise<void>((resolve) => imap.close(() => resolve())),
@@ -113,6 +116,7 @@ export async function startMailFixture(
     },
   };
 
+  let smtpLive = 0;
   const smtp = new SMTPServer({
     // A pooled client keeps a connection open; close() waits this long for
     // it (30 s by default) before dropping it.
@@ -121,6 +125,18 @@ export async function startMailFixture(
     allowInsecureAuth: true,
     disabledCommands: ["STARTTLS"],
     logger: false,
+    onConnect(_session, callback) {
+      smtpLive++;
+      fixture.smtpConnections.opened++;
+      fixture.smtpConnections.maxLive = Math.max(
+        fixture.smtpConnections.maxLive,
+        smtpLive,
+      );
+      callback();
+    },
+    onClose() {
+      smtpLive--;
+    },
     onAuth(auth, _session, callback) {
       if (auth.username === MAIL_USER && auth.password === MAIL_PASSWORD)
         callback(null, { user: auth.username });

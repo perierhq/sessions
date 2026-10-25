@@ -466,6 +466,26 @@ describe("ingestInbound", () => {
     });
   });
 
+  test("Reply-To is kept on the stored message for the reply, and left out when empty", async () => {
+    await ingested(
+      inbound({
+        replyTo: [{ name: "Ada Desk", address: " Desk@Example.test " }],
+      }),
+    );
+    await ingested(
+      inbound({ from: { name: null, address: "bob@example.test" } }),
+    );
+    const byCustomer = new Map<string, unknown>();
+    for (const row of await listIndexRows()) {
+      const c = (await getConversation(row.id))!;
+      byCustomer.set(c.customer.address, c.messages[0]!);
+    }
+    expect(byCustomer.get("ada@example.test")).toMatchObject({
+      replyTo: [{ name: "Ada Desk", address: "desk@example.test" }],
+    });
+    expect(byCustomer.get("bob@example.test")).not.toHaveProperty("replyTo");
+  });
+
   test("spf and dkim both failing count as an auth failure, one alone does not", async () => {
     await ingested(
       inbound({
