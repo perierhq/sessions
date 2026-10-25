@@ -6,6 +6,8 @@ import {
   createInbox,
   updateInbox,
 } from "./inboxes";
+import { __setActionDepsForTest } from "./actions";
+import { __setBugDepsForTest } from "./bugs";
 import {
   SUPPORT_MCP_SERVER,
   __setSupportSessionLookupForTest,
@@ -13,7 +15,7 @@ import {
   supportSessionMcp,
   supportToolDefinitions,
 } from "./mcp";
-import { wrapCustomerMessage } from "./routing";
+import { __setRoutingDepsForTest, wrapCustomerMessage } from "./routing";
 import {
   createConversation,
   getConversation,
@@ -197,4 +199,104 @@ test("draft_reply without a linked conversation does nothing", async () => {
   expect(textOf(out)).toBe(
     "This session is not linked to a support conversation",
   );
+});
+
+const toolNamed = (sessionId: string, name: string) => {
+  const tool = supportToolDefinitions({ sessionId }).find(
+    (t) => t.name === name,
+  );
+  if (!tool) throw new Error(`${name} missing`);
+  return tool;
+};
+
+async function answeredBy(sessionId: string) {
+  const mine = await conversation(1);
+  await updateConversation(mine.id, (c) => ({ ...c, sessionId }));
+  sessions[sessionId] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  return mine;
+}
+
+test("report_bug files the session's own conversation, as the agent", async () => {
+  const posted: string[] = [];
+  __setBugDepsForTest({
+    ghRepo: () => "acme/acme",
+    isPublic: async () => false,
+    createIssue: async (ghRepo, issue) => {
+      posted.push(issue.body);
+      return { number: 3, url: `https://github.com/${ghRepo}/issues/3`, repo: ghRepo };
+    },
+  });
+  try {
+    const mine = await answeredBy("os-1");
+    const tool = toolNamed("os-1", "report_bug");
+    expect(Object.keys(tool.inputSchema).sort()).toEqual(["summary", "title"]);
+    const off = await tool.handler({ title: "Export", summary: "Fails" }, {});
+    expect(textOf(off)).toBe(
+      "Bug handling is off for this inbox, so no issue was created.",
+    );
+    const updated = await updateInbox(
+      inbox.id,
+      { expectedRevision: inbox.revision, bugHandling: "issue" },
+      ADA,
+    );
+    if (!updated.ok) throw new Error(updated.error);
+    const out = await tool.handler({ title: "Export", summary: "Fails" }, {});
+    expect(textOf(out)).toBe("Created https://github.com/acme/acme/issues/3.");
+    expect(posted).toHaveLength(1);
+    expect((await getConversation(mine.id))!.issue?.number).toBe(3);
+  } finally {
+    __setBugDepsForTest(undefined);
+  }
+});
+
+test("move_conversation moves the session's own conversation", async () => {
+  const cancelled: string[] = [];
+  __setActionDepsForTest({
+    cancelSession: async (id) => {
+      cancelled.push(id);
+      return true;
+    },
+  });
+  __setRoutingDepsForTest({
+    runSpec: async () => ({
+      model: "m",
+      mcpServers: [],
+      mode: "ask",
+      sandbox: { ok: false, reason: "no place to run" },
+    }),
+  });
+  try {
+    const mine = await answeredBy("os-1");
+    const tool = toolNamed("os-1", "move_conversation");
+    expect(Object.keys(tool.inputSchema).sort()).toEqual(["project", "reason"]);
+    const refused = await tool.handler({ project: "acme", reason: "x" }, {});
+    expect(textOf(refused)).toStartWith("Not moved: ");
+    const out = await tool.handler(
+      { project: "acme-api", reason: "It's about the API" },
+      {},
+    );
+    expect(textOf(out)).toBe("Moved to acme-api. This session stops here.");
+    expect(cancelled).toEqual(["os-1"]);
+    const moved = (await getConversation(mine.id))!;
+    expect(moved.project).toBe("acme-api");
+    expect(moved.moves[0]?.by).toEqual({ kind: "agent", sessionId: "os-1" });
+  } finally {
+    __setActionDepsForTest(undefined);
+    __setRoutingDepsForTest(undefined);
+  }
+});
+
+test("a session that no longer answers the conversation can't move or report it", async () => {
+  const mine = await answeredBy("os-new");
+  sessions["os-old"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  for (const [name, args] of [
+    ["move_conversation", { project: "acme-api", reason: "x" }],
+    ["report_bug", { title: "t", summary: "s" }],
+  ] as const) {
+    const out = await toolNamed("os-old", name).handler(args, {});
+    expect(textOf(out)).toBe(
+      "This session no longer answers this conversation",
+    );
+  }
+  expect((await getConversation(mine.id))!.project).toBe("acme");
 });
