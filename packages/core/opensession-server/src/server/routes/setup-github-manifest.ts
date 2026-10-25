@@ -22,6 +22,7 @@ export const GITHUB_APP_MANIFEST_EVENTS = [
   "pull_request",
   "pull_request_review",
   "pull_request_review_comment",
+  "push",
   "status",
   "workflow_run",
 ] as const;

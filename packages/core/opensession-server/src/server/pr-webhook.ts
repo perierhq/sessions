@@ -32,6 +32,7 @@ import {
 import { githubLoginFor } from "./shared/user-mappings";
 import { scheduleSandboxEnvironmentInvalidation } from "./sandbox/environments";
 import { broadcastToAll } from "./ws-hub";
+import { invalidateAskCheckoutRefresh } from "./worktree";
 
 /** Head branches (and PR number, when known) a delivery is about. */
 function branchesFor(
@@ -226,6 +227,8 @@ export function handlePrWebhookEvent(event: string, payload: any): void {
       sandboxEnvironmentInvalidationNeeded(event, payload, repo.defaultBranch)
     ) {
       scheduleSandboxEnvironmentInvalidation(repoId);
+      // The next Ask session waits for its checkout to reach the new head.
+      invalidateAskCheckoutRefresh(repoId);
     }
     // Default-branch activity (deploy workflows on master/main) is not PR
     // activity — nudging every session parked on that branch would spend gh
