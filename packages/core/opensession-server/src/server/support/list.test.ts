@@ -25,7 +25,11 @@ function message(at: string, address: string): SupportMessage {
     cc: [],
     subject: `Question ${seq}`,
     text: `Body ${seq}`,
-    keys: { messageId: `m${seq}@example.test`, inReplyTo: null, references: [] },
+    keys: {
+      messageId: `m${seq}@example.test`,
+      inReplyTo: null,
+      references: [],
+    },
     providerId: `imap:1:${seq}`,
     attachments: [],
   };
@@ -160,8 +164,9 @@ describe("row mapping", () => {
       sessionId: null,
     });
     expect(
-      plainItem(thread({ title: null, previewText: null, statusChangedAt: null }))
-        .at,
+      plainItem(
+        thread({ title: null, previewText: null, statusChangedAt: null }),
+      ).at,
     ).toBe("2026-10-24T09:00:00.000Z");
   });
 });

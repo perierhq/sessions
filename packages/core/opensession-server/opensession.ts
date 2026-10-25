@@ -456,7 +456,10 @@ const server: import("bun").Server<WSClientData> = hotServe({
       "/catchup",
       "/reviews",
       "/reviews/*",
+      "/support",
       "/support/*",
+      "/plain",
+      "/plain/*",
     ].map((p) => [
       p,
       p === "/session/*" || p === "/workspace/*" ? sessionSpaEntry : spaEntry,

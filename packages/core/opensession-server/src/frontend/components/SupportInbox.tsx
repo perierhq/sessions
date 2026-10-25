@@ -193,7 +193,9 @@ export function SupportInbox({
     if (!mark) return null;
     const glyph = (
       <span className={ROW_MARK} role="img" aria-label={mark.label}>
-        <mark.Icon size={14} />
+        {/* dense: a 14px glyph riding in the meta line, which the 20px
+				    icon floor would otherwise make taller than the time. */}
+        <mark.Icon size={14} dense />
       </span>
     );
     return isPhone ? glyph : <Tooltip label={mark.label}>{glyph}</Tooltip>;
