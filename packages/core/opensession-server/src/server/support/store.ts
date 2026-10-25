@@ -46,11 +46,15 @@ export type ConversationListener = (
 const listeners = new Set<ConversationListener>();
 
 /** Highest revision whose index row this process wrote, so a late write
- *  never replaces a newer row. A deleted conversation is pinned at
- *  +Infinity: an index write that loses the race with its delete is
- *  dropped. Ids are never reused, so the tombstone never blocks a live
- *  conversation. */
+ *  never replaces a newer row. A delete drops the entry, so the map holds
+ *  only conversations that still exist. */
 const indexedRevision = new Map<string, number>();
+/** Deleted conversations, with when: an index write that loses the race
+ *  with its delete is dropped. A tombstone only has to outlive a write
+ *  already in flight, so it is pruned after TOMBSTONE_MS. Ids are never
+ *  reused, so a tombstone never blocks a live conversation. */
+const deletedAt = new Map<string, number>();
+const TOMBSTONE_MS = 10 * 60_000;
 /** Conversations whose last index write failed; the next update retries. */
 const staleIndex = new Set<string>();
 
@@ -82,7 +86,7 @@ function notify(
 
 function isConversationId(id: unknown): id is string {
   return (
-    typeof id === "string" && id.length <= 256 && /^sc_[0-9a-f-]+$/i.test(id)
+    typeof id === "string" && id.length <= 256 && /^sc_[0-9a-f-]+$/.test(id)
   );
 }
 
@@ -173,11 +177,16 @@ async function writeIndexRow(c: SupportConversation): Promise<void> {
     let wrote = false;
     await indexRows().update(c.id, (value) => {
       wrote = false;
+      if (deletedAt.has(c.id)) return value;
       if ((indexedRevision.get(c.id) ?? -1) > c.revision) return value;
       wrote = true;
       return indexRowFor(c);
     });
-    if (wrote && (indexedRevision.get(c.id) ?? -1) < c.revision)
+    if (
+      wrote &&
+      !deletedAt.has(c.id) &&
+      (indexedRevision.get(c.id) ?? -1) < c.revision
+    )
       indexedRevision.set(c.id, c.revision);
     staleIndex.delete(c.id);
   } catch (error) {
@@ -300,7 +309,11 @@ export async function updateConversation(
 export async function deleteConversation(id: string): Promise<boolean> {
   if (!isConversationId(id)) return false;
   // Tombstone first: an index write still in flight is dropped.
-  indexedRevision.set(id, Number.POSITIVE_INFINITY);
+  const now = Date.now();
+  for (const [deleted, at] of deletedAt)
+    if (at <= now - TOMBSTONE_MS) deletedAt.delete(deleted);
+  deletedAt.set(id, now);
+  indexedRevision.delete(id);
   staleIndex.delete(id);
   const current = await getConversation(id);
   const keysRemoved = await forgetMessageKeys(id, current);
@@ -308,6 +321,14 @@ export async function deleteConversation(id: string): Promise<boolean> {
   const rowRemoved = await indexRows().delete(id);
   if (docRemoved && current) notify(null, current);
   return keysRemoved || docRemoved || rowRemoved;
+}
+
+/** Sizes of the index bookkeeping maps (tests). */
+export function __indexBookkeepingForTest(): {
+  revisions: number;
+  tombstones: number;
+} {
+  return { revisions: indexedRevision.size, tombstones: deletedAt.size };
 }
 
 export async function listIndexRows(

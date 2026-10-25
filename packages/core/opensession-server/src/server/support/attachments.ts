@@ -5,10 +5,10 @@
 import { randomUUIDv7 } from "bun";
 import {
   mkdir,
-  readFile,
   readdir,
   rename,
   rm,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -17,11 +17,17 @@ import type { AttachmentMeta, InboxRetention } from "../../shared/support";
 import { stateDir } from "../paths";
 
 const DAY_MS = 86_400_000;
+/** An attachment directory with no conversation is left this long first:
+ *  ingest saves the files before it records them on the conversation. */
+const ORPHAN_MIN_AGE_MS = 3_600_000;
+// Lowercase only: on a case-insensitive disk two ids differing in case
+// would name one directory.
+const CONVERSATION_ID = /^sc_[0-9a-f-]{1,253}$/;
 
 export const ATTACHMENTS_DIR = (): string => stateDir("support/attachments");
 
 function conversationDir(conversationId: string): string {
-  if (!/^sc_[0-9a-f-]{1,253}$/i.test(conversationId))
+  if (!CONVERSATION_ID.test(conversationId))
     throw new Error("Invalid support conversation id");
   return join(ATTACHMENTS_DIR(), conversationId);
 }
@@ -65,15 +71,35 @@ export async function saveAttachment(
   };
 }
 
-/** null when the file is not there (expired, forgotten, never stored). */
+/** The file, read lazily: stream it or hand it to a Response (the
+ *  download route), never buffered here. null when it is not there
+ *  (expired, forgotten, never stored). */
+export async function openAttachment(
+  conversationId: string,
+  attachmentId: string,
+): Promise<Blob | null> {
+  const path = attachmentPath(conversationId, attachmentId);
+  try {
+    if (!(await stat(path)).isFile()) return null;
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+  return Bun.file(path);
+}
+
+/** The whole file in memory, for small reads; serve downloads through
+ *  `openAttachment`. null when it is not there. */
 export async function readAttachment(
   conversationId: string,
   attachmentId: string,
 ): Promise<Uint8Array | null> {
-  const path = attachmentPath(conversationId, attachmentId);
+  const file = await openAttachment(conversationId, attachmentId);
+  if (!file) return null;
   try {
-    return new Uint8Array(await readFile(path));
+    return new Uint8Array(await file.arrayBuffer());
   } catch (error) {
+    // Deleted between the check and the read.
     if (isMissing(error)) return null;
     throw error;
   }
@@ -106,4 +132,40 @@ export async function deleteConversationAttachments(
   }
   await rm(dir, { recursive: true, force: true });
   return names.filter((name) => !name.endsWith(".tmp")).length;
+}
+
+/** Removes attachment directories whose conversation no longer exists and
+ *  that are older than an hour (a crash between saving a file and recording
+ *  it, or a save racing a delete). `existing` answers which of the ids
+ *  still have a conversation. Resolves to the number of directories
+ *  removed. */
+export async function removeOrphanAttachmentDirs(
+  now: number,
+  existing: (ids: string[]) => Promise<Set<string>>,
+): Promise<number> {
+  const root = ATTACHMENTS_DIR();
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch (error) {
+    if (isMissing(error)) return 0;
+    throw error;
+  }
+  const ids = names.filter((name) => CONVERSATION_ID.test(name));
+  if (!ids.length) return 0;
+  const known = await existing(ids);
+  let removed = 0;
+  for (const id of ids) {
+    if (known.has(id)) continue;
+    const dir = join(root, id);
+    try {
+      if ((await stat(dir)).mtimeMs > now - ORPHAN_MIN_AGE_MS) continue;
+    } catch (error) {
+      if (isMissing(error)) continue;
+      throw error;
+    }
+    await rm(dir, { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
 }
