@@ -31,7 +31,12 @@ test.each<[string, MailAddress, Record<string, string>, string | null]>([
   ],
   ["auto-submitted: no", customer, { "auto-submitted": "no" }, null],
   ["auto-submitted: No (case)", customer, { "auto-submitted": " No " }, null],
-  ["auto-submitted: no; params", customer, { "auto-submitted": "no; x=y" }, null],
+  [
+    "auto-submitted: no; params",
+    customer,
+    { "auto-submitted": "no; x=y" },
+    null,
+  ],
   [
     "auto-submitted: no (comment)",
     customer,
@@ -94,7 +99,12 @@ test.each<[string, MailAddress, Record<string, string>, string | null]>([
     null,
   ],
   ["mailer-daemon", from("MAILER-DAEMON@example.test"), {}, "Bounce sender"],
-  ["mailer-daemon without a domain", from("mailer-daemon"), {}, "Bounce sender"],
+  [
+    "mailer-daemon without a domain",
+    from("mailer-daemon"),
+    {},
+    "Bounce sender",
+  ],
   ["postmaster without a domain", from("Postmaster"), {}, "Bounce sender"],
   ["postmaster", from("postmaster@mx.example.test"), {}, "Bounce sender"],
   ["noreply", from("noreply@shop.example.test"), {}, "No-reply sender"],

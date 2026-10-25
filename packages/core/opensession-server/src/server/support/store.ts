@@ -116,8 +116,10 @@ function fitDocument(c: SupportConversation): SupportConversation {
     messages[i] = { ...m, text: null };
   }
   // Each entry also costs its separating comma.
-  while (bytes > MAX_DOC_BYTES && events.length) bytes -= size(events.shift()) + 1;
-  while (bytes > MAX_DOC_BYTES && moves.length) bytes -= size(moves.shift()) + 1;
+  while (bytes > MAX_DOC_BYTES && events.length)
+    bytes -= size(events.shift()) + 1;
+  while (bytes > MAX_DOC_BYTES && moves.length)
+    bytes -= size(moves.shift()) + 1;
   return { ...c, messages, events, moves, autoSends };
 }
 
