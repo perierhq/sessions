@@ -1,11 +1,4 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  spyOn,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   type InboundMessage,
   type InboxConfig,
@@ -217,9 +210,7 @@ const messagesIn = (path: string): any[] =>
   f.imap.getMailbox(path)?.messages ?? [];
 
 /** Counts LOGIN commands; `refuse(n)` answers NO for the nth one. */
-function scriptLogin(
-  refuse: (n: number) => boolean,
-): { count: () => number } {
+function scriptLogin(refuse: (n: number) => boolean): { count: () => number } {
   const original = f.imap.getCommandHandler("LOGIN");
   let n = 0;
   f.imap.setCommandHandler(
@@ -577,15 +568,13 @@ describe("ensureFolder", () => {
   });
 
   test("lists again when the create says the folder exists", async () => {
-    const fake = fakeClient(
+    const fake = fakeClient([
+      [{ path: "INBOX", delimiter: "." }],
       [
-        [{ path: "INBOX", delimiter: "." }],
-        [
-          { path: "INBOX", delimiter: "." },
-          { path: "INBOX.Sessions.Done", delimiter: "." },
-        ],
+        { path: "INBOX", delimiter: "." },
+        { path: "INBOX.Sessions.Done", delimiter: "." },
       ],
-    );
+    ]);
     expect(await ensureFolder(fake.client, "Sessions/Done")).toBe(
       "INBOX.Sessions.Done",
     );
