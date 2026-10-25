@@ -2,9 +2,9 @@
 
 Email support connects ordinary mailboxes to Sessions. Each inbox is read over
 IMAP and answered over SMTP, with a password or an app password. New mail is
-sorted on the small model, listed under Support, and answered or drafted by a
-support session in the inbox's project, under the autonomy you choose for the
-inbox.
+labelled on the small model, listed under Support, and answered or drafted by
+a support session in the inbox's project, under the autonomy you choose for
+the inbox.
 
 The integration lives in `packages/core/opensession-server/src/agents/email/`
 (the IMAP and SMTP transports and the channel adapter) and
@@ -126,23 +126,58 @@ provider's and your domain's:
 
 ## What each setting does
 
-| Setting                    | Default                     | What it does                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Autonomy                   | Draft                       | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends. **Send after a veto window**: the reply sends when the window ends unless someone stops it. **Send right away**: the agent sends.                                                                                                                                                          |
-| Veto window in minutes     | 10                          | How long a reply waits before it sends, from 1 minute to 24 hours.                                                                                                                                                                                                                                                                                                                                   |
-| Never without a person     | All four topics             | Refunds, account deletion, legal and angry customers always wait for a person, whatever the autonomy. When the topics of a conversation are unknown (the classifier failed), every send waits.                                                                                                                                                                                                       |
-| Bug handling               | Off                         | **Create an issue** in the project's repository, or **create an issue and suggest a fix**: the conversation also gets a fix task, which a person can edit and start as their own code session in the project. Nothing starts a fix by itself. The issue holds the agent's summary with email addresses and the customer's name taken out. An issue in a public repository always waits for a person. |
-| Who may move conversations | The agent or a person       | Whether the support agent may move a conversation to another project, or only people.                                                                                                                                                                                                                                                                                                                |
-| Owner                      | Whoever connected the inbox | The owner of each new conversation, who is told when a reply needs a person. A person can hand a conversation to someone else on the team.                                                                                                                                                                                                                                                           |
-| Mailbox behaviour          | Leave untouched             | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                                                                                                                                                                                        |
-| Save a copy in Sent        | Depends on the SMTP host    | Appends each reply to the Sent folder (see below).                                                                                                                                                                                                                                                                                                                                                   |
-| Keep conversations (days)  | 180                         | How long a conversation's text is kept after it closes.                                                                                                                                                                                                                                                                                                                                              |
-| Keep attachments (days)    | 30                          | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                                                                                                                                                                                      |
-| Send limit per minute      | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                                                                                                                                                                         |
+| Setting                   | Default                     | What it does                                                                                                                                                                                                                                                                                        |
+| ------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Autonomy                  | Draft                       | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends every reply. **Send routine replies**: a reply that cites its source and needs no judgement sends on its own (after the veto window, when one is set); everything else waits for a person. |
+| Veto window in minutes    | 10                          | For routine replies: how long a reply waits before it sends, from 1 minute to 24 hours, or none (sends right away).                                                                                                                                                                                 |
+| Never without a person    | All six topics              | Money and refunds, legal, security, data export, data deletion and account deletion always wait for a person, whatever the autonomy. When a message's topics are unknown (the classifier failed), every send waits.                                                                                 |
+| Owner                     | Whoever connected the inbox | The owner of each new conversation, who is told when a reply needs a person. A person can hand a conversation to someone else on the team.                                                                                                                                                          |
+| Mailbox behaviour         | Leave untouched             | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                                                                                       |
+| Save a copy in Sent       | Depends on the SMTP host    | Appends each reply to the Sent folder (see below).                                                                                                                                                                                                                                                  |
+| Keep conversations (days) | 180                         | How long a conversation's text is kept after it closes.                                                                                                                                                                                                                                             |
+| Keep attachments (days)   | 30                          | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                                                                                     |
+| Send limit per minute     | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                                                                        |
+
+Next to the autonomy choice each inbox shows how many of the agent's drafts in
+the last 30 days were sent unchanged, sent after an edit, or discarded: the
+evidence for moving from Draft to routine replies.
 
 Any signed-in person can connect and edit inboxes. Only the instance owner can
-let an inbox send right away, allow internal mail servers, remove an inbox
-and forget a customer.
+let routine replies send right away (no veto window), allow internal mail
+servers, remove an inbox and forget a customer.
+
+## What Sessions does on its own, and what waits for a person
+
+The rule is "repetitive work is automatic, judgement is a person's".
+
+Automatic, whatever the autonomy:
+
+- Auto-replies, bounces and mailing-list mail are dropped; spam is filed.
+- A customer reply that only says thanks closes the conversation without a
+  reply. A later question opens it again.
+- A conversation waiting on the customer closes after 7 days without a reply
+  from them. No reminder mail goes out.
+
+A routine reply sends on its own only when the agent cites where its facts come
+from: a file in the project's repository, a page on the project's websites
+ticked for Support, or a record from a Support connector. Its links may point
+only to those websites, with no HTML or images.
+
+Always a person's call:
+
+- The customer asks for a person, is upset, or repeats a question that was
+  already answered.
+- A "never without a person" topic, a reply without a source, or one that
+  promises anything about policy, prices or deadlines without a source.
+- A message that tries to instruct the agent. The first one stops automatic
+  sends on that conversation; a second one stops the agent and leaves the
+  conversation to a person.
+- Bug reports: the agent prepares an issue and a fix task on the
+  conversation. A person creates the issue (only the instance owner, when the
+  repository is public) and starts the fix session. When the fix's pull
+  request merges or the issue closes, Sessions prepares an "it's fixed" note
+  that a person reviews and sends.
+- Moving a conversation to another project.
 
 When a reply needs a person, will send at the end of its veto window, or
 couldn't send, Sessions notifies the conversation's owner (the instance owner
