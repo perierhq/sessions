@@ -662,7 +662,8 @@ describe("permissions", () => {
     const inbox = await created();
     const patch = {
       expectedRevision: 0,
-      autonomy: "deploy-right-away" as const,
+      autonomy: "routine",
+      vetoMs: null as const,
     };
     expect(await updateInbox(inbox.id, patch, BEA)).toEqual({
       ok: false,
@@ -681,7 +682,7 @@ describe("permissions", () => {
     expect(label.ok).toBe(true);
     const lowered = await updateInbox(
       inbox.id,
-      { expectedRevision: 2, autonomy: "propose" },
+      { expectedRevision: 2, autonomy: "draft" },
       BEA,
     );
     expect(lowered.ok && lowered.inbox.autonomy).toBe("propose");
@@ -691,7 +692,7 @@ describe("permissions", () => {
     const inbox = await created();
     const set = await updateInbox(
       inbox.id,
-      { expectedRevision: 0, autonomy: "deploy-right-away" },
+      { expectedRevision: 0, autonomy: "routine", vetoMs: null },
       ADA,
     );
     expect(set.ok).toBe(true);
@@ -720,7 +721,7 @@ describe("permissions", () => {
       inbox.id,
       {
         expectedRevision: 2,
-        autonomy: "propose",
+        autonomy: "draft",
         neverWithoutAPerson: [],
       },
       BEA,
@@ -729,7 +730,7 @@ describe("permissions", () => {
     // The owner may do all of it.
     const raised = await updateInbox(
       inbox.id,
-      { expectedRevision: 3, autonomy: "deploy-right-away" },
+      { expectedRevision: 3, autonomy: "routine", vetoMs: null },
       ADA,
     );
     expect(raised.ok).toBe(true);

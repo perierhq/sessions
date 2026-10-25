@@ -20,8 +20,11 @@ import {
   CUSTOMER,
   INBOX_ADDRESS,
   useReplyTestbed,
+  CITED,
+  cleanLabels,
 } from "./testing/reply-testbed";
 import { runSupportTick } from "./tick";
+import { draftStats } from "./draft-stats";
 
 const tb = useReplyTestbed();
 
@@ -39,7 +42,7 @@ function stringsOf(value: unknown): string[] {
 
 async function draftNeedingPerson() {
   const c = await tb.conversation();
-  const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+  const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
   if (!proposed.ok) throw new Error(proposed.error);
   return { c, draft: proposed.draft };
 }
@@ -55,9 +58,9 @@ describe("proposeDraft", () => {
   });
 
   test("send right away with known topics sends at once, marked automatic", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.draft.state).toBe("sent");
     expect(tb.fixture().sent).toHaveLength(1);
@@ -78,13 +81,19 @@ describe("proposeDraft", () => {
   });
 
   test("the fourth automatic reply within an hour waits for a person", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     for (let i = 0; i < 3; i++) {
-      const sent = await proposeDraft(c.id, `${DRAFT} (${i})`, AGENT);
+      const sent = await proposeDraft(
+        c.id,
+        `${DRAFT} (${i})`,
+        AGENT,
+        undefined,
+        CITED,
+      );
       expect(sent.ok && sent.draft.state).toBe("sent");
     }
-    const fourth = await proposeDraft(c.id, DRAFT, AGENT);
+    const fourth = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(fourth.ok).toBe(true);
     if (fourth.ok) {
       expect(fourth.draft.state).toBe("needs-person");
@@ -94,28 +103,28 @@ describe("proposeDraft", () => {
   });
 
   test("route 'simple' with unknown topics never sends on its own", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation({
       triage: { route: "simple", topics: null },
     });
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.state).toBe("needs-person");
     expect(tb.fixture().sent).toHaveLength(0);
   });
 
   test("trust is checked on the message replyTarget answers", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const failed = await tb.conversation({
       trust: { replyToDiffers: false, authFailed: true },
     });
-    const a = await proposeDraft(failed.id, DRAFT, AGENT);
+    const a = await proposeDraft(failed.id, DRAFT, AGENT, undefined, CITED);
     expect(a.ok && a.draft.rule).toBe("The sender could not be verified");
 
     // A Reply-To elsewhere, even when ingest didn't flag it.
     const elsewhere = await tb.conversation({
       replyTo: [{ name: null, address: "billing@other.example.test" }],
     });
-    const b = await proposeDraft(elsewhere.id, DRAFT, AGENT);
+    const b = await proposeDraft(elsewhere.id, DRAFT, AGENT, undefined, CITED);
     expect(b.ok && b.draft.rule).toBe(
       "Replies would go to a different address than the sender",
     );
@@ -123,10 +132,10 @@ describe("proposeDraft", () => {
   });
 
   test("a veto decision opens a window and sends nothing yet", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto", vetoMs: 600_000 });
+    await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });
     const c = await tb.conversation();
     const before = Date.now();
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.draft.state).toBe("veto");
@@ -138,9 +147,15 @@ describe("proposeDraft", () => {
 
   test("an empty draft is refused; a missing conversation is 404", async () => {
     const c = await tb.conversation();
-    const empty = await proposeDraft(c.id, "   ", AGENT);
+    const empty = await proposeDraft(c.id, "   ", AGENT, undefined, CITED);
     expect(empty).toMatchObject({ ok: false, status: 400 });
-    const missing = await proposeDraft("sc_0000-missing", DRAFT, AGENT);
+    const missing = await proposeDraft(
+      "sc_0000-missing",
+      DRAFT,
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(missing).toMatchObject({ ok: false, status: 404 });
   });
 });
@@ -208,9 +223,9 @@ describe("sendDraft", () => {
   });
 
   test("stops and discards are audited", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    await tb.setInbox({ autonomy: "routine" });
     const c = await tb.conversation();
-    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     if (!proposed.ok) throw new Error(proposed.error);
     await stopVeto(c.id, proposed.draft.id, ADA);
     await discardDraft(c.id, proposed.draft.id, ADA);
@@ -324,9 +339,9 @@ describe("sendDraft", () => {
 
 describe("veto, discard, person replies", () => {
   test("stopping a veto hands the draft to a person", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    await tb.setInbox({ autonomy: "routine" });
     const c = await tb.conversation();
-    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     if (!proposed.ok) throw new Error(proposed.error);
     const stopped = await stopVeto(c.id, proposed.draft.id, ADA);
     expect(stopped.ok).toBe(true);
@@ -424,7 +439,7 @@ async function customerWritesAgain(
     providerId: null,
     attachments: [],
     trust: { replyToDiffers: false, authFailed: false, authVerified: true },
-    topicsChecked: true,
+    triage: cleanLabels(),
     ...over,
   };
   await updateConversation(conversationId, (x) => ({
@@ -483,19 +498,31 @@ describe("sends that may have gone out", () => {
 
 describe("after a person stopped the agent", () => {
   test("stop, then the agent proposes again: it waits for a person, until a person acts", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    await tb.setInbox({ autonomy: "routine" });
     const c = await tb.conversation();
-    const first = await proposeDraft(c.id, DRAFT, AGENT);
+    const first = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     if (!first.ok) throw new Error(first.error);
     expect((await stopVeto(c.id, first.draft.id, ADA)).ok).toBe(true);
 
-    const again = await proposeDraft(c.id, `${DRAFT} Really.`, AGENT);
+    const again = await proposeDraft(
+      c.id,
+      `${DRAFT} Really.`,
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(again.ok && again.draft.state).toBe("needs-person");
     expect(again.ok && again.draft.rule).toBe(
       "A person stopped the last reply",
     );
     // And the time after, too.
-    const third = await proposeDraft(c.id, `${DRAFT} Once more.`, AGENT);
+    const third = await proposeDraft(
+      c.id,
+      `${DRAFT} Once more.`,
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(third.ok && third.draft.rule).toBe(
       "A person stopped the last reply",
     );
@@ -504,19 +531,25 @@ describe("after a person stopped the agent", () => {
     // A person sends: the hold ends.
     if (!third.ok) throw new Error(third.error);
     expect((await sendDraft(c.id, third.draft.id, ADA)).ok).toBe(true);
-    const fourth = await proposeDraft(c.id, "Anything else?", AGENT);
+    const fourth = await proposeDraft(
+      c.id,
+      "Anything else?",
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(fourth.ok && fourth.draft.state).toBe("veto");
   });
 
   test("a discard holds the agent's next draft for a person", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
-    await tb.setInbox({ autonomy: "propose" });
-    const first = await proposeDraft(c.id, DRAFT, AGENT);
+    await tb.setInbox({ autonomy: "draft" });
+    const first = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     if (!first.ok) throw new Error(first.error);
     expect((await discardDraft(c.id, first.draft.id, ADA)).ok).toBe(true);
-    await tb.setInbox({ autonomy: "deploy-right-away" });
-    const again = await proposeDraft(c.id, DRAFT, AGENT);
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const again = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(again.ok && again.draft.rule).toBe(
       "A person stopped the last reply",
     );
@@ -524,16 +557,16 @@ describe("after a person stopped the agent", () => {
   });
 
   test("a send that may have gone out holds the agent's next draft", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     tb.fixture().smtpDropAfterData = true;
-    await proposeDraft(c.id, DRAFT, AGENT);
+    await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     tb.fixture().smtpDropAfterData = false;
     expect((await getConversation(c.id))!.draft?.lastError).toBe(
       INTERRUPTED_SEND,
     );
     const sent = tb.fixture().sent.length;
-    const again = await proposeDraft(c.id, DRAFT, AGENT);
+    const again = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(again.ok && again.draft.rule).toBe(
       "A person stopped the last reply",
     );
@@ -579,10 +612,10 @@ describe("discarding a send", () => {
 
 describe("spam conversations", () => {
   test("an agent's draft on spam waits; a person's reply keeps it spam", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     await updateConversation(c.id, (x) => ({ ...x, status: "spam" }));
-    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(proposed.ok && proposed.draft.rule).toBe(
       "The conversation is marked as spam",
     );
@@ -608,31 +641,31 @@ describe("who acted", () => {
 
 describe("automatic sends need checked topics and an authenticated sender", () => {
   test("a newer message whose topics aren't checked yet holds the send", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
-    await customerWritesAgain(c.id, { topicsChecked: undefined });
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    await customerWritesAgain(c.id, { triage: undefined });
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.rule).toBe(
-      "The newest message's topics aren't checked yet",
+      "The newest message isn't checked yet",
     );
     expect(tb.fixture().sent).toHaveLength(0);
   });
 
   test("an earlier unchecked message since our last reply holds it too", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
-    await customerWritesAgain(c.id, { topicsChecked: undefined });
+    await customerWritesAgain(c.id, { triage: undefined });
     await customerWritesAgain(c.id);
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.state).toBe("needs-person");
   });
 
   test("a sender without positive authentication waits for a person", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation({
       trust: { replyToDiffers: false, authFailed: false },
     });
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.rule).toBe(
       "The sender's mail wasn't authenticated",
     );
@@ -640,7 +673,7 @@ describe("automatic sends need checked topics and an authenticated sender", () =
   });
 
   test("the inbox's hourly cap holds automatic sends across conversations", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const now = Date.now();
     await catalogDocuments("support-pending").update(
       `autosends:${tb.inbox().id}`,
@@ -656,7 +689,7 @@ describe("automatic sends need checked topics and an authenticated sender", () =
       }),
     );
     const c = await tb.conversation();
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.rule).toBe(
       `${AUTO_SENDS_PER_INBOX_PER_HOUR} automatic replies from this inbox in the last hour`,
     );
@@ -666,13 +699,119 @@ describe("automatic sends need checked topics and an authenticated sender", () =
   });
 
   test("an automatic send counts against the inbox's cap", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
-    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
     expect(result.ok && result.draft.state).toBe("sent");
     const entry = (await catalogDocuments("support-pending").list()).find(
       (e) => e.key === `autosends:${tb.inbox().id}`,
     );
     expect((entry?.value as { sends: unknown[] }).sends).toHaveLength(1);
+  });
+});
+
+describe("routine sends need a cited source, clean labels and the project's links", () => {
+  test("a draft without a source waits for a person", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft).toMatchObject({
+      state: "needs-person",
+      rule: "No source cited",
+    });
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a promise without a source waits for a person", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, {
+      promises: true,
+    });
+    expect(result.ok && result.draft.rule).toBe(
+      "A promise without a source needs a person",
+    );
+    expect(result.ok && result.draft.promises).toBe(true);
+  });
+
+  test("a link outside the project's sites waits for a person", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(
+      c.id,
+      "Log in at https://evil.example.test/login to fix it.",
+      AGENT,
+      undefined,
+      CITED,
+    );
+    expect(result.ok && result.draft.rule).toBe(
+      "Links outside the project's sites",
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a cited draft with links to the project's sites sends and keeps its sources", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(
+      c.id,
+      "See https://docs.acme.example.test/export",
+      AGENT,
+      undefined,
+      CITED,
+    );
+    expect(result.ok && result.draft.state).toBe("sent");
+    expect(result.ok && result.draft.sources).toEqual(CITED.sources);
+  });
+
+  for (const [label, rule] of [
+    ["injection", "The message tries to instruct the agent"],
+    ["wantsHuman", "The customer asked for a person"],
+    ["angry", "The customer sounds upset"],
+    ["repeat", "The customer repeats an answered question"],
+  ] as const)
+    test(`a message labelled ${label} waits for a person`, async () => {
+      await tb.setInbox({ autonomy: "routine", vetoMs: null });
+      const c = await tb.conversation({ labels: { [label]: true } });
+      const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+      expect(result.ok && result.draft.rule).toBe(rule);
+    });
+
+  test("an injection flag earlier in the conversation holds later sends", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    await updateConversation(c.id, (x) => ({ ...x, injectionFlags: 1 }));
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(result.ok && result.draft.rule).toBe(
+      "The message tries to instruct the agent",
+    );
+  });
+});
+
+describe("draft figures", () => {
+  test("count agent drafts sent unchanged, sent edited and discarded", async () => {
+    const inboxId = tb.inbox().id;
+    const a = await tb.conversation();
+    const first = await proposeDraft(a.id, DRAFT, AGENT, undefined, CITED);
+    if (!first.ok) throw new Error(first.error);
+    expect((await sendDraft(a.id, first.draft.id, ADA)).ok).toBe(true);
+    const b = await tb.conversation();
+    const second = await proposeDraft(b.id, DRAFT, AGENT, undefined, CITED);
+    if (!second.ok) throw new Error(second.error);
+    expect(
+      (await sendDraft(b.id, second.draft.id, ADA, { text: "Edited." })).ok,
+    ).toBe(true);
+    const d = await tb.conversation();
+    const third = await proposeDraft(d.id, DRAFT, AGENT, undefined, CITED);
+    if (!third.ok) throw new Error(third.error);
+    expect((await discardDraft(d.id, third.draft.id, ADA)).ok).toBe(true);
+    // A person's own reply is not an agent draft.
+    await replyAsPerson((await tb.conversation()).id, "Hi", "Ada");
+    expect(await draftStats(inboxId)).toEqual({
+      days: 30,
+      sentUnchanged: 1,
+      sentEdited: 1,
+      discarded: 1,
+    });
   });
 });

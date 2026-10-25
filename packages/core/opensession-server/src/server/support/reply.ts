@@ -34,8 +34,10 @@ import {
   type MailAddress,
   type SupportActor,
   type SupportConversation,
+  type DraftSource,
   type SupportDraft,
   type SupportMessage,
+  DRAFT_SOURCE_KINDS,
   normalizeMessageId,
   ownMailAddresses,
 } from "../../shared/support";
@@ -49,7 +51,14 @@ import {
   channelAdapterFor,
 } from "./channel";
 import { getInbox, listInboxes } from "./inboxes";
-import { type ReplyDecision, RULES, decideReply } from "./policy";
+import { recordDraftOutcome } from "./draft-stats";
+import {
+  type ProjectSites,
+  type ReplyDecision,
+  RULES,
+  decideReply,
+  replyLabels,
+} from "./policy";
 import {
   getConversation,
   rememberMessageIds,
@@ -271,9 +280,12 @@ export function answeredTrust(
   return pinTrust(c, currentPin(c, own));
 }
 
-/** Whether every customer message the reply answers — the pinned one and
- *  each since our last reply — had its topics classified (routing.ts). */
-function topicsChecked(c: SupportConversation, pin: ReplyPin): boolean {
+/** The customer messages the reply answers: each since our last reply
+ *  and the pinned one. */
+function answeredMessages(
+  c: SupportConversation,
+  pin: ReplyPin,
+): SupportMessage[] {
   const lastOut = c.messages.findLastIndex((m) => m.direction === "out");
   const answered = c.messages
     .slice(lastOut + 1)
@@ -281,9 +293,64 @@ function topicsChecked(c: SupportConversation, pin: ReplyPin): boolean {
   const target = pin.answersMessageId
     ? c.messages.find((m) => m.id === pin.answersMessageId)
     : undefined;
-  return [...answered, ...(target ? [target] : [])].every(
-    (m) => m.topicsChecked === true,
-  );
+  return target && !answered.includes(target)
+    ? [...answered, target]
+    : answered;
+}
+
+/** What a draft says about itself, for the policy. */
+export interface DraftMeta {
+  sources?: DraftSource[];
+  promises?: boolean;
+  purpose?: NonNullable<SupportDraft["purpose"]>;
+}
+
+const MAX_SOURCES = 10;
+
+/** The sources as stored: well-formed entries only, at most MAX_SOURCES. */
+export function cleanSources(raw: unknown): DraftSource[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DraftSource[] = [];
+  for (const x of raw) {
+    const kind = (x as DraftSource | null)?.kind;
+    const ref = (x as DraftSource | null)?.ref;
+    if (!kind || !DRAFT_SOURCE_KINDS.includes(kind)) continue;
+    if (typeof ref !== "string" || !ref.trim() || ref.length > 500) continue;
+    out.push({ kind, ref: ref.trim() });
+    if (out.length >= MAX_SOURCES) break;
+  }
+  return out;
+}
+
+// ── The project's sites (sources and links) ──────────────────────────────
+
+type SitesReader = (project: string) => Promise<ProjectSites>;
+let sitesOverride: SitesReader | undefined;
+
+/** Replace how the project's Support websites and connectors are read
+ *  (tests); undefined restores it. */
+export function __setProjectSitesForTest(reader?: SitesReader): void {
+  sitesOverride = reader;
+}
+
+/** The project's websites and connectors ticked for Support; none when
+ *  the settings can't be read (every agent draft then waits). */
+async function projectSites(project: string): Promise<ProjectSites> {
+  if (sitesOverride) return sitesOverride(project);
+  try {
+    const [{ roleWebAccess }, { supportMcpServers }] = await Promise.all([
+      import("../projects/effective"),
+      import("./session-policy"),
+    ]);
+    const [web, connectors] = await Promise.all([
+      roleWebAccess(project, "support"),
+      supportMcpServers(project),
+    ]);
+    return { hosts: web.websites, connectors };
+  } catch (error) {
+    console.warn("[support] project sites unreadable:", errorName(error));
+    return { hosts: [], connectors: [] };
+  }
 }
 
 function autoSendsSince(c: SupportConversation, now: number): number {
@@ -303,17 +370,28 @@ function decide(
   pin: ReplyPin,
   now: number,
   inboxSends: number,
+  draft: { text: string } & DraftMeta,
+  sites: ProjectSites,
 ): ReplyDecision {
   return decideReply({
     author,
     inbox: inbox ?? {
       enabled: false,
       autonomy: "watch",
-      vetoMs: 0,
+      vetoMs: null,
       neverWithoutAPerson: [],
     },
     triage: c.triage,
-    topicsChecked: topicsChecked(c, pin),
+    labels: replyLabels(answeredMessages(c, pin)),
+    injectionFlags: c.injectionFlags ?? 0,
+    personOnly: Boolean(c.personOnly),
+    draft: {
+      text: draft.text,
+      sources: draft.sources ?? [],
+      promises: draft.promises === true,
+      purpose: draft.purpose ?? "reply",
+    },
+    sites,
     autoSendsLastHour: autoSendsSince(c, now),
     inboxAutoSendsLastHour: inboxSends,
     now,
@@ -327,7 +405,8 @@ async function context(c: SupportConversation) {
   const inbox = await getInbox(c.inboxId);
   const others = inbox ? await otherInboxAddresses(inbox) : [];
   const own = inbox ? ownMailAddresses(inbox, others) : [];
-  return { inbox, others, own };
+  const sites = await projectSites(c.project);
+  return { inbox, others, own, sites };
 }
 
 // ── Propose ──────────────────────────────────────────────────────────────
@@ -340,8 +419,9 @@ export async function proposeDraft(
   text: string,
   author: SupportActor,
   now = Date.now(),
+  meta: DraftMeta = {},
 ): Promise<Result<{ draft: SupportDraft }>> {
-  const result = await propose(conversationId, text, author, now);
+  const result = await propose(conversationId, text, author, now, meta);
   return result.ok ? { ok: true, draft: result.draft } : result;
 }
 
@@ -373,6 +453,7 @@ async function propose(
   rawText: string,
   author: SupportActor,
   now = Date.now(),
+  rawMeta: DraftMeta = {},
 ): Promise<
   { ok: true; draft: SupportDraft; message: SupportMessage | null } | Failure
 > {
@@ -382,7 +463,12 @@ async function propose(
   if (!current) return fail(404, "Conversation not found");
   if (current.draft?.state === "sending")
     return fail(409, "A reply is being sent");
-  const { inbox, others, own } = await context(current);
+  const { inbox, others, own, sites } = await context(current);
+  const meta: DraftMeta = {
+    sources: cleanSources(rawMeta.sources),
+    promises: rawMeta.promises === true,
+    purpose: rawMeta.purpose === "fixed-note" ? "fixed-note" : "reply",
+  };
   const draftId = `sd_${randomUUIDv7()}`;
   const messageId = newMessageId(inbox?.address ?? "");
 
@@ -396,6 +482,8 @@ async function propose(
     currentPin(current, own),
     now,
     inboxSends,
+    { text, ...meta },
+    sites,
   );
   if (provisional.kind === "veto")
     await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
@@ -423,7 +511,19 @@ async function propose(
       return null;
     }
     const pin = currentPin(c, own);
-    const decision = decide(c, author, inbox, pin, now, inboxSends);
+    const decision = decide(
+      c,
+      author,
+      inbox,
+      pin,
+      now,
+      inboxSends,
+      {
+        text,
+        ...meta,
+      },
+      sites,
+    );
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
       failure = fail(409, "The conversation changed; try again");
@@ -431,7 +531,10 @@ async function propose(
     }
     draft = {
       id: draftId,
+      ...(meta.purpose === "fixed-note" ? { purpose: meta.purpose } : {}),
       text,
+      ...(meta.sources?.length ? { sources: meta.sources } : {}),
+      ...(meta.promises ? { promises: true } : {}),
       author,
       createdAt: iso(now),
       state: decision.kind === "send" ? "sending" : decision.kind,
@@ -651,7 +754,7 @@ async function claimAndDeliver(
     return current.messages.some((m) => m.draftId === draftId)
       ? fail(409, "This reply was already sent")
       : fail(404, "Draft not found");
-  const { inbox, others, own } = await context(current);
+  const { inbox, others, own, sites } = await context(current);
   const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
 
   // The work index first (see the header); the claim below decides.
@@ -710,7 +813,16 @@ async function claimAndDeliver(
       if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
       if (decidedBy.kind !== "person") {
         // An automatic send: the policy must still let it go.
-        const decision = decide(c, d.author, inbox, pin, now, inboxSends);
+        const decision = decide(
+          c,
+          d.author,
+          inbox,
+          pin,
+          now,
+          inboxSends,
+          d,
+          sites,
+        );
         if (decision.kind === "needs-person") return toPerson(decision.rule);
       }
     } else {
@@ -740,7 +852,16 @@ async function claimAndDeliver(
               return null;
             }
             if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
-            const decision = decide(c, d.author, inbox, pin, now, inboxSends);
+            const decision = decide(
+              c,
+              d.author,
+              inbox,
+              pin,
+              now,
+              inboxSends,
+              d,
+              sites,
+            );
             if (decision.kind === "needs-person")
               return toPerson(decision.rule);
           } else if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
@@ -759,6 +880,7 @@ async function claimAndDeliver(
     claimed = {
       ...d,
       text: editText ?? d.text,
+      ...(edited || d.edited ? { edited: true } : {}),
       state: "sending",
       rule,
       vetoDeadline: null,
@@ -934,6 +1056,12 @@ async function deliverInFlight(
     textDigest: digest(draft.text),
     messageId: ourId,
   });
+  if (draft.author.kind === "agent" && draft.purpose !== "fixed-note")
+    await recordDraftOutcome(
+      c.inboxId,
+      opts.edited || draft.edited ? "edited" : "unchanged",
+      opts.now,
+    );
   return { ok: true, message };
 }
 
@@ -1094,6 +1222,10 @@ export async function discardDraft(
     result.draft,
     by,
   );
+  if (result.draft.author.kind === "agent") {
+    const c = await getConversation(conversationId);
+    if (c) await recordDraftOutcome(c.inboxId, "discarded", now);
+  }
   return { ok: true };
 }
 

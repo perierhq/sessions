@@ -14,7 +14,7 @@ import { proposeDraft } from "./reply";
 import { __setRoutingDepsForTest } from "./routing";
 import type { SupportRunSpec } from "./session-policy";
 import { getConversation, updateConversation } from "./store";
-import { useReplyTestbed } from "./testing/reply-testbed";
+import { useReplyTestbed, CITED } from "./testing/reply-testbed";
 
 const tb = useReplyTestbed();
 
@@ -245,7 +245,13 @@ describe("close, reopen and not spam", () => {
     expect((await getConversation(c.id))!.draft?.state).toBe("discarded");
 
     // The agent's next draft waits for a person.
-    const late = await proposeDraft(c.id, "One more thing", AGENT);
+    const late = await proposeDraft(
+      c.id,
+      "One more thing",
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(late.ok && late.draft.state).toBe("needs-person");
   });
 

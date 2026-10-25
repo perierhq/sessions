@@ -23,6 +23,8 @@ import {
   updateConversation,
 } from "./store";
 import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
+import { TEST_SITES, cleanLabels } from "./testing/reply-testbed";
+import { __setProjectSitesForTest } from "./reply";
 
 const kernel = useSupportTestKernel();
 const INBOX = "help@acme.example.test";
@@ -39,6 +41,7 @@ beforeEach(async () => {
   sessions = {};
   __setSupportSessionLookupForTest(async (id) => sessions[id]);
   __setInboxProjectCheckForTest((id) => TEST_PROJECTS.includes(id));
+  __setProjectSitesForTest(async () => ({ ...TEST_SITES }));
   previousSecrets = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
   process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = join(
     kernel.root(),
@@ -67,6 +70,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   __setSupportSessionLookupForTest(undefined);
+  __setProjectSitesForTest(undefined);
   __setInboxProjectCheckForTest(undefined);
   if (previousSecrets === undefined)
     delete process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
@@ -165,8 +169,12 @@ test("draft_reply drafts on the session's own conversation", async () => {
   await updateConversation(mine.id, (c) => ({ ...c, sessionId: "os-1" }));
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const tool = draftReplyTool("os-1");
-  // Only the text; never a conversation id.
-  expect(Object.keys(tool.inputSchema)).toEqual(["text"]);
+  // The text and what it cites; never a conversation id.
+  expect(Object.keys(tool.inputSchema)).toEqual([
+    "text",
+    "sources",
+    "promises",
+  ]);
   const out = await tool.handler({ text: "Fixed, please retry." }, {});
   expect(textOf(out)).toBe("Waiting for a person: Drafts wait for a person");
   const draft = (await getConversation(mine.id))!.draft!;
@@ -178,7 +186,7 @@ test("draft_reply drafts on the session's own conversation", async () => {
 test("draft_reply says when a veto window ends", async () => {
   const updated = await updateInbox(
     inbox.id,
-    { expectedRevision: inbox.revision, autonomy: "deploy-after-veto" },
+    { expectedRevision: inbox.revision, autonomy: "routine" },
     ADA,
   );
   if (!updated.ok) throw new Error(updated.error);
@@ -190,7 +198,7 @@ test("draft_reply says when a veto window ends", async () => {
     messages: c.messages.map((m) => ({
       ...m,
       trust: { replyToDiffers: false, authFailed: false, authVerified: true },
-      topicsChecked: true as const,
+      triage: cleanLabels(),
     })),
     triage: {
       route: "work",
@@ -201,8 +209,14 @@ test("draft_reply says when a veto window ends", async () => {
     },
   }));
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
-  const out = await draftReplyTool("os-1").handler({ text: "Fixed." }, {});
+  const out = await draftReplyTool("os-1").handler(
+    { text: "Fixed.", sources: [{ kind: "repo", ref: "docs/export.md" }] },
+    {},
+  );
   expect(textOf(out)).toMatch(/^Sends at \d\d:\d\d unless someone stops it\.$/);
+  expect((await getConversation(mine.id))!.draft!.sources).toEqual([
+    { kind: "repo", ref: "docs/export.md" },
+  ]);
 });
 
 test("draft_reply from a session that no longer answers the conversation does nothing", async () => {

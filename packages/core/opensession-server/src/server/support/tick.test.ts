@@ -9,7 +9,7 @@ import {
   stopVeto,
 } from "./reply";
 import { getConversation, updateConversation } from "./store";
-import { useReplyTestbed } from "./testing/reply-testbed";
+import { useReplyTestbed, CITED } from "./testing/reply-testbed";
 import { INTERRUPTED_SEND, emailSupportOn, runSupportTick } from "./tick";
 
 const tb = useReplyTestbed();
@@ -19,9 +19,15 @@ const ADA: SupportActor = { kind: "person", name: "Ada" };
 const MINUTE = 60_000;
 
 async function vetoDraft(vetoMs = 600_000) {
-  await tb.setInbox({ autonomy: "deploy-after-veto", vetoMs });
+  await tb.setInbox({ autonomy: "routine", vetoMs });
   const c = await tb.conversation();
-  const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+  const proposed = await proposeDraft(
+    c.id,
+    "Fixed, please retry.",
+    AGENT,
+    undefined,
+    CITED,
+  );
   if (!proposed.ok) throw new Error(proposed.error);
   expect(proposed.draft.state).toBe("veto");
   return {
@@ -71,7 +77,7 @@ describe("runSupportTick", () => {
 
   test("a veto whose inbox went back to Draft waits for a person", async () => {
     const { c, deadline } = await vetoDraft();
-    await tb.setInbox({ autonomy: "propose" });
+    await tb.setInbox({ autonomy: "draft" });
     expect((await runSupportTick(deadline + 1)).vetoSent).toBe(0);
     expect(tb.fixture().sent).toHaveLength(0);
     const draft = (await getConversation(c.id))!.draft!;
@@ -80,9 +86,15 @@ describe("runSupportTick", () => {
   });
 
   test("a send interrupted by a restart fails and is never resent", async () => {
-    await tb.setInbox({ autonomy: "propose" });
+    await tb.setInbox({ autonomy: "draft" });
     const c = await tb.conversation();
-    const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    const proposed = await proposeDraft(
+      c.id,
+      "Fixed, please retry.",
+      AGENT,
+      undefined,
+      CITED,
+    );
     if (!proposed.ok) throw new Error(proposed.error);
     const startedAt = Date.now();
     // What a crash in the middle of an SMTP send leaves behind.
@@ -121,9 +133,15 @@ describe("runSupportTick", () => {
   });
 
   test("a transient failure is retried when due", async () => {
-    await tb.setInbox({ autonomy: "propose" });
+    await tb.setInbox({ autonomy: "draft" });
     const c = await tb.conversation();
-    const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    const proposed = await proposeDraft(
+      c.id,
+      "Fixed, please retry.",
+      AGENT,
+      undefined,
+      CITED,
+    );
     if (!proposed.ok) throw new Error(proposed.error);
     tb.fixture().smtpReply = { code: 451, message: "Try again later" };
     await sendDraft(c.id, proposed.draft.id, ADA);
@@ -141,9 +159,15 @@ describe("runSupportTick", () => {
   });
 
   test("three transient failures fail the draft", async () => {
-    await tb.setInbox({ autonomy: "propose" });
+    await tb.setInbox({ autonomy: "draft" });
     const c = await tb.conversation();
-    const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    const proposed = await proposeDraft(
+      c.id,
+      "Fixed, please retry.",
+      AGENT,
+      undefined,
+      CITED,
+    );
     if (!proposed.ok) throw new Error(proposed.error);
     tb.fixture().smtpReply = { code: 451, message: "Try again later" };
     await sendDraft(c.id, proposed.draft.id, ADA);
@@ -220,14 +244,20 @@ describe("retries and the pinned target", () => {
   });
 
   test("an automatic retry checks the policy again", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     tb.fixture().smtpReply = { code: 451, message: "Try again later" };
-    const proposed = await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    const proposed = await proposeDraft(
+      c.id,
+      "Fixed, please retry.",
+      AGENT,
+      undefined,
+      CITED,
+    );
     expect(proposed.ok).toBe(false);
     const waiting = (await getConversation(c.id))!.draft!;
     expect(waiting.state).toBe("sending");
-    await tb.setInbox({ autonomy: "propose" });
+    await tb.setInbox({ autonomy: "draft" });
     const sentBefore = tb.fixture().sent.length;
     await runSupportTick(Date.parse(waiting.nextAttemptAt!) + 1);
     expect(tb.fixture().sent.length).toBe(sentBefore);
@@ -237,10 +267,10 @@ describe("retries and the pinned target", () => {
   });
 
   test("an automatic retry after a newer message waits for a person", async () => {
-    await tb.setInbox({ autonomy: "deploy-right-away" });
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const c = await tb.conversation();
     tb.fixture().smtpReply = { code: 451, message: "Try again later" };
-    await proposeDraft(c.id, "Fixed, please retry.", AGENT);
+    await proposeDraft(c.id, "Fixed, please retry.", AGENT, undefined, CITED);
     const waiting = (await getConversation(c.id))!.draft!;
     await updateConversation(c.id, (x) => ({
       ...x,
@@ -281,10 +311,16 @@ describe("the tick's keys", () => {
   });
 
   test("due vetoes of one tick are sent within its time budget", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto", vetoMs: MINUTE });
+    await tb.setInbox({ autonomy: "routine", vetoMs: MINUTE });
     for (let i = 0; i < 3; i++) {
       const c = await tb.conversation();
-      const proposed = await proposeDraft(c.id, `Fixed (${i}).`, AGENT);
+      const proposed = await proposeDraft(
+        c.id,
+        `Fixed (${i}).`,
+        AGENT,
+        undefined,
+        CITED,
+      );
       if (!proposed.ok) throw new Error(proposed.error);
     }
     const result = await runSupportTick(Date.now() + 2 * MINUTE);

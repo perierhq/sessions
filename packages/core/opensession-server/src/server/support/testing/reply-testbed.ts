@@ -7,6 +7,7 @@ import { afterEach, beforeEach } from "bun:test";
 import { EmailChannelAdapter } from "../../../agents/email/adapter";
 import { join } from "node:path";
 import type {
+  MessageTriage,
   InboxConfig,
   InboxPatch,
   SupportConversation,
@@ -20,7 +21,11 @@ import {
   getInbox,
   updateInbox,
 } from "../inboxes";
-import { __resetReplyStateForTest } from "../reply";
+import {
+  type DraftMeta,
+  __resetReplyStateForTest,
+  __setProjectSitesForTest,
+} from "../reply";
 import { createConversation, updateConversation } from "../store";
 import { TEST_PROJECTS, useSupportTestKernel } from "./kernel-fixture";
 import {
@@ -53,6 +58,33 @@ export const CUSTOMER = {
 /** The instance owner, so every autonomy level may be set. */
 export const OWNER = { name: "Ada", verified: true, isInstanceOwner: true };
 
+/** The project's Support websites and connectors in these tests. */
+export const TEST_SITES = {
+  hosts: ["docs.acme.example.test"],
+  connectors: ["acme-crm"],
+};
+
+/** What an agent draft cites, so a routine inbox may send it. */
+export const CITED: DraftMeta = {
+  sources: [{ kind: "repo", ref: "docs/export.md" }],
+};
+
+/** A customer message's triage labels: nothing flagged, over `over`. */
+export function cleanLabels(over: Partial<MessageTriage> = {}): MessageTriage {
+  return {
+    route: "work",
+    topics: [],
+    injection: false,
+    wantsHuman: false,
+    angry: false,
+    repeat: false,
+    bug: false,
+    thanksOnly: false,
+    at: new Date().toISOString(),
+    ...over,
+  };
+}
+
 export function useReplyTestbed() {
   const kernel = useSupportTestKernel();
   let fixture: MailFixture | undefined;
@@ -63,6 +95,7 @@ export function useReplyTestbed() {
 
   beforeEach(async () => {
     __resetReplyStateForTest();
+    __setProjectSitesForTest(async () => ({ ...TEST_SITES }));
     __setInboxProjectCheckForTest((id) => TEST_PROJECTS.includes(id));
     previousSecrets = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
     process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = join(
@@ -95,6 +128,7 @@ export function useReplyTestbed() {
     fixture = undefined;
     inbox = undefined;
     __resetReplyStateForTest();
+    __setProjectSitesForTest(undefined);
     __setInboxProjectCheckForTest(undefined);
     if (previousSecrets === undefined)
       delete process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
@@ -136,8 +170,10 @@ export function useReplyTestbed() {
         replyTo?: SupportMessage["replyTo"];
         trust?: SupportMessage["trust"];
         triage?: Partial<TriageVerdict> | null;
-        /** false: the message's topics were never classified. */
+        /** false: the message was never labelled by triage. */
         topicsChecked?: boolean;
+        /** The message's triage labels over clean ones. */
+        labels?: Partial<MessageTriage>;
       } = {},
     ): Promise<SupportConversation> {
       counter++;
@@ -163,10 +199,10 @@ export function useReplyTestbed() {
           authFailed: false,
           authVerified: true,
         },
-        // As routing leaves it once triage classified the message.
+        // As routing leaves it once triage labelled the message.
         ...(opts.topicsChecked === false
           ? {}
-          : { topicsChecked: true as const }),
+          : { triage: cleanLabels(opts.labels) }),
       };
       const c = await createConversation({
         channel: "email",

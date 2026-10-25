@@ -4,7 +4,12 @@ import {
   type InboxConfig,
   type TriageVerdict,
 } from "../../shared/support";
-import { type ReplyDecision, decideReply } from "./policy";
+import {
+  RULES,
+  type ReplyDecision,
+  decideReply,
+  draftLinkProblem,
+} from "./policy";
 
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
 const AGENT = { kind: "agent" as const, sessionId: "os-1" };
@@ -17,8 +22,8 @@ type Inbox = Pick<
 function inbox(over: Partial<Inbox> = {}): Inbox {
   return {
     enabled: true,
-    autonomy: "deploy-right-away",
-    vetoMs: 600_000,
+    autonomy: "routine",
+    vetoMs: null,
     neverWithoutAPerson: ["refund", "account-deletion", "legal"],
     ...over,
   };
@@ -37,6 +42,24 @@ function triage(over: Partial<TriageVerdict> = {}): TriageVerdict {
 
 type Input = Parameters<typeof decideReply>[0];
 
+function labels(): Input["labels"] {
+  return {
+    pending: false,
+    injection: false,
+    wantsHuman: false,
+    angry: false,
+    repeat: false,
+  };
+}
+
+const draft = (over: Partial<Input["draft"]>): Input["draft"] => ({
+  text: "Export from Settings, then Data.",
+  sources: [{ kind: "repo", ref: "docs/export.md" }],
+  promises: false,
+  purpose: "reply",
+  ...over,
+});
+
 function input(over: Partial<Input> = {}): Input {
   return {
     author: AGENT,
@@ -49,7 +72,22 @@ function input(over: Partial<Input> = {}): Input {
       authFailed: false,
       authVerified: true,
     },
-    topicsChecked: true,
+    labels: {
+      pending: false,
+      injection: false,
+      wantsHuman: false,
+      angry: false,
+      repeat: false,
+    },
+    injectionFlags: 0,
+    personOnly: false,
+    draft: {
+      text: "Export from Settings, then Data. See https://docs.acme.example.test/export",
+      sources: [{ kind: "repo", ref: "docs/export.md" }],
+      promises: false,
+      purpose: "reply",
+    },
+    sites: { hosts: ["docs.acme.example.test"], connectors: ["acme-crm"] },
     inboxAutoSendsLastHour: 0,
     status: "open",
     personStoppedLast: false,
@@ -90,8 +128,8 @@ describe("decideReply", () => {
       { kind: "needs-person", rule: "Drafts wait for a person" },
     ],
     [
-      "3. propose",
-      { inbox: inbox({ autonomy: "propose" }) },
+      "3. draft",
+      { inbox: inbox({ autonomy: "draft" }) },
       { kind: "needs-person", rule: "Drafts wait for a person" },
     ],
     [
@@ -118,11 +156,11 @@ describe("decideReply", () => {
       },
     ],
     [
-      "4. a message's topics not checked yet",
-      { topicsChecked: false },
+      "4. a message's labels not checked yet",
+      { labels: { ...labels(), pending: true } },
       {
         kind: "needs-person",
-        rule: "The newest message's topics aren't checked yet",
+        rule: "The newest message isn't checked yet",
       },
     ],
     [
@@ -167,7 +205,7 @@ describe("decideReply", () => {
     ],
     [
       "7. veto window",
-      { inbox: inbox({ autonomy: "deploy-after-veto" }) },
+      { inbox: inbox({ vetoMs: 600_000 }) },
       {
         kind: "veto",
         deadline: new Date(NOW + 600_000).toISOString(),
@@ -198,7 +236,7 @@ describe("decideReply", () => {
         input({
           author: { kind: "person", name: "Ada" },
           triage: triage({ topics: ["refund"] }),
-          inbox: inbox({ autonomy: "propose" }),
+          inbox: inbox({ autonomy: "draft" }),
         }),
       ),
     ).toEqual({ kind: "send", rule: "Sent by Ada" });
@@ -208,16 +246,19 @@ describe("decideReply", () => {
     expect(
       decideReply(
         input({
-          inbox: inbox({ autonomy: "deploy-after-veto" }),
-          triage: triage({ topics: ["angry-customer", "refund"] }),
+          inbox: inbox({ vetoMs: 600_000 }),
+          triage: triage({ topics: ["security", "refund"] }),
         }),
       ),
-    ).toEqual({ kind: "needs-person", rule: "Refunds needs a person" });
+    ).toEqual({
+      kind: "needs-person",
+      rule: "Money and refunds needs a person",
+    });
   });
 
   test("a topic outside the inbox's list does not hold the reply", () => {
     expect(
-      decideReply(input({ triage: triage({ topics: ["angry-customer"] }) })),
+      decideReply(input({ triage: triage({ topics: ["security"] }) })),
     ).toEqual({ kind: "send", rule: "Sent by the agent" });
   });
 
@@ -229,16 +270,14 @@ describe("decideReply", () => {
   });
 
   test("the veto deadline is now + vetoMs exactly", () => {
-    const decision = decideReply(
-      input({ inbox: inbox({ autonomy: "deploy-after-veto", vetoMs: 1234 }) }),
-    );
+    const decision = decideReply(input({ inbox: inbox({ vetoMs: 1234 }) }));
     expect(decision.kind).toBe("veto");
     if (decision.kind === "veto")
       expect(Date.parse(decision.deadline)).toBe(NOW + 1234);
   });
 
   test("triage route 'simple' is never permission to send", () => {
-    for (const autonomy of ["watch", "propose"] as const)
+    for (const autonomy of ["watch", "draft"] as const)
       expect(
         decideReply(
           input({
@@ -260,5 +299,137 @@ describe("decideReply", () => {
       decideReply(input({ triage: triage({ topics: null, failed: true }) }))
         .kind,
     ).toBe("needs-person");
+  });
+
+  test.each<[string, Partial<Input>, string]>([
+    ["handed to a person", { personOnly: true }, RULES.personOnly],
+    [
+      "an it's fixed note",
+      { draft: draft({ purpose: "fixed-note" }) },
+      RULES.fixedNote,
+    ],
+    [
+      "an injection flag on a message it answers",
+      { labels: { ...labels(), injection: true } },
+      RULES.injection,
+    ],
+    ["an injection flag earlier on", { injectionFlags: 1 }, RULES.injection],
+    [
+      "the customer asks for a person",
+      { labels: { ...labels(), wantsHuman: true } },
+      RULES.wantsHuman,
+    ],
+    [
+      "the customer is angry",
+      { labels: { ...labels(), angry: true } },
+      RULES.angry,
+    ],
+    [
+      "an older angry-customer topic",
+      { triage: triage({ topics: ["angry-customer" as never] }) },
+      RULES.angry,
+    ],
+    [
+      "a repeated question",
+      { labels: { ...labels(), repeat: true } },
+      RULES.repeat,
+    ],
+    ["no source", { draft: draft({ sources: [] }) }, RULES.noSource],
+    [
+      "a promise without a source",
+      { draft: draft({ sources: [], promises: true }) },
+      RULES.promise,
+    ],
+    [
+      "a source that is a path outside the repo",
+      { draft: draft({ sources: [{ kind: "repo", ref: "../secrets.env" }] }) },
+      RULES.noSource,
+    ],
+    [
+      "a URL source outside the project's sites",
+      {
+        draft: draft({
+          sources: [{ kind: "url", ref: "https://evil.example.test/x" }],
+        }),
+      },
+      RULES.noSource,
+    ],
+    [
+      "a record of a connector the project doesn't tick",
+      { draft: draft({ sources: [{ kind: "record", ref: "other:42" }] }) },
+      RULES.noSource,
+    ],
+    [
+      "a link outside the project's sites",
+      { draft: draft({ text: "See https://evil.example.test/login" }) },
+      RULES.links,
+    ],
+    [
+      "a plain http link elsewhere, with a port",
+      { draft: draft({ text: "See http://docs.acme.example.test:8080/x" }) },
+      RULES.links,
+    ],
+    [
+      "another scheme",
+      { draft: draft({ text: "Open ftp://docs.acme.example.test/x" }) },
+      RULES.links,
+    ],
+    [
+      "an image",
+      { draft: draft({ text: "![x](https://docs.acme.example.test/a.png)" }) },
+      RULES.links,
+    ],
+    [
+      "HTML",
+      {
+        draft: draft({
+          text: 'Hi <img src="https://docs.acme.example.test/t.gif">',
+        }),
+      },
+      RULES.links,
+    ],
+    [
+      "a data URI",
+      { draft: draft({ text: "data:text/html;base64,PHNjcmlwdD4=" }) },
+      RULES.links,
+    ],
+  ])("needs a person: %s", (_name, over, rule) => {
+    expect(decideReply(input(over))).toEqual({ kind: "needs-person", rule });
+  });
+
+  test("routine sends with a cited source of each kind", () => {
+    for (const source of [
+      { kind: "repo" as const, ref: "docs/export.md" },
+      { kind: "url" as const, ref: "https://docs.acme.example.test/export" },
+      { kind: "record" as const, ref: "acme-crm:cus_42" },
+    ])
+      expect(
+        decideReply(
+          input({ draft: draft({ sources: [source], promises: true }) }),
+        ),
+      ).toEqual({ kind: "send", rule: "Sent by the agent" });
+  });
+
+  test("a person's reply skips the draft checks", () => {
+    expect(
+      decideReply(
+        input({
+          author: { kind: "person", name: "Ada" },
+          labels: { ...labels(), injection: true },
+          draft: draft({ sources: [], text: "https://elsewhere.example.test" }),
+        }),
+      ),
+    ).toEqual({ kind: "send", rule: "Sent by Ada" });
+  });
+});
+
+describe("draftLinkProblem", () => {
+  test("allows plain text and links on the project's sites", () => {
+    expect(
+      draftLinkProblem("See https://docs.acme.example.test/a?b=1.", [
+        "docs.acme.example.test",
+      ]),
+    ).toBe(false);
+    expect(draftLinkProblem("2 < 3 and 4 > 1", [])).toBe(false);
   });
 });

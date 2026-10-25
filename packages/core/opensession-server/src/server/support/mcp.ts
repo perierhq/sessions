@@ -9,7 +9,11 @@
 // current session. Nothing runs at import.
 
 import { z } from "zod";
-import type { SupportConversation, SupportDraft } from "../../shared/support";
+import {
+  DRAFT_SOURCE_KINDS,
+  type SupportConversation,
+  type SupportDraft,
+} from "../../shared/support";
 import {
   type InProcessToolDefinition,
   createSdkMcpServer,
@@ -114,16 +118,41 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
     ),
     tool(
       "draft_reply",
-      "Write the reply to the customer of this conversation (plain text, no greeting placeholders). The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it; the answer says which. A new draft replaces your earlier one unless that one is already being sent.",
-      { text: z.string().describe("The reply, as plain text") },
-      async ({ text: reply }) => {
+      "Write the reply to the customer of this conversation: plain text, no HTML, no images, links only to the project's own websites. Cite every source the facts come from: a file path in this repository, a URL on the project's websites, or a Support connector record as <connector>:<record id>. A reply without a source, or one that promises anything about policy, prices or deadlines without a source, waits for a person. The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it; the answer says which. A new draft replaces your earlier one unless that one is already being sent.",
+      {
+        text: z.string().describe("The reply, as plain text"),
+        sources: z
+          .array(
+            z.object({
+              kind: z.enum(DRAFT_SOURCE_KINDS),
+              ref: z
+                .string()
+                .describe(
+                  "repo: a path like docs/setup.md; url: an https URL; record: <connector>:<record id>",
+                ),
+            }),
+          )
+          .max(10)
+          .optional()
+          .describe("Where the reply's facts come from"),
+        promises: z
+          .boolean()
+          .optional()
+          .describe(
+            "True when the reply states a policy, a price or a deadline, or promises anything",
+          ),
+      },
+      async ({ text: reply, sources, promises }) => {
         const c = await conversationForSession(ctx.sessionId);
         // Only the session that answers the conversation drafts for it.
         if (!c || c.sessionId !== ctx.sessionId) return text(NOT_LINKED);
-        const result = await proposeDraft(c.id, reply, {
-          kind: "agent",
-          sessionId: ctx.sessionId,
-        });
+        const result = await proposeDraft(
+          c.id,
+          reply,
+          { kind: "agent", sessionId: ctx.sessionId },
+          Date.now(),
+          { sources: sources ?? [], promises: promises === true },
+        );
         return text(
           result.ok ? draftOutcome(result.draft) : `Not sent: ${result.error}`,
         );

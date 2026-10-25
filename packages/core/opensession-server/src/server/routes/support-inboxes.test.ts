@@ -171,7 +171,7 @@ describe("support inbox routes", () => {
 
   test("a create may set the handling fields in the same call", async () => {
     const inbox = await created({
-      autonomy: "deploy-after-veto",
+      autonomy: "routine",
       vetoMs: 600_000,
       bugHandling: "issue",
     } as Partial<NewInbox>);
@@ -365,7 +365,7 @@ describe("support inbox routes: who may do what", () => {
     const post = await call(
       "POST",
       "/api/support/inboxes",
-      newInbox({ autonomy: "deploy-right-away" }),
+      newInbox({ autonomy: "routine", vetoMs: null }),
       BEA,
     );
     expect(post.status).toBe(403);
@@ -373,7 +373,7 @@ describe("support inbox routes: who may do what", () => {
     const patch = await call(
       "PATCH",
       `/api/support/inboxes/${inbox.id}`,
-      { expectedRevision: inbox.revision, autonomy: "deploy-right-away" },
+      { expectedRevision: inbox.revision, autonomy: "routine", vetoMs: null },
       BEA,
     );
     expect(patch.status).toBe(403);

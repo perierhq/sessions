@@ -138,7 +138,7 @@ describe("support reply routes", () => {
   });
 
   test("stop", async () => {
-    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    await tb.setInbox({ autonomy: "routine" });
     const { c, draft } = await waitingDraft();
     expect(draft.state).toBe("veto");
     const res = await call(
