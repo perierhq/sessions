@@ -475,3 +475,44 @@ test("Slack opening transport survives native create recovery without changing t
     trustProfile: "interactive",
   });
 });
+
+describe("support session opening policy", () => {
+  const supportRefs = [{ kind: "support", id: "sc_1" }];
+
+  test("the opening turn carries no user and no AWS credentials", () => {
+    const previous = process.env.AGENT_AWS_UNTRUSTED_RUNS;
+    process.env.AGENT_AWS_UNTRUSTED_RUNS = "false";
+    try {
+      const trust = openingCreateTrustPolicy({
+        branch: "",
+        runMcpServers: ["acme-crm"],
+        user: "Sessions",
+        externalRefs: supportRefs,
+      });
+      expect(trust.user).toBeUndefined();
+      expect(trust.aws).toBe(false);
+      expect(trust.mcpServers).toEqual(["acme-crm"]);
+      // Another feed ref keeps today's behaviour.
+      expect(
+        openingCreateTrustPolicy({
+          branch: "",
+          runMcpServers: [],
+          user: "Kent",
+          externalRefs: [{ kind: "tella-video", id: "v1" }],
+        }).user,
+      ).toBe("Kent");
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_AWS_UNTRUSTED_RUNS;
+      else process.env.AGENT_AWS_UNTRUSTED_RUNS = previous;
+    }
+  });
+
+  test("a sandboxed support turn proxies only opensession-support and passes no user", () => {
+    const spec = sandboxRunSecuritySpec(
+      { id: "os-1", externalRefs: supportRefs } as unknown as UnifiedSession,
+      { isAutomationSession: false, user: "Kent", mcpServers: ["acme-crm"] },
+    );
+    expect(spec.proxyMcpServers).toEqual(["opensession-support"]);
+    expect(spec.user).toBeUndefined();
+  });
+});

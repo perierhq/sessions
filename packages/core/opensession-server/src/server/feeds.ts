@@ -365,10 +365,12 @@ export async function externalRefsOpeningContext(
   opts: { scratch?: boolean; user?: string } = {},
 ): Promise<string | null> {
   if (!refs?.length) return null;
+  // A support ref's title is a customer's subject line: untrusted text,
+  // which the support opening prompt carries inside its data wrapper.
   const lines = refs
     .map(
       (r) =>
-        `- ${r.kind} ${r.id}${r.title ? ` — "${r.title}"` : ""}${r.url ? ` (${r.url})` : ""}`,
+        `- ${r.kind} ${r.id}${r.title && r.kind !== "support" ? ` — "${r.title}"` : ""}${r.url ? ` (${r.url})` : ""}`,
     )
     .join("\n");
   let out = `This session belongs to a workspace linked to external object(s):\n${lines}`;

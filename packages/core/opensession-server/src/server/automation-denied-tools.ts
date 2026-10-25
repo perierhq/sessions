@@ -12,6 +12,8 @@
  * docs/generated/mcp-tools.md, which is generated from both.
  */
 
+import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
+
 // Automation runs are headless and often driven by untrusted text (e.g.
 // customer ticket content), so they must stay read-only toward the customer:
 // no replying to or changing the state of a Plain thread. Enforced at the
@@ -109,4 +111,31 @@ export const PLAIN_DISCUSSION_DENIED_TOOLS: Record<string, string> = {
 };
 export function plainDiscussionDeniedTools(): Record<string, string> {
   return PLAIN_DISCUSSION_DENIED_TOOLS;
+}
+
+// A support session (an email conversation) reads untrusted customer mail and
+// runs with no person at the keyboard. It answers only through
+// opensession-support's draft_reply, which goes through the one reply path
+// (support/reply.ts) and the inbox's autonomy: everything the automation
+// deny-set closes stays closed, and so do the money movers and any other
+// way to mail someone.
+const SUPPORT_SEND_DENIAL =
+  "This tool isn't available in a support session. Write the reply with " +
+  "draft_reply (opensession-support); the inbox's settings decide whether a " +
+  "person approves it first.";
+const SUPPORT_MONEY_DENIAL =
+  "Money-moving Stripe actions can't run in a support session. Describe the " +
+  "exact action in your draft or notes for a person to do.";
+export const SUPPORT_DENIED_TOOLS: Record<string, string> = {
+  ...AUTOMATION_DENIED_TOOLS,
+  ...Object.fromEntries(
+    Object.keys(STRIPE_CONFIRM_TOOLS).map((name) => [
+      name,
+      SUPPORT_MONEY_DENIAL,
+    ]),
+  ),
+  mcp__gmail__send_email: SUPPORT_SEND_DENIAL,
+};
+export function supportDeniedTools(): Record<string, string> {
+  return SUPPORT_DENIED_TOOLS;
 }

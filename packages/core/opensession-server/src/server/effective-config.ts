@@ -288,6 +288,10 @@ export async function inProcessServerNames(
       }),
     );
   }
+  if (inputs.inProcessMcpBranch === "support") {
+    const { supportSessionMcp } = await import("./support/mcp");
+    return Object.keys(supportSessionMcp(session.id));
+  }
   if (inputs.inProcessMcpBranch === "plain-discussion") {
     return Object.keys(
       plainDiscussionSessionMcp(session.id, session.plainDiscussionId || ""),

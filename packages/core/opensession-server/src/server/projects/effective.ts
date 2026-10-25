@@ -358,14 +358,14 @@ export const WEB_SEARCH_OFF =
   "Web search is off for this agent in the project's access settings.";
 
 /**
- * What the access table lets Automations or Reviews do on the web: a
+ * What the access table lets Automations, Reviews or Support do on the web: a
  * `web_search` denial when the role's web search cell is off, and the
  * project's websites ticked for the role (callers add the global list).
  * Unreadable settings deny web search and add no websites.
  */
 export async function roleWebAccess(
   project: string,
-  role: "automations" | "reviews",
+  role: "automations" | "reviews" | "support",
 ): Promise<{ deniedTools: Record<string, string>; websites: string[] }> {
   try {
     const doc = await getProjectDocument(project);

@@ -147,6 +147,7 @@ import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportRetention } from "./src/server/support/retention";
+import { installSupportPipeline } from "./src/server/support/routing";
 import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
@@ -898,6 +899,10 @@ if (!g.__opensessionBooted) {
     // Support conversations and attachments past their inbox's retention
     // are deleted hourly; the mailbox is never touched.
     startSupportRetention();
+    // Each new support conversation is triaged and, unless it is spam or
+    // its inbox only watches, answered by a support session under the
+    // project's Support role; replies reach that session.
+    installSupportPipeline();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

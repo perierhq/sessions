@@ -50,6 +50,7 @@ import { createSessionsMcpServer } from "../agents/slack/sessions-tools";
 import { createSlackComposeMcpServer } from "../agents/slack/slack-compose-tools";
 import { createLocalFilesMcpServer } from "../agents/slack/local-files-tools";
 import { createPlainDiscussionMcpServer } from "../agents/plain/discussion-tools";
+import { createSupportMcpServer } from "./support/mcp";
 import { createTodosMcpServer } from "../agents/slack/todos-tools";
 import { createTurnMcpServer } from "../agents/slack/turn-tools";
 import { createWalkthroughMcpServer } from "../agents/slack/walkthrough-tools";
@@ -426,6 +427,20 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
         sessionId: SESSION_ID,
         discussionId: "disc_00000000000000000000000000",
       }),
+  },
+  {
+    name: "opensession-support",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-support"].summary,
+    source: "packages/core/opensession-server/src/server/support/mcp.ts",
+    wiring: [
+      "packages/core/opensession-server/src/server/interactive-mcp.ts",
+      "packages/core/opensession-server/src/server/session-create.ts",
+      "packages/core/opensession-server/src/server/run-session.ts",
+    ],
+    runClasses: ["interactive"],
+    condition:
+      "Only a support session (a workspace external ref of kind support): it carries this server alone instead of the interactive set, under the support deny-set and with no user.",
+    build: () => createSupportMcpServer({ sessionId: SESSION_ID }),
   },
   {
     name: "opensession-ask",

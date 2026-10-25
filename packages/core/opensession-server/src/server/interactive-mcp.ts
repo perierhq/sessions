@@ -88,6 +88,8 @@ import { makeAskHandler } from "./asks";
 import { forceMergeForSession } from "./force-merge-session";
 import { createScheduleMcpServer } from "./schedule-mcp";
 import { activeSandboxFor } from "./session-sandbox";
+import { isSupportSession } from "./session-run-inputs";
+import { supportSessionMcp } from "./support/mcp";
 import {
   describePortalSandbox,
   portalsInSandbox,
@@ -672,6 +674,11 @@ registerInteractiveMcpBuilder(
     const session = sessionId ? findSession(sessionId) : undefined;
     if (sessionId && session?.automation) {
       return automationSessionMcp(session, sessionId, { humanPrompter });
+    }
+    // Same fail-closed rule for a support session (customer mail): only
+    // opensession-support, never the interactive set.
+    if (sessionId && session && isSupportSession(session)) {
+      return supportSessionMcp(sessionId);
     }
     // Same fail-closed rule for a Plain discussion session: untrusted ticket
     // text, so only the approval server (plainDiscussionSessionMcp above).

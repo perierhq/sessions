@@ -103,8 +103,9 @@ beforeEach(async () => {
           createdAt: new Date().toISOString(),
         };
       },
-      deliverToSession(id, content, user, opts) {
+      async deliverToSession(id, content, user, opts) {
         delivered.push({ id, content, user, opts });
+        return { status: "queued", message: "Queued" };
       },
     }),
   });
