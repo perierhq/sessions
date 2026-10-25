@@ -4,7 +4,7 @@
 // Support list rows and the CloudEvent published for each customer message.
 // Types, constant lists and small pure helpers only.
 
-import { type AutonomyLevel, DEFAULT_VETO_MS } from "./incident-response";
+import { DEFAULT_VETO_MS } from "./incident-response";
 
 export type SupportChannelKind = "email" | "plain" | (string & {});
 
@@ -109,20 +109,55 @@ export interface SupportMessage {
     authFailed: boolean;
     authVerified?: boolean;
   };
-  /** Inbound only: this message's topics were classified and are in the
-   *  conversation's triage.topics (routing.ts). An automatic send waits
-   *  for a person until every message it answers has this. */
+  /** Inbound customer mail only: what the triage classifier said about
+   *  this message (every inbound customer message is classified once).
+   *  Absent until classified; an automatic send waits for a person until
+   *  every customer message it answers has it. Its topics are also merged
+   *  into the conversation's triage.topics (they only ever add). */
+  triage?: MessageTriage;
+  /** @deprecated Older documents: topics classified before per-message
+   *  triage. Read as "not triaged". */
   topicsChecked?: true;
+}
+
+/** The triage classifier's labels for one inbound customer message. */
+export interface MessageTriage {
+  route: TriageRoute;
+  /** null = unknown (classifier failed): every send needs a person. */
+  topics: SupportTopic[] | null;
+  /** The message tries to instruct the agent (prompt injection). The
+   *  first flag in a conversation blocks automatic sending; the second
+   *  hands the conversation to a person and stops the agent. */
+  injection: boolean;
+  /** The customer asks for a person. */
+  wantsHuman: boolean;
+  angry: boolean;
+  /** The customer repeats a question that was already answered. */
+  repeat: boolean;
+  /** Reports something broken. */
+  bug: boolean;
+  /** Only thanks or an acknowledgement, nothing asked: the conversation
+   *  closes without a reply. */
+  thanksOnly: boolean;
+  at: string;
+  /** The classifier failed; every flag above is the safe default. */
+  failed?: true;
 }
 
 export const TRIAGE_ROUTES = ["spam", "simple", "work"] as const;
 export type TriageRoute = (typeof TRIAGE_ROUTES)[number];
 
+/** Topics a conversation can be about that the inbox may reserve for a
+ *  person ("Never without a person"). `refund` covers money: refunds,
+ *  charges, billing and prices. Anger is not a topic: an angry customer
+ *  always gets a person (MessageTriage.angry). */
 export const SUPPORT_TOPICS = [
   "refund",
-  "account-deletion",
   "legal",
-  "angry-customer",
+  "security",
+  "data-export",
+  "data-deletion",
+  "account-deletion",
 ] as const;
 export type SupportTopic = (typeof SUPPORT_TOPICS)[number];
 
@@ -146,9 +181,33 @@ export const DRAFT_STATES = [
 ] as const;
 export type DraftState = (typeof DRAFT_STATES)[number];
 
+/** What a draft's facts come from, as the agent cited them:
+ *  - `repo`: a file path in the project's repository (`docs/setup.md`)
+ *  - `url`: an http(s) URL on the project's Support websites
+ *  - `record`: a Support connector record id (`stripe:cus_123`)
+ *  A draft without a valid source never sends on its own. */
+export const DRAFT_SOURCE_KINDS = ["repo", "url", "record"] as const;
+export type DraftSourceKind = (typeof DRAFT_SOURCE_KINDS)[number];
+export interface DraftSource {
+  kind: DraftSourceKind;
+  ref: string;
+}
+
 export interface SupportDraft {
   id: string;
+  /** `reply` (absent on older drafts) or the "it's fixed" note the server
+   *  prepares when the linked fix merges or issue closes; that one always
+   *  needs a person. */
+  purpose?: "reply" | "fixed-note";
   text: string;
+  /** The sources the agent cited (draft_reply). Absent or empty: none. */
+  sources?: DraftSource[];
+  /** The agent said the draft promises something about policy, price or a
+   *  deadline. With no source it needs a person. */
+  promises?: boolean;
+  /** A person changed the text before it went out (sent unchanged when
+   *  false or absent and the author is the agent). */
+  edited?: boolean;
   author: SupportActor;
   createdAt: string;
   state: DraftState;
@@ -204,6 +263,8 @@ export interface SupportConversation {
     reason: string;
   }>;
   issue: { repo: string; number: number; url: string } | null;
+  /** The issue text the agent prepared with report_bug. Nothing is posted
+   *  until a person creates it (issue/create). */
   pendingIssue: {
     title: string;
     body: string;
@@ -214,9 +275,9 @@ export interface SupportConversation {
     /** Why it waits, as "Waiting for a person: ..." (shown as is). */
     heldFor?: string;
   } | null;
-  /** A fix task the agent suggested with report_bug (issue-and-agent): a
-   *  person edits it and starts a fix session from it. Nothing starts on
-   *  its own. Older documents lack it. */
+  /** The fix task the agent prepared with report_bug: a person edits it
+   *  and starts a fix session from it. Nothing starts on its own. Older
+   *  documents lack it. */
   fixTask?: {
     text: string;
     /** The project the session starts in. */
@@ -224,6 +285,23 @@ export interface SupportConversation {
     suggestedBy: SupportActor;
     at: string;
   } | null;
+  /** The "it's fixed" note prepared when the linked fix pull request
+   *  merged or the linked issue closed (once per conversation). `draftId`
+   *  is the needs-person draft that carries it, or null while another
+   *  draft was live (the text waits here for a person). */
+  fixedNote?: {
+    at: string;
+    because: "pr-merged" | "issue-closed";
+    url: string;
+    text: string;
+    draftId: string | null;
+  } | null;
+  /** Injection flags seen on this conversation's customer messages. */
+  injectionFlags?: number;
+  /** Set when the conversation was handed to a person for good (second
+   *  injection flag): no automatic send and no agent session from then
+   *  on. */
+  personOnly?: { at: string; reason: string } | null;
   events: Array<{
     at: string;
     kind: string;
@@ -257,8 +335,21 @@ export interface SupportIndexRow {
 export const MAILBOX_BEHAVIOURS = ["untouched", "mark-read", "move"] as const;
 export type MailboxBehaviour = (typeof MAILBOX_BEHAVIOURS)[number];
 
-export const BUG_HANDLING = ["off", "issue", "issue-and-agent"] as const;
-export type BugHandling = (typeof BUG_HANDLING)[number];
+/** How far Sessions answers on its own:
+ *  - `watch`: sort new mail; no agent, no drafts
+ *  - `draft`: the agent drafts; a person sends every reply
+ *  - `routine`: replies the policy calls routine (cited source, nothing
+ *    reserved for a person) send on their own, after `vetoMs` when set;
+ *    everything else waits for a person */
+export const SUPPORT_AUTONOMY = ["watch", "draft", "routine"] as const;
+export type SupportAutonomy = (typeof SUPPORT_AUTONOMY)[number];
+
+/** Autonomy names stored before the redesign, read by migrateInboxRecord. */
+const LEGACY_AUTONOMY = [
+  "propose",
+  "deploy-after-veto",
+  "deploy-right-away",
+] as const;
 
 export interface InboxRetention {
   conversationDays: number;
@@ -339,11 +430,11 @@ export interface InboxConfig {
   channel: "email";
   enabled: boolean;
   project: string;
-  moveLock: "agent" | "people";
-  autonomy: AutonomyLevel;
-  vetoMs: number;
+  autonomy: SupportAutonomy;
+  /** routine only: the veto window before a routine reply sends; null =
+   *  sends right away (only the instance owner may choose that). */
+  vetoMs: number | null;
   neverWithoutAPerson: SupportTopic[];
-  bugHandling: BugHandling;
   mailbox: MailboxBehaviour;
   folders: { done: string; spam: string };
   copyToSent: boolean;
@@ -382,10 +473,22 @@ export interface InboxHealth {
 type ServerView = Omit<MailServerConfig, "passwordRef"> & {
   hasPassword: boolean;
 };
+/** Agent drafts of one inbox settled in the last `days` days: sent as
+ *  the agent wrote them, sent after a person edited them, discarded. */
+export interface InboxDraftStats {
+  days: number;
+  sentUnchanged: number;
+  sentEdited: number;
+  discarded: number;
+}
+export const DRAFT_STATS_DAYS = 30;
+
 export type InboxView = Omit<InboxConfig, "imap" | "smtp"> & {
   imap: ServerView;
   smtp: ServerView;
   health: InboxHealth;
+  /** GET /api/support/inboxes fills it. */
+  draftStats?: InboxDraftStats;
 };
 
 type ServerPatch = Partial<Omit<MailServerConfig, "passwordRef">> & {
@@ -429,7 +532,7 @@ export interface SupportConversationView {
   conversation: SupportConversation;
   inbox: Pick<
     InboxConfig,
-    "id" | "label" | "address" | "autonomy" | "moveLock" | "bugHandling"
+    "id" | "label" | "address" | "autonomy" | "vetoMs"
   > | null;
   /** The fix session a person started (`conversation.fixSessionId`) and
    *  its pull request, when the session still exists. */
@@ -476,7 +579,10 @@ export interface SupportCloudEvent {
   };
 }
 
-export const DEFAULT_SUPPORT_AUTONOMY: AutonomyLevel = "propose";
+export const DEFAULT_SUPPORT_AUTONOMY: SupportAutonomy = "draft";
+/** A waiting conversation (waiting on the customer) closes after this
+ *  long without a customer message. */
+export const WAITING_CLOSE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_NEVER_WITHOUT_A_PERSON: SupportTopic[] = [
   ...SUPPORT_TOPICS,
 ];
@@ -597,11 +703,9 @@ export function defaultInboxConfig(input: {
     channel: "email",
     enabled: true,
     project: input.project,
-    moveLock: "agent",
     autonomy: DEFAULT_SUPPORT_AUTONOMY,
     vetoMs: DEFAULT_VETO_MS,
     neverWithoutAPerson: [...DEFAULT_NEVER_WITHOUT_A_PERSON],
-    bugHandling: "off",
     mailbox: "untouched",
     folders: { ...DEFAULT_FOLDERS },
     copyToSent: !smtpSavesSentItself(input.smtp.host),
@@ -619,6 +723,47 @@ export function defaultInboxConfig(input: {
   };
 }
 
+/** An inbox record as stored before the redesign upgraded to the current
+ *  shape; current records come back unchanged (same object). Old autonomy
+ *  names map: propose → draft, deploy-after-veto → routine with its veto
+ *  window, deploy-right-away → routine without one. moveLock and
+ *  bugHandling are dropped. An upgraded record's topics lose
+ *  "angry-customer" (anger always needs a person now) and gain the new
+ *  default topics. */
+export function migrateInboxRecord(stored: InboxConfig): InboxConfig {
+  const raw = stored as unknown as Omit<InboxConfig, "autonomy"> & {
+    autonomy: string;
+    moveLock?: unknown;
+    bugHandling?: unknown;
+  };
+  const legacy =
+    (LEGACY_AUTONOMY as readonly string[]).includes(raw.autonomy) ||
+    "moveLock" in raw ||
+    "bugHandling" in raw;
+  if (!legacy) return stored;
+  const { moveLock: _moveLock, bugHandling: _bugHandling, ...rest } = raw;
+  const next = { ...rest } as InboxConfig;
+  next.autonomy =
+    raw.autonomy === "propose"
+      ? "draft"
+      : raw.autonomy === "watch"
+        ? "watch"
+        : "routine";
+  if (raw.autonomy === "deploy-right-away") next.vetoMs = null;
+  const kept = (raw.neverWithoutAPerson as string[]).filter(
+    (topic): topic is SupportTopic =>
+      (SUPPORT_TOPICS as readonly string[]).includes(topic),
+  );
+  next.neverWithoutAPerson = SUPPORT_TOPICS.filter(
+    (topic) => kept.includes(topic) || !LEGACY_TOPICS.includes(topic as never),
+  );
+  return next;
+}
+
+/** Topics that existed before the redesign; an upgraded record keeps its
+ *  choice for these and gets every newer one. */
+const LEGACY_TOPICS = ["refund", "account-deletion", "legal"] as const;
+
 // ── Inboxes settings page (/api/support/inboxes) ───────────────────────
 
 export type MailServerInput = Omit<MailServerConfig, "passwordRef"> & {
@@ -634,11 +779,9 @@ export type NewInboxInput = Pick<InboxConfig, "label" | "address" | "project"> &
       | "owner"
       | "allowInternalHost"
       | "enabled"
-      | "moveLock"
       | "autonomy"
       | "vetoMs"
       | "neverWithoutAPerson"
-      | "bugHandling"
       | "mailbox"
       | "folders"
       | "copyToSent"

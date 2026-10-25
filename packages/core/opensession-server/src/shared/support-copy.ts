@@ -3,47 +3,42 @@
 // dashes. Push copy is fixed: no customer name, address, subject or text
 // ever reaches a lock screen (the incidents rule).
 
-import type { AutonomyLevel } from "./incident-response";
-import type { BugHandling, MailboxBehaviour, SupportTopic } from "./support";
+import type {
+  MailboxBehaviour,
+  SupportAutonomy,
+  SupportTopic,
+} from "./support";
 
-/** Support labels for the incident autonomy values; users never see the
- *  stored names. */
+/** Labels for the inbox autonomy values; users never see the stored names. */
 export const SUPPORT_AUTONOMY_COPY: Record<
-  AutonomyLevel,
+  SupportAutonomy,
   { label: string; description: string }
 > = {
   watch: {
     label: "Watch only",
     description: "Sort new mail. No agent, no drafts",
   },
-  propose: { label: "Draft", description: "The agent drafts. A person sends" },
-  "deploy-after-veto": {
-    label: "Send after a veto window",
-    description: "Sends when the window ends unless someone stops it",
-  },
-  "deploy-right-away": {
-    label: "Send right away",
-    description: "The agent sends its reply",
+  draft: { label: "Draft", description: "The agent drafts. A person sends" },
+  routine: {
+    label: "Send routine replies",
+    description:
+      "Answers with a cited source send on their own. Everything else waits for a person",
   },
 };
 
 export const SUPPORT_TOPIC_LABELS: Record<SupportTopic, string> = {
-  refund: "Refunds",
-  "account-deletion": "Account deletion",
+  refund: "Money and refunds",
   legal: "Legal",
-  "angry-customer": "Angry customer",
+  security: "Security",
+  "data-export": "Data export",
+  "data-deletion": "Data deletion",
+  "account-deletion": "Account deletion",
 };
 
 export const MAILBOX_BEHAVIOUR_COPY: Record<MailboxBehaviour, string> = {
   untouched: "Leave untouched",
   "mark-read": "Mark read when handled",
   move: "Move to Sessions folders",
-};
-
-export const BUG_HANDLING_COPY: Record<BugHandling, string> = {
-  off: "Off",
-  issue: "Create an issue",
-  "issue-and-agent": "Create an issue and suggest a fix",
 };
 
 export const SUPPORT_PUSH = {

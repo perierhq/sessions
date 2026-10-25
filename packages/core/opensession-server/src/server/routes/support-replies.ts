@@ -84,8 +84,7 @@ export async function conversationViewResponse(id: string): Promise<Response> {
       label: inbox.label,
       address: inbox.address,
       autonomy: inbox.autonomy,
-      moveLock: inbox.moveLock,
-      bugHandling: inbox.bugHandling,
+      vetoMs: inbox.vetoMs,
     },
     fixSession: await fixSessionView(conversation.fixSessionId),
   };

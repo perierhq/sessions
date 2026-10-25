@@ -482,7 +482,7 @@ export async function reportBug(
   const c = await getConversation(conversationId);
   if (!c) return { state: "failed", note: "The conversation is gone." };
   const inbox = await getInbox(c.inboxId);
-  if (!inbox || inbox.bugHandling === "off")
+  if (!inbox)
     return {
       state: "off",
       note: "Bug handling is off for this inbox, so no issue was created.",
@@ -512,15 +512,14 @@ export async function reportBug(
         return { state: "failed", note: `${detail}.` };
       }
       const issue = issueText(current, input, inbox.address);
-      const fixTask =
-        inbox.bugHandling === "issue-and-agent"
-          ? {
-              text: fixTaskText(current.project, issue),
-              project: current.project,
-              suggestedBy: by,
-              at: new Date(deps().now()).toISOString(),
-            }
-          : null;
+      const fixTask = true
+        ? {
+            text: fixTaskText(current.project, issue),
+            project: current.project,
+            suggestedBy: by,
+            at: new Date(deps().now()).toISOString(),
+          }
+        : null;
       const withTask = (r: ReportBugResult): ReportBugResult =>
         fixTask && r.state !== "failed"
           ? { ...r, note: `${r.note} ${FIX_SUGGESTED}` }

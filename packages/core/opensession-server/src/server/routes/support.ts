@@ -79,8 +79,7 @@ export async function handleSupportRoutes(
         label: inbox.label,
         address: inbox.address,
         autonomy: inbox.autonomy,
-        moveLock: inbox.moveLock,
-        bugHandling: inbox.bugHandling,
+        vetoMs: inbox.vetoMs,
       },
     };
     return Response.json(view);

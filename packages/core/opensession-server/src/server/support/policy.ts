@@ -73,11 +73,7 @@ export function decideReply(input: {
   if (input.status === "spam") return needsPerson(RULES.spam);
   if (input.status === "closed") return needsPerson(RULES.closed);
   if (input.personStoppedLast) return needsPerson(RULES.personStopped);
-  if (
-    inbox.autonomy !== "deploy-after-veto" &&
-    inbox.autonomy !== "deploy-right-away"
-  )
-    return needsPerson(RULES.draftsWait);
+  if (inbox.autonomy !== "routine") return needsPerson(RULES.draftsWait);
   if (!triage || !Array.isArray(triage.topics))
     return needsPerson(RULES.topicsUnknown);
   if (!input.topicsChecked) return needsPerson(RULES.topicsPending);
@@ -93,7 +89,7 @@ export function decideReply(input: {
     return needsPerson(RULES.autoSendCap);
   if (input.inboxAutoSendsLastHour >= AUTO_SENDS_PER_INBOX_PER_HOUR)
     return needsPerson(RULES.inboxAutoSendCap);
-  if (inbox.autonomy === "deploy-after-veto")
+  if (inbox.vetoMs !== null)
     return {
       kind: "veto",
       deadline: new Date(input.now + inbox.vetoMs).toISOString(),

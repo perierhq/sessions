@@ -116,9 +116,7 @@ export async function moveConversation(
     return { ok: false, error: `There is no project called ${target}` };
   if (target === c.project)
     return { ok: false, error: `The conversation is already in ${target}` };
-  const inbox = await getInbox(c.inboxId);
-  if (by.kind !== "person" && inbox?.moveLock !== "agent")
-    return { ok: false, error: MOVE_LOCKED };
+  if (by.kind !== "person") return { ok: false, error: MOVE_LOCKED };
 
   const at = iso();
   let previous: string | null = null;

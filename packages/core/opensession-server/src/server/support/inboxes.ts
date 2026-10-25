@@ -15,11 +15,6 @@
 import { randomUUIDv7 } from "bun";
 import { isIP } from "node:net";
 import {
-  AUTONOMY_LEVELS,
-  type AutonomyLevel,
-} from "../../shared/incident-response";
-import {
-  BUG_HANDLING,
   type InboxConfig,
   type InboxHealth,
   type InboxPatch,
@@ -30,6 +25,8 @@ import {
   type NewInboxInput,
   SUPPORT_TOPICS,
   defaultInboxConfig,
+  SUPPORT_AUTONOMY,
+  migrateInboxRecord,
   noTlsHostAllowed,
   smtpSavesSentItself,
 } from "../../shared/support";
@@ -52,11 +49,9 @@ type ServerInput = Omit<MailServerConfig, "passwordRef"> & {
  *  one Save); each is validated as on update. */
 const CREATE_FIELDS = [
   "enabled",
-  "moveLock",
   "autonomy",
   "vetoMs",
   "neverWithoutAPerson",
-  "bugHandling",
   "mailbox",
   "folders",
   "copyToSent",
@@ -68,8 +63,10 @@ export type NewInbox = NewInboxInput;
 
 type Which = "imap" | "smtp";
 
-/** The autonomy level only the instance owner may choose. */
-const OWNER_ONLY_AUTONOMY: AutonomyLevel = "deploy-right-away";
+/** Routine replies without a veto window: only the instance owner may
+ *  choose it. */
+const sendsRightAway = (c: InboxConfig | null | undefined) =>
+  c?.autonomy === "routine" && c.vetoMs === null;
 
 const NOT_SIGNED_IN = "Only a signed-in person can change inboxes";
 const OWNER_SENDS = "Only the instance owner can let Sessions send right away";
@@ -101,14 +98,11 @@ function ownerOnlyChange(
   next: InboxConfig,
 ): string | null {
   if (isOwnerActor(actor)) return null;
+  if (sendsRightAway(next) && !sendsRightAway(current)) return OWNER_SENDS;
   if (
-    next.autonomy === OWNER_ONLY_AUTONOMY &&
-    current?.autonomy !== OWNER_ONLY_AUTONOMY
-  )
-    return OWNER_SENDS;
-  if (
-    current?.autonomy === OWNER_ONLY_AUTONOMY &&
-    next.autonomy === OWNER_ONLY_AUTONOMY &&
+    sendsRightAway(current) &&
+    sendsRightAway(next) &&
+    current &&
     (current.neverWithoutAPerson.some(
       (topic) => !next.neverWithoutAPerson.includes(topic),
     ) ||
@@ -223,7 +217,8 @@ function upgradeServer(server: MailServerConfig): MailServerConfig {
   return { ...rest, tls: secure ? "implicit" : "starttls" };
 }
 
-function upgradeRecord(value: InboxConfig): InboxConfig {
+function upgradeRecord(stored: InboxConfig): InboxConfig {
+  const value = migrateInboxRecord(stored);
   const imap = upgradeServer(value.imap);
   const smtp = upgradeServer(value.smtp);
   return imap === value.imap && smtp === value.smtp
@@ -348,19 +343,15 @@ export function validateInbox(
   if (typeof config.project !== "string" || !projectExists(config.project))
     return `Project ${JSON.stringify(config.project)} doesn't exist`;
   if (typeof config.enabled !== "boolean") return "Enabled must be on or off";
-  if (config.moveLock !== "agent" && config.moveLock !== "people")
-    return "Move lock must be agent or people";
-  if (!AUTONOMY_LEVELS.includes(config.autonomy))
-    return "Autonomy must be one of the four levels";
-  if (!isInt(config.vetoMs, VETO_MIN_MS, VETO_MAX_MS))
-    return "Veto window must be from 1 minute to 24 hours";
+  if (!SUPPORT_AUTONOMY.includes(config.autonomy))
+    return "Autonomy must be watch, draft or routine";
+  if (config.vetoMs !== null && !isInt(config.vetoMs, VETO_MIN_MS, VETO_MAX_MS))
+    return "Veto window must be from 1 minute to 24 hours, or none";
   if (
     !Array.isArray(config.neverWithoutAPerson) ||
     config.neverWithoutAPerson.some((topic) => !SUPPORT_TOPICS.includes(topic))
   )
     return `Never without a person topics must be from: ${SUPPORT_TOPICS.join(", ")}`;
-  if (!BUG_HANDLING.includes(config.bugHandling))
-    return "Bug handling must be off, issue, or issue and agent";
   if (!MAILBOX_BEHAVIOURS.includes(config.mailbox))
     return "Mailbox behaviour must be untouched, mark read, or move";
   const done = folderError(config.folders?.done, "Done");
@@ -549,11 +540,9 @@ const PATCHABLE = [
   "address",
   "enabled",
   "project",
-  "moveLock",
   "autonomy",
   "vetoMs",
   "neverWithoutAPerson",
-  "bugHandling",
   "mailbox",
   "folders",
   "copyToSent",

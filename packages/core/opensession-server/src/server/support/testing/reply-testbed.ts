@@ -76,7 +76,7 @@ export function useReplyTestbed() {
         address: INBOX_ADDRESS,
         project: "acme",
         allowInternalHost: true,
-        autonomy: "propose",
+        autonomy: "draft",
         imap: { ...fixture.imapServer, password: MAIL_PASSWORD },
         smtp: { ...fixture.smtpServer, password: MAIL_PASSWORD },
       },

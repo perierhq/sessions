@@ -6,6 +6,8 @@ import {
   type MailServerConfig,
   SUPPORT_TOPICS,
   defaultInboxConfig,
+  type InboxConfig,
+  migrateInboxRecord,
   normalizeAddress,
   normalizeMessageId,
   parseSupportItemId,
@@ -114,10 +116,10 @@ describe("defaultInboxConfig", () => {
 
   test("starts at Draft with safe defaults", () => {
     const config = defaultInboxConfig(input("mail.example.test"));
-    expect(config.autonomy).toBe("propose");
+    expect(config.autonomy).toBe("draft");
     expect(config.mailbox).toBe("untouched");
-    expect(config.bugHandling).toBe("off");
-    expect(config.moveLock).toBe("agent");
+    expect("bugHandling" in config).toBe(false);
+    expect("moveLock" in config).toBe(false);
     expect(config.vetoMs).toBe(600_000);
     expect(config.retention).toEqual({
       conversationDays: 180,
@@ -176,5 +178,76 @@ describe("noTlsHostAllowed", () => {
       "fe80::1",
     ])
       expect(noTlsHostAllowed(host)).toBe(false);
+  });
+});
+
+describe("migrateInboxRecord", () => {
+  const server: MailServerConfig = {
+    host: "mail.example.test",
+    port: 993,
+    tls: "implicit",
+    user: "help@example.test",
+    passwordRef: null,
+  };
+  const current = defaultInboxConfig({
+    id: "inb_1",
+    label: "Help",
+    address: "help@example.test",
+    project: "acme",
+    owner: "Ada",
+    createdBy: "Ada",
+    now: "2026-01-01T00:00:00.000Z",
+    imap: server,
+    smtp: { ...server, port: 465 },
+  });
+  const legacy = (autonomy: string, extra: object = {}) =>
+    ({
+      ...current,
+      autonomy,
+      vetoMs: 600_000,
+      moveLock: "people",
+      bugHandling: "issue",
+      neverWithoutAPerson: ["refund", "angry-customer"],
+      ...extra,
+    }) as unknown as InboxConfig;
+
+  test("a current record comes back as is", () => {
+    expect(migrateInboxRecord(current)).toBe(current);
+    expect(current.autonomy).toBe("draft");
+    expect(current.neverWithoutAPerson).toEqual([...SUPPORT_TOPICS]);
+  });
+
+  test("propose becomes draft and the removed settings go", () => {
+    const next = migrateInboxRecord(legacy("propose"));
+    expect(next.autonomy).toBe("draft");
+    expect("moveLock" in next).toBe(false);
+    expect("bugHandling" in next).toBe(false);
+    expect(next.vetoMs).toBe(600_000);
+  });
+
+  test("deploy-after-veto becomes routine with its veto window", () => {
+    const next = migrateInboxRecord(legacy("deploy-after-veto"));
+    expect(next.autonomy).toBe("routine");
+    expect(next.vetoMs).toBe(600_000);
+  });
+
+  test("deploy-right-away becomes routine without a veto window", () => {
+    const next = migrateInboxRecord(legacy("deploy-right-away"));
+    expect(next.autonomy).toBe("routine");
+    expect(next.vetoMs).toBeNull();
+  });
+
+  test("watch stays watch", () => {
+    expect(migrateInboxRecord(legacy("watch")).autonomy).toBe("watch");
+  });
+
+  test("old topics keep their choice, angry goes, new topics are added", () => {
+    const next = migrateInboxRecord(legacy("propose"));
+    expect(next.neverWithoutAPerson).toEqual([
+      "refund",
+      "security",
+      "data-export",
+      "data-deletion",
+    ]);
   });
 });
