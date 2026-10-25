@@ -4,6 +4,7 @@ import { automationSessionMcp } from "../../interactive-mcp";
 import {
   agentAccessFixture,
   descendantFixture,
+  supersededIncidentFixture,
 } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
@@ -169,6 +170,29 @@ test("a narrowed access applies at call time even if the tool was listed", async
     ok: false,
     error: "prod-1 is not one of this agent's hosts",
   });
+});
+test("a superseded agent is refused at call time and gets no tools", async () => {
+  const incidentId = await supersededIncidentFixture("os-1", "os-2");
+  const ours = { ...binding, incidentId };
+  __setBindingResolverForTest(async () => agentAccessFixture({ incidentId }));
+  const tools = incidentAccessToolDefinitions({
+    sessionId: "os-1",
+    binding: ours,
+    access: agentAccessFixture({ incidentId }),
+  });
+  expect(textOf(await tools[0].handler({}, {}))).toBe(
+    "Access refused: this agent was superseded by os-2",
+  );
+  const session = (id: string) => ({
+    id,
+    mode: "code",
+    automationDescendantPolicy: { ...descendantFixture, incident: ours },
+  });
+  expect(await incidentAccessMcpForSession(session("os-1"))).toEqual({});
+  // The session that took over keeps its tools.
+  expect(
+    Object.keys(await incidentAccessMcpForSession(session("os-2"))),
+  ).toEqual(["opensession-incident-access"]);
 });
 test("session builder fails closed", async () => {
   expect(await incidentAccessMcpForSession({ id: "os-1" })).toEqual({});

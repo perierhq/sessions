@@ -3,14 +3,16 @@
 // resolved AgentAccess; enforceIncidentSpawn re-resolves the binding when the
 // session is created, before it exists, and narrows the policy to the fresh
 // access. incidentTurnScope re-resolves it before every turn and never lets a
-// turn reach wider than the spawn snapshot. The binding is set only by
-// server-side callers.
+// turn reach wider than the spawn snapshot. An agent whose run a fresh
+// session took over (supersededRefusal) is refused every turn. The binding
+// is set only by server-side callers.
 import type {
   AgentAccess,
   IncidentAgentBinding,
 } from "../../../shared/incident-access";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentAudit } from "../audit-sink";
+import { getIncident } from "../incident-store";
 import {
   AgentAccessError,
   type IncidentRunBound,
@@ -182,6 +184,23 @@ export function incidentRunBound(session: {
   };
 }
 
+/**
+ * Why an incident agent's session may no longer act: a fresh session took
+ * its run over (the run's `supersededBy`). Undefined while it may act, or
+ * when the incident or run is not found (resolution refuses those).
+ */
+export async function supersededRefusal(
+  incidentId: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  if (!sessionId) return undefined;
+  const incident = await getIncident(incidentId);
+  const by = incident?.response?.agents.find(
+    (a) => a.sessionId === sessionId,
+  )?.supersededBy;
+  return by ? `This agent was superseded by ${by}` : undefined;
+}
+
 export interface IncidentTurnScope {
   mcpServers: string[];
   deniedTools: Record<string, string>;
@@ -249,6 +268,12 @@ async function turnScope(
       phase: "turn",
       reason,
     });
+  const refuse = (reason: string): never => {
+    refusedTurn(reason);
+    throw new AgentAccessError(reason, "turn");
+  };
+  const superseded = await supersededRefusal(binding.incidentId, sessionId);
+  if (superseded) refuse(superseded);
   let access: AgentAccess;
   try {
     access = await resolveAgentAccessForBinding(
@@ -261,10 +286,6 @@ async function turnScope(
     );
     throw error;
   }
-  const refuse = (reason: string): never => {
-    refusedTurn(reason);
-    throw new AgentAccessError(reason, "turn");
-  };
   if (access.incidentId !== binding.incidentId || access.role !== binding.role)
     refuse("The agent's access does not match its binding");
   if (session.mode !== "ask" && access.mode === "ask")

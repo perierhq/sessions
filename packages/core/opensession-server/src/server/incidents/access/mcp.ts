@@ -2,7 +2,8 @@
 // opensession-* server an incident agent gets. Each tool is mounted only when
 // the agent's access grants what it reaches, and every call re-resolves that
 // access from the binding first: a refusal returns "Access refused: ..." and
-// does nothing else, and a narrowing applies at once. A widening never does:
+// does nothing else, and a narrowing applies at once; an agent a fresh
+// session took over is refused everything. A widening never applies:
 // the access is held to what the run is bound to (clampToRun), and
 // describe_access names connections allowed after the agent started.
 // Everything is audited with the incident and role by the modules the tools
@@ -30,7 +31,7 @@ import {
   clampToRun,
   resolveAgentAccessForBinding,
 } from "./resolve";
-import { incidentRunBound } from "./session-policy";
+import { incidentRunBound, supersededRefusal } from "./session-policy";
 import type { IncidentToolContext } from "./tool-context";
 
 type Ctx = {
@@ -58,6 +59,12 @@ async function freshContext(
   ctx: Pick<Ctx, "sessionId" | "binding" | "run">,
 ): Promise<Fresh | string> {
   try {
+    const superseded = await supersededRefusal(
+      ctx.binding.incidentId,
+      ctx.sessionId,
+    );
+    if (superseded)
+      return `Access refused: ${superseded.charAt(0).toLowerCase()}${superseded.slice(1)}`;
     const resolved = await resolveAgentAccessForBinding(ctx.binding);
     if (
       resolved.incidentId !== ctx.binding.incidentId ||
