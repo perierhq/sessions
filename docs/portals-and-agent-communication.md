@@ -53,10 +53,13 @@ Host Portals survive gateway restarts, but are not permanent services:
   Archive and orphan cleanup stop Portals permanently, without automatic wake.
 - New host processes are refused when available RAM falls below 5% or 2 GiB,
   memory full-stall pressure reaches 10% over ten seconds, or the shared user
-  workload slice reaches 90% of its memory soft limit. The existing configurable
-  host Portal count cap and free-memory floor also apply. Existing, matching
-  Portals can still be reused. These are admission guards, not permission to
-  kill another session's active work.
+  workload slice reaches 90% of its memory soft limit. The configurable host
+  Portal count cap (`OPENSESSION_MAX_HOST_PORTALS`, default 4) and free-memory
+  floor also apply. The floor defaults to 15% of the host's total memory, at
+  least 2 GB and at most 24 GB; `OPENSESSION_PORTAL_MIN_AVAILABLE_MEMORY_MB`
+  overrides it, and the server warns at startup if the floor is at or above
+  total memory. Existing, matching Portals can still be reused. These are
+  admission guards, not permission to kill another session's active work.
 
 Every listening `*_PORT` service is a Portal. Host services map to
 `https://<host>:<port+6000>`; Sandbox services get an allocated route in

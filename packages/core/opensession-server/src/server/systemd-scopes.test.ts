@@ -4,6 +4,7 @@ import {
   PREVIEW_SLICE,
   controlPlaneWorkloadCommand,
   engineScopeSystemdArgs,
+  hostMemoryLimit,
   processRunsInControlPlane,
   previewScopeCommand,
   previewScopeSystemdArgs,
@@ -11,9 +12,12 @@ import {
   scopeVerbatimArgs,
 } from "./systemd-scopes";
 
+const GIB = 1024 ** 3;
+const BIG_HOST = 64 * GIB;
+
 describe("systemd scope resource controls", () => {
   test("detached engines get bounded memory, swap, tasks, and an aggregate slice", () => {
-    expect(engineScopeSystemdArgs({})).toEqual([
+    expect(engineScopeSystemdArgs({}, BIG_HOST)).toEqual([
       `--slice=${ENGINE_SLICE}`,
       "--property=MemoryHigh=6G",
       "--property=MemoryMax=12G",
@@ -24,7 +28,7 @@ describe("systemd scope resource controls", () => {
   });
 
   test("previews get a separate budget and leave CPU headroom", () => {
-    expect(previewScopeSystemdArgs({})).toEqual([
+    expect(previewScopeSystemdArgs({}, BIG_HOST)).toEqual([
       `--slice=${PREVIEW_SLICE}`,
       "--property=MemoryHigh=8G",
       "--property=MemoryMax=12G",
@@ -33,6 +37,38 @@ describe("systemd scope resource controls", () => {
       "--property=CPUQuota=600%",
       "--property=OOMPolicy=stop",
     ]);
+  });
+
+  test("memory defaults stay below a small host's total memory", () => {
+    // A 23 GB host keeps the fixed defaults.
+    expect(previewScopeSystemdArgs({}, 23 * GIB)).toEqual(
+      expect.arrayContaining([
+        "--property=MemoryHigh=8G",
+        "--property=MemoryMax=12G",
+      ]),
+    );
+    // An 8 GB host caps MemoryHigh at half and MemoryMax at three quarters.
+    expect(previewScopeSystemdArgs({}, 8 * GIB)).toEqual(
+      expect.arrayContaining([
+        "--property=MemoryHigh=4096M",
+        "--property=MemoryMax=6144M",
+      ]),
+    );
+    expect(engineScopeSystemdArgs({}, 8 * GIB)).toEqual(
+      expect.arrayContaining([
+        "--property=MemoryHigh=4096M",
+        "--property=MemoryMax=6144M",
+      ]),
+    );
+    // Overrides still win on small hosts.
+    expect(
+      previewScopeSystemdArgs(
+        { OPENSESSION_PREVIEW_MEMORY_MAX: "7G" },
+        8 * GIB,
+      ),
+    ).toContain("--property=MemoryMax=7G");
+    // An unknown total keeps the fixed default.
+    expect(hostMemoryLimit(12, 0.75, 0)).toBe("12G");
   });
 
   test("trusted env overrides tune limits while malformed values fall back", () => {
@@ -44,7 +80,10 @@ describe("systemd scope resource controls", () => {
       }),
     ).toContain("--property=MemoryHigh=4G");
     expect(
-      engineScopeSystemdArgs({ OPENSESSION_ENGINE_MEMORY_MAX: "nope" }),
+      engineScopeSystemdArgs(
+        { OPENSESSION_ENGINE_MEMORY_MAX: "nope" },
+        BIG_HOST,
+      ),
     ).toContain("--property=MemoryMax=12G");
     expect(
       engineScopeSystemdArgs({ OPENSESSION_ENGINE_TASKS_MAX: "2048" }),

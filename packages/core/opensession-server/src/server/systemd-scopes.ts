@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { totalmem } from "node:os";
 
 const UID = typeof process.getuid === "function" ? process.getuid() : 1000;
 export const SYSTEMD_USER_RUNTIME = `/run/user/${UID}`;
@@ -29,26 +30,81 @@ function value(env: LimitEnv, name: string, fallback: string): string {
     : fallback;
 }
 
+const GIB = 1024 ** 3;
+
+/**
+ * A default memory limit that never exceeds `share` of the host's memory. The
+ * fixed defaults suit large hosts; on a small one a fixed `MemoryHigh` or
+ * `MemoryMax` could sit at or above total RAM and never take effect.
+ */
+export function hostMemoryLimit(
+  fixedGib: number,
+  share: number,
+  totalMemoryBytes: number,
+): string {
+  if (!(totalMemoryBytes > 0) || fixedGib * GIB <= totalMemoryBytes * share)
+    return `${fixedGib}G`;
+  return `${Math.max(1, Math.floor((totalMemoryBytes * share) / 1024 ** 2))}M`;
+}
+
+// MemoryHigh throttles; MemoryMax kills. Keep both below total memory.
+const MEMORY_HIGH_SHARE = 0.5;
+const MEMORY_MAX_SHARE = 0.75;
+
 function property(name: string, configured: string): string {
   return `--property=${name}=${configured}`;
 }
 
-export function engineScopeSystemdArgs(env: LimitEnv = process.env): string[] {
+export function engineScopeSystemdArgs(
+  env: LimitEnv = process.env,
+  totalMemoryBytes: number = totalmem(),
+): string[] {
   return [
     `--slice=${ENGINE_SLICE}`,
-    property("MemoryHigh", value(env, "OPENSESSION_ENGINE_MEMORY_HIGH", "6G")),
-    property("MemoryMax", value(env, "OPENSESSION_ENGINE_MEMORY_MAX", "12G")),
+    property(
+      "MemoryHigh",
+      value(
+        env,
+        "OPENSESSION_ENGINE_MEMORY_HIGH",
+        hostMemoryLimit(6, MEMORY_HIGH_SHARE, totalMemoryBytes),
+      ),
+    ),
+    property(
+      "MemoryMax",
+      value(
+        env,
+        "OPENSESSION_ENGINE_MEMORY_MAX",
+        hostMemoryLimit(12, MEMORY_MAX_SHARE, totalMemoryBytes),
+      ),
+    ),
     property("MemorySwapMax", value(env, "OPENSESSION_ENGINE_SWAP_MAX", "1G")),
     property("TasksMax", value(env, "OPENSESSION_ENGINE_TASKS_MAX", "1024")),
     property("OOMPolicy", "stop"),
   ];
 }
 
-export function previewScopeSystemdArgs(env: LimitEnv = process.env): string[] {
+export function previewScopeSystemdArgs(
+  env: LimitEnv = process.env,
+  totalMemoryBytes: number = totalmem(),
+): string[] {
   return [
     `--slice=${PREVIEW_SLICE}`,
-    property("MemoryHigh", value(env, "OPENSESSION_PREVIEW_MEMORY_HIGH", "8G")),
-    property("MemoryMax", value(env, "OPENSESSION_PREVIEW_MEMORY_MAX", "12G")),
+    property(
+      "MemoryHigh",
+      value(
+        env,
+        "OPENSESSION_PREVIEW_MEMORY_HIGH",
+        hostMemoryLimit(8, MEMORY_HIGH_SHARE, totalMemoryBytes),
+      ),
+    ),
+    property(
+      "MemoryMax",
+      value(
+        env,
+        "OPENSESSION_PREVIEW_MEMORY_MAX",
+        hostMemoryLimit(12, MEMORY_MAX_SHARE, totalMemoryBytes),
+      ),
+    ),
     property("MemorySwapMax", value(env, "OPENSESSION_PREVIEW_SWAP_MAX", "1G")),
     property("TasksMax", value(env, "OPENSESSION_PREVIEW_TASKS_MAX", "768")),
     property("CPUQuota", value(env, "OPENSESSION_PREVIEW_CPU_QUOTA", "600%")),
