@@ -208,6 +208,11 @@ export interface SupportConversation {
     title: string;
     body: string;
     requestedBy: SupportActor;
+    /** The repository it will be posted to (`owner/name`), fixed when it
+     *  was held, so approving after a move can't post it elsewhere. */
+    ghRepo?: string;
+    /** Why it waits, as "Waiting for a person: ..." (shown as is). */
+    heldFor?: string;
   } | null;
   events: Array<{
     at: string;

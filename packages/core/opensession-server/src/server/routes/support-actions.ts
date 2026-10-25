@@ -2,7 +2,10 @@
 // issue/approve,issue/dismiss}: what a person does to a conversation
 // besides replying (support/actions.ts, support/bugs.ts). Signed-in people
 // only (`verifiedPerson`): the automation principal and claimed names are
-// never a person here. Each answers with the conversation as GET
+// never a person here; the person is an actor built with actorFor(), so
+// only the instance owner approves an issue for a public repository.
+// issue/approve needs `expectedRevision`, the conversation revision the
+// person saw. Each answers with the conversation as GET
 // /api/support/conversations/:id does. "Forget this customer" is
 // POST /api/support/customers/forget in support-inboxes.ts.
 import type { SupportActor } from "../../shared/support";
@@ -13,6 +16,7 @@ import {
   reopenConversation,
   setOwner,
 } from "../support/actions";
+import { actorFor } from "../support/actor";
 import { approvePendingIssue, dismissPendingIssue } from "../support/bugs";
 import { getConversation } from "../support/store";
 import { type RouteContext, verifiedPerson } from "./context";
@@ -67,7 +71,12 @@ export async function handleSupportActionRoutes(
   }
   const id = conversationId(ref);
   if (!(await getConversation(id))) return json(404, "Conversation not found");
-  const by: SupportActor = { kind: "person", name: person };
+  const actor = actorFor(person, true, ctx.authUser?.login);
+  const by: SupportActor = {
+    kind: "person",
+    name: person,
+    ...(ctx.authUser?.login ? { login: ctx.authUser.login } : {}),
+  };
   const body = await readBody(req);
 
   switch (action) {
@@ -99,13 +108,15 @@ export async function handleSupportActionRoutes(
         return json(409, "This conversation isn't spam");
       break;
     case "issue/approve": {
-      const result = await approvePendingIssue(id, person);
-      if (!result.ok)
-        return json(409, result.error ?? "Couldn't create the issue");
+      const expected = body.expectedRevision;
+      if (typeof expected !== "number" || !Number.isInteger(expected))
+        return json(400, "Say which revision of the issue you approve");
+      const result = await approvePendingIssue(id, actor, expected);
+      if (!result.ok) return json(result.status, result.error);
       break;
     }
     case "issue/dismiss":
-      if (!(await dismissPendingIssue(id, person)).ok)
+      if (!(await dismissPendingIssue(id, actor)).ok)
         return json(409, "No issue is waiting for approval");
       break;
   }

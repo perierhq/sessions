@@ -12,7 +12,9 @@ import { handleSupportActionRoutes } from "./support-actions";
 
 const tb = useReplyTestbed();
 
+// Ada is the first roster member, so the instance owner.
 const ADA = { login: "ada", name: "Ada Lovelace" };
+const GRACE = { login: "grace", name: "Grace Hopper" };
 // The built-in automation principal (isAutomationPrincipal).
 const AUTOMATION = {
   login: "automation",
@@ -154,6 +156,7 @@ describe("support action routes", () => {
     expect(view.conversation.moves[0]?.by).toEqual({
       kind: "person",
       name: "Ada",
+      login: "ada",
     });
   });
 
@@ -195,19 +198,62 @@ describe("support action routes", () => {
       title: "Export fails",
       body: "Steps\n\nReported from a support conversation in Sessions.",
       requestedBy: { kind: "agent" as const, sessionId: "os-1" },
+      ghRepo: "acme/acme",
     };
     await updateConversation(c.id, (x) => ({ ...x, pendingIssue: held }));
     expect((await call(`${base(c.id)}/issue/dismiss`)).status).toBe(200);
-    expect((await call(`${base(c.id)}/issue/approve`)).status).toBe(409);
+    const gone = (await getConversation(c.id))!;
+    expect(
+      (
+        await call(`${base(c.id)}/issue/approve`, {
+          expectedRevision: gone.revision,
+        })
+      ).status,
+    ).toBe(409);
     expect(posted).toBe(0);
-    await updateConversation(c.id, (x) => ({ ...x, pendingIssue: held }));
-    const approved = await call(`${base(c.id)}/issue/approve`);
+    const again = (await updateConversation(c.id, (x) => ({
+      ...x,
+      pendingIssue: held,
+    })))!;
+    // Without the revision the person saw, nothing is posted.
+    expect((await call(`${base(c.id)}/issue/approve`)).status).toBe(400);
+    expect(
+      (
+        await call(`${base(c.id)}/issue/approve`, {
+          expectedRevision: again.revision - 1,
+        })
+      ).status,
+    ).toBe(409);
+    expect(posted).toBe(0);
+    const approved = await call(`${base(c.id)}/issue/approve`, {
+      expectedRevision: again.revision,
+    });
     expect(approved.status).toBe(200);
     expect(
       ((await approved.json()) as SupportConversationView).conversation.issue
         ?.number,
     ).toBe(7);
     expect(posted).toBe(1);
+  });
+
+  test("only the instance owner approves an issue for a public repository", async () => {
+    const c = await tb.conversation();
+    const held = (await updateConversation(c.id, (x) => ({
+      ...x,
+      pendingIssue: {
+        title: "Export fails",
+        body: "Steps",
+        requestedBy: { kind: "agent" as const, sessionId: "os-1" },
+        ghRepo: "acme/acme",
+      },
+    })))!;
+    const res = await call(
+      `${base(c.id)}/issue/approve`,
+      { expectedRevision: held.revision },
+      GRACE,
+    );
+    expect(res.status).toBe(403);
+    expect(posted).toBe(0);
   });
 
   test("an unknown conversation is 404", async () => {
