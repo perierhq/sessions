@@ -126,16 +126,19 @@ provider's and your domain's:
 
 ## What each setting does
 
-| Setting                   | Default                  | What it does                                                                                                                                                                                                                                |
-| ------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Autonomy                  | Draft                    | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends. **Send after a veto window**: the reply sends when the window ends unless someone stops it. **Send right away**: the agent sends. |
-| Veto window in minutes    | 10                       | How long a reply waits before it sends, from 1 minute to 24 hours.                                                                                                                                                                          |
-| Never without a person    | All four topics          | Refunds, account deletion, legal and angry customers always wait for a person, whatever the autonomy. When the topics of a conversation are unknown (the classifier failed), every send waits.                                              |
-| Mailbox behaviour         | Leave untouched          | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                               |
-| Save a copy in Sent       | Depends on the SMTP host | Appends each reply to the Sent folder (see below).                                                                                                                                                                                          |
-| Keep conversations (days) | 180                      | How long a conversation's text is kept after it closes.                                                                                                                                                                                     |
-| Keep attachments (days)   | 30                       | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                             |
-| Send limit per minute     | 30                       | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                |
+| Setting                    | Default                     | What it does                                                                                                                                                                                                                                                 |
+| -------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Autonomy                   | Draft                       | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends. **Send after a veto window**: the reply sends when the window ends unless someone stops it. **Send right away**: the agent sends.                  |
+| Veto window in minutes     | 10                          | How long a reply waits before it sends, from 1 minute to 24 hours.                                                                                                                                                                                           |
+| Never without a person     | All four topics             | Refunds, account deletion, legal and angry customers always wait for a person, whatever the autonomy. When the topics of a conversation are unknown (the classifier failed), every send waits.                                                               |
+| Bug handling               | Off                         | **Create an issue** in the project's repository, or **create an issue and start an agent** to fix it. The issue holds the agent's summary with email addresses and the customer's name taken out. An issue in a public repository always waits for a person. |
+| Who may move conversations | The agent or a person       | Whether the support agent may move a conversation to another project, or only people.                                                                                                                                                                        |
+| Owner                      | Whoever connected the inbox | The owner of each new conversation, who is told when a reply needs a person. A person can hand a conversation to someone else on the team.                                                                                                                   |
+| Mailbox behaviour          | Leave untouched             | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                                                |
+| Save a copy in Sent        | Depends on the SMTP host    | Appends each reply to the Sent folder (see below).                                                                                                                                                                                                           |
+| Keep conversations (days)  | 180                         | How long a conversation's text is kept after it closes.                                                                                                                                                                                                      |
+| Keep attachments (days)    | 30                          | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                                              |
+| Send limit per minute      | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                                 |
 
 Any signed-in person can connect and edit inboxes. Only the instance owner can
 let an inbox send right away, allow internal mail servers, remove an inbox
@@ -143,7 +146,7 @@ and forget a customer.
 
 When a reply needs a person, will send at the end of its veto window, or
 couldn't send, Sessions notifies the conversation's owner (the instance owner
-while the conversation has none) with fixed wording: "A support reply is
+when it has none) with fixed wording: "A support reply is
 ready", "A support reply will send", "A support reply could not send". The
 switch is **Support replies that need you** in **Settings → Notifications**.
 
@@ -177,11 +180,12 @@ Sessions never deletes mail. What it changes depends on **Mailbox behaviour**:
 
 - **Leave untouched**: the inbox is opened read-only. Nothing changes: no
   flags, no folders, no moves.
-- **Mark read when handled**: when a reply is sent or triage files a
-  conversation as spam, its messages get the `\Seen` flag. Nothing else
-  changes.
-- **Move to Sessions folders**: when a reply is sent, the conversation's
-  messages move to `Sessions/Done`; spam moves to `Sessions/Spam`. Sessions
+- **Mark read when handled**: when a reply is sent, a conversation is
+  closed or triage files it as spam, its messages get the `\Seen` flag.
+  Nothing else changes.
+- **Move to Sessions folders**: when a reply is sent or a conversation is
+  closed, its messages move to `Sessions/Done`; spam moves to
+  `Sessions/Spam`. Sessions
   creates the folders when they are missing, under the server's own folder
   prefix if it has one (for example `INBOX.Sessions.Done`).
 

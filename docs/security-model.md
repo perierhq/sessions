@@ -814,6 +814,12 @@ The code is in `packages/core/opensession-server/src/server/support/` and
   support reply could not send") with the project as context; no customer
   name, address, subject or text reaches a lock screen, and a failed send
   never quotes the server's error.
+- **Issues in public repositories need a person.** Bug handling may turn a
+  customer email into a GitHub issue, written from the agent's summary with
+  every email address and the customer's name taken out. When the project's
+  repository is public (or its visibility can't be read), the issue waits on
+  the conversation until a person approves it, whatever the inbox's
+  autonomy.
 - **Logs and health carry ids.** Transport logs carry the inbox id, an event
   and an error code or UID; `/health` lists inbox ids, states and reasons
   with any address cut (server alert text can carry one). A refused login
