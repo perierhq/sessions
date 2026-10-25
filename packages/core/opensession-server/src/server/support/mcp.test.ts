@@ -281,67 +281,29 @@ test("report_bug files the session's own conversation, as the agent", async () =
     const mine = await answeredBy("os-1");
     const tool = toolNamed("os-1", "report_bug");
     expect(Object.keys(tool.inputSchema).sort()).toEqual(["summary", "title"]);
-    const off = await tool.handler({ title: "Export", summary: "Fails" }, {});
-    expect(textOf(off)).toBe(
-      "Bug handling is off for this inbox, so no issue was created.",
-    );
-    const updated = await updateInbox(
-      inbox.id,
-      { expectedRevision: inbox.revision, bugHandling: "issue" },
-      ADA,
-    );
-    if (!updated.ok) throw new Error(updated.error);
     const out = await tool.handler({ title: "Export", summary: "Fails" }, {});
-    expect(textOf(out)).toBe("Created https://github.com/acme/acme/issues/3.");
-    expect(posted).toHaveLength(1);
-    expect((await getConversation(mine.id))!.issue?.number).toBe(3);
+    expect(textOf(out)).toStartWith("Prepared an issue and a fix task.");
+    // Nothing is posted: a person creates it.
+    expect(posted).toHaveLength(0);
+    const after = (await getConversation(mine.id))!;
+    expect(after.issue).toBeNull();
+    expect(after.pendingIssue?.title).toBe("Export");
   } finally {
     __setBugDepsForTest(undefined);
   }
 });
 
-test("move_conversation moves the session's own conversation", async () => {
-  const cancelled: string[] = [];
-  __setActionDepsForTest({
-    cancelSession: async (id) => {
-      cancelled.push(id);
-      return true;
-    },
-  });
-  __setRoutingDepsForTest({
-    runSpec: async () => ({
-      model: "m",
-      mcpServers: [],
-      mode: "ask",
-      sandbox: { ok: false, reason: "no place to run" },
-    }),
-  });
-  try {
-    const mine = await answeredBy("os-1");
-    const tool = toolNamed("os-1", "move_conversation");
-    expect(Object.keys(tool.inputSchema).sort()).toEqual(["project", "reason"]);
-    const refused = await tool.handler({ project: "acme", reason: "x" }, {});
-    expect(textOf(refused)).toStartWith("Not moved: ");
-    const out = await tool.handler(
-      { project: "acme-api", reason: "It's about the API" },
-      {},
-    );
-    expect(textOf(out)).toBe("Moved to acme-api. This session stops here.");
-    expect(cancelled).toEqual(["os-1"]);
-    const moved = (await getConversation(mine.id))!;
-    expect(moved.project).toBe("acme-api");
-    expect(moved.moves[0]?.by).toEqual({ kind: "agent", sessionId: "os-1" });
-  } finally {
-    __setActionDepsForTest(undefined);
-    __setRoutingDepsForTest(undefined);
-  }
+test("the agent has no tool to move a conversation", () => {
+  const names = supportToolDefinitions({ sessionId: "os-1" }).map(
+    (t) => t.name,
+  );
+  expect(names).toEqual(["get_conversation", "draft_reply", "report_bug"]);
 });
 
-test("a session that no longer answers the conversation can't move or report it", async () => {
+test("a session that no longer answers the conversation can't report it", async () => {
   const mine = await answeredBy("os-new");
   sessions["os-old"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   for (const [name, args] of [
-    ["move_conversation", { project: "acme-api", reason: "x" }],
     ["report_bug", { title: "t", summary: "s" }],
   ] as const) {
     const out = await toolNamed("os-old", name).handler(args, {});

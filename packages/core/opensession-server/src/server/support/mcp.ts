@@ -3,10 +3,11 @@
 // Every tool acts on the conversation the session's own `support` external
 // ref names; no tool takes a conversation id, so mail in one conversation
 // can't steer the agent into another. Customer text comes back inside the
-// <customer_email> wrapper (wrap.ts). draft_reply goes through the one
-// reply path (reply.ts); report_bug through bug handling (bugs.ts) and
-// move_conversation through actions.ts, both only for the conversation's
-// current session. Nothing runs at import.
+// <customer_email> wrapper (wrap.ts), as JSON data. draft_reply goes
+// through the one reply path (reply.ts); report_bug only prepares an issue
+// and a fix task for a person (bugs.ts), for the conversation's current
+// session. Moving a conversation is a person's action, never a tool.
+// Nothing runs at import.
 
 import { z } from "zod";
 import {
@@ -20,7 +21,6 @@ import {
   tool,
 } from "../inprocess-mcp";
 import type { ExternalRef } from "../types";
-import { moveConversation } from "./actions";
 import { MAX_SUMMARY, MAX_TITLE, reportBug } from "./bugs";
 import { getInbox } from "./inboxes";
 import { proposeDraft } from "./reply";
@@ -189,7 +189,7 @@ function bugTools(ctx: { sessionId: string }): AnyTool[] {
   return [
     tool(
       "report_bug",
-      "Report the bug this customer hit, in your own words: what fails, where, how to reproduce it, what you found in the code. Never paste the customer's email, name or address; addresses are removed anyway. The inbox's bug handling decides whether an issue is created (a public repository waits for a person) and whether a fix task is suggested to a person, who may start a fix session. Nothing starts a fix on its own; keep the customer posted with draft_reply.",
+      "Report the bug this customer hit, in your own words: what fails, where, how to reproduce it, what you found in the code. Never paste the customer's email, name or address; addresses are removed anyway. This prepares an issue and a fix task for a person, who creates the issue and starts a fix session; nothing is filed or started on its own. Keep the customer posted with draft_reply.",
       {
         title: z.string().max(MAX_TITLE).describe("A short issue title"),
         summary: z
@@ -207,30 +207,6 @@ function bugTools(ctx: { sessionId: string }): AnyTool[] {
           { kind: "agent", sessionId: ctx.sessionId },
         );
         return text(result.note);
-      },
-    ),
-    tool(
-      "move_conversation",
-      "Move this conversation to the project it belongs to, with the reason. A new support agent takes it over there under that project's settings, and this session stops. The inbox may allow only people to move conversations.",
-      {
-        project: z.string().describe("The id of the project to move to"),
-        reason: z.string().describe("Why it belongs there"),
-      },
-      async ({ project, reason }) => {
-        const current = await currentConversation(ctx.sessionId);
-        if (!current.ok) return text(current.why);
-        const { c } = current;
-        const result = await moveConversation(
-          c.id,
-          project,
-          { kind: "agent", sessionId: ctx.sessionId },
-          reason,
-        );
-        return text(
-          result.ok
-            ? `Moved to ${project.trim()}. This session stops here.`
-            : `Not moved: ${result.error}`,
-        );
       },
     ),
   ];

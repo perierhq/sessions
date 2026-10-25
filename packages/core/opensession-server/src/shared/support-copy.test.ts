@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
-import { AUTONOMY_LEVELS } from "./incident-response";
-import { BUG_HANDLING, MAILBOX_BEHAVIOURS, SUPPORT_TOPICS } from "./support";
+import {
+  MAILBOX_BEHAVIOURS,
+  SUPPORT_AUTONOMY,
+  SUPPORT_TOPICS,
+} from "./support";
 import * as copy from "./support-copy";
 import {
-  BUG_HANDLING_COPY,
   MAILBOX_BEHAVIOUR_COPY,
   SUPPORT_AUTONOMY_COPY,
   SUPPORT_PUSH,
@@ -11,21 +13,19 @@ import {
 } from "./support-copy";
 
 test("every autonomy level has a label and a description", () => {
-  for (const level of AUTONOMY_LEVELS) {
+  for (const level of SUPPORT_AUTONOMY) {
     expect(SUPPORT_AUTONOMY_COPY[level].label.length).toBeGreaterThan(0);
     expect(SUPPORT_AUTONOMY_COPY[level].description.length).toBeGreaterThan(0);
   }
-  expect(SUPPORT_AUTONOMY_COPY.propose.label).toBe("Draft");
+  expect(SUPPORT_AUTONOMY_COPY.draft.label).toBe("Draft");
   expect(SUPPORT_AUTONOMY_COPY.watch.label).toBe("Watch only");
 });
 
-test("every topic, mailbox behaviour and bug handling has copy", () => {
+test("every topic and mailbox behaviour has copy", () => {
   for (const topic of SUPPORT_TOPICS)
     expect(SUPPORT_TOPIC_LABELS[topic].length).toBeGreaterThan(0);
   for (const behaviour of MAILBOX_BEHAVIOURS)
     expect(MAILBOX_BEHAVIOUR_COPY[behaviour].length).toBeGreaterThan(0);
-  for (const handling of BUG_HANDLING)
-    expect(BUG_HANDLING_COPY[handling].length).toBeGreaterThan(0);
 });
 
 test("the veto push names only the clock", () => {

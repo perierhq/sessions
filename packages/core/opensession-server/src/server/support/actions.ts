@@ -1,12 +1,12 @@
-// What people (and, for a move, the support agent) do to a conversation
-// besides replying: move it to another project, set its owner, close or
-// reopen it, and take it out of spam.
+// What people do to a conversation besides replying: move it to another
+// project, set its owner, close or reopen it, and take it out of spam; and
+// what Sessions closes on its own (a conversation quiet for 7 days).
 //
 // A move re-runs the conversation in the target project: the old support
 // session is cancelled and a new one starts there through routing's
 // startSupportSession, so the target's Support settings (model, connectors,
-// where it runs) apply and nothing carries over from the source. The
-// inbox's `moveLock: "people"` binds only the agent. The owner is a person
+// where it runs) apply and nothing carries over from the source. Only a
+// person moves a conversation; the agent has no move tool. The owner is a person
 // on the roster, resolved as incidents resolve theirs (incidents/owner.ts).
 // Nothing runs at import.
 

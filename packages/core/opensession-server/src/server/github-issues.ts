@@ -137,6 +137,40 @@ async function lookupPrivate(ghRepo: string): Promise<boolean | null> {
   }
 }
 
+/** Whether issue `number` of `ghRepo` is open or closed; null when it
+ *  can't be read. */
+export async function repoIssueState(
+  ghRepo: string,
+  number: number,
+): Promise<"open" | "closed" | null> {
+  if (!OWNER_NAME.test(ghRepo) || !Number.isInteger(number) || number <= 0)
+    return null;
+  const token = await deps().readToken(ghRepo);
+  if (!token) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.github.com/repos/${ghRepo}/issues/${number}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "opensession",
+        },
+      },
+      10_000,
+    );
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => null)) as {
+      state?: unknown;
+    } | null;
+    return data?.state === "open" || data?.state === "closed"
+      ? data.state
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether `ghRepo` is public; null when unknown. Callers treat null as
  *  public. */
 export async function repoIsPublic(ghRepo: string): Promise<boolean | null> {

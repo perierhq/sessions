@@ -1,33 +1,45 @@
-// Bug handling for a support conversation, per inbox (`bugHandling`):
-// off; a GitHub issue in the project's repository; or the issue plus a
-// suggested fix task. The issue text is the agent's summary, cut to size and then
-// scrubbed (issueText): every email address however it is spelled, the
-// local parts, domains and names of everyone on the mail, phone numbers,
-// and @mentions and #references made inert. It waits as `pendingIssue`
-// for a person when the repository is public or of unknown visibility
-// (design correction 10; only the instance owner may approve that), when
-// the summary quotes a customer email, or over the daily issue caps. One
-// issue per conversation: no new report while one waits or after a person
-// dismissed one.
+// Bug reports from a support conversation. The agent's report_bug only
+// PREPARES: an issue text (`pendingIssue`) and a fix task (`fixTask`), both
+// for a person. Nothing is posted or started on its own.
 //
-// Nothing starts a fix on its own. With "issue-and-agent" the report also
-// stores a fix task (`fixTask`: what is broken and how to reproduce it, in
-// the project, scrubbed like the issue) as a suggestion. A person reads and
-// edits it and starts a fix session (startFixSession): a normal interactive
-// code session in the project, as that person, with their usual defaults,
-// as the PR page's "Fix everything" does (routes/pr.ts autofix). The
+// The issue text is the agent's summary, cut to size and then scrubbed
+// (issueText): every email address however it is spelled, the local parts,
+// domains and names of everyone on the mail, phone numbers, and @mentions
+// and #references made inert. A person's click creates it
+// (approvePendingIssue, route issue/approve with the revision they saw);
+// for a public repository, or one of unknown visibility, only the instance
+// owner may. `heldFor` says why it waits. One issue per conversation: no
+// new report while one waits or after a person dismissed one.
+//
+// The fix task (what is broken and how to reproduce it, in the project,
+// scrubbed like the issue) is a suggestion: a person reads and edits it
+// and starts a fix session (startFixSession): a normal interactive code
+// session in the project, as that person, with their usual defaults, as
+// the PR page's "Fix everything" does (routes/pr.ts autofix). The
 // conversation keeps its id as `fixSessionId`.
+//
+// Close the loop: once a conversation has an issue or a fix session, a
+// `fixwatch:<conversationId>` key in the support-pending work index lets
+// the tick (checkFixes, hourly) notice the fix pull request merging or the
+// issue closing; it then prepares an "it's fixed" note as a draft that
+// always waits for a person (policy.ts). "Merged" isn't "shipped", so it
+// never sends on its own.
 //
 // Reuses createRepoIssue (github-issues.ts, also behind Plain's
 // createGithubIssue). Nothing runs at import.
 
 import type { SupportActor, SupportConversation } from "../../shared/support";
+import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import {
   createRepoIssue,
   neutralizeGithubRefs,
   repoIsPublic,
+  repoIssueState,
 } from "../github-issues";
+import { reopenConversation } from "./actions";
+import { RULES } from "./policy";
+import { proposeDraft } from "./reply";
 import { type Actor, isOwnerActor } from "./actor";
 import { type SessionControl, getSessionControl } from "../session-control";
 import { getInbox } from "./inboxes";
@@ -38,7 +50,12 @@ export const ISSUE_FOOTER =
 export const HELD_PUBLIC = "Waiting for a person: the repository is public";
 export const HELD_QUOTE =
   "Waiting for a person: the report quotes the customer's email";
-export const HELD_CAP = "Waiting for a person: too many issues today";
+export const HELD_PREPARED = "Waiting for a person to create it";
+export const FIXED_NOTE = RULES.fixedNote;
+/** The "it's fixed" note a person reviews and sends. No link: the pull
+ *  request or issue may be private, and merged isn't shipped. */
+export const FIXED_NOTE_TEXT =
+  "Hi,\n\nGood news: the problem you reported is fixed. The fix reaches you with the next release.\n\nThanks for reporting it.";
 export const PUBLIC_NEEDS_OWNER =
   "Only the instance owner can post an issue to a public repository";
 const ISSUE_LABELS = ["bug"];
@@ -49,19 +66,11 @@ export const MAX_SUMMARY = 20_000;
 const QUOTE_WORDS = 12;
 const DAY_MS = 86_400_000;
 
-export interface BugLimits {
-  issuesPerInboxPerDay: number;
-  issuesPerRepoPerDay: number;
-}
-export const DEFAULT_BUG_LIMITS: BugLimits = {
-  issuesPerInboxPerDay: 10,
-  issuesPerRepoPerDay: 20,
-};
 /** The longest fix task a person may start a session with. */
 export const MAX_FIX_TASK = 20_000;
 
 export type ReportBugResult = {
-  state: "off" | "created" | "held" | "failed";
+  state: "prepared" | "created" | "failed";
   issue?: { url: string; number: number };
   note: string;
 };
@@ -74,17 +83,19 @@ export interface BugDeps {
   isPublic: (ghRepo: string) => Promise<boolean | null>;
   createIssue: typeof createRepoIssue;
   control: () => Pick<SessionControl, "createSession">;
+  /** The fix session's pull request, or null when the session is gone. */
+  fixSession: (
+    sessionId: string,
+  ) => Promise<{ prUrl: string | null; prState: string | null } | null>;
+  issueState: typeof repoIssueState;
   now: () => number;
-  limits: BugLimits;
 }
 
 let override: Partial<BugDeps> | undefined;
 
-/** Replace bug handling's collaborators (tests); undefined restores them.
- *  Also clears the daily counters. */
+/** Replace bug handling's collaborators (tests); undefined restores them. */
 export function __setBugDepsForTest(deps?: Partial<BugDeps>): void {
   override = deps;
-  recentIssues.clear();
 }
 
 function projectGhRepo(project: string): string | null {
@@ -108,37 +119,21 @@ function deps(): BugDeps {
     createIssue: override?.createIssue ?? createRepoIssue,
     // Registered by opensession.ts at boot.
     control: override?.control ?? getSessionControl,
+    fixSession:
+      override?.fixSession ??
+      (async (id) => {
+        const session = await (
+          await import("../session-cache")
+        )
+          .findSessionAsync(id)
+          .catch(() => undefined);
+        return session
+          ? { prUrl: session.prUrl ?? null, prState: session.prState ?? null }
+          : null;
+      }),
+    issueState: override?.issueState ?? repoIssueState,
     now: override?.now ?? Date.now,
-    limits: override?.limits ?? DEFAULT_BUG_LIMITS,
   };
-}
-
-// ── Daily caps ───────────────────────────────────────────────────────────
-
-/** Times issues were created, by `inbox:<id>` and `repo:<owner/name>`,
- *  within the last day. In memory: a restart forgets them, which at worst
- *  lets one more day's worth through. */
-const recentIssues = new Map<string, number[]>();
-
-function countToday(key: string, now: number): number {
-  const live = (recentIssues.get(key) ?? []).filter((t) => now - t < DAY_MS);
-  recentIssues.set(key, live);
-  return live.length;
-}
-
-function overCap(inboxId: string, ghRepo: string): boolean {
-  const { limits, now } = deps();
-  const at = now();
-  return (
-    countToday(`inbox:${inboxId}`, at) >= limits.issuesPerInboxPerDay ||
-    countToday(`repo:${ghRepo}`, at) >= limits.issuesPerRepoPerDay
-  );
-}
-
-function countIssue(inboxId: string, ghRepo: string): void {
-  const at = deps().now();
-  for (const key of [`inbox:${inboxId}`, `repo:${ghRepo}`])
-    recentIssues.set(key, [...(recentIssues.get(key) ?? []), at]);
 }
 
 // One report or approval per conversation at a time, so two calls can't
@@ -437,7 +432,7 @@ async function create(
     );
     return { state: "failed", note: "Couldn't create the issue on GitHub." };
   }
-  countIssue(c.inboxId, ghRepo);
+  await watchFix(c.id);
   await updateConversation(c.id, (x) => ({
     ...x,
     issue: { repo: posted.repo, number: posted.number, url: posted.url },
@@ -454,26 +449,26 @@ async function create(
   };
 }
 
-const FIX_SUGGESTED = "A person can start a fix session from it.";
+const PREPARED =
+  "Prepared an issue and a fix task. A person creates the issue and starts the fix; nothing happens until then.";
 const ALREADY_WAITING =
   "An issue for this conversation is already waiting for a person.";
 const DISMISSED =
   "A person dismissed this conversation's issue, so no new one is filed.";
 
-/** Why a new issue from `c` waits for a person, or null to post it now. */
+/** What the person who creates the issue should know first. */
 async function holdReason(
   c: SupportConversation,
   ghRepo: string,
   summary: string,
-): Promise<string | null> {
-  const d = deps();
-  if ((await d.isPublic(ghRepo)) !== false) return HELD_PUBLIC;
+): Promise<string> {
+  if ((await deps().isPublic(ghRepo)) !== false) return HELD_PUBLIC;
   if (quotesCustomer(c, summary)) return HELD_QUOTE;
-  if (overCap(c.inboxId, ghRepo)) return HELD_CAP;
-  return null;
+  return HELD_PREPARED;
 }
 
-/** The agent (or a person) reports a bug on conversation `conversationId`. */
+/** The agent (or a person) reports a bug on conversation `conversationId`:
+ *  the issue text and a fix task are prepared for a person. */
 export async function reportBug(
   conversationId: string,
   input: { title: string; summary: string },
@@ -482,16 +477,11 @@ export async function reportBug(
   const c = await getConversation(conversationId);
   if (!c) return { state: "failed", note: "The conversation is gone." };
   const inbox = await getInbox(c.inboxId);
-  if (!inbox)
-    return {
-      state: "off",
-      note: "Bug handling is off for this inbox, so no issue was created.",
-    };
   return exclusive(
     c.id,
     {
       state: "failed",
-      note: "A report for this conversation is already being filed.",
+      note: "A report for this conversation is already being prepared.",
     },
     async () => {
       const current = (await getConversation(c.id)) ?? c;
@@ -507,47 +497,36 @@ export async function reportBug(
         return { state: "failed", note: DISMISSED };
       const ghRepo = deps().ghRepo(current.project);
       if (!ghRepo) {
-        const detail = `Couldn't create the issue: ${current.project} has no GitHub repository`;
+        const detail = `Couldn't prepare the issue: ${current.project} has no GitHub repository`;
         await addEvent(current.id, "issue-failed", by, detail);
         return { state: "failed", note: `${detail}.` };
       }
-      const issue = issueText(current, input, inbox.address);
-      const fixTask = true
-        ? {
-            text: fixTaskText(current.project, issue),
-            project: current.project,
-            suggestedBy: by,
-            at: new Date(deps().now()).toISOString(),
-          }
-        : null;
-      const withTask = (r: ReportBugResult): ReportBugResult =>
-        fixTask && r.state !== "failed"
-          ? { ...r, note: `${r.note} ${FIX_SUGGESTED}` }
-          : r;
+      const issue = issueText(current, input, inbox?.address);
+      const fixTask = {
+        text: fixTaskText(current.project, issue),
+        project: current.project,
+        suggestedBy: by,
+        at: new Date(deps().now()).toISOString(),
+      };
       const heldFor = await holdReason(
         current,
         ghRepo,
         input.summary.slice(0, MAX_SUMMARY),
       );
-      if (heldFor) {
-        await updateConversation(current.id, (x) => ({
-          ...x,
-          ...(fixTask ? { fixTask } : {}),
-          pendingIssue: { ...issue, requestedBy: by, ghRepo, heldFor },
-          events: [
-            ...x.events,
-            event(
-              "issue-held",
-              by,
-              `Issue ${heldFor.replace(/^Waiting/, "waiting")}`,
-            ),
-          ],
-        }));
-        return withTask({ state: "held", note: heldFor });
-      }
-      if (fixTask)
-        await updateConversation(current.id, (x) => ({ ...x, fixTask }));
-      return withTask(await create(current, issue, ghRepo, by));
+      await updateConversation(current.id, (x) => ({
+        ...x,
+        fixTask,
+        pendingIssue: { ...issue, requestedBy: by, ghRepo, heldFor },
+        events: [
+          ...x.events,
+          event(
+            "issue-prepared",
+            by,
+            "Issue and fix task prepared for a person",
+          ),
+        ],
+      }));
+      return { state: "prepared", note: PREPARED };
     },
   );
 }
@@ -738,6 +717,7 @@ export async function startFixSession(
           error: "The fix session couldn't be created",
         };
       }
+      await watchFix(c.id);
       await updateConversation(c.id, (x) => ({
         ...x,
         fixSessionId: x.fixSessionId ?? sessionId,
@@ -753,4 +733,125 @@ export async function startFixSession(
       return { ok: true, sessionId };
     },
   );
+}
+
+// ── Close the loop: the "it's fixed" note ────────────────────────────────
+
+let pendingDocs: ReturnType<typeof catalogDocuments> | undefined;
+const pending = () => (pendingDocs ??= catalogDocuments("support-pending"));
+const FIX_WATCH = "fixwatch:";
+
+/** Lets checkFixes look at the conversation's fix and issue. */
+async function watchFix(conversationId: string): Promise<void> {
+  try {
+    await pending().update(`${FIX_WATCH}${conversationId}`, () => ({
+      conversationId,
+    }));
+  } catch (error) {
+    console.warn(
+      "[support] fix watch not recorded:",
+      error instanceof Error ? error.name : typeof error,
+    );
+  }
+}
+
+const dropWatch = (conversationId: string) =>
+  pending()
+    .update(`${FIX_WATCH}${conversationId}`, () => null)
+    .catch(() => null);
+
+/** Whether the conversation's fix is done: its fix session's pull request
+ *  merged, or its issue closed. */
+async function fixDone(
+  c: SupportConversation,
+): Promise<{ because: "pr-merged" | "issue-closed"; url: string } | null> {
+  const d = deps();
+  if (c.fixSessionId) {
+    const fix = await d.fixSession(c.fixSessionId);
+    if (fix?.prState === "MERGED" && fix.prUrl)
+      return { because: "pr-merged", url: fix.prUrl };
+  }
+  if (
+    c.issue &&
+    (await d.issueState(c.issue.repo, c.issue.number)) === "closed"
+  )
+    return { because: "issue-closed", url: c.issue.url };
+  return null;
+}
+
+/** Once per conversation: reopens a closed one, puts the note in a draft
+ *  that waits for a person (or keeps it aside while another draft is
+ *  live), and records `fixedNote`. */
+async function prepareFixedNote(
+  c: SupportConversation,
+  done: { because: "pr-merged" | "issue-closed"; url: string },
+): Promise<boolean> {
+  const at = new Date(deps().now()).toISOString();
+  if (c.status === "closed")
+    await reopenConversation(c.id, { kind: "sessions" });
+  const live =
+    c.draft && ["needs-person", "veto", "sending"].includes(c.draft.state);
+  let draftId: string | null = null;
+  if (!live && c.status !== "spam") {
+    const proposed = await proposeDraft(
+      c.id,
+      FIXED_NOTE_TEXT,
+      { kind: "sessions" },
+      deps().now(),
+      { purpose: "fixed-note" },
+    );
+    if (proposed.ok) draftId = proposed.draft.id;
+  }
+  const stored = await updateConversation(c.id, (x) =>
+    x.fixedNote
+      ? null
+      : {
+          ...x,
+          fixedNote: { at, ...done, text: FIXED_NOTE_TEXT, draftId },
+          events: [
+            ...x.events,
+            event(
+              "fixed-note",
+              { kind: "sessions" },
+              done.because === "pr-merged"
+                ? 'The fix was merged. An "it\'s fixed" note waits for a person'
+                : 'The issue was closed. An "it\'s fixed" note waits for a person',
+            ),
+          ],
+        },
+  );
+  return stored !== null;
+}
+
+/** The tick's hourly look at every watched conversation; returns how many
+ *  notes it prepared. */
+export async function checkFixes(_now: number): Promise<number> {
+  let prepared = 0;
+  for (const { key, value } of await pending().list()) {
+    if (!key.startsWith(FIX_WATCH)) continue;
+    const id = (value as { conversationId?: unknown } | null)?.conversationId;
+    if (typeof id !== "string") {
+      await pending()
+        .update(key, () => null)
+        .catch(() => null);
+      continue;
+    }
+    try {
+      const c = await getConversation(id);
+      if (!c || c.fixedNote) {
+        await dropWatch(id);
+        continue;
+      }
+      const done = await fixDone(c);
+      if (!done) continue;
+      if (await prepareFixedNote(c, done)) prepared++;
+      await dropWatch(id);
+    } catch (error) {
+      console.warn(
+        "[support] fix check failed:",
+        error instanceof Error ? error.name : typeof error,
+      );
+    }
+  }
+  return prepared;
 }

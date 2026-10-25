@@ -6,13 +6,15 @@ import {
   __setBugDepsForTest,
   approvePendingIssue,
   dismissPendingIssue,
-  HELD_CAP,
+  FIXED_NOTE,
+  HELD_PREPARED,
   HELD_PUBLIC,
   HELD_QUOTE,
   issueText,
   MAX_SUMMARY,
   MAX_FIX_TASK,
   MAX_TITLE,
+  checkFixes,
   reportBug,
   startFixSession,
 } from "./bugs";
@@ -72,11 +74,8 @@ beforeEach(() => {
   return () => __setBugDepsForTest(undefined);
 });
 
-/** A conversation with a support session, on an inbox with `bugHandling`. */
-async function bugConversation(
-  bugHandling: "off" | "issue" | "issue-and-agent",
-) {
-  await tb.setInbox({ bugHandling });
+/** A conversation with a support session. */
+async function bugConversation(_kind?: string) {
   const c = await tb.conversation({
     text: "Export fails. Write to carol@customer.example.test or ada@example.test.",
   });
@@ -93,74 +92,64 @@ const SUMMARY = {
 };
 
 describe("reportBug", () => {
-  test("off: nothing is posted", async () => {
-    const c = await bugConversation("off");
+  test("prepares the issue and a fix task; nothing is posted or started", async () => {
+    const c = await bugConversation();
     const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("off");
+    expect(result.state).toBe("prepared");
+    expect(result.note).toContain("A person");
     expect(posted).toHaveLength(0);
-    expect((await getConversation(c.id))!.issue).toBeNull();
-  });
-
-  test("private repository: the agent's issue is created without addresses or the name", async () => {
-    const c = await bugConversation("issue");
-    const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("created");
-    expect(result.issue).toEqual({
-      url: "https://github.com/acme/acme/issues/1",
-      number: 1,
-    });
-    expect(posted).toHaveLength(1);
-    expect(posted[0]!.ghRepo).toBe("acme/acme");
-    expect(posted[0]!.body).not.toContain("@");
-    expect(posted[0]!.body).not.toContain("example.test");
-    expect(posted[0]!.body).toContain("[email removed]");
-    expect(posted[0]!.body).toEndWith(
+    expect(created).toHaveLength(0);
+    const stored = (await getConversation(c.id))!;
+    expect(stored.issue).toBeNull();
+    expect(stored.fixSessionId).toBeNull();
+    const issue = stored.pendingIssue!;
+    expect(issue.requestedBy).toEqual(AGENT);
+    expect(issue.ghRepo).toBe("acme/acme");
+    expect(issue.heldFor).toBe(HELD_PREPARED);
+    expect(issue.body).not.toContain("@");
+    expect(issue.body).not.toContain("example.test");
+    expect(issue.body).toContain("[email removed]");
+    expect(issue.body).toEndWith(
       "\n\nReported from a support conversation in Sessions.",
     );
-    expect(posted[0]!.title).not.toContain("Carol");
-    expect(posted[0]!.body).not.toContain("Carol");
-    const stored = (await getConversation(c.id))!;
-    expect(stored.issue).toEqual({
-      repo: "acme/acme",
-      number: 1,
-      url: "https://github.com/acme/acme/issues/1",
-    });
-    expect(stored.events.some((e) => e.kind === "issue-created")).toBe(true);
-    // Plain issue mode: no fix agent.
-    expect(created).toHaveLength(0);
+    expect(issue.title).not.toContain("Carol");
+    expect(stored.fixTask?.project).toBe("acme");
+    expect(stored.fixTask?.suggestedBy).toEqual(AGENT);
+    expect(stored.fixTask?.text).toContain("CSV export returns 500");
+    expect(stored.fixTask?.text).not.toContain("example.test");
+    expect(stored.fixTask?.text).not.toContain("Carol");
+    expect(stored.events.some((e) => e.kind === "issue-prepared")).toBe(true);
   });
 
-  test("public repository: held for a person, nothing posted until approved", async () => {
-    visibility = true;
-    const c = await bugConversation("issue");
-    const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("held");
-    expect(result.note).toBe("Waiting for a person: the repository is public");
-    expect(posted).toHaveLength(0);
+  test("a person's click creates the prepared issue as it was stored", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
     const held = (await getConversation(c.id))!;
-    expect(held.pendingIssue?.requestedBy).toEqual(AGENT);
-    expect(held.pendingIssue?.body).not.toContain("example.test");
-    expect(held.pendingIssue?.ghRepo).toBe("acme/acme");
-    expect(held.pendingIssue?.heldFor).toBe(HELD_PUBLIC);
-
-    expect(await approve(c.id)).toEqual({ ok: true });
+    // A private repository: any signed-in person may create it.
+    expect(await approve(c.id, GRACE)).toEqual({ ok: true });
     expect(posted).toHaveLength(1);
     expect(posted[0]!.body).toBe(held.pendingIssue!.body);
-    const approved = (await getConversation(c.id))!;
-    expect(approved.pendingIssue).toBeNull();
-    expect(approved.issue?.number).toBe(1);
+    const after = (await getConversation(c.id))!;
+    expect(after.pendingIssue).toBeNull();
+    expect(after.issue?.number).toBe(1);
+    expect(after.events.some((e) => e.kind === "issue-created")).toBe(true);
   });
 
-  test("unknown visibility counts as public", async () => {
-    visibility = null;
-    const c = await bugConversation("issue");
-    expect((await reportBug(c.id, SUMMARY, AGENT)).state).toBe("held");
+  test("public or unknown visibility says so; only the owner creates it", async () => {
+    for (const v of [true, null]) {
+      visibility = v;
+      const c = await bugConversation();
+      const result = await reportBug(c.id, SUMMARY, AGENT);
+      expect(result.state).toBe("prepared");
+      expect((await getConversation(c.id))!.pendingIssue?.heldFor).toBe(
+        HELD_PUBLIC,
+      );
+    }
     expect(posted).toHaveLength(0);
   });
 
   test("a dismissed issue is never posted", async () => {
-    visibility = true;
-    const c = await bugConversation("issue");
+    const c = await bugConversation();
     await reportBug(c.id, SUMMARY, AGENT);
     expect(await dismissPendingIssue(c.id, OWNER_ACTOR)).toEqual({ ok: true });
     expect((await getConversation(c.id))!.pendingIssue).toBeNull();
@@ -168,55 +157,113 @@ describe("reportBug", () => {
     expect(posted).toHaveLength(0);
   });
 
-  test("a second report keeps the first issue", async () => {
-    const c = await bugConversation("issue");
+  test("a report after the issue exists keeps it", async () => {
+    const c = await bugConversation();
     await reportBug(c.id, SUMMARY, AGENT);
+    await approve(c.id);
     const again = await reportBug(c.id, SUMMARY, AGENT);
     expect(again.state).toBe("created");
     expect(again.issue?.number).toBe(1);
     expect(posted).toHaveLength(1);
   });
 
-  test("a failed post says so", async () => {
+  test("a failed create says so and keeps the prepared issue", async () => {
     __setBugDepsForTest({
       ghRepo: () => "acme/acme",
       isPublic: async () => false,
       createIssue: async () => null,
     });
-    const c = await bugConversation("issue");
-    const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("failed");
-    expect((await getConversation(c.id))!.issue).toBeNull();
-  });
-
-  test("issue-and-agent: the issue is posted and a fix task is suggested; nothing starts", async () => {
-    const c = await bugConversation("issue-and-agent");
-    const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("created");
-    expect(result.note).toContain("A person can start a fix session");
-    expect(created).toHaveLength(0);
-    const stored = (await getConversation(c.id))!;
-    expect(stored.fixSessionId).toBeNull();
-    expect(stored.fixTask?.project).toBe("acme");
-    expect(stored.fixTask?.suggestedBy).toEqual(AGENT);
-    expect(stored.fixTask?.text).toContain("CSV export returns 500");
-    expect(stored.fixTask?.text).toContain("acme");
-    expect(stored.fixTask?.text).not.toContain("example.test");
-    expect(stored.fixTask?.text).not.toContain("Carol");
-  });
-
-  test("issue only: no fix task", async () => {
-    const c = await bugConversation("issue");
+    const c = await bugConversation();
     await reportBug(c.id, SUMMARY, AGENT);
-    expect((await getConversation(c.id))!.fixTask ?? null).toBeNull();
+    const result = await approve(c.id);
+    expect(result).toMatchObject({ ok: false, status: 502 });
+    const after = (await getConversation(c.id))!;
+    expect(after.issue).toBeNull();
+    expect(after.pendingIssue).not.toBeNull();
+  });
+});
+
+describe("the it's fixed note", () => {
+  let prState: "OPEN" | "MERGED" | "CLOSED" | null = null;
+  let issueState: "open" | "closed" | null = "open";
+  beforeEach(() => {
+    prState = null;
+    issueState = "open";
+  });
+  function withState() {
+    __setBugDepsForTest({
+      ghRepo: (project) => `acme/${project}`,
+      isPublic: async () => false,
+      createIssue: async (ghRepo) => ({
+        number: 7,
+        url: `https://github.com/${ghRepo}/issues/7`,
+        repo: ghRepo,
+      }),
+      control: () => ({
+        async createSession() {
+          return {
+            id: "os-fix-1",
+            createdBy: "Ada",
+            createdAt: new Date().toISOString(),
+          };
+        },
+      }),
+      fixSession: async () => ({
+        prUrl: "https://github.com/acme/acme/pull/9",
+        prState,
+      }),
+      issueState: async () => issueState,
+    });
+  }
+
+  test("a merged fix pull request prepares a note that waits for a person", async () => {
+    withState();
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    const started = await startFixSession(
+      c.id,
+      { name: "Ada" },
+      seen.revision,
+      "Fix it",
+    );
+    expect(started.ok).toBe(true);
+    expect(await checkFixes(Date.now())).toBe(0);
+    prState = "MERGED";
+    expect(await checkFixes(Date.now())).toBe(1);
+    const after = (await getConversation(c.id))!;
+    expect(after.fixedNote).toMatchObject({
+      because: "pr-merged",
+      url: "https://github.com/acme/acme/pull/9",
+    });
+    expect(after.draft).toMatchObject({
+      purpose: "fixed-note",
+      state: "needs-person",
+      rule: FIXED_NOTE,
+    });
+    expect(after.fixedNote!.draftId).toBe(after.draft!.id);
+    expect(tb.fixture().sent).toHaveLength(0);
+    // Once per conversation.
+    expect(await checkFixes(Date.now())).toBe(0);
   });
 
-  test("a held issue still suggests the fix task", async () => {
-    visibility = true;
-    const c = await bugConversation("issue-and-agent");
-    expect((await reportBug(c.id, SUMMARY, AGENT)).state).toBe("held");
-    expect((await getConversation(c.id))!.fixTask?.text).toContain("CSV");
-    expect(created).toHaveLength(0);
+  test("a closed issue prepares the note; a live draft keeps it aside", async () => {
+    withState();
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    await approve(c.id);
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      status: "closed",
+      closedAt: new Date().toISOString(),
+    }));
+    issueState = "closed";
+    expect(await checkFixes(Date.now())).toBe(1);
+    const after = (await getConversation(c.id))!;
+    expect(after.status).toBe("open");
+    expect(after.fixedNote?.because).toBe("issue-closed");
+    expect(after.draft?.purpose).toBe("fixed-note");
   });
 });
 
@@ -224,8 +271,11 @@ describe("startFixSession", () => {
   const ADA_PERSON = { name: "Ada", login: "ada" };
 
   async function suggested() {
-    const c = await bugConversation("issue-and-agent");
+    const c = await bugConversation();
     await reportBug(c.id, SUMMARY, AGENT);
+    // The person created the prepared issue first.
+    await approve(c.id);
+    created = [];
     return (await getConversation(c.id))!;
   }
 
@@ -319,7 +369,8 @@ describe("report_bug input", () => {
     const started = performance.now();
     const result = await reportBug(c.id, { title: huge, summary: huge }, AGENT);
     expect(performance.now() - started).toBeLessThan(1_000);
-    expect(result.state).toBe("created");
+    expect(result.state).toBe("prepared");
+    await approve(c.id);
     expect(posted[0]!.title.length).toBeLessThanOrEqual(MAX_TITLE);
     expect(posted[0]!.body.length).toBeLessThanOrEqual(MAX_SUMMARY + 100);
     expect(posted[0]!.body).not.toContain("example.test");
@@ -421,8 +472,10 @@ describe("holds and refusals", () => {
       { title: "Export spins", summary: `Customer says: ${QUOTED}.` },
       AGENT,
     );
-    expect(result.state).toBe("held");
-    expect(result.note).toBe(HELD_QUOTE);
+    expect(result.state).toBe("prepared");
+    expect((await getConversation(c.id))!.pendingIssue?.heldFor).toBe(
+      HELD_QUOTE,
+    );
     expect(posted).toHaveLength(0);
     // A private repository's held issue: any signed-in person may approve.
     expect(await approve(c.id, GRACE)).toEqual({ ok: true });
@@ -478,36 +531,4 @@ describe("holds and refusals", () => {
     await approve(c.id);
     expect(posted[0]!.ghRepo).toBe("acme/acme");
   });
-
-  for (const limits of [
-    { issuesPerInboxPerDay: 5, issuesPerRepoPerDay: 2 },
-    { issuesPerInboxPerDay: 2, issuesPerRepoPerDay: 5 },
-  ])
-    test(`over the daily cap an issue waits for a person (${JSON.stringify(limits)})`, async () => {
-      __setBugDepsForTest({
-        ghRepo: (project) => `acme/${project}`,
-        isPublic: async () => false,
-        createIssue: async (ghRepo, issue) => {
-          posted.push({ ghRepo, title: issue.title, body: issue.body });
-          return {
-            number: posted.length,
-            url: `https://github.com/${ghRepo}/issues/${posted.length}`,
-            repo: ghRepo,
-          };
-        },
-        limits,
-      });
-      const results = [];
-      for (let i = 0; i < 3; i++) {
-        const c = await bugConversation("issue");
-        results.push(await reportBug(c.id, SUMMARY, AGENT));
-      }
-      expect(results.map((r) => r.state)).toEqual([
-        "created",
-        "created",
-        "held",
-      ]);
-      expect(results[2]!.note).toBe(HELD_CAP);
-      expect(posted).toHaveLength(2);
-    });
 });

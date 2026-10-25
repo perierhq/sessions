@@ -4,12 +4,15 @@
 // conversations at large: `veto:<id>` (a window's deadline),
 // `send:<id>:<draftId>` (a send under way or waiting for its retry) and `triage:<id>` (ingest's).
 // Once an hour it also closes conversations that waited on the customer
-// for 7 days, from the support-index projection.
+// for 7 days, from the support-index projection, and prepares the "it's
+// fixed" note for conversations whose fix merged or issue closed
+// (`fixwatch:<id>` keys, bugs.ts checkFixes).
 // Reuses the incidents fix loop's deadline-in-record plus tick
 // (incidents/response/coordinator.ts). Nothing runs at import.
 import { activeIntegrations } from "../integrations/load";
 import { isShuttingDown } from "../shutdown-state";
 import { closeQuietConversations } from "./actions";
+import { checkFixes } from "./bugs";
 import { retryPendingInbound } from "./ingest";
 import {
   INTERRUPTED_AFTER_MS,
@@ -53,6 +56,7 @@ export async function runSupportTick(now: number): Promise<{
   interrupted: number;
   triaged: number;
   quietClosed: number;
+  fixedNotes: number;
 }> {
   const out = {
     vetoSent: 0,
@@ -60,6 +64,7 @@ export async function runSupportTick(now: number): Promise<{
     interrupted: 0,
     triaged: 0,
     quietClosed: 0,
+    fixedNotes: 0,
   };
   const started = performance.now();
   /** Due sends by inbox: one at a time per inbox (its SMTP connection),
@@ -144,6 +149,7 @@ export async function runSupportTick(now: number): Promise<{
     lastQuietSweep = now;
     try {
       out.quietClosed = await closeQuietConversations(now);
+      out.fixedNotes = await checkFixes(now);
     } catch (error) {
       console.warn(
         "[support] closing quiet conversations failed:",
