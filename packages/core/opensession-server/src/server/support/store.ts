@@ -219,7 +219,17 @@ export async function existingConversations(
   );
 }
 
+/** A fresh conversation id, for callers that must know it before the
+ *  conversation exists (ingest remembers its message ids under it first). */
+export function newConversationId(): string {
+  return `sc_${randomUUIDv7()}`;
+}
+
+/** Writes a new conversation. With `id`, it is written only if no
+ *  conversation has that id yet; otherwise the existing one is returned
+ *  unchanged (no index write, no listeners). */
 export async function createConversation(init: {
+  id?: string;
   channel: SupportChannelKind;
   inboxId: string;
   project: string;
@@ -228,19 +238,26 @@ export async function createConversation(init: {
   owner: string | null;
   first: SupportMessage;
   now: string;
+  /** Default "open"; "closed" also sets closedAt to `now`. */
+  status?: ConversationStatus;
+  events?: SupportConversation["events"];
 }): Promise<SupportConversation> {
+  const id = init.id ?? newConversationId();
+  if (!isConversationId(id))
+    throw new Error(`Not a support conversation id: ${id}`);
+  const status = init.status ?? "open";
   const conversation = fitDocument({
-    id: `sc_${randomUUIDv7()}`,
+    id,
     channel: init.channel,
     inboxId: init.inboxId,
     project: init.project,
     subject: init.subject,
     customer: init.customer,
-    status: "open",
+    status,
     owner: init.owner,
     createdAt: init.now,
     lastMessageAt: init.first.at,
-    closedAt: null,
+    closedAt: status === "closed" ? init.now : null,
     triage: null,
     sessionId: null,
     fixSessionId: null,
@@ -250,10 +267,24 @@ export async function createConversation(init: {
     moves: [],
     issue: null,
     pendingIssue: null,
-    events: [],
+    events: init.events ?? [],
     revision: 0,
   });
-  await conversations().set(conversation.id, conversation);
+  let created = false;
+  const committed = await conversations().update<SupportConversation>(
+    id,
+    (value) => {
+      created = false;
+      if (value === null) {
+        created = true;
+        return conversation;
+      }
+      if (!isConversationRecord(value))
+        throw new Error(`Support conversation ${id} record is malformed`);
+      return value;
+    },
+  );
+  if (!created || committed === null) return committed ?? conversation;
   await writeIndexRow(conversation);
   notify(conversation, null);
   return conversation;

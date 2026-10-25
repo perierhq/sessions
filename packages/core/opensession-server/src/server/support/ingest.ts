@@ -1,13 +1,24 @@
 // Ingest: the InboundSink every support channel hands mail to. It dedupes
-// (provider id, then Message-ID), threads (RFC 5322 keys within one inbox,
-// and only for a sender already in the conversation), stores the message
-// and its attachments, then publishes the CloudEvent and hands the message
-// to the pipeline (triage, routing) in the background. The result resolves
-// only after the message is durable, so a transport may advance its cursor.
+// (provider id, a sender-qualified Message-ID or a fallback key for mail
+// without one, then the bare Message-ID), threads (RFC 5322 keys within one
+// inbox, and only for a sender already in the conversation), stores the
+// message and its attachments, then hands the message to the pipeline
+// (triage, routing) in the background. The result resolves only after the
+// message is durable, so a transport may advance its cursor.
+//
+// Write order, so a crash at any point is repaired by the transport offering
+// the message again: a new conversation remembers its ids under a generated
+// id first, then writes its pending key, then the document; a reply is
+// appended first (deduped inside the update), then its pending key, then its
+// ids. A re-offer that finds the message already in the document repairs the
+// ids and the pending key and resolves "duplicate".
+//
+// The CloudEvent is published after the pipeline (triage) settled, and only
+// when the conversation is not spam: once per hand-off that succeeded.
 //
 // A pipeline hand-off that fails leaves its `triage:<conversationId>` key in
-// the `support-pending` work index; the tick retries it with backoff. Nothing
-// runs at import.
+// the `support-pending` work index; the tick retries it with backoff, at most
+// MAX_ATTEMPTS times. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import {
   type AttachmentMeta,
@@ -19,21 +30,23 @@ import {
   type SupportConversation,
   type SupportMessage,
   normalizeAddress,
+  ownMailAddresses,
 } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
-import { saveAttachment } from "./attachments";
+import { deleteAttachmentFile, saveAttachment } from "./attachments";
 import { publishSupportEvent, supportCloudEvent } from "./events";
 import { getInbox } from "./inboxes";
 import { isAutomatedMail } from "./loops";
 import {
   createConversation,
   getConversation,
+  newConversationId,
   lookupMessageIds,
   lookupProviderId,
   rememberMessageIds,
   updateConversation,
 } from "./store";
-import { findConversation } from "./threading";
+import { findConversation, threadCandidates } from "./threading";
 
 export interface SupportPipeline {
   onInbound(
@@ -49,6 +62,19 @@ const UNREADABLE_TEXT = "(This message couldn't be read)";
 const FIRST_RETRY_MS = 60_000;
 const RETRY_MIN_MS = 30_000;
 const RETRY_MAX_MS = 900_000;
+/** Pipeline runs per pending key, the first included, before Sessions gives
+ *  up and leaves the conversation to a person. */
+const MAX_ATTEMPTS = 8;
+/** Pending keys one tick starts at most. */
+const RETRY_BATCH = 10;
+/** A pipeline run longer than this counts as failed (B2's sink limit). */
+const PIPELINE_TIMEOUT_MS = 120_000;
+let pipelineTimeoutMs = PIPELINE_TIMEOUT_MS;
+
+/** Shorten the pipeline time limit (tests); undefined restores it. */
+export function __setPipelineTimeoutForTest(ms: number | undefined): void {
+  pipelineTimeoutMs = ms ?? PIPELINE_TIMEOUT_MS;
+}
 
 let pipeline: SupportPipeline | null = null;
 
@@ -93,12 +119,24 @@ export async function __awaitInboundForTest(): Promise<void> {
   while (inFlight.size) await Promise.allSettled([...inFlight.values()]);
 }
 
+/** What a log line may say about an error: its code or name, never a
+ *  message that could quote mail. */
+function errorLabel(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" || typeof code === "number"
+      ? `${error.name} ${code}`
+      : error.name;
+  }
+  return typeof error;
+}
+
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** replyToDiffers: a reply would go somewhere the sender didn't write
  *  from: more than one Reply-To, or one that isn't the From address. */
-function trustOf(m: InboundMessage): SupportMessage["trust"] {
+function trustOf(m: InboundMessage): NonNullable<SupportMessage["trust"]> {
   const replyToDiffers =
     m.replyTo.length > 1 ||
     m.replyTo.some((r) => !sameAddress(r.address, m.from.address));
@@ -109,12 +147,8 @@ function trustOf(m: InboundMessage): SupportMessage["trust"] {
   return { replyToDiffers, authFailed };
 }
 
-/** Our own sending addresses besides the inbox address. */
-function ownAddresses(inbox: InboxConfig): string[] {
-  return [inbox.address, inbox.smtp.user, inbox.imap.user].filter((a) =>
-    a.includes("@"),
-  );
-}
+/** Our own sending addresses: the inbox address and its logins. */
+const ownAddresses = (inbox: InboxConfig): string[] => ownMailAddresses(inbox);
 
 /** A known Message-ID is a duplicate when the message stored under it came
  *  from the same sender (another copy of the same mail, or our own sent
@@ -196,7 +230,7 @@ async function saveAttachments(
     } catch (error) {
       console.warn(
         `[support] attachment for ${conversationId} not saved:`,
-        error instanceof Error ? error.message : error,
+        errorLabel(error),
       );
       out.push(meta);
     }
@@ -204,17 +238,19 @@ async function saveAttachments(
   return out;
 }
 
-function withAttachments(
-  c: SupportConversation,
-  messageId: string,
-  attachments: AttachmentMeta[],
-): SupportConversation {
-  return {
-    ...c,
-    messages: c.messages.map((x) =>
-      x.id === messageId ? { ...x, attachments } : x,
-    ),
-  };
+/** Removes files saved for a message that was not recorded after all. */
+async function discardSaved(
+  conversationId: string,
+  saved: AttachmentMeta[],
+): Promise<void> {
+  for (const a of saved)
+    if (a.stored)
+      await deleteAttachmentFile(conversationId, a.id).catch((error: unknown) =>
+        console.warn(
+          `[support] attachment ${a.id} not removed:`,
+          errorLabel(error),
+        ),
+      );
 }
 
 function appendMessage(
@@ -226,8 +262,8 @@ function appendMessage(
     messages: [...c.messages, message],
     lastMessageAt: message.at > c.lastMessageAt ? message.at : c.lastMessageAt,
   };
-  // Machine mail never reopens a conversation.
-  if (message.automated) return next;
+  // Machine mail and our own side never reopen a conversation.
+  if (message.automated || message.direction === "out") return next;
   if (c.status === "waiting") next.status = "open";
   else if (c.status === "closed") {
     next.status = "open";
@@ -245,32 +281,150 @@ function appendMessage(
   return next;
 }
 
+/** The ids a message is deduped by besides its provider id. With a
+ *  Message-ID: the id, and the id qualified by its sender (the key a reused
+ *  id from another sender is told apart by). Without one: a key from what
+ *  every copy of the same mail keeps (sender, date, subject and size). */
+function dedupeIds(
+  m: InboundMessage,
+  from: string,
+): { qualified: string; all: string[] } {
+  const id = m.keys.messageId;
+  if (id) {
+    const qualified = `${id}\0${from}`;
+    return { qualified, all: [id, qualified] };
+  }
+  const size =
+    m.text.length +
+    m.attachments.reduce(
+      (n, a) => n + (a.content?.byteLength ?? a.sizeBytes),
+      0,
+    );
+  const qualified = [
+    "\0no-message-id",
+    from,
+    m.receivedAt,
+    m.subject,
+    String(size),
+  ].join("\0");
+  return { qualified, all: [qualified] };
+}
+
+/** The same mail already in a conversation: same provider id, or the same
+ *  Message-ID from the same sender. */
+function sameMessage(x: SupportMessage, m: SupportMessage): boolean {
+  if (x.providerId !== null && x.providerId === m.providerId) return true;
+  return (
+    m.keys.messageId !== null &&
+    x.keys.messageId === m.keys.messageId &&
+    sameAddress(x.from.address, m.from.address)
+  );
+}
+
+/** The team member (roster email or Linear email) an address belongs to, by
+ *  first name, or null. */
+async function staffName(address: string): Promise<string | null> {
+  if (!address.includes("@")) return null;
+  // Lazy: user-mappings reads the configured roster at import.
+  const { isTrustedUser, teammatesNamed } =
+    await import("../shared/user-mappings");
+  if (!isTrustedUser(address)) return null;
+  const [member] = teammatesNamed(address);
+  return member?.name.trim().split(/\s+/)[0] || address;
+}
+
+/** Whether these keys answer mail we sent in `c` (a bounce of our reply). */
+function answersOurs(
+  c: SupportConversation,
+  keys: InboundMessage["keys"],
+): boolean {
+  const ids = new Set(threadCandidates(keys));
+  if (c.draft && ids.has(c.draft.messageId)) return true;
+  return c.messages.some(
+    (x) =>
+      x.direction === "out" &&
+      x.keys.messageId !== null &&
+      ids.has(x.keys.messageId),
+  );
+}
+
+type ConversationEvent = SupportConversation["events"][number];
+
+interface Offer {
+  inbox: InboxConfig;
+  providerId: string;
+  message: SupportMessage;
+  attachments: Array<{ meta: AttachmentMeta; content?: Uint8Array }>;
+  ids: string[];
+  /** Customer mail the pipeline should see (not ours, machine or unread). */
+  handsOff: boolean;
+  events: ConversationEvent[];
+}
+
 export async function ingestInbound(
   m: InboundMessage,
 ): Promise<"stored" | "duplicate" | "ignored"> {
   const inbox = await getInbox(m.inboxId);
   if (!inbox || !inbox.enabled) return "ignored";
 
-  if (await lookupProviderId(inbox.id, m.providerId)) return "duplicate";
-  const ownId = m.keys.messageId;
-  if (ownId && (await isDuplicateMessageId(inbox, ownId, m.from.address)))
-    return "duplicate";
-
-  const automated = isAutomatedMail(m, ownAddresses(inbox), inbox.address);
   const from: MailAddress = normalizeAddress(m.from) ?? {
     name: m.from.name,
     address: "",
   };
+  const ids = dedupeIds(m, from.address);
 
-  let threadId = await findConversation(inbox.id, m.keys);
+  // A key pointing at a conversation that does not exist is the crash
+  // between remembering a new conversation's ids and creating it: the
+  // conversation is created under that id now.
+  let reuseId: string | null = null;
+  const byProvider = await lookupProviderId(inbox.id, m.providerId);
+  if (byProvider) {
+    const c = await getConversation(byProvider);
+    if (c?.messages.some((x) => x.providerId === m.providerId))
+      return "duplicate";
+    if (!c) reuseId = byProvider;
+  }
+  const byQualified = (await lookupMessageIds(inbox.id, [ids.qualified])).get(
+    ids.qualified,
+  );
+  if (byQualified) {
+    if (await getConversation(byQualified)) return "duplicate";
+    reuseId ??= byQualified;
+  }
+  const ownId = m.keys.messageId;
+  if (ownId && (await isDuplicateMessageId(inbox, ownId, from.address)))
+    return "duplicate";
+
+  const trust = trustOf(m);
+  const automated = isAutomatedMail(
+    m,
+    ownAddresses(inbox),
+    inbox.address,
+  ).automated;
+  // Our side: the inbox's own addresses and the team's. A sender that fails
+  // authentication is not trusted to be either and stays customer mail.
+  const own =
+    !trust.authFailed &&
+    ownAddresses(inbox).some((a) => sameAddress(a, from.address));
+  const staff = own || trust.authFailed ? null : await staffName(from.address);
+  const ours = own || staff !== null;
+
+  const threadId = await findConversation(inbox.id, m.keys);
   let thread = threadId ? await getConversation(threadId) : null;
-  if (thread && !isParticipant(thread, from.address)) thread = null;
-  threadId = thread?.id ?? null;
+  if (
+    thread &&
+    !ours &&
+    !isParticipant(thread, from.address) &&
+    !(automated && answersOurs(thread, m.keys))
+  )
+    thread = null;
+  // Our own mail that answers nothing here is not a customer conversation.
+  if (ours && !thread) return "ignored";
 
   const attachments = attachmentMetas(m);
   const message: SupportMessage = {
     id: `sm_${randomUUIDv7()}`,
-    direction: "in",
+    direction: ours ? "out" : "in",
     at: m.receivedAt,
     from,
     to: m.to,
@@ -280,85 +434,192 @@ export async function ingestInbound(
     keys: m.keys,
     providerId: m.providerId,
     attachments: attachments.map((a) => a.meta),
-    trust: trustOf(m),
   };
-  if (automated.automated) message.automated = true;
-  const replyTo = m.replyTo.flatMap((a) => normalizeAddress(a) ?? []);
-  if (replyTo.length) message.replyTo = replyTo;
-
-  let conversation: SupportConversation | null = null;
-  let isNew = false;
-  if (threadId) {
-    // Bytes first: the append then records them as stored.
-    const saved = await saveAttachments(threadId, attachments, inbox);
-    conversation = await updateConversation(threadId, (c) =>
-      appendMessage(c, { ...message, attachments: saved }),
-    );
+  if (!ours) {
+    message.trust = trust;
+    const replyTo = m.replyTo.flatMap((a) => normalizeAddress(a) ?? []);
+    if (replyTo.length) message.replyTo = replyTo;
   }
-  if (!conversation) {
-    isNew = true;
-    conversation = await createConversation({
-      channel: m.channel,
-      inboxId: inbox.id,
-      project: inbox.project,
-      subject: m.subject,
-      customer: from,
-      owner: null,
-      first: message,
-      now: new Date().toISOString(),
+  if (staff) message.sentBy = { kind: "person", name: staff };
+  if (automated) message.automated = true;
+
+  const events: ConversationEvent[] = [];
+  if (ours)
+    events.push({
+      at: message.at,
+      kind: "replied-outside",
+      actor: { kind: "person", name: staff ?? from.name ?? from.address },
+      detail: "Replied outside Sessions",
     });
-    if (attachments.length) {
-      const saved = await saveAttachments(conversation.id, attachments, inbox);
-      conversation =
-        (await updateConversation(conversation.id, (c) =>
-          withAttachments(c, message.id, saved),
-        )) ?? conversation;
-    }
+  else if (m.unreadable && !automated)
+    events.push({
+      at: message.at,
+      kind: "needs-person",
+      actor: { kind: "sessions" },
+      detail: "This message couldn't be read, so it waits for a person",
+    });
+
+  const offer: Offer = {
+    inbox,
+    providerId: m.providerId,
+    message,
+    attachments,
+    ids: ids.all,
+    handsOff: !ours && !automated && !m.unreadable,
+    events,
+  };
+  let result = thread ? await appendTo(thread.id, offer) : null;
+  if (!result) {
+    // The thread was deleted meanwhile; our side never starts one.
+    if (ours) return "ignored";
+    result = await createNew(offer, m, reuseId, automated);
   }
+  return result;
+}
+
+/** Appends to an existing conversation; null when it is gone. The same mail
+ *  already in it (stored before a crash) is not added again: its ids and
+ *  pending key are repaired and it resolves "duplicate". */
+async function appendTo(
+  conversationId: string,
+  offer: Offer,
+): Promise<"stored" | "duplicate" | null> {
+  const { inbox, message } = offer;
+  // Bytes first: the append then records them as stored.
+  const saved = await saveAttachments(conversationId, offer.attachments, inbox);
+  let existing: SupportMessage | undefined;
+  const c = await updateConversation(conversationId, (current) => {
+    existing = current.messages.find((x) => sameMessage(x, message));
+    if (existing) return null;
+    const next = appendMessage(current, { ...message, attachments: saved });
+    if (offer.events.length) next.events = [...next.events, ...offer.events];
+    return next;
+  });
+  if (!c || existing) await discardSaved(conversationId, saved);
+  if (!c) return null;
   const stored =
-    conversation.messages.find((x) => x.id === message.id) ?? message;
+    existing ?? c.messages.find((x) => x.id === message.id) ?? message;
+  // Replies to spam stay with spam: no pipeline, no event.
+  const handsOff = offer.handsOff && c.status !== "spam";
+  // A repaired message that opened the conversation and was never triaged
+  // still counts as new.
+  const isNew =
+    existing !== undefined &&
+    c.messages[0]?.id === existing.id &&
+    c.triage === null;
+  // The pending key before the ids: once the ids are remembered a re-offer
+  // is a duplicate, so the hand-off must already be recorded.
+  const merged = handsOff ? await markPending(c.id, stored.id, isNew) : null;
+  await rememberMessageIds(inbox.id, c.id, offer.ids, [offer.providerId]);
+  if (merged) void handOff(c, stored, merged.isNew);
+  return existing ? "duplicate" : "stored";
+}
 
-  await rememberMessageIds(inbox.id, conversation.id, ownId ? [ownId] : [], [
-    m.providerId,
-  ]);
-
-  if (message.automated) return "stored";
-
-  await markPending(conversation.id, message.id, isNew);
-  try {
-    await publishSupportEvent(
-      supportCloudEvent(conversation, stored, isNew, new Date().toISOString()),
-    );
-  } catch (error) {
-    console.warn(
-      `[support] event for ${conversation.id} not published:`,
-      error instanceof Error ? error.message : error,
-    );
+/** Starts a conversation. Its id comes first and its ids are remembered
+ *  under it before anything else, so a crash part way is finished by the
+ *  next offer under the same id. */
+async function createNew(
+  offer: Offer,
+  m: InboundMessage,
+  reuseId: string | null,
+  automated: boolean,
+): Promise<"stored" | "duplicate"> {
+  const { inbox, message } = offer;
+  const id = reuseId ?? newConversationId();
+  await rememberMessageIds(inbox.id, id, offer.ids, [offer.providerId]);
+  const merged = offer.handsOff
+    ? await markPending(id, message.id, true)
+    : null;
+  const saved = await saveAttachments(id, offer.attachments, inbox);
+  const now = new Date().toISOString();
+  const c = await createConversation({
+    id,
+    channel: m.channel,
+    inboxId: inbox.id,
+    project: inbox.project,
+    subject: m.subject,
+    customer: message.from,
+    owner: null,
+    first: { ...message, attachments: saved },
+    now,
+    // Machine mail that answers nothing of ours is filed, not left open.
+    ...(automated ? { status: "closed" as const } : {}),
+    events: offer.events,
+  });
+  const stored = c.messages.find((x) => x.id === message.id);
+  if (!stored) {
+    // The id was taken after all: add the mail to that conversation.
+    await discardSaved(id, saved);
+    return (await appendTo(c.id, offer)) ?? "stored";
   }
-  handOff(conversation, stored, isNew);
+  if (merged) void handOff(c, stored, merged.isNew);
   return "stored";
 }
 
+/** Records (or merges into) the conversation's pending hand-off and
+ *  resolves to the merged entry: isNew stays true while any message it
+ *  stands for started the conversation. */
 async function markPending(
   conversationId: string,
   messageId: string,
   isNew: boolean,
-): Promise<void> {
-  await pendingIndex().update<PendingInbound>(
+): Promise<PendingInbound> {
+  const next = (value: unknown): PendingInbound => ({
+    conversationId,
+    messageId,
+    isNew: isNew || (isPending(value) && value.isNew),
+    attempts: isPending(value) ? value.attempts : 0,
+    nextAttemptAt: Date.now() + FIRST_RETRY_MS,
+  });
+  const merged = await pendingIndex().update<PendingInbound>(
     pendingKey(conversationId),
-    (value) => ({
-      conversationId,
-      messageId,
-      isNew: isNew || (isPending(value) && value.isNew),
-      attempts: isPending(value) ? value.attempts : 0,
-      nextAttemptAt: Date.now() + FIRST_RETRY_MS,
-    }),
+    next,
   );
+  return merged ?? next(null);
 }
 
-/** Runs the pipeline for one pending key; never rejects. On success the key
- *  goes, unless a newer message replaced it meanwhile. On failure it is
- *  pushed back with backoff. */
+class PipelineTimeout extends Error {
+  override name = "PipelineTimeout";
+}
+
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A run that settles after the limit must not surface as unhandled.
+  work.catch(() => {});
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new PipelineTimeout()), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The CloudEvent, once the pipeline (triage) settled: not for spam. */
+async function publishAfterTriage(
+  conversationId: string,
+  message: SupportMessage,
+  isNew: boolean,
+): Promise<void> {
+  try {
+    const c = await getConversation(conversationId);
+    if (!c || c.status === "spam" || c.triage?.route === "spam") return;
+    await publishSupportEvent(supportCloudEvent(c, message, isNew));
+  } catch (error) {
+    console.warn(
+      `[support] event for ${conversationId} not published:`,
+      errorLabel(error),
+    );
+  }
+}
+
+/** Runs the pipeline for one pending key; never rejects. On success the
+ *  event is published and the key goes, unless a newer message replaced it
+ *  meanwhile. On failure it is pushed back with backoff, and dropped with a
+ *  conversation event after MAX_ATTEMPTS. */
 function handOff(
   conversation: SupportConversation,
   message: SupportMessage,
@@ -373,22 +634,38 @@ function handOff(
     if (previous) await previous;
     const p = pipeline;
     if (!p) return;
-    let ok = false;
     try {
-      await p.onInbound(conversation, message, isNew);
-      ok = true;
+      // Fresh: the hand-off before this one may have triaged it.
+      const current = await getConversation(conversation.id);
+      if (!current) {
+        await pendingIndex().delete(key);
+        return;
+      }
+      if (current.status === "spam") {
+        await settlePending(key, pendingMessageId, true);
+        return;
+      }
+      let ok = false;
+      try {
+        await withTimeout(
+          Promise.resolve().then(() => p.onInbound(current, message, isNew)),
+          pipelineTimeoutMs,
+        );
+        ok = true;
+      } catch (error) {
+        console.warn(
+          `[support] pipeline failed for ${conversation.id}:`,
+          errorLabel(error),
+        );
+      }
+      if (ok) await publishAfterTriage(conversation.id, message, isNew);
+      await settlePending(key, pendingMessageId, ok);
     } catch (error) {
       console.warn(
-        `[support] pipeline failed for ${conversation.id}:`,
-        error instanceof Error ? error.message : error,
+        `[support] pending key ${key} not settled:`,
+        errorLabel(error),
       );
     }
-    await settlePending(key, pendingMessageId, ok).catch((error: unknown) =>
-      console.warn(
-        `[support] pending key ${key} not settled:`,
-        error instanceof Error ? error.message : error,
-      ),
-    );
   })();
   inFlight.set(key, run);
   void run.finally(() => {
@@ -402,13 +679,19 @@ async function settlePending(
   messageId: string,
   ok: boolean,
 ): Promise<void> {
+  const outcome: { gaveUp: string | null } = { gaveUp: null };
   await pendingIndex().update<PendingInbound>(key, (value) => {
+    outcome.gaveUp = null;
     // Gone or malformed: nothing to keep.
     if (!isPending(value)) return null;
     // A newer message took the key over; it settles itself.
     if (value.messageId !== messageId) return value;
     if (ok) return null;
     const attempts = value.attempts + 1;
+    if (attempts >= MAX_ATTEMPTS) {
+      outcome.gaveUp = value.conversationId;
+      return null;
+    }
     return {
       ...value,
       attempts,
@@ -416,14 +699,28 @@ async function settlePending(
         Date.now() + Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** (attempts - 1)),
     };
   });
+  if (outcome.gaveUp)
+    await updateConversation(outcome.gaveUp, (c) => ({
+      ...c,
+      events: [
+        ...c.events,
+        {
+          at: new Date().toISOString(),
+          kind: "handoff-failed",
+          actor: { kind: "sessions" },
+          detail: "Couldn't hand this to the agent",
+        },
+      ],
+    }));
 }
 
-/** Retries due pipeline hand-offs; resolves to how many it ran. Keys whose
- *  conversation is gone are dropped. With no pipeline installed the keys
- *  wait. Called by the support tick. */
+/** Starts the due pipeline hand-offs, at most RETRY_BATCH, side by side
+ *  (each key stays in order through `inFlight`), and resolves to how many
+ *  ran once they settled. Keys whose conversation is gone are dropped. With
+ *  no pipeline installed the keys wait. Called by the support tick. */
 export async function retryPendingInbound(now: number): Promise<number> {
   if (!pipeline) return 0;
-  let ran = 0;
+  const due: Array<{ key: string; value: PendingInbound }> = [];
   for (const { key, value } of await pendingIndex().list()) {
     if (!key.startsWith("triage:") || inFlight.has(key)) continue;
     if (!isPending(value)) {
@@ -431,6 +728,10 @@ export async function retryPendingInbound(now: number): Promise<number> {
       continue;
     }
     if (value.nextAttemptAt > now) continue;
+    due.push({ key, value });
+    if (due.length >= RETRY_BATCH) break;
+  }
+  const runs = due.map(async ({ key, value }) => {
     const conversation = await getConversation(value.conversationId);
     const message =
       conversation?.messages.find((x) => x.id === value.messageId) ??
@@ -439,10 +740,11 @@ export async function retryPendingInbound(now: number): Promise<number> {
       );
     if (!conversation || !message) {
       await pendingIndex().delete(key);
-      continue;
+      return false;
     }
-    ran += 1;
     await handOff(conversation, message, value.isNew, value.messageId);
-  }
-  return ran;
+    return true;
+  });
+  const settled = await Promise.allSettled(runs);
+  return settled.filter((r) => r.status === "fulfilled" && r.value).length;
 }
