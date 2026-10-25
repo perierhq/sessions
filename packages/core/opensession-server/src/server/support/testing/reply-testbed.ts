@@ -1,8 +1,10 @@
 // Test fixture for the reply path: the support kernel, the mail fixture, an
-// inbox on it and a channel adapter that really sends over SMTP
-// (fixtureEmailAdapter), plus helpers for conversations and inbox changes.
+// inbox on it and the real email channel adapter (SMTP only; IMAP is not
+// connected), with its `mark` calls recorded, plus helpers for
+// conversations and inbox changes.
 // Not on any live import chain (excluded from the side-effect scan).
 import { afterEach, beforeEach } from "bun:test";
+import { EmailChannelAdapter } from "../../../agents/email/adapter";
 import { join } from "node:path";
 import type {
   InboxConfig,
@@ -26,7 +28,22 @@ import {
   type MailFixture,
   startMailFixture,
 } from "./mail-fixture";
-import { type FixtureAdapter, fixtureEmailAdapter } from "./smtp-adapter";
+
+export type ReplyTestAdapter = EmailChannelAdapter & {
+  marks: Array<{ conversationId: string; state: "handled" | "spam" }>;
+};
+
+function recordingAdapter(inbox: InboxConfig): ReplyTestAdapter {
+  const adapter = Object.assign(new EmailChannelAdapter(inbox), {
+    marks: [] as ReplyTestAdapter["marks"],
+  });
+  const mark = adapter.mark.bind(adapter);
+  adapter.mark = async (c, state) => {
+    adapter.marks.push({ conversationId: c.id, state });
+    await mark(c, state);
+  };
+  return adapter;
+}
 
 export const INBOX_ADDRESS = "help@acme.example.test";
 export const CUSTOMER = {
@@ -40,7 +57,7 @@ export function useReplyTestbed() {
   const kernel = useSupportTestKernel();
   let fixture: MailFixture | undefined;
   let inbox: InboxConfig | undefined;
-  let adapter: FixtureAdapter | undefined;
+  let adapter: ReplyTestAdapter | undefined;
   let previousSecrets: string | undefined;
   let counter = 0;
 
@@ -67,12 +84,12 @@ export function useReplyTestbed() {
     );
     if (!created.ok) throw new Error(created.error);
     inbox = created.inbox;
-    adapter = fixtureEmailAdapter(inbox);
+    adapter = recordingAdapter(inbox);
     registerChannelAdapter(adapter);
   });
 
   afterEach(async () => {
-    adapter?.close();
+    await adapter?.disconnect();
     await fixture?.close();
     adapter = undefined;
     fixture = undefined;
@@ -107,6 +124,8 @@ export function useReplyTestbed() {
       );
       if (!result.ok) throw new Error(result.error);
       inbox = result.inbox;
+      // As EmailAgent does for fields that need no new connection.
+      adapter?.update(result.inbox);
       return inbox;
     },
 
