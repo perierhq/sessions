@@ -245,6 +245,17 @@ export class ImapTransport {
     await this.connect();
   }
 
+  /** Tries again now after a pause with no retry planned (a refused login
+   *  or server address): someone saved or tested the inbox. Does nothing
+   *  while connected, connecting, backing off or stopped. Resolves after
+   *  the attempt settles. */
+  async resume(): Promise<void> {
+    if (this.stopped || this.client || this.retryTimer) return;
+    if (this.current.state !== "paused") return;
+    this.attempt = 0;
+    await this.connect();
+  }
+
   /** Lets the current message finish and logs out, each for at most
    *  STOP_LIMIT_MS, then closes; clears timers; no reconnect afterwards. */
   async stop(): Promise<void> {

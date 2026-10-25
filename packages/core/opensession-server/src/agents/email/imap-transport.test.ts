@@ -307,6 +307,48 @@ describe("ImapTransport", () => {
     expect(f.connections()).toBe(0);
   });
 
+  test("resume() after an auth pause logs in once and goes live", async () => {
+    const f = await fixture();
+    let refuse = true;
+    const login = scriptLogin(f, () =>
+      refuse ? { code: "AUTHENTICATIONFAILED", text: "Invalid" } : null,
+    );
+    const clock = fakeClock();
+    const h = harness(f, { timers: clock });
+    await h.transport.start();
+    expect(h.transport.health().state).toBe("paused");
+    expect(login.count()).toBe(1);
+    refuse = false;
+    await h.transport.resume();
+    expect(h.transport.health().state).toBe("live");
+    expect(login.count()).toBe(2);
+    // Live already: a second resume does nothing.
+    await h.transport.resume();
+    await flush();
+    expect(login.count()).toBe(2);
+    expect(f.connections()).toBe(1);
+  });
+
+  test("resume() does nothing while backing off or after stop()", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => ({
+      code: "THROTTLED",
+      text: "Too many requests",
+    }));
+    const clock = fakeClock();
+    const h = harness(f, { timers: clock });
+    await h.transport.start();
+    expect(h.transport.health().state).toBe("backing-off");
+    await h.transport.resume();
+    await flush();
+    expect(login.count()).toBe(1);
+    await h.transport.stop();
+    await h.transport.resume();
+    await flush();
+    expect(login.count()).toBe(1);
+    expect(h.transport.health().state).toBe("off");
+  });
+
   test("a refused login with an ALERT pauses without retrying", async () => {
     const f = await fixture();
     const login = scriptLogin(f, () => ({
