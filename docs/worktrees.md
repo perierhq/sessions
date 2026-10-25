@@ -94,13 +94,18 @@ fetch-only: its local branch and uncommitted edits are not moved. If no remote
 default branch exists, a local default branch can still be used. Explicit feature
 bases retain local commits that origin lacks, so sessions can stack on unpushed
 work. Worktree sessions can commit and use the repository's configured
-pull-request flow.
+pull-request flow. A session that reuses an existing local branch fast-forwards
+it first when `origin/<branch>` is strictly ahead; a branch that is ahead of
+origin or has diverged keeps its commits.
 
 **`ask` sessions** are read-only. For an isolated repository they share one
 per-repo detached checkout (`<wtPrefix>-ask-checkout`) pinned to
-`origin/<defaultBranch>`. Open Session refreshes an existing Ask checkout at
-most every five minutes. A shared-checkout repository uses its main checkout
-instead. Repo-less Ask sessions use a non-git scratch directory.
+`origin/<defaultBranch>`. A new Ask session waits, up to 15 seconds, for the
+checkout to catch up with origin when it was last checked more than a minute
+ago or the default branch has moved since (a push or merge webhook). The
+refresh fetches the default branch and resets only when origin moved. A slower
+refresh finishes in the background, and the session starts on the current
+checkout. A shared-checkout repository uses its main checkout instead. Repo-less Ask sessions use a non-git scratch directory.
 
 **Attached repos.** A code session can attach additional repositories. Each
 gets an isolated worktree using the session's branch name, and may be reused by
