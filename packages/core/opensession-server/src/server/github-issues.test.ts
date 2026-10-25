@@ -1,22 +1,27 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-
-// Tokens without a GitHub App: both modules are only imported lazily.
-mock.module("./github-app", () => ({
-  githubAppRepositoryToken: async () => "app-token",
-  githubToken: async () => "bot-token",
-}));
-mock.module("./github-limit", () => ({
-  botGhToken: async () => "bot-token",
-}));
-
-const { createRepoIssue, repoIsPublic, stripEmailAddresses } =
-  await import("./github-issues");
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  __setGithubIssueDepsForTest,
+  createRepoIssue,
+  neutralizeGithubRefs,
+  repoIsPublic,
+  stripEmailAddresses,
+} from "./github-issues";
 
 const realFetch = globalThis.fetch;
 let calls: Array<{ url: string; init: RequestInit | undefined }> = [];
 let answer: (url: string) => Response;
 
+let clock = 1_000_000;
+
 beforeEach(() => {
+  clock = 1_000_000;
+  // Tokens without a GitHub App: seams, never module mocks, so this file
+  // runs in one process with the others.
+  __setGithubIssueDepsForTest({
+    repositoryToken: async () => "app-token",
+    readToken: async () => "bot-token",
+    now: () => clock,
+  });
   calls = [];
   answer = () => new Response("{}", { status: 500 });
   globalThis.fetch = (async (input: string | URL | Request, init) => {
@@ -28,6 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  __setGithubIssueDepsForTest(undefined);
 });
 
 describe("repoIsPublic", () => {
@@ -45,6 +51,24 @@ describe("repoIsPublic", () => {
   test("a repository GitHub can't show is unknown", async () => {
     answer = () => new Response("Not Found", { status: 404 });
     expect(await repoIsPublic("acme/missing")).toBeNull();
+  });
+
+  test("visibility is re-checked once its cached answer is old", async () => {
+    answer = () => Response.json({ private: true });
+    expect(await repoIsPublic("acme/flip")).toBe(false);
+    answer = () => Response.json({ private: false });
+    expect(await repoIsPublic("acme/flip")).toBe(false);
+    expect(calls).toHaveLength(1);
+    clock += 5 * 60_000 + 1;
+    expect(await repoIsPublic("acme/flip")).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("an unknown answer is not cached", async () => {
+    answer = () => new Response("Bad gateway", { status: 502 });
+    expect(await repoIsPublic("acme/flaky")).toBeNull();
+    answer = () => Response.json({ private: true });
+    expect(await repoIsPublic("acme/flaky")).toBe(false);
   });
 
   test("a name that is not owner/name is unknown", async () => {
@@ -107,5 +131,26 @@ describe("stripEmailAddresses", () => {
 
   test("leaves text without an address alone", () => {
     expect(stripEmailAddresses("@mention and a@ b")).toBe("@mention and a@ b");
+  });
+});
+
+describe("neutralizeGithubRefs", () => {
+  test("mentions and issue references can't notify or link", () => {
+    const out = neutralizeGithubRefs(
+      "cc @octocat and @acme/team, see #12, acme/app#7, GH-3 and https://github.com/acme/app/issues/9",
+    );
+    expect(out).not.toMatch(/(^|[^`])@octocat/);
+    expect(out).toContain("`@octocat`");
+    expect(out).toContain("`@acme/team`");
+    expect(out).toContain("`#12`");
+    expect(out).toContain("`acme/app#7`");
+    expect(out).toContain("`GH-3`");
+    expect(out).toContain("`https://github.com/acme/app/issues/9`");
+  });
+
+  test("ordinary text is unchanged", () => {
+    expect(neutralizeGithubRefs("Step 2: open the export (50% done)")).toBe(
+      "Step 2: open the export (50% done)",
+    );
   });
 });
