@@ -7,17 +7,24 @@
 //    inbox also loses its IMAP cursor);
 //  - created or enabled: connect at once;
 //  - anything else waits `coalesceMs` (2 s) so a burst of saves is one
-//    reconnect, then reads the inbox as it is now. A change to a connection
-//    field or a password (compared by value: a new password for the same
-//    server keeps its secret ref) disconnects the old adapter before the new
-//    one connects, so an inbox never has two connections. Other fields
-//    update the adapter in place.
+//    reconnect, then reads the inbox as it is now. A change to the IMAP
+//    server, its password, internal hosts or the mailbox behaviour
+//    disconnects the old adapter before the new one connects, so an inbox
+//    never has two connections. Passwords are compared by SHA-256 digest
+//    (a new password for the same server keeps its secret ref); the agent
+//    never holds them. Other fields update the adapter in place; a new
+//    address, send limit, SMTP server or SMTP password builds a new SMTP
+//    pool only. A paused inbox saved with nothing to change tries again.
+//
+// Mail read while the inbox is disabled (and not yet disconnected) is
+// refused, so its cursor stays and the mail is read again once enabled.
 //
 // Health lists inbox ids, states and reasons only, never an address. No
 // routes in v1 (a webhook transport adds its route here). Nothing runs at
 // import; startup() is called by the integration loader.
 
-import type { InboxConfig } from "../../shared/support";
+import { createHash } from "node:crypto";
+import type { InboundMessage, InboxConfig } from "../../shared/support";
 import {
   channelAdapterFor,
   registerChannelAdapter,
@@ -40,7 +47,8 @@ import {
 /** Changes this close together are applied as one. */
 const COALESCE_MS = 2_000;
 
-type Passwords = { imap: string | undefined; smtp: string | undefined };
+/** SHA-256 digests of the stored passwords, to tell a change. */
+type Passwords = { imap: string | null; smtp: string | null };
 
 interface Live {
   adapter: EmailChannelAdapter;
@@ -56,19 +64,29 @@ export interface EmailAgentOptions {
 
 const SERVER_FIELDS = ["host", "port", "tls", "user", "passwordRef"] as const;
 
-/** Whether `next` needs a new connection: a server, the address (the EHLO
- *  name and sender), internal hosts, the mailbox behaviour (read-only or
- *  not) or the send limit (the SMTP pool's rate). */
+/** Whether `next` needs a new IMAP connection: its server, internal hosts
+ *  or the mailbox behaviour (read-only or not). SMTP-side changes are the
+ *  adapter's (update() builds a new pool). */
 function needsReconnect(current: InboxConfig, next: InboxConfig): boolean {
   return (
-    current.address !== next.address ||
     current.allowInternalHost !== next.allowInternalHost ||
     current.mailbox !== next.mailbox ||
-    current.sendLimitPerMinute !== next.sendLimitPerMinute ||
-    (["imap", "smtp"] as const).some((which) =>
-      SERVER_FIELDS.some((f) => current[which][f] !== next[which][f]),
-    )
+    SERVER_FIELDS.some((f) => current.imap[f] !== next.imap[f])
   );
+}
+
+const digest = (password: string | undefined): string | null =>
+  password === undefined
+    ? null
+    : createHash("sha256").update(password).digest("hex");
+
+/** Ingest, except for an inbox disabled since its adapter connected: the
+ *  sink throws so the IMAP cursor stays (a deleted inbox is ignored by
+ *  ingest itself). */
+async function sink(m: InboundMessage) {
+  const inbox = await getInbox(m.inboxId);
+  if (inbox && !inbox.enabled) throw new Error("The inbox is turned off");
+  return ingestInbound(m);
 }
 
 /** A reason shown in /health: any address in it (server ALERT text can
@@ -190,19 +208,26 @@ export class EmailAgent implements AgentModule {
     const inbox = await getInbox(id);
     if (!inbox || !inbox.enabled) return this.stop(id, !inbox);
     const passwords: Passwords = {
-      imap: await inboxPassword(inbox, "imap"),
-      smtp: await inboxPassword(inbox, "smtp"),
+      imap: digest(await inboxPassword(inbox, "imap")),
+      smtp: digest(await inboxPassword(inbox, "smtp")),
     };
     if (this.stopped) return;
     const current = this.live.get(id);
     if (current) {
       if (
         !needsReconnect(current.inbox, inbox) &&
-        current.passwords.imap === passwords.imap &&
-        current.passwords.smtp === passwords.smtp
+        current.passwords.imap === passwords.imap
       ) {
-        current.adapter.update(inbox);
+        const { adapter } = current;
+        adapter.update(inbox);
+        if (current.passwords.smtp !== passwords.smtp) adapter.rebuildSmtp();
         current.inbox = inbox;
+        current.passwords = passwords;
+        // Saved again after a refused login: one more try, not waited for.
+        if (adapter.health().state === "paused")
+          adapter
+            .resume()
+            .catch((error: unknown) => log("resume failed", id, error));
         return;
       }
       await this.stop(id, false);
@@ -214,14 +239,14 @@ export class EmailAgent implements AgentModule {
   /** Registers and starts connecting; doesn't wait for the server (an
    *  unreachable one must not hold up a disable). */
   private start(inbox: InboxConfig, passwords: Passwords): void {
+    // The adapter reads the passwords from the workspace secrets itself.
     const adapter = new EmailChannelAdapter(inbox, {
-      password: async (which) => passwords[which],
       ...(this.imapTiming ? { imap: this.imapTiming } : {}),
     });
     this.live.set(inbox.id, { adapter, inbox, passwords });
     registerChannelAdapter(adapter);
     adapter
-      .connect(ingestInbound)
+      .connect(sink)
       .catch((error: unknown) => log("connect failed", inbox.id, error));
   }
 

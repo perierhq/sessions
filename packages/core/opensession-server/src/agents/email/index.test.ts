@@ -3,6 +3,10 @@ import { join } from "node:path";
 import type { InboxConfig } from "../../shared/support";
 import { __setOwnerRosterForTest } from "../../server/incidents/owner";
 import { __setIdentitiesForTest } from "../../server/shared/user-mappings";
+import { catalogDocuments } from "../../server/catalog-documents";
+import { configuredIntegration } from "../../server/config";
+import { isEnabled } from "../../server/integrations/load";
+import { findIntegration } from "../../server/integrations/registry";
 import { channelAdapterFor } from "../../server/support/channel";
 import { __setSupportEventPublisherForTest } from "../../server/support/events";
 import {
@@ -13,6 +17,8 @@ import {
   __setInboxProjectCheckForTest,
   createInbox,
   deleteInbox,
+  getInbox,
+  inboxCursorKey,
   updateInbox,
 } from "../../server/support/inboxes";
 import { listIndexRows } from "../../server/support/store";
@@ -79,7 +85,33 @@ afterEach(async () => {
   await f.close();
 });
 
-async function newInbox(address: string): Promise<InboxConfig> {
+/** Counts LOGIN commands; `refusal(n)` answers NO with that code and text
+ *  for the nth one, or null to log in. */
+function scriptLogin(
+  refusal: (n: number) => { code: string; text: string } | null,
+): { count: () => number } {
+  const original = f.imap.getCommandHandler("LOGIN");
+  let n = 0;
+  f.imap.setCommandHandler(
+    "LOGIN",
+    (conn: any, parsed: any, data: any, callback: () => void) => {
+      n++;
+      const refuse = refusal(n);
+      if (!refuse) return original(conn, parsed, data, callback);
+      conn.sendStatus(parsed, data, "NO", refuse.text, refuse.code);
+      callback();
+    },
+  );
+  return { count: () => n };
+}
+
+const cursorOf = (id: string) =>
+  catalogDocuments("support-cursors").get(inboxCursorKey(id));
+
+async function newInbox(
+  address: string,
+  over: Record<string, unknown> = {},
+): Promise<InboxConfig> {
   const server = (port: number) => ({
     host: "127.0.0.1",
     port,
@@ -95,6 +127,7 @@ async function newInbox(address: string): Promise<InboxConfig> {
       allowInternalHost: true,
       imap: server(f.imapPort),
       smtp: server(f.smtpPort),
+      ...over,
     },
     ADA,
   );
@@ -238,6 +271,116 @@ describe("EmailAgent", () => {
     expect(JSON.stringify(health)).not.toContain("@");
   });
 
+  test("a paused inbox saved with nothing changed logs in once and goes live", async () => {
+    let refuse = true;
+    const login = scriptLogin(() =>
+      refuse ? { code: "AUTHENTICATIONFAILED", text: "Invalid" } : null,
+    );
+    const inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "paused");
+    expect(login.count()).toBe(1);
+    const before = channelAdapterFor(inbox.id);
+    refuse = false;
+    await update(inbox, { label: "Acme support" });
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    await Bun.sleep(300);
+    expect(login.count()).toBe(2);
+    expect(channelAdapterFor(inbox.id)).toBe(before);
+    expect(f.connections()).toBe(1);
+  });
+
+  test("a disabled inbox at startup gets no connection", async () => {
+    const inbox = await newInbox("help@acme.example.test", { enabled: false });
+    await started();
+    await Bun.sleep(300);
+    expect(f.connections()).toBe(0);
+    expect(opened).toBe(0);
+    expect(channelAdapterFor(inbox.id)).toBeUndefined();
+  });
+
+  test("mail read while the inbox is disabled keeps the cursor where it was", async () => {
+    const inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    const cursor = (await cursorOf(inbox.id)) as { lastUid: number };
+    // Disabled behind the agent's back: the connection is still up.
+    await catalogDocuments("support-inboxes").update(inbox.id, (value) => ({
+      ...(value as object),
+      enabled: false,
+    }));
+    expect((await getInbox(inbox.id))?.enabled).toBe(false);
+    f.deliver(
+      rawMail({
+        from: "Ada <ada@example.test>",
+        to: "help@acme.example.test",
+        messageId: "while-off@example.test",
+      }),
+    );
+    await until(
+      () => channelAdapterFor(inbox.id)?.health().state === "backing-off",
+    );
+    expect(await cursorOf(inbox.id)).toMatchObject({
+      lastUid: cursor.lastUid,
+    });
+    expect(await listIndexRows()).toHaveLength(0);
+  });
+
+  test("deleting an inbox removes its cursor", async () => {
+    const inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    expect(await cursorOf(inbox.id)).not.toBeNull();
+    expect((await deleteInbox(inbox.id, ADA)).ok).toBe(true);
+    await until(() => f.connections() === 0, 2000);
+    expect(await cursorOf(inbox.id)).toBeNull();
+  });
+
+  test("deleting an inbox removes its cursor without the agent running", async () => {
+    const inbox = await newInbox("help@acme.example.test");
+    await catalogDocuments("support-cursors").set(inboxCursorKey(inbox.id), {
+      uidValidity: "1",
+      lastUid: 3,
+    });
+    expect((await deleteInbox(inbox.id, ADA)).ok).toBe(true);
+    expect(await cursorOf(inbox.id)).toBeNull();
+  });
+
+  test("health cuts addresses out of server ALERT text", async () => {
+    scriptLogin(() => ({
+      code: "ALERT",
+      text: "Log in at the web site first, help@acme.example.test",
+    }));
+    const inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "paused");
+    const health = agent!.health() as { inboxes: Array<{ reason: string }> };
+    expect(health.inboxes[0]!.reason).toContain("Log in at the web site");
+    expect(health.inboxes[0]!.reason).toContain("[address]");
+    expect(JSON.stringify(health)).not.toContain("@");
+  });
+
+  test("a new address or send limit keeps the IMAP connection", async () => {
+    let inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    const before = channelAdapterFor(inbox.id);
+    inbox = await update(inbox, { address: "support@acme.example.test" });
+    inbox = await update(inbox, { sendLimitPerMinute: 10 });
+    await Bun.sleep(400);
+    expect(opened).toBe(1);
+    expect(channelAdapterFor(inbox.id)).toBe(before);
+    expect((before as any).inbox.address).toBe("support@acme.example.test");
+  });
+
+  test("the agent keeps no password in its own state", async () => {
+    const inbox = await newInbox("help@acme.example.test");
+    await started();
+    await until(() => channelAdapterFor(inbox.id)?.health().state === "live");
+    const live = (agent as any).live.get(inbox.id);
+    expect(JSON.stringify(live.passwords)).not.toContain(MAIL_PASSWORD);
+  });
+
   test("shutdown closes every connection", async () => {
     await newInbox("help@acme.example.test");
     const a = await started();
@@ -245,5 +388,33 @@ describe("EmailAgent", () => {
     await a.shutdown();
     agent = null;
     await until(() => f.connections() === 0, 2000);
+  });
+});
+
+describe("ENABLE_EMAIL_SUPPORT", () => {
+  const spec = findIntegration("email")!;
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.ENABLE_EMAIL_SUPPORT;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ENABLE_EMAIL_SUPPORT;
+    else process.env.ENABLE_EMAIL_SUPPORT = saved;
+  });
+
+  test("only the literal 'true' turns it on", () => {
+    process.env.ENABLE_EMAIL_SUPPORT = "true";
+    expect(isEnabled(spec)).toBe(true);
+    process.env.ENABLE_EMAIL_SUPPORT = "1";
+    expect(isEnabled(spec)).toBe(false);
+    process.env.ENABLE_EMAIL_SUPPORT = "TRUE";
+    expect(isEnabled(spec)).toBe(false);
+  });
+
+  test("unset, the config decides", () => {
+    delete process.env.ENABLE_EMAIL_SUPPORT;
+    expect(isEnabled(spec)).toBe(
+      configuredIntegration("email").enabled === true,
+    );
   });
 });
