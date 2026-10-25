@@ -573,18 +573,18 @@ export function InboxForm({
 
         <FormSection title="Retention">
           <div className={INBOX_FORM_PAIR}>
-            <FormField label="Keep conversations (days)">
+            <FormField label="Conversations (days)">
               <Input
-                aria-label="Keep conversations (days)"
+                aria-label="Conversations (days)"
                 className={DIALOG_INPUT}
                 inputMode="numeric"
                 value={form.conversationDays}
                 onChange={(e) => set({ conversationDays: e.target.value })}
               />
             </FormField>
-            <FormField label="Keep attachments (days)">
+            <FormField label="Attachments (days)">
               <Input
-                aria-label="Keep attachments (days)"
+                aria-label="Attachments (days)"
                 className={DIALOG_INPUT}
                 inputMode="numeric"
                 value={form.attachmentDays}

@@ -2,7 +2,8 @@
 
 /** Two short fields side by side (port and security, the two retention
  *  counts); one column on the narrowest phones, under 390px. */
-export const INBOX_FORM_PAIR = "grid grid-cols-2 gap-3 max-[389px]:grid-cols-1";
+export const INBOX_FORM_PAIR =
+  "grid grid-cols-2 items-end gap-3 max-[389px]:grid-cols-1";
 
 /** A form select: full width, a 44px target on a phone. */
 export const INBOX_SELECT = "w-full justify-between phone:min-h-11";
@@ -23,3 +24,9 @@ export const FORGET_INPUT =
 /** Forget's result and what it couldn't delete. */
 export const FORGET_RESULT =
   "m-0 mt-3 flex list-none flex-col gap-1 p-0 text-supporting text-dim";
+
+/** An inbox's health under its address: the dot stays a dot when a long
+ *  pause reason wraps. */
+export const INBOX_HEALTH =
+  "mt-1.5 flex items-start gap-1.5 text-label text-dim [overflow-wrap:anywhere]";
+export const INBOX_HEALTH_DOT = "mt-[0.4lh] size-1.5 shrink-0 rounded-full";

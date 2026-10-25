@@ -11,6 +11,8 @@ import {
   FORGET_INPUT,
   FORGET_RESULT,
   FORGET_ROW,
+  INBOX_HEALTH,
+  INBOX_HEALTH_DOT,
   INBOX_ROW_BUTTON,
 } from "../../lib/support-inbox-classes";
 import { forgetSummary, healthLine } from "../../lib/inbox-form";
@@ -31,7 +33,6 @@ import {
   SettingsHint,
   SettingsPanel,
   SettingsSection,
-  StatusChip,
 } from "../../ui/settings";
 import { InlineAlert } from "../../ui/state";
 import { InboxForm } from "./inboxes/InboxForm";
@@ -171,8 +172,13 @@ export function InboxesPanel() {
                     <SettingRowDescription className="[overflow-wrap:anywhere]">
                       {inbox.address} · {inbox.project}
                     </SettingRowDescription>
-                    <div className="mt-1.5">
-                      <StatusChip label={status.label} dot={status.dot} />
+                    <div className={INBOX_HEALTH}>
+                      <span
+                        aria-hidden
+                        className={INBOX_HEALTH_DOT}
+                        style={{ background: status.dot }}
+                      />
+                      <span className="min-w-0">{status.label}</span>
                     </div>
                   </SettingRowText>
                   <SettingRowControl>
