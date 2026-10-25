@@ -24,6 +24,10 @@ Object.assign(globalThis, {
     addEventListener: () => {},
     removeEventListener: () => {},
     dispatchEvent: () => true,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout,
+    clearTimeout,
     matchMedia: () => ({
       matches: false,
       addEventListener: () => {},
@@ -185,7 +189,7 @@ test("veto mode Stop stops the window, and Send now sends", async () => {
   expect(stopVeto).toHaveBeenCalledWith("sc_0001", "sd_1");
   button(box.output(), "Send now").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
   await settle();
-  expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1", undefined);
+  expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1");
 });
 
 test("a 409 says someone else handled it and refetches", async () => {

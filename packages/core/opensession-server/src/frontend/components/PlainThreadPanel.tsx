@@ -1059,7 +1059,22 @@ function PlainAttachments({
   return (
     <div className="flex flex-wrap gap-2 mt-2">
       {attachments.map((a) => {
-        const href = `${API_BASE}/plain/attachments/${encodeURIComponent(a.id)}`;
+        if (a.href === null)
+          return (
+            <span
+              key={a.id}
+              title="No longer kept"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-active px-2.5 py-1.5 text-label text-faint"
+            >
+              <IconPaperclip size={16} className="shrink-0 opacity-60" />
+              <span className="truncate">{a.fileName}</span>
+              {a.sizeBytes ? (
+                <span className="shrink-0">{fileSize(a.sizeBytes)}</span>
+              ) : null}
+            </span>
+          );
+        const href =
+          a.href ?? `${API_BASE}/plain/attachments/${encodeURIComponent(a.id)}`;
         const isImage = a.mimeType.startsWith("image/") && !failed[a.id];
         return (
           <a

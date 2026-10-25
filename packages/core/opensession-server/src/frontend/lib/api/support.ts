@@ -98,3 +98,112 @@ export function forgetCustomer(email: string): Promise<ForgetCustomerResult> {
     label: "Couldn't forget this customer",
   });
 }
+
+// ── One email conversation: replies and actions (D4) ───────────────────
+// Each answers with the conversation as fetchSupportConversation does. A
+// 409 means someone else changed it first (another person, the tick).
+
+function conversationAction(
+  id: string,
+  action: string,
+  label: string,
+  body: Record<string, unknown> = {},
+): Promise<SupportConversationView> {
+  return request<SupportConversationView>(
+    `/support/conversations/${encodeURIComponent(id)}/${action}`,
+    { method: "POST", body, label },
+  );
+}
+
+const draftPath = (draftId: string, action: string) =>
+  `drafts/${encodeURIComponent(draftId)}/${action}`;
+
+/** A person's own reply, sent now. */
+export function replyToConversation(
+  id: string,
+  text: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "reply", "Couldn't send the reply", { text });
+}
+
+/** Sends a draft, as edited when `edit` is given. */
+export function sendDraft(
+  id: string,
+  draftId: string,
+  edit?: { text: string },
+): Promise<SupportConversationView> {
+  return conversationAction(
+    id,
+    draftPath(draftId, "send"),
+    "Couldn't send the reply",
+    edit ? { text: edit.text } : {},
+  );
+}
+
+export function discardDraft(
+  id: string,
+  draftId: string,
+): Promise<SupportConversationView> {
+  return conversationAction(
+    id,
+    draftPath(draftId, "discard"),
+    "Couldn't discard the draft",
+  );
+}
+
+/** Ends a veto window: the draft waits for a person. */
+export function stopVeto(
+  id: string,
+  draftId: string,
+): Promise<SupportConversationView> {
+  return conversationAction(
+    id,
+    draftPath(draftId, "stop"),
+    "Couldn't stop the reply",
+  );
+}
+
+export function moveConversation(
+  id: string,
+  project: string,
+  reason: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "move", "Couldn't move the conversation", {
+    project,
+    reason,
+  });
+}
+
+export function setConversationOwner(
+  id: string,
+  owner: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "owner", "Couldn't change the owner", {
+    owner,
+  });
+}
+
+export function closeConversation(
+  id: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "close", "Couldn't mark it as done");
+}
+
+export function reopenConversation(
+  id: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "reopen", "Couldn't reopen the conversation");
+}
+
+export function markNotSpam(id: string): Promise<SupportConversationView> {
+  return conversationAction(id, "not-spam", "Couldn't mark it as not spam");
+}
+
+/** Creates the issue the agent reported and a person was asked to approve. */
+export function approveIssue(id: string): Promise<SupportConversationView> {
+  return conversationAction(id, "issue/approve", "Couldn't create the issue");
+}
+
+export function dismissIssue(id: string): Promise<SupportConversationView> {
+  return conversationAction(id, "issue/dismiss", "Couldn't dismiss the issue");
+}

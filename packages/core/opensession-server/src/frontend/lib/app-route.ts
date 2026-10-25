@@ -1,6 +1,10 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
 import type { OwnerDecision } from "../../shared/incident-response";
-import { parseSupportItemId } from "../../shared/support";
+import {
+  parseSupportIntent,
+  parseSupportItemId,
+  type SupportIntent,
+} from "../../shared/support";
 import { BASE_PATH, stripBasePath } from "./base";
 import {
   isProjectSectionId,
@@ -31,8 +35,9 @@ export type Route =
     }
   | { view: "pr"; repo: string; branch: string; number?: number }
   | { view: "pr"; repo: string; branch?: undefined; number: number }
-  /** threadId: a Support list item id (`email:sc_…`, `plain:th_…`). */
-  | { view: "support"; threadId: string }
+  /** threadId: a Support list item id (`email:sc_…`, `plain:th_…`);
+   *  intent: a support push's button, on an email conversation. */
+  | { view: "support"; threadId: string; intent?: SupportIntent }
   | { view: "plain"; threadId?: string }
   | { view: "reports"; automationId?: string; reportId?: string }
   | { view: "databases"; databaseId?: string; table?: string }
@@ -255,7 +260,6 @@ export function parseRoute(pathname: string): Route {
   return { view: "prs" };
 }
 
-/** parseRoute plus what the query carries: a push intent on an incident. */
 /**
  * The current path of a link written in an old form, or `null` when the
  * path is already current. /settings/incidents/<project> became the
@@ -267,8 +271,17 @@ export function legacyRoutePath(pathname: string): string | null {
   return routePath(parseRoute(pathname));
 }
 
+/** parseRoute plus what the query carries: a push intent on an incident
+ *  or on an email conversation. */
 export function parseRouteWithSearch(pathname: string, search: string): Route {
   const route = parseRoute(pathname);
+  if (route.view === "support") {
+    if (!route.threadId.startsWith("email:")) return route;
+    const intent = parseSupportIntent(
+      new URLSearchParams(search).get("intent"),
+    );
+    return intent ? { ...route, intent } : route;
+  }
   if (route.view !== "incidents" || !route.id) return route;
   const intent = parseIncidentIntent(new URLSearchParams(search).get("intent"));
   return intent ? { ...route, intent } : route;
@@ -289,7 +302,7 @@ export function routePath(route: Route): string {
     case "support":
       // The item id's `:` reads better left as it is, and parseRoute
       // decodes either form.
-      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId).replace(/%3A/gi, ":")}`;
+      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId).replace(/%3A/gi, ":")}${route.intent ? `?intent=${route.intent}` : ""}`;
     case "plain":
       return route.threadId
         ? `${BASE_PATH}/plain/${encodeURIComponent(route.threadId)}`

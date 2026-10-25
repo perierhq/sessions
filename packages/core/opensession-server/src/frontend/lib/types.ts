@@ -89,6 +89,10 @@ export interface PlainEntryAttachment {
   fileName: string;
   mimeType: string;
   sizeBytes: number;
+  /** Where the bytes load from, when not `/plain/attachments/:id` (an
+   *  email attachment); null once retention removed them (name and size
+   *  only). */
+  href?: string | null;
 }
 
 export interface PlainTimelineEntry {

@@ -27,6 +27,10 @@ Object.assign(globalThis, {
     addEventListener: () => {},
     removeEventListener: () => {},
     dispatchEvent: () => true,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout,
+    clearTimeout,
     matchMedia: () => ({
       matches: false,
       addEventListener: () => {},

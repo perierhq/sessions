@@ -25,7 +25,11 @@
 // still on a screen, without ever opening a row of its own.
 //
 // Nothing runs at import: `startSupportNotifications` subscribes, once.
-import type { SupportConversation, SupportDraft } from "../../shared/support";
+import type {
+  SupportConversation,
+  SupportDraft,
+  SupportIntent,
+} from "../../shared/support";
 import { SUPPORT_PUSH } from "../../shared/support-copy";
 import { clockLabel } from "../incidents/notify-copy";
 import { instanceOwner, personOwner } from "../incidents/owner";
@@ -38,7 +42,7 @@ import { timezoneForUser } from "../shared/user-mappings";
 import { INTERRUPTED_SEND } from "./reply";
 import { onConversationChange } from "./store";
 
-export type SupportIntent = "stop" | "review";
+export type { SupportIntent };
 
 export const SUPPORT_TTL_SECONDS = {
   vetoMin: 60,

@@ -414,6 +414,18 @@ export interface SupportConversationView {
   > | null;
 }
 
+/** What a support push's buttons open the conversation with
+ *  (`/support/email:<id>?intent=stop`). The page focuses the matching
+ *  control and asks before it acts; nothing happens on load. */
+export const SUPPORT_INTENTS = ["stop", "review"] as const;
+export type SupportIntent = (typeof SUPPORT_INTENTS)[number];
+
+export function parseSupportIntent(
+  raw: string | null | undefined,
+): SupportIntent | null {
+  return SUPPORT_INTENTS.find((intent) => intent === raw) ?? null;
+}
+
 export const SUPPORT_EVENT_KEY = "support:message_received";
 export const SUPPORT_EVENT_TYPE = "support.message.received";
 
