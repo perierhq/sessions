@@ -59,6 +59,9 @@ const KIND_ICON: Record<NotificationKind, React.ReactNode> = {
   incident_rolled_back: <IconUndo />,
   incident_resolved: <IconCheckCircle />,
   incident_update: <IconStatusRing />,
+  support_needs_you: <IconMail />,
+  support_veto: <IconClock />,
+  support_failed: <IconWarningTriangle />,
 };
 
 const SWIPE_PX = 88;

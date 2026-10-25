@@ -185,14 +185,18 @@ export interface NotificationRowText {
 /**
  * What a banner says, the client twin of the server's `bannerText`.
  * Incidents lead the body with the project ("acme · Deploying the fix now");
+ * support rows too, under their fixed title ("A support reply is ready");
  * every other row keeps "<subject>: <body>".
  */
 export function notificationBannerText(
   thread: NotificationThread,
 ): NotificationBannerText {
-  const title = thread.reason || thread.subject.title;
+  const support = thread.subject.type === "support";
+  const title = support
+    ? thread.subject.title
+    : thread.reason || thread.subject.title;
   const body =
-    thread.subject.type === "incident"
+    support || thread.subject.type === "incident"
       ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
       : [thread.subject.title, thread.body].filter(Boolean).join(": ");
   return { title, body };
@@ -201,13 +205,17 @@ export function notificationBannerText(
 /**
  * What an inbox row says. An incident row's title is its state ("Search is
  * down") and its line what happens next; the project sits above, as the
- * row's context. Every other row: the subject, then "<reason>: <body>".
+ * row's context. A support row's title is fixed ("A support reply is
+ * ready") and its line the rule that holds it. Every other row: the
+ * subject, then "<reason>: <body>".
  */
 export function notificationRowText(
   thread: NotificationThread,
 ): NotificationRowText {
   if (thread.subject.type === "incident")
     return { title: thread.reason, line: thread.body };
+  if (thread.subject.type === "support")
+    return { title: thread.subject.title, line: thread.reason };
   return {
     title: thread.subject.title || "Untitled",
     line: [thread.reason, thread.body].filter(Boolean).join(": "),

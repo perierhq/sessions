@@ -328,7 +328,11 @@ describe("support delivery", () => {
     push: {
       body: "Sends at 14:05 unless you stop it",
       actions: [
-        { action: "stop", title: "Stop", url: "/support/email:sc_1?intent=stop" },
+        {
+          action: "stop",
+          title: "Stop",
+          url: "/support/email:sc_1?intent=stop",
+        },
       ],
       requireInteraction: true,
       ttlSeconds: 300,

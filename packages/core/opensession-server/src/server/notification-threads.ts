@@ -27,12 +27,22 @@ export const INCIDENT_NOTIFICATION_KINDS = [
 export type IncidentNotificationKind =
   (typeof INCIDENT_NOTIFICATION_KINDS)[number];
 
+/** Support replies waiting on the conversation's owner: a draft that needs
+ *  a person, a veto window about to send, a send that failed. */
+export const SUPPORT_NOTIFICATION_KINDS = [
+  "support_needs_you",
+  "support_veto",
+  "support_failed",
+] as const;
+export type SupportNotificationKind =
+  (typeof SUPPORT_NOTIFICATION_KINDS)[number];
+
 /**
  * People notify people: review requests and results, mentions, workspace
  * invites, and your own Desk reminders. Agent activity (questions, failed or
  * finished runs) does not; the sidebar already shows it. Incidents you own
- * are the one kind the system raises for a person, because the decision can
- * be yours.
+ * and support replies waiting on you are the kinds the system raises for a
+ * person, because the decision can be yours.
  */
 export const NOTIFICATION_KINDS = [
   "review_requested",
@@ -43,6 +53,7 @@ export const NOTIFICATION_KINDS = [
   "reminder",
   "comment",
   ...INCIDENT_NOTIFICATION_KINDS,
+  ...SUPPORT_NOTIFICATION_KINDS,
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -54,6 +65,7 @@ export const ALERT_GROUPS = {
   collaborators: ["collaborator"],
   reminders: ["reminder"],
   incidents: INCIDENT_NOTIFICATION_KINDS,
+  support: SUPPORT_NOTIFICATION_KINDS,
 } as const satisfies Record<string, readonly NotificationKind[]>;
 export type AlertGroup = keyof typeof ALERT_GROUPS;
 export type AlertPrefs = Record<AlertGroup, boolean>;
@@ -65,6 +77,7 @@ export const DEFAULT_ALERT_PREFS: AlertPrefs = {
   collaborators: true,
   reminders: true,
   incidents: true,
+  support: true,
 };
 
 export type NotificationSubjectType =
@@ -72,7 +85,8 @@ export type NotificationSubjectType =
   | "pr"
   | "workspace"
   | "reminder"
-  | "incident";
+  | "incident"
+  | "support";
 
 const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "session",
@@ -80,6 +94,7 @@ const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "workspace",
   "reminder",
   "incident",
+  "support",
 ]);
 
 export interface NotificationSubject {
@@ -454,19 +469,28 @@ export function wireThread(thread: StoredThread): NotificationThread {
   return wire;
 }
 
+/** Subjects whose push says only fixed wording (the event's `push`
+ *  hints) and leads the body with the project. */
+export function hasFixedPush(type: NotificationSubjectType): boolean {
+  return type === "incident" || type === "support";
+}
+
 /**
  * What a banner says. Incidents lead the body with the project
- * ("acme · Deploying the fix now"); every other row keeps
- * "<subject>: <body>".
+ * ("acme · Deploying the fix now"); support rows too, under their fixed
+ * title ("A support reply is ready"), never the rule that is the row's
+ * reason; every other row keeps "<subject>: <body>".
  */
 export function bannerText(
   thread: Pick<NotificationThread, "subject" | "reason" | "body">,
 ): { title: string; body: string } {
-  const title = thread.reason || thread.subject.title;
-  const body =
-    thread.subject.type === "incident"
-      ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
-      : [thread.subject.title, thread.body].filter(Boolean).join(": ");
+  const title =
+    thread.subject.type === "support"
+      ? thread.subject.title
+      : thread.reason || thread.subject.title;
+  const body = hasFixedPush(thread.subject.type)
+    ? [thread.subject.context, thread.body].filter(Boolean).join(" · ")
+    : [thread.subject.title, thread.body].filter(Boolean).join(": ");
   return { title, body };
 }
 

@@ -19,12 +19,22 @@ export const NOTIFICATION_KINDS = [
   "incident_rolled_back",
   "incident_resolved",
   "incident_update",
+  "support_needs_you",
+  "support_veto",
+  "support_failed",
 ] as const;
 
 export const notificationThreadSchema = z.object({
   id: z.string(),
   subject: z.object({
-    type: z.enum(["session", "pr", "workspace", "reminder", "incident"]),
+    type: z.enum([
+      "session",
+      "pr",
+      "workspace",
+      "reminder",
+      "incident",
+      "support",
+    ]),
     id: z.string(),
     title: z.string(),
     context: z.string().optional(),
@@ -47,6 +57,7 @@ export const alertsSchema = z.object({
   collaborators: z.boolean(),
   reminders: z.boolean(),
   incidents: z.boolean().default(true),
+  support: z.boolean().default(true),
 });
 
 const inboxSchema = z.object({
@@ -65,6 +76,7 @@ export const DEFAULT_NOTIFICATION_ALERTS: NotificationAlerts = {
   collaborators: true,
   reminders: true,
   incidents: true,
+  support: true,
 };
 
 export async function fetchNotifications(user: string): Promise<{

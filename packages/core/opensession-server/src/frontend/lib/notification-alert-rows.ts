@@ -38,4 +38,9 @@ export const NOTIFICATION_ALERT_ROWS: ReadonlyArray<NotificationAlertRow> = [
     title: "Incidents",
     desc: "An incident you own opens, needs you, is about to deploy, rolls back or is fixed. At night only what can't wait",
   },
+  {
+    group: "support",
+    title: "Support replies that need you",
+    desc: "A support reply waits for you, is about to send, or could not send",
+  },
 ];
