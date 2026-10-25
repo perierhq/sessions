@@ -231,6 +231,7 @@ test("the wait shows only for Routine and can be turned off", async () => {
   chooseAutonomy(tree, "routine");
   await settle();
   expect(minutes()?.props.value).toBe("15");
+  // SAFETY: the form's switch handler reads only the checked value.
   wait()!.props.onCheckedChange?.(false, undefined as never);
   await settle();
   expect(minutes()).toBeUndefined();

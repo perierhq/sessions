@@ -270,19 +270,16 @@ export function timelineEntries(c: SupportConversation): EmailTimelineEntry[] {
     });
   });
   c.events.forEach((e, i) => {
-    rows.push({
-      at: Date.parse(e.at),
-      order: c.messages.length + i,
-      entry: {
-        id: `event:${i}`,
-        timestamp: e.at,
-        actorName: actorName(e.actor, c),
-        actorType: "system",
-        kind: "note",
-        text: e.detail,
-        ...(quietEvent(e) ? { quiet: true as const } : {}),
-      },
-    });
+    const entry: EmailTimelineEntry = {
+      id: `event:${i}`,
+      timestamp: e.at,
+      actorName: actorName(e.actor, c),
+      actorType: "system",
+      kind: "note",
+      text: e.detail,
+    };
+    if (quietEvent(e)) entry.quiet = true;
+    rows.push({ at: Date.parse(e.at), order: c.messages.length + i, entry });
   });
   return rows
     .sort((a, b) => (a.at || 0) - (b.at || 0) || a.order - b.order)
