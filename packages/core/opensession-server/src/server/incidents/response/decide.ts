@@ -701,7 +701,9 @@ function reports(view: ResponseView): ResponseStep | undefined {
     }
     if (run.role === "investigator") {
       const target = httpTarget(primarySignal(view));
+      const warnings: string[] = [];
       const parsed = parseInvestigatorReport(text, {
+        warnings,
         actionIds: new Set(view.settings.actions.map((a) => a.id)),
         actionKinds: new Map(view.settings.actions.map((a) => [a.id, a.kind])),
         signalOrigin: target?.origin ?? null,
@@ -725,6 +727,7 @@ function reports(view: ResponseView): ResponseStep | undefined {
         step: "record-report",
         sessionId: run.sessionId,
         report: parsed,
+        ...(warnings.length ? { warnings } : {}),
       };
     }
     const parsed = parseVerifierReport(text, {

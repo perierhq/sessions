@@ -176,10 +176,23 @@ export type AgentRole = "investigator" | "verifier";
 export type Independence = "other-provider" | "same-provider" | "same-model";
 
 export type EvidenceCost = "free" | "cheap" | "expensive";
+/** What one step of the investigation showed. `informative` is a step that
+ *  gathered context without confirming or ruling anything out. */
+export type EvidenceResult =
+  | "ruled-out"
+  | "confirmed"
+  | "inconclusive"
+  | "informative";
+export const EVIDENCE_RESULTS: readonly EvidenceResult[] = [
+  "ruled-out",
+  "confirmed",
+  "inconclusive",
+  "informative",
+];
 export interface EvidenceRow {
   step: string;
   cost: EvidenceCost;
-  result: "ruled-out" | "confirmed" | "inconclusive";
+  result: EvidenceResult;
   evidence: string;
   source?: string;
 }
@@ -281,6 +294,8 @@ export interface AgentRun {
   cancelledFor?: CancelReason;
   report?: InvestigatorReport | VerifierReport;
   reportError?: string;
+  /** Values Sessions repaired in an otherwise valid report. */
+  reportWarnings?: string[];
   reminded: boolean;
 }
 

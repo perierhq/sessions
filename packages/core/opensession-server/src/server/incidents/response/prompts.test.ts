@@ -219,6 +219,10 @@ test("investigator prompt: read first, cheapest-first, never secrets or commands
   expect(p).toContain(
     "End your final message with exactly one fenced block tagged incident-report.",
   );
+  expect(p).toContain(
+    "Its result is one of: ruled-out, confirmed, inconclusive, informative.",
+  );
+  expect(p).toContain('"result": "informative"');
   expect(p).not.toContain("s3cret");
   expect(p).not.toContain("--token=zzz");
   expect(p).not.toContain("rollback.sh");
@@ -371,6 +375,12 @@ test("send-back and reminder copy", () => {
   );
   expect(buildReminder("The evidence table is empty")).toBe(
     "Your last message did not end with a valid incident-report block: The evidence table is empty. Reply with only the corrected block.",
+  );
+  expect(buildReminder("The evidence table is empty", "investigator")).toBe(
+    "Your last message did not end with a valid incident-report block: The evidence table is empty. Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ruled-out, confirmed, inconclusive, informative. Reply with only the corrected block.",
+  );
+  expect(buildReminder("No incident-report block", "verifier")).toBe(
+    "Your last message did not end with a valid incident-report block: No incident-report block. Allowed values: verdict is certain or not-certain; claims[].status is verified, refuted or unverifiable. Reply with only the corrected block.",
   );
 });
 

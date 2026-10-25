@@ -122,6 +122,112 @@ test("drops unknown keys", () => {
     source: { url: "https://acme.example.test/search?q=x" },
   });
 });
+const reportWithResults = (...results: unknown[]) => ({
+  ...good,
+  attempts: results.map((result, i) => ({
+    step: `Step ${i + 1}`,
+    cost: "free",
+    ...(result === undefined ? {} : { result }),
+    evidence: "Looked at it",
+  })),
+  claims: [{ text: "A fact" }],
+});
+const withResults = (...results: unknown[]) =>
+  fence(reportWithResults(...results));
+test("a step that only gathered context is informative", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(withResults("informative", "confirmed"), {
+    ...ctx,
+    warnings,
+  });
+  if ("error" in r) throw new Error(r.error);
+  expect(r.attempts.map((a) => a.result)).toEqual(["informative", "confirmed"]);
+  expect(warnings).toEqual([]);
+});
+test("results are matched without case, spacing or underscores", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    withResults(
+      "Ruled out",
+      "ruled_out",
+      " CONFIRMED ",
+      "Inconclusive",
+      "Informative",
+      "context",
+    ),
+    { ...ctx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.attempts.map((a) => a.result)).toEqual([
+    "ruled-out",
+    "ruled-out",
+    "confirmed",
+    "inconclusive",
+    "informative",
+    "informative",
+  ]);
+  expect(r.attempts.map((a) => a.evidence)).toEqual(
+    Array(6).fill("Looked at it"),
+  );
+  expect(warnings).toEqual([]);
+});
+test("an unknown result keeps the report, as inconclusive with a warning", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    withResults("confirmed", "partly-useful", undefined),
+    { ...ctx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.attempts[0]).toEqual({
+    step: "Step 1",
+    cost: "free",
+    result: "confirmed",
+    evidence: "Looked at it",
+  });
+  expect(r.attempts[1]).toEqual({
+    step: "Step 2",
+    cost: "free",
+    result: "inconclusive",
+    evidence: 'Looked at it\n(Reported result: "partly-useful")',
+  });
+  expect(r.attempts[2]).toMatchObject({
+    result: "inconclusive",
+    evidence: "Looked at it\n(Reported result: none)",
+  });
+  expect(warnings).toEqual([
+    'Attempt 2 (Step 2) had result "partly-useful", not one of ruled-out, confirmed, inconclusive, informative; recorded as inconclusive',
+    "Attempt 3 (Step 3) had result none, not one of ruled-out, confirmed, inconclusive, informative; recorded as inconclusive",
+  ]);
+});
+test("a repaired result stays within the evidence limit", () => {
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      attempts: [
+        {
+          ...good.attempts[0],
+          result: "x".repeat(500),
+          evidence: "e".repeat(1000),
+        },
+      ],
+      claims: [{ text: "A fact" }],
+    }),
+    ctx,
+  );
+  if ("error" in r) throw new Error(r.error);
+  const evidence = r.attempts[0].evidence;
+  expect(evidence.length).toBe(1000);
+  expect(evidence).toEndWith(`\n(Reported result: "${"x".repeat(59)}\u2026")`);
+});
+test("no warnings are kept from a report that is refused", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    fence({ ...reportWithResults("maybe"), notePath: "notes.md" }),
+    { ...ctx, warnings },
+  );
+  expect(r).toMatchObject({ error: expect.stringContaining("notePath") });
+  expect(warnings).toEqual([]);
+});
 test.each([
   ["no block", "just text", "No incident-report block"],
   ["bad json", "```incident-report\n{nope\n```", "not valid JSON"],

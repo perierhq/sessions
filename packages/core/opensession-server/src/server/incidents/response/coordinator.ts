@@ -1197,7 +1197,7 @@ async function messageAgent(
         r.maxRounds,
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
       )
-    : buildReminder(run.reportError ?? "No incident-report block");
+    : buildReminder(run.reportError ?? "No incident-report block", run.role);
   const agents = await agentsFor(incident, d);
   if (!agents) return false;
   await agents.send(
@@ -1269,6 +1269,10 @@ async function recordReport(
       ? `Investigator reported: ${report.summary}`
       : `Verifier: ${report.verdict === "certain" ? "certain" : "not certain"}`
     : `${roleLabel(run.role)} report was not valid: ${step.error ?? "unknown"}`;
+  const warnings = report ? (step.warnings ?? []) : [];
+  const shown = warnings.length
+    ? `${detail}. Repaired: ${warnings.join("; ")}`
+    : detail;
   const next = await write(
     incident.id,
     d,
@@ -1280,13 +1284,18 @@ async function recordReport(
           ? a
           : patched(
               a,
-              report ? { report } : { reportError: step.error ?? "Invalid" },
+              report
+                ? {
+                    report,
+                    reportWarnings: warnings.length ? warnings : undefined,
+                  }
+                : { reportError: step.error ?? "Invalid" },
             ),
       );
       const response = ledger(patched(base, { agents: agentsNext }), at, {
         actor: run.role,
         kind: report?.role === "verifier" ? "verdict" : "agent-finished",
-        detail,
+        detail: shown,
         sessionId: run.sessionId,
       });
       const withEvent =

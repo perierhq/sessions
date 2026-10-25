@@ -3,22 +3,27 @@
 // (only the last 256 KB of a message are read, a block is at most 64 KB).
 // Errors are short, name the field, and go back to the agent verbatim.
 // Unknown keys are dropped; terminal escapes, control, bidi and zero-width
-// characters are stripped from text. `effectiveVerdict` turns the verifier's verdict into the one
+// characters are stripped from text. An attempt's result is matched loosely
+// (case, spaces, underscores, a few synonyms); one Sessions still cannot read
+// is kept as inconclusive with a warning rather than failing the report.
+// `effectiveVerdict` turns the verifier's verdict into the one
 // Sessions acts on: certainty it cannot back becomes not certain.
-import type {
-  ActionKind,
-  CandidatePlan,
-  CandidateCheck,
-  CandidateState,
-  Claim,
-  ClaimCheck,
-  ClaimStatus,
-  EvidenceCost,
-  EvidenceRow,
-  InvestigatorReport,
-  ProofResult,
-  ReadFirst,
-  VerifierReport,
+import {
+  EVIDENCE_RESULTS,
+  type ActionKind,
+  type CandidatePlan,
+  type CandidateCheck,
+  type CandidateState,
+  type Claim,
+  type ClaimCheck,
+  type ClaimStatus,
+  type EvidenceCost,
+  type EvidenceResult,
+  type EvidenceRow,
+  type InvestigatorReport,
+  type ProofResult,
+  type ReadFirst,
+  type VerifierReport,
 } from "../../../shared/incident-response";
 import { validateSource } from "../signal-validation";
 
@@ -28,11 +33,21 @@ const RUNBOOK = "docs/incidents/runbook.md";
 const NOTE_PATH = /^docs\/incidents\/\d{4}-\d{2}-\d{2}-[a-z0-9-]{1,60}\.md$/;
 const RUNBOOK_PATH = /^docs\/incidents\/runbooks\/[a-z0-9-]{1,60}\.md$/;
 const COSTS: EvidenceCost[] = ["free", "cheap", "expensive"];
-const RESULTS: EvidenceRow["result"][] = [
-  "ruled-out",
-  "confirmed",
-  "inconclusive",
-];
+/** The allowed attempt results, as the agent is told them. */
+export const RESULT_VALUES = EVIDENCE_RESULTS.join(", ");
+/** Other spellings agents use for an allowed result, after normalising. */
+const RESULT_SYNONYMS: Record<string, EvidenceResult> = {
+  ruledout: "ruled-out",
+  "rule-out": "ruled-out",
+  excluded: "ruled-out",
+  confirm: "confirmed",
+  unclear: "inconclusive",
+  context: "informative",
+  info: "informative",
+  informational: "informative",
+};
+/** The longest part of an unreadable result kept in the evidence. */
+const RESULT_ECHO_MAX = 60;
 const CLAIM_STATUSES: ClaimStatus[] = ["verified", "refuted", "unverifiable"];
 
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -231,7 +246,40 @@ function readFirstOf(value: unknown): Result<ReadFirst[]> {
   return out;
 }
 
-function attemptsOf(value: unknown): Result<EvidenceRow[]> {
+/** `value` as an allowed result: lower-cased, spaces and underscores as
+ *  hyphens, and a few synonyms. Null when it is still not one. */
+function normaliseResult(value: unknown): EvidenceResult | null {
+  if (typeof value !== "string") return null;
+  const key = cleanReportText(value, false)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "-");
+  if ((EVIDENCE_RESULTS as readonly string[]).includes(key))
+    return key as EvidenceResult;
+  return RESULT_SYNONYMS[key] ?? null;
+}
+
+/** The evidence with the unreadable result appended, within 1000
+ *  characters. */
+function withReportedResult(evidence: string, shown: string): string {
+  const suffix = `\n(Reported result: ${shown})`;
+  const room = 1000 - suffix.length;
+  const kept =
+    evidence.length <= room ? evidence : `${evidence.slice(0, room - 1)}…`;
+  return `${kept}${suffix}`;
+}
+
+function shownResult(value: unknown): string {
+  if (typeof value !== "string")
+    return value === undefined ? "none" : "not text";
+  const s = cleanReportText(value, false).trim();
+  if (!s) return "empty";
+  const clipped =
+    s.length > RESULT_ECHO_MAX ? `${s.slice(0, RESULT_ECHO_MAX - 1)}…` : s;
+  return `"${clipped.replace(/`/g, "'")}"`;
+}
+
+function attemptsOf(value: unknown, warnings: string[]): Result<EvidenceRow[]> {
   if (Array.isArray(value) && value.length === 0)
     return { error: "The evidence table is empty" };
   const items = list(value, "attempts", 1, 40);
@@ -254,10 +302,16 @@ function attemptsOf(value: unknown): Result<EvidenceRow[]> {
       return {
         error: `The attempts[${i}].cost field must be free, cheap or expensive`,
       };
-    if (!RESULTS.includes(item.result as EvidenceRow["result"]))
-      return {
-        error: `The attempts[${i}].result field must be ruled-out, confirmed or inconclusive`,
-      };
+    let result = normaliseResult(item.result);
+    let rowEvidence = evidence;
+    if (result === null) {
+      const shown = shownResult(item.result);
+      result = "inconclusive";
+      rowEvidence = withReportedResult(evidence, shown);
+      warnings.push(
+        `Attempt ${i + 1} (${step}) had result ${shown}, not one of ${RESULT_VALUES}; recorded as inconclusive`,
+      );
+    }
     const s = source(item.source, `attempts[${i}].source`);
     if (failed(s)) return s;
     const cost = item.cost as EvidenceCost;
@@ -269,8 +323,8 @@ function attemptsOf(value: unknown): Result<EvidenceRow[]> {
     out.push({
       step,
       cost,
-      result: item.result as EvidenceRow["result"],
-      evidence,
+      result,
+      evidence: rowEvidence,
       ...(s ? { source: s } : {}),
     });
   }
@@ -285,6 +339,9 @@ export interface InvestigatorReportContext {
   /** The signal's own method and path. A request check may send anything
    *  but GET or HEAD only when it matches both. */
   signalRequest?: { method: "GET" | "HEAD" | "POST"; path: string } | null;
+  /** Receives a line for each value Sessions repaired instead of refusing
+   *  the report. Filled only when the report parses. */
+  warnings?: string[];
 }
 
 function candidateOf(
@@ -374,7 +431,8 @@ export function parseInvestigatorReport(
   if (failed(cause)) return cause;
   const readFirst = readFirstOf(value.readFirst);
   if (failed(readFirst)) return readFirst;
-  const attempts = attemptsOf(value.attempts);
+  const repaired: string[] = [];
+  const attempts = attemptsOf(value.attempts, repaired);
   if (failed(attempts)) return attempts;
   const candidate = candidateOf(value.candidate, ctx);
   if (failed(candidate)) return candidate;
@@ -417,6 +475,7 @@ export function parseInvestigatorReport(
       return {
         error: `The runbookPaths field may hold only ${RUNBOOK} or docs/incidents/runbooks/<slug>.md`,
       };
+  ctx.warnings?.push(...repaired);
   return {
     role: "investigator",
     summary,

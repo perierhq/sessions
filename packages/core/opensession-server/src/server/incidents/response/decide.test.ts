@@ -643,6 +643,58 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
   });
 });
 
+test("reports: an unknown attempt result is repaired with a warning, not refused", () => {
+  const text = fence({
+    ...goodInvestigator,
+    attempts: [
+      {
+        step: "Read the status page",
+        cost: "free",
+        result: "Informative",
+        evidence: "Day bars show the outage",
+      },
+      { ...goodInvestigator.attempts[0], result: "helpful" },
+    ],
+  });
+  const step = decideNextStep(
+    view({
+      incident: incident(
+        "investigating",
+        response({ agents: [run("investigator")] }),
+      ),
+      agents: new Map([
+        [
+          "child-1",
+          {
+            status: "done",
+            costUsd: 1,
+            tokens: 10,
+            prUrl: "https://github.com/acme/web/pull/12",
+            finalText: text,
+          },
+        ],
+      ]),
+    }),
+  );
+  expect(step).toMatchObject({
+    step: "record-report",
+    sessionId: "child-1",
+    report: { role: "investigator" },
+  });
+  if (step.step !== "record-report" || step.report?.role !== "investigator")
+    throw new Error("expected an investigator report");
+  expect(step.report.attempts.map((a) => a.result)).toEqual([
+    "informative",
+    "inconclusive",
+  ]);
+  expect(step.report.attempts[1].evidence).toBe(
+    '200 with app UA, 403 without\n(Reported result: "helpful")',
+  );
+  expect(step.warnings).toEqual([
+    'Attempt 2 (Request with app UA) had result "helpful", not one of ruled-out, confirmed, inconclusive, informative; recorded as inconclusive',
+  ]);
+});
+
 test("investigation: questions, errors, timeouts and no candidate", () => {
   const one = (agentOver: Partial<AgentRun>, status: AgentLive["status"]) =>
     view({
