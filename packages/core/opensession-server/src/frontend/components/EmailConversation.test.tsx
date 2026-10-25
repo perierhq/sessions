@@ -120,8 +120,12 @@ const { ConfirmDialog } = await import("../ui/confirm");
 const { Button } = await import("../ui/button");
 const { Textarea } = await import("../ui/input");
 const { Menu } = await import("../ui/menu");
-const { EmailConversation, EmailConversationActions } =
-  await import("./EmailConversation");
+const {
+  EmailConversation,
+  EmailConversationActions,
+  FixTaskCard,
+  PendingIssueCard,
+} = await import("./EmailConversation");
 type ActionProps = Parameters<typeof EmailConversationActions>[0];
 
 /** The string children in `tree`, in order. */
@@ -232,13 +236,16 @@ test("a held issue offers Create issue and Dismiss", async () => {
     onOpenSession: () => {},
   });
   await settle();
-  const all = strings(pane.output());
+  const held = find(pane.output(), PendingIssueCard);
+  if (!held) throw new Error("No held issue card");
+  const card = harness.mount(PendingIssueCard, held.props);
+  const all = strings(card.output());
   expect(all).toContain(
     "The agent reported a bug. The repository is public, so a person creates the issue.",
   );
   expect(all).toContain("Dismiss");
   press(
-    find(pane.output(), Button, (p) => p.children === "Create issue")?.props
+    find(card.output(), Button, (p) => p.children === "Create issue")?.props
       .onClick,
   );
   await settle();
@@ -264,9 +271,12 @@ test("a suggested fix task starts a fix session as edited", async () => {
     onOpenSession: () => {},
   });
   await settle();
-  expect(strings(pane.output())).toContain("The agent suggests a fix");
+  const suggested = find(pane.output(), FixTaskCard);
+  if (!suggested) throw new Error("No fix task card");
+  const card = harness.mount(FixTaskCard, suggested.props);
+  expect(strings(card.output())).toContain("The agent suggests a fix");
   const area = find<React.ComponentProps<"textarea">>(
-    pane.output(),
+    card.output(),
     Textarea,
     (p) => p["aria-label"] === "Fix task",
   );
@@ -276,7 +286,7 @@ test("a suggested fix task starts a fix session as edited", async () => {
   area?.props.onChange?.(change as React.ChangeEvent<HTMLTextAreaElement>);
   await settle();
   press(
-    find(pane.output(), Button, (p) => p.children === "Start fix session")
+    find(card.output(), Button, (p) => p.children === "Start fix session")
       ?.props.onClick,
   );
   await settle();

@@ -232,7 +232,11 @@ test("failed shows the error with Try again and Discard", async () => {
 test("sending shows the spinner and no actions", () => {
   const box = harness.mount(
     SupportReplyBox,
-    props({ conversation: conversation({ draft: draft("sending") }) }),
+    props({
+      conversation: conversation({
+        draft: draft("sending", { attemptStartedAt: new Date().toISOString() }),
+      }),
+    }),
   );
   expect(text(box.output())).toContain("Sending…");
   expect(
@@ -286,4 +290,21 @@ test("an intent with nothing to act on toasts", async () => {
   await settle();
   expect(toasts).toEqual(["Nothing to stop: the reply was already handled"]);
   expect(stopVeto).not.toHaveBeenCalled();
+});
+
+test("a send cut off long ago offers Discard", async () => {
+  const box = harness.mount(
+    SupportReplyBox,
+    props({
+      conversation: conversation({
+        draft: draft("sending", {
+          attemptStartedAt: new Date(Date.now() - 600_000).toISOString(),
+        }),
+      }),
+    }),
+  );
+  expect(text(box.output())).toContain("Sending…");
+  press(button(box.output(), "Discard").onClick);
+  await settle();
+  expect(discardDraft).toHaveBeenCalledWith("sc_0001", "sd_1");
 });

@@ -18,6 +18,7 @@ import {
   moveConversation,
   reopenConversation,
   setConversationOwner,
+  startFixSession,
 } from "../lib/api/support";
 import { API_SWR_OPTIONS, apiSWRKey } from "../lib/api-swr";
 import { errorMessage } from "../lib/error-message";
@@ -30,12 +31,17 @@ import { mineStatus } from "../lib/sidebar-lanes";
 import { MINE_STATUS_META } from "../lib/sidebar-types";
 import { SUPPORT_COLUMN_BAR, SUPPORT_TOP_RAIL } from "../lib/support-classes";
 import { supportItemProviderId } from "../lib/support-list";
-import { agentCantStart, pollMs, timelineEntries } from "../lib/support-reply";
+import {
+  agentCantStart,
+  pendingIssueCopy,
+  pollMs,
+  timelineEntries,
+} from "../lib/support-reply";
 import type { UnifiedSession } from "../lib/types";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { useConfirm } from "../ui/confirm";
-import { Field, Input } from "../ui/input";
+import { Field, Input, Textarea } from "../ui/input";
 import { Menu } from "../ui/menu";
 import { Modal } from "../ui/modal";
 import { OptionSelect } from "../ui/select";
@@ -197,7 +203,10 @@ export function EmailConversation({
   async function issue(action: "approve" | "dismiss") {
     if (!c || issueBusy) return;
     setIssueBusy(true);
-    await (action === "approve" ? approveIssue(c.id) : dismissIssue(c.id))
+    await (action === "approve"
+      ? approveIssue(c.id, c.revision)
+      : dismissIssue(c.id)
+    )
       .then((next) => {
         if (aliveRef.current) setView(next);
       })
@@ -374,7 +383,9 @@ export function EmailConversation({
                 className={cn(FLOATING_PILL_BUTTON, "pointer-events-auto")}
                 onClick={() => onOpenSession(c.fixSessionId!)}
               >
-                <span className="min-w-0 truncate">Open fix session</span>
+                <span className="min-w-0 truncate">
+                  {fixSessionLabel(view?.fixSession ?? null)}
+                </span>
               </button>
             )}
           </div>
@@ -384,35 +395,21 @@ export function EmailConversation({
       {c && (
         <div className="mx-auto flex w-full max-w-[760px] shrink-0 flex-col gap-3 px-5 pb-5">
           {c.pendingIssue && (
-            <div className="flex flex-col gap-2.5 rounded-xl bg-panel px-4 py-3">
-              <p className="m-0 text-supporting text-fg">
-                The agent reported a bug. The repository is public, so a person
-                creates the issue.
-              </p>
-              <p className="m-0 truncate text-label text-dim">
-                {c.pendingIssue.title}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="primary"
-                  className={ACTION}
-                  disabled={issueBusy}
-                  onClick={() => void issue("approve")}
-                >
-                  Create issue
-                </Button>
-                <Button
-                  size="sm"
-                  variant="default"
-                  className={ACTION}
-                  disabled={issueBusy}
-                  onClick={() => void issue("dismiss")}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            </div>
+            <PendingIssueCard
+              issue={c.pendingIssue}
+              isInstanceOwner={inboxes?.isInstanceOwner ?? false}
+              busy={issueBusy}
+              onApprove={() => void issue("approve")}
+              onDismiss={() => void issue("dismiss")}
+            />
+          )}
+          {c.fixTask && !c.fixSessionId && (
+            <FixTaskCard
+              key={`${c.fixTask.at}`}
+              conversation={c}
+              onStarted={setView}
+              onRefetch={() => void reload()}
+            />
           )}
           {c.status !== "spam" && (
             <SupportReplyBox
@@ -427,6 +424,123 @@ export function EmailConversation({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The fix session pill: where its pull request stands, when it has one. */
+function fixSessionLabel(
+  fix: SupportConversationView["fixSession"] | null,
+): string {
+  if (fix?.prState === "MERGED") return "Fix merged";
+  if (fix?.prState === "OPEN") return "Fix in review";
+  return "Open fix session";
+}
+
+const CARD = "flex flex-col gap-2.5 rounded-xl bg-panel px-4 py-3";
+
+/** An issue the agent reported that waits for a person. */
+export function PendingIssueCard({
+  issue,
+  isInstanceOwner,
+  busy,
+  onApprove,
+  onDismiss,
+}: {
+  issue: NonNullable<SupportConversation["pendingIssue"]>;
+  isInstanceOwner: boolean;
+  busy: boolean;
+  onApprove: () => void;
+  onDismiss: () => void;
+}) {
+  const copy = pendingIssueCopy(issue, isInstanceOwner);
+  return (
+    <div className={CARD}>
+      <p className="m-0 text-supporting text-fg">{copy.text}</p>
+      <p className="m-0 truncate text-label text-dim" title={issue.title}>
+        {issue.ghRepo ? `${issue.ghRepo} · ${issue.title}` : issue.title}
+      </p>
+      {copy.why && <p className="m-0 text-label text-faint">{copy.why}</p>}
+      <div className="flex flex-wrap gap-2">
+        {copy.canApprove && (
+          <Button
+            size="sm"
+            variant="primary"
+            className={ACTION}
+            disabled={busy}
+            onClick={onApprove}
+          >
+            Create issue
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="default"
+          className={ACTION}
+          disabled={busy}
+          onClick={onDismiss}
+        >
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The fix task the agent suggested: a person edits it and starts a fix
+ *  session from it. Nothing starts on its own. */
+export function FixTaskCard({
+  conversation: c,
+  onStarted,
+  onRefetch,
+}: {
+  conversation: SupportConversation;
+  onStarted: (view: SupportConversationView) => void;
+  onRefetch: () => void;
+}) {
+  const [task, setTask] = useState(c.fixTask?.text ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function start() {
+    if (!task.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    await startFixSession(c.id, c.revision, task.trim())
+      .then(onStarted)
+      .catch((failure: Error) => {
+        setError(errorMessage(failure, "Couldn't start the fix session"));
+        onRefetch();
+      })
+      .finally(() => setBusy(false));
+  }
+
+  return (
+    <div className={CARD}>
+      <p className="m-0 text-supporting text-fg">The agent suggests a fix</p>
+      <p className="m-0 text-label text-dim">
+        {`Starts a code session in ${c.fixTask?.project ?? c.project} as you, with this task.`}
+      </p>
+      <Textarea
+        aria-label="Fix task"
+        rows={3}
+        value={task}
+        disabled={busy}
+        onChange={(e) => setTask(e.target.value)}
+        className="phone:text-input-phone"
+      />
+      {error && <InlineAlert>{error}</InlineAlert>}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          className={ACTION}
+          disabled={busy || !task.trim()}
+          onClick={() => void start()}
+        >
+          Start fix session
+        </Button>
+      </div>
     </div>
   );
 }

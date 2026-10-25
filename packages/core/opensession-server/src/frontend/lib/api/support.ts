@@ -109,6 +109,8 @@ interface ConversationActionBody {
   project?: string;
   reason?: string;
   owner?: string;
+  task?: string;
+  expectedRevision?: number;
 }
 
 function conversationAction(
@@ -207,9 +209,28 @@ export function markNotSpam(id: string): Promise<SupportConversationView> {
   return conversationAction(id, "not-spam", "Couldn't mark it as not spam");
 }
 
-/** Creates the issue the agent reported and a person was asked to approve. */
-export function approveIssue(id: string): Promise<SupportConversationView> {
-  return conversationAction(id, "issue/approve", "Couldn't create the issue");
+/** Creates the issue the agent reported and a person was asked to approve.
+ *  `expectedRevision`: the conversation revision the person saw (409 when
+ *  it changed since). */
+export function approveIssue(
+  id: string,
+  expectedRevision: number,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "issue/approve", "Couldn't create the issue", {
+    expectedRevision,
+  });
+}
+
+/** Starts a fix session from the agent's suggested task, as edited. */
+export function startFixSession(
+  id: string,
+  expectedRevision: number,
+  task: string,
+): Promise<SupportConversationView> {
+  return conversationAction(id, "fix", "Couldn't start the fix session", {
+    expectedRevision,
+    task,
+  });
 }
 
 export function dismissIssue(id: string): Promise<SupportConversationView> {

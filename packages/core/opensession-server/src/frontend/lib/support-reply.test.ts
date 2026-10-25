@@ -3,6 +3,7 @@ import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
   pendingIssueCopy,
+  sendingDiscardable,
   replyBoxMode,
   replyDraftKey,
   supportIntentPlan,
@@ -284,5 +285,26 @@ describe("pendingIssueCopy", () => {
       text: "The agent reported a bug. Waiting for a person: too many issues today",
       canApprove: true,
     });
+  });
+});
+
+describe("sendingDiscardable", () => {
+  const now = Date.parse(AT) + 10 * 60_000;
+  test("a send waiting for its retry can be discarded", () => {
+    expect(
+      sendingDiscardable(
+        draft("sending", {
+          attemptStartedAt: new Date(now - 1000).toISOString(),
+          nextAttemptAt: new Date(now + 60_000).toISOString(),
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+  test("a send cut off over two minutes ago can be discarded", () => {
+    const at = (ms: number) =>
+      draft("sending", { attemptStartedAt: new Date(now - ms).toISOString() });
+    expect(sendingDiscardable(at(121_000), now)).toBe(true);
+    expect(sendingDiscardable(at(30_000), now)).toBe(false);
   });
 });

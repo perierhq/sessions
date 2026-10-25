@@ -238,3 +238,30 @@ export function timelineEntries(c: SupportConversation): PlainTimelineEntry[] {
     .sort((a, b) => (a.at || 0) - (b.at || 0) || a.order - b.order)
     .map((r) => r.entry);
 }
+
+/** The held-issue hold reasons that bugs.ts writes (shown as is). */
+const HELD_PUBLIC = "Waiting for a person: the repository is public";
+
+/** The card over the reply box for an issue the agent reported that waits
+ *  for a person: why it waits, and whether this person can post it (only
+ *  the instance owner posts to a public repository). */
+export function pendingIssueCopy(
+  issue: NonNullable<SupportConversation["pendingIssue"]>,
+  isInstanceOwner: boolean,
+): { text: string; canApprove: boolean; why?: string } {
+  const isPublic = !issue.heldFor || issue.heldFor === HELD_PUBLIC;
+  if (!isPublic)
+    return {
+      text: `The agent reported a bug. ${issue.heldFor}`,
+      canApprove: true,
+    };
+  const text =
+    "The agent reported a bug. The repository is public, so a person creates the issue.";
+  return isInstanceOwner
+    ? { text, canApprove: true }
+    : {
+        text,
+        canApprove: false,
+        why: "Only the instance owner can post an issue to a public repository",
+      };
+}
