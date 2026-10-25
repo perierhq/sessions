@@ -336,7 +336,10 @@ export async function startSupportSession(
         : {
             ...x,
             sessionId: created.id,
-            events: [...x.events, event("agent-started", "Support agent started")],
+            events: [
+              ...x.events,
+              event("agent-started", "Support agent started"),
+            ],
           },
     );
     if (stored?.sessionId === created.id) started = created.id;

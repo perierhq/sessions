@@ -221,7 +221,9 @@ describe("support session in a podman Sandbox (queue drain)", () => {
     if (!redirected) return;
     const { opts, prompt } = await runOneTurn("bks-zz-plain-sandbox", false);
     expect(opts.reposNote).toBeTruthy();
-    expect(prompt).toContain("@session:bks-0190aaaa-0000 · no session with this id");
+    expect(prompt).toContain(
+      "@session:bks-0190aaaa-0000 · no session with this id",
+    );
     expect(opts.onAskUser).toBeDefined();
   });
 });
