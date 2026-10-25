@@ -51,11 +51,11 @@ conversation.
 
 Each server has its own security setting:
 
-| Setting      | Port (usual)       | What it does                                                                  |
-| ------------ | ------------------ | ----------------------------------------------------------------------------- |
-| Implicit TLS | IMAP 993, SMTP 465 | TLS from the first byte.                                                      |
-| STARTTLS     | IMAP 143, SMTP 587 | Upgrades to TLS before logging in. A server that doesn't offer it is refused. |
-| None         | any                | No TLS. Only for a server on this machine, such as a local mail bridge.       |
+| Setting      | Port (usual)       | What it does                                                                                                                  |
+| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Implicit TLS | IMAP 993, SMTP 465 | TLS from the first byte.                                                                                                      |
+| STARTTLS     | IMAP 143, SMTP 587 | Upgrades to TLS before logging in. A server that doesn't offer it is refused.                                                 |
+| None         | any                | No TLS. Only for a server on this machine, such as a local mail bridge, and only when the inbox allows internal mail servers. |
 
 Certificates are always checked.
 
@@ -126,23 +126,26 @@ provider's and your domain's:
 
 ## What each setting does
 
-| Setting                    | Default                     | What it does                                                                                                                                                                                                                                |
-| -------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Autonomy                   | Draft                       | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends. **Send after a veto window**: the reply sends when the window ends unless someone stops it. **Send right away**: the agent sends. |
-| Veto window in minutes     | 10                          | How long a reply waits before it sends, from 1 minute to 24 hours.                                                                                                                                                                          |
-| Never without a person     | All four topics             | Refunds, account deletion, legal and angry customers always wait for a person, whatever the autonomy. When the topics of a conversation are unknown (the classifier failed), every send waits.                                              |
-| Bug handling               | Off                         | **Create an issue** in the project's repository, or **create an issue and start an agent** to fix it. An issue in a public repository always waits for a person.                                                                            |
-| Who may move conversations | The agent or a person       | Whether the support agent may move a conversation to another project, or only people.                                                                                                                                                       |
-| Owner                      | Whoever connected the inbox | Who is asked when a reply needs a person.                                                                                                                                                                                                   |
-| Mailbox behaviour          | Leave untouched             | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                               |
-| Save a copy in Sent        | Depends on the SMTP host    | Appends each reply to the Sent folder (see below).                                                                                                                                                                                          |
-| Keep conversations (days)  | 180                         | How long a conversation's text is kept after it closes.                                                                                                                                                                                     |
-| Keep attachments (days)    | 30                          | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                             |
-| Send limit per minute      | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                |
+| Setting                   | Default                  | What it does                                                                                                                                                                                                                                |
+| ------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Autonomy                  | Draft                    | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends. **Send after a veto window**: the reply sends when the window ends unless someone stops it. **Send right away**: the agent sends. |
+| Veto window in minutes    | 10                       | How long a reply waits before it sends, from 1 minute to 24 hours.                                                                                                                                                                          |
+| Never without a person    | All four topics          | Refunds, account deletion, legal and angry customers always wait for a person, whatever the autonomy. When the topics of a conversation are unknown (the classifier failed), every send waits.                                              |
+| Mailbox behaviour         | Leave untouched          | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                               |
+| Save a copy in Sent       | Depends on the SMTP host | Appends each reply to the Sent folder (see below).                                                                                                                                                                                          |
+| Keep conversations (days) | 180                      | How long a conversation's text is kept after it closes.                                                                                                                                                                                     |
+| Keep attachments (days)   | 30                       | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                             |
+| Send limit per minute     | 30                       | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                |
 
 Any signed-in person can connect and edit inboxes. Only the instance owner can
 let an inbox send right away, allow internal mail servers, remove an inbox
 and forget a customer.
+
+When a reply needs a person, will send at the end of its veto window, or
+couldn't send, Sessions notifies the conversation's owner (the instance owner
+while the conversation has none) with fixed wording: "A support reply is
+ready", "A support reply will send", "A support reply could not send". The
+switch is **Support replies that need you** in **Settings → Notifications**.
 
 ## Rate limits and connections
 
@@ -151,11 +154,14 @@ and forget a customer.
   IDLE is checked every 5 minutes.
 - **Reconnects back off.** A lost connection is retried after a random delay
   that grows from 30 seconds to 15 minutes. A connection limit ("too many
-  connections"), a throttling response or a server alert pauses the inbox
-  and backs off the same way; the inbox row shows the reason.
+  connections") or a throttling response backs off the same way. A server
+  alert that ends the connection shows the inbox as paused with the alert's
+  text, and it is retried on the same schedule; the inbox row shows the
+  reason and when Sessions tries again.
 - **A refused login is not retried.** Providers lock accounts after repeated
-  failed logins, so the inbox stays paused until someone saves or tests it
-  again.
+  failed logins, so the inbox stays paused until someone saves the inbox
+  (any change, or a new password) or a test with its saved passwords
+  passes. Then Sessions logs in once more.
 - **One SMTP connection per inbox**, reused for every reply, within the
   inbox's send limit. A conversation gets at most 3 automatic sends an hour.
 - **Provider limits still apply.** Gmail allows about 15 IMAP connections per
@@ -171,15 +177,18 @@ Sessions never deletes mail. What it changes depends on **Mailbox behaviour**:
 
 - **Leave untouched**: the inbox is opened read-only. Nothing changes: no
   flags, no folders, no moves.
-- **Mark read when handled**: when a conversation is closed or marked as
-  spam, its messages get the `\Seen` flag. Nothing else changes.
-- **Move to Sessions folders**: when a conversation is closed, its messages
-  move to `Sessions/Done`; spam moves to `Sessions/Spam`. Sessions creates
-  the folders when they are missing.
+- **Mark read when handled**: when a reply is sent or triage files a
+  conversation as spam, its messages get the `\Seen` flag. Nothing else
+  changes.
+- **Move to Sessions folders**: when a reply is sent, the conversation's
+  messages move to `Sessions/Done`; spam moves to `Sessions/Spam`. Sessions
+  creates the folders when they are missing, under the server's own folder
+  prefix if it has one (for example `INBOX.Sessions.Done`).
 
-Only the messages of that conversation are touched. A mailbox action that
-fails (the connection is down, the folder can't be created) is logged and
-dropped; it never holds up a reply.
+Only the messages of that conversation are touched, including our own mail
+that Sessions read from the inbox. A mailbox action that fails (the
+connection is down, the folder can't be created) is logged and dropped; it
+never holds up a reply.
 
 ### Save a copy in Sent
 
@@ -214,12 +223,17 @@ holding customer mail.
 
 ## Troubleshooting
 
-| Inbox state | Meaning                                                                                                                            |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Live        | Connected and waiting for mail with IDLE.                                                                                          |
-| Polling     | Connected; the server has no IDLE, so Sessions checks every 5 minutes.                                                             |
-| Backing off | The connection was lost; the row shows when Sessions tries again.                                                                  |
-| Paused      | Sessions stopped trying: a refused login, a refused server address, or a server alert. Fix the setting and save or test the inbox. |
+| Inbox state | Meaning                                                                                                                                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live        | Connected and waiting for mail with IDLE.                                                                                                                                                                                                   |
+| Polling     | Connected; the server has no IDLE, so Sessions checks every 5 minutes.                                                                                                                                                                      |
+| Backing off | The connection was lost, or the server asked Sessions to slow down; the row shows when Sessions tries again.                                                                                                                                |
+| Paused      | A refused login, a missing password or a refused server address: Sessions stopped trying. Fix the setting and save the inbox, or run a test that passes. A server alert also shows as paused, with the time Sessions tries again by itself. |
+
+The state is the IMAP connection's. When a reply fails for a reason that
+won't go away by retrying (a refused SMTP login, an address the account
+can't send as), the row also shows "Sending failed" and the reason until a
+reply sends or the SMTP settings change.
 
 The service log has a line per connection event with the inbox id and an
 error code. It never contains a password, an address or message text.

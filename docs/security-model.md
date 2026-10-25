@@ -804,23 +804,24 @@ The code is in `packages/core/opensession-server/src/server/support/` and
   cloud metadata addresses are always refused; loopback, private and tailnet
   addresses only when the inbox allows internal servers, which only the
   instance owner can turn on. STARTTLS is required when chosen, and no TLS
-  is allowed only on loopback. Server error text is never shown or logged;
-  a fixed message is.
+  is allowed only on loopback, so it also needs internal servers allowed.
+  Server error text is never shown or logged; a fixed message is.
 - **Who may do what.** Any signed-in person may connect and edit inboxes.
   Only the instance owner may let an inbox send right away, allow internal
   servers, remove an inbox, or forget a customer.
 - **A push says nothing about the customer.** Support pushes use fixed
-  wording ("A support reply is ready", "A support reply will send"); no
-  customer name, address, subject or text reaches a lock screen.
-- **Issues in public repositories need a person.** Bug handling may turn a
-  customer email into a GitHub issue. When the project's repository is
-  public (or its visibility can't be read), the issue waits on the
-  conversation until a person approves it, whatever the inbox's autonomy.
+  wording ("A support reply is ready", "A support reply will send", "A
+  support reply could not send") with the project as context; no customer
+  name, address, subject or text reaches a lock screen, and a failed send
+  never quotes the server's error.
 - **Logs and health carry ids.** Transport logs carry the inbox id, an event
   and an error code or UID; `/health` lists inbox ids, states and reasons
-  with any address cut. Conversations themselves are customer data: they are
-  stored in the catalog and mirrored as JSON under the state directory, and
-  retention and "Forget a customer" delete them there.
+  with any address cut (server alert text can carry one). A refused login
+  is never retried on a timer; the inbox tries once more only when someone
+  saves it or a test with its saved passwords passes. Conversations
+  themselves are customer data: they are stored in the catalog and mirrored
+  as JSON under the state directory, and retention and "Forget a customer"
+  delete them there.
 
 ## Private information and public repositories
 
