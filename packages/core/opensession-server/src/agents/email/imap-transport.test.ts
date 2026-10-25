@@ -365,7 +365,9 @@ describe("ImapTransport", () => {
     const retryAt = Date.parse(health.retryAt!);
     expect(retryAt - clock.now()).toBeGreaterThanOrEqual(30_000);
     clock.advanceTo(retryAt - 1);
-    await Bun.sleep(100);
+    // The retry timer starts the connect synchronously, so the state tells.
+    expect(h.transport.health().state).toBe("backing-off");
+    expect(clock.pending()).toBe(1);
     expect(login.count()).toBe(1);
     clock.advanceTo(retryAt);
     await waitFor(() => h.transport.health().state === "live");
