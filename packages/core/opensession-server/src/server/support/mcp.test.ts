@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "path";
+import { z } from "zod";
 import type { InboxConfig, SupportMessage } from "../../shared/support";
 import {
   __setInboxProjectCheckForTest,
@@ -7,7 +8,7 @@ import {
   updateInbox,
 } from "./inboxes";
 import { __setActionDepsForTest } from "./actions";
-import { __setBugDepsForTest } from "./bugs";
+import { __setBugDepsForTest, MAX_SUMMARY, MAX_TITLE } from "./bugs";
 import {
   SUPPORT_MCP_SERVER,
   __setSupportSessionLookupForTest,
@@ -128,7 +129,10 @@ test("a session without a support ref gets no conversation", async () => {
 });
 
 test("get_conversation returns the session's own conversation only", async () => {
-  const mine = await conversation(1);
+  const mine = (await updateConversation((await conversation(1)).id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+  })))!;
   await conversation(2);
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const tool = getConversationTool("os-1");
@@ -323,4 +327,26 @@ test("a session that no longer answers the conversation can't move or report it"
     );
   }
   expect((await getConversation(mine.id))!.project).toBe("acme");
+});
+
+test("a session that no longer answers the conversation can't read it", async () => {
+  const mine = await answeredBy("os-new");
+  sessions["os-old"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const out = await toolNamed("os-old", "get_conversation").handler({}, {});
+  expect(textOf(out)).toBe("This session no longer answers this conversation");
+  const current = await toolNamed("os-new", "get_conversation").handler({}, {});
+  expect(textOf(current)).toContain("customer_email");
+});
+
+test("report_bug refuses oversized fields before anything runs", () => {
+  const schema = z.object(toolNamed("os-1", "report_bug").inputSchema);
+  expect(schema.safeParse({ title: "t", summary: "s" }).success).toBe(true);
+  expect(
+    schema.safeParse({ title: "t".repeat(MAX_TITLE + 1), summary: "s" })
+      .success,
+  ).toBe(false);
+  expect(
+    schema.safeParse({ title: "t", summary: "s".repeat(MAX_SUMMARY + 1) })
+      .success,
+  ).toBe(false);
 });
