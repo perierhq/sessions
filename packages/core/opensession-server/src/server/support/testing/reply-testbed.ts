@@ -136,6 +136,8 @@ export function useReplyTestbed() {
         replyTo?: SupportMessage["replyTo"];
         trust?: SupportMessage["trust"];
         triage?: Partial<TriageVerdict> | null;
+        /** false: the message's topics were never classified. */
+        topicsChecked?: boolean;
       } = {},
     ): Promise<SupportConversation> {
       counter++;
@@ -156,7 +158,13 @@ export function useReplyTestbed() {
         },
         providerId: `imap:1:${counter}`,
         attachments: [],
-        trust: opts.trust ?? { replyToDiffers: false, authFailed: false },
+        trust: opts.trust ?? {
+          replyToDiffers: false,
+          authFailed: false,
+          authVerified: true,
+        },
+        // As routing leaves it once triage classified the message.
+        ...(opts.topicsChecked === false ? {} : { topicsChecked: true as const }),
       };
       const c = await createConversation({
         channel: "email",

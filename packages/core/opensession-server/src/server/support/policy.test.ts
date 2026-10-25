@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { InboxConfig, TriageVerdict } from "../../shared/support";
+import {
+  AUTO_SENDS_PER_INBOX_PER_HOUR,
+  type InboxConfig,
+  type TriageVerdict,
+} from "../../shared/support";
 import { type ReplyDecision, decideReply } from "./policy";
 
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
@@ -40,7 +44,13 @@ function input(over: Partial<Input> = {}): Input {
     triage: triage(),
     autoSendsLastHour: 0,
     now: NOW,
-    lastInboundTrust: { replyToDiffers: false, authFailed: false },
+    lastInboundTrust: {
+      replyToDiffers: false,
+      authFailed: false,
+      authVerified: true,
+    },
+    topicsChecked: true,
+    inboxAutoSendsLastHour: 0,
     status: "open",
     personStoppedLast: false,
     ...over,
@@ -105,6 +115,44 @@ describe("decideReply", () => {
       {
         kind: "needs-person",
         rule: "Replies would go to a different address than the sender",
+      },
+    ],
+    [
+      "4. a message's topics not checked yet",
+      { topicsChecked: false },
+      {
+        kind: "needs-person",
+        rule: "The newest message's topics aren't checked yet",
+      },
+    ],
+    [
+      "4a. sender's mail not authenticated",
+      {
+        lastInboundTrust: {
+          replyToDiffers: false,
+          authFailed: false,
+          authVerified: false,
+        },
+      },
+      {
+        kind: "needs-person",
+        rule: "The sender's mail wasn't authenticated",
+      },
+    ],
+    [
+      "4a. no Authentication-Results at all",
+      { lastInboundTrust: { replyToDiffers: false, authFailed: false } },
+      {
+        kind: "needs-person",
+        rule: "The sender's mail wasn't authenticated",
+      },
+    ],
+    [
+      "6. the inbox's hourly cap",
+      { inboxAutoSendsLastHour: AUTO_SENDS_PER_INBOX_PER_HOUR },
+      {
+        kind: "needs-person",
+        rule: `${AUTO_SENDS_PER_INBOX_PER_HOUR} automatic replies from this inbox in the last hour`,
       },
     ],
     [

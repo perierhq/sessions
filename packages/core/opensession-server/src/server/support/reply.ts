@@ -28,6 +28,7 @@
 import { randomUUIDv7 } from "bun";
 import { buildReply, newMessageId, replyTarget } from "../../agents/email/mime";
 import {
+  AUTO_SENDS_PER_INBOX_PER_HOUR,
   MAX_TEXT_CHARS,
   type InboxConfig,
   type MailAddress,
@@ -270,6 +271,21 @@ export function answeredTrust(
   return pinTrust(c, currentPin(c, own));
 }
 
+/** Whether every customer message the reply answers — the pinned one and
+ *  each since our last reply — had its topics classified (routing.ts). */
+function topicsChecked(c: SupportConversation, pin: ReplyPin): boolean {
+  const lastOut = c.messages.findLastIndex((m) => m.direction === "out");
+  const answered = c.messages
+    .slice(lastOut + 1)
+    .filter((m) => m.direction === "in" && !m.automated);
+  const target = pin.answersMessageId
+    ? c.messages.find((m) => m.id === pin.answersMessageId)
+    : undefined;
+  return [...answered, ...(target ? [target] : [])].every(
+    (m) => m.topicsChecked === true,
+  );
+}
+
 function autoSendsSince(c: SupportConversation, now: number): number {
   return c.autoSends.filter((at) => {
     const t = Date.parse(at);
@@ -277,14 +293,16 @@ function autoSendsSince(c: SupportConversation, now: number): number {
   }).length;
 }
 
-/** decideReply for `author` on `c` answering `pin`. A removed inbox counts
- *  as off. */
+/** decideReply for `author` on `c` answering `pin`; `inboxSends` is the
+ *  inbox's automatic sends in the last hour (inboxAutoSends). A removed
+ *  inbox counts as off. */
 function decide(
   c: SupportConversation,
   author: SupportActor,
   inbox: InboxConfig | null,
   pin: ReplyPin,
   now: number,
+  inboxSends: number,
 ): ReplyDecision {
   return decideReply({
     author,
@@ -295,7 +313,9 @@ function decide(
       neverWithoutAPerson: [],
     },
     triage: c.triage,
+    topicsChecked: topicsChecked(c, pin),
     autoSendsLastHour: autoSendsSince(c, now),
+    inboxAutoSendsLastHour: inboxSends,
     now,
     lastInboundTrust: pinTrust(c, pin),
     status: c.status,
@@ -368,12 +388,14 @@ async function propose(
 
   // The work index first, from the decision on what we just read: a crash
   // after it leaves a key the tick drops, never a window nobody ends.
+  const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
   const provisional = decide(
     current,
     author,
     inbox,
     currentPin(current, own),
     now,
+    inboxSends,
   );
   if (provisional.kind === "veto")
     await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
@@ -398,7 +420,7 @@ async function propose(
       return null;
     }
     const pin = currentPin(c, own);
-    const decision = decide(c, author, inbox, pin, now);
+    const decision = decide(c, author, inbox, pin, now, inboxSends);
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
       failure = fail(409, "The conversation changed; try again");
@@ -436,6 +458,8 @@ async function propose(
     return failure ?? fail(404, "Conversation not found");
   if (written.state !== "sending")
     return { ok: true, draft: written, message: null };
+  const held = await claimAutoSendSlot(committed, written, now);
+  if (held) return { ok: true, draft: held, message: null };
   const sent = await deliver(committed, written, inbox, others, {
     edited: false,
     now,
@@ -467,6 +491,97 @@ async function reconcileVetoKey(conversationId: string): Promise<void> {
   } catch (error) {
     console.warn("[support] veto key not updated:", errorName(error));
   }
+}
+
+// ── The inbox's hourly cap ───────────────────────────────────────────────
+
+/** `autosends:<inboxId>` in the work index: the inbox's automatic sends in
+ *  the last hour, each with its draft. A slot is taken (compare-and-swap)
+ *  just before an automatic send goes out, and kept whatever the outcome. */
+interface InboxAutoSendLog {
+  inboxId: string;
+  sends: Array<{ at: number; draftId: string }>;
+}
+
+const autoSendsKey = (inboxId: string) => `autosends:${inboxId}`;
+
+function recentSends(
+  value: unknown,
+  now: number,
+): InboxAutoSendLog["sends"] {
+  const sends = (value as InboxAutoSendLog | null)?.sends;
+  if (!Array.isArray(sends)) return [];
+  return sends.filter(
+    (s) =>
+      typeof s?.at === "number" &&
+      typeof s.draftId === "string" &&
+      s.at > now - HOUR_MS &&
+      s.at <= now,
+  );
+}
+
+/** The inbox's automatic sends in the last hour, but `draftId`'s. An
+ *  unreadable log counts as full: automatic sends wait for a person. */
+async function inboxAutoSends(
+  inboxId: string,
+  now: number,
+  draftId: string,
+): Promise<number> {
+  try {
+    return recentSends(await pending().get(autoSendsKey(inboxId)), now).filter(
+      (s) => s.draftId !== draftId,
+    ).length;
+  } catch (error) {
+    console.warn("[support] auto-send log unreadable:", errorName(error));
+    return AUTO_SENDS_PER_INBOX_PER_HOUR;
+  }
+}
+
+/** Takes the inbox's slot for an automatic (`decidedBy` Sessions) send of
+ *  `draft`, or, when the hour's slots are gone, hands the draft to a person
+ *  and returns it. Null: go ahead (a person's send never takes a slot). */
+async function claimAutoSendSlot(
+  c: SupportConversation,
+  draft: SupportDraft,
+  now: number,
+): Promise<SupportDraft | null> {
+  if (draft.decidedBy?.kind !== "sessions") return null;
+  let ok = false;
+  try {
+    await pending().update<InboxAutoSendLog>(
+      autoSendsKey(c.inboxId),
+      (value) => {
+        const sends = recentSends(value, now);
+        ok = sends.some((s) => s.draftId === draft.id);
+        if (!ok && sends.length < AUTO_SENDS_PER_INBOX_PER_HOUR) {
+          ok = true;
+          sends.push({ at: now, draftId: draft.id });
+        }
+        return { inboxId: c.inboxId, sends };
+      },
+    );
+  } catch (error) {
+    console.warn("[support] auto-send log not updated:", errorName(error));
+    ok = false;
+  }
+  if (ok) return null;
+  let held: SupportDraft | null = null;
+  await updateConversation(c.id, (x) => {
+    held = null;
+    const d = x.draft;
+    if (!d || d.id !== draft.id || d.state !== "sending") return null;
+    held = {
+      ...d,
+      state: "needs-person",
+      rule: RULES.inboxAutoSendCap,
+      nextAttemptAt: null,
+      attemptStartedAt: null,
+      decidedBy: null,
+    };
+    return { ...x, draft: held };
+  });
+  await dropPendingKey(sendKey(c.id, draft.id), draft.id).catch(() => {});
+  return held ?? { ...draft, state: "needs-person", rule: RULES.inboxAutoSendCap };
 }
 
 // ── Send ─────────────────────────────────────────────────────────────────
@@ -533,6 +648,7 @@ async function claimAndDeliver(
       ? fail(409, "This reply was already sent")
       : fail(404, "Draft not found");
   const { inbox, others, own } = await context(current);
+  const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
 
   // The work index first (see the header); the claim below decides.
   const key = sendKey(conversationId, draftId);
@@ -589,7 +705,7 @@ async function claimAndDeliver(
       if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
       if (decidedBy.kind !== "person") {
         // An automatic send: the policy must still let it go.
-        const decision = decide(c, d.author, inbox, pin, now);
+        const decision = decide(c, d.author, inbox, pin, now, inboxSends);
         if (decision.kind === "needs-person") return toPerson(decision.rule);
       }
     } else {
@@ -619,7 +735,7 @@ async function claimAndDeliver(
               return null;
             }
             if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
-            const decision = decide(c, d.author, inbox, pin, now);
+            const decision = decide(c, d.author, inbox, pin, now, inboxSends);
             if (decision.kind === "needs-person") return toPerson(decision.rule);
           } else if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
           break;
@@ -658,6 +774,8 @@ async function claimAndDeliver(
     startedAt: now,
     edited,
   }));
+  const held = await claimAutoSendSlot(committed, draft, now);
+  if (held) return fail(409, held.rule);
   return deliver(committed, draft, inbox, others, { edited, now });
 }
 

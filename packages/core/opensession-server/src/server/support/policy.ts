@@ -9,6 +9,7 @@
 import { SUPPORT_TOPIC_LABELS } from "../../shared/support-copy";
 import {
   AUTO_SENDS_PER_HOUR,
+  AUTO_SENDS_PER_INBOX_PER_HOUR,
   type ConversationStatus,
   type InboxConfig,
   type SupportActor,
@@ -28,9 +29,12 @@ export const RULES = {
   personStopped: "A person stopped the last reply",
   draftsWait: "Drafts wait for a person",
   topicsUnknown: "Topics unknown, so a person decides",
+  topicsPending: "The newest message's topics aren't checked yet",
   authFailed: "The sender could not be verified",
   replyToDiffers: "Replies would go to a different address than the sender",
+  authUnverified: "The sender's mail wasn't authenticated",
   autoSendCap: `${AUTO_SENDS_PER_HOUR} automatic replies in the last hour`,
+  inboxAutoSendCap: `${AUTO_SENDS_PER_INBOX_PER_HOUR} automatic replies from this inbox in the last hour`,
   veto: "Sends when the window ends unless someone stops it",
   newerMessage: "A newer message arrived",
   agentSent: "Sent by the agent",
@@ -48,7 +52,12 @@ export function decideReply(input: {
     "enabled" | "autonomy" | "vetoMs" | "neverWithoutAPerson"
   >;
   triage: TriageVerdict | null;
+  /** Every customer message the reply answers had its topics classified
+   *  into triage.topics (routing.ts). */
+  topicsChecked: boolean;
   autoSendsLastHour: number;
+  /** Automatic sends of the inbox in the last hour, across conversations. */
+  inboxAutoSendsLastHour: number;
   now: number;
   /** Trust of the message the reply answers (mime.ts replyTarget). */
   lastInboundTrust: SupportMessage["trust"] | null;
@@ -71,14 +80,19 @@ export function decideReply(input: {
     return needsPerson(RULES.draftsWait);
   if (!triage || !Array.isArray(triage.topics))
     return needsPerson(RULES.topicsUnknown);
+  if (!input.topicsChecked) return needsPerson(RULES.topicsPending);
   if (input.lastInboundTrust?.authFailed) return needsPerson(RULES.authFailed);
   if (input.lastInboundTrust?.replyToDiffers)
     return needsPerson(RULES.replyToDiffers);
+  if (input.lastInboundTrust?.authVerified !== true)
+    return needsPerson(RULES.authUnverified);
   const held = triage.topics.find((t) => inbox.neverWithoutAPerson.includes(t));
   if (held)
     return needsPerson(`${SUPPORT_TOPIC_LABELS[held] ?? held} needs a person`);
   if (input.autoSendsLastHour >= AUTO_SENDS_PER_HOUR)
     return needsPerson(RULES.autoSendCap);
+  if (input.inboxAutoSendsLastHour >= AUTO_SENDS_PER_INBOX_PER_HOUR)
+    return needsPerson(RULES.inboxAutoSendCap);
   if (inbox.autonomy === "deploy-after-veto")
     return {
       kind: "veto",

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { SupportActor, SupportMessage } from "../../shared/support";
+import {
+  AUTO_SENDS_PER_INBOX_PER_HOUR,
+  type SupportActor,
+  type SupportMessage,
+} from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
 import {
   INTERRUPTED_SEND,
@@ -559,5 +563,73 @@ describe("who acted", () => {
     const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
     expect(row.by).toBe("ada");
     expect(row.byName).toBe("Ada");
+  });
+});
+
+describe("automatic sends need checked topics and an authenticated sender", () => {
+  test("a newer message whose topics aren't checked yet holds the send", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    await customerWritesAgain(c.id, { topicsChecked: undefined });
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.rule).toBe(
+      "The newest message's topics aren't checked yet",
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("an earlier unchecked message since our last reply holds it too", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    await customerWritesAgain(c.id, { topicsChecked: undefined });
+    await customerWritesAgain(c.id);
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.state).toBe("needs-person");
+  });
+
+  test("a sender without positive authentication waits for a person", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation({
+      trust: { replyToDiffers: false, authFailed: false },
+    });
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.rule).toBe(
+      "The sender's mail wasn't authenticated",
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("the inbox's hourly cap holds automatic sends across conversations", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const now = Date.now();
+    await catalogDocuments("support-pending").update(
+      `autosends:${tb.inbox().id}`,
+      () => ({
+        inboxId: tb.inbox().id,
+        sends: Array.from({ length: AUTO_SENDS_PER_INBOX_PER_HOUR }, (_, i) => ({
+          at: now - i * 1000,
+          draftId: `sd_other-${i}`,
+        })),
+      }),
+    );
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.rule).toBe(
+      `${AUTO_SENDS_PER_INBOX_PER_HOUR} automatic replies from this inbox in the last hour`,
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+    // A person's reply is never capped.
+    expect((await replyAsPerson(c.id, "By hand.", "Ada")).ok).toBe(true);
+  });
+
+  test("an automatic send counts against the inbox's cap", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.state).toBe("sent");
+    const entry = (await catalogDocuments("support-pending").list()).find(
+      (e) => e.key === `autosends:${tb.inbox().id}`,
+    );
+    expect((entry?.value as { sends: unknown[] }).sends).toHaveLength(1);
   });
 });

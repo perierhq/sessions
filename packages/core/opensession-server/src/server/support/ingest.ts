@@ -134,17 +134,70 @@ function errorLabel(error: unknown): string {
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
+const domainOf = (address: string) =>
+  address.slice(address.lastIndexOf("@") + 1).trim().toLowerCase();
+
+/** Relaxed alignment (RFC 7489 3.1), approximated without a public-suffix
+ *  list: the same domain, or one a subdomain of the other. */
+function aligned(domain: string, fromDomain: string): boolean {
+  if (!domain.includes(".") || !fromDomain) return false;
+  return (
+    domain === fromDomain ||
+    fromDomain.endsWith(`.${domain}`) ||
+    domain.endsWith(`.${fromDomain}`)
+  );
+}
+
+/** Whether the receiving server's Authentication-Results (RFC 8601) show
+ *  positive authentication for `fromAddress`: dmarc=pass (for the From
+ *  domain when it names one), or dkim=pass / spf=pass for a domain aligned
+ *  with it. Only the topmost header counts, the one the receiving server
+ *  added (`results` holds the headers in order, one per line); lower ones
+ *  may come from the sender. Comments are ignored. Missing = false. */
+export function mailAuthVerified(results: string, fromAddress: string): boolean {
+  const top = (results.split("\n")[0] ?? "")
+    .replace(/\([^()]*\)/g, " ")
+    .toLowerCase();
+  const from = domainOf(fromAddress);
+  // The first item is the server's id; each other one is
+  // `method=result prop=value ...`.
+  for (const item of top.split(";").slice(1)) {
+    const words = item.trim().split(/\s+/);
+    const [method, result] = (words[0] ?? "").split("=");
+    if (result !== "pass") continue;
+    const props = new Map<string, string>();
+    for (const w of words.slice(1)) {
+      const at = w.indexOf("=");
+      if (at > 0) props.set(w.slice(0, at), w.slice(at + 1));
+    }
+    if (method === "dmarc") {
+      const header = props.get("header.from");
+      if (!header || aligned(domainOf(header), from)) return true;
+    } else if (method === "dkim") {
+      const d = props.get("header.d") ?? props.get("header.i");
+      if (d && aligned(domainOf(d), from)) return true;
+    } else if (method === "spf") {
+      const d = props.get("smtp.mailfrom") ?? props.get("smtp.helo");
+      if (d && aligned(domainOf(d), from)) return true;
+    }
+  }
+  return false;
+}
+
 /** replyToDiffers: a reply would go somewhere the sender didn't write
- *  from: more than one Reply-To, or one that isn't the From address. */
+ *  from: more than one Reply-To, or one that isn't the From address.
+ *  authVerified: see mailAuthVerified. */
 function trustOf(m: InboundMessage): NonNullable<SupportMessage["trust"]> {
   const replyToDiffers =
     m.replyTo.length > 1 ||
     m.replyTo.some((r) => !sameAddress(r.address, m.from.address));
-  const results = (m.loopHeaders["authentication-results"] ?? "").toLowerCase();
+  const header = m.loopHeaders["authentication-results"] ?? "";
+  const results = header.toLowerCase();
   const failed = (method: string) =>
     new RegExp(`(^|[\\s;])${method}\\s*=\\s*fail\\b`).test(results);
   const authFailed = failed("dmarc") || (failed("spf") && failed("dkim"));
-  return { replyToDiffers, authFailed };
+  const authVerified = !authFailed && mailAuthVerified(header, m.from.address);
+  return { replyToDiffers, authFailed, authVerified };
 }
 
 /** Our own sending addresses: the inbox address and its logins. */

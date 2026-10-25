@@ -3,7 +3,12 @@ import {
   __setRouteClassifierOneShotForTest,
   ROUTE_CLASSIFIER_MODEL,
 } from "../route-classifier";
-import { EMAIL_TRIAGE_PROMPT, triageMessage } from "./triage";
+import {
+  EMAIL_TOPICS_PROMPT,
+  EMAIL_TRIAGE_PROMPT,
+  classifyTopics,
+  triageMessage,
+} from "./triage";
 
 const NOW = "2026-10-25T12:00:00.000Z";
 const MAIL = {
@@ -182,5 +187,21 @@ describe("triageMessage", () => {
     calls = fake(OK);
     await triageMessage(MAIL);
     expect(calls[0]!.model).toBe("other-model");
+  });
+});
+
+describe("classifyTopics", () => {
+  it("returns the known topics of one email, with its own prompt", async () => {
+    const calls = fake('{"route":"topics","reason":"r","topics":["Refunds","legal"]}');
+    expect(await classifyTopics(MAIL)).toEqual(["refund", "legal"]);
+    expect(calls[0]!.system).toContain(EMAIL_TOPICS_PROMPT);
+    expect(wrapped(calls[0]!.prompt)).toContain("My export at acme fails");
+  });
+
+  it("is null when the model fails or answers without a topic list", async () => {
+    fake(null);
+    expect(await classifyTopics(MAIL)).toBeNull();
+    fake('{"route":"topics","reason":"r"}');
+    expect(await classifyTopics(MAIL)).toBeNull();
   });
 });

@@ -182,6 +182,12 @@ test("draft_reply says when a veto window ends", async () => {
   await updateConversation(mine.id, (c) => ({
     ...c,
     sessionId: "os-1",
+    // An authenticated sender whose topics were classified.
+    messages: c.messages.map((m) => ({
+      ...m,
+      trust: { replyToDiffers: false, authFailed: false, authVerified: true },
+      topicsChecked: true as const,
+    })),
     triage: {
       route: "work",
       reason: "test",

@@ -464,6 +464,8 @@ export const DEFAULT_FOLDERS = {
   spam: "Sessions/Spam",
 } as const;
 export const AUTO_SENDS_PER_HOUR = 3;
+/** Automatic replies one inbox sends in an hour, across conversations. */
+export const AUTO_SENDS_PER_INBOX_PER_HOUR = 20;
 export const MAX_MESSAGES = 500;
 /** Per message. */
 export const MAX_TEXT_CHARS = 50_000;

@@ -17,6 +17,7 @@ import {
   __awaitInboundForTest,
   __setPipelineTimeoutForTest,
   ingestInbound,
+  mailAuthVerified,
   retryPendingInbound,
   setSupportPipeline,
 } from "./ingest";
@@ -492,24 +493,29 @@ describe("ingestInbound", () => {
     expect(trustBy.get("ada@example.test")).toEqual({
       replyToDiffers: true,
       authFailed: false,
+      authVerified: false,
     });
     expect(trustBy.get("bob@example.test")).toEqual({
       replyToDiffers: false,
       authFailed: true,
+      authVerified: false,
     });
     // Another address at the same domain still differs.
     expect(trustBy.get("cy@example.test")).toEqual({
       replyToDiffers: true,
       authFailed: false,
+      authVerified: true,
     });
     expect(trustBy.get("dan@example.test")).toEqual({
       replyToDiffers: false,
       authFailed: false,
+      authVerified: false,
     });
     // More than one Reply-To differs, even when one is the sender.
     expect(trustBy.get("eve@example.test")).toEqual({
       replyToDiffers: true,
       authFailed: false,
+      authVerified: false,
     });
   });
 
@@ -908,5 +914,25 @@ describe("routing after triage", () => {
     const c = await onlyConversation();
     expect(c.status).toBe("closed");
     expect(c.closedAt).not.toBeNull();
+  });
+});
+
+describe("positive mail authentication", () => {
+  const from = "carol@customer.example.test";
+  test.each<[string, string, boolean]>([
+    ["dmarc pass", "mx.example.test; dmarc=pass header.from=customer.example.test", true],
+    ["dmarc pass for another domain", "mx.example.test; dmarc=pass header.from=evil.example.test", false],
+    ["aligned dkim", "mx.example.test; dkim=pass header.d=customer.example.test", true],
+    ["dkim of a parent domain", "mx.example.test; dkim=pass header.i=@example.test", true],
+    ["dkim of another domain", "mx.example.test; dkim=pass header.d=mailer.example.org", false],
+    ["aligned spf", "mx.example.test; spf=pass smtp.mailfrom=bounce@customer.example.test", true],
+    ["unaligned spf", "mx.example.test; spf=pass smtp.mailfrom=bounce@sender.example.org", false],
+    ["comments are ignored", "mx.example.test; dkim=fail (dkim=pass header.d=customer.example.test)", false],
+    ["nothing passed", "mx.example.test; spf=none; dkim=none; dmarc=none", false],
+    ["no header", "", false],
+    // Only the receiving server's (topmost) header counts.
+    ["a lower header a sender added", "mx.example.test; dkim=none\nforged; dmarc=pass header.from=customer.example.test", false],
+  ])("%s", (_name, results, verified) => {
+    expect(mailAuthVerified(results, from)).toBe(verified);
   });
 });

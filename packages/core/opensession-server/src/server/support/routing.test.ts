@@ -5,6 +5,7 @@ import type {
   SupportConversation,
   SupportMessage,
   TriageVerdict,
+  SupportTopic,
 } from "../../shared/support";
 import type { CreateSessionOpts } from "../session-control";
 import { registerChannelAdapter } from "./channel";
@@ -38,6 +39,9 @@ const ADA = { name: "Ada", verified: true, isInstanceOwner: true };
 
 let route: TriageVerdict["route"] = "work";
 let triageCalls = 0;
+/** What the topics-only check answers; null = it failed. */
+let topicsAnswer: SupportTopic[] | null = [];
+let topicsCalls: string[] = [];
 let spec: SupportRunSpec;
 let created: CreateSessionOpts[] = [];
 let delivered: Array<{
@@ -74,6 +78,8 @@ function verdict(): TriageVerdict {
 beforeEach(async () => {
   route = "work";
   triageCalls = 0;
+  topicsAnswer = [];
+  topicsCalls = [];
   created = [];
   delivered = [];
   workspaces = [];
@@ -97,6 +103,10 @@ beforeEach(async () => {
     triage: async () => {
       triageCalls++;
       return verdict();
+    },
+    topics: async (input) => {
+      topicsCalls.push(input.text);
+      return topicsAnswer;
     },
     runSpec: async () => spec,
     resolveWorkspace: async (input) => {
@@ -526,5 +536,62 @@ describe("Watch only and the hourly cap", () => {
     const asked = await conversation();
     expect(await startSupportSession(asked, "person")).not.toBeNull();
     expect(created).toHaveLength(MAX_NEW_SESSIONS_PER_HOUR + 1);
+  });
+});
+
+describe("topics of later messages", () => {
+  test("the first message's triage checks its topics", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0]!, true);
+    const after = await fresh(c.id);
+    expect(after.messages[0]!.topicsChecked).toBe(true);
+    // Triage covered it: no second classification.
+    expect(topicsCalls).toEqual([]);
+  });
+
+  test("a reply is checked for topics before delivery, and topics only grow", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0]!, true);
+    topicsAnswer = ["refund"];
+    const reply = message("I want my money back.", "Re: Export is broken");
+    const withReply = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, reply],
+    }));
+    await onInbound(withReply!, reply, false);
+    expect(topicsCalls).toEqual(["I want my money back."]);
+    expect(triageCalls).toBe(1);
+    let after = await fresh(c.id);
+    expect(after.triage!.topics).toEqual(["refund"]);
+    expect(after.messages.at(-1)!.topicsChecked).toBe(true);
+
+    // A later message without topics never removes one.
+    topicsAnswer = [];
+    const calm = message("Thanks.", "Re: Export is broken");
+    const withCalm = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, calm],
+    }));
+    await onInbound(withCalm!, calm, false);
+    after = await fresh(c.id);
+    expect(after.triage!.topics).toEqual(["refund"]);
+    expect(after.messages.at(-1)!.topicsChecked).toBe(true);
+  });
+
+  test("a failed check leaves the message unchecked and still delivers it", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0]!, true);
+    topicsAnswer = null;
+    const reply = message("Any news?", "Re: Export is broken");
+    const withReply = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, reply],
+    }));
+    await onInbound(withReply!, reply, false);
+    const after = await fresh(c.id);
+    expect(after.messages.at(-1)!.topicsChecked).toBeUndefined();
+    expect(delivered.map((d) => d.opts)).toEqual([
+      { busy: "queue", deliveryId: reply.id },
+    ]);
   });
 });
