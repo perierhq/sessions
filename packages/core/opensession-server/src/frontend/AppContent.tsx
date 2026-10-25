@@ -28,8 +28,7 @@ import {
   Reports,
   Reviews,
   Security,
-  SupportInbox,
-  SupportPreview,
+  SupportPane,
   SupportTinder,
   Tasks,
   WorkspacePane,
@@ -81,18 +80,7 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { getActiveViewTab, saveActiveViewTab } from "./lib/active-view-tab";
 import { cachedRepos, resolveWorkspaceApi } from "./lib/api";
 import { buildAppCommandActions } from "./components/app-command-actions";
-import {
-  isToolView,
-  parseRoute,
-  routePath,
-  supportItemIdFromPath,
-  type Route,
-} from "./lib/app-route";
-import {
-  supportItemProviderId,
-  supportItemRoute,
-  supportPageItem,
-} from "./lib/support-list";
+import { isToolView, parseRoute, routePath, type Route } from "./lib/app-route";
 import { useDeskShowNavigation } from "./hooks/useDeskShowNavigation";
 import {
   APP_BODY,
@@ -1619,35 +1607,14 @@ export function AppContent({
                       addHandler={addHandler}
                       onOpenSession={(id) => navigate({ view: "session", id })}
                     />
-                  ) : supportPageItem(route) !== undefined ? (
-                    <SupportInbox
-                      itemId={supportPageItem(route) ?? null}
-                      intent={
-                        route.view === "support" ? route.intent : undefined
-                      }
-                      onIntentHandled={() => {
-                        if (route.view === "support")
-                          navigate(
-                            { view: "support", threadId: route.threadId },
-                            { replace: true },
-                          );
-                      }}
+                  ) : route.view === "support" || route.view === "plain" ? (
+                    <SupportPane
+                      route={route}
                       sessions={sessions}
-                      onSelectItem={(itemId) =>
-                        navigate(supportItemRoute(itemId))
-                      }
-                      onOpenSession={(id) => navigate({ view: "session", id })}
-                    />
-                  ) : route.view === "support" ? (
-                    <SupportPreview
-                      key={route.threadId}
-                      threadId={supportItemProviderId(
-                        supportItemIdFromPath(route.threadId),
-                      )}
                       connected={connected}
                       send={send}
                       addHandler={addHandler}
-                      onOpenSession={(id) => navigate({ view: "session", id })}
+                      navigate={navigate}
                     />
                   ) : route.view === "issues" ? (
                     <Issues
