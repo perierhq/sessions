@@ -15,6 +15,7 @@ import { resolveOwner } from "../incidents/owner";
 import { type SessionControl, getSessionControl } from "../session-control";
 import { channelAdapterFor } from "./channel";
 import { getInbox, projectExists } from "./inboxes";
+import { discardDraft, stopVeto } from "./reply";
 import { startSupportSession } from "./routing";
 import { getConversation, updateConversation } from "./store";
 
@@ -173,6 +174,32 @@ export async function setOwner(
   return { ok: true };
 }
 
+/** After a close nothing goes out on its own: the support session's run
+ *  stops (the session stays, so a reopen or a reply can resume it), an
+ *  open veto window waits for a person, and a send waiting for its retry
+ *  is dropped. The agent's later drafts wait for a person anyway (policy:
+ *  closed). A person's fix session is theirs and keeps running. */
+async function stopSending(
+  c: SupportConversation,
+  by: SupportActor,
+): Promise<void> {
+  if (c.sessionId) await cancel(c.sessionId);
+  const draft = c.draft;
+  // Settling a draft is a person's act; for anyone else the tick's policy
+  // check (closed) holds a due veto or retry.
+  if (!draft || by.kind !== "person") return;
+  const settled =
+    draft.state === "veto"
+      ? await stopVeto(c.id, draft.id, by)
+      : draft.state === "sending" && draft.nextAttemptAt
+        ? await discardDraft(c.id, draft.id, by)
+        : null;
+  if (settled && !settled.ok)
+    console.warn(
+      `[support] couldn't stop the draft on ${c.id} when closing: ${settled.error}`,
+    );
+}
+
 /** Closes the conversation and marks its mail handled in the mailbox. */
 export async function closeConversation(
   id: string,
@@ -193,6 +220,7 @@ export async function closeConversation(
     };
   });
   if (!closed || !changed) return { ok: false };
+  await stopSending(closed, by);
   const adapter = channelAdapterFor(closed.inboxId);
   if (adapter?.mark)
     await adapter.mark(closed, "handled").catch((error: unknown) => {

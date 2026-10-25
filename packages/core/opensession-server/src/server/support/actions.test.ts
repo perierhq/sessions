@@ -10,6 +10,7 @@ import {
   reopenConversation,
   setOwner,
 } from "./actions";
+import { proposeDraft } from "./reply";
 import { __setRoutingDepsForTest } from "./routing";
 import type { SupportRunSpec } from "./session-policy";
 import { getConversation, updateConversation } from "./store";
@@ -197,6 +198,50 @@ describe("close, reopen and not spam", () => {
     expect(tb.adapter().marks).toEqual([
       { conversationId: c.id, state: "handled" },
     ]);
+  });
+
+  test("closing stops the agent, a veto window and a waiting retry; the agent can't send after", async () => {
+    const c = await tb.conversation();
+    const draft = (at: string, state: "veto" | "sending") => ({
+      id: `sd_${state}`,
+      text: "We fixed it.",
+      author: AGENT,
+      createdAt: at,
+      state,
+      rule: "test",
+      vetoDeadline: state === "veto" ? new Date(Date.now() + 60_000).toISOString() : null,
+      attempts: state === "sending" ? 1 : 0,
+      nextAttemptAt: state === "sending" ? new Date(Date.now() + 60_000).toISOString() : null,
+      lastError: state === "sending" ? "busy" : null,
+      messageId: `<${state}@acme.example.test>`,
+      decidedBy: ADA,
+      attemptStartedAt: null,
+    });
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      sessionId: "os-old",
+      fixSessionId: "os-fix",
+      draft: draft(new Date().toISOString(), "veto"),
+    }));
+    expect(await closeConversation(c.id, ADA)).toEqual({ ok: true });
+    // The support session stops; a person's fix session is theirs.
+    expect(cancelled).toEqual(["os-old"]);
+    const closed = (await getConversation(c.id))!;
+    expect(closed.draft?.state).toBe("needs-person");
+    expect(closed.events.some((e) => e.kind === "closed")).toBe(true);
+
+    // A retry a person once decided is dropped too.
+    await reopenConversation(c.id, ADA);
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: draft(new Date().toISOString(), "sending"),
+    }));
+    await closeConversation(c.id, ADA);
+    expect((await getConversation(c.id))!.draft?.state).toBe("discarded");
+
+    // The agent's next draft waits for a person.
+    const late = await proposeDraft(c.id, "One more thing", AGENT);
+    expect(late.ok && late.draft.state).toBe("needs-person");
   });
 
   test("reopening clears closedAt", async () => {
