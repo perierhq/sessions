@@ -449,6 +449,21 @@ describe("ingestInbound", () => {
         },
       }),
     );
+    await ingested(
+      inbound({
+        from: { name: null, address: "dan@example.test" },
+        replyTo: [{ name: "Dan", address: "Dan@Example.test" }],
+      }),
+    );
+    await ingested(
+      inbound({
+        from: { name: null, address: "eve@example.test" },
+        replyTo: [
+          { name: null, address: "eve@example.test" },
+          { name: null, address: "boss@example.test" },
+        ],
+      }),
+    );
     const trustBy = new Map<string, unknown>();
     for (const row of await listIndexRows()) {
       const c = (await getConversation(row.id))!;
@@ -462,8 +477,18 @@ describe("ingestInbound", () => {
       replyToDiffers: false,
       authFailed: true,
     });
+    // Another address at the same domain still differs.
     expect(trustBy.get("cy@example.test")).toEqual({
+      replyToDiffers: true,
+      authFailed: false,
+    });
+    expect(trustBy.get("dan@example.test")).toEqual({
       replyToDiffers: false,
+      authFailed: false,
+    });
+    // More than one Reply-To differs, even when one is the sender.
+    expect(trustBy.get("eve@example.test")).toEqual({
+      replyToDiffers: true,
       authFailed: false,
     });
   });

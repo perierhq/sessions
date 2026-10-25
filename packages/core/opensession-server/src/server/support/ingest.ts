@@ -96,21 +96,12 @@ export async function __awaitInboundForTest(): Promise<void> {
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
-function domainOf(address: string): string {
-  const at = address.lastIndexOf("@");
-  return at < 0
-    ? ""
-    : address
-        .slice(at + 1)
-        .trim()
-        .toLowerCase();
-}
-
+/** replyToDiffers: a reply would go somewhere the sender didn't write
+ *  from: more than one Reply-To, or one that isn't the From address. */
 function trustOf(m: InboundMessage): SupportMessage["trust"] {
-  const fromDomain = domainOf(m.from.address);
-  const replyToDiffers = m.replyTo.some(
-    (r) => domainOf(r.address) !== fromDomain,
-  );
+  const replyToDiffers =
+    m.replyTo.length > 1 ||
+    m.replyTo.some((r) => !sameAddress(r.address, m.from.address));
   const results = (m.loopHeaders["authentication-results"] ?? "").toLowerCase();
   const failed = (method: string) =>
     new RegExp(`(^|[\\s;])${method}\\s*=\\s*fail\\b`).test(results);

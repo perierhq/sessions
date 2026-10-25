@@ -17,6 +17,10 @@ export interface MailAddress {
 /** RFC 5322 threading keys: ids without `<>`, domain part lowercased. */
 export interface ThreadKeys {
   messageId: string | null;
+  /** The Message-ID as the sender wrote it (without `<>`), when that
+   *  differs from `messageId`. Outgoing In-Reply-To and References use it;
+   *  lookups use `messageId`. */
+  rawMessageId?: string;
   inReplyTo: string | null;
   references: string[];
 }
@@ -420,6 +424,25 @@ export function normalizeMessageId(
   const at = id.lastIndexOf("@");
   if (at <= 0 || at === id.length - 1) return null;
   return `${id.slice(0, at)}@${id.slice(at + 1).toLowerCase()}`;
+}
+
+/** The addresses that are this instance's own for `inbox`: its address,
+ *  its SMTP and IMAP logins when they are addresses, and the addresses of
+ *  the other inboxes; trimmed, lowercased, unique. A reply never goes to
+ *  any of them. */
+export function ownMailAddresses(
+  inbox: Pick<InboxConfig, "address" | "smtp" | "imap">,
+  otherInboxAddresses: readonly string[] = [],
+): string[] {
+  const all = [
+    inbox.address,
+    inbox.smtp.user,
+    inbox.imap.user,
+    ...otherInboxAddresses,
+  ]
+    .map((a) => a.trim().toLowerCase())
+    .filter((a) => a.includes("@"));
+  return [...new Set(all)];
 }
 
 export function supportItemId(
