@@ -55,6 +55,22 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
 }
 
 /** The same shape GET /api/support/conversations/:id answers with. */
+/** The fix session and its pull request, for the conversation page. */
+async function fixSessionView(
+  id: string | null,
+): Promise<SupportConversationView["fixSession"]> {
+  if (!id) return null;
+  const session = await (await import("../session-cache"))
+    .findSessionAsync(id)
+    .catch(() => undefined);
+  if (!session) return null;
+  return {
+    id,
+    prUrl: session.prUrl ?? null,
+    prState: session.prState ?? null,
+  };
+}
+
 export async function conversationViewResponse(id: string): Promise<Response> {
   const conversation = await getConversation(id);
   if (!conversation) return json(404, "Conversation not found");
@@ -69,6 +85,7 @@ export async function conversationViewResponse(id: string): Promise<Response> {
       moveLock: inbox.moveLock,
       bugHandling: inbox.bugHandling,
     },
+    fixSession: await fixSessionView(conversation.fixSessionId),
   };
   return Response.json(body);
 }

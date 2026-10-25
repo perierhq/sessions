@@ -7,15 +7,15 @@ import {
   approvePendingIssue,
   dismissPendingIssue,
   HELD_CAP,
-  HELD_FIX,
   HELD_PUBLIC,
   HELD_QUOTE,
   issueText,
   MAX_SUMMARY,
+  MAX_FIX_TASK,
   MAX_TITLE,
   reportBug,
+  startFixSession,
 } from "./bugs";
-import type { SupportRunSpec } from "./session-policy";
 import { getConversation, updateConversation } from "./store";
 import { useReplyTestbed } from "./testing/reply-testbed";
 
@@ -35,7 +35,6 @@ async function approve(id: string, actor: Actor = OWNER_ACTOR) {
 let posted: Array<{ ghRepo: string; title: string; body: string }> = [];
 let created: CreateSessionOpts[] = [];
 let visibility: boolean | null = false;
-let spec: SupportRunSpec;
 let issueCounter = 0;
 
 beforeEach(() => {
@@ -43,12 +42,6 @@ beforeEach(() => {
   created = [];
   visibility = false;
   issueCounter = 0;
-  spec = {
-    model: "pi/anthropic/claude-sonnet-5",
-    mcpServers: ["acme-crm"],
-    mode: "code",
-    sandbox: { ok: true, request: "daytona" },
-  };
   __setBugDepsForTest({
     ghRepo: (project) => `acme/${project}`,
     isPublic: async () => visibility,
@@ -61,7 +54,6 @@ beforeEach(() => {
         repo: ghRepo,
       };
     },
-    runSpec: async () => spec,
     control: () => ({
       async createSession(opts) {
         created.push(opts);
@@ -193,53 +185,115 @@ describe("reportBug", () => {
     expect((await getConversation(c.id))!.issue).toBeNull();
   });
 
-  test("issue-and-agent with Support mode code waits for a person, then starts the fix session", async () => {
+  test("issue-and-agent: the issue is posted and a fix task is suggested; nothing starts", async () => {
     const c = await bugConversation("issue-and-agent");
     const result = await reportBug(c.id, SUMMARY, AGENT);
-    expect(result.state).toBe("held");
-    expect(result.note).toBe(HELD_FIX);
-    expect(posted).toHaveLength(0);
+    expect(result.state).toBe("created");
+    expect(result.note).toContain("A person can start a fix session");
     expect(created).toHaveLength(0);
-    // A private repository: any signed-in person may approve.
-    expect(await approve(c.id, GRACE)).toEqual({ ok: true });
-    expect(posted).toHaveLength(1);
+    const stored = (await getConversation(c.id))!;
+    expect(stored.fixSessionId).toBeNull();
+    expect(stored.fixTask?.project).toBe("acme");
+    expect(stored.fixTask?.suggestedBy).toEqual(AGENT);
+    expect(stored.fixTask?.text).toContain("CSV export returns 500");
+    expect(stored.fixTask?.text).toContain("acme");
+    expect(stored.fixTask?.text).not.toContain("example.test");
+    expect(stored.fixTask?.text).not.toContain("Carol");
+  });
+
+  test("issue only: no fix task", async () => {
+    const c = await bugConversation("issue");
+    await reportBug(c.id, SUMMARY, AGENT);
+    expect((await getConversation(c.id))!.fixTask ?? null).toBeNull();
+  });
+
+  test("a held issue still suggests the fix task", async () => {
+    visibility = true;
+    const c = await bugConversation("issue-and-agent");
+    expect((await reportBug(c.id, SUMMARY, AGENT)).state).toBe("held");
+    expect((await getConversation(c.id))!.fixTask?.text).toContain("CSV");
+    expect(created).toHaveLength(0);
+  });
+});
+
+describe("startFixSession", () => {
+  const ADA_PERSON = { name: "Ada", login: "ada" };
+
+  async function suggested() {
+    const c = await bugConversation("issue-and-agent");
+    await reportBug(c.id, SUMMARY, AGENT);
+    return (await getConversation(c.id))!;
+  }
+
+  test("a person starts a normal code session as themselves with the edited task", async () => {
+    const c = await suggested();
+    const result = await startFixSession(
+      c.id,
+      ADA_PERSON,
+      c.revision,
+      "Fix the CSV export 500. Edited by Ada.",
+    );
+    expect(result).toEqual({ ok: true, sessionId: "os-fix-1" });
     expect(created).toHaveLength(1);
     const opts = created[0]!;
     expect(opts.mode).toBe("code");
     expect(opts.repo).toBe("acme");
-    expect(opts.isolatedWorktree).toBe(true);
-    expect(opts.parentSessionId).toBe("os-support");
-    expect(opts.reportBack).toBe(true);
-    expect(opts.model).toBe(spec.model);
-    expect(opts.mcpServers).toEqual(["acme-crm"]);
-    expect(opts.sandbox).toBe("daytona");
-    expect(opts.agentStarted).toBe(true);
-    expect(opts.user).toBe("Sessions");
+    expect(opts.user).toBe("Ada");
+    expect(opts.createdByLogin).toBe("ada");
+    // A normal interactive session: the person's own defaults, no support
+    // scope, no parent, no report-back, no workspace of the conversation.
+    expect(opts.model).toBeUndefined();
+    expect(opts.mcpServers).toBeUndefined();
+    expect(opts.sandbox).toBeUndefined();
+    expect(opts.parentSessionId).toBeUndefined();
+    expect(opts.reportBack).toBeUndefined();
+    expect(opts.workspaceId).toBeUndefined();
+    expect(opts.automationDescendantPolicy).toBeUndefined();
+    expect(opts.agentStarted).toBeUndefined();
+    expect(opts.prompt).toContain("Fix the CSV export 500. Edited by Ada.");
+    expect(opts.prompt).toContain("customer email");
     expect(opts.prompt).toContain("https://github.com/acme/acme/issues/1");
-    expect(opts.prompt).not.toContain("example.test");
-    expect((await getConversation(c.id))!.fixSessionId).toBe("os-fix-1");
-  });
-
-  test("issue-and-agent with Support mode ask starts no session and says why", async () => {
-    spec = { ...spec, mode: "ask" };
-    const c = await bugConversation("issue-and-agent");
-    expect((await reportBug(c.id, SUMMARY, AGENT)).state).toBe("created");
-    expect(created).toHaveLength(0);
     const stored = (await getConversation(c.id))!;
-    expect(stored.fixSessionId).toBeNull();
-    expect(stored.events.map((e) => e.detail)).toContain(
-      "Support can't change code in acme, so no fix agent started",
-    );
+    expect(stored.fixSessionId).toBe("os-fix-1");
+    expect(stored.events.at(-1)?.kind).toBe("fix-session-started");
+    expect(stored.events.at(-1)?.actor).toEqual({
+      kind: "person",
+      name: "Ada",
+      login: "ada",
+    });
   });
 
-  test("an approved public issue still starts the fix agent", async () => {
-    visibility = true;
-    const c = await bugConversation("issue-and-agent");
-    await reportBug(c.id, SUMMARY, AGENT);
+  test("works without a support session and without a suggestion", async () => {
+    const c = await tb.conversation();
+    expect(c.sessionId).toBeNull();
+    const result = await startFixSession(c.id, ADA_PERSON, c.revision, "Fix it");
+    expect(result.ok).toBe(true);
+    expect(created[0]!.parentSessionId).toBeUndefined();
+  });
+
+  test("needs the revision the person saw, a task, and no fix session yet", async () => {
+    const c = await suggested();
+    const stale = await startFixSession(c.id, ADA_PERSON, c.revision - 1, "Fix");
+    expect(stale).toMatchObject({ ok: false, status: 409 });
+    const empty = await startFixSession(c.id, ADA_PERSON, c.revision, "  ");
+    expect(empty).toMatchObject({ ok: false, status: 400 });
     expect(created).toHaveLength(0);
-    await approve(c.id);
+    await startFixSession(c.id, ADA_PERSON, c.revision, "Fix");
+    const now = (await getConversation(c.id))!;
+    const again = await startFixSession(c.id, ADA_PERSON, now.revision, "Fix");
+    expect(again).toMatchObject({ ok: false, status: 409 });
     expect(created).toHaveLength(1);
-    expect(created[0]!.parentSessionId).toBe("os-support");
+  });
+
+  test("a task over the size limit is refused", async () => {
+    const c = await suggested();
+    const result = await startFixSession(
+      c.id,
+      ADA_PERSON,
+      c.revision,
+      "x".repeat(MAX_FIX_TASK + 1),
+    );
+    expect(result).toMatchObject({ ok: false, status: 400 });
   });
 });
 

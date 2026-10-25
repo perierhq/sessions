@@ -1,11 +1,13 @@
 // /api/support/conversations/:id/{move,owner,close,reopen,not-spam,
-// issue/approve,issue/dismiss}: what a person does to a conversation
+// issue/approve,issue/dismiss,fix}: what a person does to a conversation
 // besides replying (support/actions.ts, support/bugs.ts). Signed-in people
 // only (`verifiedPerson`): the automation principal and claimed names are
 // never a person here; the person is an actor built with actorFor(), so
 // only the instance owner approves an issue for a public repository.
 // issue/approve needs `expectedRevision`, the conversation revision the
-// person saw. Each answers with the conversation as GET
+// person saw; so does fix {expectedRevision, task}, which starts a normal
+// code session as the person (support/bugs.ts startFixSession). Each
+// answers with the conversation as GET
 // /api/support/conversations/:id does. "Forget this customer" is
 // POST /api/support/customers/forget in support-inboxes.ts.
 import type { SupportActor } from "../../shared/support";
@@ -17,7 +19,11 @@ import {
   setOwner,
 } from "../support/actions";
 import { actorFor } from "../support/actor";
-import { approvePendingIssue, dismissPendingIssue } from "../support/bugs";
+import {
+  approvePendingIssue,
+  dismissPendingIssue,
+  startFixSession,
+} from "../support/bugs";
 import { getConversation } from "../support/store";
 import { type RouteContext, verifiedPerson } from "./context";
 import { conversationId, conversationViewResponse } from "./support-replies";
@@ -32,6 +38,7 @@ const ACTIONS = new Set([
   "not-spam",
   "issue/approve",
   "issue/dismiss",
+  "fix",
 ]);
 
 const json = (status: number, error: string) =>
@@ -107,6 +114,19 @@ export async function handleSupportActionRoutes(
       if (!(await markNotSpam(id, person)).ok)
         return json(409, "This conversation isn't spam");
       break;
+    case "fix": {
+      const expected = body.expectedRevision;
+      if (typeof expected !== "number" || !Number.isInteger(expected))
+        return json(400, "Say which revision of the task you start");
+      const result = await startFixSession(
+        id,
+        { name: person, login: ctx.authUser?.login },
+        expected,
+        text(body.task),
+      );
+      if (!result.ok) return json(result.status, result.error);
+      break;
+    }
     case "issue/approve": {
       const expected = body.expectedRevision;
       if (typeof expected !== "number" || !Number.isInteger(expected))

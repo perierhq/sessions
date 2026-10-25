@@ -23,9 +23,11 @@ const AUTOMATION = {
 };
 
 let posted = 0;
+let fixCreates: Array<{ user?: string; createdByLogin?: string; mode?: string }> = [];
 
 beforeEach(() => {
   posted = 0;
+  fixCreates = [];
   __setOwnerRosterForTest([
     { name: "Ada Lovelace", github: "ada" },
     { name: "Grace Hopper", github: "grace" },
@@ -55,6 +57,16 @@ beforeEach(() => {
   });
   __setActionDepsForTest({ cancelSession: async () => true });
   __setBugDepsForTest({
+    control: () => ({
+      async createSession(opts) {
+        fixCreates.push(opts);
+        return {
+          id: "os-fix",
+          createdBy: opts.user ?? "",
+          createdAt: new Date().toISOString(),
+        };
+      },
+    }),
     ghRepo: () => "acme/acme",
     isPublic: async () => true,
     createIssue: async () => {
@@ -118,6 +130,7 @@ describe("support action routes", () => {
         ["not-spam", undefined],
         ["issue/approve", undefined],
         ["issue/dismiss", undefined],
+        ["fix", { expectedRevision: 1, task: "Fix it" }],
       ] as const) {
         const res = await call(`${base(c.id)}/${action}`, body, auth);
         expect(res.status).toBe(401);
@@ -254,6 +267,41 @@ describe("support action routes", () => {
     );
     expect(res.status).toBe(403);
     expect(posted).toBe(0);
+  });
+
+  test("a person starts a fix session as themselves", async () => {
+    const c = await tb.conversation();
+    expect(
+      (await call(`${base(c.id)}/fix`, { task: "Fix the export" })).status,
+    ).toBe(400);
+    expect(
+      (
+        await call(`${base(c.id)}/fix`, {
+          expectedRevision: c.revision,
+          task: "",
+        })
+      ).status,
+    ).toBe(400);
+    expect(fixCreates).toHaveLength(0);
+    const res = await call(`${base(c.id)}/fix`, {
+      expectedRevision: c.revision,
+      task: "Fix the export",
+    });
+    expect(res.status).toBe(200);
+    const view = (await res.json()) as SupportConversationView;
+    expect(view.conversation.fixSessionId).toBe("os-fix");
+    expect(fixCreates).toEqual([
+      expect.objectContaining({
+        user: "Ada",
+        createdByLogin: "ada",
+        mode: "code",
+      }),
+    ]);
+    const again = await call(`${base(c.id)}/fix`, {
+      expectedRevision: view.conversation.revision,
+      task: "Fix the export",
+    });
+    expect(again.status).toBe(409);
   });
 
   test("an unknown conversation is 404", async () => {

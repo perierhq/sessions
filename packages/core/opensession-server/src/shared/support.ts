@@ -214,6 +214,16 @@ export interface SupportConversation {
     /** Why it waits, as "Waiting for a person: ..." (shown as is). */
     heldFor?: string;
   } | null;
+  /** A fix task the agent suggested with report_bug (issue-and-agent): a
+   *  person edits it and starts a fix session from it. Nothing starts on
+   *  its own. Older documents lack it. */
+  fixTask?: {
+    text: string;
+    /** The project the session starts in. */
+    project: string;
+    suggestedBy: SupportActor;
+    at: string;
+  } | null;
   events: Array<{
     at: string;
     kind: string;
@@ -421,6 +431,13 @@ export interface SupportConversationView {
     InboxConfig,
     "id" | "label" | "address" | "autonomy" | "moveLock" | "bugHandling"
   > | null;
+  /** The fix session a person started (`conversation.fixSessionId`) and
+   *  its pull request, when the session still exists. */
+  fixSession?: {
+    id: string;
+    prUrl: string | null;
+    prState: "OPEN" | "MERGED" | "CLOSED" | null;
+  } | null;
 }
 
 /** What a support push's buttons open the conversation with
