@@ -9,6 +9,7 @@ import {
   normalizeAddress,
   normalizeMessageId,
   parseSupportItemId,
+  noTlsHostAllowed,
   smtpSavesSentItself,
   SUPPORT_CHANNELS,
   supportItemId,
@@ -147,5 +148,33 @@ describe("defaultInboxConfig", () => {
     const b = defaultInboxConfig(input("mail.example.test"));
     expect(b.neverWithoutAPerson).toEqual([...SUPPORT_TOPICS]);
     expect(b.folders.done).toBe("Sessions/Done");
+  });
+});
+
+describe("noTlsHostAllowed", () => {
+  test("localhost and loopback literals only", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST.",
+      "127.0.0.1",
+      "127.1.2.3",
+      "::1",
+      "[::1]",
+      "0:0:0:0:0:0:0:1",
+      "::ffff:127.0.0.1",
+    ])
+      expect(noTlsHostAllowed(host)).toBe(true);
+    for (const host of [
+      "",
+      "imap.example.test",
+      "localhost.example.test",
+      "10.0.0.5",
+      "127.0.0.1.example.test",
+      "127.0.0",
+      "::2",
+      "::ffff:10.0.0.1",
+      "fe80::1",
+    ])
+      expect(noTlsHostAllowed(host)).toBe(false);
   });
 });

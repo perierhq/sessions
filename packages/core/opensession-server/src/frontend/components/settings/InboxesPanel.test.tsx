@@ -70,11 +70,12 @@ const PAUSED: InboxView = {
 };
 
 let data: InboxesResponse | undefined;
+let loadError: Error | undefined;
 mock.module("swr", () => ({
   mutate: async () => undefined,
   default: () => ({
     data,
-    error: undefined,
+    error: loadError,
     isLoading: false,
     mutate: async () => data,
   }),
@@ -106,9 +107,12 @@ const { InboxesPanel } = await import("./InboxesPanel");
 const { Button } = await import("../../ui/button");
 const { Input } = await import("../../ui/input");
 const { ConfirmDialog } = await import("../../ui/confirm");
+const { InlineAlert } = await import("../../ui/state");
+const { ApiError } = await import("../../lib/api/request");
 
 beforeEach(() => {
   forgets.length = 0;
+  loadError = undefined;
   data = {
     enabled: true,
     isInstanceOwner: true,
@@ -173,4 +177,21 @@ test("Forget asks first, then shows what went", async () => {
   const all = text(tree);
   expect(all).toContain("Deleted 2 conversations, 1 session and 3 attachments");
   expect(all).toContain("Mail in the mailbox");
+});
+
+test("signed out, the page asks to sign in without a retry", async () => {
+  data = undefined;
+  loadError = new ApiError("Sign in to change support inboxes", 401);
+  const tree = await mountPanel();
+  expect(text(tree)).toContain("Sign in to manage inboxes");
+  expect(find(tree.output(), InlineAlert)).toBeUndefined();
+});
+
+test("an enabled inbox nothing has connected yet says so", async () => {
+  data!.inboxes = [
+    { ...PAUSED, health: { ...PAUSED.health, state: "off", reason: null } },
+  ];
+  const tree = await mountPanel();
+  expect(text(tree)).toContain("Not connected yet");
+  expect(text(tree)).not.toContain('"Off"');
 });

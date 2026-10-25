@@ -12,23 +12,38 @@ const team = [
 describe("actorFor", () => {
   test("the configured notify user is the instance owner", () => {
     __setOwnerRosterForTest(team, "Ada");
-    expect(actorFor("Ada", true)).toEqual({
+    expect(actorFor("Ada", true, "ada-l")).toEqual({
       name: "Ada",
       verified: true,
       isInstanceOwner: true,
     });
-    expect(actorFor("Bea", true).isInstanceOwner).toBe(false);
+    expect(actorFor("Bea", true, "bea-s").isInstanceOwner).toBe(false);
   });
 
   test("without a notify user, the first directory member is", () => {
     __setOwnerRosterForTest(team);
-    expect(actorFor("Ada", true).isInstanceOwner).toBe(true);
-    expect(actorFor("ada-l", true).isInstanceOwner).toBe(true);
+    expect(actorFor("Ada", true, "ada-l").isInstanceOwner).toBe(true);
+    expect(actorFor("Ada", true, "ADA-L").isInstanceOwner).toBe(true);
+  });
+
+  test("the owner is matched by GitHub login, never by first name", () => {
+    __setOwnerRosterForTest(
+      [...team, { name: "Ada Byron", github: "ada-b" }],
+      "Ada",
+    );
+    expect(actorFor("Ada", true, "ada-b").isInstanceOwner).toBe(false);
+    expect(actorFor("Ada", true).isInstanceOwner).toBe(false);
+    expect(actorFor("Ada", true, "ada-l").isInstanceOwner).toBe(true);
+  });
+
+  test("an owner without a GitHub login on the roster is nobody's", () => {
+    __setOwnerRosterForTest([{ name: "Ada Lovelace" }], "Ada");
+    expect(actorFor("Ada", true, "ada").isInstanceOwner).toBe(false);
   });
 
   test("a claimed name is never the instance owner", () => {
     __setOwnerRosterForTest(team, "Ada");
-    expect(actorFor("Ada", false)).toEqual({
+    expect(actorFor("Ada", false, "ada-l")).toEqual({
       name: "Ada",
       verified: false,
       isInstanceOwner: false,
@@ -37,8 +52,8 @@ describe("actorFor", () => {
 
   test("nobody is the instance owner when there is none", () => {
     __setOwnerRosterForTest([], "");
-    expect(actorFor("Ada", true).isInstanceOwner).toBe(false);
-    expect(actorFor("", true)).toMatchObject({
+    expect(actorFor("Ada", true, "ada-l").isInstanceOwner).toBe(false);
+    expect(actorFor("", true, "ada-l")).toMatchObject({
       verified: false,
       isInstanceOwner: false,
     });
