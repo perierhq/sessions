@@ -14,7 +14,8 @@ import {
   setPlainThreadStatusApi,
   startPlainTriageApi,
 } from "../lib/api";
-import { PlainEntryRow, plainThreadUrl } from "./PlainThreadPanel";
+import { plainThreadUrl } from "./PlainThreadPanel";
+import { SupportMessage } from "./SupportMessageList";
 import { useCurrentUser } from "./UserPicker";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
@@ -569,7 +570,7 @@ function TicketCard({
             No messages in this thread yet.
           </div>
         ) : (
-          timeline.entries.map((e) => <PlainEntryRow key={e.id} entry={e} />)
+          timeline.entries.map((e) => <SupportMessage key={e.id} entry={e} />)
         )}
       </div>
     </SwipeCard>

@@ -20,7 +20,6 @@ import {
 } from "../lib/session-viewer-classes";
 import { PlainStatusBadge } from "./PlainStatusBadge";
 import {
-  PlainEntryRow,
   PlainReplyBox,
   PlainThreadActions,
   PlainWaitingBanner,
@@ -30,6 +29,7 @@ import { IconSparkle } from "./icons";
 import { errorMessage } from "../lib/error-message";
 import { parseSupportItemId, type SupportIntent } from "../../shared/support";
 import { EmailConversation } from "./EmailConversation";
+import { SupportMessageList } from "./SupportMessageList";
 
 interface Props {
   /** The Plain thread id — the pane's key. */
@@ -347,22 +347,14 @@ function PlainConversationPane({
                   />
                 )}
 
-                <div className="mt-5 flex flex-col gap-3">
-                  {thread && thread.entries.length === 0 ? (
-                    <div className="mt-5 text-center text-label text-faint">
-                      No messages in this thread yet.
-                    </div>
-                  ) : (
-                    thread?.entries.map((e) => (
-                      <PlainEntryRow
-                        key={e.id}
-                        entry={e}
-                        threadId={threadId}
-                        threadTitle={thread?.title}
-                      />
-                    ))
-                  )}
-                </div>
+                {thread && (
+                  <SupportMessageList
+                    entries={thread.entries}
+                    threadId={threadId}
+                    threadTitle={thread.title}
+                    className="mt-5"
+                  />
+                )}
               </>
             )}
           </div>

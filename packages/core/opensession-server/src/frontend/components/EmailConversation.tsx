@@ -33,7 +33,6 @@ import { MINE_STATUS_META } from "../lib/sidebar-types";
 import {
   PREPARED_CARD,
   PREPARED_TEXT,
-  QUIET_EVENT,
   SUPPORT_COLUMN_BAR,
   SUPPORT_TOP_RAIL,
 } from "../lib/support-classes";
@@ -65,7 +64,7 @@ import {
   IconPerson,
   IconRestore,
 } from "./icons";
-import { PlainEntryRow } from "./PlainThreadPanel";
+import { SupportMessageList } from "./SupportMessageList";
 import { SupportReplyBox } from "./SupportReplyBox";
 
 /**
@@ -338,21 +337,11 @@ export function EmailConversation({
                   </>
                 )}
                 {!actionsInBar && actions}
-                <div className="mt-5 flex flex-col gap-3">
-                  {timelineEntries(c).map((entry) =>
-                    entry.quiet ? (
-                      <p key={entry.id} className={QUIET_EVENT}>
-                        {entry.text}
-                      </p>
-                    ) : (
-                      <PlainEntryRow
-                        key={entry.id}
-                        entry={entry}
-                        threadTitle={c.subject}
-                      />
-                    ),
-                  )}
-                </div>
+                <SupportMessageList
+                  entries={timelineEntries(c)}
+                  threadTitle={c.subject}
+                  className="mt-5"
+                />
                 {/* What the agent prepared for a person ends the thread, so
                     the reply box stays in reach on a phone. */}
                 <div className="mt-4 flex flex-col gap-3 empty:hidden">

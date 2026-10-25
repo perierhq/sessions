@@ -1,13 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  PlainEntryAttachment,
   PlainLabelType,
   PlainThread,
-  PlainTimelineEntry,
   PlainWorkspaceUser,
 } from "../lib/types";
 import {
-  API_BASE,
   changePlainThreadLabelsApi,
   fetchPlainLabelTypesApi,
   fetchPlainThreadApi,
@@ -24,10 +21,7 @@ import {
   setPlainThreadTitleApi,
   uploadPlainAttachmentApi,
 } from "../lib/api";
-import { BASE_PATH } from "../lib/base";
 import { Menu } from "../ui/menu";
-import { renderMarkdown } from "../lib/markdown";
-import { MarkdownBody } from "./MarkdownBody";
 import { loadDraft, saveDraft, clearDraft } from "../lib/drafts";
 import { useCurrentUser } from "./UserPicker";
 import { cn } from "../ui/cn";
@@ -45,16 +39,6 @@ import {
 import { noAutofill } from "../lib/composer-autofill";
 import { noteSurface } from "../lib/tinted-surface";
 import { paletteIconBtn, palettePill } from "../lib/palette-classes";
-import {
-  plainEntryBody,
-  plainEntryHead,
-  plainEntryIn,
-  plainEntryMeta,
-  plainEntryName,
-  plainEntryNote,
-  plainEntryOut,
-  plainEntryRow,
-} from "../lib/plain-classes";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import {
@@ -65,7 +49,6 @@ import {
   IconClock,
   IconFlag,
   IconForbid,
-  IconPaperclip,
   IconPencil,
   IconPerson,
   IconPlus,
@@ -74,6 +57,7 @@ import {
 } from "./icons";
 import { FileChips } from "./FileChips";
 import { UserAvatar } from "./UserAvatar";
+import { SupportMessageList } from "./SupportMessageList";
 import { errorMessage } from "../lib/error-message";
 
 interface Props {
@@ -90,17 +74,6 @@ export function plainThreadUrl(threadId: string): string {
   return PLAIN_WORKSPACE_ID
     ? `https://app.plain.com/workspace/${PLAIN_WORKSPACE_ID}/thread/${threadId}/`
     : "";
-}
-
-function timeOf(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 /**
@@ -218,20 +191,13 @@ export function PlainThreadPanel({ sessionId, threadId, plainUrl }: Props) {
           <div className="mt-5 text-center text-label text-faint">
             Couldn't load Plain thread: {error}
           </div>
-        ) : thread && thread.entries.length === 0 ? (
-          <div className="mt-5 text-center text-label text-faint">
-            No messages in this thread yet.
-          </div>
-        ) : (
-          thread?.entries.map((e) => (
-            <PlainEntryRow
-              key={e.id}
-              entry={e}
-              threadId={threadId}
-              threadTitle={thread?.title}
-            />
-          ))
-        )}
+        ) : thread ? (
+          <SupportMessageList
+            entries={thread.entries}
+            threadId={threadId}
+            threadTitle={thread.title}
+          />
+        ) : null}
       </div>
 
       {thread && (
@@ -1033,239 +999,6 @@ export function PlainWaitingBanner({
         )}
         <span className="text-dim"> · {waited}</span>
       </span>
-    </div>
-  );
-}
-
-/** Human-readable file size for an attachment chip. */
-function fileSize(bytes: number): string {
-  if (!bytes) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * A message's attachments. Images render inline — on a visual bug report the
- * screenshot usually *is* the report — and click through to the full-size file.
- * Everything else gets a download chip.
- */
-function PlainAttachments({
-  attachments,
-}: {
-  attachments: PlainEntryAttachment[];
-}) {
-  const [failed, setFailed] = useState<Record<string, boolean>>({});
-  return (
-    <div className="flex flex-wrap gap-2 mt-2">
-      {attachments.map((a) => {
-        if (a.href === null)
-          return (
-            <span
-              key={a.id}
-              title="No longer kept"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-active px-2.5 py-1.5 text-label text-faint"
-            >
-              <IconPaperclip size={16} className="shrink-0 opacity-60" />
-              <span className="truncate">{a.fileName}</span>
-              {a.sizeBytes ? (
-                <span className="shrink-0">{fileSize(a.sizeBytes)}</span>
-              ) : null}
-            </span>
-          );
-        const href =
-          a.href ?? `${API_BASE}/plain/attachments/${encodeURIComponent(a.id)}`;
-        const isImage = a.mimeType.startsWith("image/") && !failed[a.id];
-        return (
-          <a
-            key={a.id}
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            title={`${a.fileName}${a.sizeBytes ? ` · ${fileSize(a.sizeBytes)}` : ""}`}
-            className={cn(
-              "block overflow-hidden rounded-lg no-underline",
-              isImage
-                ? "md-image-link bg-surface"
-                : "inline-flex items-center gap-1.5 bg-active px-2.5 py-1.5 text-label text-dim hover:bg-hover hover:text-fg",
-            )}
-          >
-            {isImage ? (
-              <img
-                src={href}
-                alt={a.fileName}
-                loading="lazy"
-                onError={() => setFailed((f) => ({ ...f, [a.id]: true }))}
-                /* md-image is what opens the lightbox. Its own block
-								   treatment is for a full-width transcript image, so the
-								   thumbnail keeps its cap and drops the border and margin
-								   the wrapper already provides. */
-                className="md-image m-0 block max-h-[220px] max-w-full border-0 bg-surface object-contain"
-              />
-            ) : (
-              <>
-                <IconPaperclip size={16} className="shrink-0 opacity-60" />
-                <span className="truncate">{a.fileName}</span>
-                {a.sizeBytes ? (
-                  <span className="shrink-0 text-faint">
-                    {fileSize(a.sizeBytes)}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </a>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
- * A message body, rendered as markdown. Customer mail and our own replies get
- * the same treatment a session message does: `**test**` is bold, a pasted
- * stack trace in a fence is highlighted, and an inline image opens the shared
- * lightbox (markdown.ts emits the `md-image` class the delegated handler in
- * MediaLightbox.tsx watches for).
- *
- * Deliberately rendered with no context: a bare `#123` in a customer's mail is
- * their order number rather than a PR in our repo, and raw HTML they paste
- * stays literal text, which is the renderer's default.
- */
-function PlainEntryText({ text }: { text: string }) {
-  const html = renderMarkdown(text);
-  return <MarkdownBody className={plainEntryBody} html={html} />;
-}
-
-/**
- * Notes posted from here carry an author prefix (see the reply route) because
- * Plain's API can't attribute a write to a workspace user — everything lands
- * as our machine user. Unpick that so a teammate's note shows *their* name,
- * and so anything else from the machine user is honestly labelled as the
- * agent rather than passing for a human.
- */
-const NOTE_VIA_PREFIX = /^\*\*(.+?) \(via [^)]+\):\*\*\s*/;
-
-function noteAuthor(entry: PlainTimelineEntry) {
-  const viaUs = entry.text.match(NOTE_VIA_PREFIX);
-  if (viaUs)
-    return {
-      name: viaUs[1],
-      isAgent: false,
-      text: entry.text.slice(viaUs[0].length),
-    };
-  if (entry.actorType === "bot") {
-    // Agents open their notes with their own name; the badge says it now.
-    const selfSigned = new RegExp(
-      `^${entry.actorName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*`,
-    );
-    return {
-      name: entry.actorName,
-      isAgent: true,
-      text: entry.text.replace(selfSigned, ""),
-    };
-  }
-  return { name: entry.actorName, isAgent: false, text: entry.text };
-}
-
-/**
- * A message repeats the thread's own subject on almost every line ("Re: …"),
- * which is the loudest thing in the timeline and the one fact the reader
- * already has. Show it only where it says something new.
- */
-function subjectWorthShowing(
-  subject: string | null | undefined,
-  threadTitle?: string | null,
-): string | null {
-  const s = subject?.trim();
-  if (!s) return null;
-  if (!threadTitle) return s;
-  const bare = (t: string) =>
-    t
-      .replace(/^((re|fwd|fw)\s*:\s*)+/i, "")
-      .trim()
-      .toLowerCase();
-  return bare(s) === bare(threadTitle) ? null : s;
-}
-
-export function PlainEntryRow({
-  entry,
-  threadId,
-  threadTitle,
-}: {
-  entry: PlainTimelineEntry;
-  /** Enables the "open the triage session" link on agent notes. */
-  threadId?: string;
-  /** The thread's own subject, so a message that only echoes it stays quiet. */
-  threadTitle?: string | null;
-}) {
-  if (entry.kind === "note") {
-    const author = noteAuthor(entry);
-    return (
-      <div
-        className={plainEntryNote}
-        style={{ background: noteSurface("transparent") }}
-      >
-        <div className={plainEntryHead}>
-          <span className={plainEntryName}>{author.name}</span>
-          <span
-            className="text-meta font-semibold text-yellow"
-            title="Only the team sees this note"
-          >
-            Note
-          </span>
-          {author.isAgent && (
-            <span
-              className={plainEntryMeta}
-              title="Written by an agent run, not a teammate"
-            >
-              agent
-            </span>
-          )}
-          <span className={plainEntryMeta}>{timeOf(entry.timestamp)}</span>
-          {author.isAgent && threadId && (
-            <a
-              className="ml-auto inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-meta font-semibold text-link no-underline hover:underline"
-              href={`${BASE_PATH}/plain-triage/${encodeURIComponent(threadId)}`}
-              target="_blank"
-              rel="noreferrer"
-              title="Open the triage session for this ticket"
-            >
-              Session
-              <IconArrowUpRight size={13} />
-            </a>
-          )}
-        </div>
-        <PlainEntryText text={author.text} />
-        {entry.attachments?.length ? (
-          <PlainAttachments attachments={entry.attachments} />
-        ) : null}
-      </div>
-    );
-  }
-
-  const ours = entry.actorType !== "customer";
-  const subject = subjectWorthShowing(entry.subject, threadTitle);
-  return (
-    <div className={plainEntryRow}>
-      {/* The head sits above the message rather than inside it, so our own
-			    bubble holds nothing but the words — the transcript's grammar for a
-			    speaker label, and the only way the customer's side can lose its
-			    plate without losing who wrote it. */}
-      <div className={cn(plainEntryHead, ours && "flex-row-reverse")}>
-        <span className={plainEntryName}>{entry.actorName}</span>
-        <span className={plainEntryMeta}>
-          {entry.kind} · {timeOf(entry.timestamp)}
-        </span>
-      </div>
-      <div className={ours ? plainEntryOut : plainEntryIn}>
-        {subject && (
-          <div className="text-body font-semibold text-fg">{subject}</div>
-        )}
-        {entry.text && <PlainEntryText text={entry.text} />}
-        {entry.attachments?.length ? (
-          <PlainAttachments attachments={entry.attachments} />
-        ) : null}
-      </div>
     </div>
   );
 }

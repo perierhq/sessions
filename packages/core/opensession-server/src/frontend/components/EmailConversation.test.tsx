@@ -122,6 +122,7 @@ const { Button } = await import("../ui/button");
 const { Textarea } = await import("../ui/input");
 const { Menu } = await import("../ui/menu");
 const { InlineAlert } = await import("../ui/state");
+const { SupportMessageList } = await import("./SupportMessageList");
 const {
   EmailConversation,
   EmailConversationActions,
@@ -359,13 +360,11 @@ test("a thanks-only close reads as a quiet line, not a note", async () => {
     onOpenSession: () => {},
   });
   await settle();
-  const line = find<React.ComponentProps<"p">>(
-    pane.output(),
-    "p",
-    (p) =>
-      p.children === "The customer only said thanks. Closed without a reply",
+  const list = find(pane.output(), SupportMessageList);
+  const line = list?.props.entries.find(
+    (e) => e.text === "The customer only said thanks. Closed without a reply",
   );
-  expect(line).toBeDefined();
+  expect(line?.quiet).toBe(true);
 });
 
 test("a fixed note outside the reply box sends once the draft is settled", async () => {
