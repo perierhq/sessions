@@ -148,6 +148,7 @@ import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
+import { startSupportTick } from "./src/server/support/tick";
 import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
@@ -903,6 +904,9 @@ if (!g.__opensessionBooted) {
     // its inbox only watches, answered by a support session under the
     // project's Support role; replies reach that session.
     installSupportPipeline();
+    // Veto windows end, support sends retry and pipeline hand-offs are
+    // retried on a 15 s tick over the support work index.
+    startSupportTick();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

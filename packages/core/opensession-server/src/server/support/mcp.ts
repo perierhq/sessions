@@ -3,10 +3,12 @@
 // Every tool acts on the conversation the session's own `support` external
 // ref names; no tool takes a conversation id, so mail in one conversation
 // can't steer the agent into another. Customer text comes back inside the
-// <customer_email> wrapper (routing.ts). C3 and C5 add the reply, bug and
-// move tools here. Nothing runs at import.
+// <customer_email> wrapper (routing.ts). draft_reply goes through the one
+// reply path (reply.ts); C5 adds the bug and move tools here. Nothing runs
+// at import.
 
-import type { SupportConversation } from "../../shared/support";
+import { z } from "zod";
+import type { SupportConversation, SupportDraft } from "../../shared/support";
 import {
   type InProcessToolDefinition,
   createSdkMcpServer,
@@ -14,6 +16,7 @@ import {
 } from "../inprocess-mcp";
 import type { ExternalRef } from "../types";
 import { getInbox } from "./inboxes";
+import { proposeDraft } from "./reply";
 import { wrapSupportMessage } from "./routing";
 import { getConversation } from "./store";
 
@@ -53,6 +56,21 @@ function text(value: string) {
   return { content: [{ type: "text" as const, text: value }] };
 }
 
+/** HH:MM on this server's clock. */
+function clock(at: string): string {
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** The one line draft_reply answers with. */
+export function draftOutcome(draft: SupportDraft): string {
+  if (draft.state === "sent") return "Sent.";
+  if (draft.state === "veto" && draft.vetoDeadline)
+    return `Sends at ${clock(draft.vetoDeadline)} unless someone stops it.`;
+  return `Waiting for a person: ${draft.rule}`;
+}
+
 /** The tools, for the server and for tests. */
 export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
   return [
@@ -84,6 +102,22 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
             null,
             1,
           ),
+        );
+      },
+    ),
+    tool(
+      "draft_reply",
+      "Write the reply to the customer of this conversation (plain text, no greeting placeholders). The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it; the answer says which. A new draft replaces your earlier one unless that one is already being sent.",
+      { text: z.string().describe("The reply, as plain text") },
+      async ({ text: reply }) => {
+        const c = await conversationForSession(ctx.sessionId);
+        if (!c) return text(NOT_LINKED);
+        const result = await proposeDraft(c.id, reply, {
+          kind: "agent",
+          sessionId: ctx.sessionId,
+        });
+        return text(
+          result.ok ? draftOutcome(result.draft) : `Not sent: ${result.error}`,
         );
       },
     ),

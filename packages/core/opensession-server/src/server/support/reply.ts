@@ -1,0 +1,852 @@
+// The one reply path. Every customer-facing send goes through here: an
+// agent's or a person's draft is decided by policy.ts (decideReply), then
+// waits for a person, waits out a veto window, or goes out through the
+// conversation's channel adapter. `deliver` below is the only caller of a
+// channel adapter's `send` in the codebase (reply.test.ts guards it), and
+// every attempt writes one audit row: `support.reply` when it went out,
+// `support.reply.failed` when it didn't. Rows carry a digest of the text,
+// never the text or an address.
+//
+// Reuses the incidents pattern of a deadline in the record plus a tick
+// (incidents/response/coordinator.ts): a veto window or a send waiting for
+// its retry leaves a key in the `support-pending` work index
+// (`veto:<conversationId>`, `send:<conversationId>`), written before the
+// conversation changes, and tick.ts reads only those keys. A send claims
+// its draft with the catalog's compare-and-swap (state `sending`), so two
+// callers never send one draft twice; a send that a restart interrupted is
+// failed by the tick, never resent blindly.
+//
+// Trust is checked on the message mime.ts `replyTarget` answers, the same
+// one the email adapter replies to. Nothing runs at import.
+import { randomUUIDv7 } from "bun";
+import { buildReply, newMessageId, replyTarget } from "../../agents/email/mime";
+import {
+  MAX_TEXT_CHARS,
+  type InboxConfig,
+  type SupportActor,
+  type SupportConversation,
+  type SupportDraft,
+  type SupportMessage,
+  normalizeMessageId,
+  ownMailAddresses,
+} from "../../shared/support";
+import { digest } from "../audit";
+import { catalogDocuments } from "../catalog-documents";
+import { supportAudit } from "./audit-sink";
+import { SendError, type SentReceipt, channelAdapterFor } from "./channel";
+import { getInbox, listInboxes } from "./inboxes";
+import { decideReply } from "./policy";
+import {
+  getConversation,
+  rememberMessageIds,
+  updateConversation,
+} from "./store";
+
+type Failure = { ok: false; status: 400 | 404 | 409 | 502; error: string };
+export type Result<T> = ({ ok: true } & T) | Failure;
+
+const HOUR_MS = 3_600_000;
+/** Waits before the 2nd, 3rd (and, were there one, 4th) attempt. */
+export const SEND_BACKOFF_MS = [60_000, 300_000, 900_000] as const;
+/** Attempts before a transient failure fails the draft. */
+export const MAX_SEND_ATTEMPTS = 3;
+
+export const INTERRUPTED_SEND =
+  "Interrupted while sending. Check the mailbox's Sent folder before sending again";
+const NOT_CONNECTED = "The inbox isn't connected";
+const INBOX_REMOVED = "The inbox was removed";
+const SEND_FAILED = "Couldn't send the message";
+
+const SESSIONS: SupportActor = { kind: "sessions" };
+
+// ── The work index ───────────────────────────────────────────────────────
+
+let pendingDocs: ReturnType<typeof catalogDocuments> | undefined;
+const pending = () => (pendingDocs ??= catalogDocuments("support-pending"));
+
+export interface PendingVeto {
+  conversationId: string;
+  draftId: string;
+  /** Epoch ms. */
+  deadline: number;
+}
+
+export interface PendingSend {
+  conversationId: string;
+  draftId: string;
+  /** Epoch ms when the current attempt started. */
+  startedAt: number;
+  edited?: boolean;
+}
+
+export const vetoKey = (conversationId: string) => `veto:${conversationId}`;
+export const sendKey = (conversationId: string) => `send:${conversationId}`;
+
+export function isPendingVeto(value: unknown): value is PendingVeto {
+  const v = value as PendingVeto | null;
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof v.conversationId === "string" &&
+    typeof v.draftId === "string" &&
+    typeof v.deadline === "number"
+  );
+}
+
+export function isPendingSend(value: unknown): value is PendingSend {
+  const v = value as PendingSend | null;
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof v.conversationId === "string" &&
+    typeof v.draftId === "string" &&
+    typeof v.startedAt === "number"
+  );
+}
+
+/** The reply keys of the work index (tick.ts). */
+export async function listPendingReplies(): Promise<
+  Array<{ key: string; value: unknown }>
+> {
+  return (await pending().list()).filter(
+    ({ key }) => key.startsWith("veto:") || key.startsWith("send:"),
+  );
+}
+
+/** Deletes `key` when it still stands for `draftId` (or is unreadable). */
+export async function dropPendingKey(
+  key: string,
+  draftId: string,
+): Promise<void> {
+  await pending().update(key, (value) => {
+    const v = value as { draftId?: unknown } | null;
+    if (
+      value !== null &&
+      typeof v?.draftId === "string" &&
+      v.draftId !== draftId
+    )
+      return value;
+    return null;
+  });
+}
+
+// ── In-process state ─────────────────────────────────────────────────────
+
+/** Conversations whose send runs in this process now. A restart empties it,
+ *  which is how the tick tells an interrupted send from a slow one. */
+const inFlight = new Set<string>();
+
+export function sendingInProcess(conversationId: string): boolean {
+  return inFlight.has(conversationId);
+}
+
+/** Forget in-process state, as a restart would (tests). */
+export function __resetReplyStateForTest(): void {
+  inFlight.clear();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const fail = (status: Failure["status"], error: string): Failure => ({
+  ok: false,
+  status,
+  error,
+});
+
+function actorLabel(actor: SupportActor): string {
+  return actor.kind === "person" ? actor.name : actor.kind;
+}
+
+/** Trimmed text, or why it can't be sent. */
+function replyText(raw: unknown): string | Failure {
+  if (typeof raw !== "string" || !raw.trim())
+    return fail(400, "Write a reply first");
+  const text = raw.replace(/\r\n?/g, "\n").trim();
+  if (text.length > MAX_TEXT_CHARS)
+    return fail(400, `A reply can be at most ${MAX_TEXT_CHARS} characters`);
+  return text;
+}
+
+async function otherInboxAddresses(inbox: InboxConfig): Promise<string[]> {
+  return (await listInboxes())
+    .filter((i) => i.id !== inbox.id)
+    .map((i) => i.address);
+}
+
+/** The trust the policy checks: of the message replyTarget answers. A reply
+ *  that would go somewhere its sender didn't write from (a Reply-To, or no
+ *  person's message at all) counts as `replyToDiffers`. */
+export function answeredTrust(
+  c: SupportConversation,
+  own: readonly string[],
+): NonNullable<SupportMessage["trust"]> {
+  const { message, to } = replyTarget(c, own);
+  if (!message || !to[0]) return { replyToDiffers: true, authFailed: false };
+  return {
+    replyToDiffers:
+      message.trust?.replyToDiffers === true ||
+      to[0].address.toLowerCase() !== message.from.address.toLowerCase(),
+    authFailed: message.trust?.authFailed === true,
+  };
+}
+
+function autoSendsSince(c: SupportConversation, now: number): number {
+  return c.autoSends.filter((at) => {
+    const t = Date.parse(at);
+    return t > now - HOUR_MS && t <= now;
+  }).length;
+}
+
+/** decideReply for `author` on `c` as it stands. A removed inbox counts as
+ *  off. */
+function decide(
+  c: SupportConversation,
+  author: SupportActor,
+  inbox: InboxConfig | null,
+  own: readonly string[],
+  now: number,
+) {
+  return decideReply({
+    author,
+    inbox: inbox ?? {
+      enabled: false,
+      autonomy: "watch",
+      vetoMs: 0,
+      neverWithoutAPerson: [],
+    },
+    triage: c.triage,
+    autoSendsLastHour: autoSendsSince(c, now),
+    now,
+    lastInboundTrust: answeredTrust(c, own),
+  });
+}
+
+async function context(c: SupportConversation) {
+  const inbox = await getInbox(c.inboxId);
+  const others = inbox ? await otherInboxAddresses(inbox) : [];
+  const own = inbox ? ownMailAddresses(inbox, others) : [];
+  return { inbox, others, own };
+}
+
+// ── Propose ──────────────────────────────────────────────────────────────
+
+/** Agent or person writes a draft; replaces a live draft that is not
+ *  `sending`. Applies decideReply; a `send` decision continues into the
+ *  send with by = { kind: "sessions" } (agent) or the person. */
+export async function proposeDraft(
+  conversationId: string,
+  text: string,
+  author: SupportActor,
+  now = Date.now(),
+): Promise<Result<{ draft: SupportDraft }>> {
+  const result = await propose(conversationId, text, author, now);
+  return result.ok ? { ok: true, draft: result.draft } : result;
+}
+
+/** A person's reply: sent at once (rule 1), replacing any waiting draft. */
+export async function replyAsPerson(
+  conversationId: string,
+  text: string,
+  person: string,
+): Promise<Result<{ message: SupportMessage }>> {
+  if (!person.trim()) return fail(400, "Sign in to reply");
+  const result = await propose(conversationId, text, {
+    kind: "person",
+    name: person,
+  });
+  if (!result.ok) return result;
+  if (!result.message)
+    return fail(409, result.draft.rule || "The reply was not sent");
+  return { ok: true, message: result.message };
+}
+
+async function propose(
+  conversationId: string,
+  rawText: string,
+  author: SupportActor,
+  now = Date.now(),
+): Promise<
+  { ok: true; draft: SupportDraft; message: SupportMessage | null } | Failure
+> {
+  const text = replyText(rawText);
+  if (typeof text !== "string") return text;
+  const current = await getConversation(conversationId);
+  if (!current) return fail(404, "Conversation not found");
+  if (current.draft?.state === "sending")
+    return fail(409, "A reply is being sent");
+  const { inbox, others, own } = await context(current);
+  const draftId = `sd_${randomUUIDv7()}`;
+  const messageId = newMessageId(inbox?.address ?? "");
+
+  // The work index first, from the decision on what we just read: a crash
+  // after it leaves a key the tick drops, never a window nobody ends.
+  const provisional = decide(current, author, inbox, own, now);
+  if (provisional.kind === "veto")
+    await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
+      conversationId,
+      draftId,
+      deadline: Date.parse(provisional.deadline),
+    }));
+  if (provisional.kind === "send")
+    await pending().update<PendingSend>(sendKey(conversationId), () => ({
+      conversationId,
+      draftId,
+      startedAt: now,
+    }));
+
+  let failure: Failure | null = null;
+  let draft: SupportDraft | null = null;
+  const committed = await updateConversation(conversationId, (c) => {
+    failure = null;
+    draft = null;
+    if (c.draft?.state === "sending") {
+      failure = fail(409, "A reply is being sent");
+      return null;
+    }
+    const decision = decide(c, author, inbox, own, now);
+    if (decision.kind === "send" && provisional.kind !== "send") {
+      // Decided differently than the work index was written for: hold.
+      failure = fail(409, "The conversation changed; try again");
+      return null;
+    }
+    draft = {
+      id: draftId,
+      text,
+      author,
+      createdAt: iso(now),
+      state: decision.kind === "send" ? "sending" : decision.kind,
+      rule: decision.rule,
+      vetoDeadline: decision.kind === "veto" ? decision.deadline : null,
+      attempts: decision.kind === "send" ? 1 : 0,
+      nextAttemptAt: null,
+      lastError: null,
+      messageId,
+      decidedBy:
+        decision.kind === "send"
+          ? author.kind === "person"
+            ? author
+            : SESSIONS
+          : null,
+    };
+    return { ...c, draft };
+  });
+  const written = draft as SupportDraft | null;
+  if (provisional.kind === "send" && written?.state !== "sending")
+    await dropPendingKey(sendKey(conversationId), draftId).catch(() => {});
+  await reconcileVetoKey(conversationId);
+  if (!committed || !written)
+    return failure ?? fail(404, "Conversation not found");
+  if (written.state !== "sending")
+    return { ok: true, draft: written, message: null };
+  const sent = await deliver(committed, written, inbox, others, {
+    edited: false,
+    now,
+  });
+  if (!sent.ok) return sent;
+  return {
+    ok: true,
+    draft: { ...written, state: "sent" },
+    message: sent.message,
+  };
+}
+
+/** Makes the conversation's veto key match its draft: the key of a draft
+ *  in its veto window, no key otherwise. Failures are logged; the tick
+ *  drops keys that name no veto. */
+async function reconcileVetoKey(conversationId: string): Promise<void> {
+  try {
+    const d = (await getConversation(conversationId))?.draft;
+    const live = d?.state === "veto" && d.vetoDeadline ? d : null;
+    await pending().update<PendingVeto>(vetoKey(conversationId), (value) => {
+      if (!live) return null;
+      if (isPendingVeto(value) && value.draftId === live.id) return value;
+      return {
+        conversationId,
+        draftId: live.id,
+        deadline: Date.parse(live.vetoDeadline!),
+      };
+    });
+  } catch (error) {
+    console.warn("[support] veto key not updated:", errorName(error));
+  }
+}
+
+// ── Send ─────────────────────────────────────────────────────────────────
+
+/** The only caller of adapter.send in the codebase. */
+export async function sendDraft(
+  conversationId: string,
+  draftId: string,
+  by: SupportActor,
+  edit?: { text: string },
+): Promise<Result<{ message: SupportMessage }>> {
+  return claimAndDeliver(conversationId, draftId, by, {
+    mode: "claim",
+    now: Date.now(),
+    ...(edit ? { edit } : {}),
+  });
+}
+
+/** A veto draft whose window ended, sent by Sessions (tick.ts). Policy is
+ *  checked again first: a draft the inbox would no longer send goes to a
+ *  person instead. */
+export async function sendDueVeto(
+  conversationId: string,
+  draftId: string,
+  now: number,
+): Promise<Result<{ message: SupportMessage }>> {
+  return claimAndDeliver(conversationId, draftId, SESSIONS, {
+    mode: "claim",
+    now,
+  });
+}
+
+/** The next attempt of a send whose retry is due (tick.ts). */
+export async function retrySend(
+  conversationId: string,
+  draftId: string,
+  now: number,
+): Promise<Result<{ message: SupportMessage }>> {
+  return claimAndDeliver(conversationId, draftId, SESSIONS, {
+    mode: "retry",
+    now,
+  });
+}
+
+async function claimAndDeliver(
+  conversationId: string,
+  draftId: string,
+  by: SupportActor,
+  opts: { mode: "claim" | "retry"; now: number; edit?: { text: string } },
+): Promise<Result<{ message: SupportMessage }>> {
+  const { now } = opts;
+  let editText: string | null = null;
+  if (opts.edit) {
+    const text = replyText(opts.edit.text);
+    if (typeof text !== "string") return text;
+    editText = text;
+  }
+  if (by.kind !== "person" && by.kind !== "sessions")
+    return fail(409, "Only a person can send this reply");
+  const current = await getConversation(conversationId);
+  if (!current) return fail(404, "Conversation not found");
+  if (current.draft?.id !== draftId)
+    return current.messages.some((m) => m.draftId === draftId)
+      ? fail(409, "This reply was already sent")
+      : fail(404, "Draft not found");
+  const { inbox, others, own } = await context(current);
+
+  // The work index first (see the header); the claim below decides.
+  const key = sendKey(conversationId);
+  await pending().update<PendingSend>(key, (value) =>
+    isPendingSend(value) && value.draftId === draftId
+      ? value
+      : { conversationId, draftId, startedAt: now },
+  );
+
+  let failure: Failure | null = null;
+  let claimed: SupportDraft | null = null;
+  let edited = false;
+  const committed = await updateConversation(conversationId, (c) => {
+    failure = null;
+    claimed = null;
+    edited = false;
+    const d = c.draft;
+    if (!d || d.id !== draftId) {
+      failure = c.messages.some((m) => m.draftId === draftId)
+        ? fail(409, "This reply was already sent")
+        : fail(404, "Draft not found");
+      return null;
+    }
+    let attempts = d.attempts + 1;
+    let decidedBy: SupportActor = by;
+    let rule = d.rule;
+    if (opts.mode === "retry") {
+      if (
+        d.state !== "sending" ||
+        !d.nextAttemptAt ||
+        Date.parse(d.nextAttemptAt) > now
+      ) {
+        failure = fail(409, "No retry is due");
+        return null;
+      }
+      decidedBy = d.decidedBy ?? by;
+    } else {
+      switch (d.state) {
+        case "sending":
+          failure = fail(409, "This reply is already being sent");
+          return null;
+        case "sent":
+          failure = fail(409, "This reply was already sent");
+          return null;
+        case "discarded":
+          failure = fail(409, "This draft was discarded");
+          return null;
+        case "needs-person":
+        case "failed":
+          if (by.kind !== "person") {
+            failure = fail(409, "Only a person can send this reply");
+            return null;
+          }
+          if (d.state === "failed") attempts = 1;
+          break;
+        case "veto":
+          if (by.kind === "sessions") {
+            if (!d.vetoDeadline || Date.parse(d.vetoDeadline) > now) {
+              failure = fail(409, "The veto window is still open");
+              return null;
+            }
+            const decision = decide(c, d.author, inbox, own, now);
+            if (decision.kind === "needs-person") {
+              failure = fail(409, decision.rule);
+              return {
+                ...c,
+                draft: {
+                  ...d,
+                  state: "needs-person",
+                  rule: decision.rule,
+                  vetoDeadline: null,
+                },
+              };
+            }
+          }
+          break;
+        default:
+          failure = fail(409, "This draft can't be sent");
+          return null;
+      }
+      if (by.kind === "person") rule = `Sent by ${by.name}`;
+    }
+    if (editText !== null && editText !== d.text) edited = true;
+    claimed = {
+      ...d,
+      text: editText ?? d.text,
+      state: "sending",
+      rule,
+      vetoDeadline: null,
+      attempts,
+      nextAttemptAt: null,
+      lastError: null,
+      decidedBy,
+    };
+    return { ...c, draft: claimed };
+  });
+  const draft = claimed as SupportDraft | null;
+  if (!committed || !draft) {
+    await dropUnclaimed(key, draftId);
+    // A veto the policy now holds waits for a person: no key.
+    await reconcileVetoKey(conversationId);
+    return failure ?? fail(404, "Conversation not found");
+  }
+  // This attempt's start, for the tick's interrupted-send check.
+  await pending().update<PendingSend>(key, () => ({
+    conversationId,
+    draftId,
+    startedAt: now,
+    edited,
+  }));
+  return deliver(committed, draft, inbox, others, { edited, now });
+}
+
+/** After a refused claim: drop the send key unless a send of the draft is
+ *  really under way (the draft is `sending`). */
+async function dropUnclaimed(key: string, draftId: string): Promise<void> {
+  const conversationId = key.slice("send:".length);
+  const c = await getConversation(conversationId);
+  if (c?.draft?.id === draftId && c.draft.state === "sending") return;
+  await dropPendingKey(key, draftId).catch(() => {});
+}
+
+/** Sends a claimed (`sending`) draft through the conversation's adapter and
+ *  records the outcome: the out message, or a retry time, or the failure.
+ *  Every attempt writes one audit row. */
+async function deliver(
+  c: SupportConversation,
+  draft: SupportDraft,
+  inbox: InboxConfig | null,
+  otherInboxes: string[],
+  opts: { edited: boolean; now: number },
+): Promise<Result<{ message: SupportMessage }>> {
+  const by = draft.decidedBy ?? SESSIONS;
+  if (!inbox)
+    return failed(c, draft, new SendError(INBOX_REMOVED, true), opts.now);
+  const adapter = channelAdapterFor(c.inboxId);
+  const sent = await attempt(async () => {
+    // Our id first: a reply to it threads here even if we crash after the
+    // send.
+    await rememberMessageIds(c.inboxId, c.id, [draft.messageId], []);
+    if (!adapter) throw new SendError(NOT_CONNECTED, false);
+    return adapter.send({ conversation: c, draft, inbox });
+  }, c.id);
+  if (!sent.ok) return failed(c, draft, sent.error, opts.now);
+  const receipt = sent.receipt;
+
+  const mail =
+    c.channel === "email"
+      ? buildReply({ conversation: c, draft, inbox }, otherInboxes)
+      : null;
+  const ourId = normalizeMessageId(receipt.messageId) ?? receipt.messageId;
+  const message: SupportMessage = {
+    id: `sm_${randomUUIDv7()}`,
+    direction: "out",
+    at: receipt.sentAt,
+    from: { name: inbox.label, address: inbox.address },
+    to: mail?.to ?? [],
+    cc: [],
+    subject: mail?.subject ?? c.subject,
+    text: draft.text,
+    keys: {
+      messageId: ourId,
+      ...(ourId !== receipt.messageId
+        ? { rawMessageId: receipt.messageId }
+        : {}),
+      inReplyTo: normalizeMessageId(mail?.inReplyTo) ?? null,
+      references: (mail?.references ?? []).flatMap(
+        (id) => normalizeMessageId(id) ?? [],
+      ),
+    },
+    providerId: receipt.providerId,
+    attachments: [],
+    sentBy: by,
+    draftId: draft.id,
+  };
+  const automatic = by.kind === "sessions";
+  const updated = await updateConversation(c.id, (x) => ({
+    ...x,
+    messages: [...x.messages, message],
+    draft: x.draft?.id === draft.id ? null : x.draft,
+    status: "waiting",
+    lastMessageAt: message.at > x.lastMessageAt ? message.at : x.lastMessageAt,
+    autoSends: automatic ? [...x.autoSends, message.at] : x.autoSends,
+  }));
+  await Promise.allSettled([
+    ourId !== draft.messageId
+      ? rememberMessageIds(c.inboxId, c.id, [ourId], [])
+      : Promise.resolve(),
+    dropPendingKey(sendKey(c.id), draft.id),
+    reconcileVetoKey(c.id),
+  ]);
+  if (inbox.mailbox !== "untouched" && adapter?.mark && updated)
+    await adapter.mark(updated, "handled").catch((error: unknown) => {
+      console.warn("[support] marking the mailbox failed:", errorName(error));
+    });
+  await audit({
+    type: "support.reply",
+    conversationId: c.id,
+    inboxId: c.inboxId,
+    channel: c.channel,
+    draftId: draft.id,
+    author: draft.author.kind,
+    by: actorLabel(by),
+    rule: draft.rule,
+    edited: opts.edited,
+    attempt: draft.attempts,
+    textDigest: digest(draft.text),
+    messageId: ourId,
+  });
+  return { ok: true, message };
+}
+
+/** Runs one send with the conversation marked in flight in this process. */
+async function attempt(
+  send: () => Promise<SentReceipt>,
+  conversationId: string,
+): Promise<{ ok: true; receipt: SentReceipt } | { ok: false; error: unknown }> {
+  inFlight.add(conversationId);
+  try {
+    return { ok: true, receipt: await send() };
+  } catch (error) {
+    return { ok: false, error };
+  } finally {
+    inFlight.delete(conversationId);
+  }
+}
+
+/** Records a failed attempt: transient → still `sending` with the next
+ *  attempt's time; permanent, or the last attempt → `failed`. */
+async function failed(
+  c: SupportConversation,
+  draft: SupportDraft,
+  error: unknown,
+  now: number,
+): Promise<Failure> {
+  const err =
+    error instanceof SendError ? error : new SendError(SEND_FAILED, false);
+  if (!(error instanceof SendError))
+    console.warn("[support] send failed:", errorName(error));
+  const permanent = err.permanent || draft.attempts >= MAX_SEND_ATTEMPTS;
+  const wait = Math.max(
+    SEND_BACKOFF_MS[Math.min(draft.attempts, SEND_BACKOFF_MS.length) - 1] ??
+      SEND_BACKOFF_MS[0],
+    err.retryAfterMs ?? 0,
+  );
+  const nextAttemptAt = permanent ? null : iso(now + wait);
+  await updateConversation(c.id, (x) =>
+    x.draft?.id === draft.id && x.draft.state === "sending"
+      ? {
+          ...x,
+          draft: {
+            ...x.draft,
+            state: permanent ? "failed" : "sending",
+            nextAttemptAt,
+            lastError: err.message,
+          },
+        }
+      : null,
+  );
+  if (permanent) await dropPendingKey(sendKey(c.id), draft.id).catch(() => {});
+  await audit({
+    type: "support.reply.failed",
+    conversationId: c.id,
+    inboxId: c.inboxId,
+    channel: c.channel,
+    draftId: draft.id,
+    author: draft.author.kind,
+    by: actorLabel(draft.decidedBy ?? SESSIONS),
+    attempt: draft.attempts,
+    permanent,
+    error: err.message,
+    nextAttemptAt,
+    textDigest: digest(draft.text),
+  });
+  return fail(
+    502,
+    permanent ? err.message : `${err.message}. Sessions tries again soon`,
+  );
+}
+
+/** A `sending` draft no process is sending any more (a restart cut it off):
+ *  `failed`, never resent automatically (tick.ts). */
+export async function failInterruptedSend(
+  conversationId: string,
+  draftId: string,
+): Promise<boolean> {
+  let changed = false;
+  let draft: SupportDraft | null = null;
+  const c = await updateConversation(conversationId, (x) => {
+    changed = false;
+    const d = x.draft;
+    if (!d || d.id !== draftId || d.state !== "sending" || d.nextAttemptAt)
+      return null;
+    changed = true;
+    draft = { ...d, state: "failed", lastError: INTERRUPTED_SEND };
+    return { ...x, draft };
+  });
+  await dropPendingKey(sendKey(conversationId), draftId).catch(() => {});
+  const d = draft as SupportDraft | null;
+  if (!changed || !c || !d) return false;
+  await audit({
+    type: "support.reply.failed",
+    conversationId,
+    inboxId: c.inboxId,
+    channel: c.channel,
+    draftId,
+    author: d.author.kind,
+    by: actorLabel(d.decidedBy ?? SESSIONS),
+    attempt: d.attempts,
+    permanent: true,
+    interrupted: true,
+    error: INTERRUPTED_SEND,
+    textDigest: digest(d.text),
+  });
+  return true;
+}
+
+// ── Discard and stop ─────────────────────────────────────────────────────
+
+/** A person drops a draft that is waiting (for a person or a veto window)
+ *  or failed. */
+export async function discardDraft(
+  conversationId: string,
+  draftId: string,
+  by: SupportActor,
+): Promise<Result<{}>> {
+  const result = await settleDraft(conversationId, draftId, by, (d) => {
+    if (
+      d.state !== "needs-person" &&
+      d.state !== "veto" &&
+      d.state !== "failed"
+    )
+      return fail(409, "This draft can't be discarded now");
+    return {
+      ...d,
+      state: "discarded",
+      rule: `Discarded by ${actorLabel(by)}`,
+      vetoDeadline: null,
+      decidedBy: by,
+    };
+  });
+  return result.ok ? { ok: true } : result;
+}
+
+/** A person stops a veto window: the draft waits for a person. */
+export async function stopVeto(
+  conversationId: string,
+  draftId: string,
+  by: SupportActor,
+): Promise<Result<{ draft: SupportDraft }>> {
+  return settleDraft(conversationId, draftId, by, (d) => {
+    if (d.state !== "veto") return fail(409, "No veto window is open");
+    return {
+      ...d,
+      state: "needs-person",
+      rule: `Stopped by ${actorLabel(by)}`,
+      vetoDeadline: null,
+      decidedBy: by,
+    };
+  });
+}
+
+async function settleDraft(
+  conversationId: string,
+  draftId: string,
+  by: SupportActor,
+  change: (d: SupportDraft) => SupportDraft | Failure,
+): Promise<Result<{ draft: SupportDraft }>> {
+  if (by.kind !== "person") return fail(409, "Only a person can do this");
+  let failure: Failure | null = null;
+  let next: SupportDraft | null = null;
+  const committed = await updateConversation(conversationId, (c) => {
+    failure = null;
+    next = null;
+    if (c.draft?.id !== draftId) {
+      failure = c.messages.some((m) => m.draftId === draftId)
+        ? fail(409, "This reply was already sent")
+        : fail(404, "Draft not found");
+      return null;
+    }
+    const result = change(c.draft);
+    if ("ok" in result) {
+      failure = result;
+      return null;
+    }
+    next = result;
+    return { ...c, draft: result };
+  });
+  const draft = next as SupportDraft | null;
+  if (!committed || !draft)
+    return failure ?? fail(404, "Conversation not found");
+  await reconcileVetoKey(conversationId);
+  return { ok: true, draft };
+}
+
+// ── Audit ────────────────────────────────────────────────────────────────
+
+function errorName(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? `${error.name} ${code}` : error.name;
+  }
+  return typeof error;
+}
+
+/** Durable before the caller reports the outcome; a failing audit write is
+ *  logged, never turned into a failed send (the mail went out). */
+async function audit(event: Record<string, unknown>): Promise<void> {
+  try {
+    await supportAudit(event);
+  } catch (error) {
+    console.error("[support] audit write failed:", errorName(error));
+  }
+}

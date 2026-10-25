@@ -20,7 +20,7 @@ const AUTOMATION = {
 async function call(
   path: string,
   body?: unknown,
-  auth: RouteContext["authUser"] = ADA,
+  auth: RouteContext["authUser"] | null = ADA,
 ): Promise<Response> {
   const url = new URL(`http://localhost${path}`);
   const res = await handleSupportReplyRoutes({
@@ -36,7 +36,7 @@ async function call(
     url,
     path: url.pathname,
     publicPrefix: "/backstage",
-    authUser: auth,
+    authUser: auth ?? undefined,
   });
   if (!res) throw new Error(`POST ${path} was not handled`);
   return res;
@@ -59,7 +59,7 @@ describe("support reply routes", () => {
 
   test("need a signed-in person", async () => {
     const { c, draft } = await waitingDraft();
-    for (const auth of [undefined, AUTOMATION]) {
+    for (const auth of [null, AUTOMATION]) {
       expect(
         (
           await call(
