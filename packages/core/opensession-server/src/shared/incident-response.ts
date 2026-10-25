@@ -218,6 +218,46 @@ export interface CandidatePlan {
   actions: string[];
 }
 
+/**
+ * What an investigator may suggest the owner do next, each one mapped onto
+ * something the incident card can already do. `send-back` is Send it back
+ * with a prefilled note, `open-settings` only opens a project settings
+ * section, `close-provider` is Close without action (a signal that fails
+ * again opens or reopens an incident). None of them is a new server action.
+ */
+export const NEXT_STEP_KINDS = [
+  "send-back",
+  "open-settings",
+  "close-provider",
+] as const;
+export type NextStepKind = (typeof NEXT_STEP_KINDS)[number];
+
+/** The project settings an `open-settings` step may open. */
+export const NEXT_STEP_TARGETS = [
+  "access",
+  "production",
+  "signals",
+  "models",
+  "sandbox",
+] as const;
+export type NextStepTarget = (typeof NEXT_STEP_TARGETS)[number];
+
+/** The most next steps a report keeps, and their longest title and why. */
+export const NEXT_STEPS_MAX = 3;
+export const NEXT_STEP_TITLE_MAX = 60;
+export const NEXT_STEP_WHY_MAX = 200;
+
+/** `why` is empty when the investigator gave none. */
+export type NextStep =
+  | { kind: "send-back"; title: string; why: string; payload: string }
+  | {
+      kind: "open-settings";
+      title: string;
+      why: string;
+      payload: NextStepTarget;
+    }
+  | { kind: "close-provider"; title: string; why: string };
+
 export interface InvestigatorReport {
   role: "investigator";
   summary: string;
@@ -230,6 +270,8 @@ export interface InvestigatorReport {
   claims: Claim[];
   notePath: string;
   runbookPaths: string[];
+  /** Suggested next steps for the owner, at most NEXT_STEPS_MAX. */
+  nextSteps?: NextStep[];
 }
 
 export type ClaimStatus = "verified" | "refuted" | "unverifiable";

@@ -9,6 +9,8 @@
 // line that says it is data, not instructions.
 import {
   describeIndependence,
+  NEXT_STEP_TARGETS,
+  NEXT_STEPS_MAX,
   type AgentRole,
   type CandidateState,
   type IncidentAction,
@@ -418,9 +420,45 @@ export function buildInvestigatorPrompt(
       notePath,
       runbookPaths: [runbooks[1]],
     }),
+    "",
+    ...NEXT_STEPS_BRIEF,
   );
   return out.join("\n");
 }
+
+/** When and how the investigator suggests next steps for the owner. */
+const NEXT_STEPS_BRIEF = [
+  "## Next steps for the owner",
+  "",
+  `When the owner has to decide what happens next (no candidate, or a cause you could not reach), add nextSteps to the report: at most ${NEXT_STEPS_MAX}, best first. Leave it out when a candidate speaks for itself. They are suggestions the owner picks from, never actions: Sessions offers them beside its own decisions and changes nothing until the owner answers.`,
+  "Each step is { title, why, kind, payload }. The title is a short plain instruction (at most 60 characters), the why one line saying what it would settle. kind is one of:",
+  "- send-back: another round for you. payload is the note you would want back, written as the owner's instruction; the owner can edit it before sending.",
+  `- open-settings: open one of the project's settings so the owner can grant or fix something you lacked. payload is one of ${NEXT_STEP_TARGETS.join(", ")}: access (what agents may use: connections, hosts, keychain), production (production Runners), signals (the project's signals and incident policy), models, sandbox (where agents run).`,
+  "- close-provider: close the incident without action because the cause is on a provider's side. No payload. If the signal fails again, Sessions opens or reopens an incident.",
+  "Any other kind or target is dropped. For example, when the cause can only be read in logs you cannot reach:",
+  "",
+  jsonBlock("json", {
+    nextSteps: [
+      {
+        title: "Let agents read the search service's logs",
+        why: "Its logs say which of the 452, 429 or 407 it is",
+        kind: "open-settings",
+        payload: "access",
+      },
+      {
+        title: "Check the proxy's 407s first",
+        why: "A 407 is the cheapest of the three to rule out",
+        kind: "send-back",
+        payload: "Rule out the proxy's 407 responses before the 452s and 429s.",
+      },
+      {
+        title: "Close it as the provider's problem",
+        why: "Every candidate is on the provider's side",
+        kind: "close-provider",
+      },
+    ],
+  }),
+];
 
 export function buildSendBackMessage(
   round: number,

@@ -547,3 +547,141 @@ test("claim texts carry no backticks, so the verifier can quote them exactly", (
   );
   expect("error" in v ? v.error : v.claims[0]?.status).toBe("verified");
 });
+
+const searchLogs = {
+  title: "Give it the search service's logs",
+  why: "The cause is only in logs it cannot reach",
+  kind: "open-settings",
+  payload: "access",
+};
+const askAgain = {
+  title: "Check the proxy's 407s first",
+  why: "A 407 is the cheapest of the three to rule out",
+  kind: "send-back",
+  payload: "Look at the proxy's 407 responses before the 452s and 429s.",
+};
+const providerSide = {
+  title: "Close as the provider's problem",
+  why: "Every candidate is on the provider's side",
+  kind: "close-provider",
+};
+
+test("keeps valid next steps in order", () => {
+  const r = parseInvestigatorReport(
+    fence({ ...good, nextSteps: [searchLogs, askAgain, providerSide] }),
+    ctx,
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.nextSteps).toEqual([
+    {
+      kind: "open-settings",
+      title: searchLogs.title,
+      why: searchLogs.why,
+      payload: "access",
+    },
+    {
+      kind: "send-back",
+      title: askAgain.title,
+      why: askAgain.why,
+      payload: askAgain.payload,
+    },
+    {
+      kind: "close-provider",
+      title: providerSide.title,
+      why: providerSide.why,
+    },
+  ]);
+});
+
+test("a report without next steps has none", () => {
+  const r = parseInvestigatorReport(fence({ ...good, nextSteps: [] }), ctx);
+  if ("error" in r) throw new Error(r.error);
+  expect(r).not.toHaveProperty("nextSteps");
+});
+
+test("an unknown kind or target is dropped, not the report", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      nextSteps: [
+        { title: "Raise the budget", kind: "raise-budget", payload: "100" },
+        { ...searchLogs, payload: "billing" },
+        { ...searchLogs, title: "" },
+        "Pause the worker",
+        { ...askAgain, extra: 1 },
+      ],
+    }),
+    { ...ctx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.nextSteps?.map((s) => s.kind)).toEqual(["send-back"]);
+  expect(r.nextSteps?.[0]).not.toHaveProperty("extra");
+  expect(warnings).toEqual([
+    'Next step 1 (Raise the budget) had kind "raise-budget", not one of send-back, open-settings, close-provider; dropped',
+    `Next step 2 (${searchLogs.title}) opens "billing", not one of access, production, signals, models, sandbox; dropped`,
+    "Next step 3 had no title; dropped",
+    "Next step 4 was not an object; dropped",
+  ]);
+});
+
+test("next steps past three are dropped, and long text is cut", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      nextSteps: [
+        { ...askAgain, title: "x".repeat(200), why: "y\n".repeat(300) },
+        { ...askAgain, payload: undefined },
+        { ...searchLogs, payload: " Production " },
+        providerSide,
+        providerSide,
+      ],
+    }),
+    { ...ctx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  const steps = r.nextSteps ?? [];
+  expect(steps).toHaveLength(3);
+  expect(steps[0]!.title).toHaveLength(60);
+  expect(steps[0]!.title.endsWith("…")).toBe(true);
+  expect(steps[0]!.why.length).toBeLessThanOrEqual(200);
+  expect(steps[0]!.why).not.toContain("\n");
+  // A send-back without a note sends its title.
+  expect(steps[1]).toMatchObject({
+    kind: "send-back",
+    payload: askAgain.title,
+  });
+  expect(steps[2]).toMatchObject({
+    kind: "open-settings",
+    payload: "production",
+  });
+  expect(warnings).toEqual(["Only 3 next steps are kept; dropped 2 more"]);
+});
+
+test("next steps that are not a list never refuse the report", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    fence({ ...good, nextSteps: { kind: "send-back" } }),
+    { ...ctx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r).not.toHaveProperty("nextSteps");
+  expect(warnings).toEqual(["nextSteps was not a list; dropped"]);
+});
+
+test("the verifier's report never carries next steps", () => {
+  const r = parseVerifierReport(
+    fence({
+      role: "verifier",
+      verdict: "certain",
+      reasons: [],
+      proofAccepted: false,
+      claims: [{ text: "A", status: "verified", evidence: "seen" }],
+      nextSteps: [askAgain],
+    }),
+    { claims: [{ text: "A" }] },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r).not.toHaveProperty("nextSteps");
+});
