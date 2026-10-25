@@ -119,10 +119,12 @@ mock.module("../lib/people", () => ({
 
 const { ConfirmDialog } = await import("../ui/confirm");
 const { Button } = await import("../ui/button");
-const { Textarea } = await import("../ui/input");
+const { Input, Textarea } = await import("../ui/input");
 const { Menu } = await import("../ui/menu");
 const { InlineAlert } = await import("../ui/state");
 const { SupportMessageList } = await import("./SupportMessageList");
+const { SupportSessionPill, SupportThreadHeader } =
+  await import("./SupportThread");
 const {
   EmailConversation,
   EmailConversationActions,
@@ -174,10 +176,11 @@ test("the header chip names the inbox and the project", async () => {
   });
   await settle();
   expect(fetchSupportConversation).toHaveBeenCalledWith("sc_0001");
-  const all = strings(pane.output());
-  expect(all).toContain("Acme help · acme");
-  expect(all).toContain("Login broken");
-  expect(all).toContain("grace@example.test");
+  expect(strings(pane.output())).toContain("Acme help · acme");
+  const header = find(pane.output(), SupportThreadHeader);
+  expect(header?.props.placement).toBe("bar");
+  expect(header?.props.subject).toBe("Login broken");
+  expect(header?.props.customerEmail).toBe("grace@example.test");
 });
 
 test("a conversation with a session wears the Open session pill", async () => {
@@ -190,12 +193,9 @@ test("a conversation with a session wears the Open session pill", async () => {
     onOpenSession: (id) => opened.push(id),
   });
   await settle();
-  const pill = find<React.ComponentProps<"button">>(
-    pane.output(),
-    "button",
-    (p) => p["aria-label"] === "Open session",
-  );
-  press(pill?.props.onClick);
+  const pill = find(pane.output(), SupportSessionPill);
+  expect(pill?.props.sessionId).toBe("s1");
+  pill?.props.onOpenSession("s1");
   expect(opened).toEqual(["s1"]);
 });
 
@@ -257,6 +257,83 @@ test("a prepared issue shows its text and offers Create issue and Dismiss", asyn
   );
   await settle();
   expect(approveIssue).toHaveBeenCalledWith("sc_0001", 1);
+});
+
+test("a prepared issue reads as posted until Edit, then sends only the edits", async () => {
+  const onApprove = mock();
+  const props = {
+    issue: {
+      title: "Login fails",
+      body: "Steps",
+      requestedBy: { kind: "agent" as const, sessionId: "s1" },
+    },
+    isInstanceOwner: true,
+    busy: false,
+    onApprove,
+    onDismiss: () => {},
+  };
+  const card = harness.mount(PendingIssueCard, props);
+  expect(find(card.output(), Input)).toBeUndefined();
+  expect(find(card.output(), Textarea)).toBeUndefined();
+  press(
+    find(card.output(), Button, (p) => p.children === "Edit")?.props.onClick,
+  );
+  await settle();
+  const title = find(card.output(), Input);
+  expect(title?.props.value).toBe("Login fails");
+  expect(find(card.output(), Textarea)?.props.value).toBe("Steps");
+  // SAFETY: the field's change handler reads only `target.value`.
+  title?.props.onChange?.({
+    target: { value: "Sign-in fails on Safari" },
+  } as never);
+  await settle();
+  press(
+    find(card.output(), Button, (p) => p.children === "Create issue")?.props
+      .onClick,
+  );
+  expect(onApprove).toHaveBeenLastCalledWith({
+    title: "Sign-in fails on Safari",
+  });
+
+  press(
+    find(card.output(), Button, (p) => p.children === "Cancel edits")?.props
+      .onClick,
+  );
+  await settle();
+  expect(find(card.output(), Input)).toBeUndefined();
+  expect(strings(card.output())).toContain("Login fails");
+  press(
+    find(card.output(), Button, (p) => p.children === "Create issue")?.props
+      .onClick,
+  );
+  expect(onApprove).toHaveBeenLastCalledWith(undefined);
+});
+
+test("Create issue passes a person's edits to the server", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        revision: 3,
+        pendingIssue: {
+          title: "Login fails",
+          body: "Steps",
+          requestedBy: { kind: "agent", sessionId: "s1" },
+        },
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  find(pane.output(), PendingIssueCard)?.props.onApprove({
+    body: "Steps, edited",
+  });
+  await settle();
+  expect(approveIssue).toHaveBeenCalledWith("sc_0001", 3, {
+    body: "Steps, edited",
+  });
 });
 
 test("a prepared fix task, marked as from a customer email, starts as edited", async () => {

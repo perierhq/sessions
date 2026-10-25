@@ -6,7 +6,7 @@ import type {
   SupportConversationView,
   SupportIntent,
 } from "../../shared/support";
-import { useIsPhone } from "../hooks/useIsPhone";
+import { useSupportPaneLayout } from "../hooks/useSupportPaneLayout";
 import {
   approveIssue,
   closeConversation,
@@ -24,18 +24,8 @@ import {
 import { API_SWR_OPTIONS, apiSWRKey } from "../lib/api-swr";
 import { errorMessage } from "../lib/error-message";
 import { usePeople } from "../lib/people";
-import {
-  FLOATING_PILL,
-  FLOATING_PILL_BUTTON,
-} from "../lib/session-viewer-classes";
-import { mineStatus } from "../lib/sidebar-lanes";
-import { MINE_STATUS_META } from "../lib/sidebar-types";
-import {
-  PREPARED_CARD,
-  PREPARED_TEXT,
-  SUPPORT_COLUMN_BAR,
-  SUPPORT_TOP_RAIL,
-} from "../lib/support-classes";
+import { FLOATING_PILL } from "../lib/session-viewer-classes";
+import { PREPARED_CARD, PREPARED_TEXT } from "../lib/support-classes";
 import { supportItemProviderId } from "../lib/support-list";
 import {
   agentCantStart,
@@ -55,7 +45,6 @@ import { Modal } from "../ui/modal";
 import { OptionSelect } from "../ui/select";
 import { EmptyState, InlineAlert, LoadingState } from "../ui/state";
 import { toast } from "../ui/toast";
-import { Tooltip } from "../ui/tooltip";
 import {
   IconCheck,
   IconDotsHorizontal,
@@ -65,6 +54,14 @@ import {
   IconRestore,
 } from "./icons";
 import { SupportMessageList } from "./SupportMessageList";
+import {
+  SupportRailButton,
+  SupportSessionPill,
+  SupportThreadBar,
+  SupportThreadBody,
+  SupportThreadFooter,
+  SupportThreadHeader,
+} from "./SupportThread";
 import { SupportReplyBox } from "./SupportReplyBox";
 
 /**
@@ -118,7 +115,6 @@ export function EmailConversation({
   className?: string;
 }) {
   const id = supportItemProviderId(itemId);
-  const isPhone = useIsPhone();
   const people = usePeople();
   const { data: inboxes } = useSWR(
     apiSWRKey.supportInboxes(),
@@ -130,8 +126,10 @@ export function EmailConversation({
   const [error, setError] = useState<string | null>(null);
   const [forgotten, setForgotten] = useState<ForgetCustomerResult | null>(null);
   const [issueBusy, setIssueBusy] = useState(false);
-  const [paneEl, setPaneEl] = useState<HTMLDivElement | null>(null);
-  const [paneWidth, setPaneWidth] = useState(0);
+  const { paneRef, inBar, actionsInBar } = useSupportPaneLayout(
+    headerInBar,
+    ACTIONS_IN_BAR_MIN,
+  );
   const aliveRef = useRef(true);
 
   useEffect(() => {
@@ -140,16 +138,6 @@ export function EmailConversation({
       aliveRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!paneEl) return;
-    setPaneWidth(paneEl.getBoundingClientRect().width);
-    const ro = new ResizeObserver(([entry]) => {
-      setPaneWidth(entry.contentRect.width);
-    });
-    ro.observe(paneEl);
-    return () => ro.disconnect();
-  }, [paneEl]);
 
   function reload() {
     return fetchSupportConversation(id)
@@ -179,8 +167,6 @@ export function EmailConversation({
   }, [id, interval]);
 
   const c = view?.conversation ?? null;
-  const headerInTopBar = !!headerInBar && !isPhone;
-  const actionsInBar = headerInTopBar && paneWidth >= ACTIONS_IN_BAR_MIN;
   const chip = c ? `${view?.inbox?.label || "Email"} · ${c.project}` : null;
   const customerName = c?.customer.name || "";
   const customerEmail = c?.customer.address || "";
@@ -204,19 +190,15 @@ export function EmailConversation({
     />
   );
 
-  const sessionState = session
-    ? MINE_STATUS_META.find((m) => m.key === mineStatus(session))
-    : null;
-  const sessionLabel =
-    sessionState?.key === "needsinput" || sessionState?.key === "inprogress"
-      ? sessionState.label
-      : "Open session";
-
-  async function issue(action: "approve" | "dismiss") {
+  async function issue(action: "approve" | "dismiss", edit?: IssueEdit) {
     if (!c || issueBusy) return;
     setIssueBusy(true);
     await (
-      action === "approve" ? approveIssue(c.id, c.revision) : dismissIssue(c.id)
+      action === "approve"
+        ? edit
+          ? approveIssue(c.id, c.revision, edit)
+          : approveIssue(c.id, c.revision)
+        : dismissIssue(c.id)
     )
       .then((next) => {
         if (aliveRef.current) setView(next);
@@ -247,190 +229,147 @@ export function EmailConversation({
       </div>
     );
 
+  const statusNode = statusWord && (
+    <span className="shrink-0 text-meta font-medium text-faint">
+      {statusWord}
+    </span>
+  );
+  const chipNode = chip && (
+    <span className={CHIP} title={chip}>
+      {chip}
+    </span>
+  );
+  const identity = c && {
+    subject: c.subject,
+    subjectFallback: "No subject",
+    customerName,
+    customerEmail,
+  };
+
+  const railNode = rail && c && (
+    <>
+      {c.sessionId ? (
+        <SupportSessionPill
+          sessionId={c.sessionId}
+          session={session}
+          tooltip="Open the support agent's session"
+          onOpenSession={onOpenSession}
+        />
+      ) : cantStart ? (
+        <div
+          className={cn(
+            FLOATING_PILL,
+            "pointer-events-auto min-w-0 font-normal",
+          )}
+          role="status"
+        >
+          <span className="shrink-0 font-semibold text-fg">
+            Agent can't start
+          </span>
+          <span className="min-w-0 truncate text-dim" title={cantStart}>
+            {cantStart}
+          </span>
+        </div>
+      ) : null}
+      {c.fixSessionId && (
+        <SupportRailButton
+          aria-label="Open fix session"
+          onClick={() => onOpenSession(c.fixSessionId!)}
+        >
+          <span className="min-w-0 truncate">
+            {fixSessionLabel(view?.fixSession ?? null)}
+          </span>
+        </SupportRailButton>
+      )}
+    </>
+  );
+
   return (
     <div
-      ref={setPaneEl}
+      ref={paneRef}
       className={cn("flex min-h-0 flex-1 flex-col", className)}
     >
-      {headerInTopBar && (
-        <div className={SUPPORT_COLUMN_BAR}>
-          {c && (
-            <>
-              <div className="flex min-w-0 flex-1 flex-col justify-center">
-                <h2
-                  className="m-0 truncate text-item-title font-semibold text-fg"
-                  title={c.subject || undefined}
-                >
-                  {c.subject || "No subject"}
-                </h2>
-                <div className="flex min-w-0 items-center gap-1.5 text-meta">
-                  {customerName && (
-                    <>
-                      <span className="truncate text-dim">{customerName}</span>
-                      <span className="text-faint">·</span>
-                    </>
-                  )}
-                  <span className="truncate text-faint">{customerEmail}</span>
-                </div>
-              </div>
-              {statusWord && (
-                <span className="shrink-0 text-meta font-medium text-faint">
-                  {statusWord}
-                </span>
-              )}
-              {chip && (
-                <span className={CHIP} title={chip}>
-                  {chip}
-                </span>
-              )}
-              {actionsInBar && actions}
-            </>
+      {inBar && (
+        <SupportThreadBar>
+          {identity && (
+            <SupportThreadHeader
+              placement="bar"
+              {...identity}
+              meta={
+                <>
+                  {statusNode}
+                  {chipNode}
+                </>
+              }
+              actions={actionsInBar && actions}
+            />
           )}
-        </div>
+        </SupportThreadBar>
       )}
-      <div className="relative min-h-0 flex-1">
-        <div className="h-full overflow-y-auto">
-          <div
-            className={cn(
-              "mx-auto w-full max-w-[760px] px-5 pb-5",
-              rail ? "pt-12" : headerInTopBar ? "pt-1" : "pt-6",
+      <SupportThreadBody rail={railNode} inBar={inBar}>
+        {loading && !c ? (
+          <LoadingState>Loading conversation…</LoadingState>
+        ) : error && !c ? (
+          <InlineAlert>Couldn't load this conversation: {error}</InlineAlert>
+        ) : c && identity ? (
+          <>
+            {!inBar && (
+              <SupportThreadHeader
+                placement="inline"
+                {...identity}
+                meta={
+                  (chipNode || statusNode) && (
+                    <>
+                      {chipNode}
+                      {statusNode}
+                    </>
+                  )
+                }
+              />
             )}
-          >
-            {loading && !c ? (
-              <LoadingState>Loading conversation…</LoadingState>
-            ) : error && !c ? (
-              <InlineAlert>
-                Couldn't load this conversation: {error}
-              </InlineAlert>
-            ) : c ? (
-              <>
-                {!headerInTopBar && (
-                  <>
-                    <div className="flex min-w-0 items-center gap-2.5">
-                      <span
-                        className="truncate text-item-title font-semibold text-fg"
-                        title={customerEmail}
-                      >
-                        {customerName || customerEmail}
-                      </span>
-                      {customerName && (
-                        <span className="truncate text-label text-faint">
-                          {customerEmail}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-2 text-section-title font-semibold text-fg">
-                      {c.subject || "No subject"}
-                    </div>
-                    <div className="mt-2 flex min-w-0 items-center gap-2">
-                      {chip && (
-                        <span className={CHIP} title={chip}>
-                          {chip}
-                        </span>
-                      )}
-                      {statusWord && (
-                        <span className="text-meta font-medium text-faint">
-                          {statusWord}
-                        </span>
-                      )}
-                    </div>
-                  </>
-                )}
-                {!actionsInBar && actions}
-                <SupportMessageList
-                  entries={timelineEntries(c)}
-                  threadTitle={c.subject}
-                  className="mt-5"
+            {!actionsInBar && actions}
+            <SupportMessageList
+              entries={timelineEntries(c)}
+              threadTitle={c.subject}
+              className="mt-5"
+            />
+            {/* What the agent prepared for a person ends the thread, so
+                the reply box stays in reach on a phone. */}
+            <div className="mt-4 flex flex-col gap-3 empty:hidden">
+              {c.pendingIssue && (
+                <PendingIssueCard
+                  key={`${c.pendingIssue.title}\n${c.pendingIssue.body}`}
+                  issue={c.pendingIssue}
+                  isInstanceOwner={inboxes?.isInstanceOwner ?? false}
+                  busy={issueBusy}
+                  onApprove={(edit) => void issue("approve", edit)}
+                  onDismiss={() => void issue("dismiss")}
                 />
-                {/* What the agent prepared for a person ends the thread, so
-                    the reply box stays in reach on a phone. */}
-                <div className="mt-4 flex flex-col gap-3 empty:hidden">
-                  {c.pendingIssue && (
-                    <PendingIssueCard
-                      issue={c.pendingIssue}
-                      isInstanceOwner={inboxes?.isInstanceOwner ?? false}
-                      busy={issueBusy}
-                      onApprove={() => void issue("approve")}
-                      onDismiss={() => void issue("dismiss")}
-                    />
-                  )}
-                  {c.fixTask && !c.fixSessionId && (
-                    <FixTaskCard
-                      key={`${c.fixTask.at}`}
-                      conversation={c}
-                      onStarted={setView}
-                      onRefetch={() => void reload()}
-                    />
-                  )}
-                  {fixedNote && c.status !== "spam" && (
-                    <FixedNoteCard
-                      key={fixedNote.at}
-                      conversation={c}
-                      note={fixedNote}
-                      onSent={setView}
-                      onRefetch={() => void reload()}
-                    />
-                  )}
-                </div>
-              </>
-            ) : null}
-          </div>
-        </div>
-        {rail && c && (
-          <div className={SUPPORT_TOP_RAIL}>
-            {c.sessionId ? (
-              <Tooltip label="Open the support agent's session">
-                <button
-                  type="button"
-                  aria-label={sessionLabel}
-                  className={cn(FLOATING_PILL_BUTTON, "pointer-events-auto")}
-                  onClick={() => onOpenSession(c.sessionId!)}
-                >
-                  <span
-                    className="size-[7px] shrink-0 rounded-full"
-                    style={{
-                      backgroundColor:
-                        sessionState?.dotColor || "var(--text-faint)",
-                    }}
-                    aria-hidden
-                  />
-                  <span className="min-w-0 truncate">{sessionLabel}</span>
-                </button>
-              </Tooltip>
-            ) : cantStart ? (
-              <div
-                className={cn(
-                  FLOATING_PILL,
-                  "pointer-events-auto min-w-0 font-normal",
-                )}
-                role="status"
-              >
-                <span className="shrink-0 font-semibold text-fg">
-                  Agent can't start
-                </span>
-                <span className="min-w-0 truncate text-dim" title={cantStart}>
-                  {cantStart}
-                </span>
-              </div>
-            ) : null}
-            {c.fixSessionId && (
-              <button
-                type="button"
-                aria-label="Open fix session"
-                className={cn(FLOATING_PILL_BUTTON, "pointer-events-auto")}
-                onClick={() => onOpenSession(c.fixSessionId!)}
-              >
-                <span className="min-w-0 truncate">
-                  {fixSessionLabel(view?.fixSession ?? null)}
-                </span>
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+              {c.fixTask && !c.fixSessionId && (
+                <FixTaskCard
+                  key={`${c.fixTask.at}`}
+                  conversation={c}
+                  onStarted={setView}
+                  onRefetch={() => void reload()}
+                />
+              )}
+              {fixedNote && c.status !== "spam" && (
+                <FixedNoteCard
+                  key={fixedNote.at}
+                  conversation={c}
+                  note={fixedNote}
+                  onSent={setView}
+                  onRefetch={() => void reload()}
+                />
+              )}
+            </div>
+          </>
+        ) : null}
+      </SupportThreadBody>
 
       {c && (
-        <div className="mx-auto flex w-full max-w-[760px] shrink-0 flex-col gap-3 px-5 pb-5">
+        <SupportThreadFooter>
           {stopped && (
             <InlineAlert
               variant="warn"
@@ -452,7 +391,7 @@ export function EmailConversation({
               onRefetch={() => void reload()}
             />
           )}
-        </div>
+        </SupportThreadFooter>
       )}
     </div>
   );
@@ -467,8 +406,13 @@ function fixSessionLabel(
   return "Open fix session";
 }
 
+/** A person's changes to the prepared issue, only the fields they changed. */
+type IssueEdit = { title?: string; body?: string };
+
 /** The issue the agent prepared: its title and scrubbed text as they
- *  would be posted. A person creates it or dismisses it. */
+ *  would be posted. A person creates it, edits it first, or dismisses it.
+ *  The text reads as it will be posted until Edit opens it in fields. Key
+ *  it on the agent's text, so a new preparation starts unedited. */
 export function PendingIssueCard({
   issue,
   isInstanceOwner,
@@ -479,22 +423,73 @@ export function PendingIssueCard({
   issue: NonNullable<SupportConversation["pendingIssue"]>;
   isInstanceOwner: boolean;
   busy: boolean;
-  onApprove: () => void;
+  /** Create it, with the person's edits when there are any. */
+  onApprove: (edit?: IssueEdit) => void;
   onDismiss: () => void;
 }) {
   const copy = pendingIssueCopy(issue, isInstanceOwner);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(issue.title);
+  const [body, setBody] = useState(issue.body);
+  const titleRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing) titleRef.current?.focus();
+  }, [editing]);
+
+  function approve() {
+    const edit: IssueEdit = {};
+    if (title.trim() !== issue.title) edit.title = title.trim();
+    if (body.trim() !== issue.body.trim()) edit.body = body.trim();
+    onApprove(
+      edit.title !== undefined || edit.body !== undefined ? edit : undefined,
+    );
+  }
+
+  function cancelEdit() {
+    setTitle(issue.title);
+    setBody(issue.body);
+    setEditing(false);
+  }
+
   return (
     <div className={PREPARED_CARD}>
       <p className="m-0 text-supporting text-fg">{copy.text}</p>
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <p className="m-0 text-label font-medium text-fg [overflow-wrap:anywhere]">
-          {issue.title}
-        </p>
-        {issue.ghRepo && (
-          <p className="m-0 truncate text-meta text-faint">{issue.ghRepo}</p>
-        )}
-        {issue.body && <div className={PREPARED_TEXT}>{issue.body}</div>}
-      </div>
+      {editing ? (
+        <div className="flex min-w-0 flex-col gap-2">
+          <Field label="Title">
+            <Input
+              ref={titleRef}
+              value={title}
+              maxLength={256}
+              disabled={busy}
+              onChange={(e) => setTitle(e.target.value)}
+              className="phone:min-h-11 phone:text-input-phone"
+            />
+          </Field>
+          {issue.ghRepo && (
+            <p className="m-0 truncate text-meta text-faint">{issue.ghRepo}</p>
+          )}
+          <Field label="Description">
+            <Textarea
+              value={body}
+              rows={6}
+              disabled={busy}
+              onChange={(e) => setBody(e.target.value)}
+              className="phone:text-input-phone"
+            />
+          </Field>
+        </div>
+      ) : (
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <p className="m-0 text-label font-medium text-fg [overflow-wrap:anywhere]">
+            {title}
+          </p>
+          {issue.ghRepo && (
+            <p className="m-0 truncate text-meta text-faint">{issue.ghRepo}</p>
+          )}
+          {body && <div className={PREPARED_TEXT}>{body}</div>}
+        </div>
+      )}
       {copy.why && <p className="m-0 text-label text-faint">{copy.why}</p>}
       <div className="flex flex-wrap gap-2">
         {copy.canApprove && (
@@ -502,12 +497,34 @@ export function PendingIssueCard({
             size="sm"
             variant="default"
             className={ACTION}
-            disabled={busy}
-            onClick={onApprove}
+            disabled={busy || !title.trim()}
+            onClick={approve}
           >
             Create issue
           </Button>
         )}
+        {copy.canApprove &&
+          (editing ? (
+            <Button
+              size="sm"
+              variant="default"
+              className={ACTION}
+              disabled={busy}
+              onClick={cancelEdit}
+            >
+              Cancel edits
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="default"
+              className={ACTION}
+              disabled={busy}
+              onClick={() => setEditing(true)}
+            >
+              Edit
+            </Button>
+          ))}
         <Button
           size="sm"
           variant="default"
