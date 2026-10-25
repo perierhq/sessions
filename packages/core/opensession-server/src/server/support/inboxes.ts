@@ -8,6 +8,7 @@
 // hear every committed create, update and delete (the transports reconnect
 // from them). Nothing runs at import.
 import { randomUUIDv7 } from "bun";
+import { isIP } from "node:net";
 import { AUTONOMY_LEVELS } from "../../shared/incident-response";
 import {
   BUG_HANDLING,
@@ -47,6 +48,7 @@ const VETO_MIN_MS = 60_000;
 const VETO_MAX_MS = 86_400_000;
 const SEND_LIMIT_MAX = 120;
 const LABEL_MAX = 120;
+const PASSWORD_MAX = 1024;
 
 // Bound on first use, never at import: the catalog client is a live effect.
 let inboxDocs: ReturnType<typeof catalogDocuments> | undefined;
@@ -62,7 +64,7 @@ export function __setInboxProjectCheckForTest(
 }
 
 function projectExists(id: string): boolean {
-  return projectCheck ? projectCheck(id) : id in configuredRepos();
+  return projectCheck ? projectCheck(id) : Object.hasOwn(configuredRepos(), id);
 }
 
 export type InboxListener = (
@@ -77,6 +79,16 @@ export function onInboxChange(listener: InboxListener): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** What a failed secret write or delete logs: the error's code or name only,
+ *  since a parse error's message can quote the store. */
+function warnSecret(action: string, ref: string, error: unknown): void {
+  const e = error as NodeJS.ErrnoException | null;
+  console.warn(
+    `[support] couldn't ${action} inbox secret ${ref}:`,
+    e?.code ?? e?.name ?? "error",
+  );
 }
 
 /** Each listener on its own microtask, as the conversation store does. */
@@ -121,17 +133,45 @@ const isInt = (value: unknown, min: number, max: number) =>
   value >= min &&
   value <= max;
 
-const HOST = /^[A-Za-z0-9._:[\]-]{1,253}$/;
-// No whitespace, at most one `@` with something on both sides.
-const ADDRESS = /^[^\s@<>]+@[^\s@<>]+$/;
+// One RFC 1123 label; a host name is up to 253 characters of them.
+const HOST_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+// Exactly one address: one `@`, no whitespace, and none of the characters
+// that would make a header carry a second address or a display name.
+const ADDRESS = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
+
+/** A host name or an IP literal (IPv6 without brackets). */
+function hostError(host: unknown, name: string): string | null {
+  if (typeof host === "string" && isIP(host)) return null;
+  if (typeof host === "string" && /^[^:]+:\d+$/.test(host))
+    return `${name} host can't include a port. Put it in the port field`;
+  const labels = typeof host === "string" ? host.split(".") : [];
+  if (
+    typeof host !== "string" ||
+    host.length > 253 ||
+    !labels.every((label) => HOST_LABEL.test(label)) ||
+    // An all-numeric last label is a malformed IP address, not a name.
+    /^\d+$/.test(labels.at(-1)!)
+  )
+    return `${name} host must be a host name or IP address`;
+  return null;
+}
+
+function passwordError(password: unknown, which: Which): string | null {
+  const name = SERVER_NAMES[which];
+  if (typeof password !== "string" || !password)
+    return `${name} password is required`;
+  if (password.length > PASSWORD_MAX || /[\r\n\0]/.test(password))
+    return `${name} password must be up to ${PASSWORD_MAX} characters, without line breaks`;
+  return null;
+}
 
 function serverError(server: MailServerConfig, which: Which): string | null {
   const name = SERVER_NAMES[which];
   if (!server || typeof server !== "object")
     return `${name} settings are missing`;
-  if (typeof server.host !== "string" || !HOST.test(server.host))
-    return `${name} host must be a host name without spaces`;
+  const host = hostError(server.host, name);
+  if (host) return host;
   if (!isInt(server.port, 1, 65_535))
     return `${name} port must be a whole number from 1 to 65535`;
   if (typeof server.secure !== "boolean")
@@ -162,10 +202,15 @@ export function validateInbox(
   if (
     typeof config.label !== "string" ||
     !config.label.trim() ||
-    config.label.length > LABEL_MAX
+    config.label.length > LABEL_MAX ||
+    CONTROL.test(config.label)
   )
-    return `Label is required, up to ${LABEL_MAX} characters`;
-  if (typeof config.address !== "string" || !ADDRESS.test(config.address))
+    return `Label is required, up to ${LABEL_MAX} characters on one line`;
+  if (
+    typeof config.address !== "string" ||
+    !ADDRESS.test(config.address) ||
+    CONTROL.test(config.address)
+  )
     return "Address must be an email address like help@example.test";
   if (config.channel !== "email") return "Channel must be email";
   if (typeof config.project !== "string" || !projectExists(config.project))
@@ -212,7 +257,7 @@ export function validateInbox(
 // ── Views (pure) ────────────────────────────────────────────────────────
 
 function serverView({ passwordRef, ...rest }: MailServerConfig) {
-  return { ...rest, hasPassword: passwordRef !== null };
+  return { ...rest, hasPassword: Boolean(passwordRef) };
 }
 
 /** What the API shows: no secret refs, whether each password is set. */
@@ -251,18 +296,33 @@ export async function inboxPassword(
   return ref ? resolveWorkspaceSecretAsync(ref) : undefined;
 }
 
-const trimServer = (input: ServerInput): MailServerConfig => ({
-  host: typeof input?.host === "string" ? input.host.trim() : input?.host,
-  port: input?.port,
-  secure: input?.secure,
-  user: typeof input?.user === "string" ? input.user.trim() : input?.user,
-  passwordRef: null,
-});
+/** Null when `input` isn't an object; field types are left to serverError. */
+const trimServer = (input: ServerInput): MailServerConfig | null =>
+  input && typeof input === "object"
+    ? {
+        host: typeof input.host === "string" ? input.host.trim() : input.host,
+        port: input.port,
+        secure: input.secure,
+        user: typeof input.user === "string" ? input.user.trim() : input.user,
+        passwordRef: null,
+      }
+    : null;
 
 export async function createInbox(
   input: NewInbox,
   by: string,
 ): Promise<{ ok: true; inbox: InboxConfig } | { ok: false; error: string }> {
+  if (!input || typeof input !== "object")
+    return { ok: false, error: "Inbox settings are missing" };
+  // Server settings first: defaultInboxConfig reads the SMTP host.
+  const servers = {
+    imap: trimServer(input.imap),
+    smtp: trimServer(input.smtp),
+  };
+  for (const which of SERVERS) {
+    const error = serverError(servers[which]!, which);
+    if (error) return { ok: false, error };
+  }
   let owner: string;
   if (input.owner !== undefined) {
     const resolved = resolveOwner(input.owner);
@@ -283,17 +343,15 @@ export async function createInbox(
     owner,
     createdBy: by,
     now,
-    imap: trimServer(input.imap),
-    smtp: trimServer(input.smtp),
+    imap: servers.imap!,
+    smtp: servers.smtp!,
   });
   const invalid = validateInbox(draft, projectExists);
   if (invalid) return { ok: false, error: invalid };
-  for (const which of SERVERS)
-    if (typeof input[which].password !== "string" || !input[which].password)
-      return {
-        ok: false,
-        error: `${SERVER_NAMES[which]} password is required`,
-      };
+  for (const which of SERVERS) {
+    const error = passwordError(input[which].password, which);
+    if (error) return { ok: false, error };
+  }
 
   const refs: string[] = [];
   try {
@@ -373,8 +431,19 @@ function applyPatch(
   return next;
 }
 
-/** A new password (non-empty `password` in the patch) replaces the secret
- *  under the same ref; no password keeps the old one. */
+const SERVER_CHANGED = "Enter the password again when the server changes";
+
+/** Whether `next` would send the password somewhere `current` didn't. */
+const serverChanged = (current: MailServerConfig, next: MailServerConfig) =>
+  current.host !== next.host ||
+  current.port !== next.port ||
+  current.secure !== next.secure ||
+  current.user !== next.user;
+
+/** A new password (non-empty `password` in the patch) replaces the secret;
+ *  no password keeps the old one, unless the server's host, port, TLS or
+ *  user changes: then the password must come again, so a stored password
+ *  is never sent to a server it wasn't entered for. */
 export async function updateInbox(
   id: string,
   patch: InboxPatch,
@@ -395,24 +464,47 @@ export async function updateInbox(
   const invalid = validateInbox(next, projectExists);
   if (invalid) return { ok: false, status: 400, error: invalid };
 
-  // A password under a new ref is written before the commit, so the record
-  // never points at a missing secret; one under an existing ref after it,
-  // so a conflict never changes the password.
-  const before: string[] = [];
-  const after: Array<[Which, string, string]> = [];
+  const passwords: Partial<Record<Which, string>> = {};
   for (const which of SERVERS) {
     const password = patch[which]?.password;
-    if (typeof password !== "string" || !password) continue;
-    const existing = next[which].passwordRef;
-    if (existing) after.push([which, existing, password]);
-    else {
-      const ref = await putWorkspaceSecretAsync(
-        secretPurpose(id, which),
-        password,
-      );
-      before.push(ref);
-      next[which].passwordRef = ref;
+    if (password === undefined || password === "") {
+      if (serverChanged(current[which], next[which]))
+        return { ok: false, status: 400, error: SERVER_CHANGED };
+      continue;
     }
+    const error = passwordError(password, which);
+    if (error) return { ok: false, status: 400, error };
+    passwords[which] = password;
+  }
+
+  // A password for a changed server, or one with no ref yet, goes under a
+  // new ref before the commit: the record never points at a missing secret,
+  // nor pairs a new server with the old password. The old ref is deleted
+  // after the commit. A password for an unchanged server replaces the
+  // secret under its ref after the commit, so a conflict never changes it.
+  const before: string[] = [];
+  const retired: string[] = [];
+  const after: Array<[Which, string, string]> = [];
+  try {
+    for (const which of SERVERS) {
+      const password = passwords[which];
+      if (password === undefined) continue;
+      const existing = next[which].passwordRef;
+      if (existing && !serverChanged(current[which], next[which]))
+        after.push([which, existing, password]);
+      else {
+        const ref = await putWorkspaceSecretAsync(
+          secretPurpose(id, which),
+          password,
+        );
+        before.push(ref);
+        if (existing) retired.push(existing);
+        next[which].passwordRef = ref;
+      }
+    }
+  } catch (error) {
+    await Promise.allSettled(before.map(deleteWorkspaceSecretAsync));
+    throw error;
   }
 
   let stale = false;
@@ -443,10 +535,22 @@ export async function updateInbox(
       return { ok: false, status: 404, error: "That inbox doesn't exist" };
     return STALE;
   }
-  for (const [which, ref, password] of after)
-    await putWorkspaceSecretAsync(secretPurpose(id, which), password, ref);
-  notify(committed, previous);
-  return { ok: true, inbox: committed };
+  // Committed: listeners hear it even if a secret write below fails.
+  const saved = committed;
+  try {
+    for (const [which, ref, password] of after)
+      await putWorkspaceSecretAsync(secretPurpose(id, which), password, ref);
+  } finally {
+    notify(saved, previous);
+    const results = await Promise.allSettled(
+      retired.map(deleteWorkspaceSecretAsync),
+    );
+    results.forEach((result, i) => {
+      if (result.status === "rejected")
+        warnSecret("delete", retired[i]!, result.reason);
+    });
+  }
+  return { ok: true, inbox: saved };
 }
 
 /** Deletes the config and both secrets. Conversations stay. */
@@ -460,10 +564,20 @@ export async function deleteInbox(id: string, _by: string): Promise<boolean> {
   });
   const removed = previous as InboxConfig | null;
   if (!removed) return false;
-  for (const which of SERVERS) {
-    const ref = removed[which].passwordRef;
-    if (ref) await deleteWorkspaceSecretAsync(ref);
+  // The inbox is gone: listeners hear it whatever happens to the secrets.
+  try {
+    const refs = SERVERS.map((which) => removed[which].passwordRef).filter(
+      (ref): ref is string => Boolean(ref),
+    );
+    const results = await Promise.allSettled(
+      refs.map(deleteWorkspaceSecretAsync),
+    );
+    results.forEach((result, i) => {
+      if (result.status === "rejected")
+        warnSecret("delete", refs[i]!, result.reason);
+    });
+  } finally {
+    notify(null, removed);
   }
-  notify(null, removed);
   return true;
 }

@@ -95,6 +95,9 @@ export async function startMailFixture(
   };
 
   const smtp = new SMTPServer({
+    // A pooled client keeps a connection open; close() waits this long for
+    // it (30 s by default) before dropping it.
+    closeTimeout: 50,
     authOptional: true,
     allowInsecureAuth: true,
     disabledCommands: ["STARTTLS"],
@@ -128,7 +131,13 @@ export async function startMailFixture(
       });
     },
   });
-  fixture.smtpPort = await listen(smtp, () => smtp.server.address());
+  try {
+    fixture.smtpPort = await listen(smtp, () => smtp.server.address());
+  } catch (error) {
+    // The IMAP server is already listening: don't leak it.
+    await new Promise<void>((resolve) => imap.close(() => resolve()));
+    throw error;
+  }
   return fixture;
 }
 

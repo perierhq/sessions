@@ -65,9 +65,9 @@ afterAll(async () => {
 
 /** A connected, qualified This machine (container), certified unless told
  *  otherwise. */
-function readyPodman(certified = true) {
+async function readyPodman(certified = true) {
   writeFileSync(cfgPath(), "{}");
-  connectSandboxProvider("podman", {});
+  await connectSandboxProvider("podman", {});
   setSandboxConnectionQualification("podman", { status: "ready" });
   SANDBOX_PROVIDER_CERTIFICATIONS.podman = certified
     ? {
@@ -79,19 +79,19 @@ function readyPodman(certified = true) {
     : { certified: false, note: "not live-certified" };
 }
 
-test("true when the connection is qualified, certified and switched on", () => {
-  readyPodman();
+test("true when the connection is qualified, certified and switched on", async () => {
+  await readyPodman();
   expect(podmanReadyForIncident("acme", MODEL)).toBe(true);
 });
 
-test("false while the provider is not live-certified", () => {
-  readyPodman(false);
+test("false while the provider is not live-certified", async () => {
+  await readyPodman(false);
   expect(SANDBOX_PROVIDER_CERTIFICATIONS.podman.certified).toBe(false);
   expect(podmanReadyForIncident("acme", MODEL)).toBe(false);
 });
 
-test("false when the qualification predates the current adapter", () => {
-  readyPodman();
+test("false when the qualification predates the current adapter", async () => {
+  await readyPodman();
   const cfg = JSON.parse(readFileSync(cfgPath(), "utf8"));
   for (const connection of cfg.connections)
     if (connection.provider === "podman")
@@ -100,21 +100,21 @@ test("false when the qualification predates the current adapter", () => {
   expect(podmanReadyForIncident("acme", MODEL)).toBe(false);
 });
 
-test("false with the sandbox kill switch on", () => {
-  readyPodman();
+test("false with the sandbox kill switch on", async () => {
+  await readyPodman();
   mkdirSync(OPENSESSION_SESSIONS_DIR, { recursive: true });
   writeFileSync(killSwitch(), "");
   expect(podmanReadyForIncident("acme", MODEL)).toBe(false);
 });
 
-test("false when the connection is disabled", () => {
-  readyPodman();
+test("false when the connection is disabled", async () => {
+  await readyPodman();
   updateSandboxConnection("podman", { enabled: false });
   expect(podmanReadyForIncident("acme", MODEL)).toBe(false);
 });
 
-test("false for a model that cannot run in a Sandbox", () => {
-  readyPodman();
+test("false for a model that cannot run in a Sandbox", async () => {
+  await readyPodman();
   const family = SANDBOX_MODEL_FAMILIES.find((f) => f.id === "pi")!;
   family.sandboxable = false;
   try {

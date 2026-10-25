@@ -104,8 +104,8 @@ const writeIngress = async (publicBaseUrl: string) => {
   );
   await getConfigAsync();
 };
-const ready = (provider: "daytona" | "box" | "podman") => {
-  connectSandboxProvider(
+const ready = async (provider: "daytona" | "box" | "podman") => {
+  await connectSandboxProvider(
     provider,
     provider === "podman" ? {} : { secret: `test-${provider}-key` },
   );
@@ -123,9 +123,9 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     }
   });
 
-  test("workspace default persists without replacing provider configuration", () => {
+  test("workspace default persists without replacing provider configuration", async () => {
     write({ provider: "daytona", nested: { keep: true } });
-    ready("daytona");
+    await ready("daytona");
     expect(setWorkspaceSandboxDefault("daytona")).toBe("daytona");
     const stored = JSON.parse(readFileSync(cfgPath(), "utf-8"));
     expect(stored).toMatchObject({
@@ -136,9 +136,9 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     expect(sandboxConfig().sessionDefault).toBe("daytona");
   });
 
-  test("a repo default persists beside the provider override and is removable", () => {
+  test("a repo default persists beside the provider override and is removable", async () => {
     write({ provider: "daytona", perRepo: { tella: { provider: "box" } } });
-    ready("daytona");
+    await ready("daytona");
     expect(setRepoSandboxDefault("tella", "daytona")).toBe("daytona");
     expect(JSON.parse(readFileSync(cfgPath(), "utf-8")).perRepo).toEqual({
       tella: { provider: "box", sessionDefault: "daytona" },
@@ -153,12 +153,12 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     );
   });
 
-  test("a repo's Portal Sandbox persists beside its other overrides and is removable", () => {
+  test("a repo's Portal Sandbox persists beside its other overrides and is removable", async () => {
     write({
       provider: "daytona",
       perRepo: { tella: { sessionDefault: "none" } },
     });
-    ready("daytona");
+    await ready("daytona");
     expect(setRepoPortalSandbox("tella", "daytona")).toBe("daytona");
     expect(JSON.parse(readFileSync(cfgPath(), "utf-8")).perRepo).toEqual({
       tella: { sessionDefault: "none", portalSandbox: "daytona" },
@@ -180,9 +180,9 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     expect(sandboxConfig().perRepo).toBeUndefined();
   });
 
-  test("keep-ready targets toggle without touching the rest of prewarm", () => {
+  test("keep-ready targets toggle without touching the rest of prewarm", async () => {
     write({ provider: "daytona", prewarm: { ttlMinutes: 7 } });
-    ready("daytona");
+    await ready("daytona");
     expect(setKeepReadyTarget("daytona", "tella", true)).toEqual([
       { provider: "daytona", repoId: "tella" },
     ]);
@@ -233,9 +233,9 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     expect(s.providers.find((p) => p.id === "daytona")?.note).toBeUndefined();
   });
 
-  test("a provider without a dial-back URL carries a pointed note", () => {
+  test("a provider without a dial-back URL carries a pointed note", async () => {
     write({ provider: "daytona" });
-    ready("daytona");
+    await ready("daytona");
     const s = sandboxCapabilityStatus();
     const d = s.providers.find((p) => p.id === "daytona")!;
     expect(d.configured).toBe(true);
@@ -245,7 +245,7 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
   test("healthy provider (public ingress configured) carries no note", async () => {
     write({ provider: "daytona" });
     await writeIngress("https://example.ts.net");
-    ready("daytona");
+    await ready("daytona");
     const d = sandboxCapabilityStatus().providers.find(
       (p) => p.id === "daytona",
     )!;
@@ -253,21 +253,21 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     expect(d.note).toBeUndefined();
   });
 
-  test("an explicit callbackBaseUrl also counts as dial-back configured", () => {
+  test("an explicit callbackBaseUrl also counts as dial-back configured", async () => {
     write({ provider: "box", callbackBaseUrl: "wss://os.example.ts.net" });
-    ready("box");
+    await ready("box");
     const b = sandboxCapabilityStatus().providers.find((p) => p.id === "box")!;
     expect(b.configured).toBe(true);
     expect(b.certified).toBe(true);
     expect(b.note).toBeUndefined();
   });
 
-  test("a disabled publicIngress block does not count as dial-back configured", () => {
+  test("a disabled publicIngress block does not count as dial-back configured", async () => {
     write({
       provider: "daytona",
       publicIngress: { enabled: false, publicBaseUrl: "wss://example.ts.net" },
     });
-    ready("daytona");
+    await ready("daytona");
     const d = sandboxCapabilityStatus().providers.find(
       (p) => p.id === "daytona",
     )!;
@@ -292,7 +292,7 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
     );
   });
 
-  test("sandbox automations require a qualified Daytona provider and dial-back URL", () => {
+  test("sandbox automations require a qualified Daytona provider and dial-back URL", async () => {
     write({
       provider: "daytona",
       callbackBaseUrl: "wss://sessions.example.com",
@@ -302,7 +302,7 @@ describe("sandboxCapabilityStatus (the /api/sandbox/status payload)", () => {
       available: false,
     });
 
-    ready("daytona");
+    await ready("daytona");
     expect(sandboxCapabilityStatus().automation).toEqual({
       provider: "daytona",
       available: true,
@@ -338,7 +338,7 @@ describe("provider-independent model-family sandboxability", () => {
 describe("resolveRequestedSandbox (create-path validation)", () => {
   test("omitted interactive choice uses defaults; explicit Host still wins", async () => {
     write({ provider: "daytona", sessionDefault: "daytona" });
-    ready("daytona");
+    await ready("daytona");
     expect(
       await resolveInteractiveSandbox(
         undefined,
@@ -363,7 +363,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       sessionDefault: "none",
       perRepo: { tella: { sessionDefault: "daytona" } },
     });
-    ready("daytona");
+    await ready("daytona");
     expect(
       await resolveInteractiveSandbox(
         undefined,
@@ -402,24 +402,24 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     expect(resolveRequestedSandbox("")).toEqual({ ok: true, provider: null });
   });
 
-  test("true = the workspace's Sandbox: its default, else the one ready provider", () => {
+  test("true = the workspace's Sandbox: its default, else the one ready provider", async () => {
     write({});
-    ready("box");
+    await ready("box");
     expect(anySandboxProvider()).toBe(sandboxesEnabled() ? "box" : null);
     const r = resolveRequestedSandbox(true);
     if (sandboxesEnabled()) expect(r).toEqual({ ok: true, provider: "box" });
     else expect(r.ok).toBe(false);
 
     write({ sessionDefault: "daytona" });
-    ready("daytona");
-    ready("box");
+    await ready("daytona");
+    await ready("box");
     expect(anySandboxProvider()).toBe(sandboxesEnabled() ? "daytona" : null);
   });
 
-  test("a connection whose qualification predates the current adapter is not usable", () => {
+  test("a connection whose qualification predates the current adapter is not usable", async () => {
     write({});
-    ready("daytona");
-    ready("box");
+    await ready("daytona");
+    await ready("box");
     const cfg = JSON.parse(readFileSync(cfgPath(), "utf8"));
     for (const connection of cfg.connections)
       if (connection.provider === "daytona")
@@ -435,9 +435,9 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
       expect(r.error).toContain("needs attention in Workspace > Sandboxes");
   });
 
-  test("a qualified This machine (container) is selectable now it is live-certified", () => {
+  test("a qualified This machine (container) is selectable now it is live-certified", async () => {
     write({});
-    ready("podman");
+    await ready("podman");
     expect(SANDBOX_PROVIDER_CERTIFICATIONS.podman.certified).toBe(true);
     expect(sandboxProviderUsability("podman").state).toBe(
       sandboxesEnabled() ? "usable" : "unavailable",
@@ -446,7 +446,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     expect(resolveRequestedSandbox("podman").ok).toBe(sandboxesEnabled());
   });
 
-  test("a qualified This machine (container) stays off without live certification", () => {
+  test("a qualified This machine (container) stays off without live certification", async () => {
     const certification = SANDBOX_PROVIDER_CERTIFICATIONS.podman;
     SANDBOX_PROVIDER_CERTIFICATIONS.podman = {
       certified: false,
@@ -454,7 +454,7 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     };
     try {
       write({});
-      ready("podman");
+      await ready("podman");
       expect(sandboxProviderUsability("podman").state).toBe("unavailable");
       expect(anySandboxProvider()).toBe(null);
       expect(resolveRequestedSandbox("podman").ok).toBe(false);
@@ -470,10 +470,10 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     if (!r.ok) expect(r.error).toContain("No Sandbox provider is ready");
   });
 
-  test("explicit configured and certified provider is accepted", () => {
+  test("explicit configured and certified provider is accepted", async () => {
     write({ provider: "daytona" });
-    ready("daytona");
-    ready("box");
+    await ready("daytona");
+    await ready("box");
     expect(sandboxProviderUsability("daytona")).toEqual({
       state: "usable",
       configured: true,
@@ -493,9 +493,9 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     });
   });
 
-  test("retired provider ids fail with a retirement error", () => {
+  test("retired provider ids fail with a retirement error", async () => {
     write({ provider: "daytona" });
-    ready("daytona");
+    await ready("daytona");
     for (const retired of ["docker", "modal", "e2b", "lambda-microvm"]) {
       const r = resolveRequestedSandbox(retired);
       expect(r.ok).toBe(false);
@@ -513,9 +513,9 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     if (!b.ok) expect(b.error).toContain("Boat");
   });
 
-  test("failed qualification stays configured but cannot be selected by either create path", () => {
+  test("failed qualification stays configured but cannot be selected by either create path", async () => {
     write({ provider: "daytona" });
-    connectSandboxProvider("daytona", { secret: "test-daytona-key" });
+    await connectSandboxProvider("daytona", { secret: "test-daytona-key" });
     setSandboxConnectionQualification("daytona", {
       status: "failed",
       failureCode: "CREDENTIAL_REJECTED",
@@ -564,9 +564,9 @@ describe("resolveRequestedSandbox (create-path validation)", () => {
     });
   });
 
-  test("model-family sandboxability is enforced at create, not just in the UI", () => {
+  test("model-family sandboxability is enforced at create, not just in the UI", async () => {
     write({ provider: "daytona" });
-    ready("daytona");
+    await ready("daytona");
     expect(
       resolveRequestedSandbox("daytona", undefined, "claude-fable-5-1"),
     ).toEqual({

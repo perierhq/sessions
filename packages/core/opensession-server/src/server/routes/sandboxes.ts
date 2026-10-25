@@ -190,7 +190,7 @@ export async function handleSandboxesRoutes(
         unknown
       >;
       try {
-        connectSandboxProvider(provider, {
+        await connectSandboxProvider(provider, {
           secret:
             typeof body.secret === "string"
               ? body.secret
@@ -249,7 +249,7 @@ export async function handleSandboxesRoutes(
       if (body.confirm !== true) {
         return errorResponse("Disconnect confirmation is required");
       }
-      disconnectSandboxProvider(provider);
+      await disconnectSandboxProvider(provider);
       return Response.json(await connectionPayload(ctx));
     }
   }

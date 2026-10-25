@@ -27,7 +27,7 @@ const { connectSandboxProvider, getSandboxConnection, sandboxConnectionReady } =
 
 describe("podman qualification dispatch", () => {
   test("qualifies through the podman adapter and records its facts", async () => {
-    connectSandboxProvider("podman", { settings: {} });
+    await connectSandboxProvider("podman", { settings: {} });
     await qualifySandboxConnection("podman", undefined, "linux");
     expect(calls).toEqual(["ingress", "podman"]);
     expect(getSandboxConnection("podman")?.podman).toEqual(facts);
