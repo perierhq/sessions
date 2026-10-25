@@ -18,8 +18,13 @@ import {
   type ImapCursor,
   ImapTransport,
   type ImapTransportOptions,
+  imapClientOptions,
   testImapLogin,
 } from "./imap-transport";
+import {
+  MAIL_HOST_REFUSED,
+  __setMailHostResolverForTest,
+} from "../../server/support/mail-host";
 
 const START = Date.parse("2026-10-25T10:00:00.000Z");
 
@@ -74,7 +79,7 @@ function inboxFor(fixture: MailFixture): InboxConfig {
     user: MAIL_USER,
     passwordRef: "ref_imap",
   };
-  return defaultInboxConfig({
+  const inbox = defaultInboxConfig({
     id: "inb_test",
     label: "Acme help",
     address: "help@acme.example.test",
@@ -85,6 +90,8 @@ function inboxFor(fixture: MailFixture): InboxConfig {
     imap: { ...server, port: fixture.imapPort },
     smtp: { ...server, port: fixture.smtpPort },
   });
+  // The fixture listens on loopback.
+  return { ...inbox, allowInternalHost: true };
 }
 
 function mail(n: number, size = 0): string {
@@ -107,6 +114,7 @@ let fixtures: MailFixture[] = [];
 let transports: ImapTransport[] = [];
 
 afterEach(async () => {
+  __setMailHostResolverForTest(undefined);
   await Promise.all(transports.map((t) => t.stop()));
   await Promise.all(fixtures.map((f) => f.close()));
   transports = [];
@@ -798,6 +806,108 @@ describe("ImapTransport", () => {
   });
 });
 
+describe("mail server address policy", () => {
+  test("a loopback server without allowInternalHost is never dialled", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => null);
+    const clock = fakeClock();
+    const h = harness(f, {
+      timers: clock,
+      inbox: { ...inboxFor(f), allowInternalHost: false },
+    });
+    await h.transport.start();
+    const health = h.transport.health();
+    expect(health.state).toBe("paused");
+    expect(health.reason).toBe(MAIL_HOST_REFUSED);
+    expect(health.retryAt).toBeNull();
+    expect(clock.pending()).toBe(0);
+    clock.advance(3_600_000);
+    await flush();
+    expect(login.count()).toBe(0);
+    expect(f.connections()).toBe(0);
+  });
+
+  test("a metadata address is refused even with allowInternalHost", async () => {
+    const f = await fixture();
+    const base = inboxFor(f);
+    const h = harness(f, {
+      inbox: { ...base, imap: { ...base.imap, host: "169.254.169.254" } },
+    });
+    await h.transport.start();
+    expect(h.transport.health()).toMatchObject({
+      state: "paused",
+      reason: MAIL_HOST_REFUSED,
+    });
+  });
+
+  test("a host name is resolved once and the checked address is dialled", async () => {
+    const f = await fixture();
+    const asked: string[] = [];
+    __setMailHostResolverForTest(async (host) => {
+      asked.push(host);
+      return ["127.0.0.1"];
+    });
+    const base = inboxFor(f);
+    const h = harness(f, {
+      inbox: { ...base, imap: { ...base.imap, host: "imap.example.test" } },
+    });
+    await h.transport.start();
+    expect(h.transport.health().state).toBe("live");
+    expect(asked).toEqual(["imap.example.test"]);
+    f.deliver(mail(1));
+    await waitFor(() => h.received.length === 1, 2000);
+  });
+
+  test("a name that rebinds to an internal address is refused", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["127.0.0.1"]);
+    const base = inboxFor(f);
+    const h = harness(f, {
+      inbox: {
+        ...base,
+        allowInternalHost: false,
+        imap: { ...base.imap, host: "imap.example.test" },
+      },
+    });
+    await h.transport.start();
+    expect(h.transport.health().reason).toBe(MAIL_HOST_REFUSED);
+    expect(f.connections()).toBe(0);
+  });
+
+  test("the client dials the address and keeps the name for TLS", () => {
+    const base = inboxFor({ imapPort: 993, smtpPort: 465 } as MailFixture);
+    const options = imapClientOptions(
+      {
+        host: "imap.example.test",
+        address: "93.184.216.34",
+        servername: "imap.example.test",
+        loopback: false,
+      },
+      { ...base.imap, host: "imap.example.test", port: 993 },
+      "pw",
+    );
+    expect(options.host).toBe("93.184.216.34");
+    expect(options.servername).toBe("imap.example.test");
+    expect(options.port).toBe(993);
+  });
+
+  test("testImapLogin refuses an internal server without allowInternalHost", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => null);
+    const result = await testImapLogin(
+      { host: "127.0.0.1", port: f.imapPort, secure: false, user: MAIL_USER },
+      MAIL_PASSWORD,
+      { allowInternalHost: false },
+    );
+    expect(result).toEqual({
+      ok: false,
+      kind: "address",
+      error: MAIL_HOST_REFUSED,
+    });
+    expect(login.count()).toBe(0);
+  });
+});
+
 describe("testImapLogin", () => {
   test("reports capabilities and the Sent folder", async () => {
     const f = await fixture();
@@ -807,7 +917,9 @@ describe("testImapLogin", () => {
       secure: false,
       user: MAIL_USER,
     };
-    expect(await testImapLogin(server, MAIL_PASSWORD)).toEqual({
+    expect(
+      await testImapLogin(server, MAIL_PASSWORD, { allowInternalHost: true }),
+    ).toEqual({
       ok: true,
       idle: true,
       condstore: true,
@@ -824,7 +936,10 @@ describe("testImapLogin", () => {
       secure: false,
       user: MAIL_USER,
     };
-    expect((await testImapLogin(server, MAIL_PASSWORD)).ok).toBe(true);
+    expect(
+      (await testImapLogin(server, MAIL_PASSWORD, { allowInternalHost: true }))
+        .ok,
+    ).toBe(true);
     expect(examine.count()).toBe(1);
   });
 
@@ -836,7 +951,9 @@ describe("testImapLogin", () => {
       secure: false,
       user: MAIL_USER,
     };
-    const result = await testImapLogin(server, "wrong");
+    const result = await testImapLogin(server, "wrong", {
+      allowInternalHost: true,
+    });
     expect(result).toMatchObject({ ok: false, kind: "auth" });
     expect(JSON.stringify(result)).not.toContain("wrong");
   });

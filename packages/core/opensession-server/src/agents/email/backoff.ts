@@ -5,6 +5,7 @@
 // (providers lock accounts after repeated bad logins). Pure.
 
 import { BACKOFF_MAX_MS, BACKOFF_MIN_MS } from "../../shared/support";
+import { MAIL_HOST_REFUSED } from "../../server/support/mail-host";
 
 export type PauseKind =
   | "auth"
@@ -12,7 +13,8 @@ export type PauseKind =
   | "too-many-connections"
   | "alert"
   | "network"
-  | "protocol";
+  | "protocol"
+  | "address";
 
 export const PAUSE_COPY: Record<PauseKind, string> = {
   auth: "The mail server refused the password. Save a new one to reconnect",
@@ -22,6 +24,7 @@ export const PAUSE_COPY: Record<PauseKind, string> = {
   alert: "The mail server sent an alert. Retrying later",
   network: "Can't reach the mail server. Retrying later",
   protocol: "The mail server gave an unexpected answer. Retrying later",
+  address: MAIL_HOST_REFUSED,
 };
 
 /** Full jitter: random() * min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2^attempt),
@@ -88,6 +91,11 @@ export function classifyImapError(err: unknown): {
     err instanceof Error ? err.message : "",
   ].join(" ");
   const throttleReset = field(err, "throttleReset");
+
+  // The address policy (server/support/mail-host.ts) refused the server
+  // before any connection: nothing to retry until the inbox changes.
+  if (code === "EMAILHOSTREFUSED")
+    return { kind: "address", message: PAUSE_COPY.address };
 
   if (
     typeof throttleReset === "number" ||

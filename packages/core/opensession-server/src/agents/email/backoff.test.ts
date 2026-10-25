@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { BACKOFF_MAX_MS, BACKOFF_MIN_MS } from "../../shared/support";
+import {
+  MAIL_HOST_REFUSED,
+  MailHostRefusedError,
+} from "../../server/support/mail-host";
 import { PAUSE_COPY, classifyImapError, nextBackoffMs } from "./backoff";
 
 describe("nextBackoffMs", () => {
@@ -140,6 +144,13 @@ describe("classifyImapError", () => {
     expect(result.message).not.toContain("secret-pass");
   });
 
+  test("a refused server address is its own kind, with the generic copy", () => {
+    expect(classifyImapError(new MailHostRefusedError())).toEqual({
+      kind: "address",
+      message: MAIL_HOST_REFUSED,
+    });
+  });
+
   test("every kind has copy", () => {
     for (const kind of [
       "auth",
@@ -148,6 +159,7 @@ describe("classifyImapError", () => {
       "alert",
       "network",
       "protocol",
+      "address",
     ] as const)
       expect(PAUSE_COPY[kind].length).toBeGreaterThan(0);
   });

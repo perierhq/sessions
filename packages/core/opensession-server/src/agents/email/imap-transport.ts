@@ -23,6 +23,11 @@ import {
 } from "../../shared/support";
 import type { InboundSink } from "../../server/support/channel";
 import {
+  type MailHostPolicy,
+  type MailHostTarget,
+  resolveMailHost,
+} from "../../server/support/mail-host";
+import {
   PAUSE_COPY,
   type PauseKind,
   classifyImapError,
@@ -109,12 +114,16 @@ type Failure = { kind: PauseKind; reason: string; retryAfterMs?: number };
 
 type MessageItem = { uid: number; size: number; internalDate?: Date | string };
 
-function clientOptions(
+/** Connects to the checked address only; the name stays the TLS servername
+ *  so SNI and the certificate check use it. */
+export function imapClientOptions(
+  target: MailHostTarget,
   server: Omit<MailServerConfig, "passwordRef">,
   password: string,
 ): ImapFlowOptions {
   return {
-    host: server.host,
+    host: target.address,
+    ...(target.servername ? { servername: target.servername } : {}),
     port: server.port,
     secure: server.secure,
     auth: { user: server.user, pass: password },
@@ -298,8 +307,17 @@ export class ImapTransport {
     this.knownUidNext = null;
     this.alertText = null;
     this.setHealth("connecting");
+    const { imap, allowInternalHost } = this.opts.inbox;
+    let target: MailHostTarget;
+    try {
+      target = await resolveMailHost(imap.host, { allowInternalHost });
+    } catch (err) {
+      this.fail(gen, err);
+      return;
+    }
+    if (gen !== this.generation || this.stopped) return;
     const client = new ImapFlow({
-      ...clientOptions(this.opts.inbox.imap, this.opts.password),
+      ...imapClientOptions(target, imap, this.opts.password),
       maxIdleTime: MAX_IDLE_MS,
       socketTimeout: Math.max(SOCKET_TIMEOUT_MS, this.pollMs() + 60_000),
       ...(this.opts.autoIdleDelayMs !== undefined
@@ -653,7 +671,7 @@ export class ImapTransport {
     const reason = this.alertText
       ? `${failure.reason}. The server said: ${this.alertText}`
       : failure.reason;
-    if (failure.kind === "auth") {
+    if (failure.kind === "auth" || failure.kind === "address") {
       log(this.inboxId, "imap paused", { kind: failure.kind });
       this.setHealth("paused", reason, null);
       return;
@@ -699,11 +717,19 @@ export class ImapTransport {
 export async function testImapLogin(
   server: Omit<MailServerConfig, "passwordRef">,
   password: string,
+  policy: MailHostPolicy,
 ): Promise<
   | { ok: true; idle: boolean; condstore: boolean; sentFolder: string | null }
   | { ok: false; kind: PauseKind; error: string }
 > {
-  const client = new ImapFlow(clientOptions(server, password));
+  let target: MailHostTarget;
+  try {
+    target = await resolveMailHost(server.host, policy);
+  } catch (err) {
+    const { kind, message } = classifyImapError(err);
+    return { ok: false, kind, error: message };
+  }
+  const client = new ImapFlow(imapClientOptions(target, server, password));
   client.on("error", () => undefined);
   try {
     await client.connect();

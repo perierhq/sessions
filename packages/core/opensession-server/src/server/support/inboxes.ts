@@ -24,6 +24,7 @@ import {
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import { instanceOwner, personOwner, resolveOwner } from "../incidents/owner";
+import { mailHostLiteralAllowed } from "./mail-host";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -35,7 +36,7 @@ type ServerInput = Omit<MailServerConfig, "passwordRef"> & {
 };
 
 export type NewInbox = Pick<InboxConfig, "label" | "address" | "project"> &
-  Partial<Pick<InboxConfig, "owner">> & {
+  Partial<Pick<InboxConfig, "owner" | "allowInternalHost">> & {
     imap: ServerInput;
     smtp: ServerInput;
   };
@@ -166,12 +167,19 @@ function passwordError(password: unknown, which: Which): string | null {
   return null;
 }
 
-function serverError(server: MailServerConfig, which: Which): string | null {
+function serverError(
+  server: MailServerConfig,
+  which: Which,
+  allowInternalHost = false,
+): string | null {
   const name = SERVER_NAMES[which];
   if (!server || typeof server !== "object")
     return `${name} settings are missing`;
   const host = hostError(server.host, name);
   if (host) return host;
+  // An IP literal is judged now; a name when it is resolved, at connect.
+  if (!mailHostLiteralAllowed(server.host, { allowInternalHost }))
+    return `This ${name} server address isn't allowed`;
   if (!isInt(server.port, 1, 65_535))
     return `${name} port must be a whole number from 1 to 65535`;
   if (typeof server.secure !== "boolean")
@@ -247,8 +255,10 @@ export function validateInbox(
   if (typeof config.owner !== "string") return "Owner must be a person";
   if (!isInt(config.sendLimitPerMinute, 1, SEND_LIMIT_MAX))
     return `Send limit must be from 1 to ${SEND_LIMIT_MAX} a minute`;
+  if (typeof config.allowInternalHost !== "boolean")
+    return "Internal mail servers must be on or off";
   for (const which of SERVERS) {
-    const error = serverError(config[which], which);
+    const error = serverError(config[which], which, config.allowInternalHost);
     if (error) return error;
   }
   return null;
@@ -320,7 +330,11 @@ export async function createInbox(
     smtp: trimServer(input.smtp),
   };
   for (const which of SERVERS) {
-    const error = serverError(servers[which]!, which);
+    const error = serverError(
+      servers[which]!,
+      which,
+      input.allowInternalHost === true,
+    );
     if (error) return { ok: false, error };
   }
   let owner: string;
@@ -346,6 +360,8 @@ export async function createInbox(
     imap: servers.imap!,
     smtp: servers.smtp!,
   });
+  if (input.allowInternalHost !== undefined)
+    draft.allowInternalHost = input.allowInternalHost;
   const invalid = validateInbox(draft, projectExists);
   if (invalid) return { ok: false, error: invalid };
   for (const which of SERVERS) {
@@ -400,6 +416,7 @@ const PATCHABLE = [
   "retention",
   "owner",
   "sendLimitPerMinute",
+  "allowInternalHost",
 ] as const satisfies ReadonlyArray<keyof InboxConfig>;
 
 function applyPatch(

@@ -440,13 +440,48 @@ describe("validateInbox", () => {
       "localhost",
       "mail.example.test",
       "xn--bcher-kva.example",
-      "127.0.0.1",
-      "::1",
+      "93.184.216.34",
       "2001:db8::25",
     ])
       expect(
         validateInbox({ ...base, imap: { ...base.imap, host } }, exists),
       ).toBeNull();
+  });
+
+  test("new inboxes don't allow internal hosts", () => {
+    expect(base.allowInternalHost).toBe(false);
+  });
+
+  test("an internal IP literal needs allowInternalHost", () => {
+    for (const host of ["127.0.0.1", "::1", "10.0.0.5", "100.64.1.2"]) {
+      const config = { ...base, imap: { ...base.imap, host } };
+      expect(validateInbox(config, exists)).toBe(
+        "This IMAP server address isn't allowed",
+      );
+      expect(
+        validateInbox({ ...config, allowInternalHost: true }, exists),
+      ).toBeNull();
+    }
+  });
+
+  test("a link-local or metadata literal is refused even with allowInternalHost", () => {
+    for (const host of ["169.254.169.254", "fe80::1", "fd00:ec2::254"])
+      expect(
+        validateInbox(
+          {
+            ...base,
+            allowInternalHost: true,
+            smtp: { ...base.smtp, host },
+          },
+          exists,
+        ),
+      ).toBe("This SMTP server address isn't allowed");
+  });
+
+  test("allowInternalHost must be on or off", () => {
+    expect(
+      validateInbox({ ...base, allowInternalHost: "yes" as never }, exists),
+    ).toMatch(/Internal/);
   });
 
   const cases: Array<[string, Partial<InboxConfig>, RegExp]> = [

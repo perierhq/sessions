@@ -238,6 +238,10 @@ export interface InboxConfig {
   retention: InboxRetention;
   owner: string;
   sendLimitPerMinute: number;
+  /** Whether the mail servers may be on loopback, a private network or the
+   *  tailnet. Link-local and cloud metadata addresses are never allowed.
+   *  Only the instance owner may turn it on. */
+  allowInternalHost: boolean;
   imap: MailServerConfig;
   smtp: MailServerConfig;
   createdAt: string;
@@ -445,6 +449,7 @@ export function defaultInboxConfig(input: {
     retention: { ...DEFAULT_RETENTION },
     owner: input.owner,
     sendLimitPerMinute: DEFAULT_SEND_LIMIT_PER_MINUTE,
+    allowInternalHost: false,
     imap: { ...input.imap },
     smtp: { ...input.smtp },
     createdAt: input.now,
