@@ -171,6 +171,7 @@ import { commitAuthorFor, userMatchesAny } from "./shared/user-mappings";
 import { envCapacity } from "./shared/env-capacity";
 import { sanitizeBranchSlug } from "./suggest-branch";
 import {
+  type ExternalRef,
   type NativeSessionFile,
   type SessionUsage,
   type UnifiedSession,
@@ -502,6 +503,17 @@ export interface ResolvedCreate {
    * runSessionPromptAndDrain).
    */
   finish: "drain" | "auto-continue-guard";
+}
+
+/** The @session/@workspace footer for an opening prompt; none for a support
+ *  session, whose prompt is customer mail and whose agent must not learn
+ *  about other sessions from it. */
+export function openingMentionsNote(
+  openingPrompt: string,
+  externalRefs: ExternalRef[] | undefined,
+): string | null {
+  if (isSupportSession({ externalRefs })) return null;
+  return sessionMentionsNote(openingPrompt);
 }
 
 /** Per-path transport for a create: who hears the announce/stream/failures. */
@@ -3228,7 +3240,10 @@ export async function handleCreateSessionMessage(
     // resolving footer as prompts on existing sessions (see
     // runSessionPromptInner) — this create path bypasses it.
     {
-      const mentionsNote = sessionMentionsNote(openingPrompt);
+      const mentionsNote = openingMentionsNote(
+        openingPrompt,
+        (sourceWorkspace ?? workspace)?.externalRefs,
+      );
       if (mentionsNote) openingPrompt += `\n\n${mentionsNote}`;
     }
     // Folders the creator connected from the New-session box, on their own

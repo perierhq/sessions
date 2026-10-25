@@ -3,6 +3,7 @@ import {
   assertAutomationDescendantOpeningIsolation,
   descendantOpeningScope,
   openingCreateTrustPolicy,
+  openingMentionsNote,
 } from "./session-create";
 import {
   AgentAccessError,
@@ -514,5 +515,17 @@ describe("support session opening policy", () => {
     );
     expect(spec.proxyMcpServers).toEqual(["opensession-support"]);
     expect(spec.user).toBeUndefined();
+  });
+});
+
+describe("support session opening mentions", () => {
+  test("a support opening never resolves @session mentions", () => {
+    const prompt = "Please look at @session:bks-0190aaaa-0000";
+    expect(
+      openingMentionsNote(prompt, [{ kind: "support", id: "sc_1" }]),
+    ).toBeNull();
+    expect(openingMentionsNote(prompt, undefined)).toContain(
+      "@session:bks-0190aaaa-0000",
+    );
   });
 });

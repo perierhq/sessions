@@ -2361,9 +2361,12 @@ export async function maybeLaunchSandboxedRun(
       // they do for any session here; an automation keeps its allowlist.
       mcpServers: opts.mcpServers ?? "all",
       proxyMcpServers: security.proxyMcpServers,
-      reposNote: opts.isAutomationSession
-        ? undefined
-        : await buildSessionNote(session, opts.user),
+      // No repos, memory or personal note for untrusted runs: automation
+      // turns and support sessions (customer mail, no person).
+      reposNote:
+        opts.isAutomationSession || isSupportSession(session)
+          ? undefined
+          : await buildSessionNote(session, opts.user),
       deniedTools: opts.deniedTools,
       // An unattended run's web_fetch reads only its egress allowlist: the
       // disposable Executor's domains, or an incident agent's hosts.
@@ -2397,7 +2400,10 @@ export async function maybeLaunchSandboxedRun(
       ...runAccountSpec(session, opts, owningAutomation),
       trustProfile: security.trustProfile,
       journalKind: security.journalKind,
-      onAskUser: makeAskHandler(session.id),
+      // No one answers a support session's questions.
+      onAskUser: isSupportSession(session)
+        ? undefined
+        : makeAskHandler(session.id),
       // A steer that reached the run too late must not evaporate. Hand it
       // back to the queue, receipt and all.
       onSteerFailed: (text: string) =>
@@ -3239,7 +3245,7 @@ async function runSessionPromptInner(
 
   // @session:<id> mentions → footer resolving them for the agent's
   // opensession-sessions tools. Interactive sessions only (same gate as the tools).
-  if (!isAutomationSession) {
+  if (!isAutomationSession && !supportSession) {
     const mentionsNote = sessionMentionsNote(prompt, inlinedSessionIds);
     if (mentionsNote) prompt += `\n\n${mentionsNote}`;
   }
@@ -3616,7 +3622,7 @@ async function runSessionPromptInner(
           ...runAccountSpec(session, runInputs),
           trustProfile: isAutomationSession ? "automation" : "interactive",
           journalKind: "prompt",
-          onAskUser: makeAskHandler(sessionId),
+          onAskUser: supportSession ? undefined : makeAskHandler(sessionId),
           onSteerFailed: (text) => requeueFailedSteer(session.id, text, user),
           fallbackInProcessMcp: inProcessMcpForTurn,
         })
@@ -3732,7 +3738,7 @@ async function runSessionPromptInner(
       mcpGrantUser: runInputs.mcpGrantUser,
       journal: { osSessionId: session.id, kind: "prompt" },
       startToken,
-      onAskUser: makeAskHandler(sessionId),
+      onAskUser: supportSession ? undefined : makeAskHandler(sessionId),
     })) {
     firstEventMs ??= Date.now() - turnMetricStartedAt;
     recordIncidentDeclarations(event);
