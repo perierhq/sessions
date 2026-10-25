@@ -171,6 +171,9 @@ function Sections({
           safety={body.safety}
           onOpenSession={actions.onOpenSession}
           onOpenSettings={actions.onOpenAppSettings}
+          onOpenProjectSettings={(section) =>
+            actions.onOpenSettings(incident.project, section)
+          }
           intent={body.intent}
           onIntentHandled={actions.onIntentHandled}
         />

@@ -2,7 +2,12 @@ import * as React from "react";
 import { Questionnaire } from "@shadcn/react/questionnaire";
 import { AGENT_NAME } from "../lib/brand";
 import { renderMarkdown } from "../lib/markdown";
-import type { AskNoteField, AskQuestion } from "../lib/types";
+import type {
+  AskFreeText,
+  AskNoteField,
+  AskOptionGroup,
+  AskQuestion,
+} from "../lib/types";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import { cn } from "../ui/cn";
@@ -10,7 +15,9 @@ import { IconCheck, IconReturn, IconX } from "./icons";
 import { useMarkdownRepo } from "./MarkdownBody";
 import {
   ASK_CARD_SHELL,
+  ASK_CHOICE_QUIET,
   ASK_CHOICE_ROW,
+  ASK_GROUP_LABEL,
   ASK_NOTE_FIELD,
   ASK_NOTE_LABEL,
 } from "../lib/ask-card-classes";
@@ -19,16 +26,19 @@ import {
   askOptionForLetter,
   isTextEntryTarget,
 } from "../lib/ask-shortcuts";
+import { freeTextField, optionRuns } from "../lib/ask-option-groups";
 import { blockingOverlayOpen } from "../lib/blocking-overlay";
 import { matchesShortcut } from "../lib/shortcuts";
 
 interface Props {
   questions: AskQuestion[];
-  /** The answers by question text, and the notes their picked options
-   *  needed (see `notes`), by question text too. */
+  /** The answers by question text, the notes their picked options
+   *  needed (see `notes`), and the answers that were typed rather than
+   *  picked, all by question text. */
   onAnswer: (
     answers: Record<string, string>,
     notes: Record<string, string>,
+    typed: Record<string, string>,
   ) => void;
   /**
    * Whether this card's session is the one the keyboard belongs to. Split
@@ -57,17 +67,23 @@ interface Props {
   plainText?: boolean;
   /**
    * Options that need a written note before they can be sent, by label.
-   * Picking one opens a labelled field under the options, and Answer waits
+   * Picking one opens a labelled field under it, and Answer waits
    * until it is filled in: the card asks for the note where the choice is
    * made, instead of refusing the answer afterwards.
    */
   notes?: Readonly<Record<string, AskNoteField>>;
   /**
    * Offer "Or type your own answer…". Off for a card where only its options
-   * mean anything (an incident decision): a typed answer there would have
-   * nowhere to go.
+   * mean anything; a card whose typed answer means one thing (an incident's
+   * "Tell the investigator…") names the field instead.
    */
-  freeText?: boolean;
+  freeText?: boolean | AskFreeText;
+  /**
+   * A lone question's options in runs, in order: a label over each, and a
+   * quiet run set smaller (an incident's suggested steps, then its fixed
+   * decisions). The letters run on across groups.
+   */
+  groups?: readonly AskOptionGroup[];
 }
 
 /**
@@ -141,6 +157,7 @@ export function AskCard({
   plainText = false,
   notes,
   freeText = true,
+  groups,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
@@ -186,11 +203,20 @@ export function AskCard({
     return notes?.[picked[0]!];
   }
 
+  /** The note written for the question's pick. Each option keeps its own,
+   *  starting from the field's `initial` text. */
+  function noteKey(index: number): string {
+    return `${itemName(index)}:${(picks[itemName(index)] ?? [])[0] ?? ""}`;
+  }
+  function noteValue(index: number): string {
+    return noteText[noteKey(index)] ?? noteFieldFor(index)?.initial ?? "";
+  }
+
   /** Whether the question's note, if its pick needs one, can be sent. */
   function noteReady(index: number): boolean {
     const field = noteFieldFor(index);
     if (!field) return true;
-    const text = (noteText[itemName(index)] ?? "").trim();
+    const text = noteValue(index).trim();
     return text !== "" && (!field.maxLength || text.length <= field.maxLength);
   }
 
@@ -332,12 +358,14 @@ export function AskCard({
     setSubmitted(true);
     const answers: Record<string, string> = {};
     const written: Record<string, string> = {};
+    const typed: Record<string, string> = {};
     questions.forEach((q, i) => {
       answers[q.question] = answerFor(i);
-      if (noteFieldFor(i))
-        written[q.question] = (noteText[itemName(i)] ?? "").trim();
+      if (noteFieldFor(i)) written[q.question] = noteValue(i).trim();
+      const own = (custom[itemName(i)] ?? "").trim();
+      if (own) typed[q.question] = own;
     });
-    onAnswer(answers, written);
+    onAnswer(answers, written, typed);
   }
 
   return (
@@ -399,78 +427,88 @@ export function AskCard({
         )}
       </div>
 
-      {questions.map((q, i) => (
-        <Questionnaire.Item
-          key={itemName(i)}
-          ref={(el) => {
-            itemRefs.current[i] = el;
-          }}
-          name={itemName(i)}
-          required
-          multiple={q.multiSelect}
-          aria-labelledby={titleId(i)}
-          // Zero the UA fieldset (no Preflight), and win back `hidden`
-          // against the `flex` on the same element.
-          className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0 [&[hidden]]:hidden"
-        >
-          {((q.header && !lone) || q.multiSelect) && (
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              {q.header && !lone && (
-                <span className="text-label font-semibold text-faint">
-                  {q.header}
-                </span>
-              )}
-              {q.multiSelect && (
-                <Questionnaire.Description
-                  className="text-meta text-faint"
-                  render={<span />}
-                >
-                  Select all that apply
-                </Questionnaire.Description>
-              )}
-            </div>
-          )}
-          {/* The question is prose, not a title: it is often several sentences,
+      {questions.map((q, i) => {
+        const typing = freeTextField(freeText, !!q.options?.length);
+        return (
+          <Questionnaire.Item
+            key={itemName(i)}
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
+            name={itemName(i)}
+            required
+            multiple={q.multiSelect}
+            aria-labelledby={titleId(i)}
+            // Zero the UA fieldset (no Preflight), and win back `hidden`
+            // against the `flex` on the same element.
+            className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0 [&[hidden]]:hidden"
+          >
+            {((q.header && !lone) || q.multiSelect) && (
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                {q.header && !lone && (
+                  <span className="text-label font-semibold text-faint">
+                    {q.header}
+                  </span>
+                )}
+                {q.multiSelect && (
+                  <Questionnaire.Description
+                    className="text-meta text-faint"
+                    render={<span />}
+                  >
+                    Select all that apply
+                  </Questionnaire.Description>
+                )}
+              </div>
+            )}
+            {/* The question is prose, not a title: it is often several sentences,
 					    and setting it semibold turned whole paragraphs bold. Body weight
 					    on the transcript's own 14px/24px rhythm — the raised card and the
 					    "needs input" label already mark it as the thing being asked.
 					    It replaces the fieldset's `legend` (markdown is block content,
 					    which a legend may not hold), so it names the item by id. */}
-          <Questionnaire.Title
-            id={titleId(i)}
-            render={
-              plainText ? (
-                <div className="whitespace-pre-wrap text-body leading-6 text-fg [overflow-wrap:anywhere]">
-                  {q.question}
-                </div>
-              ) : (
-                <div
-                  className="markdown text-body leading-6 text-fg [overflow-wrap:anywhere]"
-                  dangerouslySetInnerHTML={{
-                    __html: renderMarkdown(q.question, { repo }),
-                  }}
-                />
-              )
-            }
-          />
-          <Questionnaire.Choices className="flex flex-col gap-1.5">
-            {q.options?.map((opt) => {
-              const active = (picks[itemName(i)] ?? []).includes(opt.label);
-              return (
-                <Questionnaire.Choice
-                  key={opt.label}
-                  value={opt.label}
-                  checked={active}
-                  onChange={(e) => choose(i, q, opt.label, e.target.checked)}
-                  // No hairline: the row's own surface against the card is the
-                  // edge. And a pick doesn't tint the row — the filled
-                  // indicator says it. Washing the row grey made the chosen
-                  // option look dimmed, not chosen, and collided with the
-                  // hover wash on its neighbours.
-                  className={ASK_CHOICE_ROW}
-                >
-                  <Questionnaire.ChoiceInput className="sr-only" />
-                  {/* The letter leads the row, the way a lettered list does. It is
+            <Questionnaire.Title
+              id={titleId(i)}
+              render={
+                plainText ? (
+                  <div className="whitespace-pre-wrap text-body leading-6 text-fg [overflow-wrap:anywhere]">
+                    {q.question}
+                  </div>
+                ) : (
+                  <div
+                    className="markdown text-body leading-6 text-fg [overflow-wrap:anywhere]"
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdown(q.question, { repo }),
+                    }}
+                  />
+                )
+              }
+            />
+            <Questionnaire.Choices className="flex flex-col gap-1.5">
+              {optionRuns(q, lone ? groups : undefined).map((run, r) => {
+                const rows = run.options.map((opt) => {
+                  const active = (picks[itemName(i)] ?? []).includes(opt.label);
+                  // The note a pick needs opens right under that pick.
+                  const note = active ? noteFieldFor(i) : undefined;
+                  return (
+                    <React.Fragment key={opt.label}>
+                      <Questionnaire.Choice
+                        value={opt.label}
+                        checked={active}
+                        onChange={(e) =>
+                          choose(i, q, opt.label, e.target.checked)
+                        }
+                        // No hairline: the row's own surface against the card is the
+                        // edge. And a pick doesn't tint the row — the filled
+                        // indicator says it. Washing the row grey made the chosen
+                        // option look dimmed, not chosen, and collided with the
+                        // hover wash on its neighbours.
+                        className={cn(
+                          ASK_CHOICE_ROW,
+                          run.quiet && ASK_CHOICE_QUIET,
+                        )}
+                      >
+                        <Questionnaire.ChoiceInput className="sr-only" />
+                        {/* The letter leads the row, the way a lettered list does. It is
 									    how the options are named (in the transcript above, in Slack,
 									    and out loud), so it belongs where a marker goes rather than
 									    trailing the description as a key hint. Fixed width so the
@@ -483,38 +521,90 @@ export function AskCard({
 									    letters share an edge with each other and with the text in
 									    the free-text row below. Pulling only its trailing margin
 									    keeps the answer close without tightening the indicator. */}
-                  <Questionnaire.ChoiceShortcut className="-mr-2 w-3.5 shrink-0 text-label leading-5 text-faint" />
-                  <Questionnaire.ChoiceLabel className="min-w-0 flex-1">
-                    <span className="block text-control-label font-semibold leading-5 text-fg">
-                      {opt.label}
-                    </span>
-                    {opt.description && (
-                      <span className="mt-0.5 block text-supporting leading-[1.45] text-dim">
-                        {opt.description}
+                        <Questionnaire.ChoiceShortcut className="-mr-2 w-3.5 shrink-0 text-label leading-5 text-faint" />
+                        {run.quiet ? (
+                          // One line where it fits: the label, then what it does.
+                          <Questionnaire.ChoiceLabel className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                            <span className="text-control-label font-medium leading-5 text-fg">
+                              {opt.label}
+                            </span>
+                            {opt.description && (
+                              <span className="text-meta leading-5 text-faint">
+                                {opt.description}
+                              </span>
+                            )}
+                          </Questionnaire.ChoiceLabel>
+                        ) : (
+                          <Questionnaire.ChoiceLabel className="min-w-0 flex-1">
+                            <span className="block text-control-label font-semibold leading-5 text-fg">
+                              {opt.label}
+                            </span>
+                            {opt.description && (
+                              <span className="mt-0.5 block text-supporting leading-[1.45] text-dim">
+                                {opt.description}
+                              </span>
+                            )}
+                          </Questionnaire.ChoiceLabel>
+                        )}
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "mt-px flex h-5 w-5 shrink-0 items-center justify-center border transition-[background-color,border-color,color]",
+                            q.multiSelect
+                              ? "rounded-[calc(6px*var(--rf))] [corner-shape:var(--cs)]"
+                              : "rounded-full",
+                            active
+                              ? "border-transparent bg-fg text-bg"
+                              : "border-line-strong text-transparent",
+                          )}
+                        >
+                          <IconCheck size={20} />
+                        </span>
+                      </Questionnaire.Choice>
+                      {note && (
+                        <AskNote
+                          field={note}
+                          id={`${titleBase}-note${i}`}
+                          value={noteValue(i)}
+                          disabled={submitted}
+                          textareaRef={(el) => {
+                            noteRefs.current[i] = el;
+                          }}
+                          onChange={(value) =>
+                            setNoteText((prev) => ({
+                              ...prev,
+                              [noteKey(i)]: value,
+                            }))
+                          }
+                        />
+                      )}
+                    </React.Fragment>
+                  );
+                });
+                if (!run.grouped) return rows;
+                const labelId = `${titleBase}-q${i}-g${r}`;
+                return (
+                  <div
+                    key={`group-${r}`}
+                    role="group"
+                    aria-labelledby={run.label ? labelId : undefined}
+                    // The space between groups is twice the space inside one.
+                    className={cn("flex flex-col gap-1.5", r > 0 && "mt-1.5")}
+                  >
+                    {run.label && (
+                      <span id={labelId} className={ASK_GROUP_LABEL}>
+                        {run.label}
                       </span>
                     )}
-                  </Questionnaire.ChoiceLabel>
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "mt-px flex h-5 w-5 shrink-0 items-center justify-center border transition-[background-color,border-color,color]",
-                      q.multiSelect
-                        ? "rounded-[calc(6px*var(--rf))] [corner-shape:var(--cs)]"
-                        : "rounded-full",
-                      active
-                        ? "border-transparent bg-fg text-bg"
-                        : "border-line-strong text-transparent",
-                    )}
-                  >
-                    <IconCheck size={20} />
-                  </span>
-                </Questionnaire.Choice>
-              );
-            })}
-            {freeText && (
-              <Questionnaire.Input
-                aria-label={q.options?.length ? "Custom answer" : "Answer"}
-                /* border-0 is load-bearing, not tidying: this app deliberately
+                    {rows}
+                  </div>
+                );
+              })}
+              {typing && (
+                <Questionnaire.Input
+                  aria-label={typing.label}
+                  maxLength={typing.maxLength}
+                  /* border-0 is load-bearing, not tidying: this app deliberately
 							   doesn't ship Tailwind's Preflight (see styles/tailwind.css), so
 							   an <input> with no border utility keeps the UA's 2px inset
 							   border — the dark outline this field used to wear. Any borderless
@@ -523,37 +613,20 @@ export function AskCard({
 							   No ring on focus either — same call the composer makes: it read
 							   as an error state on a field you're simply typing in, and the
 							   caret is affordance enough. */
-                className={cn(
-                  "h-11 w-full rounded-[calc(12px*var(--rf))] border-0 bg-control px-3 text-base text-fg outline-none placeholder:text-faint disabled:opacity-60 sm:text-control-label [corner-shape:var(--cs)]",
-                  q.options?.length && "mt-1.5",
-                )}
-                placeholder={
-                  q.options?.length
-                    ? "Or type your own answer…"
-                    : "Type your answer…"
-                }
-                value={custom[itemName(i)] ?? ""}
-                onChange={(e) => write(i, q, e.target.value)}
-              />
-            )}
-          </Questionnaire.Choices>
-          {noteFieldFor(i) && (
-            <AskNote
-              field={noteFieldFor(i)!}
-              id={`${titleBase}-note${i}`}
-              value={noteText[itemName(i)] ?? ""}
-              disabled={submitted}
-              textareaRef={(el) => {
-                noteRefs.current[i] = el;
-              }}
-              onChange={(value) =>
-                setNoteText((prev) => ({ ...prev, [itemName(i)]: value }))
-              }
-            />
-          )}
-          <Questionnaire.Error className="text-meta text-red" />
-        </Questionnaire.Item>
-      ))}
+                  className={cn(
+                    "h-11 w-full rounded-[calc(12px*var(--rf))] border-0 bg-control px-3 text-base text-fg outline-none placeholder:text-faint disabled:opacity-60 sm:text-control-label [corner-shape:var(--cs)]",
+                    q.options?.length && "mt-1.5",
+                  )}
+                  placeholder={typing.placeholder}
+                  value={custom[itemName(i)] ?? ""}
+                  onChange={(e) => write(i, q, e.target.value)}
+                />
+              )}
+            </Questionnaire.Choices>
+            <Questionnaire.Error className="text-meta text-red" />
+          </Questionnaire.Item>
+        );
+      })}
 
       {/* An action the active question has no use for arrives carrying
 			    `hidden`, and Button's own `inline-flex` outranks the UA's
@@ -653,7 +726,7 @@ export function AskCard({
 
 /**
  * The note a picked option needs, asked for in the card: a labelled field
- * under the options. It takes the caret when it opens, since the pick that
+ * under the picked option. It takes the caret when it opens, since the pick that
  * opened it cannot be sent without it; Enter is a new line, and the answer
  * goes on Answer or Cmd/Ctrl+Enter.
  */
@@ -674,7 +747,12 @@ export function AskNote({
 }) {
   const inner = React.useRef<HTMLTextAreaElement | null>(null);
   React.useEffect(() => {
-    inner.current?.focus();
+    const el = inner.current;
+    if (!el) return;
+    el.focus();
+    // A note that starts written is there to be edited: the caret goes
+    // to its end.
+    el.setSelectionRange(el.value.length, el.value.length);
   }, []);
   return (
     <div className="flex flex-col gap-1.5">

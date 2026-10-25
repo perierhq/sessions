@@ -12,6 +12,8 @@ import {
   type AutonomyLevel,
   describeIndependence,
   type IncidentResponse,
+  type NextStep,
+  type NextStepTarget,
   type OwnerDecision,
   type RedactedProjectSettings,
   type ResponsePhase,
@@ -25,9 +27,15 @@ import {
   type SignalView,
 } from "../../../shared/incidents";
 import { ApiError } from "../api/request";
+import type { ProjectSectionId } from "../project-settings/page-model";
 import { repoLabel } from "../repo-label";
 import { clockTime } from "../time";
-import type { AskNoteField, AskQuestion } from "../types";
+import type {
+  AskFreeText,
+  AskNoteField,
+  AskOptionGroup,
+  AskQuestion,
+} from "../types";
 import { formatSpan } from "./copy";
 import { type DotTone, signalDotTone } from "./tone";
 
@@ -76,14 +84,29 @@ export interface ShellCard {
   buttons: CardButton[];
 }
 
+/** What picking a choice card's option does: post a decision, or only
+ *  open a project settings section. */
+export type ChoicePick =
+  | { kind: "decision"; decision: OwnerDecision }
+  | { kind: "settings"; section: ProjectSectionId };
+
 export interface ChoiceCard {
   mode: "choice";
   eyebrow: string;
   question: AskQuestion;
   decisions: OwnerDecision[];
   /** The options that need a note, by label (Send it back): the card asks
-   *  for it in a labelled field once that option is picked. */
+   *  for it in a labelled field once that option is picked. A suggested
+   *  send-back starts with the investigator's note. */
   notes: Record<string, AskNoteField>;
+  /** What each option does, by label. */
+  picks: Record<string, ChoicePick>;
+  /** The investigator's suggested steps first, then the fixed decisions,
+   *  set smaller. Absent without suggestions. */
+  groups?: AskOptionGroup[];
+  /** The typed answer: Send it back with that note. Null when Send it
+   *  back is not offered. */
+  freeText: AskFreeText | null;
 }
 
 export type NextCard = ShellCard | ChoiceCard | null;
@@ -373,19 +396,9 @@ export function nextCard(input: {
           buttons,
         });
       }
-      if (decisions.length >= 2)
-        return {
-          mode: "choice",
-          eyebrow: "Needs you",
-          decisions,
-          question: {
-            header: "Needs you",
-            question: next.reason,
-            options: decisions.map((d) => DECISION_COPY[d]),
-            multiSelect: false,
-          },
-          notes: decisionNotes(decisions),
-        };
+      const suggested = suggestedSteps(r, decisions);
+      if (decisions.length >= 2 || (suggested.length && decisions.length))
+        return choiceCard(next.reason, decisions, suggested);
       return shell({
         tone: "blue",
         eyebrow: "Needs you",
@@ -436,6 +449,133 @@ export function orderButtons(buttons: CardButton[]): CardButton[] {
         a.i - b.i,
     )
     .map(({ button }) => button);
+}
+
+/** Where an `open-settings` step goes in the project's settings. */
+export const NEXT_STEP_SECTION: Record<NextStepTarget, ProjectSectionId> = {
+  access: "access",
+  production: "production",
+  signals: "incidents",
+  models: "models",
+  sandbox: "where",
+};
+
+/** The label over the investigator's suggested steps. */
+export const SUGGESTED_LABEL = "Suggested by the investigator";
+
+/** The typed answer on a card that offers Send it back. */
+export const TELL_INVESTIGATOR: AskFreeText = {
+  label: "Tell the investigator",
+  placeholder: "Tell the investigator…",
+  maxLength: SEND_BACK_NOTE_MAX,
+};
+
+interface SuggestedStep {
+  option: { label: string; description: string };
+  pick: ChoicePick;
+  note?: AskNoteField;
+}
+
+/**
+ * The newest investigator's suggested next steps for this round, as card
+ * options. A step whose decision the card does not offer is left out, and
+ * so is one whose title repeats an option's label.
+ */
+export function suggestedSteps(
+  r: IncidentResponse,
+  decisions: readonly OwnerDecision[],
+): SuggestedStep[] {
+  const run = newest(r.agents, "investigator");
+  const report = run?.report;
+  if (!run || run.round !== r.round || report?.role !== "investigator")
+    return [];
+  const taken = new Set(
+    decisions.map((d) => DECISION_COPY[d].label.toLowerCase()),
+  );
+  const out: SuggestedStep[] = [];
+  for (const step of report.nextSteps ?? []) {
+    const made = stepOption(step, decisions);
+    const key = step.title.trim().toLowerCase();
+    if (!made || !key || taken.has(key)) continue;
+    taken.add(key);
+    out.push(made);
+  }
+  return out;
+}
+
+function stepOption(
+  step: NextStep,
+  decisions: readonly OwnerDecision[],
+): SuggestedStep | null {
+  const option = { label: step.title.trim(), description: step.why };
+  switch (step.kind) {
+    case "send-back":
+      if (!decisions.includes("send-back")) return null;
+      return {
+        option,
+        pick: { kind: "decision", decision: "send-back" },
+        note: { ...DECISION_NOTE["send-back"]!, initial: step.payload },
+      };
+    case "close-provider":
+      if (!decisions.includes("close")) return null;
+      return { option, pick: { kind: "decision", decision: "close" } };
+    case "open-settings": {
+      const section = NEXT_STEP_SECTION[step.payload];
+      return section ? { option, pick: { kind: "settings", section } } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** The needs-you choice card: suggested steps first, then the decisions. */
+function choiceCard(
+  reason: string,
+  decisions: OwnerDecision[],
+  suggested: SuggestedStep[],
+): ChoiceCard {
+  const picks: Record<string, ChoicePick> = {};
+  const notes: Record<string, AskNoteField> = {};
+  for (const s of suggested) {
+    picks[s.option.label] = s.pick;
+    if (s.note) notes[s.option.label] = s.note;
+  }
+  for (const d of decisions)
+    picks[DECISION_COPY[d].label] = { kind: "decision", decision: d };
+  const card: ChoiceCard = {
+    mode: "choice",
+    eyebrow: "Needs you",
+    decisions,
+    question: {
+      header: "Needs you",
+      question: reason,
+      options: [
+        ...suggested.map((s) => s.option),
+        ...decisions.map((d) => DECISION_COPY[d]),
+      ],
+      multiSelect: false,
+    },
+    notes: { ...notes, ...decisionNotes(decisions) },
+    picks,
+    freeText: decisions.includes("send-back") ? TELL_INVESTIGATOR : null,
+  };
+  if (suggested.length)
+    card.groups = [
+      { label: SUGGESTED_LABEL, count: suggested.length },
+      { count: decisions.length, quiet: true },
+    ];
+  return card;
+}
+
+/** What a choice card's answer picked: the answer is one option's label
+ *  (case aside). Null for anything else. */
+export function pickFromAnswer(
+  answer: string,
+  card: Pick<ChoiceCard, "picks">,
+): ChoicePick | null {
+  const text = answer.trim().toLowerCase();
+  const label = Object.keys(card.picks).find((l) => l.toLowerCase() === text);
+  return label ? card.picks[label]! : null;
 }
 
 /** The decisions that carry a note, and the field that asks for it. The

@@ -21,6 +21,7 @@ import {
   runbookPathsFor,
   slugify,
 } from "./prompts";
+import { parseInvestigatorReport } from "./reports";
 
 const incident: Incident = {
   id: "inc-1",
@@ -459,4 +460,85 @@ test("untrusted text stays inside fenced data blocks", () => {
   });
   expect(back).toContain(ESCAPED);
   expect(fences(back)).toEqual(["```text", "```"]);
+});
+
+test("investigator prompt: next steps, their kinds and an example that parses", () => {
+  const p = buildInvestigatorPrompt({
+    incident,
+    signal,
+    otherSignals: [],
+    evaluation,
+    recent,
+    baseBranch: "main",
+    round: 1,
+    maxRounds: 2,
+    actions: [],
+  });
+  expect(p).toContain("## Next steps for the owner");
+  expect(p).toContain("add nextSteps to the report: at most 3, best first");
+  expect(p).toContain("- send-back: ");
+  expect(p).toContain(
+    "payload is one of access, production, signals, models, sandbox",
+  );
+  expect(p).toContain("- close-provider: ");
+  expect(p).toContain("Any other kind or target is dropped.");
+  // The example is a report's nextSteps exactly as Sessions reads them.
+  const example = /```json\n([\s\S]*?)\n```/.exec(
+    p.slice(p.indexOf("## Next steps for the owner")),
+  );
+  const { nextSteps } = JSON.parse(example![1]!);
+  const report = {
+    role: "investigator",
+    summary: "Search fails",
+    cause: "Unknown: only the search service's logs say",
+    readFirst: [{ path: "docs/incidents/runbook.md", found: true }],
+    attempts: [
+      {
+        step: "Read the runbook",
+        cost: "free",
+        result: "informative",
+        evidence: "Read",
+      },
+    ],
+    candidate: null,
+    noCandidateReason: "The cause is only in logs agents cannot reach",
+    check: { kind: "after-deploy", reason: "Nothing to deploy" },
+    claims: [],
+    notePath: "docs/incidents/2026-10-20-search-fails.md",
+    runbookPaths: ["docs/incidents/runbook.md"],
+    nextSteps,
+  };
+  const warnings: string[] = [];
+  const parsed = parseInvestigatorReport(
+    `\`\`\`incident-report\n${JSON.stringify(report)}\n\`\`\``,
+    {
+      actionIds: new Set(),
+      actionKinds: new Map(),
+      signalOrigin: null,
+      warnings,
+    },
+  );
+  if ("error" in parsed) throw new Error(parsed.error);
+  expect(parsed.nextSteps?.map((s) => s.kind)).toEqual([
+    "open-settings",
+    "send-back",
+    "close-provider",
+  ]);
+  expect(warnings).toEqual([]);
+});
+
+test("the verifier is never asked for next steps", () => {
+  const p = buildVerifierPrompt({
+    incident,
+    signal,
+    candidate,
+    headSha: "abc1234",
+    proof,
+    mode: "ask",
+    runnerLabel: "Production · acme",
+    independence: "other-provider",
+    round: 1,
+  });
+  expect(p).not.toContain("nextSteps");
+  expect(p).not.toContain("Next steps");
 });

@@ -460,7 +460,7 @@ test("Try again, Mark as fixed and Close without action go without a note", asyn
     // free-text answer that would have nowhere to go.
     expect(ask.notes).toEqual({});
     expect(ask.freeText).toBe(false);
-    ask.onAnswer({ [ask.questions[0]!.question]: label }, {});
+    ask.onAnswer({ [ask.questions[0]!.question]: label }, {}, {});
     await settle();
     expect(decide).toHaveBeenCalledWith("inc-1", decision, undefined);
     harness.unmountAll();
@@ -485,6 +485,7 @@ test("Send it back carries the note written in the card", async () => {
   ask.onAnswer(
     { "Stopped by Ada": "Send it back" },
     { "Stopped by Ada": "Check the resume policy" },
+    {},
   );
   await settle();
   expect(decide).toHaveBeenCalledWith(
@@ -514,4 +515,180 @@ test("a Send it back intent points at the card instead of a confirm", async () =
     "Pick Send it back on the card and write the investigator a note",
   ]);
   expect(decide).not.toHaveBeenCalled();
+});
+
+// The investigator concluded the cause is only in logs it cannot reach.
+const unreachable = (): Incident => {
+  const base = incident(
+    {
+      kind: "needs-you",
+      reason:
+        "The investigator found no fix: the cause is in logs it can't reach",
+      needsYou: "no-candidate",
+      options: ["send-back", "resolve", "close"],
+    },
+    "needs-you",
+  );
+  base.response!.agents = [
+    {
+      role: "investigator",
+      round: 1,
+      attempt: 1,
+      sessionId: "s-inv",
+      model: "m",
+      provider: "p",
+      workspace: { kind: "sandbox", provider: "daytona" },
+      accessSummary: "",
+      accessRevision: "r1",
+      status: "done",
+      startedAt: iso(-600_000),
+      turnSentAt: iso(-600_000),
+      costUsd: 0.4,
+      tokens: 1000,
+      reminded: false,
+      report: {
+        role: "investigator",
+        summary: "Search fails behind the proxy",
+        cause: "One of a 452, 429 or 407; only the search service's logs say",
+        readFirst: [{ path: "docs/incidents/runbook.md", found: true }],
+        attempts: [
+          {
+            step: "Read the runbook",
+            cost: "free",
+            result: "informative",
+            evidence: "Read",
+          },
+        ],
+        candidate: null,
+        noCandidateReason: "The cause is only in logs agents cannot reach",
+        check: { kind: "after-deploy", reason: "Nothing to deploy" },
+        claims: [],
+        notePath: "docs/incidents/2026-10-20-search.md",
+        runbookPaths: ["docs/incidents/runbook.md"],
+        nextSteps: [
+          {
+            kind: "open-settings",
+            title: "Let agents read the search logs",
+            why: "They say which of the three it is",
+            payload: "access",
+          },
+          {
+            kind: "send-back",
+            title: "Check the proxy's 407s first",
+            why: "The cheapest of the three to rule out",
+            payload: "Rule out the proxy's 407s before the 452s and 429s.",
+          },
+          {
+            kind: "close-provider",
+            title: "Close as the provider's problem",
+            why: "Every candidate is on the provider's side",
+          },
+        ],
+      },
+    },
+  ];
+  return base;
+};
+
+test("suggested steps lead the card, then the fixed decisions, then a note", () => {
+  const card = harness.mount(NextAction, props({ incident: unreachable() }));
+  const ask = askOf(card.output());
+  expect(ask.questions[0]!.options!.map((o) => o.label)).toEqual([
+    "Let agents read the search logs",
+    "Check the proxy's 407s first",
+    "Close as the provider's problem",
+    "Send it back",
+    "Mark as fixed",
+    "Close without action",
+  ]);
+  expect(ask.questions[0]!.options![0]!.description).toBe(
+    "They say which of the three it is",
+  );
+  expect(ask.groups).toEqual([
+    { label: "Suggested by the investigator", count: 3 },
+    { count: 3, quiet: true },
+  ]);
+  expect(ask.freeText).toMatchObject({
+    placeholder: "Tell the investigator…",
+  });
+  // The suggested send-back opens its note already written.
+  expect(ask.notes?.["Check the proxy's 407s first"]).toMatchObject({
+    label: "Note for the investigator",
+    initial: "Rule out the proxy's 407s before the 452s and 429s.",
+  });
+  expect(ask.notes?.["Send it back"]?.initial).toBeUndefined();
+});
+
+test("a suggested send-back posts Send it back with the note as edited", async () => {
+  const inc = unreachable();
+  decide.mockResolvedValue(inc);
+  const card = harness.mount(NextAction, props({ incident: inc }));
+  const ask = askOf(card.output());
+  const q = ask.questions[0]!.question;
+  ask.onAnswer(
+    { [q]: "Check the proxy's 407s first" },
+    { [q]: "Rule out the 407s, then the 429s." },
+    {},
+  );
+  await settle();
+  expect(decide).toHaveBeenCalledWith(
+    "inc-1",
+    "send-back",
+    "Rule out the 407s, then the 429s.",
+  );
+});
+
+test("a suggested settings step only opens that section", async () => {
+  const opened: string[] = [];
+  const card = harness.mount(
+    NextAction,
+    props({
+      incident: unreachable(),
+      onOpenProjectSettings: (section) => opened.push(section),
+    }),
+  );
+  const ask = askOf(card.output());
+  const q = ask.questions[0]!.question;
+  ask.onAnswer({ [q]: "Let agents read the search logs" }, {}, {});
+  await settle();
+  expect(opened).toEqual(["access"]);
+  expect(decide).not.toHaveBeenCalled();
+  expect(updateSettings).not.toHaveBeenCalled();
+});
+
+test("closing as the provider's problem is Close without action", async () => {
+  const inc = unreachable();
+  decide.mockResolvedValue(inc);
+  const card = harness.mount(NextAction, props({ incident: inc }));
+  const ask = askOf(card.output());
+  const q = ask.questions[0]!.question;
+  ask.onAnswer({ [q]: "Close as the provider's problem" }, {}, {});
+  await settle();
+  expect(decide).toHaveBeenCalledWith("inc-1", "close", undefined);
+});
+
+test("typed text sends it back with that note, even when it reads like an option", async () => {
+  const inc = unreachable();
+  decide.mockResolvedValue(inc);
+  for (const text of ["Look at the proxy logs too", "Mark as fixed"]) {
+    decide.mockClear();
+    const card = harness.mount(NextAction, props({ incident: inc }));
+    const ask = askOf(card.output());
+    const q = ask.questions[0]!.question;
+    ask.onAnswer({ [q]: text }, {}, { [q]: text });
+    await settle();
+    expect(decide).toHaveBeenCalledWith("inc-1", "send-back", text);
+    harness.unmountAll();
+  }
+});
+
+test("a refused suggestion keeps the server's refusal, as any decision does", async () => {
+  decide.mockRejectedValue(new ApiError("Only an owner can decide", 403));
+  const card = harness.mount(NextAction, props({ incident: unreachable() }));
+  const ask = askOf(card.output());
+  const q = ask.questions[0]!.question;
+  ask.onAnswer({ [q]: "Close as the provider's problem" }, {}, {});
+  await settle();
+  expect(decide).toHaveBeenCalledWith("inc-1", "close", undefined);
+  expect(toasts.map((t) => t.message)).toEqual(["Only an owner can decide"]);
 });

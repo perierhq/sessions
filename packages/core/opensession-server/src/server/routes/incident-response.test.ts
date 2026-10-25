@@ -389,6 +389,37 @@ test("Send it back needs a note, and says so when it is missing or too long", as
   });
 });
 
+test("a suggested next step is never a decision of its own", async () => {
+  const inc = await seedAgentErrorNeedsYou();
+  const path = `/api/incidents/${inc.id}/decisions`;
+  // The card maps each step onto an owner decision; the step kinds are
+  // not decisions the route knows.
+  for (const decision of ["open-settings", "close-provider", "pause-agents"])
+    expect(await call("POST", path, { decision })).toEqual({
+      status: 400,
+      json: { error: "Unknown decision" },
+    });
+  // A suggested send-back is Send it back, under the same sign-in.
+  expect(
+    (
+      await call(
+        "POST",
+        path,
+        { decision: "send-back", note: "Rule out the 407s first" },
+        { authUser: null, signInRequired: true },
+      )
+    )?.status,
+  ).toBe(401);
+  const sent = await call("POST", path, {
+    decision: "send-back",
+    note: "Rule out the 407s first",
+  });
+  expect(sent?.json).toMatchObject({
+    state: "investigating",
+    response: { sendBack: { kind: "owner", note: "Rule out the 407s first" } },
+  });
+});
+
 test("agent audit lists the ledger, each agent's access and its tool calls", async () => {
   __setIncidentResponseRoutesForTest({
     toolCalls: async (sessionId) =>

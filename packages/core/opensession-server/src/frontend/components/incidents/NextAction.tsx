@@ -27,12 +27,13 @@ import {
 import { intentPlan } from "../../lib/incidents/intent";
 import {
   type CardButton,
+  type ChoicePick,
   DECISION_COPY,
   decisionErrorText,
-  decisionFromAnswer,
   incidentDecisionKey,
   nextCard,
   orderButtons,
+  pickFromAnswer,
   type ShellCard,
   STOP_GRACE_MS,
 } from "../../lib/incidents/next-action";
@@ -44,6 +45,7 @@ import {
   NEXT_EYEBROW,
 } from "../../lib/incident-classes";
 import { repoLabel } from "../../lib/repo-label";
+import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import type { SettingsSectionKey } from "../../lib/settings-sections";
 import type { SessionSafetyState } from "../../lib/types";
 import { Button } from "../../ui/button";
@@ -257,6 +259,7 @@ export function NextAction({
   safety,
   onOpenSession,
   onOpenSettings,
+  onOpenProjectSettings,
   intent,
   onIntentHandled,
 }: {
@@ -271,6 +274,9 @@ export function NextAction({
   onOpenSession: (sessionId: string) => void;
   /** Opens a settings section, where a setup problem is fixed. */
   onOpenSettings?: (section: SettingsSectionKey) => void;
+  /** Opens a section of the incident project's settings: a step the
+   *  investigator suggested. Navigation only. */
+  onOpenProjectSettings?: (section: ProjectSectionId) => void;
   intent?: OwnerDecision;
   onIntentHandled: () => void;
 }) {
@@ -383,24 +389,34 @@ export function NextAction({
     }
   };
 
-  // The card offers only its options, and asks in place for the note a
-  // decision needs (Send it back), so an answer is always one decision.
+  // The card asks in place for the note a decision needs (Send it back),
+  // so an answer is one decision through the same route as every other:
+  // a picked option, or typed text, which sends it back with that note. A
+  // suggested settings step only opens the section.
   const onAnswer = async (
     answers: Record<string, string>,
     notes: Record<string, string>,
+    typed: Record<string, string>,
   ) => {
     if (card?.mode !== "choice") return;
     const [question = "", answer = ""] = Object.entries(answers)[0] ?? [];
-    const decision = decisionFromAnswer(answer, card.decisions);
-    const ok = decision
-      ? await decide(
-          decision,
-          DECISION_COPY[decision].label,
-          `choice:${decision}`,
-          notes[question],
-        )
-      : false;
-    // A refused answer gets a fresh card to answer again.
+    const written = typed[question]?.trim();
+    const pick: ChoicePick | null = written
+      ? card.freeText
+        ? { kind: "decision", decision: "send-back" }
+        : null
+      : pickFromAnswer(answer, card);
+    let ok = false;
+    if (pick?.kind === "settings") onOpenProjectSettings?.(pick.section);
+    else if (pick)
+      ok = await decide(
+        pick.decision,
+        DECISION_COPY[pick.decision].label,
+        `choice:${pick.decision}`,
+        written || notes[question],
+      );
+    // A refused answer, or a settings step, gets a fresh card to answer
+    // again.
     if (!ok) setChoiceAttempt((n) => n + 1);
   };
 
@@ -488,9 +504,12 @@ export function NextAction({
           // The reason is agent text from what it read: never markdown
           // that could load from another host.
           plainText
-          freeText={false}
+          freeText={card.freeText ?? false}
           notes={card.notes}
-          onAnswer={(answers, notes) => void onAnswer(answers, notes)}
+          groups={card.groups}
+          onAnswer={(answers, notes, typed) =>
+            void onAnswer(answers, notes, typed)
+          }
         />
       )}
       {incident.response && (

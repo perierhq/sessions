@@ -6,6 +6,8 @@
 // characters are stripped from text. An attempt's result is matched loosely
 // (case, spaces, underscores, a few synonyms); one Sessions still cannot read
 // is kept as inconclusive with a warning rather than failing the report.
+// Suggested next steps are read tolerantly and never refuse a report; the
+// verifier's report has none.
 // `effectiveVerdict` turns the verifier's verdict into the one
 // Sessions acts on: certainty it cannot back becomes not certain.
 import {
@@ -21,7 +23,16 @@ import {
   type EvidenceResult,
   type EvidenceRow,
   type InvestigatorReport,
+  NEXT_STEP_KINDS,
+  NEXT_STEP_TARGETS,
+  NEXT_STEP_TITLE_MAX,
+  NEXT_STEP_WHY_MAX,
+  NEXT_STEPS_MAX,
+  type NextStep,
+  type NextStepKind,
+  type NextStepTarget,
   type ProofResult,
+  SEND_BACK_NOTE_MAX,
   type ReadFirst,
   type VerifierReport,
 } from "../../../shared/incident-response";
@@ -331,6 +342,94 @@ function attemptsOf(value: unknown, warnings: string[]): Result<EvidenceRow[]> {
   return out;
 }
 
+/** `value` as clean text cut to `max` characters, or "" when it is not
+ *  text. A cut ends in an ellipsis. */
+function clipped(value: unknown, max: number, multiline = false): string {
+  if (typeof value !== "string") return "";
+  const s = cleanReportText(value, multiline).trim();
+  return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** A next step's kind or target as written, for a warning. */
+function shownValue(value: unknown): string {
+  if (typeof value !== "string")
+    return value === undefined ? "none" : "not text";
+  const s = cleanReportText(value, false).trim().slice(0, RESULT_ECHO_MAX);
+  return `"${s.replace(/`/g, "'")}"`;
+}
+
+/**
+ * The report's suggested next steps, read tolerantly: a step with an
+ * unknown kind or target, or no title, is dropped with a warning; long
+ * text is cut; steps past NEXT_STEPS_MAX are dropped. Never an error, so a
+ * bad suggestion cannot cost the report.
+ */
+function nextStepsOf(value: unknown, warnings: string[]): NextStep[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push("nextSteps was not a list; dropped");
+    return [];
+  }
+  const out: NextStep[] = [];
+  for (const [i, item] of value.entries()) {
+    const at = `Next step ${i + 1}`;
+    if (out.length === NEXT_STEPS_MAX) {
+      warnings.push(
+        `Only ${NEXT_STEPS_MAX} next steps are kept; dropped ${value.length - i} more`,
+      );
+      break;
+    }
+    if (!isRecord(item)) {
+      warnings.push(`${at} was not an object; dropped`);
+      continue;
+    }
+    const title = clipped(item.title, NEXT_STEP_TITLE_MAX);
+    if (!title) {
+      warnings.push(`${at} had no title; dropped`);
+      continue;
+    }
+    const why = clipped(item.why, NEXT_STEP_WHY_MAX);
+    const kind = typeof item.kind === "string" ? item.kind.trim() : item.kind;
+    if (!(NEXT_STEP_KINDS as readonly unknown[]).includes(kind)) {
+      warnings.push(
+        `${at} (${title}) had kind ${shownValue(item.kind)}, not one of ${NEXT_STEP_KINDS.join(", ")}; dropped`,
+      );
+      continue;
+    }
+    switch (kind as NextStepKind) {
+      case "send-back": {
+        // The title stands in for a missing note: it says what to do.
+        const note = clipped(item.payload, SEND_BACK_NOTE_MAX, true) || title;
+        out.push({ kind: "send-back", title, why, payload: note });
+        break;
+      }
+      case "open-settings": {
+        const target =
+          typeof item.payload === "string"
+            ? item.payload.trim().toLowerCase()
+            : item.payload;
+        if (!(NEXT_STEP_TARGETS as readonly unknown[]).includes(target)) {
+          warnings.push(
+            `${at} (${title}) opens ${shownValue(item.payload)}, not one of ${NEXT_STEP_TARGETS.join(", ")}; dropped`,
+          );
+          continue;
+        }
+        out.push({
+          kind: "open-settings",
+          title,
+          why,
+          payload: target as NextStepTarget,
+        });
+        break;
+      }
+      case "close-provider":
+        out.push({ kind: "close-provider", title, why });
+        break;
+    }
+  }
+  return out;
+}
+
 export interface InvestigatorReportContext {
   actionIds: ReadonlySet<string>;
   /** Kind of each project action; a `deploy` runs only with the PR. */
@@ -475,6 +574,7 @@ export function parseInvestigatorReport(
       return {
         error: `The runbookPaths field may hold only ${RUNBOOK} or docs/incidents/runbooks/<slug>.md`,
       };
+  const nextSteps = nextStepsOf(value.nextSteps, repaired);
   ctx.warnings?.push(...repaired);
   return {
     role: "investigator",
@@ -488,6 +588,7 @@ export function parseInvestigatorReport(
     claims,
     notePath: value.notePath,
     runbookPaths: [...(runbookPaths as string[])],
+    ...(nextSteps.length ? { nextSteps } : {}),
   };
 }
 
