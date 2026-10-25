@@ -56,11 +56,16 @@ describe("renderInternalMcpCapabilities", () => {
     // a manual. Raised from 7,300 for opensession-local-folders, whose
     // per-turn note names its tools instead, and from 7,500 for
     // opensession-html, one more server at the usual ~150 chars. The
-    // incident access server is only ever mounted alone, so it is left out.
+    // incident access and support servers are only ever mounted alone, so
+    // they are left out.
+    const mountedAlone = new Set([
+      "opensession-incident-access",
+      "opensession-support",
+    ]);
     const together = renderInternalMcpCapabilities(
       Object.fromEntries(
         names
-          .filter((name) => name !== "opensession-incident-access")
+          .filter((name) => !mountedAlone.has(name))
           .map((name) => [name, {}]),
       ),
     );
