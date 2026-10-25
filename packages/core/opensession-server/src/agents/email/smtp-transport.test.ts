@@ -409,7 +409,11 @@ describe("classifySmtpError", () => {
       "553 5.7.1 <help@acme.example.test>: Sender address rejected: not owned by user testuser",
     ]) {
       const e = classifySmtpError(
-        err({ code: "EENVELOPE", responseCode: Number(response.slice(0, 3)), response }),
+        err({
+          code: "EENVELOPE",
+          responseCode: Number(response.slice(0, 3)),
+          response,
+        }),
       );
       expect(e.message).toBe(SMTP_SEND_AS_REFUSED);
       expect(e.permanent).toBe(true);
@@ -478,7 +482,9 @@ describe("appendSentCopy", () => {
     expect(await appendSentCopy(imap, raw, null)).toBe(true);
     expect(f.imap.getMailbox("Sent").messages).toHaveLength(1);
     // The live connection is back on INBOX: new mail still arrives.
-    f.deliver(rawMail({ from: "ada@example.test", messageId: "new@example.test" }));
+    f.deliver(
+      rawMail({ from: "ada@example.test", messageId: "new@example.test" }),
+    );
     const deadline = Date.now() + 3000;
     while (!seen.includes("new@example.test")) {
       if (Date.now() > deadline) throw new Error("INBOX mail not seen");

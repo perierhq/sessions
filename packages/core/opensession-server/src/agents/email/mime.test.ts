@@ -257,9 +257,9 @@ describe("buildReply", () => {
       }),
     ]);
     out.inbox.smtp.user = "login@acme.example.test";
-    expect(
-      buildReply(out, ["other-inbox@acme.example.test"]).to,
-    ).toEqual([ADA]);
+    expect(buildReply(out, ["other-inbox@acme.example.test"]).to).toEqual([
+      ADA,
+    ]);
     expect(buildReply(out).to).toEqual([
       { name: null, address: "other-inbox@acme.example.test" },
     ]);
