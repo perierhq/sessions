@@ -308,3 +308,62 @@ test("a send cut off long ago offers Discard", async () => {
   await settle();
   expect(discardDraft).toHaveBeenCalledWith("sc_0001", "sd_1");
 });
+
+test("a routine draft shows the sources it cites", () => {
+  const box = harness.mount(
+    SupportReplyBox,
+    props({
+      conversation: conversation({
+        draft: draft("veto", {
+          sources: [
+            { kind: "url", ref: "https://docs.acme.example.test/reset" },
+            { kind: "repo", ref: "docs/sign-in.md" },
+            { kind: "record", ref: "stripe:cus_123" },
+          ],
+        }),
+      }),
+    }),
+  );
+  const link = find<React.ComponentProps<"a">>(box.output(), "a");
+  expect(link?.props.href).toBe("https://docs.acme.example.test/reset");
+  expect(link?.props.target).toBe("_blank");
+  const all = strings(box.output());
+  expect(all).toContain("Sources");
+  expect(all).toContain("docs.acme.example.test/reset");
+  expect(all).toContain("docs/sign-in.md");
+  expect(all).toContain("stripe:cus_123");
+});
+
+test("a draft waiting for judgement says why, as the server wrote it", () => {
+  const box = harness.mount(
+    SupportReplyBox,
+    props({
+      conversation: conversation({
+        draft: draft("needs-person", { rule: "No source cited" }),
+      }),
+    }),
+  );
+  expect(text(box.output())).toContain("Draft by the agent · No source cited");
+  expect(strings(box.output())).not.toContain("Sources");
+});
+
+test("a prepared fixed note sends with its own button", async () => {
+  const box = harness.mount(
+    SupportReplyBox,
+    props({
+      conversation: conversation({
+        draft: draft("needs-person", {
+          purpose: "fixed-note",
+          author: { kind: "sessions" },
+          rule: 'An "it\'s fixed" note always needs a person',
+        }),
+      }),
+    }),
+  );
+  expect(text(box.output())).toContain(
+    'Fixed note · An "it\'s fixed" note always needs a person',
+  );
+  press(button(box.output(), "Send fixed note").onClick);
+  await settle();
+  expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1", undefined);
+});

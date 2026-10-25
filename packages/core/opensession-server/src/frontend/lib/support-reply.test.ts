@@ -3,7 +3,10 @@ import type { SupportConversation } from "../../shared/support";
 import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
+  draftSendLabel,
+  draftSources,
   pendingIssueCopy,
+  waitingFixedNote,
   sendingDiscardable,
   replyBoxMode,
   replyDraftKey,
@@ -264,11 +267,11 @@ describe("pendingIssueCopy", () => {
     if (heldFor) issue.heldFor = heldFor;
     return issue;
   };
-  test("a public repository needs a person, and the owner to post", () => {
-    const copy =
-      "The agent reported a bug. The repository is public, so a person creates the issue.";
+  const prepared =
+    "The agent prepared an issue. Nothing is posted until you create it.";
+  test("a public repository needs the owner to post", () => {
     expect(pendingIssueCopy(held(), true)).toEqual({
-      text: copy,
+      text: prepared,
       canApprove: true,
     });
     expect(
@@ -277,9 +280,9 @@ describe("pendingIssueCopy", () => {
         false,
       ),
     ).toEqual({
-      text: copy,
+      text: prepared,
       canApprove: false,
-      why: "Only the instance owner can post an issue to a public repository",
+      why: "The repository is public. Only the instance owner can post the issue",
     });
   });
   test("any other hold says why as the server wrote it", () => {
@@ -289,9 +292,108 @@ describe("pendingIssueCopy", () => {
         false,
       ),
     ).toEqual({
-      text: "The agent reported a bug. Waiting for a person: too many issues today",
+      text: prepared,
       canApprove: true,
+      why: "Waiting for a person: too many issues today",
     });
+  });
+});
+
+describe("draft sources", () => {
+  test("a public link opens; a path and a record read as they are", () => {
+    const rows = draftSources(
+      draft("needs-person", {
+        sources: [
+          { kind: "url", ref: "https://docs.acme.example.test/reset?x=1" },
+          { kind: "repo", ref: "docs/sign-in.md" },
+          { kind: "record", ref: "stripe:cus_123" },
+          { kind: "url", ref: "javascript:alert(1)" },
+          { kind: "repo", ref: "  " },
+        ],
+      }),
+    );
+    expect(rows).toEqual([
+      {
+        kind: "url",
+        label: "docs.acme.example.test/reset?x=1",
+        href: "https://docs.acme.example.test/reset?x=1",
+      },
+      { kind: "repo", label: "docs/sign-in.md", href: null },
+      { kind: "record", label: "stripe:cus_123", href: null },
+      { kind: "url", label: "javascript:alert(1)", href: null },
+    ]);
+  });
+  test("a draft without sources has none", () => {
+    expect(draftSources(draft("needs-person"))).toEqual([]);
+  });
+});
+
+describe("fixed note", () => {
+  const note = (draftId: string | null) => ({
+    at: "2026-10-25T11:00:00.000Z",
+    because: "pr-merged" as const,
+    url: "https://github.example.test/acme/acme/pull/7",
+    text: "It's fixed now",
+    draftId,
+  });
+  test("a fixed note in the reply box sends as one", () => {
+    const d = draft("needs-person", { purpose: "fixed-note" });
+    expect(draftSendLabel({ kind: "review", draft: d })).toBe(
+      "Send fixed note",
+    );
+    expect(draftHeader({ kind: "review", draft: d }, 0)).toBe(
+      "Fixed note · Draft: a person sends",
+    );
+    expect(
+      draftSendLabel({ kind: "review", draft: draft("needs-person") }),
+    ).toBe("Send");
+    expect(draftSendLabel({ kind: "failed", draft: d })).toBe("Try again");
+  });
+  test("a note outside the reply box waits until a reply goes out", () => {
+    expect(waitingFixedNote(conversation({ fixedNote: note("sd_9") }))).toBe(
+      null,
+    );
+    const waiting = conversation({ fixedNote: note(null) });
+    expect(waitingFixedNote(waiting)?.text).toBe("It's fixed now");
+    const answered = conversation({
+      fixedNote: note(null),
+      messages: [
+        message(),
+        message({
+          id: "sm_2",
+          direction: "out",
+          at: "2026-10-25T11:05:00.000Z",
+        }),
+      ],
+    });
+    expect(waitingFixedNote(answered)).toBe(null);
+  });
+});
+
+describe("quiet events", () => {
+  test("Sessions closing a conversation on its own is a quiet line", () => {
+    const c = conversation({
+      events: [
+        {
+          at: "2026-10-25T10:05:00.000Z",
+          kind: "closed",
+          actor: { kind: "sessions" },
+          detail: "The customer only said thanks. Closed without a reply",
+        },
+        {
+          at: "2026-10-25T10:06:00.000Z",
+          kind: "closed",
+          actor: { kind: "person", name: "Ada" },
+          detail: "Ada closed this",
+        },
+      ],
+    });
+    const [, quiet, person] = timelineEntries(c);
+    expect(quiet?.quiet).toBe(true);
+    expect(quiet?.text).toBe(
+      "The customer only said thanks. Closed without a reply",
+    );
+    expect(person?.quiet).toBeUndefined();
   });
 });
 

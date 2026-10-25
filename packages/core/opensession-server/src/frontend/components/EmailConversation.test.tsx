@@ -87,6 +87,7 @@ const approveIssue = mock(async (_id: string, _revision: number) => view());
 const startFixSession = mock(
   async (_id: string, _revision: number, _task: string) => view(),
 );
+const replyToConversation = mock(async (_id: string, _text: string) => view());
 const realApi = await import("../lib/api/support");
 mock.module("../lib/api/support", () => ({
   ...realApi,
@@ -95,6 +96,7 @@ mock.module("../lib/api/support", () => ({
   markNotSpam,
   approveIssue,
   startFixSession,
+  replyToConversation,
 }));
 
 const inboxes: InboxesResponse = {
@@ -119,10 +121,12 @@ const { ConfirmDialog } = await import("../ui/confirm");
 const { Button } = await import("../ui/button");
 const { Textarea } = await import("../ui/input");
 const { Menu } = await import("../ui/menu");
+const { InlineAlert } = await import("../ui/state");
 const {
   EmailConversation,
   EmailConversationActions,
   FixTaskCard,
+  FixedNoteCard,
   PendingIssueCard,
 } = await import("./EmailConversation");
 type ActionProps = Parameters<typeof EmailConversationActions>[0];
@@ -157,6 +161,7 @@ beforeEach(() => {
   markNotSpam.mockClear();
   approveIssue.mockClear();
   startFixSession.mockClear();
+  replyToConversation.mockClear();
 });
 afterEach(() => harness.unmountAll());
 
@@ -218,7 +223,7 @@ test("an agent that couldn't start says why instead", async () => {
   expect(strings(pane.output())).toContain("the session couldn't be created");
 });
 
-test("a held issue offers Create issue and Dismiss", async () => {
+test("a prepared issue shows its text and offers Create issue and Dismiss", async () => {
   fetchSupportConversation.mockImplementationOnce(async () =>
     view(
       conversation({
@@ -240,8 +245,10 @@ test("a held issue offers Create issue and Dismiss", async () => {
   const card = harness.mount(PendingIssueCard, held.props);
   const all = strings(card.output());
   expect(all).toContain(
-    "The agent reported a bug. The repository is public, so a person creates the issue.",
+    "The agent prepared an issue. Nothing is posted until you create it.",
   );
+  expect(all).toContain("Login fails");
+  expect(all).toContain("Steps");
   expect(all).toContain("Dismiss");
   press(
     find(card.output(), Button, (p) => p.children === "Create issue")?.props
@@ -251,7 +258,7 @@ test("a held issue offers Create issue and Dismiss", async () => {
   expect(approveIssue).toHaveBeenCalledWith("sc_0001", 1);
 });
 
-test("a suggested fix task starts a fix session as edited", async () => {
+test("a prepared fix task, marked as from a customer email, starts as edited", async () => {
   fetchSupportConversation.mockImplementationOnce(async () =>
     view(
       conversation({
@@ -273,7 +280,8 @@ test("a suggested fix task starts a fix session as edited", async () => {
   const suggested = find(pane.output(), FixTaskCard);
   if (!suggested) throw new Error("No fix task card");
   const card = harness.mount(FixTaskCard, suggested.props);
-  expect(strings(card.output())).toContain("The agent suggests a fix");
+  expect(strings(card.output())).toContain("The agent prepared a fix task");
+  expect(strings(card.output())).toContain("From a customer email");
   const area = find<React.ComponentProps<"textarea">>(
     card.output(),
     Textarea,
@@ -285,7 +293,7 @@ test("a suggested fix task starts a fix session as edited", async () => {
   area?.props.onChange?.(change as React.ChangeEvent<HTMLTextAreaElement>);
   await settle();
   press(
-    find(card.output(), Button, (p) => p.children === "Start fix session")
+    find(card.output(), Button, (p) => p.children === "Start a fix session")
       ?.props.onClick,
   );
   await settle();
@@ -293,6 +301,130 @@ test("a suggested fix task starts a fix session as edited", async () => {
     "sc_0001",
     4,
     "Fix the sign-in redirect on Safari",
+  );
+});
+
+test("a second manipulation attempt shows the agent stopped", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        injectionFlags: 2,
+        personOnly: {
+          at: "2026-10-25T10:02:00.000Z",
+          reason: "A second message tries to instruct the agent",
+        },
+        events: [
+          {
+            at: "2026-10-25T10:01:00.000Z",
+            kind: "agent-cant-start",
+            actor: { kind: "sessions" },
+            detail: "Support agent can't start: stopped",
+          },
+        ],
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  const alert = find(pane.output(), InlineAlert);
+  expect(alert?.props.title).toBe(
+    "Possible manipulation attempt. The agent stopped",
+  );
+  expect(alert?.props.variant).toBe("warn");
+  // The stop is on purpose: no "can't start" pill beside it.
+  expect(strings(pane.output())).not.toContain("Agent can't start");
+});
+
+test("a thanks-only close reads as a quiet line, not a note", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        status: "closed",
+        events: [
+          {
+            at: "2026-10-25T10:03:00.000Z",
+            kind: "closed",
+            actor: { kind: "sessions" },
+            detail: "The customer only said thanks. Closed without a reply",
+          },
+        ],
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  const line = find<React.ComponentProps<"p">>(
+    pane.output(),
+    "p",
+    (p) =>
+      p.children === "The customer only said thanks. Closed without a reply",
+  );
+  expect(line).toBeDefined();
+});
+
+test("a fixed note outside the reply box sends once the draft is settled", async () => {
+  const fixedNote = {
+    at: "2026-10-25T10:05:00.000Z",
+    because: "pr-merged" as const,
+    url: "https://github.example.test/acme/acme/pull/7",
+    text: "The sign-in fix is live",
+    draftId: null,
+  };
+  const props = (c: ReturnType<typeof conversation>) => ({
+    conversation: c,
+    note: fixedNote,
+    onSent: () => {},
+    onRefetch: () => {},
+  });
+  const blocked = harness.mount(
+    FixedNoteCard,
+    props(
+      conversation({
+        fixedNote,
+        draft: {
+          id: "sd_1",
+          text: "Hi",
+          author: { kind: "agent", sessionId: "s1" },
+          createdAt: "2026-10-25T10:04:00.000Z",
+          state: "needs-person",
+          rule: "No source cited",
+          vetoDeadline: null,
+          attempts: 0,
+          nextAttemptAt: null,
+          lastError: null,
+          messageId: "m@acme.example.test",
+          decidedBy: null,
+        },
+      }),
+    ),
+  );
+  const blockedSend = find(
+    blocked.output(),
+    Button,
+    (p) => p.children === "Send fixed note",
+  );
+  expect(blockedSend?.props.disabled).toBe(true);
+  expect(strings(blocked.output())).toContain(
+    "Send or discard the draft below first",
+  );
+  const card = harness.mount(FixedNoteCard, props(conversation({ fixedNote })));
+  expect(strings(card.output())).toContain(
+    "The fix was merged. A note for the customer is ready.",
+  );
+  press(
+    find(card.output(), Button, (p) => p.children === "Send fixed note")?.props
+      .onClick,
+  );
+  await settle();
+  expect(replyToConversation).toHaveBeenCalledWith(
+    "sc_0001",
+    "The sign-in fix is live",
   );
 });
 

@@ -17,6 +17,7 @@ import {
   markNotSpam,
   moveConversation,
   reopenConversation,
+  replyToConversation,
   setConversationOwner,
   startFixSession,
 } from "../lib/api/support";
@@ -29,13 +30,21 @@ import {
 } from "../lib/session-viewer-classes";
 import { mineStatus } from "../lib/sidebar-lanes";
 import { MINE_STATUS_META } from "../lib/sidebar-types";
-import { SUPPORT_COLUMN_BAR, SUPPORT_TOP_RAIL } from "../lib/support-classes";
+import {
+  PREPARED_CARD,
+  PREPARED_TEXT,
+  QUIET_EVENT,
+  SUPPORT_COLUMN_BAR,
+  SUPPORT_TOP_RAIL,
+} from "../lib/support-classes";
 import { supportItemProviderId } from "../lib/support-list";
 import {
   agentCantStart,
+  fixedNoteReason,
   pendingIssueCopy,
   pollMs,
   timelineEntries,
+  waitingFixedNote,
 } from "../lib/support-reply";
 import type { UnifiedSession } from "../lib/types";
 import { Button } from "../ui/button";
@@ -82,8 +91,9 @@ const STATUS_WORD: Partial<Record<SupportConversation["status"], string>> = {
 /**
  * An email conversation in the Support pane: the thread from the store with
  * its events between the messages, what a person does to it (owner, move,
- * done or reopen, not spam, forget the customer), the agent's issue waiting
- * for approval, and the draft-aware reply box. ConversationPane's shape for a
+ * done or reopen, not spam, forget the customer), what the agent prepared
+ * for a person (an issue, a fix task, a fixed note), the stop after a second
+ * manipulation attempt, and the draft-aware reply box. ConversationPane's shape for a
  * Plain ticket, with the same bar, floating session pill and polling: 10s
  * while a send is about to go or going, else 20s, never while hidden.
  */
@@ -176,7 +186,10 @@ export function EmailConversation({
   const customerName = c?.customer.name || "";
   const customerEmail = c?.customer.address || "";
   const statusWord = c ? STATUS_WORD[c.status] : undefined;
-  const cantStart = c ? agentCantStart(c) : null;
+  // Handed to a person for good: the agent was stopped on purpose.
+  const stopped = c?.personOnly ?? null;
+  const cantStart = c && !stopped ? agentCantStart(c) : null;
+  const fixedNote = c ? waitingFixedNote(c) : null;
   const rail = c && (c.sessionId || c.fixSessionId || cantStart);
 
   const actions = c && (
@@ -326,13 +339,19 @@ export function EmailConversation({
                 )}
                 {!actionsInBar && actions}
                 <div className="mt-5 flex flex-col gap-3">
-                  {timelineEntries(c).map((entry) => (
-                    <PlainEntryRow
-                      key={entry.id}
-                      entry={entry}
-                      threadTitle={c.subject}
-                    />
-                  ))}
+                  {timelineEntries(c).map((entry) =>
+                    entry.quiet ? (
+                      <p key={entry.id} className={QUIET_EVENT}>
+                        {entry.text}
+                      </p>
+                    ) : (
+                      <PlainEntryRow
+                        key={entry.id}
+                        entry={entry}
+                        threadTitle={c.subject}
+                      />
+                    ),
+                  )}
                 </div>
               </>
             ) : null}
@@ -393,6 +412,16 @@ export function EmailConversation({
 
       {c && (
         <div className="mx-auto flex w-full max-w-[760px] shrink-0 flex-col gap-3 px-5 pb-5">
+          {stopped && (
+            <InlineAlert
+              variant="warn"
+              title="Possible manipulation attempt. The agent stopped"
+            >
+              A customer message tried to give the agent instructions twice.
+              Nothing sends on its own now. Reply yourself or close the
+              conversation.
+            </InlineAlert>
+          )}
           {c.pendingIssue && (
             <PendingIssueCard
               issue={c.pendingIssue}
@@ -407,6 +436,15 @@ export function EmailConversation({
               key={`${c.fixTask.at}`}
               conversation={c}
               onStarted={setView}
+              onRefetch={() => void reload()}
+            />
+          )}
+          {fixedNote && c.status !== "spam" && (
+            <FixedNoteCard
+              key={fixedNote.at}
+              conversation={c}
+              note={fixedNote}
+              onSent={setView}
               onRefetch={() => void reload()}
             />
           )}
@@ -436,9 +474,8 @@ function fixSessionLabel(
   return "Open fix session";
 }
 
-const CARD = "flex flex-col gap-2.5 rounded-xl bg-panel px-4 py-3";
-
-/** An issue the agent reported that waits for a person. */
+/** The issue the agent prepared: its title and scrubbed text as they
+ *  would be posted. A person creates it or dismisses it. */
 export function PendingIssueCard({
   issue,
   isInstanceOwner,
@@ -454,11 +491,21 @@ export function PendingIssueCard({
 }) {
   const copy = pendingIssueCopy(issue, isInstanceOwner);
   return (
-    <div className={CARD}>
+    <div className={PREPARED_CARD}>
       <p className="m-0 text-supporting text-fg">{copy.text}</p>
-      <p className="m-0 truncate text-label text-dim" title={issue.title}>
-        {issue.ghRepo ? `${issue.ghRepo} · ${issue.title}` : issue.title}
-      </p>
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <p className="m-0 text-label font-medium text-fg [overflow-wrap:anywhere]">
+          {issue.title}
+        </p>
+        {issue.ghRepo && (
+          <p className="m-0 truncate text-meta text-faint">{issue.ghRepo}</p>
+        )}
+        {issue.body && (
+          <pre className={PREPARED_TEXT} aria-label="Issue text">
+            {issue.body}
+          </pre>
+        )}
+      </div>
       {copy.why && <p className="m-0 text-label text-faint">{copy.why}</p>}
       <div className="flex flex-wrap gap-2">
         {copy.canApprove && (
@@ -486,8 +533,8 @@ export function PendingIssueCard({
   );
 }
 
-/** The fix task the agent suggested: a person edits it and starts a fix
- *  session from it. Nothing starts on its own. */
+/** The fix task the agent prepared from a customer email: a person edits
+ *  it and starts a fix session from it. Nothing starts on its own. */
 export function FixTaskCard({
   conversation: c,
   onStarted,
@@ -515,10 +562,15 @@ export function FixTaskCard({
   }
 
   return (
-    <div className={CARD}>
-      <p className="m-0 text-supporting text-fg">The agent suggests a fix</p>
+    <div className={PREPARED_CARD}>
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+        <p className="m-0 text-supporting text-fg">
+          The agent prepared a fix task
+        </p>
+        <span className="text-meta text-faint">From a customer email</span>
+      </div>
       <p className="m-0 text-label text-dim">
-        {`Starts a code session in ${c.fixTask?.project ?? c.project} as you, with this task.`}
+        {`Starts a code session in ${c.fixTask?.project ?? c.project} as you, with this task. Its words come from the customer, so read it first.`}
       </p>
       <Textarea
         aria-label="Fix task"
@@ -537,8 +589,68 @@ export function FixTaskCard({
           disabled={busy || !task.trim()}
           onClick={() => void start()}
         >
-          Start fix session
+          Start a fix session
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The "it's fixed" note the server prepared while another draft was in
+ *  the reply box. A person sends it once that draft is settled. */
+export function FixedNoteCard({
+  conversation: c,
+  note,
+  onSent,
+  onRefetch,
+}: {
+  conversation: SupportConversation;
+  note: NonNullable<SupportConversation["fixedNote"]>;
+  onSent: (view: SupportConversationView) => void;
+  onRefetch: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const draftLive =
+    !!c.draft && c.draft.state !== "sent" && c.draft.state !== "discarded";
+
+  async function send() {
+    if (busy || draftLive) return;
+    setBusy(true);
+    setError(null);
+    await replyToConversation(c.id, note.text)
+      .then(onSent)
+      .catch((failure: Error) => {
+        setError(errorMessage(failure, "Couldn't send the fixed note"));
+        onRefetch();
+      })
+      .finally(() => setBusy(false));
+  }
+
+  return (
+    <div className={PREPARED_CARD}>
+      <p className="m-0 text-supporting text-fg">
+        {`${fixedNoteReason(note)}. A note for the customer is ready.`}
+      </p>
+      <pre className={PREPARED_TEXT} aria-label="Fixed note">
+        {note.text}
+      </pre>
+      {error && <InlineAlert>{error}</InlineAlert>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          className={ACTION}
+          disabled={busy || draftLive}
+          onClick={() => void send()}
+        >
+          Send fixed note
+        </Button>
+        {draftLive && (
+          <span className="text-label text-faint">
+            Send or discard the draft below first
+          </span>
+        )}
       </div>
     </div>
   );
@@ -559,8 +671,8 @@ function forgetSummary(r: ForgetCustomerResult): string {
 
 /**
  * What a person does to an email conversation besides replying: the owner,
- * a move to another project (people may always move; the inbox's lock binds
- * only the agent), Mark as done or Reopen, and in the overflow Not spam
+ * a move to another project (only a person moves a conversation), Mark as
+ * done or Reopen, and in the overflow Not spam
  * (spam only) and Forget this customer (the instance owner only, behind a
  * confirm that says what goes). Each answers with the conversation, which
  * replaces the pane's copy.

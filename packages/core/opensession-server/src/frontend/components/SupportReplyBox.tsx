@@ -27,11 +27,18 @@ import { errorMessage } from "../lib/error-message";
 import {
   composePlaceholder,
   draftHeader,
+  draftSendLabel,
+  draftSources,
   replyBoxMode,
   replyDraftKey,
   sendingDiscardable,
   supportIntentPlan,
 } from "../lib/support-reply";
+import {
+  DRAFT_SOURCES,
+  DRAFT_SOURCE_LINK,
+  DRAFT_SOURCE_REF,
+} from "../lib/support-classes";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { useConfirm } from "../ui/confirm";
@@ -205,6 +212,7 @@ export function SupportReplyBox({
             : 0,
         );
   const pinnedTo = draft?.to?.map((a) => a.address).join(", ");
+  const sources = draft ? draftSources(draft) : [];
   const locked = mode.kind === "veto" || mode.kind === "sending" || !!busy;
 
   return (
@@ -225,6 +233,33 @@ export function SupportReplyBox({
             <span className="min-w-0 truncate text-meta text-faint">
               {`To ${pinnedTo}`}
             </span>
+          )}
+        </div>
+      )}
+      {sources.length > 0 && (
+        <div className={DRAFT_SOURCES} aria-label="Sources">
+          <span className="text-faint">Sources</span>
+          {sources.map((source) =>
+            source.href ? (
+              <a
+                key={`${source.kind}:${source.label}`}
+                className={DRAFT_SOURCE_LINK}
+                href={source.href}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={source.href}
+              >
+                {source.label}
+              </a>
+            ) : (
+              <span
+                key={`${source.kind}:${source.label}`}
+                className={DRAFT_SOURCE_REF}
+                title={source.label}
+              >
+                {source.label}
+              </span>
+            ),
           )}
         </div>
       )}
@@ -327,7 +362,7 @@ export function SupportReplyBox({
               disabled={!!busy || !text.trim()}
               onClick={send}
             >
-              {mode.kind === "failed" ? "Try again" : "Send"}
+              {draftSendLabel(mode)}
             </Button>
             <Button
               size="sm"

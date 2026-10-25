@@ -5,6 +5,7 @@
 // them.
 import { formatVetoRemaining } from "../../shared/incident-response";
 import type {
+  DraftSource,
   SupportActor,
   SupportConversation,
   SupportDraft,
@@ -67,7 +68,9 @@ export function vetoLabel(deadline: number, now: number): string {
   return `Sends at ${clock.format(new Date(deadline))}`;
 }
 
-function draftAuthor(author: SupportActor): string {
+function draftAuthor(draft: SupportDraft): string {
+  if (draft.purpose === "fixed-note") return "Fixed note";
+  const author = draft.author;
   switch (author.kind) {
     case "agent":
       return "Draft by the agent";
@@ -87,9 +90,45 @@ export function draftHeader(
 ): string {
   const why =
     mode.kind === "veto" ? vetoLabel(mode.deadline, now) : mode.draft.rule;
-  return why
-    ? `${draftAuthor(mode.draft.author)} · ${why}`
-    : draftAuthor(mode.draft.author);
+  return why ? `${draftAuthor(mode.draft)} · ${why}` : draftAuthor(mode.draft);
+}
+
+/** The primary button under a draft waiting for a person. */
+export function draftSendLabel(
+  mode: Extract<ReplyBoxMode, { kind: "review" | "failed" }>,
+): string {
+  if (mode.kind === "failed") return "Try again";
+  return mode.draft.purpose === "fixed-note" ? "Send fixed note" : "Send";
+}
+
+export interface SourceRow {
+  kind: DraftSource["kind"];
+  /** What the row reads: the URL without its scheme, the path, the id. */
+  label: string;
+  /** Opens in a new tab; only for an http(s) URL. */
+  href: string | null;
+}
+
+/** The sources a draft cites, as rows to show under it: a public link
+ *  opens, a repository path and a connector record read as they are. */
+export function draftSources(draft: SupportDraft): SourceRow[] {
+  return (draft.sources ?? []).flatMap((source): SourceRow[] => {
+    const ref = source.ref.trim();
+    if (!ref) return [];
+    if (source.kind !== "url")
+      return [{ kind: source.kind, label: ref, href: null }];
+    let url: URL;
+    try {
+      url = new URL(ref);
+    } catch {
+      return [{ kind: source.kind, label: ref, href: null }];
+    }
+    const web = url.protocol === "https:" || url.protocol === "http:";
+    const label = web
+      ? `${url.host}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`
+      : ref;
+    return [{ kind: source.kind, label, href: web ? url.href : null }];
+  });
 }
 
 /** Local draft storage (lib/drafts.ts): a person's own reply under the
@@ -182,10 +221,20 @@ function actorName(actor: SupportActor, c: SupportConversation): string {
 
 const REMOVED = "(Removed after the retention period)";
 
+/** A timeline row: a message or note PlainEntryRow draws, or a quiet line
+ *  for something Sessions did on its own that needs no reading (it closed
+ *  a conversation after thanks or a week of silence). */
+export type EmailTimelineEntry = PlainTimelineEntry & { quiet?: true };
+
+/** Events that read as one quiet line rather than a note. */
+function quietEvent(e: SupportConversation["events"][number]): boolean {
+  return e.kind === "closed" && e.actor.kind === "sessions";
+}
+
 /** Messages as email rows and events as system notes, oldest first. */
-export function timelineEntries(c: SupportConversation): PlainTimelineEntry[] {
+export function timelineEntries(c: SupportConversation): EmailTimelineEntry[] {
   const base = `${API_BASE}/support/conversations/${encodeURIComponent(c.id)}/attachments/`;
-  const rows: Array<{ at: number; order: number; entry: PlainTimelineEntry }> =
+  const rows: Array<{ at: number; order: number; entry: EmailTimelineEntry }> =
     [];
   c.messages.forEach((m, order) => {
     const ours = m.direction === "out";
@@ -231,6 +280,7 @@ export function timelineEntries(c: SupportConversation): PlainTimelineEntry[] {
         actorType: "system",
         kind: "note",
         text: e.detail,
+        ...(quietEvent(e) ? { quiet: true as const } : {}),
       },
     });
   });
@@ -242,15 +292,18 @@ export function timelineEntries(c: SupportConversation): PlainTimelineEntry[] {
 /** The held-issue hold reasons that bugs.ts writes (shown as is). */
 const HELD_PUBLIC = "Waiting for a person: the repository is public";
 
-/** The card over the reply box for an issue the agent reported that waits
- *  for a person: why it waits, and whether this person can post it (only
- *  the instance owner posts to a public repository). */
+/** The card over the reply box for the issue the agent prepared: nothing
+ *  is posted until a person creates it, and only the instance owner posts
+ *  to a public repository. */
 export interface PendingIssueCopy {
   text: string;
   canApprove: boolean;
-  /** Why this person can't post it. */
+  /** Why this person can't create it, or the server's other hold reason. */
   why?: string;
 }
+
+const PREPARED_ISSUE =
+  "The agent prepared an issue. Nothing is posted until you create it.";
 
 export function pendingIssueCopy(
   issue: NonNullable<SupportConversation["pendingIssue"]>,
@@ -258,19 +311,38 @@ export function pendingIssueCopy(
 ): PendingIssueCopy {
   const isPublic = !issue.heldFor || issue.heldFor === HELD_PUBLIC;
   if (!isPublic)
-    return {
-      text: `The agent reported a bug. ${issue.heldFor}`,
-      canApprove: true,
-    };
-  const text =
-    "The agent reported a bug. The repository is public, so a person creates the issue.";
+    return { text: PREPARED_ISSUE, canApprove: true, why: issue.heldFor };
   return isInstanceOwner
-    ? { text, canApprove: true }
+    ? { text: PREPARED_ISSUE, canApprove: true }
     : {
-        text,
+        text: PREPARED_ISSUE,
         canApprove: false,
-        why: "Only the instance owner can post an issue to a public repository",
+        why: "The repository is public. Only the instance owner can post the issue",
       };
+}
+
+/** The "it's fixed" note the server prepared that isn't in the reply box
+ *  (another draft was live then) and hasn't gone out: no reply was sent
+ *  after it was prepared. null otherwise. */
+export function waitingFixedNote(
+  c: SupportConversation,
+): NonNullable<SupportConversation["fixedNote"]> | null {
+  const note = c.fixedNote;
+  if (!note || note.draftId) return null;
+  const at = Date.parse(note.at);
+  const answered = c.messages.some(
+    (m) => m.direction === "out" && Date.parse(m.at) >= at,
+  );
+  return answered ? null : note;
+}
+
+/** Why the fixed note exists, in a few words. */
+export function fixedNoteReason(
+  note: NonNullable<SupportConversation["fixedNote"]>,
+): string {
+  return note.because === "pr-merged"
+    ? "The fix was merged"
+    : "The linked issue was closed";
 }
 
 /** reply.ts INTERRUPTED_AFTER_MS: an attempt older than this with no
