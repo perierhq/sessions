@@ -29,6 +29,7 @@ import {
   type MailServerConfig,
   SUPPORT_TOPICS,
   defaultInboxConfig,
+  smtpSavesSentItself,
 } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
@@ -63,6 +64,8 @@ const OWNER_INTERNAL =
 const OWNER_INTERNAL_SERVERS =
   "Only the instance owner can change the mail servers of an inbox that allows internal servers";
 const OWNER_REMOVES = "Only the instance owner can remove inboxes";
+const OWNER_SENDING_INBOX =
+  "Only the instance owner can change the topics, project or address of an inbox that sends right away";
 
 type Forbidden = { ok: false; status: 403; error: string };
 const forbidden = (error: string): Forbidden => ({
@@ -74,7 +77,9 @@ const forbidden = (error: string): Forbidden => ({
 /** Why `actor` may not turn `current` into `next` (null for a new inbox),
  *  or null. Only raising autonomy to send right away, turning internal
  *  servers on, or moving the servers of an inbox that allows internal
- *  ones needs the owner; lowering either is anyone's. */
+ *  ones needs the owner; lowering either is anyone's. While an inbox
+ *  sends right away (and keeps doing so), dropping a topic that needs a
+ *  person or changing its project or address is the owner's too. */
 function ownerOnlyChange(
   actor: Actor,
   current: InboxConfig | null,
@@ -86,6 +91,16 @@ function ownerOnlyChange(
     current?.autonomy !== OWNER_ONLY_AUTONOMY
   )
     return OWNER_SENDS;
+  if (
+    current?.autonomy === OWNER_ONLY_AUTONOMY &&
+    next.autonomy === OWNER_ONLY_AUTONOMY &&
+    (current.neverWithoutAPerson.some(
+      (topic) => !next.neverWithoutAPerson.includes(topic),
+    ) ||
+      current.project !== next.project ||
+      current.address !== next.address)
+  )
+    return OWNER_SENDING_INBOX;
   if (next.allowInternalHost === true && current?.allowInternalHost !== true)
     return OWNER_INTERNAL;
   if (
@@ -386,10 +401,14 @@ export async function inboxPassword(
 }
 
 /** Null when `input` isn't an object; field types are left to serverError. */
+/** Trimmed, without the trailing dot of a fully qualified name. */
+const cleanHost = (host: unknown) =>
+  typeof host === "string" ? host.trim().replace(/\.+$/, "") : host;
+
 const trimServer = (input: ServerInput): MailServerConfig | null =>
   input && typeof input === "object"
     ? {
-        host: typeof input.host === "string" ? input.host.trim() : input.host,
+        host: cleanHost(input.host) as string,
         port: input.port,
         tls: input.tls,
         user: typeof input.user === "string" ? input.user.trim() : input.user,
@@ -526,13 +545,19 @@ function applyPatch(
     const server = patch[which];
     if (!server) continue;
     const { host, port, tls, user } = server;
-    if (host !== undefined)
-      next[which].host = typeof host === "string" ? host.trim() : host;
+    if (host !== undefined) next[which].host = cleanHost(host) as string;
     if (port !== undefined) next[which].port = port;
     if (tls !== undefined) next[which].tls = tls;
     if (user !== undefined)
       next[which].user = typeof user === "string" ? user.trim() : user;
   }
+  // A new SMTP host decides the Sent copy again, unless the patch does.
+  if (
+    patch.copyToSent === undefined &&
+    typeof next.smtp.host === "string" &&
+    next.smtp.host !== current.smtp.host
+  )
+    next.copyToSent = !smtpSavesSentItself(next.smtp.host);
   next.updatedAt = now;
   next.updatedBy = by;
   return next;

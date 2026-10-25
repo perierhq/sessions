@@ -462,14 +462,17 @@ export function parseSupportItemId(
 
 const SMTP_HOSTS_THAT_SAVE_SENT = new Set([
   "smtp.gmail.com",
+  "smtp.googlemail.com",
   "smtp.office365.com",
   "smtp-mail.outlook.com",
 ]);
 
 /** Hosts that put SMTP-submitted mail in Sent themselves; an IMAP copy
- *  would be a duplicate. */
+ *  would be a duplicate. A trailing dot (fully qualified) is ignored. */
 export function smtpSavesSentItself(host: string): boolean {
-  return SMTP_HOSTS_THAT_SAVE_SENT.has(host.trim().toLowerCase());
+  return SMTP_HOSTS_THAT_SAVE_SENT.has(
+    host.trim().toLowerCase().replace(/\.+$/, ""),
+  );
 }
 
 export function defaultInboxConfig(input: {

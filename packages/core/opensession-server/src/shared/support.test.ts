@@ -65,6 +65,10 @@ describe("smtpSavesSentItself", () => {
     expect(smtpSavesSentItself("smtp.office365.com")).toBe(true);
     expect(smtpSavesSentItself("smtp-mail.outlook.com")).toBe(true);
     expect(smtpSavesSentItself("mail.example.test")).toBe(false);
+    expect(smtpSavesSentItself("smtp.googlemail.com")).toBe(true);
+    // A fully qualified name with its trailing dot is the same host.
+    expect(smtpSavesSentItself(" smtp.gmail.com. ")).toBe(true);
+    expect(smtpSavesSentItself("smtp.office365.com..")).toBe(true);
   });
 });
 

@@ -4,6 +4,7 @@ import { join } from "path";
 import {
   type InboxConfig,
   type InboxHealth,
+  type InboxPatch,
   defaultInboxConfig,
 } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
@@ -317,6 +318,36 @@ describe("updateInbox", () => {
     expect(kept.inbox.imap.port).toBe(993);
     expect(await inboxPassword(kept.inbox, "imap")).toBe("rotated");
     expect(await inboxPassword(kept.inbox, "smtp")).toBe(SMTP_PASSWORD);
+  });
+
+  test("copyToSent follows a new SMTP host unless the patch sets it", async () => {
+    const inbox = await created();
+    expect(inbox.copyToSent).toBe(true);
+    let revision = inbox.revision;
+    const patched = async (patch: Omit<InboxPatch, "expectedRevision">) => {
+      const result = await updateInbox(
+        inbox.id,
+        { expectedRevision: revision, ...patch },
+        ADA,
+      );
+      if (!result.ok) throw new Error(result.error);
+      revision = result.inbox.revision;
+      return result.inbox.copyToSent;
+    };
+    expect(
+      await patched({ smtp: { host: "smtp.gmail.com.", password: "p" } }),
+    ).toBe(false);
+    expect(
+      await patched({ smtp: { host: "smtp.example.test", password: "p" } }),
+    ).toBe(true);
+    expect(
+      await patched({
+        copyToSent: true,
+        smtp: { host: "smtp.googlemail.com", password: "p" },
+      }),
+    ).toBe(true);
+    // Without a host change the choice stays.
+    expect(await patched({ label: "Acme support" })).toBe(true);
   });
 
   test("changing a server without its password again is refused", async () => {
@@ -654,6 +685,63 @@ describe("permissions", () => {
       BEA,
     );
     expect(lowered.ok && lowered.inbox.autonomy).toBe("propose");
+  });
+
+  test("on an inbox that sends right away, only the owner may drop topics or move its project or address", async () => {
+    const inbox = await created();
+    const set = await updateInbox(
+      inbox.id,
+      { expectedRevision: 0, autonomy: "deploy-right-away" },
+      ADA,
+    );
+    expect(set.ok).toBe(true);
+    const error =
+      "Only the instance owner can change the topics, project or address of an inbox that sends right away";
+    for (const patch of [
+      { neverWithoutAPerson: ["legal" as const] },
+      { project: TEST_PROJECTS.find((p) => p !== inbox.project)! },
+      { address: "other@acme.example.test" },
+    ])
+      expect(
+        await updateInbox(inbox.id, { expectedRevision: 1, ...patch }, BEA),
+      ).toEqual({ ok: false, status: 403, error });
+    // Resending the topics is anyone's, and so is lowering autonomy with a
+    // change.
+    const added = await updateInbox(
+      inbox.id,
+      {
+        expectedRevision: 1,
+        neverWithoutAPerson: [...inbox.neverWithoutAPerson],
+      },
+      BEA,
+    );
+    expect(added.ok).toBe(true);
+    const lowered = await updateInbox(
+      inbox.id,
+      {
+        expectedRevision: 2,
+        autonomy: "propose",
+        neverWithoutAPerson: [],
+      },
+      BEA,
+    );
+    expect(lowered.ok).toBe(true);
+    // The owner may do all of it.
+    const raised = await updateInbox(
+      inbox.id,
+      { expectedRevision: 3, autonomy: "deploy-right-away" },
+      ADA,
+    );
+    expect(raised.ok).toBe(true);
+    expect(
+      (
+        await updateInbox(
+          inbox.id,
+          { expectedRevision: 4, address: "other@acme.example.test" },
+          ADA,
+        )
+      ).ok,
+    ).toBe(true);
   });
 
   test("only the instance owner may allow internal mail servers", async () => {
