@@ -155,6 +155,15 @@ export interface MergeGithub {
     c: GithubCredential,
   ): Promise<GithubMergeResponse>;
   appCredential(ghRepo: string): Promise<GithubCredential>;
+  /** POST /issues/:n/comments with `c`. */
+  comment(
+    ghRepo: string,
+    n: number,
+    body: string,
+    c: GithubCredential,
+  ): Promise<void>;
+  /** Close an open pull request without merging it, with `c`. */
+  close(ghRepo: string, n: number, c: GithubCredential): Promise<void>;
 }
 
 async function gh(args: string[], credential: GithubCredential) {
@@ -210,6 +219,22 @@ export function defaultMergeGithub(): MergeGithub {
     merge: (repo, n, o, c) => githubForceMergeApi.merge(repo, n, o, c),
     appCredential: (repo) =>
       resolveGithubCredential(serviceGithubCredential, { write: true, repo }),
+    comment: (repo, n, body, c) =>
+      githubForceMergeApi.comment(repo, n, body, c),
+    async close(ghRepo, n, c) {
+      const { err, code } = await gh(
+        [
+          "api",
+          "-X",
+          "PATCH",
+          `repos/${ghRepo}/pulls/${n}`,
+          "-f",
+          "state=closed",
+        ],
+        c,
+      );
+      if (code !== 0) throw new Error(parseGhApiError(err).message);
+    },
     async files(ghRepo, n) {
       const { out, code } = await gh(
         [

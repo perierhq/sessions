@@ -253,7 +253,8 @@ export interface IncidentAgents {
   /** What the agent's run is bound to (connections, mode, spawn
    *  snapshot); undefined when its session or binding is gone. */
   bound(id: string): Promise<IncidentRunBound | undefined>;
-  /** Archive an agent's session another one took over from. */
+  /** Archive an agent's session another one took over from; one already
+   *  archived is left alone. */
   retire(id: string): Promise<void>;
 }
 
@@ -400,7 +401,8 @@ export function createIncidentAgents(
 
     async retire(id) {
       const session = d.control.getSession(id);
-      if (session) await d.archive(id, session);
+      if (session && !session.archived && session.state !== "archived")
+        await d.archive(id, session);
     },
 
     async cancel(id, requestId) {

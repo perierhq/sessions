@@ -155,6 +155,12 @@ const github = (over: Partial<MergeGithub> = {}) => {
       merges.push(args);
       return { ok: true, sha: "9f9f9f9" };
     },
+    comment: async () => {
+      throw new Error("unused");
+    },
+    close: async () => {
+      throw new Error("unused");
+    },
     ...over,
   };
   return { gh, merges };

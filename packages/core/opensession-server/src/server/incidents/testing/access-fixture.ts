@@ -205,25 +205,24 @@ export async function supersededIncidentFixture(
     at,
     detail: "Search failing",
   });
-  const run = (id: string, over: Partial<AgentRun> = {}): AgentRun =>
-    ({
-      role: "investigator",
-      round: 1,
-      attempt: 1,
-      sessionId: id,
-      model: "pi/anthropic/claude-opus-5-5",
-      provider: "anthropic",
-      workspace: { kind: "sandbox", provider: "daytona" },
-      accessSummary: "Investigator · no connections · can edit acme",
-      accessRevision: "r1",
-      status: "running",
-      startedAt: at,
-      turnSentAt: at,
-      costUsd: 0,
-      tokens: 0,
-      reminded: false,
-      ...over,
-    });
+  const run = (id: string, over: Partial<AgentRun> = {}): AgentRun => ({
+    role: "investigator",
+    round: 1,
+    attempt: 1,
+    sessionId: id,
+    model: "pi/anthropic/claude-opus-5-5",
+    provider: "anthropic",
+    workspace: { kind: "sandbox", provider: "daytona" },
+    accessSummary: "Investigator · no connections · can edit acme",
+    accessRevision: "r1",
+    status: "running",
+    startedAt: at,
+    turnSentAt: at,
+    costUsd: 0,
+    tokens: 0,
+    reminded: false,
+    ...over,
+  });
   await updateIncident(incident.id, (c) => ({
     ...c,
     response: {

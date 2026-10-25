@@ -328,9 +328,13 @@ test("a running agent never loses a denial it was spawned with", async () => {
 });
 test("a run without a mode is bound to ask", () => {
   const policy = incidentDescendantPolicy(access(), base);
-  expect(incidentRunBound({ automationDescendantPolicy: policy })).toMatchObject(
-    { mode: "ask", runners: ["rn-prod"], connections: ["sentry"] },
-  );
+  expect(
+    incidentRunBound({ automationDescendantPolicy: policy }),
+  ).toMatchObject({
+    mode: "ask",
+    runners: ["rn-prod"],
+    connections: ["sentry"],
+  });
   expect(
     incidentRunBound({ mode: "code", automationDescendantPolicy: policy })
       ?.mode,

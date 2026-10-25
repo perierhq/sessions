@@ -1073,7 +1073,12 @@ test("a run's access: narrowings, route changes, runners and lifted denials", ()
     deniedTools: { bash: "No shell for incident agents" },
     hosts: [
       { runner: "rn-prod", runnerName: "prod-1", access: "read-only" },
-      { runner: "rn-prod", runnerName: "prod-1", ssh: "db", access: "read-only" },
+      {
+        runner: "rn-prod",
+        runnerName: "prod-1",
+        ssh: "db",
+        access: "read-only",
+      },
     ],
     credentials: [credential],
     egress: { route: "server", hosts: ["search.example.test"] },
@@ -1122,7 +1127,5 @@ test("a run's access: narrowings, route changes, runners and lifted denials", ()
     { field: "deniedTools", item: "bash" },
   ]);
   // A snapshot without denials (an older one) has nothing to lift.
-  expect(
-    accessSpawnSnapshot(agentAccessFixture()).deniedTools,
-  ).toBeUndefined();
+  expect(accessSpawnSnapshot(agentAccessFixture()).deniedTools).toBeUndefined();
 });

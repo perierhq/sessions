@@ -404,6 +404,12 @@ test("an agent's run binding is read from its session, and a superseded one is a
   await agents.retire("child-9");
   await agents.retire("gone");
   expect(archived).toEqual(["child-9"]);
+  // One already archived is left alone, so retiring again is safe.
+  h.sessions.set("child-8", summary("child-8", { archived: true }));
+  h.sessions.set("child-7", summary("child-7", { state: "archived" }));
+  await agents.retire("child-8");
+  await agents.retire("child-7");
+  expect(archived).toEqual(["child-9"]);
 });
 
 test("an agent in This machine (container) asks for it by name", async () => {

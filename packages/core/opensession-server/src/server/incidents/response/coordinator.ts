@@ -82,6 +82,7 @@ import {
   defaultMergeGithub,
   fetchPrSnapshot,
   mergeIncidentPr,
+  parsePrUrl,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { budgetProblem } from "./policy";
@@ -676,6 +677,7 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     let incident = await d.getIncident(incidentId);
     if (!incident) return;
     const settings = await d.settings(incident.project);
+    if (i === 0) await retireSuperseded(incident, d);
     incident = await syncAgents(incident, d, settings);
     for (const run of incident.response?.agents ?? [])
       sessionIndex.set(run.sessionId, incident.id);
@@ -694,6 +696,35 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
       return;
     }
     if (!more) return;
+  }
+}
+
+/**
+ * Archive every agent a fresh session took over from whose session is
+ * still open: the archive right after the takeover may have failed. Those
+ * sessions are refused every turn and tool call meanwhile.
+ */
+async function retireSuperseded(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<void> {
+  const superseded = (incident.response?.agents ?? []).filter(
+    (a) => a.supersededBy,
+  );
+  if (!superseded.length) return;
+  const agents = await agentsFor(incident, d);
+  if (!agents) return;
+  for (const run of superseded) await retire(agents, run.sessionId);
+}
+
+async function retire(agents: IncidentAgents, sessionId: string) {
+  try {
+    await agents.retire(sessionId);
+  } catch (error) {
+    console.warn(
+      `[incidents] Could not archive superseded agent ${sessionId}:`,
+      errorMessage(error),
+    );
   }
 }
 
@@ -1010,9 +1041,13 @@ async function startAgent(
       prompt,
       model,
       branch: branchFor(incident, role, round, attempt),
+      // The verifier reads the investigator's work; a fresh investigator
+      // starts from the work of the session it takes over from.
       ...(role === "verifier" && investigator
         ? { baseSessionId: investigator.sessionId }
-        : {}),
+        : supersede
+          ? { baseSessionId: supersede.run.sessionId }
+          : {}),
       access,
       workspace,
     }));
@@ -1046,7 +1081,7 @@ async function startAgent(
       reminded: false,
     };
     const detail = supersede
-      ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${supersede.widened.map((w) => w.item).join(", ")})`
+      ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`
       : `${roleLabel(role)} started on ${label}, round ${round}`;
     const response = ledger(
       patched(base, {
@@ -1083,17 +1118,59 @@ async function startAgent(
     ...(supersede ? { supersedes: supersede.run.sessionId } : {}),
   });
   if (supersede) {
-    try {
-      const agents = await agentsFor(next, d);
-      await agents?.retire(supersede.run.sessionId);
-    } catch (error) {
-      console.warn(
-        `[incidents] Could not archive superseded agent ${supersede.run.sessionId}:`,
-        errorMessage(error),
-      );
-    }
+    const agents = await agentsFor(next, d);
+    if (agents) await retire(agents, supersede.run.sessionId);
+    await closeSupersededPr(
+      view,
+      supersede.run,
+      { round, branch: branchFor(incident, role, round, attempt) },
+      d,
+    );
   }
   return true;
+}
+
+/** Up to three items in a sentence; more are counted ("a, b and 4 more"). */
+function cappedList(items: string[]): string {
+  const unique = [...new Set(items)];
+  if (unique.length > 3)
+    return `${unique.slice(0, 2).join(", ")} and ${unique.length - 2} more`;
+  return unique.length > 1
+    ? `${unique.slice(0, -1).join(", ")} and ${unique.at(-1)}`
+    : (unique[0] ?? "");
+}
+
+/**
+ * Close the superseded run's pull request with a comment naming the fresh
+ * session's branch, which starts from its work. Best effort: a pull request
+ * in another repository, or one GitHub refuses to close, is left open.
+ */
+async function closeSupersededPr(
+  view: ResponseView,
+  run: AgentRun,
+  fresh: { round: number; branch: string },
+  d: CoordinatorDeps,
+): Promise<void> {
+  const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
+  const pr = prUrl ? parsePrUrl(prUrl) : null;
+  if (!pr) return;
+  try {
+    const own = d.ghRepoOf(view.incident.project);
+    if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase()) return;
+    const credential = await d.github.appCredential(pr.ghRepo);
+    await d.github.comment(
+      pr.ghRepo,
+      pr.number,
+      `Superseded: the investigator's access was widened after it started, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
+      credential,
+    );
+    await d.github.close(pr.ghRepo, pr.number, credential);
+  } catch (error) {
+    console.warn(
+      `[incidents] Could not close superseded pull request ${prUrl}:`,
+      errorMessage(error),
+    );
+  }
 }
 
 /**
