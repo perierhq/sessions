@@ -120,7 +120,7 @@ describe("AccessTable", () => {
 
   test("markup: 6 equal columns, labels, 44px targets", () => {
     const html = renderToStaticMarkup(table());
-    expect(html).toContain("repeat(6,96px)");
+    expect(html).toContain("repeat(6,80px)");
     for (const role of [
       "You",
       "Automations",

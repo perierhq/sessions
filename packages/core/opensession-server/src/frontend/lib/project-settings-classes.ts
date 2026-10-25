@@ -121,9 +121,10 @@ export const OFFLINE_DOT = "size-1.5 rounded-full bg-faint";
 
 // ── What agents may use ──────────────────────────────────────────────────
 
-/** Six equal 96px role columns beside the row titles. */
+/** Six equal 80px role columns beside the row titles: the titles keep the
+ *  width they had with five 96px columns. */
 export const ACCESS_GRID =
-  "grid grid-cols-[minmax(0,1fr)_repeat(6,96px)] items-center";
+  "grid grid-cols-[minmax(0,1fr)_repeat(6,80px)] items-center";
 export const ACCESS_HEAD_CELL =
   "py-2.5 text-center text-meta font-medium text-dim";
 export const ACCESS_GROUP_LABEL =
