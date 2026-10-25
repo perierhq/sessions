@@ -16,6 +16,12 @@ disagree.
   `THIRD-PARTY-NOTICES.md` or `THIRD-PARTY-LICENSES`.
 - **Public repo.** No secrets, client data or internal hostnames in commits,
   PRs or issues (see "Public repository" below).
+- **Reuse before you invent.** Before adding a new abstraction, setting,
+  format or subsystem, look for an established pattern that already does the
+  job, first in this codebase (an existing feature, setting or flow) and then
+  in common standards (`AGENTS.md`, `SKILL.md` skills, MCP, RFC formats, plain
+  sessions). Build on it, and say in the PR which pattern you reused or why
+  none fit. Add a new abstraction only when nothing existing works.
 - **Small PRs.** One cut or one change per PR, with build and tests passing.
 - **Clean up after every task.** Once a PR merges, remove its worktree, delete
   its branch locally and on origin, stop its background jobs, and delete scratch
