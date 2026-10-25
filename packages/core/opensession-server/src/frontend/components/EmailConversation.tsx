@@ -203,9 +203,8 @@ export function EmailConversation({
   async function issue(action: "approve" | "dismiss") {
     if (!c || issueBusy) return;
     setIssueBusy(true);
-    await (action === "approve"
-      ? approveIssue(c.id, c.revision)
-      : dismissIssue(c.id)
+    await (
+      action === "approve" ? approveIssue(c.id, c.revision) : dismissIssue(c.id)
     )
       .then((next) => {
         if (aliveRef.current) setView(next);

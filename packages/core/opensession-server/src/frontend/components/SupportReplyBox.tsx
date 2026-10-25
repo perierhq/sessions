@@ -29,6 +29,7 @@ import {
   draftHeader,
   replyBoxMode,
   replyDraftKey,
+  sendingDiscardable,
   supportIntentPlan,
 } from "../lib/support-reply";
 import { Button } from "../ui/button";
@@ -273,10 +274,25 @@ export function SupportReplyBox({
             <IconArrowUp size={24} />
           </button>
         ) : mode.kind === "sending" ? (
-          <span className="flex items-center gap-2 text-label text-dim">
-            <Spinner aria-hidden />
-            <span>Sending…</span>
-          </span>
+          <>
+            <span className="flex items-center gap-2 text-label text-dim">
+              <Spinner aria-hidden />
+              <span>Sending…</span>
+            </span>
+            {/* A send cut off by a restart, or waiting for its retry, can
+						    be dropped; one running now cannot. */}
+            {sendingDiscardable(mode.draft, Date.now()) && (
+              <Button
+                size="sm"
+                variant="default"
+                className={cn(ACTION, "ml-auto")}
+                disabled={!!busy}
+                onClick={discard}
+              >
+                Discard
+              </Button>
+            )}
+          </>
         ) : mode.kind === "veto" ? (
           <>
             <Button

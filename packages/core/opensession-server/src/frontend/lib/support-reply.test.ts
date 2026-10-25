@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { SupportConversation } from "../../shared/support";
 import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
@@ -254,16 +255,22 @@ describe("supportIntentPlan", () => {
 });
 
 describe("pendingIssueCopy", () => {
-  const held = (heldFor?: string) => ({
-    title: "Login fails",
-    body: "Steps",
-    requestedBy: { kind: "agent" as const, sessionId: "s1" },
-    ...(heldFor ? { heldFor } : {}),
-  });
+  const held = (heldFor?: string) => {
+    const issue: NonNullable<SupportConversation["pendingIssue"]> = {
+      title: "Login fails",
+      body: "Steps",
+      requestedBy: { kind: "agent", sessionId: "s1" },
+    };
+    if (heldFor) issue.heldFor = heldFor;
+    return issue;
+  };
   test("a public repository needs a person, and the owner to post", () => {
     const copy =
       "The agent reported a bug. The repository is public, so a person creates the issue.";
-    expect(pendingIssueCopy(held(), true)).toEqual({ text: copy, canApprove: true });
+    expect(pendingIssueCopy(held(), true)).toEqual({
+      text: copy,
+      canApprove: true,
+    });
     expect(
       pendingIssueCopy(
         held("Waiting for a person: the repository is public"),

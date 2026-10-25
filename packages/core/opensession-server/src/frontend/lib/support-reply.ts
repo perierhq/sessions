@@ -245,10 +245,17 @@ const HELD_PUBLIC = "Waiting for a person: the repository is public";
 /** The card over the reply box for an issue the agent reported that waits
  *  for a person: why it waits, and whether this person can post it (only
  *  the instance owner posts to a public repository). */
+export interface PendingIssueCopy {
+  text: string;
+  canApprove: boolean;
+  /** Why this person can't post it. */
+  why?: string;
+}
+
 export function pendingIssueCopy(
   issue: NonNullable<SupportConversation["pendingIssue"]>,
   isInstanceOwner: boolean,
-): { text: string; canApprove: boolean; why?: string } {
+): PendingIssueCopy {
   const isPublic = !issue.heldFor || issue.heldFor === HELD_PUBLIC;
   if (!isPublic)
     return {
@@ -264,4 +271,18 @@ export function pendingIssueCopy(
         canApprove: false,
         why: "Only the instance owner can post an issue to a public repository",
       };
+}
+
+/** reply.ts INTERRUPTED_AFTER_MS: an attempt older than this with no
+ *  answer was cut off (a restart), and a person may discard it. */
+const INTERRUPTED_AFTER_MS = 2 * 60_000;
+
+/** Whether a `sending` draft may be discarded: it waits for a retry, or its
+ *  attempt started long enough ago that it was cut off. The server checks
+ *  again (a send still running here answers 409). */
+export function sendingDiscardable(draft: SupportDraft, now: number): boolean {
+  if (draft.state !== "sending") return false;
+  if (draft.nextAttemptAt) return true;
+  const started = Date.parse(draft.attemptStartedAt ?? draft.createdAt);
+  return Number.isFinite(started) && now - started > INTERRUPTED_AFTER_MS;
 }
