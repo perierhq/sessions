@@ -374,7 +374,7 @@ describe("holds and refusals", () => {
     await updateConversation(c.id, (x) => ({ ...x, owner: "Grace" }));
     const stale = await approvePendingIssue(c.id, OWNER_ACTOR, seen);
     expect(stale.ok).toBe(false);
-    expect(stale.status).toBe(409);
+    expect("status" in stale && stale.status).toBe(409);
     expect(posted).toHaveLength(0);
   });
 
@@ -384,11 +384,12 @@ describe("holds and refusals", () => {
     await reportBug(c.id, SUMMARY, AGENT);
     const refused = await approve(c.id, GRACE);
     expect(refused.ok).toBe(false);
-    expect(refused.status).toBe(403);
+    expect("status" in refused && refused.status).toBe(403);
     expect(posted).toHaveLength(0);
     // Unknown visibility at approval counts as public too.
     visibility = null;
-    expect((await approve(c.id, GRACE)).status).toBe(403);
+    const unknown = await approve(c.id, GRACE);
+    expect("status" in unknown && unknown.status).toBe(403);
     expect(await approve(c.id, OWNER_ACTOR)).toEqual({ ok: true });
   });
 
