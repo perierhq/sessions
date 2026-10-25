@@ -174,6 +174,14 @@ On a cloud box, also check the firewall — the security group or firewall rules
 should not open 3850 or 3860 directly. Cloudflare Tunnel or Caddy terminates
 TLS in front of loopback 3860. See [ec2.md](ec2.md#networking).
 
+Portals are served on their own HTTPS ports on the same host name: host
+Portals at the service port + 6000, Sandbox Portals in 20000–27999. If the
+host firewall also filters the tailnet interface (firewalld puts every
+interface in its default zone), allow that range on the tailnet address only,
+the way you allow 3850. Otherwise the app opens but every Portal link is
+refused, while agents, which reach their dev servers on loopback, still see
+them working.
+
 ## An optional friendly private domain (os.company.dev)
 
 `http://100.64.12.34:3850` works but is unpleasant to type and impossible to

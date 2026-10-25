@@ -33,6 +33,36 @@ describe("permission-coupled preview portals", () => {
     expect(handles[2].upstreams).toEqual([{ dial: "127.0.0.1:23001" }]);
   });
 
+  test("the sign-in check dials the address the server listens on", () => {
+    // A server bound to one private address (HOST) has nothing on loopback,
+    // so a loopback auth hop failed every person's Portal request with 502.
+    const authDial = (host: string) => {
+      const previous = { host: process.env.HOST, port: process.env.PORT };
+      process.env.HOST = host;
+      process.env.PORT = "3850";
+      try {
+        const config = previewServerConfig(
+          22004,
+          "127.0.0.1:23004",
+          "preview.example.test",
+        ) as any;
+        return config.routes[0].handle[0].routes[0].handle[1].upstreams[0].dial;
+      } finally {
+        for (const [key, value] of [
+          ["HOST", previous.host],
+          ["PORT", previous.port],
+        ] as const) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    };
+    expect(authDial("100.64.0.10")).toBe("100.64.0.10:3850");
+    expect(authDial("127.0.0.1")).toBe("127.0.0.1:3850");
+    expect(authDial("0.0.0.0")).toBe("127.0.0.1:3850");
+    expect(authDial("::")).toBe("[::1]:3850");
+  });
+
   test("refuses provider or private-network upstreams in Caddy", () => {
     expect(() =>
       previewServerConfig(

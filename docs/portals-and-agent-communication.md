@@ -66,8 +66,10 @@ Every listening `*_PORT` service is a Portal. Host services map to
 20000–27999 that relays over the Sandbox's authenticated outbound connection,
 so the browser never receives a provider URL. Caddy forward-authenticates
 every request against Open Session before proxying it, so possession of a
-Portal URL does not bypass the app's sign-in boundary. A browser that opens
-a Portal without a web session (a phone's Safari, opened from the native app
+Portal URL does not bypass the app's sign-in boundary. That check dials
+the server where it listens (`HOST`/`PORT`, loopback when it listens on every
+address), so a server bound to a tailnet address works too. A browser that
+opens a Portal without a web session (a phone's Safari, opened from the native app
 or the home-screen web app, keeps its own cookies) is redirected to the app
 to sign in and then returned to the Portal; the cookie is host-scoped, so
 one sign-in covers every Portal port on that host
