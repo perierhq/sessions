@@ -58,7 +58,7 @@ export const PREPARED_CARD =
 /** The prepared issue's body: the scrubbed text as it would be posted,
  *  scrolling past a few lines. */
 export const PREPARED_TEXT =
-  "m-0 max-h-40 overflow-y-auto rounded-md bg-surface px-3 py-2 text-label " +
+  "max-h-40 overflow-y-auto rounded-md bg-surface px-3 py-2 text-label " +
   "whitespace-pre-wrap text-dim [overflow-wrap:anywhere] select-text";
 
 /** A quiet event line in the thread: something Sessions did on its own. */

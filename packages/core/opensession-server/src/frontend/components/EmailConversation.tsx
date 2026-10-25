@@ -353,6 +353,36 @@ export function EmailConversation({
                     ),
                   )}
                 </div>
+                {/* What the agent prepared for a person ends the thread, so
+                    the reply box stays in reach on a phone. */}
+                <div className="mt-4 flex flex-col gap-3 empty:hidden">
+                  {c.pendingIssue && (
+                    <PendingIssueCard
+                      issue={c.pendingIssue}
+                      isInstanceOwner={inboxes?.isInstanceOwner ?? false}
+                      busy={issueBusy}
+                      onApprove={() => void issue("approve")}
+                      onDismiss={() => void issue("dismiss")}
+                    />
+                  )}
+                  {c.fixTask && !c.fixSessionId && (
+                    <FixTaskCard
+                      key={`${c.fixTask.at}`}
+                      conversation={c}
+                      onStarted={setView}
+                      onRefetch={() => void reload()}
+                    />
+                  )}
+                  {fixedNote && c.status !== "spam" && (
+                    <FixedNoteCard
+                      key={fixedNote.at}
+                      conversation={c}
+                      note={fixedNote}
+                      onSent={setView}
+                      onRefetch={() => void reload()}
+                    />
+                  )}
+                </div>
               </>
             ) : null}
           </div>
@@ -422,32 +452,6 @@ export function EmailConversation({
               conversation.
             </InlineAlert>
           )}
-          {c.pendingIssue && (
-            <PendingIssueCard
-              issue={c.pendingIssue}
-              isInstanceOwner={inboxes?.isInstanceOwner ?? false}
-              busy={issueBusy}
-              onApprove={() => void issue("approve")}
-              onDismiss={() => void issue("dismiss")}
-            />
-          )}
-          {c.fixTask && !c.fixSessionId && (
-            <FixTaskCard
-              key={`${c.fixTask.at}`}
-              conversation={c}
-              onStarted={setView}
-              onRefetch={() => void reload()}
-            />
-          )}
-          {fixedNote && c.status !== "spam" && (
-            <FixedNoteCard
-              key={fixedNote.at}
-              conversation={c}
-              note={fixedNote}
-              onSent={setView}
-              onRefetch={() => void reload()}
-            />
-          )}
           {c.status !== "spam" && (
             <SupportReplyBox
               key={c.draft?.id ?? "compose"}
@@ -500,18 +504,14 @@ export function PendingIssueCard({
         {issue.ghRepo && (
           <p className="m-0 truncate text-meta text-faint">{issue.ghRepo}</p>
         )}
-        {issue.body && (
-          <pre className={PREPARED_TEXT} aria-label="Issue text">
-            {issue.body}
-          </pre>
-        )}
+        {issue.body && <div className={PREPARED_TEXT}>{issue.body}</div>}
       </div>
       {copy.why && <p className="m-0 text-label text-faint">{copy.why}</p>}
       <div className="flex flex-wrap gap-2">
         {copy.canApprove && (
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             className={ACTION}
             disabled={busy}
             onClick={onApprove}
@@ -584,7 +584,7 @@ export function FixTaskCard({
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          variant="primary"
+          variant="default"
           className={ACTION}
           disabled={busy || !task.trim()}
           onClick={() => void start()}
@@ -632,14 +632,12 @@ export function FixedNoteCard({
       <p className="m-0 text-supporting text-fg">
         {`${fixedNoteReason(note)}. A note for the customer is ready.`}
       </p>
-      <pre className={PREPARED_TEXT} aria-label="Fixed note">
-        {note.text}
-      </pre>
+      <div className={PREPARED_TEXT}>{note.text}</div>
       {error && <InlineAlert>{error}</InlineAlert>}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          variant="primary"
+          variant="default"
           className={ACTION}
           disabled={busy || draftLive}
           onClick={() => void send()}
