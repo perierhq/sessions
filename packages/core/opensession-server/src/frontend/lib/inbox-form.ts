@@ -21,6 +21,7 @@ import {
   type MailTlsMode,
   type MailboxBehaviour,
   type NewInboxInput,
+  SUPPORT_AUTONOMY,
   SUPPORT_TOPICS,
   type SupportAutonomy,
   type SupportTopic,
@@ -28,6 +29,7 @@ import {
   noTlsHostAllowed,
   smtpSavesSentItself,
 } from "../../shared/support";
+import { SUPPORT_AUTONOMY_COPY } from "../../shared/support-copy";
 
 const MINUTE_MS = 60_000;
 const DEFAULT_VETO_MINUTES = DEFAULT_VETO_MS / MINUTE_MS;
@@ -441,24 +443,10 @@ export const AUTONOMY_CHOICES: ReadonlyArray<{
   value: SupportAutonomy;
   label: string;
   description: string;
-}> = [
-  {
-    value: "watch",
-    label: "Watch",
-    description: "Sessions sorts new mail. No agent and no drafts",
-  },
-  {
-    value: "draft",
-    label: "Draft",
-    description: "The agent drafts every reply. Nothing sends until you do",
-  },
-  {
-    value: "routine",
-    label: "Routine",
-    description:
-      "Repetitive replies backed by a source send on their own. Everything that needs judgement waits for you",
-  },
-];
+}> = SUPPORT_AUTONOMY.map((value) => ({
+  value,
+  ...SUPPORT_AUTONOMY_COPY[value],
+}));
 
 /** An autonomy's name, as the form's choice reads. */
 export function autonomyLabel(value: SupportAutonomy): string {

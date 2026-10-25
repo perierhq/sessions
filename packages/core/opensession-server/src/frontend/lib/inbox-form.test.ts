@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InboxView } from "../../shared/support";
+import { SUPPORT_AUTONOMY_COPY } from "../../shared/support-copy";
 import {
   AUTONOMY_CHOICES,
   draftStatsLine,
@@ -285,6 +286,12 @@ describe("autonomy", () => {
       "Draft",
       "Routine",
     ]);
+    // The shared copy is the one source.
+    for (const choice of AUTONOMY_CHOICES)
+      expect(choice).toEqual({
+        value: choice.value,
+        ...SUPPORT_AUTONOMY_COPY[choice.value],
+      });
     for (const choice of AUTONOMY_CHOICES) {
       expect(choice.description).not.toContain("\u2014");
       expect(choice.description.length).toBeLessThan(110);

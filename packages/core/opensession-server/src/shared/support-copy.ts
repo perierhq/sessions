@@ -9,20 +9,25 @@ import type {
   SupportTopic,
 } from "./support";
 
-/** Labels for the inbox autonomy values; users never see the stored names. */
+/** Labels and one-line explanations for the inbox autonomy values: the
+ *  one source for the inbox form, the inbox list and server copy. Users
+ *  never see the stored names. */
 export const SUPPORT_AUTONOMY_COPY: Record<
   SupportAutonomy,
   { label: string; description: string }
 > = {
   watch: {
-    label: "Watch only",
-    description: "Sort new mail. No agent, no drafts",
+    label: "Watch",
+    description: "Sessions sorts new mail. No agent and no drafts",
   },
-  draft: { label: "Draft", description: "The agent drafts. A person sends" },
+  draft: {
+    label: "Draft",
+    description: "The agent drafts every reply. Nothing sends until you do",
+  },
   routine: {
-    label: "Send routine replies",
+    label: "Routine",
     description:
-      "Answers with a cited source send on their own. Everything else waits for a person",
+      "Repetitive replies backed by a source send on their own. Everything that needs judgement waits for you",
   },
 };
 

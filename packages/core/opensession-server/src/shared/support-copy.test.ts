@@ -17,8 +17,33 @@ test("every autonomy level has a label and a description", () => {
     expect(SUPPORT_AUTONOMY_COPY[level].label.length).toBeGreaterThan(0);
     expect(SUPPORT_AUTONOMY_COPY[level].description.length).toBeGreaterThan(0);
   }
-  expect(SUPPORT_AUTONOMY_COPY.draft.label).toBe("Draft");
-  expect(SUPPORT_AUTONOMY_COPY.watch.label).toBe("Watch only");
+  expect(SUPPORT_AUTONOMY_COPY).toEqual({
+    watch: {
+      label: "Watch",
+      description: "Sessions sorts new mail. No agent and no drafts",
+    },
+    draft: {
+      label: "Draft",
+      description: "The agent drafts every reply. Nothing sends until you do",
+    },
+    routine: {
+      label: "Routine",
+      description:
+        "Repetitive replies backed by a source send on their own. Everything that needs judgement waits for you",
+    },
+  });
+});
+
+test("no copy uses a semicolon", () => {
+  const strings: string[] = [];
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") strings.push(value);
+    else if (typeof value === "function") strings.push(String(value("x")));
+    else if (value && typeof value === "object")
+      for (const v of Object.values(value)) walk(v);
+  };
+  walk(copy);
+  for (const text of strings) expect(text).not.toContain(";");
 });
 
 test("every topic and mailbox behaviour has copy", () => {
