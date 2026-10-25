@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { DEFAULT_NOTIFICATION_ALERTS } from "./api/notifications";
-import { NOTIFICATION_ALERT_ROWS } from "./notification-alert-rows";
+import {
+  NOTIFICATION_ALERT_ROWS,
+  notificationAlertRows,
+} from "./notification-alert-rows";
 
 test("one row per alert switch, incidents then support last", () => {
   expect(NOTIFICATION_ALERT_ROWS.map((r) => r.group)).toEqual([
@@ -25,4 +28,15 @@ test("one row per alert switch, incidents then support last", () => {
     title: "Incidents",
     desc: "An incident you own opens, needs you, is about to deploy, rolls back or is fixed. At night only what can't wait",
   });
+});
+
+test("the support switch shows only while email support is on", () => {
+  expect(
+    notificationAlertRows({ emailSupport: true }).map((r) => r.group),
+  ).toEqual(NOTIFICATION_ALERT_ROWS.map((r) => r.group));
+  expect(
+    notificationAlertRows({ emailSupport: false }).map((r) => r.group),
+  ).toEqual(
+    NOTIFICATION_ALERT_ROWS.map((r) => r.group).filter((g) => g !== "support"),
+  );
 });

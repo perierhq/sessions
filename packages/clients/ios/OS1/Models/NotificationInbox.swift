@@ -155,10 +155,13 @@ struct InboxThread: Decodable, Equatable, Identifiable, Sendable {
     }
 
     /// The banner body, the way the server words its own push: an incident
-    /// leads with the project ("acme · Deploying the fix now"); every other
-    /// row is the subject, then the detail.
+    /// or a support row leads with the project ("acme · Deploying the fix
+    /// now", "acme · Open Sessions to read it and send"), where a support
+    /// row's body is fixed copy and its title the subject ("A support reply
+    /// is ready"), never a customer's words; every other row is the
+    /// subject, then the detail.
     var bannerBody: String {
-        if subject.type == "incident" {
+        if subject.type == "incident" || subject.type == "support" {
             return [subject.context ?? "", body].filter { !$0.isEmpty }.joined(separator: " · ")
         }
         return [subject.title, body].filter { !$0.isEmpty }.joined(separator: ": ")
