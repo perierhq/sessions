@@ -10,6 +10,7 @@ import {
   type SupportChannelKind,
   type SupportIndexRow,
   type SupportListItem,
+  SUPPORT_EMAIL_LIST_LIMIT,
   supportItemId,
 } from "../../shared/support";
 import { listInboxes } from "./inboxes";
@@ -23,7 +24,11 @@ export interface SupportChannelStatus {
 
 export interface SupportListResult {
   items: SupportListItem[];
+  /** Each channel's state; `error` is copy for the page, never a raw
+   *  provider error. */
   channels: SupportChannelStatus[];
+  /** Email had more open conversations than the list carries. */
+  truncated: boolean;
 }
 
 /** The email list row. Pure; email has no priority. */
@@ -100,33 +105,70 @@ function isThreadSummary(
   );
 }
 
-const reasonText = (reason: Error | string | null, fallback: string) =>
-  (reason instanceof Error ? reason.message : reason) || fallback;
+/** The raw reason as log text; never empty. */
+function reasonText(reason: unknown, fallback: string): string {
+  if (reason instanceof Error) return reason.message || fallback;
+  if (typeof reason === "string") return reason || fallback;
+  try {
+    return JSON.stringify(reason) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 const newestFirst = (a: SupportListItem, b: SupportListItem) =>
   (b.at ?? "").localeCompare(a.at ?? "");
 
-async function emailItems(): Promise<SupportListItem[]> {
+export const SIGN_IN_FOR_MAIL = "Sign in to read support mail";
+const EMAIL_UNREADABLE = "Email conversations could not be read";
+const PLAIN_UNREACHABLE = "Plain could not be reached";
+
+async function emailItems(): Promise<{
+  items: SupportListItem[];
+  truncated: boolean;
+}> {
   const [rows, inboxes] = await Promise.all([
     listIndexRows({ status: ["open", "waiting"] }),
     listInboxes(),
   ]);
   const labels = new Map(inboxes.map((i) => [i.id, i.label]));
-  return rows.map((row) => emailItem(row, labels.get(row.inboxId) ?? null));
+  return {
+    // listIndexRows is newest first.
+    items: rows
+      .slice(0, SUPPORT_EMAIL_LIST_LIMIT)
+      .map((row) => emailItem(row, labels.get(row.inboxId) ?? null)),
+    truncated: rows.length > SUPPORT_EMAIL_LIST_LIMIT,
+  };
 }
 
-/** Email rows (open or waiting, newest first) and, when Plain is loaded,
- *  its TODO queue; merged newest first. */
-export async function listSupportItems(): Promise<SupportListResult> {
+/**
+ * Plain's TODO queue whenever Plain is loaded, and email rows (open or
+ * waiting, the newest SUPPORT_EMAIL_LIST_LIMIT) only for a signed-in
+ * `person`; without one the email channel says to sign in. Merged newest
+ * first; `truncated` when email had more rows than the list carries.
+ */
+export async function listSupportItems({
+  person,
+}: {
+  person: string | null;
+}): Promise<SupportListResult> {
   const [email, plain] = await Promise.allSettled([
-    emailItems(),
+    person ? emailItems() : Promise.resolve(null),
     plainThreads(),
   ]);
   const items: SupportListItem[] = [];
   const channels: SupportChannelStatus[] = [];
+  let truncated = false;
   if (email.status === "fulfilled") {
-    items.push(...email.value);
-    channels.push({ channel: "email", label: "Email", error: null });
+    if (email.value) {
+      items.push(...email.value.items);
+      truncated = email.value.truncated;
+    }
+    channels.push({
+      channel: "email",
+      label: "Email",
+      error: email.value ? null : SIGN_IN_FOR_MAIL,
+    });
   } else {
     console.warn(
       "[support] email list failed:",
@@ -135,7 +177,7 @@ export async function listSupportItems(): Promise<SupportListResult> {
     channels.push({
       channel: "email",
       label: "Email",
-      error: "Email conversations could not be read",
+      error: EMAIL_UNREADABLE,
     });
   }
   if (plain.status === "fulfilled") {
@@ -144,11 +186,12 @@ export async function listSupportItems(): Promise<SupportListResult> {
       channels.push({ channel: "plain", label: "Plain", error: null });
     }
   } else {
+    console.warn("[support] Plain list failed:", plain.reason);
     channels.push({
       channel: "plain",
       label: "Plain",
-      error: reasonText(plain.reason, "Plain lookup failed"),
+      error: PLAIN_UNREACHABLE,
     });
   }
-  return { items: items.sort(newestFirst), channels };
+  return { items: items.sort(newestFirst), channels, truncated };
 }

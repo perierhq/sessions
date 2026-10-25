@@ -32,9 +32,24 @@ export function needsYou(item: SupportListItem): boolean {
 const newestFirst = (a: SupportListItem, b: SupportListItem) =>
   (b.at ?? "").localeCompare(a.at ?? "");
 
-/** "Needs you" first (draftState needs-person, veto or failed), then the
- *  priority lanes; email rows sit in Normal. Empty lanes are left out; each
- *  lane is newest first. */
+const vetoing = (item: SupportListItem) =>
+  item.draftState === "veto" && item.vetoDeadline !== null;
+
+/** The Needs you order: sends that can still be stopped first, the one
+ *  going soonest at the top; then drafts and failed sends, the one waiting
+ *  longest at the top. A missing time sorts last. */
+function needsYouOrder(a: SupportListItem, b: SupportListItem): number {
+  const va = vetoing(a);
+  const vb = vetoing(b);
+  if (va !== vb) return va ? -1 : 1;
+  const ta = (va ? a.vetoDeadline : a.at) ?? "\uffff";
+  const tb = (vb ? b.vetoDeadline : b.at) ?? "\uffff";
+  return ta.localeCompare(tb);
+}
+
+/** "Needs you" first (draftState needs-person, veto or failed; see
+ *  needsYouOrder), then the priority lanes, each newest first; email rows
+ *  sit in Normal. Empty lanes are left out. */
 export function supportLanes(items: SupportListItem[]): SupportLane[] {
   const lanes: SupportLane[] = [
     { key: "needs-you", label: "Needs you", items: [] },
@@ -54,7 +69,12 @@ export function supportLanes(items: SupportListItem[]): SupportLane[] {
   }
   return lanes
     .filter((l) => l.items.length > 0)
-    .map((l) => ({ ...l, items: [...l.items].sort(newestFirst) }));
+    .map((l) => ({
+      ...l,
+      items: [...l.items].sort(
+        l.key === "needs-you" ? needsYouOrder : newestFirst,
+      ),
+    }));
 }
 
 export function filterByChannel(

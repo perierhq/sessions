@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from "react";
-import type { SupportChannelKind, SupportListItem } from "../../shared/support";
+import {
+  SUPPORT_EMAIL_LIST_LIMIT,
+  type SupportChannelKind,
+  type SupportListItem,
+} from "../../shared/support";
 import { useIsPhone } from "../hooks/useIsPhone";
 import { type SupportItems, fetchSupportItems } from "../lib/api/support";
 import {
@@ -82,15 +86,11 @@ function channelMark(channel: SupportChannelKind) {
 
 type ChannelFilter = SupportChannelKind | "all";
 
-/** "Plain could not be reached. Email is up to date." */
+/** Each failed channel's own copy from the server, as one line: "Plain
+ *  could not be reached." */
 function channelErrorText(channels: SupportItems["channels"]): string | null {
-  const failed = channels.filter((c) => c.error);
-  if (failed.length === 0) return null;
-  const fine = channels.filter((c) => !c.error);
-  const down = `${failed.map((c) => c.label).join(" and ")} could not be reached.`;
-  return fine.length
-    ? `${down} ${fine.map((c) => c.label).join(" and ")} ${fine.length > 1 ? "are" : "is"} up to date.`
-    : down;
+  const errors = channels.flatMap((c) => (c.error ? [c.error] : []));
+  return errors.length ? errors.map((e) => `${e}.`).join(" ") : null;
 }
 
 const LIST =
@@ -279,8 +279,12 @@ export function SupportInbox({
             </div>
           )}
           <div className={LIST}>
+            {/* A channel that can't answer is a warning over the rows the
+						    others sent, not an error page; only a failed request is. */}
             {channelError && items && items.length > 0 && (
-              <InlineAlert className="mx-1.5 mb-2">{channelError}</InlineAlert>
+              <InlineAlert variant="warn" className="mx-1.5 mb-2">
+                {channelError}
+              </InlineAlert>
             )}
             {items === null ? (
               error ? (
@@ -290,7 +294,9 @@ export function SupportInbox({
               )
             ) : items.length === 0 ? (
               channelError ? (
-                <InlineAlert className="mt-2">{channelError}</InlineAlert>
+                <InlineAlert variant="warn" className="mt-2">
+                  {channelError}
+                </InlineAlert>
               ) : (
                 <div className="px-3 py-6 text-center text-label text-faint">
                   Nothing waiting.
@@ -342,23 +348,24 @@ export function SupportInbox({
                 );
               })
             )}
+            {data?.truncated && (
+              <p className="m-0 px-3 pt-3 text-meta text-faint">
+                Showing the newest {SUPPORT_EMAIL_LIST_LIMIT} email
+                conversations.
+              </p>
+            )}
           </div>
         </aside>
       )}
 
       {showTicket && (
         <section className="flex min-w-0 flex-1 flex-col">
-          {/* An open ticket brings its own bar, with its subject and
-					    customer in it. This is the one for when nothing is open, and
-					    for phones, where the app's floating back control sits here
-					    and the ticket keeps its header inline — a second back button
-					    would be the same gesture twice. Either way the two columns
-					    start on one line. */}
           {/* An open Plain ticket brings its own bar, with its subject and
 					    customer in it. This is the one for everything else, and
 					    for phones, where the app's floating back control sits here
-					    and the ticket keeps its header inline. Either way the two
-					    columns start on one line. */}
+					    and the ticket keeps its header inline (a second back button
+					    would be the same gesture twice). Either way the two columns
+					    start on one line. */}
           {(!itemId || isPhone || openChannel !== "plain") && (
             <div className={SUPPORT_COLUMN_BAR} />
           )}
@@ -374,14 +381,14 @@ export function SupportInbox({
               headerInBar
             />
           ) : itemId ? (
-            // Email conversations open here once the email pane lands; until
-            // then the row says who wrote and the pane says so.
+            // An email conversation: who wrote and what they said, from its
+            // list row.
             <div className="flex min-h-0 flex-1 items-center justify-center p-8">
               <EmptyState
                 icon={<IconMail size={22} />}
                 title={openItem?.title || "Email conversation"}
               >
-                Reading and answering email here is coming next.
+                {openItem?.preview || "No preview for this conversation."}
               </EmptyState>
             </div>
           ) : (
@@ -390,8 +397,7 @@ export function SupportInbox({
                 icon={<IconMail size={22} />}
                 title="Nothing selected"
               >
-                Pick a conversation to read it, reply, and set its status
-                without leaving this page.
+                Open a conversation to read it here.
               </EmptyState>
             </div>
           )}

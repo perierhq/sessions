@@ -19,6 +19,8 @@ export interface SupportItems {
     label: string;
     error: string | null;
   }>;
+  /** Email had more open conversations than the list carries. */
+  truncated: boolean;
 }
 
 /** The Support list across channels (email conversations and Plain's queue). */
@@ -26,7 +28,11 @@ export async function fetchSupportItems(): Promise<SupportItems> {
   const body = await request<SupportItems | null>("/support/conversations", {
     label: "Failed to load the support list",
   });
-  return { items: body?.items ?? [], channels: body?.channels ?? [] };
+  return {
+    items: body?.items ?? [],
+    channels: body?.channels ?? [],
+    truncated: body?.truncated ?? false,
+  };
 }
 
 /** One email conversation, by conversation id or list item id. */

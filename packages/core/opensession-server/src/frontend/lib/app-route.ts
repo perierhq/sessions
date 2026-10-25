@@ -1,5 +1,6 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
 import type { OwnerDecision } from "../../shared/incident-response";
+import { parseSupportItemId } from "../../shared/support";
 import { BASE_PATH, stripBasePath } from "./base";
 import {
   isProjectSectionId,
@@ -8,15 +9,13 @@ import {
 import type { SettingsSectionKey } from "./settings-sections";
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
 
-const SUPPORT_CHANNEL_PREFIX = /^(?:email|plain):/;
-
 /**
  * A Support list item id (`<channel>:<id>`) from a `/support/<id>` path. A
  * bare id, from a link written before email joined the list, is a Plain
- * thread. Idempotent.
+ * thread; so is one whose prefix is not a known channel. Idempotent.
  */
 export function supportItemIdFromPath(raw: string): string {
-  return SUPPORT_CHANNEL_PREFIX.test(raw) ? raw : `plain:${raw}`;
+  return parseSupportItemId(raw) ? raw : `plain:${raw}`;
 }
 
 export type Route =
@@ -288,7 +287,9 @@ export function routePath(route: Route): string {
           : encodeURIComponent(route.branch)
       }`;
     case "support":
-      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId)}`;
+      // The item id's `:` reads better left as it is, and parseRoute
+      // decodes either form.
+      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId).replace(/%3A/gi, ":")}`;
     case "plain":
       return route.threadId
         ? `${BASE_PATH}/plain/${encodeURIComponent(route.threadId)}`

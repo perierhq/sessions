@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import type { SupportIndexRow, SupportMessage } from "../../shared/support";
+import {
+  SUPPORT_EMAIL_LIST_LIMIT,
+  type SupportIndexRow,
+  type SupportMessage,
+} from "../../shared/support";
 import type { SupportThreadSummary } from "../../agents/plain/api";
 import {
   __setPlainThreadsForTest,
   emailItem,
   listSupportItems as listAs,
   plainItem,
-  SUPPORT_EMAIL_LIST_LIMIT,
 } from "./list";
 import { createConversation, updateConversation } from "./store";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
@@ -107,7 +110,9 @@ describe("listSupportItems", () => {
     const first = await conversation("2026-10-25T08:00:00.000Z");
     for (let i = 0; i < SUPPORT_EMAIL_LIST_LIMIT; i++)
       await conversation(
-        new Date(Date.parse("2026-10-25T09:00:00.000Z") + i * 1000).toISOString(),
+        new Date(
+          Date.parse("2026-10-25T09:00:00.000Z") + i * 1000,
+        ).toISOString(),
       );
     const out = await listSupportItems();
     expect(SUPPORT_EMAIL_LIST_LIMIT).toBe(200);

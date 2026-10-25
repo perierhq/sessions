@@ -1,5 +1,7 @@
 // /api/support/*: the Support list across channels, one email conversation
-// and its attachment downloads. Signed-in people only (`verifiedPerson`).
+// and its attachment downloads. Email is for signed-in people only
+// (`verifiedPerson`): without one the list still carries Plain's queue and
+// says to sign in for mail, and a conversation or attachment answers 401.
 // Later tasks add their routes in their own blocks below.
 import {
   type SupportConversationView,
@@ -7,7 +9,7 @@ import {
 } from "../../shared/support";
 import { openAttachment } from "../support/attachments";
 import { getInbox } from "../support/inboxes";
-import { listSupportItems } from "../support/list";
+import { listSupportItems, SIGN_IN_FOR_MAIL } from "../support/list";
 import { getConversation } from "../support/store";
 import { type RouteContext, verifiedPerson } from "./context";
 
@@ -54,10 +56,13 @@ export async function handleSupportRoutes(
   if (parts[0] !== "conversations" || parts.length > 4 || parts.length === 3)
     return undefined;
   if (parts.length === 4 && parts[2] !== "attachments") return undefined;
-  if (!verifiedPerson(ctx)) return json(401, "Sign in to read support mail");
+  const person = verifiedPerson(ctx) || null;
 
   // ── List (D3) ──
-  if (parts.length === 1) return Response.json(await listSupportItems());
+  if (parts.length === 1)
+    return Response.json(await listSupportItems({ person }));
+
+  if (!person) return json(401, SIGN_IN_FOR_MAIL);
 
   const ref = segment(parts[1]!);
   if (ref === null) return json(400, "Invalid path");

@@ -8,6 +8,19 @@ import { type AutonomyLevel, DEFAULT_VETO_MS } from "./incident-response";
 
 export type SupportChannelKind = "email" | "plain" | (string & {});
 
+/** The channels this build lists, in list order. A Support list item id
+ *  starts with one of these (`email:sc_…`, `plain:th_…`). */
+export const SUPPORT_CHANNELS = ["email", "plain"] as const;
+
+/** The email rows the Support list carries: the newest this many. */
+export const SUPPORT_EMAIL_LIST_LIMIT = 200;
+
+export function isSupportChannel(
+  value: string,
+): value is (typeof SUPPORT_CHANNELS)[number] {
+  return (SUPPORT_CHANNELS as readonly string[]).includes(value);
+}
+
 /** `address` is trimmed and lowercased. */
 export interface MailAddress {
   name: string | null;
@@ -452,12 +465,16 @@ export function supportItemId(
   return `${channel}:${providerId}`;
 }
 
+/** A list item id's channel and provider id; null unless the channel is
+ *  one of SUPPORT_CHANNELS and an id follows it. */
 export function parseSupportItemId(
   raw: string,
 ): { channel: SupportChannelKind; id: string } | null {
   const colon = raw.indexOf(":");
   if (colon <= 0 || colon === raw.length - 1) return null;
-  return { channel: raw.slice(0, colon), id: raw.slice(colon + 1) };
+  const channel = raw.slice(0, colon);
+  if (!isSupportChannel(channel)) return null;
+  return { channel, id: raw.slice(colon + 1) };
 }
 
 const SMTP_HOSTS_THAT_SAVE_SENT = new Set([
