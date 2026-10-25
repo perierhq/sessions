@@ -74,6 +74,12 @@ jobs:
             bun scripts/build-compile.ts --version "$version" --os "$os" --arch "$arch" --out "$out"
             versioned="$out/opensession-$version-$os-$arch.tar.gz"
             test -s "$versioned"
+            # Pi's image resizer loads this from beside the binary; without it
+            # agents cannot see any image they read.
+            if ! tar -tzf "$versioned" | grep -Fqx "opensession-$version-$os-$arch/photon_rs_bg.wasm"; then
+              echo "::error title=Image resizer is missing::$versioned has no photon_rs_bg.wasm beside the binary."
+              exit 1
+            fi
             cp "$versioned" "$out/assets/"
             cp "$versioned" "$out/assets/opensession-$os-$arch.tar.gz"
           done
@@ -83,6 +89,19 @@ jobs:
             printf '%s  %s\n' "$hash" "$asset" > "$asset.sha256"
           done
           ls -la "$out/assets"
+      - name: Smoke-test image reads
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # A compiled pi read tool, run beside the staged Linux artefact's
+          # photon_rs_bg.wasm, must return the image rather than omit it.
+          probe_dir="$RUNNER_TEMP/image-read-probe"
+          mkdir -p "$probe_dir"
+          bun build --compile scripts/image-read-probe.ts --outfile "$probe_dir/image-read-probe"
+          cp "$RUNNER_TEMP/release/stage/opensession-$version-linux-x64/photon_rs_bg.wasm" "$probe_dir/"
+          (cd "$RUNNER_TEMP" && "$probe_dir/image-read-probe")
       - name: Smoke-test Linux binary
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
