@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
+  pendingIssueCopy,
   replyBoxMode,
   replyDraftKey,
   supportIntentPlan,
@@ -247,6 +248,41 @@ describe("supportIntentPlan", () => {
     expect(supportIntentPlan("review", { kind: "compose" })).toEqual({
       kind: "stale",
       message: "Nothing to review: the reply was already handled",
+    });
+  });
+});
+
+describe("pendingIssueCopy", () => {
+  const held = (heldFor?: string) => ({
+    title: "Login fails",
+    body: "Steps",
+    requestedBy: { kind: "agent" as const, sessionId: "s1" },
+    ...(heldFor ? { heldFor } : {}),
+  });
+  test("a public repository needs a person, and the owner to post", () => {
+    const copy =
+      "The agent reported a bug. The repository is public, so a person creates the issue.";
+    expect(pendingIssueCopy(held(), true)).toEqual({ text: copy, canApprove: true });
+    expect(
+      pendingIssueCopy(
+        held("Waiting for a person: the repository is public"),
+        false,
+      ),
+    ).toEqual({
+      text: copy,
+      canApprove: false,
+      why: "Only the instance owner can post an issue to a public repository",
+    });
+  });
+  test("any other hold says why as the server wrote it", () => {
+    expect(
+      pendingIssueCopy(
+        held("Waiting for a person: too many issues today"),
+        false,
+      ),
+    ).toEqual({
+      text: "The agent reported a bug. Waiting for a person: too many issues today",
+      canApprove: true,
     });
   });
 });

@@ -84,12 +84,18 @@ const forgetCustomer = mock(async (_email: string) => ({
   notDeleted: [],
 }));
 const markNotSpam = mock(async (_id: string) => view());
+const approveIssue = mock(async (_id: string, _revision: number) => view());
+const startFixSession = mock(
+  async (_id: string, _revision: number, _task: string) => view(),
+);
 const realApi = await import("../lib/api/support");
 mock.module("../lib/api/support", () => ({
   ...realApi,
   fetchSupportConversation,
   forgetCustomer,
   markNotSpam,
+  approveIssue,
+  startFixSession,
 }));
 
 const inboxes: InboxesResponse = {
@@ -111,6 +117,8 @@ mock.module("../lib/people", () => ({
 }));
 
 const { ConfirmDialog } = await import("../ui/confirm");
+const { Button } = await import("../ui/button");
+const { Textarea } = await import("../ui/input");
 const { Menu } = await import("../ui/menu");
 const { EmailConversation, EmailConversationActions } =
   await import("./EmailConversation");
@@ -144,6 +152,8 @@ beforeEach(() => {
   fetchSupportConversation.mockClear();
   forgetCustomer.mockClear();
   markNotSpam.mockClear();
+  approveIssue.mockClear();
+  startFixSession.mockClear();
 });
 afterEach(() => harness.unmountAll());
 
@@ -226,8 +236,55 @@ test("a held issue offers Create issue and Dismiss", async () => {
   expect(all).toContain(
     "The agent reported a bug. The repository is public, so a person creates the issue.",
   );
-  expect(all).toContain("Create issue");
   expect(all).toContain("Dismiss");
+  press(
+    find(pane.output(), Button, (p) => p.children === "Create issue")?.props
+      .onClick,
+  );
+  await settle();
+  expect(approveIssue).toHaveBeenCalledWith("sc_0001", 1);
+});
+
+test("a suggested fix task starts a fix session as edited", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        revision: 4,
+        fixTask: {
+          text: "Fix the sign-in redirect",
+          project: "acme",
+          suggestedBy: { kind: "agent", sessionId: "s1" },
+          at: "2026-10-25T10:01:00.000Z",
+        },
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  expect(strings(pane.output())).toContain("The agent suggests a fix");
+  const area = find<React.ComponentProps<"textarea">>(
+    pane.output(),
+    Textarea,
+    (p) => p["aria-label"] === "Fix task",
+  );
+  expect(area?.props.value).toBe("Fix the sign-in redirect");
+  const change = { target: { value: "Fix the sign-in redirect on Safari" } };
+  // SAFETY: the card's change handler reads only `target.value`.
+  area?.props.onChange?.(change as React.ChangeEvent<HTMLTextAreaElement>);
+  await settle();
+  press(
+    find(pane.output(), Button, (p) => p.children === "Start fix session")
+      ?.props.onClick,
+  );
+  await settle();
+  expect(startFixSession).toHaveBeenCalledWith(
+    "sc_0001",
+    4,
+    "Fix the sign-in redirect on Safari",
+  );
 });
 
 test("a spam conversation offers Not spam", async () => {
