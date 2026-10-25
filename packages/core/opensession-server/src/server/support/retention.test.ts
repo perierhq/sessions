@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type {
   AttachmentMeta,
   InboxConfig,
@@ -6,11 +6,22 @@ import type {
   SupportConversation,
   SupportMessage,
 } from "../../shared/support";
+import { utimes } from "node:fs/promises";
+import { join } from "node:path";
 import { digest } from "../audit";
-import { readAttachment, saveAttachment } from "./attachments";
+import type { SessionDeleteResult } from "../session-delete";
+import type { UnifiedSession } from "../types";
+import { resolveWorkspaceSecretAsync } from "../workspace-secrets";
+import { catalogDocuments } from "../catalog-documents";
+import { ATTACHMENTS_DIR, readAttachment, saveAttachment } from "./attachments";
 import {
+  FORGET_KEY_REF,
   type RetentionDeps,
+  __resetRetentionForTest,
+  customerDigest,
+  deleteSupportSession,
   forgetCustomer,
+  startSupportRetention,
   sweepRetention,
 } from "./retention";
 import * as store from "./store";
@@ -25,6 +36,7 @@ import {
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 
 const kernel = useSupportTestKernel();
+afterEach(() => __resetRetentionForTest());
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
@@ -39,19 +51,25 @@ const RETENTION: Record<string, InboxRetention> = {
 function deps(over: Partial<RetentionDeps> = {}): {
   deps: Partial<RetentionDeps>;
   deletedSessions: string[];
+  /** Sessions deleted with their worktree. */
+  worktrees: string[];
 } {
   const deletedSessions: string[] = [];
+  const worktrees: string[] = [];
   return {
     deletedSessions,
+    worktrees,
     deps: {
       now: () => NOW,
       inbox: async (id) =>
         RETENTION[id]
           ? ({ id, retention: RETENTION[id] } as unknown as InboxConfig)
           : null,
-      deleteSession: async (id) => {
+      deleteSession: async (id, cleanWorktree) => {
         deletedSessions.push(id);
+        if (cleanWorktree) worktrees.push(id);
       },
+      shuttingDown: () => false,
       ...over,
     },
   };
@@ -152,7 +170,11 @@ describe("sweepRetention", () => {
 
     const result = await sweepRetention(d);
 
-    expect(result).toEqual({ conversationsDeleted: 1, attachmentsExpired: 0 });
+    expect(result).toEqual({
+      conversationsDeleted: 1,
+      attachmentsExpired: 0,
+      orphansRemoved: 0,
+    });
     expect(await getConversation(old.id)).toBeNull();
     expect(await readAttachment(old.id, "att_1")).toBeNull();
     expect(
@@ -198,7 +220,11 @@ describe("sweepRetention", () => {
 
     const result = await sweepRetention(d);
 
-    expect(result).toEqual({ conversationsDeleted: 0, attachmentsExpired: 1 });
+    expect(result).toEqual({
+      conversationsDeleted: 0,
+      attachmentsExpired: 1,
+      orphansRemoved: 0,
+    });
     expect(await readAttachment(c.id, "att_old")).toBeNull();
     expect(await readAttachment(c.id, "att_new")).not.toBeNull();
     const after = (await getConversation(c.id))!;
@@ -220,6 +246,7 @@ describe("sweepRetention", () => {
     expect(await sweepRetention(later.deps)).toEqual({
       conversationsDeleted: 0,
       attachmentsExpired: 1,
+      orphansRemoved: 0,
     });
     expect((await listIndexRows())[0]!.attachmentsExpireAt).toBeNull();
   });
@@ -242,6 +269,183 @@ describe("sweepRetention", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("sweepRetention, linked sessions and bounds", () => {
+  test("deletes the linked sessions before the conversation", async () => {
+    const old = await conversation({
+      closedDaysAgo: 181,
+      patch: { sessionId: "ses_support", fixSessionId: "ses_fix" },
+    });
+    const order: string[] = [];
+    const { deps: d, deletedSessions, worktrees } = deps();
+    const deleteSession = d.deleteSession!;
+    d.deleteSession = async (id, clean) => {
+      order.push(`${id}:${(await getConversation(old.id)) ? "kept" : "gone"}`);
+      await deleteSession(id, clean);
+    };
+
+    await sweepRetention(d);
+
+    expect(deletedSessions.sort()).toEqual(["ses_fix", "ses_support"]);
+    // The support session's worktree holds nothing worth keeping; the fix
+    // session's may hold a fix branch.
+    expect(worktrees).toEqual(["ses_support"]);
+    expect(order.sort()).toEqual(["ses_fix:kept", "ses_support:kept"]);
+    expect(await getConversation(old.id)).toBeNull();
+  });
+
+  test("a session that refuses to go keeps its conversation for the next sweep", async () => {
+    const old = await conversation({
+      closedDaysAgo: 181,
+      patch: { sessionId: "ses_support" },
+    });
+    const { deps: d } = deps({
+      deleteSession: async () => {
+        throw new Error("still stopping");
+      },
+    });
+    expect((await sweepRetention(d)).conversationsDeleted).toBe(0);
+    expect(await getConversation(old.id)).not.toBeNull();
+    expect((await listIndexRows()).map((r) => r.id)).toEqual([old.id]);
+  });
+
+  test("one run acts on at most maxActions conversations; the rest wait", async () => {
+    for (let i = 0; i < 3; i++) await conversation({ closedDaysAgo: 200 });
+    const { deps: d } = deps({ maxActions: 2 });
+    expect((await sweepRetention(d)).conversationsDeleted).toBe(2);
+    expect(await listIndexRows()).toHaveLength(1);
+    expect((await sweepRetention(d)).conversationsDeleted).toBe(1);
+    expect(await listIndexRows()).toEqual([]);
+  });
+
+  test("stops between conversations once the server is shutting down", async () => {
+    for (let i = 0; i < 3; i++) await conversation({ closedDaysAgo: 200 });
+    let checks = 0;
+    const { deps: d } = deps({ shuttingDown: () => ++checks > 1 });
+    expect((await sweepRetention(d)).conversationsDeleted).toBe(1);
+    expect(await listIndexRows()).toHaveLength(2);
+  });
+
+  test("only one sweep runs at a time", async () => {
+    await conversation({ closedDaysAgo: 200, patch: { sessionId: "ses_a" } });
+    const { deps: d, deletedSessions } = deps();
+    const first = sweepRetention(d);
+    const second = sweepRetention(d);
+    expect(second).toBe(first);
+    await first;
+    expect(deletedSessions).toEqual(["ses_a"]);
+  });
+
+  test("removes orphaned attachment directories once a day", async () => {
+    const kept = await conversation({
+      attachments: [{ id: "att_1", savedDaysAgo: 1 }],
+    });
+    const orphan = "sc_0192e8a0-0000-7000-8000-0000000000aa";
+    await saveAttachment(
+      orphan,
+      {
+        id: "att_x",
+        fileName: "x.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 0,
+        stored: false,
+        expiresAt: null,
+      },
+      new TextEncoder().encode("x"),
+      RETENTION.inb_acme!,
+      NOW,
+    );
+    const old = new Date(NOW - 2 * 3_600_000);
+    await utimes(join(ATTACHMENTS_DIR(), orphan), old, old);
+    const { deps: d } = deps();
+
+    expect((await sweepRetention(d)).orphansRemoved).toBe(1);
+    expect(await readAttachment(orphan, "att_x")).toBeNull();
+    expect(await readAttachment(kept.id, "att_1")).not.toBeNull();
+
+    // Not again until a day has passed.
+    await saveAttachment(
+      orphan,
+      {
+        id: "att_y",
+        fileName: "y.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 0,
+        stored: false,
+        expiresAt: null,
+      },
+      new TextEncoder().encode("y"),
+      RETENTION.inb_acme!,
+      NOW,
+    );
+    await utimes(join(ATTACHMENTS_DIR(), orphan), old, old);
+    const hourLater = deps({ now: () => NOW + 3_600_000 });
+    expect((await sweepRetention(hourLater.deps)).orphansRemoved).toBe(0);
+    const dayLater = deps({ now: () => NOW + DAY });
+    expect((await sweepRetention(dayLater.deps)).orphansRemoved).toBe(1);
+  });
+});
+
+describe("startSupportRetention", () => {
+  test("is idempotent", () => {
+    startSupportRetention();
+    const timer = globalThis.__supportRetention;
+    try {
+      expect(timer).toBeDefined();
+      startSupportRetention();
+      expect(globalThis.__supportRetention).toBe(timer);
+    } finally {
+      clearTimeout(timer);
+      clearInterval(timer);
+      globalThis.__supportRetention = undefined;
+    }
+  });
+});
+
+describe("deleteSupportSession", () => {
+  const session = { id: "ses_a" } as UnifiedSession;
+  const removed = (result: SessionDeleteResult) => {
+    const calls: Array<[string, boolean]> = [];
+    return {
+      calls,
+      remove: async (s: UnifiedSession, clean: boolean) => {
+        calls.push([s.id, clean]);
+        return result;
+      },
+    };
+  };
+
+  test("a session already gone is fine", async () => {
+    const { calls, remove } = removed({ status: 200, body: { ok: true } });
+    await deleteSupportSession("ses_a", true, {
+      find: async () => null,
+      remove,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a deleted session resolves, with the worktree choice passed on", async () => {
+    const { calls, remove } = removed({ status: 200, body: { ok: true } });
+    await deleteSupportSession("ses_a", false, {
+      find: async () => session,
+      remove,
+    });
+    expect(calls).toEqual([["ses_a", false]]);
+  });
+
+  test("a refused deletion throws its error", async () => {
+    const { remove } = removed({
+      status: 409,
+      body: { error: "The session is still stopping. Retry deletion shortly." },
+    });
+    await expect(
+      deleteSupportSession("ses_a", true, {
+        find: async () => session,
+        remove,
+      }),
+    ).rejects.toThrow("still stopping");
   });
 });
 
@@ -272,7 +476,7 @@ describe("forgetCustomer", () => {
       customer: "grace@example.test",
       patch: { sessionId: "ses_other" },
     });
-    const { deps: d, deletedSessions } = deps();
+    const { deps: d, deletedSessions, worktrees } = deps();
 
     const result = await forgetCustomer("Ada@Example.test", "kacper", d);
 
@@ -280,12 +484,24 @@ describe("forgetCustomer", () => {
       conversations: 2,
       sessions: 3,
       attachments: 3,
+      failed: 0,
       notDeleted: [
         "Mail in the mailbox",
+        "Fix session worktree and branch",
         "https://github.com/acme/app/issues/7",
       ],
     });
     expect(deletedSessions.sort()).toEqual(["ses_a", "ses_b", "ses_fix"]);
+    expect(worktrees.sort()).toEqual(["ses_a", "ses_b"]);
+    // No message-id key, key list or index row is left for Ada.
+    const ids = await catalogDocuments("support-message-ids").list();
+    expect(ids.length).toBeGreaterThan(0);
+    for (const { key, value } of ids)
+      expect(
+        key === `c:${other.id}` ||
+          (value as { conversationId?: string }).conversationId === other.id,
+      ).toBe(true);
+    expect((await listIndexRows()).map((r) => r.id)).toEqual([other.id]);
     expect(await getConversation(a.id)).toBeNull();
     expect(await getConversation(b.id)).toBeNull();
     expect(await readAttachment(b.id, "att_2")).toBeNull();
@@ -294,11 +510,38 @@ describe("forgetCustomer", () => {
       {
         type: "support.forget",
         by: "kacper",
-        customer: digest("ada@example.test"),
+        customer: await customerDigest("ada@example.test"),
         conversations: 2,
+        failed: 0,
       },
     ]);
     expect(JSON.stringify(kernel.audits).toLowerCase()).not.toContain("ada@");
+  });
+
+  test("the audit digest is keyed by a per-instance secret made on first use", async () => {
+    expect(await resolveWorkspaceSecretAsync(FORGET_KEY_REF)).toBeUndefined();
+    const [first, again] = await Promise.all([
+      customerDigest("ada@example.test"),
+      customerDigest("ada@example.test"),
+    ]);
+    const key = await resolveWorkspaceSecretAsync(FORGET_KEY_REF);
+    expect(key).toBeDefined();
+    expect(again).toBe(first);
+    expect(await customerDigest("ada@example.test")).toBe(first);
+    expect(first).not.toBe(digest("ada@example.test"));
+    expect(await customerDigest("grace@example.test")).not.toBe(first);
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  test("an empty or invalid address is refused before anything is deleted", async () => {
+    const c = await conversation({ customer: "" });
+    const { deps: d } = deps();
+    for (const bad of ["", "   ", "ada", "@example.test", "ada@", "a b@x.test"])
+      await expect(forgetCustomer(bad, "kacper", d)).rejects.toThrow(
+        "Invalid customer address",
+      );
+    expect(await getConversation(c.id)).not.toBeNull();
+    expect(kernel.audits).toEqual([]);
   });
 
   test("a customer Sessions never saw still gets a record", async () => {
@@ -307,22 +550,46 @@ describe("forgetCustomer", () => {
       conversations: 0,
       sessions: 0,
       attachments: 0,
+      failed: 0,
       notDeleted: ["Mail in the mailbox"],
     });
     expect(deletedSessions).toEqual([]);
     expect(kernel.audits).toHaveLength(1);
   });
 
-  test("a session that fails to delete keeps the conversation for a retry", async () => {
-    const c = await conversation({ patch: { sessionId: "ses_a" } });
-    const { deps: d } = deps({
-      deleteSession: async () => {
-        throw new Error("still stopping");
-      },
+  test("a session that fails to delete keeps its conversation, the rest go and the audit says so", async () => {
+    const stuck = await conversation({ patch: { sessionId: "ses_busy" } });
+    const gone = await conversation({ patch: { sessionId: "ses_a" } });
+    const { deps: d, deletedSessions } = deps();
+    const deleteSession = d.deleteSession!;
+    d.deleteSession = async (id, clean) => {
+      if (id === "ses_busy") throw new Error("still stopping");
+      await deleteSession(id, clean);
+    };
+
+    const result = await forgetCustomer("ada@example.test", "kacper", d);
+
+    expect(result).toEqual({
+      conversations: 1,
+      sessions: 1,
+      attachments: 0,
+      failed: 1,
+      notDeleted: [
+        "Mail in the mailbox",
+        "1 conversation still in use, try again",
+      ],
     });
-    await expect(
-      forgetCustomer("ada@example.test", "kacper", d),
-    ).rejects.toThrow("still stopping");
-    expect(await getConversation(c.id)).not.toBeNull();
+    expect(deletedSessions).toEqual(["ses_a"]);
+    expect(await getConversation(stuck.id)).not.toBeNull();
+    expect(await getConversation(gone.id)).toBeNull();
+    expect(kernel.audits).toEqual([
+      {
+        type: "support.forget",
+        by: "kacper",
+        customer: await customerDigest("ada@example.test"),
+        conversations: 1,
+        failed: 1,
+      },
+    ]);
   });
 });

@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import type { AttachmentMeta } from "../../shared/support";
 import {
   ATTACHMENTS_DIR,
   deleteAttachmentFile,
   deleteConversationAttachments,
+  openAttachment,
   readAttachment,
+  removeOrphanAttachmentDirs,
   saveAttachment,
 } from "./attachments";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
@@ -53,6 +55,15 @@ describe("attachments", () => {
     expect(await readAttachment(CONVERSATION, "att_2")).toBeNull();
   });
 
+  test("reading streams from disk instead of buffering the file", async () => {
+    await saveAttachment(CONVERSATION, meta("att_1"), BYTES, RETENTION, NOW);
+    const file = await openAttachment(CONVERSATION, "att_1");
+    expect(file!.size).toBe(BYTES.byteLength);
+    expect(file!.stream()).toBeInstanceOf(ReadableStream);
+    expect(new Uint8Array(await file!.arrayBuffer())).toEqual(BYTES);
+    expect(await openAttachment(CONVERSATION, "att_2")).toBeNull();
+  });
+
   test("the file is readable by the owner only", async () => {
     await saveAttachment(CONVERSATION, meta("att_1"), BYTES, RETENTION, NOW);
     const info = await stat(join(ATTACHMENTS_DIR(), CONVERSATION, "att_1"));
@@ -97,6 +108,51 @@ describe("attachments", () => {
     await expect(readAttachment(CONVERSATION, "../x")).rejects.toThrow();
     await expect(deleteAttachmentFile("..", "att_1")).rejects.toThrow();
     await expect(deleteConversationAttachments("../..")).rejects.toThrow();
+    // Ids are lowercase: on a case-insensitive disk an uppercase twin would
+    // name the same directory.
+    await expect(
+      saveAttachment(
+        CONVERSATION.toUpperCase().replace("SC_", "sc_"),
+        meta("att_1"),
+        BYTES,
+        RETENTION,
+        NOW,
+      ),
+    ).rejects.toThrow();
+    await expect(stat(ATTACHMENTS_DIR())).rejects.toThrow();
+  });
+
+  test("orphan directories older than an hour go; known and fresh ones stay", async () => {
+    const known = CONVERSATION;
+    const oldOrphan = "sc_0192e8a0-0000-7000-8000-000000000002";
+    const freshOrphan = "sc_0192e8a0-0000-7000-8000-000000000003";
+    for (const id of [known, oldOrphan, freshOrphan])
+      await saveAttachment(id, meta("att_1"), BYTES, RETENTION, NOW);
+    const age = async (id: string, ms: number) => {
+      const at = new Date(NOW - ms);
+      await utimes(join(ATTACHMENTS_DIR(), id), at, at);
+    };
+    await age(known, 2 * DAY);
+    await age(oldOrphan, 2 * 3_600_000);
+    await age(freshOrphan, 10 * 60_000);
+    const asked: string[][] = [];
+
+    const removed = await removeOrphanAttachmentDirs(NOW, async (ids) => {
+      asked.push([...ids].sort());
+      return new Set(ids.filter((id) => id === known));
+    });
+
+    expect(removed).toBe(1);
+    expect(asked).toEqual([[known, oldOrphan, freshOrphan].sort()]);
+    expect((await readdir(ATTACHMENTS_DIR())).sort()).toEqual(
+      [known, freshOrphan].sort(),
+    );
+  });
+
+  test("orphan cleanup with no attachments directory does nothing", async () => {
+    expect(await removeOrphanAttachmentDirs(NOW, async () => new Set())).toBe(
+      0,
+    );
     await expect(stat(ATTACHMENTS_DIR())).rejects.toThrow();
   });
 });

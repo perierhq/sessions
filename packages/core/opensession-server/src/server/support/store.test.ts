@@ -9,6 +9,7 @@ import {
 import {
   type ConversationListener,
   createConversation,
+  __indexBookkeepingForTest,
   deleteConversation,
   getConversation,
   indexRowFor,
@@ -102,6 +103,11 @@ test("createConversation stores an open conversation and its index row", async (
 test("getConversation refuses ids that are not conversation ids", async () => {
   expect(await getConversation("nope")).toBeNull();
   expect(await getConversation("sc_../x")).toBeNull();
+  // Ids are lowercase: an uppercase twin never names the same conversation.
+  const c = await create();
+  expect(
+    await getConversation(c.id.toUpperCase().replace("SC_", "sc_")),
+  ).toBeNull();
 });
 
 test("updateConversation: null writes nothing, a change bumps revision once", async () => {
@@ -359,6 +365,33 @@ test("an index write that lands after a concurrent delete is dropped", async () 
 
   expect(await getConversation(c.id)).toBeNull();
   expect(await listIndexRows()).toEqual([]);
+});
+
+test("deleted conversations leave no lasting index bookkeeping", async () => {
+  const realNow = Date.now;
+  let clock = realNow() + 3_600_000;
+  Date.now = () => clock;
+  try {
+    // Earlier tests' tombstones age out with the first delete below.
+    const start = __indexBookkeepingForTest().revisions;
+    const a = await create();
+    const b = await create(message(1));
+    expect(__indexBookkeepingForTest().revisions).toBe(start + 2);
+    await deleteConversation(a.id);
+    expect(__indexBookkeepingForTest()).toEqual({
+      revisions: start + 1,
+      tombstones: 1,
+    });
+    // Tombstones only need to outlive an index write still in flight.
+    clock += 11 * 60_000;
+    await deleteConversation(b.id);
+    expect(__indexBookkeepingForTest()).toEqual({
+      revisions: start,
+      tombstones: 1,
+    });
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("listIndexRows filters by inbox, status and customer (any case)", async () => {
