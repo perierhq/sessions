@@ -2,10 +2,9 @@
 // and Forget a customer behind a confirm. The panel's own hooks run in the
 // hook harness; children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { InboxView } from "../../../shared/support";
+import type { InboxView, InboxesResponse } from "../../../shared/support";
 import {
   createHookHarness,
-  elements,
   find,
   reactWithHarness,
   settle,
@@ -70,7 +69,7 @@ const PAUSED: InboxView = {
   },
 };
 
-let data: unknown;
+let data: InboxesResponse | undefined;
 mock.module("swr", () => ({
   mutate: async () => undefined,
   default: () => ({
@@ -81,7 +80,9 @@ mock.module("swr", () => ({
   }),
 }));
 
+const realPeople = await import("../../lib/people");
 mock.module("../../lib/people", () => ({
+  ...realPeople,
   usePeople: () => [{ name: "Ada", fullName: "Ada Lovelace" }],
 }));
 
@@ -155,16 +156,13 @@ test("Forget asks first, then shows what went", async () => {
     Input,
     (p) => p["aria-label"] === "Customer address",
   );
-  input!.props.onChange!({
-    target: { value: "ada@example.test" },
-  } as never);
+  // SAFETY: the panel's handler reads only `target.value`.
+  const change = { target: { value: "ada@example.test" } } as never;
+  input!.props.onChange!(change);
   await settle();
-  const forget = elements(tree.output()).find(
-    (e) =>
-      e.type === Button &&
-      (e.props as { children?: unknown }).children === "Forget",
-  );
-  (forget!.props as { onClick: () => void }).onClick();
+  const forget = find(tree.output(), Button, (p) => p.children === "Forget");
+  // SAFETY: the panel's Forget handler ignores the click event.
+  forget!.props.onClick!(undefined as never);
   await settle();
   expect(forgets).toEqual([]);
   const request = find(tree.output(), ConfirmDialog)?.props.request;

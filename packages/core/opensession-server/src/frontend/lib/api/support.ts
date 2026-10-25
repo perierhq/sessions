@@ -1,4 +1,11 @@
 import type {
+  ForgetCustomerResult,
+  InboxPatch,
+  InboxTestBody,
+  InboxTestResult,
+  InboxView,
+  InboxesResponse,
+  NewInboxInput,
   SupportChannelKind,
   SupportConversationView,
   SupportListItem,
@@ -30,4 +37,58 @@ export function fetchSupportConversation(
     `/support/conversations/${encodeURIComponent(id)}`,
     { label: "Failed to load the conversation" },
   );
+}
+
+// ── Inboxes (Settings → Inboxes) ────────────────────────────────────────
+
+/** The inboxes, whether email support is on, and the projects to pick. */
+export function fetchInboxes(): Promise<InboxesResponse> {
+  return request<InboxesResponse>("/support/inboxes", {
+    label: "Failed to load the inboxes",
+  });
+}
+
+export function createInbox(
+  input: NewInboxInput,
+): Promise<{ inbox: InboxView }> {
+  return request<{ inbox: InboxView }>("/support/inboxes", {
+    method: "POST",
+    body: input,
+    label: "Couldn't connect the inbox",
+  });
+}
+
+export function patchInbox(
+  id: string,
+  patch: InboxPatch,
+): Promise<{ inbox: InboxView }> {
+  return request<{ inbox: InboxView }>(
+    `/support/inboxes/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: patch, label: "Couldn't save the inbox" },
+  );
+}
+
+export function deleteInbox(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/support/inboxes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    label: "Couldn't remove the inbox",
+  });
+}
+
+/** One login to each server; never stores anything. */
+export function testInbox(body: InboxTestBody): Promise<InboxTestResult> {
+  return request<InboxTestResult>("/support/inboxes/test", {
+    method: "POST",
+    body,
+    label: "Couldn't test the connection",
+  });
+}
+
+/** Deletes everything Sessions holds for this customer (instance owner). */
+export function forgetCustomer(email: string): Promise<ForgetCustomerResult> {
+  return request<ForgetCustomerResult>("/support/customers/forget", {
+    method: "POST",
+    body: { email },
+    label: "Couldn't forget this customer",
+  });
 }

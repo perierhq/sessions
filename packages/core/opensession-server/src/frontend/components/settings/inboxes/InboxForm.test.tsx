@@ -2,10 +2,15 @@
 // the veto field follows the autonomy, removing asks first. The form's own
 // hooks run in the hook harness; children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { InboxView } from "../../../../shared/support";
+import type {
+  InboxPatch,
+  InboxTestBody,
+  InboxTestResult,
+  InboxView,
+  NewInboxInput,
+} from "../../../../shared/support";
 import {
   createHookHarness,
-  elements,
   find,
   reactWithHarness,
   settle,
@@ -23,12 +28,17 @@ const harness = createHookHarness();
 const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
-const calls: Array<[string, unknown]> = [];
-let testAnswer: unknown = null;
+type Call =
+  | ["test", InboxTestBody]
+  | ["delete", string]
+  | ["patch", { id: string; patch: InboxPatch }]
+  | ["create", NewInboxInput];
+const calls: Call[] = [];
+let testAnswer: InboxTestResult | null = null;
 const realSupportApi = await import("../../../lib/api/support");
 mock.module("../../../lib/api/support", () => ({
   ...realSupportApi,
-  testInbox: async (body: unknown) => {
+  testInbox: async (body: InboxTestBody) => {
     calls.push(["test", body]);
     return testAnswer;
   },
@@ -36,11 +46,11 @@ mock.module("../../../lib/api/support", () => ({
     calls.push(["delete", id]);
     return { ok: true };
   },
-  patchInbox: async (id: string, patch: unknown) => {
+  patchInbox: async (id: string, patch: InboxPatch) => {
     calls.push(["patch", { id, patch }]);
     return { inbox: VIEW };
   },
-  createInbox: async (input: unknown) => {
+  createInbox: async (input: NewInboxInput) => {
     calls.push(["create", input]);
     return { inbox: VIEW };
   },
@@ -140,15 +150,11 @@ function text(tree: Tree): string {
 }
 
 function button(tree: Tree, label: string) {
-  const el = elements(tree.output()).find(
-    (e) =>
-      e.type === Button &&
-      JSON.stringify((e.props as { children?: unknown }).children) ===
-        JSON.stringify(label),
-  );
-  if (!el) throw new Error(`No button ${label}`);
-  // SAFETY: a Button's props.
-  return el.props as { onClick: () => void; disabled?: boolean };
+  const el = find(tree.output(), Button, (p) => p.children === label);
+  if (!el?.props.onClick) throw new Error(`No button ${label}`);
+  const onClick = el.props.onClick;
+  // SAFETY: the form's handlers ignore the click event.
+  return { onClick: () => onClick(undefined as never) };
 }
 
 test("Test connection shows the IMAP and SMTP results on their own lines", async () => {

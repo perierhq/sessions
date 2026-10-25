@@ -52,6 +52,7 @@ import { DeploysPanel } from "./settings/DeploysPanel";
 import { DownloadsPanel } from "./settings/DownloadsPanel";
 import { GeneralPanel } from "./settings/GeneralPanel";
 import { IntegrationsPanel } from "./settings/IntegrationsPanel";
+import { InboxesPanel } from "./settings/InboxesPanel";
 import { IngressPanel } from "./settings/IngressPanel";
 import { LibraryPanel } from "./settings/LibraryPanel";
 import { MembersPanel } from "./settings/MembersPanel";
@@ -278,6 +279,7 @@ function SectionPanel({
       {section === "authentication" && <AuthenticationPanel />}
       {section === "library" && <LibraryPanel />}
       {section === "integrations" && <IntegrationsPanel />}
+      {section === "inboxes" && <InboxesPanel />}
       {section === "audit" && <AuditPanel />}
       {section === "downloads" && <DownloadsPanel />}
       {section === "providers" && <ProvidersPanel />}

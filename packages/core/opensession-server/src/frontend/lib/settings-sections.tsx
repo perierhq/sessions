@@ -15,6 +15,7 @@ import {
   IconDatabase,
   IconFileText2,
   IconHome,
+  IconInbox,
   IconGlobe,
   IconKeyboard,
   IconPeople,
@@ -58,6 +59,7 @@ export type SettingsSectionKey =
   | "runners"
   | "library"
   | "integrations"
+  | "inboxes"
   | "connections"
   | "memory"
   | "storage"
@@ -175,6 +177,12 @@ export const SECTIONS: SettingsSection[] = [
     label: "Integrations",
     group: "Organization",
     icon: <IconPlug />,
+  },
+  {
+    key: "inboxes",
+    label: "Inboxes",
+    group: "Organization",
+    icon: <IconInbox />,
   },
   {
     key: "connections",

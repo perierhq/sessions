@@ -1,0 +1,604 @@
+import { useState } from "react";
+import {
+  AUTONOMY_LEVELS,
+  type AutonomyLevel,
+} from "../../../../shared/incident-response";
+import {
+  BUG_HANDLING,
+  type BugHandling,
+  type InboxProjectOption,
+  type InboxTestResult,
+  type InboxView,
+  MAILBOX_BEHAVIOURS,
+  MAIL_TLS_MODES,
+  type MailTlsMode,
+  type MailboxBehaviour,
+  SUPPORT_TOPICS,
+  defaultMailPort,
+} from "../../../../shared/support";
+import {
+  BUG_HANDLING_COPY,
+  MAILBOX_BEHAVIOUR_COPY,
+  SUPPORT_AUTONOMY_COPY,
+  SUPPORT_TOPIC_LABELS,
+} from "../../../../shared/support-copy";
+import {
+  createInbox,
+  deleteInbox,
+  patchInbox,
+  testInbox,
+} from "../../../lib/api/support";
+import { errorMessage } from "../../../lib/error-message";
+import {
+  CHECK_ROW,
+  DIALOG_INPUT,
+  FIELD_HINT,
+} from "../../../lib/incident-settings-classes";
+import {
+  type InboxFormState,
+  type MailServerKind,
+  effectiveCopyToSent,
+  emptyInboxForm,
+  formFromInbox,
+  inboxFormError,
+  newInboxFromForm,
+  patchFromForm,
+  showsConnectorWarning,
+  testBodyFromForm,
+  testResultLines,
+} from "../../../lib/inbox-form";
+import {
+  INBOX_FORM_PAIR,
+  INBOX_SELECT,
+  INBOX_TEST_LINES,
+} from "../../../lib/support-inbox-classes";
+import { Button } from "../../../ui/button";
+import { Checkbox } from "../../../ui/checkbox";
+import { useConfirm } from "../../../ui/confirm";
+import { Input } from "../../../ui/input";
+import { OptionSelect } from "../../../ui/select";
+import { InlineAlert } from "../../../ui/state";
+import { Switch } from "../../../ui/switch";
+import { toast } from "../../../ui/toast";
+import { FormField, FormSection } from "../incidents/FormParts";
+import { SettingsDialog } from "../incidents/SettingsDialog";
+
+const TLS_LABELS: Record<MailTlsMode, string> = {
+  implicit: "TLS",
+  starttls: "STARTTLS",
+  none: "None (this machine only)",
+};
+
+const SERVER_TITLES: Record<MailServerKind, string> = {
+  imap: "IMAP",
+  smtp: "SMTP",
+};
+
+const CONNECTOR_WARNING =
+  "The agent can send what its connectors return. Draft is safer until Sessions checks mail for injected instructions.";
+
+/**
+ * Connect or edit one support inbox: the mailbox and its two servers (with
+ * Test connection), how its mail is handled, what happens in the mailbox,
+ * and how long Sessions keeps it. A centred dialog on a desktop and a
+ * bottom sheet on a phone (`SettingsDialog`). Callers key it by the inbox
+ * and each opening, so it starts from the stored values.
+ */
+export function InboxForm({
+  open,
+  inbox,
+  projects,
+  people,
+  isInstanceOwner,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  /** null connects a new inbox. */
+  inbox: InboxView | null;
+  projects: InboxProjectOption[];
+  /** Names a person can be picked by, for the owner. */
+  people: string[];
+  isInstanceOwner: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState<InboxFormState>(() =>
+    inbox
+      ? formFromInbox(inbox)
+      : emptyInboxForm(projects[0]?.id ?? "", people[0] ?? ""),
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState<InboxTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
+
+  const editing = inbox !== null;
+  const set = (patch: Partial<InboxFormState>) =>
+    setForm((current) => ({ ...current, ...patch }));
+  const setServer = (
+    which: MailServerKind,
+    patch: Partial<InboxFormState["imap"]>,
+  ) =>
+    setForm((current) => ({
+      ...current,
+      [which]: { ...current[which], ...patch },
+    }));
+
+  const project = projects.find((p) => p.id === form.project);
+  const warn = showsConnectorWarning(
+    form.autonomy,
+    project?.supportConnectors ?? false,
+  );
+  const lines = tested ? testResultLines(tested) : null;
+
+  const save = () => {
+    const invalid = inboxFormError(form, editing);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
+    setError(null);
+    if (inbox) {
+      const patch = patchFromForm(inbox, form);
+      if (Object.keys(patch).length === 1) {
+        onClose();
+        return;
+      }
+      setBusy(true);
+      patchInbox(inbox.id, patch).then(
+        () => {
+          setBusy(false);
+          toast("Saved");
+          onSaved();
+          onClose();
+        },
+        (cause) => {
+          setBusy(false);
+          setError(errorMessage(cause, "Couldn't save the inbox"));
+        },
+      );
+      return;
+    }
+    setBusy(true);
+    createInbox(newInboxFromForm(form)).then(
+      () => {
+        setBusy(false);
+        toast("Inbox connected");
+        onSaved();
+        onClose();
+      },
+      (cause) => {
+        setBusy(false);
+        setError(errorMessage(cause, "Couldn't connect the inbox"));
+      },
+    );
+  };
+
+  const runTest = () => {
+    setTesting(true);
+    setTested(null);
+    setTestError(null);
+    testInbox(testBodyFromForm(form, inbox)).then(
+      (result) => {
+        setTesting(false);
+        setTested(result);
+      },
+      (cause) => {
+        setTesting(false);
+        setTestError(errorMessage(cause, "Couldn't test the connection"));
+      },
+    );
+  };
+
+  const toggleEnabled = () => {
+    if (!inbox) return;
+    setBusy(true);
+    patchInbox(inbox.id, {
+      expectedRevision: inbox.revision,
+      enabled: !inbox.enabled,
+    }).then(
+      () => {
+        setBusy(false);
+        toast(inbox.enabled ? "Inbox turned off" : "Inbox turned on");
+        onSaved();
+        onClose();
+      },
+      (cause) => {
+        setBusy(false);
+        setError(errorMessage(cause, "Couldn't change the inbox"));
+      },
+    );
+  };
+
+  const remove = () => {
+    if (!inbox) return;
+    confirm({
+      title: "Remove this inbox?",
+      description: "Conversations stay; Sessions stops reading the mailbox",
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: () => {
+        setBusy(true);
+        deleteInbox(inbox.id).then(
+          () => {
+            setBusy(false);
+            toast("Inbox removed");
+            onSaved();
+            onClose();
+          },
+          (cause) => {
+            setBusy(false);
+            setError(errorMessage(cause, "Couldn't remove the inbox"));
+          },
+        );
+      },
+    });
+  };
+
+  const serverFields = (which: MailServerKind) => {
+    const server = form[which];
+    const title = SERVER_TITLES[which];
+    const saved = inbox?.[which];
+    return (
+      <div className="flex flex-col gap-3">
+        <FormField label={`${title} server`}>
+          <Input
+            aria-label={`${title} server`}
+            className={DIALOG_INPUT}
+            value={server.host}
+            placeholder={`${which}.example.test`}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(e) => setServer(which, { host: e.target.value })}
+          />
+        </FormField>
+        <div className={INBOX_FORM_PAIR}>
+          <FormField label={`${title} port`}>
+            <Input
+              aria-label={`${title} port`}
+              className={DIALOG_INPUT}
+              inputMode="numeric"
+              value={server.port}
+              onChange={(e) => setServer(which, { port: e.target.value })}
+            />
+          </FormField>
+          <FormField label={`${title} security`}>
+            <OptionSelect<MailTlsMode>
+              label={`${title} security`}
+              className={INBOX_SELECT}
+              value={server.tls}
+              options={MAIL_TLS_MODES.map((tls) => ({
+                value: tls,
+                label: TLS_LABELS[tls],
+              }))}
+              onChange={(tls) => {
+                // A port still at the old mode's usual one follows the mode.
+                const usual = String(defaultMailPort(which, server.tls));
+                const port =
+                  server.port === usual
+                    ? String(defaultMailPort(which, tls))
+                    : server.port;
+                setServer(which, { tls, port });
+              }}
+            />
+          </FormField>
+        </div>
+        <FormField label={`${title} user name`}>
+          <Input
+            aria-label={`${title} user name`}
+            className={DIALOG_INPUT}
+            value={server.user}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setServer(which, { user: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          label={`${title} password`}
+          hint={
+            saved?.hasPassword
+              ? "Leave empty to keep the saved password"
+              : "An app password if the account has two-step sign-in"
+          }
+        >
+          <Input
+            aria-label={`${title} password`}
+            className={DIALOG_INPUT}
+            type="password"
+            autoComplete="new-password"
+            value={server.password}
+            placeholder={saved?.hasPassword ? "Saved" : ""}
+            onChange={(e) => setServer(which, { password: e.target.value })}
+          />
+        </FormField>
+      </div>
+    );
+  };
+
+  const ownerOptions = [
+    ...new Set([...(form.owner ? [form.owner] : []), ...people]),
+  ];
+
+  return (
+    <>
+      <SettingsDialog
+        open={open}
+        onClose={onClose}
+        title={editing ? `Edit ${inbox.label}` : "Connect an inbox"}
+        error={error}
+        busy={busy}
+        onSave={save}
+        wide
+        leading={
+          inbox ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="soft"
+                className="phone:min-h-11"
+                disabled={busy}
+                onClick={toggleEnabled}
+              >
+                {inbox.enabled ? "Turn off" : "Turn on"}
+              </Button>
+              {isInstanceOwner && (
+                <Button
+                  type="button"
+                  variant="danger"
+                  className="phone:min-h-11"
+                  disabled={busy}
+                  onClick={remove}
+                >
+                  Remove inbox
+                </Button>
+              )}
+            </div>
+          ) : undefined
+        }
+      >
+        <FormSection title="Mailbox">
+          <FormField label="Address">
+            <Input
+              aria-label="Address"
+              className={DIALOG_INPUT}
+              type="email"
+              value={form.address}
+              placeholder="help@example.test"
+              autoCapitalize="off"
+              spellCheck={false}
+              onChange={(e) => set({ address: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Name shown to customers">
+            <Input
+              aria-label="Name shown to customers"
+              className={DIALOG_INPUT}
+              value={form.label}
+              placeholder="Acme support"
+              onChange={(e) => set({ label: e.target.value })}
+            />
+          </FormField>
+          {serverFields("imap")}
+          {serverFields("smtp")}
+          {isInstanceOwner && (
+            <label className={CHECK_ROW}>
+              <span className="min-w-0 flex-1">
+                Mail servers on this machine or a private network
+              </span>
+              <Switch
+                checked={form.allowInternalHost}
+                onCheckedChange={(allowInternalHost) =>
+                  set({ allowInternalHost })
+                }
+              />
+            </label>
+          )}
+          <div className="flex flex-col items-start gap-2">
+            <Button
+              type="button"
+              variant="soft"
+              className="phone:min-h-11"
+              disabled={testing}
+              onClick={runTest}
+            >
+              Test connection
+            </Button>
+            {testing && <p className={FIELD_HINT}>Testing the connection</p>}
+            {testError && <InlineAlert>{testError}</InlineAlert>}
+            {lines && (
+              <ul className={INBOX_TEST_LINES} aria-live="polite">
+                <li className={tested?.imap.ok ? "text-fg" : "text-red"}>
+                  {lines.imap}
+                </li>
+                <li className={tested?.smtp.ok ? "text-fg" : "text-red"}>
+                  {lines.smtp}
+                </li>
+              </ul>
+            )}
+          </div>
+        </FormSection>
+
+        <FormSection title="Handling">
+          <FormField label="Project">
+            <OptionSelect
+              label="Project"
+              className={INBOX_SELECT}
+              value={form.project}
+              options={projects.map((p) => ({ value: p.id, label: p.id }))}
+              onChange={(next) => set({ project: next })}
+            />
+          </FormField>
+          <FormField label="Who may move conversations">
+            <OptionSelect<"agent" | "people">
+              label="Who may move conversations"
+              className={INBOX_SELECT}
+              value={form.moveLock}
+              options={[
+                { value: "agent", label: "The agent or a person" },
+                { value: "people", label: "People only" },
+              ]}
+              onChange={(moveLock) => set({ moveLock })}
+            />
+          </FormField>
+          <FormField label="Owner">
+            {ownerOptions.length ? (
+              <OptionSelect
+                label="Owner"
+                className={INBOX_SELECT}
+                value={form.owner}
+                options={ownerOptions.map((name) => ({
+                  value: name,
+                  label: name,
+                }))}
+                onChange={(owner) => set({ owner })}
+              />
+            ) : (
+              <Input
+                aria-label="Owner"
+                className={DIALOG_INPUT}
+                value={form.owner}
+                onChange={(e) => set({ owner: e.target.value })}
+              />
+            )}
+          </FormField>
+          <FormField
+            label="Autonomy"
+            hint={SUPPORT_AUTONOMY_COPY[form.autonomy].description}
+          >
+            <OptionSelect<AutonomyLevel>
+              label="Autonomy"
+              className={INBOX_SELECT}
+              value={form.autonomy}
+              options={AUTONOMY_LEVELS.map((level) => ({
+                value: level,
+                label: SUPPORT_AUTONOMY_COPY[level].label,
+                // Only the instance owner may let Sessions send right away.
+                disabled:
+                  level === "deploy-right-away" &&
+                  !isInstanceOwner &&
+                  inbox?.autonomy !== level,
+              }))}
+              onChange={(autonomy) => set({ autonomy })}
+            />
+          </FormField>
+          {form.autonomy === "deploy-after-veto" && (
+            <FormField
+              label="Veto window in minutes"
+              hint="How long a reply waits before it sends"
+            >
+              <Input
+                aria-label="Veto window in minutes"
+                className={DIALOG_INPUT}
+                inputMode="numeric"
+                value={form.vetoMinutes}
+                onChange={(e) => set({ vetoMinutes: e.target.value })}
+              />
+            </FormField>
+          )}
+          {warn && (
+            <InlineAlert variant="warn">{CONNECTOR_WARNING}</InlineAlert>
+          )}
+          <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
+            <legend className="mb-1.5 p-0 text-label font-medium text-dim">
+              Never without a person
+            </legend>
+            {SUPPORT_TOPICS.map((topic) => (
+              <label key={topic} className={CHECK_ROW}>
+                <Checkbox
+                  checked={form.neverWithoutAPerson.includes(topic)}
+                  onCheckedChange={(checked) =>
+                    set({
+                      neverWithoutAPerson: checked
+                        ? [...form.neverWithoutAPerson, topic]
+                        : form.neverWithoutAPerson.filter((t) => t !== topic),
+                    })
+                  }
+                />
+                <span className="min-w-0 flex-1">
+                  {SUPPORT_TOPIC_LABELS[topic]}
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <FormField label="Bug handling">
+            <OptionSelect<BugHandling>
+              label="Bug handling"
+              className={INBOX_SELECT}
+              value={form.bugHandling}
+              options={BUG_HANDLING.map((value) => ({
+                value,
+                label: BUG_HANDLING_COPY[value],
+              }))}
+              onChange={(bugHandling) => set({ bugHandling })}
+            />
+          </FormField>
+        </FormSection>
+
+        <FormSection title="Mailbox behaviour">
+          <FormField label="When a conversation is handled">
+            <OptionSelect<MailboxBehaviour>
+              label="When a conversation is handled"
+              className={INBOX_SELECT}
+              value={form.mailbox}
+              options={MAILBOX_BEHAVIOURS.map((value) => ({
+                value,
+                label: MAILBOX_BEHAVIOUR_COPY[value],
+              }))}
+              onChange={(mailbox) => set({ mailbox })}
+            />
+          </FormField>
+          <label className={CHECK_ROW}>
+            <span className="min-w-0 flex-1">Save a copy in Sent</span>
+            <Switch
+              checked={effectiveCopyToSent(form)}
+              onCheckedChange={(copyToSent) => set({ copyToSent })}
+            />
+          </label>
+          <FormField label="Send limit per minute">
+            <Input
+              aria-label="Send limit per minute"
+              className={DIALOG_INPUT}
+              inputMode="numeric"
+              value={form.sendLimitPerMinute}
+              onChange={(e) => set({ sendLimitPerMinute: e.target.value })}
+            />
+          </FormField>
+        </FormSection>
+
+        <FormSection title="Retention">
+          <div className={INBOX_FORM_PAIR}>
+            <FormField label="Keep conversations (days)">
+              <Input
+                aria-label="Keep conversations (days)"
+                className={DIALOG_INPUT}
+                inputMode="numeric"
+                value={form.conversationDays}
+                onChange={(e) => set({ conversationDays: e.target.value })}
+              />
+            </FormField>
+            <FormField label="Keep attachments (days)">
+              <Input
+                aria-label="Keep attachments (days)"
+                className={DIALOG_INPUT}
+                inputMode="numeric"
+                value={form.attachmentDays}
+                onChange={(e) => set({ attachmentDays: e.target.value })}
+              />
+            </FormField>
+          </div>
+          <p className={FIELD_HINT}>
+            Counted from when a conversation closes. Retention never changes the
+            mailbox
+          </p>
+        </FormSection>
+      </SettingsDialog>
+      {confirmDialog}
+    </>
+  );
+}
