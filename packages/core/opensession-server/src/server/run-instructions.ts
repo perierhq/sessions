@@ -8,7 +8,7 @@
 // buildPiInstructions) once the pi engine started sharing it.
 
 import { join } from "path";
-import { configuredServer, personaName } from "./config";
+import { configuredServer, personaName, productName } from "./config";
 import { renderInternalMcpCapabilities } from "./mcp-capabilities";
 import { githubLoginFor, type GitIdentity } from "./shared/user-mappings";
 
@@ -84,6 +84,7 @@ export function buildRunInstructions(input: {
   stripeApprovalsNote?: string;
 }): string {
   const parts: string[] = [];
+  const inproc = (input.inProcessMcp || {}) as Record<string, unknown>;
   parts.push(
     "## Data handling\nNever upload files or data to public hosts. Use " +
       "organization-controlled channels only.",
@@ -116,6 +117,23 @@ export function buildRunInstructions(input: {
     "## Working directory\nRelative paths in this prompt resolve against the working " +
       "directory named in the session context.",
   );
+  // Models carry rules written for a person's own computer ("never start a
+  // dev server") into this workspace and refuse to run the app they changed.
+  // Say where they are, and keep the repository's rules in force. Portals are
+  // mounted for interactive sessions only; automations get the fallback.
+  if (!input.isAsk && input.hasSession) {
+    parts.push(
+      `## Workspace\nYou are working in an isolated ${productName()} workspace, not on the user's own ` +
+        "computer. Rules about the user's local machine (for example, not starting dev " +
+        "servers there) don't apply here: you may start dev servers. " +
+        (inproc["opensession-portals"]
+          ? "Start them through Portals so they are supervised, get their own port and " +
+            "preview, and stop when the session ends. "
+          : "Portals aren't available in this run, so start one in the background and " +
+            "stop it before you finish. ") +
+        "A repository's own rules still apply.",
+    );
+  }
 
   if (input.isScratch) {
     parts.push(
@@ -182,7 +200,6 @@ export function buildRunInstructions(input: {
     );
   }
 
-  const inproc = (input.inProcessMcp || {}) as Record<string, unknown>;
   // Models default to `sleep 240; check`: one call, blind to a job that
   // finished early or died. The rule used to live in one repository's
   // AGENTS.md and in schedule guidance scoped to "external work", so a run
