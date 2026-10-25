@@ -58,6 +58,8 @@ describe("parseInbound", () => {
     expect(m.text.trim()).toBe("Hi there");
     expect(m.keys).toEqual({
       messageId: "abc.123@mail.example.test",
+      // As written, for outgoing In-Reply-To and References.
+      rawMessageId: "abc.123@Mail.Example.TEST",
       inReplyTo: "prev@acme.example.test",
       references: ["first@acme.example.test", "prev@acme.example.test"],
     });

@@ -90,6 +90,26 @@ function messageIds(value: string | undefined): string[] {
   return [...ids];
 }
 
+/** The first id of `value` as it was written (without `<>`), when it
+ *  differs from its normalized form; for outgoing In-Reply-To. */
+function rawFirstId(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const raw = value.match(/<[^<>]*>/g) ?? value.split(/[\s,]+/);
+  for (const candidate of raw) {
+    if (candidate.length > MAX_LINE + 2) continue;
+    const id = normalizeMessageId(candidate);
+    if (!id || id.length > MAX_LINE) continue;
+    const written = candidate.replace(/^\s*<?\s*|\s*>?\s*$/g, "");
+    return written !== id && normalizeMessageId(written) === id
+      ? written
+      : undefined;
+  }
+  return undefined;
+}
+
+const optionalRaw = (id: string | undefined) =>
+  id ? { rawMessageId: id } : {};
+
 function references(value: string | undefined): string[] {
   const ids = messageIds(value);
   if (ids.length <= REFERENCES_TAIL + 1) return ids;
@@ -223,6 +243,7 @@ export async function parseInbound(
         : capText(body.trim()),
     keys: {
       messageId: messageIds(first("message-id"))[0] ?? null,
+      ...optionalRaw(rawFirstId(first("message-id"))),
       inReplyTo: messageIds(first("in-reply-to"))[0] ?? null,
       references: references(raw.get("references")?.join(" ")),
     },
