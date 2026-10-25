@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { SupportActor } from "../../shared/support";
+import type { SupportActor, SupportConversation } from "../../shared/support";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import type { CreateSessionOpts } from "../session-control";
 import {
@@ -317,5 +317,54 @@ describe("closeQuietConversations", () => {
     expect(cancelled).toEqual(["os-old"]);
     expect((await getConversation(recent.id))!.status).toBe("waiting");
     expect((await getConversation(open.id))!.status).toBe("open");
+  });
+
+  test("skips a conversation where something waits for a person", async () => {
+    const now = Date.now();
+    const old = now - 8 * DAY;
+    const at = new Date(old).toISOString();
+    const draft = {
+      id: "sd_1",
+      text: "Hi",
+      author: { kind: "agent" as const, sessionId: "os-old" },
+      createdAt: at,
+      rule: "Drafts wait for a person",
+      vetoDeadline: null,
+      attempts: 0,
+      nextAttemptAt: null,
+      lastError: null,
+      messageId: "x@acme.example.test",
+      decidedBy: null,
+    };
+    const waiting: Array<Partial<SupportConversation>> = [
+      { draft: { ...draft, state: "needs-person" } },
+      { draft: { ...draft, state: "failed" } },
+      { draft: { ...draft, state: "veto", vetoDeadline: at } },
+      {
+        pendingIssue: {
+          title: "t",
+          body: "b",
+          requestedBy: { kind: "sessions" },
+        },
+      },
+      {
+        fixTask: {
+          text: "fix",
+          project: "acme",
+          suggestedBy: { kind: "sessions" },
+          at,
+        },
+      },
+      { fixSessionId: "os-fix" },
+    ];
+    const ids: string[] = [];
+    for (const over of waiting) {
+      const c = await waitingSince(old);
+      await updateConversation(c.id, (x) => ({ ...x, ...over }));
+      ids.push(c.id);
+    }
+    expect(await closeQuietConversations(now)).toBe(0);
+    for (const id of ids)
+      expect((await getConversation(id))!.status).toBe("waiting");
   });
 });

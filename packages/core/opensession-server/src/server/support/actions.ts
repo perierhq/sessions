@@ -241,9 +241,19 @@ export async function closeConversation(
 export const QUIET_CLOSED =
   "No reply from the customer in 7 days. Closed without a reply";
 
+/** Something on the conversation waits for a person: a draft that waits
+ *  (or failed), a prepared issue, a fix task or a fix session. */
+function waitsForPerson(c: SupportConversation): boolean {
+  const d = c.draft;
+  if (d && d.state !== "sent" && d.state !== "discarded") return true;
+  return Boolean(c.pendingIssue || c.fixTask || c.fixSessionId);
+}
+
 /** Closes every conversation that has waited on the customer for
  *  WAITING_CLOSE_MS (our reply was the last message): no reminder mail.
- *  Reads the support-index projection only. Returns how many closed. */
+ *  Skips one where something waits for a person (waitsForPerson). Reads
+ *  the support-index projection, then the document. Returns how many
+ *  closed. */
 export async function closeQuietConversations(now: number): Promise<number> {
   let closed = 0;
   for (const row of await listIndexRows({ status: ["waiting"] })) {
@@ -252,6 +262,7 @@ export async function closeQuietConversations(now: number): Promise<number> {
     const c = await getConversation(row.id);
     if (!c || c.status !== "waiting") continue;
     if (now - Date.parse(c.lastMessageAt) < WAITING_CLOSE_MS) continue;
+    if (waitsForPerson(c)) continue;
     if ((await closeConversation(c.id, SESSIONS_ACTOR, QUIET_CLOSED)).ok)
       closed++;
   }

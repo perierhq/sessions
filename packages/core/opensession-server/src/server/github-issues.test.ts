@@ -4,6 +4,7 @@ import {
   createRepoIssue,
   neutralizeGithubRefs,
   repoIsPublic,
+  repoIssueState,
   stripEmailAddresses,
 } from "./github-issues";
 
@@ -74,6 +75,20 @@ describe("repoIsPublic", () => {
   test("a name that is not owner/name is unknown", async () => {
     expect(await repoIsPublic("")).toBeNull();
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("repoIssueState", () => {
+  test("only a close as completed reads as completed", async () => {
+    answer = () => Response.json({ state: "open", state_reason: null });
+    expect(await repoIssueState("acme/app", 7)).toBe("open");
+    answer = () =>
+      Response.json({ state: "closed", state_reason: "completed" });
+    expect(await repoIssueState("acme/app", 7)).toBe("completed");
+    for (const reason of ["not_planned", "duplicate", null]) {
+      answer = () => Response.json({ state: "closed", state_reason: reason });
+      expect(await repoIssueState("acme/app", 7)).toBe("closed");
+    }
   });
 });
 

@@ -4,6 +4,7 @@ import type { Actor } from "./actor";
 import type { CreateSessionOpts } from "../session-control";
 import {
   __setBugDepsForTest,
+  SIGN_IN_TO_CREATE,
   approvePendingIssue,
   dismissPendingIssue,
   FIXED_NOTE,
@@ -135,6 +136,22 @@ describe("reportBug", () => {
     expect(after.events.some((e) => e.kind === "issue-created")).toBe(true);
   });
 
+  test("a private repository needs a signed-in person, and says so", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const result = await approve(c.id, {
+      name: "Guest",
+      verified: false,
+      isInstanceOwner: false,
+    });
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      error: SIGN_IN_TO_CREATE,
+    });
+    expect(posted).toHaveLength(0);
+  });
+
   test("public or unknown visibility says so; only the owner creates it", async () => {
     for (const v of [true, null]) {
       visibility = v;
@@ -233,7 +250,7 @@ describe("a person edits the prepared issue before creating it", () => {
 
 describe("the it's fixed note", () => {
   let prState: "OPEN" | "MERGED" | "CLOSED" | null = null;
-  let issueState: "open" | "closed" | null = "open";
+  let issueState: "open" | "closed" | "completed" | null = "open";
   beforeEach(() => {
     prState = null;
     issueState = "open";
@@ -306,7 +323,11 @@ describe("the it's fixed note", () => {
       status: "closed",
       closedAt: new Date().toISOString(),
     }));
+    // Closed as not planned: no "it's fixed" note.
     issueState = "closed";
+    expect(await checkFixes(Date.now())).toBe(0);
+    expect((await getConversation(c.id))!.fixedNote ?? null).toBeNull();
+    issueState = "completed";
     expect(await checkFixes(Date.now())).toBe(1);
     const after = (await getConversation(c.id))!;
     expect(after.status).toBe("open");

@@ -142,7 +142,7 @@ async function lookupPrivate(ghRepo: string): Promise<boolean | null> {
 export async function repoIssueState(
   ghRepo: string,
   number: number,
-): Promise<"open" | "closed" | null> {
+): Promise<"open" | "closed" | "completed" | null> {
   if (!OWNER_NAME.test(ghRepo) || !Number.isInteger(number) || number <= 0)
     return null;
   const token = await deps().readToken(ghRepo);
@@ -162,10 +162,12 @@ export async function repoIssueState(
     if (!res.ok) return null;
     const data = (await res.json().catch(() => null)) as {
       state?: unknown;
+      state_reason?: unknown;
     } | null;
-    return data?.state === "open" || data?.state === "closed"
-      ? data.state
-      : null;
+    if (data?.state === "open") return "open";
+    if (data?.state !== "closed") return null;
+    // Closed as done, versus not planned, a duplicate or no reason given.
+    return data.state_reason === "completed" ? "completed" : "closed";
   } catch {
     return null;
   }

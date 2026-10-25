@@ -58,6 +58,7 @@ export const FIXED_NOTE_TEXT =
   "Hi,\n\nGood news: the problem you reported is fixed. The fix reaches you with the next release.\n\nThanks for reporting it.";
 export const PUBLIC_NEEDS_OWNER =
   "Only the instance owner can post an issue to a public repository";
+export const SIGN_IN_TO_CREATE = "Sign in to create the issue";
 const ISSUE_LABELS = ["bug"];
 export const MAX_TITLE = 200;
 export const MAX_SUMMARY = 20_000;
@@ -627,7 +628,7 @@ export async function approvePendingIssue(
           error: `${c.project} has no GitHub repository`,
         };
       if (!person.verified)
-        return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
+        return { ok: false, status: 403, error: SIGN_IN_TO_CREATE };
       if ((await deps().isPublic(ghRepo)) !== false && !isOwnerActor(person))
         return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
       const inbox = await getInbox(c.inboxId);
@@ -823,7 +824,7 @@ const dropWatch = (conversationId: string) =>
     .catch(() => null);
 
 /** Whether the conversation's fix is done: its fix session's pull request
- *  merged, or its issue closed. */
+ *  merged, or its issue closed as completed. */
 async function fixDone(
   c: SupportConversation,
 ): Promise<{ because: "pr-merged" | "issue-closed"; url: string } | null> {
@@ -833,9 +834,10 @@ async function fixDone(
     if (fix?.prState === "MERGED" && fix.prUrl)
       return { because: "pr-merged", url: fix.prUrl };
   }
+  // Only an issue closed as done: not planned or a duplicate is no fix.
   if (
     c.issue &&
-    (await d.issueState(c.issue.repo, c.issue.number)) === "closed"
+    (await d.issueState(c.issue.repo, c.issue.number)) === "completed"
   )
     return { because: "issue-closed", url: c.issue.url };
   return null;
