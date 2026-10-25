@@ -23,6 +23,7 @@ const KNOWN_EVENT_KEYS = [
   "plain:thread_created",
   "stripe:charge.dispute.created",
   "github:pr_merged",
+  "support:message_received",
 ];
 
 export interface AutomationDraft {

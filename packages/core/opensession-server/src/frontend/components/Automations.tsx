@@ -126,6 +126,7 @@ const EVENT_OPTIONS: Array<{ key: string; label: string }> = [
     label: "Stripe · dispute (chargeback) created",
   },
   { key: "github:pr_merged", label: "GitHub · PR merged" },
+  { key: "support:message_received", label: "Support · new customer message" },
 ];
 
 /** Claude and Codex accounts for provider-aware automation pins. */
