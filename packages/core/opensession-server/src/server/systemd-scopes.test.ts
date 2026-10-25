@@ -105,6 +105,7 @@ describe("systemd scope resource controls", () => {
           "0::/opensession.slice/opensession-control.slice/opensession.service",
         scopesAvailable: true,
         systemdVersion: 259,
+        totalMemoryBytes: BIG_HOST,
       },
     );
     expect(scoped.unit).toBe("opensession-agent-cmd-test");
@@ -179,6 +180,7 @@ describe("systemd scope resource controls", () => {
       env: { PATH: "/bin", HOME: "/tmp" },
       scopesAvailable: true,
       systemdVersion: 259,
+      totalMemoryBytes: BIG_HOST,
     });
     expect(scoped.unit).toBe(previewScopeUnit("/srv/worktrees/a", "web"));
     expect(scoped.command).toEqual([

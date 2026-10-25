@@ -195,6 +195,8 @@ export function controlPlaneWorkloadCommand(
     description?: string;
     /** systemd-run's version; read from the host when omitted. */
     systemdVersion?: number | null;
+    /** Host memory the defaults scale to; the real host when omitted. */
+    totalMemoryBytes?: number;
   } = {},
 ): { command: string[]; env: Record<string, string>; unit?: string } {
   const env = options.env ?? process.env;
@@ -211,7 +213,7 @@ export function controlPlaneWorkloadCommand(
       "--quiet",
       `--unit=${unit}`,
       ...(options.description ? [`--description=${options.description}`] : []),
-      ...engineScopeSystemdArgs(env),
+      ...engineScopeSystemdArgs(env, options.totalMemoryBytes),
       "--property=TimeoutStopSec=2",
       ...scopeVerbatimArgs(options.systemdVersion),
       "--",
@@ -244,6 +246,8 @@ export function previewScopeCommand(
     scopesAvailable?: boolean;
     /** systemd-run's version; read from the host when omitted. */
     systemdVersion?: number | null;
+    /** Host memory the defaults scale to; the real host when omitted. */
+    totalMemoryBytes?: number;
   } = {},
 ): { command: string[]; env: Record<string, string>; unit?: string } {
   const env = options.env ?? process.env;
@@ -258,7 +262,7 @@ export function previewScopeCommand(
       "--collect",
       "--quiet",
       `--unit=${unit}`,
-      ...previewScopeSystemdArgs(env),
+      ...previewScopeSystemdArgs(env, options.totalMemoryBytes),
       "--property=TimeoutStopSec=5",
       ...scopeVerbatimArgs(options.systemdVersion),
       "--",
