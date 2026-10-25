@@ -3,7 +3,7 @@
 // Every tool acts on the conversation the session's own `support` external
 // ref names; no tool takes a conversation id, so mail in one conversation
 // can't steer the agent into another. Customer text comes back inside the
-// <customer_email> wrapper (routing.ts). draft_reply goes through the one
+// <customer_email> wrapper (wrap.ts). draft_reply goes through the one
 // reply path (reply.ts); C5 adds the bug and move tools here. Nothing runs
 // at import.
 
@@ -17,7 +17,7 @@ import {
 import type { ExternalRef } from "../types";
 import { getInbox } from "./inboxes";
 import { proposeDraft } from "./reply";
-import { wrapSupportMessage } from "./routing";
+import { wrapSupportMessage } from "./wrap";
 import { getConversation } from "./store";
 
 export const SUPPORT_MCP_SERVER = "opensession-support";

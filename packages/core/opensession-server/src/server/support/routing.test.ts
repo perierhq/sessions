@@ -17,6 +17,8 @@ import {
   MAX_NEW_SESSIONS_PER_HOUR,
   __setRoutingDepsForTest,
   onInbound,
+  startSupportSession,
+  supportDelivery,
   supportOpeningPrompt,
   wrapCustomerMessage,
 } from "./routing";
@@ -52,6 +54,11 @@ let marks: Array<{ id: string; state: string }> = [];
 let previousSecrets: string | undefined;
 let inbox: InboxConfig;
 let sessionCounter = 0;
+/** Session ids by request id: the real create returns the same session for
+ *  the same request. */
+let sessionsByRequest = new Map<string, string>();
+/** Runs inside a create before it returns (a reply arriving meanwhile). */
+let duringCreate: (() => Promise<void>) | null = null;
 
 function verdict(): TriageVerdict {
   return {
@@ -71,6 +78,8 @@ beforeEach(async () => {
   workspaces = [];
   marks = [];
   sessionCounter = 0;
+  sessionsByRequest = new Map();
+  duringCreate = null;
   spec = {
     model: "pi/anthropic/claude-sonnet-5",
     mcpServers: ["acme-crm"],
@@ -96,9 +105,15 @@ beforeEach(async () => {
     control: () => ({
       async createSession(opts) {
         created.push(opts);
-        sessionCounter++;
+        await duringCreate?.();
+        let id = opts.requestId && sessionsByRequest.get(opts.requestId);
+        if (!id) {
+          sessionCounter++;
+          id = `os-${sessionCounter}`;
+          if (opts.requestId) sessionsByRequest.set(opts.requestId, id);
+        }
         return {
-          id: `os-${sessionCounter}`,
+          id,
           createdBy: "Sessions",
           createdAt: new Date().toISOString(),
         };
@@ -251,9 +266,11 @@ describe("new conversations", () => {
       expect(opts.agentStarted).toBe(true);
       expect(opts.user).toBe("Sessions");
       expect(opts.workspaceId).toBe(`ws-${c.id}`);
+      expect(opts.requestId).toBe(`support-${c.id}-new`);
       expect(workspaces).toEqual([
         {
-          ref: { kind: "support", id: c.id, title: c.subject },
+          // No customer text in the workspace.
+          ref: { kind: "support", id: c.id, title: `Support ${c.id}` },
           createdBy: "Sessions",
           repo: "acme",
         },
@@ -338,9 +355,9 @@ describe("replies", () => {
     expect(delivered).toEqual([
       {
         id: "os-1",
-        content: wrapCustomerMessage(reply),
+        content: supportDelivery(reply),
         user: undefined,
-        opts: { busy: "queue" },
+        opts: { busy: "queue", deliveryId: reply.id },
       },
     ]);
   });
@@ -360,7 +377,148 @@ test("the opening prompt names the inbox and the rules", async () => {
   const prompt = supportOpeningPrompt(c, inbox);
   expect(prompt).toContain("acme");
   expect(prompt).toContain("AGENTS.md");
-  expect(prompt).toContain("report_bug");
-  expect(prompt).toContain("move_conversation");
+  expect(prompt).toContain("draft_reply");
+  expect(prompt).toContain("get_conversation");
+  // Only tools the support server carries today.
+  expect(prompt).not.toContain("report_bug");
+  expect(prompt).not.toContain("move_conversation");
   expect(prompt.toLowerCase()).toContain("refund");
+});
+
+async function addReply(id: string, text: string): Promise<SupportMessage> {
+  const reply = message(text, "Re: Export is broken");
+  await updateConversation(id, (x) => ({
+    ...x,
+    messages: [...x.messages, reply],
+    lastMessageAt: reply.at,
+  }));
+  return reply;
+}
+
+describe("a reply while the conversation is routed", () => {
+  test("is delivered when the opening prompt didn't show it", async () => {
+    const c = await conversation();
+    let reply: SupportMessage | null = null;
+    duringCreate = async () => {
+      duringCreate = null;
+      reply = await addReply(c.id, "Also the PDF export.");
+    };
+    await onInbound(c, c.messages[0], true);
+    expect(created).toHaveLength(1);
+    expect(created[0].prompt).not.toContain("Also the PDF export.");
+    // The first message's hand-off delivers nothing: the prompt showed it.
+    expect(delivered).toEqual([]);
+    // The reply's hand-off was merged into the new one (isNew stays true).
+    await onInbound(await fresh(c.id), reply!, true);
+    expect(triageCalls).toBe(1);
+    expect(created).toHaveLength(1);
+    expect(delivered).toEqual([
+      {
+        id: "os-1",
+        content: supportDelivery(reply!),
+        user: undefined,
+        opts: { busy: "queue", deliveryId: reply!.id },
+      },
+    ]);
+  });
+
+  test("is not delivered again when the opening prompt showed it", async () => {
+    const c = await conversation();
+    const reply = await addReply(c.id, "Also the PDF export.");
+    await onInbound(c, c.messages[0], true);
+    expect(created[0].prompt).toContain("Also the PDF export.");
+    await onInbound(await fresh(c.id), reply, true);
+    expect(delivered).toEqual([]);
+  });
+
+  test("the delivery frames the email as untrusted", () => {
+    const m = message("Hi");
+    const framed = supportDelivery(m);
+    expect(framed.split("\n")[0]).toBe("New customer email (untrusted):");
+    expect(framed).toContain(wrapCustomerMessage(m));
+  });
+});
+
+describe("a retried start", () => {
+  test("after a timeout asks for the same session and keeps one", async () => {
+    const c = await conversation();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    duringCreate = async () => {
+      duringCreate = null;
+      await held;
+    };
+    // The pipeline gave up waiting on the first attempt; it runs on.
+    const first = onInbound(c, c.messages[0], true);
+    while (created.length === 0) await Bun.sleep(1);
+    // A reply lands before the retry: the retry still opens the same way.
+    await addReply(c.id, "Hello?");
+    const retry = await startSupportSession(await fresh(c.id), "new");
+    release();
+    await first;
+    expect(created).toHaveLength(2);
+    expect(created[0].requestId).toBe(`support-${c.id}-new`);
+    expect(created[1].requestId).toBe(created[0].requestId);
+    expect(created[1].prompt).toBe(created[0].prompt);
+    expect(sessionCounter).toBe(1);
+    expect(retry).toBe("os-1");
+    const after = await fresh(c.id);
+    expect(after.sessionId).toBe("os-1");
+    expect(after.events.filter((e) => e.kind === "agent-started")).toHaveLength(
+      1,
+    );
+  });
+
+  test("never replaces a session stored meanwhile", async () => {
+    const c = await conversation();
+    duringCreate = async () => {
+      duringCreate = null;
+      await updateConversation(c.id, (x) => ({ ...x, sessionId: "os-person" }));
+    };
+    const started = await startSupportSession(c, "new");
+    expect(started).toBeNull();
+    expect((await fresh(c.id)).sessionId).toBe("os-person");
+  });
+});
+
+describe("Watch only and the hourly cap", () => {
+  async function watchOnly(): Promise<void> {
+    const out = await updateInbox(
+      inbox.id,
+      { expectedRevision: inbox.revision, autonomy: "watch" },
+      ADA,
+    );
+    expect(out.ok).toBe(true);
+  }
+
+  test("a moved conversation starts no agent on a Watch only inbox", async () => {
+    await watchOnly();
+    const c = await conversation();
+    expect(await startSupportSession(c, "moved")).toBeNull();
+    expect(created).toEqual([]);
+    expect(eventDetails(await fresh(c.id))).toContain("Watch only: no agent");
+  });
+
+  test("a person may start the agent on a Watch only inbox", async () => {
+    await watchOnly();
+    const c = await conversation();
+    expect(await startSupportSession(c, "person")).toBe("os-1");
+    expect(created).toHaveLength(1);
+  });
+
+  test("moves count against the cap; a person's start does not", async () => {
+    for (let i = 0; i < MAX_NEW_SESSIONS_PER_HOUR; i++) {
+      const c = await conversation();
+      await onInbound(c, c.messages[0], true);
+    }
+    expect(created).toHaveLength(MAX_NEW_SESSIONS_PER_HOUR);
+    const moved = await conversation();
+    expect(await startSupportSession(moved, "moved")).toBeNull();
+    expect(eventDetails(await fresh(moved.id))).toContain(
+      "Too many new conversations this hour. The agent waits for a person",
+    );
+    const asked = await conversation();
+    expect(await startSupportSession(asked, "person")).not.toBeNull();
+    expect(created).toHaveLength(MAX_NEW_SESSIONS_PER_HOUR + 1);
+  });
 });
