@@ -47,23 +47,43 @@ export function __setRouteClassifierOneShotForTest(fn: OneShotFn | null): void {
   oneShotOverride = fn;
 }
 
-/** The first JSON object in `text`, tolerating prose around it. */
-function firstJsonObject(text: string): Record<string, unknown> | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
-  // Try the widest candidate first (nested arrays and objects), then shrink
-  // to each earlier closing brace.
-  for (let end = text.lastIndexOf("}"); end > start;) {
-    try {
-      const parsed = JSON.parse(text.slice(start, end + 1));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-        return parsed as Record<string, unknown>;
-    } catch {
-      // try a shorter candidate
+/**
+ * Every top-level JSON object in `text`, tolerating prose around them. One
+ * linear pass matches braces, skipping string contents inside objects; each
+ * balanced top-level span that parses as an object is kept. Braces in prose
+ * that never balance swallow what follows, which reads as no answer.
+ */
+function topLevelJsonObjects(text: string): Record<string, unknown>[] {
+  const objects: Record<string, unknown>[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
     }
-    end = text.lastIndexOf("}", end - 1);
+    if (ch === '"' && depth > 0) inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" && depth > 0) {
+      depth--;
+      if (depth > 0) continue;
+      try {
+        const parsed: unknown = JSON.parse(text.slice(start, i + 1));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          objects.push(parsed as Record<string, unknown>);
+      } catch {
+        // prose in braces, not an answer
+      }
+    }
   }
-  return null;
+  return objects;
 }
 
 /** Route `content`. null when no verdict could be reached. Never throws. */
@@ -80,17 +100,22 @@ export async function classifyRoute<R extends string>(
       label: input.label,
     });
     if (!text) return null;
-    const raw = firstJsonObject(text);
-    if (!raw) {
-      // Never log the answer: it can echo customer text.
+    // Never log the answer, only its length: it can echo customer text.
+    const answers = topLevelJsonObjects(text).filter((o) => "route" in o);
+    if (answers.length !== 1) {
       console.error(
-        `[route-classifier] ${input.label} returned no JSON (${text.length} chars)`,
+        `[route-classifier] ${input.label} returned ${answers.length ? "more than one" : "no"} JSON answer (${text.length} chars)`,
       );
       return null;
     }
+    const raw = answers[0]!;
     const route = raw.route;
-    if (typeof route !== "string" || !input.routes.includes(route as R))
+    if (typeof route !== "string" || !input.routes.includes(route as R)) {
+      console.error(
+        `[route-classifier] ${input.label} returned an unknown route (${text.length} chars)`,
+      );
       return null;
+    }
     return {
       route: route as R,
       reason: typeof raw.reason === "string" ? raw.reason : "",

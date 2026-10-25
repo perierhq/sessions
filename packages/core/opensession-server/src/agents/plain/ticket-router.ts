@@ -22,10 +22,7 @@
  */
 import { stateDir } from "../../server/paths";
 import { existsSync, readFileSync } from "fs";
-import {
-  classifyRoute,
-  ROUTE_CLASSIFIER_MODEL,
-} from "../../server/route-classifier";
+import { classifyRoute } from "../../server/route-classifier";
 import { writeJsonAtomic } from "../../server/shared/atomic-write";
 import { resolveModel } from "../../server/models";
 import { personaCompany, personaProduct } from "../../server/config";
@@ -125,7 +122,6 @@ export async function classifyTicketRoute(
     contract: OUTPUT_CONTRACT,
     routes: TICKET_ROUTES,
     label: "ticket-router",
-    model: ROUTE_CLASSIFIER_MODEL,
   });
   return verdict ? { route: verdict.route, reason: verdict.reason } : null;
 }

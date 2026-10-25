@@ -28,6 +28,15 @@ describe("classifyTicketRoute", () => {
     }
   });
 
+  it("counts the prefix inside the 8000-character cap", async () => {
+    const calls = fake('{"route":"full","reason":"r"}');
+    await classifyTicketRoute("a".repeat(9000));
+    expect(calls[0]!.prompt.length).toBe(8000);
+    expect(calls[0]!.prompt).toStartWith(
+      "Classify this support ticket:\n\naaa",
+    );
+  });
+
   it("returns null for a support route it does not know", async () => {
     fake('{"route":"simple","reason":"r"}');
     expect(await classifyTicketRoute("Ticket body")).toBeNull();

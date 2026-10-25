@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import {
   __setRouteClassifierOneShotForTest,
   classifyRoute,
@@ -76,6 +76,59 @@ describe("classifyRoute", () => {
   it("returns null when the one-shot throws", async () => {
     fake(new Error("timeout"));
     expect(await classifyRoute(input())).toBeNull();
+  });
+
+  it("returns null when more than one object names a route", async () => {
+    fake(
+      'First {"route":"spam","reason":"a"} then {"route":"work","reason":"b"}',
+    );
+    expect(await classifyRoute(input())).toBeNull();
+  });
+
+  it("picks the one object that names a route among others", async () => {
+    fake('Meta {"note":1} answer {"route":"work","reason":"b"}');
+    expect((await classifyRoute(input()))?.route).toBe("work");
+  });
+
+  it("skips braces in prose around the answer", async () => {
+    fake(
+      'Think {maybe} and } stray, then {"route":"simple","reason":"r"} {end}',
+    );
+    expect((await classifyRoute(input()))?.route).toBe("simple");
+  });
+
+  it("skips braces and quotes inside strings", async () => {
+    fake('{"route":"work","reason":"has } and { and \\" inside"}');
+    const verdict = await classifyRoute(input());
+    expect(verdict?.route).toBe("work");
+    expect(verdict?.reason).toBe('has } and { and " inside');
+  });
+
+  it("reads a nested object as one answer", async () => {
+    fake(
+      '{"route":"work","reason":"r","meta":{"route":"spam","deep":{"a":[1,{"b":2}]}}}',
+    );
+    const verdict = await classifyRoute(input());
+    expect(verdict?.route).toBe("work");
+    expect(verdict?.raw.meta).toEqual({
+      route: "spam",
+      deep: { a: [1, { b: 2 }] },
+    });
+  });
+
+  it("never logs the answer text", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fake("Dear customer jane@example.test, no verdict here.");
+      expect(await classifyRoute(input())).toBeNull();
+      fake('{"route":"jane@example.test","reason":"r"}');
+      expect(await classifyRoute(input())).toBeNull();
+      expect(error).toHaveBeenCalledTimes(2);
+      for (const args of error.mock.calls)
+        expect(args.map(String).join(" ")).not.toContain("jane@example.test");
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("cuts content to 8000 characters", async () => {
