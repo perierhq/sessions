@@ -23,7 +23,11 @@ const AUTOMATION = {
 };
 
 let posted = 0;
-let fixCreates: Array<{ user?: string; createdByLogin?: string; mode?: string }> = [];
+let fixCreates: Array<{
+  user?: string;
+  createdByLogin?: string;
+  mode?: string;
+}> = [];
 
 beforeEach(() => {
   posted = 0;
@@ -288,6 +292,7 @@ describe("support action routes", () => {
       task: "Fix the export",
     });
     expect(res.status).toBe(200);
+    // SAFETY: a 200 from these routes is conversationViewResponse's body.
     const view = (await res.json()) as SupportConversationView;
     expect(view.conversation.fixSessionId).toBe("os-fix");
     expect(fixCreates).toEqual([

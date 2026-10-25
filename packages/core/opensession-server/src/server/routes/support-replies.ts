@@ -60,7 +60,9 @@ async function fixSessionView(
   id: string | null,
 ): Promise<SupportConversationView["fixSession"]> {
   if (!id) return null;
-  const session = await (await import("../session-cache"))
+  const session = await (
+    await import("../session-cache")
+  )
     .findSessionAsync(id)
     .catch(() => undefined);
   if (!session) return null;

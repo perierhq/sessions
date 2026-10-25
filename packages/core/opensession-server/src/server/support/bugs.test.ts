@@ -23,7 +23,11 @@ const tb = useReplyTestbed();
 
 const AGENT: SupportActor = { kind: "agent", sessionId: "os-support" };
 /** The instance owner and another signed-in person (actorFor's shape). */
-const OWNER_ACTOR: Actor = { name: "Ada", verified: true, isInstanceOwner: true };
+const OWNER_ACTOR: Actor = {
+  name: "Ada",
+  verified: true,
+  isInstanceOwner: true,
+};
 const GRACE: Actor = { name: "Grace", verified: true, isInstanceOwner: false };
 
 /** Approves as `actor` at the conversation's current revision. */
@@ -266,14 +270,24 @@ describe("startFixSession", () => {
   test("works without a support session and without a suggestion", async () => {
     const c = await tb.conversation();
     expect(c.sessionId).toBeNull();
-    const result = await startFixSession(c.id, ADA_PERSON, c.revision, "Fix it");
+    const result = await startFixSession(
+      c.id,
+      ADA_PERSON,
+      c.revision,
+      "Fix it",
+    );
     expect(result.ok).toBe(true);
     expect(created[0]!.parentSessionId).toBeUndefined();
   });
 
   test("needs the revision the person saw, a task, and no fix session yet", async () => {
     const c = await suggested();
-    const stale = await startFixSession(c.id, ADA_PERSON, c.revision - 1, "Fix");
+    const stale = await startFixSession(
+      c.id,
+      ADA_PERSON,
+      c.revision - 1,
+      "Fix",
+    );
     expect(stale).toMatchObject({ ok: false, status: 409 });
     const empty = await startFixSession(c.id, ADA_PERSON, c.revision, "  ");
     expect(empty).toMatchObject({ ok: false, status: 400 });
@@ -313,14 +327,23 @@ describe("report_bug input", () => {
 });
 
 describe("issueText scrubbing", () => {
-  async function scrubbed(summary: string, extra: Partial<SupportMessage> = {}) {
+  async function scrubbed(
+    summary: string,
+    extra: Partial<SupportMessage> = {},
+  ) {
     const c = await bugConversation("issue");
     const withPeople = (await updateConversation(c.id, (x) => ({
       ...x,
-      customer: { name: "Zoë Ångström", address: "zoe.angstrom@customer.example.test" },
+      customer: {
+        name: "Zoë Ångström",
+        address: "zoe.angstrom@customer.example.test",
+      },
       messages: x.messages.map((m) => ({
         ...m,
-        from: { name: "Zoë Ångström", address: "zoe.angstrom@customer.example.test" },
+        from: {
+          name: "Zoë Ångström",
+          address: "zoe.angstrom@customer.example.test",
+        },
         cc: [
           { name: "Bo Ek", address: "bo@partner.example.test" },
           { name: "Acme help", address: "help@acme.example.test" },

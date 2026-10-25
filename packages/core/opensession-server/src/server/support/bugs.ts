@@ -205,7 +205,10 @@ const BRACKETED = (word: string) =>
 const AT = String.raw`(?:\s?@\s?|%40|${BRACKETED("at")})`;
 const DOT = String.raw`(?:\.|${BRACKETED("dot")}|\s+dot\s+)`;
 /** `a@b.c`, `a%40b.c`, `a [at] b (dot) c`, `a @ b.c`. */
-const ADDRESS = new RegExp(`${LOCAL}${AT}${LABEL}(?:${DOT}${LABEL}){1,10}`, "giu");
+const ADDRESS = new RegExp(
+  `${LOCAL}${AT}${LABEL}(?:${DOT}${LABEL}){1,10}`,
+  "giu",
+);
 /** `a at b dot c`: spelled out, the dots must be too, so "look at app.js"
  *  stays. */
 const SPOKEN_ADDRESS = new RegExp(
@@ -230,15 +233,56 @@ function scrubPhones(text: string): string {
 /** Words never taken for a name: too common to be identifying, and taking
  *  them would gut the report. */
 const NOT_NAMES = new Set([
-  "admin", "and", "account", "billing", "contact", "customer", "dev",
-  "example", "hello", "help", "info", "mail", "noreply", "office", "ops",
-  "reply", "sales", "service", "support", "team", "test", "the", "user",
-  "von", "van", "der", "den", "del", "della", "les", "mr", "mrs", "ms",
+  "admin",
+  "and",
+  "account",
+  "billing",
+  "contact",
+  "customer",
+  "dev",
+  "example",
+  "hello",
+  "help",
+  "info",
+  "mail",
+  "noreply",
+  "office",
+  "ops",
+  "reply",
+  "sales",
+  "service",
+  "support",
+  "team",
+  "test",
+  "the",
+  "user",
+  "von",
+  "van",
+  "der",
+  "den",
+  "del",
+  "della",
+  "les",
+  "mr",
+  "mrs",
+  "ms",
 ]);
 /** Mail providers: their name says nothing about the customer. */
 const MAIL_PROVIDERS = new Set([
-  "gmail", "googlemail", "outlook", "hotmail", "live", "yahoo", "icloud",
-  "me", "proton", "protonmail", "aol", "gmx", "fastmail", "zoho",
+  "gmail",
+  "googlemail",
+  "outlook",
+  "hotmail",
+  "live",
+  "yahoo",
+  "icloud",
+  "me",
+  "proton",
+  "protonmail",
+  "aol",
+  "gmx",
+  "fastmail",
+  "zoho",
 ]);
 
 function nameWords(text: string | null | undefined, into: Set<string>): void {
@@ -307,7 +351,10 @@ function scrub(
     .replace(SPOKEN_ADDRESS, "[email removed]");
   for (const domain of domains)
     out = out.replace(
-      new RegExp(`(?<![\\p{L}\\p{N}.-])${escapeRegExp(domain)}(?![\\p{L}\\p{N}-])`, "giu"),
+      new RegExp(
+        `(?<![\\p{L}\\p{N}.-])${escapeRegExp(domain)}(?![\\p{L}\\p{N}-])`,
+        "giu",
+      ),
       "[domain removed]",
     );
   out = out.replace(/[\p{L}\p{N}]+/gu, (word) =>
@@ -340,10 +387,7 @@ export function issueText(
     input.summary.slice(0, MAX_SUMMARY).trim(),
     c,
     ownAddress,
-  ).slice(
-    0,
-    MAX_SUMMARY,
-  );
+  ).slice(0, MAX_SUMMARY);
   return { title, body: `${summary}${ISSUE_FOOTER}` };
 }
 
@@ -457,7 +501,8 @@ export async function reportBug(
           issue: { url: current.issue.url, number: current.issue.number },
           note: `This conversation already has an issue: ${current.issue.url}.`,
         };
-      if (current.pendingIssue) return { state: "failed", note: ALREADY_WAITING };
+      if (current.pendingIssue)
+        return { state: "failed", note: ALREADY_WAITING };
       if (current.events.some((e) => e.kind === "issue-dismissed"))
         return { state: "failed", note: DISMISSED };
       const ghRepo = deps().ghRepo(current.project);
@@ -526,7 +571,8 @@ export async function approvePendingIssue(
     { ok: false, status: 409, error: "This issue is already being created" },
     async () => {
       const c = await getConversation(conversationId);
-      if (!c) return { ok: false, status: 404, error: "Conversation not found" };
+      if (!c)
+        return { ok: false, status: 404, error: "Conversation not found" };
       if (!c.pendingIssue)
         return {
           ok: false,
@@ -548,10 +594,7 @@ export async function approvePendingIssue(
         };
       if (!person.verified)
         return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
-      if (
-        (await deps().isPublic(ghRepo)) !== false &&
-        !isOwnerActor(person)
-      )
+      if ((await deps().isPublic(ghRepo)) !== false && !isOwnerActor(person))
         return { ok: false, status: 403, error: PUBLIC_NEEDS_OWNER };
       const result = await create(
         c,

@@ -43,7 +43,7 @@ export const MAILBOX_BEHAVIOUR_COPY: Record<MailboxBehaviour, string> = {
 export const BUG_HANDLING_COPY: Record<BugHandling, string> = {
   off: "Off",
   issue: "Create an issue",
-  "issue-and-agent": "Create an issue and start an agent",
+  "issue-and-agent": "Create an issue and suggest a fix",
 };
 
 export const SUPPORT_PUSH = {

@@ -209,9 +209,13 @@ describe("close, reopen and not spam", () => {
       createdAt: at,
       state,
       rule: "test",
-      vetoDeadline: state === "veto" ? new Date(Date.now() + 60_000).toISOString() : null,
+      vetoDeadline:
+        state === "veto" ? new Date(Date.now() + 60_000).toISOString() : null,
       attempts: state === "sending" ? 1 : 0,
-      nextAttemptAt: state === "sending" ? new Date(Date.now() + 60_000).toISOString() : null,
+      nextAttemptAt:
+        state === "sending"
+          ? new Date(Date.now() + 60_000).toISOString()
+          : null,
       lastError: state === "sending" ? "busy" : null,
       messageId: `<${state}@acme.example.test>`,
       decidedBy: ADA,

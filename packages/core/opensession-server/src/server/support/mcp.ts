@@ -85,8 +85,9 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
       async () => {
         // Only the session that answers the conversation reads it: after a
         // move the old session still carries the ref.
-        const c = await currentConversation(ctx.sessionId);
-        if (typeof c === "string") return text(c);
+        const current = await currentConversation(ctx.sessionId);
+        if (!current.ok) return text(current.why);
+        const { c } = current;
         const inbox = await getInbox(c.inboxId);
         return text(
           JSON.stringify(
@@ -137,10 +138,12 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
  *  act on the conversation. */
 async function currentConversation(
   sessionId: string,
-): Promise<SupportConversation | string> {
+): Promise<{ ok: true; c: SupportConversation } | { ok: false; why: string }> {
   const c = await conversationForSession(sessionId);
-  if (!c) return NOT_LINKED;
-  return c.sessionId === sessionId ? c : NOT_CURRENT;
+  if (!c) return { ok: false, why: NOT_LINKED };
+  return c.sessionId === sessionId
+    ? { ok: true, c }
+    : { ok: false, why: NOT_CURRENT };
 }
 
 function bugTools(ctx: { sessionId: string }): AnyTool[] {
@@ -156,8 +159,9 @@ function bugTools(ctx: { sessionId: string }): AnyTool[] {
           .describe("The bug report: symptoms, steps, what you found"),
       },
       async ({ title, summary }) => {
-        const c = await currentConversation(ctx.sessionId);
-        if (typeof c === "string") return text(c);
+        const current = await currentConversation(ctx.sessionId);
+        if (!current.ok) return text(current.why);
+        const { c } = current;
         const result = await reportBug(
           c.id,
           { title, summary },
@@ -174,8 +178,9 @@ function bugTools(ctx: { sessionId: string }): AnyTool[] {
         reason: z.string().describe("Why it belongs there"),
       },
       async ({ project, reason }) => {
-        const c = await currentConversation(ctx.sessionId);
-        if (typeof c === "string") return text(c);
+        const current = await currentConversation(ctx.sessionId);
+        if (!current.ok) return text(current.why);
+        const { c } = current;
         const result = await moveConversation(
           c.id,
           project,
