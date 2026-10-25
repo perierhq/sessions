@@ -4,8 +4,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   deleteWorkspaceSecret,
+  deleteWorkspaceSecretAsync,
   putWorkspaceSecret,
+  putWorkspaceSecretAsync,
   resolveWorkspaceSecret,
+  resolveWorkspaceSecretAsync,
   workspaceSecretExists,
 } from "./workspace-secrets";
 
@@ -46,5 +49,42 @@ describe("workspace secrets", () => {
 
     expect(deleteWorkspaceSecret(ref)).toBe(true);
     expect(workspaceSecretExists(ref)).toBe(false);
+  });
+
+  test("async writers create, rotate and delete a 0600 secret", async () => {
+    const path = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE!;
+    const ref = await putWorkspaceSecretAsync("p", "v");
+    expect(ref).toMatch(/^wssec-/);
+    expect(await resolveWorkspaceSecretAsync(ref)).toBe("v");
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    expect(await putWorkspaceSecretAsync("p", "w", ref)).toBe(ref);
+    expect(await resolveWorkspaceSecretAsync(ref)).toBe("w");
+    // The sync readers see what the async writers wrote.
+    expect(resolveWorkspaceSecret(ref)).toBe("w");
+
+    expect(await deleteWorkspaceSecretAsync(ref)).toBe(true);
+    expect(await deleteWorkspaceSecretAsync(ref)).toBe(false);
+    expect(await resolveWorkspaceSecretAsync(ref)).toBeUndefined();
+  });
+
+  test("concurrent async writes keep every secret", async () => {
+    const refs = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        putWorkspaceSecretAsync(`p${i}`, `v${i}`),
+      ),
+    );
+    for (const [i, ref] of refs.entries())
+      expect(await resolveWorkspaceSecretAsync(ref)).toBe(`v${i}`);
+    await Promise.all(refs.slice(0, 4).map(deleteWorkspaceSecretAsync));
+    for (const [i, ref] of refs.entries())
+      expect(await resolveWorkspaceSecretAsync(ref)).toBe(
+        i < 4 ? undefined : `v${i}`,
+      );
+  });
+
+  test("async writers reject an empty purpose or value", async () => {
+    await expect(putWorkspaceSecretAsync(" ", "v")).rejects.toThrow();
+    await expect(putWorkspaceSecretAsync("p", "")).rejects.toThrow();
   });
 });
