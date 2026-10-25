@@ -56,9 +56,11 @@ export interface MailHostTarget {
 const METADATA_NAMES =
   /^(metadata|metadata\.google\.internal|metadata\.goog|instance-data|instance-data\.ec2\.internal)$/;
 
-/** Cloud metadata addresses inside ranges otherwise counted as internal:
- *  Alibaba Cloud (CGNAT) and AWS over IPv6 (unique local). */
-const METADATA_ADDRESSES = new Set(["100.100.100.200"]);
+/** Cloud metadata and host-agent addresses inside ranges otherwise
+ *  counted as internal or public: Alibaba Cloud (CGNAT), Azure's host
+ *  endpoint (WireServer, a public address) and AWS over IPv6 (unique
+ *  local). */
+const METADATA_ADDRESSES = new Set(["100.100.100.200", "168.63.129.16"]);
 const AWS_METADATA_V6 = [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254];
 
 const bare = (address: string) =>
@@ -134,6 +136,18 @@ export function mailHostLiteralAllowed(
 }
 
 let resolverOverride: ResolveHost | undefined;
+let tlsCaOverride: string | undefined;
+
+/** Trust `ca` (PEM) for mail server certificates instead of the system
+ *  roots (tests with a self-signed certificate); undefined restores. */
+export function __setMailTlsCaForTest(ca: string | undefined): void {
+  tlsCaOverride = ca;
+}
+
+/** Extra TLS options for mail server connections: none outside tests. */
+export function mailTlsOptions(): { ca?: string } {
+  return tlsCaOverride ? { ca: tlsCaOverride } : {};
+}
 
 /** Replace DNS for the transports (tests); undefined restores it. */
 export function __setMailHostResolverForTest(

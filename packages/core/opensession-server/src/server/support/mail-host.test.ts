@@ -57,6 +57,9 @@ describe("classifyMailAddress", () => {
       "fe80::1%en0",
       "fd00:ec2::254",
       "100.100.100.200",
+      // Azure's host endpoint (WireServer), a public address.
+      "168.63.129.16",
+      "::ffff:168.63.129.16",
       "192.0.0.192",
       "::ffff:169.254.169.254",
       "0.0.0.0",
