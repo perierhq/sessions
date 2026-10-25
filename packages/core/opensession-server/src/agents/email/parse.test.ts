@@ -42,7 +42,10 @@ describe("parseInbound", () => {
     expect(m.channel).toBe("email");
     expect(m.providerId).toBe("imap:1:7");
     expect(m.receivedAt).toBe(CTX.receivedAt);
-    expect(m.from).toEqual({ name: "Ada Lovelace", address: "ada@example.test" });
+    expect(m.from).toEqual({
+      name: "Ada Lovelace",
+      address: "ada@example.test",
+    });
     expect(m.to).toEqual([
       { name: "Help", address: "help@acme.example.test" },
       { name: null, address: "other@example.test" },
@@ -67,7 +70,11 @@ describe("parseInbound", () => {
       bytes(rawMail({ from: "a@example.test" })),
       CTX,
     );
-    expect(m.keys).toEqual({ messageId: null, inReplyTo: null, references: [] });
+    expect(m.keys).toEqual({
+      messageId: null,
+      inReplyTo: null,
+      references: [],
+    });
   });
 
   test("an HTML-only body yields readable text", async () => {
@@ -161,7 +168,7 @@ describe("parseInbound", () => {
         "Return-Path": "<>",
         "Authentication-Results": "mx.example.test; dkim=fail",
         "X-Other": "nope",
-        "Received": "from somewhere",
+        Received: "from somewhere",
       },
     });
     const m = await parseInbound(bytes(raw), CTX);

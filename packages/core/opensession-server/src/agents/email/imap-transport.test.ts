@@ -140,7 +140,7 @@ function harness(
       cursor.value = c;
     },
     onHealth: (h) => healths.push(h),
-    autoIdleDelay: 50,
+    autoIdleDelayMs: 50,
     ...rest,
   });
   transports.push(transport);
@@ -152,7 +152,7 @@ function scriptLogin(
   f: MailFixture,
   answer: (n: number) => { code: string; text: string } | null,
 ): { count: () => number } {
-  const original = f.imap.commandHandlers.LOGIN;
+  const original = f.imap.getCommandHandler("LOGIN");
   let n = 0;
   f.imap.setCommandHandler(
     "LOGIN",
@@ -347,7 +347,12 @@ describe("ImapTransport", () => {
 describe("testImapLogin", () => {
   test("reports capabilities and the Sent folder", async () => {
     const f = await fixture();
-    const server = { host: "127.0.0.1", port: f.imapPort, secure: false, user: MAIL_USER };
+    const server = {
+      host: "127.0.0.1",
+      port: f.imapPort,
+      secure: false,
+      user: MAIL_USER,
+    };
     expect(await testImapLogin(server, MAIL_PASSWORD)).toEqual({
       ok: true,
       idle: true,
@@ -358,7 +363,12 @@ describe("testImapLogin", () => {
 
   test("a wrong password is an auth failure", async () => {
     const f = await fixture();
-    const server = { host: "127.0.0.1", port: f.imapPort, secure: false, user: MAIL_USER };
+    const server = {
+      host: "127.0.0.1",
+      port: f.imapPort,
+      secure: false,
+      user: MAIL_USER,
+    };
     const result = await testImapLogin(server, "wrong");
     expect(result).toMatchObject({ ok: false, kind: "auth" });
     expect(JSON.stringify(result)).not.toContain("wrong");
