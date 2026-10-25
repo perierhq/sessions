@@ -30,3 +30,19 @@ export const FORGET_RESULT =
 export const INBOX_HEALTH =
   "mt-1.5 flex items-start gap-1.5 text-label text-dim [overflow-wrap:anywhere]";
 export const INBOX_HEALTH_DOT = "mt-[0.4lh] size-1.5 shrink-0 rounded-full";
+
+/** A group label in the inbox form, in FormField's label type. */
+export const INBOX_LEGEND = "m-0 p-0 text-label font-medium text-dim";
+
+/** Autonomy's label with the drafts figure beside it; the figure goes
+ *  under the label on a phone. */
+export const INBOX_LEGEND_ROW =
+  "flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 phone:flex-col phone:items-start";
+
+/** Watch, Draft and Routine, one per line. */
+export const INBOX_AUTONOMY_CHOICES = "flex flex-col";
+
+/** One autonomy choice: the radio, its name and its one line; the whole
+ *  row is the target, 44px under a finger. */
+export const INBOX_AUTONOMY_CHOICE =
+  "flex min-h-11 cursor-pointer items-start gap-3 py-1.5";

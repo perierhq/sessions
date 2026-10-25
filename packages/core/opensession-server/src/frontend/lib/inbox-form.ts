@@ -5,13 +5,13 @@
 // Passwords are never shown back: the fields start empty, and an empty
 // field means "keep the stored password", so a patch only carries one the
 // person typed.
-import type { AutonomyLevel } from "../../shared/incident-response";
+import { DEFAULT_VETO_MS } from "../../shared/incident-response";
 import {
-  type BugHandling,
   DEFAULT_NEVER_WITHOUT_A_PERSON,
   DEFAULT_RETENTION,
   DEFAULT_SEND_LIMIT_PER_MINUTE,
   DEFAULT_SUPPORT_AUTONOMY,
+  type InboxDraftStats,
   type InboxHealth,
   type InboxPatch,
   type InboxTestBody,
@@ -22,14 +22,15 @@ import {
   type MailboxBehaviour,
   type NewInboxInput,
   SUPPORT_TOPICS,
+  type SupportAutonomy,
   type SupportTopic,
   defaultMailPort,
   noTlsHostAllowed,
   smtpSavesSentItself,
 } from "../../shared/support";
 
-const DEFAULT_VETO_MINUTES = 10;
 const MINUTE_MS = 60_000;
+const DEFAULT_VETO_MINUTES = DEFAULT_VETO_MS / MINUTE_MS;
 
 export type MailServerKind = "imap" | "smtp";
 
@@ -49,11 +50,12 @@ export interface InboxFormState {
   /** "" on a new inbox: the server makes whoever connects it the owner. */
   owner: string;
   enabled: boolean;
-  moveLock: "agent" | "people";
-  autonomy: AutonomyLevel;
+  autonomy: SupportAutonomy;
+  /** Routine only: a routine reply waits `vetoMinutes` so someone can stop
+   *  it. Off sends right away (only the instance owner may choose that). */
+  routineWaits: boolean;
   vetoMinutes: string;
   neverWithoutAPerson: SupportTopic[];
-  bugHandling: BugHandling;
   mailbox: MailboxBehaviour;
   /** null: the default for the SMTP host (off where it saves Sent itself). */
   copyToSent: boolean | null;
@@ -90,11 +92,10 @@ export function emptyInboxForm(project: string, owner: string): InboxFormState {
     project,
     owner,
     enabled: true,
-    moveLock: "agent",
     autonomy: DEFAULT_SUPPORT_AUTONOMY,
+    routineWaits: true,
     vetoMinutes: String(DEFAULT_VETO_MINUTES),
     neverWithoutAPerson: [...DEFAULT_NEVER_WITHOUT_A_PERSON],
-    bugHandling: "off",
     mailbox: "untouched",
     copyToSent: null,
     copyToSentTouched: false,
@@ -122,11 +123,12 @@ export function formFromInbox(view: InboxView): InboxFormState {
     project: view.project,
     owner: view.owner,
     enabled: view.enabled,
-    moveLock: view.moveLock,
     autonomy: view.autonomy,
-    vetoMinutes: String(Math.round(view.vetoMs / MINUTE_MS)),
+    routineWaits: view.vetoMs !== null,
+    vetoMinutes: String(
+      Math.round((view.vetoMs ?? DEFAULT_VETO_MS) / MINUTE_MS),
+    ),
     neverWithoutAPerson: [...view.neverWithoutAPerson],
-    bugHandling: view.bugHandling,
     mailbox: view.mailbox,
     copyToSent: view.copyToSent,
     copyToSentTouched: false,
@@ -211,10 +213,11 @@ export function inboxFormError(
       return `Enter the ${SERVER_NAMES[which]} password again for the changed server`;
   }
   if (
-    form.autonomy === "deploy-after-veto" &&
+    form.autonomy === "routine" &&
+    form.routineWaits &&
     !inRange(whole(form.vetoMinutes), 1, 1440)
   )
-    return "Veto window must be from 1 to 1440 minutes";
+    return "Wait before sending must be from 1 to 1440 minutes";
   if (!inRange(whole(form.sendLimitPerMinute), 1, 120))
     return "Send limit must be from 1 to 120 a minute";
   const conversation = whole(form.conversationDays);
@@ -242,10 +245,8 @@ export function newInboxFromForm(form: InboxFormState): NewInboxInput {
     address: form.address.trim().toLowerCase(),
     project: form.project,
     enabled: form.enabled,
-    moveLock: form.moveLock,
     autonomy: form.autonomy,
     neverWithoutAPerson: topics(form.neverWithoutAPerson),
-    bugHandling: form.bugHandling,
     mailbox: form.mailbox,
     sendLimitPerMinute: whole(form.sendLimitPerMinute),
     retention: {
@@ -255,12 +256,17 @@ export function newInboxFromForm(form: InboxFormState): NewInboxInput {
     imap: { ...serverInput(form.imap), password: form.imap.password },
     smtp: { ...serverInput(form.smtp), password: form.smtp.password },
   };
-  if (form.autonomy === "deploy-after-veto")
-    input.vetoMs = whole(form.vetoMinutes) * MINUTE_MS;
+  if (form.autonomy === "routine") input.vetoMs = routineVetoMs(form);
   if (form.owner) input.owner = form.owner;
   if (form.allowInternalHost) input.allowInternalHost = true;
   if (form.copyToSent !== null) input.copyToSent = form.copyToSent;
   return input;
+}
+
+/** The veto window a routine inbox saves: the minutes as ms, or null when
+ *  routine replies send right away. */
+function routineVetoMs(form: InboxFormState): number | null {
+  return form.routineWaits ? whole(form.vetoMinutes) * MINUTE_MS : null;
 }
 
 /** Whether a server's host, port, security or user differs from the
@@ -308,16 +314,14 @@ export function patchFromForm(
   if (form.project !== view.project) patch.project = form.project;
   if (form.owner && form.owner !== view.owner) patch.owner = form.owner;
   if (form.enabled !== view.enabled) patch.enabled = form.enabled;
-  if (form.moveLock !== view.moveLock) patch.moveLock = form.moveLock;
   if (form.autonomy !== view.autonomy) patch.autonomy = form.autonomy;
-  const vetoMs = whole(form.vetoMinutes) * MINUTE_MS;
-  if (form.autonomy === "deploy-after-veto" && vetoMs !== view.vetoMs)
-    patch.vetoMs = vetoMs;
+  if (form.autonomy === "routine") {
+    const vetoMs = routineVetoMs(form);
+    if (vetoMs !== view.vetoMs) patch.vetoMs = vetoMs;
+  }
   const never = topics(form.neverWithoutAPerson);
   if (never.join() !== topics(view.neverWithoutAPerson).join())
     patch.neverWithoutAPerson = never;
-  if (form.bugHandling !== view.bugHandling)
-    patch.bugHandling = form.bugHandling;
   if (form.mailbox !== view.mailbox) patch.mailbox = form.mailbox;
   if (form.copyToSent !== null && form.copyToSent !== view.copyToSent)
     patch.copyToSent = form.copyToSent;
@@ -423,16 +427,66 @@ export function testResultLines(result: InboxTestResult): TestResultLines {
   return { imap, smtp };
 }
 
-/** Whether to warn that a sending agent can send what its connectors
+/** Whether to warn that routine replies can carry what its connectors
  *  return (prompt injection through connector output). */
 export function showsConnectorWarning(
-  autonomy: AutonomyLevel,
+  autonomy: SupportAutonomy,
   projectHasSupportConnectors: boolean,
 ): boolean {
-  return (
-    projectHasSupportConnectors &&
-    (autonomy === "deploy-after-veto" || autonomy === "deploy-right-away")
-  );
+  return projectHasSupportConnectors && autonomy === "routine";
+}
+
+/** The autonomy choices in the form, each with its one line. */
+export const AUTONOMY_CHOICES: ReadonlyArray<{
+  value: SupportAutonomy;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "watch",
+    label: "Watch",
+    description: "Sessions sorts new mail. No agent and no drafts",
+  },
+  {
+    value: "draft",
+    label: "Draft",
+    description: "The agent drafts every reply. Nothing sends until you do",
+  },
+  {
+    value: "routine",
+    label: "Routine",
+    description:
+      "Repetitive replies backed by a source send on their own. Everything that needs judgement waits for you",
+  },
+];
+
+/** An autonomy's name, as the form's choice reads. */
+export function autonomyLabel(value: SupportAutonomy): string {
+  return AUTONOMY_CHOICES.find((c) => c.value === value)?.label ?? value;
+}
+
+/** "12 of 15 drafts sent unchanged in the last 30 days": how often the
+ *  agent's drafts went out as written, next to the autonomy choice. */
+export function draftStatsLine(stats: InboxDraftStats): string {
+  const total = stats.sentUnchanged + stats.sentEdited + stats.discarded;
+  if (total === 0) return `No drafts in the last ${stats.days} days`;
+  const noun = total === 1 ? "draft" : "drafts";
+  return `${stats.sentUnchanged} of ${total} ${noun} sent unchanged in the last ${stats.days} days`;
+}
+
+/** Why the "Wait before sending" switch can't be turned off: sending
+ *  right away is the instance owner's call. null when it can. */
+export function routineWaitLocked(
+  form: InboxFormState,
+  saved: InboxView | null,
+  isInstanceOwner: boolean,
+): string | null {
+  if (isInstanceOwner) return null;
+  // Already sending right away (the owner chose it): it stays as it is.
+  if (saved?.autonomy === "routine" && saved.vetoMs === null) return null;
+  return form.routineWaits
+    ? "Only the instance owner can let routine replies send right away"
+    : null;
 }
 
 /** "Deleted 2 conversations, 1 session and 3 attachments". */

@@ -1,5 +1,6 @@
 // The inbox form: Test connection reports IMAP and SMTP on their own lines,
-// the veto field follows the autonomy, removing asks first. The form's own
+// autonomy is Watch, Draft or Routine with the wait under Routine and the
+// drafts figure beside it, removing asks first. The form's own
 // hooks run in the hook harness; children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import type {
@@ -71,6 +72,7 @@ const { OptionSelect } = await import("../../../ui/select");
 const { ConfirmDialog } = await import("../../../ui/confirm");
 const { InlineAlert } = await import("../../../ui/state");
 const { Switch } = await import("../../../ui/switch");
+const { RadioGroup } = await import("../../../ui/radio");
 const { SettingsDialog } = await import("../incidents/SettingsDialog");
 const { ApiError } = await import("../../../lib/api/request");
 
@@ -81,11 +83,9 @@ const VIEW: InboxView = {
   channel: "email",
   enabled: true,
   project: "acme",
-  moveLock: "agent",
-  autonomy: "propose",
+  autonomy: "draft",
   vetoMs: 900_000,
   neverWithoutAPerson: ["refund"],
-  bugHandling: "off",
   mailbox: "untouched",
   folders: { done: "Sessions/Done", spam: "Sessions/Spam" },
   copyToSent: true,
@@ -194,45 +194,93 @@ test("Test connection shows the IMAP and SMTP results on their own lines", async
   expect(all).toContain("SMTP: The mail server refused the password");
 });
 
-test("the veto field shows only for Send after a veto window", async () => {
-  const tree = await mountForm();
-  const veto = () =>
-    find(
-      tree.output(),
-      Input,
-      (p) => p["aria-label"] === "Veto window in minutes",
-    );
-  expect(veto()).toBeUndefined();
-  const autonomy = find(
+function chooseAutonomy(tree: Tree, value: string) {
+  const group = find(
     tree.output(),
-    OptionSelect,
-    (p) => p.label === "Autonomy",
+    RadioGroup,
+    (p) => p.value !== undefined && "aria-labelledby" in p,
   );
-  if (!autonomy) throw new Error("No autonomy select");
-  autonomy.props.onChange("deploy-after-veto");
-  await settle();
-  expect(veto()).toBeDefined();
-  find(
-    tree.output(),
-    OptionSelect,
-    (p) => p.label === "Autonomy",
-  )!.props.onChange("deploy-right-away");
-  await settle();
-  expect(veto()).toBeUndefined();
+  if (!group?.props.onValueChange) throw new Error("No autonomy choice");
+  // SAFETY: the form's handler reads only the value.
+  group.props.onValueChange(value, undefined as never);
+}
+
+test("autonomy is Watch, Draft or Routine, each with its one line", async () => {
+  const tree = await mountForm();
+  const all = text(tree);
+  for (const label of ["Watch", "Draft", "Routine"])
+    expect(all).toContain(`"children":"${label}"`);
+  expect(all).toContain(
+    "Repetitive replies backed by a source send on their own. Everything that needs judgement waits for you",
+  );
+  expect(all).not.toContain("Bug handling");
+  expect(all).not.toContain("Who may move conversations");
 });
 
-test("a send level on a project with connectors warns", async () => {
+test("the wait shows only for Routine and can be turned off", async () => {
   const tree = await mountForm();
-  expect(text(tree)).not.toContain("The agent can send what its connectors");
-  find(
+  const minutes = () =>
+    find(tree.output(), Input, (p) => p["aria-label"] === "Minutes to wait");
+  const wait = () =>
+    find(
+      tree.output(),
+      Switch,
+      (p) => p["aria-label"] === "Wait before sending",
+    );
+  expect(minutes()).toBeUndefined();
+  chooseAutonomy(tree, "routine");
+  await settle();
+  expect(minutes()?.props.value).toBe("15");
+  wait()!.props.onCheckedChange?.(false, undefined as never);
+  await settle();
+  expect(minutes()).toBeUndefined();
+  expect(text(tree)).toContain("Routine replies send right away");
+  find(tree.output(), SettingsDialog)!.props.onSave!();
+  await settle();
+  expect(calls).toEqual([
+    [
+      "patch",
+      {
+        id: "inb_0001",
+        patch: { expectedRevision: 2, autonomy: "routine", vetoMs: null },
+      },
+    ],
+  ]);
+});
+
+test("a teammate can't turn off the wait", async () => {
+  const tree = await mountForm(VIEW, { isInstanceOwner: false });
+  chooseAutonomy(tree, "routine");
+  await settle();
+  const wait = find(
     tree.output(),
-    OptionSelect,
-    (p) => p.label === "Autonomy",
-  )!.props.onChange("deploy-after-veto");
+    Switch,
+    (p) => p["aria-label"] === "Wait before sending",
+  );
+  expect(wait?.props.disabled).toBe(true);
+  expect(text(tree)).toContain(
+    "Only the instance owner can let routine replies send right away",
+  );
+});
+
+test("the drafts figure sits beside the autonomy", async () => {
+  const tree = await mountForm({
+    ...VIEW,
+    draftStats: { days: 30, sentUnchanged: 9, sentEdited: 2, discarded: 1 },
+  });
+  expect(text(tree)).toContain(
+    "9 of 12 drafts sent unchanged in the last 30 days",
+  );
+});
+
+test("routine on a project with connectors warns", async () => {
+  const tree = await mountForm();
+  expect(find(tree.output(), InlineAlert)).toBeUndefined();
+  chooseAutonomy(tree, "routine");
   await settle();
   expect(find(tree.output(), InlineAlert)).toBeDefined();
   expect(text(tree)).toContain(
-    "The agent can send what its connectors, web search and websites return. Draft is safer until Sessions checks mail for injected instructions.",
+    "Routine replies can carry what the project's connectors",
   );
 });
 
@@ -318,15 +366,6 @@ test("a changed server asks for its password again", async () => {
   expect(find(tree.output(), SettingsDialog)!.props.error).toBe(
     "Enter the SMTP password again for the changed server",
   );
-});
-
-test("a teammate is told why Send right away is off", async () => {
-  const tree = await mountForm(VIEW, { isInstanceOwner: false });
-  const option = select(tree, "Autonomy").options.find(
-    (o: { value: string }) => o.value === "deploy-right-away",
-  );
-  expect(option?.disabled).toBe(true);
-  expect(text(tree)).toContain("Only the instance owner can choose this");
 });
 
 test("someone else's change refreshes the list and offers Reload", async () => {

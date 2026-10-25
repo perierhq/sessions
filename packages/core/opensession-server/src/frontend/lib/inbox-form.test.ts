@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { InboxView } from "../../shared/support";
 import {
+  AUTONOMY_CHOICES,
+  draftStatsLine,
   emptyInboxForm,
   formChanged,
   formFromInbox,
@@ -11,6 +13,7 @@ import {
   tlsChoices,
   newInboxFromForm,
   patchFromForm,
+  routineWaitLocked,
   showsConnectorWarning,
   testBodyFromForm,
 } from "./inbox-form";
@@ -22,11 +25,9 @@ const VIEW: InboxView = {
   channel: "email",
   enabled: true,
   project: "acme",
-  moveLock: "agent",
-  autonomy: "propose",
+  autonomy: "draft",
   vetoMs: 900_000,
   neverWithoutAPerson: ["refund", "legal"],
-  bugHandling: "off",
   mailbox: "untouched",
   folders: { done: "Sessions/Done", spam: "Sessions/Spam" },
   copyToSent: true,
@@ -98,14 +99,48 @@ describe("patchFromForm", () => {
     });
   });
 
-  test("veto minutes become vetoMs", () => {
+  test("routine with a wait sends its minutes as vetoMs", () => {
     const form = formFromInbox(VIEW);
-    form.autonomy = "deploy-after-veto";
+    form.autonomy = "routine";
     form.vetoMinutes = "5";
     expect(patchFromForm(VIEW, form)).toEqual({
       expectedRevision: 3,
-      autonomy: "deploy-after-veto",
+      autonomy: "routine",
       vetoMs: 300_000,
+    });
+  });
+
+  test("routine without a wait sends vetoMs null", () => {
+    const form = formFromInbox(VIEW);
+    form.autonomy = "routine";
+    form.routineWaits = false;
+    expect(patchFromForm(VIEW, form)).toEqual({
+      expectedRevision: 3,
+      autonomy: "routine",
+      vetoMs: null,
+    });
+  });
+
+  test("a routine inbox that sends right away reads back without a wait", () => {
+    const saved: InboxView = { ...VIEW, autonomy: "routine", vetoMs: null };
+    const form = formFromInbox(saved);
+    expect(form.routineWaits).toBe(false);
+    expect(form.vetoMinutes).toBe("10");
+    expect(patchFromForm(saved, form)).toEqual({ expectedRevision: 3 });
+    form.routineWaits = true;
+    expect(patchFromForm(saved, form)).toEqual({
+      expectedRevision: 3,
+      vetoMs: 600_000,
+    });
+  });
+
+  test("leaving routine sends no veto window", () => {
+    const saved: InboxView = { ...VIEW, autonomy: "routine", vetoMs: null };
+    const form = formFromInbox(saved);
+    form.autonomy = "draft";
+    expect(patchFromForm(saved, form)).toEqual({
+      expectedRevision: 3,
+      autonomy: "draft",
     });
   });
 
@@ -140,7 +175,7 @@ describe("newInboxFromForm", () => {
       user: "help@acme.example.test",
       password: "smtp-secret",
     };
-    form.autonomy = "deploy-after-veto";
+    form.autonomy = "routine";
     form.vetoMinutes = "10";
     const input = newInboxFromForm(form);
     expect(input.imap).toEqual({
@@ -152,8 +187,23 @@ describe("newInboxFromForm", () => {
     });
     expect(input.smtp.password).toBe("smtp-secret");
     expect(input.vetoMs).toBe(600_000);
-    expect(input.autonomy).toBe("deploy-after-veto");
+    expect(input.autonomy).toBe("routine");
     expect(input.project).toBe("acme");
+    expect(input).not.toHaveProperty("moveLock");
+    expect(input).not.toHaveProperty("bugHandling");
+  });
+
+  test("starts at Draft with every never-without-a-person topic", () => {
+    const form = emptyInboxForm("acme", "");
+    expect(form.autonomy).toBe("draft");
+    expect(form.neverWithoutAPerson).toEqual([
+      "refund",
+      "legal",
+      "security",
+      "data-export",
+      "data-deletion",
+      "account-deletion",
+    ]);
   });
 });
 
@@ -220,11 +270,69 @@ describe("healthLine", () => {
 });
 
 describe("showsConnectorWarning", () => {
-  test("only for the two send levels on a project with connectors", () => {
-    expect(showsConnectorWarning("deploy-after-veto", true)).toBe(true);
-    expect(showsConnectorWarning("deploy-right-away", true)).toBe(true);
-    expect(showsConnectorWarning("propose", true)).toBe(false);
-    expect(showsConnectorWarning("deploy-right-away", false)).toBe(false);
+  test("only for routine on a project with connectors", () => {
+    expect(showsConnectorWarning("routine", true)).toBe(true);
+    expect(showsConnectorWarning("draft", true)).toBe(false);
+    expect(showsConnectorWarning("watch", true)).toBe(false);
+    expect(showsConnectorWarning("routine", false)).toBe(false);
+  });
+});
+
+describe("autonomy", () => {
+  test("three choices, each with one plain line", () => {
+    expect(AUTONOMY_CHOICES.map((c) => c.label)).toEqual([
+      "Watch",
+      "Draft",
+      "Routine",
+    ]);
+    for (const choice of AUTONOMY_CHOICES) {
+      expect(choice.description).not.toContain("\u2014");
+      expect(choice.description.length).toBeLessThan(110);
+    }
+  });
+
+  test("the drafts figure counts unchanged sends out of every settled draft", () => {
+    const stats = { days: 30, sentUnchanged: 12, sentEdited: 2, discarded: 1 };
+    expect(draftStatsLine(stats)).toBe(
+      "12 of 15 drafts sent unchanged in the last 30 days",
+    );
+    expect(
+      draftStatsLine({
+        days: 30,
+        sentUnchanged: 1,
+        sentEdited: 0,
+        discarded: 0,
+      }),
+    ).toBe("1 of 1 draft sent unchanged in the last 30 days");
+    expect(
+      draftStatsLine({
+        days: 30,
+        sentUnchanged: 0,
+        sentEdited: 0,
+        discarded: 0,
+      }),
+    ).toBe("No drafts in the last 30 days");
+  });
+
+  test("only the instance owner may turn off the wait", () => {
+    const form = formFromInbox({ ...VIEW, autonomy: "routine" });
+    expect(routineWaitLocked(form, VIEW, true)).toBeNull();
+    expect(routineWaitLocked(form, VIEW, false)).toBe(
+      "Only the instance owner can let routine replies send right away",
+    );
+    const owners: InboxView = { ...VIEW, autonomy: "routine", vetoMs: null };
+    expect(routineWaitLocked(formFromInbox(owners), owners, false)).toBeNull();
+  });
+
+  test("a routine wait outside 1 to 1440 minutes is named", () => {
+    const form = formFromInbox(VIEW);
+    form.autonomy = "routine";
+    form.vetoMinutes = "0";
+    expect(inboxFormError(form, VIEW)).toBe(
+      "Wait before sending must be from 1 to 1440 minutes",
+    );
+    form.routineWaits = false;
+    expect(inboxFormError(form, VIEW)).toBeNull();
   });
 });
 
@@ -255,11 +363,13 @@ describe("review fixes", () => {
     expect(newInboxFromForm(filled())).not.toHaveProperty("owner");
   });
 
-  test("vetoMs is sent only for the veto level", () => {
+  test("vetoMs is sent only for routine", () => {
     const form = filled();
     expect(newInboxFromForm(form)).not.toHaveProperty("vetoMs");
-    form.autonomy = "deploy-after-veto";
+    form.autonomy = "routine";
     expect(newInboxFromForm(form).vetoMs).toBe(600_000);
+    form.routineWaits = false;
+    expect(newInboxFromForm(form).vetoMs).toBeNull();
   });
 
   test("a changed server needs its password again", () => {

@@ -67,9 +67,8 @@ const INBOX: SupportConversationView["inbox"] = {
   id: "inb_0001",
   label: "Acme help",
   address: "help@acme.example.test",
-  autonomy: "propose",
-  moveLock: "agent",
-  bugHandling: "off",
+  autonomy: "draft",
+  vetoMs: 600_000,
 };
 const view = (c = conversation()): SupportConversationView => ({
   conversation: c,

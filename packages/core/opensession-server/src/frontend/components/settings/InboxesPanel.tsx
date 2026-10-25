@@ -16,7 +16,11 @@ import {
   INBOX_HEALTH_DOT,
   INBOX_ROW_BUTTON,
 } from "../../lib/support-inbox-classes";
-import { forgetSummary, inboxStatusLine } from "../../lib/inbox-form";
+import {
+  autonomyLabel,
+  forgetSummary,
+  inboxStatusLine,
+} from "../../lib/inbox-form";
 import { usePeople } from "../../lib/people";
 import { Button } from "../../ui/button";
 import { useConfirm } from "../../ui/confirm";
@@ -192,7 +196,8 @@ export function InboxesPanel() {
                       {inbox.label}
                     </SettingRowTitle>
                     <SettingRowDescription className="[overflow-wrap:anywhere]">
-                      {inbox.address} · {inbox.project}
+                      {inbox.address} · {inbox.project} ·{" "}
+                      {autonomyLabel(inbox.autonomy)}
                     </SettingRowDescription>
                     <div className={INBOX_HEALTH}>
                       <span
@@ -221,8 +226,8 @@ export function InboxesPanel() {
               <SettingRowText>
                 <SettingRowTitle>No inboxes yet</SettingRowTitle>
                 <SettingRowDescription>
-                  Connect a support mailbox and agents sort, draft and answer
-                  its mail
+                  Connect a support mailbox. The agent sorts its mail and drafts
+                  replies
                 </SettingRowDescription>
               </SettingRowText>
             </SettingRow>

@@ -1,11 +1,5 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
-  AUTONOMY_LEVELS,
-  type AutonomyLevel,
-} from "../../../../shared/incident-response";
-import {
-  BUG_HANDLING,
-  type BugHandling,
   type InboxProjectOption,
   type InboxTestResult,
   type InboxView,
@@ -16,9 +10,7 @@ import {
   defaultMailPort,
 } from "../../../../shared/support";
 import {
-  BUG_HANDLING_COPY,
   MAILBOX_BEHAVIOUR_COPY,
-  SUPPORT_AUTONOMY_COPY,
   SUPPORT_TOPIC_LABELS,
 } from "../../../../shared/support-copy";
 import {
@@ -35,8 +27,10 @@ import {
   FIELD_HINT,
 } from "../../../lib/incident-settings-classes";
 import {
+  AUTONOMY_CHOICES,
   type InboxFormState,
   type MailServerKind,
+  draftStatsLine,
   effectiveCopyToSent,
   emptyInboxForm,
   formChanged,
@@ -44,6 +38,7 @@ import {
   inboxFormError,
   newInboxFromForm,
   patchFromForm,
+  routineWaitLocked,
   serverMoved,
   setServerField,
   showsConnectorWarning,
@@ -52,7 +47,11 @@ import {
   tlsChoices,
 } from "../../../lib/inbox-form";
 import {
+  INBOX_AUTONOMY_CHOICE,
+  INBOX_AUTONOMY_CHOICES,
   INBOX_FORM_PAIR,
+  INBOX_LEGEND,
+  INBOX_LEGEND_ROW,
   INBOX_SELECT,
   INBOX_TEST_LINES,
 } from "../../../lib/support-inbox-classes";
@@ -60,6 +59,7 @@ import { Button } from "../../../ui/button";
 import { Checkbox } from "../../../ui/checkbox";
 import { useConfirm } from "../../../ui/confirm";
 import { Input } from "../../../ui/input";
+import { Radio, RadioGroup } from "../../../ui/radio";
 import { OptionSelect } from "../../../ui/select";
 import { InlineAlert } from "../../../ui/state";
 import { Switch } from "../../../ui/switch";
@@ -79,9 +79,7 @@ const SERVER_TITLES: Record<MailServerKind, string> = {
 };
 
 const CONNECTOR_WARNING =
-  "The agent can send what its connectors, web search and websites return. Draft is safer until Sessions checks mail for injected instructions.";
-
-const OWNER_ONLY = "Only the instance owner can choose this";
+  "Routine replies can carry what the project's connectors, web search and websites return. Draft is safer while you get to know the agent.";
 
 /**
  * Connect or edit one support inbox: the mailbox and its two servers (with
@@ -126,6 +124,7 @@ export function InboxForm({
   const [tested, setTested] = useState<InboxTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const [confirm, confirmDialog] = useConfirm();
+  const autonomyId = useId();
 
   const editing = inbox !== null;
   const set = (patch: Partial<InboxFormState>) =>
@@ -356,8 +355,8 @@ export function InboxForm({
       (name) => ({ value: name, label: name }),
     ),
   ];
-  const sendsRightAwayLocked =
-    !isInstanceOwner && inbox?.autonomy !== "deploy-right-away";
+  const waitLocked = routineWaitLocked(form, inbox, isInstanceOwner);
+  const stats = inbox?.draftStats;
 
   return (
     <>
@@ -481,18 +480,6 @@ export function InboxForm({
               <p className={FIELD_HINT}>Add a repository first</p>
             )}
           </FormField>
-          <FormField label="Who may move conversations">
-            <OptionSelect<"agent" | "people">
-              label="Who may move conversations"
-              className={INBOX_SELECT}
-              value={form.moveLock}
-              options={[
-                { value: "agent", label: "The agent or a person" },
-                { value: "people", label: "People only" },
-              ]}
-              onChange={(moveLock) => set({ moveLock })}
-            />
-          </FormField>
           <FormField label="Owner">
             {ownerOptions.length > (editing ? 0 : 1) ? (
               <OptionSelect
@@ -511,54 +498,86 @@ export function InboxForm({
               />
             )}
           </FormField>
-          <FormField
-            label="Autonomy"
-            hint={
-              <>
-                {SUPPORT_AUTONOMY_COPY[form.autonomy].description}
-                {sendsRightAwayLocked && (
-                  <span className="block">
-                    {SUPPORT_AUTONOMY_COPY["deploy-right-away"].label}:{" "}
-                    {OWNER_ONLY}
-                  </span>
-                )}
-              </>
-            }
-          >
-            <OptionSelect<AutonomyLevel>
-              label="Autonomy"
-              className={INBOX_SELECT}
+          <div className="flex flex-col gap-1.5">
+            <div className={INBOX_LEGEND_ROW}>
+              <span id={autonomyId} className={INBOX_LEGEND}>
+                Autonomy
+              </span>
+              {stats && (
+                <span className="text-meta text-dim">
+                  {draftStatsLine(stats)}
+                </span>
+              )}
+            </div>
+            <RadioGroup
+              aria-labelledby={autonomyId}
+              className={INBOX_AUTONOMY_CHOICES}
               value={form.autonomy}
-              options={AUTONOMY_LEVELS.map((level) => ({
-                value: level,
-                label: SUPPORT_AUTONOMY_COPY[level].label,
-                // Only the instance owner may let Sessions send right away.
-                disabled: level === "deploy-right-away" && sendsRightAwayLocked,
-              }))}
-              onChange={(autonomy) => set({ autonomy })}
-            />
-          </FormField>
-          {form.autonomy === "deploy-after-veto" && (
-            <FormField
-              label="Veto window in minutes"
-              hint="How long a reply waits before it sends"
+              onValueChange={(next) => {
+                const choice = AUTONOMY_CHOICES.find((c) => c.value === next);
+                if (choice) set({ autonomy: choice.value });
+              }}
             >
-              <Input
-                aria-label="Veto window in minutes"
-                className={DIALOG_INPUT}
-                inputMode="numeric"
-                value={form.vetoMinutes}
-                onChange={(e) => set({ vetoMinutes: e.target.value })}
-              />
-            </FormField>
+              {AUTONOMY_CHOICES.map((choice) => (
+                <label key={choice.value} className={INBOX_AUTONOMY_CHOICE}>
+                  <Radio
+                    value={choice.value}
+                    aria-label={choice.label}
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-body font-medium text-fg">
+                      {choice.label}
+                    </span>
+                    <span className="block text-meta text-dim">
+                      {choice.description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </RadioGroup>
+          </div>
+          {form.autonomy === "routine" && (
+            <div className="flex flex-col gap-2">
+              <label className={CHECK_ROW}>
+                <span className="min-w-0 flex-1">Wait before sending</span>
+                <Switch
+                  aria-label="Wait before sending"
+                  checked={form.routineWaits}
+                  disabled={!!waitLocked}
+                  onCheckedChange={(routineWaits) => set({ routineWaits })}
+                />
+              </label>
+              {form.routineWaits ? (
+                <FormField
+                  label="Minutes to wait"
+                  hint={
+                    waitLocked ??
+                    "A routine reply waits this long so someone can stop it"
+                  }
+                >
+                  <Input
+                    aria-label="Minutes to wait"
+                    className={DIALOG_INPUT}
+                    inputMode="numeric"
+                    value={form.vetoMinutes}
+                    onChange={(e) => set({ vetoMinutes: e.target.value })}
+                  />
+                </FormField>
+              ) : (
+                <p className={FIELD_HINT}>Routine replies send right away</p>
+              )}
+            </div>
           )}
           {warn && (
             <InlineAlert variant="warn">{CONNECTOR_WARNING}</InlineAlert>
           )}
           <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
-            <legend className="mb-1.5 p-0 text-label font-medium text-dim">
-              Never without a person
-            </legend>
+            <legend className={INBOX_LEGEND}>Never without a person</legend>
+            <p className={`${FIELD_HINT} mb-1.5`}>
+              Mail about these always waits for you. So does a customer who asks
+              for a person, sounds upset or repeats a question
+            </p>
             {SUPPORT_TOPICS.map((topic) => (
               <label key={topic} className={CHECK_ROW}>
                 <Checkbox
@@ -577,18 +596,6 @@ export function InboxForm({
               </label>
             ))}
           </fieldset>
-          <FormField label="Bug handling">
-            <OptionSelect<BugHandling>
-              label="Bug handling"
-              className={INBOX_SELECT}
-              value={form.bugHandling}
-              options={BUG_HANDLING.map((value) => ({
-                value,
-                label: BUG_HANDLING_COPY[value],
-              }))}
-              onChange={(bugHandling) => set({ bugHandling })}
-            />
-          </FormField>
         </FormSection>
 
         <FormSection title="Mailbox behaviour">
