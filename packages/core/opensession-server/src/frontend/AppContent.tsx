@@ -81,7 +81,18 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { getActiveViewTab, saveActiveViewTab } from "./lib/active-view-tab";
 import { cachedRepos, resolveWorkspaceApi } from "./lib/api";
 import { buildAppCommandActions } from "./components/app-command-actions";
-import { isToolView, parseRoute, routePath, type Route } from "./lib/app-route";
+import {
+  isToolView,
+  parseRoute,
+  routePath,
+  supportItemIdFromPath,
+  type Route,
+} from "./lib/app-route";
+import {
+  supportItemProviderId,
+  supportItemRoute,
+  supportPageItem,
+} from "./lib/support-list";
 import { useDeskShowNavigation } from "./hooks/useDeskShowNavigation";
 import {
   APP_BODY,
@@ -1608,19 +1619,21 @@ export function AppContent({
                       addHandler={addHandler}
                       onOpenSession={(id) => navigate({ view: "session", id })}
                     />
-                  ) : route.view === "plain" ? (
+                  ) : supportPageItem(route) !== undefined ? (
                     <SupportInbox
-                      threadId={route.threadId ?? null}
+                      itemId={supportPageItem(route) ?? null}
                       sessions={sessions}
-                      onSelectThread={(threadId) =>
-                        navigate({ view: "plain", threadId })
+                      onSelectItem={(itemId) =>
+                        navigate(supportItemRoute(itemId))
                       }
                       onOpenSession={(id) => navigate({ view: "session", id })}
                     />
                   ) : route.view === "support" ? (
                     <SupportPreview
                       key={route.threadId}
-                      threadId={route.threadId}
+                      threadId={supportItemProviderId(
+                        supportItemIdFromPath(route.threadId),
+                      )}
                       connected={connected}
                       send={send}
                       addHandler={addHandler}

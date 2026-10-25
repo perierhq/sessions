@@ -10,6 +10,12 @@ import { handleSupportRoutes } from "./support";
 useSupportTestKernel();
 
 const ADA = { login: "ada", name: "Ada Lovelace" };
+// The built-in automation principal (isAutomationPrincipal).
+const AUTOMATION = {
+  login: "automation",
+  name: "Automation",
+  automation: true,
+};
 
 async function call(
   path: string,
@@ -96,10 +102,7 @@ describe("auth", () => {
     "/api/support/conversations/sc_0190/attachments/att_1",
   ])("401 without a signed-in person: %s", async (path) => {
     expect((await call(path, null))?.status).toBe(401);
-    expect(
-      (await call(path, { login: "bot", name: "Bot", automation: true } as never))
-        ?.status,
-    ).toBe(401);
+    expect((await call(path, AUTOMATION))?.status).toBe(401);
   });
 });
 
@@ -137,7 +140,9 @@ describe("one conversation", () => {
 describe("attachments", () => {
   test("an HTML attachment is served as bytes to download", async () => {
     const id = await conversationWith([{ id: "att_1", mimeType: "text/html" }]);
-    const res = await call(`/api/support/conversations/${id}/attachments/att_1`);
+    const res = await call(
+      `/api/support/conversations/${id}/attachments/att_1`,
+    );
     expect(res?.status).toBe(200);
     expect(res!.headers.get("content-type")).toBe("application/octet-stream");
     expect(res!.headers.get("content-disposition")).toStartWith("attachment");
@@ -147,7 +152,9 @@ describe("attachments", () => {
 
   test("an image keeps its type", async () => {
     const id = await conversationWith([{ id: "att_2", mimeType: "image/png" }]);
-    const res = await call(`/api/support/conversations/${id}/attachments/att_2`);
+    const res = await call(
+      `/api/support/conversations/${id}/attachments/att_2`,
+    );
     expect(res!.headers.get("content-type")).toBe("image/png");
     expect(res!.headers.get("content-disposition")).toStartWith("attachment");
   });
@@ -157,10 +164,12 @@ describe("attachments", () => {
       { id: "att_3", mimeType: "application/pdf", savedAgoMs: 31 * 86_400_000 },
     ]);
     expect(
-      (await call(`/api/support/conversations/${id}/attachments/att_3`))?.status,
+      (await call(`/api/support/conversations/${id}/attachments/att_3`))
+        ?.status,
     ).toBe(410);
     expect(
-      (await call(`/api/support/conversations/${id}/attachments/att_9`))?.status,
+      (await call(`/api/support/conversations/${id}/attachments/att_9`))
+        ?.status,
     ).toBe(404);
   });
 
@@ -185,7 +194,8 @@ describe("attachments", () => {
       ],
     }));
     expect(
-      (await call(`/api/support/conversations/${id}/attachments/att_4`))?.status,
+      (await call(`/api/support/conversations/${id}/attachments/att_4`))
+        ?.status,
     ).toBe(410);
   });
 });

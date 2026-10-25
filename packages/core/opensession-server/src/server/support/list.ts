@@ -83,11 +83,25 @@ async function plainThreads(): Promise<SupportThreadSummary[] | null> {
   await ensureFeedsRegistered();
   const items = await getFeedItems("plain");
   if (items === null) return null;
-  return items.map((item) => item.meta as unknown as SupportThreadSummary);
+  return items.flatMap((item) =>
+    isThreadSummary(item.meta) ? [item.meta] : [],
+  );
 }
 
-const message = (error: unknown, fallback: string) =>
-  error instanceof Error && error.message ? error.message : fallback;
+/** The Plain feed keeps each `listTodoThreads` row whole as its item meta. */
+function isThreadSummary(
+  meta: Record<string, unknown> | undefined,
+): meta is Record<string, unknown> & SupportThreadSummary {
+  const customer = meta?.customer;
+  return (
+    typeof meta?.id === "string" &&
+    typeof customer === "object" &&
+    customer !== null
+  );
+}
+
+const reasonText = (reason: Error | string | null, fallback: string) =>
+  (reason instanceof Error ? reason.message : reason) || fallback;
 
 const newestFirst = (a: SupportListItem, b: SupportListItem) =>
   (b.at ?? "").localeCompare(a.at ?? "");
@@ -114,7 +128,10 @@ export async function listSupportItems(): Promise<SupportListResult> {
     items.push(...email.value);
     channels.push({ channel: "email", label: "Email", error: null });
   } else {
-    console.warn("[support] email list failed:", message(email.reason, ""));
+    console.warn(
+      "[support] email list failed:",
+      reasonText(email.reason, "unknown error"),
+    );
     channels.push({
       channel: "email",
       label: "Email",
@@ -130,7 +147,7 @@ export async function listSupportItems(): Promise<SupportListResult> {
     channels.push({
       channel: "plain",
       label: "Plain",
-      error: message(plain.reason, "Plain lookup failed"),
+      error: reasonText(plain.reason, "Plain lookup failed"),
     });
   }
   return { items: items.sort(newestFirst), channels };

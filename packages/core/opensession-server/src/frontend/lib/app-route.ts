@@ -8,6 +8,17 @@ import {
 import type { SettingsSectionKey } from "./settings-sections";
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
 
+const SUPPORT_CHANNEL_PREFIX = /^(?:email|plain):/;
+
+/**
+ * A Support list item id (`<channel>:<id>`) from a `/support/<id>` path. A
+ * bare id, from a link written before email joined the list, is a Plain
+ * thread. Idempotent.
+ */
+export function supportItemIdFromPath(raw: string): string {
+  return SUPPORT_CHANNEL_PREFIX.test(raw) ? raw : `plain:${raw}`;
+}
+
 export type Route =
   | { view: "prs" }
   | { view: "issues" }
@@ -21,6 +32,7 @@ export type Route =
     }
   | { view: "pr"; repo: string; branch: string; number?: number }
   | { view: "pr"; repo: string; branch?: undefined; number: number }
+  /** threadId: a Support list item id (`email:sc_…`, `plain:th_…`). */
   | { view: "support"; threadId: string }
   | { view: "plain"; threadId?: string }
   | { view: "reports"; automationId?: string; reportId?: string }
@@ -141,8 +153,13 @@ export function parseRoute(pathname: string): Route {
 
   const support = path.match(/^\/support\/(.+)$/);
   if (support) {
-    return { view: "support", threadId: decodeURIComponent(support[1]!) };
+    return {
+      view: "support",
+      threadId: supportItemIdFromPath(decodeURIComponent(support[1]!)),
+    };
   }
+  // The Support list itself lives on the Support tool's page.
+  if (path === "/support") return { view: "plain" };
   const plain = path.match(/^\/plain(?:\/(.+))?$/);
   if (plain) {
     const route: Extract<Route, { view: "plain" }> = { view: "plain" };

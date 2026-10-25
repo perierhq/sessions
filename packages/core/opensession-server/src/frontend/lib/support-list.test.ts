@@ -5,10 +5,13 @@ import {
   liveSessionFor,
   supportItemRoute,
   supportLanes,
+  supportPageItem,
 } from "./support-list";
 import type { UnifiedSession } from "./types";
 
-function item(over: Partial<SupportListItem> & { id: string }): SupportListItem {
+function item(
+  over: Partial<SupportListItem> & { id: string },
+): SupportListItem {
   const channel = over.id.slice(0, over.id.indexOf(":"));
   return {
     channel,
@@ -27,11 +30,13 @@ function item(over: Partial<SupportListItem> & { id: string }): SupportListItem 
   };
 }
 
+// SAFETY: liveSessionFor reads only id, archived, plainThreadId and
+// lastActivity, which every fixture sets.
 const session = (over: Partial<UnifiedSession>): UnifiedSession =>
   ({
     id: "s_1",
     archived: false,
-    lastActivity: 1,
+    lastActivity: "2026-10-25T08:00:00.000Z",
     ...over,
   }) as UnifiedSession;
 
@@ -99,22 +104,36 @@ describe("liveSessionFor", () => {
     expect(
       liveSessionFor(email, [session({ id: "s_2", archived: true })]),
     ).toBeNull();
-    expect(liveSessionFor(item({ id: "email:sc_2" }), [session({})])).toBeNull();
+    expect(
+      liveSessionFor(item({ id: "email:sc_2" }), [session({})]),
+    ).toBeNull();
   });
 
   test("plain: the newest live session on the thread", () => {
     const plain = item({ id: "plain:th_1" });
     expect(
       liveSessionFor(plain, [
-        session({ id: "s_1", plainThreadId: "th_1", lastActivity: 1 }),
-        session({ id: "s_2", plainThreadId: "th_1", lastActivity: 3 }),
+        session({
+          id: "s_1",
+          plainThreadId: "th_1",
+          lastActivity: "2026-10-25T01:00:00.000Z",
+        }),
+        session({
+          id: "s_2",
+          plainThreadId: "th_1",
+          lastActivity: "2026-10-25T03:00:00.000Z",
+        }),
         session({
           id: "s_3",
           plainThreadId: "th_1",
-          lastActivity: 9,
+          lastActivity: "2026-10-25T09:00:00.000Z",
           archived: true,
         }),
-        session({ id: "s_4", plainThreadId: "th_2", lastActivity: 9 }),
+        session({
+          id: "s_4",
+          plainThreadId: "th_2",
+          lastActivity: "2026-10-25T09:00:00.000Z",
+        }),
       ])?.id,
     ).toBe("s_2");
   });
@@ -129,4 +148,22 @@ test("supportItemRoute: Plain items keep their page, email items open under /sup
     view: "support",
     threadId: "email:sc_1",
   });
+});
+
+test("supportPageItem: which routes are the Support page, and what is open", () => {
+  expect(supportPageItem({ view: "plain" })).toBeNull();
+  expect(supportPageItem({ view: "plain", threadId: "th_1" })).toBe(
+    "plain:th_1",
+  );
+  expect(supportPageItem({ view: "support", threadId: "email:sc_1" })).toBe(
+    "email:sc_1",
+  );
+  // A Plain ticket's /support link opens its workspace instead.
+  expect(
+    supportPageItem({ view: "support", threadId: "plain:th_1" }),
+  ).toBeUndefined();
+  expect(
+    supportPageItem({ view: "support", threadId: "th_1" }),
+  ).toBeUndefined();
+  expect(supportPageItem({ view: "prs" })).toBeUndefined();
 });

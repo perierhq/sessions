@@ -15,7 +15,8 @@ import {
   type ActiveViewTab,
 } from "../lib/active-view-tab";
 import { resolveWorkspaceApi, type OpenPr } from "../lib/api";
-import type { Route } from "../lib/app-route";
+import { type Route, supportItemIdFromPath } from "../lib/app-route";
+import { supportItemProviderId } from "../lib/support-list";
 import { DEFAULT_REPO_ID } from "../lib/brand";
 import { ensureFeedMeta } from "../lib/feeds-meta";
 import {
@@ -411,8 +412,17 @@ export function useWorkspacePanes({
           // has to say so rather than spin.
           if (!stale && route.branch === undefined) setPrRefMissing(true);
         });
-    } else if (route.view === "support") {
-      resolveWorkspaceApi({ plainThreadId: route.threadId })
+    } else if (
+      route.view === "support" &&
+      supportItemIdFromPath(route.threadId).startsWith("plain:")
+    ) {
+      // A Plain ticket's link opens its workspace. Other channels' items
+      // open on the Support page beside the list (supportPageItem).
+      resolveWorkspaceApi({
+        plainThreadId: supportItemProviderId(
+          supportItemIdFromPath(route.threadId),
+        ),
+      })
         .then(({ workspaceId }) => toWorkspace(workspaceId, "conversation"))
         .catch(() => {});
     } else if (route.view === "reviews") {
