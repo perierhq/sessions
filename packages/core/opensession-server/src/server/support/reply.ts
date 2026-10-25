@@ -404,11 +404,14 @@ async function propose(
       deadline: Date.parse(provisional.deadline),
     }));
   if (provisional.kind === "send")
-    await pending().update<PendingSend>(sendKey(conversationId, draftId), () => ({
-      conversationId,
-      draftId,
-      startedAt: now,
-    }));
+    await pending().update<PendingSend>(
+      sendKey(conversationId, draftId),
+      () => ({
+        conversationId,
+        draftId,
+        startedAt: now,
+      }),
+    );
 
   let failure: Failure | null = null;
   let draft: SupportDraft | null = null;
@@ -452,7 +455,9 @@ async function propose(
   });
   const written = draft as SupportDraft | null;
   if (provisional.kind === "send" && written?.state !== "sending")
-    await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(() => {});
+    await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
+      () => {},
+    );
   await reconcileVetoKey(conversationId);
   if (!committed || !written)
     return failure ?? fail(404, "Conversation not found");
@@ -473,9 +478,9 @@ async function propose(
 }
 
 /** Makes the conversation's veto key match its draft: the key of a draft
- *  in its veto window, no key otherwise. Failures are logged; the tick
- *  drops keys that name no veto. */
-async function reconcileVetoKey(conversationId: string): Promise<void> {
+ *  in its veto window, no key otherwise (also tick.ts, for a key that names
+ *  another draft). Failures are logged. */
+export async function reconcileVetoKey(conversationId: string): Promise<void> {
   try {
     const d = (await getConversation(conversationId))?.draft;
     const live = d?.state === "veto" && d.vetoDeadline ? d : null;
@@ -505,10 +510,7 @@ interface InboxAutoSendLog {
 
 const autoSendsKey = (inboxId: string) => `autosends:${inboxId}`;
 
-function recentSends(
-  value: unknown,
-  now: number,
-): InboxAutoSendLog["sends"] {
+function recentSends(value: unknown, now: number): InboxAutoSendLog["sends"] {
   const sends = (value as InboxAutoSendLog | null)?.sends;
   if (!Array.isArray(sends)) return [];
   return sends.filter(
@@ -581,7 +583,9 @@ async function claimAutoSendSlot(
     return { ...x, draft: held };
   });
   await dropPendingKey(sendKey(c.id, draft.id), draft.id).catch(() => {});
-  return held ?? { ...draft, state: "needs-person", rule: RULES.inboxAutoSendCap };
+  return (
+    held ?? { ...draft, state: "needs-person", rule: RULES.inboxAutoSendCap }
+  );
 }
 
 // ── Send ─────────────────────────────────────────────────────────────────
@@ -661,6 +665,7 @@ async function claimAndDeliver(
   let failure: Failure | null = null;
   let claimed: SupportDraft | null = null;
   let edited = false;
+  let originalDigest: string | null = null;
   const committed = await updateConversation(conversationId, (c) => {
     failure = null;
     claimed = null;
@@ -736,7 +741,8 @@ async function claimAndDeliver(
             }
             if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
             const decision = decide(c, d.author, inbox, pin, now, inboxSends);
-            if (decision.kind === "needs-person") return toPerson(decision.rule);
+            if (decision.kind === "needs-person")
+              return toPerson(decision.rule);
           } else if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
           break;
         default:
@@ -745,7 +751,11 @@ async function claimAndDeliver(
       }
       if (by.kind === "person") rule = `Sent by ${by.name}`;
     }
-    if (editText !== null && editText !== d.text) edited = true;
+    originalDigest = null;
+    if (editText !== null && editText !== d.text) {
+      edited = true;
+      originalDigest = digest(d.text);
+    }
     claimed = {
       ...d,
       text: editText ?? d.text,
@@ -776,7 +786,11 @@ async function claimAndDeliver(
   }));
   const held = await claimAutoSendSlot(committed, draft, now);
   if (held) return fail(409, held.rule);
-  return deliver(committed, draft, inbox, others, { edited, now });
+  return deliver(committed, draft, inbox, others, {
+    edited,
+    now,
+    ...(originalDigest ? { originalDigest } : {}),
+  });
 }
 
 /** After a refused claim: drop the send key unless a send of the draft is
@@ -799,7 +813,7 @@ async function deliver(
   draft: SupportDraft,
   inbox: InboxConfig | null,
   otherInboxes: string[],
-  opts: { edited: boolean; now: number },
+  opts: { edited: boolean; now: number; originalDigest?: string },
 ): Promise<Result<{ message: SupportMessage }>> {
   const by = draft.decidedBy ?? SESSIONS;
   if (!inbox)
@@ -823,7 +837,7 @@ async function deliverInFlight(
   inbox: InboxConfig,
   otherInboxes: string[],
   by: SupportActor,
-  opts: { edited: boolean; now: number },
+  opts: { edited: boolean; now: number; originalDigest?: string },
 ): Promise<Result<{ message: SupportMessage }>> {
   const adapter = channelAdapterFor(c.inboxId);
   // Our id first: a reply to it threads here even if we crash after the
@@ -836,6 +850,19 @@ async function deliverInFlight(
   }
   if (!adapter)
     return failed(c, draft, new SendError(NOT_CONNECTED, false), opts.now);
+  // Durable before the mail may leave: an attempt without a matching
+  // support.reply or support.reply.failed row was cut off mid-send.
+  await audit({
+    type: "support.reply.attempt",
+    conversationId: c.id,
+    inboxId: c.inboxId,
+    channel: c.channel,
+    draftId: draft.id,
+    author: draft.author.kind,
+    ...auditActor(by),
+    attempt: draft.attempts,
+    textDigest: digest(draft.text),
+  });
   const sent = await attempt(() =>
     adapter.send({ conversation: c, draft, inbox }),
   );
@@ -902,6 +929,7 @@ async function deliverInFlight(
     ...auditActor(by),
     rule: draft.rule,
     edited: opts.edited,
+    ...(opts.originalDigest ? { originalDigest: opts.originalDigest } : {}),
     attempt: draft.attempts,
     textDigest: digest(draft.text),
     messageId: ourId,
@@ -954,7 +982,8 @@ async function failed(
         }
       : null,
   );
-  if (permanent) await dropPendingKey(sendKey(c.id, draft.id), draft.id).catch(() => {});
+  if (permanent)
+    await dropPendingKey(sendKey(c.id, draft.id), draft.id).catch(() => {});
   await audit({
     type: "support.reply.failed",
     conversationId: c.id,
@@ -992,7 +1021,9 @@ export async function failInterruptedSend(
     draft = { ...d, state: "failed", lastError: INTERRUPTED_SEND };
     return { ...x, draft };
   });
-  await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(() => {});
+  await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
+    () => {},
+  );
   const d = draft as SupportDraft | null;
   if (!changed || !c || !d) return false;
   await audit({
@@ -1057,7 +1088,12 @@ export async function discardDraft(
   await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
     () => {},
   );
-  await auditSettled("support.reply.discarded", conversationId, result.draft, by);
+  await auditSettled(
+    "support.reply.discarded",
+    conversationId,
+    result.draft,
+    by,
+  );
   return { ok: true };
 }
 
@@ -1078,7 +1114,12 @@ export async function stopVeto(
     };
   });
   if (result.ok)
-    await auditSettled("support.reply.stopped", conversationId, result.draft, by);
+    await auditSettled(
+      "support.reply.stopped",
+      conversationId,
+      result.draft,
+      by,
+    );
   return result;
 }
 

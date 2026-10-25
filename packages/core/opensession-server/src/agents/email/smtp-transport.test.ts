@@ -388,8 +388,16 @@ describe("classifySmtpError", () => {
       err({ responseCode: 451, code: "EENVELOPE", command: "MAIL FROM" }),
       err({ responseCode: 450, code: "EENVELOPE", command: "RCPT TO" }),
       err({ responseCode: 451, code: "EMESSAGE", command: "DATA" }),
-      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "CONNECT_TIMEOUT" }),
-      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "GREETING_TIMEOUT" }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "CONNECT_TIMEOUT",
+      }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "GREETING_TIMEOUT",
+      }),
       err({ code: "EDNS", command: "CONN" }),
       err({ code: "ECONNECTION", originalCode: "ECONNREFUSED" }),
       err({ code: "ESOCKET", originalCode: "EHOSTUNREACH" }),
@@ -400,7 +408,11 @@ describe("classifySmtpError", () => {
   test("a timeout or broken connection without an answer may have sent: never retried", () => {
     for (const e of [
       err({ code: "ECONNECTION", command: "CONN" }),
-      err({ code: "ETIMEDOUT", command: "CONN", timeoutType: "SOCKET_TIMEOUT" }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "SOCKET_TIMEOUT",
+      }),
       err({ code: "ETIMEDOUT" }),
       err({ code: "ESOCKET", command: "CONN" }),
       err({ code: "EPIPE" }),

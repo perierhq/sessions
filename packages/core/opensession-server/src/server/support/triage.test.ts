@@ -192,7 +192,9 @@ describe("triageMessage", () => {
 
 describe("classifyTopics", () => {
   it("returns the known topics of one email, with its own prompt", async () => {
-    const calls = fake('{"route":"topics","reason":"r","topics":["Refunds","legal"]}');
+    const calls = fake(
+      '{"route":"topics","reason":"r","topics":["Refunds","legal"]}',
+    );
     expect(await classifyTopics(MAIL)).toEqual(["refund", "legal"]);
     expect(calls[0]!.system).toContain(EMAIL_TOPICS_PROMPT);
     expect(wrapped(calls[0]!.prompt)).toContain("My export at acme fails");

@@ -10,7 +10,7 @@ import {
 } from "./reply";
 import { getConversation, updateConversation } from "./store";
 import { useReplyTestbed } from "./testing/reply-testbed";
-import { INTERRUPTED_SEND, runSupportTick } from "./tick";
+import { INTERRUPTED_SEND, emailSupportOn, runSupportTick } from "./tick";
 
 const tb = useReplyTestbed();
 
@@ -203,7 +203,11 @@ describe("retries and the pinned target", () => {
         {
           ...x.messages[0]!,
           id: "sm_newer",
-          keys: { messageId: "newer@customer.example.test", inReplyTo: null, references: [] },
+          keys: {
+            messageId: "newer@customer.example.test",
+            inReplyTo: null,
+            references: [],
+          },
           replyTo: [{ name: null, address: "billing@other.example.test" }],
         },
       ],
@@ -242,12 +246,64 @@ describe("retries and the pinned target", () => {
       ...x,
       messages: [
         ...x.messages,
-        { ...x.messages[0]!, id: "sm_newer2", keys: { messageId: "n2@customer.example.test", inReplyTo: null, references: [] } },
+        {
+          ...x.messages[0]!,
+          id: "sm_newer2",
+          keys: {
+            messageId: "n2@customer.example.test",
+            inReplyTo: null,
+            references: [],
+          },
+        },
       ],
     }));
     await runSupportTick(Date.parse(waiting.nextAttemptAt!) + 1);
     const draft = (await getConversation(c.id))!.draft!;
     expect(draft.state).toBe("needs-person");
     expect(draft.rule).toBe("A newer message arrived");
+  });
+});
+
+describe("the tick's keys", () => {
+  test("a veto key naming an older draft is fixed, not dropped", async () => {
+    const { c, draft } = await vetoDraft();
+    const docs = catalogDocuments("support-pending");
+    // A key left by an earlier draft, as a crash between writes would.
+    await docs.update(`veto:${c.id}`, () => ({
+      conversationId: c.id,
+      draftId: "sd_older",
+      deadline: 0,
+    }));
+    await runSupportTick(Date.now());
+    const value = (await docs.get(`veto:${c.id}`)) as { draftId: string };
+    expect(value.draftId).toBe(draft.id);
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("due vetoes of one tick are sent within its time budget", async () => {
+    await tb.setInbox({ autonomy: "deploy-after-veto", vetoMs: MINUTE });
+    for (let i = 0; i < 3; i++) {
+      const c = await tb.conversation();
+      const proposed = await proposeDraft(c.id, `Fixed (${i}).`, AGENT);
+      if (!proposed.ok) throw new Error(proposed.error);
+    }
+    const result = await runSupportTick(Date.now() + 2 * MINUTE);
+    expect(result.vetoSent).toBe(3);
+    expect(tb.fixture().sent).toHaveLength(3);
+  });
+});
+
+describe("startSupportTick", () => {
+  test("does nothing while email support is off", () => {
+    const saved = process.env.ENABLE_EMAIL_SUPPORT;
+    process.env.ENABLE_EMAIL_SUPPORT = "false";
+    try {
+      expect(emailSupportOn()).toBe(false);
+      process.env.ENABLE_EMAIL_SUPPORT = "true";
+      expect(emailSupportOn()).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.ENABLE_EMAIL_SUPPORT;
+      else process.env.ENABLE_EMAIL_SUPPORT = saved;
+    }
   });
 });

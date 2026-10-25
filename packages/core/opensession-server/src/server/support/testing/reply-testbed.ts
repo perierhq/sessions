@@ -164,7 +164,9 @@ export function useReplyTestbed() {
           authVerified: true,
         },
         // As routing leaves it once triage classified the message.
-        ...(opts.topicsChecked === false ? {} : { topicsChecked: true as const }),
+        ...(opts.topicsChecked === false
+          ? {}
+          : { topicsChecked: true as const }),
       };
       const c = await createConversation({
         channel: "email",

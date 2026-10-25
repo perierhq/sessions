@@ -135,7 +135,10 @@ const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const domainOf = (address: string) =>
-  address.slice(address.lastIndexOf("@") + 1).trim().toLowerCase();
+  address
+    .slice(address.lastIndexOf("@") + 1)
+    .trim()
+    .toLowerCase();
 
 /** Relaxed alignment (RFC 7489 3.1), approximated without a public-suffix
  *  list: the same domain, or one a subdomain of the other. */
@@ -154,7 +157,10 @@ function aligned(domain: string, fromDomain: string): boolean {
  *  with it. Only the topmost header counts, the one the receiving server
  *  added (`results` holds the headers in order, one per line); lower ones
  *  may come from the sender. Comments are ignored. Missing = false. */
-export function mailAuthVerified(results: string, fromAddress: string): boolean {
+export function mailAuthVerified(
+  results: string,
+  fromAddress: string,
+): boolean {
   const top = (results.split("\n")[0] ?? "")
     .replace(/\([^()]*\)/g, " ")
     .toLowerCase();

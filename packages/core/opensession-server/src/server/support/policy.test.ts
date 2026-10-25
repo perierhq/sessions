@@ -186,7 +186,9 @@ describe("decideReply", () => {
       { personStoppedLast: true },
     ])
       expect(
-        decideReply(input({ author: { kind: "person", name: "Ada" }, ...over })),
+        decideReply(
+          input({ author: { kind: "person", name: "Ada" }, ...over }),
+        ),
       ).toEqual({ kind: "send", rule: "Sent by Ada" });
   });
 

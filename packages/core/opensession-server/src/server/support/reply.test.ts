@@ -194,6 +194,31 @@ describe("sendDraft", () => {
     expect(tb.fixture().sent[0]!.raw).not.toContain("zebracache");
     const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
     expect(row.edited).toBe(true);
+    expect(typeof row.originalDigest).toBe("string");
+    expect(row.originalDigest).not.toBe(row.textDigest);
+  });
+
+  test("an attempt row is written before the mail goes out", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect((await sendDraft(c.id, draft.id, ADA)).ok).toBe(true);
+    const types = tb.kernel.audits
+      .filter((a) => a.draftId === draft.id)
+      .map((a) => a.type);
+    expect(types).toEqual(["support.reply.attempt", "support.reply"]);
+  });
+
+  test("stops and discards are audited", async () => {
+    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    if (!proposed.ok) throw new Error(proposed.error);
+    await stopVeto(c.id, proposed.draft.id, ADA);
+    await discardDraft(c.id, proposed.draft.id, ADA);
+    expect(
+      tb.kernel.audits
+        .filter((a) => a.draftId === proposed.draft.id)
+        .map((a) => a.type),
+    ).toEqual(["support.reply.stopped", "support.reply.discarded"]);
   });
 
   test("two sends of the same draft at once send one mail", async () => {
@@ -359,9 +384,16 @@ describe("one send path", () => {
         const path = join(root, dir, file);
         if (path === join(import.meta.dir, "reply.ts")) continue;
         const source = await readFile(path, "utf8");
+        const transport =
+          path === join(root, "agents", "email", "adapter.ts") ||
+          path === join(root, "agents", "email", "smtp-transport.ts");
         if (
-          /\badapter\??\.send\(/.test(source) ||
-          /channelAdapterFor\([^)]*\)[^;]*\.send\(/.test(source)
+          // Any adapter variable's send (adapter, emailAdapter, a, …).
+          /\b\w*[aA]dapter\w*\??\.send\(/.test(source) ||
+          /channelAdapterFor\([^)]*\)[^;]*\.send\(/.test(source) ||
+          /listChannelAdapters\(\)[^;]*\.send\(/.test(source) ||
+          (!transport && /\bnew SmtpTransport\(/.test(source)) ||
+          (!transport && /\bsendMail\(/.test(source))
         )
           offenders.push(join(dir, file));
       }
@@ -459,10 +491,14 @@ describe("after a person stopped the agent", () => {
 
     const again = await proposeDraft(c.id, `${DRAFT} Really.`, AGENT);
     expect(again.ok && again.draft.state).toBe("needs-person");
-    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    expect(again.ok && again.draft.rule).toBe(
+      "A person stopped the last reply",
+    );
     // And the time after, too.
     const third = await proposeDraft(c.id, `${DRAFT} Once more.`, AGENT);
-    expect(third.ok && third.draft.rule).toBe("A person stopped the last reply");
+    expect(third.ok && third.draft.rule).toBe(
+      "A person stopped the last reply",
+    );
     expect(tb.fixture().sent).toHaveLength(0);
 
     // A person sends: the hold ends.
@@ -481,7 +517,9 @@ describe("after a person stopped the agent", () => {
     expect((await discardDraft(c.id, first.draft.id, ADA)).ok).toBe(true);
     await tb.setInbox({ autonomy: "deploy-right-away" });
     const again = await proposeDraft(c.id, DRAFT, AGENT);
-    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    expect(again.ok && again.draft.rule).toBe(
+      "A person stopped the last reply",
+    );
     expect(tb.fixture().sent).toHaveLength(0);
   });
 
@@ -496,7 +534,9 @@ describe("after a person stopped the agent", () => {
     );
     const sent = tb.fixture().sent.length;
     const again = await proposeDraft(c.id, DRAFT, AGENT);
-    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    expect(again.ok && again.draft.rule).toBe(
+      "A person stopped the last reply",
+    );
     expect(tb.fixture().sent.length).toBe(sent);
   });
 });
@@ -606,10 +646,13 @@ describe("automatic sends need checked topics and an authenticated sender", () =
       `autosends:${tb.inbox().id}`,
       () => ({
         inboxId: tb.inbox().id,
-        sends: Array.from({ length: AUTO_SENDS_PER_INBOX_PER_HOUR }, (_, i) => ({
-          at: now - i * 1000,
-          draftId: `sd_other-${i}`,
-        })),
+        sends: Array.from(
+          { length: AUTO_SENDS_PER_INBOX_PER_HOUR },
+          (_, i) => ({
+            at: now - i * 1000,
+            draftId: `sd_other-${i}`,
+          }),
+        ),
       }),
     );
     const c = await tb.conversation();
