@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import {
   createHookHarness,
+  elements,
   find,
   reactWithHarness,
   settle,
@@ -65,7 +66,10 @@ const textarea = (tree: React.ReactNode) => {
   if (!el) throw new Error("No textarea");
   return el.props;
 };
-const keyDown = (tree: React.ReactNode, over: object) => {
+const keyDown = (
+  tree: React.ReactNode,
+  over: { metaKey?: boolean; ctrlKey?: boolean },
+) => {
   const preventDefault = mock();
   // SAFETY: the handler reads only the modifier keys, `key` and preventDefault.
   textarea(tree).onKeyDown?.({
@@ -98,11 +102,9 @@ test("the text, its name and every slot land in the box", () => {
   // SAFETY: the change handler reads only `target.value`.
   textarea(tree).onChange?.(change as never);
   expect(onChange).toHaveBeenCalledWith("Hi there");
-  const strings = JSON.stringify(tree, (_k, v) =>
-    typeof v === "function" ? undefined : v,
-  );
-  expect(strings).toContain("Draft by the agent");
-  expect(strings).toContain("Toolbar");
+  const spans = elements(tree).map((el) => el.props);
+  expect(spans).toContainEqual({ children: "Draft by the agent" });
+  expect(spans).toContainEqual({ children: "Toolbar" });
   expect(
     find(tree, "div", (p: { role?: string }) => p.role === "alert"),
   ).toBeDefined();
@@ -127,6 +129,7 @@ test("the send button is named for what it sends", () => {
   const props = (el as React.ReactElement<React.ComponentProps<"button">>)
     .props;
   expect(props["aria-label"]).toBe("Add internal note");
+  // SAFETY: the button's handler ignores its event.
   props.onClick?.(undefined as never);
   expect(onClick).toHaveBeenCalledTimes(1);
 });
