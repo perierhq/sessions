@@ -138,11 +138,11 @@ export const routeHandlers: RouteHandler[] = [
   // Before the incidents routes, so /api/incidents/:id/access is answered here.
   handleIncidentAccessRoutes,
   handleIncidentsRoutes,
+  handleIncidentResponseRoutes,
   handleSupportRoutes,
   handleSupportInboxRoutes,
   handleSupportReplyRoutes,
   handleSupportActionRoutes,
-  handleIncidentResponseRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,
   handleMacKeychainRoutes,
