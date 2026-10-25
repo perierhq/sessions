@@ -25,6 +25,12 @@ import {
   type HostPortalActivity,
 } from "./portal-lifecycle";
 import { audit } from "./audit";
+import {
+  hostPortalMemoryFloorMb,
+  meminfoMb,
+  PORTAL_MEMORY_FLOOR_ENV,
+  warnIfPortalMemoryFloorUnreachable,
+} from "./portal-memory-floor";
 import { portalHostCommand, spawnPortalHost } from "./portal-host-process";
 import { ensureAgentAwsCredsFile } from "./aws-creds";
 import { configuredPaths, configuredServer } from "./config";
@@ -132,7 +138,6 @@ const remoteRelayAgentStarts: Map<string, Promise<string | null>> = ((
 const PORTAL_REAP_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_PORTAL_IDLE_MS = 30 * 60_000;
 const DEFAULT_MAX_HOST_PORTALS = 4;
-const DEFAULT_MIN_AVAILABLE_MEMORY_MB = 24 * 1024;
 
 type HostPortalRef = {
   sessionId: string;
@@ -1373,18 +1378,18 @@ export function hostPortalAdmissionReason(input: {
   minAvailableMemoryMb: number;
 }): string | undefined {
   if (input.active + (input.reserved ?? 0) >= input.maxActive)
-    return `Host Portal capacity is full (${input.maxActive} active)`;
+    return `Host Portal capacity is full (${input.maxActive} active). Stop another Portal or wait for one to sleep.`;
   if (input.availableMemoryMb < input.minAvailableMemoryMb)
-    return `Host memory is below the Portal safety floor (${Math.round(input.availableMemoryMb)} MB available; ${input.minAvailableMemoryMb} MB required)`;
+    return `Host memory is below the Portal safety floor (${Math.round(input.availableMemoryMb)} MB available; ${input.minAvailableMemoryMb} MB required). Stop another Portal, or lower the floor with ${PORTAL_MEMORY_FLOOR_ENV}.`;
   return undefined;
 }
 
 async function availableMemoryMb(): Promise<number> {
   try {
-    const match = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(
-      await readFile("/proc/meminfo", "utf8"),
+    return (
+      meminfoMb(await readFile("/proc/meminfo", "utf8"), "MemAvailable") ??
+      Number.POSITIVE_INFINITY
     );
-    return match ? Number(match[1]) / 1024 : Number.POSITIVE_INFINITY;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
@@ -1416,15 +1421,9 @@ async function reserveHostPortalStart(
         DEFAULT_MAX_HOST_PORTALS,
       ),
       availableMemoryMb: memoryMb,
-      minAvailableMemoryMb: positiveIntegerEnv(
-        "OPENSESSION_PORTAL_MIN_AVAILABLE_MEMORY_MB",
-        DEFAULT_MIN_AVAILABLE_MEMORY_MB,
-      ),
+      minAvailableMemoryMb: await hostPortalMemoryFloorMb(),
     });
-    if (reason)
-      throw new Error(
-        `${reason}. Stop another Portal or wait for it to sleep.`,
-      );
+    if (reason) throw new Error(reason);
     hostPortalReservations.add(key);
     return () =>
       withHostPortalOperation(root, "@admission", async () => {
@@ -1800,6 +1799,7 @@ export function startPortalReaper(
       portalReconcileInFlight = false;
     }
   };
+  void warnIfPortalMemoryFloorUnreachable();
   void run();
   portalReapTimer = setInterval(() => void run(), PORTAL_REAP_INTERVAL_MS);
   portalReapTimer.unref?.();

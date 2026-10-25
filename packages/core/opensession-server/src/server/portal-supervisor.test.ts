@@ -47,8 +47,8 @@ const previousStateDir = process.env.OPENSESSION_STATE_DIR;
 const previousMinAvailableMemoryMb =
   process.env.OPENSESSION_PORTAL_MIN_AVAILABLE_MEMORY_MB;
 const previousPath = process.env.PATH;
-// Host Portal admission samples real host memory against a 24 GB floor, and
-// hosted CI runners have less than that. The floor itself is covered by the
+// Host Portal admission samples real host memory against a floor scaled to
+// the host, which a busy CI runner may still fall below. The floor itself is covered by the
 // pure hostPortalAdmissionReason test; the process tests below must not
 // depend on the machine they run on.
 const previousMemoryFloor =
@@ -549,6 +549,16 @@ describe("host Portal capacity", () => {
         minAvailableMemoryMb: 24_576,
       }),
     ).toContain("memory is below");
+    expect(
+      hostPortalAdmissionReason({
+        active: 1,
+        maxActive: 4,
+        availableMemoryMb: 1_000,
+        minAvailableMemoryMb: 3_533,
+      }),
+    ).toContain(
+      "lower the floor with OPENSESSION_PORTAL_MIN_AVAILABLE_MEMORY_MB",
+    );
     expect(
       hostPortalAdmissionReason({
         active: 1,
