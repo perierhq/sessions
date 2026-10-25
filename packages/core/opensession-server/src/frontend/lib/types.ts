@@ -35,6 +35,26 @@ export interface AskNoteField {
   placeholder?: string;
   /** The longest note the receiver keeps. */
   maxLength?: number;
+  /** Text the note starts with, for the person to edit or send as is. */
+  initial?: string;
+}
+
+/**
+ * A run of a lone question's options, in order: a label over them, and
+ * `quiet` for a group set smaller than the options it follows.
+ */
+export interface AskOptionGroup {
+  label?: string;
+  count: number;
+  quiet?: boolean;
+}
+
+/** The typed-answer field when it is something other than "Or type your
+ *  own answer…": its accessible name, placeholder and longest answer. */
+export interface AskFreeText {
+  label: string;
+  placeholder: string;
+  maxLength?: number;
 }
 
 export type SessionSource = "slack" | "linear" | "opensession" | "cli";

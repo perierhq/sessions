@@ -3,6 +3,10 @@ import { DECISION_COPY } from "../../../shared/incident-decision-copy";
 import {
   type AgentRun,
   type IncidentResponse,
+  type InvestigatorReport,
+  NEXT_STEP_TARGETS,
+  type NextStep,
+  type OwnerDecision,
   OWNER_DECISIONS,
   type ProofResult,
   type RedactedProjectSettings,
@@ -20,8 +24,11 @@ import {
   decisionFromAnswer,
   decisionNotes,
   incidentDecisionKey,
+  type ChoiceCard,
+  NEXT_STEP_SECTION,
   nextCard,
   orderButtons,
+  pickFromAnswer,
   recoveryLine,
 } from "./next-action";
 
@@ -288,6 +295,12 @@ test("needs you: several ways forward go to AskCard, one goes to a primary butto
     },
     // Try again and Close without action need nothing more.
     notes: {},
+    picks: {
+      "Try again": { kind: "decision", decision: "retry" },
+      "Close without action": { kind: "decision", decision: "close" },
+    },
+    // Nothing to tell the investigator without Send it back.
+    freeText: null,
   });
   const one = nextCard({
     ...base,
@@ -647,4 +660,162 @@ test("the signal line only where it closes by itself", () => {
     footnote:
       "Search is still failing. The incident closes by itself 5 min after it recovers",
   });
+});
+
+const steps: NextStep[] = [
+  {
+    kind: "open-settings",
+    title: "Let agents read the search logs",
+    why: "They say which of the three it is",
+    payload: "access",
+  },
+  {
+    kind: "send-back",
+    title: "Check the proxy's 407s first",
+    why: "The cheapest to rule out",
+    payload: "Rule out the 407s first.",
+  },
+  {
+    kind: "close-provider",
+    title: "Close as the provider's problem",
+    why: "Every candidate is on the provider's side",
+  },
+];
+const report = (nextSteps: NextStep[]): InvestigatorReport => ({
+  role: "investigator",
+  summary: "Search fails",
+  cause: "Only the search service's logs say",
+  readFirst: [{ path: "docs/incidents/runbook.md", found: true }],
+  attempts: [],
+  candidate: null,
+  noCandidateReason: "Out of reach",
+  check: { kind: "after-deploy", reason: "Nothing to deploy" },
+  claims: [],
+  notePath: "docs/incidents/2026-10-20-search.md",
+  runbookPaths: ["docs/incidents/runbook.md"],
+  nextSteps,
+});
+const suggesting = (
+  options: OwnerDecision[],
+  nextSteps: NextStep[] = steps,
+  round = 2,
+): ChoiceCard => {
+  const card = nextCard({
+    ...base,
+    incident: inc("needs-you", {
+      phase: "needs-you",
+      agents: [
+        verifier({
+          role: "investigator",
+          round,
+          sessionId: "inv",
+          report: report(nextSteps),
+        }),
+      ],
+      next: {
+        kind: "needs-you",
+        reason: "No fix found",
+        needsYou: "no-candidate",
+        options,
+      },
+    }),
+  });
+  if (card?.mode !== "choice") throw new Error("Not a choice card");
+  return card;
+};
+
+test("needs you: the investigator's steps lead, then the fixed decisions", () => {
+  const card = suggesting(["send-back", "resolve", "close"]);
+  expect(card.mode).toBe("choice");
+  expect(card.question.options).toEqual([
+    {
+      label: "Let agents read the search logs",
+      description: "They say which of the three it is",
+    },
+    {
+      label: "Check the proxy's 407s first",
+      description: "The cheapest to rule out",
+    },
+    {
+      label: "Close as the provider's problem",
+      description: "Every candidate is on the provider's side",
+    },
+    DECISION_COPY["send-back"],
+    DECISION_COPY.resolve,
+    DECISION_COPY.close,
+  ]);
+  expect(card.groups).toEqual([
+    { label: "Suggested by the investigator", count: 3 },
+    { count: 3, quiet: true },
+  ]);
+  expect(card.picks).toEqual({
+    "Let agents read the search logs": { kind: "settings", section: "access" },
+    "Check the proxy's 407s first": {
+      kind: "decision",
+      decision: "send-back",
+    },
+    "Close as the provider's problem": { kind: "decision", decision: "close" },
+    "Send it back": { kind: "decision", decision: "send-back" },
+    "Mark as fixed": { kind: "decision", decision: "resolve" },
+    "Close without action": { kind: "decision", decision: "close" },
+  });
+  expect(card.notes["Check the proxy's 407s first"]).toEqual({
+    label: "Note for the investigator",
+    placeholder: "What should it look at or try differently?",
+    maxLength: SEND_BACK_NOTE_MAX,
+    initial: "Rule out the 407s first.",
+  });
+  expect(card.freeText).toEqual({
+    label: "Tell the investigator",
+    placeholder: "Tell the investigator…",
+    maxLength: SEND_BACK_NOTE_MAX,
+  });
+  expect(pickFromAnswer(" close as the provider's problem", card)).toEqual({
+    kind: "decision",
+    decision: "close",
+  });
+  expect(pickFromAnswer("Something typed", card)).toBeNull();
+});
+
+test("needs you: a step whose decision is not offered is left out", () => {
+  // No Send it back and no Close: only the settings step is left, and
+  // nothing can be typed to the investigator.
+  const card = suggesting(["retry", "resolve"]);
+  expect(card.question.options?.map((o) => o.label)).toEqual([
+    "Let agents read the search logs",
+    "Try again",
+    "Mark as fixed",
+  ]);
+  expect(card.freeText).toBeNull();
+  // One decision and a suggestion is still a choice.
+  expect(suggesting(["resolve"]).mode).toBe("choice");
+});
+
+test("needs you: steps from an earlier round, or repeating an option, are left out", () => {
+  const earlier = suggesting(["send-back", "close"], steps, 1);
+  expect(earlier.groups).toBeUndefined();
+  expect(earlier.question.options).toEqual([
+    DECISION_COPY["send-back"],
+    DECISION_COPY.close,
+  ]);
+  const repeats = suggesting(
+    ["send-back", "close"],
+    [
+      { kind: "close-provider", title: "Close without action", why: "" },
+      { ...steps[1]!, title: "Check it" },
+      { ...steps[1]!, title: "check it " },
+    ],
+  );
+  expect(repeats.question.options?.map((o) => o.label)).toEqual([
+    "Check it",
+    "Send it back",
+    "Close without action",
+  ]);
+});
+
+test("every settings target opens a project settings section", () => {
+  for (const target of NEXT_STEP_TARGETS)
+    expect(NEXT_STEP_SECTION[target]).toBeTruthy();
+  expect(NEXT_STEP_SECTION.signals).toBe("incidents");
+  expect(NEXT_STEP_SECTION.sandbox).toBe("where");
 });

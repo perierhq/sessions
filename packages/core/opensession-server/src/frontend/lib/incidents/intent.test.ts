@@ -87,6 +87,8 @@ test("a needs-you top option confirms with the page's own words", () => {
       options: [DECISION_COPY.retry, DECISION_COPY.close],
     },
     notes: {},
+    picks: {},
+    freeText: null,
   };
   expect(intentPlan(choice, "retry", "needs you")).toMatchObject({
     kind: "confirm",
@@ -106,6 +108,8 @@ test("Send it back from a notification points at the card's note field", () => {
       options: [DECISION_COPY["send-back"], DECISION_COPY.close],
     },
     notes: {},
+    picks: {},
+    freeText: null,
   };
   expect(intentPlan(choice, "send-back", "needs you")).toEqual({
     kind: "on-card",

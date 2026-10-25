@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import type { AskQuestion } from "../lib/types";
 import {
   createHookHarness,
+  elements,
   find,
   reactWithHarness,
   settle,
@@ -66,11 +67,17 @@ function mountCard(
 ) {
   const sent: Array<Record<string, string>> = [];
   const notes: Array<Record<string, string>> = [];
+  const typed: Array<Record<string, string>> = [];
   const card = harness.mount(AskCard, {
     questions,
-    onAnswer: (answers: Record<string, string>, n: Record<string, string>) => {
+    onAnswer: (
+      answers: Record<string, string>,
+      n: Record<string, string>,
+      t: Record<string, string>,
+    ) => {
       sent.push(answers);
       notes.push(n);
+      typed.push(t);
     },
     ...extra,
   });
@@ -90,6 +97,8 @@ function mountCard(
   return {
     sent,
     notes,
+    typed,
+    tree,
     choice,
     submit,
     note,
@@ -301,4 +310,116 @@ test("an option without a note sends on its own, and leaves no note", async () =
 test("without free text the card offers only its options", () => {
   expect(mountCard([SHIP], { freeText: false }).input()).toBeUndefined();
   expect(mountCard([SHIP]).input()).toBeDefined();
+});
+
+// An incident's card: the investigator's steps, then the fixed decisions.
+const NEXT: AskQuestion = {
+  question: "No fix found",
+  options: [
+    { label: "Let agents read the logs", description: "They say which" },
+    { label: "Check the 407s first", description: "Cheapest to rule out" },
+    { label: "Send it back", description: "Another round" },
+    { label: "Close without action", description: "Nothing needed fixing" },
+  ],
+};
+const GROUPS = [
+  { label: "Suggested by the investigator", count: 2 },
+  { count: 2, quiet: true },
+];
+const PREFILLED = {
+  "Check the 407s first": {
+    label: "Note for the investigator",
+    maxLength: 200,
+    initial: "Rule out the 407s first.",
+  },
+  "Send it back": { label: "Note for the investigator", maxLength: 200 },
+};
+
+/** The card's groups and choices in document order: "group" for each
+ *  group, then each choice's label. */
+const layout = (tree: ReactNode) =>
+  elements(tree).flatMap((el) => {
+    if ("role" in el.props && el.props.role === "group") return ["group"];
+    if (el.type === Questionnaire.Choice && "value" in el.props)
+      return [String(el.props.value)];
+    return [];
+  });
+
+test("groups lead with a labelled run, and the quiet run is smaller on a desktop only", () => {
+  const card = mountCard([NEXT], { groups: GROUPS });
+  // The letters run on: one choice list for the whole question.
+  expect(layout(card.tree())).toEqual([
+    "group",
+    "Let agents read the logs",
+    "Check the 407s first",
+    "group",
+    "Send it back",
+    "Close without action",
+  ]);
+  const label = find(
+    card.tree(),
+    "span",
+    (p: { id?: string; children?: ReactNode }) =>
+      String(p.id ?? "").endsWith("-g0"),
+  );
+  expect(label?.props.children).toBe("Suggested by the investigator");
+  const lead = String(card.choice("Check the 407s first").props.className);
+  const quiet = String(card.choice("Send it back").props.className);
+  expect(lead).toContain("py-2.5");
+  expect(quiet).toContain("desktop:min-h-9");
+  expect(quiet).not.toContain("py-2.5");
+  // A phone keeps the 44px target.
+  expect(quiet).toContain("min-h-11");
+});
+
+test("without groups the options render as before", () => {
+  expect(layout(mountCard([NEXT]).tree())).toEqual(
+    NEXT.options!.map((o) => o.label),
+  );
+});
+
+test("a note that starts written opens under its pick, editable, and sends as edited", async () => {
+  const card = mountCard([NEXT], { groups: GROUPS, notes: PREFILLED });
+  await card.click("Check the 407s first");
+  expect(card.note()?.props.value).toBe("Rule out the 407s first.");
+  // Already written, so the pick can go as it is.
+  expect(card.submit()?.props.disabled).toBe(false);
+  await card.write("Rule out the 407s, then the 429s.");
+  // Another option with a note starts from its own text; coming back
+  // finds the edit.
+  await card.click("Send it back");
+  expect(card.note()?.props.value).toBe("");
+  await card.click("Check the 407s first");
+  expect(card.note()?.props.value).toBe("Rule out the 407s, then the 429s.");
+  await card.send();
+  expect(card.sent).toEqual([{ "No fix found": "Check the 407s first" }]);
+  expect(card.notes).toEqual([
+    { "No fix found": "Rule out the 407s, then the 429s." },
+  ]);
+  expect(card.typed).toEqual([{}]);
+});
+
+test("a named free-text field says what typing does, and the answer says it was typed", async () => {
+  const card = mountCard([NEXT], {
+    groups: GROUPS,
+    notes: PREFILLED,
+    freeText: {
+      label: "Tell the investigator",
+      placeholder: "Tell the investigator…",
+      maxLength: 200,
+    },
+  });
+  const input = card.input()!;
+  expect(input.props.placeholder).toBe("Tell the investigator…");
+  expect(input.props["aria-label"]).toBe("Tell the investigator");
+  expect(input.props.maxLength).toBe(200);
+  await card.click("Check the 407s first");
+  await card.type("Look at the proxy logs too");
+  expect(card.note()).toBeUndefined();
+  await card.send();
+  expect(card.sent).toEqual([{ "No fix found": "Look at the proxy logs too" }]);
+  expect(card.notes).toEqual([{}]);
+  expect(card.typed).toEqual([
+    { "No fix found": "Look at the proxy logs too" },
+  ]);
 });

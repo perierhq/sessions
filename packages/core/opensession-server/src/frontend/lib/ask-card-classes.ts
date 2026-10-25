@@ -13,6 +13,14 @@ export const ASK_CHOICE_ROW_BASE =
 
 export const ASK_CHOICE_ROW = `${ASK_CHOICE_ROW_BASE} cursor-pointer transition-[background-color] hover:bg-hover has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent-ink)]`;
 
+/** Merged over ASK_CHOICE_ROW with `cn` for a quiet option row (AskCard's
+ *  `groups`): the same row set smaller, for choices that follow the ones
+ *  the card leads with. Still 44px on a phone. */
+export const ASK_CHOICE_QUIET = "py-2 desktop:min-h-9";
+
+/** The label over a group of options, on the rows' own text edge. */
+export const ASK_GROUP_LABEL = "px-3 text-meta text-faint";
+
 /** The label over a note a picked option needs (see AskCard's `notes`). */
 export const ASK_NOTE_LABEL = "text-label font-semibold text-dim";
 
