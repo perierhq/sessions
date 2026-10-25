@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SupportMessage, ThreadKeys } from "../../shared/support";
+import { catalogDocuments } from "../catalog-documents";
 import { createConversation, rememberMessageIds } from "./store";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 import { findConversation, threadCandidates } from "./threading";
@@ -60,6 +61,40 @@ test("threadCandidates: In-Reply-To first, then References newest first", () => 
   expect(
     threadCandidates({ messageId: null, inReplyTo: null, references: [] }),
   ).toEqual([]);
+});
+
+test("threadCandidates: In-Reply-To plus only the newest 20 References", () => {
+  const references = Array.from({ length: 30 }, (_, i) => `r${i}@x`);
+  const out = threadCandidates({
+    messageId: "c@x",
+    inReplyTo: "irt@x",
+    references,
+  });
+  expect(out).toHaveLength(21);
+  expect(out[0]).toBe("irt@x");
+  expect(out[1]).toBe("r29@x");
+  expect(out.at(-1)).toBe("r10@x");
+});
+
+test("a key left pointing at a deleted conversation is skipped", async () => {
+  const older = await conversationIn(INBOX_I, "older@acme.example.test");
+  const gone = await conversationIn(INBOX_I, "gone@acme.example.test");
+  // The document is gone; its key was not cleaned up.
+  await catalogDocuments("support-conversations").delete(gone.id);
+  expect(
+    await findConversation(INBOX_I, {
+      messageId: "reply@example.test",
+      inReplyTo: "gone@acme.example.test",
+      references: ["older@acme.example.test", "gone@acme.example.test"],
+    }),
+  ).toBe(older.id);
+  expect(
+    await findConversation(INBOX_I, {
+      messageId: "reply@example.test",
+      inReplyTo: "gone@acme.example.test",
+      references: [],
+    }),
+  ).toBeNull();
 });
 
 test("a reply to a stored message finds its conversation", async () => {
