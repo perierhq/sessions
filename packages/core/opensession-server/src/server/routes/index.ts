@@ -49,6 +49,7 @@ import { handleProjectDefaultsRoutes } from "./project-defaults";
 import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
+import { handleSupportRoutes } from "./support";
 import { handleHumanAsksRoutes } from "./human-asks";
 import { handleKeychainRoutes } from "./keychain";
 import { handleMacKeychainRoutes } from "./mac-keychain";
@@ -134,6 +135,7 @@ export const routeHandlers: RouteHandler[] = [
   // Before the incidents routes, so /api/incidents/:id/access is answered here.
   handleIncidentAccessRoutes,
   handleIncidentsRoutes,
+  handleSupportRoutes,
   handleIncidentResponseRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,
