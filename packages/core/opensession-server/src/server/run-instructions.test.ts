@@ -123,6 +123,7 @@ describe("buildRunInstructions", () => {
       "## Messages during a turn",
       "## References",
       "## Working directory",
+      "## Workspace",
       "## Pull requests",
       "## Waiting",
       "## Tools",
@@ -186,7 +187,45 @@ describe("buildRunInstructions", () => {
     // dispatchers to tool_search/tool_call adds 2. "Background work" adds
     // ~330: archive stops only what carries the session's label, and agents
     // cannot learn the label for compose or systemd-run any other way.
-    expect(prompt.length).toBeLessThan(4_600);
+    // "Workspace" adds ~400: rules written for a person's own computer kept
+    // agents from starting the dev server for the app they changed.
+    expect(prompt.length).toBeLessThan(5_000);
+  });
+
+  test("tells a code run it may start dev servers in its workspace", () => {
+    const workspace = (prompt: string) =>
+      prompt.match(/^## Workspace\n.+$/m)?.[0];
+    const intro =
+      "## Workspace\nYou are working in an isolated Open Session workspace, not on the " +
+      "user's own computer. Rules about the user's local machine (for example, not " +
+      "starting dev servers there) don't apply here: you may start dev servers. ";
+    const withPortals = {
+      isAsk: false,
+      hasSession: true,
+      inProcessMcp: { "opensession-portals": {} },
+    };
+    for (const prompt of [
+      buildRunInstructions(withPortals),
+      buildRunInstructions({ ...withPortals, sandboxed: true }),
+    ])
+      expect(workspace(prompt)).toBe(
+        intro +
+          "Start them through Portals so they are supervised, get their own port and " +
+          "preview, and stop when the session ends. A repository's own rules still apply.",
+      );
+    // Automations do not mount Portals.
+    expect(
+      workspace(buildRunInstructions({ isAsk: false, hasSession: true })),
+    ).toBe(
+      intro +
+        "Portals aren't available in this run, so start one in the background and " +
+        "stop it before you finish. A repository's own rules still apply.",
+    );
+    for (const prompt of [
+      buildRunInstructions({ ...withPortals, isAsk: true }),
+      buildRunInstructions({ ...withPortals, hasSession: false }),
+    ])
+      expect(prompt).not.toContain("## Workspace");
   });
 
   test("names the ownership label only where archive can act on it", () => {
