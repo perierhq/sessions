@@ -3,7 +3,7 @@
 // closed longer than the inbox keeps them (deleted with their attachments
 // and message-id keys) or holding an attachment past its expiry (file
 // deleted, name and size kept), at most SWEEP_MAX_ACTIONS a run. A swept
-// conversation's linked sessions go first. Once a day it also removes
+// conversation's linked sessions go first, then its support workspace. Once a day it also removes
 // attachment directories no conversation owns. The held-sweep pattern of
 // the incident notifier. Retention never touches the mailbox.
 import { createHmac, randomBytes } from "node:crypto";
@@ -52,6 +52,13 @@ export interface RetentionDeps {
   /** Resolves once the session is gone (or already was); throws when the
    *  deletion is refused. */
   deleteSession(sessionId: string, cleanWorktree: boolean): Promise<void>;
+  /** Deletes the conversation's `support-<id>` workspace once the sessions
+   *  in it are gone (`deletedSessions` were just deleted); throws when it
+   *  can't. */
+  deleteWorkspace(
+    conversationId: string,
+    deletedSessions: ReadonlySet<string>,
+  ): Promise<void>;
   audit(event: Record<string, unknown>): Promise<void>;
   shuttingDown(): boolean;
   maxActions: number;
@@ -87,10 +94,45 @@ export async function deleteSupportSession(
   );
 }
 
+/** Deletes the workspace routing made for the conversation (key
+ *  `support-<id>`), unless a session other than `deletedSessions` still
+ *  uses it (one a person opened there). A workspace keyed like that never
+ *  goes with its last session on its own (session-workspace-cleanup.ts).
+ *  `seam` replaces the lookups and the deletion (tests). */
+export async function deleteSupportWorkspace(
+  conversationId: string,
+  deletedSessions: ReadonlySet<string>,
+  seam?: {
+    find(key: string): Promise<{ id: string } | null>;
+    sessions(): Promise<
+      ReadonlyArray<{ id: string; workspaceId?: string | null }>
+    >;
+    remove(id: string): Promise<boolean>;
+  },
+): Promise<void> {
+  const find =
+    seam?.find ??
+    (async (key: string) =>
+      (await import("../workspaces")).findWorkspaceByKey(key));
+  const sessions =
+    seam?.sessions ??
+    (async () => (await import("../session-cache")).getCachedSessions());
+  const remove =
+    seam?.remove ??
+    (async (id: string) => (await import("../workspaces")).deleteWorkspace(id));
+  const workspace = await find(`support-${conversationId}`);
+  if (!workspace) return;
+  const inUse = (await sessions()).some(
+    (s) => s.workspaceId === workspace.id && !deletedSessions.has(s.id),
+  );
+  if (!inUse) await remove(workspace.id);
+}
+
 const defaultDeps: RetentionDeps = {
   now: () => Date.now(),
   inbox: getInbox,
   deleteSession: (id, cleanWorktree) => deleteSupportSession(id, cleanWorktree),
+  deleteWorkspace: (id, deleted) => deleteSupportWorkspace(id, deleted),
   audit: supportAudit,
   shuttingDown: isShuttingDown,
   maxActions: SWEEP_MAX_ACTIONS,
@@ -248,6 +290,7 @@ export function sweepRetention(
             deps,
             sessionsDeleted,
           );
+          await deps.deleteWorkspace(row.id, sessionsDeleted);
           await deleteWithAttachments(row.id);
           conversationsDeleted += 1;
         } else if (
@@ -326,6 +369,7 @@ export async function forgetCustomer(
           await deleteLinkedSessions(conversation, row, deps, sessionsDeleted)
         )
           fixSessionKept = true;
+        await deps.deleteWorkspace(row.id, sessionsDeleted);
         attachments += await deleteWithAttachments(row.id);
         conversations += 1;
         if (conversation?.issue && !issues.includes(conversation.issue.url))

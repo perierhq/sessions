@@ -20,6 +20,7 @@ import {
   __resetRetentionForTest,
   customerDigest,
   deleteSupportSession,
+  deleteSupportWorkspace,
   forgetCustomer,
   startSupportRetention,
   sweepRetention,
@@ -54,13 +55,20 @@ function deps(over: Partial<RetentionDeps> = {}): {
   deletedSessions: string[];
   /** Sessions deleted with their worktree. */
   worktrees: string[];
+  /** Conversations whose support workspace was deleted. */
+  workspaces: string[];
 } {
   const deletedSessions: string[] = [];
   const worktrees: string[] = [];
+  const workspaces: string[] = [];
   return {
     deletedSessions,
     worktrees,
+    workspaces,
     deps: {
+      deleteWorkspace: async (conversationId) => {
+        workspaces.push(conversationId);
+      },
       now: () => NOW,
       inbox: async (id) =>
         RETENTION[id]
@@ -297,6 +305,31 @@ describe("sweepRetention, linked sessions and bounds", () => {
     expect(await getConversation(old.id)).toBeNull();
   });
 
+  test("deletes the conversation's support workspace after its sessions", async () => {
+    const old = await conversation({
+      closedDaysAgo: 181,
+      patch: { sessionId: "ses_support" },
+    });
+    const kept = await conversation({ closedDaysAgo: 10 });
+    const order: string[] = [];
+    const { deps: d } = deps({
+      deleteSession: async (id) => {
+        order.push(`session:${id}`);
+      },
+      deleteWorkspace: async (conversationId, deleted) => {
+        order.push(`workspace:${conversationId}:${[...deleted].join(",")}`);
+      },
+    });
+
+    await sweepRetention(d);
+
+    expect(order).toEqual([
+      "session:ses_support",
+      `workspace:${old.id}:ses_support`,
+    ]);
+    expect(await getConversation(kept.id)).not.toBeNull();
+  });
+
   test("a session that refuses to go keeps its conversation for the next sweep", async () => {
     const old = await conversation({
       closedDaysAgo: 181,
@@ -452,6 +485,55 @@ describe("deleteSupportSession", () => {
 
 const OWNER = { name: "kacper", verified: true, isInstanceOwner: true };
 
+describe("deleteSupportWorkspace", () => {
+  function seam(
+    workspace: { id: string } | null,
+    sessions: Array<{ id: string; workspaceId?: string | null }>,
+  ) {
+    const deleted: string[] = [];
+    const keys: string[] = [];
+    return {
+      deleted,
+      keys,
+      seam: {
+        find: async (key: string) => {
+          keys.push(key);
+          return workspace;
+        },
+        sessions: async () => sessions,
+        remove: async (id: string) => {
+          deleted.push(id);
+          return true;
+        },
+      },
+    };
+  }
+
+  test("deletes the support-<id> workspace once its sessions are gone", async () => {
+    const t = seam({ id: "ws-support" }, [
+      { id: "ses_support", workspaceId: "ws-support" },
+      { id: "ses_elsewhere", workspaceId: "ws-other" },
+    ]);
+    await deleteSupportWorkspace("sc_1", new Set(["ses_support"]), t.seam);
+    expect(t.keys).toEqual(["support-sc_1"]);
+    expect(t.deleted).toEqual(["ws-support"]);
+  });
+
+  test("keeps a workspace another session still uses", async () => {
+    const t = seam({ id: "ws-support" }, [
+      { id: "ses_person", workspaceId: "ws-support" },
+    ]);
+    await deleteSupportWorkspace("sc_1", new Set(), t.seam);
+    expect(t.deleted).toEqual([]);
+  });
+
+  test("no workspace is fine", async () => {
+    const t = seam(null, []);
+    await deleteSupportWorkspace("sc_1", new Set(), t.seam);
+    expect(t.deleted).toEqual([]);
+  });
+});
+
 describe("forgetCustomer", () => {
   test("only the instance owner may forget a customer", async () => {
     const c = await conversation({ customer: "ada@example.test" });
@@ -500,9 +582,10 @@ describe("forgetCustomer", () => {
       customer: "grace@example.test",
       patch: { sessionId: "ses_other" },
     });
-    const { deps: d, deletedSessions, worktrees } = deps();
+    const { deps: d, deletedSessions, worktrees, workspaces } = deps();
 
     const result = await forgetCustomer("Ada@Example.test", OWNER, d);
+    expect(workspaces.sort()).toEqual([a.id, b.id].sort());
 
     expect(result).toEqual({
       conversations: 2,
