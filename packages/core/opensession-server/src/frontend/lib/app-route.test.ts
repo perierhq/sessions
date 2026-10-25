@@ -222,6 +222,25 @@ describe("incident routes", () => {
       `${BASE_PATH}/incidents/inc-1?intent=retry`,
     );
   });
+
+  test("support push intents open an email conversation", () => {
+    expect(
+      parseRouteWithSearch("/support/email:sc_1", "?intent=stop"),
+    ).toEqual({ view: "support", threadId: "email:sc_1", intent: "stop" });
+    expect(
+      parseRouteWithSearch("/support/email:sc_1", "?intent=review"),
+    ).toEqual({ view: "support", threadId: "email:sc_1", intent: "review" });
+    expect(
+      parseRouteWithSearch("/support/email:sc_1", "?intent=send"),
+    ).toEqual({ view: "support", threadId: "email:sc_1" });
+    expect(parseRouteWithSearch("/support/th_1", "?intent=stop")).toEqual({
+      view: "support",
+      threadId: "plain:th_1",
+    });
+    expect(
+      routePath({ view: "support", threadId: "email:sc_1", intent: "stop" }),
+    ).toBe(`${BASE_PATH}/support/email:sc_1?intent=stop`);
+  });
 });
 
 describe("project settings routes", () => {

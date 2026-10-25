@@ -1,0 +1,262 @@
+// The email conversation pane: its header chip, and the actions a person
+// takes on it (Not spam for spam only, Forget this customer for the
+// instance owner only and behind a confirm). Hooks run in the hook harness;
+// children are read, not rendered.
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import type {
+  InboxesResponse,
+  SupportConversationView,
+} from "../../shared/support";
+import {
+  createHookHarness,
+  elements,
+  find,
+  reactWithHarness,
+  settle,
+} from "../tools/hook-harness";
+import { conversation } from "../tools/support-fixture";
+
+const store = new Map<string, string>();
+const storage = {
+  getItem: (k: string) => store.get(k) ?? null,
+  setItem: (k: string, v: string) => void store.set(k, v),
+  removeItem: (k: string) => void store.delete(k),
+};
+Object.assign(globalThis, {
+  window: {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+    matchMedia: () => ({
+      matches: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }),
+  },
+  localStorage: storage,
+  sessionStorage: storage,
+  document: {
+    documentElement: { dataset: {}, style: { colorScheme: "" } },
+    querySelector: () => null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    visibilityState: "visible",
+  },
+});
+
+const harness = createHookHarness();
+const realReact = await import("react");
+mock.module("react", () => reactWithHarness({ ...realReact }, harness));
+
+const toasts: string[] = [];
+const realToast = await import("../ui/toast");
+mock.module("../ui/toast", () => ({
+  ...realToast,
+  toast: (message: string) => {
+    toasts.push(message);
+    return toasts.length;
+  },
+}));
+
+const INBOX: SupportConversationView["inbox"] = {
+  id: "inb_0001",
+  label: "Acme help",
+  address: "help@acme.example.test",
+  autonomy: "propose",
+  moveLock: "agent",
+  bugHandling: "off",
+};
+const view = (c = conversation()): SupportConversationView => ({
+  conversation: c,
+  inbox: INBOX,
+});
+const fetchSupportConversation = mock(async (_id: string) => view());
+const forgetCustomer = mock(async (_email: string) => ({
+  conversations: 1,
+  sessions: 0,
+  attachments: 0,
+  failed: 0,
+  notDeleted: [],
+}));
+const markNotSpam = mock(async (_id: string) => view());
+const realApi = await import("../lib/api/support");
+mock.module("../lib/api/support", () => ({
+  ...realApi,
+  fetchSupportConversation,
+  forgetCustomer,
+  markNotSpam,
+}));
+
+const inboxes: InboxesResponse = {
+  enabled: true,
+  isInstanceOwner: true,
+  projects: [{ id: "acme", supportConnectors: false }],
+  inboxes: [],
+};
+const realSwr = await import("swr");
+mock.module("swr", () => ({
+  ...realSwr,
+  default: () => ({ data: inboxes, error: undefined, mutate: async () => {} }),
+}));
+
+const realPeople = await import("../lib/people");
+mock.module("../lib/people", () => ({
+  ...realPeople,
+  usePeople: () => [{ name: "Ada", fullName: "Ada Lovelace" }],
+}));
+
+const { ConfirmDialog } = await import("../ui/confirm");
+const { Menu } = await import("../ui/menu");
+const { EmailConversation, EmailConversationActions } = await import(
+  "./EmailConversation"
+);
+type ActionProps = Parameters<typeof EmailConversationActions>[0];
+
+const strings = (tree: React.ReactNode) =>
+  elements(tree).flatMap((el) => {
+    const c = (el.props as { children?: unknown }).children;
+    return typeof c === "string" ? [c] : [];
+  });
+const item = (tree: React.ReactNode, label: string) =>
+  find(tree, Menu.Item, (p) => p.children === label)?.props;
+
+const actionProps = (over: Partial<ActionProps> = {}): ActionProps => ({
+  conversation: conversation(),
+  isInstanceOwner: true,
+  projects: ["acme", "acme-billing"],
+  people: ["Ada", "Grace"],
+  onChanged: () => {},
+  ...over,
+});
+
+beforeEach(() => {
+  toasts.length = 0;
+  fetchSupportConversation.mockClear();
+  forgetCustomer.mockClear();
+  markNotSpam.mockClear();
+});
+afterEach(() => harness.unmountAll());
+
+test("the header chip names the inbox and the project", async () => {
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+    headerInBar: true,
+  });
+  await settle();
+  expect(fetchSupportConversation).toHaveBeenCalledWith("sc_0001");
+  const all = strings(pane.output());
+  expect(all).toContain("Acme help · acme");
+  expect(all).toContain("Login broken");
+  expect(all).toContain("grace@example.test");
+});
+
+test("a conversation with a session wears the Open session pill", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(conversation({ sessionId: "s1" })),
+  );
+  const opened: string[] = [];
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: (id) => opened.push(id),
+  });
+  await settle();
+  const pill = find<React.ComponentProps<"button">>(
+    pane.output(),
+    "button",
+    (p) => p["aria-label"] === "Open session",
+  );
+  pill?.props.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  expect(opened).toEqual(["s1"]);
+});
+
+test("an agent that couldn't start says why instead", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        events: [
+          {
+            at: "2026-10-25T10:01:00.000Z",
+            kind: "agent-cant-start",
+            actor: { kind: "sessions" },
+            detail:
+              "Support agent can't start: the session couldn't be created",
+          },
+        ],
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  expect(strings(pane.output())).toContain("Agent can't start");
+  expect(strings(pane.output())).toContain("the session couldn't be created");
+});
+
+test("a held issue offers Create issue and Dismiss", async () => {
+  fetchSupportConversation.mockImplementationOnce(async () =>
+    view(
+      conversation({
+        pendingIssue: {
+          title: "Login fails",
+          body: "Steps",
+          requestedBy: { kind: "agent", sessionId: "s1" },
+        },
+      }),
+    ),
+  );
+  const pane = harness.mount(EmailConversation, {
+    itemId: "email:sc_0001",
+    onOpenSession: () => {},
+  });
+  await settle();
+  const all = strings(pane.output());
+  expect(all).toContain(
+    "The agent reported a bug. The repository is public, so a person creates the issue.",
+  );
+  expect(all).toContain("Create issue");
+  expect(all).toContain("Dismiss");
+});
+
+test("a spam conversation offers Not spam", async () => {
+  const onChanged = mock();
+  const actions = harness.mount(
+    EmailConversationActions,
+    actionProps({ conversation: conversation({ status: "spam" }), onChanged }),
+  );
+  const notSpam = item(actions.output(), "Not spam");
+  expect(notSpam).toBeDefined();
+  expect(item(actions.output(), "Mark as done")).toBeUndefined();
+  notSpam?.onClick?.({} as never);
+  await settle();
+  expect(markNotSpam).toHaveBeenCalledWith("sc_0001");
+  expect(onChanged).toHaveBeenCalledTimes(1);
+});
+
+test("an open conversation has no Not spam", () => {
+  const actions = harness.mount(EmailConversationActions, actionProps());
+  expect(item(actions.output(), "Not spam")).toBeUndefined();
+});
+
+test("Forget this customer asks first, then forgets", async () => {
+  const actions = harness.mount(EmailConversationActions, actionProps());
+  item(actions.output(), "Forget this customer")?.onClick?.({} as never);
+  await settle();
+  expect(forgetCustomer).not.toHaveBeenCalled();
+  const dialog = find(actions.output(), ConfirmDialog)?.props;
+  expect(dialog?.open).toBe(true);
+  expect(dialog?.request?.destructive).toBe(true);
+  dialog?.request?.onConfirm();
+  await settle();
+  expect(forgetCustomer).toHaveBeenCalledWith("grace@example.test");
+});
+
+test("only the instance owner sees Forget this customer", () => {
+  const actions = harness.mount(
+    EmailConversationActions,
+    actionProps({ isInstanceOwner: false }),
+  );
+  expect(item(actions.output(), "Forget this customer")).toBeUndefined();
+});
