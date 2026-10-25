@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "path";
 import type { InboxConfig, SupportMessage } from "../../shared/support";
-import { __setInboxProjectCheckForTest, createInbox } from "./inboxes";
+import {
+  __setInboxProjectCheckForTest,
+  createInbox,
+  updateInbox,
+} from "./inboxes";
 import {
   SUPPORT_MCP_SERVER,
   __setSupportSessionLookupForTest,
@@ -10,7 +14,11 @@ import {
   supportToolDefinitions,
 } from "./mcp";
 import { wrapCustomerMessage } from "./routing";
-import { createConversation } from "./store";
+import {
+  createConversation,
+  getConversation,
+  updateConversation,
+} from "./store";
 import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
 
 const kernel = useSupportTestKernel();
@@ -135,4 +143,58 @@ test("get_conversation returns the session's own conversation only", async () =>
 test("the server is named opensession-support", () => {
   expect(Object.keys(supportSessionMcp("os-1"))).toEqual([SUPPORT_MCP_SERVER]);
   expect(SUPPORT_MCP_SERVER).toBe("opensession-support");
+});
+
+const draftReplyTool = (sessionId: string) => {
+  const tool = supportToolDefinitions({ sessionId }).find(
+    (t) => t.name === "draft_reply",
+  );
+  if (!tool) throw new Error("draft_reply missing");
+  return tool;
+};
+
+test("draft_reply drafts on the session's own conversation", async () => {
+  const mine = await conversation(1);
+  const other = await conversation(2);
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const tool = draftReplyTool("os-1");
+  // Only the text; never a conversation id.
+  expect(Object.keys(tool.inputSchema)).toEqual(["text"]);
+  const out = await tool.handler({ text: "Fixed, please retry." }, {});
+  expect(textOf(out)).toBe("Waiting for a person: Drafts wait for a person");
+  const draft = (await getConversation(mine.id))!.draft!;
+  expect(draft.text).toBe("Fixed, please retry.");
+  expect(draft.author).toEqual({ kind: "agent", sessionId: "os-1" });
+  expect((await getConversation(other.id))!.draft).toBeNull();
+});
+
+test("draft_reply says when a veto window ends", async () => {
+  const updated = await updateInbox(
+    inbox.id,
+    { expectedRevision: inbox.revision, autonomy: "deploy-after-veto" },
+    ADA,
+  );
+  if (!updated.ok) throw new Error(updated.error);
+  const mine = await conversation(1);
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    triage: {
+      route: "work",
+      reason: "test",
+      topics: [],
+      bug: false,
+      at: new Date().toISOString(),
+    },
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const out = await draftReplyTool("os-1").handler({ text: "Fixed." }, {});
+  expect(textOf(out)).toMatch(/^Sends at \d\d:\d\d unless someone stops it\.$/);
+});
+
+test("draft_reply without a linked conversation does nothing", async () => {
+  sessions["os-plain"] = { externalRefs: [] };
+  const out = await draftReplyTool("os-plain").handler({ text: "Hi" }, {});
+  expect(textOf(out)).toBe(
+    "This session is not linked to a support conversation",
+  );
 });

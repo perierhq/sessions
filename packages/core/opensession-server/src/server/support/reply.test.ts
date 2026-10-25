@@ -1,0 +1,360 @@
+import { describe, expect, test } from "bun:test";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { SupportActor } from "../../shared/support";
+import {
+  discardDraft,
+  proposeDraft,
+  replyAsPerson,
+  sendDraft,
+  stopVeto,
+} from "./reply";
+import { getConversation, lookupMessageIds } from "./store";
+import { INBOX_ADDRESS, useReplyTestbed } from "./testing/reply-testbed";
+
+const tb = useReplyTestbed();
+
+const AGENT: SupportActor = { kind: "agent", sessionId: "os-1" };
+const ADA: SupportActor = { kind: "person", name: "Ada" };
+const DRAFT = "Please clear the zebracache folder and export again.";
+
+function stringsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsOf);
+  if (value && typeof value === "object")
+    return Object.values(value).flatMap(stringsOf);
+  return [];
+}
+
+async function draftNeedingPerson() {
+  const c = await tb.conversation();
+  const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+  if (!proposed.ok) throw new Error(proposed.error);
+  return { c, draft: proposed.draft };
+}
+
+describe("proposeDraft", () => {
+  test("an agent draft under Draft waits for a person and sends nothing", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect(draft.state).toBe("needs-person");
+    expect(draft.rule).toBe("Drafts wait for a person");
+    expect(draft.author).toEqual(AGENT);
+    expect(tb.fixture().sent).toHaveLength(0);
+    expect((await getConversation(c.id))!.draft?.id).toBe(draft.id);
+  });
+
+  test("send right away with known topics sends at once, marked automatic", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.draft.state).toBe("sent");
+    expect(tb.fixture().sent).toHaveLength(1);
+    const raw = tb.fixture().sent[0]!.raw;
+    expect(raw).toMatch(/^Auto-Submitted: auto-replied/im);
+    expect(raw).toContain("zebracache");
+    const after = (await getConversation(c.id))!;
+    expect(after.autoSends).toHaveLength(1);
+    expect(after.draft).toBeNull();
+    expect(after.status).toBe("waiting");
+    const out = after.messages.at(-1)!;
+    expect(out.direction).toBe("out");
+    expect(out.sentBy).toEqual({ kind: "sessions" });
+    expect(out.from.address).toBe(INBOX_ADDRESS);
+    expect(out.to.map((a) => a.address)).toEqual([
+      "carol@customer.example.test",
+    ]);
+  });
+
+  test("the fourth automatic reply within an hour waits for a person", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    for (let i = 0; i < 3; i++) {
+      const sent = await proposeDraft(c.id, `${DRAFT} (${i})`, AGENT);
+      expect(sent.ok && sent.draft.state).toBe("sent");
+    }
+    const fourth = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(fourth.ok).toBe(true);
+    if (fourth.ok) {
+      expect(fourth.draft.state).toBe("needs-person");
+      expect(fourth.draft.rule).toBe("3 automatic replies in the last hour");
+    }
+    expect(tb.fixture().sent).toHaveLength(3);
+  });
+
+  test("route 'simple' with unknown topics never sends on its own", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation({
+      triage: { route: "simple", topics: null },
+    });
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok && result.draft.state).toBe("needs-person");
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("trust is checked on the message replyTarget answers", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const failed = await tb.conversation({
+      trust: { replyToDiffers: false, authFailed: true },
+    });
+    const a = await proposeDraft(failed.id, DRAFT, AGENT);
+    expect(a.ok && a.draft.rule).toBe("The sender could not be verified");
+
+    // A Reply-To elsewhere, even when ingest didn't flag it.
+    const elsewhere = await tb.conversation({
+      replyTo: [{ name: null, address: "billing@other.example.test" }],
+    });
+    const b = await proposeDraft(elsewhere.id, DRAFT, AGENT);
+    expect(b.ok && b.draft.rule).toBe(
+      "Replies would go to a different address than the sender",
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a veto decision opens a window and sends nothing yet", async () => {
+    await tb.setInbox({ autonomy: "deploy-after-veto", vetoMs: 600_000 });
+    const c = await tb.conversation();
+    const before = Date.now();
+    const result = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.draft.state).toBe("veto");
+    const deadline = Date.parse(result.draft.vetoDeadline!);
+    expect(deadline).toBeGreaterThanOrEqual(before + 600_000);
+    expect(deadline).toBeLessThanOrEqual(Date.now() + 600_000);
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("an empty draft is refused; a missing conversation is 404", async () => {
+    const c = await tb.conversation();
+    const empty = await proposeDraft(c.id, "   ", AGENT);
+    expect(empty).toMatchObject({ ok: false, status: 400 });
+    const missing = await proposeDraft("sc_0000-missing", DRAFT, AGENT);
+    expect(missing).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe("sendDraft", () => {
+  test("a person sends a waiting draft; the audit row holds a digest, not the text", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const result = await sendDraft(c.id, draft.id, ADA);
+    expect(result.ok).toBe(true);
+    expect(tb.fixture().sent).toHaveLength(1);
+    const after = (await getConversation(c.id))!;
+    const out = after.messages.at(-1)!;
+    expect(out.direction).toBe("out");
+    expect(out.sentBy).toEqual(ADA);
+    expect(out.draftId).toBe(draft.id);
+    expect(after.draft).toBeNull();
+    // A person's send is not automatic.
+    expect(after.autoSends).toHaveLength(0);
+    expect(tb.fixture().sent[0]!.raw).not.toMatch(/^Auto-Submitted:/im);
+    // Our id threads replies to this conversation.
+    expect(
+      (await lookupMessageIds(c.inboxId, [draft.messageId])).get(
+        draft.messageId,
+      ),
+    ).toBe(c.id);
+
+    const rows = tb.kernel.audits.filter((a) => a.type === "support.reply");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      conversationId: c.id,
+      inboxId: c.inboxId,
+      channel: "email",
+      draftId: draft.id,
+      author: "agent",
+      edited: false,
+      messageId: draft.messageId,
+    });
+    expect(typeof rows[0]!.textDigest).toBe("string");
+    for (const value of stringsOf(rows[0]))
+      expect(value.length > 3 && DRAFT.includes(value)).toBe(false);
+    expect(JSON.stringify(rows[0])).not.toContain("zebracache");
+  });
+
+  test("an edited send sends the edit and says so in the audit row", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const result = await sendDraft(c.id, draft.id, ADA, {
+      text: "Edited: please try the export once more.",
+    });
+    expect(result.ok).toBe(true);
+    expect(tb.fixture().sent[0]!.raw).toContain("Edited: please try");
+    expect(tb.fixture().sent[0]!.raw).not.toContain("zebracache");
+    const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
+    expect(row.edited).toBe(true);
+  });
+
+  test("two sends of the same draft at once send one mail", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const results = await Promise.all([
+      sendDraft(c.id, draft.id, ADA),
+      sendDraft(c.id, draft.id, { kind: "person", name: "Bob" }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.find((r) => !r.ok)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+    expect(tb.fixture().sent).toHaveLength(1);
+    // And once more after it went out.
+    expect(await sendDraft(c.id, draft.id, ADA)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+  });
+
+  test("a discarded draft can't be sent", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect((await discardDraft(c.id, draft.id, ADA)).ok).toBe(true);
+    expect((await getConversation(c.id))!.draft?.state).toBe("discarded");
+    expect(await sendDraft(c.id, draft.id, ADA)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("only a person sends a draft that waits for a person", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect(await sendDraft(c.id, draft.id, AGENT)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+    expect(await sendDraft(c.id, draft.id, { kind: "sessions" })).toMatchObject(
+      { ok: false, status: 409 },
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("an unknown draft is 404", async () => {
+    const { c } = await draftNeedingPerson();
+    expect(await sendDraft(c.id, "sd_nope", ADA)).toMatchObject({
+      ok: false,
+      status: 404,
+    });
+  });
+
+  test("a 451 keeps the draft sending with a retry time", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    tb.fixture().smtpReply = { code: 451, message: "Try again later" };
+    const result = await sendDraft(c.id, draft.id, ADA);
+    expect(result).toMatchObject({ ok: false, status: 502 });
+    const after = (await getConversation(c.id))!.draft!;
+    expect(after.state).toBe("sending");
+    expect(after.attempts).toBe(1);
+    expect(after.nextAttemptAt).not.toBeNull();
+    expect(Date.parse(after.nextAttemptAt!)).toBeGreaterThan(Date.now());
+    expect(after.lastError).toContain("451");
+    expect(
+      tb.kernel.audits.filter((a) => a.type === "support.reply.failed"),
+    ).toHaveLength(1);
+    // Never claimed twice while it waits for its retry.
+    expect(await sendDraft(c.id, draft.id, ADA)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+  });
+
+  test("a 550 fails the draft with the reason", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    tb.fixture().smtpReply = { code: 550, message: "No such user" };
+    const result = await sendDraft(c.id, draft.id, ADA);
+    expect(result).toMatchObject({ ok: false, status: 502 });
+    const after = (await getConversation(c.id))!.draft!;
+    expect(after.state).toBe("failed");
+    expect(after.lastError).toContain("550");
+    const failed = tb.kernel.audits.filter(
+      (a) => a.type === "support.reply.failed",
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.permanent).toBe(true);
+    expect(JSON.stringify(failed[0])).not.toContain("zebracache");
+  });
+
+  test("the mailbox is marked handled unless the inbox leaves it untouched", async () => {
+    const first = await draftNeedingPerson();
+    await sendDraft(first.c.id, first.draft.id, ADA);
+    expect(tb.adapter().marks).toHaveLength(0);
+
+    await tb.setInbox({ mailbox: "mark-read" });
+    const second = await draftNeedingPerson();
+    await sendDraft(second.c.id, second.draft.id, ADA);
+    expect(tb.adapter().marks).toEqual([
+      { conversationId: second.c.id, state: "handled" },
+    ]);
+  });
+});
+
+describe("veto, discard, person replies", () => {
+  test("stopping a veto hands the draft to a person", async () => {
+    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    if (!proposed.ok) throw new Error(proposed.error);
+    const stopped = await stopVeto(c.id, proposed.draft.id, ADA);
+    expect(stopped.ok).toBe(true);
+    if (stopped.ok) {
+      expect(stopped.draft.state).toBe("needs-person");
+      expect(stopped.draft.rule).toBe("Stopped by Ada");
+      expect(stopped.draft.vetoDeadline).toBeNull();
+    }
+    // Not a veto any more.
+    expect(await stopVeto(c.id, proposed.draft.id, ADA)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+  });
+
+  test("a person's reply sends at once whatever the autonomy", async () => {
+    await tb.setInbox({ autonomy: "watch" });
+    const c = await tb.conversation({
+      triage: { topics: ["refund"] },
+      trust: { replyToDiffers: true, authFailed: true },
+    });
+    const result = await replyAsPerson(
+      c.id,
+      "A person will refund you.",
+      "Ada",
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message.sentBy).toEqual(ADA);
+      expect(result.message.text).toBe("A person will refund you.");
+    }
+    expect(tb.fixture().sent).toHaveLength(1);
+  });
+
+  test("a person's reply replaces the agent's waiting draft", async () => {
+    const { c } = await draftNeedingPerson();
+    const result = await replyAsPerson(c.id, "Answered by hand.", "Ada");
+    expect(result.ok).toBe(true);
+    const after = (await getConversation(c.id))!;
+    expect(after.draft).toBeNull();
+    expect(tb.fixture().sent).toHaveLength(1);
+    expect(tb.fixture().sent[0]!.raw).not.toContain("zebracache");
+  });
+});
+
+describe("one send path", () => {
+  test("only reply.ts calls a channel adapter's send", async () => {
+    const root = join(import.meta.dir, "..", "..");
+    const offenders: string[] = [];
+    for (const dir of ["server", "agents"]) {
+      const files = await readdir(join(root, dir), { recursive: true });
+      for (const file of files) {
+        if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
+        if (file.includes("/testing/") || file.startsWith("testing/")) continue;
+        const path = join(root, dir, file);
+        if (path === join(import.meta.dir, "reply.ts")) continue;
+        const source = await readFile(path, "utf8");
+        if (
+          /\badapter\??\.send\(/.test(source) ||
+          /channelAdapterFor\([^)]*\)[^;]*\.send\(/.test(source)
+        )
+          offenders.push(join(dir, file));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
