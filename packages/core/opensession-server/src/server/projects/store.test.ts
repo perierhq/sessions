@@ -13,6 +13,7 @@ import {
   patchProjectDocumentAsServer,
   peekProjectDocument,
   type ProjectActor,
+  projectDocuments,
   updateProjectDocument,
 } from "./store";
 
@@ -83,6 +84,83 @@ test("a project without a document reads as the defaults, unwritten", async () =
   expect(doc).toMatchObject({ revision: 0, sandbox: "default", models: {} });
   expect(await listProjectDocuments()).toEqual([]);
   expect(peekProjectDocument("acme-web")?.revision).toBe(0);
+});
+
+test("a document stored before the Support role reads it as read-only, without search", async () => {
+  // Stored by a build that had five roles: no `support` key anywhere.
+  await projectDocuments().set("acme-web", {
+    schema: 1,
+    project: "acme-web",
+    revision: 3,
+    sandbox: "podman",
+    models: { reviews: "pi/anthropic/claude-opus-5-5" },
+    access: {
+      modes: {
+        automations: "code",
+        investigator: "code",
+        verifier: "ask",
+        reviews: "code",
+      },
+      connections: [
+        { server: "linear", roles: ["automations", "investigator", "reviews"] },
+      ],
+      credentials: [],
+      hosts: [],
+      websites: [{ host: "api.example.test", roles: ["automations"] }],
+      webSearch: ["automations", "investigator", "reviews"],
+      routes: {
+        investigator: { route: "server" },
+        verifier: { route: "server" },
+      },
+      deniedTools: { investigator: [], verifier: [] },
+      signalExceptions: [],
+    },
+    updatedAt: "2026-10-01T09:00:00.000Z",
+    updatedBy: "Ada",
+  });
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.revision).toBe(3);
+  expect(doc.access.modes.support).toBe("ask");
+  expect(
+    doc.access.connections.some((c) =>
+      (c.roles as string[]).includes("support"),
+    ),
+  ).toBe(false);
+  expect(doc.access.webSearch as string[]).not.toContain("support");
+  expect(doc.models.support).toBeUndefined();
+  expect(((await projectDocuments().get("acme-web")) as { revision: number }).revision).toBe(3);
+});
+
+test("Support's Changes code and connector cells are set here", async () => {
+  const doc = await written({
+    access: {
+      cells: [
+        { row: { kind: "mode" }, role: "support", value: "code" },
+        {
+          row: { kind: "connection", server: "linear" },
+          role: "support",
+          value: true,
+        },
+      ],
+    },
+  });
+  expect(doc.access.modes.support).toBe("code");
+  expect(doc.access.connections).toEqual([
+    { server: "linear", roles: ["support"] },
+  ]);
+  expect(
+    await write({
+      access: {
+        cells: [
+          {
+            row: { kind: "host", runner: "runner-prod" },
+            role: "support",
+            value: true,
+          },
+        ],
+      },
+    }),
+  ).toMatchObject({ status: 400 });
 });
 
 test("unknown projects answer 404", async () => {

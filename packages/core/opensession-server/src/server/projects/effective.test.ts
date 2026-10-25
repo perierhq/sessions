@@ -3,15 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
+import { automationModel } from "../automations";
+import { __resetModelCachesForTest } from "../models";
 import { patchUiPrefs } from "../ui-prefs";
 import { writeWebSearchSetting } from "../web-search-setting";
 import {
   __setEffectiveDepsForTest,
   type EffectiveDeps,
+  effectiveRoleModel,
   effectiveSandboxes,
   resolveSessionSandbox,
   roleWebAccess,
 } from "./effective";
+import { setGlobalRoleDefault } from "./global-defaults";
 import { __setLegacyEnvironmentForTest } from "./legacy";
 import {
   __setProjectStoreContextForTest,
@@ -65,6 +69,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  __resetModelCachesForTest();
   __setEffectiveDepsForTest(undefined);
   __setLegacyEnvironmentForTest(undefined);
   __setProjectStoreContextForTest(undefined);
@@ -81,6 +86,12 @@ test("a container project with a Daytona default: automations keep running where
       source: "project",
     },
     incidentAgents: {
+      state: "ok",
+      provider: "podman",
+      label: "This machine · container",
+      source: "project",
+    },
+    support: {
       state: "ok",
       provider: "podman",
       label: "This machine · container",
@@ -290,4 +301,51 @@ test("web search and websites for automations and reviews come from the table", 
     deniedTools: {},
     websites: ["status.example.test"],
   });
+});
+
+test("Support runs where incident agents run", async () => {
+  const same = async () => {
+    const s = await effectiveSandboxes("acme-web");
+    expect(s.support).toEqual(s.incidentAgents);
+    return s.support;
+  };
+  // Nothing anywhere: can't start.
+  deps({ global: () => "none" });
+  expect(await same()).toEqual({
+    state: "cant-start",
+    reason: "Agents can't start: this project has no sandbox",
+  });
+  // This machine (container) when Ready.
+  deps({ global: () => "none", podmanReady: () => true });
+  expect(await same()).toMatchObject({ provider: "podman", source: "fallback" });
+  // The global default.
+  deps({ global: () => "daytona" });
+  expect(await same()).toMatchObject({ provider: "daytona", source: "default" });
+  // The project's own sandbox.
+  await setSandbox("podman");
+  expect(await same()).toMatchObject({ provider: "podman", source: "project" });
+});
+
+test("Support's model: the project's, else the global Support default, else the automation model", async () => {
+  __resetModelCachesForTest();
+  expect(await effectiveRoleModel("acme-web", "support")).toBe(
+    automationModel()!,
+  );
+  setGlobalRoleDefault("support", "pi/anthropic/claude-fable-5-1");
+  expect(await effectiveRoleModel("acme-web", "support")).toBe(
+    "pi/anthropic/claude-fable-5-1",
+  );
+  const { revision } = await getProjectDocument("acme-web");
+  const out = await updateProjectDocument(
+    "acme-web",
+    {
+      expectedRevision: revision,
+      models: { support: "pi/anthropic/claude-opus-5-5" },
+    },
+    { name: "Ada", verified: true, login: "ada" },
+  );
+  if ("error" in out) throw new Error(out.error);
+  expect(await effectiveRoleModel("acme-web", "support")).toBe(
+    "pi/anthropic/claude-opus-5-5",
+  );
 });

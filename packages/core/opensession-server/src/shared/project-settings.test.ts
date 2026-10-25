@@ -29,13 +29,14 @@ import {
 const NOW = "2026-10-01T09:00:00.000Z";
 
 describe("project roles", () => {
-  test("five roles in the fixed order, with their labels", () => {
+  test("six roles in the fixed order, with their labels", () => {
     expect([...PROJECT_ROLES]).toEqual([
       "you",
       "automations",
       "investigator",
       "verifier",
       "reviews",
+      "support",
     ]);
     expect(PROJECT_ROLES.map((r) => ROLE_LABELS[r])).toEqual([
       "You",
@@ -43,7 +44,11 @@ describe("project roles", () => {
       "Investigator",
       "Verifier",
       "Reviews",
+      "Support",
     ]);
+    expect(ROLE_DESCRIPTIONS.support).toBe(
+      "Conversations from your support inboxes",
+    );
     expect<string[]>([...UNATTENDED_ROLES]).toEqual(PROJECT_ROLES.slice(1));
     expect(ROLE_DESCRIPTIONS.verifier).toBe(
       "Incidents: proves the fix on a different provider",
@@ -64,6 +69,7 @@ describe("defaultProjectDocument", () => {
       investigator: "code",
       verifier: "ask",
       reviews: "code",
+      support: "ask",
     });
     expect(doc.access.webSearch).toEqual([
       "automations",
@@ -215,6 +221,16 @@ describe("fixtures", () => {
     expect(ALL_READY.readiness.steps.every((s) => s.state === "ready")).toBe(
       true,
     );
+  });
+
+  test("Support runs where incident agents run, read-only, without search", () => {
+    for (const v of views) {
+      expect(v.effective.sandbox.support).toEqual(
+        v.effective.sandbox.incidentAgents,
+      );
+      const mode = v.access.groups[0]!.rows[0]!;
+      expect(mode.cells.support).toEqual({ value: "read", editable: true });
+    }
   });
 
   test("every access row has a cell per role", () => {

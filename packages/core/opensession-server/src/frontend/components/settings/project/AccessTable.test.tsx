@@ -90,15 +90,41 @@ describe("AccessTable", () => {
     expect(allowed).toEqual(["grafana"]);
   });
 
-  test("markup: 5 equal columns, labels, 44px targets", () => {
+  test("Support has a column whose cells change through the same patch", () => {
+    const changes: AccessCellChange[] = [];
+    const all = buttons(table((c) => changes.push(c)));
+    click(all.find((b) => b["aria-label"] === "Linear for Support: No"));
+    click(
+      all.find(
+        (b) => b["aria-label"] === "Changes code in acme-web for Support: Read only",
+      ),
+    );
+    click(all.find((b) => b["aria-label"] === "Search the web for Support: No"));
+    expect(changes).toEqual([
+      {
+        row: { kind: "connection", server: "linear" },
+        role: "support",
+        value: true,
+      },
+      { row: { kind: "mode" }, role: "support", value: "code" },
+      { row: { kind: "webSearch" }, role: "support", value: true },
+    ]);
+    const labels = all.map((b) => String(b["aria-label"] ?? ""));
+    expect(
+      labels.some((l) => l.startsWith("Cloudflare token for Support")),
+    ).toBe(false);
+  });
+
+  test("markup: 6 equal columns, labels, 44px targets", () => {
     const html = renderToStaticMarkup(table());
-    expect(html).toContain("repeat(5,96px)");
+    expect(html).toContain("repeat(6,96px)");
     for (const role of [
       "You",
       "Automations",
       "Investigator",
       "Verifier",
       "Reviews",
+      "Support",
     ])
       expect(html).toContain(`>${role}<`);
     const all = html.match(/<button[^>]*>/g) ?? [];

@@ -1,4 +1,4 @@
-// The phone access list: all five roles as chips, one role's values at a
+// The phone access list: all six roles as chips, one role's values at a
 // time, checkmark toggles that change a cell. Its own state runs in the
 // hook harness; the rows are read from the element tree.
 import { afterEach, describe, expect, mock, test } from "bun:test";
@@ -73,7 +73,7 @@ const mount = (onCellChange = (_: AccessCellChange) => {}) =>
   });
 
 describe("AccessRoleList", () => {
-  test("shows all five roles as chips", () => {
+  test("shows all six roles as chips", () => {
     const list = mount();
     const all = chips(list.output());
     expect(all.map((c) => text(c.children))).toEqual([
@@ -82,6 +82,7 @@ describe("AccessRoleList", () => {
       "Investigator",
       "Verifier",
       "Reviews",
+      "Support",
     ]);
     for (const chip of all) expect(String(chip.className)).toMatch(/before:/);
   });
@@ -162,14 +163,35 @@ describe("AccessRoleList", () => {
     expect(tabbable()).toEqual(["Verifier"]);
     key(current(), "End");
     await settle();
-    expect(tabbable()).toEqual(["Reviews"]);
+    expect(tabbable()).toEqual(["Support"]);
     key(current(), "ArrowRight");
     await settle();
     expect(tabbable()).toEqual(["You"]);
     expect(focused).toEqual([
       '[data-role="verifier"]',
-      '[data-role="reviews"]',
+      '[data-role="support"]',
       '[data-role="you"]',
+    ]);
+  });
+
+  test("the Support chip shows Support's cells and toggles them", async () => {
+    const changes: AccessCellChange[] = [];
+    const list = mount((c) => changes.push(c));
+    click(chips(list.output()).find((c) => text(c.children) === "Support"));
+    await settle();
+    const tree = list.output();
+    expect(text(tree)).toContain("Conversations from your support inboxes");
+    const linear = buttons(tree).find(
+      (b) => b["aria-label"] === "Linear for Support: No",
+    );
+    expect(linear?.["aria-pressed"]).toBe(false);
+    click(linear);
+    expect(changes).toEqual([
+      {
+        row: { kind: "connection", server: "linear" },
+        role: "support",
+        value: true,
+      },
     ]);
   });
 
@@ -185,7 +207,7 @@ describe("AccessRoleList", () => {
   test("each row says how many roles have it", () => {
     const list = mount();
     const all = text(list.output());
-    expect(all).toContain("4 of 5 roles");
-    expect(all).toContain("Every role");
+    expect(all).toContain("4 of 6 roles");
+    expect(all).toContain("5 of 6 roles");
   });
 });
