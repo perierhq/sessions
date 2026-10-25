@@ -6,7 +6,7 @@ import {
 import { __setEffectiveDepsForTest } from "../projects/effective";
 import { __setLegacyEnvironmentForTest } from "../projects/legacy";
 import { projectDocuments } from "../projects/store";
-import { supportRunSpec } from "./session-policy";
+import { supportRunSpec, supportSandboxRequest } from "./session-policy";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 
 useSupportTestKernel();
@@ -96,4 +96,12 @@ test("unreadable settings: read-only, no connectors, can't start", async () => {
   expect(spec.mcpServers).toEqual([]);
   expect(spec.mode).toBe("ask");
   expect(spec.sandbox.ok).toBe(false);
+});
+
+test("a support session never asks for this machine", () => {
+  expect(supportSandboxRequest(null)).toBeNull();
+  expect(supportSandboxRequest("local")).toBeNull();
+  expect(supportSandboxRequest("unknown")).toBeNull();
+  expect(supportSandboxRequest("podman")).toBe("podman");
+  expect(supportSandboxRequest("daytona")).toBe("daytona");
 });

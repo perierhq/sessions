@@ -36,9 +36,14 @@ const SANDBOX_REQUESTS = new Set<string>([
   "podman",
 ]);
 
-/** A run place's provider as a create request: `null` is this machine. */
-function sandboxRequest(provider: string | null): SandboxRequest | null {
-  if (provider === null || provider === "local") return "local";
+/** A run place's provider as a create request, or null when Support can't
+ *  run there. Never this machine (`null` or "local"): support reads
+ *  untrusted mail, so it runs only in a sandbox, whatever the run place
+ *  says (effective.ts supportPlace already refuses the host). */
+export function supportSandboxRequest(
+  provider: string | null,
+): SandboxRequest | null {
+  if (provider === null || provider === "local") return null;
   // SAFETY: SANDBOX_REQUESTS lists only SandboxRequest provider names.
   return SANDBOX_REQUESTS.has(provider) ? (provider as SandboxRequest) : null;
 }
@@ -94,7 +99,7 @@ export async function supportRunSpec(project: string): Promise<SupportRunSpec> {
       mode,
       sandbox: { ok: false, reason: place.reason },
     };
-  const request = sandboxRequest(place.provider);
+  const request = supportSandboxRequest(place.provider);
   return {
     model,
     mcpServers,
