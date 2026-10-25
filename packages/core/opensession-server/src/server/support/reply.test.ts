@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SupportActor, SupportMessage } from "../../shared/support";
+import { catalogDocuments } from "../catalog-documents";
 import {
   INTERRUPTED_SEND,
   discardDraft,
@@ -441,5 +442,122 @@ describe("sends that may have gone out", () => {
     tb.fixture().smtpDropAfterData = false;
     expect((await runSupportTick(Date.now() + 3_600_000)).retried).toBe(0);
     expect(tb.fixture().sent.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("after a person stopped the agent", () => {
+  test("stop, then the agent proposes again: it waits for a person, until a person acts", async () => {
+    await tb.setInbox({ autonomy: "deploy-after-veto" });
+    const c = await tb.conversation();
+    const first = await proposeDraft(c.id, DRAFT, AGENT);
+    if (!first.ok) throw new Error(first.error);
+    expect((await stopVeto(c.id, first.draft.id, ADA)).ok).toBe(true);
+
+    const again = await proposeDraft(c.id, `${DRAFT} Really.`, AGENT);
+    expect(again.ok && again.draft.state).toBe("needs-person");
+    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    // And the time after, too.
+    const third = await proposeDraft(c.id, `${DRAFT} Once more.`, AGENT);
+    expect(third.ok && third.draft.rule).toBe("A person stopped the last reply");
+    expect(tb.fixture().sent).toHaveLength(0);
+
+    // A person sends: the hold ends.
+    if (!third.ok) throw new Error(third.error);
+    expect((await sendDraft(c.id, third.draft.id, ADA)).ok).toBe(true);
+    const fourth = await proposeDraft(c.id, "Anything else?", AGENT);
+    expect(fourth.ok && fourth.draft.state).toBe("veto");
+  });
+
+  test("a discard holds the agent's next draft for a person", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    await tb.setInbox({ autonomy: "propose" });
+    const first = await proposeDraft(c.id, DRAFT, AGENT);
+    if (!first.ok) throw new Error(first.error);
+    expect((await discardDraft(c.id, first.draft.id, ADA)).ok).toBe(true);
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const again = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a send that may have gone out holds the agent's next draft", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    tb.fixture().smtpDropAfterData = true;
+    await proposeDraft(c.id, DRAFT, AGENT);
+    tb.fixture().smtpDropAfterData = false;
+    expect((await getConversation(c.id))!.draft?.lastError).toBe(
+      INTERRUPTED_SEND,
+    );
+    const sent = tb.fixture().sent.length;
+    const again = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(again.ok && again.draft.rule).toBe("A person stopped the last reply");
+    expect(tb.fixture().sent.length).toBe(sent);
+  });
+});
+
+describe("discarding a send", () => {
+  test("a person may discard a send waiting for its retry; the tick then leaves it", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    tb.fixture().smtpReply = { code: 451, message: "Try again later" };
+    await sendDraft(c.id, draft.id, ADA);
+    const keys = (await catalogDocuments("support-pending").list()).map(
+      (e) => e.key,
+    );
+    expect(keys).toContain(`send:${c.id}:${draft.id}`);
+    expect((await discardDraft(c.id, draft.id, ADA)).ok).toBe(true);
+    expect((await getConversation(c.id))!.draft?.state).toBe("discarded");
+    const after = (await catalogDocuments("support-pending").list()).map(
+      (e) => e.key,
+    );
+    expect(after).not.toContain(`send:${c.id}:${draft.id}`);
+    expect((await runSupportTick(Date.now() + 3_600_000)).retried).toBe(0);
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a send that just started can't be discarded", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: {
+        ...x.draft!,
+        state: "sending",
+        attemptStartedAt: new Date().toISOString(),
+      },
+    }));
+    expect(await discardDraft(c.id, draft.id, ADA)).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+  });
+});
+
+describe("spam conversations", () => {
+  test("an agent's draft on spam waits; a person's reply keeps it spam", async () => {
+    await tb.setInbox({ autonomy: "deploy-right-away" });
+    const c = await tb.conversation();
+    await updateConversation(c.id, (x) => ({ ...x, status: "spam" }));
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT);
+    expect(proposed.ok && proposed.draft.rule).toBe(
+      "The conversation is marked as spam",
+    );
+    expect((await replyAsPerson(c.id, "Hi.", "Ada")).ok).toBe(true);
+    expect((await getConversation(c.id))!.status).toBe("spam");
+  });
+});
+
+describe("who acted", () => {
+  test("audit rows name the person's login and display name", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const result = await sendDraft(c.id, draft.id, {
+      kind: "person",
+      name: "Ada",
+      login: "ada",
+    });
+    expect(result.ok).toBe(true);
+    const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
+    expect(row.by).toBe("ada");
+    expect(row.byName).toBe("Ada");
   });
 });

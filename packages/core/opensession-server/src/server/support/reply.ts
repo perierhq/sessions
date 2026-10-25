@@ -10,7 +10,8 @@
 // Reuses the incidents pattern of a deadline in the record plus a tick
 // (incidents/response/coordinator.ts): a veto window or a send waiting for
 // its retry leaves a key in the `support-pending` work index
-// (`veto:<conversationId>`, `send:<conversationId>`), written before the
+// (`veto:<conversationId>`, `send:<conversationId>:<draftId>`), written
+// before the
 // conversation changes, and tick.ts reads only those keys. A send claims
 // its draft with the catalog's compare-and-swap (state `sending`), so two
 // callers never send one draft twice; a send that a restart interrupted is
@@ -92,7 +93,15 @@ export interface PendingSend {
 }
 
 export const vetoKey = (conversationId: string) => `veto:${conversationId}`;
-export const sendKey = (conversationId: string) => `send:${conversationId}`;
+/** One per draft, so a new draft never replaces a live send's key. */
+export const sendKey = (conversationId: string, draftId: string) =>
+  `send:${conversationId}:${draftId}`;
+
+/** A `sending` draft that started longer ago than this, and that no send in
+ *  this process owns, was cut off by a restart. Longer than the SMTP
+ *  connect and greeting time limits, so a live send in another process is
+ *  never mistaken for one. */
+export const INTERRUPTED_AFTER_MS = 2 * 60_000;
 
 export function isPendingVeto(value: unknown): value is PendingVeto {
   const v = value as PendingVeto | null;
@@ -166,8 +175,28 @@ const fail = (status: Failure["status"], error: string): Failure => ({
   error,
 });
 
+/** Display name, for rules ("Stopped by Ada"). */
 function actorLabel(actor: SupportActor): string {
   return actor.kind === "person" ? actor.name : actor.kind;
+}
+
+/** Who acted, for audit rows: the signed-in login (else the name) and
+ *  the display name. */
+function auditActor(actor: SupportActor): { by: string; byName?: string } {
+  if (actor.kind !== "person") return { by: actor.kind };
+  return { by: actor.login || actor.name, byName: actor.name };
+}
+
+/** A person stopped or discarded the last draft (or a stop carried over
+ *  to the agent's next one), or its send may have gone out: the agent's
+ *  next draft waits for a person until one acts. */
+function heldByPerson(d: SupportDraft | null): boolean {
+  if (!d) return false;
+  if (d.state === "failed") return d.lastError === INTERRUPTED_SEND;
+  if (d.state === "discarded") return d.decidedBy?.kind === "person";
+  if (d.state === "needs-person")
+    return d.decidedBy?.kind === "person" || d.rule === RULES.personStopped;
+  return false;
 }
 
 /** Trimmed text, or why it can't be sent. */
@@ -269,6 +298,8 @@ function decide(
     autoSendsLastHour: autoSendsSince(c, now),
     now,
     lastInboundTrust: pinTrust(c, pin),
+    status: c.status,
+    personStoppedLast: heldByPerson(c.draft),
   });
 }
 
@@ -294,17 +325,23 @@ export async function proposeDraft(
   return result.ok ? { ok: true, draft: result.draft } : result;
 }
 
-/** A person's reply: sent at once (rule 1), replacing any waiting draft. */
+/** A person's reply: sent at once (rule 1), replacing any waiting draft.
+ *  `person` is the display name, or the actor with the signed-in login. */
 export async function replyAsPerson(
   conversationId: string,
   text: string,
-  person: string,
+  person: string | { name: string; login?: string },
 ): Promise<Result<{ message: SupportMessage }>> {
-  if (!person.trim()) return fail(400, "Sign in to reply");
-  const result = await propose(conversationId, text, {
-    kind: "person",
-    name: person,
-  });
+  const actor: SupportActor =
+    typeof person === "string"
+      ? { kind: "person", name: person }
+      : {
+          kind: "person",
+          name: person.name,
+          ...(person.login ? { login: person.login } : {}),
+        };
+  if (!actor.name.trim()) return fail(400, "Sign in to reply");
+  const result = await propose(conversationId, text, actor);
   if (!result.ok) return result;
   if (!result.message)
     return fail(409, result.draft.rule || "The reply was not sent");
@@ -345,7 +382,7 @@ async function propose(
       deadline: Date.parse(provisional.deadline),
     }));
   if (provisional.kind === "send")
-    await pending().update<PendingSend>(sendKey(conversationId), () => ({
+    await pending().update<PendingSend>(sendKey(conversationId, draftId), () => ({
       conversationId,
       draftId,
       startedAt: now,
@@ -393,7 +430,7 @@ async function propose(
   });
   const written = draft as SupportDraft | null;
   if (provisional.kind === "send" && written?.state !== "sending")
-    await dropPendingKey(sendKey(conversationId), draftId).catch(() => {});
+    await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(() => {});
   await reconcileVetoKey(conversationId);
   if (!committed || !written)
     return failure ?? fail(404, "Conversation not found");
@@ -498,7 +535,7 @@ async function claimAndDeliver(
   const { inbox, others, own } = await context(current);
 
   // The work index first (see the header); the claim below decides.
-  const key = sendKey(conversationId);
+  const key = sendKey(conversationId, draftId);
   await pending().update<PendingSend>(key, (value) =>
     isPendingSend(value) && value.draftId === draftId
       ? value
@@ -609,7 +646,7 @@ async function claimAndDeliver(
   });
   const draft = claimed as SupportDraft | null;
   if (!committed || !draft) {
-    await dropUnclaimed(key, draftId);
+    await dropUnclaimed(conversationId, key, draftId);
     // A veto the policy now holds waits for a person: no key.
     await reconcileVetoKey(conversationId);
     return failure ?? fail(404, "Conversation not found");
@@ -626,8 +663,11 @@ async function claimAndDeliver(
 
 /** After a refused claim: drop the send key unless a send of the draft is
  *  really under way (the draft is `sending`). */
-async function dropUnclaimed(key: string, draftId: string): Promise<void> {
-  const conversationId = key.slice("send:".length);
+async function dropUnclaimed(
+  conversationId: string,
+  key: string,
+  draftId: string,
+): Promise<void> {
   const c = await getConversation(conversationId);
   if (c?.draft?.id === draftId && c.draft.state === "sending") return;
   await dropPendingKey(key, draftId).catch(() => {});
@@ -718,7 +758,8 @@ async function deliverInFlight(
     ...x,
     messages: [...x.messages, message],
     draft: x.draft?.id === draft.id ? null : x.draft,
-    status: "waiting",
+    // A reply never takes a conversation out of spam.
+    status: x.status === "spam" ? "spam" : "waiting",
     lastMessageAt: message.at > x.lastMessageAt ? message.at : x.lastMessageAt,
     autoSends: automatic ? [...x.autoSends, message.at] : x.autoSends,
   }));
@@ -726,7 +767,7 @@ async function deliverInFlight(
     ourId !== draft.messageId
       ? rememberMessageIds(c.inboxId, c.id, [ourId], [])
       : Promise.resolve(),
-    dropPendingKey(sendKey(c.id), draft.id),
+    dropPendingKey(sendKey(c.id, draft.id), draft.id),
     reconcileVetoKey(c.id),
   ]);
   if (inbox.mailbox !== "untouched" && adapter?.mark && updated)
@@ -740,7 +781,7 @@ async function deliverInFlight(
     channel: c.channel,
     draftId: draft.id,
     author: draft.author.kind,
-    by: actorLabel(by),
+    ...auditActor(by),
     rule: draft.rule,
     edited: opts.edited,
     attempt: draft.attempts,
@@ -795,7 +836,7 @@ async function failed(
         }
       : null,
   );
-  if (permanent) await dropPendingKey(sendKey(c.id), draft.id).catch(() => {});
+  if (permanent) await dropPendingKey(sendKey(c.id, draft.id), draft.id).catch(() => {});
   await audit({
     type: "support.reply.failed",
     conversationId: c.id,
@@ -803,7 +844,7 @@ async function failed(
     channel: c.channel,
     draftId: draft.id,
     author: draft.author.kind,
-    by: actorLabel(draft.decidedBy ?? SESSIONS),
+    ...auditActor(draft.decidedBy ?? SESSIONS),
     attempt: draft.attempts,
     permanent,
     error: err.message,
@@ -833,7 +874,7 @@ export async function failInterruptedSend(
     draft = { ...d, state: "failed", lastError: INTERRUPTED_SEND };
     return { ...x, draft };
   });
-  await dropPendingKey(sendKey(conversationId), draftId).catch(() => {});
+  await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(() => {});
   const d = draft as SupportDraft | null;
   if (!changed || !c || !d) return false;
   await audit({
@@ -843,7 +884,7 @@ export async function failInterruptedSend(
     channel: c.channel,
     draftId,
     author: d.author.kind,
-    by: actorLabel(d.decidedBy ?? SESSIONS),
+    ...auditActor(d.decidedBy ?? SESSIONS),
     attempt: d.attempts,
     permanent: true,
     interrupted: true,
@@ -855,18 +896,34 @@ export async function failInterruptedSend(
 
 // ── Discard and stop ─────────────────────────────────────────────────────
 
-/** A person drops a draft that is waiting (for a person or a veto window)
- *  or failed. */
+/** Whether a person may discard a `sending` draft: no send of it runs in
+ *  this process, and it waits for its retry or its attempt started longer
+ *  ago than INTERRUPTED_AFTER_MS (a restart cut it off). */
+function discardableSend(
+  conversationId: string,
+  d: SupportDraft,
+  now: number,
+): boolean {
+  if (inFlight.has(conversationId)) return false;
+  if (d.nextAttemptAt) return true;
+  const started = Date.parse(d.attemptStartedAt ?? d.createdAt);
+  return Number.isFinite(started) && now - started > INTERRUPTED_AFTER_MS;
+}
+
+/** A person drops a draft that is waiting (for a person or a veto window),
+ *  failed, or a send that waits for its retry or was cut off. */
 export async function discardDraft(
   conversationId: string,
   draftId: string,
   by: SupportActor,
+  now = Date.now(),
 ): Promise<Result<{}>> {
   const result = await settleDraft(conversationId, draftId, by, (d) => {
     if (
       d.state !== "needs-person" &&
       d.state !== "veto" &&
-      d.state !== "failed"
+      d.state !== "failed" &&
+      !(d.state === "sending" && discardableSend(conversationId, d, now))
     )
       return fail(409, "This draft can't be discarded now");
     return {
@@ -874,10 +931,16 @@ export async function discardDraft(
       state: "discarded",
       rule: `Discarded by ${actorLabel(by)}`,
       vetoDeadline: null,
+      nextAttemptAt: null,
       decidedBy: by,
     };
   });
-  return result.ok ? { ok: true } : result;
+  if (!result.ok) return result;
+  await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
+    () => {},
+  );
+  await auditSettled("support.reply.discarded", conversationId, result.draft, by);
+  return { ok: true };
 }
 
 /** A person stops a veto window: the draft waits for a person. */
@@ -886,7 +949,7 @@ export async function stopVeto(
   draftId: string,
   by: SupportActor,
 ): Promise<Result<{ draft: SupportDraft }>> {
-  return settleDraft(conversationId, draftId, by, (d) => {
+  const result = await settleDraft(conversationId, draftId, by, (d) => {
     if (d.state !== "veto") return fail(409, "No veto window is open");
     return {
       ...d,
@@ -895,6 +958,28 @@ export async function stopVeto(
       vetoDeadline: null,
       decidedBy: by,
     };
+  });
+  if (result.ok)
+    await auditSettled("support.reply.stopped", conversationId, result.draft, by);
+  return result;
+}
+
+async function auditSettled(
+  type: "support.reply.stopped" | "support.reply.discarded",
+  conversationId: string,
+  draft: SupportDraft,
+  by: SupportActor,
+): Promise<void> {
+  const c = await getConversation(conversationId).catch(() => null);
+  await audit({
+    type,
+    conversationId,
+    inboxId: c?.inboxId ?? null,
+    channel: c?.channel ?? null,
+    draftId: draft.id,
+    author: draft.author.kind,
+    ...auditActor(by),
+    textDigest: digest(draft.text),
   });
 }
 

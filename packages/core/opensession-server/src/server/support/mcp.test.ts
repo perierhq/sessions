@@ -158,6 +158,7 @@ const draftReplyTool = (sessionId: string) => {
 test("draft_reply drafts on the session's own conversation", async () => {
   const mine = await conversation(1);
   const other = await conversation(2);
+  await updateConversation(mine.id, (c) => ({ ...c, sessionId: "os-1" }));
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const tool = draftReplyTool("os-1");
   // Only the text; never a conversation id.
@@ -180,6 +181,7 @@ test("draft_reply says when a veto window ends", async () => {
   const mine = await conversation(1);
   await updateConversation(mine.id, (c) => ({
     ...c,
+    sessionId: "os-1",
     triage: {
       route: "work",
       reason: "test",
@@ -191,6 +193,18 @@ test("draft_reply says when a veto window ends", async () => {
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const out = await draftReplyTool("os-1").handler({ text: "Fixed." }, {});
   expect(textOf(out)).toMatch(/^Sends at \d\d:\d\d unless someone stops it\.$/);
+});
+
+test("draft_reply from a session that no longer answers the conversation does nothing", async () => {
+  const mine = await conversation(1);
+  // The ref still names the conversation, but another session answers it.
+  await updateConversation(mine.id, (c) => ({ ...c, sessionId: "os-2" }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const out = await draftReplyTool("os-1").handler({ text: "Hi" }, {});
+  expect(textOf(out)).toBe(
+    "This session is not linked to a support conversation",
+  );
+  expect((await getConversation(mine.id))!.draft).toBeNull();
 });
 
 test("draft_reply without a linked conversation does nothing", async () => {

@@ -41,6 +41,8 @@ function input(over: Partial<Input> = {}): Input {
     autoSendsLastHour: 0,
     now: NOW,
     lastInboundTrust: { replyToDiffers: false, authFailed: false },
+    status: "open",
+    personStoppedLast: false,
     ...over,
   };
 }
@@ -56,6 +58,21 @@ describe("decideReply", () => {
       "2. inbox off",
       { inbox: inbox({ enabled: false }) },
       { kind: "needs-person", rule: "The inbox is off" },
+    ],
+    [
+      "2a. spam",
+      { status: "spam" },
+      { kind: "needs-person", rule: "The conversation is marked as spam" },
+    ],
+    [
+      "2a. closed",
+      { status: "closed" },
+      { kind: "needs-person", rule: "The conversation is closed" },
+    ],
+    [
+      "2b. a person stopped the last reply",
+      { personStoppedLast: true },
+      { kind: "needs-person", rule: "A person stopped the last reply" },
     ],
     [
       "3. watch",
@@ -112,6 +129,17 @@ describe("decideReply", () => {
     ["8. send right away", {}, { kind: "send", rule: "Sent by the agent" }],
   ])("%s", (_name, over, expected) => {
     expect(decideReply(input(over))).toEqual(expected);
+  });
+
+  test("a person sends on a spam or closed conversation, and after a stop", () => {
+    for (const over of [
+      { status: "spam" as const },
+      { status: "closed" as const },
+      { personStoppedLast: true },
+    ])
+      expect(
+        decideReply(input({ author: { kind: "person", name: "Ada" }, ...over })),
+      ).toEqual({ kind: "send", rule: "Sent by Ada" });
   });
 
   test("a person wins over a refund topic", () => {

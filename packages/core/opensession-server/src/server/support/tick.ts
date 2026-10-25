@@ -1,13 +1,14 @@
 // The support tick: ends veto windows, retries sends that failed for a
 // while, fails sends a restart interrupted, and retries pipeline hand-offs
 // (ingest.ts). It reads only the `support-pending` work index, never the
-// conversations at large: `veto:<id>` (a window's deadline), `send:<id>` (a
-// send under way or waiting for its retry) and `triage:<id>` (ingest's).
+// conversations at large: `veto:<id>` (a window's deadline),
+// `send:<id>:<draftId>` (a send under way or waiting for its retry) and `triage:<id>` (ingest's).
 // Reuses the incidents fix loop's deadline-in-record plus tick
 // (incidents/response/coordinator.ts). Nothing runs at import.
 import { isShuttingDown } from "../shutdown-state";
 import { retryPendingInbound } from "./ingest";
 import {
+  INTERRUPTED_AFTER_MS,
   INTERRUPTED_SEND,
   dropPendingKey,
   failInterruptedSend,
@@ -20,14 +21,9 @@ import {
 } from "./reply";
 import { getConversation } from "./store";
 
-export { INTERRUPTED_SEND };
+export { INTERRUPTED_AFTER_MS, INTERRUPTED_SEND };
 
 export const SUPPORT_TICK_MS = 15_000;
-/** A send with no retry time that started longer ago than this, and that no
- *  send in this process owns, was cut off by a restart. Longer than the
- *  SMTP connect and greeting time limits, so a live send in another
- *  process is never mistaken for one. */
-export const INTERRUPTED_AFTER_MS = 2 * 60_000;
 /** Sends one tick starts at most; the rest wait for the next tick. */
 const SENDS_PER_TICK = 20;
 

@@ -163,3 +163,28 @@ describe("support reply routes", () => {
     ).toBeUndefined();
   });
 });
+
+describe("support reply routes: who and which", () => {
+  test("a reply records the signed-in login and the display name", async () => {
+    const c = await tb.conversation();
+    const res = await call(`/api/support/conversations/${c.id}/reply`, {
+      text: "Answered by hand.",
+    });
+    expect(res.status).toBe(200);
+    const out = (await getConversation(c.id))!.messages.at(-1)!;
+    expect(out.sentBy).toMatchObject({ kind: "person", login: "ada" });
+    const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
+    expect(row.by).toBe("ada");
+  });
+
+  test("ids that aren't a conversation's or a draft's are 404", async () => {
+    const { c } = await waitingDraft();
+    for (const path of [
+      "/api/support/conversations/sc_NOT-HEX/reply",
+      "/api/support/conversations/nope/reply",
+      `/api/support/conversations/${c.id}/drafts/nope/send`,
+    ])
+      expect((await call(path, { text: "Hi" })).status).toBe(404);
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+});

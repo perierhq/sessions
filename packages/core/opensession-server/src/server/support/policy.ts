@@ -3,10 +3,13 @@
 // ordered rules that each name the rule text the reply box shows. Sending
 // is decided by who wrote the reply, the inbox's autonomy and the triage
 // topics; the triage route ("simple" included) never permits a send, and
-// unknown topics always need a person. Pure.
+// unknown topics always need a person. A person's reply always goes; an
+// automatic one never on a spam or closed conversation, nor after a person
+// stopped the last one. Pure.
 import { SUPPORT_TOPIC_LABELS } from "../../shared/support-copy";
 import {
   AUTO_SENDS_PER_HOUR,
+  type ConversationStatus,
   type InboxConfig,
   type SupportActor,
   type SupportMessage,
@@ -20,6 +23,9 @@ export type ReplyDecision =
 
 export const RULES = {
   inboxOff: "The inbox is off",
+  spam: "The conversation is marked as spam",
+  closed: "The conversation is closed",
+  personStopped: "A person stopped the last reply",
   draftsWait: "Drafts wait for a person",
   topicsUnknown: "Topics unknown, so a person decides",
   authFailed: "The sender could not be verified",
@@ -46,11 +52,18 @@ export function decideReply(input: {
   now: number;
   /** Trust of the message the reply answers (mime.ts replyTarget). */
   lastInboundTrust: SupportMessage["trust"] | null;
+  status: ConversationStatus;
+  /** A person stopped or discarded the conversation's last draft, or its
+   *  last send may have gone out (reply.ts): held until a person acts. */
+  personStoppedLast: boolean;
 }): ReplyDecision {
   const { author, inbox, triage } = input;
   if (author.kind === "person")
     return { kind: "send", rule: `Sent by ${author.name}` };
   if (!inbox.enabled) return needsPerson(RULES.inboxOff);
+  if (input.status === "spam") return needsPerson(RULES.spam);
+  if (input.status === "closed") return needsPerson(RULES.closed);
+  if (input.personStoppedLast) return needsPerson(RULES.personStopped);
   if (
     inbox.autonomy !== "deploy-after-veto" &&
     inbox.autonomy !== "deploy-right-away"

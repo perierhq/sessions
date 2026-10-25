@@ -39,6 +39,10 @@ export function conversationId(raw: string): string {
   return item?.channel === "email" ? item.id : raw;
 }
 
+/** Ids as the store makes them; anything else is not found. */
+export const CONVERSATION_ID = /^sc_[0-9a-f-]{1,64}$/;
+const DRAFT_ID = /^sd_[0-9a-f-]{1,64}$/;
+
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   try {
     const body = await req.json();
@@ -91,13 +95,21 @@ export async function handleSupportReplyRoutes(
   const draftId = action ? segment(parts[2]!) : "";
   if (ref === null || draftId === null) return json(400, "Invalid path");
   const id = conversationId(ref);
-  const by: SupportActor = { kind: "person", name: person };
+  if (!CONVERSATION_ID.test(id)) return json(404, "Conversation not found");
+  if (action && !DRAFT_ID.test(draftId)) return json(404, "Draft not found");
+  // The display name for rules; the signed-in login for the audit.
+  const login = ctx.authUser?.login ?? "";
+  const by: SupportActor = {
+    kind: "person",
+    name: person,
+    ...(login ? { login } : {}),
+  };
   const body = await readBody(req);
 
   let result: { ok: true } | { ok: false; status: number; error: string };
   if (isReply) {
     if (typeof body.text !== "string") return json(400, "Write a reply first");
-    result = await replyAsPerson(id, body.text, person);
+    result = await replyAsPerson(id, body.text, { name: person, login });
   } else if (action === "send") {
     if (body.text !== undefined && typeof body.text !== "string")
       return json(400, "The reply text must be text");

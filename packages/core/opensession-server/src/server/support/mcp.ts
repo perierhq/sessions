@@ -115,7 +115,8 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
       { text: z.string().describe("The reply, as plain text") },
       async ({ text: reply }) => {
         const c = await conversationForSession(ctx.sessionId);
-        if (!c) return text(NOT_LINKED);
+        // Only the session that answers the conversation drafts for it.
+        if (!c || c.sessionId !== ctx.sessionId) return text(NOT_LINKED);
         const result = await proposeDraft(c.id, reply, {
           kind: "agent",
           sessionId: ctx.sessionId,
