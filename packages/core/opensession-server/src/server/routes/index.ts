@@ -50,6 +50,7 @@ import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
 import { handleSupportRoutes } from "./support";
+import { handleSupportActionRoutes } from "./support-actions";
 import { handleSupportInboxRoutes } from "./support-inboxes";
 import { handleSupportReplyRoutes } from "./support-replies";
 import { handleHumanAsksRoutes } from "./human-asks";
@@ -140,6 +141,7 @@ export const routeHandlers: RouteHandler[] = [
   handleSupportRoutes,
   handleSupportInboxRoutes,
   handleSupportReplyRoutes,
+  handleSupportActionRoutes,
   handleIncidentResponseRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,

@@ -4,8 +4,9 @@
 // ref names; no tool takes a conversation id, so mail in one conversation
 // can't steer the agent into another. Customer text comes back inside the
 // <customer_email> wrapper (wrap.ts). draft_reply goes through the one
-// reply path (reply.ts); C5 adds the bug and move tools here. Nothing runs
-// at import.
+// reply path (reply.ts); report_bug through bug handling (bugs.ts) and
+// move_conversation through actions.ts, both only for the conversation's
+// current session. Nothing runs at import.
 
 import { z } from "zod";
 import type { SupportConversation, SupportDraft } from "../../shared/support";
@@ -15,6 +16,8 @@ import {
   tool,
 } from "../inprocess-mcp";
 import type { ExternalRef } from "../types";
+import { moveConversation } from "./actions";
+import { reportBug } from "./bugs";
 import { getInbox } from "./inboxes";
 import { proposeDraft } from "./reply";
 import { wrapSupportMessage } from "./wrap";
@@ -23,6 +26,7 @@ import { getConversation } from "./store";
 export const SUPPORT_MCP_SERVER = "opensession-support";
 export const NOT_LINKED =
   "This session is not linked to a support conversation";
+export const NOT_CURRENT = "This session no longer answers this conversation";
 
 type SessionLookup = (
   sessionId: string,
@@ -118,6 +122,66 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
         });
         return text(
           result.ok ? draftOutcome(result.draft) : `Not sent: ${result.error}`,
+        );
+      },
+    ),
+    ...bugTools(ctx),
+  ];
+}
+
+/** The conversation `sessionId` currently answers, or why not: after a
+ *  move the old session still carries the ref, but only the new one may
+ *  act on the conversation. */
+async function currentConversation(
+  sessionId: string,
+): Promise<SupportConversation | string> {
+  const c = await conversationForSession(sessionId);
+  if (!c) return NOT_LINKED;
+  return c.sessionId === sessionId ? c : NOT_CURRENT;
+}
+
+function bugTools(ctx: { sessionId: string }): AnyTool[] {
+  return [
+    tool(
+      "report_bug",
+      "Report the bug this customer hit, in your own words: what fails, where, how to reproduce it, what you found in the code. Never paste the customer's email, name or address; addresses are removed anyway. The inbox's bug handling decides whether an issue is created (a public repository waits for a person) and whether a fix agent starts; it reports back to you, and you keep the customer posted with draft_reply.",
+      {
+        title: z.string().describe("A short issue title"),
+        summary: z
+          .string()
+          .describe("The bug report: symptoms, steps, what you found"),
+      },
+      async ({ title, summary }) => {
+        const c = await currentConversation(ctx.sessionId);
+        if (typeof c === "string") return text(c);
+        const result = await reportBug(
+          c.id,
+          { title, summary },
+          { kind: "agent", sessionId: ctx.sessionId },
+        );
+        return text(result.note);
+      },
+    ),
+    tool(
+      "move_conversation",
+      "Move this conversation to the project it belongs to, with the reason. A new support agent takes it over there under that project's settings, and this session stops. The inbox may allow only people to move conversations.",
+      {
+        project: z.string().describe("The id of the project to move to"),
+        reason: z.string().describe("Why it belongs there"),
+      },
+      async ({ project, reason }) => {
+        const c = await currentConversation(ctx.sessionId);
+        if (typeof c === "string") return text(c);
+        const result = await moveConversation(
+          c.id,
+          project,
+          { kind: "agent", sessionId: ctx.sessionId },
+          reason,
+        );
+        return text(
+          result.ok
+            ? `Moved to ${project.trim()}. This session stops here.`
+            : `Not moved: ${result.error}`,
         );
       },
     ),

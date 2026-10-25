@@ -34,7 +34,7 @@ function segment(raw: string): string | null {
 }
 
 /** A conversation id, also accepted as its list item id (`email:sc_…`). */
-function conversationId(raw: string): string {
+export function conversationId(raw: string): string {
   const item = parseSupportItemId(raw);
   return item?.channel === "email" ? item.id : raw;
 }
@@ -51,7 +51,7 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
 }
 
 /** The same shape GET /api/support/conversations/:id answers with. */
-async function view(id: string): Promise<Response> {
+export async function conversationViewResponse(id: string): Promise<Response> {
   const conversation = await getConversation(id);
   if (!conversation) return json(404, "Conversation not found");
   const inbox = await getInbox(conversation.inboxId);
@@ -113,5 +113,5 @@ export async function handleSupportReplyRoutes(
     result = await stopVeto(id, draftId, by);
   }
   if (!result.ok) return json(result.status, result.error);
-  return view(id);
+  return conversationViewResponse(id);
 }

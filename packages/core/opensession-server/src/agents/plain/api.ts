@@ -1135,38 +1135,8 @@ export async function createGithubIssue(
     console.error("[plain] No default GitHub repository configured");
     return null;
   }
-  const { githubAppRepositoryToken } = await import("../../server/github-app");
-  const token = await githubAppRepositoryToken(repo);
-  if (!token) {
-    console.error(`[plain] No GitHub App credential for ${repo}`);
-    return null;
-  }
-  try {
-    const response = await fetchWithTimeout(
-      `https://api.github.com/repos/${repo}/issues`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ title, body, labels }),
-      },
-    );
-    if (!response.ok) {
-      console.error(
-        `[plain] GitHub issue creation failed: ${response.status} ${(await response.text()).slice(0, 300)}`,
-      );
-      return null;
-    }
-    const data = await response.json();
-    return { number: data.number, url: data.html_url, repo };
-  } catch (e) {
-    console.error("[plain] Error creating GitHub issue:", e);
-    return null;
-  }
+  const { createRepoIssue } = await import("../../server/github-issues");
+  return createRepoIssue(repo, { title, body, labels });
 }
 
 /**

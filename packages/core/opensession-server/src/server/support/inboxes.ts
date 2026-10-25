@@ -152,7 +152,8 @@ export function __setInboxProjectCheckForTest(
   projectCheck = check;
 }
 
-function projectExists(id: string): boolean {
+/** Whether `id` is a registered project (the registry, or the test check). */
+export function projectExists(id: string): boolean {
   return projectCheck ? projectCheck(id) : Object.hasOwn(configuredRepos(), id);
 }
 

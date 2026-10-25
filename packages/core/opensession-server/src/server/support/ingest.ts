@@ -539,7 +539,8 @@ async function createNew(
     project: inbox.project,
     subject: m.subject,
     customer: message.from,
-    owner: null,
+    // The inbox's owner until a person reassigns it (support/actions.ts).
+    owner: inbox.owner || null,
     first: { ...message, attachments: saved },
     now,
     // Machine mail that answers nothing of ours is filed, not left open.

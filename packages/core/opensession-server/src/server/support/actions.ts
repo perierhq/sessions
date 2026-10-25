@@ -1,0 +1,266 @@
+// What people (and, for a move, the support agent) do to a conversation
+// besides replying: move it to another project, set its owner, close or
+// reopen it, and take it out of spam.
+//
+// A move re-runs the conversation in the target project: the old support
+// session is cancelled and a new one starts there through routing's
+// startSupportSession, so the target's Support settings (model, connectors,
+// where it runs) apply and nothing carries over from the source. The
+// inbox's `moveLock: "people"` binds only the agent. The owner is a person
+// on the roster, resolved as incidents resolve theirs (incidents/owner.ts).
+// Nothing runs at import.
+
+import type { SupportActor, SupportConversation } from "../../shared/support";
+import { resolveOwner } from "../incidents/owner";
+import { type SessionControl, getSessionControl } from "../session-control";
+import { channelAdapterFor } from "./channel";
+import { getInbox, projectExists } from "./inboxes";
+import { startSupportSession } from "./routing";
+import { getConversation, updateConversation } from "./store";
+
+export const MOVE_LOCKED = "Only a person can move this conversation";
+const MAX_REASON = 500;
+
+export interface ActionDeps {
+  cancelSession: SessionControl["cancelSession"];
+  now: () => number;
+}
+
+let override: Partial<ActionDeps> | undefined;
+
+/** Replace the actions' collaborators (tests); undefined restores them. */
+export function __setActionDepsForTest(deps?: Partial<ActionDeps>): void {
+  override = deps;
+}
+
+function deps(): ActionDeps {
+  return {
+    // Registered by opensession.ts at boot.
+    cancelSession:
+      override?.cancelSession ??
+      ((id, opts) => getSessionControl().cancelSession(id, opts)),
+    now: override?.now ?? Date.now,
+  };
+}
+
+const iso = () => new Date(deps().now()).toISOString();
+
+function actorName(actor: SupportActor): string {
+  if (actor.kind === "person") return actor.name;
+  if (actor.kind === "agent") return "The support agent";
+  return "Sessions";
+}
+
+function event(
+  kind: string,
+  actor: SupportActor,
+  detail: string,
+): SupportConversation["events"][number] {
+  return { at: iso(), kind, actor, detail };
+}
+
+/** Cancels a support session's run; a session that is gone or not running
+ *  here is fine. */
+async function cancel(sessionId: string): Promise<void> {
+  try {
+    await deps().cancelSession(sessionId);
+  } catch (error) {
+    console.warn(
+      `[support] couldn't cancel ${sessionId}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/** Starts a session; a failure is an event on the conversation, so the
+ *  conversation waits for a person. */
+async function startOrRecord(
+  c: SupportConversation,
+  why: "moved" | "person",
+): Promise<void> {
+  try {
+    await startSupportSession(c, why);
+  } catch (error) {
+    console.warn(
+      `[support] support agent for ${c.id} didn't start:`,
+      error instanceof Error ? error.message : error,
+    );
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      events: [
+        ...x.events,
+        event(
+          "agent-cant-start",
+          { kind: "sessions" },
+          "Support agent can't start: the session couldn't be created",
+        ),
+      ],
+    }));
+  }
+}
+
+/** Moves conversation `id` to project `to` and starts its agent there. */
+export async function moveConversation(
+  id: string,
+  to: string,
+  by: SupportActor,
+  reason: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const c = await getConversation(id);
+  if (!c) return { ok: false, error: "Conversation not found" };
+  const target = to.trim();
+  const why = reason.replace(/\s+/g, " ").trim().slice(0, MAX_REASON);
+  if (!why) return { ok: false, error: "Say why it moves" };
+  if (!projectExists(target))
+    return { ok: false, error: `There is no project called ${target}` };
+  if (target === c.project)
+    return { ok: false, error: `The conversation is already in ${target}` };
+  const inbox = await getInbox(c.inboxId);
+  if (by.kind !== "person" && inbox?.moveLock !== "agent")
+    return { ok: false, error: MOVE_LOCKED };
+
+  const at = iso();
+  let previous: string | null = null;
+  const moved = await updateConversation(id, (x) => {
+    previous = x.sessionId;
+    return {
+      ...x,
+      project: target,
+      sessionId: null,
+      moves: [...x.moves, { at, from: x.project, to: target, by, reason: why }],
+      events: [
+        ...x.events,
+        event(
+          "moved",
+          by,
+          `${actorName(by)} moved this from ${x.project} to ${target}: ${why}`,
+        ),
+      ],
+    };
+  });
+  if (!moved) return { ok: false, error: "Conversation not found" };
+  // After the move is stored: the agent moving its own conversation is
+  // the run being cancelled.
+  if (previous) await cancel(previous);
+  // A closed or spam conversation moves without an agent.
+  if (moved.status === "open" || moved.status === "waiting")
+    await startOrRecord(moved, "moved");
+  return { ok: true };
+}
+
+/** Sets the owner to a person on the roster. */
+export async function setOwner(
+  id: string,
+  owner: string,
+  by: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const resolved = resolveOwner(owner);
+  if (typeof resolved !== "string") return { ok: false, error: resolved.error };
+  const actor: SupportActor = { kind: "person", name: by };
+  const stored = await updateConversation(id, (c) =>
+    c.owner === resolved
+      ? null
+      : {
+          ...c,
+          owner: resolved,
+          events: [
+            ...c.events,
+            event("owner", actor, `${by} made ${resolved} the owner`),
+          ],
+        },
+  );
+  if (!stored) return { ok: false, error: "Conversation not found" };
+  return { ok: true };
+}
+
+/** Closes the conversation and marks its mail handled in the mailbox. */
+export async function closeConversation(
+  id: string,
+  by: SupportActor,
+): Promise<{ ok: boolean }> {
+  let changed = false;
+  const closed = await updateConversation(id, (c) => {
+    changed = c.status === "open" || c.status === "waiting";
+    if (!changed) return null;
+    return {
+      ...c,
+      status: "closed",
+      closedAt: iso(),
+      events: [
+        ...c.events,
+        event("closed", by, `${actorName(by)} closed this`),
+      ],
+    };
+  });
+  if (!closed || !changed) return { ok: false };
+  const adapter = channelAdapterFor(closed.inboxId);
+  if (adapter?.mark)
+    await adapter.mark(closed, "handled").catch((error: unknown) => {
+      console.warn(
+        `[support] couldn't mark ${id} handled in the mailbox:`,
+        error instanceof Error ? error.name : typeof error,
+      );
+    });
+  return { ok: true };
+}
+
+/** Reopens a closed conversation. Spam leaves spam through markNotSpam. */
+export async function reopenConversation(
+  id: string,
+  by: SupportActor,
+): Promise<{ ok: boolean }> {
+  let changed = false;
+  const open = await updateConversation(id, (c) => {
+    changed = c.status === "closed";
+    if (!changed) return null;
+    return {
+      ...c,
+      status: "open",
+      closedAt: null,
+      events: [
+        ...c.events,
+        event("reopened", by, `${actorName(by)} reopened this`),
+      ],
+    };
+  });
+  return { ok: open !== null && changed };
+}
+
+/** A person says it isn't spam: the conversation opens as work (no new
+ *  triage, unknown topics), and its agent starts unless the inbox is Watch
+ *  only. Mail
+ *  already moved to the spam folder stays there. */
+export async function markNotSpam(
+  id: string,
+  person: string,
+): Promise<{ ok: boolean }> {
+  const actor: SupportActor = { kind: "person", name: person };
+  let changed = false;
+  const open = await updateConversation(id, (c) => {
+    changed = c.status === "spam";
+    if (!changed) return null;
+    return {
+      ...c,
+      status: "open",
+      closedAt: null,
+      // The verdict that called it spam is no guide to its topics:
+      // unknown topics hold every send for a person.
+      triage: {
+        route: "work",
+        reason: `${person} marked this as not spam`,
+        topics: null,
+        bug: c.triage?.bug ?? false,
+        at: iso(),
+      },
+      events: [
+        ...c.events,
+        event("not-spam", actor, `${person} marked this as not spam`),
+      ],
+    };
+  });
+  if (!open || !changed) return { ok: false };
+  const inbox = await getInbox(open.inboxId);
+  if (inbox && inbox.autonomy !== "watch" && !open.sessionId)
+    await startOrRecord(open, "person");
+  return { ok: true };
+}

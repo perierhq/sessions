@@ -223,7 +223,11 @@ test("report_bug files the session's own conversation, as the agent", async () =
     isPublic: async () => false,
     createIssue: async (ghRepo, issue) => {
       posted.push(issue.body);
-      return { number: 3, url: `https://github.com/${ghRepo}/issues/3`, repo: ghRepo };
+      return {
+        number: 3,
+        url: `https://github.com/${ghRepo}/issues/3`,
+        repo: ghRepo,
+      };
     },
   });
   try {

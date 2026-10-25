@@ -179,6 +179,12 @@ describe("ingestInbound", () => {
     expect(await pending()).toEqual([]);
   });
 
+  test("a new conversation is owned by the inbox's owner", async () => {
+    expect(inbox.owner).toBe("Ada");
+    await ingested(inbound());
+    expect((await onlyConversation()).owner).toBe("Ada");
+  });
+
   test("the same message again is a duplicate and writes nothing", async () => {
     const m = inbound();
     await ingested(m);

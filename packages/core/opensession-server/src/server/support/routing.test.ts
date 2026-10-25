@@ -22,6 +22,7 @@ import {
   supportOpeningPrompt,
   wrapCustomerMessage,
 } from "./routing";
+import { supportToolDefinitions } from "./mcp";
 import type { SupportRunSpec } from "./session-policy";
 import {
   createConversation,
@@ -379,9 +380,14 @@ test("the opening prompt names the inbox and the rules", async () => {
   expect(prompt).toContain("AGENTS.md");
   expect(prompt).toContain("draft_reply");
   expect(prompt).toContain("get_conversation");
-  // Only tools the support server carries today.
-  expect(prompt).not.toContain("report_bug");
-  expect(prompt).not.toContain("move_conversation");
+  expect(prompt).toContain("report_bug");
+  expect(prompt).toContain("move_conversation");
+  // Every tool it names is one the support server carries.
+  const tools = new Set(
+    supportToolDefinitions({ sessionId: "os-1" }).map((t) => t.name),
+  );
+  for (const name of prompt.match(/\b[a-z]+_[a-z_]+\b/g) ?? [])
+    if (/^(get|draft|report|move)_/.test(name)) expect(tools).toContain(name);
   expect(prompt.toLowerCase()).toContain("refund");
 });
 
