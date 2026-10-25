@@ -103,11 +103,19 @@ export function forgetCustomer(email: string): Promise<ForgetCustomerResult> {
 // Each answers with the conversation as fetchSupportConversation does. A
 // 409 means someone else changed it first (another person, the tick).
 
+/** What the conversation routes read from a body. */
+interface ConversationActionBody {
+  text?: string;
+  project?: string;
+  reason?: string;
+  owner?: string;
+}
+
 function conversationAction(
   id: string,
   action: string,
   label: string,
-  body: Record<string, unknown> = {},
+  body: ConversationActionBody = {},
 ): Promise<SupportConversationView> {
   return request<SupportConversationView>(
     `/support/conversations/${encodeURIComponent(id)}/${action}`,

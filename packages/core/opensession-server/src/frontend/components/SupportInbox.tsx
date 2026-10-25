@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   SUPPORT_EMAIL_LIST_LIMIT,
   type SupportChannelKind,
+  type SupportIntent,
   type SupportListItem,
 } from "../../shared/support";
 import { useIsPhone } from "../hooks/useIsPhone";
@@ -124,6 +125,10 @@ interface Props {
   /** The open item (`email:sc_…`, `plain:th_…`), or null for the list on
    *  its own. */
   itemId: string | null;
+  /** A support push's button on the open email conversation (`?intent=`). */
+  intent?: SupportIntent;
+  /** The intent was asked about: drop it from the route. */
+  onIntentHandled?: () => void;
   /** Live sessions, for the rail dot: a conversation already being worked on
    *  wears its session's status instead of its priority. */
   sessions: UnifiedSession[];
@@ -135,6 +140,8 @@ interface Props {
 
 export function SupportInbox({
   itemId,
+  intent,
+  onIntentHandled,
   sessions,
   onSelectItem,
   onOpenSession,
@@ -360,35 +367,39 @@ export function SupportInbox({
 
       {showTicket && (
         <section className="flex min-w-0 flex-1 flex-col">
-          {/* An open Plain ticket brings its own bar, with its subject and
-					    customer in it. This is the one for everything else, and
+          {/* An open conversation (a Plain ticket, an email) brings its
+					    own bar, with its subject and customer in it. This is the
+					    one for everything else, and
 					    for phones, where the app's floating back control sits here
 					    and the ticket keeps its header inline (a second back button
 					    would be the same gesture twice). Either way the two columns
 					    start on one line. */}
-          {(!itemId || isPhone || openChannel !== "plain") && (
-            <div className={SUPPORT_COLUMN_BAR} />
-          )}
-          {itemId && openChannel === "plain" ? (
+          {(!itemId || isPhone) && <div className={SUPPORT_COLUMN_BAR} />}
+          {itemId && (openChannel === "plain" || openChannel === "email") ? (
             <ConversationPane
               key={itemId}
               threadId={supportItemProviderId(itemId)}
+              itemId={itemId}
+              intent={intent}
+              onIntentHandled={onIntentHandled}
               onOpenSession={onOpenSession}
               session={liveSessionFor(
-                openItem ?? { id: itemId, channel: "plain", sessionId: null },
+                openItem ?? {
+                  id: itemId,
+                  channel: openChannel,
+                  sessionId: null,
+                },
                 sessions,
               )}
               headerInBar
             />
           ) : itemId ? (
-            // An email conversation: who wrote and what they said, from its
-            // list row.
             <div className="flex min-h-0 flex-1 items-center justify-center p-8">
               <EmptyState
                 icon={<IconMail size={22} />}
-                title={openItem?.title || "Email conversation"}
+                title={openItem?.title || "Conversation"}
               >
-                {openItem?.preview || "No preview for this conversation."}
+                {openItem?.preview || "This channel can't be opened here yet."}
               </EmptyState>
             </div>
           ) : (

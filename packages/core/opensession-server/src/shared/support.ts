@@ -104,7 +104,11 @@ export interface SupportMessage {
    *  Authentication-Results showed dmarc=pass or a dkim/spf pass aligned
    *  with the From domain; an automatic send needs it (absent = not
    *  verified). */
-  trust?: { replyToDiffers: boolean; authFailed: boolean; authVerified?: boolean };
+  trust?: {
+    replyToDiffers: boolean;
+    authFailed: boolean;
+    authVerified?: boolean;
+  };
   /** Inbound only: this message's topics were classified and are in the
    *  conversation's triage.topics (routing.ts). An automatic send waits
    *  for a person until every message it answers has this. */

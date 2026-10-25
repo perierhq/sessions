@@ -3,6 +3,7 @@
 // and a push intent focuses its control and asks before it acts. The box's
 // own hooks run in the hook harness; children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { z } from "zod";
 import type { SupportConversationView } from "../../shared/support";
 import {
   createHookHarness,
@@ -101,18 +102,25 @@ const textarea = (tree: React.ReactNode) => {
   if (!el) throw new Error("No textarea");
   return el.props;
 };
-const type = (tree: React.ReactNode, value: string) =>
-  textarea(tree).onChange?.({
-    target: { value },
-  } as React.ChangeEvent<HTMLTextAreaElement>);
+const type = (tree: React.ReactNode, value: string) => {
+  const change = { target: { value } };
+  // SAFETY: the box's change handler reads only `target.value`.
+  textarea(tree).onChange?.(change as React.ChangeEvent<HTMLTextAreaElement>);
+};
 const confirmOf = (tree: React.ReactNode) => find(tree, ConfirmDialog)?.props;
-const text = (tree: React.ReactNode) =>
-  elements(tree)
-    .flatMap((el) => {
-      const c = (el.props as { children?: unknown }).children;
-      return typeof c === "string" ? [c] : [];
-    })
-    .join(" | ");
+
+/** The string children in `tree`, in order. */
+const childText = z.object({ children: z.string() });
+const strings = (tree: React.ReactNode) =>
+  elements(tree).flatMap((el) => {
+    const parsed = childText.safeParse(el.props);
+    return parsed.success ? [parsed.data.children] : [];
+  });
+/** A press: the handlers under test ignore their event. */
+const press = (handler: ((event: never) => void) | undefined) =>
+  // SAFETY: every handler pressed here ignores its event argument.
+  handler?.(undefined as never);
+const text = (tree: React.ReactNode) => strings(tree).join(" | ");
 
 beforeEach(() => {
   store.clear();
@@ -149,7 +157,7 @@ test("review prefills the draft and Send sends the edited text", async () => {
   expect(loadDraft("support-reply:sc_0001:sd_1").text).toBe(
     "Try resetting your password, Grace",
   );
-  button(box.output(), "Send").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Send").onClick);
   await settle();
   expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1", {
     text: "Try resetting your password, Grace",
@@ -163,7 +171,7 @@ test("an unedited draft is sent as the agent wrote it", async () => {
     SupportReplyBox,
     props({ conversation: conversation({ draft: draft("needs-person") }) }),
   );
-  button(box.output(), "Send").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Send").onClick);
   await settle();
   expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1", undefined);
 });
@@ -173,7 +181,7 @@ test("Discard drops the draft", async () => {
     SupportReplyBox,
     props({ conversation: conversation({ draft: draft("needs-person") }) }),
   );
-  button(box.output(), "Discard").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Discard").onClick);
   await settle();
   expect(discardDraft).toHaveBeenCalledWith("sc_0001", "sd_1");
 });
@@ -184,10 +192,10 @@ test("veto mode Stop stops the window, and Send now sends", async () => {
     props({ conversation: conversation({ draft: draft("veto") }) }),
   );
   expect(textarea(box.output()).readOnly).toBe(true);
-  button(box.output(), "Stop").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Stop").onClick);
   await settle();
   expect(stopVeto).toHaveBeenCalledWith("sc_0001", "sd_1");
-  button(box.output(), "Send now").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Send now").onClick);
   await settle();
   expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1");
 });
@@ -201,7 +209,7 @@ test("a 409 says someone else handled it and refetches", async () => {
     SupportReplyBox,
     props({ conversation: conversation({ draft: draft("veto") }), onRefetch }),
   );
-  button(box.output(), "Stop").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Stop").onClick);
   await settle();
   expect(text(box.output())).toContain(
     "Someone else already handled this draft",
@@ -215,7 +223,7 @@ test("failed shows the error with Try again and Discard", async () => {
     props({ conversation: conversation({ draft: draft("failed") }) }),
   );
   expect(text(box.output())).toContain("The mail server refused the reply");
-  button(box.output(), "Try again").onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(button(box.output(), "Try again").onClick);
   await settle();
   expect(sendDraft).toHaveBeenCalledWith("sc_0001", "sd_1", undefined);
   expect(button(box.output(), "Discard")).toBeDefined();
@@ -227,7 +235,9 @@ test("sending shows the spinner and no actions", () => {
     props({ conversation: conversation({ draft: draft("sending") }) }),
   );
   expect(text(box.output())).toContain("Sending…");
-  expect(find(box.output(), Button, (p) => p.children === "Send")).toBeUndefined();
+  expect(
+    find(box.output(), Button, (p) => p.children === "Send"),
+  ).toBeUndefined();
 });
 
 test("intent stop focuses Stop and asks before stopping", async () => {

@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  AT,
-  conversation,
-  draft,
-  message,
-} from "../tools/support-fixture";
+import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
   replyBoxMode,
@@ -103,11 +98,7 @@ describe("timelineEntries", () => {
       ],
     });
     const entries = timelineEntries(c);
-    expect(entries.map((e) => e.id)).toEqual([
-      "sm_1",
-      "event:0",
-      "sm_2",
-    ]);
+    expect(entries.map((e) => e.id)).toEqual(["sm_1", "event:0", "sm_2"]);
     expect(entries[0]).toMatchObject({
       kind: "email",
       actorType: "customer",
@@ -180,9 +171,9 @@ describe("timelineEntries", () => {
 describe("draft copy", () => {
   test("the header names who drafted and why", () => {
     const now = Date.parse(AT);
-    expect(draftHeader({ kind: "review", draft: draft("needs-person") }, now)).toBe(
-      "Draft by the agent · Draft: a person sends",
-    );
+    expect(
+      draftHeader({ kind: "review", draft: draft("needs-person") }, now),
+    ).toBe("Draft by the agent · Draft: a person sends");
     expect(
       draftHeader(
         { kind: "veto", draft: draft("veto"), deadline: now + 299_000 },
@@ -222,7 +213,10 @@ describe("supportIntentPlan", () => {
 
   test("review focuses Send on a draft waiting for a person", () => {
     expect(
-      supportIntentPlan("review", { kind: "review", draft: draft("needs-person") }),
+      supportIntentPlan("review", {
+        kind: "review",
+        draft: draft("needs-person"),
+      }),
     ).toEqual({ kind: "focus", target: "send" });
     expect(
       supportIntentPlan("review", { kind: "failed", draft: draft("failed") }),
@@ -242,7 +236,10 @@ describe("supportIntentPlan", () => {
       message: "Nothing to stop: the reply was already handled",
     });
     expect(
-      supportIntentPlan("stop", { kind: "review", draft: draft("needs-person") }),
+      supportIntentPlan("stop", {
+        kind: "review",
+        draft: draft("needs-person"),
+      }),
     ).toEqual({
       kind: "stale",
       message: "Nothing to stop: the reply is waiting for you",

@@ -146,11 +146,7 @@ export function SupportReplyBox({
     if (!draft) {
       const reply = text.trim();
       if (!reply) return;
-      void act(
-        "send",
-        () => replyToConversation(conversation.id, reply),
-        true,
-      );
+      void act("send", () => replyToConversation(conversation.id, reply), true);
       return;
     }
     void act(

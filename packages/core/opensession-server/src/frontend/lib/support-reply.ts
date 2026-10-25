@@ -31,7 +31,9 @@ export function replyBoxMode(c: SupportConversation): ReplyBoxMode {
     case "needs-person":
       return { kind: "review", draft };
     case "veto": {
-      const deadline = draft.vetoDeadline ? Date.parse(draft.vetoDeadline) : NaN;
+      const deadline = draft.vetoDeadline
+        ? Date.parse(draft.vetoDeadline)
+        : NaN;
       // A window with no end can't count down; it is a draft to look at.
       return Number.isFinite(deadline)
         ? { kind: "veto", draft, deadline }
@@ -56,8 +58,7 @@ let clock: Intl.DateTimeFormat | undefined;
 export function vetoLabel(deadline: number, now: number): string {
   const left = deadline - now;
   if (left <= 0) return "Sending soon";
-  if (left < COUNTDOWN_UNDER_MS)
-    return `Sends in ${formatVetoRemaining(left)}`;
+  if (left < COUNTDOWN_UNDER_MS) return `Sends in ${formatVetoRemaining(left)}`;
   clock ??= new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
@@ -86,12 +87,17 @@ export function draftHeader(
 ): string {
   const why =
     mode.kind === "veto" ? vetoLabel(mode.deadline, now) : mode.draft.rule;
-  return why ? `${draftAuthor(mode.draft.author)} · ${why}` : draftAuthor(mode.draft.author);
+  return why
+    ? `${draftAuthor(mode.draft.author)} · ${why}`
+    : draftAuthor(mode.draft.author);
 }
 
 /** Local draft storage (lib/drafts.ts): a person's own reply under the
  *  conversation, their edits to a draft under the draft. */
-export function replyDraftKey(conversationId: string, draftId?: string): string {
+export function replyDraftKey(
+  conversationId: string,
+  draftId?: string,
+): string {
   return draftId
     ? `support-reply:${conversationId}:${draftId}`
     : `support-reply:${conversationId}`;
@@ -136,7 +142,10 @@ export function supportIntentPlan(
   if (mode.kind === "review" || mode.kind === "failed")
     return { kind: "focus", target: "send" };
   if (mode.kind === "veto") return { kind: "focus", target: "stop" };
-  return { kind: "stale", message: `Nothing to review: ${NOW_STATE[mode.kind]}` };
+  return {
+    kind: "stale",
+    message: `Nothing to review: ${NOW_STATE[mode.kind]}`,
+  };
 }
 
 /** Polls faster while a send is about to go or going. */
@@ -229,4 +238,3 @@ export function timelineEntries(c: SupportConversation): PlainTimelineEntry[] {
     .sort((a, b) => (a.at || 0) - (b.at || 0) || a.order - b.order)
     .map((r) => r.entry);
 }
-

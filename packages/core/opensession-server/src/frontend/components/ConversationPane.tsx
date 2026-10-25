@@ -28,10 +28,19 @@ import {
 import { cn } from "../ui/cn";
 import { IconSparkle } from "./icons";
 import { errorMessage } from "../lib/error-message";
+import { parseSupportItemId, type SupportIntent } from "../../shared/support";
+import { EmailConversation } from "./EmailConversation";
 
 interface Props {
   /** The Plain thread id — the pane's key. */
   threadId: string;
+  /** A Support list item id (`plain:th_…`, `email:sc_…`), when the pane
+   *  opens from the Support list: an email item opens EmailConversation,
+   *  a Plain item this pane for its thread. */
+  itemId?: string;
+  /** A support push's button (`?intent=`), on an email conversation. */
+  intent?: SupportIntent;
+  onIntentHandled?: () => void;
   /** Navigate into a session (the triage button resolves to one over HTTP). */
   onOpenSession: (id: string) => void;
   /** Hide the "Triage this ticket" affordance (e.g. the pane is already
@@ -76,7 +85,26 @@ const ACTIONS_IN_BAR_MIN = 750;
  * workspaces) and by the legacy session-less /support preview. Polls at 20s —
  * there's no live push for Plain.
  */
-export function ConversationPane({
+export function ConversationPane(props: Props) {
+  const item = props.itemId ? parseSupportItemId(props.itemId) : null;
+  if (item?.channel === "email")
+    return (
+      <EmailConversation
+        itemId={props.itemId!}
+        onOpenSession={props.onOpenSession}
+        session={props.session}
+        headerInBar={props.headerInBar}
+        intent={props.intent}
+        onIntentHandled={props.onIntentHandled}
+        className={props.className}
+      />
+    );
+  return (
+    <PlainConversationPane {...props} threadId={item?.id ?? props.threadId} />
+  );
+}
+
+function PlainConversationPane({
   threadId,
   onOpenSession,
   hideTriage,

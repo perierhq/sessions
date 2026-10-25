@@ -3,6 +3,7 @@
 // instance owner only and behind a confirm). Hooks run in the hook harness;
 // children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { z } from "zod";
 import type {
   InboxesResponse,
   SupportConversationView,
@@ -111,16 +112,21 @@ mock.module("../lib/people", () => ({
 
 const { ConfirmDialog } = await import("../ui/confirm");
 const { Menu } = await import("../ui/menu");
-const { EmailConversation, EmailConversationActions } = await import(
-  "./EmailConversation"
-);
+const { EmailConversation, EmailConversationActions } =
+  await import("./EmailConversation");
 type ActionProps = Parameters<typeof EmailConversationActions>[0];
 
+/** The string children in `tree`, in order. */
+const childText = z.object({ children: z.string() });
 const strings = (tree: React.ReactNode) =>
   elements(tree).flatMap((el) => {
-    const c = (el.props as { children?: unknown }).children;
-    return typeof c === "string" ? [c] : [];
+    const parsed = childText.safeParse(el.props);
+    return parsed.success ? [parsed.data.children] : [];
   });
+/** A press: the handlers under test ignore their event. */
+const press = (handler: ((event: never) => void) | undefined) =>
+  // SAFETY: every handler pressed here ignores its event argument.
+  handler?.(undefined as never);
 const item = (tree: React.ReactNode, label: string) =>
   find(tree, Menu.Item, (p) => p.children === label)?.props;
 
@@ -170,7 +176,7 @@ test("a conversation with a session wears the Open session pill", async () => {
     "button",
     (p) => p["aria-label"] === "Open session",
   );
-  pill?.props.onClick?.({} as React.MouseEvent<HTMLButtonElement>);
+  press(pill?.props.onClick);
   expect(opened).toEqual(["s1"]);
 });
 
@@ -233,7 +239,7 @@ test("a spam conversation offers Not spam", async () => {
   const notSpam = item(actions.output(), "Not spam");
   expect(notSpam).toBeDefined();
   expect(item(actions.output(), "Mark as done")).toBeUndefined();
-  notSpam?.onClick?.({} as never);
+  press(notSpam?.onClick);
   await settle();
   expect(markNotSpam).toHaveBeenCalledWith("sc_0001");
   expect(onChanged).toHaveBeenCalledTimes(1);
@@ -246,7 +252,7 @@ test("an open conversation has no Not spam", () => {
 
 test("Forget this customer asks first, then forgets", async () => {
   const actions = harness.mount(EmailConversationActions, actionProps());
-  item(actions.output(), "Forget this customer")?.onClick?.({} as never);
+  press(item(actions.output(), "Forget this customer")?.onClick);
   await settle();
   expect(forgetCustomer).not.toHaveBeenCalled();
   const dialog = find(actions.output(), ConfirmDialog)?.props;

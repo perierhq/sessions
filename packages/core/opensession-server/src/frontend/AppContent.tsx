@@ -1622,6 +1622,16 @@ export function AppContent({
                   ) : supportPageItem(route) !== undefined ? (
                     <SupportInbox
                       itemId={supportPageItem(route) ?? null}
+                      intent={
+                        route.view === "support" ? route.intent : undefined
+                      }
+                      onIntentHandled={() => {
+                        if (route.view === "support")
+                          navigate(
+                            { view: "support", threadId: route.threadId },
+                            { replace: true },
+                          );
+                      }}
                       sessions={sessions}
                       onSelectItem={(itemId) =>
                         navigate(supportItemRoute(itemId))
