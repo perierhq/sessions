@@ -395,6 +395,7 @@ test("an agent's run binding is read from its session, and a superseded one is a
   );
   expect(await agents.bound("child-9")).toEqual({
     connections: ["sentry"],
+    runners: [],
     mode: "ask",
     spawn,
   });

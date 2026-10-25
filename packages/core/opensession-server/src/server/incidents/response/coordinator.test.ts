@@ -300,6 +300,7 @@ async function world(
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
       bound.set(id, {
         connections: [...input.access.connections],
+        runners: [...input.access.runners],
         mode: input.access.mode,
         spawn: accessSpawnSnapshot(input.access),
       });

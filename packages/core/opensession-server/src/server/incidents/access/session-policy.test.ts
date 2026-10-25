@@ -7,6 +7,7 @@ import {
   auditIncidentSpawned,
   enforceIncidentSpawn,
   incidentDescendantPolicy,
+  incidentRunBound,
   incidentTurnScope,
   viewIncidentTurnScope,
 } from "./session-policy";
@@ -310,6 +311,30 @@ test("a superseded agent's turn is refused", async () => {
       bound({ id: "os-2", automationDescendantPolicy: policy }),
     ),
   ).toMatchObject({ mcpServers: ["sentry"] });
+});
+test("a running agent never loses a denial it was spawned with", async () => {
+  const policy = incidentDescendantPolicy(
+    access({ deniedTools: { bash: "No shell" } }),
+    base,
+  );
+  current = access({ deniedTools: { web_fetch: "No web" } });
+  expect(
+    (await incidentTurnScope(bound({ automationDescendantPolicy: policy })))
+      ?.deniedTools,
+  ).toEqual({
+    bash: expect.stringContaining("denied when this agent started"),
+    web_fetch: "No web",
+  });
+});
+test("a run without a mode is bound to ask", () => {
+  const policy = incidentDescendantPolicy(access(), base);
+  expect(incidentRunBound({ automationDescendantPolicy: policy })).toMatchObject(
+    { mode: "ask", runners: ["rn-prod"], connections: ["sentry"] },
+  );
+  expect(
+    incidentRunBound({ mode: "code", automationDescendantPolicy: policy })
+      ?.mode,
+  ).toBe("code");
 });
 test("a refused resolution refuses the turn", async () => {
   __setBindingResolverForTest(async () => {

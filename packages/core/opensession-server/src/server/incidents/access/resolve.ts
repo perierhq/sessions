@@ -523,6 +523,9 @@ export function accessSpawnSnapshot(access: AgentAccess): AccessSpawnSnapshot {
           hosts: [...access.egress.hosts],
         }
       : null,
+    ...(Object.keys(access.deniedTools).length
+      ? { deniedTools: Object.keys(access.deniedTools).sort() }
+      : {}),
   };
 }
 
@@ -545,7 +548,10 @@ export function spawnSnapshotOf(
     !Array.isArray(raw.hosts) ||
     !Array.isArray(raw.credentials) ||
     (raw.egress !== null &&
-      (typeof raw.egress !== "object" || !Array.isArray(raw.egress?.hosts)))
+      (typeof raw.egress !== "object" || !Array.isArray(raw.egress?.hosts))) ||
+    (raw.deniedTools !== undefined &&
+      (!Array.isArray(raw.deniedTools) ||
+        raw.deniedTools.some((t) => typeof t !== "string")))
   )
     return EMPTY_SNAPSHOT;
   return raw as AccessSpawnSnapshot;
@@ -602,10 +608,12 @@ export function clampToSpawn(
 }
 
 /** What a running incident agent is bound to: the connections its run
- *  mounts (the policy's mcpServers), its session's mode and its spawn
- *  snapshot. Settings widened later never reach it. */
+ *  mounts (the policy's mcpServers), the Runners it may use (the policy's
+ *  allowedRunners), its session's mode and its spawn snapshot. Settings
+ *  widened later never reach it. */
 export interface IncidentRunBound {
   connections: string[];
+  runners: string[];
   mode: AccessMode;
   spawn: AccessSpawnSnapshot;
 }
@@ -633,16 +641,24 @@ export function clampToRun(
 
 /** Something the access allows that a running agent was not bound to. */
 export interface AccessWidening {
-  field: "connections" | "hosts" | "credentials" | "egress" | "mode";
+  field:
+    | "connections"
+    | "runners"
+    | "hosts"
+    | "credentials"
+    | "egress"
+    | "mode"
+    | "deniedTools";
   item: string;
 }
 
 /**
  * What `access` (resolved now, not clamped) allows beyond what the run is
- * bound to: connections it does not mount, hosts and credentials it was not
- * spawned with, a credential at a wider mode, an egress route or host it
- * was not spawned with, and code mode for an ask session. Empty when the
- * access is the same or narrower.
+ * bound to: connections it does not mount, Runners it may not use, hosts
+ * and credentials it was not spawned with, a credential at a wider mode, an
+ * egress route or host it was not spawned with, code mode for an ask
+ * session, and tools denied at spawn that are no longer denied. Empty when
+ * the access is the same or narrower.
  */
 export function accessWidenedBeyond(
   access: AgentAccess,
@@ -652,6 +668,8 @@ export function accessWidenedBeyond(
   for (const c of access.connections)
     if (!run.connections.includes(c))
       out.push({ field: "connections", item: c });
+  for (const r of access.runners)
+    if (!run.runners.includes(r)) out.push({ field: "runners", item: r });
   for (const h of access.hosts)
     if (!run.spawn.hosts.includes(hostGrantKey(h)))
       out.push({
@@ -678,6 +696,9 @@ export function accessWidenedBeyond(
   }
   if (!modeWithin(access.mode, run.mode))
     out.push({ field: "mode", item: "editing" });
+  for (const tool of run.spawn.deniedTools ?? [])
+    if (!(tool in access.deniedTools))
+      out.push({ field: "deniedTools", item: tool });
   return out;
 }
 

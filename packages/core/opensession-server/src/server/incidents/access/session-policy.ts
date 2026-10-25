@@ -168,8 +168,9 @@ export function auditIncidentSpawned(
 
 /**
  * What a bound incident agent's run is held to: the connections its policy
- * mounts, its session's mode (read the way incidentTurnScope reads it: any
- * mode but ask is code) and its spawn snapshot. Null without a binding.
+ * mounts, the Runners it allows, its session's mode (code only when the
+ * session says code; a missing or unknown mode is ask) and its spawn
+ * snapshot. Null without a binding.
  */
 export function incidentRunBound(session: {
   mode?: string;
@@ -179,7 +180,8 @@ export function incidentRunBound(session: {
   if (!policy?.incident) return null;
   return {
     connections: [...policy.mcpServers],
-    mode: session.mode === "ask" ? "ask" : "code",
+    runners: [...policy.allowedRunners],
+    mode: session.mode === "code" ? "code" : "ask",
     spawn: spawnSnapshotOf(policy.incident),
   };
 }
@@ -215,6 +217,9 @@ export interface IncidentTurnSession {
   automationDescendantPolicy?: AutomationDescendantPolicy;
 }
 
+const DENIED_AT_SPAWN =
+  "This tool was denied when this agent started; it stays denied until a fresh agent starts with the new access.";
+
 // (session, revision) pairs whose change was already audited in this process.
 const auditedChanges = new Set<string>();
 const MAX_AUDITED_CHANGES = 10_000;
@@ -222,7 +227,7 @@ const MAX_AUDITED_CHANGES = 10_000;
 /**
  * The scope of an incident agent's next turn, re-resolved from its binding:
  * the spawn snapshot of connections intersected with the fresh access, and
- * the fresh denials. Mode, repo and Runner are fixed at spawn; if the fresh
+ * the fresh denials on top of the spawn snapshot's. Mode, repo and Runner are fixed at spawn; if the fresh
  * access no longer allows them the turn is refused. Returns null for a
  * session without a binding; throws AgentAccessError otherwise.
  */
@@ -318,7 +323,17 @@ async function turnScope(
     mcpServers: policy.mcpServers.filter((name) =>
       access.connections.includes(name),
     ),
-    deniedTools: { ...access.deniedTools },
+    // A denial the agent was spawned with stays, whatever the settings say
+    // now; lifting it reaches only a fresh agent.
+    deniedTools: {
+      ...Object.fromEntries(
+        (spawnSnapshotOf(binding).deniedTools ?? []).map((tool) => [
+          tool,
+          DENIED_AT_SPAWN,
+        ]),
+      ),
+      ...access.deniedTools,
+    },
     access,
   };
 }

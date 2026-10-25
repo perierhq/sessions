@@ -166,6 +166,10 @@ export interface AccessSpawnSnapshot {
     proxyCredential?: string;
     hosts: string[];
   } | null;
+  /** Tools denied at spawn, sorted: a running agent keeps these denials
+   *  whatever the settings say later. Absent when there were none (and in
+   *  snapshots taken before denials were kept). */
+  deniedTools?: string[];
 }
 
 /** Carried on an incident agent's descendant policy; re-resolved on use. */
