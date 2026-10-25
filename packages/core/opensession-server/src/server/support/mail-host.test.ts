@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAIL_HOST_REFUSED,
+  MAIL_TLS_NONE_REFUSED,
   MailHostRefusedError,
   classifyMailAddress,
   resolveMailHost,
@@ -187,5 +188,23 @@ describe("resolveMailHost", () => {
     ).catch((e: Error & { code?: string }) => e);
     expect(error).not.toBeInstanceOf(MailHostRefusedError);
     expect((error as { code?: string }).code).toBe("ENOTFOUND");
+  });
+
+  test("no TLS only when the address is this machine", async () => {
+    const r = resolver({
+      localhost: ["127.0.0.1"],
+      "bridge.example.test": ["10.0.0.5"],
+    });
+    const policy = { allowInternalHost: true, tls: "none" as const };
+    expect(await resolveMailHost("localhost", policy, r.resolve)).toMatchObject(
+      { address: "127.0.0.1", loopback: true },
+    );
+    for (const host of ["bridge.example.test", "10.0.0.5", PUBLIC]) {
+      const error = await resolveMailHost(host, policy, r.resolve).catch(
+        (e: Error) => e,
+      );
+      expect(error).toBeInstanceOf(MailHostRefusedError);
+      expect((error as Error).message).toBe(MAIL_TLS_NONE_REFUSED);
+    }
   });
 });

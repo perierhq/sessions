@@ -17,6 +17,7 @@ import {
   type InboxPatch,
   type InboxView,
   MAILBOX_BEHAVIOURS,
+  MAIL_TLS_MODES,
   type MailServerConfig,
   SUPPORT_TOPICS,
   defaultInboxConfig,
@@ -24,7 +25,7 @@ import {
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import { instanceOwner, personOwner, resolveOwner } from "../incidents/owner";
-import { mailHostLiteralAllowed } from "./mail-host";
+import { mailHostLiteralAllowed, noTlsHostAllowed } from "./mail-host";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -111,6 +112,25 @@ function isInboxId(id: unknown): id is string {
   );
 }
 
+/** A server stored before TLS modes had `secure: boolean`: on reads as
+ *  implicit TLS, off as STARTTLS, which is now required (the safe reading
+ *  of what was opportunistic). */
+function upgradeServer(server: MailServerConfig): MailServerConfig {
+  const legacy = server as MailServerConfig & { secure?: unknown };
+  if (legacy.tls !== undefined || typeof legacy.secure !== "boolean")
+    return server;
+  const { secure, ...rest } = legacy;
+  return { ...rest, tls: secure ? "implicit" : "starttls" };
+}
+
+function upgradeRecord(value: InboxConfig): InboxConfig {
+  const imap = upgradeServer(value.imap);
+  const smtp = upgradeServer(value.smtp);
+  return imap === value.imap && smtp === value.smtp
+    ? value
+    : { ...value, imap, smtp };
+}
+
 function isInboxRecord(value: unknown): value is InboxConfig {
   const v = value as InboxConfig | null;
   return (
@@ -182,8 +202,10 @@ function serverError(
     return `This ${name} server address isn't allowed`;
   if (!isInt(server.port, 1, 65_535))
     return `${name} port must be a whole number from 1 to 65535`;
-  if (typeof server.secure !== "boolean")
-    return `${name} TLS setting must be on or off`;
+  if (!MAIL_TLS_MODES.includes(server.tls))
+    return `${name} security must be implicit TLS, STARTTLS or none`;
+  if (server.tls === "none" && !noTlsHostAllowed(server.host))
+    return `${name} security can be none only for a server on this machine`;
   if (
     typeof server.user !== "string" ||
     !server.user.trim() ||
@@ -285,7 +307,7 @@ export function inboxView(config: InboxConfig, health: InboxHealth): InboxView {
 export async function listInboxes(): Promise<InboxConfig[]> {
   const out: InboxConfig[] = [];
   for (const { value } of await inboxes().list())
-    if (isInboxRecord(value)) out.push(value);
+    if (isInboxRecord(value)) out.push(upgradeRecord(value));
   return out.sort(
     (a, b) =>
       a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
@@ -295,7 +317,7 @@ export async function listInboxes(): Promise<InboxConfig[]> {
 export async function getInbox(id: string): Promise<InboxConfig | null> {
   if (!isInboxId(id)) return null;
   const value = await inboxes().get(id);
-  return isInboxRecord(value) ? value : null;
+  return isInboxRecord(value) ? upgradeRecord(value) : null;
 }
 
 export async function inboxPassword(
@@ -312,7 +334,7 @@ const trimServer = (input: ServerInput): MailServerConfig | null =>
     ? {
         host: typeof input.host === "string" ? input.host.trim() : input.host,
         port: input.port,
-        secure: input.secure,
+        tls: input.tls,
         user: typeof input.user === "string" ? input.user.trim() : input.user,
         passwordRef: null,
       }
@@ -435,11 +457,11 @@ function applyPatch(
   for (const which of SERVERS) {
     const server = patch[which];
     if (!server) continue;
-    const { host, port, secure, user } = server;
+    const { host, port, tls, user } = server;
     if (host !== undefined)
       next[which].host = typeof host === "string" ? host.trim() : host;
     if (port !== undefined) next[which].port = port;
-    if (secure !== undefined) next[which].secure = secure;
+    if (tls !== undefined) next[which].tls = tls;
     if (user !== undefined)
       next[which].user = typeof user === "string" ? user.trim() : user;
   }
@@ -454,7 +476,7 @@ const SERVER_CHANGED = "Enter the password again when the server changes";
 const serverChanged = (current: MailServerConfig, next: MailServerConfig) =>
   current.host !== next.host ||
   current.port !== next.port ||
-  current.secure !== next.secure ||
+  current.tls !== next.tls ||
   current.user !== next.user;
 
 /** A new password (non-empty `password` in the patch) replaces the secret;
@@ -539,7 +561,7 @@ export async function updateInbox(
         stale = true;
         return value;
       }
-      previous = value;
+      previous = upgradeRecord(value);
       return { ...next, revision: value.revision + 1 };
     });
   } catch (error) {
@@ -576,7 +598,7 @@ export async function deleteInbox(id: string, _by: string): Promise<boolean> {
   if (!current) return false;
   let previous: InboxConfig | null = null;
   await inboxes().update(id, (value) => {
-    previous = isInboxRecord(value) ? value : null;
+    previous = isInboxRecord(value) ? upgradeRecord(value) : null;
     return null;
   });
   const removed = previous as InboxConfig | null;

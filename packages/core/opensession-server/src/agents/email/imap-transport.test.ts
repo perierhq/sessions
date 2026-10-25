@@ -23,8 +23,10 @@ import {
 } from "./imap-transport";
 import {
   MAIL_HOST_REFUSED,
+  MAIL_TLS_NONE_REFUSED,
   __setMailHostResolverForTest,
 } from "../../server/support/mail-host";
+import { PAUSE_COPY } from "./backoff";
 
 const START = Date.parse("2026-10-25T10:00:00.000Z");
 
@@ -73,12 +75,7 @@ async function flush(rounds = 20): Promise<void> {
 }
 
 function inboxFor(fixture: MailFixture): InboxConfig {
-  const server = {
-    host: "127.0.0.1",
-    secure: false,
-    user: MAIL_USER,
-    passwordRef: "ref_imap",
-  };
+  const server = { passwordRef: "ref_imap" };
   const inbox = defaultInboxConfig({
     id: "inb_test",
     label: "Acme help",
@@ -87,8 +84,8 @@ function inboxFor(fixture: MailFixture): InboxConfig {
     owner: "Ada",
     createdBy: "Ada",
     now: new Date(START).toISOString(),
-    imap: { ...server, port: fixture.imapPort },
-    smtp: { ...server, port: fixture.smtpPort },
+    imap: { ...fixture.imapServer, ...server },
+    smtp: { ...fixture.smtpServer, ...server },
   });
   // The fixture listens on loopback.
   return { ...inbox, allowInternalHost: true };
@@ -874,8 +871,8 @@ describe("mail server address policy", () => {
     expect(f.connections()).toBe(0);
   });
 
-  test("the client dials the address and keeps the name for TLS", () => {
-    const base = inboxFor({ imapPort: 993, smtpPort: 465 } as MailFixture);
+  test("the client dials the address and keeps the name for TLS", async () => {
+    const base = inboxFor(await fixture());
     const options = imapClientOptions(
       {
         host: "imap.example.test",
@@ -883,7 +880,7 @@ describe("mail server address policy", () => {
         servername: "imap.example.test",
         loopback: false,
       },
-      { ...base.imap, host: "imap.example.test", port: 993 },
+      { ...base.imap, host: "imap.example.test", port: 993, tls: "implicit" },
       "pw",
     );
     expect(options.host).toBe("93.184.216.34");
@@ -894,11 +891,9 @@ describe("mail server address policy", () => {
   test("testImapLogin refuses an internal server without allowInternalHost", async () => {
     const f = await fixture();
     const login = scriptLogin(f, () => null);
-    const result = await testImapLogin(
-      { host: "127.0.0.1", port: f.imapPort, secure: false, user: MAIL_USER },
-      MAIL_PASSWORD,
-      { allowInternalHost: false },
-    );
+    const result = await testImapLogin(f.imapServer, MAIL_PASSWORD, {
+      allowInternalHost: false,
+    });
     expect(result).toEqual({
       ok: false,
       kind: "address",
@@ -908,14 +903,120 @@ describe("mail server address policy", () => {
   });
 });
 
+describe("TLS modes", () => {
+  const target = {
+    host: "imap.example.test",
+    address: "93.184.216.34",
+    servername: "imap.example.test",
+    loopback: false,
+  };
+  const server = {
+    host: "imap.example.test",
+    port: 993,
+    user: MAIL_USER,
+  };
+
+  test("implicit TLS connects over TLS", () => {
+    const options = imapClientOptions(
+      target,
+      { ...server, tls: "implicit" },
+      "pw",
+    );
+    expect(options.secure).toBe(true);
+    expect(options.doSTARTTLS).toBeUndefined();
+  });
+
+  test("STARTTLS is required, never opportunistic", () => {
+    const options = imapClientOptions(
+      target,
+      { ...server, port: 143, tls: "starttls" },
+      "pw",
+    );
+    expect(options.secure).toBe(false);
+    expect(options.doSTARTTLS).toBe(true);
+  });
+
+  test("no TLS never upgrades, and only on this machine", () => {
+    const options = imapClientOptions(
+      { ...target, address: "127.0.0.1", loopback: true },
+      { ...server, port: 143, tls: "none" },
+      "pw",
+    );
+    expect(options.secure).toBe(false);
+    expect(options.doSTARTTLS).toBe(false);
+    expect(() =>
+      imapClientOptions(target, { ...server, port: 143, tls: "none" }, "pw"),
+    ).toThrow(MAIL_TLS_NONE_REFUSED);
+  });
+
+  test("STARTTLS not offered: no login, the inbox backs off", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => null);
+    const clock = fakeClock();
+    const base = inboxFor(f);
+    const h = harness(f, {
+      timers: clock,
+      inbox: { ...base, imap: { ...base.imap, tls: "starttls" } },
+    });
+    await h.transport.start();
+    const health = h.transport.health();
+    expect(health.state).toBe("backing-off");
+    expect(health.reason).toBe(PAUSE_COPY.tls);
+    expect(login.count()).toBe(0);
+  });
+
+  test("STARTTLS offered: the upgrade runs before any login", async () => {
+    const f = await fixture({ plugins: [...DEFAULT_IMAP_PLUGINS, "STARTTLS"] });
+    const login = scriptLogin(f, () => null);
+    const starttls = countCommands(f, "STARTTLS");
+    const base = inboxFor(f);
+    // The fixture's certificate is self-signed, so the handshake is
+    // refused: the password is never sent in the clear or to it.
+    const result = await testImapLogin(
+      { ...f.imapServer, tls: "starttls" },
+      MAIL_PASSWORD,
+      { allowInternalHost: base.allowInternalHost },
+    );
+    expect(result.ok).toBe(false);
+    expect(starttls.count()).toBe(1);
+    expect(login.count()).toBe(0);
+  });
+
+  test("testImapLogin reports STARTTLS not offered as a TLS failure", async () => {
+    const f = await fixture();
+    const login = scriptLogin(f, () => null);
+    expect(
+      await testImapLogin({ ...f.imapServer, tls: "starttls" }, MAIL_PASSWORD, {
+        allowInternalHost: true,
+      }),
+    ).toEqual({ ok: false, kind: "tls", error: PAUSE_COPY.tls });
+    expect(login.count()).toBe(0);
+  });
+
+  test("no TLS to a name that isn't this machine is refused before connecting", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["93.184.216.34"]);
+    const base = inboxFor(f);
+    const h = harness(f, {
+      inbox: {
+        ...base,
+        imap: { ...base.imap, host: "imap.example.test", tls: "none" },
+      },
+    });
+    await h.transport.start();
+    expect(h.transport.health()).toMatchObject({
+      state: "paused",
+      reason: MAIL_TLS_NONE_REFUSED,
+      retryAt: null,
+    });
+  });
+});
+
 describe("testImapLogin", () => {
   test("reports capabilities and the Sent folder", async () => {
     const f = await fixture();
     const server = {
-      host: "127.0.0.1",
-      port: f.imapPort,
-      secure: false,
-      user: MAIL_USER,
+      ...f.imapServer,
     };
     expect(
       await testImapLogin(server, MAIL_PASSWORD, { allowInternalHost: true }),
@@ -931,10 +1032,7 @@ describe("testImapLogin", () => {
     const f = await fixture();
     const examine = countCommands(f, "EXAMINE");
     const server = {
-      host: "127.0.0.1",
-      port: f.imapPort,
-      secure: false,
-      user: MAIL_USER,
+      ...f.imapServer,
     };
     expect(
       (await testImapLogin(server, MAIL_PASSWORD, { allowInternalHost: true }))
@@ -946,10 +1044,7 @@ describe("testImapLogin", () => {
   test("a wrong password is an auth failure", async () => {
     const f = await fixture();
     const server = {
-      host: "127.0.0.1",
-      port: f.imapPort,
-      secure: false,
-      user: MAIL_USER,
+      ...f.imapServer,
     };
     const result = await testImapLogin(server, "wrong", {
       allowInternalHost: true,

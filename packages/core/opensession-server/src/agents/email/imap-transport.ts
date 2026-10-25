@@ -23,7 +23,9 @@ import {
 } from "../../shared/support";
 import type { InboundSink } from "../../server/support/channel";
 import {
+  MAIL_TLS_NONE_REFUSED,
   type MailHostPolicy,
+  MailHostRefusedError,
   type MailHostTarget,
   resolveMailHost,
 } from "../../server/support/mail-host";
@@ -114,6 +116,27 @@ type Failure = { kind: PauseKind; reason: string; retryAfterMs?: number };
 
 type MessageItem = { uid: number; size: number; internalDate?: Date | string };
 
+/** TLS mode → imapflow: implicit TLS; STARTTLS required (refused before
+ *  LOGIN when not offered); or none, which never upgrades and is only for
+ *  a loopback address. */
+function tlsOptions(
+  server: Pick<MailServerConfig, "tls">,
+  target: MailHostTarget,
+): Pick<ImapFlowOptions, "secure" | "doSTARTTLS"> {
+  switch (server.tls) {
+    case "implicit":
+      return { secure: true };
+    case "starttls":
+      return { secure: false, doSTARTTLS: true };
+    case "none":
+      if (!target.loopback)
+        throw new MailHostRefusedError(MAIL_TLS_NONE_REFUSED);
+      return { secure: false, doSTARTTLS: false };
+    default:
+      throw new Error("Unknown mail server security");
+  }
+}
+
 /** Connects to the checked address only; the name stays the TLS servername
  *  so SNI and the certificate check use it. */
 export function imapClientOptions(
@@ -125,7 +148,7 @@ export function imapClientOptions(
     host: target.address,
     ...(target.servername ? { servername: target.servername } : {}),
     port: server.port,
-    secure: server.secure,
+    ...tlsOptions(server, target),
     auth: { user: server.user, pass: password },
     logger: false,
     connectionTimeout: CONNECT_TIMEOUT_MS,
@@ -310,14 +333,24 @@ export class ImapTransport {
     const { imap, allowInternalHost } = this.opts.inbox;
     let target: MailHostTarget;
     try {
-      target = await resolveMailHost(imap.host, { allowInternalHost });
+      target = await resolveMailHost(imap.host, {
+        allowInternalHost,
+        tls: imap.tls,
+      });
     } catch (err) {
       this.fail(gen, err);
       return;
     }
     if (gen !== this.generation || this.stopped) return;
+    let options: ImapFlowOptions;
+    try {
+      options = imapClientOptions(target, imap, this.opts.password);
+    } catch (err) {
+      this.fail(gen, err);
+      return;
+    }
     const client = new ImapFlow({
-      ...imapClientOptions(target, imap, this.opts.password),
+      ...options,
       maxIdleTime: MAX_IDLE_MS,
       socketTimeout: Math.max(SOCKET_TIMEOUT_MS, this.pollMs() + 60_000),
       ...(this.opts.autoIdleDelayMs !== undefined
@@ -722,14 +755,18 @@ export async function testImapLogin(
   | { ok: true; idle: boolean; condstore: boolean; sentFolder: string | null }
   | { ok: false; kind: PauseKind; error: string }
 > {
-  let target: MailHostTarget;
+  let options: ImapFlowOptions;
   try {
-    target = await resolveMailHost(server.host, policy);
+    const target = await resolveMailHost(server.host, {
+      ...policy,
+      tls: server.tls,
+    });
+    options = imapClientOptions(target, server, password);
   } catch (err) {
     const { kind, message } = classifyImapError(err);
     return { ok: false, kind, error: message };
   }
-  const client = new ImapFlow(imapClientOptions(target, server, password));
+  const client = new ImapFlow(options);
   client.on("error", () => undefined);
   try {
     await client.connect();

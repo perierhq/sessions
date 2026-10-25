@@ -6,6 +6,7 @@ import {
   type InboxHealth,
   defaultInboxConfig,
 } from "../../shared/support";
+import { catalogDocuments } from "../catalog-documents";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import { resolveWorkspaceSecretAsync } from "../workspace-secrets";
 import {
@@ -83,14 +84,14 @@ function newInbox(over: Partial<NewInbox> = {}): NewInbox {
     imap: {
       host: "imap.example.test",
       port: 993,
-      secure: true,
+      tls: "implicit",
       user: "help@acme.example.test",
       password: IMAP_PASSWORD,
     },
     smtp: {
       host: "smtp.example.test",
       port: 465,
-      secure: true,
+      tls: "implicit",
       user: "help@acme.example.test",
       password: SMTP_PASSWORD,
     },
@@ -149,14 +150,14 @@ describe("createInbox", () => {
       imap: {
         host: "imap.example.test",
         port: 993,
-        secure: true,
+        tls: "implicit",
         user: "help@acme.example.test",
         passwordRef: inbox.imap.passwordRef,
       },
       smtp: {
         host: "smtp.example.test",
         port: 465,
-        secure: true,
+        tls: "implicit",
         user: "help@acme.example.test",
         passwordRef: inbox.smtp.passwordRef,
       },
@@ -307,7 +308,7 @@ describe("updateInbox", () => {
     const changes = [
       { imap: { host: "attacker.example.test" } },
       { imap: { port: 143 } },
-      { imap: { secure: false } },
+      { imap: { tls: "starttls" as const } },
       { smtp: { user: "someone@example.test" } },
       // A password for the other server doesn't count.
       { imap: { host: "attacker.example.test" }, smtp: { password: "s" } },
@@ -418,14 +419,14 @@ describe("validateInbox", () => {
     imap: {
       host: "imap.example.test",
       port: 993,
-      secure: true,
+      tls: "implicit",
       user: "u",
       passwordRef: null,
     },
     smtp: {
       host: "smtp.example.test",
       port: 465,
-      secure: true,
+      tls: "implicit",
       user: "u",
       passwordRef: null,
     },
@@ -476,6 +477,34 @@ describe("validateInbox", () => {
           exists,
         ),
       ).toBe("This SMTP server address isn't allowed");
+  });
+
+  test("security must be implicit TLS, STARTTLS or none", () => {
+    for (const tls of ["implicit", "starttls"] as const)
+      expect(
+        validateInbox({ ...base, imap: { ...base.imap, tls } }, exists),
+      ).toBeNull();
+    for (const tls of [true, "tls", undefined])
+      expect(
+        validateInbox(
+          { ...base, smtp: { ...base.smtp, tls: tls as never } },
+          exists,
+        ),
+      ).toBe("SMTP security must be implicit TLS, STARTTLS or none");
+  });
+
+  test("no TLS only for a server on this machine", () => {
+    const none = (host: string) => ({
+      ...base,
+      allowInternalHost: true,
+      imap: { ...base.imap, host, tls: "none" as const },
+    });
+    for (const host of ["127.0.0.1", "::1", "localhost"])
+      expect(validateInbox(none(host), exists)).toBeNull();
+    for (const host of ["imap.example.test", "93.184.216.34", "10.0.0.5"])
+      expect(validateInbox(none(host), exists)).toBe(
+        "IMAP security can be none only for a server on this machine",
+      );
   });
 
   test("allowInternalHost must be on or off", () => {
@@ -554,6 +583,29 @@ describe("validateInbox", () => {
       // Sentence case: a capital first letter.
       expect(error![0]).toBe(error![0]!.toUpperCase());
     });
+});
+
+describe("stored inboxes from before TLS modes", () => {
+  test("secure on reads as implicit TLS, off as required STARTTLS", async () => {
+    const inbox = await created();
+    const legacy = structuredClone(inbox) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const [which, secure] of [
+      ["imap", true],
+      ["smtp", false],
+    ] as const) {
+      delete legacy[which]!.tls;
+      legacy[which]!.secure = secure;
+    }
+    await catalogDocuments("support-inboxes").set(inbox.id, legacy);
+    const read = await getInbox(inbox.id);
+    expect(read!.imap.tls).toBe("implicit");
+    expect(read!.smtp.tls).toBe("starttls");
+    expect(hasKeyDeep(read, "secure")).toBe(false);
+    expect((await listInboxes())[0]!.smtp.tls).toBe("starttls");
+  });
 });
 
 describe("deleteInbox and listeners", () => {

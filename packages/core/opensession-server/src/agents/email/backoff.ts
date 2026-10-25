@@ -5,7 +5,10 @@
 // (providers lock accounts after repeated bad logins). Pure.
 
 import { BACKOFF_MAX_MS, BACKOFF_MIN_MS } from "../../shared/support";
-import { MAIL_HOST_REFUSED } from "../../server/support/mail-host";
+import {
+  MAIL_HOST_REFUSED,
+  MAIL_TLS_NONE_REFUSED,
+} from "../../server/support/mail-host";
 
 export type PauseKind =
   | "auth"
@@ -14,7 +17,8 @@ export type PauseKind =
   | "alert"
   | "network"
   | "protocol"
-  | "address";
+  | "address"
+  | "tls";
 
 export const PAUSE_COPY: Record<PauseKind, string> = {
   auth: "The mail server refused the password. Save a new one to reconnect",
@@ -25,6 +29,7 @@ export const PAUSE_COPY: Record<PauseKind, string> = {
   network: "Can't reach the mail server. Retrying later",
   protocol: "The mail server gave an unexpected answer. Retrying later",
   address: MAIL_HOST_REFUSED,
+  tls: "The mail server didn't offer a secure connection. Retrying later",
 };
 
 /** Full jitter: random() * min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2^attempt),
@@ -95,7 +100,20 @@ export function classifyImapError(err: unknown): {
   // The address policy (server/support/mail-host.ts) refused the server
   // before any connection: nothing to retry until the inbox changes.
   if (code === "EMAILHOSTREFUSED")
-    return { kind: "address", message: PAUSE_COPY.address };
+    return {
+      kind: "address",
+      message:
+        err instanceof Error && err.message === MAIL_TLS_NONE_REFUSED
+          ? MAIL_TLS_NONE_REFUSED
+          : PAUSE_COPY.address,
+    };
+  // Required STARTTLS not offered (imapflow `tlsFailed`), or a TLS
+  // handshake or certificate refused.
+  if (
+    field(err, "tlsFailed") === true ||
+    /^(ERR_TLS_|ERR_SSL_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/.test(code)
+  )
+    return { kind: "tls", message: PAUSE_COPY.tls };
 
   if (
     typeof throttleReset === "number" ||

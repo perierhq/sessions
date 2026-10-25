@@ -151,6 +151,24 @@ describe("classifyImapError", () => {
     });
   });
 
+  test("required STARTTLS not offered, or a refused certificate, is a TLS failure", () => {
+    for (const err of [
+      Object.assign(new Error("Server does not support STARTTLS"), {
+        tlsFailed: true,
+      }),
+      Object.assign(new Error("self-signed certificate"), {
+        code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+      }),
+      Object.assign(new Error("Hostname/IP does not match"), {
+        code: "ERR_TLS_CERT_ALTNAME_INVALID",
+      }),
+    ])
+      expect(classifyImapError(err)).toEqual({
+        kind: "tls",
+        message: PAUSE_COPY.tls,
+      });
+  });
+
   test("every kind has copy", () => {
     for (const kind of [
       "auth",
@@ -160,6 +178,7 @@ describe("classifyImapError", () => {
       "network",
       "protocol",
       "address",
+      "tls",
     ] as const)
       expect(PAUSE_COPY[kind].length).toBeGreaterThan(0);
   });

@@ -210,10 +210,37 @@ export interface InboxRetention {
   attachmentDays: number;
 }
 
+/** How a mail server connection is protected:
+ *  - `implicit`: TLS from the first byte (IMAP 993, SMTP 465).
+ *  - `starttls`: plain connect, then STARTTLS, which is required: a server
+ *    that doesn't offer it is refused before the password is sent
+ *    (imapflow `doSTARTTLS: true`, nodemailer `requireTLS: true`).
+ *  - `none`: no TLS at all (imapflow `doSTARTTLS: false`, nodemailer
+ *    `ignoreTLS: true`); only for a server on this machine, such as a
+ *    local mail bridge. */
+export const MAIL_TLS_MODES = ["implicit", "starttls", "none"] as const;
+export type MailTlsMode = (typeof MAIL_TLS_MODES)[number];
+
+const DEFAULT_MAIL_PORTS: Record<
+  "imap" | "smtp",
+  Record<MailTlsMode, number>
+> = {
+  imap: { implicit: 993, starttls: 143, none: 143 },
+  smtp: { implicit: 465, starttls: 587, none: 587 },
+};
+
+/** The usual port for a server and TLS mode, for forms. */
+export function defaultMailPort(
+  which: "imap" | "smtp",
+  tls: MailTlsMode,
+): number {
+  return DEFAULT_MAIL_PORTS[which][tls];
+}
+
 export interface MailServerConfig {
   host: string;
   port: number;
-  secure: boolean;
+  tls: MailTlsMode;
   user: string;
   /** Opaque workspace-secrets ref; never the password itself. */
   passwordRef: string | null;

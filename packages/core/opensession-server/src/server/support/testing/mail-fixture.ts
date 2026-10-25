@@ -1,9 +1,13 @@
 // Test fixture: an in-process IMAP server (hoodiecrow-imap) and SMTP server
 // (smtp-server) on ephemeral ports, for the email transport tests. No Docker,
 // no network beyond 127.0.0.1. Both accept `testuser` / `testpass`.
+// Neither speaks TLS, which is allowed because they are on loopback:
+// `imapServer` / `smtpServer` are ready server settings (`tls: "none"`),
+// and an inbox using them needs `allowInternalHost: true`.
 // Not on any live import chain (excluded from the side-effect scan).
 import type { AddressInfo } from "node:net";
 import { SMTPServer, type SMTPServerAddress } from "smtp-server";
+import type { MailServerConfig } from "../../../shared/support";
 
 export const MAIL_USER = "testuser";
 export const MAIL_PASSWORD = "testpass";
@@ -18,9 +22,15 @@ export const DEFAULT_IMAP_PLUGINS = [
   "QRESYNC",
 ];
 
+type FixtureServer = Omit<MailServerConfig, "passwordRef">;
+
 export interface MailFixture {
   imapPort: number;
   smtpPort: number;
+  /** Server settings for the fixture's IMAP server: loopback, no TLS. */
+  imapServer: FixtureServer;
+  /** The same for SMTP. */
+  smtpServer: FixtureServer;
   /** The hoodiecrow server (it ships no types), for scripted handlers. */
   imap: any;
   /** Appends to `folder` (INBOX by default) and notifies IDLE sessions. */
@@ -49,6 +59,13 @@ function listen(
     }
   });
 }
+
+const server = (port: number): FixtureServer => ({
+  host: "127.0.0.1",
+  port,
+  tls: "none",
+  user: MAIL_USER,
+});
 
 const addressOf = (value: SMTPServerAddress | false) =>
   value ? value.address : "";
@@ -79,6 +96,8 @@ export async function startMailFixture(
   const fixture: MailFixture = {
     imapPort,
     smtpPort: 0,
+    imapServer: server(imapPort),
+    smtpServer: server(0),
     imap,
     deliver(raw, folder = "INBOX") {
       imap.appendMessage(folder, [], new Date(), raw);
@@ -133,6 +152,7 @@ export async function startMailFixture(
   });
   try {
     fixture.smtpPort = await listen(smtp, () => smtp.server.address());
+    fixture.smtpServer = server(fixture.smtpPort);
   } catch (error) {
     // The IMAP server is already listening: don't leak it.
     await new Promise<void>((resolve) => imap.close(() => resolve()));

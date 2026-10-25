@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_FOLDERS,
+  MAIL_TLS_MODES,
+  defaultMailPort,
   type MailServerConfig,
   SUPPORT_TOPICS,
   defaultInboxConfig,
@@ -66,11 +68,24 @@ describe("smtpSavesSentItself", () => {
   });
 });
 
+describe("mail TLS modes", () => {
+  test("three modes, implicit TLS first", () => {
+    expect([...MAIL_TLS_MODES]).toEqual(["implicit", "starttls", "none"]);
+  });
+
+  test("the usual port for each server and mode", () => {
+    expect(defaultMailPort("imap", "implicit")).toBe(993);
+    expect(defaultMailPort("imap", "starttls")).toBe(143);
+    expect(defaultMailPort("smtp", "implicit")).toBe(465);
+    expect(defaultMailPort("smtp", "starttls")).toBe(587);
+  });
+});
+
 describe("defaultInboxConfig", () => {
   const server = (host: string): MailServerConfig => ({
     host,
     port: 993,
-    secure: true,
+    tls: "implicit",
     user: "support@example.test",
     passwordRef: null,
   });

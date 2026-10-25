@@ -17,12 +17,16 @@ import {
   ipv6Hextets,
   isBlockedAddress,
 } from "../shared/network-address";
+import type { MailTlsMode } from "../../shared/support";
 import { type ResolveHost, resolveWithDns } from "../shared/pinned-fetch";
 
 export const MAIL_HOST_REFUSED = "This mail server address isn't allowed";
+export const MAIL_TLS_NONE_REFUSED =
+  "A mail server without TLS must be on this machine";
 
 /** A mail server address the inbox may not connect to. Its message is
- *  always MAIL_HOST_REFUSED. */
+ *  MAIL_HOST_REFUSED, or MAIL_TLS_NONE_REFUSED for no TLS off this
+ *  machine; never the address. */
 export class MailHostRefusedError extends Error {
   readonly code = "EMAILHOSTREFUSED";
   constructor(message = MAIL_HOST_REFUSED) {
@@ -35,6 +39,8 @@ export type MailAddressClass = "public" | "internal" | "refused";
 
 export interface MailHostPolicy {
   allowInternalHost: boolean;
+  /** `none` also requires the address to be loopback. */
+  tls?: MailTlsMode;
 }
 
 /** Where to connect: `address` is the only one to dial; `servername` is the
@@ -107,6 +113,13 @@ export function isLoopbackAddress(ip: string): boolean {
   return v4 !== undefined && v4.split(".")[0] === "127";
 }
 
+/** Whether `none` (no TLS) may be saved for `host`: `localhost` or a
+ *  loopback literal. A connect checks the resolved address again. */
+export function noTlsHostAllowed(host: string): boolean {
+  const name = bare(host).replace(/\.+$/, "");
+  return name === "localhost" || (isIP(name) !== 0 && isLoopbackAddress(name));
+}
+
 /** Whether a host literal (no resolution) may be saved on an inbox: a name
  *  passes here and is checked when it is resolved. */
 export function mailHostLiteralAllowed(
@@ -155,10 +168,13 @@ export async function resolveMailHost(
   }
   const address =
     addresses.find((a) => isIP(bare(a)) === 4) ?? bare(addresses[0]!);
+  const loopback = isLoopbackAddress(address);
+  if (policy.tls === "none" && !addresses.every(isLoopbackAddress))
+    throw new MailHostRefusedError(MAIL_TLS_NONE_REFUSED);
   return {
     host: name,
     address: bare(address),
     servername: literal ? undefined : name,
-    loopback: isLoopbackAddress(address),
+    loopback,
   };
 }
