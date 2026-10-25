@@ -21,7 +21,11 @@ import { transitionIncident } from "../lifecycle";
 import { emptyResponse } from "./ledger";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { AgentAccessError } from "../access/resolve";
+import {
+  AgentAccessError,
+  type IncidentRunBound,
+  accessSpawnSnapshot,
+} from "../access/resolve";
 import {
   __resetIncidentAccessGateForTest,
   incidentAccessGate,
@@ -287,12 +291,25 @@ async function world(
     ],
   ]);
   let next = 0;
+  const bound = new Map<string, IncidentRunBound>();
+  const retired: string[] = [];
   const agents: IncidentAgents = {
     async spawn(input) {
       spawns.push(input);
       const id = `child-${++next}`;
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
+      bound.set(id, {
+        connections: [...input.access.connections],
+        mode: input.access.mode,
+        spawn: accessSpawnSnapshot(input.access),
+      });
       return { sessionId: id };
+    },
+    async bound(id) {
+      return bound.get(id);
+    },
+    async retire(id) {
+      retired.push(id);
     },
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
@@ -417,6 +434,7 @@ async function world(
     spawns,
     sends,
     cancels,
+    retired,
     audits: kit.audits,
     get clock() {
       return clock;
@@ -1365,6 +1383,104 @@ test("stop and deploy now during the veto", async () => {
   expect(w.sends.at(-1)?.message).toContain(
     "Try the app's TLS fingerprint too",
   );
+});
+
+/** A world whose investigator's connections follow `granted`. */
+async function widenableWorld() {
+  const granted = { connections: [] as string[] };
+  const w = await world({
+    access: async (role, incident) =>
+      agentAccessFixture({
+        role,
+        incidentId: incident.id,
+        mode: role === "verifier" ? "ask" : "code",
+        connections: role === "investigator" ? [...granted.connections] : [],
+      }),
+  });
+  return { w, granted };
+}
+
+test("send it back with the investigator's access widened starts a fresh investigator", async () => {
+  const { w, granted } = await widenableWorld();
+  granted.connections = ["sentry"];
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence(investigatorReport), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-2", fence(goodVerifier));
+  await advanceIncident(w.incident.id, w.deps);
+  // The owner ticks two more connections, then sends the work back.
+  granted.connections = ["sentry", "logs", "tickets"];
+  const sendsBefore = w.sends.length;
+  await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs too",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+
+  // The old session gets no message; a new one takes round 2.
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  expect(fresh.access.connections).toEqual(["sentry", "logs", "tickets"]);
+  expect(fresh.branch).toMatch(/-a2$/);
+  // It carries the earlier round's findings and the owner's note.
+  expect(fresh.prompt).toContain("Check the search logs too");
+  expect(fresh.prompt).toContain(investigatorReport.summary);
+  expect(fresh.prompt).toContain("https://github.com/acme/web/pull/12");
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  const runs = i?.response?.agents ?? [];
+  expect(runs.find((a) => a.sessionId === "child-1")).toMatchObject({
+    round: 1,
+    supersededBy: "child-3",
+  });
+  expect(runs.at(-1)).toMatchObject({
+    sessionId: "child-3",
+    role: "investigator",
+    round: 2,
+    attempt: 2,
+    status: "running",
+  });
+  expect(i?.response?.sendBack).toBeUndefined();
+  expect(i?.response?.ledger.at(-1)?.detail).toContain("logs, tickets");
+});
+
+test("send it back with the same or narrower access goes to the same investigator", async () => {
+  for (const after of [["sentry"], []]) {
+    const { w, granted } = await widenableWorld();
+    granted.connections = ["sentry"];
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish("child-1", fence(investigatorReport), {
+      prUrl: "https://github.com/acme/web/pull/12",
+    });
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish("child-2", fence(goodVerifier));
+    await advanceIncident(w.incident.id, w.deps);
+    granted.connections = after;
+    const spawned = w.spawns.length;
+    await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Check the search logs too",
+      w.deps,
+    );
+    await __waitForCoordinatorForTest();
+    expect(w.spawns).toHaveLength(spawned);
+    expect(w.sends.at(-1)).toMatchObject({
+      id: "child-1",
+      message: expect.stringContaining("Check the search logs too"),
+    });
+    expect(w.retired).toEqual([]);
+    __resetCoordinatorForTest();
+  }
 });
 
 /** An advance that is already running, held right after it started. */

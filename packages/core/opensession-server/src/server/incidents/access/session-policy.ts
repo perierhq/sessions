@@ -13,8 +13,10 @@ import type { AutomationDescendantPolicy } from "../../types";
 import { incidentAudit } from "../audit-sink";
 import {
   AgentAccessError,
+  type IncidentRunBound,
   accessSpawnSnapshot,
   resolveAgentAccessForBinding,
+  spawnSnapshotOf,
 } from "./resolve";
 
 export interface IncidentDescendantBase {
@@ -160,6 +162,24 @@ export function auditIncidentSpawned(
     mode: request.mode,
     ...(request.model !== undefined ? { model: request.model } : {}),
   });
+}
+
+/**
+ * What a bound incident agent's run is held to: the connections its policy
+ * mounts, its session's mode (read the way incidentTurnScope reads it: any
+ * mode but ask is code) and its spawn snapshot. Null without a binding.
+ */
+export function incidentRunBound(session: {
+  mode?: string;
+  automationDescendantPolicy?: AutomationDescendantPolicy;
+}): IncidentRunBound | null {
+  const policy = session.automationDescendantPolicy;
+  if (!policy?.incident) return null;
+  return {
+    connections: [...policy.mcpServers],
+    mode: session.mode === "ask" ? "ask" : "code",
+    spawn: spawnSnapshotOf(policy.incident),
+  };
 }
 
 export interface IncidentTurnScope {

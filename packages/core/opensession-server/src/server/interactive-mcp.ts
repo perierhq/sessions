@@ -614,6 +614,7 @@ export async function automationSessionMcp(
     automationDescendantPolicy?: unknown;
     plainDiscussionId?: string | null;
     automationEvent?: string;
+    mode?: string;
   },
   sessionId: string,
   opts: { humanPrompter?: string } = {},
@@ -625,7 +626,11 @@ export async function automationSessionMcp(
     | undefined;
   if (descendant?.incident)
     return (await import("./incidents/access/mcp")).incidentAccessMcpForSession(
-      { id: sessionId, automationDescendantPolicy: descendant },
+      {
+        id: sessionId,
+        mode: session.mode,
+        automationDescendantPolicy: descendant,
+      },
     );
   const servers: Record<string, unknown> = {
     ...papercutsServerFor(

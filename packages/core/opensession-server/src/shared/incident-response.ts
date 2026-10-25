@@ -310,7 +310,9 @@ export type CancelReason =
 
 /**
  * One run per agent session. A send-back reuses the investigator's run and
- * moves its `round` forward; a new session is a new `attempt`.
+ * moves its `round` forward; a new session is a new `attempt`. When the
+ * role's access was widened since the run's session started, the send-back
+ * starts a new session instead and the old run names it in `supersededBy`.
  * `accessSummary` and `accessRevision` are plan 3's `AgentAccess.summary`
  * and `revision` at spawn.
  */
@@ -339,6 +341,9 @@ export interface AgentRun {
   /** Values Sessions repaired in an otherwise valid report. */
   reportWarnings?: string[];
   reminded: boolean;
+  /** The session that took over the next round, when this one's access
+   *  was widened after it started. */
+  supersededBy?: string;
 }
 
 export interface ProofSample {

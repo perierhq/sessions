@@ -37,7 +37,12 @@ import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
 import { getRepo } from "../../worktree";
-import { AgentAccessError, resolveAgentAccess } from "../access/resolve";
+import {
+  type AccessWidening,
+  AgentAccessError,
+  accessWidenedBeyond,
+  resolveAgentAccess,
+} from "../access/resolve";
 import { incidentAudit } from "../audit-sink";
 import {
   getIncident,
@@ -860,10 +865,17 @@ async function init(
   return next !== null;
 }
 
+/** A run a fresh session takes over from, and the access that is wider. */
+interface Supersede {
+  run: AgentRun;
+  widened: AccessWidening[];
+}
+
 async function startAgent(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "start-agent" }>,
   d: CoordinatorDeps,
+  supersede?: Supersede,
 ): Promise<boolean> {
   const { incident, settings } = view;
   const r = incident.response!;
@@ -922,6 +934,12 @@ async function startAgent(
       ? skipParallelInvestigator(view, "unavailable", workspace.error, d)
       : setupProblem(view, d, workspace.error, "sandboxes");
 
+  // A new round in a fresh session carries the round before it: why the
+  // work came back, what was found and its pull request.
+  const earlier =
+    role === "investigator" && investigator && investigator.round < round
+      ? investigator
+      : undefined;
   let prompt: string;
   if (role === "investigator") {
     const release = r.candidate?.rollbackFirst
@@ -939,6 +957,18 @@ async function startAgent(
       baseBranch: d.defaultBranch(incident.project),
       round,
       maxRounds: r.maxRounds,
+      ...(earlier
+        ? {
+            earlier: {
+              round: earlier.round,
+              ...(r.sendBack ? { sendBack: r.sendBack } : {}),
+              ...(earlier.report?.role === "investigator"
+                ? { report: earlier.report }
+                : {}),
+              ...(earlier.prUrl ? { prUrl: earlier.prUrl } : {}),
+            },
+          }
+        : {}),
       ...(release
         ? {
             rollbackFirst: {
@@ -996,6 +1026,7 @@ async function startAgent(
   const next = await write(incident.id, d, settings, null, (c, base, at) => {
     if (base.agents.some((a) => a.sessionId === sessionId))
       return { incident: c, response: base };
+    const superseded = supersede?.run.sessionId;
     const run: AgentRun = {
       role,
       round,
@@ -1014,12 +1045,23 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
-    const detail = `${roleLabel(role)} started on ${label}, round ${round}`;
+    const detail = supersede
+      ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${supersede.widened.map((w) => w.item).join(", ")})`
+      : `${roleLabel(role)} started on ${label}, round ${round}`;
     const response = ledger(
       patched(base, {
-        agents: [...base.agents, run],
+        agents: [
+          ...base.agents.map((a) =>
+            a.sessionId === superseded
+              ? patched(a, { supersededBy: sessionId })
+              : a,
+          ),
+          run,
+        ],
         retryRequested: undefined,
         parallelInvestigatorRetryAt: undefined,
+        // The send-back reason went into the fresh session's brief.
+        ...(earlier ? { sendBack: undefined } : {}),
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1038,8 +1080,46 @@ async function startAgent(
     independence,
     workspace: workspace.kind,
     accessRevision: access.revision,
+    ...(supersede ? { supersedes: supersede.run.sessionId } : {}),
   });
+  if (supersede) {
+    try {
+      const agents = await agentsFor(next, d);
+      await agents?.retire(supersede.run.sessionId);
+    } catch (error) {
+      console.warn(
+        `[incidents] Could not archive superseded agent ${supersede.run.sessionId}:`,
+        errorMessage(error),
+      );
+    }
+  }
   return true;
+}
+
+/**
+ * What the role's access allows now beyond what the run's session is bound
+ * to. A running agent never gains access, so a wider access is for a fresh
+ * session. Empty when it is the same or narrower, or when it can't be read:
+ * the message then goes as before and its turn re-resolves the access.
+ */
+async function widenedSinceStart(
+  view: ResponseView,
+  run: AgentRun,
+  agents: IncidentAgents,
+  d: CoordinatorDeps,
+): Promise<AccessWidening[]> {
+  const primary = view.signals.get(view.incident.primarySignalId);
+  if (!primary) return [];
+  try {
+    const bound = await agents.bound(run.sessionId);
+    if (!bound) return [];
+    const access = await d.access(run.role, view.incident, primary, {
+      audit: false,
+    });
+    return accessWidenedBeyond(access, bound);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1191,6 +1271,25 @@ async function messageAgent(
   const run = r.agents.find((a) => a.sessionId === step.sessionId);
   if (!run) return false;
   const sendBack = step.message === "send-back";
+  const agents = await agentsFor(incident, d);
+  if (!agents) return false;
+  // A new round for an agent whose access was widened since it started
+  // goes to a fresh session; the old one is archived.
+  if (sendBack) {
+    const widened = await widenedSinceStart(view, run, agents, d);
+    if (widened.length)
+      return startAgent(
+        view,
+        {
+          step: "start-agent",
+          role: run.role,
+          round: r.round,
+          attempt: run.attempt + 1,
+        },
+        d,
+        { run, widened },
+      );
+  }
   const text = sendBack
     ? buildSendBackMessage(
         r.round,
@@ -1198,8 +1297,6 @@ async function messageAgent(
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
       )
     : buildReminder(run.reportError ?? "No incident-report block", run.role);
-  const agents = await agentsFor(incident, d);
-  if (!agents) return false;
   await agents.send(
     run.sessionId,
     text,

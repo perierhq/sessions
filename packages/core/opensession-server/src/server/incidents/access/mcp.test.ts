@@ -9,6 +9,7 @@ import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   incidentAccessMcpForSession,
   incidentAccessToolDefinitions,
+  incidentAccessToolsForSession,
 } from "./mcp";
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 
@@ -85,6 +86,36 @@ test("describe_access reports the fresh access and no secrets", async () => {
     egress: null,
     narrowed: [],
   });
+});
+test("describe_access lists only what this run is bound to, and names what was allowed later", async () => {
+  const policy = {
+    ...descendantFixture,
+    mcpServers: ["sentry"],
+    incident: binding,
+  };
+  __setBindingResolverForTest(async () =>
+    agentAccessFixture({ connections: ["sentry", "logs", "tickets"] }),
+  );
+  const tools = await incidentAccessToolsForSession({
+    id: "os-1",
+    mode: "ask",
+    automationDescendantPolicy: policy,
+  });
+  const out = JSON.parse(textOf(await tools[0].handler({}, {})));
+  expect(out.connections).toEqual(["sentry"]);
+  expect(out.mode).toBe("ask");
+  expect(out.summary).not.toContain("logs");
+  expect(out.summary).not.toContain("can edit");
+  expect(out.note).toBe(
+    "logs and tickets were allowed after this agent started. They apply from the next round.",
+  );
+  // Nothing allowed later: no note.
+  __setBindingResolverForTest(async () =>
+    agentAccessFixture({ connections: ["sentry"] }),
+  );
+  expect(
+    JSON.parse(textOf(await tools[0].handler({}, {}))).note,
+  ).toBeUndefined();
 });
 test("every call re-resolves: a revoked agent gets nothing", async () => {
   const granted = agentAccessFixture({

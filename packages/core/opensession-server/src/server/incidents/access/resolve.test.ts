@@ -8,10 +8,15 @@ import { catalogDocuments } from "../../catalog-documents";
 import { __setIdentitiesForTest } from "../../shared/user-mappings";
 import { createIncident } from "../incident-store";
 import { createSignal } from "../signal-store";
-import { useAccessTestEnv } from "../testing/access-fixture";
+import {
+  agentAccessFixture,
+  useAccessTestEnv,
+} from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   accessSpawnSnapshot,
+  accessWidenedBeyond,
+  clampToRun,
   registerAccessGate,
   resolveAgentAccess,
   resolveAgentAccessForBinding,
@@ -984,4 +989,71 @@ test("egress off in the access table resolves to no egress", async () => {
   expect(a.egress).toBeNull();
   const v = await resolveAgentAccess("verifier", incident(), signal);
   expect(v.egress).toMatchObject({ route: "server" });
+});
+
+test("a run's access: wider than its binding is named, the same or narrower is not", () => {
+  const spawned = agentAccessFixture({
+    connections: ["sentry"],
+    mode: "ask",
+    hosts: [{ runner: "rn-prod", runnerName: "prod-1", access: "read-only" }],
+    credentials: [
+      {
+        credential: "kc-shared",
+        service: "status-api",
+        host: "status.example.test",
+        mode: "once",
+        scope: "workspace",
+      },
+    ],
+    egress: { route: "server", hosts: ["search.example.test"] },
+  });
+  const run = {
+    connections: ["sentry"],
+    mode: "ask" as const,
+    spawn: accessSpawnSnapshot(spawned),
+  };
+  expect(accessWidenedBeyond(spawned, run)).toEqual([]);
+  expect(
+    accessWidenedBeyond(
+      agentAccessFixture({ connections: [], mode: "ask" }),
+      run,
+    ),
+  ).toEqual([]);
+  expect(
+    accessWidenedBeyond(
+      {
+        ...spawned,
+        connections: ["sentry", "logs"],
+        mode: "code",
+        hosts: [
+          ...spawned.hosts,
+          {
+            runner: "rn-prod",
+            runnerName: "prod-1",
+            ssh: "db",
+            access: "read-only",
+          },
+        ],
+        credentials: [{ ...spawned.credentials[0]!, mode: "standing" }],
+        egress: {
+          route: "server",
+          hosts: ["search.example.test", "status.example.test"],
+        },
+      },
+      run,
+    ),
+  ).toEqual([
+    { field: "connections", item: "logs" },
+    { field: "hosts", item: "db via prod-1" },
+    { field: "credentials", item: "status-api (standing)" },
+    { field: "egress", item: "status.example.test" },
+    { field: "mode", item: "editing" },
+  ]);
+  // Held to the run: the connections it mounts and its session's mode.
+  const held = clampToRun(
+    agentAccessFixture({ connections: ["sentry", "logs"], mode: "code" }),
+    { connections: ["sentry"], mode: "ask" },
+  );
+  expect(held).toMatchObject({ connections: ["sentry"], mode: "ask" });
+  expect(held.summary).toBe("Investigator · sentry · read-only on acme");
 });
