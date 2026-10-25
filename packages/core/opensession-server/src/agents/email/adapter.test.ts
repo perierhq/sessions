@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   type InboundMessage,
   type InboxConfig,
@@ -9,7 +16,7 @@ import {
   defaultInboxConfig,
 } from "../../shared/support";
 import { catalogDocuments } from "../../server/catalog-documents";
-import type { OutboundDraft } from "../../server/support/channel";
+import { type OutboundDraft, SendError } from "../../server/support/channel";
 import { useSupportTestKernel } from "../../server/support/testing/kernel-fixture";
 import {
   MAIL_PASSWORD,
@@ -18,7 +25,7 @@ import {
   rawMail,
   startMailFixture,
 } from "../../server/support/testing/mail-fixture";
-import { EmailChannelAdapter } from "./adapter";
+import { EmailChannelAdapter, ensureFolder } from "./adapter";
 
 useSupportTestKernel();
 
@@ -209,6 +216,38 @@ function snapshot(): Snapshot {
 const messagesIn = (path: string): any[] =>
   f.imap.getMailbox(path)?.messages ?? [];
 
+/** Counts LOGIN commands; `refuse(n)` answers NO for the nth one. */
+function scriptLogin(
+  refuse: (n: number) => boolean,
+): { count: () => number } {
+  const original = f.imap.getCommandHandler("LOGIN");
+  let n = 0;
+  f.imap.setCommandHandler(
+    "LOGIN",
+    (conn: any, parsed: any, data: any, callback: () => void) => {
+      n++;
+      if (!refuse(n)) return original(conn, parsed, data, callback);
+      conn.sendStatus(
+        parsed,
+        data,
+        "NO",
+        "Invalid credentials",
+        "AUTHENTICATIONFAILED",
+      );
+      callback();
+    },
+  );
+  return { count: () => n };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 describe("EmailChannelAdapter.send", () => {
   test("sends the draft and returns its Message-ID", async () => {
     const inbox = inboxFor({ copyToSent: false });
@@ -246,6 +285,74 @@ describe("EmailChannelAdapter.send", () => {
     await adapter.send(outbound(inbox, "out3@acme.example.test"));
     await Bun.sleep(300);
     expect(messagesIn("Sent")).toHaveLength(0);
+  });
+
+  test("a disconnect during a send's first await opens no SMTP session", async () => {
+    const inbox = inboxFor({ copyToSent: false });
+    const others = deferred<string[]>();
+    const adapter = new EmailChannelAdapter(inbox, {
+      password: async () => MAIL_PASSWORD,
+      otherInboxAddresses: () => others.promise,
+    });
+    adapters.push(adapter);
+    const sending = adapter
+      .send(outbound(inbox, "race@acme.example.test"))
+      .catch((e: unknown) => e);
+    await Bun.sleep(10);
+    const closing = adapter.disconnect();
+    others.resolve([]);
+    await closing;
+    const error = await sending;
+    expect(error).toBeInstanceOf(SendError);
+    expect(error).toMatchObject({ permanent: false });
+    await Bun.sleep(100);
+    expect(f.smtpConnections.opened).toBe(0);
+    expect(f.sent).toHaveLength(0);
+  });
+
+  test("disconnect lets a send in flight finish before closing SMTP", async () => {
+    const inbox = inboxFor({ copyToSent: false });
+    const adapter = adapterFor({ copyToSent: false });
+    await connected(adapter);
+    const sending = adapter.send(outbound(inbox, "late@acme.example.test"));
+    await until(() => f.smtpConnections.opened === 1);
+    await adapter.disconnect();
+    await expect(sending).resolves.toMatchObject({
+      messageId: "late@acme.example.test",
+    });
+    expect(f.sent).toHaveLength(1);
+  });
+
+  test("a permanent SMTP error shows on the inbox's health until a send works", async () => {
+    const inbox = inboxFor({ copyToSent: false });
+    const adapter = adapterFor({ copyToSent: false });
+    await connected(adapter);
+    f.smtpReply = { code: 550, message: "No such user" };
+    const error = await adapter
+      .send(outbound(inbox, "bad@acme.example.test"))
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: "SendError", permanent: true });
+    const health = adapter.health();
+    expect(health.state).toBe("live");
+    expect(health.reason).toContain("The mail server refused the message");
+    expect(health.reason).not.toContain("No such user");
+    await adapter.send(outbound(inbox, "good@acme.example.test"));
+    expect(adapter.health().reason).toBeNull();
+  });
+
+  test("a new address rebuilds the SMTP pool but keeps the IMAP connection", async () => {
+    const inbox = inboxFor({ copyToSent: false });
+    const adapter = adapterFor({ copyToSent: false });
+    await connected(adapter);
+    await adapter.send(outbound(inbox, "one@acme.example.test"));
+    expect(f.smtpConnections.opened).toBe(1);
+    const moved = { ...inbox, address: "support@acme.example.test" };
+    adapter.update(moved);
+    await adapter.send(outbound(moved, "two@acme.example.test"));
+    expect(f.smtpConnections.opened).toBe(2);
+    expect(f.sent[1]!.envelope.from).toBe("support@acme.example.test");
+    expect(f.connections()).toBe(1);
+    expect(adapter.health().state).toBe("live");
   });
 
   test("a missing SMTP password is a permanent send error", async () => {
@@ -314,6 +421,36 @@ describe("EmailChannelAdapter.mark", () => {
     );
   });
 
+  test("mark-read also flags our own mail filed from this mailbox", async () => {
+    const adapter = adapterFor({ mailbox: "mark-read" });
+    const received = await connected(adapter);
+    const [a] = await receive(received, 1);
+    // "Replied outside Sessions": our own mail, read from INBOX.
+    const ours = { ...stored(a!, "sm_ours"), direction: "out" as const };
+    await adapter.mark(conversationOf([ours]), "handled");
+    expect(messagesIn("INBOX")[0].flags).toContain("\\Seen");
+  });
+
+  test("mark-read on a mailbox opened read-only changes nothing and logs the inbox", async () => {
+    const adapter = adapterFor({ mailbox: "untouched" });
+    const received = await connected(adapter);
+    const [a] = await receive(received, 1);
+    // Changed in place, so the connection is still the read-only one.
+    adapter.update(inboxFor({ mailbox: "mark-read" }));
+    const before = snapshot();
+    const warn = spyOn(console, "warn");
+    try {
+      await adapter.mark(conversationOf([stored(a!, "sm_a")]), "handled");
+      expect(snapshot()).toEqual(before);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("mailbox action skipped"),
+        expect.objectContaining({ inboxId: inboxFor().id }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test("a mailbox action on a disconnected inbox is swallowed", async () => {
     const adapter = adapterFor({ mailbox: "move" });
     const c = conversationOf([]);
@@ -349,6 +486,50 @@ describe("EmailChannelAdapter.connect", () => {
     expect(received[0]!.keys.messageId).toBe("late@x.test");
   });
 
+  test("the stored cursor records when the last message arrived", async () => {
+    const adapter = adapterFor();
+    const received = await connected(adapter);
+    const [m] = await receive(received, 1);
+    const key = `${inboxFor().id}:INBOX`;
+    const docs = catalogDocuments("support-cursors");
+    let cursor: any = null;
+    const end = Date.now() + 2000;
+    while (Date.now() < end) {
+      cursor = await docs.get(key);
+      if (cursor?.lastUid === 1) break;
+      await Bun.sleep(20);
+    }
+    expect(cursor).toMatchObject({
+      uidValidity: expect.any(String),
+      lastUid: 1,
+      lastReceivedAt: m!.receivedAt,
+    });
+  });
+
+  test("a refused login pauses; resume() logs in once and goes live", async () => {
+    const login = scriptLogin((n) => n === 1);
+    const adapter = adapterFor();
+    await adapter.connect(async () => "stored");
+    expect(adapter.health().state).toBe("paused");
+    expect(login.count()).toBe(1);
+    await adapter.resume();
+    expect(adapter.health().state).toBe("live");
+    expect(login.count()).toBe(2);
+    await adapter.resume();
+    await Bun.sleep(100);
+    expect(login.count()).toBe(2);
+    expect(f.connections()).toBe(1);
+  });
+
+  test("resume() after disconnect does nothing", async () => {
+    const adapter = adapterFor();
+    await connected(adapter);
+    await adapter.disconnect();
+    await adapter.resume();
+    expect(adapter.health().state).toBe("off");
+    await until(() => f.connections() === 0);
+  });
+
   test("a missing IMAP password pauses the inbox without connecting", async () => {
     const adapter = new EmailChannelAdapter(inboxFor(), {
       password: async () => undefined,
@@ -358,5 +539,61 @@ describe("EmailChannelAdapter.connect", () => {
     await adapter.connect(async () => "stored");
     expect(adapter.health().state).toBe("paused");
     expect(f.connections()).toBe(0);
+  });
+});
+
+describe("ensureFolder", () => {
+  function fakeClient(
+    listed: Array<Array<{ path: string; delimiter: string }>>,
+    over: Record<string, unknown> = {},
+  ) {
+    let lists = 0;
+    const created: unknown[] = [];
+    const client = {
+      namespace: { prefix: "INBOX.", delimiter: "." },
+      list: async () => listed[Math.min(lists++, listed.length - 1)]!,
+      mailboxCreate: async (path: unknown) => {
+        created.push(path);
+        throw Object.assign(new Error("exists"), {
+          serverResponseCode: "ALREADYEXISTS",
+        });
+      },
+      ...over,
+    };
+    return { client: client as any, created, lists: () => lists };
+  }
+
+  test("finds a folder under the server's namespace prefix", async () => {
+    const fake = fakeClient([
+      [
+        { path: "INBOX", delimiter: "." },
+        { path: "INBOX.Sessions.Done", delimiter: "." },
+      ],
+    ]);
+    expect(await ensureFolder(fake.client, "Sessions/Done")).toBe(
+      "INBOX.Sessions.Done",
+    );
+    expect(fake.created).toEqual([]);
+  });
+
+  test("lists again when the create says the folder exists", async () => {
+    const fake = fakeClient(
+      [
+        [{ path: "INBOX", delimiter: "." }],
+        [
+          { path: "INBOX", delimiter: "." },
+          { path: "INBOX.Sessions.Done", delimiter: "." },
+        ],
+      ],
+    );
+    expect(await ensureFolder(fake.client, "Sessions/Done")).toBe(
+      "INBOX.Sessions.Done",
+    );
+    expect(fake.lists()).toBe(2);
+  });
+
+  test("a create that fails for another reason still fails", async () => {
+    const fake = fakeClient([[{ path: "INBOX", delimiter: "." }]]);
+    await expect(ensureFolder(fake.client, "Sessions/Done")).rejects.toThrow();
   });
 });

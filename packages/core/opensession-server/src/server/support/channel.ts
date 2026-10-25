@@ -48,6 +48,10 @@ export interface SupportChannelAdapter {
   readonly inboxId: string;
   connect(sink: InboundSink): Promise<void>;
   disconnect(): Promise<void>;
+  /** Tries again now after a pause no retry is planned for (a refused
+   *  login): someone saved the inbox or a test with its stored passwords
+   *  passed. Does nothing while connected or backing off. */
+  resume?(): Promise<void>;
   health(): InboxHealth;
   /** Throws SendError. */
   send(out: OutboundDraft): Promise<SentReceipt>;

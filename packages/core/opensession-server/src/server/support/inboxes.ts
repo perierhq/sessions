@@ -142,6 +142,18 @@ const PASSWORD_MAX = 1024;
 // Bound on first use, never at import: the catalog client is a live effect.
 let inboxDocs: ReturnType<typeof catalogDocuments> | undefined;
 const inboxes = () => (inboxDocs ??= catalogDocuments("support-inboxes"));
+let cursorDocs: ReturnType<typeof catalogDocuments> | undefined;
+const cursors = () => (cursorDocs ??= catalogDocuments("support-cursors"));
+
+/** The `support-cursors` key of an inbox's folder (the email transport's
+ *  UID cursor; only INBOX is read in v1). */
+export const inboxCursorKey = (inboxId: string, folder = "INBOX") =>
+  `${inboxId}:${folder}`;
+
+/** Drops an inbox's read position (the inbox was removed). */
+export async function deleteInboxCursor(inboxId: string): Promise<void> {
+  await cursors().delete(inboxCursorKey(inboxId));
+}
 
 let projectCheck: ((id: string) => boolean) | undefined;
 
@@ -719,8 +731,8 @@ const NO_INBOX = {
   error: "That inbox doesn't exist",
 } as const;
 
-/** Deletes the config and both secrets; instance owner only. Conversations
- *  stay. */
+/** Deletes the config, both secrets and the inbox's read position;
+ *  instance owner only. Conversations stay. */
 export async function deleteInbox(
   id: string,
   actor: Actor,
@@ -746,6 +758,14 @@ export async function deleteInbox(
     results.forEach((result, i) => {
       if (result.status === "rejected")
         warnSecret("delete", refs[i]!, result.reason);
+    });
+    // The read position is dead data once the inbox is gone.
+    await deleteInboxCursor(id).catch((error: unknown) => {
+      const e = error as { code?: unknown; name?: unknown } | null;
+      console.warn(
+        "[support] couldn't delete inbox cursor:",
+        String(e?.code ?? e?.name ?? "error"),
+      );
     });
   } finally {
     notify(null, removed);
