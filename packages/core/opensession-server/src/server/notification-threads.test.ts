@@ -436,4 +436,44 @@ describe("support notifications", () => {
       body: "acme · Open Sessions to read it and send",
     });
   });
+
+  test("an existing-only event updates a row but never opens one", () => {
+    const settle = event({
+      kind: "support_needs_you",
+      subject: {
+        type: "support",
+        id: "sc_1",
+        title: "Reply sent",
+        context: "acme",
+      },
+      reason: "Nothing waits on you",
+      body: "Nothing waits on you",
+      url: "/support/email:sc_1",
+      delivery: "replace",
+      existingOnly: true,
+    });
+    const none = applyNotificationEvent(empty, settle);
+    expect(none.thread).toBeNull();
+    expect(none.doc).toBe(empty);
+    const opened = applyNotificationEvent(
+      empty,
+      event({
+        kind: "support_veto",
+        subject: {
+          type: "support",
+          id: "sc_1",
+          title: "A support reply will send",
+        },
+        reason: "Sends when the window ends unless someone stops it",
+        url: "/support/email:sc_1",
+      }),
+    );
+    const settled = applyNotificationEvent(opened.doc, {
+      ...settle,
+      at: T0 + 60_000,
+    });
+    expect(settled.delivery).toBe("replace");
+    expect(settled.thread?.subject.title).toBe("Reply sent");
+    expect(settled.thread?.unread).toBe(true);
+  });
 });

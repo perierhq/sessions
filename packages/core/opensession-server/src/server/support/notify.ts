@@ -12,10 +12,17 @@
 // write from fixed text and team members' names; a failed send says "Not
 // sent", never the server's error, which can quote an address.
 //
-// A conversation owned by nobody who can be told goes to the instance
-// owner; with no instance owner either, nothing is written. Buttons open
-// the conversation with an intent (`?intent=stop`), where the page asks
-// before it acts.
+// A conversation owned by nobody who can be told goes to its inbox's
+// owner, then the instance owner; with nobody, nothing is written. Buttons
+// open the conversation with an intent (`?intent=stop`), where the page
+// asks before it acts.
+//
+// Delivery follows the incident notifier: a repeat needs-you or failed
+// alert inside the cooldown replaces the banner silently (a veto always
+// alerts, it is about to act); the recipient's own change replaces it
+// silently, since they made it; a draft that leaves the inbox (sent or
+// discarded) settles its row with fixed wording and replaces any banner
+// still on a screen, without ever opening a row of its own.
 //
 // Nothing runs at import: `startSupportNotifications` subscribes, once.
 import type { SupportConversation, SupportDraft } from "../../shared/support";
@@ -28,15 +35,22 @@ import type {
   SupportNotificationKind,
 } from "../notification-threads";
 import { timezoneForUser } from "../shared/user-mappings";
+import { INTERRUPTED_SEND } from "./reply";
 import { onConversationChange } from "./store";
 
 export type SupportIntent = "stop" | "review";
 
 export const SUPPORT_TTL_SECONDS = {
   vetoMin: 60,
+  vetoMax: 3600,
   needsYou: 43_200,
   failed: 43_200,
+  settled: 3600,
 } as const;
+
+/** A repeat needs-you or failed alert within this replaces the banner
+ *  silently (the incidents' INCIDENT_ALERT_COOLDOWN_MS). */
+export const SUPPORT_ALERT_COOLDOWN_MS = 900_000;
 
 /** The failed row's reason: the error stays in the reply box. */
 export const FAILED_REASON = "Not sent";
@@ -81,6 +95,17 @@ function changedBy(draft: SupportDraft): string | null {
   return actor.kind === "person" ? personOwner(actor.name) : null;
 }
 
+/** The recipient made this change and has seen its outcome. A failed send
+ *  only counts when it failed on their own first attempt, which they read
+ *  in the reply box; a retry that failed later, or a send a restart cut
+ *  off, is news to them. */
+function ownChange(draft: SupportDraft, recipient: string): boolean {
+  const by = changedBy(draft);
+  if (!by || by.toLowerCase() !== recipient.toLowerCase()) return false;
+  if (draft.state !== "failed") return true;
+  return draft.attempts === 1 && draft.lastError !== INTERRUPTED_SEND;
+}
+
 /** What one notified state says: kind, fixed title and body, the push. */
 interface SupportRow {
   kind: SupportNotificationKind;
@@ -98,7 +123,8 @@ function row(
 ): SupportRow {
   switch (draft.state) {
     case "veto": {
-      const deadline = draft.vetoDeadline ?? new Date(now).toISOString();
+      // A veto with no future deadline plans nothing (vetoOpen).
+      const deadline = draft.vetoDeadline ?? "";
       const body = SUPPORT_PUSH.vetoBody(clockLabel(deadline, facts.timeZone));
       const seconds = Math.ceil((Date.parse(deadline) - now) / 1000);
       return {
@@ -116,9 +142,9 @@ function row(
             },
           ],
           requireInteraction: true,
-          ttlSeconds: Math.max(
-            SUPPORT_TTL_SECONDS.vetoMin,
-            Number.isFinite(seconds) ? seconds : 0,
+          ttlSeconds: Math.min(
+            SUPPORT_TTL_SECONDS.vetoMax,
+            Math.max(SUPPORT_TTL_SECONDS.vetoMin, seconds),
           ),
           urgency: "high",
         },
@@ -167,11 +193,62 @@ function row(
   }
 }
 
+/** A veto window still to come: one already over (or without a deadline)
+ *  is the tick's to send or hold, too late to stop from a banner. */
+function vetoOpen(draft: SupportDraft, now: number): boolean {
+  if (draft.state !== "veto") return true;
+  const deadline = Date.parse(draft.vetoDeadline ?? "");
+  return Number.isFinite(deadline) && deadline > now;
+}
+
+/** The row of a draft that left the inbox: sent or discarded. Fixed
+ *  wording, existing rows only, never an alert. */
+function settled(
+  next: SupportConversation,
+  draft: SupportDraft & { state: "sent" | "discarded" },
+  now: number,
+): NotificationEvent {
+  return {
+    kind: "support_needs_you",
+    subject: {
+      type: "support",
+      id: next.id,
+      title:
+        draft.state === "sent"
+          ? SUPPORT_PUSH.sentTitle
+          : SUPPORT_PUSH.discardedTitle,
+      context: next.project,
+    },
+    reason: SUPPORT_PUSH.settledBody,
+    body: SUPPORT_PUSH.settledBody,
+    url: supportUrl(next.id),
+    eventKey: eventKey(next, draft),
+    at: now,
+    delivery: "replace",
+    existingOnly: true,
+    push: {
+      body: SUPPORT_PUSH.settledBody,
+      ttlSeconds: SUPPORT_TTL_SECONDS.settled,
+      urgency: "low",
+    },
+  };
+}
+
+/** One occurrence: the draft in a state at a revision, so a draft that
+ *  comes back to a state (a resent draft fails again) is news. */
+function eventKey(next: SupportConversation, draft: SupportDraft): string {
+  return `${next.id}:${draft.id}:${draft.state}:${next.revision}`;
+}
+
 /**
- * Pure. One event per change into needs-person, veto or failed (a new
- * draft, or the same draft in a new state); nothing otherwise. The
- * recipient's own change (they stopped the veto, their send failed) lands
- * quietly: it is recorded without a push.
+ * Pure. One event per change into needs-person, veto (with its window
+ * still open) or failed: a new draft, or the same draft in a new state.
+ * The same draft going on to sent or discarded settles its row. Nothing
+ * otherwise.
+ *
+ * Others' changes alert, needs-you and failed under a cooldown per kind;
+ * the recipient's own change (they stopped the veto) replaces the banner
+ * silently, except a failed send they did not watch fail.
  */
 export function planSupportNotification(
   next: SupportConversation,
@@ -180,10 +257,18 @@ export function planSupportNotification(
   now: number = Date.now(),
 ): PlannedSupportNotification | null {
   const draft = next.draft;
-  if (!notified(draft) || !facts.recipient) return null;
+  if (!draft || !facts.recipient) return null;
   const before = previous?.draft;
-  if (before && before.id === draft.id && before.state === draft.state)
-    return null;
+  const same = before?.id === draft.id;
+  if (same && before?.state === draft.state) return null;
+  if (draft.state === "sent" || draft.state === "discarded")
+    return same
+      ? {
+          user: facts.recipient,
+          event: settled(next, { ...draft, state: draft.state }, now),
+        }
+      : null;
+  if (!notified(draft) || !vetoOpen(draft, now)) return null;
   const r = row(draft, next.id, facts, now);
   const event: NotificationEvent = {
     kind: r.kind,
@@ -196,18 +281,23 @@ export function planSupportNotification(
     reason: r.reason,
     body: r.body,
     url: supportUrl(next.id),
-    eventKey: `${next.id}:${draft.id}:${draft.state}`,
+    eventKey: eventKey(next, draft),
     at: now,
     push: r.push,
   };
-  if (changedBy(draft) === facts.recipient) event.delivery = "quiet";
+  if (ownChange(draft, facts.recipient)) event.delivery = "replace";
+  else if (r.kind !== "support_veto")
+    event.cooldown = { key: r.kind, ms: SUPPORT_ALERT_COOLDOWN_MS };
   return { user: facts.recipient, event };
 }
 
-/** Who is told about `c`: its owner when a person, else the instance
- *  owner; "" when there is nobody. */
-export function supportRecipient(c: Pick<SupportConversation, "owner">) {
-  return personOwner(c.owner) ?? instanceOwner();
+/** Who is told about `c`: its owner when a person, else its inbox's owner,
+ *  else the instance owner; "" when there is nobody. */
+export function supportRecipient(
+  c: Pick<SupportConversation, "owner">,
+  inboxOwner: string | null = null,
+): string {
+  return personOwner(c.owner) ?? personOwner(inboxOwner) ?? instanceOwner();
 }
 
 export interface SupportNotifierDeps {
@@ -216,6 +306,8 @@ export interface SupportNotifierDeps {
   notify(user: string, event: NotificationEvent): Promise<unknown>;
   timeZone(user: string): string;
   now(): number;
+  /** The owner of the conversation's inbox, or null. */
+  inboxOwner(inboxId: string): Promise<string | null>;
 }
 
 const defaultDeps: SupportNotifierDeps = {
@@ -225,6 +317,10 @@ const defaultDeps: SupportNotifierDeps = {
   },
   timeZone: (user) => timezoneForUser(user) || "UTC",
   now: Date.now,
+  inboxOwner: async (inboxId) => {
+    const { getInbox } = await import("./inboxes");
+    return (await getInbox(inboxId))?.owner ?? null;
+  },
 };
 
 /** The tail of each conversation's queue, so rows end on the newest state. */
@@ -248,12 +344,20 @@ function message(error: unknown): string {
 export function handleSupportChange(
   next: SupportConversation | null,
   previous: SupportConversation | null,
-  deps: SupportNotifierDeps = defaultDeps,
+  overrides: Partial<SupportNotifierDeps> = {},
 ): Promise<void> {
-  if (!next || !notified(next.draft)) return Promise.resolve();
+  const draft = next?.draft;
+  if (!next || !draft) return Promise.resolve();
+  const before = previous?.draft;
+  if (before?.id === draft.id && before.state === draft.state)
+    return Promise.resolve();
+  const deps: SupportNotifierDeps = { ...defaultDeps, ...overrides };
   return enqueue(next.id, async () => {
     try {
-      const recipient = supportRecipient(next);
+      const recipient = supportRecipient(
+        next,
+        personOwner(next.owner) ? null : await deps.inboxOwner(next.inboxId),
+      );
       if (!recipient) return;
       const planned = planSupportNotification(
         next,

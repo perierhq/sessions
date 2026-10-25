@@ -10,11 +10,14 @@ import { __setOwnerRosterForTest } from "../incidents/owner";
 import type { NotificationEvent } from "../notification-threads";
 import {
   __resetSupportNotificationsForTest,
+  handleSupportChange,
   planSupportNotification,
+  SUPPORT_ALERT_COOLDOWN_MS,
   startSupportNotifications,
   supportNotificationsSettled,
   supportUrl,
 } from "./notify";
+import { INTERRUPTED_SEND } from "./reply";
 import { createConversation, updateConversation } from "./store";
 import { useSupportTestKernel } from "./testing/kernel-fixture";
 
@@ -127,7 +130,7 @@ describe("planSupportNotification", () => {
       reason: "Drafts wait for a person",
       body: SUPPORT_PUSH.needsYouBody,
       url: supportUrl(next.id),
-      eventKey: `${next.id}:sd_1:needs-person`,
+      eventKey: `${next.id}:sd_1:needs-person:2`,
       at: NOW,
       push: {
         body: SUPPORT_PUSH.needsYouBody,
@@ -142,7 +145,9 @@ describe("planSupportNotification", () => {
         ttlSeconds: 43_200,
         urgency: "normal",
       },
+      cooldown: { key: "support_needs_you", ms: SUPPORT_ALERT_COOLDOWN_MS },
     });
+    expect(SUPPORT_ALERT_COOLDOWN_MS).toBe(900_000);
   });
 
   test("the same state again (a revision bump for another reason) plans nothing", () => {
@@ -156,11 +161,21 @@ describe("planSupportNotification", () => {
   });
 
   test("states nobody has to act on plan nothing", () => {
-    for (const state of ["sending", "sent", "discarded"] as const)
+    expect(
+      planSupportNotification(
+        conversation({ draft: draft("sending") }),
+        conversation({ draft: draft("veto") }),
+        FACTS,
+        NOW,
+      ),
+    ).toBeNull();
+    // A sent or discarded draft that was never in the inbox before: nothing
+    // to settle.
+    for (const state of ["sent", "discarded"] as const)
       expect(
         planSupportNotification(
           conversation({ draft: draft(state) }),
-          conversation({ draft: draft("veto") }),
+          conversation({ draft: draft(state, { id: "sd_0" }) }),
           FACTS,
           NOW,
         ),
@@ -177,7 +192,7 @@ describe("planSupportNotification", () => {
     });
     expect(
       planSupportNotification(next, previous, FACTS, NOW)?.event.eventKey,
-    ).toBe(`${next.id}:sd_2:needs-person`);
+    ).toBe(`${next.id}:sd_2:needs-person:1`);
   });
 
   test("a veto says when it sends, in the owner's time zone, with a Stop button", () => {
@@ -233,7 +248,7 @@ describe("planSupportNotification", () => {
       subject: { title: SUPPORT_PUSH.failedTitle },
       reason: "Not sent",
       body: SUPPORT_PUSH.failedBody,
-      eventKey: `${next.id}:sd_1:failed`,
+      eventKey: `${next.id}:sd_1:failed:1`,
       push: { body: SUPPORT_PUSH.failedBody },
     });
     expect(JSON.stringify(planned)).not.toContain(CUSTOMER_ADDRESS);
@@ -275,7 +290,7 @@ describe("planSupportNotification", () => {
     ).toBeNull();
   });
 
-  test("the recipient's own change lands quietly", () => {
+  test("the recipient's own change replaces the banner silently", () => {
     const next = conversation({
       draft: draft("needs-person", {
         rule: "Stopped by Ada",
@@ -283,9 +298,18 @@ describe("planSupportNotification", () => {
       }),
     });
     const previous = conversation({ draft: draft("veto") });
+    const own = planSupportNotification(next, previous, FACTS, NOW)?.event;
+    expect(own?.delivery).toBe("replace");
+    expect(own?.cooldown).toBeUndefined();
+    // Compared without case.
     expect(
-      planSupportNotification(next, previous, FACTS, NOW)?.event.delivery,
-    ).toBe("quiet");
+      planSupportNotification(
+        next,
+        previous,
+        { recipient: "ada", timeZone: "UTC" },
+        NOW,
+      )?.event.delivery,
+    ).toBe("replace");
     const other = conversation({
       draft: draft("needs-person", {
         rule: "Stopped by Grace",
@@ -295,6 +319,151 @@ describe("planSupportNotification", () => {
     expect(
       planSupportNotification(other, previous, FACTS, NOW)?.event.delivery,
     ).toBeUndefined();
+  });
+
+  test("a failed send alerts even when the recipient sent it", () => {
+    const by = { kind: "person", name: "Ada" } as const;
+    const previous = conversation({
+      draft: draft("sending", { decidedBy: by, attempts: 1 }),
+    });
+    // Retries the person never saw fail.
+    const retried = conversation({
+      draft: draft("failed", {
+        decidedBy: by,
+        attempts: 3,
+        lastError: "421 try later",
+      }),
+    });
+    const retriedEvent = planSupportNotification(
+      retried,
+      previous,
+      FACTS,
+      NOW,
+    )?.event;
+    expect(retriedEvent?.delivery).toBeUndefined();
+    expect(retriedEvent?.cooldown).toEqual({
+      key: "support_failed",
+      ms: SUPPORT_ALERT_COOLDOWN_MS,
+    });
+    // A restart cut the send off: nobody saw that either.
+    const interrupted = conversation({
+      draft: draft("failed", {
+        decidedBy: by,
+        attempts: 1,
+        lastError: INTERRUPTED_SEND,
+      }),
+    });
+    expect(
+      planSupportNotification(interrupted, previous, FACTS, NOW)?.event
+        .delivery,
+    ).toBeUndefined();
+    // The first attempt failed while they waited: they read it in the 502.
+    const seen = conversation({
+      draft: draft("failed", {
+        decidedBy: by,
+        attempts: 1,
+        lastError: "550 no such user",
+      }),
+    });
+    expect(
+      planSupportNotification(seen, previous, FACTS, NOW)?.event.delivery,
+    ).toBe("replace");
+  });
+
+  test("a veto alert has no cooldown; one with no future deadline plans nothing", () => {
+    const veto = planSupportNotification(
+      conversation({ draft: draft("veto") }),
+      conversation(),
+      FACTS,
+      NOW,
+    )?.event;
+    expect(veto?.cooldown).toBeUndefined();
+    for (const vetoDeadline of [null, "2026-10-25T13:59:00.000Z"])
+      expect(
+        planSupportNotification(
+          conversation({ draft: draft("veto", { vetoDeadline }) }),
+          conversation(),
+          FACTS,
+          NOW,
+        ),
+      ).toBeNull();
+  });
+
+  test("a veto banner lives at most an hour", () => {
+    const next = conversation({
+      draft: draft("veto", { vetoDeadline: "2026-10-25T18:00:00.000Z" }),
+    });
+    expect(
+      planSupportNotification(next, conversation(), FACTS, NOW)?.event.push
+        ?.ttlSeconds,
+    ).toBe(3600);
+  });
+
+  test("the dedupe key names the revision, so a draft back in a state is news", () => {
+    const first = planSupportNotification(
+      conversation({ draft: draft("veto"), revision: 4 }),
+      conversation({ draft: draft("needs-person"), revision: 3 }),
+      FACTS,
+      NOW,
+    );
+    const again = planSupportNotification(
+      conversation({ draft: draft("veto"), revision: 7 }),
+      conversation({ draft: draft("needs-person"), revision: 6 }),
+      FACTS,
+      NOW,
+    );
+    expect(first?.event.eventKey).toMatch(/:sd_1:veto:4$/);
+    expect(again?.event.eventKey).toMatch(/:sd_1:veto:7$/);
+  });
+
+  test("a waiting draft that is sent or discarded settles its row silently", () => {
+    const sent = planSupportNotification(
+      conversation({
+        draft: draft("sent", { rule: "Sent by Grace" }),
+        revision: 5,
+      }),
+      conversation({ draft: draft("sending"), revision: 4 }),
+      FACTS,
+      NOW,
+    );
+    expect(sent?.user).toBe("Ada");
+    expect(sent?.event).toEqual({
+      kind: "support_needs_you",
+      subject: {
+        type: "support",
+        id: sent?.event.subject.id ?? "",
+        title: SUPPORT_PUSH.sentTitle,
+        context: "acme",
+      },
+      reason: SUPPORT_PUSH.settledBody,
+      body: SUPPORT_PUSH.settledBody,
+      url: supportUrl(sent?.event.subject.id ?? ""),
+      eventKey: `${sent?.event.subject.id}:sd_1:sent:5`,
+      at: NOW,
+      delivery: "replace",
+      existingOnly: true,
+      push: {
+        body: SUPPORT_PUSH.settledBody,
+        ttlSeconds: 3600,
+        urgency: "low",
+      },
+    });
+    expect(SUPPORT_PUSH.sentTitle).toBe("Reply sent");
+    const discarded = planSupportNotification(
+      conversation({
+        draft: draft("discarded", {
+          rule: "Discarded by Ada",
+          decidedBy: { kind: "person", name: "Ada" },
+        }),
+      }),
+      conversation({ draft: draft("veto") }),
+      FACTS,
+      NOW,
+    );
+    expect(discarded?.event.subject.title).toBe(SUPPORT_PUSH.discardedTitle);
+    expect(SUPPORT_PUSH.discardedTitle).toBe("Reply discarded");
+    expect(discarded?.event.delivery).toBe("replace");
+    expect(discarded?.event.existingOnly).toBe(true);
   });
 });
 
@@ -369,6 +538,45 @@ describe("startSupportNotifications", () => {
     expect(delivered.map((d) => [d.user, d.event.kind])).toEqual([
       ["Grace", "support_veto"],
     ]);
+  });
+
+  test("no owner: the inbox owner hears before the instance owner", async () => {
+    const seen: string[] = [];
+    const deps = {
+      notify: async (user: string) => {
+        seen.push(user);
+        return null;
+      },
+      timeZone: () => "UTC",
+      now: () => NOW,
+    };
+    const next = conversation({ owner: null, draft: draft("needs-person") });
+    await handleSupportChange(next, conversation({ owner: null }), {
+      ...deps,
+      inboxOwner: async () => "Ada",
+    });
+    await handleSupportChange(next, conversation({ owner: null }), {
+      ...deps,
+      inboxOwner: async () => null,
+    });
+    expect(seen).toEqual(["Ada", "Grace"]);
+  });
+
+  test("a sent draft reaches the notifier as a settle", async () => {
+    const c = await seed("Ada");
+    await updateConversation(c.id, (x) => ({ ...x, draft: draft("veto") }));
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: draft("sending"),
+    }));
+    await updateConversation(c.id, (x) => ({ ...x, draft: draft("sent") }));
+    await settle();
+    expect(delivered.map((d) => [d.event.kind, d.event.subject.title])).toEqual(
+      [
+        ["support_veto", SUPPORT_PUSH.vetoTitle],
+        ["support_needs_you", SUPPORT_PUSH.sentTitle],
+      ],
+    );
   });
 
   test("starting twice subscribes once", async () => {

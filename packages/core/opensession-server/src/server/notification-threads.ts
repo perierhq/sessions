@@ -188,6 +188,9 @@ export interface NotificationEvent {
   clearHeld?: boolean;
   /** A repeat alert under the same key within `ms` becomes a replace. */
   cooldown?: { key: string; ms: number };
+  /** Update the subject's row only if it is already in the inbox: news
+   *  that settles a row (a support reply sent) never opens one. */
+  existingOnly?: boolean;
   push?: NotificationPush;
 }
 
@@ -356,6 +359,8 @@ export function applyNotificationEvent(
   if (event.eventKey && events.some((seen) => seen.key === event.eventKey))
     return { doc, thread: null, delivery: "quiet" };
   if (event.flushHeld && existing?.heldAt === undefined)
+    return { doc, thread: null, delivery: "quiet" };
+  if (event.existingOnly && !existing)
     return { doc, thread: null, delivery: "quiet" };
   const delivery = resolveDelivery(event, existing, now);
   const alert = delivery === "alert";

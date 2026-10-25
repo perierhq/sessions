@@ -53,6 +53,10 @@ export const SUPPORT_PUSH = {
   vetoBody: (clock: string) => `Sends at ${clock} unless you stop it`,
   failedTitle: "A support reply could not send",
   failedBody: "Open Sessions to see why",
+  /** A row that waited on you, once the reply went out or was dropped. */
+  sentTitle: "Reply sent",
+  discardedTitle: "Reply discarded",
+  settledBody: "Nothing waits on you",
   stop: "Stop",
   review: "Review",
 } as const;
