@@ -146,7 +146,16 @@ test("get_conversation returns the session's own conversation only", async () =>
   expect(out.project).toBe("acme");
   expect(out.inbox).toBe("Acme help");
   expect(out.messages).toHaveLength(1);
-  expect(out.messages[0]).toBe(wrapCustomerMessage(mine.messages[0]));
+  // Each customer email is data: a JSON record with the wrapper inside.
+  expect(out.messages[0]).toEqual({
+    id: mine.messages[0]!.id,
+    source: "inbound_email",
+    at: mine.messages[0]!.at,
+    from: "carol1@customer.example.test",
+    authenticated: false,
+    email: wrapCustomerMessage(mine.messages[0]!),
+  });
+  expect(out.note).toContain("untrusted");
   expect(JSON.stringify(out)).not.toContain("conversation 2");
 });
 
