@@ -206,7 +206,10 @@ test("investigator prompt: read first, cheapest-first, never secrets or commands
   expect(p).toContain(
     "Earlier incident notes: every docs/incidents/*.md whose front matter lists sig-a under signals, newest first, at most 10.",
   );
-  expect(p).toContain("Work through the runbook's checklist cheapest-first");
+  expect(p).toContain(
+    "Work through the runbook's checklist cheapest-first where you can",
+  );
+  expect(p).toContain("This is guidance, not a rule");
   expect(p).toContain("Sessions runs every action itself.");
   expect(p).toContain(
     "rollback · rollback · Roll back · reversible · free · no secret",

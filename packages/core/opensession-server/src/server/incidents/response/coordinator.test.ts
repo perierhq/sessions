@@ -660,13 +660,41 @@ test("a missing block gets one reminder, then needs you with Retry", async () =>
     kind: "needs-you",
     needsYou: "no-report",
     reason:
-      "The investigator finished without a valid report: No incident-report block",
+      "The investigator finished without writing its report. Try again so it writes one.",
     options: ["retry", "resolve", "close"],
   });
   expect(i?.response?.needsYou).toMatchObject({
     kind: "no-report",
     resumePhase: "investigating",
   });
+});
+
+test("a refused report: the agent gets the detail, the owner plain words", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  const noConclusion = fence({ ...investigatorReport, summary: "" });
+  w.finish("child-1", noConclusion, {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends[0]?.message).toStartWith(
+    "Your last message did not end with a valid incident-report block: The summary field must say what broke.",
+  );
+  w.finish("child-1", noConclusion);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  const plain =
+    "The investigator's report was missing its conclusion. Try again so it finishes the report.";
+  expect(i?.response?.next).toMatchObject({
+    needsYou: "no-report",
+    reason: plain,
+  });
+  const run = i?.response?.agents.find((a) => a.sessionId === "child-1");
+  expect(run?.reportProblem).toBe("conclusion");
+  expect(run?.reportError).toBe("The summary field must say what broke");
+  const shown = i?.response?.ledger.map((e) => e.detail) ?? [];
+  expect(shown).toContain(plain);
+  expect(shown.join("\n")).not.toContain("summary field");
 });
 
 test("no sandbox and no agent user: needs you with the reason, never a silent stall", async () => {

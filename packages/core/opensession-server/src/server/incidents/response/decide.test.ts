@@ -560,6 +560,7 @@ test("investigation: start, remind once, then needs you", () => {
     step: "record-report",
     sessionId: "child-1",
     error: "No incident-report block",
+    problem: "missing",
   });
   expect(
     decideNextStep(done({ reportError: "No incident-report block" })),
@@ -570,13 +571,31 @@ test("investigation: start, remind once, then needs you", () => {
   });
   expect(
     decideNextStep(
-      done({ reportError: "No incident-report block", reminded: true }),
+      done({
+        reportError: "No incident-report block",
+        reportProblem: "missing",
+        reminded: true,
+      }),
     ),
   ).toEqual({
     step: "needs-you",
     kind: "no-report",
     reason:
-      "The investigator finished without a valid report: No incident-report block",
+      "The investigator finished without writing its report. Try again so it writes one.",
+  });
+  // The parser's detail never reaches the owner, even from an older run
+  // stored without a problem kind.
+  expect(
+    decideNextStep(
+      done({
+        reportError: "The summary field must say what broke",
+        reminded: true,
+      }),
+    ),
+  ).toMatchObject({
+    step: "needs-you",
+    reason:
+      "The investigator's report could not be used. Try again so it finishes the report.",
   });
   expect(decideNextStep(done({ report: goodInvestigator }))).toMatchObject({
     step: "transition",
@@ -623,6 +642,7 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
     step: "record-report",
     sessionId: "child-1",
     error: "Open a pull request with the note and the runbook update",
+    problem: "pr",
   });
   // Finished without any final message: no report after a grace period.
   const silent = (sentAgoMs: number) =>
@@ -640,6 +660,7 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
     step: "record-report",
     sessionId: "child-1",
     error: "No incident-report block",
+    problem: "missing",
   });
 });
 

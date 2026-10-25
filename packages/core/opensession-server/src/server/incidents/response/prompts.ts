@@ -315,7 +315,7 @@ export function buildInvestigatorPrompt(
 
   out.push("## How to work", "");
   out.push(
-    "Work through the runbook's checklist cheapest-first: free checks before cheap ones before expensive ones. Record every attempt in the evidence table, including the ones that ruled something out.",
+    "Work through the runbook's checklist cheapest-first where you can: free checks before cheap ones before expensive ones. This is guidance, not a rule; when a cheap check points to a free one, run it. Record every attempt in the evidence table, including the ones that ruled something out. Sessions shows the table sorted by cost.",
     "",
     "Do not conclude that something must be bought, scaled or given new credentials. Say so in noCandidateReason and Sessions will ask the owner.",
     "",

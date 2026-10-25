@@ -37,6 +37,7 @@ import {
   effectiveVerdict,
   parseInvestigatorReport,
   parseVerifierReport,
+  plainReportProblem,
 } from "./reports";
 import {
   AGENT_MAX_MS,
@@ -696,6 +697,7 @@ function reports(view: ResponseView): ResponseStep | undefined {
           step: "record-report",
           sessionId: run.sessionId,
           error: "No incident-report block",
+          problem: "missing",
         };
       continue;
     }
@@ -716,12 +718,14 @@ function reports(view: ResponseView): ResponseStep | undefined {
           step: "record-report",
           sessionId: run.sessionId,
           error: parsed.error,
+          problem: parsed.problem,
         };
       if (parsed.candidate !== null && !(live?.prUrl ?? run.prUrl))
         return {
           step: "record-report",
           sessionId: run.sessionId,
           error: "Open a pull request with the note and the runbook update",
+          problem: "pr",
         };
       return {
         step: "record-report",
@@ -730,12 +734,24 @@ function reports(view: ResponseView): ResponseStep | undefined {
         ...(warnings.length ? { warnings } : {}),
       };
     }
+    const warnings: string[] = [];
     const parsed = parseVerifierReport(text, {
       claims: r.candidate?.claims ?? [],
+      warnings,
     });
     return "error" in parsed
-      ? { step: "record-report", sessionId: run.sessionId, error: parsed.error }
-      : { step: "record-report", sessionId: run.sessionId, report: parsed };
+      ? {
+          step: "record-report",
+          sessionId: run.sessionId,
+          error: parsed.error,
+          problem: parsed.problem,
+        }
+      : {
+          step: "record-report",
+          sessionId: run.sessionId,
+          report: parsed,
+          ...(warnings.length ? { warnings } : {}),
+        };
   }
 
   // 13. One reminder for a missing or invalid report.
@@ -849,7 +865,7 @@ function investigation(view: ResponseView): ResponseStep {
     return {
       step: "needs-you",
       kind: "no-report",
-      reason: `The investigator finished without a valid report: ${inv.reportError}`,
+      reason: plainReportProblem("investigator", inv.reportProblem),
     };
 
   const report = inv.report;

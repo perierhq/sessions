@@ -173,6 +173,20 @@ export const ACTION_TEMPLATES: Record<
 
 /** The same union as plan 3's `IncidentAgentRole`. */
 export type AgentRole = "investigator" | "verifier";
+
+/** What was wrong with a refused report, so the owner reads plain words
+ *  instead of the parser's detail. */
+export type ReportProblem =
+  | "missing"
+  | "unreadable"
+  | "conclusion"
+  | "evidence"
+  | "decision"
+  | "action"
+  | "check"
+  | "claims"
+  | "note"
+  | "pr";
 export type Independence = "other-provider" | "same-provider" | "same-model";
 
 export type EvidenceCost = "free" | "cheap" | "expensive";
@@ -335,7 +349,10 @@ export interface AgentRun {
   error?: string;
   cancelledFor?: CancelReason;
   report?: InvestigatorReport | VerifierReport;
+  /** The parser's detail on a refused report; for the agent and logs. */
   reportError?: string;
+  /** What the owner is told about a refused report. */
+  reportProblem?: ReportProblem;
   /** Values Sessions repaired in an otherwise valid report. */
   reportWarnings?: string[];
   reminded: boolean;

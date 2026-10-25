@@ -98,6 +98,7 @@ import {
   notePathFor,
   runbookPathsFor,
 } from "./prompts";
+import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
   PARALLEL_INVESTIGATOR_RETRY_MS,
@@ -1221,6 +1222,7 @@ async function messageAgent(
               endedAt: undefined,
               report: undefined,
               reportError: undefined,
+              reportProblem: undefined,
               reminded: false,
             })
           : patched(a, {
@@ -1228,6 +1230,7 @@ async function messageAgent(
               turnSentAt: at,
               endedAt: undefined,
               reportError: undefined,
+              reportProblem: undefined,
               reminded: true,
             });
       });
@@ -1268,7 +1271,11 @@ async function recordReport(
     ? report.role === "investigator"
       ? `Investigator reported: ${report.summary}`
       : `Verifier: ${report.verdict === "certain" ? "certain" : "not certain"}`
-    : `${roleLabel(run.role)} report was not valid: ${step.error ?? "unknown"}`;
+    : plainReportProblem(run.role, step.problem);
+  if (!report)
+    console.warn(
+      `[incidents] ${incident.id}: ${run.role} report refused: ${step.error ?? "unknown"}`,
+    );
   const warnings = report ? (step.warnings ?? []) : [];
   const shown = warnings.length
     ? `${detail}. Repaired: ${warnings.join("; ")}`
@@ -1289,7 +1296,10 @@ async function recordReport(
                     report,
                     reportWarnings: warnings.length ? warnings : undefined,
                   }
-                : { reportError: step.error ?? "Invalid" },
+                : {
+                    reportError: step.error ?? "Invalid",
+                    reportProblem: step.problem,
+                  },
             ),
       );
       const response = ledger(patched(base, { agents: agentsNext }), at, {
