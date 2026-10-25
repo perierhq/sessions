@@ -52,6 +52,8 @@ export interface InboundMessage {
   attachments: Array<AttachmentMeta & { content?: Uint8Array }>;
   /** Source over MAX_SOURCE_BYTES: headers only. */
   oversize?: true;
+  /** The body couldn't be parsed: headers only, with a stub text. */
+  unreadable?: true;
 }
 
 export type SupportActor =

@@ -236,4 +236,100 @@ describe("parseInbound", () => {
     expect(m.keys.messageId).toBe("big@example.test");
     expect(m.attachments).toEqual([]);
   });
+
+  test("strips controls from the subject and display names, and caps them", async () => {
+    const raw = [
+      "From: =?utf-8?Q?Ada=0D=0ALovelace=07?= <ada@example.test>",
+      "To: help@acme.example.test",
+      "Subject: =?utf-8?Q?Hi=0D=0ABcc:_x=07=C2=85end?=",
+      "",
+      "body",
+      "",
+    ].join("\r\n");
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(m.subject).toBe("Hi Bcc: x end");
+    expect(m.from).toEqual({ name: "Ada Lovelace", address: "ada@example.test" });
+
+    const long = await parseInbound(
+      bytes(rawMail({ from: "a@example.test", subject: "s".repeat(3000) })),
+      CTX,
+    );
+    expect(long.subject.length).toBe(998);
+  });
+
+  test("drops addresses that are not one plain mailbox", async () => {
+    const raw = rawMail({
+      from: "a@example.test",
+      to: '<a@b@x.test>, good@x.test, <"a b"@x.test>, noat.example.test',
+    });
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(m.to).toEqual([{ name: null, address: "good@x.test" }]);
+  });
+
+  test("the text cut never splits a surrogate pair", async () => {
+    const cutAt = MAX_TEXT_CHARS - "\n[…cut]".length;
+    const raw = rawMail({
+      from: "a@example.test",
+      text: `${"x".repeat(cutAt - 1)}${"😀".repeat(400)}`,
+    });
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(m.text.endsWith("\n[…cut]")).toBe(true);
+    const body = m.text.slice(0, -"\n[…cut]".length);
+    const last = body.charCodeAt(body.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+  });
+
+  test("a huge HTML body still yields text, quickly", async () => {
+    const html = `<html><body><script>secret()</script>${"<p>Hello <b>there</b></p>".repeat(120_000)}</body></html>`;
+    const raw = [
+      "From: a@example.test",
+      "To: help@acme.example.test",
+      "Subject: Html",
+      "MIME-Version: 1.0",
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      html,
+      "",
+    ].join("\r\n");
+    const started = performance.now();
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(m.text).toContain("Hello there");
+    expect(m.text).not.toContain("<");
+    expect(m.text).not.toContain("secret");
+    expect(m.text.length).toBeLessThanOrEqual(MAX_TEXT_CHARS);
+  });
+
+  test("hostile HTML over the parse limit stays linear", async () => {
+    const html = `${"<script>".repeat(150_000)}${"<style".repeat(150_000)}`;
+    const raw = [
+      "From: a@example.test",
+      "Subject: Html",
+      "MIME-Version: 1.0",
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      html,
+      "",
+    ].join("\r\n");
+    const started = performance.now();
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(m.text).not.toContain("<");
+  });
+
+  test("an unreadable message keeps its headers and says so", async () => {
+    const raw = rawMail({
+      from: "Ada <ada@example.test>",
+      subject: "Broken",
+      messageId: "broken@example.test",
+    });
+    const headers = raw.slice(0, raw.indexOf("\r\n\r\n") + 4);
+    const m = await parseInbound(bytes(headers), { ...CTX, unreadable: true });
+    expect(m.unreadable).toBe(true);
+    expect(m.oversize).toBeUndefined();
+    expect(m.text).toBe("(This message couldn't be read)");
+    expect(m.subject).toBe("Broken");
+    expect(m.keys.messageId).toBe("broken@example.test");
+    expect(m.attachments).toEqual([]);
+  });
 });

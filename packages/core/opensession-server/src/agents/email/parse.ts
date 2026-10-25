@@ -38,6 +38,18 @@ function flatten(entries: EmailAddress[]): EmailAddress[] {
   );
 }
 
+/** One plain mailbox: exactly one `@`, no whitespace or controls. */
+function plainAddress(address: MailAddress): MailAddress | null {
+  const value = address.address;
+  if (value.length > MAX_LINE || /[\s\u0000-\u001f\u007f-\u009f]/.test(value))
+    return null;
+  const at = value.indexOf("@");
+  if (at <= 0 || at === value.length - 1 || value.indexOf("@", at + 1) >= 0)
+    return null;
+  const name = address.name ? cleanLine(address.name) : "";
+  return { name: name || null, address: value };
+}
+
 function addresses(
   header: AddressObject | AddressObject[] | undefined,
 ): MailAddress[] {
@@ -45,7 +57,8 @@ function addresses(
   const objects = Array.isArray(header) ? header : [header];
   const out: MailAddress[] = [];
   for (const entry of flatten(objects.flatMap((o) => o.value))) {
-    const address = normalizeAddress(entry);
+    const normalized = normalizeAddress(entry);
+    const address = normalized && plainAddress(normalized);
     if (address) out.push(address);
   }
   return out;
@@ -103,7 +116,52 @@ export function cleanLine(text: string, max = MAX_LINE): string {
 
 function capText(text: string): string {
   if (text.length <= MAX_TEXT_CHARS) return text;
-  return text.slice(0, MAX_TEXT_CHARS - CUT_MARK.length) + CUT_MARK;
+  return cutText(text, MAX_TEXT_CHARS - CUT_MARK.length) + CUT_MARK;
+}
+
+/** HTML longer than this is not given to html-to-text. */
+const MAX_HTML_TO_PARSE = 2_000_000;
+const UNREADABLE_TEXT = "(This message couldn't be read)";
+
+/** The cheap fallback when html-to-text refused: one linear pass over the
+ *  first MAX_HTML_TO_PARSE characters that drops tags, script and style. */
+function stripTags(html: string): string {
+  const input = cutText(html, MAX_HTML_TO_PARSE);
+  const lower = input.toLowerCase();
+  const out: string[] = [];
+  let at = 0;
+  while (at < input.length) {
+    const open = input.indexOf("<", at);
+    if (open < 0) {
+      out.push(input.slice(at));
+      break;
+    }
+    out.push(input.slice(at, open));
+    const close = input.indexOf(">", open);
+    if (close < 0) break;
+    const tag = lower.slice(open + 1, Math.min(close, open + 8));
+    const skip = /^(script|style)\b/.exec(tag)?.[1];
+    if (skip) {
+      const end = lower.indexOf(`</${skip}`, close);
+      const after = end < 0 ? -1 : lower.indexOf(">", end);
+      if (after < 0) break;
+      at = after + 1;
+      out.push(" ");
+      continue;
+    }
+    out.push(/^(br|\/p|\/div|\/li|\/tr|\/h[1-6])\b/.test(tag) ? "\n" : " ");
+    at = close + 1;
+  }
+  return out
+    .join("")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "‹")
+    .replace(/&gt;/gi, "›")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ ?\n[ \t\n]*/g, "\n");
 }
 
 export async function parseInbound(
@@ -113,13 +171,21 @@ export async function parseInbound(
     providerId: string;
     receivedAt: string;
     oversize?: boolean;
+    /** The full source didn't parse: `source` is its header block. */
+    unreadable?: boolean;
   },
 ): Promise<InboundMessage> {
+  const headersOnly = Boolean(ctx.oversize || ctx.unreadable);
   const parsed = await simpleParser(Buffer.from(source), {
     skipTextToHtml: true,
     skipImageLinks: true,
     keepCidLinks: true,
+    maxHtmlLengthToParse: MAX_HTML_TO_PARSE,
   });
+  const body =
+    parsed.textConversionError && typeof parsed.html === "string"
+      ? stripTags(parsed.html)
+      : (parsed.text ?? "");
 
   const raw = new Map<string, string[]>();
   for (const { key, line } of parsed.headerLines) {
@@ -149,15 +215,19 @@ export async function parseInbound(
     to: addresses(parsed.to),
     cc: addresses(parsed.cc),
     replyTo: addresses(parsed.replyTo),
-    subject: (parsed.subject ?? "").trim(),
-    text: ctx.oversize ? "" : capText((parsed.text ?? "").trim()),
+    subject: cleanLine(parsed.subject ?? ""),
+    text: ctx.unreadable
+      ? UNREADABLE_TEXT
+      : ctx.oversize
+        ? ""
+        : capText(body.trim()),
     keys: {
       messageId: messageIds(first("message-id"))[0] ?? null,
       inReplyTo: messageIds(first("in-reply-to"))[0] ?? null,
       references: references(raw.get("references")?.join(" ")),
     },
     loopHeaders,
-    attachments: ctx.oversize
+    attachments: headersOnly
       ? []
       : parsed.attachments.map((attachment, index) => ({
           id: `att_${index + 1}`,
@@ -173,6 +243,7 @@ export async function parseInbound(
           ),
         })),
   };
-  if (ctx.oversize) message.oversize = true;
+  if (ctx.unreadable) message.unreadable = true;
+  else if (ctx.oversize) message.oversize = true;
   return message;
 }
