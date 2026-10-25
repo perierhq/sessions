@@ -115,13 +115,6 @@ export function isLoopbackAddress(ip: string): boolean {
   return v4 !== undefined && v4.split(".")[0] === "127";
 }
 
-/** Whether `none` (no TLS) may be saved for `host`: `localhost` or a
- *  loopback literal. A connect checks the resolved address again. */
-export function noTlsHostAllowed(host: string): boolean {
-  const name = bare(host).replace(/\.+$/, "");
-  return name === "localhost" || (isIP(name) !== 0 && isLoopbackAddress(name));
-}
-
 /** Whether a host literal (no resolution) may be saved on an inbox: a name
  *  passes here and is checked when it is resolved. */
 export function mailHostLiteralAllowed(

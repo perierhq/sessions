@@ -5,6 +5,7 @@ import type {
   InboxHealthState,
   InboxView,
 } from "../../../shared/support";
+import { ApiError } from "../../lib/api/request";
 import { fetchInboxes, forgetCustomer } from "../../lib/api/support";
 import { errorMessage } from "../../lib/error-message";
 import {
@@ -15,7 +16,7 @@ import {
   INBOX_HEALTH_DOT,
   INBOX_ROW_BUTTON,
 } from "../../lib/support-inbox-classes";
-import { forgetSummary, healthLine } from "../../lib/inbox-form";
+import { forgetSummary, inboxStatusLine } from "../../lib/inbox-form";
 import { usePeople } from "../../lib/people";
 import { Button } from "../../ui/button";
 import { useConfirm } from "../../ui/confirm";
@@ -54,10 +55,11 @@ interface InboxStatus {
 }
 
 function statusOf(inbox: InboxView): InboxStatus {
-  if (!inbox.enabled) return { label: "Turned off", dot: HEALTH_DOT.off };
   return {
-    label: healthLine(inbox.health),
-    dot: HEALTH_DOT[inbox.health.state] ?? HEALTH_DOT.off,
+    label: inboxStatusLine(inbox),
+    dot: inbox.enabled
+      ? (HEALTH_DOT[inbox.health.state] ?? HEALTH_DOT.off)
+      : HEALTH_DOT.off,
   };
 }
 
@@ -86,6 +88,18 @@ export function InboxesPanel() {
     setOpened((n) => n + 1);
     setEditing(inbox);
   };
+
+  /** Someone else saved the inbox first: open it again as it is now. */
+  const reloadForm = () => {
+    const id = editing?.id;
+    void mutate().then((fresh) => {
+      const inbox = fresh?.inboxes.find((i) => i.id === id);
+      if (inbox) openForm(inbox);
+      else setEditing(undefined);
+    });
+  };
+
+  const signedOut = error instanceof ApiError && error.status === 401;
 
   const enabled = data?.enabled ?? false;
   const isOwner = data?.isInstanceOwner ?? false;
@@ -143,6 +157,14 @@ export function InboxesPanel() {
 
       {isLoading && !data ? (
         <SettingCardSkeleton rows={2} />
+      ) : signedOut && !data ? (
+        <SettingCard>
+          <SettingRow>
+            <SettingRowText>
+              <SettingRowTitle>Sign in to manage inboxes</SettingRowTitle>
+            </SettingRowText>
+          </SettingRow>
+        </SettingCard>
       ) : error && !data ? (
         <InlineAlert onRetry={() => void mutate()}>
           {errorMessage(error, "Couldn't load the inboxes")}
@@ -274,6 +296,7 @@ export function InboxesPanel() {
           isInstanceOwner={isOwner}
           onClose={() => setEditing(undefined)}
           onSaved={() => void mutate()}
+          onReload={reloadForm}
         />
       )}
       {confirmDialog}

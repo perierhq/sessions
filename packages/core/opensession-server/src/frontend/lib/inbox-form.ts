@@ -17,12 +17,14 @@ import {
   type InboxTestBody,
   type InboxTestResult,
   type InboxView,
+  MAIL_TLS_MODES,
   type MailTlsMode,
   type MailboxBehaviour,
   type NewInboxInput,
   SUPPORT_TOPICS,
   type SupportTopic,
   defaultMailPort,
+  noTlsHostAllowed,
   smtpSavesSentItself,
 } from "../../shared/support";
 
@@ -44,6 +46,7 @@ export interface InboxFormState {
   label: string;
   address: string;
   project: string;
+  /** "" on a new inbox: the server makes whoever connects it the owner. */
   owner: string;
   enabled: boolean;
   moveLock: "agent" | "people";
@@ -54,6 +57,8 @@ export interface InboxFormState {
   mailbox: MailboxBehaviour;
   /** null: the default for the SMTP host (off where it saves Sent itself). */
   copyToSent: boolean | null;
+  /** The person set the Sent switch, so a new SMTP host keeps it. */
+  copyToSentTouched: boolean;
   sendLimitPerMinute: string;
   conversationDays: string;
   attachmentDays: string;
@@ -92,6 +97,7 @@ export function emptyInboxForm(project: string, owner: string): InboxFormState {
     bugHandling: "off",
     mailbox: "untouched",
     copyToSent: null,
+    copyToSentTouched: false,
     sendLimitPerMinute: String(DEFAULT_SEND_LIMIT_PER_MINUTE),
     conversationDays: String(DEFAULT_RETENTION.conversationDays),
     attachmentDays: String(DEFAULT_RETENTION.attachmentDays),
@@ -123,6 +129,7 @@ export function formFromInbox(view: InboxView): InboxFormState {
     bugHandling: view.bugHandling,
     mailbox: view.mailbox,
     copyToSent: view.copyToSent,
+    copyToSentTouched: false,
     sendLimitPerMinute: String(view.sendLimitPerMinute),
     conversationDays: String(view.retention.conversationDays),
     attachmentDays: String(view.retention.attachmentDays),
@@ -130,6 +137,35 @@ export function formFromInbox(view: InboxView): InboxFormState {
     imap: serverForm(view.imap),
     smtp: serverForm(view.smtp),
   };
+}
+
+/** `form` with one server's fields changed. A new SMTP host decides the
+ *  Sent copy again (as the store does), unless the person set the switch. */
+export function setServerField(
+  form: InboxFormState,
+  which: MailServerKind,
+  patch: Partial<ServerForm>,
+): InboxFormState {
+  const next = { ...form, [which]: { ...form[which], ...patch } };
+  if (
+    which === "smtp" &&
+    patch.host !== undefined &&
+    patch.host !== form.smtp.host &&
+    !form.copyToSentTouched
+  )
+    next.copyToSent = null;
+  return next;
+}
+
+/** The security modes the form offers: no TLS only for a server on this
+ *  machine, or when it is what the inbox has (so it still reads). */
+export function tlsChoices(
+  host: string,
+  current: MailTlsMode | null,
+): MailTlsMode[] {
+  return MAIL_TLS_MODES.filter(
+    (tls) => tls !== "none" || current === "none" || noTlsHostAllowed(host),
+  );
 }
 
 /** What the "Save a copy in Sent" switch shows. */
@@ -152,24 +188,28 @@ const topics = (list: SupportTopic[]) =>
  *  has the last word; these are the mistakes worth catching before. */
 export function inboxFormError(
   form: InboxFormState,
-  editing: boolean,
+  saved: InboxView | null,
 ): string | null {
-  if (!form.label.trim()) return "Label is required";
+  if (!form.label.trim()) return "Name shown to customers is required";
   if (!/^[^\s@]+@[^\s@]+$/.test(form.address.trim()))
     return "Address must be an email address like help@example.test";
-  if (!form.project) return "Pick a project";
+  if (!form.project) return "Add a repository first";
   for (const which of SERVERS) {
     const name = SERVER_NAMES[which];
     const server = form[which];
     if (!server.host.trim()) return `${name} server is required`;
     if (!inRange(whole(server.port), 1, 65_535))
       return `${name} port must be a whole number from 1 to 65535`;
+    if (server.tls === "none" && !noTlsHostAllowed(server.host))
+      return `${name} security can be none only for a server on this machine`;
     if (!server.user.trim()) return `${name} user name is required`;
   }
-  if (!editing)
-    for (const which of SERVERS)
-      if (!form[which].password)
-        return `${SERVER_NAMES[which]} password is required`;
+  for (const which of SERVERS) {
+    if (form[which].password) continue;
+    if (!saved) return `${SERVER_NAMES[which]} password is required`;
+    if (serverMoved(saved[which], form[which]))
+      return `Enter the ${SERVER_NAMES[which]} password again for the changed server`;
+  }
   if (
     form.autonomy === "deploy-after-veto" &&
     !inRange(whole(form.vetoMinutes), 1, 1440)
@@ -204,7 +244,6 @@ export function newInboxFromForm(form: InboxFormState): NewInboxInput {
     enabled: form.enabled,
     moveLock: form.moveLock,
     autonomy: form.autonomy,
-    vetoMs: whole(form.vetoMinutes) * MINUTE_MS,
     neverWithoutAPerson: topics(form.neverWithoutAPerson),
     bugHandling: form.bugHandling,
     mailbox: form.mailbox,
@@ -216,10 +255,27 @@ export function newInboxFromForm(form: InboxFormState): NewInboxInput {
     imap: { ...serverInput(form.imap), password: form.imap.password },
     smtp: { ...serverInput(form.smtp), password: form.smtp.password },
   };
+  if (form.autonomy === "deploy-after-veto")
+    input.vetoMs = whole(form.vetoMinutes) * MINUTE_MS;
   if (form.owner) input.owner = form.owner;
   if (form.allowInternalHost) input.allowInternalHost = true;
   if (form.copyToSent !== null) input.copyToSent = form.copyToSent;
   return input;
+}
+
+/** Whether a server's host, port, security or user differs from the
+ *  saved one: the stored password won't be sent there. */
+export function serverMoved(
+  saved: InboxView["imap"],
+  form: ServerForm,
+): boolean {
+  const next = serverInput(form);
+  return (
+    next.host !== saved.host ||
+    next.port !== saved.port ||
+    next.tls !== saved.tls ||
+    next.user !== saved.user
+  );
 }
 
 /** The server fields that differ from the saved ones, plus a typed
@@ -285,6 +341,11 @@ export function patchFromForm(
   return patch;
 }
 
+/** Whether the form holds edits Save would send. */
+export function formChanged(view: InboxView, form: InboxFormState): boolean {
+  return Object.keys(patchFromForm(view, form)).length > 1;
+}
+
 /** What Test connection sends: a saved inbox by id, with any server the
  *  person changed as typed; a new inbox's servers with their passwords. */
 export function testBodyFromForm(
@@ -310,6 +371,13 @@ export function testBodyFromForm(
     body[which] = server;
   }
   return body;
+}
+
+/** The status line under an inbox's name in the list. */
+export function inboxStatusLine(inbox: InboxView, locale?: string): string {
+  if (!inbox.enabled) return "Turned off";
+  if (inbox.health.state === "off") return "Not connected yet";
+  return healthLine(inbox.health, locale);
 }
 
 /** The health line under an inbox's name. */

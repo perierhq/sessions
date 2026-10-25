@@ -10,7 +10,6 @@ import {
   type InboxTestResult,
   type InboxView,
   MAILBOX_BEHAVIOURS,
-  MAIL_TLS_MODES,
   type MailTlsMode,
   type MailboxBehaviour,
   SUPPORT_TOPICS,
@@ -28,6 +27,7 @@ import {
   patchInbox,
   testInbox,
 } from "../../../lib/api/support";
+import { ApiError } from "../../../lib/api/request";
 import { errorMessage } from "../../../lib/error-message";
 import {
   CHECK_ROW,
@@ -39,13 +39,17 @@ import {
   type MailServerKind,
   effectiveCopyToSent,
   emptyInboxForm,
+  formChanged,
   formFromInbox,
   inboxFormError,
   newInboxFromForm,
   patchFromForm,
+  serverMoved,
+  setServerField,
   showsConnectorWarning,
   testBodyFromForm,
   testResultLines,
+  tlsChoices,
 } from "../../../lib/inbox-form";
 import {
   INBOX_FORM_PAIR,
@@ -75,7 +79,9 @@ const SERVER_TITLES: Record<MailServerKind, string> = {
 };
 
 const CONNECTOR_WARNING =
-  "The agent can send what its connectors return. Draft is safer until Sessions checks mail for injected instructions.";
+  "The agent can send what its connectors, web search and websites return. Draft is safer until Sessions checks mail for injected instructions.";
+
+const OWNER_ONLY = "Only the instance owner can choose this";
 
 /**
  * Connect or edit one support inbox: the mailbox and its two servers (with
@@ -92,6 +98,7 @@ export function InboxForm({
   isInstanceOwner,
   onClose,
   onSaved,
+  onReload,
 }: {
   open: boolean;
   /** null connects a new inbox. */
@@ -101,15 +108,20 @@ export function InboxForm({
   people: string[];
   isInstanceOwner: boolean;
   onClose: () => void;
+  /** Refreshes the inbox list (after a save, or a refused stale one). */
   onSaved: () => void;
+  /** Opens the form again on the inbox as it is now, dropping edits. */
+  onReload: () => void;
 }) {
+  // A new inbox's owner is "" until picked: the server makes whoever
+  // connects it the owner.
   const [form, setForm] = useState<InboxFormState>(() =>
-    inbox
-      ? formFromInbox(inbox)
-      : emptyInboxForm(projects[0]?.id ?? "", people[0] ?? ""),
+    inbox ? formFromInbox(inbox) : emptyInboxForm(projects[0]?.id ?? "", ""),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Someone else saved the inbox first: Save can't win until a reload.
+  const [stale, setStale] = useState(false);
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState<InboxTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
@@ -121,11 +133,17 @@ export function InboxForm({
   const setServer = (
     which: MailServerKind,
     patch: Partial<InboxFormState["imap"]>,
-  ) =>
-    setForm((current) => ({
-      ...current,
-      [which]: { ...current[which], ...patch },
-    }));
+  ) => setForm((current) => setServerField(current, which, patch));
+
+  /** A refused save: a 409 refreshes the list and offers Reload. */
+  const saveFailed = (cause: unknown, fallback: string) => {
+    setBusy(false);
+    setError(errorMessage(cause, fallback));
+    if (cause instanceof ApiError && cause.status === 409) {
+      setStale(true);
+      onSaved();
+    }
+  };
 
   const project = projects.find((p) => p.id === form.project);
   const warn = showsConnectorWarning(
@@ -135,7 +153,7 @@ export function InboxForm({
   const lines = tested ? testResultLines(tested) : null;
 
   const save = () => {
-    const invalid = inboxFormError(form, editing);
+    const invalid = inboxFormError(form, inbox);
     if (invalid) {
       setError(invalid);
       return;
@@ -155,10 +173,7 @@ export function InboxForm({
           onSaved();
           onClose();
         },
-        (cause) => {
-          setBusy(false);
-          setError(errorMessage(cause, "Couldn't save the inbox"));
-        },
+        (cause) => saveFailed(cause, "Couldn't save the inbox"),
       );
       return;
     }
@@ -195,6 +210,21 @@ export function InboxForm({
 
   const toggleEnabled = () => {
     if (!inbox) return;
+    // Turning off or on saves only that: other edits would be lost.
+    if (formChanged(inbox, form)) {
+      confirm({
+        title: "Discard your changes?",
+        description: `${inbox.enabled ? "Turning the inbox off" : "Turning the inbox on"} saves only that. Your other changes are lost`,
+        confirmLabel: inbox.enabled ? "Turn off" : "Turn on",
+        onConfirm: saveEnabled,
+      });
+      return;
+    }
+    saveEnabled();
+  };
+
+  const saveEnabled = () => {
+    if (!inbox) return;
     setBusy(true);
     patchInbox(inbox.id, {
       expectedRevision: inbox.revision,
@@ -206,10 +236,7 @@ export function InboxForm({
         onSaved();
         onClose();
       },
-      (cause) => {
-        setBusy(false);
-        setError(errorMessage(cause, "Couldn't change the inbox"));
-      },
+      (cause) => saveFailed(cause, "Couldn't change the inbox"),
     );
   };
 
@@ -242,6 +269,7 @@ export function InboxForm({
     const server = form[which];
     const title = SERVER_TITLES[which];
     const saved = inbox?.[which];
+    const moved = saved ? serverMoved(saved, server) : false;
     return (
       <div className="flex flex-col gap-3">
         <FormField label={`${title} server`}>
@@ -271,10 +299,9 @@ export function InboxForm({
               label={`${title} security`}
               className={INBOX_SELECT}
               value={server.tls}
-              options={MAIL_TLS_MODES.map((tls) => ({
-                value: tls,
-                label: TLS_LABELS[tls],
-              }))}
+              options={tlsChoices(server.host, saved?.tls ?? null).map(
+                (tls) => ({ value: tls, label: TLS_LABELS[tls] }),
+              )}
               onChange={(tls) => {
                 // A port still at the old mode's usual one follows the mode.
                 const usual = String(defaultMailPort(which, server.tls));
@@ -302,9 +329,11 @@ export function InboxForm({
         <FormField
           label={`${title} password`}
           hint={
-            saved?.hasPassword
-              ? "Leave empty to keep the saved password"
-              : "An app password if the account has two-step sign-in"
+            moved
+              ? "Enter the password again for the changed server"
+              : saved?.hasPassword
+                ? "Leave empty to keep the saved password"
+                : "An app password if the account has two-step sign-in"
           }
         >
           <Input
@@ -313,7 +342,7 @@ export function InboxForm({
             type="password"
             autoComplete="new-password"
             value={server.password}
-            placeholder={saved?.hasPassword ? "Saved" : ""}
+            placeholder={saved?.hasPassword && !moved ? "Saved" : ""}
             onChange={(e) => setServer(which, { password: e.target.value })}
           />
         </FormField>
@@ -322,8 +351,13 @@ export function InboxForm({
   };
 
   const ownerOptions = [
-    ...new Set([...(form.owner ? [form.owner] : []), ...people]),
+    ...(editing ? [] : [{ value: "", label: "You" }]),
+    ...[...new Set([...(form.owner ? [form.owner] : []), ...people])].map(
+      (name) => ({ value: name, label: name }),
+    ),
   ];
+  const sendsRightAwayLocked =
+    !isInstanceOwner && inbox?.autonomy !== "deploy-right-away";
 
   return (
     <>
@@ -336,7 +370,16 @@ export function InboxForm({
         onSave={save}
         wide
         leading={
-          inbox ? (
+          stale ? (
+            <Button
+              type="button"
+              variant="soft"
+              className="phone:min-h-11"
+              onClick={onReload}
+            >
+              Reload
+            </Button>
+          ) : inbox ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
@@ -426,13 +469,17 @@ export function InboxForm({
 
         <FormSection title="Handling">
           <FormField label="Project">
-            <OptionSelect
-              label="Project"
-              className={INBOX_SELECT}
-              value={form.project}
-              options={projects.map((p) => ({ value: p.id, label: p.id }))}
-              onChange={(next) => set({ project: next })}
-            />
+            {projects.length ? (
+              <OptionSelect
+                label="Project"
+                className={INBOX_SELECT}
+                value={form.project}
+                options={projects.map((p) => ({ value: p.id, label: p.id }))}
+                onChange={(next) => set({ project: next })}
+              />
+            ) : (
+              <p className={FIELD_HINT}>Add a repository first</p>
+            )}
           </FormField>
           <FormField label="Who may move conversations">
             <OptionSelect<"agent" | "people">
@@ -447,15 +494,12 @@ export function InboxForm({
             />
           </FormField>
           <FormField label="Owner">
-            {ownerOptions.length ? (
+            {ownerOptions.length > (editing ? 0 : 1) ? (
               <OptionSelect
                 label="Owner"
                 className={INBOX_SELECT}
                 value={form.owner}
-                options={ownerOptions.map((name) => ({
-                  value: name,
-                  label: name,
-                }))}
+                options={ownerOptions}
                 onChange={(owner) => set({ owner })}
               />
             ) : (
@@ -469,7 +513,17 @@ export function InboxForm({
           </FormField>
           <FormField
             label="Autonomy"
-            hint={SUPPORT_AUTONOMY_COPY[form.autonomy].description}
+            hint={
+              <>
+                {SUPPORT_AUTONOMY_COPY[form.autonomy].description}
+                {sendsRightAwayLocked && (
+                  <span className="block">
+                    {SUPPORT_AUTONOMY_COPY["deploy-right-away"].label}:{" "}
+                    {OWNER_ONLY}
+                  </span>
+                )}
+              </>
+            }
           >
             <OptionSelect<AutonomyLevel>
               label="Autonomy"
@@ -479,10 +533,7 @@ export function InboxForm({
                 value: level,
                 label: SUPPORT_AUTONOMY_COPY[level].label,
                 // Only the instance owner may let Sessions send right away.
-                disabled:
-                  level === "deploy-right-away" &&
-                  !isInstanceOwner &&
-                  inbox?.autonomy !== level,
+                disabled: level === "deploy-right-away" && sendsRightAwayLocked,
               }))}
               onChange={(autonomy) => set({ autonomy })}
             />
@@ -556,8 +607,11 @@ export function InboxForm({
           <label className={CHECK_ROW}>
             <span className="min-w-0 flex-1">Save a copy in Sent</span>
             <Switch
+              aria-label="Save a copy in Sent"
               checked={effectiveCopyToSent(form)}
-              onCheckedChange={(copyToSent) => set({ copyToSent })}
+              onCheckedChange={(copyToSent) =>
+                set({ copyToSent, copyToSentTouched: true })
+              }
             />
           </label>
           <FormField label="Send limit per minute">

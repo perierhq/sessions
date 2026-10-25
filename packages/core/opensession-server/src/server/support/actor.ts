@@ -5,10 +5,12 @@
 // member) alone may let Sessions send right away, allow internal mail
 // servers, remove inboxes and forget a customer.
 //
-// Routes build the actor with `actorFor(verifiedPerson(ctx), ...)`: a
-// claimed name or the automation principal is never verified, so it can
-// never act as the owner. Nothing runs at import.
-import { instanceOwner, personOwner } from "../incidents/owner";
+// Routes build the actor with `actorFor(verifiedPerson(ctx), true,
+// ctx.authUser?.login)`: a claimed name or the automation principal is never
+// verified, so it can never act as the owner. The owner is matched by the
+// signed-in GitHub login against the owner's roster entry, never by first
+// name, which two people can share. Nothing runs at import.
+import { instanceOwnerMember } from "../incidents/owner";
 
 export interface Actor {
   name: string;
@@ -26,15 +28,21 @@ export class ForbiddenError extends Error {
   }
 }
 
-/** The actor for `name`; only a verified person can be the instance
- *  owner, and only when the instance has one. */
-export function actorFor(name: string, verified: boolean): Actor {
-  const person = verified ? personOwner(name) : null;
-  const owner = instanceOwner();
+/** The actor for `name`, signed in as GitHub `login`. Only a verified
+ *  person whose login is the instance owner's roster login is the owner. */
+export function actorFor(
+  name: string,
+  verified: boolean,
+  login?: string | null,
+): Actor {
+  const isVerified = verified && Boolean(name.trim());
+  const ownerLogin = instanceOwnerMember()?.github?.trim().toLowerCase();
+  const signedIn = login?.trim().toLowerCase();
   return {
     name,
-    verified: verified && Boolean(name.trim()),
-    isInstanceOwner: person !== null && owner !== "" && person === owner,
+    verified: isVerified,
+    isInstanceOwner:
+      isVerified && !!ownerLogin && !!signedIn && signedIn === ownerLogin,
   };
 }
 

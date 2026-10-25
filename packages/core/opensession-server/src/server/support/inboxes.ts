@@ -30,13 +30,14 @@ import {
   type NewInboxInput,
   SUPPORT_TOPICS,
   defaultInboxConfig,
+  noTlsHostAllowed,
   smtpSavesSentItself,
 } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
 import { configuredRepos } from "../config";
 import { instanceOwner, personOwner, resolveOwner } from "../incidents/owner";
 import { type Actor, isOwnerActor } from "./actor";
-import { mailHostLiteralAllowed, noTlsHostAllowed } from "./mail-host";
+import { mailHostLiteralAllowed } from "./mail-host";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -76,6 +77,7 @@ const OWNER_INTERNAL =
   "Only the instance owner can allow internal mail servers";
 const OWNER_INTERNAL_SERVERS =
   "Only the instance owner can change the mail servers of an inbox that allows internal servers";
+const OWNER_PERSON = "Owner must be a person";
 const OWNER_REMOVES = "Only the instance owner can remove inboxes";
 const OWNER_SENDING_INBOX =
   "Only the instance owner can change the topics, project or address of an inbox that sends right away";
@@ -243,7 +245,7 @@ const isInt = (value: unknown, min: number, max: number) =>
 const HOST_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 // Exactly one address: one `@`, no whitespace, and none of the characters
 // that would make a header carry a second address or a display name.
-const ADDRESS = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+$/;
+export const ADDRESS = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /** A host name or an IP literal (IPv6 without brackets). */
@@ -263,7 +265,7 @@ function hostError(host: unknown, name: string): string | null {
   return null;
 }
 
-function passwordError(password: unknown, which: Which): string | null {
+export function passwordError(password: unknown, which: Which): string | null {
   const name = SERVER_NAMES[which];
   if (typeof password !== "string" || !password)
     return `${name} password is required`;
@@ -272,8 +274,10 @@ function passwordError(password: unknown, which: Which): string | null {
   return null;
 }
 
-function serverError(
-  server: MailServerConfig,
+/** Why one server's settings can't be used, or null; the routes' Test
+ *  button checks typed servers with it too. */
+export function serverError(
+  server: Omit<MailServerConfig, "passwordRef">,
   which: Which,
   allowInternalHost = false,
 ): string | null {
@@ -359,7 +363,7 @@ export function validateInbox(
     return "Attachment retention must be a whole number of days";
   if (retention.attachmentDays > retention.conversationDays)
     return "Attachment retention can't be longer than conversation retention";
-  if (typeof config.owner !== "string") return "Owner must be a person";
+  if (typeof config.owner !== "string") return OWNER_PERSON;
   if (!isInt(config.sendLimitPerMinute, 1, SEND_LIMIT_MAX))
     return `Send limit must be from 1 to ${SEND_LIMIT_MAX} a minute`;
   if (typeof config.allowInternalHost !== "boolean")
@@ -459,7 +463,9 @@ export async function createInbox(
     if (error) return invalidInput(error);
   }
   let owner: string;
-  if (input.owner !== undefined) {
+  // An empty owner means the person connecting it, as no owner does.
+  if (input.owner !== undefined && input.owner !== "") {
+    if (typeof input.owner !== "string") return invalidInput(OWNER_PERSON);
     const resolved = resolveOwner(input.owner);
     if (typeof resolved !== "string") return invalidInput(resolved.error);
     owner = resolved;
@@ -598,6 +604,8 @@ export async function updateInbox(
   actor: Actor,
 ): Promise<UpdateResult> {
   if (!actor?.verified) return forbidden(NOT_SIGNED_IN);
+  if (patch.owner !== undefined && typeof patch.owner !== "string")
+    return { ok: false, status: 400, error: OWNER_PERSON };
   const current = await getInbox(id);
   if (!current)
     return { ok: false, status: 404, error: "That inbox doesn't exist" };

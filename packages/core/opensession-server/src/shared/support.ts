@@ -256,6 +256,36 @@ export function defaultMailPort(
   return DEFAULT_MAIL_PORTS[which][tls];
 }
 
+const LOOPBACK_V4 = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+const isLoopbackV4 = (value: string) => {
+  const m = LOOPBACK_V4.exec(value);
+  return !!m && m.slice(1).every((part) => Number(part) <= 255);
+};
+
+/** Whether `none` (no TLS) may be chosen for `host`: `localhost` or a
+ *  loopback literal (127/8, ::1, also IPv4-mapped). Pure, so the inbox form
+ *  offers it by the same rule the store saves by; a connect checks the
+ *  resolved address again. */
+export function noTlsHostAllowed(host: string): boolean {
+  const name = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+  if (name === "localhost") return true;
+  if (isLoopbackV4(name)) return true;
+  if (!name.includes(":")) return false;
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(.+)$/.exec(name);
+  if (mapped && isLoopbackV4(mapped[1]!)) return true;
+  // ::1 in any spelling: every group zero but a last group of 1.
+  if (!/^[0:]*:0*1$/.test(name)) return false;
+  const groups = name.split("::");
+  if (groups.length > 2) return false;
+  const count = name.split(":").filter(Boolean).length;
+  return groups.length === 2 ? count <= 8 : count === 8;
+}
+
 export interface MailServerConfig {
   host: string;
   port: number;
