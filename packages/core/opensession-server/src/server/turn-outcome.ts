@@ -65,9 +65,11 @@ export interface TurnOutcome {
  * a wrong entry here either hides a real silent drop (missing effect → false
  * alarm) or masks one (a read tool counted as an effect). Both are worse than
  * a list someone has to extend on purpose. Add a tool when its call is, by
- * itself, a thing a human will see.
+ * itself, a thing a human will see. The support deny-set
+ * (automation-denied-tools.ts) denies every entry: a support session reaches
+ * people only through its own reply path.
  */
-const REACH_TOOLS = [
+export const REACH_TOOLS = [
   // Plain — the support inbox. `create_note` is the triage deliverable.
   "mcp__plain__create_note",
   "mcp__plain__reply_to_thread",
