@@ -10,6 +10,8 @@ import {
 } from "./reply";
 import { getConversation, updateConversation } from "./store";
 import { useReplyTestbed, CITED } from "./testing/reply-testbed";
+import { __resetQuietSweepForTest } from "./tick";
+import { updateConversation as updateForQuiet } from "./store";
 import { INTERRUPTED_SEND, emailSupportOn, runSupportTick } from "./tick";
 
 const tb = useReplyTestbed();
@@ -342,4 +344,24 @@ describe("startSupportTick", () => {
       else process.env.ENABLE_EMAIL_SUPPORT = saved;
     }
   });
+});
+
+test("the tick closes conversations quiet for 7 days, at most once an hour", async () => {
+  __resetQuietSweepForTest();
+  const now = Date.now();
+  const c = await tb.conversation();
+  await updateForQuiet(c.id, (x) => ({
+    ...x,
+    status: "waiting",
+    lastMessageAt: new Date(now - 8 * 86_400_000).toISOString(),
+  }));
+  expect((await runSupportTick(now)).quietClosed).toBe(1);
+  const d = await tb.conversation();
+  await updateForQuiet(d.id, (x) => ({
+    ...x,
+    status: "waiting",
+    lastMessageAt: new Date(now - 8 * 86_400_000).toISOString(),
+  }));
+  expect((await runSupportTick(now + 60_000)).quietClosed).toBe(0);
+  expect((await runSupportTick(now + 3_600_000)).quietClosed).toBe(1);
 });

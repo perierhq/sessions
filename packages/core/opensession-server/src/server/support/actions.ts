@@ -10,14 +10,20 @@
 // on the roster, resolved as incidents resolve theirs (incidents/owner.ts).
 // Nothing runs at import.
 
-import type { SupportActor, SupportConversation } from "../../shared/support";
+import {
+  type SupportActor,
+  type SupportConversation,
+  WAITING_CLOSE_MS,
+} from "../../shared/support";
+
+const SESSIONS_ACTOR: SupportActor = { kind: "sessions" };
 import { resolveOwner } from "../incidents/owner";
 import { type SessionControl, getSessionControl } from "../session-control";
 import { channelAdapterFor } from "./channel";
 import { getInbox, projectExists } from "./inboxes";
 import { discardDraft, stopVeto } from "./reply";
 import { startSupportSession } from "./routing";
-import { getConversation, updateConversation } from "./store";
+import { getConversation, listIndexRows, updateConversation } from "./store";
 
 export const MOVE_LOCKED = "Only a person can move this conversation";
 const MAX_REASON = 500;
@@ -230,6 +236,26 @@ export async function closeConversation(
       );
     });
   return { ok: true };
+}
+
+export const QUIET_CLOSED =
+  "No reply from the customer in 7 days. Closed without a reply";
+
+/** Closes every conversation that has waited on the customer for
+ *  WAITING_CLOSE_MS (our reply was the last message): no reminder mail.
+ *  Reads the support-index projection only. Returns how many closed. */
+export async function closeQuietConversations(now: number): Promise<number> {
+  let closed = 0;
+  for (const row of await listIndexRows({ status: ["waiting"] })) {
+    if (now - Date.parse(row.lastMessageAt) < WAITING_CLOSE_MS) continue;
+    // The document decides: a customer message since makes it open.
+    const c = await getConversation(row.id);
+    if (!c || c.status !== "waiting") continue;
+    if (now - Date.parse(c.lastMessageAt) < WAITING_CLOSE_MS) continue;
+    if ((await closeConversation(c.id, SESSIONS_ACTOR, QUIET_CLOSED)).ok)
+      closed++;
+  }
+  return closed;
 }
 
 /** Reopens a closed conversation. Spam leaves spam through markNotSpam. */

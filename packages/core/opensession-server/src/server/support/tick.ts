@@ -3,10 +3,13 @@
 // (ingest.ts). It reads only the `support-pending` work index, never the
 // conversations at large: `veto:<id>` (a window's deadline),
 // `send:<id>:<draftId>` (a send under way or waiting for its retry) and `triage:<id>` (ingest's).
+// Once an hour it also closes conversations that waited on the customer
+// for 7 days, from the support-index projection.
 // Reuses the incidents fix loop's deadline-in-record plus tick
 // (incidents/response/coordinator.ts). Nothing runs at import.
 import { activeIntegrations } from "../integrations/load";
 import { isShuttingDown } from "../shutdown-state";
+import { closeQuietConversations } from "./actions";
 import { retryPendingInbound } from "./ingest";
 import {
   INTERRUPTED_AFTER_MS,
@@ -34,13 +37,30 @@ export const TICK_SEND_BUDGET_MS = 10_000;
 
 type SendJob = () => Promise<void>;
 
+/** How often the tick closes conversations quiet for WAITING_CLOSE_MS
+ *  (actions.ts closeQuietConversations, from the support-index
+ *  projection). */
+const QUIET_SWEEP_MS = 3_600_000;
+let lastQuietSweep = Number.NEGATIVE_INFINITY;
+
+export function __resetQuietSweepForTest(): void {
+  lastQuietSweep = Number.NEGATIVE_INFINITY;
+}
+
 export async function runSupportTick(now: number): Promise<{
   vetoSent: number;
   retried: number;
   interrupted: number;
   triaged: number;
+  quietClosed: number;
 }> {
-  const out = { vetoSent: 0, retried: 0, interrupted: 0, triaged: 0 };
+  const out = {
+    vetoSent: 0,
+    retried: 0,
+    interrupted: 0,
+    triaged: 0,
+    quietClosed: 0,
+  };
   const started = performance.now();
   /** Due sends by inbox: one at a time per inbox (its SMTP connection),
    *  inboxes in parallel. */
@@ -120,6 +140,17 @@ export async function runSupportTick(now: number): Promise<{
     }),
   );
   out.triaged = await retryPendingInbound(now);
+  if (now - lastQuietSweep >= QUIET_SWEEP_MS) {
+    lastQuietSweep = now;
+    try {
+      out.quietClosed = await closeQuietConversations(now);
+    } catch (error) {
+      console.warn(
+        "[support] closing quiet conversations failed:",
+        error instanceof Error ? error.name : typeof error,
+      );
+    }
+  }
   return out;
 }
 

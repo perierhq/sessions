@@ -4,7 +4,9 @@ import { __setOwnerRosterForTest } from "../incidents/owner";
 import type { CreateSessionOpts } from "../session-control";
 import {
   __setActionDepsForTest,
+  QUIET_CLOSED,
   closeConversation,
+  closeQuietConversations,
   markNotSpam,
   moveConversation,
   reopenConversation,
@@ -284,5 +286,36 @@ describe("close, reopen and not spam", () => {
     const c = await tb.conversation();
     expect((await markNotSpam(c.id, "Ada")).ok).toBe(false);
     expect(created).toHaveLength(0);
+  });
+});
+
+describe("closeQuietConversations", () => {
+  const DAY = 86_400_000;
+  async function waitingSince(at: number) {
+    const c = await tb.conversation();
+    return (await updateConversation(c.id, (x) => ({
+      ...x,
+      status: "waiting",
+      sessionId: "os-old",
+      lastMessageAt: new Date(at).toISOString(),
+    })))!;
+  }
+
+  test("closes a conversation waiting on the customer for 7 days", async () => {
+    const now = Date.now();
+    const quiet = await waitingSince(now - 7 * DAY - 1000);
+    const recent = await waitingSince(now - 6 * DAY);
+    const open = await tb.conversation();
+    await updateConversation(open.id, (x) => ({
+      ...x,
+      lastMessageAt: new Date(now - 30 * DAY).toISOString(),
+    }));
+    expect(await closeQuietConversations(now)).toBe(1);
+    const closed = (await getConversation(quiet.id))!;
+    expect(closed.status).toBe("closed");
+    expect(closed.events.at(-1)!.detail).toBe(QUIET_CLOSED);
+    expect(cancelled).toEqual(["os-old"]);
+    expect((await getConversation(recent.id))!.status).toBe("waiting");
+    expect((await getConversation(open.id))!.status).toBe("open");
   });
 });
