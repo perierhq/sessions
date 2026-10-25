@@ -247,3 +247,40 @@ export async function parseInbound(
   else if (ctx.oversize) message.oversize = true;
   return message;
 }
+
+/** The header block of a raw source: up to and including the first blank
+ *  line, or all of it when the cut came first. */
+export function headerBlock(source: Uint8Array): Uint8Array {
+  for (let i = 0; i + 1 < source.length; i++) {
+    if (source[i] !== 0x0a) continue;
+    if (source[i + 1] === 0x0a) return source.subarray(0, i + 2);
+    if (source[i + 1] === 0x0d && source[i + 2] === 0x0a)
+      return source.subarray(0, i + 3);
+  }
+  return source;
+}
+
+/** A message nothing could be parsed from: offered so the cursor can pass
+ *  it, and so a person sees that mail arrived. */
+export function unreadableMessage(ctx: {
+  inboxId: string;
+  providerId: string;
+  receivedAt: string;
+}): InboundMessage {
+  return {
+    inboxId: ctx.inboxId,
+    channel: "email",
+    providerId: ctx.providerId,
+    receivedAt: ctx.receivedAt,
+    from: { name: null, address: "" },
+    to: [],
+    cc: [],
+    replyTo: [],
+    subject: "",
+    text: UNREADABLE_TEXT,
+    keys: { messageId: null, inReplyTo: null, references: [] },
+    loopHeaders: {},
+    attachments: [],
+    unreadable: true,
+  };
+}

@@ -248,7 +248,10 @@ describe("parseInbound", () => {
     ].join("\r\n");
     const m = await parseInbound(bytes(raw), CTX);
     expect(m.subject).toBe("Hi Bcc: x end");
-    expect(m.from).toEqual({ name: "Ada Lovelace", address: "ada@example.test" });
+    expect(m.from).toEqual({
+      name: "Ada Lovelace",
+      address: "ada@example.test",
+    });
 
     const long = await parseInbound(
       bytes(rawMail({ from: "a@example.test", subject: "s".repeat(3000) })),

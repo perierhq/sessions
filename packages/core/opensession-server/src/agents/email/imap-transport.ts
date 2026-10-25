@@ -2,15 +2,19 @@
 // poll every pollMs when the server has no IDLE), and a UID cursor so only
 // new mail is fetched, never a full scan. The cursor moves past a message
 // only after the sink resolved, so a crash re-offers it (ingest dedupes).
-// A first connect, or a UIDVALIDITY change, starts at UIDNEXT and imports
-// nothing. Lost connections back off with full jitter; an auth failure
-// pauses the inbox until someone saves or tests it again.
+// A first connect starts at UIDNEXT and imports nothing; a UIDVALIDITY
+// change offers the mail received since the old cursor (at most 7 days,
+// 500 messages; ingest dedupes by Message-ID) and then starts at UIDNEXT.
+// An untouched mailbox is opened read-only. Lost connections back off with
+// full jitter; an auth failure pauses the inbox until someone saves or
+// tests it again. Server ALERT text is shown on the inbox, never acted on.
 // Logs carry the inbox id, a kind and UIDs only: never the password, the
 // addresses or any message content. Nothing runs at import.
 
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import {
   IMAP_POLL_MS,
+  type InboundMessage,
   type InboxConfig,
   type InboxHealth,
   type InboxHealthState,
@@ -24,11 +28,19 @@ import {
   classifyImapError,
   nextBackoffMs,
 } from "./backoff";
-import { cleanLine, parseInbound } from "./parse";
+import {
+  cleanLine,
+  headerBlock,
+  parseInbound,
+  unreadableMessage,
+} from "./parse";
 
 export interface ImapCursor {
   uidValidity: string;
   lastUid: number;
+  /** When the last offered message arrived (or when the cursor was set),
+   *  ISO; where a UIDVALIDITY change looks back from. */
+  lastReceivedAt?: string;
 }
 
 export interface ImapTransportOptions {
@@ -55,19 +67,47 @@ const MAX_IDLE_MS = 1_500_000;
 const LIVE_RESET_MS = 300_000;
 const PAGE_SIZE = 50;
 const CONNECT_TIMEOUT_MS = 30_000;
+/** imapflow's default; poll mode keeps the socket open past one poll. */
+const SOCKET_TIMEOUT_MS = 300_000;
+/** A sink that hasn't answered by then counts as failed. */
+const SINK_TIMEOUT_MS = 120_000;
+/** stop() waits this long for the current message, and again for LOGOUT. */
+const STOP_LIMIT_MS = 5_000;
+/** The most read for a header block (oversize or unreadable messages). */
+const HEADER_BYTES = 262_144;
 /** Server ALERT text shown on the inbox. */
 const MAX_ALERT_CHARS = 200;
+const DAY_MS = 86_400_000;
+/** How far a UIDVALIDITY change looks back, at most. */
+const RECOVERY_MAX_MS = 7 * DAY_MS;
+const RECOVERY_MAX_MESSAGES = 500;
 
 const SINK_FAILED = "Couldn't store a new message. Retrying later";
+const CURSOR_FAILED = "Couldn't save the inbox position. Retrying later";
 
-/** The sink refused a message: not the server's fault. */
+/** The sink refused a message, or didn't answer: not the server's fault. */
 class SinkFailure extends Error {
   constructor(readonly uid: number) {
     super("sink failed");
   }
 }
 
+/** saveCursor failed: not the server's fault either. */
+class CursorFailure extends Error {
+  constructor() {
+    super("cursor not saved");
+  }
+}
+
+class TimedOut extends Error {
+  constructor() {
+    super("timed out");
+  }
+}
+
 type Failure = { kind: PauseKind; reason: string; retryAfterMs?: number };
+
+type MessageItem = { uid: number; size: number; internalDate?: Date | string };
 
 function clientOptions(
   server: Omit<MailServerConfig, "passwordRef">,
@@ -105,11 +145,22 @@ export class ImapTransport {
   private connectedAt: number | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The current connection's cursor; null until it is loaded. */
   private cursor: ImapCursor | null = null;
+  /** UIDNEXT from SELECT/EXAMINE, until an `exists` or the first catch-up
+   *  uses it: nothing newer than the cursor means no search. */
+  private knownUidNext: number | null = null;
   /** The last ALERT text of the current connection, sanitized. */
   private alertText: string | null = null;
-  private catchUpRunning = false;
-  private catchUpQueued = false;
+  /** The current connection's catch-up; an `exists` during it queues one
+   *  more pass. */
+  private catchUp: {
+    gen: number;
+    queued: boolean;
+    done: Promise<void>;
+  } | null = null;
+  /** Pending time limits (sink answers); stop() ends them all. */
+  private readonly limits = new Set<() => void>();
   /** Serializes catch-up and withClient on the one connection. */
   private chain: Promise<unknown> = Promise.resolve();
   private current: InboxHealth;
@@ -162,20 +213,25 @@ export class ImapTransport {
     await this.connect();
   }
 
-  /** Logs out and clears timers; no reconnect afterwards. */
+  /** Lets the current message finish and logs out, each for at most
+   *  STOP_LIMIT_MS, then closes; clears timers; no reconnect afterwards. */
   async stop(): Promise<void> {
     this.stopped = true;
     this.generation++;
     this.clearTimers();
     const client = this.client;
+    const running = this.catchUp?.done;
     this.client = null;
     this.connectedAt = null;
+    this.cursor = null;
+    this.knownUidNext = null;
+    this.catchUp = null;
+    if (running) await this.settleWithin(running, STOP_LIMIT_MS);
+    // A sink still running past the limit is given up on, and its timer
+    // with it.
+    for (const cut of [...this.limits]) cut();
     if (client) {
-      try {
-        await client.logout();
-      } catch {
-        // Closing anyway.
-      }
+      await this.settleWithin(client.logout(), STOP_LIMIT_MS);
       client.close();
     }
     this.setHealth("off");
@@ -199,6 +255,31 @@ export class ImapTransport {
     return run;
   }
 
+  /** `work`, or a TimedOut rejection after `ms` on the injected clock (or
+   *  when stop() cuts all limits short). */
+  private within<T>(work: Promise<T>, ms: number): Promise<T> {
+    let cut = () => undefined as void;
+    const limit = new Promise<never>((_, reject) => {
+      const timer = this.timers.setTimeout(() => cut(), ms);
+      cut = () => {
+        this.timers.clearTimeout(timer);
+        this.limits.delete(cut);
+        reject(new TimedOut());
+      };
+      this.limits.add(cut);
+    });
+    return Promise.race([work, limit]).finally(() => cut());
+  }
+
+  /** Waits for `work` to settle, at most `ms`; never throws. */
+  private async settleWithin(work: Promise<unknown>, ms: number) {
+    try {
+      await this.within(work, ms);
+    } catch {
+      // Settled, failed or given up: stopping either way.
+    }
+  }
+
   private clearTimers(): void {
     if (this.retryTimer) this.timers.clearTimeout(this.retryTimer);
     if (this.pollTimer) this.timers.clearTimeout(this.pollTimer);
@@ -206,13 +287,21 @@ export class ImapTransport {
     this.pollTimer = null;
   }
 
+  private pollMs(): number {
+    return this.opts.pollMs ?? IMAP_POLL_MS;
+  }
+
   private async connect(): Promise<void> {
     if (this.stopped) return;
     const gen = ++this.generation;
+    this.cursor = null;
+    this.knownUidNext = null;
+    this.alertText = null;
     this.setHealth("connecting");
     const client = new ImapFlow({
       ...clientOptions(this.opts.inbox.imap, this.opts.password),
       maxIdleTime: MAX_IDLE_MS,
+      socketTimeout: Math.max(SOCKET_TIMEOUT_MS, this.pollMs() + 60_000),
       ...(this.opts.autoIdleDelayMs !== undefined
         ? { autoIdleDelay: this.opts.autoIdleDelayMs }
         : {}),
@@ -222,8 +311,12 @@ export class ImapTransport {
     client.on("error", (err: unknown) => {
       lastError = err;
     });
-    client.on("exists", () => this.scheduleCatchUp(gen));
-    this.alertText = null;
+    let sawExists = false;
+    client.on("exists", () => {
+      sawExists = true;
+      if (gen === this.generation) this.knownUidNext = null;
+      this.scheduleCatchUp(gen);
+    });
     // RFC 9051 7.1: ALERT text is for a person. It never closes the
     // connection: a refused LOGIN still rejects and is classified there.
     client.on("alert", (alert: { message?: unknown }) => {
@@ -256,17 +349,37 @@ export class ImapTransport {
           client as unknown as { options: ImapFlowOptions }
         ).options.disableAutoIdle = true;
 
-      const mailbox = await client.mailboxOpen("INBOX");
+      // EXAMINE when nothing here changes the mailbox: the server can't set
+      // \Seen or anything else on our behalf.
+      const mailbox = await client.mailboxOpen("INBOX", {
+        readOnly: this.opts.inbox.mailbox === "untouched",
+      });
       if (gen !== this.generation) return;
       const uidValidity = String(mailbox.uidValidity);
-      let cursor = await this.opts.loadCursor();
+      const uidNext =
+        typeof mailbox.uidNext === "number" && mailbox.uidNext > 0
+          ? mailbox.uidNext
+          : null;
+      const stored = await this.opts.loadCursor();
+      if (gen !== this.generation) return;
+      let cursor = stored;
       if (!cursor || cursor.uidValidity !== uidValidity) {
-        const lastUid = await this.highestUid(client, mailbox.uidNext);
-        cursor = { uidValidity, lastUid };
-        await this.opts.saveCursor(cursor);
+        const lastUid =
+          uidNext !== null ? uidNext - 1 : await this.highestUid(client);
+        if (cursor) {
+          const old = cursor;
+          await this.exclusive(() =>
+            this.recover(gen, client, old, uidValidity, lastUid),
+          );
+        }
+        if (gen !== this.generation) return;
+        cursor = { uidValidity, lastUid, lastReceivedAt: this.iso() };
+        await this.persist(cursor);
+        if (gen !== this.generation) return;
         log(this.inboxId, "imap cursor reset", { uidValidity, lastUid });
       }
-      if (gen !== this.generation) return;
+      // UIDNEXT is current unless new mail was announced since the open.
+      if (uidNext !== null && !sawExists) this.knownUidNext = uidNext;
       this.cursor = cursor;
       this.connectedAt = this.timers.now();
       this.setHealth(idle ? "live" : "polling", this.alertText);
@@ -277,17 +390,44 @@ export class ImapTransport {
     }
   }
 
-  private async highestUid(
-    client: ImapFlow,
-    uidNext: number | undefined,
-  ): Promise<number> {
-    if (typeof uidNext === "number" && uidNext > 0) return uidNext - 1;
-    const uids = (await client.search({ all: true }, { uid: true })) || [];
+  /** Without UIDNEXT: the UID of the newest message, 0 when empty. */
+  private async highestUid(client: ImapFlow): Promise<number> {
+    const uids = (await client.search({ uid: "*" }, { uid: true })) || [];
     return uids.reduce((max, uid) => Math.max(max, uid), 0);
   }
 
+  /** UIDVALIDITY changed, so the old UIDs mean nothing: offer what arrived
+   *  since a day before the old cursor (at most RECOVERY_MAX_MS back, the
+   *  newest RECOVERY_MAX_MESSAGES). Ingest drops what it already has by
+   *  Message-ID. The old cursor stays until all of them were offered. */
+  private async recover(
+    gen: number,
+    client: ImapFlow,
+    old: ImapCursor,
+    uidValidity: string,
+    lastUid: number,
+  ): Promise<void> {
+    if (gen !== this.generation) return;
+    const now = this.timers.now();
+    const last = old.lastReceivedAt ? Date.parse(old.lastReceivedAt) : NaN;
+    const since = Math.max(
+      now - RECOVERY_MAX_MS,
+      Number.isNaN(last) ? -Infinity : last - DAY_MS,
+    );
+    const found =
+      (await client.search({ since: new Date(since) }, { uid: true })) || [];
+    const uids = found
+      .filter((uid) => uid <= lastUid)
+      .sort((a, b) => a - b)
+      .slice(-RECOVERY_MAX_MESSAGES);
+    log(this.inboxId, "imap uidvalidity changed", {
+      uidValidity,
+      offered: uids.length,
+    });
+    await this.offer(gen, client, uidValidity, uids, false);
+  }
+
   private schedulePoll(gen: number): void {
-    const pollMs = this.opts.pollMs ?? IMAP_POLL_MS;
     this.pollTimer = this.timers.setTimeout(async () => {
       this.pollTimer = null;
       const client = this.client;
@@ -300,7 +440,7 @@ export class ImapTransport {
         return;
       }
       if (gen === this.generation) this.schedulePoll(gen);
-    }, pollMs);
+    }, this.pollMs());
   }
 
   private scheduleCatchUp(gen: number): void {
@@ -308,27 +448,36 @@ export class ImapTransport {
     this.runCatchUp(gen).catch((err) => this.fail(gen, err));
   }
 
-  /** One catch-up at a time; an `exists` during one queues another. */
-  private async runCatchUp(gen: number): Promise<void> {
-    if (this.catchUpRunning) {
-      this.catchUpQueued = true;
-      return;
+  /** One catch-up per connection at a time; an `exists` during one queues
+   *  another. A new connection never waits on an old one's queue. */
+  private runCatchUp(gen: number): Promise<void> {
+    const running = this.catchUp;
+    if (running && running.gen === gen) {
+      running.queued = true;
+      return Promise.resolve();
     }
-    this.catchUpRunning = true;
-    try {
-      do {
-        this.catchUpQueued = false;
-        await this.exclusive(() => this.catchUpOnce(gen));
-      } while (this.catchUpQueued && gen === this.generation);
-    } finally {
-      this.catchUpRunning = false;
-    }
+    const state = { gen, queued: false, done: Promise.resolve() };
+    state.done = (async () => {
+      try {
+        do {
+          state.queued = false;
+          await this.exclusive(() => this.catchUpOnce(gen));
+        } while (state.queued && gen === this.generation);
+      } finally {
+        if (this.catchUp === state) this.catchUp = null;
+      }
+    })();
+    this.catchUp = state;
+    return state.done;
   }
 
   private async catchUpOnce(gen: number): Promise<void> {
     const client = this.client;
     const start = this.cursor;
     if (gen !== this.generation || !client || !start) return;
+    const uidNext = this.knownUidNext;
+    this.knownUidNext = null;
+    if (uidNext !== null && uidNext - 1 <= start.lastUid) return;
     const found =
       (await client.search({ uid: `${start.lastUid + 1}:*` }, { uid: true })) ||
       [];
@@ -336,14 +485,21 @@ export class ImapTransport {
     const uids = found
       .filter((uid) => uid > start.lastUid)
       .sort((a, b) => a - b);
-    const maxBytes = this.opts.maxSourceBytes ?? MAX_SOURCE_BYTES;
+    await this.offer(gen, client, start.uidValidity, uids, true);
+  }
 
+  /** Fetches and offers `uids` in order; with `advance`, saves the cursor
+   *  after each message the sink took. */
+  private async offer(
+    gen: number,
+    client: ImapFlow,
+    uidValidity: string,
+    uids: number[],
+    advance: boolean,
+  ): Promise<void> {
+    const maxBytes = this.opts.maxSourceBytes ?? MAX_SOURCE_BYTES;
     for (let i = 0; i < uids.length; i += PAGE_SIZE) {
-      const page: Array<{
-        uid: number;
-        size: number;
-        internalDate?: Date | string;
-      }> = [];
+      const page: MessageItem[] = [];
       for await (const item of client.fetch(
         uids.slice(i, i + PAGE_SIZE).join(","),
         { uid: true, size: true, internalDate: true },
@@ -360,22 +516,24 @@ export class ImapTransport {
         if (gen !== this.generation) return;
         const message = await this.fetchMessage(
           client,
-          start.uidValidity,
+          uidValidity,
           item,
           maxBytes,
         );
         if (gen !== this.generation) return;
-        if (message) {
-          try {
-            await this.opts.sink(message);
-          } catch {
-            log(this.inboxId, "imap sink failed", { uid: item.uid });
-            throw new SinkFailure(item.uid);
-          }
+        if (message) await this.deliver(message, item.uid);
+        if (gen !== this.generation) return;
+        if (advance) {
+          const next: ImapCursor = {
+            uidValidity,
+            lastUid: item.uid,
+            lastReceivedAt:
+              message?.receivedAt ?? this.cursor?.lastReceivedAt ?? this.iso(),
+          };
+          await this.persist(next);
+          if (gen !== this.generation) return;
+          this.cursor = next;
         }
-        const next = { uidValidity: start.uidValidity, lastUid: item.uid };
-        await this.opts.saveCursor(next);
-        this.cursor = next;
         if (message) {
           this.current = { ...this.current, lastMessageAt: this.iso() };
           this.opts.onHealth(this.health());
@@ -384,12 +542,39 @@ export class ImapTransport {
     }
   }
 
+  private async deliver(message: InboundMessage, uid: number): Promise<void> {
+    try {
+      await this.within(
+        Promise.resolve().then(() => this.opts.sink(message)),
+        SINK_TIMEOUT_MS,
+      );
+    } catch (err) {
+      log(this.inboxId, "imap sink failed", {
+        uid,
+        timedOut: err instanceof TimedOut,
+      });
+      throw new SinkFailure(uid);
+    }
+  }
+
+  private async persist(cursor: ImapCursor): Promise<void> {
+    try {
+      await this.opts.saveCursor(cursor);
+    } catch {
+      log(this.inboxId, "imap cursor not saved", { lastUid: cursor.lastUid });
+      throw new CursorFailure();
+    }
+  }
+
+  /** null when the message is gone. IMAP errors propagate (the message is
+   *  fetched again after a reconnect); a source nothing can be parsed from
+   *  still yields a message, so one bad mail never blocks the inbox. */
   private async fetchMessage(
     client: ImapFlow,
     uidValidity: string,
-    item: { uid: number; size: number; internalDate?: Date | string },
+    item: MessageItem,
     maxBytes: number,
-  ) {
+  ): Promise<InboundMessage | null> {
     const internal = item.internalDate ? new Date(item.internalDate) : null;
     const ctx = {
       inboxId: this.inboxId,
@@ -399,46 +584,64 @@ export class ImapTransport {
           ? internal.toISOString()
           : this.iso(),
     };
-    const headersOnly = async () => {
-      const one = await client.fetchOne(
-        String(item.uid),
-        { uid: true, headers: true },
-        { uid: true },
-      );
-      if (!one || !one.headers) return null;
-      return parseInbound(one.headers, { ...ctx, oversize: true });
+    const fromHeaders = async (
+      source: Uint8Array,
+      flag: { oversize: true } | { unreadable: true },
+    ) => {
+      try {
+        return await parseInbound(
+          headerBlock(source.subarray(0, HEADER_BYTES)),
+          {
+            ...ctx,
+            ...flag,
+          },
+        );
+      } catch {
+        log(this.inboxId, "imap headers unreadable", { uid: item.uid });
+        return unreadableMessage(ctx);
+      }
     };
 
-    if (item.size > maxBytes) return headersOnly();
+    if (item.size > maxBytes) {
+      const one = await client.fetchOne(
+        String(item.uid),
+        { uid: true, source: { maxLength: HEADER_BYTES } },
+        { uid: true },
+      );
+      if (!one || !one.source) return null;
+      return fromHeaders(one.source, { oversize: true });
+    }
+    // One byte past the limit tells a message bigger than its reported
+    // RFC822.SIZE (or one without a size) from one that fits.
     const one = await client.fetchOne(
       String(item.uid),
-      { uid: true, source: true },
+      { uid: true, source: { maxLength: maxBytes + 1 } },
       { uid: true },
     );
     // Expunged since the search: nothing to offer.
     if (!one || !one.source) return null;
+    if (one.source.length > maxBytes)
+      return fromHeaders(one.source, { oversize: true });
     try {
       return await parseInbound(one.source, ctx);
     } catch {
       log(this.inboxId, "imap parse failed, keeping headers", {
         uid: item.uid,
       });
-      try {
-        return await headersOnly();
-      } catch {
-        log(this.inboxId, "imap message skipped", { uid: item.uid });
-        return null;
-      }
+      return fromHeaders(one.source, { unreadable: true });
     }
   }
 
-  private fail(gen: number, err: unknown, known?: Failure): void {
+  private fail(gen: number, err: unknown): void {
     if (gen !== this.generation || this.stopped) return;
     this.generation++;
     if (this.pollTimer) this.timers.clearTimeout(this.pollTimer);
     this.pollTimer = null;
     const client = this.client;
     this.client = null;
+    this.cursor = null;
+    this.knownUidNext = null;
+    this.catchUp = null;
     client?.close();
 
     const now = this.timers.now();
@@ -446,7 +649,7 @@ export class ImapTransport {
       this.attempt = 0;
     this.connectedAt = null;
 
-    const failure = known ?? this.failureOf(err);
+    const failure = this.failureOf(err);
     const reason = this.alertText
       ? `${failure.reason}. The server said: ${this.alertText}`
       : failure.reason;
@@ -479,6 +682,8 @@ export class ImapTransport {
   private failureOf(err: unknown): Failure {
     if (err instanceof SinkFailure)
       return { kind: "protocol", reason: SINK_FAILED };
+    if (err instanceof CursorFailure)
+      return { kind: "protocol", reason: CURSOR_FAILED };
     const classified = classifyImapError(err);
     return {
       kind: classified.kind,
@@ -504,6 +709,9 @@ export async function testImapLogin(
     await client.connect();
     const idle = client.capabilities.has("IDLE");
     const condstore = client.capabilities.has("CONDSTORE");
+    // Proves the mailbox the transport reads opens; read-only, so the test
+    // changes nothing.
+    await client.mailboxOpen("INBOX", { readOnly: true });
     const folders = await client.list();
     const sent = folders.find((f) => f.specialUse === "\\Sent");
     try {
