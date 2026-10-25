@@ -1,5 +1,7 @@
-// Outbound email: the reply built from a draft (RFC 5322 threading headers,
-// RFC 3834 Auto-Submitted for sends Sessions decided) and its raw bytes.
+// Outbound email: the reply built from a draft (one recipient, RFC 5322
+// threading headers, RFC 3834 Auto-Submitted for sends Sessions decided) and
+// its raw bytes. replyTarget is the one place that picks who a reply goes
+// to and which message it answers; the send decision checks the same.
 // The raw message is composed once, so the bytes appended to Sent are the
 // bytes that went out. Pure apart from MailComposer; nothing runs at import.
 
@@ -27,7 +29,8 @@ export interface OutgoingMail {
   headers: Record<string, string>;
 }
 
-/** The most ids in an outgoing References header; the oldest are dropped. */
+/** The most ids in an outgoing References header: the thread root and the
+ *  newest; the ones in between are dropped. */
 export const MAX_OUTGOING_REFERENCES = 20;
 
 /** Control characters and line breaks never reach a header. */
