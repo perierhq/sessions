@@ -22,27 +22,15 @@ import {
   uploadPlainAttachmentApi,
 } from "../lib/api";
 import { Menu } from "../ui/menu";
-import { loadDraft, saveDraft, clearDraft } from "../lib/drafts";
 import { useCurrentUser } from "./UserPicker";
 import { cn } from "../ui/cn";
 import { PLAIN_WORKSPACE_ID, PRODUCT_NAME } from "../lib/brand";
 import { PlainStatusBadge } from "./PlainStatusBadge";
-import {
-  composerBox,
-  composerBoxExpanded,
-  composerSend,
-  composerSendDefault,
-  composerTextarea,
-  composerTextareaPadding,
-  composerToolbar,
-} from "../lib/composer-classes";
-import { noAutofill } from "../lib/composer-autofill";
 import { noteSurface } from "../lib/tinted-surface";
 import { paletteIconBtn, palettePill } from "../lib/palette-classes";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import {
-  IconArrowUp,
   IconArrowUpRight,
   IconCheck,
   IconDotsHorizontal,
@@ -58,6 +46,9 @@ import {
 import { FileChips } from "./FileChips";
 import { UserAvatar } from "./UserAvatar";
 import { SupportMessageList } from "./SupportMessageList";
+import { SupportComposer, SupportSendButton } from "./SupportComposer";
+import { useSavedDraft } from "../hooks/useSavedDraft";
+import { PlainButton } from "../ui/plain-button";
 import { errorMessage } from "../lib/error-message";
 
 interface Props {
@@ -730,10 +721,7 @@ export function PlainReplyBox({
   className?: string;
 }) {
   const draftKey = `plain-reply:${threadId}`;
-  const [text, setText] = useState(() => loadDraft(draftKey).text);
-  useEffect(() => {
-    saveDraft(draftKey, { text });
-  }, [draftKey, text]);
+  const [text, setText] = useSavedDraft(draftKey);
   const [kind, setKind] = useState<"reply" | "note">("reply");
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -744,14 +732,7 @@ export function PlainReplyBox({
   );
   useEffect(() => () => clearTimeout(sentTimer.current), []);
   const currentUser = useCurrentUser();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "";
-    if (text) el.style.height = `${el.scrollHeight}px`;
-  }, [text]);
 
   async function handleSend() {
     const t = text.trim();
@@ -784,7 +765,6 @@ export function PlainReplyBox({
       await sendPlainReplyApi(threadId, t, kind, currentUser, attachmentIds);
       setText("");
       setAttachments([]);
-      clearDraft(draftKey);
       setSent(true);
       clearTimeout(sentTimer.current);
       sentTimer.current = setTimeout(() => setSent(false), 3000);
@@ -805,148 +785,115 @@ export function PlainReplyBox({
       : undefined;
 
   return (
-    <div
-      className={cn(
-        "composer shrink-0",
-        composerBox,
-        composerBoxExpanded,
-        className,
-      )}
+    <SupportComposer
+      value={text}
+      onChange={setText}
+      onSubmit={handleSend}
+      label={kind === "note" ? "Internal note" : "Reply"}
+      placeholder={
+        kind === "note"
+          ? "Internal note for the team (English)…"
+          : `Reply to ${customerName || "the customer"}, sent via Plain…`
+      }
+      disabled={sending}
+      error={error}
+      className={className}
       style={noteStyle}
-    >
-      <FileChips
-        files={attachments.map((file) => ({
-          name: file.name,
-          type: file.type,
-        }))}
-        onRemove={(index) =>
-          setAttachments((current) => current.filter((_, i) => i !== index))
-        }
-        disabled={sending}
-      />
-      <textarea
-        ref={textareaRef}
-        rows={1}
-        {...noAutofill}
-        className={cn(
-          "composer-textarea min-h-12 text-fg placeholder:text-faint",
-          composerTextarea,
-          composerTextareaPadding,
-        )}
-        placeholder={
-          kind === "note"
-            ? "Internal note for the team (English)…"
-            : `Reply to ${customerName || "the customer"}, sent via Plain…`
-        }
-        value={text}
-        disabled={sending}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            handleSend();
+      header={
+        <FileChips
+          files={attachments.map((file) => ({
+            name: file.name,
+            type: file.type,
+          }))}
+          onRemove={(index) =>
+            setAttachments((current) => current.filter((_, i) => i !== index))
           }
+          disabled={sending}
+        />
+      }
+    >
+      <Tooltip label="Add attachments">
+        <PlainButton
+          className={cn(paletteIconBtn, "-ml-1.5")}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={sending}
+          aria-label="Add attachments"
+        >
+          <IconPlus size={20} />
+        </PlainButton>
+      </Tooltip>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(event) => {
+          const picked = Array.from(event.target.files || []);
+          const accepted = picked.filter(
+            (file) => file.size <= PLAIN_ATTACHMENT_MAX_BYTES,
+          );
+          const rejected = picked.find(
+            (file) => file.size > PLAIN_ATTACHMENT_MAX_BYTES,
+          );
+          if (accepted.length) {
+            setAttachments((current) => {
+              const available = PLAIN_ATTACHMENTS_MAX_COUNT - current.length;
+              if (accepted.length > available) {
+                setError(
+                  `You can attach up to ${PLAIN_ATTACHMENTS_MAX_COUNT} files`,
+                );
+              }
+              return [...current, ...accepted.slice(0, Math.max(0, available))];
+            });
+          }
+          if (rejected) setError(`${rejected.name} is too large (25 MB max)`);
+          event.target.value = "";
         }}
       />
-      {error && (
-        <div className="mt-1 truncate text-label text-red" title={error}>
-          {error}
-        </div>
-      )}
-      <div className={composerToolbar}>
-        <Tooltip label="Add attachments">
-          <button
-            type="button"
-            className={cn(paletteIconBtn, "-ml-1.5")}
-            onClick={() => fileInputRef.current?.click()}
-            disabled={sending}
-            aria-label="Add attachments"
-          >
-            <IconPlus size={20} />
-          </button>
-        </Tooltip>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(event) => {
-            const picked = Array.from(event.target.files || []);
-            const accepted = picked.filter(
-              (file) => file.size <= PLAIN_ATTACHMENT_MAX_BYTES,
-            );
-            const rejected = picked.find(
-              (file) => file.size > PLAIN_ATTACHMENT_MAX_BYTES,
-            );
-            if (accepted.length) {
-              setAttachments((current) => {
-                const available = PLAIN_ATTACHMENTS_MAX_COUNT - current.length;
-                if (accepted.length > available) {
-                  setError(
-                    `You can attach up to ${PLAIN_ATTACHMENTS_MAX_COUNT} files`,
-                  );
-                }
-                return [
-                  ...current,
-                  ...accepted.slice(0, Math.max(0, available)),
-                ];
-              });
-            }
-            if (rejected) setError(`${rejected.name} is too large (25 MB max)`);
-            event.target.value = "";
-          }}
-        />
-        {/* A labelled toggle rather than a bare glyph: which of the two
-				    things this box sends — a customer-facing reply or an internal
-				    note — is the one thing you must never have to guess. Same
-				    "Note" marker the session composer puts beside its own "+". */}
-        <Tooltip
-          label={
-            kind === "note"
-              ? "Switch to a customer reply"
-              : "Write a note only the team sees"
+      {/* A labelled toggle rather than a bare glyph: which of the two
+          things this box sends — a customer-facing reply or an internal
+          note — is the one thing you must never have to guess. Same
+          "Note" marker the session composer puts beside its own "+". */}
+      <Tooltip
+        label={
+          kind === "note"
+            ? "Switch to a customer reply"
+            : "Write a note only the team sees"
+        }
+      >
+        <PlainButton
+          aria-pressed={kind === "note"}
+          className={cn(
+            palettePill,
+            "shrink-0",
+            kind === "note" &&
+              "bg-[color-mix(in_srgb,var(--yellow-tint)_22%,transparent)] text-yellow hover:bg-[color-mix(in_srgb,var(--yellow-tint)_32%,transparent)] hover:text-yellow",
+          )}
+          onClick={() =>
+            setKind((current) => (current === "note" ? "reply" : "note"))
           }
+          disabled={sending}
         >
-          <button
-            type="button"
-            aria-pressed={kind === "note"}
-            className={cn(
-              palettePill,
-              "shrink-0",
-              kind === "note" &&
-                "bg-[color-mix(in_srgb,var(--yellow-tint)_22%,transparent)] text-yellow hover:bg-[color-mix(in_srgb,var(--yellow-tint)_32%,transparent)] hover:text-yellow",
-            )}
-            onClick={() =>
-              setKind((current) => (current === "note" ? "reply" : "note"))
-            }
-            disabled={sending}
-          >
-            <IconPencil size={14} />
-            Internal note
-          </button>
-        </Tooltip>
-        <span className="min-w-0 truncate text-meta text-faint phone:hidden">
-          {kind === "note"
-            ? `Posted as ${currentUser} (via ${PRODUCT_NAME})`
-            : `Via Plain, signed “${currentUser.split(/\s+/)[0]}”`}
+          <IconPencil size={14} />
+          Internal note
+        </PlainButton>
+      </Tooltip>
+      <span className="min-w-0 truncate text-meta text-faint phone:hidden">
+        {kind === "note"
+          ? `Posted as ${currentUser} (via ${PRODUCT_NAME})`
+          : `Via Plain, signed “${currentUser.split(/\s+/)[0]}”`}
+      </span>
+      {sent && (
+        <span className="shrink-0 text-meta font-semibold text-green">
+          Sent ✓
         </span>
-        {sent && (
-          <span className="shrink-0 text-meta font-semibold text-green">
-            Sent ✓
-          </span>
-        )}
-        <button
-          type="button"
-          className={cn("ml-auto", composerSend, composerSendDefault)}
-          onClick={handleSend}
-          disabled={sending || (!text.trim() && attachments.length === 0)}
-          title="Send (⌘↵)"
-          aria-label={kind === "note" ? "Add internal note" : "Send reply"}
-        >
-          <IconArrowUp size={24} />
-        </button>
-      </div>
-    </div>
+      )}
+      <SupportSendButton
+        label={kind === "note" ? "Add internal note" : "Send reply"}
+        onClick={handleSend}
+        disabled={sending || (!text.trim() && attachments.length === 0)}
+      />
+    </SupportComposer>
   );
 }
 

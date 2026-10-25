@@ -82,6 +82,7 @@ const { ConfirmDialog } = await import("../ui/confirm");
 const { Button } = await import("../ui/button");
 const { loadDraft } = await import("../lib/drafts");
 const { SupportReplyBox } = await import("./SupportReplyBox");
+const { SupportComposer } = await import("./SupportComposer");
 type Props = Parameters<typeof SupportReplyBox>[0];
 
 const props = (over: Partial<Props> = {}): Props => ({
@@ -98,15 +99,12 @@ const button = (tree: React.ReactNode, label: string) => {
   return el.props;
 };
 const textarea = (tree: React.ReactNode) => {
-  const el = find<React.ComponentProps<"textarea">>(tree, "textarea");
-  if (!el) throw new Error("No textarea");
+  const el = find(tree, SupportComposer);
+  if (!el) throw new Error("No composer");
   return el.props;
 };
-const type = (tree: React.ReactNode, value: string) => {
-  const change = { target: { value } };
-  // SAFETY: the box's change handler reads only `target.value`.
-  textarea(tree).onChange?.(change as React.ChangeEvent<HTMLTextAreaElement>);
-};
+const type = (tree: React.ReactNode, value: string) =>
+  textarea(tree).onChange(value);
 const confirmOf = (tree: React.ReactNode) => find(tree, ConfirmDialog)?.props;
 
 /** The string children in `tree`, in order. */
@@ -211,7 +209,7 @@ test("a 409 says someone else handled it and refetches", async () => {
   );
   press(button(box.output(), "Stop").onClick);
   await settle();
-  expect(text(box.output())).toContain(
+  expect(textarea(box.output()).error).toBe(
     "Someone else already handled this draft",
   );
   expect(onRefetch).toHaveBeenCalledTimes(1);
