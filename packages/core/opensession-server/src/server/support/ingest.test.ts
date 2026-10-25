@@ -86,7 +86,7 @@ async function newInbox(address: string): Promise<InboxConfig> {
   const server = (host: string, port: number) => ({
     host,
     port,
-    tls: "implicit",
+    tls: "implicit" as const,
     user: address,
     password: "fake-pass-1a2b",
   });

@@ -18,7 +18,7 @@ function inbox(): InboxConfig {
   const server = {
     host: "mail.example.test",
     port: 993,
-    secure: true,
+    tls: "implicit" as const,
     user: "help@acme.example.test",
     passwordRef: "ref",
   };

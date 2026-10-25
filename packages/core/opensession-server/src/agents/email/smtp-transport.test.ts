@@ -7,6 +7,11 @@ import {
 } from "../../shared/support";
 import { SendError } from "../../server/support/channel";
 import {
+  MAIL_HOST_REFUSED,
+  MAIL_TLS_NONE_REFUSED,
+  __setMailHostResolverForTest,
+} from "../../server/support/mail-host";
+import {
   MAIL_PASSWORD,
   MAIL_USER,
   type MailFixture,
@@ -27,6 +32,7 @@ let fixtures: MailFixture[] = [];
 let closers: Array<() => unknown> = [];
 
 afterEach(async () => {
+  __setMailHostResolverForTest(undefined);
   for (const close of closers) await close();
   await Promise.all(fixtures.map((f) => f.close()));
   closers = [];
@@ -43,7 +49,7 @@ function serverFor(port: number): MailServerConfig {
   return {
     host: "127.0.0.1",
     port,
-    secure: false,
+    tls: "none",
     user: MAIL_USER,
     passwordRef: "ref",
   };
@@ -62,6 +68,7 @@ function inboxFor(f: MailFixture, over: Partial<InboxConfig> = {}) {
       imap: serverFor(f.imapPort),
       smtp: serverFor(f.smtpPort),
     }),
+    allowInternalHost: true,
     ...over,
   };
 }
@@ -100,6 +107,8 @@ async function closedPort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
+
+const INTERNAL = { allowInternalHost: true };
 
 const decode = (raw: Uint8Array) => new TextDecoder().decode(raw);
 
@@ -171,6 +180,50 @@ describe("SmtpTransport.send", () => {
     const error = await t.send(mail()).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SendError);
     expect((error as SendError).permanent).toBe(true);
+  });
+
+  test("an internal address needs allowInternalHost, and nothing is sent", async () => {
+    const f = await fixture();
+    const error = await transport(f, { allowInternalHost: false })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(MAIL_HOST_REFUSED);
+    expect(f.smtpConnections.opened).toBe(0);
+  });
+
+  test("a name is resolved and the checked address is dialled", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["127.0.0.1"]);
+    await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), host: "mail.acme.example.test" },
+    }).send(mail());
+    expect(f.sent).toHaveLength(1);
+  });
+
+  test("no TLS off this machine is refused", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["93.184.216.34"]);
+    const error = await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), host: "mail.acme.example.test" },
+    })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(MAIL_TLS_NONE_REFUSED);
+  });
+
+  test("starttls is required: a server without it is refused before login", async () => {
+    const f = await fixture();
+    const error = await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), tls: "starttls" },
+    })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect(f.sent).toHaveLength(0);
   });
 
   test("a closed port is a transient SendError", async () => {
@@ -270,14 +323,20 @@ describe("appendSentCopy", () => {
 describe("testSmtpLogin", () => {
   test("logs in to the fixture", async () => {
     const f = await fixture();
-    expect(await testSmtpLogin(serverFor(f.smtpPort), MAIL_PASSWORD)).toEqual({
+    expect(
+      await testSmtpLogin(serverFor(f.smtpPort), MAIL_PASSWORD, INTERNAL),
+    ).toEqual({
       ok: true,
     });
   });
 
   test("a wrong password is permanent", async () => {
     const f = await fixture();
-    const result = await testSmtpLogin(serverFor(f.smtpPort), "wrong");
+    const result = await testSmtpLogin(
+      serverFor(f.smtpPort),
+      "wrong",
+      INTERNAL,
+    );
     expect(result).toMatchObject({ ok: false, permanent: true });
   });
 
@@ -285,7 +344,17 @@ describe("testSmtpLogin", () => {
     const result = await testSmtpLogin(
       serverFor(await closedPort()),
       MAIL_PASSWORD,
+      INTERNAL,
     );
     expect(result).toMatchObject({ ok: false, permanent: false });
+  });
+
+  test("an internal address without allowInternalHost is refused", async () => {
+    const f = await fixture();
+    expect(
+      await testSmtpLogin(serverFor(f.smtpPort), MAIL_PASSWORD, {
+        allowInternalHost: false,
+      }),
+    ).toEqual({ ok: false, permanent: true, error: MAIL_HOST_REFUSED });
   });
 });

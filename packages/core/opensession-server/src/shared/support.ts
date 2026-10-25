@@ -69,6 +69,8 @@ export interface SupportMessage {
   from: MailAddress;
   to: MailAddress[];
   cc: MailAddress[];
+  /** Inbound only, when the message had a Reply-To: where a reply goes. */
+  replyTo?: MailAddress[];
   subject: string;
   /** null once retention removed it. */
   text: string | null;

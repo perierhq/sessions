@@ -292,6 +292,8 @@ export async function ingestInbound(
     trust: trustOf(m),
   };
   if (automated.automated) message.automated = true;
+  const replyTo = m.replyTo.flatMap((a) => normalizeAddress(a) ?? []);
+  if (replyTo.length) message.replyTo = replyTo;
 
   let conversation: SupportConversation | null = null;
   let isNew = false;
