@@ -76,7 +76,7 @@ jobs:
             test -s "$versioned"
             # Pi's image resizer loads this from beside the binary; without it
             # agents cannot see any image they read.
-            if ! tar -tzf "$versioned" | grep -Fqx "opensession-$version-$os-$arch/photon_rs_bg.wasm"; then
+            if ! tar -tzf "$versioned" | grep -Fx "opensession-$version-$os-$arch/photon_rs_bg.wasm" >/dev/null; then
               echo "::error title=Image resizer is missing::$versioned has no photon_rs_bg.wasm beside the binary."
               exit 1
             fi
