@@ -2,8 +2,7 @@ import useSWR from "swr";
 import type { KnowledgeFilter } from "../../../../shared/knowledge";
 import { apiSWRKey } from "../../../lib/api-swr";
 import type { KnowledgeRoute, KnowledgeTab } from "../../../lib/app-route";
-import { fetchKnowledge, fetchKnowledgeJobs } from "../../../lib/api/knowledge";
-import { relativeTime } from "../../../lib/api/request";
+import { fetchKnowledge } from "../../../lib/api/knowledge";
 import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_EDITOR_FRAME,
@@ -21,8 +20,6 @@ import {
   emptyCopy,
   freshnessLine,
   itemBadges,
-  jobLine,
-  runningJob,
 } from "../../../lib/knowledge/models";
 import { PROJECT_PAGE_FRAME } from "../../../lib/project-settings-classes";
 import { repoLabel } from "../../../lib/repo-label";
@@ -39,6 +36,7 @@ import { EmptyState, InlineAlert } from "../../../ui/state";
 import { IconChevronLeft } from "../../icons";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeHistory } from "./KnowledgeHistory";
+import { KnowledgeImport } from "./KnowledgeImport";
 import { KnowledgeList } from "./KnowledgeList";
 import { KnowledgeSuggestions } from "./KnowledgeSuggestions";
 import { KnowledgeNeedsCheck } from "./KnowledgeNeedsCheck";
@@ -56,8 +54,6 @@ const TAB_FILTERS: Partial<Record<KnowledgeTab, KnowledgeFilter>> = {
   suggestions: "suggestions",
   "needs-check": "needs-check",
 };
-
-const JOB_POLL_MS = 5_000;
 
 /** The day, read in UTC, for the freshness lines. */
 function today(): string {
@@ -218,7 +214,7 @@ export function KnowledgePage({
         ) : filter ? (
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (
-          <ImportJobs project={project} />
+          <KnowledgeImport project={project} />
         ) : null}
       </SettingsPanel>
     </div>
@@ -258,42 +254,6 @@ function ItemList({
             ))}
           </div>
           <div className={KNOWLEDGE_ROW_LINE}>{freshnessLine(item, day)}</div>
-        </div>
-      ))}
-    </SettingCard>
-  );
-}
-
-function ImportJobs({ project }: { project: string }) {
-  const jobs = useSWR(
-    apiSWRKey.knowledgeJobs(project),
-    () => fetchKnowledgeJobs(project),
-    {
-      refreshInterval: (latest) =>
-        latest && runningJob(latest) ? JOB_POLL_MS : 0,
-    },
-  );
-  if (jobs.error && !jobs.data)
-    return (
-      <InlineAlert onRetry={() => void jobs.mutate()}>
-        {errorMessage(jobs.error, "Couldn't load the imports")}
-      </InlineAlert>
-    );
-  if (!jobs.data) return <SettingCardSkeleton rows={2} />;
-  if (!jobs.data.length)
-    return (
-      <EmptyState placement="card">
-        No imports yet. Import your mailbox, docs, website or files
-      </EmptyState>
-    );
-  return (
-    <SettingCard>
-      {jobs.data.map((job) => (
-        <div key={job.id} className={KNOWLEDGE_ROW}>
-          <div className={KNOWLEDGE_ROW_TITLE}>{jobLine(job)}</div>
-          <div className={KNOWLEDGE_ROW_LINE}>
-            Started {relativeTime(job.startedAt)}
-          </div>
         </div>
       ))}
     </SettingCard>

@@ -373,6 +373,19 @@ export async function fetchKnowledgeJobs(
   return body?.jobs ?? [];
 }
 
+/** Stop an import that is queued or running; it ends as failed with
+ *  "Cancelled.". */
+export async function cancelKnowledgeJob(
+  project: string,
+  id: string,
+): Promise<KnowledgeImportJob> {
+  const body = await request<{ job: KnowledgeImportJob }>(
+    `${base(project)}/jobs/${encodeURIComponent(id)}/cancel`,
+    { method: "POST", body: {}, label: "Couldn't stop the import" },
+  );
+  return body.job;
+}
+
 /** Check every item against its sources now. */
 export async function revalidateKnowledge(
   project: string,

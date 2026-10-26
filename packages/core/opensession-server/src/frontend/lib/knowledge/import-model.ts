@@ -7,6 +7,7 @@ import {
   DEFAULT_BACKFILL_MONTHS,
   type KnowledgeImportJob,
 } from "../../../shared/knowledge";
+import { importLabel, jobLine } from "./models";
 
 /** The mailbox backfill windows offered, in months. */
 export const BACKFILL_MONTH_CHOICES = [3, 6, 12, 24, 36] as const;
@@ -187,4 +188,22 @@ export function checkFiles<F extends PickedFile>(
     else accepted.push(file);
   }
   return { accepted, refused, error: null };
+}
+
+const CANCELLED = "Cancelled.";
+
+/** A job's line: its progress and what it made (jobLine), or for a job that
+ *  ended badly just the kind and "Failed" or "Cancelled"; the reason goes
+ *  on its own line (jobError). */
+export function jobTitle(job: KnowledgeImportJob): string {
+  if (job.state !== "failed") return jobLine(job);
+  const head = importLabel(job.kind);
+  return job.error === CANCELLED ? `${head} · Cancelled` : `${head} · Failed`;
+}
+
+/** Why a job failed; null for one that didn't, or that a person stopped. */
+export function jobError(job: KnowledgeImportJob): string | null {
+  return job.state === "failed" && job.error && job.error !== CANCELLED
+    ? job.error
+    : null;
 }

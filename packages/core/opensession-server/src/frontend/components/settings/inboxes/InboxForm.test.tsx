@@ -59,7 +59,8 @@ mock.module("../../../lib/api/support", () => ({
   },
 }));
 
-const imports: Array<[string, string, unknown]> = [];
+type ImportBody = { inboxId?: string; months?: number };
+const imports: Array<[string, string, ImportBody]> = [];
 let importError: Error | null = null;
 const realKnowledgeApi = await import("../../../lib/api/knowledge");
 mock.module("../../../lib/api/knowledge", () => ({
@@ -67,7 +68,7 @@ mock.module("../../../lib/api/knowledge", () => ({
   startKnowledgeImport: async (
     project: string,
     kind: string,
-    body: unknown,
+    body: ImportBody,
   ) => {
     imports.push([project, kind, body]);
     if (importError) throw importError;

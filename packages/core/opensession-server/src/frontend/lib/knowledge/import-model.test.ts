@@ -13,6 +13,8 @@ import {
   JOB_POLL_MS,
   checkFiles,
   importChoices,
+  jobError,
+  jobTitle,
   jobProgress,
   monthsLabel,
   pollJobs,
@@ -135,4 +137,23 @@ test("progress is a share of the total, unknown without one", () => {
   );
   expect(jobProgress(job({ state: "running", done: 0, total: 0 }))).toBe(0);
   expect(jobProgress(job({ state: "done", done: 3, total: null }))).toBe(100);
+});
+
+test("a failed job names the failure on its own line; a cancelled one doesn't", () => {
+  const failed = job({
+    state: "failed",
+    error: "The mail server refused the password",
+  });
+  expect(jobTitle(failed)).toBe("Mailbox · Failed");
+  expect(jobError(failed)).toBe("The mail server refused the password");
+  const cancelled = job({
+    kind: "website",
+    state: "failed",
+    error: "Cancelled.",
+  });
+  expect(jobTitle(cancelled)).toBe("Website · Cancelled");
+  expect(jobError(cancelled)).toBeNull();
+  const running = job({ state: "running", done: 3, total: 10 });
+  expect(jobTitle(running)).toBe("Mailbox · 3 of 10");
+  expect(jobError(running)).toBeNull();
 });
