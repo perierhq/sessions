@@ -56,9 +56,17 @@ describe("org floor", () => {
     expect(evaluateCommand("git push -f origin feature", p).decision).toBe(
       "require_approval",
     );
+    // A lease only overwrites what the pusher last saw: not a blind force.
     expect(evaluateCommand("git push --force-with-lease", p).decision).toBe(
-      "require_approval",
+      "allow",
     );
+    expect(
+      evaluateCommand("git push --force-with-lease=feature:abc123", p).decision,
+    ).toBe("allow");
+    expect(
+      evaluateCommand("git push --force-with-lease --force origin x", p)
+        .decision,
+    ).toBe("require_approval");
     expect(evaluateCommand("git push origin main", p).decision).toBe("allow");
     expect(evaluateCommand("git push -u origin feature", p).decision).toBe(
       "allow",
@@ -682,9 +690,9 @@ describe("publication policy: pushing the owned branch", () => {
       "git push origin @",
       `git push origin HEAD:${head}`,
       `git push origin HEAD:refs/heads/${head}`,
-      `git push origin +${head}`,
-      `git push origin +HEAD:${head}`,
       `git push --force-with-lease origin ${head}`,
+      `git push --force-with-lease=${head} origin HEAD`,
+      `git push --force-with-lease --force-if-includes origin ${head}`,
       `git push --force-with-lease=${head}:abc123 origin ${head}`,
       `git push -o ci.skip origin ${head}`,
       `git push --push-option ci.skip origin ${head}`,
@@ -726,6 +734,11 @@ describe("publication policy: pushing the owned branch", () => {
       [`git push --prune origin ${head}`, "--prune"],
       ["git push origin refs/heads/*:refs/heads/*", "refs/heads/*"],
       [`git push upstream ${head}`, "remote upstream"],
+      [`git push origin +${head}`, "+" + head],
+      [`git push origin +HEAD:${head} 2>&1`, "+HEAD:" + head],
+      [`git push --force origin ${head}`, "--force"],
+      [`git push -f origin ${head}`, "-f"],
+      [`git push -uf origin HEAD`, "-f"],
       [
         `git -c remote.origin.push=refs/heads/*:refs/heads/* push`,
         "remote.origin.push",

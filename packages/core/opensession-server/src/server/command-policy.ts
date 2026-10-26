@@ -70,7 +70,9 @@ const ORG_FLOOR_RULES: CommandRule[] = [
     reason: "recursive delete",
   },
   {
-    pattern: "\\bgit\\s+push\\b.*(?:--force\\b|(?:^|\\s)-[a-zA-Z]*f\\b)",
+    // `--force-with-lease` only overwrites what the pusher last saw, so it
+    // is not a blind force.
+    pattern: "\\bgit\\s+push\\b.*(?:--force(?:\\s|$)|(?:^|\\s)-[a-zA-Z]*f\\b)",
     decision: "require_approval",
     reason: "force push",
   },
@@ -216,6 +218,9 @@ interface PushPlan {
   deletes: string[];
   /** A flag that publishes refs no refspec names (`--all`, `--tags`). */
   bulk?: string;
+  /** A blind force: `--force`, `-f` or a `+` refspec, as written.
+   *  `--force-with-lease` is not one. */
+  force?: string;
 }
 
 const PUSH_BULK_FLAGS = new Set([
@@ -269,6 +274,7 @@ function pushPlan(pushArgs: string[]): PushPlan {
       const [name, inline] = arg.split(/=(.*)/s, 2);
       if (PUSH_BULK_FLAGS.has(name)) plan.bulk ??= name;
       else if (name === "--delete") deleting = true;
+      else if (name === "--force") plan.force ??= name;
       else if (PUSH_VALUE_OPTIONS.has(name)) {
         const value = inline ?? pushArgs[++index];
         if (name === "--repo" && value !== undefined) plan.remotes.push(value);
@@ -279,6 +285,7 @@ function pushPlan(pushArgs: string[]): PushPlan {
     for (let at = 1; at < arg.length; at++) {
       const flag = arg.charAt(at);
       if (flag === "d") deleting = true;
+      if (flag === "f") plan.force ??= "-f";
       if (flag === "o") {
         if (at === arg.length - 1) index++;
         break;
@@ -289,6 +296,7 @@ function pushPlan(pushArgs: string[]): PushPlan {
   if (remote !== undefined) plan.remotes.push(remote);
   if (refspecs.length === 0) plan.current = !deleting;
   for (const refspec of refspecs) {
+    if (refspec.startsWith("+")) plan.force ??= refspec;
     const spec = refspec.replace(/^\+/, "");
     const colon = spec.indexOf(":");
     const source = colon < 0 ? spec : spec.slice(0, colon);
@@ -521,6 +529,8 @@ function pushDenyReason(
   const others = plan.destinations.filter((d) => d !== policy.headBranch);
   if (others.length)
     return `${owned}; this push targets ${others.map(shownRef).join(", ")}`;
+  if (plan.force)
+    return `automation descendants cannot force-push (${plan.force}); use --force-with-lease on ${policy.headBranch}`;
   return undefined;
 }
 
