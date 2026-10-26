@@ -668,3 +668,30 @@ test("an agent on the default branch has no pull request of its own", async () =
   );
   expect((await agents.status("child-7")).prUrl).toBeUndefined();
 });
+
+test("an agent's usage counts every turn in its session, a person's too", async () => {
+  const h = fakeWorld();
+  h.sessions.set(
+    "child-9",
+    summary("child-9", {
+      parentSessionId: "coord",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 800,
+        cacheCreationTokens: 50,
+        costUsd: 6.92,
+      } as SessionSummary["usage"],
+    }),
+  );
+  const agents = createIncidentAgents(
+    incident,
+    { coordinatorSessionId: "coord", automation },
+    h.deps,
+  );
+  expect(await agents.usage("child-9")).toEqual({
+    costUsd: 6.92,
+    tokens: 1000,
+  });
+  expect(await agents.usage("gone")).toBeUndefined();
+});

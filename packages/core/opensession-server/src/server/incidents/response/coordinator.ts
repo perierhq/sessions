@@ -454,22 +454,31 @@ function guardOf(view: ResponseView): { state: IncidentState; phase?: string } {
 
 // ── Sync and view ──────────────────────────────────────────────────────────
 
-/** Copies the agents' live status into the record; one write at most. */
+/**
+ * Copies the agents' live status into the record; one write at most. A run
+ * that is no longer watched (it reported, stopped or failed) still has its
+ * cost followed: a person may keep working in its session, and those turns
+ * are the incident's too.
+ */
 async function syncAgents(
   incident: Incident,
   d: CoordinatorDeps,
   settings: IncidentProjectSettings,
 ): Promise<Incident> {
   const r = incident.response;
-  if (!r) return incident;
-  const watched = r.agents.filter(watchedRun);
-  if (!watched.length) return incident;
+  if (!r?.agents.length) return incident;
   const agents = await agentsFor(incident, d);
   if (!agents) return incident;
   const lives = new Map<string, AgentLive>();
-  for (const run of watched) {
+  const usages = new Map<string, { costUsd: number; tokens: number }>();
+  for (const run of r.agents) {
     try {
-      lives.set(run.sessionId, await agents.status(run.sessionId));
+      if (watchedRun(run))
+        lives.set(run.sessionId, await agents.status(run.sessionId));
+      else {
+        const usage = await agents.usage(run.sessionId);
+        if (usage) usages.set(run.sessionId, usage);
+      }
     } catch (error) {
       console.warn(
         `[incidents] Could not read agent ${run.sessionId}:`,
@@ -477,6 +486,14 @@ async function syncAgents(
       );
     }
   }
+  const costChanged = (run: AgentRun): boolean => {
+    const usage = usages.get(run.sessionId);
+    return (
+      !!usage &&
+      !watchedRun(run) &&
+      (usage.costUsd !== run.costUsd || usage.tokens !== run.tokens)
+    );
+  };
   const changed = (run: AgentRun): boolean => {
     const live = lives.get(run.sessionId);
     if (!live || !watchedRun(run)) return false;
@@ -488,13 +505,18 @@ async function syncAgents(
       (live.error !== undefined && live.error !== run.error)
     );
   };
-  if (!r.agents.some(changed)) return incident;
+  if (!r.agents.some((run) => changed(run) || costChanged(run)))
+    return incident;
 
   const finished: AgentRun[] = [];
   const next = await write(incident.id, d, settings, null, (c, base, at) => {
     finished.length = 0;
     let response = base;
     const runs = response.agents.map((run) => {
+      if (costChanged(run)) {
+        const usage = usages.get(run.sessionId)!;
+        return { ...run, costUsd: usage.costUsd, tokens: usage.tokens };
+      }
       if (!changed(run)) return run;
       const live = lives.get(run.sessionId)!;
       const status = liveRunStatus(live);

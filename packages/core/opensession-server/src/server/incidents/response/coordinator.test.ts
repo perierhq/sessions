@@ -350,6 +350,10 @@ async function world(
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
     },
+    async usage(id) {
+      const l = live.get(id);
+      return l ? { costUsd: l.costUsd, tokens: l.tokens } : undefined;
+    },
     async finalText(id) {
       return texts.get(id);
     },
@@ -2835,4 +2839,57 @@ test("an extra round past the limit is never 'round 3 of 2'", async () => {
     "Sent the investigator round 3, an extra round past the limit of 2",
   );
   expect(details.join("\n")).not.toMatch(/round 3 of 2/);
+});
+
+test("the card's cost counts the owner's own turns in an agent's session", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+    { costUsd: 4.66, tokens: 1000 },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.costUsd).toBe(4.66);
+  // The owner asks the agent a follow-up in its own session.
+  w.live("child-1", { costUsd: 6.92, tokens: 1500 });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.agents[0]).toMatchObject({
+    costUsd: 6.92,
+    tokens: 1500,
+  });
+  expect(i?.response?.costUsd).toBe(6.92);
+  // Closed, a later turn still counts.
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  w.live("child-1", { costUsd: 7.5 });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("closed-without-action");
+  expect(i?.response?.costUsd).toBe(7.5);
+});
+
+test("a run that failed to start still counts the turns a person ran in it", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.live("child-1", { status: "error", error: "Session setup failed" });
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.agents[0]?.status).toBe(
+    "error",
+  );
+  w.live("child-1", { status: "done", costUsd: 1.47, tokens: 300 });
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.agents[0]).toMatchObject({
+    status: "error",
+    costUsd: 1.47,
+  });
+  expect(i?.response?.costUsd).toBe(1.47);
 });

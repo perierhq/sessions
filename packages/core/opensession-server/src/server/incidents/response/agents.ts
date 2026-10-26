@@ -265,6 +265,10 @@ export interface IncidentAgents {
    *  undefined when the session is gone. */
   work(id: string): Promise<SessionWork | undefined>;
   status(id: string): Promise<AgentLive>;
+  /** What the session has cost so far, every turn in it counted (a
+   *  person's own turns too); undefined when the session is gone. Cheap: it
+   *  reads the session store only. */
+  usage(id: string): Promise<{ costUsd: number; tokens: number } | undefined>;
   finalText(id: string, since: string): Promise<string | undefined>;
   send(id: string, message: string, requestId: string): Promise<void>;
   cancel(id: string, requestId: string): Promise<void>;
@@ -436,6 +440,19 @@ export function createIncidentAgents(
         tokens: s.tokens ?? 0,
         ...(prUrl ? { prUrl } : {}),
         ...(s.error ? { error: s.error } : {}),
+      };
+    },
+
+    async usage(id) {
+      const usage = d.control.getSession(id)?.usage;
+      if (!usage) return undefined;
+      return {
+        costUsd: usage.costUsd,
+        tokens:
+          usage.inputTokens +
+          usage.outputTokens +
+          usage.cacheReadTokens +
+          usage.cacheCreationTokens,
       };
     },
 
