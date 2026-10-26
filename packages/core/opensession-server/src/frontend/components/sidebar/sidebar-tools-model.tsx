@@ -58,6 +58,9 @@ interface SidebarToolsModelOptions {
   borrowedLens: boolean;
   productEmpty: boolean;
   feeds: FeedDescriptor[];
+  /** Email support is on (`enabled` from /api/support/inboxes): a support
+   *  channel of its own, with or without a Plain feed. */
+  emailSupport: boolean;
   archivedActive: boolean;
 }
 
@@ -83,6 +86,7 @@ export function createSidebarToolsModel({
   borrowedLens,
   productEmpty,
   feeds,
+  emailSupport,
   archivedActive,
 }: SidebarToolsModelOptions) {
   // The rows below call `onClick()` with no arguments rather than handing the
@@ -143,7 +147,7 @@ export function createSidebarToolsModel({
       icon: <IconMail />,
       active: plainActive,
       onClick: navigation.openPlain,
-      title: "Support tickets waiting in Plain",
+      title: "Support conversations",
     },
     {
       id: "catchup",
@@ -207,10 +211,13 @@ export function createSidebarToolsModel({
   // read as theirs, so a borrowed sidebar is their workspaces and nothing
   // else. Another teammate, or your own sidebar back, is a click away in
   // "Group, filter & sort" — and the strip at the top is the way out.
-  // Support is the one tool whose visibility is not its own: it and the Plain
-  // band are two doors onto one queue, and both at once would list the same
-  // tickets twice. The tool wins when the independent stored lists say both,
-  // because it is the default placement and the band is the alternate.
+  // Support is the one tool whose visibility is not always its own: with a
+  // Plain feed, it and the Plain band are two doors onto one queue, and both
+  // at once would list the same tickets twice. The tool wins when the
+  // independent stored lists say both, because it is the default placement
+  // and the band is the alternate. Without a Plain feed there is no band, so
+  // the tool is an ordinary tool (email support alone still lands on it).
+  const plainQueueExists = feeds.some((feed) => feed.id === PLAIN_ID);
   const supportSurface = supportSurfaceOf(
     !hiddenTools.has(PLAIN_ID),
     !hiddenFeeds.has(PLAIN_ID),
@@ -221,19 +228,24 @@ export function createSidebarToolsModel({
         (tool) =>
           !hiddenTools.has(tool.id) &&
           !(productEmpty && tool.id === "prs") &&
-          !(tool.id === PLAIN_ID && supportSurface !== "page"),
+          !(
+            tool.id === PLAIN_ID &&
+            plainQueueExists &&
+            supportSurface !== "page"
+          ),
       );
 
   // What the sidebar's own right-click menu offers (SidebarToolsMenu): every
   // tool and every source, ticked when it's showing.
   //
   // Support is the exception, and the reason that menu is a real one: where
-  // the others tick on or off, it names which of two surfaces its queue lives
-  // on, so it is a submenu of three states rather than a tick. No Plain feed
-  // means no queue to place, so the row drops out entirely.
-  const plainQueueExists = feeds.some((feed) => feed.id === PLAIN_ID);
+  // the others tick on or off, with a Plain feed it names which of two
+  // surfaces its queue lives on, so it is a submenu of three states rather
+  // than a tick. With email support alone it is an ordinary tick. No support
+  // channel at all means nothing to open, so the row drops out entirely.
+  const supportChannelExists = plainQueueExists || emailSupport;
   const sidebarMenuTools: SidebarMenuTool[] = fittingTools
-    .filter((tool) => tool.id !== PLAIN_ID || plainQueueExists)
+    .filter((tool) => tool.id !== PLAIN_ID || supportChannelExists)
     .map((tool) => {
       const menuTool: SidebarMenuTool = {
         id: tool.id,
@@ -241,7 +253,8 @@ export function createSidebarToolsModel({
         icon: tool.icon,
         shown: !hiddenTools.has(tool.id),
       };
-      if (tool.id === PLAIN_ID) menuTool.surface = supportSurface;
+      if (tool.id === PLAIN_ID && plainQueueExists)
+        menuTool.surface = supportSurface;
       return menuTool;
     });
   const sidebarMenuSources = feeds

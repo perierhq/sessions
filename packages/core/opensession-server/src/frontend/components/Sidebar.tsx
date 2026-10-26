@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import useSWR from "swr";
 import { useIsPhone } from "../hooks/useIsPhone";
 import { useNavigation } from "../hooks/useNavigation";
 import { useHiddenRows } from "../hooks/useHiddenRows";
@@ -9,6 +10,8 @@ import { useSidebarSources } from "../hooks/useSidebarSources";
 import { useSidebarStickyHeadings } from "../hooks/useSidebarStickyHeadings";
 import { useSidebarWorkspaceController } from "../hooks/useSidebarWorkspaceController";
 import { closePrPreviewApi } from "../lib/api";
+import { fetchInboxes } from "../lib/api/support";
+import { API_SWR_OPTIONS, apiSWRKey } from "../lib/api-swr";
 import { mobileFilterBtn } from "../lib/app-header-classes";
 import { useAutomationOverview } from "../lib/automation-overview";
 import {
@@ -447,6 +450,13 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
   } = useSidebarSources({ sessions, hiddenFeeds });
 
   const supportSessionByThread = latestSupportSessionsByThread(sessions);
+  // The Inboxes page's request (same key): `enabled` is whether email
+  // support is on, a support channel the Support tool serves without Plain.
+  const { data: inboxes } = useSWR(
+    apiSWRKey.supportInboxes(),
+    fetchInboxes,
+    API_SWR_OPTIONS,
+  );
 
   const discoveredRepos = discoverSidebarRepos(
     registeredRepos,
@@ -1014,6 +1024,7 @@ export const Sidebar = React.forwardRef<SidebarHandle, Props>(function Sidebar(
       borrowedLens,
       productEmpty,
       feeds,
+      emailSupport: inboxes?.enabled === true,
       archivedActive,
     });
   const setToolVisible = setSidebarToolVisible;
