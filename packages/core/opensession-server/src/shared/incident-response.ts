@@ -509,6 +509,8 @@ export const OWNER_DECISIONS = [
   "resolve",
   "close",
   "roll-back",
+  "close-prs",
+  "keep-prs",
 ] as const;
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
@@ -521,7 +523,9 @@ export const SEND_BACK_NOTE_MAX = 2000;
 
 /**
  * `options` on `watching` and `done` is `["roll-back"]` when a manual
- * rollback is available, else `[]`.
+ * rollback is available, else `[]`. Closed without action with code-fix
+ * pull requests still open (`openPrs`), `done` offers
+ * `["close-prs", "keep-prs"]`.
  */
 export type NextAction =
   | { kind: "working"; detail: string }
@@ -599,6 +603,13 @@ export type SendBackReason =
   | { kind: "reopened"; detail: string }
   | { kind: "check-failed"; detail: string };
 
+/** A pull request one of the incident's agents opened. */
+export interface AgentPullRequest {
+  url: string;
+  number: number;
+  sessionId: string;
+}
+
 export interface IncidentResponse {
   phase: ResponsePhase;
   round: number;
@@ -643,6 +654,10 @@ export interface IncidentResponse {
     fix?: SetupFix;
   };
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
+  /** Closed without action: pull requests the incident's agents opened that
+   *  change code, left open for the owner to close or keep. Their note-only
+   *  pull requests are closed without asking. */
+  openPrs?: AgentPullRequest[];
   next: NextAction;
   ledger: LedgerEntry[];
   droppedLedger: number;

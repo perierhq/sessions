@@ -261,7 +261,10 @@ export function nextActionFor(
       kind: "done",
       detail:
         incident.state === "resolved" ? "Resolved" : "Closed without action",
-      options: rollback(),
+      options:
+        incident.state === "closed-without-action" && r?.openPrs?.length
+          ? ["close-prs", "keep-prs"]
+          : rollback(),
     };
   if (incident.state === "paused")
     return {
@@ -668,6 +671,7 @@ function starting(view: ResponseView): ResponseStep | undefined {
         note: undefined,
         mergingSince: undefined,
         documentingSince: undefined,
+        openPrs: undefined,
       },
     };
   }

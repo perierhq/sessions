@@ -8,6 +8,7 @@
 // runs at import.
 import {
   type ActionRun,
+  type AgentPullRequest,
   type AgentRole,
   type AgentRun,
   type AgentWorkspace,
@@ -88,6 +89,7 @@ import {
   fetchPrSnapshot,
   mergeIncidentPr,
   parsePrUrl,
+  prFilePaths,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { budgetProblem } from "./policy";
@@ -101,6 +103,7 @@ import {
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
+  INCIDENT_DOCS_DIR,
   buildInvestigatorPrompt,
   buildReminder,
   buildSendBackMessage,
@@ -1928,6 +1931,8 @@ async function applyTransition(
       };
     },
   );
+  if (next?.state === "closed-without-action")
+    void enqueue(incident.id, () => settleAgentPrs(incident.id, d));
   return next !== null;
 }
 
@@ -2380,6 +2385,139 @@ async function mergeNote(
   return next !== null;
 }
 
+// ── Pull requests after a close ────────────────────────────────────────────
+
+const CLOSED_WITHOUT_ACTION_COMMENT =
+  "The incident this pull request was opened for was closed without action, so Sessions is closing it. Reopen it if the change is still wanted.";
+
+/**
+ * Comments on and closes an agent's pull request in the project's own
+ * repository. True, or why it was not closed.
+ */
+async function closeAgentPr(
+  incident: Incident,
+  prUrl: string,
+  body: string,
+  d: CoordinatorDeps,
+): Promise<true | string> {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return "not a GitHub pull request";
+  try {
+    const own = d.ghRepoOf(incident.project);
+    if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase())
+      return "it is in another repository";
+    const credential = await d.github.appCredential(pr.ghRepo);
+    await d.github.comment(pr.ghRepo, pr.number, body, credential);
+    await d.github.close(pr.ghRepo, pr.number, credential);
+    return true;
+  } catch (error) {
+    return errorMessage(error);
+  }
+}
+
+/** Whether every file is the incident's note or a runbook. Unreadable
+ *  files count as code. */
+function noteOnly(files: string[] | null): boolean {
+  return !!files?.length && files.every((f) => f.startsWith(INCIDENT_DOCS_DIR));
+}
+
+/**
+ * An incident closed without action: the open pull requests its own agents
+ * opened are closed with a short comment, when nobody pushed to them after
+ * the agent (the head is still the agent's last commit) and they hold only
+ * the incident note and runbooks. A code fix is left open and asked about
+ * on the card (`openPrs`). A merged or closed pull request, one in another
+ * repository, and one whose head can't be matched to the agent are left
+ * alone. Best effort: what was done is written to the ledger.
+ */
+async function settleAgentPrs(
+  incidentId: string,
+  d: CoordinatorDeps,
+): Promise<void> {
+  const incident = await d.getIncident(incidentId);
+  if (incident?.state !== "closed-without-action") return;
+  const r = incident.response;
+  if (!r?.agents.some((a) => a.role === "investigator")) return;
+  const agents = await agentsFor(incident, d);
+  if (!agents) return;
+  const own = (() => {
+    try {
+      return d.ghRepoOf(incident.project)?.toLowerCase();
+    } catch {
+      return undefined;
+    }
+  })();
+  const lines: string[] = [];
+  const ask: AgentPullRequest[] = [];
+  const seen = new Set<string>();
+  for (const run of r.agents) {
+    if (run.role !== "investigator") continue;
+    let url = run.prUrl;
+    if (!url)
+      url = await agents
+        .status(run.sessionId)
+        .then((live) => live.prUrl)
+        .catch(() => undefined);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pr = parsePrUrl(url);
+    if (!pr || !own || own !== pr.ghRepo.toLowerCase()) continue;
+    try {
+      const v = await d.github.verdict({
+        repoId: incident.project,
+        ghRepo: pr.ghRepo,
+        number: pr.number,
+      });
+      if (v.state !== "OPEN") continue;
+      const head = await agents.head(run.sessionId);
+      if (!head || head !== v.pr.headSha) {
+        lines.push(
+          head
+            ? `Left pull request #${pr.number} open: it changed after the investigator's last commit`
+            : `Left pull request #${pr.number} open: Sessions can't tell whether anyone pushed to it after the investigator`,
+        );
+        continue;
+      }
+      if (!noteOnly(prFilePaths(await d.github.files(pr.ghRepo, pr.number)))) {
+        ask.push({ url, number: pr.number, sessionId: run.sessionId });
+        lines.push(
+          `Left pull request #${pr.number} open for you: it changes code`,
+        );
+        continue;
+      }
+      const closed = await closeAgentPr(
+        incident,
+        url,
+        CLOSED_WITHOUT_ACTION_COMMENT,
+        d,
+      );
+      lines.push(
+        closed === true
+          ? `Closed the investigator's pull request #${pr.number}`
+          : `Could not close pull request #${pr.number}: ${closed}`,
+      );
+    } catch (error) {
+      lines.push(
+        `Could not check pull request #${pr.number}: ${errorMessage(error)}`,
+      );
+    }
+  }
+  if (!lines.length) return;
+  const settings = await d.settings(incident.project);
+  await write(incidentId, d, settings, null, (c, base, at) => {
+    if (c.state !== "closed-without-action")
+      return { error: "The incident reopened meanwhile" };
+    let response = patched(base, { openPrs: ask.length ? ask : undefined });
+    for (const detail of lines)
+      response = ledger(response, at, {
+        actor: "sessions",
+        kind: "merge",
+        detail,
+      });
+    return { incident: c, response };
+  });
+}
+
 // ── Wake-ups ───────────────────────────────────────────────────────────────
 
 /** Whether the tick should look at this incident at all. `recovering`:
@@ -2491,6 +2629,8 @@ const REFUSALS: Record<OwnerDecision, string> = {
   resolve: "This incident can't be resolved now",
   close: "This incident can't be closed now",
   "roll-back": "Nothing to roll back",
+  "close-prs": "No pull request is waiting for you",
+  "keep-prs": "No pull request is waiting for you",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -2563,6 +2703,9 @@ function decisionAllowed(
       return c.state === "needs-you" || c.state === "investigating";
     case "roll-back":
       return manualRollbackAvailable(c, settings);
+    case "close-prs":
+    case "keep-prs":
+      return c.state === "closed-without-action" && !!r.openPrs?.length;
   }
 }
 
@@ -2625,7 +2768,13 @@ function decisionMove(
   c: Incident,
   base: IncidentResponse,
   at: string,
-  input: { by: string; note: string; cancelled: ReadonlySet<string> },
+  input: {
+    by: string;
+    note: string;
+    cancelled: ReadonlySet<string>;
+    /** Close it: the pull requests GitHub would not close. */
+    stillOpen: ReadonlySet<string>;
+  },
 ): Mutation {
   const { by } = input;
   const move = (
@@ -2753,6 +2902,17 @@ function decisionMove(
         }),
       );
     }
+    case "close-prs":
+    case "keep-prs": {
+      // Closing them happened before the record; one GitHub refused stays.
+      const left = (base.openPrs ?? []).filter((p) =>
+        input.stillOpen.has(p.url),
+      );
+      return {
+        incident: c,
+        response: patched(base, { openPrs: left.length ? left : undefined }),
+      };
+    }
   }
 }
 
@@ -2802,6 +2962,23 @@ async function ownerDecision(
           decision === "stop" ? "stopped" : "closed",
         )
       : new Set<string>();
+  const prLines: string[] = [];
+  const stillOpen = new Set<string>();
+  if (decision === "close-prs")
+    for (const pr of incident.response.openPrs ?? []) {
+      const closed = await closeAgentPr(
+        incident,
+        pr.url,
+        "The incident this pull request was opened for was closed without action, and its owner chose to close it too. Reopen it if the change is still wanted.",
+        d,
+      );
+      if (closed === true)
+        prLines.push(`Closed the investigator's pull request #${pr.number}`);
+      else {
+        stillOpen.add(pr.url);
+        prLines.push(`Could not close pull request #${pr.number}: ${closed}`);
+      }
+    }
   let coordinator:
     | { coordinatorSessionId: string; automationId: string }
     | undefined;
@@ -2832,9 +3009,21 @@ async function ownerDecision(
         by,
         note: text,
         cancelled,
+        stillOpen,
       });
       if ("error" in moved) return moved;
       const detail = `${by}: ${decision}`;
+      let response = ledger(
+        { ...moved.response, ownerTouched: true, ...coordinator },
+        at,
+        { actor: "owner", kind: "decision", detail, by },
+      );
+      for (const line of prLines)
+        response = ledger(response, at, {
+          actor: "sessions",
+          kind: "merge",
+          detail: line,
+        });
       return {
         incident: appendEvent(moved.incident, {
           at,
@@ -2842,11 +3031,7 @@ async function ownerDecision(
           by,
           detail,
         }),
-        response: ledger(
-          { ...moved.response, ownerTouched: true, ...coordinator },
-          at,
-          { actor: "owner", kind: "decision", detail, by },
-        ),
+        response,
       };
     },
   );
@@ -2859,6 +3044,10 @@ async function ownerDecision(
     decision,
     by,
   });
+  // The agents' pull requests, after the close is recorded: in the chain,
+  // so the decision returns without waiting on GitHub.
+  if (decision === "close")
+    void enqueue(incidentId, () => settleAgentPrs(incidentId, d));
   if (decision === "stop" && incident.state === "veto")
     incidentAudit({
       kind: "incident_veto",

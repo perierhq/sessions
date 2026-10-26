@@ -36,7 +36,9 @@ import type { ConnectionProblem } from "../access/mcp";
 import { redactSignal } from "../signal-validation";
 import { REPORT_FENCE, RESULT_VALUES, cleanReportText } from "./reports";
 
-const RUNBOOK = "docs/incidents/runbook.md";
+/** Where incident notes and runbooks live in a project. */
+export const INCIDENT_DOCS_DIR = "docs/incidents/";
+const RUNBOOK = `${INCIDENT_DOCS_DIR}runbook.md`;
 const RECENT_LINES = 20;
 const DETAIL_MAX = 300;
 const SEND_BACK_TAIL =

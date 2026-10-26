@@ -280,6 +280,11 @@ async function world(
   const merges: Array<{ ghRepo: string; n: number; sha: string }> = [];
   const prComments: Array<{ ghRepo: string; n: number; body: string }> = [];
   const prCloses: Array<{ ghRepo: string; n: number }> = [];
+  // Agents' pull requests other than the candidate's, by number.
+  const prs = new Map<
+    number,
+    { state: "OPEN" | "MERGED" | "CLOSED"; headSha: string; files: string[] }
+  >();
   const actions: Array<
     Parameters<CoordinatorDeps["runAction"]>[0] & { actionId: string }
   > = [];
@@ -353,6 +358,9 @@ async function world(
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
     },
+    async head(id) {
+      return works.get(id)?.checkpoint?.head;
+    },
     async stackable(id) {
       return !unstackable.has(id);
     },
@@ -374,8 +382,22 @@ async function world(
     },
   };
   const github = {
-    verdict: async () => prVerdict(pr, merged),
-    files: async () => ["src/search.ts", NOTE, "docs/incidents/runbook.md"],
+    verdict: async (t: { number: number }) => {
+      const other = prs.get(t.number);
+      if (!other) return prVerdict(pr, merged);
+      const v = verdict(other.headSha);
+      return {
+        ...v,
+        pr: {
+          ...v.pr,
+          number: t.number,
+          url: `https://github.com/acme/web/pull/${t.number}`,
+        },
+        state: other.state,
+      } as PrMergeVerdict;
+    },
+    files: async (_repo: string, n: number) =>
+      prs.get(n)?.files ?? ["src/search.ts", NOTE, "docs/incidents/runbook.md"],
     mergeCommit: async () => (merged ? "9f9f9f9" : undefined),
     mergeMethods: async () => ["squash"],
     merge: async (ghRepo: string, n: number, o: { sha: string }) => {
@@ -491,6 +513,7 @@ async function world(
     works,
     prComments,
     prCloses,
+    prs,
     unstackable,
     failRetire(times: number) {
       retireFailures = times;
@@ -3005,4 +3028,149 @@ test("a retry after the project's sandbox changed starts in the current one", as
     workspace: { kind: "sandbox", provider: "podman" },
   });
   expect(fresh.baseSessionId).toBeUndefined();
+});
+
+/** An investigator that opened `prNumber`, reported no fix, and whose last
+ *  pushed commit was `head`; the incident waits for the owner. */
+async function noFixWithPr(prNumber: number, head?: string) {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.works.set("child-1", {
+    branch: "session-branch-1",
+    ...(head
+      ? {
+          checkpoint: {
+            ref: "refs/opensession/checkpoints/child-1",
+            head,
+          },
+        }
+      : {}),
+  });
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+    { prUrl: `https://github.com/acme/web/pull/${prNumber}` },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  return w;
+}
+
+const HEAD_A = "a".repeat(40);
+
+test("closing an incident closes the pull requests its agents opened", async () => {
+  const w = await noFixWithPr(21, HEAD_A);
+  w.prs.set(21, {
+    state: "OPEN",
+    headSha: HEAD_A,
+    files: [NOTE, "docs/incidents/runbook.md"],
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(w.prComments).toEqual([
+    {
+      ghRepo: "acme/web",
+      n: 21,
+      body: expect.stringContaining("closed without action"),
+    },
+  ]);
+  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 21 }]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("closed-without-action");
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "Closed the investigator's pull request #21",
+  );
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.next).toEqual({
+    kind: "done",
+    detail: "Closed without action",
+    options: [],
+  });
+});
+
+test("a code fix stays open and the card asks about it", async () => {
+  const w = await noFixWithPr(22, HEAD_A);
+  w.prs.set(22, {
+    state: "OPEN",
+    headSha: HEAD_A,
+    files: ["src/search.ts", NOTE],
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(w.prCloses).toEqual([]);
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.openPrs).toEqual([
+    {
+      url: "https://github.com/acme/web/pull/22",
+      number: 22,
+      sessionId: "child-1",
+    },
+  ]);
+  expect(i?.response?.next).toEqual({
+    kind: "done",
+    detail: "Closed without action",
+    options: ["close-prs", "keep-prs"],
+  });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "close-prs",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "closed-without-action" });
+  await __waitForCoordinatorForTest();
+  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 22 }]);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.next).toMatchObject({ options: [] });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "keep-prs",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toEqual({ error: "No pull request is waiting for you", status: 409 });
+});
+
+test("keeping a code fix open clears the question", async () => {
+  const w = await noFixWithPr(22, HEAD_A);
+  w.prs.set(22, { state: "OPEN", headSha: HEAD_A, files: ["src/search.ts"] });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  await applyOwnerDecision(w.incident.id, "keep-prs", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  const i = await getIncident(w.incident.id);
+  expect(w.prCloses).toEqual([]);
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.ledger.at(-1)?.detail).toBe("Bo: keep-prs");
+});
+
+test("a merged pull request, or one a person pushed to, is never closed", async () => {
+  for (const [state, headSha, head] of [
+    ["MERGED", HEAD_A, HEAD_A],
+    ["OPEN", "b".repeat(40), HEAD_A],
+    ["OPEN", HEAD_A, undefined],
+  ] as const) {
+    const w = await noFixWithPr(23, head);
+    w.prs.set(23, { state, headSha, files: [NOTE] });
+    await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+    await __waitForCoordinatorForTest();
+    expect(w.prCloses).toEqual([]);
+    expect(w.prComments).toEqual([]);
+    const i = await getIncident(w.incident.id);
+    expect(i?.response?.openPrs).toBeUndefined();
+    if (state === "OPEN")
+      expect(i?.response?.ledger.at(-1)?.detail).toContain(
+        "Left pull request #23 open",
+      );
+    __resetCoordinatorForTest();
+  }
 });
