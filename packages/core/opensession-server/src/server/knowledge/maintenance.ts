@@ -9,7 +9,9 @@
  *     every page an item depends on and refreshes the web mirrors;
  *   - a push to a project's default branch nudges a repo-only re-validation,
  *     debounced to one run per project per minute (pr-webhook.ts);
- *   - a person asks for a run from the Knowledge page (requestRevalidation).
+ *   - a person asks for a run from the Knowledge page (requestRevalidation);
+ *   - at boot, imports the last process left running are marked failed
+ *     (ingest/jobs.ts failInterruptedJobs).
  *
  * Re-validations of one project run one at a time: a request while another
  * waits to start joins it (a full run covers a repo-only one). A step that
@@ -61,6 +63,8 @@ export interface KnowledgeMaintenanceDeps {
   };
   now(): number;
   steps: KnowledgeStep[];
+  /** At boot: imports the last process left running are marked failed. */
+  failInterruptedJobs(): Promise<void>;
 }
 
 /** Per project, in order; each step's mark is `<name>:<project>`. */
@@ -92,6 +96,8 @@ function defaultDeps(): KnowledgeMaintenanceDeps {
     marks: catalogMarks(),
     now: Date.now,
     steps: KNOWLEDGE_DAILY_STEPS,
+    failInterruptedJobs: async () =>
+      (await import("./ingest/jobs")).failInterruptedJobs(),
   };
 }
 
@@ -263,13 +269,16 @@ const g = globalThis as typeof globalThis & {
   __osKnowledgeTimers?: ReturnType<typeof setTimeout>[];
 };
 
-/** Arm the hourly tick (first one five minutes after boot). Idempotent; a
- *  no-op while email support is off. */
+/** Fail the imports a restart interrupted and arm the hourly tick (first
+ *  one five minutes after boot). Idempotent; a no-op while email support
+ *  is off. */
 export function startKnowledgeMaintenance(): void {
   for (const timer of g.__osKnowledgeTimers ?? []) clearTimeout(timer);
   const timers: ReturnType<typeof setTimeout>[] = [];
   g.__osKnowledgeTimers = timers;
-  if (!current().enabled()) return;
+  const d = current();
+  if (!d.enabled()) return;
+  void step("interrupted imports", () => d.failInterruptedJobs());
 
   let ticking = false;
   const tick = () => {

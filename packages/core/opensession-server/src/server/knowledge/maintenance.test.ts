@@ -8,6 +8,7 @@ import {
   nudgeKnowledge,
   requestRevalidation,
   runKnowledgeTick,
+  startKnowledgeMaintenance,
   type KnowledgeMaintenanceDeps,
 } from "./maintenance";
 
@@ -202,6 +203,33 @@ describe("requestRevalidation", () => {
     expect(runs.filter((r) => r.project === "acme")).toHaveLength(2);
   });
 
+  test("the tick's full run and a person's request never overlap for one project", async () => {
+    let active = 0;
+    let most = 0;
+    const gates: Array<() => void> = [];
+    revalidate = async (project, opts) => {
+      active++;
+      most = Math.max(most, active);
+      runs.push({ project, scope: opts?.scope ?? "all" });
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active--;
+      return result();
+    };
+    withRepo.delete("globex");
+    const tick = runKnowledgeTick(NOW);
+    await Bun.sleep(1);
+    const asked = requestRevalidation("acme");
+    await Bun.sleep(1);
+    expect(runs).toHaveLength(1);
+    for (const open of gates.splice(0)) open();
+    await tick;
+    await Bun.sleep(1);
+    expect(runs).toHaveLength(2);
+    for (const open of gates.splice(0)) open();
+    await asked;
+    expect(most).toBe(1);
+  });
+
   test("refuses while email support is off", async () => {
     enabled = false;
     await expect(requestRevalidation("acme")).rejects.toThrow();
@@ -260,5 +288,37 @@ describe("nudgeKnowledge", () => {
     await settle();
     expect(fetches).toEqual([]);
     expect(runs).toEqual([]);
+  });
+});
+
+describe("startKnowledgeMaintenance", () => {
+  const timers = () =>
+    (globalThis as { __osKnowledgeTimers?: unknown[] }).__osKnowledgeTimers ??
+    [];
+
+  test("marks imports interrupted by the restart as failed and arms the tick", async () => {
+    let failed = 0;
+    install({ failInterruptedJobs: async () => void failed++ });
+    startKnowledgeMaintenance();
+    await Bun.sleep(1);
+    expect(failed).toBe(1);
+    expect(timers()).toHaveLength(2);
+    // A restart replaces the timers instead of adding more.
+    startKnowledgeMaintenance();
+    await Bun.sleep(1);
+    expect(timers()).toHaveLength(2);
+    enabled = false;
+    startKnowledgeMaintenance();
+    expect(timers()).toHaveLength(0);
+  });
+
+  test("does nothing while email support is off", async () => {
+    let failed = 0;
+    enabled = false;
+    install({ failInterruptedJobs: async () => void failed++ });
+    startKnowledgeMaintenance();
+    await Bun.sleep(1);
+    expect(failed).toBe(0);
+    expect(timers()).toHaveLength(0);
   });
 });
