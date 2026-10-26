@@ -36,11 +36,11 @@
  * blob, never the index's copy of its text. A write that fails for any
  * reason but a conflict is retried once with only the flips.
  *
- * The daily run (scope "all") then runs the conflict check (conflicts.ts)
- * on the trusted items written since the last run's start, plus the ones
- * an earlier run couldn't finish, as its own commit. The mark (that start
- * and the unfinished paths) lives in the `knowledge-jobs` catalog namespace
- * under `conflicts:<project>`; it only moves when the check ran. Nothing
+ * The daily run (scope "all") then runs the conflict check
+ * (conflicts.ts runConflictCheck) on the trusted items whose body changed
+ * since the knowledge commit the last check listed, plus the ones an
+ * earlier run couldn't finish, as its own commit. Its mark lives in the
+ * `knowledge-jobs` catalog namespace under `conflicts:<project>`. Nothing
  * runs at import.
  */
 
@@ -54,7 +54,7 @@ import type { Author } from "../../memory-repo/git-store";
 import { findSecrets } from "../../memory-repo/secrets";
 import { knowledgeRepo } from "../client";
 import type { KnowledgeChange } from "../service";
-import type { ConflictVerdict } from "./conflicts";
+import type { ConflictMarks, ConflictVerdict } from "./conflicts";
 import { MAX_ARTICLE_BYTES } from "../validate";
 import { evaluateItem, type Signals } from "./evaluate";
 import {
@@ -114,11 +114,9 @@ export interface RevalidateDeps extends Signals {
   github: Partial<GithubSignalDeps>;
   /** The conflict check's model call (conflicts.ts default when unset). */
   classifyConflict?(a: string, b: string): Promise<ConflictVerdict | null>;
-  /** Where the last conflict check started and what it left unfinished. */
-  conflictMarks: {
-    load(): Promise<ConflictMark | null>;
-    save(mark: ConflictMark): Promise<void>;
-  };
+  /** The conflict check's mark (conflicts.ts conflictMarkStore when
+   *  unset). */
+  conflictMarks?: ConflictMarks;
   /** The run state kept between runs (RevalidateState). */
   state: {
     load(): Promise<RevalidateState | null>;
@@ -153,38 +151,7 @@ export interface RevalidateState {
   releaseClears: string[];
 }
 
-/** The last conflict check: its start (ISO time) and the paths it didn't
- *  finish. */
-export interface ConflictMark {
-  at: string;
-  pending: string[];
-}
-
-function conflictMarkStore(project: string): RevalidateDeps["conflictMarks"] {
-  const key = `conflicts:${project}`;
-  const docs = async () =>
-    (await import("../../catalog-documents")).catalogDocuments(
-      "knowledge-jobs",
-    );
-  return {
-    async load() {
-      const value = (await (await docs()).get(key)) as ConflictMark | null;
-      if (
-        !value ||
-        typeof value.at !== "string" ||
-        !Array.isArray(value.pending)
-      )
-        return null;
-      return {
-        at: value.at,
-        pending: value.pending.filter((p) => typeof p === "string"),
-      };
-    },
-    async save(mark) {
-      await (await docs()).set(key, mark);
-    },
-  };
-}
+export type { ConflictMark, ConflictMarks } from "./conflicts";
 
 function runStateStore(project: string): RevalidateDeps["state"] {
   const key = `revalidate:${project}`;
@@ -324,7 +291,7 @@ function bindDeps(
     showAt: over.showAt ?? ((sha, path) => showAt(project, sha, path, repo)),
     fetchPage,
     classifyConflict: over.classifyConflict,
-    conflictMarks: over.conflictMarks ?? conflictMarkStore(project),
+    conflictMarks: over.conflictMarks,
     state: over.state ?? runStateStore(project),
     write: over.write,
     now: over.now,
@@ -748,83 +715,24 @@ export async function revalidateProject(
 }
 
 /**
- * The conflict check of a daily run: trusted, not retired items written
- * since the last check started, plus what it left unfinished. Adds the
- * pairs to `result.conflicts` (and their flips to `result.flipped`); a
- * failure lands in `result.errors` and keeps every path for the next run.
+ * The conflict check of a daily run (conflicts.ts runConflictCheck): adds
+ * its pairs to `result.conflicts`, the items it wrote to `result.flipped`
+ * and its failures to `result.errors`.
  */
 async function runConflictCheck(
   project: string,
   d: RevalidateDeps,
   result: RevalidateResult,
 ): Promise<void> {
-  const start = new Date().toISOString();
-  let mark: ConflictMark | null;
-  try {
-    mark = await d.conflictMarks.load();
-  } catch (error) {
-    result.errors.push(`Conflict check: ${message(error)}`);
-    return;
-  }
-  const since = mark ? Date.parse(mark.at) : Number.NEGATIVE_INFINITY;
-  const pending = new Set(mark?.pending ?? []);
-  let paths: string[];
-  const titles = new Map<string, string>();
-  try {
-    const items = await listItems(project, d.today);
-    for (const item of items) titles.set(item.path, item.title);
-    paths = items
-      .filter(
-        (item) =>
-          item.trust === "trusted" &&
-          effectiveStatus(item, d.today) !== "retired" &&
-          (pending.has(item.path) || !(Date.parse(item.updatedAt) <= since)),
-      )
-      // Unfinished first, then the newest.
-      .sort(
-        (x, y) =>
-          Number(pending.has(y.path)) - Number(pending.has(x.path)) ||
-          (x.updatedAt < y.updatedAt ? 1 : x.updatedAt > y.updatedAt ? -1 : 0),
-      )
-      .map((item) => item.path);
-  } catch (error) {
-    result.errors.push(`Conflict check: ${message(error)}`);
-    return;
-  }
-  const unchecked: string[] = [];
-  if (paths.length) {
-    const { checkConflicts } = await import("./conflicts");
-    try {
-      const pairs = await checkConflicts(project, paths, {
-        classify: d.classifyConflict,
-        today: d.today,
-        onUnchecked: (path) => unchecked.push(path),
-      });
-      result.conflicts.push(...pairs);
-      const flipped = new Set(result.flipped.map((f) => f.path));
-      for (const { a, b } of pairs) {
-        for (const [path, other] of [
-          [a, b],
-          [b, a],
-        ] as const) {
-          if (flipped.has(path)) continue;
-          flipped.add(path);
-          result.flipped.push({
-            path,
-            reason: `Disagrees with ${titles.get(other) ?? other}`,
-          });
-        }
-      }
-    } catch (error) {
-      result.errors.push(`Conflict check: ${message(error)}`);
-      unchecked.splice(0, unchecked.length, ...paths);
-    }
-  }
-  try {
-    await d.conflictMarks.save({ at: start, pending: unchecked });
-  } catch (error) {
-    result.errors.push(`Conflict check: ${message(error)}`);
-  }
+  const { runConflictCheck: run } = await import("./conflicts");
+  const check = await run(project, {
+    classify: d.classifyConflict,
+    today: d.today,
+    marks: d.conflictMarks,
+  });
+  result.conflicts.push(...check.pairs);
+  result.flipped.push(...check.flipped);
+  result.errors.push(...check.errors);
 }
 
 /** Evaluate every item and write the flips and refreshes as one commit.

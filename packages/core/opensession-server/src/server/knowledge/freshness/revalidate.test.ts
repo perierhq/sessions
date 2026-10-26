@@ -68,10 +68,19 @@ function fm(over: Partial<KnowledgeFrontMatter>): KnowledgeFrontMatter {
 function memoryMarks(start: ConflictMark | null = null) {
   const marks = {
     mark: start,
+    saved: 0,
     conflictMarks: {
       load: async () => marks.mark,
       save: async (mark: ConflictMark) => {
+        marks.saved++;
         marks.mark = mark;
+      },
+      resolve: async (key: string) => {
+        marks.mark = {
+          commit: marks.mark?.commit ?? null,
+          pending: marks.mark?.pending ?? [],
+          resolved: [...(marks.mark?.resolved ?? []), key],
+        };
       },
     },
   };
@@ -470,15 +479,19 @@ describe("revalidateProject", () => {
 });
 
 describe("revalidateProject conflict check", () => {
-  const P = "acme-c";
   const A = "articles/plans.md";
   const B = "articles/plans-old.md";
+  let n = 0;
 
-  beforeAll(async () => {
-    await knowledgeRepo.call("ensureRepo", P);
+  /** A project of its own per test: two trusted answers that disagree. */
+  async function seed(
+    over: Partial<KnowledgeFrontMatter> = {},
+  ): Promise<string> {
+    const project = `acme-c${++n}`;
+    await knowledgeRepo.call("ensureRepo", project);
     await knowledgeRepo.call(
       "write",
-      P,
+      project,
       [
         {
           op: "put",
@@ -489,16 +502,26 @@ describe("revalidateProject conflict check", () => {
         {
           op: "put",
           path: B,
-          fm: fm({ title: "Which plans export CSV", topics: ["plans"] }),
+          fm: fm({
+            title: "Which plans export CSV",
+            topics: ["plans"],
+            ...over,
+          }),
           body: "Only the Pro plan can export CSV.\n",
         },
       ],
       { message: "Seed", author: ADA },
     );
-  });
+    return project;
+  }
 
   test("nothing written since the last run: no model call", async () => {
-    const marks = memoryMarks({ at: "2999-01-01T00:00:00Z", pending: [] });
+    const P = await seed();
+    const marks = memoryMarks({
+      commit: await knowledgeRepo.call("head", P),
+      pending: [],
+      resolved: [],
+    });
     let calls = 0;
     const result = await revalidateProject(P, {
       deps: deps({
@@ -514,7 +537,8 @@ describe("revalidateProject conflict check", () => {
   });
 
   test("a model that fails keeps the items for the next run", async () => {
-    const marks = memoryMarks({ at: "2000-01-01T00:00:00Z", pending: [] });
+    const P = await seed();
+    const marks = memoryMarks();
     const result = await revalidateProject(P, {
       deps: deps({
         conflictMarks: marks.conflictMarks,
@@ -523,13 +547,14 @@ describe("revalidateProject conflict check", () => {
     });
     expect(result.conflicts).toEqual([]);
     expect(marks.mark!.pending.sort()).toEqual([A, B].sort());
-    expect(marks.mark!.at > "2000-01-01T00:00:00Z").toBe(true);
+    expect(marks.mark!.commit).toBe(await knowledgeRepo.call("head", P));
     const a = await knowledgeRepo.call("read", P, A, TODAY);
     expect(a!.item.status).toBe("active");
   });
 
   test("scope repo leaves the conflict check to the daily run", async () => {
-    const marks = memoryMarks({ at: "2000-01-01T00:00:00Z", pending: [] });
+    const P = await seed();
+    const marks = memoryMarks();
     let calls = 0;
     await revalidateProject(P, {
       scope: "repo",
@@ -542,11 +567,12 @@ describe("revalidateProject conflict check", () => {
       }),
     });
     expect(calls).toBe(0);
-    expect(marks.mark!.at).toBe("2000-01-01T00:00:00Z");
+    expect(marks.saved).toBe(0);
   });
 
-  test("items written since the last run that disagree both need a check", async () => {
-    const marks = memoryMarks({ at: "2999-01-01T00:00:00Z", pending: [A] });
+  test("items that disagree both need a check", async () => {
+    const P = await seed();
+    const marks = memoryMarks();
     const result = await revalidateProject(P, {
       deps: deps({
         conflictMarks: marks.conflictMarks,
@@ -554,13 +580,33 @@ describe("revalidateProject conflict check", () => {
       }),
     });
     expect(result.errors).toEqual([]);
-    expect(result.conflicts).toEqual([{ a: A, b: B }]);
+    expect(result.conflicts).toEqual([{ a: B, b: A }]);
+    expect(result.flipped).toEqual([
+      { path: B, reason: "Disagrees with Plans with CSV export" },
+      { path: A, reason: "Disagrees with Which plans export CSV" },
+    ]);
     expect(marks.mark!.pending).toEqual([]);
     const a = await knowledgeRepo.call("read", P, A, TODAY);
     expect(a!.item.status).toBe("needs-check");
     expect(a!.item.check?.conflictWith).toBe(B);
     const b = await knowledgeRepo.call("read", P, B, TODAY);
     expect(b!.item.check?.conflictWith).toBe(A);
+  });
+
+  test("flipped lists only the items the conflict check wrote", async () => {
+    const note = { reason: "Checked by hand", since: "2026-10-01" };
+    const P = await seed({ status: "needs-check", check: note });
+    const result = await revalidateProject(P, {
+      deps: deps({
+        conflictMarks: memoryMarks().conflictMarks,
+        classifyConflict: async () => "disagree",
+      }),
+    });
+    expect(result.flipped).toEqual([
+      { path: A, reason: "Disagrees with Which plans export CSV" },
+    ]);
+    const b = await knowledgeRepo.call("read", P, B, TODAY);
+    expect(b!.item.check).toEqual(note);
   });
 });
 
