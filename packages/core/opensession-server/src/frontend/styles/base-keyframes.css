@@ -150,6 +150,20 @@
   }
 }
 
+/* An indeterminate progress track (ui/meter's MeterTrack): a third-wide
+   fill crosses the track and leaves it, over and over, on transform alone.
+   Referenced from `animate-[meter-indeterminate_…]`. Under reduced motion
+   the fill spans the track and breathes instead (Tailwind's pulse, handed
+   back on the element like PulseDot), so the work still reads as live. */
+@keyframes meter-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 /* A transcript block arriving at the live edge fades up into place instead of
    popping. Applied one-shot via VirtualTranscriptList's `enter` flag (see
    newTailBlockKeys): only blocks whose key was not mounted by the previous
