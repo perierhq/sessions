@@ -17,6 +17,8 @@ import type {
 } from "../../shared/knowledge";
 import { git } from "../memory-repo/git";
 import { __setKnowledgeServiceForTest } from "../knowledge/client";
+import { __waitForJobForTest } from "../knowledge/ingest/jobs";
+import { MemoryRepoError } from "../memory-repo/git-store";
 import { KnowledgeService } from "../knowledge/service";
 import { __setInboxProjectCheckForTest } from "../support/inboxes";
 import { __setEmailSupportEnabledForTest } from "../support/enabled";
@@ -499,7 +501,7 @@ describe("imports", () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test("the project's own inbox starts a job and sets up the repository", async () => {
+  test("the project's own inbox starts a job", async () => {
     const response = await call("POST", "/api/knowledge/acme/import/mailbox", {
       body: { inboxId: "inb_acme" },
     });
@@ -509,6 +511,43 @@ describe("imports", () => {
     expect(jobs[0]).toMatchObject({
       options: { inboxId: "inb_acme", months: 12 },
     });
+    // The starter sets the repository up when it has something to write.
+    expect(await service.hasRepo("acme")).toBe(false);
+  });
+
+  test("a refused import leaves no repository behind", async () => {
+    __setKnowledgeRouteDepsForTest({
+      startImport: async () => {
+        throw new MemoryRepoError("An import of this kind is running", 409);
+      },
+    });
+    const response = await call("POST", "/api/knowledge/acme/import/repo", {
+      body: {},
+    });
+    expect(response.status).toBe(409);
+    expect(await service.hasRepo("acme")).toBe(false);
+  });
+
+  test("a repository import runs through the default starter", async () => {
+    __setKnowledgeRouteDepsForTest({
+      today: () => TODAY,
+      repoChanges: {
+        repo: (project) =>
+          project === "acme" ? { dir: code, defaultBranch: "main" } : null,
+        serialize: (fn) => fn(),
+      },
+    });
+    const response = await call("POST", "/api/knowledge/acme/import/repo", {
+      body: {},
+    });
+    expect(response.status).toBe(200);
+    const { job } = (await response.json()) as { job: KnowledgeImportJob };
+    expect(job).toMatchObject({ kind: "repo", project: "acme" });
+    await __waitForJobForTest(job.id);
+    const listed = await call("GET", "/api/knowledge/acme/jobs");
+    const body = (await listed.json()) as { jobs: KnowledgeImportJob[] };
+    expect(body.jobs[0]).toMatchObject({ id: job.id, state: "done" });
+    expect(body.jobs[0]!.created.trusted).toBe(1);
     expect(await service.hasRepo("acme")).toBe(true);
   });
 });

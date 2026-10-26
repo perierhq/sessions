@@ -13,8 +13,9 @@
 // The knowledge repository is reached only through the worker client
 // (knowledge/client.ts); reads go through its fresh-first methods.
 //
-// Imports are started through `startImport` (C3–C7 wire their starters into
-// the defaults below); until then an import answers 501.
+// Imports are started through `startImport`: the default dispatches by kind
+// to the ingest starters (C3–C7 add theirs to startImportOf); a kind without
+// one answers 501.
 import {
   KNOWLEDGE_COPY,
   KNOWLEDGE_FILTERS,
@@ -129,11 +130,42 @@ const defaults: KnowledgeRouteDeps = {
   // One run at a time per project, shared with the daily tick and nudges.
   revalidate: async (project) =>
     (await import("../knowledge/maintenance")).requestRevalidation(project),
-  startImport: async () => {
-    throw new MemoryRepoError("This import isn't available yet.", 501);
-  },
-  listJobs: async () => [],
+  startImport: (request) => startImportOf(request),
+  listJobs: async (project) =>
+    (await import("../knowledge/ingest/jobs")).listJobs(project),
 };
+
+/** The default starter of each import kind. Each sets the knowledge
+ *  repository up itself, so a refused import leaves none behind. */
+async function startImportOf(
+  request: KnowledgeImportRequest,
+): Promise<KnowledgeImportJob> {
+  const { project, by } = request;
+  switch (request.kind) {
+    case "mailbox": {
+      const { startMailboxBackfill } =
+        await import("../knowledge/ingest/mailbox");
+      return startMailboxBackfill(
+        {
+          project,
+          inboxId: String(request.options.inboxId),
+          months: Number(request.options.months),
+          by,
+        },
+        { repoChanges: deps.repoChanges },
+      );
+    }
+    case "repo": {
+      const { startRepoImport } = await import("../knowledge/ingest/repo-docs");
+      return startRepoImport(
+        { project, by },
+        { repoChanges: deps.repoChanges, today: deps.today },
+      );
+    }
+    default:
+      throw new MemoryRepoError("This import isn't available yet.", 501);
+  }
+}
 
 let deps: KnowledgeRouteDeps = defaults;
 
@@ -832,7 +864,6 @@ async function startImport(
       options = { inboxId: body.inboxId, months };
     }
   }
-  await knowledgeRepo.call("ensureRepo", project);
   const job = await deps.startImport({
     project,
     kind,
