@@ -79,7 +79,7 @@ export function ProjectSettingsPage({
   section?: ProjectSectionId;
   onOpenSection: (id: ProjectSectionId) => void;
   /** Open another Settings page (a fix that lives elsewhere). */
-  onOpenSettings?: (section: "providers" | "sandboxes") => void;
+  onOpenSettings?: (section: "providers" | "sandboxes" | "connections") => void;
 }) {
   const settings = useProjectSettings(project);
   const defaults = useProjectDefaults();
@@ -196,7 +196,7 @@ export function ProjectSettingsPage({
         ),
     });
 
-  const openSettings = (target: "providers" | "sandboxes") => {
+  const openSettings = (target: "providers" | "sandboxes" | "connections") => {
     if (onOpenSettings) onOpenSettings(target);
     else
       window.location.assign(routePath({ view: "settings", section: target }));
@@ -224,6 +224,8 @@ export function ProjectSettingsPage({
         return setAddSignal(Date.now());
       case "allow-agents":
         return allowAgents(next.server);
+      case "reconnect":
+        return openSettings("connections");
       case "unpause":
         return saveNow({ incidents: { agentsPaused: false } }, (v) =>
           applyIncidentsPatch(v, { agentsPaused: false }),

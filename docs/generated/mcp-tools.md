@@ -1546,7 +1546,7 @@ Read-only host commands, egress requests and borrowed credentials for one incide
 
 `mcp__opensession-incident-access__describe_access` · input: none
 
-What this incident agent may reach right now: connections, mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. Every call is audited with your incident and role.
+What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. Every call is audited with your incident and role.
 
 ### `host_command`
 

@@ -14,8 +14,11 @@
  * identity table as commit attribution — the github-auth.ts pattern). At run
  * time withDynamicCredentials() injects `Authorization: Bearer <token>` into
  * the server's headers — the run user's own grant when they have one, else
- * the shared grant. Engines never see refresh tokens; rotation happens here
- * (lazy kick + 2-min ticker parked on globalThis, refresh-on-first-use).
+ * the shared grant. Engines never see refresh tokens; rotation happens here:
+ * a run awaits freshMcpAuthHeader before it connects (refreshing a grant
+ * that is expired or about to be, with or without a user behind the run),
+ * and a 2-minute ticker refreshes ahead of expiry. Refreshes are serialized
+ * per grant across processes, so a rotating refresh token is spent once.
  *
  * Discovery follows the MCP auth spec: RFC 9728 protected-resource metadata
  * for the server resource → authorization server → RFC 8414 AS metadata →
@@ -25,7 +28,6 @@
  * the document this instance serves on its public ingress (Oneleet, e.g.,
  * disables dynamic registration).
  */
-import { readFileSync, writeFileSync, existsSync } from "fs";
 import { randomBytes, createHash } from "crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { discoverMcpOauth, OauthDiscoveryError } from "./mcp-oauth-discovery";
@@ -34,6 +36,8 @@ import { statePath } from "./paths";
 import { pinnedFetch } from "./shared/pinned-fetch";
 import { resolveTeammate } from "./shared/user-mappings";
 import { readJsonFileCopy } from "./shared/json-file-cache";
+import { writeFileAtomic, writeFileAtomicAsync } from "./shared/atomic-write";
+import { withFileLock } from "./shared/file-lock";
 
 const STORE_PATH = statePath(".opensession-mcp-oauth.json");
 
@@ -53,6 +57,9 @@ interface Grant {
   updatedAt: string;
   /** Team member (or GitHub login fallback) who completed the flow. */
   connectedBy?: string;
+  /** The provider refused the refresh token: the grant stops working at
+   *  expiry, and only a new sign-in clears this. */
+  refreshError?: { at: string; message: string };
 }
 
 interface ServerAuth {
@@ -115,9 +122,7 @@ function readStore(): Store {
 }
 
 function writeStore(store: Store): void {
-  writeFileSync(STORE_PATH, JSON.stringify(store, null, 2) + "\n", {
-    mode: 0o600,
-  });
+  writeFileAtomic(STORE_PATH, JSON.stringify(store, null, 2) + "\n", 0o600);
 }
 
 /**
@@ -543,58 +548,154 @@ export async function completeMcpOauthFlow(
 
 const REFRESH_AHEAD_MS = 5 * 60_000;
 
-async function refreshGrant(
-  name: string,
-  auth: ServerAuth,
-  ref: GrantRef,
-): Promise<void> {
-  const { grant } = ref;
-  if (!grant.tokens.refreshToken) return;
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: grant.tokens.refreshToken,
-    client_id: auth.clientInfo.clientId,
-  });
-  if (auth.resource) body.set("resource", auth.resource);
+/** What an agent, the access check and Settings say about a server whose
+ *  sign-in can no longer be used. */
+export const SIGN_IN_EXPIRED_REASON =
+  "sign-in expired. A person needs to reconnect it in Settings → Connections.";
+
+/** Whether a grant's access token is past its expiry. */
+function grantExpired(grant: Grant, now = Date.now()): boolean {
+  const exp = grant.tokens.expiresAt;
+  return !!exp && exp <= now;
+}
+
+/** How long before expiry a grant is refreshed: five minutes, or half the
+ *  token's lifetime when that is shorter (some providers issue 5-minute
+ *  tokens, which would otherwise be due the moment they are issued). */
+function refreshAheadMs(grant: Grant): number {
+  const exp = grant.tokens.expiresAt;
+  const issued = Date.parse(grant.updatedAt);
+  const lifetime = exp && Number.isFinite(issued) ? exp - issued : Infinity;
+  return Math.min(REFRESH_AHEAD_MS, Math.max(lifetime / 2, 0));
+}
+
+/** A grant this close to expiry is refreshed before use, not behind it. */
+const REFRESH_BEFORE_USE_MS = 30_000;
+
+/** Whether a grant should be refreshed now: close to or past expiry, with a
+ *  refresh token that the provider has not already refused. */
+function refreshDue(grant: Grant, now = Date.now()): boolean {
+  const exp = grant.tokens.expiresAt;
+  return (
+    !!grant.tokens.refreshToken &&
+    !grant.refreshError &&
+    !!exp &&
+    exp - now < refreshAheadMs(grant)
+  );
+}
+
+async function readStoreAsync(): Promise<Store> {
   try {
-    const res = (await (
-      await oauthPost(auth.endpoints.token, auth.serverUrl, {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-        signal: AbortSignal.timeout(15_000),
-      })
-    ).json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    };
-    if (!res.access_token) return;
-    const next: Grant = {
-      ...grant,
-      tokens: {
-        accessToken: res.access_token,
-        refreshToken: res.refresh_token || grant.tokens.refreshToken,
-        ...(res.expires_in
-          ? { expiresAt: Date.now() + res.expires_in * 1000 }
-          : {}),
-      },
-      updatedAt: new Date().toISOString(),
-    };
-    const store = readStore();
-    const entry = store[name];
-    if (!entry) return;
-    writeGrant(entry, ref, next);
-    writeStore(store);
-  } catch (e) {
-    console.error(
-      `[mcp-oauth] refresh failed for ${name}/${slotLabel(ref)}:`,
-      e,
-    );
+    return JSON.parse(await readFile(STORE_PATH, "utf8")) as Store;
+  } catch {
+    return {};
   }
 }
 
+/** One refresh per grant slot at a time in this process; the file lock below
+ *  holds other processes off. */
+const refreshing: Map<string, Promise<GrantRef | undefined>> = ((
+  globalThis as any
+).__osMcpOauthRefreshing ??= new Map());
+
+/**
+ * Refresh one grant when it is due, serialized across callers and processes.
+ * Under the store's lock the grant is read again first: when another caller
+ * already rotated it, that result is used, so a rotating refresh token is
+ * never sent twice. A refused refresh is kept on the grant (refreshError) so
+ * the reason can be shown and the provider is not asked again until a person
+ * reconnects. Network and server errors are logged and retried later.
+ */
+function refreshSlot(
+  name: string,
+  slot: GrantSlot,
+): Promise<GrantRef | undefined> {
+  const key = `${name}\0${slotLabel(slot)}`;
+  const running = refreshing.get(key);
+  if (running) return running;
+  const work = withFileLock(
+    STORE_PATH,
+    async () => {
+      const store = await readStoreAsync();
+      const auth = store[name];
+      const ref = grantRef(auth, slot);
+      if (!auth || !ref || !refreshDue(ref.grant)) return ref;
+      const refreshToken = ref.grant.tokens.refreshToken!;
+      const body = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: auth.clientInfo.clientId,
+      });
+      if (auth.resource) body.set("resource", auth.resource);
+      let next: Grant;
+      try {
+        const response = await oauthPost(auth.endpoints.token, auth.serverUrl, {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          signal: AbortSignal.timeout(15_000),
+        });
+        const res = (await response.json().catch(() => ({}))) as {
+          access_token?: string;
+          refresh_token?: string;
+          expires_in?: number;
+          error?: string;
+          error_description?: string;
+        };
+        if (!response.ok || !res.access_token) {
+          const message = `${res.error || `HTTP ${response.status}`}${res.error_description ? `: ${res.error_description}` : ""}`;
+          console.warn(
+            `[mcp-oauth] refresh refused for ${name}/${slotLabel(ref)}: ${message}`,
+          );
+          // A 4xx answer is the provider's decision; a 5xx may pass.
+          if (response.status < 400 || response.status >= 500) return ref;
+          next = {
+            ...ref.grant,
+            refreshError: { at: new Date().toISOString(), message },
+          };
+        } else {
+          next = {
+            ...ref.grant,
+            tokens: {
+              accessToken: res.access_token,
+              refreshToken: res.refresh_token || refreshToken,
+              ...(res.expires_in
+                ? { expiresAt: Date.now() + res.expires_in * 1000 }
+                : {}),
+            },
+            updatedAt: new Date().toISOString(),
+          };
+          delete next.refreshError;
+        }
+      } catch (e) {
+        console.error(
+          `[mcp-oauth] refresh failed for ${name}/${slotLabel(ref)}:`,
+          e,
+        );
+        return ref;
+      }
+      // Write over what is on disk now, so nothing written meanwhile by a
+      // sign-in or a disconnect is lost. A grant replaced meanwhile wins.
+      const fresh = await readStoreAsync();
+      const entry = fresh[name];
+      const current = grantRef(entry, slot);
+      if (!entry || current?.grant.tokens.refreshToken !== refreshToken)
+        return current;
+      writeGrant(entry, slot, next);
+      await writeFileAtomicAsync(
+        STORE_PATH,
+        JSON.stringify(fresh, null, 2) + "\n",
+        0o600,
+      );
+      return { ...slot, grant: next };
+    },
+    "MCP sign-in store",
+  ).finally(() => refreshing.delete(key));
+  refreshing.set(key, work);
+  return work;
+}
+
 async function refreshExpiring(): Promise<void> {
-  const store = readStore();
+  const store = await readStoreAsync();
   for (const [name, auth] of Object.entries(store)) {
     const slots: GrantSlot[] = [
       ...(auth.shared ? [{ kind: "shared" } as const] : []),
@@ -604,34 +705,35 @@ async function refreshExpiring(): Promise<void> {
     ];
     for (const slot of slots) {
       const ref = grantRef(auth, slot);
-      const exp = ref?.grant.tokens.expiresAt;
-      if (
-        ref?.grant.tokens.refreshToken &&
-        exp &&
-        exp - Date.now() < REFRESH_AHEAD_MS
-      )
-        await refreshGrant(name, auth, ref);
+      if (ref && refreshDue(ref.grant))
+        await refreshSlot(name, slot).catch((e) =>
+          console.error(`[mcp-oauth] refresh check failed for ${name}:`, e),
+        );
     }
   }
 }
 
-// Lazy 2-minute refresh ticker (parked on globalThis; started on first store
-// use, so no entry-file side-effect import is needed).
-function ensureTicker(): void {
+/**
+ * Refresh grants ahead of expiry every two minutes, so a run that starts
+ * later (an incident agent at night) finds a current sign-in. Idempotent;
+ * called from gateway boot.
+ */
+export function startMcpOauthRefresher(): void {
   const g = globalThis as any;
   if (g.__osMcpOauthTicker) return;
   g.__osMcpOauthTicker = setInterval(() => {
     refreshExpiring().catch(() => {});
   }, 2 * 60_000);
+  g.__osMcpOauthTicker.unref?.();
   refreshExpiring().catch(() => {});
 }
 
 /**
  * The Authorization header value for a server, for a run by `user` — the
  * user's own grant first (per-user MCP identity), else the shared grant.
- * Sync (called from filterMcpServers); a stale token still gets returned
- * while the ticker refreshes in the background — the server 401s at worst,
- * which reads as "tools unavailable this turn", never a crashed run.
+ * Sync (called from filterMcpServers): an expired grant gives no header and
+ * starts a refresh. Callers about to use a server await
+ * freshMcpAuthHeader instead.
  */
 export function mcpAuthHeader(name: string, user?: string): string | undefined {
   return mcpUserGrantHeader(name, user) ?? mcpSharedGrantHeader(name);
@@ -654,30 +756,127 @@ export function mcpSharedGrantHeader(name: string): string | undefined {
   return grantHeader(name, { kind: "shared" });
 }
 
+function headerOf(ref: GrantRef | undefined): string | undefined {
+  if (!ref || grantExpired(ref.grant)) return undefined;
+  return `Bearer ${ref.grant.tokens.accessToken}`;
+}
+
 function grantHeader(name: string, slot: GrantSlot): string | undefined {
-  ensureTicker();
   const auth = readStore()[name];
   const ref = grantRef(auth, slot);
   if (!auth || !ref) return undefined;
-  const { accessToken, expiresAt, refreshToken } = ref.grant.tokens;
-  if (expiresAt && expiresAt - Date.now() < REFRESH_AHEAD_MS && refreshToken)
-    refreshGrant(name, auth, ref).catch(() => {});
-  if (expiresAt && expiresAt < Date.now()) return undefined;
-  return `Bearer ${accessToken}`;
+  if (refreshDue(ref.grant)) refreshSlot(name, slot).catch(() => {});
+  return headerOf(ref);
 }
 
-/** Connection status for the UI: who's connected on each grant. */
+/** The grant slots a run by these identities may use, in priority order:
+ *  each user's own grant, then the shared one. */
+function slotsFor(users: readonly string[]): GrantSlot[] {
+  const slots: GrantSlot[] = [];
+  for (const user of users) {
+    const teamName = resolveTeammate(user)?.name;
+    if (
+      teamName &&
+      !slots.some((s) => s.kind === "user" && s.teamName === teamName)
+    )
+      slots.push({ kind: "user", teamName });
+  }
+  slots.push({ kind: "shared" });
+  return slots;
+}
+
+/**
+ * The Authorization header for a run by `users` (priority order; empty for a
+ * run with nobody behind it). A grant that is expired or within 30 seconds of
+ * it is refreshed first; one merely close to expiry is refreshed behind the
+ * call. Use before connecting to a server.
+ */
+export async function freshMcpAuthHeader(
+  name: string,
+  users: readonly string[] = [],
+): Promise<string | undefined> {
+  const store = await readStoreAsync();
+  const auth = store[name];
+  if (!auth) return undefined;
+  for (const slot of slotsFor(users)) {
+    let ref = grantRef(auth, slot);
+    if (!ref) continue;
+    if (refreshDue(ref.grant)) {
+      const exp = ref.grant.tokens.expiresAt!;
+      // Expired or about to be: wait for the new token. Otherwise refresh
+      // behind this request and use the current one.
+      if (exp - Date.now() < REFRESH_BEFORE_USE_MS)
+        ref = await refreshSlot(name, slot).catch(() => ref);
+      else refreshSlot(name, slot).catch(() => {});
+    }
+    const header = headerOf(ref);
+    if (header) return header;
+  }
+  return undefined;
+}
+
+/**
+ * Why a run by `users` can't use this server's sign-in, or undefined when it
+ * can or has none: every grant it could use has expired and cannot be
+ * refreshed (no refresh token, or the provider refused it).
+ */
+export function mcpSignInProblem(
+  name: string,
+  users: readonly string[] = [],
+): string | undefined {
+  return signInProblemIn(readStore(), name, users);
+}
+
+/** mcpSignInProblem for each name, reading the store without blocking. */
+export async function mcpSignInProblems(
+  names: readonly string[],
+  users: readonly string[] = [],
+): Promise<Record<string, string>> {
+  const store = await readStoreAsync();
+  const out: Record<string, string> = {};
+  for (const name of names) {
+    const problem = signInProblemIn(store, name, users);
+    if (problem) out[name] = problem;
+  }
+  return out;
+}
+
+function signInProblemIn(
+  store: Store,
+  name: string,
+  users: readonly string[],
+): string | undefined {
+  const auth = store[name];
+  if (!auth) return undefined;
+  const refs = slotsFor(users)
+    .map((slot) => grantRef(auth, slot))
+    .filter((ref): ref is GrantRef => !!ref);
+  if (!refs.length) return undefined;
+  const now = Date.now();
+  const usable = refs.some(
+    (ref) => !grantExpired(ref.grant, now) || refreshDue(ref.grant, now),
+  );
+  return usable ? undefined : SIGN_IN_EXPIRED_REASON;
+}
+
+/** Connection status for the UI: who's connected on each grant, and
+ *  whether the workspace grant's sign-in expired for good (a person has to
+ *  reconnect it). */
 export function mcpOauthStatus(name: string): {
-  shared?: { connectedBy?: string; updatedAt: string };
+  shared?: { connectedBy?: string; updatedAt: string; expired?: true };
   users: string[];
 } {
-  const auth = readStore()[name];
+  const store = readStore();
+  const auth = store[name];
+  // No users: only the workspace grant counts.
+  const expired = !!auth?.shared && !!signInProblemIn(store, name, []);
   return {
     ...(auth?.shared
       ? {
           shared: {
             connectedBy: auth.shared.connectedBy,
             updatedAt: auth.shared.updatedAt,
+            ...(expired ? { expired: true as const } : {}),
           },
         }
       : {}),

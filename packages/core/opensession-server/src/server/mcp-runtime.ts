@@ -20,7 +20,12 @@ import {
   toolsCacheKey,
   writeCachedTools,
 } from "./mcp-tools-cache";
-import { mcpSharedGrantHeader, mcpUserGrantHeader } from "./mcp-oauth";
+import {
+  freshMcpAuthHeader,
+  hasMcpOauthGrant,
+  mcpSignInProblem,
+  SIGN_IN_EXPIRED_REASON,
+} from "./mcp-oauth";
 import { mcpRelayUrl, mintMcpRelayToken } from "./mcp-relay";
 import type { InProcessMcpServer } from "./inprocess-mcp";
 import { RPC_TOOL_CALL_TIMEOUT_MS } from "./run-rpc-protocol";
@@ -66,6 +71,9 @@ export interface McpRuntime {
   ): Promise<McpRuntimeCallResult>;
   /** True when a catalog may exist, including not-yet-hydrated servers. */
   readonly hasCatalog: boolean;
+  /** Bound servers that could not be listed, with the reason, as of the
+   *  last catalog() call. */
+  unavailable(): ReadonlyMap<string, string>;
   close(): Promise<void>;
 }
 
@@ -111,6 +119,16 @@ interface Entry {
 }
 interface RegisteredTool extends McpRuntimeTool {
   entry: Entry;
+}
+
+/** A bound server whose sign-in can't be used; the message is the reason. */
+class SignInExpiredError extends Error {}
+
+/** A listing refused for want of a valid sign-in (HTTP 401 and friends). */
+function looksUnauthorized(message: string): boolean {
+  return /\b401\b|invalid_token|unauthori[sz]ed|missing authorization/i.test(
+    message,
+  );
 }
 
 function isDeniedTool(
@@ -362,11 +380,15 @@ export async function createMcpRuntime(opts: {
     let transport: Transport;
     if (cfg.type === "http" || cfg.type === "sse" || cfg.url) {
       const candidates = grantUsers.filter((user): user is string => !!user);
-      const hasGrant =
-        candidates.some((user) => mcpUserGrantHeader(name, user)) ||
-        !!mcpSharedGrantHeader(name);
+      // Refresh an expired or expiring grant before connecting: a run with
+      // nobody behind it has no later chance to.
+      const hasGrant = !!(await freshMcpAuthHeader(name, candidates));
       let url = String(cfg.url);
       let headers = { ...((cfg.headers as Record<string, string>) || {}) };
+      if (!hasGrant && !headers.Authorization) {
+        const problem = mcpSignInProblem(name, candidates);
+        if (problem) throw new SignInExpiredError(problem);
+      }
       if (hasGrant) {
         url = mcpRelayUrl(name, mintMcpRelayToken(name, candidates));
         const { Authorization: _drop, ...rest } = headers;
@@ -536,10 +558,16 @@ export async function createMcpRuntime(opts: {
     return listed;
   };
   const unavailable = (entry: Entry, started: number, error: unknown) => {
-    failures.set(
-      entry.name,
-      error instanceof Error ? error.message : String(error),
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    // A server signed in through Sessions that refuses the sign-in reads the
+    // same as an expired one: a person has to reconnect it.
+    const reason =
+      error instanceof SignInExpiredError
+        ? message
+        : looksUnauthorized(message) && hasMcpOauthGrant(entry.name)
+          ? SIGN_IN_EXPIRED_REASON
+          : message;
+    failures.set(entry.name, reason);
     console.warn(
       `[mcp-runtime] server "${entry.name}" unavailable, skipping:`,
       error,
@@ -593,7 +621,10 @@ export async function createMcpRuntime(opts: {
 
   return {
     get hasCatalog() {
-      return tools.length > 0 || pending.size > 0;
+      return tools.length > 0 || pending.size > 0 || failures.size > 0;
+    },
+    unavailable() {
+      return failures;
     },
     async catalog(options) {
       if (closed) throw new Error("MCP runtime is closed");

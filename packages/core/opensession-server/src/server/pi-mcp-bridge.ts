@@ -58,6 +58,18 @@ function definitionOf(tool: BoundTool): ToolDefinition<any, any, any> {
   };
 }
 
+/** Bound servers this run could not list, and why, so a search that finds
+ *  nothing from them says so instead of reading as "no such tools". */
+function unavailableNote(runtime: McpRuntime): string {
+  const failures = [...runtime.unavailable()];
+  if (!failures.length) return "";
+  const brief = (text: string) =>
+    text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  return `\n\nBound to this run but unavailable:\n${failures
+    .map(([server, reason]) => `- ${server}: ${brief(reason)}`)
+    .join("\n")}`;
+}
+
 export async function createPiMcpBridge(
   runtime: McpRuntime,
 ): Promise<PiMcpBridge> {
@@ -154,7 +166,10 @@ export async function createPiMcpBridge(
             )
             .join("\n\n")
         : `No permitted MCP tools matched "${query}". Try broader capability words.`;
-      return { content: [{ type: "text", text }], details: undefined };
+      return {
+        content: [{ type: "text", text: text + unavailableNote(runtime) }],
+        details: undefined,
+      };
     },
   };
 

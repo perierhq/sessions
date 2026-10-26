@@ -319,6 +319,7 @@ export type ReadinessFix =
   | { kind: "add-signal" }
   | { kind: "add-action"; action: "deploy" | "rollback" }
   | { kind: "allow-agents"; server: string }
+  | { kind: "reconnect"; server: string }
   | { kind: "unpause" };
 
 export interface ReadinessStep {

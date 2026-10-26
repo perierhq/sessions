@@ -21,6 +21,7 @@ import {
   tool,
 } from "../../inprocess-mcp";
 import { BROKER_METHODS } from "../../keychain-broker";
+import { freshMcpAuthHeader, mcpSignInProblems } from "../../mcp-oauth";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentCredentialCall } from "./credentials";
 import { egressFetch } from "./egress";
@@ -96,11 +97,31 @@ export function allowedLaterNote(names: string[]): string | undefined {
   return `${listed(names)} ${names.length > 1 ? "were" : "was"} allowed after this agent started. ${names.length > 1 ? "They apply" : "It applies"} from the next round.`;
 }
 
-function describe(access: AgentAccess, allowedLater: string[] = []) {
+/** Connections the agent may use but can't open, each as
+ *  "<name>: <reason>". Incident agents run with nobody behind them, so only
+ *  workspace sign-ins count; one due for a refresh is refreshed first. */
+export async function unavailableConnections(
+  connections: readonly string[],
+): Promise<string[]> {
+  await Promise.all(
+    connections.map((name) => freshMcpAuthHeader(name).catch(() => undefined)),
+  );
+  const problems = await mcpSignInProblems(connections);
+  return connections.flatMap((name) =>
+    problems[name] ? [`${name}: ${problems[name]}`] : [],
+  );
+}
+
+function describe(
+  access: AgentAccess,
+  allowedLater: string[] = [],
+  unavailable: string[] = [],
+) {
   const note = allowedLaterNote(allowedLater);
   return {
     summary: access.summary,
     connections: access.connections,
+    ...(unavailable.length ? { unavailable } : {}),
     mode: access.mode,
     repos: access.repos,
     hosts: access.hosts.map((h) => ({
@@ -142,9 +163,15 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
   const tools: AnyTool[] = [
     tool(
       "describe_access",
-      `What this incident agent may reach right now: connections, mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. ${AUDITED}`,
+      `What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. ${AUDITED}`,
       {},
-      guarded(async (fresh, _args, later) => describe(fresh.access, later)),
+      guarded(async (fresh, _args, later) =>
+        describe(
+          fresh.access,
+          later,
+          await unavailableConnections(fresh.access.connections),
+        ),
+      ),
     ),
   ];
   if (ctx.access.hosts.length)

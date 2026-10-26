@@ -135,7 +135,8 @@ function ConnectionsSkeleton() {
 }
 
 interface McpOauthStatus {
-  shared?: { connectedBy?: string };
+  /** `expired`: the workspace sign-in can't be refreshed any more. */
+  shared?: { connectedBy?: string; expired?: true };
   users: string[];
   capable?: boolean;
   manualToken?: boolean;
@@ -408,7 +409,19 @@ export function Connections() {
                       </div>
                     )}
                   </div>
-                  <StatusChip label={meta.label} dot={meta.dot} />
+                  {oauthByName[s.name]?.shared?.expired ? (
+                    <>
+                      <StatusChip label="Sign-in expired" dot="var(--yellow)" />
+                      <Button
+                        size="sm"
+                        onClick={() => handleOauthConnect(s, "shared")}
+                      >
+                        Reconnect
+                      </Button>
+                    </>
+                  ) : (
+                    <StatusChip label={meta.label} dot={meta.dot} />
+                  )}
                   <Menu.Root>
                     <Menu.Trigger
                       className={cn(
