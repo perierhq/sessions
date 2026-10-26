@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -207,7 +208,11 @@ test("a person's reply becomes one trusted mail item without the customer", asyn
     status: "active",
     kind: "answer",
     answeredAt: message.at,
-    sources: [`mail:${message.keys.messageId}`, `conversation:${c.id}`],
+    sources: [
+      `mail:${message.keys.messageId}`,
+      `thread:${createHash("sha256").update(c.messages[0]!.keys.messageId!).digest("hex")}`,
+      `conversation:${c.id}`,
+    ],
   });
   expect(read!.item.validAsOfCommit).toMatch(/^[0-9a-f]{40}$/);
   expect(read!.body).toContain("press Export and pick CSV");

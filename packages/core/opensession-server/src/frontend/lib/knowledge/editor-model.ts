@@ -84,6 +84,7 @@ export const PERSON_CHECK_REASON = "Marked by a person";
 const SOURCE_PREFIXES = [
   "mail:",
   "conversation:",
+  "thread:",
   "repo:",
   "url:",
   "issue:",

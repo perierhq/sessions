@@ -13,6 +13,7 @@
  * the References past it.
  * Automated mail is left out before this (mailbox.ts). Pure.
  */
+import { createHash } from "node:crypto";
 import { normalizeMessageId } from "../../../shared/support";
 import type { Party } from "./strip";
 
@@ -55,6 +56,20 @@ export function threadRoot(
     normalizeMessageId(r.inReplyTo) ??
     normalizeMessageId(r.messageId)
   );
+}
+
+/** A mail item's `thread:` source: the SHA-256 of its thread's root
+ *  Message-ID (a customer's Message-ID names their domain, so it is never
+ *  written as it is); null without one. */
+export function threadSource(
+  ...records: Array<Pick<MailRecord, "messageId" | "inReplyTo" | "references">>
+): string | null {
+  for (const r of records) {
+    const root = threadRoot(r);
+    if (root)
+      return `thread:${createHash("sha256").update(root).digest("hex")}`;
+  }
+  return null;
 }
 
 export function pairThreads(records: MailRecord[]): QaPair[] {

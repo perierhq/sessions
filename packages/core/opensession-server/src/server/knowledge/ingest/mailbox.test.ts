@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +109,8 @@ afterAll(async () => {
 
 // ── Mail ───────────────────────────────────────────────────────────────
 
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+
 function rawMail(m: {
   id: string;
   from: string;
@@ -115,6 +118,7 @@ function rawMail(m: {
   subject: string;
   date: string;
   inReplyTo?: string;
+  references?: string[];
   text: string;
   headers?: string[];
 }): string {
@@ -125,7 +129,10 @@ function rawMail(m: {
     `Subject: ${m.subject}`,
     `Date: ${new Date(m.date).toUTCString()}`,
     ...(m.inReplyTo
-      ? [`In-Reply-To: <${m.inReplyTo}>`, `References: <${m.inReplyTo}>`]
+      ? [
+          `In-Reply-To: <${m.inReplyTo}>`,
+          `References: ${(m.references ?? [m.inReplyTo]).map((r) => `<${r}>`).join(" ")}`,
+        ]
       : []),
     ...(m.headers ?? []),
     "MIME-Version: 1.0",
@@ -297,6 +304,83 @@ async function item(path: string) {
 }
 
 describe("mailbox backfill", () => {
+  test("two answers in one customer's thread are no repeated question; every sender is stripped", async () => {
+    // Drop the other threads: only thread 1, answered twice.
+    await fixture.close();
+    fixture = await startMailFixture();
+    const created = await createInbox(
+      {
+        label: "Acme help 2",
+        address: INBOX_ADDRESS,
+        project: "acme",
+        allowInternalHost: true,
+        autonomy: "draft",
+        imap: { ...fixture.imapServer, password: MAIL_PASSWORD },
+        smtp: { ...fixture.smtpServer, password: MAIL_PASSWORD },
+      },
+      OWNER,
+    );
+    if (!created.ok) throw new Error(created.error);
+    inbox = created.inbox;
+    seed(fixture, "1", "2026-10-20");
+    const q = "q1@customer.example.test";
+    const a = "a1@acme.example.test";
+    const q2 = "q1b@partner.example.test";
+    fixture.imap.appendMessage(
+      "INBOX",
+      [],
+      new Date("2026-10-21T08:00:00Z"),
+      rawMail({
+        id: q2,
+        from: "Dave Okafor <dave@partner.example.test>",
+        to: INBOX_ADDRESS,
+        subject: "Re: Export",
+        date: "2026-10-21T08:00:00Z",
+        inReplyTo: a,
+        references: [q, a],
+        text: "Dave Okafor here. How do I export a project as CSV again?",
+      }),
+    );
+    fixture.imap.appendMessage(
+      "Sent",
+      ["\\Seen"],
+      new Date("2026-10-21T10:00:00Z"),
+      rawMail({
+        id: "a1b@acme.example.test",
+        from: `Acme help <${INBOX_ADDRESS}>`,
+        to: "Dave Okafor <dave@partner.example.test>",
+        subject: "Re: Export",
+        date: "2026-10-21T10:00:00Z",
+        inReplyTo: q2,
+        references: [q, a, q2],
+        text: "Hi Dave,\n\nOpen the project, press Export and pick CSV. Carol knows it too.\n\nBest,\nAda",
+      }),
+    );
+    const extract = model.classify;
+    const labels: string[] = [];
+    const classify = (async (input) => {
+      labels.push(input.label);
+      return input.label === "knowledge-repeat"
+        ? { route: "same", reason: "", raw: { route: "same" } }
+        : input.label === "knowledge-extract"
+          ? extract(input)
+          : null;
+    }) as MailboxDeps["classify"];
+    const job = await backfill(12, { classify });
+    expect(job.state).toBe("done");
+    const { items } = await knowledgeRepo.call("index.list", "acme", "all", {
+      today: TODAY,
+    });
+    const mail = items.filter((i) => i.origin === "mail");
+    expect(mail).toHaveLength(2);
+    for (const i of mail) expect(i.sources).toContain(`thread:${sha256(q)}`);
+    expect(items.filter((i) => i.origin === "suggestion")).toEqual([]);
+    expect(labels).not.toContain("knowledge-repeat");
+    const sent = model.calls.join("\n");
+    for (const word of ["Carol", "Dave", "Okafor", "carol@", "dave@"])
+      expect(sent).not.toContain(word);
+  });
+
   test("a question answered in two threads becomes a suggestion", async () => {
     const extract = model.classify;
     const classify = (async (input) =>
@@ -348,7 +432,10 @@ describe("mailbox backfill", () => {
       kind: "answer",
       trust: "reference",
       status: "active",
-      sources: ["mail:a1@acme.example.test"],
+      sources: [
+        "mail:a1@acme.example.test",
+        `thread:${sha256("q1@customer.example.test")}`,
+      ],
       answeredAt: "2026-09-10T10:00:00.000Z",
       validAsOf: "2026-09-10",
       dependsOn: ["repo:docs/", "repo:README.md"],

@@ -278,11 +278,31 @@ interface Budget {
   calls: number;
 }
 
-/** Which conversation an item came from; a backfilled item (no
- *  `conversation:` source) is its own thread. */
-function conversationOf(item: KnowledgeItem): string {
-  const source = item.sources.find((s) => s.startsWith("conversation:"));
-  return source ?? `path:${item.path}`;
+/** What ties an item to its thread: its `thread:` (the mail thread's
+ *  root) and `conversation:` sources; an item with neither stands alone. */
+function threadKeys(item: KnowledgeItem): string[] {
+  const keys = item.sources.filter(
+    (s) => s.startsWith("thread:") || s.startsWith("conversation:"),
+  );
+  return keys.length ? keys : [`path:${item.path}`];
+}
+
+/** Two items of one thread share a thread or a conversation. */
+function sameThread(a: KnowledgeItem, b: KnowledgeItem): boolean {
+  const keys = new Set(threadKeys(a));
+  return threadKeys(b).some((k) => keys.has(k));
+}
+
+/** How many threads `items` come from (items linked by a shared key, also
+ *  through others, count once). */
+function threadCount(items: KnowledgeItem[]): number {
+  const parent = items.map((_, i) => i);
+  const root = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = root(parent[i]!));
+  for (let i = 0; i < items.length; i++)
+    for (let j = i + 1; j < items.length; j++)
+      if (sameThread(items[i]!, items[j]!)) parent[root(j)] = root(i);
+  return new Set(items.map((_, i) => root(i))).size;
 }
 
 function sectionAfter(body: string, heading: string): string | null {
@@ -363,7 +383,6 @@ async function repeatsOf(
   const today = utcDay(deps.now());
   const own = await read(project, path, today);
   if (!own || own.item.origin !== "mail") return [];
-  const conversation = conversationOf(own.item);
   const hits = await knowledgeRepo.call(
     "index.search",
     project,
@@ -376,7 +395,7 @@ async function repeatsOf(
       (i) =>
         i.origin === "mail" &&
         i.effective !== "retired" &&
-        conversationOf(i) !== conversation,
+        !sameThread(i, own.item),
     )
     .slice(0, REPEAT_CANDIDATES);
   const question = questionText(own.item, own.body);
@@ -562,7 +581,7 @@ async function suggestOne(
     const r = await read(project, p, today);
     if (r && r.item.origin === "mail") group.push(r);
   }
-  if (new Set(group.map((g) => conversationOf(g.item))).size < 2) return null;
+  if (threadCount(group.map((g) => g.item)) < 2) return null;
   const sources = mailSources(group.map((g) => g.item));
   const pat = { author: PAT_AUTHOR, trailers: [PAT_TRAILER] };
 
@@ -639,7 +658,7 @@ async function suggestOne(
     ...(n.validAsOfCommit ? { validAsOfCommit: n.validAsOfCommit } : {}),
     suggestedBy: PAT_AUTHOR.name,
   };
-  const conversations = new Set(group.map((g) => conversationOf(g.item))).size;
+  const conversations = threadCount(group.map((g) => g.item));
   await knowledgeRepo.call(
     "write",
     project,

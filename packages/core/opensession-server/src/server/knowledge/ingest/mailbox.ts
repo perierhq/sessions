@@ -71,7 +71,13 @@ import {
   startJob,
   stepper,
 } from "./jobs";
-import { type MailRecord, pairThreads, type QaPair, threadRoot } from "./pairs";
+import {
+  type MailRecord,
+  pairThreads,
+  type QaPair,
+  threadRoot,
+  threadSource,
+} from "./pairs";
 import type { Party } from "./strip";
 import { HISTORY_UNREADABLE, mailTrust } from "./trust";
 
@@ -551,7 +557,11 @@ export async function planMailItem(
     status: "active",
     origin: "mail",
     topics: extracted.topics,
-    sources: [`mail:${answer.messageId}`],
+    sources: [
+      `mail:${answer.messageId}`,
+      // The thread, so repeats count threads, not replies.
+      ...[threadSource(answer, question)].flatMap((t) => (t ? [t] : [])),
+    ],
     dependsOn: decision.dependsOn,
     validAsOf: decision.validAsOf,
     ...(decision.validAsOfCommit

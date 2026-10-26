@@ -432,6 +432,28 @@ describe("knowledge article format", () => {
     );
   });
 
+  test("a thread source is a SHA-256", () => {
+    const bad = [
+      "thread:q1@customer.example.test",
+      `thread:${"A".repeat(64)}`,
+      `thread:${"a".repeat(63)}`,
+      "thread:",
+    ];
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines(),
+        `sources: ${JSON.stringify([`thread:${"a".repeat(64)}`, ...bad])}`,
+      ]),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual(
+      bad.map(
+        (s) =>
+          `Unknown source "${s}". Use mail:, repo:, url:, issue:, release:, file: followed by the reference.`,
+      ),
+    );
+  });
+
   test("answeredAt must be a full timestamp and mail items need one", () => {
     const path = "sources/mail/2026-10/abc@x.md";
     const mail = (answeredAt: string | null) =>

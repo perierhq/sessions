@@ -71,13 +71,15 @@ const CHECK_ORDER = [
   "conflictWith",
 ] as const satisfies ReadonlyArray<keyof KnowledgeCheckNote>;
 
-// Also accepted: `conversation:<id>`, which only capture writes.
+// Also accepted: `conversation:<id>` (capture) and `thread:<Message-ID>`
+// (mail items: the SHA-256 of the thread's root), which only Pat writes.
 const SOURCE_KINDS = ["mail", "repo", "url", "issue", "release", "file"];
 const UNKNOWN_SOURCE_HINT = `Use ${SOURCE_KINDS.map((k) => `${k}:`).join(", ")} followed by the reference.`;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const SOURCE_COMMIT = /^[0-9a-f]{7,64}$/;
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
+const THREAD_ID = /^[0-9a-f]{64}$/;
 const URL_CONTENT_HASH = /#sha256=[0-9a-f]{64}$/;
 const FENCE = /^---[ \t]*$/;
 /** Line breaks and control characters; text fields are one line. */
@@ -149,6 +151,9 @@ export function isSourceRef(
     case "conversation":
       // The support conversation a captured reply was sent in (an id).
       return CONVERSATION_ID.test(value);
+    case "thread":
+      // A mail item's thread: the SHA-256 of its root Message-ID.
+      return THREAD_ID.test(value);
     default:
       return false;
   }
