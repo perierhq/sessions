@@ -19,7 +19,7 @@ import {
   type InvestigatorReport,
   type ProofResult,
   type ProofSample,
-  type ReportProblem,
+  type ReportIssue,
   type SendBackReason,
 } from "../../../shared/incident-response";
 import type {
@@ -794,15 +794,43 @@ const ALLOWED_VALUES: Record<AgentRole, string> = {
     "Allowed values: verdict is certain or not-certain; claims[].status is verified, refuted or unverifiable.",
 };
 
+const PR_ONLY =
+  "Your report proposes a fix, but this session has no pull request yet. Push this session's branch and open the pull request, then end with the same incident-report block. If the push or the pull request fails, say what failed in plain words and end with the same block anyway. Keep the candidate: never set it to null because the fix is not published.";
+const PR_TOO =
+  "Your report also proposes a fix, but this session has no pull request yet: push this session's branch and open the pull request. If the push or the pull request fails, say what failed in plain words. Keep the candidate: never set it to null because the fix is not published.";
+
+/**
+ * The one reminder for a refused report, worded for what was wrong: no
+ * block asks for one, a block with problems lists every problem so one
+ * reply fixes them all, and a fix without its pull request asks to push
+ * and open it (or say what failed) and to keep the candidate. A missing
+ * pull request is never answered with a block alone, so the reminder never
+ * asks for "only" the block.
+ */
 export function buildReminder(
-  error: string,
+  issues: readonly ReportIssue[],
   role?: AgentRole,
-  problem?: ReportProblem,
 ): string {
+  const pr = issues.some((i) => i.problem === "pr");
+  const block = issues.filter((i) => i.problem !== "pr");
   // A fix without its pull request is not a broken report: asking for a
   // "corrected block" led an investigator to drop a fix it could not push.
-  if (problem === "pr")
-    return "Your report proposes a fix, but this session has no pull request yet. Push this session's branch and open the pull request, then end with the same incident-report block. If the push or the pull request fails, say what failed in plain words and end with the same block anyway. Keep the candidate: never set it to null because the fix is not published.";
-  const allowed = role ? ` ${ALLOWED_VALUES[role]}` : "";
-  return `Your last message did not end with a valid incident-report block: ${error}.${allowed} Reply with only the corrected block.`;
+  if (block.length === 0) return PR_ONLY;
+  const allowed = role ? ALLOWED_VALUES[role] : "";
+  if (block.some((i) => i.problem === "missing"))
+    return [
+      "Your last message did not end with an incident-report block. End your reply with exactly one, as your brief describes.",
+      allowed,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  return [
+    "Sessions could not use your incident-report block. Fix every problem below at once:",
+    ...block.map((i) => `- ${dataText(i.error, 500)}`),
+    allowed,
+    ...(pr ? [PR_TOO] : []),
+    "Then end your reply with the corrected incident-report block.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

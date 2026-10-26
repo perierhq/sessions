@@ -10,6 +10,7 @@ import type {
   InvestigatorReport,
   NeedsYouKind,
   PolicyDecision,
+  ReportIssue,
   ReportProblem,
   ResponsePhase,
   SetupFix,
@@ -85,6 +86,8 @@ export type ResponseStep =
       report?: InvestigatorReport | VerifierReport;
       error?: string;
       problem?: ReportProblem;
+      /** Every problem with a refused report, for one reminder. */
+      issues?: ReportIssue[];
       /** Values Sessions repaired in the report instead of refusing it. */
       warnings?: string[];
       /** The pull request the agent opened from its session branch. */

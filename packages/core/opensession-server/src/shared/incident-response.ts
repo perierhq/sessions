@@ -192,6 +192,8 @@ export type ReportProblem =
 export interface ReportIssue {
   problem: ReportProblem;
   error: string;
+  /** The rule it broke, as the server's report rules name it. */
+  rule?: string;
 }
 export type Independence = "other-provider" | "same-provider" | "same-model";
 
@@ -361,6 +363,9 @@ export interface AgentRun {
   reportError?: string;
   /** What the owner is told about a refused report. */
   reportProblem?: ReportProblem;
+  /** Everything wrong with a refused report, so one reminder asks for
+   *  every fix; a missing pull request is one of them. */
+  reportIssues?: ReportIssue[];
   /** Values Sessions repaired in an otherwise valid report. */
   reportWarnings?: string[];
   reminded: boolean;
