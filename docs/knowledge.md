@@ -147,17 +147,32 @@ the issue.
    aren't checked again. Mirrors of the code repository and the website are
    rewritten from their changed source instead (a deleted file retires its
    mirror); the articles that depend on the same path or page are what flip.
-   Each run is one commit by Pat: `Knowledge check: <n> need a check, <m>
-refreshed`.
+   Each run is one commit by Pat:
+   `Knowledge check: <n> need a check, <m> refreshed`.
 3. Newer beats older. When two trusted items answer the same question and the
-   small model finds they disagree, both become `needs-check` with "Disagrees
-   with <other title>" and a link to the other item, and a person sees them
-   side by side. The daily run compares each trusted item written since the
-   last check with the trusted items search finds for its title and topics
-   (reference material is never compared), at most 20 comparisons per
-   project per run, as a commit by Pat: `Knowledge conflicts: <n> need a
-check`. When the model gives no answer, nothing flips and the item is
-   compared again on the next run.
+   small model finds they disagree, the article or mail answer of the pair
+   becomes `needs-check` with "Disagrees with <other title>" and a link to
+   the other item, and a person sees them side by side. Mirrors of the code
+   repository, the website and releases never flip (they follow their
+   source), and two mirrors are never compared with each other. Reference
+   material is never compared.
+   - The daily run examines each trusted item whose text changed since the
+     knowledge commit the last check listed (a status change alone doesn't
+     count), plus what earlier runs left unfinished. The first run examines
+     the articles; when that commit is no longer in the history, every
+     trusted item is examined. At most 50 items a run: 10 of the oldest unfinished, then
+     the newest changed; the rest waits for the next run.
+   - Each item is compared with the trusted items one search for its title
+     and topics finds (any of their words, at most 4), at most 20
+     comparisons per project per run, as one commit by Pat:
+     `Knowledge conflicts: <n> need a check`.
+   - A mail item is compared on its answer only. The model sees the first
+     3,500 characters of each side; a disagreement further down a long item
+     isn't seen.
+   - When the model gives no answer, nothing flips and the item is compared
+     again on the next run.
+   - When a person clears a conflict check without changing either text,
+     that pair is not compared again until one of the two texts changes.
 4. Imported mail is time-aware. A question-and-reply pair older than the
    latest change to what it touches (the newest release, or a default-branch
    commit touching those paths, committed up to 2 days before the reply,

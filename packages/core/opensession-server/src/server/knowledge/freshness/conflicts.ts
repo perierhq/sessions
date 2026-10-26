@@ -405,7 +405,9 @@ export function conflictMarkStore(project: string): ConflictMarks {
       return parseMark(await (await docs()).get(key));
     },
     async save(mark) {
-      await (await docs()).update(key, (current) => ({
+      await (
+        await docs()
+      ).update(key, (current) => ({
         commit: mark.commit,
         pending: mark.pending,
         resolved: mergeResolved(
@@ -415,7 +417,9 @@ export function conflictMarkStore(project: string): ConflictMarks {
       }));
     },
     async resolve(pair) {
-      await (await docs()).update(key, (current) => {
+      await (
+        await docs()
+      ).update(key, (current) => {
         const mark = parseMark(current) ?? {
           commit: null,
           pending: [],
@@ -627,10 +631,7 @@ export async function runConflictCheck(
     .map((item) => item.path);
   const older = pending.slice(0, PENDING_SHARE);
   const recent = newest.slice(0, MAX_CONFLICT_ITEMS - older.length);
-  const more = pending.slice(
-    older.length,
-    MAX_CONFLICT_ITEMS - recent.length,
-  );
+  const more = pending.slice(older.length, MAX_CONFLICT_ITEMS - recent.length);
   const examined = [...older, ...recent, ...more];
 
   let unchecked: string[] = [];

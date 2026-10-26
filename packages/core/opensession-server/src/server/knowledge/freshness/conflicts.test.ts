@@ -1,4 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -210,9 +217,7 @@ describe("checkConflicts", () => {
     expect(model.calls[0]![1]).toContain("only available on the Pro plan");
     expect((await item(p, A)).status).toBe("active");
     expect((await item(p, B)).status).toBe("active");
-    expect((await knowledgeRepo.call("history", p)).length).toBe(
-      before.length,
-    );
+    expect((await knowledgeRepo.call("history", p)).length).toBe(before.length);
   });
 
   test("unrelated leaves both items as they are", async () => {
@@ -303,7 +308,11 @@ describe("checkConflicts", () => {
       put(A, {}, "Open the project, choose Export, then CSV.\n"),
       put(
         B,
-        { title: "Export a project to CSV", status: "needs-check", check: note },
+        {
+          title: "Export a project to CSV",
+          status: "needs-check",
+          check: note,
+        },
         "CSV export is only available on the Pro plan.\n",
       ),
     ]);
@@ -432,8 +441,10 @@ describe("checkConflicts", () => {
 
   test(`at most ${MAX_CONFLICT_CALLS} pairs are classified; exactly the rest is left`, async () => {
     const p = project();
-    const words = Array.from({ length: 25 }, (_, n) =>
-      `q${String.fromCharCode(97 + (n % 26))}${String.fromCharCode(97 + Math.floor(n / 26))}zz`,
+    const words = Array.from(
+      { length: 25 },
+      (_, n) =>
+        `q${String.fromCharCode(97 + (n % 26))}${String.fromCharCode(97 + Math.floor(n / 26))}zz`,
     );
     const changes: KnowledgeChange[] = [];
     const paths: string[] = [];
@@ -713,10 +724,7 @@ describe("runConflictCheck", () => {
     });
     expect(searched.length).toBe(MAX_CONFLICT_ITEMS);
     expect(searched.slice(0, PENDING_SHARE)).toEqual(old.slice(0, 10));
-    expect(marks.mark!.pending).toEqual([
-      ...old.slice(10),
-      ...fresh.slice(40),
-    ]);
+    expect(marks.mark!.pending).toEqual([...old.slice(10), ...fresh.slice(40)]);
   });
 
   test("a person clearing a conflict check settles the pair", async () => {
@@ -743,7 +751,9 @@ describe("runConflictCheck", () => {
       marks: marks.store,
       classify: model.classify,
     });
-    expect(marks.mark!.resolved).toContain(pairKey(a.body, (await read(p, B)).body));
+    expect(marks.mark!.resolved).toContain(
+      pairKey(a.body, (await read(p, B)).body),
+    );
     // Even when A comes up again, the pair isn't asked about.
     marks.mark = { ...marks.mark!, pending: [A] };
     await runConflictCheck(p, {
