@@ -38,7 +38,7 @@ export const INBOX_EXISTING_TEXT = "m-0 text-supporting text-dim";
 /** "How far back" there: as wide as its longest choice beside the button,
  *  full width and 44px under a finger. */
 export const INBOX_EXISTING_SELECT =
-  "justify-between phone:w-full phone:min-h-11";
+  "w-auto justify-between phone:w-full phone:min-h-11";
 
 /** A group label in the inbox form, in FormField's label type. */
 export const INBOX_LEGEND = "m-0 p-0 text-label font-medium text-dim";
