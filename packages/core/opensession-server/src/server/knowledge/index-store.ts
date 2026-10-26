@@ -95,11 +95,23 @@ const TIER = `CASE
 
 const SUGGESTION = `i.path LIKE 'suggestions/%'`;
 
+/** A list filter: the Knowledge page's, or `articles` (every article not
+ *  retired; the server's own, never a page filter). */
+export type KnowledgeListFilter = KnowledgeFilter | "articles";
+
 /** WHERE clause per list filter; `?` binds are the day (EFFECTIVE). */
-function filterSql(filter: KnowledgeFilter): { sql: string; days: number } {
+function filterSql(filter: KnowledgeListFilter): {
+  sql: string;
+  days: number;
+} {
   switch (filter) {
     case "all":
       return { sql: `i.status <> 'retired'`, days: 0 };
+    case "articles":
+      return {
+        sql: `i.path LIKE 'articles/%' AND i.status <> 'retired'`,
+        days: 0,
+      };
     case "answer":
       return {
         sql: `i.kind = 'answer' AND i.trust = 'trusted' AND (${EFFECTIVE}) = 'active' AND NOT ${SUGGESTION}`,
@@ -338,7 +350,7 @@ export class KnowledgeIndex {
   /** One page of a list filter, optionally narrowed by a text query. */
   list(
     project: string,
-    filter: KnowledgeFilter,
+    filter: KnowledgeListFilter,
     opts: {
       query?: string;
       limit?: number;

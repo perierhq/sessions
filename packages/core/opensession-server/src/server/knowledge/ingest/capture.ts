@@ -495,7 +495,7 @@ export async function findRepeats(
 /** Every listed item of `filter` (pages of LIST_PAGE). */
 async function listAll(
   project: string,
-  filter: "all" | "suggestions",
+  filter: "articles" | "suggestions",
   today: string,
 ): Promise<KnowledgeItem[]> {
   const items: KnowledgeItem[] = [];
@@ -736,7 +736,7 @@ async function suggestOne(
   const newest = group.reduce((a, b) =>
     (b.item.answeredAt ?? "") > (a.item.answeredAt ?? "") ? b : a,
   );
-  const articles = (await listAll(project, "all", today)).filter((i) =>
+  const articles = (await listAll(project, "articles", today)).filter((i) =>
     isArticlePath(i.path),
   );
   if (await covered(project, newest, sources, articles, deps, budget))

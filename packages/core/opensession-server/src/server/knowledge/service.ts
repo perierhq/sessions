@@ -36,6 +36,7 @@ import { parseArticle, renderArticle } from "./format";
 import {
   excerptOf,
   KnowledgeIndex,
+  type KnowledgeListFilter,
   type KnowledgeSearchOptions,
 } from "./index-store";
 import {
@@ -410,7 +411,7 @@ export class KnowledgeService {
   /** KnowledgeIndex.list after a freshness check. */
   async list(
     project: string,
-    filter: KnowledgeFilter,
+    filter: KnowledgeListFilter,
     opts: { today: string; query?: string; limit?: number; offset?: number },
   ): Promise<{ items: KnowledgeItem[]; total: number }> {
     await this.fresh(project);

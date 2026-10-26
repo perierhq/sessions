@@ -4,6 +4,7 @@ import {
   beforeAll,
   beforeEach,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { createHash } from "node:crypto";
@@ -32,6 +33,7 @@ import {
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { RepoChangeDeps } from "../freshness/repo-changes";
 import { mailItemPath } from "../layout";
+import { KnowledgeIndex } from "../index-store";
 import { KnowledgeService } from "../service";
 import {
   __waitForCapturesForTest,
@@ -268,6 +270,14 @@ test("an automatic send is not captured", async () => {
 });
 
 test("the same question answered by hand in two conversations becomes one suggestion, a third adds its source", async () => {
+  const filters: string[] = [];
+  const real = KnowledgeIndex.prototype.list;
+  const list = spyOn(KnowledgeIndex.prototype, "list").mockImplementation(
+    function (this: KnowledgeIndex, ...args) {
+      filters.push(args[1]);
+      return real.apply(this, args);
+    },
+  );
   const first = await answeredByHand();
   expect(await listed("suggestions")).toEqual([]);
 
@@ -283,6 +293,8 @@ test("the same question answered by hand in two conversations becomes one sugges
     title: "Export a project as CSV",
   });
   expect(suggestion.path.startsWith("suggestions/")).toBe(true);
+  // The articles were read through their own filter, not every item.
+  expect(filters).toContain("articles");
   expect([...suggestion.sources].sort()).toEqual(
     [
       `mail:${first.message.keys.messageId}`,
@@ -306,6 +318,7 @@ test("the same question answered by hand in two conversations becomes one sugges
     `mail:${third.message.keys.messageId}`,
   );
   expect(suggestions[0]!.sources).toHaveLength(3);
+  list.mockRestore();
 });
 
 test("answers behind a discarded suggestion make no suggestion again", async () => {

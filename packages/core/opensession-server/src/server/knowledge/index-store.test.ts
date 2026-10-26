@@ -242,6 +242,16 @@ describe("KnowledgeIndex", () => {
     expect(index.list("acme", "internal").items.map((i) => i.path)).toEqual([
       "articles/note.md",
     ]);
+    const articles = index
+      .list("acme", "articles", { limit: 200 })
+      .items.map((i) => i.path);
+    expect(articles.length).toBeGreaterThan(0);
+    expect(articles).toEqual(
+      index
+        .list("acme", "all", { limit: 200 })
+        .items.map((i) => i.path)
+        .filter((p) => p.startsWith("articles/")),
+    );
     const queried = index.list("acme", "all", { query: "escalate" });
     expect(queried.items.map((i) => i.path)).toEqual(["articles/note.md"]);
     const page = index.list("acme", "all", { limit: 2, offset: 0 });
