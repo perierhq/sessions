@@ -171,8 +171,17 @@ function gitAccessView(
   issue: GitAccessIssue | null,
 ): Pick<ProjectSettingsView, "gitAccess"> {
   if (!issue) return {};
-  const { kind, since, lastError, failures, nextAttemptAt } = issue;
-  return { gitAccess: { kind, since, lastError, failures, nextAttemptAt } };
+  const { kind, ghRepo, since, lastError, failures, nextAttemptAt } = issue;
+  return {
+    gitAccess: {
+      kind,
+      ...(ghRepo ? { ghRepo } : {}),
+      since,
+      lastError,
+      failures,
+      nextAttemptAt,
+    },
+  };
 }
 
 /** One row per configured project, in sidebar order, with its status. */
