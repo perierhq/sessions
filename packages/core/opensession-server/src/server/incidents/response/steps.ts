@@ -87,6 +87,11 @@ export type ResponseStep =
       problem?: ReportProblem;
       /** Values Sessions repaired in the report instead of refusing it. */
       warnings?: string[];
+      /** The pull request the agent opened from its session branch. */
+      prUrl?: string;
+      /** A report refused for want of a pull request, read again on a
+       *  Retry now that its pull request is found. */
+      reread?: boolean;
     }
   | { step: "cancel-agents"; reason: string; for: CancelReason }
   | { step: "run-proof" }
