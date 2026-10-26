@@ -341,7 +341,7 @@ export async function bootstrapLaunchAgent(
  * with "Failed to connect to bus: No medium found". Point it at the standard
  * location when it is missing.
  */
-function userEnv(): Record<string, string> {
+export function userEnv(): Record<string, string> {
   if (process.env.XDG_RUNTIME_DIR) return {};
   return { XDG_RUNTIME_DIR: `/run/user/${process.getuid?.() ?? ""}` };
 }
@@ -444,7 +444,7 @@ function servicePath(bunDir: string): string {
  * fails twice over: the tarball has no socket template, and a hand-supplied
  * one takes the port before the server can (tellahq/opensession#297).
  */
-function socketActivated(compiled = isCompiledBinary()): boolean {
+export function socketActivated(compiled = isCompiledBinary()): boolean {
   return !compiled;
 }
 

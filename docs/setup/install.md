@@ -270,6 +270,15 @@ changes how many previous releases stay, and a release a running process still
 uses is never removed. `OPENSESSION_RELEASE_BASE` overrides the release base
 URL; `--channel <url>` points at a specific tarball.
 
+Both kinds of update also bring the installed systemd units in step with the
+new release (`opensession service sync`, run by the new release itself). They
+are re-rendered from the release's templates, keeping the install's own user,
+paths, env file, credentials, binary and `PATH`; only units that differ are
+replaced, through `sudo -n` for a system install, and systemd is reloaded.
+Units the install does not have are left to `opensession service install`, and
+drop-ins under `<unit>.d/` are never touched. `opensession service sync
+--check` and `opensession doctor` show what differs.
+
 A source checkout can live anywhere: the CLI derives its root from the code it
 is running, and onboarding writes instance paths into
 `~/.opensession/config.json`. If a source install skips onboarding, the default

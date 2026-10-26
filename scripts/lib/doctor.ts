@@ -21,6 +21,7 @@ import {
   claudeCodeVersionSatisfies,
 } from "../../packages/core/opensession-server/src/server/claude-code-version";
 import * as service from "./service";
+import { defaultUnitTargets, planUnitSync, unitDrift } from "./unit-sync";
 import { dim, fail, heading, info, ok, run, warn } from "./ui";
 
 type Tally = { errors: number; warnings: number };
@@ -261,6 +262,25 @@ async function checkService(
     } else {
       // Could not ask. The health probe below is the real answer.
       warn(`could not query ${kind}`, "no permission or no session bus");
+      t.warnings++;
+    }
+  }
+
+  const scope = service.installedScope();
+  if (kind === "systemd" && scope) {
+    // `opensession update` re-renders the units; one that differs from this
+    // release's templates means the sync failed or was skipped.
+    const plan = await planUnitSync({ targets: defaultUnitTargets(scope) });
+    const drift = unitDrift(plan);
+    if (drift) {
+      warn(drift.summary, drift.fix);
+      for (const line of drift.details) info(dim(`  ${line}`));
+      t.warnings++;
+    } else if (!plan.some((u) => u.status === "error")) {
+      ok("systemd units match this release");
+    }
+    for (const unit of plan.filter((u) => u.status === "error")) {
+      warn(`cannot render ${unit.name}`, unit.error);
       t.warnings++;
     }
   }

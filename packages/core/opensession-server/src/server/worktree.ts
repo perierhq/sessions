@@ -851,6 +851,28 @@ export async function ensureAskCheckout(repoId?: string): Promise<string> {
   });
 }
 
+/**
+ * Where a turn runs when its session records no checkout (worktreeDir "").
+ *
+ * A repo-less session (the Desk, a repo-less ask sibling) gets its own
+ * scratch dir. Resolved like a bare ask session it landed in the default
+ * repo's ask checkout instead: it read a repo nobody asked about, and that
+ * repo's AGENTS.md joined its system prompt and left again whenever the
+ * checkout changed, re-caching the whole conversation. A bare ask session
+ * that names (or predates) a repo keeps the pinned ask checkout; anything
+ * else runs in the default repo.
+ */
+export async function sessionFallbackCwd(
+  session: Pick<UnifiedSession, "id" | "mode" | "repo" | "repoLess"> & {
+    workspaceId?: string | null;
+  },
+): Promise<string> {
+  if (session.mode === "scratch" || session.repoLess)
+    return ensureScratchDir(session.workspaceId || session.id);
+  if (session.mode === "ask") return ensureAskCheckout(session.repo);
+  return defaultRepo().repo;
+}
+
 export async function removeWorktree(
   branch: string,
   repoId?: string,
