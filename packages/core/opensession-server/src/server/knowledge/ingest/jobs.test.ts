@@ -79,6 +79,34 @@ describe("knowledge import jobs", () => {
     expect(await cancelJob("acme-api", job.id)).toBeNull();
   });
 
+  test("a cancelled run that fails for another reason records that reason", async () => {
+    const g = gate();
+    const job = await startJob("acme", "mailbox", {}, async () => {
+      await g.opened;
+      throw new Error("The disk is full");
+    });
+    await Promise.resolve();
+    await cancelJob("acme", job.id);
+    g.open();
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({ state: "failed", error: "The disk is full" });
+  });
+
+  test("a run stopped with the cancel copy (mailbox StopRun) is cancelled", async () => {
+    const g = gate();
+    const job = await startJob("acme", "mailbox", {}, async (handle) => {
+      await g.opened;
+      if (handle.signal.aborted) throw new Error(CANCELLED_COPY);
+    });
+    await Promise.resolve();
+    await cancelJob("acme", job.id);
+    g.open();
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({ state: "failed", error: CANCELLED_COPY });
+  });
+
   test("a run can say it left part of the input out", async () => {
     const job = await startJob("acme", "mailbox", {}, async (handle) => {
       await handle.markTruncated();

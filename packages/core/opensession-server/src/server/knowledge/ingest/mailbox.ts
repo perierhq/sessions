@@ -60,7 +60,7 @@ import {
 import { PAT_AUTHOR, PAT_TRAILER } from "../freshness/revalidate";
 import { knowledgeRepoName, mailItemPath } from "../layout";
 import { extractPair } from "./extract";
-import { type JobHandle, startJob } from "./jobs";
+import { CANCELLED_COPY, type JobHandle, startJob } from "./jobs";
 import { type MailRecord, pairThreads, type QaPair } from "./pairs";
 import { HISTORY_UNREADABLE, mailTrust } from "./trust";
 
@@ -180,7 +180,7 @@ type Step = () => void;
 function stepper(signal: AbortSignal, deadlineMs: number): Step {
   const end = performance.now() + deadlineMs;
   return () => {
-    if (signal.aborted) throw new StopRun("Cancelled.");
+    if (signal.aborted) throw new StopRun(CANCELLED_COPY);
     if (performance.now() >= end) throw new StopRun(DEADLINE_COPY);
   };
 }

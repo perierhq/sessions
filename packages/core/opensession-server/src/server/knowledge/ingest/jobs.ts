@@ -111,6 +111,16 @@ function errorText(error: unknown): string {
   );
 }
 
+/** Whether a run's error is its cancellation: the signal's own reason
+ *  (throwIfAborted, an aborted fetch) or an error carrying CANCELLED_COPY
+ *  (the mailbox's StopRun). Anything else that went wrong while a cancel
+ *  was pending is recorded as itself. */
+function cancelled(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false;
+  if (error === signal.reason) return true;
+  return error instanceof Error && error.message === CANCELLED_COPY;
+}
+
 /**
  * Record a running job and start `run` in the background; resolves with
  * the job as recorded. Rejects with a 409 while a job of `kind` runs for
@@ -186,7 +196,9 @@ export async function startJob(
       await Promise.resolve().then(() => run(handle));
       await finish("done");
     } catch (error) {
-      const why = ac.signal.aborted ? CANCELLED_COPY : errorText(error);
+      const why = cancelled(error, ac.signal)
+        ? CANCELLED_COPY
+        : errorText(error);
       await finish("failed", why).catch((e) =>
         console.warn(`[knowledge] job ${id} not recorded:`, errorText(e)),
       );
