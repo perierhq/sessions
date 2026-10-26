@@ -247,8 +247,16 @@ export interface KnowledgeSearchHit {
 export interface KnowledgeVerdict {
   /** Citations that may back the reply. */
   backing: Array<{ kind: "knowledge"; ref: string }>;
-  /** Citations that can't, with the KNOWLEDGE_COPY reason. */
-  blocked: Array<{ ref: string; path: string; title: string; reason: string }>;
+  /** Citations that can't, with the KNOWLEDGE_COPY reason. `uncited`:
+   *  not cited, but the session read it (`<path>@<commit read>`) and the
+   *  draft cites nothing that backs it, so the reply may rest on it. */
+  blocked: Array<{
+    ref: string;
+    path: string;
+    title: string;
+    reason: string;
+    uncited?: true;
+  }>;
   /** An internal article the draft quotes; the draft then waits. */
   internalQuoted: { path: string; title: string } | null;
   /** The check itself failed; the draft waits (fail closed). */

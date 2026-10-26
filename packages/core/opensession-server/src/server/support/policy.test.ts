@@ -786,6 +786,33 @@ describe("knowledge", () => {
     ).toEqual({ kind: "needs-person", rule: RULES.draftPromise });
   });
 
+  test("an item read but not cited holds even a clarifying question", () => {
+    const used = verdict({
+      blocked: [
+        {
+          ref: "suggestions/pdf.md@3f2a1b0",
+          path: "suggestions/pdf.md",
+          title: "PDF export",
+          reason: "Reference material, not approved for replies",
+          uncited: true,
+        },
+      ],
+    });
+    const question = draft({
+      text: "Which browser do you use?",
+      sources: [],
+      purpose: "clarify",
+    });
+    expect(decideReply(input({ draft: question }))).toEqual({
+      kind: "send",
+      rule: "Sent by the agent",
+    });
+    expect(decideReply(input({ draft: question, knowledge: used }))).toEqual({
+      kind: "needs-person",
+      rule: "Knowledge may be out of date: PDF export",
+    });
+  });
+
   test("a person's reply is unaffected", () => {
     expect(
       decideReply(

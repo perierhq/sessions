@@ -16,8 +16,11 @@
 //     no `issue:`/`pr:` dependency closed or merged since, read fresh from
 //     GitHub (freshness/evaluate.ts, with page and release checks left to
 //     the daily run);
-//  5. this session's own search_knowledge or read_knowledge printed it at
-//     that commit (support/evidence.ts).
+//  5. this session's own read_knowledge showed it at that commit
+//     (support/evidence.ts); search_knowledge listing it is not enough.
+// Used but not cited: when the draft cites nothing that backs it, every
+// item the session read must pass 1–4 at the commit it was read at, or
+// it holds the draft too (`uncited`), since the reply may rest on it.
 // Anything that throws (the worker, the index, git, GitHub) makes the
 // whole verdict `failed`: the draft waits with "Knowledge couldn't be
 // checked". Nothing runs at import.
@@ -31,7 +34,7 @@ import {
   parseKnowledgeCitation,
 } from "../../shared/knowledge";
 import type { DraftSource } from "../../shared/support";
-import { sessionSawKnowledge } from "../support/evidence";
+import { sessionReadKnowledge, sessionSawKnowledge } from "../support/evidence";
 import { knowledgeRepo } from "./client";
 import { evaluateItem, type Signals } from "./freshness/evaluate";
 import { type GithubReadOptions, refState } from "./freshness/github";
@@ -62,11 +65,15 @@ export interface BackingDeps {
     opts: GithubReadOptions,
   ) => ReturnType<typeof refState>;
   sawKnowledge: typeof sessionSawKnowledge;
+  readKnowledge: typeof sessionReadKnowledge;
 }
 
 export const NOT_FOUND = "Not found in knowledge";
 export const RETIRED = "Retired";
 export const NEEDS_CHECK = "Needs a check";
+/** Items a session read that are checked when it cites none that backs;
+ *  past it the check fails closed. */
+export const MAX_READ_CHECKED = 20;
 
 let override:
   | ((input: VerdictInput) => Promise<KnowledgeVerdict | null>)
@@ -109,12 +116,14 @@ function notBackingReason(item: KnowledgeItem, today: string): string {
 
 type Blocked = KnowledgeVerdict["blocked"][number];
 
-/** One citation: null when it backs, else why not. */
+/** One citation: null when it backs, else why not. `read: false` skips
+ *  step 5 (an item the session read, checked at the commit it read). */
 async function checkCitation(
   input: VerdictInput,
   ref: string,
   today: string,
   d: BackingDeps,
+  opts: { read: boolean } = { read: true },
 ): Promise<Blocked | null> {
   const parsed = parseKnowledgeCitation(ref);
   if (!parsed) {
@@ -170,7 +179,10 @@ async function checkCitation(
   const verdict = await evaluateItem(item, "", signals);
   if (verdict.stale) return blocked(verdict.reason);
 
-  if (!input.sessionId || !d.sawKnowledge(input.sessionId, path, commit))
+  if (
+    opts.read &&
+    (!input.sessionId || !d.sawKnowledge(input.sessionId, path, commit, "read"))
+  )
     return blocked(KNOWLEDGE_COPY.notRead);
   return null;
 }
@@ -182,6 +194,7 @@ function deps(over: Partial<BackingDeps>): BackingDeps {
     refState:
       over.refState ?? ((project, ref, opts) => refState(project, ref, opts)),
     sawKnowledge: over.sawKnowledge ?? sessionSawKnowledge,
+    readKnowledge: over.readKnowledge ?? sessionReadKnowledge,
   };
 }
 
@@ -220,6 +233,23 @@ export async function knowledgeVerdict(
       const blocked = await checkCitation(input, ref, today, d);
       if (blocked) verdict.blocked.push(blocked);
       else verdict.backing.push({ kind: "knowledge", ref });
+    }
+    if (verdict.backing.length === 0 && input.sessionId) {
+      const citedPaths = new Set(
+        cited.map((ref) => parseKnowledgeCitation(ref)?.path),
+      );
+      const read = d
+        .readKnowledge(input.sessionId)
+        .filter((r) => !citedPaths.has(r.path));
+      if (read.length > MAX_READ_CHECKED)
+        throw new Error(`The session read ${read.length} items`);
+      for (const r of read) {
+        const ref = `${r.path}@${r.commit}`;
+        const blocked = await checkCitation(input, ref, today, d, {
+          read: false,
+        });
+        if (blocked) verdict.blocked.push({ ...blocked, uncited: true });
+      }
     }
     return verdict;
   } catch (error) {

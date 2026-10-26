@@ -182,25 +182,38 @@ trusted)`. One import of a kind runs per project at a time; an import a
 The support agent has two tools, only in a support session:
 `search_knowledge(query)` (ranked, this project only) and
 `read_knowledge(path)`. Both print the knowledge commit they read, and a draft
-cites an item as `knowledge:<path>@<commit>`.
+cites an item as `knowledge:<path>@<commit>`. Search only lists items;
+`read_knowledge` prints an item's trust, status, any check note and the ref to
+cite first, then its text inside a wrapper the text can't close. An item that
+can't back a reply says so next to its ref ("can't back a reply alone").
 
-When a reply is about to be sent (right away, at the end of the veto window,
-and on every retry) the server checks each knowledge citation again. The
+When an agent's draft is checked, and again when it is about to be sent
+automatically (at the end of the veto window and on every retry), the server
+checks each knowledge citation. A person sending a draft is not gated. The
 draft waits for a person when:
 
-- the cited item is gone or this session didn't read it ("This session didn't
-  read it");
+- the citation names nothing in knowledge: a path that isn't an item at the
+  cited commit, or a commit that isn't in the repository ("Not found in
+  knowledge");
 - the item changed after the agent read it ("Changed since the agent read
   it");
 - it is reference material ("Reference material, not approved for replies");
-- it is `needs-check`, `retired` or past its review date ("Review date passed
-  (<date>)");
-- a default-branch commit after its `validAsOfCommit` touches one of its
-  `dependsOn` paths;
-- the knowledge service or index can't answer ("Knowledge couldn't be
-  checked"). This also applies to a draft that cites nothing on a project that
-  has a knowledge repository: the server never sends on data it couldn't
-  check;
+- it is `needs-check` (its check reason), past its review date ("Review date
+  passed (<date>)") or `retired` ("Retired");
+- a default-branch commit after its `validAsOfCommit` (or from its
+  `validAsOf` day on) touches one of its `repo:` dependencies ("<path> changed
+  in <sha>"), read from the local `origin/<default branch>` with no fetch at
+  send time, or an `issue:`/`pr:` dependency closed or merged after
+  `validAsOf`, read from GitHub without the cache ("Issue #42 was closed").
+  Changed pages and new releases are left to the daily run;
+- this session didn't open it with `read_knowledge` ("This session didn't read
+  it"); a search listing is not enough;
+- the session read an item that can't back a reply and the draft cites no item
+  that can: the reply may rest on it, so it waits too (that item's reason);
+- the knowledge service, the index, the code repository or GitHub can't answer
+  ("Knowledge couldn't be checked"). This also applies to a draft that cites
+  nothing on a project that has a knowledge repository: the server never sends
+  on data it couldn't check;
 - the draft contains 12 or more consecutive words of an `internal` article
   ("The reply quotes an internal note").
 

@@ -24,7 +24,8 @@ import { KnowledgeService } from "./service";
 
 const ADA = { name: "Ada", email: "ada@example.test" };
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
-const SESSION = "os-1";
+/** One session per project, as a support session answers one. */
+const sessionFor = (project: string) => `os-${project}`;
 
 let base: string;
 let code: string;
@@ -87,7 +88,7 @@ async function project(
     { message: "Add articles", author: ADA },
   ))!;
   for (const path of Object.keys(items))
-    recordKnowledgeSeen(SESSION, path, head);
+    recordKnowledgeSeen(sessionFor(name), path, head, "read");
   return head;
 }
 
@@ -106,7 +107,7 @@ function input(
 ): VerdictInput {
   return {
     project: name,
-    sessionId: SESSION,
+    sessionId: sessionFor(name),
     sources,
     text: "Open the project, choose Export.",
     now: NOW,
@@ -310,6 +311,63 @@ test("an item this session didn't read is blocked", async () => {
     deps,
   );
   expect(none?.blocked.map((b) => b.reason)).toEqual([KNOWLEDGE_COPY.notRead]);
+});
+
+test("an item search only listed is not read", async () => {
+  await service.ensureRepo("acme-listed");
+  const listed = (await service.write(
+    "acme-listed",
+    [{ op: "put", path: "articles/export.md", fm: fm(), body: "Export.\n" }],
+    { message: "Add", author: ADA },
+  ))!;
+  recordKnowledgeSeen("os-listed", "articles/export.md", listed, "listed");
+  const v = await knowledgeVerdict(
+    input("acme-listed", [cite("articles/export.md", listed.slice(0, 7))], {
+      sessionId: "os-listed",
+    }),
+    deps,
+  );
+  expect(v?.blocked.map((b) => b.reason)).toEqual([KNOWLEDGE_COPY.notRead]);
+});
+
+test("used but not cited: a read item that can't back holds a draft citing no backing item", async () => {
+  const head = await project("acme-used", {
+    "articles/export.md": {},
+    "suggestions/pdf.md": {
+      title: "PDF export",
+      trust: "reference",
+      origin: "suggestion",
+    },
+  });
+  // Cites only a repo file, but read a reference item.
+  const repoOnly = await knowledgeVerdict(
+    input("acme-used", [{ kind: "repo", ref: "docs/export.md" }]),
+    deps,
+  );
+  expect(repoOnly?.backing).toEqual([]);
+  expect(repoOnly?.blocked).toEqual([
+    {
+      ref: `suggestions/pdf.md@${head}`,
+      path: "suggestions/pdf.md",
+      title: "PDF export",
+      reason: KNOWLEDGE_COPY.notTrusted,
+      uncited: true,
+    },
+  ]);
+  // Citing an item that backs is enough.
+  const cited = await knowledgeVerdict(
+    input("acme-used", [cite("articles/export.md", head)]),
+    deps,
+  );
+  expect(cited?.backing).toHaveLength(1);
+  expect(cited?.blocked).toEqual([]);
+  // Another session that read only backing items: nothing held.
+  recordKnowledgeSeen("os-good", "articles/export.md", head, "read");
+  const good = await knowledgeVerdict(
+    input("acme-used", [], { sessionId: "os-good" }),
+    deps,
+  );
+  expect(good?.blocked).toEqual([]);
 });
 
 test("a citation that names nothing in knowledge is not found", async () => {

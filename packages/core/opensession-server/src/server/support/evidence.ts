@@ -6,8 +6,9 @@
 // discussion mirror is (agents/plain/discussion-mirror.ts). In memory and
 // bounded: a restart forgets it, so a draft cites nothing verifiable and
 // waits for a person. The knowledge items the session's own
-// search_knowledge and read_knowledge printed are recorded by those tools
-// (knowledge/support-tools.ts), at the commit they printed. Never logged.
+// search_knowledge listed and read_knowledge read are recorded by those
+// tools (knowledge/support-tools.ts), at the commit they printed; only a
+// read item may back a reply. Never logged.
 // Nothing runs at import.
 import { MCP_CALL_TOOL } from "@tellahq/opensession-protocol/tool-presentation";
 import type { StreamEvent } from "../run-events";
@@ -28,9 +29,14 @@ interface Evidence {
   urls: Set<string>;
   /** `<connector>\0<id>` */
   records: Set<string>;
-  /** `<path>\0<commit>`, the commit as printed (7 or 40 hex). */
-  knowledge: Set<string>;
+  /** `<path>\0<commit>` → how the session saw it, the commit as printed
+   *  (7 or 40 hex). Most recent last. */
+  knowledge: Map<string, KnowledgeEvidenceLevel>;
 }
+
+/** `listed`: search_knowledge printed it; `read`: read_knowledge showed
+ *  its text. Read includes listed. */
+export type KnowledgeEvidenceLevel = "listed" | "read";
 
 const sessions = new Map<string, Evidence>();
 const pending = new Map<
@@ -51,7 +57,7 @@ function evidenceFor(sessionId: string): Evidence {
     sessions.set(sessionId, e);
     return e;
   }
-  e = { urls: new Set(), records: new Set(), knowledge: new Set() };
+  e = { urls: new Set(), records: new Set(), knowledge: new Map() };
   sessions.set(sessionId, e);
   while (sessions.size > MAX_SESSIONS)
     sessions.delete(sessions.keys().next().value!);
@@ -179,19 +185,28 @@ export function sessionReturnedRecord(
 
 const KNOWLEDGE_COMMIT = /^[0-9a-f]{7,64}$/;
 
-/** A knowledge tool of `sessionId` printed item `path` at `commit`. */
+/** A knowledge tool of `sessionId` printed item `path` at `commit`: listed
+ *  it (search_knowledge) or showed its text (read_knowledge). Listing an
+ *  item already read keeps it read. */
 export function recordKnowledgeSeen(
   sessionId: string,
   path: string,
   commit: string,
+  level: KnowledgeEvidenceLevel,
 ): void {
   const sha = commit.toLowerCase();
   if (!path || path.length > MAX_ID_CHARS || !KNOWLEDGE_COMMIT.test(sha))
     return;
-  add(evidenceFor(sessionId).knowledge, `${path}\u0000${sha}`, MAX_IDS);
+  const seen = evidenceFor(sessionId).knowledge;
+  const key = `${path}\u0000${sha}`;
+  const was = seen.get(key);
+  seen.delete(key);
+  seen.set(key, was === "read" ? "read" : level);
+  while (seen.size > MAX_IDS) seen.delete(seen.keys().next().value!);
 }
 
-/** Whether a knowledge tool of `sessionId` printed `path` at `commit`. A
+/** Whether a knowledge tool of `sessionId` printed `path` at `commit` at
+ *  `level` or more (default `read`: read_knowledge showed its text). A
  *  short commit (search_knowledge prints seven hex) and the full one name
  *  the same commit: either may be a prefix of the other, at least seven
  *  hex long. */
@@ -199,17 +214,39 @@ export function sessionSawKnowledge(
   sessionId: string,
   path: string,
   commit: string,
+  level: KnowledgeEvidenceLevel = "read",
 ): boolean {
   const sha = commit.toLowerCase();
   if (!KNOWLEDGE_COMMIT.test(sha)) return false;
   const seen = sessions.get(sessionId)?.knowledge;
   if (!seen) return false;
-  if (seen.has(`${path}\u0000${sha}`)) return true;
+  const enough = (l: KnowledgeEvidenceLevel) =>
+    level === "listed" || l === "read";
+  const exact = seen.get(`${path}\u0000${sha}`);
+  if (exact && enough(exact)) return true;
   const key = `${path}\u0000`;
-  for (const entry of seen) {
-    if (!entry.startsWith(key)) continue;
+  for (const [entry, l] of seen) {
+    if (!entry.startsWith(key) || !enough(l)) continue;
     const printed = entry.slice(key.length);
     if (printed.startsWith(sha) || sha.startsWith(printed)) return true;
   }
   return false;
+}
+
+/** The items read_knowledge showed `sessionId`, each path once at the
+ *  commit it was last read at, most recent last. */
+export function sessionReadKnowledge(
+  sessionId: string,
+): Array<{ path: string; commit: string }> {
+  const seen = sessions.get(sessionId)?.knowledge;
+  if (!seen) return [];
+  const latest = new Map<string, string>();
+  for (const [entry, l] of seen) {
+    if (l !== "read") continue;
+    const cut = entry.indexOf("\u0000");
+    const path = entry.slice(0, cut);
+    latest.delete(path);
+    latest.set(path, entry.slice(cut + 1));
+  }
+  return [...latest].map(([path, commit]) => ({ path, commit }));
 }
