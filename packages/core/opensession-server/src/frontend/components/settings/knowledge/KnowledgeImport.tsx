@@ -22,8 +22,9 @@ import {
   IMPORT_HOST_SKIPPED,
   IMPORT_HOSTS,
   IMPORT_JOB,
+  IMPORT_JOB_CANCEL,
   IMPORT_JOB_ERROR,
-  IMPORT_JOB_HEAD,
+  IMPORT_JOB_FOOT,
   IMPORT_JOB_LINE,
   IMPORT_JOB_META,
   IMPORT_JOB_TRACK,
@@ -421,23 +422,8 @@ function Jobs({
         const active = isActiveJob(job);
         return (
           <div key={job.id} className={IMPORT_JOB}>
-            <div className={IMPORT_JOB_HEAD}>
-              <div className={IMPORT_JOB_LINE}>{jobTitle(job)}</div>
-              {active ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="shrink-0 phone:min-h-11"
-                  disabled={cancelling === job.id}
-                  aria-label={`Cancel the ${importLabel(job.kind).toLowerCase()} import`}
-                  onClick={() => cancel(job)}
-                >
-                  Cancel
-                </Button>
-              ) : null}
-            </div>
-            {active ? (
+            <div className={IMPORT_JOB_LINE}>{jobTitle(job)}</div>
+            {active && pct !== null ? (
               <MeterTrack
                 pct={pct}
                 tone="normal"
@@ -451,10 +437,25 @@ function Jobs({
             {job.truncated ? (
               <div className={IMPORT_JOB_META}>{TRUNCATED_COPY}</div>
             ) : null}
-            <div className={IMPORT_JOB_META}>
-              {job.finishedAt
-                ? `Finished ${relativeTime(job.finishedAt)}`
-                : `Started ${relativeTime(job.startedAt)}`}
+            <div className={IMPORT_JOB_FOOT}>
+              <span className={IMPORT_JOB_META}>
+                {job.finishedAt
+                  ? `Finished ${relativeTime(job.finishedAt)}`
+                  : `Started ${relativeTime(job.startedAt)}`}
+              </span>
+              {active ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className={IMPORT_JOB_CANCEL}
+                  disabled={cancelling === job.id}
+                  aria-label={`Cancel the ${importLabel(job.kind).toLowerCase()} import`}
+                  onClick={() => cancel(job)}
+                >
+                  Cancel
+                </Button>
+              ) : null}
             </div>
           </div>
         );

@@ -31,12 +31,16 @@ export const IMPORT_HOST_SKIPPED = "text-faint";
 export const IMPORT_REFUSED =
   "m-0 mt-1 flex list-none flex-col gap-0.5 p-0 [overflow-wrap:anywhere]";
 
-/** One import: its line, the progress track, when it started and Cancel. */
+/** One import: its line, the progress track (once the total is known),
+ *  then when it started with Cancel at the end of that line. */
 export const IMPORT_JOB = "flex flex-col gap-2 px-5 py-3.5";
-export const IMPORT_JOB_HEAD =
-  "flex items-start gap-3 phone:flex-col phone:items-stretch phone:gap-2";
 export const IMPORT_JOB_LINE =
-  "min-w-0 flex-1 text-item-title font-medium text-fg [overflow-wrap:anywhere]";
+  "min-w-0 text-item-title font-medium text-fg [overflow-wrap:anywhere]";
+export const IMPORT_JOB_FOOT =
+  "flex min-h-7 items-center justify-between gap-3";
+/** Cancel sits on the meta line without making it taller on a desktop;
+ *  44px under a finger. */
+export const IMPORT_JOB_CANCEL = "-my-1 -mr-2 shrink-0 phone:min-h-11";
 export const IMPORT_JOB_META = "text-supporting text-dim phone:text-meta";
 export const IMPORT_JOB_ERROR =
   "text-supporting text-red phone:text-meta [overflow-wrap:anywhere]";

@@ -89,7 +89,7 @@ const CONNECTOR_WARNING =
   "Routine replies can carry what the project's connectors, web search and websites return. Draft is safer while you get to know the agent.";
 
 const LEARN_COPY =
-  "Pat reads the replies your team sent from this inbox and adds them to the project's knowledge. Answers older than the latest change to the docs or a release come in as reference";
+  "Pat reads the replies your team sent from this inbox and adds them to the project's knowledge. Answers older than the latest docs change or release come in as reference";
 
 /**
  * Connect or edit one support inbox: the mailbox and its two servers (with
@@ -393,7 +393,7 @@ export function InboxForm({
         error={error}
       >
         <div className={INBOX_LEARN_ROW}>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0">
             <div className="text-item-title font-medium text-fg">
               Learn from past replies
             </div>
