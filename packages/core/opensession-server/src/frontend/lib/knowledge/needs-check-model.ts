@@ -2,12 +2,18 @@
 // them, the two panes of one item's comparison, and the words around the
 // queue's actions. Pure; no I/O, no React.
 
-import type { KnowledgeItem } from "../../../shared/knowledge";
+import { KNOWLEDGE_COPY, type KnowledgeItem } from "../../../shared/knowledge";
 import type {
   KnowledgeNeedsCheckChange,
   KnowledgeRevalidateResult,
 } from "../api/knowledge";
 import { diffLineTone } from "../memory-repo";
+import {
+  formatDay,
+  itemBadges,
+  originLabel,
+  type KnowledgeBadge,
+} from "./models";
 
 /** Items that need a check for the same reason: one changed source, one
  *  disagreeing article, or a review date that passed. */
@@ -57,6 +63,25 @@ export function groupByReason(items: KnowledgeItem[]): NeedsCheckGroup[] {
   }));
 }
 
+/** A row's second line: since when it needs a check (its group says why),
+ *  then where it came from when that isn't the team. */
+export function rowLine(item: KnowledgeItem): string {
+  const when = item.check
+    ? `Since ${formatDay(item.check.since)}`
+    : item.reviewBy
+      ? KNOWLEDGE_COPY.reviewPassed(formatDay(item.reviewBy))
+      : "Needs a check";
+  const origin = originLabel(item.origin);
+  return origin ? `${when} · ${origin}` : when;
+}
+
+/** A row's badges, without the ones every row in this tab would carry. */
+export function rowBadges(item: KnowledgeItem): KnowledgeBadge[] {
+  return itemBadges(item).filter(
+    (b) => b.label !== "Needs check" && b.label !== "Overdue",
+  );
+}
+
 export type PatchTone = ReturnType<typeof diffLineTone>;
 
 export interface PaneSide {
@@ -97,7 +122,9 @@ function readOrMissing(
   link?: string,
 ): PaneSide {
   const side: PaneSide =
-    text === undefined ? { label, text: missing, missing: true } : { label, text };
+    text === undefined
+      ? { label, text: missing, missing: true }
+      : { label, text };
   if (link) side.link = link;
   return side;
 }

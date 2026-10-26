@@ -44,6 +44,7 @@ import { IconChevronLeft } from "../../icons";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeList } from "./KnowledgeList";
 import { KnowledgeSuggestions } from "./KnowledgeSuggestions";
+import { KnowledgeNeedsCheck } from "./KnowledgeNeedsCheck";
 
 /** The tabs in the bar, in order. History opens from an item's page. */
 const TABS: Array<{ tab: KnowledgeTab; label: string }> = [
@@ -180,6 +181,12 @@ export function KnowledgePage({
           />
         ) : route.tab === "suggestions" ? (
           <KnowledgeSuggestions project={project} />
+        ) : route.tab === "needs-check" ? (
+          <KnowledgeNeedsCheck
+            project={project}
+            path={route.path}
+            onNavigate={onNavigate}
+          />
         ) : filter ? (
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (

@@ -5,6 +5,8 @@ import {
   checkNowLine,
   confirmGroupRequest,
   groupByReason,
+  rowBadges,
+  rowLine,
 } from "./needs-check-model";
 
 const NEW = "9c1d2e0f".padEnd(40, "a");
@@ -244,5 +246,30 @@ test("checkNowLine counts what was checked and what flipped", () => {
   ).toEqual({
     text: "Checked 3, 0 need a check. Some sources couldn't be read",
     failed: true,
+  });
+});
+
+describe("rows", () => {
+  test("a row says since when, not the reason its group already says", () => {
+    expect(rowLine(item())).toBe("Since 25 Oct 2026");
+    expect(rowLine(item({ check: undefined, reviewBy: "2026-10-01" }))).toBe(
+      "Review date passed (1 Oct 2026)",
+    );
+    expect(
+      rowLine(item({ path: "sources/mail/2026-10/m.md", origin: "mail" })),
+    ).toBe("Since 25 Oct 2026 · From the mailbox");
+  });
+
+  test("badges leave out what the tab already says", () => {
+    expect(
+      rowBadges(item({ trust: "reference", kind: "internal" })).map(
+        (b) => b.label,
+      ),
+    ).toEqual(["Internal", "Reference"]);
+    expect(
+      rowBadges(
+        item({ status: "active", check: undefined, reviewBy: "2026-10-01" }),
+      ),
+    ).toEqual([]);
   });
 });
