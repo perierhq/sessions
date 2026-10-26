@@ -11,6 +11,7 @@ import {
   latestChange,
   patchFor,
   type RepoChangeDeps,
+  RepoTooLargeError,
   RepoUnavailableError,
   showAt,
 } from "./repo-changes";
@@ -190,5 +191,165 @@ describe("repo change signals", () => {
     await expect(
       commitsSince("acme", "--all", ["docs/"], deps),
     ).rejects.toThrow();
+  });
+});
+
+describe("first-parent dates, caps, fetch flags and odd paths", () => {
+  let root: string;
+  let w: string;
+  let co: string;
+  let d: Partial<RepoChangeDeps>;
+  const s: Record<string, string> = {};
+
+  async function edit(file: string, text: string, date: string) {
+    await mkdir(join(w, file, ".."), { recursive: true });
+    await writeFile(join(w, file), text);
+    await run(w, ["add", "--", file]);
+    await run(w, ["commit", "-q", "-m", `edit ${file}`], date);
+    return run(w, ["rev-parse", "HEAD"]);
+  }
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "kn-repo-changes-merge-"));
+    const origin = join(root, "origin.git");
+    w = join(root, "work");
+    co = join(root, "checkout");
+    await run(root, ["init", "-q", "--bare", "-b", "main", origin]);
+    await run(root, ["clone", "-q", origin, w]);
+    await run(w, ["checkout", "-q", "-b", "main"]);
+    s.m0 = await edit("README.md", "hi\n", "2026-08-01T10:00:00Z");
+    await run(w, ["checkout", "-q", "-b", "feature"]);
+    // Written long ago on a branch, landed on main much later.
+    s.b1 = await edit("docs/guide.md", "old\n", "2026-07-01T10:00:00Z");
+    await run(w, ["checkout", "-q", "main"]);
+    s.m1 = await edit("README.md", "hello\n", "2026-09-01T10:00:00Z");
+    await run(
+      w,
+      ["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"],
+      "2026-10-01T10:00:00Z",
+    );
+    s.merge = await run(w, ["rev-parse", "HEAD"]);
+    s.u = await edit("docs/ünï cöde.md", "x\n", "2026-10-02T10:00:00Z");
+    s.big = await edit(
+      "docs/big.md",
+      "x".repeat(1024 * 1024 + 10),
+      "2026-10-03T10:00:00Z",
+    );
+    await run(w, ["push", "-q", "origin", "main"]);
+    await run(root, ["clone", "-q", origin, co]);
+    d = {
+      repo: () => ({ dir: co, defaultBranch: "main" }),
+      serialize: (fn) => fn(),
+    };
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("latestChange reports the merge that landed a change, at its landing date", async () => {
+    const latest = await latestChange("acme", ["docs/guide.md"], d);
+    expect(latest?.sha).toBe(s.merge!);
+    expect(latest?.at).toStartWith("2026-10-01T10:00:00");
+    expect(latest?.paths).toEqual(["docs/guide.md"]);
+  });
+
+  test("commitAt walks the default branch only, not merged-in branch dates", async () => {
+    expect(await commitAt("acme", "2026-07-15T00:00:00Z", d)).toBeNull();
+    expect(await commitAt("acme", "2026-09-15T00:00:00Z", d)).toBe(s.m1!);
+    expect(await commitAt("acme", "2026-10-01T12:00:00Z", d)).toBe(s.merge!);
+  });
+
+  test("commitsSince keeps the full topology", async () => {
+    const since = await commitsSince("acme", s.m0!, ["docs/guide.md"], d);
+    expect(since.map((c) => c.sha)).toContain(s.b1!);
+    expect(since.truncated).toBe(false);
+  });
+
+  test("non-ASCII paths come back as written", async () => {
+    const since = await commitsSince("acme", s.merge!, ["docs/"], d);
+    expect(since.map((c) => c.paths)).toEqual([
+      ["docs/big.md"],
+      ["docs/ünï cöde.md"],
+    ]);
+    const latest = await latestChange("acme", ["docs/ünï cöde.md"], d);
+    expect(latest?.sha).toBe(s.u!);
+    expect(await showAt("acme", s.u!, "docs/ünï cöde.md", d)).toBe("x\n");
+  });
+
+  test("commitsSince caps the entries and says so", async () => {
+    const capped = await commitsSince("acme", s.m0!, [], {
+      ...d,
+      limits: { commits: 2 },
+    });
+    expect(capped).toHaveLength(2);
+    expect(capped.truncated).toBe(true);
+    expect(capped[0]!.sha).toBe(s.big!);
+  });
+
+  test("showAt refuses a file over 1 MB", async () => {
+    await expect(showAt("acme", s.big!, "docs/big.md", d)).rejects.toThrow(
+      RepoTooLargeError,
+    );
+  });
+
+  test("output past the cap kills git and throws", async () => {
+    await expect(
+      patchFor("acme", s.big!, "docs/big.md", {
+        ...d,
+        limits: { outputBytes: 4096 },
+      }),
+    ).rejects.toThrow(RepoTooLargeError);
+    await expect(
+      commitsSince("acme", s.m0!, [], { ...d, limits: { outputBytes: 64 } }),
+    ).rejects.toThrow(RepoTooLargeError);
+  });
+
+  test("patchFor never runs textconv", async () => {
+    const calls: string[][] = [];
+    await patchFor("acme", s.u!, "docs/ünï cöde.md", {
+      ...d,
+      git: async (_dir, args) => {
+        calls.push(args);
+        return "";
+      },
+    });
+    const show = calls.find((a) => a.includes("show"))!;
+    expect(show).toContain("--no-textconv");
+  });
+
+  test("the fetch skips gc, submodules and FETCH_HEAD", async () => {
+    const calls: string[][] = [];
+    expect(
+      await fetchDefaultBranch("acme", {
+        repo: d.repo,
+        git: async (_dir, args) => {
+          calls.push(args);
+          return "";
+        },
+      }),
+    ).toBe(true);
+    const fetch = calls.find((a) => a.includes("fetch"))!;
+    expect(fetch).toContain("--no-auto-gc");
+    expect(fetch).toContain("--no-recurse-submodules");
+    expect(fetch).toContain("--no-write-fetch-head");
+  });
+
+  test("a real fetch waits for the server's git lock", async () => {
+    const { withGitLock } = await import("../../worktree");
+    let release!: () => void;
+    const held = withGitLock(
+      () => new Promise<void>((done) => (release = done)),
+    );
+    let finished = false;
+    const fetching = fetchDefaultBranch("acme", { repo: d.repo }).then((ok) => {
+      finished = true;
+      return ok;
+    });
+    await Bun.sleep(300);
+    expect(finished).toBe(false);
+    release();
+    await held;
+    expect(await fetching).toBe(true);
   });
 });

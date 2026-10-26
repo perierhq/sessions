@@ -34,18 +34,53 @@ export interface RepoCommit {
   paths: string[];
 }
 
+/** commitsSince's answer: newest first, at most `limits.commits` entries.
+ *  `truncated` is true when there were more (the oldest were dropped). */
+export type RepoCommits = RepoCommit[] & { truncated: boolean };
+
+export interface RepoChangeLimits {
+  /** Most commits commitsSince returns (default 500). */
+  commits: number;
+  /** Most bytes of git output read before git is killed (default 8 MiB;
+   *  patchFor reads at most 2 MiB). */
+  outputBytes: number;
+  /** Largest file showAt reads (default 1 MiB). */
+  showBytes: number;
+}
+
 export interface RepoChangeDeps {
-  /** Run git in `dir`; resolves stdout, rejects on a non-zero exit. */
-  git(dir: string, args: string[]): Promise<string>;
+  /** Run git in `dir`; resolves stdout, rejects on a non-zero exit. The
+   *  output cap is advisory for an injected git (its answer is checked
+   *  against it afterwards). */
+  git(
+    dir: string,
+    args: string[],
+    opts?: { maxBytes: number },
+  ): Promise<string>;
   repo(project: string): { dir: string; defaultBranch: string } | null;
   /** Serialises the fetch with the server's other git work on the same
-   *  checkout (worktree.ts withGitLock). Tests run it directly. */
+   *  checkout. Defaults to worktree.ts withGitLock, unless `git` is
+   *  injected (then the fetch runs directly). */
   serialize?<T>(fn: () => Promise<T>): Promise<T>;
+  limits?: Partial<RepoChangeLimits>;
 }
 
 const GIT_TIMEOUT_MS = 10_000;
 /** A fetch talks to the remote; give it longer than a local read. */
-const FETCH_TIMEOUT_MS = 60_000;
+const FETCH_TIMEOUT_MS = 25_000;
+/** SIGTERM first, SIGKILL when git hasn't gone this long after. */
+const KILL_GRACE_MS = 2_000;
+const MIB = 1024 * 1024;
+const LIMITS: RepoChangeLimits = {
+  commits: 500,
+  outputBytes: 8 * MIB,
+  showBytes: MIB,
+};
+const PATCH_BYTES = 2 * MIB;
+const STDERR_BYTES = 64 * 1024;
+/** Paths as written (UTF-8, not octal-quoted). */
+const GLOBAL = ["-c", "core.quotePath=false"];
+const HEADER = /^([0-9a-f]{40,64})\x1f(\d{4}-\d\d-\d\dT[^\x1f\0]*)$/;
 const SHA = /^[0-9a-f]{7,64}$/i;
 const FIELD = "\x1f";
 
@@ -62,6 +97,15 @@ export class RepoUnavailableError extends Error {
   }
 }
 
+/** The git subcommand in `args` (global options and `-c` values skipped). */
+function subcommand(args: readonly string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-c") i++;
+    else if (!args[i]!.startsWith("-")) return args[i]!;
+  }
+  return "";
+}
+
 export class RepoGitError extends Error {
   constructor(
     readonly args: string[],
@@ -69,14 +113,59 @@ export class RepoGitError extends Error {
     readonly stderr: string,
   ) {
     super(
-      `git ${args.filter((a) => a !== LITERAL_PATHSPECS)[0] ?? ""} failed${code === null ? " (timed out)" : ` (${code})`}: ${stderr.trim().slice(0, 300)}`,
+      `git ${subcommand(args)} failed${code === null ? " (timed out)" : ` (${code})`}: ${stderr.trim().slice(0, 300)}`,
     );
     this.name = "RepoGitError";
   }
 }
 
-async function runGit(dir: string, args: string[]): Promise<string> {
-  const fetching = args[0] === "fetch";
+/** Git answered more than the cap allows (git was killed). */
+export class RepoTooLargeError extends Error {
+  constructor(
+    readonly what: string,
+    readonly limit: number,
+  ) {
+    super(`${what} is larger than ${limit} bytes`);
+    this.name = "RepoTooLargeError";
+  }
+}
+
+/** Read a stream up to `max` bytes. Past it: `onOver` (then stop reading)
+ *  or, without one, keep draining and drop the rest. */
+async function drain(
+  stream: ReadableStream<Uint8Array>,
+  max: number,
+  onOver?: () => void,
+): Promise<{ data: Buffer; over: boolean }> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let over = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (over) continue;
+    if (size + value.byteLength > max) {
+      over = true;
+      if (onOver) {
+        onOver();
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      continue;
+    }
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  return { data: Buffer.concat(chunks), over };
+}
+
+async function runGit(
+  dir: string,
+  args: string[],
+  opts: { maxBytes: number } = { maxBytes: LIMITS.outputBytes },
+): Promise<string> {
+  const fetching = subcommand(args) === "fetch";
   const proc = Bun.spawn(workloadArgv(["git", "-C", dir, ...args], "git"), {
     stdin: "ignore",
     stdout: "pipe",
@@ -88,24 +177,36 @@ async function runGit(dir: string, args: string[]): Promise<string> {
     },
   });
   let timedOut = false;
+  let killer: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => {
+    proc.kill("SIGTERM");
+    killer ??= setTimeout(() => proc.kill("SIGKILL"), KILL_GRACE_MS);
+  };
   const timer = setTimeout(
     () => {
       timedOut = true;
-      proc.kill("SIGKILL");
+      stop();
     },
     fetching ? FETCH_TIMEOUT_MS : GIT_TIMEOUT_MS,
   );
   try {
     const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      drain(proc.stdout, opts.maxBytes, stop),
+      drain(proc.stderr, STDERR_BYTES),
       proc.exited,
     ]);
+    if (stdout.over)
+      throw new RepoTooLargeError(`git ${subcommand(args)}`, opts.maxBytes);
     if (timedOut || code !== 0)
-      throw new RepoGitError(args, timedOut ? null : code, stderr);
-    return stdout;
+      throw new RepoGitError(
+        args,
+        timedOut ? null : code,
+        stderr.data.toString("utf8"),
+      );
+    return stdout.data.toString("utf8");
   } finally {
     clearTimeout(timer);
+    clearTimeout(killer);
   }
 }
 
@@ -161,7 +262,10 @@ async function isDirectory(dir: string): Promise<boolean> {
 }
 
 interface Resolved {
-  git(args: string[]): Promise<string>;
+  /** git with `-c core.quotePath=false`; output capped at `maxBytes`
+   *  (default limits.outputBytes). */
+  git(args: string[], maxBytes?: number): Promise<string>;
+  limits: RepoChangeLimits;
   branch: string;
   /** `refs/remotes/origin/<branch>`. */
   ref: string;
@@ -187,12 +291,21 @@ async function resolve(
       `not a branch name: ${repo.defaultBranch.slice(0, 80)}`,
     );
   const git = deps.git ?? runGit;
+  const limits = { ...LIMITS, ...deps.limits };
   return {
-    git: (args) => git(repo.dir, args),
+    git: async (args, maxBytes = limits.outputBytes) => {
+      const full = [...GLOBAL, ...args];
+      const out = await git(repo.dir, full, { maxBytes });
+      if (Buffer.byteLength(out) > maxBytes)
+        throw new RepoTooLargeError(`git ${subcommand(full)}`, maxBytes);
+      return out;
+    },
+    limits,
     branch: repo.defaultBranch,
     ref: `refs/remotes/origin/${repo.defaultBranch}`,
-    serialize:
-      deps.serialize ?? (deps.git || deps.repo ? (fn) => fn() : withGitLock),
+    // Only a fake git may skip the lock: a real fetch on the project's
+    // checkout always queues behind the server's other git work.
+    serialize: deps.serialize ?? (deps.git ? (fn) => fn() : withGitLock),
   };
 }
 
@@ -212,20 +325,27 @@ function matches(path: string, asked: readonly string[]): boolean {
   return asked.some((a) => (a.endsWith("/") ? path.startsWith(a) : path === a));
 }
 
-/** `git log --name-only` output with `%H<US>%cI` headers → commits. */
+/** `git log -z --name-only` output with `%H<US>%cI` headers → commits.
+ *  With -z every header and path ends in NUL, and the first path after a
+ *  header starts with a newline. */
 function parseLog(out: string, asked: readonly string[]): RepoCommit[] {
   const commits: RepoCommit[] = [];
   let current: RepoCommit | null = null;
-  for (const line of out.split("\n")) {
-    if (!line) continue;
-    const header = line.split(FIELD);
-    if (header.length === 2 && SHA.test(header[0]!)) {
-      current = { sha: header[0]!, at: header[1]!, paths: [] };
+  let afterHeader = false;
+  for (let token of out.split("\0")) {
+    if (token.startsWith("\n") && (afterHeader || HEADER.test(token.slice(1))))
+      token = token.slice(1);
+    afterHeader = false;
+    if (!token) continue;
+    const header = HEADER.exec(token);
+    if (header) {
+      current = { sha: header[1]!, at: header[2]!, paths: [] };
       commits.push(current);
+      afterHeader = true;
       continue;
     }
     if (!current) continue;
-    if (asked.length === 0 || matches(line, asked)) current.paths.push(line);
+    if (asked.length === 0 || matches(token, asked)) current.paths.push(token);
   }
   return commits;
 }
@@ -239,6 +359,7 @@ async function log(
   const out = await r.git([
     LITERAL_PATHSPECS,
     "log",
+    "-z",
     `--format=%H${FIELD}%cI`,
     "--name-only",
     "--no-renames",
@@ -258,7 +379,15 @@ export async function fetchDefaultBranch(
   try {
     const r = await resolve(project, deps);
     await r.serialize(() =>
-      r.git(["fetch", "origin", `+refs/heads/${r.branch}:${r.ref}`, "--quiet"]),
+      r.git([
+        "fetch",
+        "--quiet",
+        "--no-auto-gc",
+        "--no-recurse-submodules",
+        "--no-write-fetch-head",
+        "origin",
+        `+refs/heads/${r.branch}:${r.ref}`,
+      ]),
     );
     return true;
   } catch (error) {
@@ -285,33 +414,51 @@ export async function defaultHead(
   }
 }
 
-/** Default-branch commits after `since` that touch `paths`, newest first.
- *  No paths: every commit. Throws when `since` is not a known commit. */
+/** Default-branch commits after `since` that touch `paths`, newest first,
+ *  over the full topology (commits merged in from branches included, at
+ *  their own dates). No paths: every commit. At most `limits.commits`
+ *  (500) entries; `truncated` says more were left out. Throws when `since`
+ *  is not a known commit. */
 export async function commitsSince(
   project: string,
   since: string,
   paths: string[],
   deps?: Partial<RepoChangeDeps>,
-): Promise<RepoCommit[]> {
+): Promise<RepoCommits> {
   const r = await resolve(project, deps);
   const from = checkSha(since);
-  return log(r, [`${from}..${r.ref}`], paths);
+  const cap = r.limits.commits;
+  const commits = await log(
+    r,
+    [`--max-count=${cap + 1}`, `${from}..${r.ref}`],
+    paths,
+  );
+  return Object.assign(commits.slice(0, cap), {
+    truncated: commits.length > cap,
+  });
 }
 
 /** The newest default-branch commit touching any of `paths` (any commit
- *  when none are given); null when there is none. */
+ *  when none are given); null when there is none. Walks first parents
+ *  only, so a change merged in from a branch is reported as the merge
+ *  commit, at the date it landed. */
 export async function latestChange(
   project: string,
   paths: string[],
   deps?: Partial<RepoChangeDeps>,
 ): Promise<RepoCommit | null> {
   const r = await resolve(project, deps);
-  const commits = await log(r, ["-1", r.ref], paths);
+  const commits = await log(
+    r,
+    ["-1", "--first-parent", "--diff-merges=first-parent", r.ref],
+    paths,
+  );
   return commits[0] ?? null;
 }
 
-/** The default-branch commit current at `at` (the newest committed at or
- *  before it); null when none. */
+/** The default-branch commit current at `at` (the newest first-parent
+ *  commit at or before it, so a branch commit's own older date doesn't
+ *  count); null when none. */
 export async function commitAt(
   project: string,
   at: string,
@@ -324,6 +471,7 @@ export async function commitAt(
     await r.git([
       "rev-list",
       "-1",
+      "--first-parent",
       `--before=${new Date(time).toISOString()}`,
       r.ref,
     ])
@@ -332,7 +480,8 @@ export async function commitAt(
 }
 
 /** A file's text at a commit; null when it isn't a file there. Throws
- *  when the commit itself is unknown. */
+ *  when the commit itself is unknown, and RepoTooLargeError for a file over
+ *  `limits.showBytes` (1 MiB). */
 export async function showAt(
   project: string,
   sha: string,
@@ -353,11 +502,15 @@ export async function showAt(
     return null;
   }
   if (type !== "blob") return null;
-  return r.git(["cat-file", "blob", object]);
+  const size = Number((await r.git(["cat-file", "-s", object])).trim());
+  if (!Number.isSafeInteger(size) || size > r.limits.showBytes)
+    throw new RepoTooLargeError(path, r.limits.showBytes);
+  return r.git(["cat-file", "blob", object], r.limits.showBytes);
 }
 
 /** What commit `sha` changed in `path` (a unified diff; empty when it
- *  didn't touch it), for the needs-check side-by-side. */
+ *  didn't touch it), for the needs-check side-by-side. RepoTooLargeError
+ *  past 2 MiB (or `limits.outputBytes` when smaller). */
 export async function patchFor(
   project: string,
   sha: string,
@@ -365,16 +518,20 @@ export async function patchFor(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<string> {
   const r = await resolve(project, deps);
-  return r.git([
-    LITERAL_PATHSPECS,
-    "show",
-    "--format=",
-    "--patch",
-    "--no-renames",
-    "--no-color",
-    "--no-ext-diff",
-    checkSha(sha),
-    "--",
-    checkPath(path),
-  ]);
+  return r.git(
+    [
+      LITERAL_PATHSPECS,
+      "show",
+      "--format=",
+      "--patch",
+      "--no-renames",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      checkSha(sha),
+      "--",
+      checkPath(path),
+    ],
+    Math.min(PATCH_BYTES, r.limits.outputBytes),
+  );
 }
