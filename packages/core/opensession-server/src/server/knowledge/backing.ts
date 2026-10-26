@@ -18,9 +18,9 @@
 //     the daily run);
 //  5. this session's own read_knowledge showed it at that commit
 //     (support/evidence.ts); search_knowledge listing it is not enough.
-// Used but not cited: when the draft cites nothing that backs it, every
-// item the session read must pass 1–4 at the commit it was read at, or
-// it holds the draft too (`uncited`), since the reply may rest on it.
+// Used but not cited: every item the session read and the draft doesn't
+// cite must pass 1–4 at the commit it was read at, or it holds the draft
+// too (`uncited`), since the reply may rest on it whatever else it cites.
 // Quoted internal text: whenever the project has a knowledge repository,
 // cited or not, a draft holding INTERNAL_QUOTE_WORDS consecutive words of
 // an `internal` article body sets `internalQuoted` (quote-check.ts); the
@@ -83,7 +83,7 @@ export interface BackingDeps {
 export const NOT_FOUND = "Not found in knowledge";
 export const RETIRED = "Retired";
 export const NEEDS_CHECK = "Needs a check";
-/** Items a session read that are checked when it cites none that backs;
+/** Items a session read and the draft doesn't cite that are checked;
  *  past it the check fails closed. */
 export const MAX_READ_CHECKED = 20;
 
@@ -272,7 +272,7 @@ export async function knowledgeVerdict(
       if (blocked) verdict.blocked.push(blocked);
       else verdict.backing.push({ kind: "knowledge", ref });
     }
-    if (verdict.backing.length === 0 && input.sessionId) {
+    if (input.sessionId) {
       const citedPaths = new Set(
         cited.map((ref) => parseKnowledgeCitation(ref)?.path),
       );

@@ -225,8 +225,9 @@ draft waits for a person when:
   Changed pages and new releases are left to the daily run;
 - this session didn't open it with `read_knowledge` ("This session didn't read
   it"); a search listing is not enough;
-- the session read an item that can't back a reply and the draft cites no item
-  that can: the reply may rest on it, so it waits too (that item's reason);
+- the session read an item that can't back a reply and the draft doesn't cite
+  it: the reply may rest on it, so it waits too (that item's reason), whatever
+  else the draft cites;
 - the knowledge service, the index, the code repository or GitHub can't answer
   ("Knowledge couldn't be checked"). This also applies to a draft that cites
   nothing on a project that has a knowledge repository: the server never sends

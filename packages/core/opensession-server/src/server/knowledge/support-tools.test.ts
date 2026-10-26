@@ -370,9 +370,7 @@ test("the descriptions say what citing and reading do", () => {
   const [search, read] = knowledgeTools({ sessionId: "s1" });
   expect(search!.description).toContain("Listing an item is not reading it");
   expect(read!.description).toContain("checked again when the reply is sent");
-  expect(read!.description).toContain(
-    "the reply waits for a person unless it also cites one that can",
-  );
+  expect(read!.description).not.toContain("unless it also cites");
 });
 
 test("read_knowledge marks an internal item", async () => {

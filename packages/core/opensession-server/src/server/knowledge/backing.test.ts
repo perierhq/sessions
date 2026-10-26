@@ -360,7 +360,7 @@ test("an item search only listed is not read", async () => {
   expect(v?.blocked.map((b) => b.reason)).toEqual([KNOWLEDGE_COPY.notRead]);
 });
 
-test("used but not cited: a read item that can't back holds a draft citing no backing item", async () => {
+test("used but not cited: a read item that can't back always holds the draft", async () => {
   const head = await project("acme-used", {
     "articles/export.md": {},
     "suggestions/pdf.md": {
@@ -384,13 +384,24 @@ test("used but not cited: a read item that can't back holds a draft citing no ba
       uncited: true,
     },
   ]);
-  // Citing an item that backs is enough.
+  // Citing an item that backs doesn't clear it: the reply may still rest
+  // on the reference item the session read.
   const cited = await knowledgeVerdict(
     input("acme-used", [cite("articles/export.md", head)]),
     deps,
   );
-  expect(cited?.backing).toHaveLength(1);
-  expect(cited?.blocked).toEqual([]);
+  expect(cited?.backing).toEqual([
+    { kind: "knowledge", ref: `articles/export.md@${head}` },
+  ]);
+  expect(cited?.blocked).toEqual([
+    {
+      ref: `suggestions/pdf.md@${head}`,
+      path: "suggestions/pdf.md",
+      title: "PDF export",
+      reason: KNOWLEDGE_COPY.notTrusted,
+      uncited: true,
+    },
+  ]);
   // Another session that read only backing items: nothing held.
   recordKnowledgeSeen("os-good", "articles/export.md", head, "read");
   const good = await knowledgeVerdict(
