@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KNOWLEDGE_SKIP } from "../../../shared/knowledge";
 import type { InboxConfig } from "../../../shared/support";
 import { catalogDocuments } from "../../catalog-documents";
 import { git, isolatedGitEnv } from "../../memory-repo/git";
@@ -38,6 +39,7 @@ import { mailItemPath } from "../layout";
 import { KnowledgeService } from "../service";
 import { HISTORY_UNREADABLE } from "./trust";
 import {
+  __setJobPhaseListenerForTest,
   __waitForJobForTest,
   CANCELLED_COPY,
   cancelJob,
@@ -510,6 +512,48 @@ describe("mailbox backfill", () => {
     expect(flags()).toEqual(flagsBefore);
     expect((await listIndexRows()).length).toBe(conversationsBefore);
     expect(await catalogDocuments("support-cursors").list()).toEqual([]);
+  });
+
+  test("a run says what it is doing from the start, and a rerun says why it skipped", async () => {
+    const phases: string[] = [];
+    __setJobPhaseListenerForTest((_project, _id, phase) =>
+      phases.push(phase.text),
+    );
+    try {
+      const job = await backfill();
+      expect(job.phase).toEqual({ text: "Finding repeated questions" });
+      const steps = [...new Set(phases)];
+      expect(steps.slice(0, 3)).toEqual([
+        "Connecting to the mail server",
+        "Reading Sent",
+        "Reading Sent 0 of 2",
+      ]);
+      for (const step of [
+        "Reading INBOX",
+        "Pairing",
+        "Reading messages 0 of 4",
+        "Reading the repository",
+        "Writing answers 0 of 2",
+        "Writing answers 1 of 2",
+        "Committing 2 of 2",
+        "Finding repeated questions",
+      ])
+        expect(steps).toContain(step);
+      expect(steps.indexOf("Pairing")).toBeGreaterThan(
+        steps.indexOf("Reading INBOX"),
+      );
+      expect(steps.indexOf("Committing 2 of 2")).toBeGreaterThan(
+        steps.indexOf("Writing answers 1 of 2"),
+      );
+
+      const again = await backfill();
+      expect(again.created.skipped).toBe(2);
+      expect(again.skippedReasons).toEqual({
+        [KNOWLEDGE_SKIP.alreadyImported]: 2,
+      });
+    } finally {
+      __setJobPhaseListenerForTest(undefined);
+    }
   });
 
   test("a second run adds nothing", async () => {

@@ -7,15 +7,24 @@
  * marks what was left running as failed (failInterruptedJobs, from the
  * knowledge maintenance start). The newest MAX_LISTED_JOBS per project are
  * kept. Nothing runs at import.
+ *
+ * A run says what it is doing (`phase`, "Reading INBOX 120 of 900") and
+ * counts what it made and skipped, by why. Those land on the job in this
+ * process at once (listJobs reads them) and on its record at most every
+ * JOB_WRITE_MS; each record write tells the project's clients
+ * (broadcast.ts). The record keeps the last phase once the run ends.
  */
 import { randomBytes } from "node:crypto";
 import {
   type KnowledgeImportJob,
   type KnowledgeImportKind,
+  type KnowledgeJobPhase,
+  MAX_SKIP_REASONS,
   MAX_SKIPPED_RECORDED,
 } from "../../../shared/knowledge";
 import { catalogDocuments } from "../../catalog-documents";
 import { MemoryRepoError } from "../../memory-repo/git-store";
+import { knowledgeChanged } from "../broadcast";
 
 export const JOB_RUNNING_COPY = "An import of this kind is running";
 export const INTERRUPTED_COPY = "Interrupted by a restart. Start it again.";
@@ -26,7 +35,53 @@ export const DEADLINE_COPY =
 export const JOB_DEADLINE_MS = 30 * 60 * 1000;
 /** How many jobs per project are listed (and kept). */
 export const MAX_LISTED_JOBS = 20;
+/** A running job's record is written at most this often. */
+export const JOB_WRITE_MS = 500;
 const MAX_ERROR_CHARS = 300;
+const MAX_PHASE_CHARS = 120;
+const STARTING: KnowledgeJobPhase = { text: "Starting" };
+
+/** Counts a run reports with its phase. */
+export interface PhaseCounts {
+  done?: number;
+  total?: number | null;
+}
+
+/** Say what a run is doing now; `counts` when they are known. */
+export type ReportPhase = (label: string, counts?: PhaseCounts) => void;
+
+/** Skipped inputs by why (a KNOWLEDGE_SKIP reason). */
+export type SkipCounts = Record<string, number>;
+
+/** Add `more` to `into`, in place; returns `into`. */
+export function addSkips(into: SkipCounts, more: SkipCounts): SkipCounts {
+  for (const [reason, n] of Object.entries(more))
+    if (n > 0) into[reason] = (into[reason] ?? 0) + n;
+  return into;
+}
+
+const whole = (n: number | null | undefined) =>
+  typeof n === "number" && Number.isFinite(n)
+    ? Math.max(0, Math.floor(n))
+    : null;
+
+/** "Reading INBOX 120 of 900", "Reading pages, 12 so far", "Pairing". */
+export function phaseOf(
+  label: string,
+  counts: PhaseCounts = {},
+): KnowledgeJobPhase {
+  const head = label.replace(/\s+/g, " ").trim().slice(0, MAX_PHASE_CHARS);
+  const done = whole(counts.done);
+  const total = whole(counts.total);
+  if (done !== null && total !== null)
+    return {
+      text: `${head} ${Math.min(done, total)} of ${total}`,
+      done: Math.min(done, total),
+      total,
+    };
+  if (done !== null) return { text: `${head}, ${done} so far`, done };
+  return { text: head };
+}
 
 export interface JobHandle {
   id: string;
@@ -41,9 +96,16 @@ export interface JobHandle {
     skipped: Array<{ name: string; reason: string }>,
   ): Promise<void>;
   setTotal(n: number): Promise<void>;
+  /** Add to the counts. `skippedBy` counts skipped inputs by why; when
+   *  `skipped` is left out, it is their sum. */
   progress(
-    delta: Partial<KnowledgeImportJob["created"]> & { done?: number },
+    delta: Partial<KnowledgeImportJob["created"]> & {
+      done?: number;
+      skippedBy?: SkipCounts;
+    },
   ): Promise<void>;
+  /** What the run is doing now. */
+  phase: ReportPhase;
 }
 
 let jobDocs: ReturnType<typeof catalogDocuments> | undefined;
@@ -53,6 +115,8 @@ const docs = () => (jobDocs ??= catalogDocuments("knowledge-jobs"));
 const claimed = new Set<string>();
 /** Runs of this process, by job id. */
 const running = new Map<string, Promise<void>>();
+/** Their jobs as they are now, ahead of the throttled record, by job id. */
+const live = new Map<string, KnowledgeImportJob>();
 /** Their cancel switches, by job id. */
 const controllers = new Map<string, { project: string; ac: AbortController }>();
 let sequence = 0;
@@ -82,7 +146,7 @@ async function allJobs(project?: string): Promise<KnowledgeImportJob[]> {
   const jobs: KnowledgeImportJob[] = [];
   for (const { value } of await docs().list())
     if (isJob(value) && (project === undefined || value.project === project))
-      jobs.push(value);
+      jobs.push(live.get(value.id) ?? value);
   return jobs.sort(newestFirst);
 }
 
@@ -177,6 +241,7 @@ export async function startJob(
       done: 0,
       total: null,
       created: { trusted: 0, reference: 0, suggestions: 0, skipped: 0 },
+      phase: STARTING,
       options,
     };
     await docs().set(keyOf(project, job.id), job);
@@ -184,17 +249,51 @@ export async function startJob(
     claimed.delete(slot);
     throw error;
   }
+  knowledgeChanged(project, "jobs");
 
   const id = job.id;
   const ac = new AbortController();
   controllers.set(id, { project, ac });
+  live.set(id, job);
+
+  // The job as it is now; written at most every JOB_WRITE_MS, in order.
+  let current = job;
+  let lastWrite = performance.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let writing: Promise<void> = Promise.resolve();
+  /** Set once the run ended: a late report can't reopen the record. */
+  let closed = false;
+  const write = () => {
+    timer = undefined;
+    lastWrite = performance.now();
+    const snapshot = current;
+    writing = writing
+      .then(() => update(project, id, () => snapshot))
+      .then(() => knowledgeChanged(project, "jobs"))
+      .catch((e) =>
+        console.warn(`[knowledge] job ${id} not recorded:`, errorText(e)),
+      );
+  };
+  const change = (mutate: (job: KnowledgeImportJob) => KnowledgeImportJob) => {
+    if (closed) return Promise.resolve();
+    current = mutate(current);
+    live.set(id, current);
+    if (timer) return Promise.resolve();
+    const wait = lastWrite + JOB_WRITE_MS - performance.now();
+    if (wait <= 0) write();
+    else {
+      timer = setTimeout(write, wait);
+      (timer as { unref?: () => void }).unref?.();
+    }
+    return Promise.resolve();
+  };
+
   const handle: JobHandle = {
     id,
     signal: ac.signal,
-    markTruncated: () =>
-      update(project, id, (j) => ({ ...j, truncated: true })),
+    markTruncated: () => change((j) => ({ ...j, truncated: true })),
     recordSkipped: (skipped) =>
-      update(project, id, (j) => ({
+      change((j) => ({
         ...j,
         skippedFiles: [
           ...(j.skippedFiles ?? []),
@@ -204,30 +303,49 @@ export async function startJob(
           })),
         ].slice(0, MAX_SKIPPED_RECORDED),
       })),
-    setTotal: (n) =>
-      update(project, id, (j) => ({ ...j, total: Math.max(0, n) })),
+    setTotal: (n) => change((j) => ({ ...j, total: Math.max(0, n) })),
     progress: (delta) =>
-      update(project, id, (j) => ({
-        ...j,
-        done: j.done + (delta.done ?? 0),
-        created: {
-          trusted: j.created.trusted + (delta.trusted ?? 0),
-          reference: j.created.reference + (delta.reference ?? 0),
-          suggestions: j.created.suggestions + (delta.suggestions ?? 0),
-          skipped: j.created.skipped + (delta.skipped ?? 0),
-        },
-      })),
+      change((j) => {
+        const by = delta.skippedBy ?? {};
+        const skipped =
+          delta.skipped ??
+          Object.values(by).reduce((sum, n) => sum + Math.max(0, n), 0);
+        return {
+          ...j,
+          done: j.done + (delta.done ?? 0),
+          created: {
+            trusted: j.created.trusted + (delta.trusted ?? 0),
+            reference: j.created.reference + (delta.reference ?? 0),
+            suggestions: j.created.suggestions + (delta.suggestions ?? 0),
+            skipped: j.created.skipped + skipped,
+          },
+          ...(Object.keys(by).length
+            ? { skippedReasons: skipReasons(j.skippedReasons, by) }
+            : {}),
+        };
+      }),
+    phase: (label, counts) => {
+      const next = phaseOf(label, counts);
+      phaseListener?.(project, id, next);
+      void change((j) => ({ ...j, phase: next }));
+    },
   };
-  const finish = (state: "done" | "failed", error?: string) =>
-    update(project, id, (j) => {
-      const { error: _previous, ...rest } = j;
-      return {
-        ...rest,
-        state,
-        finishedAt: new Date().toISOString(),
-        ...(error ? { error } : {}),
-      };
-    });
+  const finish = async (state: "done" | "failed", error?: string) => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    await writing;
+    const { error: _previous, ...rest } = current;
+    const ended: KnowledgeImportJob = {
+      ...rest,
+      state,
+      finishedAt: new Date().toISOString(),
+      ...(error ? { error } : {}),
+    };
+    live.delete(id);
+    await update(project, id, () => ended);
+    knowledgeChanged(project, "jobs");
+  };
 
   const done = (async () => {
     try {
@@ -241,6 +359,7 @@ export async function startJob(
         console.warn(`[knowledge] job ${id} not recorded:`, errorText(e)),
       );
     } finally {
+      live.delete(id);
       claimed.delete(slot);
       running.delete(id);
       controllers.delete(id);
@@ -249,6 +368,27 @@ export async function startJob(
   })();
   running.set(id, done);
   return job;
+}
+
+/** `into` with `more` added, at most MAX_SKIP_REASONS reasons (a new
+ *  reason past it is counted in the total only). */
+function skipReasons(
+  into: SkipCounts | undefined,
+  more: SkipCounts,
+): SkipCounts {
+  const out: SkipCounts = { ...into };
+  for (const [raw, n] of Object.entries(more)) {
+    if (!(n > 0)) continue;
+    const reason = raw.replace(/\s+/g, " ").trim().slice(0, MAX_PHASE_CHARS);
+    if (!reason) continue;
+    if (
+      out[reason] === undefined &&
+      Object.keys(out).length >= MAX_SKIP_REASONS
+    )
+      continue;
+    out[reason] = (out[reason] ?? 0) + Math.floor(n);
+  }
+  return out;
 }
 
 /** The project's import jobs, newest first, at most MAX_LISTED_JOBS. */
@@ -267,7 +407,7 @@ export async function cancelJob(
   if (!run || run.project !== project) return null;
   run.ac.abort();
   const value = await docs().get(keyOf(project, id));
-  return isJob(value) ? value : null;
+  return isJob(value) ? (live.get(id) ?? value) : null;
 }
 
 /** At boot: a job left running by the last process can't finish; mark it
@@ -286,6 +426,15 @@ export async function failInterruptedJobs(): Promise<void> {
         : j,
     );
   }
+}
+
+let phaseListener:
+  | ((project: string, id: string, phase: KnowledgeJobPhase) => void)
+  | undefined;
+
+/** Hear every phase a run reports, before the throttle (tests). */
+export function __setJobPhaseListenerForTest(fn: typeof phaseListener): void {
+  phaseListener = fn;
 }
 
 /** Resolves when this process's run of `id` ended (tests). */

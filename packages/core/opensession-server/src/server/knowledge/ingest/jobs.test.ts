@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import type { KnowledgeImportJob } from "../../../shared/knowledge";
+import {
+  KNOWLEDGE_SKIP,
+  type KnowledgeImportJob,
+} from "../../../shared/knowledge";
 import { catalogDocuments } from "../../catalog-documents";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import {
+  __setKnowledgeBroadcastForTest,
+  type KnowledgeBroadcast,
+} from "../broadcast";
+import {
   __waitForJobForTest,
+  JOB_WRITE_MS,
   CANCELLED_COPY,
   cancelJob,
   failInterruptedJobs,
@@ -214,5 +222,118 @@ describe("knowledge import jobs", () => {
     g.open();
     await __waitForJobForTest(job.id);
     expect((await listJobs("acme"))[0]!.state).toBe("done");
+  });
+
+  test("a run's phase shows from the start, is written at most every 500 ms, and the last one stays", async () => {
+    const sent: KnowledgeBroadcast[] = [];
+    __setKnowledgeBroadcastForTest((m) => sent.push(m));
+    try {
+      const g = gate();
+      const job = await startJob("acme", "mailbox", {}, async (h) => {
+        for (let i = 1; i <= 900; i++)
+          h.phase("Reading INBOX", { done: i, total: 900 });
+        await g.opened;
+        h.phase("Committing");
+      });
+      expect(JOB_WRITE_MS).toBe(500);
+      expect(job.phase).toEqual({ text: "Starting" });
+      await Bun.sleep(5);
+      // Read while it runs: the newest phase, before any write of it.
+      const [running] = await listJobs("acme");
+      expect(running!.phase).toEqual({
+        text: "Reading INBOX 900 of 900",
+        done: 900,
+        total: 900,
+      });
+      // 900 updates, a handful of writes and messages.
+      const jobMessages = () => sent.filter((m) => m.what === "jobs").length;
+      expect(jobMessages()).toBeLessThanOrEqual(2);
+      await Bun.sleep(JOB_WRITE_MS + 100);
+      const stored = (await catalogDocuments("knowledge-jobs").get(
+        `acme:${job.id}`,
+      )) as KnowledgeImportJob;
+      expect(stored.phase?.text).toBe("Reading INBOX 900 of 900");
+      expect(jobMessages()).toBeLessThanOrEqual(3);
+      g.open();
+      await __waitForJobForTest(job.id);
+      const [done] = await listJobs("acme");
+      expect(done).toMatchObject({
+        state: "done",
+        phase: { text: "Committing" },
+      });
+    } finally {
+      __setKnowledgeBroadcastForTest(undefined);
+    }
+  });
+
+  test("a report after the run ended doesn't reopen its record", async () => {
+    let late: ((label: string) => void) | undefined;
+    const job = await startJob("acme", "repo", {}, async (h) => {
+      late = h.phase;
+      h.phase("Reading files");
+    });
+    await __waitForJobForTest(job.id);
+    late!("Still here");
+    await Bun.sleep(JOB_WRITE_MS + 50);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({
+      state: "done",
+      phase: { text: "Reading files" },
+    });
+  });
+
+  test("a phase with only a count says so far", async () => {
+    const job = await startJob("acme", "website", {}, async (h) => {
+      h.phase("Reading pages", { done: 12 });
+    });
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done!.phase).toEqual({ text: "Reading pages, 12 so far", done: 12 });
+  });
+
+  test("skipped inputs are counted by why", async () => {
+    const job = await startJob("acme", "mailbox", {}, async (h) => {
+      await h.progress({
+        done: 3,
+        skippedBy: {
+          [KNOWLEDGE_SKIP.alreadyImported]: 2,
+          [KNOWLEDGE_SKIP.notReusable]: 1,
+        },
+      });
+      await h.progress({
+        done: 1,
+        skippedBy: { [KNOWLEDGE_SKIP.alreadyImported]: 1 },
+      });
+      await h.progress({ done: 1, trusted: 1 });
+    });
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({
+      done: 5,
+      created: { trusted: 1, skipped: 4 },
+      skippedReasons: {
+        [KNOWLEDGE_SKIP.alreadyImported]: 3,
+        [KNOWLEDGE_SKIP.notReusable]: 1,
+      },
+    });
+  });
+
+  test("every job change tells the project's clients", async () => {
+    const sent: KnowledgeBroadcast[] = [];
+    __setKnowledgeBroadcastForTest((m) => sent.push(m));
+    try {
+      const job = await startJob("acme", "repo", {}, async () => {});
+      expect(sent).toEqual([
+        { type: "knowledge_changed", project: "acme", what: "jobs" },
+      ]);
+      await __waitForJobForTest(job.id);
+      // Started and finished.
+      expect(sent).toHaveLength(2);
+      expect(sent.every((m) => m.project === "acme" && m.what === "jobs")).toBe(
+        true,
+      );
+    } finally {
+      __setKnowledgeBroadcastForTest(undefined);
+    }
   });
 });
