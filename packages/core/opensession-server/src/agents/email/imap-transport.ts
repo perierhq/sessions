@@ -156,6 +156,29 @@ export function imapClientOptions(
   };
 }
 
+/** What a failed connection said, for the log line that reports it: the
+ *  error code (ECONNREFUSED, a server response code) and a short message.
+ *  Never the password: imapflow's errors carry neither it nor the LOGIN
+ *  arguments. */
+export function imapErrorDetail(err: unknown): {
+  code?: string;
+  error?: string;
+} {
+  if (!err || typeof err !== "object") return {};
+  const e = err as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const code = str(e.code) || str(e.serverResponseCode);
+  const parts = [
+    err instanceof Error ? err.message.trim() : "",
+    str(e.responseText),
+  ].filter(Boolean);
+  const message = [...new Set(parts)].join(": ").slice(0, 300);
+  return {
+    ...(code ? { code } : {}),
+    ...(message ? { error: message } : {}),
+  };
+}
+
 function log(
   inboxId: string,
   event: string,
@@ -716,7 +739,10 @@ export class ImapTransport {
       ? `${failure.reason}. The server said: ${this.alertText}`
       : failure.reason;
     if (failure.kind === "auth" || failure.kind === "address") {
-      log(this.inboxId, "imap paused", { kind: failure.kind });
+      log(this.inboxId, "imap paused", {
+        kind: failure.kind,
+        ...imapErrorDetail(err),
+      });
       this.setHealth("paused", reason, null);
       return;
     }
@@ -729,6 +755,7 @@ export class ImapTransport {
     log(this.inboxId, "imap backing off", {
       kind: failure.kind,
       delayMs: delay,
+      ...imapErrorDetail(err),
     });
     this.setHealth(
       failure.kind === "alert" ? "paused" : "backing-off",
