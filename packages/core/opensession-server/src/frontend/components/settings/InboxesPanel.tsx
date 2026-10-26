@@ -40,6 +40,7 @@ import {
   SettingsSection,
 } from "../../ui/settings";
 import { InlineAlert } from "../../ui/state";
+import { InboxExistingMail } from "./inboxes/InboxExistingMail";
 import { InboxForm } from "./inboxes/InboxForm";
 
 const INBOXES_KEY = ["api", "support-inboxes"] as const;
@@ -207,6 +208,11 @@ export function InboxesPanel() {
                       />
                       <span className="min-w-0">{status.label}</span>
                     </div>
+                    <InboxExistingMail
+                      inbox={inbox}
+                      isInstanceOwner={isOwner}
+                      onBroughtIn={() => void mutate()}
+                    />
                   </SettingRowText>
                   <SettingRowControl>
                     <Button

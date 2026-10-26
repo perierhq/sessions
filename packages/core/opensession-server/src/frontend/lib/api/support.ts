@@ -81,6 +81,18 @@ export function deleteInbox(id: string): Promise<{ ok: true }> {
   });
 }
 
+/** Takes in the unread mail of the last `days` days that was already in
+ *  the inbox when it first connected. */
+export function bringInMail(
+  id: string,
+  days: number,
+): Promise<{ count: number; inbox: InboxView }> {
+  return request<{ count: number; inbox: InboxView }>(
+    `/support/inboxes/${encodeURIComponent(id)}/bring-in`,
+    { method: "POST", body: { days }, label: "Couldn't bring in the mail" },
+  );
+}
+
 /** One login to each server; never stores anything. */
 export function testInbox(body: InboxTestBody): Promise<InboxTestResult> {
   return request<InboxTestResult>("/support/inboxes/test", {

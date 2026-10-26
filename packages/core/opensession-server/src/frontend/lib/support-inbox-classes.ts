@@ -31,6 +31,11 @@ export const INBOX_HEALTH =
   "mt-1.5 flex items-start gap-1.5 text-label text-dim [overflow-wrap:anywhere]";
 export const INBOX_HEALTH_DOT = "mt-[0.4lh] size-1.5 shrink-0 rounded-full";
 
+/** The unread mail already in an inbox at its first connect: its line,
+ *  then "How far back" and Bring in, under the health line. */
+export const INBOX_EXISTING = "mt-3 flex flex-col gap-2";
+export const INBOX_EXISTING_TEXT = "m-0 text-supporting text-dim";
+
 /** A group label in the inbox form, in FormField's label type. */
 export const INBOX_LEGEND = "m-0 p-0 text-label font-medium text-dim";
 
