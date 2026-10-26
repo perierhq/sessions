@@ -20,7 +20,14 @@
  * can't say whether an issue is open, a changed mirror can't be rewritten)
  * the item goes to `needs-check` with "Knowledge couldn't be checked" and
  * the failure is listed in `errors`. An unreadable page alone is not a
- * change (the next run fetches it again). Nothing runs at import.
+ * change (the next run fetches it again).
+ *
+ * The daily run (scope "all") then runs the conflict check (conflicts.ts)
+ * on the trusted items written since the last run's start, plus the ones
+ * an earlier run couldn't finish, as its own commit. The mark (that start
+ * and the unfinished paths) lives in the `knowledge-jobs` catalog namespace
+ * under `conflicts:<project>`; it only moves when the check ran. Nothing
+ * runs at import.
  */
 
 import {
@@ -33,6 +40,7 @@ import type { Author } from "../../memory-repo/git-store";
 import { findSecrets } from "../../memory-repo/secrets";
 import { knowledgeRepo } from "../client";
 import type { KnowledgeChange } from "../service";
+import type { ConflictVerdict } from "./conflicts";
 import { MAX_ARTICLE_BYTES } from "../validate";
 import { evaluateItem, type Signals } from "./evaluate";
 import {
@@ -61,6 +69,8 @@ export interface RevalidateResult {
   flipped: Array<{ path: string; reason: string }>;
   /** Mirrors rewritten (or retired) from their changed source. */
   refreshed: number;
+  /** Trusted pairs that disagree; both now need a check (conflicts.ts). */
+  conflicts: Array<{ a: string; b: string }>;
   /** `<path>: <message>` per item a signal couldn't be read for. */
   errors: string[];
 }
@@ -83,6 +93,46 @@ export interface RevalidateDeps extends Signals {
   repoChanges: Partial<RepoChangeDeps>;
   /** Passed to the github defaults. */
   github: Partial<GithubSignalDeps>;
+  /** The conflict check's model call (conflicts.ts default when unset). */
+  classifyConflict?(a: string, b: string): Promise<ConflictVerdict | null>;
+  /** Where the last conflict check started and what it left unfinished. */
+  conflictMarks: {
+    load(): Promise<ConflictMark | null>;
+    save(mark: ConflictMark): Promise<void>;
+  };
+}
+
+/** The last conflict check: its start (ISO time) and the paths it didn't
+ *  finish. */
+export interface ConflictMark {
+  at: string;
+  pending: string[];
+}
+
+function conflictMarkStore(project: string): RevalidateDeps["conflictMarks"] {
+  const key = `conflicts:${project}`;
+  const docs = async () =>
+    (await import("../../catalog-documents")).catalogDocuments(
+      "knowledge-jobs",
+    );
+  return {
+    async load() {
+      const value = (await (await docs()).get(key)) as ConflictMark | null;
+      if (
+        !value ||
+        typeof value.at !== "string" ||
+        !Array.isArray(value.pending)
+      )
+        return null;
+      return {
+        at: value.at,
+        pending: value.pending.filter((p) => typeof p === "string"),
+      };
+    },
+    async save(mark) {
+      await (await docs()).set(key, mark);
+    },
+  };
 }
 
 const PAGE_SIZE = 200;
@@ -191,6 +241,8 @@ function bindDeps(
     head: over.head ?? (() => defaultHead(project, repo)),
     showAt: over.showAt ?? ((sha, path) => showAt(project, sha, path, repo)),
     fetchPage,
+    classifyConflict: over.classifyConflict,
+    conflictMarks: over.conflictMarks ?? conflictMarkStore(project),
     repoCommits:
       over.repoCommits ??
       ((paths, since) => defaultRepoCommits(project, paths, since, repo)),
@@ -277,10 +329,14 @@ function checkedPut(
   return { op: "put", path, fm, body };
 }
 
-async function listItems(project: string): Promise<KnowledgeItem[]> {
+async function listItems(
+  project: string,
+  today: string,
+): Promise<KnowledgeItem[]> {
   const items: KnowledgeItem[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const page = await knowledgeRepo.call("index.list", project, "all", {
+      today,
       limit: PAGE_SIZE,
       offset,
     });
@@ -363,11 +419,12 @@ async function plan(project: string, d: RevalidateDeps): Promise<Planned> {
     checked: 0,
     flipped: [],
     refreshed: 0,
+    conflicts: [],
     errors: [],
   };
   const changes: KnowledgeChange[] = [];
   const expected: Record<string, string> = {};
-  for (const listed of await listItems(project)) {
+  for (const listed of await listItems(project, d.today)) {
     if (effectiveStatus(listed, d.today) === "retired") continue;
     result.checked++;
     let read: { item: KnowledgeItem; body: string } | null;
@@ -435,13 +492,104 @@ export async function revalidateProject(
     checked: 0,
     flipped: [],
     refreshed: 0,
+    conflicts: [],
     errors: [],
   };
   if (!(await knowledgeRepo.call("hasRepo", project))) return empty;
   const d = bindDeps(project, today, opts.deps ?? {}, opts.scope ?? "all");
   // A failed fetch leaves the last fetched state, which is still checked.
   await d.fetchRepo().catch(() => false);
+  const result = await revalidateItems(project, d, empty);
+  if (opts.scope !== "repo") await runConflictCheck(project, d, result);
+  return result;
+}
 
+/**
+ * The conflict check of a daily run: trusted, not retired items written
+ * since the last check started, plus what it left unfinished. Adds the
+ * pairs to `result.conflicts` (and their flips to `result.flipped`); a
+ * failure lands in `result.errors` and keeps every path for the next run.
+ */
+async function runConflictCheck(
+  project: string,
+  d: RevalidateDeps,
+  result: RevalidateResult,
+): Promise<void> {
+  const start = new Date().toISOString();
+  let mark: ConflictMark | null;
+  try {
+    mark = await d.conflictMarks.load();
+  } catch (error) {
+    result.errors.push(`Conflict check: ${message(error)}`);
+    return;
+  }
+  const since = mark ? Date.parse(mark.at) : Number.NEGATIVE_INFINITY;
+  const pending = new Set(mark?.pending ?? []);
+  let paths: string[];
+  const titles = new Map<string, string>();
+  try {
+    const items = await listItems(project, d.today);
+    for (const item of items) titles.set(item.path, item.title);
+    paths = items
+      .filter(
+        (item) =>
+          item.trust === "trusted" &&
+          effectiveStatus(item, d.today) !== "retired" &&
+          (pending.has(item.path) || !(Date.parse(item.updatedAt) <= since)),
+      )
+      // Unfinished first, then the newest.
+      .sort(
+        (x, y) =>
+          Number(pending.has(y.path)) - Number(pending.has(x.path)) ||
+          (x.updatedAt < y.updatedAt ? 1 : x.updatedAt > y.updatedAt ? -1 : 0),
+      )
+      .map((item) => item.path);
+  } catch (error) {
+    result.errors.push(`Conflict check: ${message(error)}`);
+    return;
+  }
+  const unchecked: string[] = [];
+  if (paths.length) {
+    const { checkConflicts } = await import("./conflicts");
+    try {
+      const pairs = await checkConflicts(project, paths, {
+        classify: d.classifyConflict,
+        today: d.today,
+        onUnchecked: (path) => unchecked.push(path),
+      });
+      result.conflicts.push(...pairs);
+      const flipped = new Set(result.flipped.map((f) => f.path));
+      for (const { a, b } of pairs) {
+        for (const [path, other] of [
+          [a, b],
+          [b, a],
+        ] as const) {
+          if (flipped.has(path)) continue;
+          flipped.add(path);
+          result.flipped.push({
+            path,
+            reason: `Disagrees with ${titles.get(other) ?? other}`,
+          });
+        }
+      }
+    } catch (error) {
+      result.errors.push(`Conflict check: ${message(error)}`);
+      unchecked.splice(0, unchecked.length, ...paths);
+    }
+  }
+  try {
+    await d.conflictMarks.save({ at: start, pending: unchecked });
+  } catch (error) {
+    result.errors.push(`Conflict check: ${message(error)}`);
+  }
+}
+
+/** Evaluate every item and write the flips and refreshes as one commit. */
+async function revalidateItems(
+  project: string,
+  d: RevalidateDeps,
+  empty: RevalidateResult,
+): Promise<RevalidateResult> {
   for (let attempt = 1; ; attempt++) {
     const { changes, expected, result } = await plan(project, d);
     if (!changes.length) return result;

@@ -142,8 +142,14 @@ the issue.
    Each run is one commit by Pat: `Knowledge check: <n> need a check, <m>
 refreshed`.
 3. Newer beats older. When two trusted items answer the same question and the
-   small model finds they disagree, both become `needs-check` and a person
-   sees them side by side.
+   small model finds they disagree, both become `needs-check` with "Disagrees
+   with <other title>" and a link to the other item, and a person sees them
+   side by side. The daily run compares each trusted item written since the
+   last check with the trusted items search finds for its title and topics
+   (reference material is never compared), at most 20 comparisons per
+   project per run, as a commit by Pat: `Knowledge conflicts: <n> need a
+check`. When the model gives no answer, nothing flips and the item is
+   compared again on the next run.
 4. Imported mail is time-aware. A question-and-reply pair older than the
    latest change to what it touches (the newest release, or a default-branch
    commit touching those paths) is imported as reference. When the pair's
