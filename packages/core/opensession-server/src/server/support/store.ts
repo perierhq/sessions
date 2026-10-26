@@ -18,7 +18,11 @@ import {
   type SupportMessage,
   newTextOf,
 } from "../../shared/support";
-import { SPLIT_VERSION, splitEmailText } from "../../agents/email/quote";
+import {
+  SPLIT_VERSION,
+  ThreadMatcher,
+  splitInThread,
+} from "../../agents/email/quote";
 import { catalogDocuments } from "../catalog-documents";
 
 const PREVIEW_CHARS = 160;
@@ -139,10 +143,8 @@ function collapse(text: string): string {
 
 /** The list row for a conversation. Pure. */
 export function indexRowFor(c: SupportConversation): SupportIndexRow {
-  const withText = c.messages.findLast((m) => m.text !== null);
-  const previewText = !withText
-    ? ""
-    : (newTextOf(c.channel === "email" ? withSplit(withText) : withText) ?? "");
+  const withText = withSplits(c).messages.findLast((m) => m.text !== null);
+  const previewText = withText ? (newTextOf(withText) ?? "") : "";
   let unansweredSince: string | null = null;
   if (c.status !== "closed" && c.status !== "spam")
     for (let i = c.messages.length - 1; i >= 0; i--) {
@@ -208,22 +210,22 @@ async function writeIndexRow(c: SupportConversation): Promise<void> {
 }
 
 /** Email messages stored before the split existed (or by an older
- *  splitter) get it here, in what every read and write hands back; the
- *  document itself is not rewritten for it. */
+ *  splitter) get it here, in what every read and write hands back, each
+ *  matched against the messages before it; the document itself is not
+ *  rewritten for it. */
 function withSplits(c: SupportConversation): SupportConversation {
   if (c.channel !== "email") return c;
+  let thread: ThreadMatcher | null = null;
+  let added = 0;
   let changed = false;
-  const messages = c.messages.map((m) => {
-    const next = withSplit(m);
-    if (next !== m) changed = true;
-    return next;
+  const messages = c.messages.map((m, i) => {
+    if (m.text === null || m.split?.v === SPLIT_VERSION) return m;
+    thread ??= new ThreadMatcher();
+    for (; added < i; added++) thread.add(c.messages[added]!);
+    changed = true;
+    return { ...m, split: splitInThread(m, thread) };
   });
   return changed ? { ...c, messages } : c;
-}
-
-function withSplit(m: SupportMessage): SupportMessage {
-  if (m.text === null || m.split?.v === SPLIT_VERSION) return m;
-  return { ...m, split: splitEmailText(m.text, { subject: m.subject }) };
 }
 
 export async function getConversation(

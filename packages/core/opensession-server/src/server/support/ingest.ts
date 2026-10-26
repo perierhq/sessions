@@ -32,6 +32,7 @@ import {
   normalizeAddress,
   ownMailAddresses,
 } from "../../shared/support";
+import { splitInThread, threadOf } from "../../agents/email/quote";
 import { catalogDocuments } from "../catalog-documents";
 import { deleteAttachmentFile, saveAttachment } from "./attachments";
 import { publishSupportEvent, supportCloudEvent } from "./events";
@@ -312,10 +313,23 @@ async function discardSaved(
       );
 }
 
+/** An email's split, its quoted text matched against the messages
+ *  already in the conversation; the transport's split only lends its HTML
+ *  hint. */
+function inThread(
+  channel: SupportConversation["channel"],
+  earlier: SupportMessage[],
+  message: SupportMessage,
+): SupportMessage {
+  if (channel !== "email" || message.text === null) return message;
+  return { ...message, split: splitInThread(message, threadOf(earlier)) };
+}
+
 function appendMessage(
   c: SupportConversation,
-  message: SupportMessage,
+  added: SupportMessage,
 ): SupportConversation {
+  const message = inThread(c.channel, c.messages, added);
   const next: SupportConversation = {
     ...c,
     messages: [...c.messages, message],
@@ -494,7 +508,8 @@ export async function ingestInbound(
     providerId: m.providerId,
     attachments: attachments.map((a) => a.meta),
   };
-  // The transport's split, when it describes the text stored here.
+  // The transport's split, for its HTML hint; appendMessage and createNew
+  // split it again against the thread.
   if (m.split && message.text === m.text) message.split = m.split;
   if (!ours) {
     message.trust = trust;
@@ -602,7 +617,7 @@ async function createNew(
     customer: message.from,
     // The inbox's owner until a person reassigns it (support/actions.ts).
     owner: inbox.owner || null,
-    first: { ...message, attachments: saved },
+    first: inThread(m.channel, [], { ...message, attachments: saved }),
     now,
     // Machine mail that answers nothing of ours is filed, not left open.
     ...(automated ? { status: "closed" as const } : {}),

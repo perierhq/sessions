@@ -106,7 +106,7 @@ export interface PlainTimelineEntry {
   /** For an email: only what the sender wrote this time. */
   text: string;
   /** An email's quoted history and signature, in order, shown behind a
-   *  "Show quoted text" toggle. */
+   *  toggle that names them ("Show quoted text and signature"). */
   hiddenParts?: Array<{ kind: "quoted" | "signature"; text: string }>;
   attachments?: PlainEntryAttachment[];
 }

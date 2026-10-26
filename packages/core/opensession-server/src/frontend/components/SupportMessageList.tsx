@@ -183,6 +183,16 @@ function EntryText({ text }: { text: string }) {
   return <MarkdownBody className={plainEntryBody} html={html} />;
 }
 
+/** What the toggle opens: "quoted text", "signature", or both. */
+export function foldedLabel(
+  parts: NonNullable<PlainTimelineEntry["hiddenParts"]>,
+): string {
+  const quoted = parts.some((p) => p.kind === "quoted");
+  const signature = parts.some((p) => p.kind === "signature");
+  if (quoted && signature) return "quoted text and signature";
+  return signature ? "signature" : "quoted text";
+}
+
 /**
  * An email's quoted history and signature, folded behind one toggle under the
  * new text, the way a mail client does it: the thread already shows every
@@ -197,6 +207,7 @@ function QuotedParts({
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const what = foldedLabel(parts);
   return (
     <>
       <PlainButton
@@ -206,7 +217,7 @@ function QuotedParts({
         onClick={() => setOpen((o) => !o)}
       >
         <span aria-hidden="true">···</span>
-        {open ? "Hide quoted text" : "Show quoted text"}
+        {open ? `Hide ${what}` : `Show ${what}`}
       </PlainButton>
       <div id={id} hidden={!open} className="flex flex-col gap-2">
         {open &&

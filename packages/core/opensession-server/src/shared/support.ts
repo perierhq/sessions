@@ -122,7 +122,8 @@ export interface SupportMessage {
    *  triage. Read as "not triaged". */
   topicsChecked?: true;
   /** Email only: which parts of `text` are new, quoted history or the
-   *  signature (agents/email/quote.ts). `text` stays whole. Set on ingest;
+   *  signature (agents/email/quote.ts). `text` stays whole. Set on ingest,
+   *  where quoted text must match the conversation's earlier messages;
    *  older documents get it when they are read (store.ts). */
   split?: MessageSplit;
 }
@@ -136,6 +137,9 @@ export type MessagePartKind = "new" | "quoted" | "signature";
 export interface MessageSplit {
   v: number;
   parts: Array<{ kind: MessagePartKind; start: number; end: number }>;
+  /** Where the HTML part's quote container starts in `text` (a line
+   *  offset), kept so a re-split under a newer `v` can use it again. */
+  html?: number;
 }
 
 export interface MessagePart {
@@ -195,6 +199,33 @@ export function newTextOf(
     .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n")
     .trim();
   return fresh || (m.text ?? "").trim();
+}
+
+/** The quoted history and signature the new text leaves out, in order,
+ *  or null when nothing is folded. */
+export function foldedTextOf(
+  m: Pick<SupportMessage, "text" | "split">,
+): string | null {
+  const parts = messageParts(m) ?? [];
+  // With no new text, newTextOf is the whole text: nothing is folded.
+  if (!parts.some((p) => p.kind === "new" && p.text.trim())) return null;
+  const folded = parts
+    .filter((p) => p.kind !== "new")
+    .map((p) => p.text)
+    .join("")
+    .trim();
+  return folded || null;
+}
+
+/** How many characters each folded kind holds, for a reader that only
+ *  sees the new text. */
+export function foldedSizes(
+  m: Pick<SupportMessage, "text" | "split">,
+): Partial<Record<"quoted" | "signature", number>> {
+  const sizes: Partial<Record<"quoted" | "signature", number>> = {};
+  for (const p of messageParts(m) ?? [])
+    if (p.kind !== "new") sizes[p.kind] = (sizes[p.kind] ?? 0) + p.text.length;
+  return sizes;
 }
 
 /** The triage classifier's labels for one inbound customer message. */

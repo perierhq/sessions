@@ -68,7 +68,7 @@ export const plainEntryQuoted =
   "markdown break-words text-body leading-relaxed text-dim " +
   "[&>:first-child]:mt-0 [&>:last-child]:mb-0";
 
-/** The "Show quoted text" toggle: a small pill under the new text, the way
+/** The "Show quoted text" / "Show signature" toggle: a small pill under the new text, the way
  *  a mail client folds the history. `before:` grows the 24px pill to a 44px
  *  target without moving the text around it. */
 export const plainEntryQuoteToggle =
