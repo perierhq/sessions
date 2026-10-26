@@ -2,6 +2,7 @@ import {
   openSync,
   readSync,
   closeSync,
+  lstatSync,
   realpathSync,
   constants as fsConstants,
 } from "fs";
@@ -34,12 +35,14 @@ const BLOCKED_PATH_ROOTS = ["/proc", "/sys", "/dev"];
  * Realpath-based workspace containment: resolve `rawPath`, symlink-resolve it
  * through its nearest EXISTING ancestor (so not-yet-created write targets are
  * checked too — a symlinked parent can't smuggle them out), and require the
- * result to sit under `realRoot`. Throws with a model-facing message on
- * escape. Returns the fully-resolved path it validated.
+ * result to sit under `realRoot` or one of `extraRealRoots` (the session
+ * scratch dir). Throws with a model-facing message on escape. Returns the
+ * fully-resolved path it validated.
  */
 export function assertContainedPiPath(
   rawPath: string,
   realRoot: string,
+  extraRealRoots: readonly string[] = [],
 ): string {
   const resolved = resolve(rawPath);
   let probe = resolved;
@@ -65,10 +68,15 @@ export function assertContainedPiPath(
       throw new Error(`Path is not accessible to this session: ${rawPath}`);
     }
   }
-  if (full !== realRoot && !full.startsWith(realRoot + sep)) {
+  const roots = [realRoot, ...extraRealRoots];
+  if (!roots.some((root) => full === root || full.startsWith(root + sep))) {
     throw new Error(
       `Path is outside the session workspace (${rawPath}). ` +
-        "Local file tools are contained to the session's working directory.",
+        (extraRealRoots.length
+          ? "Local file tools are contained to the session's working directory " +
+            "and its scratch dir ($OPENSESSION_SCRATCH, also $TMPDIR); save " +
+            "screenshots and temporary files there."
+          : "Local file tools are contained to the session's working directory."),
     );
   }
   return full;
@@ -117,14 +125,30 @@ function sniffImageMime(path: string): string | undefined {
  * no child, no env, `followSymlinks: false` so a symlinked dir can't be
  * traversed out of. Exported for the containment unit tests.
  */
-export function makeGuardedToolOps(cwd: string) {
+export function makeGuardedToolOps(
+  cwd: string,
+  /** More directories the tools may use: the session scratch dir, which the
+   *  runner exports to bash as $OPENSESSION_SCRATCH and $TMPDIR. */
+  extraRoots: readonly string[] = [],
+) {
   let realRoot: string;
   try {
     realRoot = realpathSync(cwd);
   } catch {
     realRoot = resolve(cwd);
   }
-  const guard = (p: string) => assertContainedPiPath(p, realRoot);
+  const realExtraRoots = extraRoots.flatMap((root) => {
+    // A root that is itself a symlink could point anywhere; only a real
+    // directory counts. It is resolved once, here, before any command runs.
+    try {
+      if (!lstatSync(root).isDirectory()) return [];
+      return [realpathSync(root)];
+    } catch {
+      return [];
+    }
+  });
+  const guard = (p: string) =>
+    assertContainedPiPath(p, realRoot, realExtraRoots);
   const exists = async (p: string) => {
     guard(p);
     try {
