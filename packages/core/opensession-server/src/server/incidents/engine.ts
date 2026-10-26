@@ -679,6 +679,22 @@ function applyOp(
         )
       )
         return incident;
+      // Found again after it was resolved: a flap, not news. The one
+      // finding counts it; the event log has it from the first time.
+      const again = incident.findings.findLastIndex((f) =>
+        sameFinding(f, op.finding),
+      );
+      if (again !== -1) {
+        const findings = [...incident.findings];
+        const { resolvedAt: _resolvedAt, ...back } = findings[again]!;
+        findings[again] = {
+          ...back,
+          detail: op.finding.detail,
+          count: (back.count ?? 1) + 1,
+          lastAt: op.finding.at,
+        };
+        return { ...incident, findings, updatedAt: at };
+      }
       return appendEvent(
         {
           ...incident,

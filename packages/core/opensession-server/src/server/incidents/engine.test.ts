@@ -1214,6 +1214,69 @@ describe("providers and disagreements", () => {
 describe("apply", () => {
   useIncidentTestKernel();
 
+  test("a finding that comes back is the same finding, counted", async () => {
+    const [opened] = await applyIncidentOps(
+      [
+        {
+          op: "open",
+          incident: {
+            project: "acme",
+            title: "Search",
+            state: "investigating",
+            severity: "major",
+            owner: "Ada",
+            openedBy: { kind: "rule", ref: "sig-a" },
+            signalIds: ["sig-a"],
+            primarySignalId: "sig-a",
+            at: iso(300_000),
+            detail: "x",
+          },
+        },
+      ],
+      iso(300_000),
+    );
+    const id = opened!.id;
+    const finding = (msAgo: number) => ({
+      kind: "disagreement" as const,
+      at: iso(msAgo),
+      signalId: "sig-r",
+      againstSignalId: "sig-a",
+      detail: "Health reports ok while Search is failing",
+    });
+    const resolve = {
+      op: "resolve-finding" as const,
+      incidentId: id,
+      kind: "disagreement" as const,
+      againstSignalId: "sig-a",
+    };
+    // Found, resolved, found again, twice over: one finding, seen 3 times.
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(240_000) }],
+      iso(240_000),
+    );
+    await applyIncidentOps([resolve], iso(180_000));
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(120_000) }],
+      iso(120_000),
+    );
+    await applyIncidentOps([resolve], iso(60_000));
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(0) }],
+      iso(),
+    );
+    const stored = await getIncident(id);
+    expect(stored?.findings).toHaveLength(1);
+    expect(stored?.findings[0]).toMatchObject({
+      kind: "disagreement",
+      at: iso(240_000),
+      lastAt: iso(),
+      count: 3,
+    });
+    expect(stored?.findings[0]?.resolvedAt).toBeUndefined();
+    // Only the first sighting is an event.
+    expect(stored?.events.map((e) => e.kind)).toEqual(["opened", "finding"]);
+  });
+
   test("apply: open, attach, event, stale transition", async () => {
     const [opened] = await applyIncidentOps(
       [

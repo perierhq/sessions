@@ -304,11 +304,18 @@ export interface IncidentEvent {
 export interface IncidentFinding {
   id: string;
   kind: "disagreement" | "external";
+  /** When it was first found. */
   at: string;
   signalId: string;
   againstSignalId?: string;
   detail: string;
   resolvedAt?: string;
+  /** Times it was found: a finding that comes back after it was resolved
+   *  (a flapping signal) is the same finding again, not a new one. Absent
+   *  means once. */
+  count?: number;
+  /** When it was last found, once it has come back. */
+  lastAt?: string;
 }
 
 /** The impact of an incident as last measured from its signal's source. */

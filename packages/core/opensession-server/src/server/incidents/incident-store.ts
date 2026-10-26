@@ -110,6 +110,7 @@ function findingAudit(
     ...(finding.againstSignalId === undefined
       ? {}
       : { againstSignalId: finding.againstSignalId }),
+    ...(finding.count === undefined ? {} : { count: finding.count }),
   };
 }
 
@@ -142,7 +143,8 @@ function auditChange(previous: Incident, next: Incident): void {
   const before = new Map(previous.findings.map((f) => [f.id, f]));
   for (const finding of next.findings) {
     const old = before.get(finding.id);
-    if (!old) incidentAudit(findingAudit(id, finding));
+    if (!old || (old.resolvedAt && !finding.resolvedAt))
+      incidentAudit(findingAudit(id, finding));
     if (finding.resolvedAt && !old?.resolvedAt)
       incidentAudit({
         kind: "incident_finding_resolved",
