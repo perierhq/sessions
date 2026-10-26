@@ -6,8 +6,9 @@
  *
  * Read-only git subprocesses on the project's own checkout (`Repo.repo`).
  * Only `refs/remotes/origin/<default branch>` is read or fetched (the same
- * refspec worktree.ts uses for the Ask checkout); the work tree, index and
- * HEAD are never touched. Every path goes through `--literal-pathspecs`, so
+ * refspec worktree.ts uses for the Ask checkout), authenticated the way
+ * worktree.ts's own GitHub fetches are (githubServiceGitEnv); the work tree,
+ * index and HEAD are never touched. Every path goes through `--literal-pathspecs`, so
  * `docs/*` or `:/` mean those characters, not pathspec magic. A path that
  * ends in `/` is a folder and matches everything under it.
  *
@@ -51,13 +52,16 @@ export interface RepoChangeLimits {
 export interface RepoChangeDeps {
   /** Run git in `dir`; resolves stdout, rejects on a non-zero exit. The
    *  output cap is advisory for an injected git (its answer is checked
-   *  against it afterwards). */
+   *  against it afterwards). `env` is the whole environment, given for the
+   *  fetch only (worktree.ts githubServiceGitEnv). */
   git(
     dir: string,
     args: string[],
-    opts?: { maxBytes: number },
+    opts?: { maxBytes: number; env?: Record<string, string | undefined> },
   ): Promise<string>;
-  repo(project: string): { dir: string; defaultBranch: string } | null;
+  repo(
+    project: string,
+  ): { dir: string; defaultBranch: string; ghRepo?: string } | null;
   /** Serialises the fetch with the server's other git work on the same
    *  checkout. Defaults to worktree.ts withGitLock, unless `git` is
    *  injected (then the fetch runs directly). */
@@ -163,7 +167,9 @@ async function drain(
 async function runGit(
   dir: string,
   args: string[],
-  opts: { maxBytes: number } = { maxBytes: LIMITS.outputBytes },
+  opts: { maxBytes: number; env?: Record<string, string | undefined> } = {
+    maxBytes: LIMITS.outputBytes,
+  },
 ): Promise<string> {
   const fetching = subcommand(args) === "fetch";
   const proc = Bun.spawn(workloadArgv(["git", "-C", dir, ...args], "git"), {
@@ -171,7 +177,7 @@ async function runGit(
     stdout: "pipe",
     stderr: "pipe",
     env: {
-      ...process.env,
+      ...(opts.env ?? process.env),
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
     },
@@ -212,17 +218,27 @@ async function runGit(
 
 async function configuredRepo(
   project: string,
-): Promise<{ dir: string; defaultBranch: string } | null> {
+): Promise<{ dir: string; defaultBranch: string; ghRepo?: string } | null> {
   const { configuredRepos } = await import("../../config");
   const repo = configuredRepos()[project];
   return repo?.repo
-    ? { dir: repo.repo, defaultBranch: repo.defaultBranch }
+    ? { dir: repo.repo, defaultBranch: repo.defaultBranch, ghRepo: repo.ghRepo }
     : null;
 }
 
 async function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
   const { withGitLock: lock } = await import("../../worktree");
   return lock(fn);
+}
+
+/** The environment worktree.ts fetches from GitHub with: the service token
+ *  and a helper list that replaces whatever the checkout's .git/config
+ *  names (an earlier install's helper may not be there or readable). */
+async function fetchEnv(
+  ghRepo: string | undefined,
+): Promise<Record<string, string | undefined>> {
+  const { githubServiceGitEnv } = await import("../../worktree");
+  return githubServiceGitEnv(ghRepo);
 }
 
 /** Branch names `git check-ref-format --branch` accepted (it only
@@ -264,9 +280,15 @@ async function isDirectory(dir: string): Promise<boolean> {
 interface Resolved {
   /** git with `-c core.quotePath=false`; output capped at `maxBytes`
    *  (default limits.outputBytes). */
-  git(args: string[], maxBytes?: number): Promise<string>;
+  git(
+    args: string[],
+    maxBytes?: number,
+    env?: Record<string, string | undefined>,
+  ): Promise<string>;
   limits: RepoChangeLimits;
   branch: string;
+  /** `owner/name` on GitHub, when configured. */
+  ghRepo: string | undefined;
   /** `refs/remotes/origin/<branch>`. */
   ref: string;
   serialize<T>(fn: () => Promise<T>): Promise<T>;
@@ -293,15 +315,20 @@ async function resolve(
   const git = deps.git ?? runGit;
   const limits = { ...LIMITS, ...deps.limits };
   return {
-    git: async (args, maxBytes = limits.outputBytes) => {
+    git: async (args, maxBytes = limits.outputBytes, env) => {
       const full = [...GLOBAL, ...args];
-      const out = await git(repo.dir, full, { maxBytes });
+      const out = await git(
+        repo.dir,
+        full,
+        env ? { maxBytes, env } : { maxBytes },
+      );
       if (Buffer.byteLength(out) > maxBytes)
         throw new RepoTooLargeError(`git ${subcommand(full)}`, maxBytes);
       return out;
     },
     limits,
     branch: repo.defaultBranch,
+    ghRepo: repo.ghRepo,
     ref: `refs/remotes/origin/${repo.defaultBranch}`,
     // Only a fake git may skip the lock: a real fetch on the project's
     // checkout always queues behind the server's other git work.
@@ -370,24 +397,30 @@ async function log(
   return parseLog(out, asked);
 }
 
-/** Fetch the default branch from origin into its remote-tracking ref.
- *  False for an unknown project or a failed fetch. */
+/** Fetch the default branch from origin into its remote-tracking ref,
+ *  with worktree.ts's GitHub credentials. False for an unknown project or a
+ *  failed fetch. */
 export async function fetchDefaultBranch(
   project: string,
   deps?: Partial<RepoChangeDeps>,
 ): Promise<boolean> {
   try {
     const r = await resolve(project, deps);
+    const env = await fetchEnv(r.ghRepo);
     await r.serialize(() =>
-      r.git([
-        "fetch",
-        "--quiet",
-        "--no-auto-gc",
-        "--no-recurse-submodules",
-        "--no-write-fetch-head",
-        "origin",
-        `+refs/heads/${r.branch}:${r.ref}`,
-      ]),
+      r.git(
+        [
+          "fetch",
+          "--quiet",
+          "--no-auto-gc",
+          "--no-recurse-submodules",
+          "--no-write-fetch-head",
+          "origin",
+          `+refs/heads/${r.branch}:${r.ref}`,
+        ],
+        undefined,
+        env,
+      ),
     );
     return true;
   } catch (error) {
