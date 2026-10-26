@@ -374,7 +374,7 @@ describe("first-parent dates, caps, fetch flags and odd paths", () => {
     const helpers = (
       await git(["config", "--get-all", key], {
         cwd: co,
-        env: { ...isolatedGitEnv(), ...credential },
+        env: isolatedGitEnv(credential),
       })
     ).stdout
       .replace(/\n$/, "")

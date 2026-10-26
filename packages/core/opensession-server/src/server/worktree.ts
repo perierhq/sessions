@@ -1092,6 +1092,19 @@ export async function fastForwardBranchFromOrigin(
 }
 
 /**
+ * The environment of a server-owned fetch from GitHub: the service token and
+ * process-local helper config (github-git-credential.ts). The helper list is
+ * reset first, so a helper an earlier install wrote into the checkout's
+ * .git/config (a path that may not exist or be readable any more) never runs.
+ * Knowledge's default-branch fetch (knowledge/freshness/repo-changes.ts) uses
+ * it too.
+ */
+export async function githubServiceGitEnv(ghRepo: string | undefined) {
+  const { githubServiceCredentialEnv } = await import("./github-app");
+  return { ...process.env, ...(await githubServiceCredentialEnv(ghRepo)) };
+}
+
+/**
  * Fetch branches, guaranteeing their `origin/<branch>` refs exist afterwards.
  *
  * `git fetch origin <branch>` writes `refs/remotes/origin/<branch>` only when the
@@ -1105,11 +1118,6 @@ export async function fastForwardBranchFromOrigin(
  * Explicit refspecs bypass the remote config. Found on a repo cloned
  * single-branch during node provisioning; `--unshallow` fixes depth, not this.
  */
-async function githubServiceGitEnv(ghRepo: string | undefined) {
-  const { githubServiceCredentialEnv } = await import("./github-app");
-  return { ...process.env, ...(await githubServiceCredentialEnv(ghRepo)) };
-}
-
 async function fetchBranchesWithTracking(
   gitDir: string,
   ghRepo: string | undefined,
