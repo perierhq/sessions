@@ -18,6 +18,7 @@ import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
 import { ownedWorktreeWorkBranch } from "./session-branch-ownership";
 import { piModelUnservableReason } from "./pi-model-routing";
+import { logDetail, reported } from "./reported-errors";
 import {
   mirrorSlackSessionReply,
   SLACK_SESSION_NOTE,
@@ -789,7 +790,10 @@ export async function steerQueuedPrompt(
       promptEntryId,
       [item.id],
     ).catch(async (e) => {
-      console.error(`[queue] Send-now delivery failed for ${sessionId}:`, e);
+      console.error(
+        `[queue] Send-now delivery failed for ${sessionId}:`,
+        logDetail(e),
+      );
       await failPromptDispatch(sessionId, promptEntryId);
     });
     return true;
@@ -1120,7 +1124,9 @@ export function resumeDrainedSessions(
       id,
       restartContinuationPrompt(r.prompt),
       SYSTEM_RESTART_USER,
-    ).catch((e) => console.error(`[resume] Wake failed for ${id}:`, e));
+    ).catch((e) =>
+      console.error(`[resume] Wake failed for ${id}:`, logDetail(e)),
+    );
   }
   if (woken > 0)
     console.log(
@@ -1771,7 +1777,7 @@ export function watchExternalRunAndDrain(sessionId: string): void {
       watcher.failures += 1;
       console.error(
         `[queue] Drain after external run failed for ${sessionId}; retrying:`,
-        error,
+        logDetail(error),
       );
       schedule(drainWatcherDelay(watcher.failures));
     }
@@ -2425,9 +2431,13 @@ export async function maybeLaunchSandboxedRun(
     });
     // A provider's refusal (a workspace it cannot hold, an unsupported run)
     // stays a refusal, so the queue reports it once instead of retrying it.
+    // Logged above with its cause; the queue's retry line repeats only
+    // the message (reported-errors.ts).
     if (isRunSetupRefusal(e))
-      throw new RunSetupRefusedError(`Sandbox unavailable: ${reason}`);
-    throw new Error(`Sandbox unavailable: ${reason}`);
+      throw reported(
+        new RunSetupRefusedError(`Sandbox unavailable: ${reason}`),
+      );
+    throw reported(new Error(`Sandbox unavailable: ${reason}`));
   }
 }
 
@@ -4396,7 +4406,10 @@ export function startLoopTicker(): void {
         loopTickMessage(loop.prompt, loopTickNote(loop)),
         loopActor(loop.setBy),
       ).catch((e) =>
-        console.error(`[loop] Loop prompt failed for ${session.id}:`, e),
+        console.error(
+          `[loop] Loop prompt failed for ${session.id}:`,
+          logDetail(e),
+        ),
       );
     }
   }, 60_000);
