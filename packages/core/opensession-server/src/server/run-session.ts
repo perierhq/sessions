@@ -267,8 +267,10 @@ import {
   attachedGithubRepos,
   buildSessionNote,
   retrievedMemoryNoteFor,
+  sessionNotePerson,
   sessionRepoIds,
 } from "./session-repos";
+import { deskStateContext } from "./desk-state";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -3222,6 +3224,14 @@ async function runSessionPromptInner(
     const foldersNote = localFoldersContextNote(session.id, user);
     if (foldersNote)
       prompt = `${wrapContext(foldersNote, "local-folders-note")}\n\n${prompt}`;
+  }
+
+  // The Desk's live state (what is waiting, running, unread) changes on
+  // nearly every turn, so it rides in this turn's message rather than the
+  // system prompt, where each change re-cached the whole conversation.
+  if (session.desk && runInputs.sessionNote) {
+    const deskState = deskStateContext(sessionNotePerson(session, user));
+    if (deskState) prompt = `${deskState}\n\n${prompt}`;
   }
 
   // Retrieval is query-specific context for this turn. Keep it out of the

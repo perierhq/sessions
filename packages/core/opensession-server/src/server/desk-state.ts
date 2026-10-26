@@ -5,8 +5,10 @@
  *
  * The Desk is an orchestrator, and an orchestrator that doesn't know what's
  * already running spawns duplicates — so every Desk turn carries this, and it
- * is rebuilt PER TURN (buildSessionNote runs per prompt), never cached onto
- * the session.
+ * is rebuilt PER TURN, never cached onto the session. It rides in the turn's
+ * own message (deskStateContext, run-session.ts), not the system prompt: it
+ * changes on nearly every turn, and a changed system prompt re-caches the
+ * whole conversation behind it.
  *
  * Three buckets:
  *   waiting — a question the user is the only one who can answer. This is the
@@ -27,6 +29,7 @@
  * when they summon the Desk.
  */
 import { pendingAskAwaitingAnswerSync } from "./asks";
+import { wrapContext } from "./prompt-context";
 import { listAsks as listHumanAsks } from "./human-asks";
 import { findSession, getCachedSessions } from "./session-cache";
 import { getReads, isUnread } from "./reads";
@@ -340,7 +343,7 @@ export function renderDeskBriefing(state: DeskState): string {
 
   out.push(
     "",
-    "Use this instead of asking a tool for the same facts, and re-read it rather than trusting what you said last turn — it is rebuilt every turn.",
+    "Use this instead of asking a tool for the same facts. It is rebuilt every turn: trust the newest copy, not an older one or what you said last turn.",
     "Before starting anything, check it against the list above: if a session is already on that work, steer it (`send_to_session`) instead of spawning a second one.",
   );
   return out.join("\n");
@@ -356,4 +359,11 @@ export function deskBriefingFor(user: string | undefined): string | undefined {
     console.warn("[desk] failed to build the live-state briefing:", e);
     return undefined;
   }
+}
+
+/** The briefing fenced for the start of a Desk turn's message, or undefined
+ *  when there is none. */
+export function deskStateContext(user: string | undefined): string | undefined {
+  const briefing = deskBriefingFor(user);
+  return briefing ? wrapContext(briefing, "desk-state") : undefined;
 }

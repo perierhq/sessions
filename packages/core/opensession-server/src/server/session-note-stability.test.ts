@@ -4,6 +4,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { AUTO_CONTINUE_USER } from "./auto-continue";
 import { getConfigAsync } from "./config";
+import { deskStateContext } from "./desk-state";
+import { parseContextBlocks } from "./prompt-context";
 import { setPersonalOutputStyle } from "./personal-output-style";
 import { setPersonalPrompt } from "./personal-prompts";
 import { workerActor } from "./session-actors";
@@ -29,7 +31,9 @@ beforeAll(async () => {
     configPath,
     JSON.stringify({
       paths: { worktreesDir: join(dir, "worktrees") },
-      repos: { acme: { repo: process.cwd(), default: true } },
+      repos: {
+        acme: { repo: process.cwd(), sharedCheckout: true, default: true },
+      },
     }),
   );
   process.env.OPENSESSION_CONFIG = configPath;
@@ -83,5 +87,18 @@ describe("session note across the turns of one session", () => {
       undefined,
     );
     expect(note).toContain("## Personal output style: Concise");
+  });
+
+  test("the Desk's live state rides in the turn, not in the system prompt", async () => {
+    const note = await buildSessionNote(session({ desk: true }), "Ada Example");
+    expect(note).toContain("## Your role: the Desk");
+    expect(note).not.toContain("live state");
+    expect(note).not.toContain("Nothing is running");
+
+    const context = deskStateContext("Ada Example");
+    expect(context).toBeTruthy();
+    const blocks = parseContextBlocks(context!);
+    expect(blocks.map((block) => block.source)).toEqual(["desk-state"]);
+    expect(blocks[0].body).toContain("## The user's live state");
   });
 });

@@ -51,6 +51,7 @@ export type ContextSource =
   | "pinned-goal"
   | "portals-note"
   | "local-folders-note"
+  | "desk-state"
   | "session"
   | "unknown";
 
@@ -70,6 +71,7 @@ const SOURCES = new Set<string>([
   "pinned-goal",
   "portals-note",
   "local-folders-note",
+  "desk-state",
   "session",
   "unknown",
 ]);
