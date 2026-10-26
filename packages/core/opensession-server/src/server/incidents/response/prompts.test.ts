@@ -12,7 +12,6 @@ import type {
   SignalEvaluation,
 } from "../../../shared/incidents";
 import {
-  branchFor,
   buildInvestigatorPrompt,
   buildReminder,
   buildSendBackMessage,
@@ -158,17 +157,32 @@ test("paths, slugs, branches", () => {
     "docs/incidents/runbook.md",
     "docs/incidents/runbooks/search-api.md",
   ]);
-  expect(branchFor(incident, "investigator", 1, 1)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream",
+  // Another incident with the same title on the same day (the same
+  // signal failing twice) gets its own note file.
+  const morning = {
+    ...incident,
+    id: "inc-0",
+    openedAt: "2026-10-20T08:00:00.000Z",
+  };
+  const later = {
+    ...incident,
+    id: "inc-2",
+    openedAt: "2026-10-20T15:00:00.000Z",
+  };
+  const yesterday = {
+    ...incident,
+    id: "inc-y",
+    openedAt: "2026-10-19T10:00:00.000Z",
+  };
+  const other = { ...incident, id: "inc-o", title: "Checkout slow" };
+  expect(notePathFor(incident, [incident, yesterday, other, later])).toBe(
+    "docs/incidents/2026-10-20-search-blocked-by-upstream.md",
   );
-  expect(branchFor(incident, "investigator", 2, 3)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-a3",
+  expect(notePathFor(incident, [morning, incident, later])).toBe(
+    "docs/incidents/2026-10-20-search-blocked-by-upstream-2.md",
   );
-  expect(branchFor(incident, "verifier", 2, 1)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-verify-r2",
-  );
-  expect(branchFor(incident, "verifier", 1, 2)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-verify-r1-a2",
+  expect(notePathFor(later, [morning, incident, later])).toBe(
+    "docs/incidents/2026-10-20-search-blocked-by-upstream-3.md",
   );
 });
 test("investigator prompt: read first, cheapest-first, never secrets or commands", () => {
@@ -210,6 +224,9 @@ test("investigator prompt: read first, cheapest-first, never secrets or commands
     "Work through the runbook's checklist cheapest-first where you can",
   );
   expect(p).toContain("This is guidance, not a rule");
+  expect(p).toContain(
+    "If a push or opening the pull request fails, say what failed in plain words and keep the candidate: never set candidate to null because the fix is not published.",
+  );
   expect(p).toContain("Sessions runs every action itself.");
   expect(p).toContain(
     "rollback · rollback · Roll back · reversible · free · no secret",
@@ -383,6 +400,21 @@ test("send-back and reminder copy", () => {
   expect(buildReminder("The evidence table is empty", "investigator")).toBe(
     "Your last message did not end with a valid incident-report block: The evidence table is empty. Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ruled-out, confirmed, inconclusive, informative. Reply with only the corrected block.",
   );
+  // A fix without its pull request: push and open it, or say what failed,
+  // and keep the candidate either way.
+  const pr = buildReminder(
+    "Open a pull request with the note and the runbook update",
+    "investigator",
+    "pr",
+  );
+  expect(pr).toStartWith(
+    "Your report proposes a fix, but this session has no pull request yet.",
+  );
+  expect(pr).toContain(
+    "If the push or the pull request fails, say what failed in plain words",
+  );
+  expect(pr).toContain("Keep the candidate");
+  expect(pr).not.toContain("corrected block");
   expect(buildReminder("No incident-report block", "verifier")).toBe(
     "Your last message did not end with a valid incident-report block: No incident-report block. Allowed values: verdict is certain or not-certain; claims[].status is verified, refuted or unverifiable. Reply with only the corrected block.",
   );

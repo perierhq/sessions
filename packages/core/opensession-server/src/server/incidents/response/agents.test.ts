@@ -308,10 +308,11 @@ test("agents start under plan 3's policy, on their own model, never reporting in
     attempt: 1,
     prompt: "Investigate",
     model: "pi/anthropic/claude-opus-5-5",
-    branch: "incident/2026-10-20-search",
     access: access("investigator", { connections: ["sentry"] }),
     workspace: { kind: "sandbox", provider: "daytona" },
   });
+  // The session takes its branch the way every session does.
+  expect(h.creates[0]?.branch).toBeUndefined();
   expect(h.creates[0]).toMatchObject({
     requestId: "incident:inc-1:r1:investigator:a1",
     mode: "code",
@@ -342,7 +343,6 @@ test("agents start under plan 3's policy, on their own model, never reporting in
     attempt: 1,
     prompt: "Verify",
     model: "pi/openai/gpt-6.1-sol",
-    branch: "incident/x-verify-r1",
     baseSessionId: sessionId,
     access: access("verifier"),
     workspace: { kind: "host", user: "opensession-incident" },
@@ -425,7 +425,6 @@ test("an agent in This machine (container) asks for it by name", async () => {
     attempt: 1,
     prompt: "Investigate",
     model: "pi/anthropic/claude-opus-5-5",
-    branch: "incident/x",
     access: access("investigator"),
     workspace: { kind: "sandbox", provider: "podman" },
   });
@@ -462,7 +461,6 @@ test("an access for another incident or role never spawns", async () => {
     attempt: 1,
     prompt: "Investigate",
     model: "pi/anthropic/claude-opus-5-5",
-    branch: "incident/x",
     workspace: { kind: "sandbox" as const, provider: "daytona" },
   };
   await expect(
