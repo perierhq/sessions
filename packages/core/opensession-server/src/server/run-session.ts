@@ -2461,6 +2461,9 @@ export async function maybeQueueAutoContinue(opts: {
   toolUseCount: number;
   endedWithError: boolean;
   runFailure: string | null;
+  /** The turn died on a usage limit no account could serve (plan limits or
+   *  paid credits spent everywhere it may run). */
+  usageLimited?: boolean;
   /** Skip the lookup when the caller already holds the session. */
   session?: UnifiedSession | null;
 }): Promise<boolean> {
@@ -2494,6 +2497,12 @@ export async function maybeQueueAutoContinue(opts: {
   const endedOnFabricatedTranscript = looksLikeFabricatedToolTranscript(
     assistantText.slice(-2000),
   );
+  // Every account this session may use refused the turn. Another turn, a
+  // redelivery or a nudge, would only repeat the refusal and spend a
+  // request proving it (2026-10-19: six refusals in under an hour). The
+  // failure chip already tells the human; the next message they send runs
+  // as soon as an account is back.
+  if (opts.usageLimited) return suppressed("usage_limited");
   if (endedWithError) {
     // A failed/aborted turn can strand user messages the model never read: a
     // busy-send steer is a noReply history append the running turn only reads
@@ -3575,6 +3584,9 @@ async function runSessionPromptInner(
   // credit/API errors) — recorded on the session after the loop so the sidebar
   // surfaces it as "Needs input"; null (a clean finish) clears an earlier one.
   let runFailure: string | null = null;
+  // The failure was a usage limit with no account left to serve the turn
+  // (spent plan limits or paid credits on every account it could use).
+  let usageLimited = false;
   // How recordRunOutcome should word the failure's transcript chip, and
   // whether the runner already wrote a friendlier one itself (timeouts).
   let failureNoticeLabel: string | undefined;
@@ -3907,6 +3919,7 @@ async function runSessionPromptInner(
         // whose result is the limit notice (not an `error` event) — but it
         // still needs a human, so treat it as a failure.
         if (event.usageLimitExhausted) {
+          usageLimited = true;
           runFailure = event.result || "Usage limit reached on every account";
           // This one was a clean `done`, not an error — recordRunOutcome
           // writes the transcript chip below, worded as a stop.
@@ -3977,6 +3990,7 @@ async function runSessionPromptInner(
           });
         }
         endedWithError = true;
+        if (event.usageLimitExhausted) usageLimited = true;
         runFailure = event.content || "Run failed";
         // The transcript chip is written by recordRunOutcome below — this is
         // the choke point AFTER agent-runner's rotation/fallback walk, so only
@@ -4162,6 +4176,7 @@ async function runSessionPromptInner(
     toolUseCount,
     endedWithError,
     runFailure,
+    usageLimited,
   });
 
   // The session just finished a turn; if nothing's queued it's idle now, so fire

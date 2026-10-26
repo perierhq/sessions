@@ -5,6 +5,7 @@ import type { AnthropicRateLimitSnapshot } from "./anthropic-rate-limit";
 import { audit } from "./audit";
 import { pickClaudeAccount } from "./claude-account-pick";
 import {
+  markCreditsExhausted as markClaudeCreditsExhausted,
   markExhausted as markClaudeExhausted,
   type ClaudeAccount,
 } from "./claude-accounts";
@@ -24,7 +25,10 @@ import {
   type PiRuntimeAccountEvidence,
 } from "./pi-runtime-binding";
 import type { StreamEvent, TurnUsage } from "./run-events";
-import { usageLimitResetAt } from "./runner-shared";
+import {
+  isClaudeCreditsExhaustedError,
+  usageLimitResetAt,
+} from "./runner-shared";
 import {
   markXaiExhausted,
   maskXaiAccount,
@@ -266,6 +270,13 @@ export class PiAttemptAccounts {
     const account = this.sidelineableAccount;
     if (!account) return;
     if (account.pool === "openai") markCodexExhausted(account.id, this.modelID);
+    else if (
+      account.pool === "claude" &&
+      isClaudeCreditsExhaustedError(message)
+    )
+      // Out of paid credits: plan headroom will not bring it back, so it
+      // waits for credits (or the next billing month), not a usage window.
+      markClaudeCreditsExhausted(account.id);
     else if (account.pool === "claude")
       // Bench it until the reset the account named, when it named one:
       // Anthropic's unified reset header on the 429, else a reset in the

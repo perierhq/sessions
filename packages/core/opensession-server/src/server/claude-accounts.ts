@@ -204,6 +204,29 @@ function exhaustionKey(id: string, model?: string): string {
   return model ? `${id}:${model}` : id;
 }
 
+/** The account-wide sideline for spent paid credits ("out of extra usage").
+ *  Its own key, because usage windows say nothing about credits: the poll's
+ *  5-hour and 7-day evidence must not release it. */
+function creditsKey(id: string): string {
+  return `${id}#credits`;
+}
+
+/** Start of the next calendar month (UTC), when monthly credit caps reset. */
+function nextMonthStart(now: number): number {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+}
+
+/** The poll shows paid credits to spend again (added, or a new month). */
+function hasCreditEvidence(usage: AccountUsage): boolean {
+  const extra = usage.extraUsage;
+  return (
+    !!extra?.enabled &&
+    extra.monthlyLimit > 0 &&
+    extra.usedCredits < extra.monthlyLimit
+  );
+}
+
 function isExhaustionKeyActive(key: string): boolean {
   const map = sidelines();
   const until = map.get(key);
@@ -231,6 +254,13 @@ function releaseDisprovenSidelines(
 ): void {
   const map = sidelines();
   let changed = false;
+  if (map.has(creditsKey(account.id)) && hasCreditEvidence(usage)) {
+    map.delete(creditsKey(account.id));
+    changed = true;
+    console.log(
+      `[claude-accounts] ${account.name} usable again (paid credits available${via})`,
+    );
+  }
   if (map.has(exhaustionKey(account.id))) {
     const u = usage.fiveHour?.utilization;
     if (u !== null && u !== undefined && u < EXHAUSTED_UTILIZATION) {
@@ -687,7 +717,10 @@ export function startUsagePoller(): void {
 }
 
 function isExhausted(id: string): boolean {
-  return isExhaustionKeyActive(exhaustionKey(id));
+  return (
+    isExhaustionKeyActive(exhaustionKey(id)) ||
+    isExhaustionKeyActive(creditsKey(id))
+  );
 }
 
 function isModelExhausted(id: string, model?: string): boolean {
@@ -852,7 +885,10 @@ function isAccountUsableFor(
 
 function toPublic(a: ClaudeAccount): ClaudeAccountPublic {
   const usage = usageCache.get(a.id) || null;
-  const until = sidelines().get(exhaustionKey(a.id));
+  const until = Math.max(
+    sidelines().get(exhaustionKey(a.id)) ?? 0,
+    sidelines().get(creditsKey(a.id)) ?? 0,
+  );
   const fiveHour = usage?.fiveHour?.utilization ?? null;
   return {
     id: a.id,
@@ -867,10 +903,7 @@ function toPublic(a: ClaudeAccount): ClaudeAccountPublic {
     usage,
     noUsageScope: a.usageScope === "missing" && !a.credentialsPath,
     credentialsPath: a.credentialsPath,
-    exhaustedUntil:
-      until !== undefined && until > Date.now()
-        ? new Date(until).toISOString()
-        : null,
+    exhaustedUntil: until > Date.now() ? new Date(until).toISOString() : null,
     usable:
       !isExhausted(a.id) &&
       (fiveHour === null || fiveHour < EXHAUSTED_UTILIZATION),
@@ -1041,6 +1074,7 @@ export function removeAccount(id: string): boolean {
   usageCache.delete(id);
   const map = sidelines();
   map.delete(exhaustionKey(id));
+  map.delete(creditsKey(id));
   for (const key of [...map.keys()]) {
     if (key.startsWith(`${id}:`)) map.delete(key);
   }
@@ -1391,6 +1425,26 @@ export function markExhausted(
 }
 
 /**
+ * Bench an account whose paid credits are spent ("You're out of extra
+ * usage"). Plan headroom does not bring it back and a retry only spends a
+ * request proving it again, so it stays out of the pool until a usage poll
+ * shows credits to spend, or at the latest until the next calendar month
+ * (UTC), when monthly credit caps reset. Account-wide: credits are not per
+ * model. No immediate usage refresh: a snapshot taken seconds after the
+ * refusal must not undo it.
+ */
+export function markCreditsExhausted(id: string, now = Date.now()): void {
+  const account = readStore().find((a) => a.id === id);
+  const until = nextMonthStart(now);
+  const map = sidelines();
+  map.set(creditsKey(id), Math.max(until, map.get(creditsKey(id)) ?? 0));
+  persistSidelines();
+  console.warn(
+    `[claude-accounts] ${account?.name || id} is out of paid credits; benched until credits are added or ${new Date(until).toISOString()}`,
+  );
+}
+
+/**
  * Briefly sideline an account whose engine bridge wedged (new provider
  * requests hang while established streams keep flowing). The wedge is
  * account-scoped — every model through the same bridge hangs — so retries and
@@ -1461,6 +1515,7 @@ export function earliestPoolReset(
   for (const a of candidates) {
     if (isAccountUsableFor(a, model, allowExtraUsage)) return now;
     consider(sidelines().get(exhaustionKey(a.id)));
+    consider(sidelines().get(creditsKey(a.id)));
     for (const required of requiredModels(model)) {
       if (required) {
         consider(sidelines().get(exhaustionKey(a.id, required)));
