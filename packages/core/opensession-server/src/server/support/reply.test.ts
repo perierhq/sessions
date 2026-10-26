@@ -381,9 +381,10 @@ describe("the conversation's event log", () => {
     await tb.setInbox({ autonomy: "routine", vetoMs: null });
     const auto = await tb.conversation();
     await proposeDraft(auto.id, DRAFT, AGENT, undefined, CITED);
-    expect(await kinds(auto.id)).toContainEqual([
-      "reply-sent",
-      "Sent on its own",
+    // The send says how it went; the draft line names no rule.
+    expect(await kinds(auto.id)).toEqual([
+      ["draft-written", `${personaName()} wrote a draft`],
+      ["reply-sent", "Sent on its own"],
     ]);
 
     await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });

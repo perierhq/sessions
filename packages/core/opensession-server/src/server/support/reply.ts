@@ -753,7 +753,10 @@ async function propose(
             logEvent(
               "draft-written",
               author,
-              `${actorLabel(author)} wrote a draft. ${decision.rule}`,
+              // A send's own line says how it went.
+              decision.kind === "send"
+                ? `${actorLabel(author)} wrote a draft`
+                : `${actorLabel(author)} wrote a draft. ${decision.rule}`,
               now,
             ),
           ];
