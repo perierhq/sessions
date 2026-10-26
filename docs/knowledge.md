@@ -203,6 +203,20 @@ the issue.
 trusted)`. One import of a kind runs per project at a time; an import a
    restart cut off shows "Interrupted by a restart. Start it again."
 
+   The website import crawls the exact hosts of the project's Support
+   websites (wildcard entries never), over https only. Per host it reads
+   `robots.txt` first and honours its `Disallow` and `Allow` rules for every
+   agent (`*`); a host whose `robots.txt` can't be read is skipped. It then
+   reads `/sitemap.xml` and nested sitemap indexes two levels deep; a host
+   without a sitemap is walked from `/` along its own links, three links
+   deep. Pages already mirrored are fetched again too. At most 200 pages per
+   run, one request per second per host; a run cut short at the limit is
+   marked so. Each page becomes a trusted `sources/web/<host>/` item with its
+   content hash; an unchanged page is left alone, a page that answers 404 or
+   410 is retired (text kept), and a page that looks like it holds a
+   credential is skipped, never stored. One commit by Pat: `Import website:
+<n> pages`. The import needs at least one exact Support website.
+
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
 6. The run happens daily, after a push to the default branch, and on demand
