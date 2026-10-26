@@ -4,12 +4,18 @@
  * hash no longer matches the one recorded in its sources.
  *
  * Pages are fetched with the pinned fetcher (web-fetch.ts fetchChecked:
- * private addresses refused on every hop) and only from an exact,
- * non-wildcard host of the project's Support websites, the rule an
- * automatic reply's links follow (support/policy.ts linkAllowed). The host
- * is checked before the first request and on every redirect hop before it
- * is dialled, so a listed page can't lead the crawler anywhere else.
- * Nothing runs at import.
+ * private addresses refused on every hop), over https only, and only from
+ * an exact, non-wildcard host of the project's Support websites, the rule
+ * an automatic reply's links follow (support/policy.ts linkAllowed). The
+ * host is checked before the first request and on every redirect hop
+ * before its name is resolved and again before it is dialled (with the
+ * scheme), so a listed page can't lead the crawler anywhere else.
+ *
+ * The text that is hashed is NFC-normalised and leaves out what changes
+ * without the content changing (`<header>`, `<time>`, besides what
+ * htmlToText drops). A page with under 200 characters of readable text (a
+ * script shell, a loading screen) or over 256 KB of it is an error, not a
+ * hash. Nothing runs at import.
  */
 
 import { createHash } from "node:crypto";
@@ -26,9 +32,22 @@ import { resolveWithDns } from "../../shared/pinned-fetch";
 const TEXT_TYPES =
   /^(text\/(plain|markdown|x-markdown)|application\/(xhtml\+xml))\b/i;
 const HTML_TYPES = /\b(html|xhtml)\b/i;
+/** Elements that churn without the page's content changing. */
+const CHURN = "header, time";
+/** Less readable text than this is no page to hash. */
+const MIN_TEXT_CHARS = 200;
+const MAX_TEXT_BYTES = 256 * 1024;
 
-/** A page's readable text: HTML through htmlToText, plain text and
- *  Markdown as they are; lines trimmed, runs of blank lines folded. */
+async function withoutChurn(html: string): Promise<string> {
+  return new HTMLRewriter()
+    .on(CHURN, { element: (e) => void e.remove() })
+    .transform(new Response(html))
+    .text();
+}
+
+/** A page's readable text: HTML through htmlToText (without `<header>`
+ *  and `<time>`), plain text and Markdown as they are; NFC-normalised,
+ *  lines trimmed, runs of blank lines folded. */
 export async function normalizedPageText(
   html: string,
   contentType: string,
@@ -36,11 +55,14 @@ export async function normalizedPageText(
   let title: string | undefined;
   let text = html;
   if (HTML_TYPES.test(contentType)) {
-    const extracted = await htmlToText(html);
-    title = extracted.title?.replace(/\s+/g, " ").trim() || undefined;
+    const extracted = await htmlToText(await withoutChurn(html));
+    title =
+      extracted.title?.normalize("NFC").replace(/\s+/g, " ").trim() ||
+      undefined;
     text = extracted.text;
   }
   const lines = text
+    .normalize("NFC")
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.replace(/[ \t\f\v\u00a0]+/g, " ").trim());
@@ -75,6 +97,28 @@ function withoutHash(raw: string): string | null {
   }
 }
 
+/** The lowercased host names (no port) of the exact entries in `hosts`. */
+function hostNames(hosts: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const entry of hosts) {
+    const e = entry.trim().toLowerCase();
+    if (!e || e.startsWith("*.")) continue;
+    const host = /^(.+?)(?::\d+)?$/.exec(e)?.[1]?.replace(/\.+$/, "");
+    if (host) names.add(host);
+  }
+  return names;
+}
+
+/** https, and on one of `hosts` by linkAllowed's exact-host rule. */
+function allowed(raw: string, hosts: readonly string[]): boolean {
+  try {
+    if (new URL(raw).protocol !== "https:") return false;
+  } catch {
+    return false;
+  }
+  return linkAllowed(raw, hosts);
+}
+
 /**
  * Fetch one page of the project's websites and return its text and hash.
  * `hosts` is the project's Support websites list; only exact, non-wildcard
@@ -90,16 +134,25 @@ export async function fetchPage(
   | { error: string }
 > {
   const start = withoutHash(url);
-  if (!start || !linkAllowed(start, hosts))
-    return { error: `Not on the project's websites: ${url.slice(0, 200)}` };
-  // Every hop, the first included, passes the host rule before it is
-  // dialled; fetchChecked resolves and address-checks it as usual.
+  if (!start || !allowed(start, hosts))
+    return {
+      error: `Not an https page of the project's websites: ${url.slice(0, 200)}`,
+    };
+  // Every hop, the first included, passes the host rule before its name
+  // is resolved, and the full rule (scheme, host, port) before it is
+  // dialled; fetchChecked address-checks it as usual.
+  const names = hostNames(hosts);
   const guarded: WebFetchDeps = {
     ...deps,
+    resolve: (hostname) => {
+      if (!names.has(hostname.toLowerCase().replace(/\.+$/, "")))
+        throw new Error(`Redirected off the project's websites: ${hostname}`);
+      return deps.resolve(hostname);
+    },
     request: (target, signal, inner) => {
-      if (!linkAllowed(withoutHash(target.url.toString()) ?? "", hosts))
+      if (!allowed(withoutHash(target.url.toString()) ?? "", hosts))
         throw new Error(
-          `Redirected off the project's websites: ${target.url.host}`,
+          `Redirected off the project's https websites: ${target.url.protocol}//${target.url.host}`,
         );
       return deps.request(target, signal, inner);
     },
@@ -110,7 +163,7 @@ export async function fetchPage(
       undefined,
       guarded,
     );
-    if (!linkAllowed(finalUrl, hosts))
+    if (!allowed(finalUrl, hosts))
       return { error: `Redirected off the project's websites: ${finalUrl}` };
     if (response.status < 200 || response.status >= 300)
       return { error: `The page answered ${response.status}` };
@@ -123,6 +176,10 @@ export async function fetchPage(
       response.body,
     );
     const page = await normalizedPageText(body, contentType);
+    if (Buffer.byteLength(page.text) > MAX_TEXT_BYTES)
+      return { error: "The page has more than 256 KB of text" };
+    if (page.text.length < MIN_TEXT_CHARS)
+      return { error: "The page has almost no readable text" };
     return {
       url: finalUrl,
       ...(page.title ? { title: page.title } : {}),
@@ -138,8 +195,9 @@ export async function fetchPage(
 }
 
 /** Whether fetchPage would try `url` at all (the crawler filters sitemap
- *  entries with it). Query strings are refused, as in a reply's links. */
+ *  entries with it). https only; query strings are refused, as in a
+ *  reply's links. */
 export function crawlable(url: string, hosts: string[]): boolean {
   const plain = withoutHash(url);
-  return !!plain && linkAllowed(plain, hosts);
+  return !!plain && allowed(plain, hosts);
 }
