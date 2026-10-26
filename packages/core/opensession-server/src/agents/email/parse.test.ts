@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_TEXT_CHARS } from "../../shared/support";
+import {
+  MAX_TEXT_CHARS,
+  hasQuotedParts,
+  messageParts,
+  newTextOf,
+} from "../../shared/support";
 import { rawMail } from "../../server/support/testing/mail-fixture";
 import { parseInbound } from "./parse";
 
@@ -94,6 +99,68 @@ describe("parseInbound", () => {
     expect(m.text).toContain("Hello");
     expect(m.text).toContain("there");
     expect(m.text).not.toContain("<");
+  });
+
+  test("splits quoted history, using Gmail's HTML quote when the text shows none", async () => {
+    const boundary = "b1";
+    const raw = [
+      "From: Petra <petra@example.test>",
+      "To: help@acme.example.test",
+      "Subject: Re: Export",
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "Pořád to nefunguje.",
+      "",
+      "po 3. 11. 2026 v 10:12 odesílatel Acme Support",
+      "help@example.test napsal:",
+      "Zkuste to prosím znovu.",
+      "",
+      `--${boundary}`,
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      '<div dir="ltr">Pořád to nefunguje.</div><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">po 3. 11. 2026 v 10:12 odesílatel Acme Support &lt;help@example.test&gt; napsal:<br></div><blockquote class="gmail_quote">Zkuste to prosím znovu.</blockquote></div>',
+      "",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(newTextOf(m)).toBe("Pořád to nefunguje.");
+    expect(hasQuotedParts(m)).toBe(true);
+    // The text itself is kept whole.
+    expect(m.text).toContain("Zkuste to prosím znovu.");
+  });
+
+  test("an Apple Mail HTML-only reply: the blockquote is quoted history", async () => {
+    const raw = [
+      "From: Alice <alice@example.test>",
+      "To: help@acme.example.test",
+      "Subject: Re: Reset",
+      "MIME-Version: 1.0",
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      '<html><body><div>Yes please, reset it.</div><div><br></div><div>Sent from my iPhone</div><div><br><blockquote type="cite">On 3 Nov 2026, at 10:12, Acme Support &lt;help@example.test&gt; wrote:<br><br><div>Shall we reset your workspace?</div></blockquote></div></body></html>',
+      "",
+    ].join("\r\n");
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(newTextOf(m)).toBe("Yes please, reset it.");
+    const kinds = messageParts(m)!
+      .filter((p) => p.text.trim())
+      .map((p) => p.kind);
+    expect(kinds).toEqual(["new", "signature", "quoted"]);
+  });
+
+  test("a plain message gets a split with nothing hidden", async () => {
+    const raw = rawMail({
+      from: "ada@example.test",
+      text: "Hi there, how do I export my data?",
+    });
+    const m = await parseInbound(bytes(raw), CTX);
+    expect(m.split?.parts.map((p) => p.kind)).toEqual(["new"]);
+    expect(hasQuotedParts(m)).toBe(false);
   });
 
   test("decodes a windows-1250 body", async () => {

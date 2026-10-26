@@ -151,4 +151,31 @@ describe("sidebar person sessions", () => {
     ]);
     expect(groups.map((group) => group.label)).toEqual(["Michiel", AGENT_NAME]);
   });
+
+  test("files a session the agent started as itself under the Agent person", () => {
+    const groups = sidebarPersonSessions(
+      [
+        session("support", { startedBy: AGENT_NAME, isRunning: true }),
+        session("unattended", {
+          startedBy: null,
+          isRunning: true,
+          automation: "Incidents",
+        }),
+        session("generic", { startedBy: "Sessions", isRunning: true }),
+      ],
+      roster,
+      "Kent",
+      NOW,
+    );
+
+    // One group, beside the agent's own automations; the old generic
+    // "Sessions" starter is nobody and stays out of the list.
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.key).toBe(AGENT_PERSON_KEY);
+    expect(groups[0]!.label).toBe(AGENT_NAME);
+    expect(groups[0]!.activeSessions.map((s) => s.id)).toEqual([
+      "support",
+      "unattended",
+    ]);
+  });
 });

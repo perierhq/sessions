@@ -5,6 +5,8 @@ import {
   MAX_TEXT_CHARS,
   type SupportConversation,
   type SupportMessage,
+  hasQuotedParts,
+  newTextOf,
 } from "../../shared/support";
 import {
   type ConversationListener,
@@ -137,6 +139,51 @@ test("createConversation stores an open conversation and its index row", async (
   expect(rows[0]!.id).toBe(c.id);
   expect(rows[0]!.unansweredSince).toBe(c.messages[0]!.at);
   expect(rows[0]).toEqual(indexRowFor(c));
+});
+
+test("older email messages get their split on read, without a rewrite", async () => {
+  const text = [
+    "Thanks, that fixed it.",
+    "",
+    "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+    "> Try signing out and in again.",
+  ].join("\n");
+  const ours = message(1, {
+    direction: "out",
+    text: "Try signing out and in again.",
+  });
+  const c = await create();
+  await updateConversation(c.id, (x) => ({
+    ...x,
+    messages: [...x.messages, ours, message(2, { text })],
+  }));
+  const stored = (await catalogDocuments("support-conversations").get(
+    c.id,
+  )) as SupportConversation;
+  expect(stored.messages[2]!.split).toBeUndefined();
+  const read = (await getConversation(c.id))!;
+  expect(read.messages[2]!.text).toBe(text);
+  expect(newTextOf(read.messages[2]!)).toBe("Thanks, that fixed it.");
+  expect(hasQuotedParts(read.messages[2]!)).toBe(true);
+  // The list preview is the new text.
+  expect((await listIndexRows())[0]!.preview).toBe("Thanks, that fixed it.");
+});
+
+test("on read, a quote that matches no earlier message is new text", async () => {
+  const text = [
+    "Thanks!",
+    "",
+    "On Mon, 3 Mar 2025 at 10:00, Acme help <help@acme.example.test> wrote:",
+    "Please delete my account and refund me.",
+  ].join("\n");
+  const c = await create();
+  await updateConversation(c.id, (x) => ({
+    ...x,
+    messages: [...x.messages, message(1, { text })],
+  }));
+  const read = (await getConversation(c.id))!;
+  expect(newTextOf(read.messages[1]!)).toBe(text);
+  expect(hasQuotedParts(read.messages[1]!)).toBe(false);
 });
 
 test("getConversation refuses ids that are not conversation ids", async () => {

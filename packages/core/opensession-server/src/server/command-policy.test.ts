@@ -56,9 +56,17 @@ describe("org floor", () => {
     expect(evaluateCommand("git push -f origin feature", p).decision).toBe(
       "require_approval",
     );
+    // A lease only overwrites what the pusher last saw: not a blind force.
     expect(evaluateCommand("git push --force-with-lease", p).decision).toBe(
-      "require_approval",
+      "allow",
     );
+    expect(
+      evaluateCommand("git push --force-with-lease=feature:abc123", p).decision,
+    ).toBe("allow");
+    expect(
+      evaluateCommand("git push --force-with-lease --force origin x", p)
+        .decision,
+    ).toBe("require_approval");
     expect(evaluateCommand("git push origin main", p).decision).toBe("allow");
     expect(evaluateCommand("git push -u origin feature", p).decision).toBe(
       "allow",
@@ -655,6 +663,118 @@ describe("automation descendant publication policy", () => {
         policy,
       ),
     ).toContain("general GitHub API");
+  });
+});
+
+describe("publication policy: pushing the owned branch", () => {
+  const policy = {
+    repo: "acme/widgets",
+    branch: "main",
+    headBranch: "incident/2026-10-26-search-slow",
+  };
+  const head = policy.headBranch;
+  const dir = "/home/agent/worktrees/widgets-incident/2026-10-26-search-slow";
+
+  test("every form that pushes only the owned branch passes", () => {
+    for (const command of [
+      // The forms an incident agent ran live, each refused for its `2>&1`.
+      `cd ${dir} && git push origin ${head} 2>&1 | tail -3`,
+      `cd ${dir} && git push 2>&1 | tail -3`,
+      `git push -q origin HEAD 2>&1 | tail -2`,
+      `cd ${dir} && git push origin refs/heads/${head}:refs/heads/${head} 2>&1 | tail -3; git config --get-regexp 'branch\\.incident.*'`,
+      // Implicit destination: the isolated worktree is on the owned branch.
+      "git push",
+      "git push origin",
+      "git push -u origin HEAD",
+      "git push --set-upstream origin HEAD",
+      "git push origin @",
+      `git push origin HEAD:${head}`,
+      `git push origin HEAD:refs/heads/${head}`,
+      `git push --force-with-lease origin ${head}`,
+      `git push --force-with-lease=${head} origin HEAD`,
+      `git push --force-with-lease --force-if-includes origin ${head}`,
+      `git push --force-with-lease=${head}:abc123 origin ${head}`,
+      `git push -o ci.skip origin ${head}`,
+      `git push --push-option ci.skip origin ${head}`,
+      `git push origin ${head} > /tmp/push.log 2>&1`,
+      `git push origin ${head} &> /tmp/push.log`,
+      `git push origin ${head} 2>/dev/null || echo failed`,
+      `GIT_TRACE=1 git push origin ${head}`,
+      `env GIT_TERMINAL_PROMPT=0 git push origin ${head}`,
+      `git -C ${dir} push origin ${head}`,
+      `/usr/bin/git push origin ${head}`,
+      `git push origin ${head} && gh pr create --base main --head ${head} --title Fix`,
+      `bash -c 'git push origin ${head} 2>&1'`,
+    ])
+      expect([command, publicationPolicyDenyReason(command, policy)]).toEqual([
+        command,
+        undefined,
+      ]);
+  });
+
+  test("other branches, the base, URLs, deletes and bulk pushes are refused", () => {
+    const refused: Array<[string, string]> = [
+      ["git push origin other-branch", "other-branch"],
+      [`git push origin ${head} other-branch`, "other-branch"],
+      ["git push origin HEAD:other-branch 2>&1", "other-branch"],
+      ["git push origin HEAD:refs/heads/other-branch", "other-branch"],
+      ["git push origin refs/tags/v1.0.0", "refs/tags/v1.0.0"],
+      ["git push origin main", "protected base"],
+      ["git push origin +HEAD:main 2>&1", "protected base"],
+      ["git push origin HEAD:refs/heads/main", "protected base"],
+      ["git push https://example.test/acme/other.git HEAD", "external"],
+      [`git push --repo=https://example.test/acme/other.git`, "external"],
+      [`git push origin :${head}`, "delete"],
+      [`git push origin --delete ${head}`, "delete"],
+      [`git push -d origin ${head}`, "delete"],
+      ["git push --all origin", "--all"],
+      ["git push --mirror origin", "--mirror"],
+      ["git push --tags origin", "--tags"],
+      [`git push --follow-tags origin ${head}`, "--follow-tags"],
+      [`git push --prune origin ${head}`, "--prune"],
+      ["git push origin refs/heads/*:refs/heads/*", "refs/heads/*"],
+      [`git push upstream ${head}`, "remote upstream"],
+      [`git push origin +${head}`, "+" + head],
+      [`git push origin +HEAD:${head} 2>&1`, "+HEAD:" + head],
+      [`git push --force origin ${head}`, "--force"],
+      [`git push -f origin ${head}`, "-f"],
+      [`git push -uf origin HEAD`, "-f"],
+      [
+        `git -c remote.origin.push=refs/heads/*:refs/heads/* push`,
+        "remote.origin.push",
+      ],
+    ];
+    for (const [command, said] of refused) {
+      const reason = publicationPolicyDenyReason(command, policy);
+      expect([command, reason]).toEqual([command, expect.any(String)]);
+      expect([command, reason]).toEqual([
+        command,
+        expect.stringContaining(said),
+      ]);
+    }
+  });
+
+  test("the refusal names the destination it saw", () => {
+    expect(
+      publicationPolicyDenyReason("git push origin other-branch 2>&1", policy),
+    ).toBe(
+      `automation descendants may only push their owned branch ${head}; this push targets other-branch`,
+    );
+  });
+
+  test("a base-branch push in a later command is not read into an earlier push", () => {
+    expect(
+      mergeGuardDenyReason(
+        "git push -q -u origin HEAD 2>&1 | tail -2 && gh pr create --base main --title Fix",
+        { baseBranch: "main" },
+      ),
+    ).toBeUndefined();
+    expect(
+      publicationPolicyDenyReason(
+        `git push origin ${head}; git log --oneline main -1`,
+        policy,
+      ),
+    ).toBeUndefined();
   });
 });
 

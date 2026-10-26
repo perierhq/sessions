@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SupportActor, SupportConversation } from "../../shared/support";
+import { personaName } from "../config";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import type { CreateSessionOpts } from "../session-control";
 import {
@@ -264,6 +265,21 @@ describe("close, reopen and not spam", () => {
     const open = (await getConversation(c.id))!;
     expect(open.status).toBe("open");
     expect(open.closedAt).toBeNull();
+  });
+
+  test("events name the persona for the agent and Sessions, never the customer", async () => {
+    const c = await tb.conversation();
+    await closeConversation(c.id, AGENT);
+    await reopenConversation(c.id, { kind: "sessions" });
+    await closeConversation(c.id, { kind: "customer" });
+    const details = (await getConversation(c.id))!.events
+      .filter((e) => e.kind === "closed" || e.kind === "reopened")
+      .map((e) => e.detail);
+    expect(details).toEqual([
+      `${personaName()} closed this`,
+      `${personaName()} reopened this`,
+      "The customer closed this",
+    ]);
   });
 
   test("not spam reopens it as work and starts the agent without triage", async () => {

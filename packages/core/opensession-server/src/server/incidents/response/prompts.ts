@@ -19,6 +19,7 @@ import {
   type InvestigatorReport,
   type ProofResult,
   type ProofSample,
+  type ReportProblem,
   type SendBackReason,
 } from "../../../shared/incident-response";
 import type {
@@ -60,25 +61,29 @@ function incidentStem(incident: Pick<Incident, "openedAt" | "title">): string {
   return `${dateOf(incident.openedAt)}-${slugify(incident.title)}`;
 }
 
+/**
+ * The incident's note. Another incident with the same title on the same
+ * day (one signal failing twice) gets the next free name: `-2`, `-3`, in
+ * the order they opened. `others` is the project's incidents; the incident
+ * itself may be among them.
+ */
 export function notePathFor(
-  incident: Pick<Incident, "openedAt" | "title">,
+  incident: Pick<Incident, "id" | "openedAt" | "title">,
+  others: ReadonlyArray<Pick<Incident, "id" | "openedAt" | "title">> = [],
 ): string {
-  return `docs/incidents/${incidentStem(incident)}.md`;
+  const stem = incidentStem(incident);
+  const earlier = others.filter(
+    (o) =>
+      o.id !== incident.id &&
+      incidentStem(o) === stem &&
+      (o.openedAt < incident.openedAt ||
+        (o.openedAt === incident.openedAt && o.id < incident.id)),
+  ).length;
+  return `docs/incidents/${earlier ? `${stem}-${earlier + 1}` : stem}.md`;
 }
 
 export function runbookPathsFor(signal: Pick<Signal, "name">): string[] {
   return [RUNBOOK, `docs/incidents/runbooks/${slugify(signal.name)}.md`];
-}
-
-export function branchFor(
-  incident: Pick<Incident, "openedAt" | "title">,
-  role: AgentRole,
-  round: number,
-  attempt: number,
-): string {
-  const base = `incident/${incidentStem(incident)}`;
-  const named = role === "verifier" ? `${base}-verify-r${round}` : base;
-  return attempt > 1 ? `${named}-a${attempt}` : named;
 }
 
 // ── Shared pieces ───────────────────────────────────────────────────────────
@@ -254,6 +259,9 @@ export interface InvestigatorPromptInput {
   rollbackFirst?: { releaseAt: string; ref?: string };
   /** The earlier round this fresh session takes over, when there is one. */
   earlier?: EarlierRound;
+  /** The incident's note, when another incident shares its title and day
+   *  (notePathFor with the project's incidents). */
+  notePath?: string;
 }
 
 /** What a fresh investigator is told about the round before its own. */
@@ -263,6 +271,17 @@ export interface EarlierRound {
   sendBack?: SendBackReason;
   report?: InvestigatorReport;
   prUrl?: string;
+  /** The earlier round's work sits on a branch another incident uses: the
+   *  fresh session brings its commits over instead of building on it. */
+  carry?: CarriedWork;
+}
+
+/** Where an earlier session's commits are when its branch is not its own. */
+export interface CarriedWork {
+  branch: string;
+  /** Its Sandbox checkpoint on origin: the hidden ref, and the branch tip
+   *  the checkpoint was taken on. */
+  checkpoint?: { ref: string; head: string };
 }
 
 function earlierRoundLines(
@@ -292,7 +311,23 @@ function earlierRoundLines(
     ];
     out.push(...dataBlock(`What round ${earlier.round} found`, lines), "");
   }
-  if (earlier.prUrl)
+  if (earlier.carry) {
+    const { branch, checkpoint } = earlier.carry;
+    out.push(
+      `Round ${earlier.round}'s commits are on ${branch}, a branch another incident's pull request also uses. Never push ${branch} or open a pull request from it. Bring this incident's commits onto your own branch instead:`,
+      ...(checkpoint
+        ? [
+            `- git fetch origin ${checkpoint.ref}`,
+            `- git cherry-pick ${checkpoint.head} (round ${earlier.round}'s last commit; \`git log FETCH_HEAD\` shows the commits before it)`,
+          ]
+        : [
+            `- git log ${branch} shows them; git cherry-pick the ones round ${earlier.round} made for this incident.`,
+          ]),
+      "Leave out the other incident's commits. Then push your branch and open the pull request.",
+      "",
+    );
+  }
+  if (earlier.prUrl && !earlier.carry)
     out.push(
       ...dataBlock(`Round ${earlier.round}'s pull request`, [
         dataText(earlier.prUrl, 200),
@@ -309,7 +344,7 @@ export function buildInvestigatorPrompt(
   const { incident, round, maxRounds } = input;
   const signal = redactSignal(input.signal);
   const origin = signalOrigin(signal);
-  const notePath = notePathFor(incident);
+  const notePath = input.notePath ?? notePathFor(incident);
   const runbooks = runbookPathsFor(signal);
   const out: string[] = [];
 
@@ -393,6 +428,8 @@ export function buildInvestigatorPrompt(
     `Commit on this session's branch and open one pull request into ${input.baseBranch}. The PR holds the fix (if it is code), the incident note at ${notePath}, and an update to the runbook (${runbooks.join(" or ")}).`,
     "",
     "If the fix is an action rather than code, the PR contains only the note and the runbook update.",
+    "",
+    "If a push or opening the pull request fails, say what failed in plain words and keep the candidate: never set candidate to null because the fix is not published.",
     "",
     "Declare how Sessions should prove the fix (the check field), one of:",
     origin
@@ -699,7 +736,15 @@ const ALLOWED_VALUES: Record<AgentRole, string> = {
     "Allowed values: verdict is certain or not-certain; claims[].status is verified, refuted or unverifiable.",
 };
 
-export function buildReminder(error: string, role?: AgentRole): string {
+export function buildReminder(
+  error: string,
+  role?: AgentRole,
+  problem?: ReportProblem,
+): string {
+  // A fix without its pull request is not a broken report: asking for a
+  // "corrected block" led an investigator to drop a fix it could not push.
+  if (problem === "pr")
+    return "Your report proposes a fix, but this session has no pull request yet. Push this session's branch and open the pull request, then end with the same incident-report block. If the push or the pull request fails, say what failed in plain words and end with the same block anyway. Keep the candidate: never set it to null because the fix is not published.";
   const allowed = role ? ` ${ALLOWED_VALUES[role]}` : "";
   return `Your last message did not end with a valid incident-report block: ${error}.${allowed} Reply with only the corrected block.`;
 }

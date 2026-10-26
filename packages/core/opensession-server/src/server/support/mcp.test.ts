@@ -157,7 +157,7 @@ test("get_conversation returns the session's own conversation only", async () =>
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const tool = getConversationTool("os-1");
   // The tool takes no conversation id.
-  expect(Object.keys(tool.inputSchema)).toEqual([]);
+  expect(Object.keys(tool.inputSchema)).toEqual(["full"]);
   const out = JSON.parse(textOf(await tool.handler({}, {})));
   expect(out.project).toBe("acme");
   expect(out.inbox).toBe("Acme help");
@@ -173,6 +173,71 @@ test("get_conversation returns the session's own conversation only", async () =>
   });
   expect(out.note).toContain("untrusted");
   expect(JSON.stringify(out)).not.toContain("conversation 2");
+});
+
+test("get_conversation shows the new text unless full is asked for", async () => {
+  const quote = "> Please try again now, it should work.\n";
+  const signature = "-- \nCarol\n";
+  const quoted = [
+    "Still broken, sorry.",
+    "",
+    "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+    quote,
+    signature,
+  ].join("\n");
+  const mine = await conversation(1);
+  const ours: SupportMessage = {
+    ...message(2, "Please try again now, it should work."),
+    direction: "out",
+    from: { name: null, address: INBOX },
+  };
+  // Stored before the split existed: no split on the document.
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+    messages: [...c.messages, ours, message(3, quoted)],
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const tool = getConversationTool("os-1");
+  const brief = JSON.parse(textOf(await tool.handler({}, {})));
+  const [plain, , reply] = brief.messages;
+  expect(plain.quotedHistory).toBeUndefined();
+  expect(plain.folded).toBeUndefined();
+  expect(reply.quotedHistory).toBe(true);
+  // What was left out, by kind, in characters.
+  expect(Object.keys(reply.folded)).toEqual(["quoted", "signature"]);
+  expect(reply.folded.signature).toBe(signature.length);
+  expect(reply.folded.quoted).toBeGreaterThan(quote.length);
+  expect(reply.email).toContain("Still broken, sorry.");
+  expect(reply.email).not.toContain("Please try again now");
+  expect(reply.email).not.toContain("Carol\n");
+  const full = JSON.parse(textOf(await tool.handler({ full: true }, {})));
+  expect(full.messages[2].quotedHistory).toBeUndefined();
+  expect(full.messages[2].folded).toBeUndefined();
+  expect(full.messages[2].email).toContain("> Please try again now");
+});
+
+test("get_conversation shows a quote that matches nothing earlier as new text", async () => {
+  const text = [
+    "Thanks!",
+    "",
+    "On Mon, 3 Mar 2025 at 10:00, Acme help <help@acme.example.test> wrote:",
+    "Please delete my account and refund me.",
+  ].join("\n");
+  const mine = await conversation(1);
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+    messages: [...c.messages, message(2, text)],
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const brief = JSON.parse(
+    textOf(await getConversationTool("os-1").handler({}, {})),
+  );
+  expect(brief.messages[1].quotedHistory).toBeUndefined();
+  expect(brief.messages[1].email).toContain(
+    "Please delete my account and refund me.",
+  );
 });
 
 test("the server is named opensession-support", () => {

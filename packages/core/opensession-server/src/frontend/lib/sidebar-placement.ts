@@ -2,6 +2,7 @@ import {
   AGENT_PERSON_KEY,
   AUTOMATION_MACHINE_IDENTITY,
 } from "./automation-audience";
+import { AGENT_NAME } from "./brand";
 import {
   personKey,
   prReviewCompletion,
@@ -74,6 +75,19 @@ export function sessionWasAgentStarted(session: {
     session.branch?.startsWith("report-") ||
     sessionWasAutoCreated(session),
   );
+}
+
+/**
+ * What the robot beside an agent-started session says. A session the agent
+ * started under its own name with no person to credit (a support session)
+ * is the agent's, so it says whose; other agent starts keep the generic line.
+ */
+export function agentStartedLabel(session: {
+  startedBy?: string | null;
+}): string {
+  return session.startedBy?.trim().toLowerCase() === AGENT_PERSON_KEY
+    ? `Started by ${AGENT_NAME}`
+    : "Started by an agent";
 }
 
 /** A row where every represented session was opened by an agent action. */

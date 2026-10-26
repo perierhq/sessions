@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { personaName } from "./config";
 import type { UnifiedSession } from "./types";
 import {
   parseSidebarSessionScope,
@@ -343,5 +344,38 @@ describe("scopeSessionsForSidebar", () => {
         }),
       ).map((row) => row.id),
     ).toEqual(["mine"]);
+  });
+
+  test("the persona's lens holds its support sessions and unowned automations", () => {
+    const persona = personaName();
+    const rows = [
+      session("support", {
+        startedBy: persona,
+        lastActivity: "2026-08-01T12:00:00.000Z",
+        externalRefs: [{ kind: "support", id: "sc_1" }],
+      }),
+      session("incident", { automation: "incidents", startedBy: undefined }),
+      session("owned", { automation: "nightly", startedBy: undefined }),
+      session("ada", { lastActivity: "2026-08-01T12:00:00.000Z" }),
+    ];
+    const ctx = context({
+      automations: new Map([
+        ["incidents", {}],
+        ["nightly", { owner: "Ada" }],
+      ]),
+    });
+    const now = Date.parse("2026-08-18T12:00:00.000Z");
+    expect(
+      scopeSessionsForSidebar(
+        rows,
+        scope({ person: persona.toLowerCase() }),
+        ctx,
+        now,
+      ).map((row) => row.id),
+    ).toEqual(["support", "incident"]);
+    // Not mixed into the owner's own lanes.
+    expect(
+      scopeSessionsForSidebar(rows, scope(), ctx, now).map((row) => row.id),
+    ).toEqual(["owned", "ada"]);
   });
 });

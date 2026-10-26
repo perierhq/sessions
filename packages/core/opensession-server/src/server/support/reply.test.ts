@@ -8,6 +8,7 @@ import {
 } from "../../shared/support";
 import type { KnowledgeVerdict } from "../../shared/knowledge";
 import { catalogDocuments } from "../catalog-documents";
+import { personaName } from "../config";
 import {
   type VerdictInput,
   __setKnowledgeVerdictForTest,
@@ -649,6 +650,66 @@ describe("who acted", () => {
     const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
     expect(row.by).toBe("ada");
     expect(row.byName).toBe("Ada");
+  });
+
+  test("an automatic send's audit rows name the persona, never as a login", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(result.ok && result.draft.state).toBe("sent");
+    const rows = tb.kernel.audits.filter(
+      (a) =>
+        a.conversationId === c.id && String(a.type).startsWith("support.reply"),
+    );
+    expect(rows.map((a) => a.type)).toEqual([
+      "support.reply.attempt",
+      "support.reply",
+    ]);
+    for (const row of rows) {
+      expect(row.by).toBe("sessions");
+      expect(row.byName).toBe(personaName());
+    }
+  });
+});
+
+describe("who acted on an agent-proposed draft", () => {
+  test("its audit rows keep the agent as author and name the persona, never a login", async () => {
+    // The agent proposes; Sessions sends it when the veto window ends.
+    // Only a person or Sessions ever sends (claimAndDeliver), so `by` is
+    // the machine kind and the persona is its display name.
+    await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    if (!proposed.ok) throw new Error(proposed.error);
+    expect(proposed.draft.state).toBe("veto");
+    const due = Date.parse(proposed.draft.vetoDeadline!) + 1;
+    expect(await sendDueVeto(c.id, proposed.draft.id, due)).toMatchObject({
+      ok: true,
+    });
+    const rows = tb.kernel.audits.filter(
+      (a) =>
+        a.conversationId === c.id && String(a.type).startsWith("support.reply"),
+    );
+    expect(rows.map((a) => a.type)).toEqual([
+      "support.reply.attempt",
+      "support.reply",
+    ]);
+    for (const row of rows) {
+      expect(row.author).toBe("agent");
+      expect(row.by).toBe("sessions");
+      expect(row.byName).toBe(personaName());
+    }
+  });
+
+  test("only a person may discard it, so no rule ever names the customer as the persona", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    for (const by of [AGENT, { kind: "customer" } as const])
+      expect(await discardDraft(c.id, draft.id, by)).toEqual({
+        ok: false,
+        status: 409,
+        error: "Only a person can do this",
+      });
+    expect((await getConversation(c.id))!.draft?.state).toBe("needs-person");
   });
 });
 

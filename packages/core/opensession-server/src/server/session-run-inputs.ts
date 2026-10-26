@@ -23,6 +23,7 @@ import {
   automationMcpServersByName,
 } from "./automations";
 import { humanPrompter, interactivePrompter } from "./session-actors";
+import { type GitIdentity, commitAuthorFor } from "./shared/user-mappings";
 import {
   plainDiscussionDeniedTools,
   supportDeniedTools,
@@ -137,6 +138,20 @@ export function isSupportSession(
   session: Pick<RunInputsSession, "externalRefs">,
 ): boolean {
   return !!session.externalRefs?.some((r) => r.kind === "support");
+}
+
+/** Whose git identity a turn's commits carry (shared/user-mappings.ts
+ *  commitAuthorFor): the sender, else the session owner. A support session
+ *  carries none, so it commits as the GitHub App's bot alone: its creator is
+ *  the persona, and a persona named like a teammate would otherwise resolve
+ *  to that teammate, their co-author trailer and their GitHub token
+ *  (pi-run-authority.ts githubCredentialUser). */
+export function runCommitAuthor(
+  session: Pick<RunInputsSession, "externalRefs">,
+  user?: string | null,
+  owner?: string | null,
+): GitIdentity | null {
+  return isSupportSession(session) ? null : commitAuthorFor(user, owner);
 }
 
 /** One support turn's scope, read fresh from the project's access table so
@@ -284,8 +299,16 @@ export async function resolveSessionRunInputs(
                     await import("./feeds")
                   ).feedMcpServersForRefs(session.externalRefs!)
                 : undefined;
-  const accountUser = humanPrompter(opts.user) ?? undefined;
-  const prompter = interactivePrompter(opts.user) ?? undefined;
+  // A support turn acts for nobody, whoever it is sent as: a sender that
+  // reads as a person (a persona named like a teammate, a stray turn sent
+  // under a teammate's name) must not pick that person's provider account
+  // or make the session theirs.
+  const accountUser = supportScope
+    ? undefined
+    : (humanPrompter(opts.user) ?? undefined);
+  const prompter = supportScope
+    ? undefined
+    : (interactivePrompter(opts.user) ?? undefined);
   return {
     isAutomationSession,
     mcpServers,
@@ -306,7 +329,9 @@ export async function resolveSessionRunInputs(
       isAutomationSession || isPlainDiscussionSession || supportScope
         ? undefined
         : opts.user,
-    mcpGrantUser: session.createdByLogin || undefined,
+    mcpGrantUser: supportScope
+      ? undefined
+      : session.createdByLogin || undefined,
     accountUser,
     humanPrompter: prompter,
     inProcessMcpBranch: sessionInProcessMcpBranch(session, prompter),

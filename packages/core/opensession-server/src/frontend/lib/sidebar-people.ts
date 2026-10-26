@@ -40,8 +40,9 @@ export function sessionIsRecentlyActive(
  * integrations and arbitrary `startedBy` strings never become people. The
  * signed-in person's sessions already live in the workspace lanes above, so
  * this list excludes them instead of rendering every active row twice.
- * Unowned automations file under the Agent person; owned automations file under
- * their configured teammate.
+ * Unowned automations, and sessions the agent started under its own name,
+ * file under the Agent person; owned automations file under their configured
+ * teammate.
  *
  * Active sessions retain the incoming order. Sessions already kept in personal
  * lanes are omitted so Team remains the place to discover work that is not yet
@@ -81,8 +82,13 @@ export function sidebarPersonSessions(
       }
     } else {
       if (!session.startedBy) continue;
-      label = rosterNameFor(session.startedBy, canonical);
       key = ownerKeyOf(session, canonical);
+      // A session the agent started with no person to credit (a support
+      // session, say) is the agent's, the same group as its automations.
+      label =
+        key === AGENT_PERSON_KEY
+          ? AGENT_NAME
+          : rosterNameFor(session.startedBy, canonical);
     }
     if (!label || key === currentUserKey) continue;
 

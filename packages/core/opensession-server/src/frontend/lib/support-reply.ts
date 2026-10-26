@@ -9,12 +9,14 @@ import {
   parseKnowledgeCitation,
   type KnowledgeVerdict,
 } from "../../shared/knowledge";
-import type {
-  DraftSource,
-  SupportActor,
-  SupportConversation,
-  SupportDraft,
-  SupportIntent,
+import {
+  type DraftSource,
+  type SupportActor,
+  type SupportConversation,
+  type SupportDraft,
+  type SupportIntent,
+  messageParts,
+  newTextOf,
 } from "../../shared/support";
 import { API_BASE } from "./api/request";
 import { routePath } from "./app-route";
@@ -377,6 +379,16 @@ const REMOVED = "(Removed after the retention period)";
  *  a conversation after thanks or a week of silence). */
 export type EmailTimelineEntry = PlainTimelineEntry & { quiet?: true };
 
+/** The quoted history and signature a message hides behind its toggle. */
+function hiddenPartsOf(
+  m: SupportConversation["messages"][number],
+): Pick<EmailTimelineEntry, "hiddenParts"> {
+  const hidden = (messageParts(m) ?? []).flatMap((p) =>
+    p.kind === "new" || !p.text.trim() ? [] : [{ kind: p.kind, text: p.text }],
+  );
+  return hidden.length ? { hiddenParts: hidden } : {};
+}
+
 /** Events that read as one quiet line rather than a note. */
 function quietEvent(e: SupportConversation["events"][number]): boolean {
   return e.kind === "closed" && e.actor.kind === "sessions";
@@ -409,7 +421,8 @@ export function timelineEntries(c: SupportConversation): EmailTimelineEntry[] {
         actorType,
         kind: "email",
         subject: m.subject,
-        text: m.text ?? REMOVED,
+        text: newTextOf(m) ?? REMOVED,
+        ...hiddenPartsOf(m),
         attachments: m.attachments.map((a) => ({
           id: a.id,
           fileName: a.fileName,

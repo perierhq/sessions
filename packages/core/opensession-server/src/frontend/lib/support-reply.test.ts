@@ -126,6 +126,37 @@ describe("timelineEntries", () => {
     });
   });
 
+  test("an email shows its new text; quoted history and signature fold away", () => {
+    const text =
+      "Yes please.\n\nSent from my iPhone\n\n> On 3 Nov 2026, at 10:12, Acme <help@acme.example.test> wrote:\n> Shall we reset it?\n";
+    const quoteAt = text.indexOf("> On");
+    const sigAt = text.indexOf("Sent");
+    const [entry] = timelineEntries(
+      conversation({
+        messages: [
+          message({
+            text,
+            split: {
+              v: 1,
+              parts: [
+                { kind: "new", start: 0, end: sigAt },
+                { kind: "signature", start: sigAt, end: quoteAt },
+                { kind: "quoted", start: quoteAt, end: text.length },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+    expect(entry!.text).toBe("Yes please.");
+    expect(entry!.hiddenParts).toEqual([
+      { kind: "signature", text: text.slice(sigAt, quoteAt) },
+      { kind: "quoted", text: text.slice(quoteAt) },
+    ]);
+    const [plain] = timelineEntries(conversation());
+    expect(plain!.hiddenParts).toBeUndefined();
+  });
+
   test("a person's reply is ours, and retention-removed text says so", () => {
     const c = conversation({
       messages: [

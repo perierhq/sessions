@@ -1,11 +1,19 @@
 // Routing: the support pipeline ingest hands every customer message to.
 // Every inbound customer message is labelled by triage (one small-model
 // call each: route, topics, injection, a request for a person, anger, a
-// repeat, thanks only). A new conversation is then filed as spam, listed
+// repeat, thanks only); an email's new text and the history it quotes go
+// to it apart (quote.ts). A new conversation is then filed as spam, listed
 // for a person (Watch only), or answered by a support session: a normal
 // session (getSessionControl().createSession) in the project's repo, in a
 // workspace stamped with a `support` external ref, so session-run-inputs.ts
-// runs it under the Support role with the support deny-set and no user. A
+// runs it under the Support role with the support deny-set and no user. The
+// session and its workspace are credited to the assistant persona
+// (personaName()), the name every agent-started session without a person
+// already carries (session-control-wiring.ts); that name is a machine actor
+// (session-actors.ts isMachineActor), so it is display only and never a
+// person's rights. A persona named like a teammate (supportSessionUser)
+// would read as that teammate, so the session is then credited to
+// "Sessions" instead. A
 // reply on a conversation with a session is announced to that session,
 // queued behind a running turn; one that arrived while the conversation was
 // being routed is announced once the session exists. Topics only ever add
@@ -24,14 +32,18 @@
 // through get_conversation (mcp.ts), still inside the <customer_email>
 // wrapper (wrap.ts). Nothing runs at import.
 
-import type {
-  InboxConfig,
-  MessageTriage,
-  SupportActor,
-  SupportConversation,
-  SupportMessage,
-  SupportTopic,
+import {
+  type InboxConfig,
+  type MessageTriage,
+  type SupportActor,
+  type SupportConversation,
+  type SupportMessage,
+  type SupportTopic,
+  foldedTextOf,
+  messageParts,
+  newTextOf,
 } from "../../shared/support";
+import { quoteMatchesThread, threadOf } from "../../agents/email/quote";
 import {
   type CreateSessionOpts,
   type SessionControl,
@@ -43,6 +55,8 @@ import { getInbox } from "./inboxes";
 import { setSupportPipeline } from "./ingest";
 import { type SupportRunSpec, supportRunSpec } from "./session-policy";
 import { catalogDocuments } from "../catalog-documents";
+import { personaName } from "../config";
+import { isMachineActor } from "../session-actors";
 import { getConversation, updateConversation } from "./store";
 import { addSenderStrike, senderStrikes } from "./strikes";
 import { classifyMessage, failedTriage } from "./triage";
@@ -53,8 +67,31 @@ import { wrapAttribute } from "./wrap";
 export const MAX_NEW_SESSIONS_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 
-const SESSIONS_USER = "Sessions";
 const SESSIONS_ACTOR: SupportActor = { kind: "sessions" };
+
+/** Who a support session is credited to when the persona can't be. */
+export const SUPPORT_FALLBACK_USER = "Sessions";
+
+let warnedPersonaCollision: string | null = null;
+
+/** The name a support session and its workspace are credited to: the
+ *  assistant persona, as long as it reads as a machine. A persona that
+ *  shares a teammate's name, first name, alias or GitHub login is not a
+ *  machine actor (isMachineActor gives a configured teammate precedence),
+ *  so crediting it would make the session that teammate's. Then the
+ *  session is credited to "Sessions", which no person is called. Logged
+ *  once per persona name. */
+export function supportSessionUser(): string {
+  const persona = personaName();
+  if (isMachineActor(persona)) return persona;
+  if (warnedPersonaCollision !== persona) {
+    warnedPersonaCollision = persona;
+    console.warn(
+      `[support] the assistant persona "${persona}" matches a teammate; support sessions are credited to "${SUPPORT_FALLBACK_USER}"`,
+    );
+  }
+  return SUPPORT_FALLBACK_USER;
+}
 
 export interface RoutingDeps {
   classify: typeof classifyMessage;
@@ -369,7 +406,7 @@ export async function startSupportSession(
     const { workspace } = await d.resolveWorkspace({
       // No customer text: the subject stays in the conversation.
       ref: { kind: "support", id: current.id, title: `Support ${current.id}` },
-      createdBy: SESSIONS_USER,
+      createdBy: supportSessionUser(),
       repo: current.project,
     });
     const whyLine = WHY_LINE[why];
@@ -386,7 +423,8 @@ export async function startSupportSession(
       mcpServers: spec.mcpServers,
       sandbox: spec.sandbox.request,
       agentStarted: true,
-      user: SESSIONS_USER,
+      // Credit only: the support ref, not this name, decides what it may do.
+      user: supportSessionUser(),
     };
     const created = await d.control().createSession(opts);
     // Compare-and-set: a session stored meanwhile (an earlier attempt that
@@ -477,7 +515,8 @@ function sinceLastReply(c: SupportConversation): SupportMessage[] {
 function replyBefore(c: SupportConversation, id: string): string | null {
   const at = c.messages.findIndex((m) => m.id === id);
   const before = at < 0 ? c.messages : c.messages.slice(0, at);
-  return before.findLast((m) => m.direction === "out")?.text ?? null;
+  const ours = before.findLast((m) => m.direction === "out");
+  return ours ? newTextOf(ours) : null;
 }
 
 export const STRIKE_ONE =
@@ -568,7 +607,10 @@ async function classifyPending(
     const { triage, reason } = takeTriage(c.inboxId, d.now())
       ? await d.classify({
           subject: current.subject,
-          text: current.text ?? "",
+          // What the customer wrote this time, and apart from it the
+          // history it quotes: topics and injection read both.
+          text: newTextOf(current) ?? "",
+          quoted: foldedTextOf(current),
           from: current.from.address,
           earlierReply: replyBefore(c, current.id),
           now,
@@ -775,11 +817,25 @@ export const THANKS_MAX_CHARS = 300;
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/** Whether every quoted part of `m` matches mail we sent before it. */
+function quotesOnlyOurs(c: SupportConversation, m: SupportMessage): boolean {
+  const quoted = (messageParts(m) ?? []).filter((p) => p.kind === "quoted");
+  if (quoted.length === 0) return true;
+  const at = c.messages.findIndex((y) => y.id === m.id);
+  const ours = threadOf(
+    c.messages
+      .slice(0, at < 0 ? undefined : at)
+      .filter((y) => y.direction === "out"),
+  );
+  return quoted.every((p) => quoteMatchesThread(p.text, ours));
+}
+
 /** Whether message `id` closes the conversation without a reply: we were
  *  waiting on the customer (our reply is the newest before it, and the
  *  conversation wasn't closed), it is the only customer message since,
  *  the customer wrote it from their verified address, it only says thanks
- *  (no other label, no topic, no attachment, short), and nothing waits for
+ *  (no other label, no topic, no attachment, short, quoting only mail we
+ *  sent), and nothing waits for
  *  a person (no draft, prepared issue or fix task). Anything else is a
  *  normal message. */
 export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
@@ -803,7 +859,10 @@ export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
   if (!Array.isArray(t.topics) || t.topics.length > 0) return false;
   if (t.injection || t.wantsHuman || t.angry || t.repeat || t.bug) return false;
   if (m.attachments.length > 0) return false;
-  if ((m.text ?? "").trim().length >= THANKS_MAX_CHARS) return false;
+  // A "thanks!" over the quoted thread is still short, as long as all it
+  // quotes is mail we sent.
+  if ((newTextOf(m) ?? "").length >= THANKS_MAX_CHARS) return false;
+  if (!quotesOnlyOurs(c, m)) return false;
   const d = c.draft;
   if (d && d.state !== "sent" && d.state !== "discarded") return false;
   if (c.pendingIssue || c.fixTask) return false;
