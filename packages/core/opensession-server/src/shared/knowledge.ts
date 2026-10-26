@@ -246,8 +246,9 @@ export interface KnowledgeSearchHit {
 /** What the server found about a draft's knowledge at the moment of sending
  *  (server/knowledge/backing.ts). Shown to people only. */
 export interface KnowledgeVerdict {
-  /** Citations that may back the reply. */
-  backing: Array<{ kind: "knowledge"; ref: string }>;
+  /** Citations that may back the reply. `title`: the item's title, for
+   *  people (absent on verdicts stored before it was kept). */
+  backing: Array<{ kind: "knowledge"; ref: string; title?: string }>;
   /** Citations that can't, with the KNOWLEDGE_COPY reason. `uncited`:
    *  not cited, but the session read it (`<path>@<commit read>`), so the
    *  reply may rest on it whatever else the draft cites. */

@@ -209,7 +209,8 @@ describe("checkDraft", () => {
     };
     const asked: unknown[] = [];
     const verdict: KnowledgeVerdict = {
-      backing: [fresh],
+      // The title is for people; the verified source is the citation.
+      backing: [{ ...fresh, title: "Export" }],
       blocked: [
         {
           ref: stale.ref,

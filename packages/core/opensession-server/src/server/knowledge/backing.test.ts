@@ -178,7 +178,9 @@ test("a fresh trusted article the session read backs the reply", async () => {
     deps,
   );
   expect(v).toEqual({
-    backing: [{ kind: "knowledge", ref: `articles/export.md@${head}` }],
+    backing: [
+      { kind: "knowledge", ref: `articles/export.md@${head}`, title: "Export" },
+    ],
     blocked: [],
     internalQuoted: null,
     failed: false,
@@ -268,7 +270,9 @@ test("each article that may not back says why, in order", async () => {
     deps,
   );
   expect(v?.failed).toBe(false);
-  expect(v?.backing).toEqual([cite("articles/today.md", head)]);
+  expect(v?.backing).toEqual([
+    { ...cite("articles/today.md", head), title: "Today" },
+  ]);
   expect(v?.blocked.map((b) => [b.title, b.reason])).toEqual([
     ["Reference", KNOWLEDGE_COPY.notTrusted],
     ["Overdue", KNOWLEDGE_COPY.reviewPassed("2026-10-01")],
@@ -290,7 +294,9 @@ test("an article without validAsOfCommit counts changes from its day on", async 
     ]),
     deps,
   );
-  expect(v?.backing).toEqual([cite("articles/new.md", head)]);
+  expect(v?.backing).toEqual([
+    { ...cite("articles/new.md", head), title: "Export" },
+  ]);
   expect(v?.blocked[0]?.reason).toBe(
     `docs/export.md changed in ${sha.c2!.slice(0, 7)}`,
   );
@@ -484,7 +490,7 @@ test("used but not cited: a read item that can't back always holds the draft", a
     deps,
   );
   expect(cited?.backing).toEqual([
-    { kind: "knowledge", ref: `articles/export.md@${head}` },
+    { kind: "knowledge", ref: `articles/export.md@${head}`, title: "Export" },
   ]);
   expect(cited?.blocked).toEqual([
     {

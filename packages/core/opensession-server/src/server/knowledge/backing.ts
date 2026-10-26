@@ -156,16 +156,22 @@ function readAt(read: KnowledgeRead[], path: string, commit: string): boolean {
  *  couldn't be checked". */
 class VerdictFailure extends Error {}
 
-/** One citation: null when it backs, else why not. `read` is the read
- *  proof (stored and live) step 5 checks; null skips step 5 (an item the
- *  session read, checked at the commit it read). */
+/** A citation that backs the reply, with the item's title for people. */
+interface Backs {
+  backs: true;
+  title: string;
+}
+
+/** One citation: `backs` when it may back the reply, else why not. `read`
+ *  is the read proof (stored and live) step 5 checks; null skips step 5 (an
+ *  item the session read, checked at the commit it read). */
 async function checkCitation(
   input: VerdictInput,
   ref: string,
   today: string,
   d: BackingDeps,
   read: KnowledgeRead[] | null,
-): Promise<Blocked | null> {
+): Promise<Blocked | Backs> {
   const parsed = parseKnowledgeCitation(ref);
   if (!parsed) {
     const at = ref.lastIndexOf("@");
@@ -231,7 +237,7 @@ async function checkCitation(
     )
   )
     return blocked(KNOWLEDGE_COPY.notRead);
-  return null;
+  return { backs: true, title: item.title };
 }
 
 /** Shingled internal bodies per project, at the knowledge HEAD they were
@@ -343,14 +349,16 @@ export async function knowledgeVerdict(
       throw new VerdictFailure(KNOWLEDGE_COPY.readTooMuch(MAX_READ_CHECKED));
     verdict.internalQuoted = await internalQuote(input.project, input.text, d);
     for (const ref of cited) {
-      const blocked = await checkCitation(input, ref, today, d, read);
-      if (blocked) verdict.blocked.push(blocked);
-      else verdict.backing.push({ kind: "knowledge", ref });
+      const checked = await checkCitation(input, ref, today, d, read);
+      if ("backs" in checked)
+        verdict.backing.push({ kind: "knowledge", ref, title: checked.title });
+      else verdict.blocked.push(checked);
     }
     for (const r of uncited) {
       const ref = `${r.path}@${r.commit}`;
-      const blocked = await checkCitation(input, ref, today, d, null);
-      if (blocked) verdict.blocked.push({ ...blocked, uncited: true });
+      const checked = await checkCitation(input, ref, today, d, null);
+      if (!("backs" in checked))
+        verdict.blocked.push({ ...checked, uncited: true });
     }
     if (read.length) verdict.read = read;
     return verdict;

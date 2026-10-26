@@ -218,7 +218,7 @@ export async function checkDraft(input: DraftCheckInput): Promise<DraftCheck> {
   return {
     verified: [
       ...input.sources.filter((_, i) => ok[i]),
-      ...(knowledge?.backing ?? []),
+      ...(knowledge?.backing ?? []).map(({ kind, ref }) => ({ kind, ref })),
     ],
     topics: read ? read.topics : null,
     promises: read ? read.promises : true,
