@@ -10,6 +10,7 @@ import {
   freshnessLine,
   itemBadges,
   jobLine,
+  listLine,
   originLabel,
   sectionCounts,
 } from "./models";
@@ -85,6 +86,13 @@ test("originLabel: nothing for the team's own articles", () => {
   expect(originLabel("repo")).toBe("From the docs");
 });
 
+test("listLine adds where an item came from", () => {
+  expect(listLine(item(), TODAY)).toBe("Valid as of 26 Oct 2026");
+  expect(listLine(item({ origin: "mail" }), TODAY)).toBe(
+    "Valid as of 26 Oct 2026 · From the mailbox",
+  );
+});
+
 describe("freshnessLine", () => {
   test("valid as of", () => {
     expect(freshnessLine(item(), TODAY)).toBe("Valid as of 26 Oct 2026");
@@ -123,7 +131,7 @@ test("formatDay", () => {
 
 test("filterLabel and emptyCopy cover every filter", () => {
   expect(filterLabel("needs-check")).toBe("Needs check");
-  expect(filterLabel("answer")).toBe("Answers");
+  expect(filterLabel("answer")).toBe("Answer");
   expect(emptyCopy("needs-check")).toBe("Nothing needs a check");
   expect(emptyCopy("suggestions")).toContain("No suggestions");
 });

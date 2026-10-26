@@ -19,6 +19,7 @@ import {
   KNOWLEDGE_TAB_COUNT,
   KNOWLEDGE_TABS_SCROLL,
 } from "../../../lib/knowledge-classes";
+import { NEW_ARTICLE } from "../../../lib/knowledge/editor-model";
 import {
   emptyCopy,
   freshnessLine,
@@ -39,6 +40,8 @@ import {
 } from "../../../ui/settings";
 import { EmptyState, InlineAlert } from "../../../ui/state";
 import { IconChevronLeft } from "../../icons";
+import { KnowledgeEditor } from "./KnowledgeEditor";
+import { KnowledgeList } from "./KnowledgeList";
 
 /** The tabs in the bar, in order. History opens from an item's page. */
 const TABS: Array<{ tab: KnowledgeTab; label: string }> = [
@@ -48,9 +51,8 @@ const TABS: Array<{ tab: KnowledgeTab; label: string }> = [
   { tab: "import", label: "Import" },
 ];
 
-/** The list each list tab shows. */
+/** The list each list tab shows (Articles has its own, KnowledgeList). */
 const TAB_FILTERS: Partial<Record<KnowledgeTab, KnowledgeFilter>> = {
-  articles: "all",
   suggestions: "suggestions",
   "needs-check": "needs-check",
 };
@@ -92,6 +94,36 @@ export function KnowledgePage({
         ? counts?.["needs-check"]
         : undefined;
   const filter = TAB_FILTERS[route.tab];
+  const openPath = (path: string) => onNavigate({ tab: "articles", path });
+
+  // An item open in the editor: the page is the item, and Back is the list.
+  if (route.tab === "articles" && route.path)
+    return (
+      <div className={PROJECT_PAGE_FRAME}>
+        <SettingsPanel className="self-start">
+          <div className={KNOWLEDGE_PAGE_BACK}>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="phone:min-h-11"
+              icon={<IconChevronLeft size={18} />}
+              aria-label="Back to articles"
+              onClick={() => onNavigate({ tab: "articles" })}
+            >
+              Articles
+            </Button>
+          </div>
+          <KnowledgeEditor
+            key={route.path}
+            project={project}
+            path={route.path}
+            onSaved={openPath}
+            onHistory={(path) => onNavigate({ tab: "history", path })}
+          />
+        </SettingsPanel>
+      </div>
+    );
 
   return (
     <div className={PROJECT_PAGE_FRAME}>
@@ -138,7 +170,13 @@ export function KnowledgePage({
             })}
           </Segmented>
         </div>
-        {filter ? (
+        {route.tab === "articles" ? (
+          <KnowledgeList
+            project={project}
+            onOpen={openPath}
+            onNew={() => openPath(NEW_ARTICLE)}
+          />
+        ) : filter ? (
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (
           <ImportJobs project={project} />

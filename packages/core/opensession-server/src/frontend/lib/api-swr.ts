@@ -92,7 +92,21 @@ export const apiSWRKey = {
     ["api", "knowledge", project, "needs-check", path] as const,
   knowledgeHistory: (project: string, path = "") =>
     ["api", "knowledge", project, "history", path] as const,
+  knowledgeItem: (project: string, path: string) =>
+    ["api", "knowledge", project, "item", path] as const,
 };
+
+/** Every key of one project's Knowledge, for `mutate(filter)` after a
+ *  write: the lists, counts, items, history and needs-check all move. */
+export function knowledgeKeyFilter(
+  project: string,
+): (key: Arguments) => boolean {
+  return (key) =>
+    Array.isArray(key) &&
+    key[0] === "api" &&
+    key[1] === "knowledge" &&
+    key[2] === project;
+}
 
 /**
  * Every resource keyed by one session, for `mutate(filter)` once the server

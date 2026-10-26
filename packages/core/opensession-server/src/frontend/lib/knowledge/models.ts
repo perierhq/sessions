@@ -114,9 +114,41 @@ export function originLabel(origin: KnowledgeOrigin): string | null {
   return ORIGIN_LABELS[origin];
 }
 
+/** The day, read in UTC, for freshness lines and new articles. */
+export function todayUtc(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/** A list row's second line: how current the item is, then where it came
+ *  from when that isn't the team. */
+export function listLine(
+  item: Pick<
+    KnowledgeItem,
+    "status" | "effective" | "check" | "reviewBy" | "validAsOf" | "origin"
+  >,
+  today: string,
+): string {
+  const line = freshnessLine(item, today);
+  const origin = originLabel(item.origin);
+  return origin ? `${line} · ${origin}` : line;
+}
+
+/** How long the search box waits after the last key. */
+export const SEARCH_DEBOUNCE_MS = 250;
+
+/** The Articles tab's filter chips (suggestions have their own tab). */
+export const LIST_FILTERS = [
+  "all",
+  "answer",
+  "internal",
+  "needs-check",
+  "reference",
+  "retired",
+] as const satisfies readonly KnowledgeFilter[];
+
 const FILTER_LABELS: Record<KnowledgeFilter, string> = {
   all: "All",
-  answer: "Answers",
+  answer: "Answer",
   internal: "Internal",
   "needs-check": "Needs check",
   reference: "Reference",

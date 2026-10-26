@@ -9,6 +9,7 @@ import {
   type KnowledgeItem,
   type KnowledgeKind,
   type KnowledgeStatus,
+  type KnowledgeTrust,
 } from "../../../shared/knowledge";
 
 /** What the form shows as controls. Lists are edited as text: topics comma
@@ -56,6 +57,25 @@ export type EditorField =
   | "body";
 
 export type EditorErrors = Partial<Record<EditorField, string>>;
+
+/** The route path that opens the editor on a new article (no item path
+ *  is a bare word: they all sit in a folder). */
+export const NEW_ARTICLE = "new";
+
+/** What a 409 on Save says; the form offers Reload beside it. */
+export const CONFLICT_COPY =
+  "Someone changed this article. Reload and try again.";
+
+/** What Attach offers: screenshots and PDFs (routes/knowledge.ts). */
+export const ATTACH_ACCEPT =
+  "image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf";
+
+/** The editor's subtitle: trust is set by where an item lives, not here. */
+export function trustLine(trust: KnowledgeTrust): string {
+  return trust === "trusted"
+    ? "Trusted: can back an automatic reply while it is fresh"
+    : "Reference: informs replies, never backs one by itself";
+}
 
 /** The reason written when a person sets an item to needs-check. */
 export const PERSON_CHECK_REASON = "Marked by a person";
@@ -144,11 +164,14 @@ export function lineList(text: string): string[] {
   );
 }
 
-/** The front matter and body to send. */
-export function toSave(state: EditorState): {
+/** What Save sends: the front matter and the Markdown body. */
+export interface EditorSave {
   fm: KnowledgeFrontMatter;
   body: string;
-} {
+}
+
+/** The front matter and body to send. */
+export function toSave(state: EditorState): EditorSave {
   const { kept } = state;
   const fm: KnowledgeFrontMatter = {
     title: state.title.trim(),
