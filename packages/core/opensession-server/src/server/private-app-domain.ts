@@ -2,6 +2,7 @@
 import { CADDY_STREAM_CLOSE_DELAY } from "./caddy-stream";
 import { X509Certificate, randomBytes } from "crypto";
 import { resolve4 } from "dns/promises";
+import { connect as tlsConnect } from "tls";
 import {
   chmodSync,
   existsSync,
@@ -12,6 +13,7 @@ import {
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { configuredServer } from "./config";
 import { stateDir } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
 import { isTailnetIpv4 } from "./shared/network-address";
@@ -31,6 +33,20 @@ interface PrivateAppCredential {
   apiToken: string;
   teamId?: string;
   upstream?: string;
+  /** More private app hostnames whose certificates this credential renews.
+   * Each has its own lego certificate and its own Caddy site. */
+  domains?: string[];
+}
+
+export interface PrivateAppCertificateStatus {
+  domain: string;
+  /** Expiry of the certificate Caddy serves, or of the installed file when
+   * the served one could not be read. Empty when neither is known. */
+  expiresAt: string;
+  /** Last renewal check, ISO time. Empty before the first check. */
+  checkedAt: string;
+  /** Why the last renewal check failed; empty when it succeeded. */
+  renewalError: string;
 }
 
 export interface PrivateAppDomainStatus {
@@ -39,16 +55,22 @@ export interface PrivateAppDomainStatus {
   credentialConfigured: boolean;
   certificateEmailConfigured: boolean;
   certificateExpiresAt: string;
+  /** Every certificate Open Session renews, primary domain first. */
+  certificates: PrivateAppCertificateStatus[];
   legoInstalled: boolean;
 }
 
 const CREDENTIAL_PATH = () => stateDir("private-app-dns.json");
 const ACME_PATH = () => stateDir("private-app-acme");
+const RENEWAL_PATH = () => stateDir("private-app-renewal.json");
 const CADDYFILE = () =>
   process.env.OPENSESSION_CADDYFILE || "/etc/caddy/Caddyfile";
 const TLS_DIR = () => process.env.OPENSESSION_TLS_DIR || "/etc/opensession/tls";
 const MANAGED_START = "# BEGIN OPENSESSION PRIVATE APP";
 const MANAGED_END = "# END OPENSESSION PRIVATE APP";
+const HOSTNAME =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 const runtime = globalThis as typeof globalThis & {
   __opensessionPrivateAppRenewal?: ReturnType<typeof setInterval>;
   __opensessionPrivateAppRenewing?: boolean;
@@ -64,7 +86,13 @@ function safeCredential(): PrivateAppCredential | null {
       typeof parsed.email !== "string" ||
       typeof parsed.apiToken !== "string" ||
       (parsed.teamId !== undefined && typeof parsed.teamId !== "string") ||
-      (parsed.upstream !== undefined && typeof parsed.upstream !== "string")
+      (parsed.upstream !== undefined && typeof parsed.upstream !== "string") ||
+      (parsed.domains !== undefined &&
+        (!Array.isArray(parsed.domains) ||
+          !parsed.domains.every(
+            (domain: unknown) =>
+              typeof domain === "string" && HOSTNAME.test(domain),
+          )))
     )
       return null;
     return parsed;
@@ -388,6 +416,7 @@ function validateCredentialInput(input: {
     apiToken,
     ...(input.provider === "vercel" && teamId ? { teamId } : {}),
     ...(input.upstream ? { upstream: input.upstream } : {}),
+    ...(canReuse && saved.domains?.length ? { domains: saved.domains } : {}),
   };
 }
 
@@ -455,8 +484,46 @@ function caddySites(
   return sites;
 }
 
+function siteHosts(
+  caddyfile: string,
+  header: number,
+  opening: number,
+): string[] {
+  return caddyfile
+    .slice(header, opening)
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map((address) =>
+      address
+        .replace(/^https?:\/\//i, "")
+        .replace(/:443$/, "")
+        .toLowerCase(),
+    );
+}
+
+/** The Caddy site that serves `domain`, and whether Open Session's markers
+ * are inside it. */
+export function privateAppCaddySite(
+  caddyfile: string,
+  domain: string,
+): { managed: boolean; usesCertificate: boolean } | null {
+  const site = caddySites(caddyfile).find(({ header, opening }) =>
+    siteHosts(caddyfile, header, opening).includes(domain.toLowerCase()),
+  );
+  if (!site) return null;
+  const body = caddyfile.slice(site.opening + 1, site.closing);
+  const paths = certificatePaths(domain);
+  return {
+    managed: body.includes(MANAGED_START),
+    usesCertificate:
+      body.includes(paths.certificate) && body.includes(paths.key),
+  };
+}
+
 /** Update only Open Session's marked private-app site. Existing unmarked sites
- * are left alone because silently taking ownership could expose or break them. */
+ * are left alone because silently taking ownership could expose or break them.
+ * With several marked sites (one per renewed domain) the one for `domain` is
+ * updated; a lone marked site for another name is renamed, as before. */
 export function upsertPrivateAppCaddy(
   caddyfile: string,
   domain: string,
@@ -467,9 +534,16 @@ export function upsertPrivateAppCaddy(
     `^[ \\t]*${MANAGED_START}[\\s\\S]*?^[ \\t]*${MANAGED_END}[ \\t]*(?:\\r?\\n)?`,
     "gm",
   );
-  const owned = caddySites(caddyfile).find(({ opening, closing }) =>
+  const marked = caddySites(caddyfile).filter(({ opening, closing }) =>
     caddyfile.slice(opening + 1, closing).includes(MANAGED_START),
   );
+  const owned =
+    marked.find(({ header, opening }) =>
+      siteHosts(caddyfile, header, opening).includes(domain.toLowerCase()),
+    ) ||
+    (marked.length === 1 && !privateAppCaddySite(caddyfile, domain) // never create a duplicate site
+      ? marked[0]
+      : undefined);
   if (owned) {
     const body = caddyfile.slice(owned.opening + 1, owned.closing);
     const replacement = managedBlock(domain, tailnetIpv4, upstream)
@@ -517,10 +591,11 @@ async function issueCertificate(
   credential: PrivateAppCredential,
   lego: string,
   renew = false,
+  domain = credential.domain,
 ): Promise<boolean> {
   mkdirSync(ACME_PATH(), { recursive: true, mode: 0o700 });
   chmodSync(ACME_PATH(), 0o700);
-  const certificatePath = legoCertificatePaths(credential.domain).certificate;
+  const certificatePath = legoCertificatePaths(domain).certificate;
   const before = existsSync(certificatePath)
     ? readFileSync(certificatePath)
     : null;
@@ -534,7 +609,7 @@ async function issueCertificate(
     "--dns",
     credential.provider,
     "--domains",
-    credential.domain,
+    domain,
     renew ? "renew" : "run",
   ];
   if (renew) args.push("--days", "30");
@@ -571,6 +646,98 @@ async function caddyGroup(): Promise<string> {
     : "caddy";
 }
 
+/** The Caddyfile is often readable only by root and the caddy group. */
+async function readCaddyfile(sudo: string | null): Promise<string | null> {
+  try {
+    return readFileSync(CADDYFILE(), "utf8");
+  } catch {}
+  if (!sudo) return null;
+  const read = await runCommand(
+    [sudo, "-n", "cat", CADDYFILE()],
+    commandEnvironment(),
+  );
+  return read.code === 0 ? read.stdout : null;
+}
+
+/** Copy lego's certificate and key to the paths the Caddy site loads
+ * (root:<caddy group>, certificate 0644, key 0640). */
+async function installCertificateFiles(
+  domain: string,
+  sudo: string,
+  group: string,
+): Promise<void> {
+  const source = legoCertificatePaths(domain);
+  const target = certificatePaths(domain);
+  const runSudo = (args: string[]) =>
+    runCommand([sudo, "-n", ...args], commandEnvironment());
+  for (const [from, to, mode] of [
+    [source.certificate, target.certificate, "0644"],
+    [source.key, target.key, "0640"],
+  ] as const) {
+    const result = await runSudo([
+      "install",
+      "-m",
+      mode,
+      "-o",
+      "root",
+      "-g",
+      group,
+      from,
+      to,
+    ]);
+    if (result.code !== 0)
+      throw new Error(
+        `Could not install the private app certificate for ${domain}: ${result.stderr.trim() || `install exited ${result.code}`}`,
+      );
+  }
+}
+
+/** Make Caddy re-read certificate files without dropping runtime Portal
+ * servers. The same tls config is PATCHed back with `Cache-Control:
+ * must-revalidate` (what `caddy reload --force` sends), so Caddy reprovisions
+ * its running config, Portal servers included, and loads the new files. A
+ * `systemctl reload` replaces the config with the Caddyfile and drops Portal
+ * servers until Open Session re-creates them, so it is only the fallback. */
+async function reloadCaddyCertificates(sudo: string): Promise<string> {
+  const admin = configuredServer().caddyAdmin.replace(/\/+$/, "");
+  let adminError = "";
+  try {
+    const current = await fetch(`${admin}/config/apps/tls`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const tls = current.ok ? await current.text() : "";
+    if (!tls.trim().startsWith("{"))
+      throw new Error(`no tls app (${current.status})`);
+    const patched = await fetch(`${admin}/config/apps/tls`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "must-revalidate",
+      },
+      body: tls,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (patched.ok) return "admin API";
+    throw new Error(
+      `${patched.status} ${(await patched.text().catch(() => "")).trim()}`,
+    );
+  } catch (error) {
+    adminError = error instanceof Error ? error.message : String(error);
+  }
+  const reload = await runCommand(
+    [sudo, "-n", "systemctl", "reload", "caddy"],
+    commandEnvironment(),
+  );
+  if (reload.code !== 0)
+    throw new Error(
+      `Caddy did not reload (admin API: ${adminError}; systemctl: ${reload.stderr.trim() || `exit ${reload.code}`})`,
+    );
+  console.warn(
+    `[private-app] reloaded Caddy with systemctl (admin API: ${adminError}); Portal routes come back on their next status check`,
+  );
+  return "systemctl";
+}
+
 async function installCertificateAndCaddy(
   domain: string,
   tailnetIpv4: string,
@@ -590,12 +757,8 @@ async function installCertificateAndCaddy(
     );
   }
   const caddyfile = CADDYFILE();
-  let current: string;
-  try {
-    current = readFileSync(caddyfile, "utf8");
-  } catch {
-    throw new Error(`Could not read ${caddyfile}`);
-  }
+  const current = await readCaddyfile(sudo);
+  if (current === null) throw new Error(`Could not read ${caddyfile}`);
   const next = upsertPrivateAppCaddy(current, domain, tailnetIpv4, upstream);
   const scratch = mkdtempSync(
     join(
@@ -633,36 +796,7 @@ async function installCertificateAndCaddy(
     ) {
       throw new Error(`Could not create ${TLS_DIR()}`);
     }
-    if (
-      (
-        await runSudo([
-          "install",
-          "-m",
-          "0644",
-          "-o",
-          "root",
-          "-g",
-          group,
-          source.certificate,
-          certificatePaths(domain).certificate,
-        ])
-      ).code !== 0 ||
-      (
-        await runSudo([
-          "install",
-          "-m",
-          "0640",
-          "-o",
-          "root",
-          "-g",
-          group,
-          source.key,
-          certificatePaths(domain).key,
-        ])
-      ).code !== 0
-    ) {
-      throw new Error("Could not install the private app certificate");
-    }
+    await installCertificateFiles(domain, sudo, group);
     if (
       (await runSudo(["install", "-m", "0644", staged, caddyfile])).code !== 0
     ) {
@@ -728,13 +862,30 @@ export async function privateAppDomainStatus(
     domain = new URL(origin).hostname;
   } catch {}
   const credential = safeCredential();
+  const renewal = readRenewalState();
+  const domains =
+    credential?.domain === domain
+      ? privateAppCertificateDomains(credential)
+      : domain
+        ? [domain]
+        : [];
+  const certificates = domains.map((name) => {
+    const recorded = renewal[name];
+    return {
+      domain: name,
+      expiresAt: recorded?.expiresAt || certificateExpiry(name),
+      checkedAt: recorded?.checkedAt || "",
+      renewalError: recorded?.error || "",
+    };
+  });
   return {
     health: await appHealth(origin, tailnetIpv4),
     dnsProvider: credential?.domain === domain ? credential.provider : null,
     credentialConfigured: credential?.domain === domain,
     certificateEmailConfigured:
       credential?.domain === domain && Boolean(credential.email),
-    certificateExpiresAt: domain ? certificateExpiry(domain) : "",
+    certificateExpiresAt: certificates[0]?.expiresAt || "",
+    certificates,
     legoInstalled: Bun.which("lego") !== null,
   };
 }
@@ -791,7 +942,171 @@ export async function testPrivateAppDomain(
   return privateAppDomainStatus(origin, tailnetIpv4);
 }
 
-export async function renewPrivateAppCertificate(): Promise<boolean> {
+interface RenewalRecord {
+  checkedAt: string;
+  expiresAt: string;
+  error?: string;
+}
+
+function readRenewalState(): Record<string, RenewalRecord> {
+  try {
+    const parsed = JSON.parse(readFileSync(RENEWAL_PATH(), "utf8"));
+    return parsed?.version === 1 && parsed.domains ? parsed.domains : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeRenewalState(domains: Record<string, RenewalRecord>): void {
+  try {
+    writeJsonAtomic(RENEWAL_PATH(), { version: 1, domains }, true, 0o600);
+  } catch (error) {
+    console.error("[private-app] could not save the renewal status:", error);
+  }
+}
+
+/** The configured domain first, then any extra `domains`, deduplicated. */
+export function privateAppCertificateDomains(credential: {
+  domain: string;
+  domains?: string[];
+}): string[] {
+  return [
+    ...new Set(
+      [credential.domain, ...(credential.domains || [])].map((domain) =>
+        domain.toLowerCase(),
+      ),
+    ),
+  ];
+}
+
+function readCertificate(path: string): X509Certificate | null {
+  try {
+    return new X509Certificate(readFileSync(path));
+  } catch {
+    return null;
+  }
+}
+
+/** The leaf certificate Caddy serves for `domain` on its tailnet address, or
+ * null when it cannot be reached (then the installed file stands in). */
+async function servedCertificate(
+  domain: string,
+): Promise<X509Certificate | null> {
+  const records = await resolve4(domain).catch((): string[] => []);
+  const host = records.find(isTailnetIpv4) || records[0];
+  if (!host) return null;
+  return new Promise((resolve) => {
+    const socket = tlsConnect({
+      host,
+      port: 443,
+      servername: domain,
+      rejectUnauthorized: false,
+      timeout: 5_000,
+    });
+    const done = (certificate: X509Certificate | null) => {
+      socket.destroy();
+      resolve(certificate);
+    };
+    socket.once("secureConnect", () => {
+      const raw = socket.getPeerCertificate()?.raw;
+      try {
+        done(raw ? new X509Certificate(raw) : null);
+      } catch {
+        done(null);
+      }
+    });
+    socket.once("timeout", () => done(null));
+    socket.once("error", () => done(null));
+  });
+}
+
+function expiresAfter(
+  candidate: X509Certificate,
+  current: X509Certificate | null,
+): boolean {
+  return (
+    !current ||
+    new Date(candidate.validTo).getTime() > new Date(current.validTo).getTime()
+  );
+}
+
+export interface PrivateAppRenewalOptions {
+  /** Reads the certificate Caddy serves. Tests replace the TLS probe. */
+  servedCertificate?: (domain: string) => Promise<X509Certificate | null>;
+}
+
+/** Renew one domain and make sure Caddy serves lego's newest certificate.
+ * lego's own "changed" answer is not trusted: a failed install after a
+ * successful renewal would otherwise never be retried, so every check
+ * compares lego's certificate with the installed file and the served one. */
+async function renewDomain(
+  credential: PrivateAppCredential,
+  domain: string,
+  lego: string,
+  probe: (domain: string) => Promise<X509Certificate | null>,
+): Promise<X509Certificate | null> {
+  const source = legoCertificatePaths(domain);
+  if (!existsSync(source.certificate) || !existsSync(source.key))
+    throw new Error(
+      `lego has no certificate for ${domain} in ${ACME_PATH()}; set the domain up again`,
+    );
+  await issueCertificate(credential, lego, true, domain);
+  const renewed = readCertificate(source.certificate);
+  if (!renewed)
+    throw new Error(`lego's certificate for ${domain} is unreadable`);
+  const installed = readCertificate(certificatePaths(domain).certificate);
+  const served = await probe(domain);
+  const fileStale =
+    installed?.fingerprint256 !== renewed.fingerprint256 &&
+    expiresAfter(renewed, installed);
+  const servedStale = served
+    ? served.fingerprint256 !== renewed.fingerprint256 &&
+      expiresAfter(renewed, served)
+    : fileStale;
+  if (!fileStale && !servedStale) return served || installed;
+
+  const sudo = Bun.which("sudo");
+  if (!sudo)
+    throw new Error("Passwordless sudo is required to install certificates");
+  if (fileStale)
+    await installCertificateFiles(domain, sudo, await caddyGroup());
+  const caddyfile = await readCaddyfile(sudo);
+  const site =
+    caddyfile === null ? null : privateAppCaddySite(caddyfile, domain);
+  if (caddyfile === null)
+    console.warn(
+      `[private-app] could not read ${CADDYFILE()}; reloading Caddy for ${domain} anyway`,
+    );
+  else if (!site)
+    console.warn(
+      `[private-app] no Caddy site serves ${domain}; installed its certificate in ${TLS_DIR()} only`,
+    );
+  else if (!site.managed)
+    console.warn(
+      `[private-app] ${domain} has a Caddy site without the "${MANAGED_START}" markers; installed the renewed certificate it loads and left the site unchanged`,
+    );
+  if (site && !site.usesCertificate)
+    console.warn(
+      `[private-app] the Caddy site for ${domain} does not load ${certificatePaths(domain).certificate}; it keeps its own certificate`,
+    );
+  const how = await reloadCaddyCertificates(sudo);
+  console.log(
+    `[private-app] installed the certificate for ${domain} (expires ${new Date(renewed.validTo).toISOString()}) and reloaded Caddy via ${how}`,
+  );
+  if (!served) return renewed;
+  const after = await probe(domain);
+  if (after && after.fingerprint256 !== renewed.fingerprint256)
+    throw new Error(
+      `Caddy still serves the certificate that expires ${new Date(after.validTo).toISOString()}`,
+    );
+  return after || renewed;
+}
+
+/** Check every configured private app certificate. Returns true when all of
+ * them are current; failures are recorded per domain for Settings. */
+export async function renewPrivateAppCertificate(
+  options: PrivateAppRenewalOptions = {},
+): Promise<boolean> {
   // Externally managed macOS certificates must not be renewed behind the
   // operator's back when we cannot install and reload them.
   if (process.platform !== "linux" || runtime.__opensessionPrivateAppRenewing)
@@ -799,46 +1114,88 @@ export async function renewPrivateAppCertificate(): Promise<boolean> {
   const credential = safeCredential();
   if (!credential || !Bun.which("lego") || !Bun.which("caddy")) return false;
   runtime.__opensessionPrivateAppRenewing = true;
+  const domains = privateAppCertificateDomains(credential);
+  const state = readRenewalState();
+  const record = (
+    domain: string,
+    certificate: X509Certificate | null,
+    error?: unknown,
+  ) => {
+    state[domain] = {
+      checkedAt: new Date().toISOString(),
+      expiresAt: certificate
+        ? new Date(certificate.validTo).toISOString()
+        : certificateExpiry(domain),
+      ...(error
+        ? { error: error instanceof Error ? error.message : String(error) }
+        : {}),
+    };
+  };
+  let ok = true;
   try {
     requirePrivateAppPlatform();
-    const changed = await issueCertificate(
-      credential,
-      await requireLego(),
-      true,
-    );
-    if (changed) {
-      const records = await resolve4(credential.domain).catch(
-        (): string[] => [],
-      );
-      const tailnetIpv4 = records.find(isTailnetIpv4);
-      if (!tailnetIpv4)
-        throw new Error(
-          "Private app DNS no longer points to a Tailscale address",
+    const lego = await requireLego();
+    for (const domain of domains) {
+      try {
+        record(
+          domain,
+          await renewDomain(
+            credential,
+            domain,
+            lego,
+            options.servedCertificate || servedCertificate,
+          ),
         );
-      await installCertificateAndCaddy(
-        credential.domain,
-        tailnetIpv4,
-        credential.upstream,
-      );
-      console.log(`[private-app] certificate renewed for ${credential.domain}`);
+      } catch (error) {
+        ok = false;
+        console.error(
+          `[private-app] certificate renewal failed for ${domain}:`,
+          error,
+        );
+        record(domain, null, error);
+      }
     }
-    return true;
   } catch (error) {
+    ok = false;
     console.error("[private-app] certificate renewal failed:", error);
-    return false;
+    for (const domain of domains) record(domain, null, error);
   } finally {
     runtime.__opensessionPrivateAppRenewing = false;
   }
+  writeRenewalState(state);
+  return ok;
 }
 
-/** Check at boot and every 24 hours. lego renews only inside the 30-day window. */
+/** Check at boot and every 24 hours. lego renews only inside the 30-day
+ * window, and each check retries an install that has not reached Caddy. */
 export function startPrivateAppCertificateRenewal(): void {
   if (runtime.__opensessionPrivateAppRenewal) return;
   void renewPrivateAppCertificate();
-  runtime.__opensessionPrivateAppRenewal = setInterval(
-    () => {
-      void renewPrivateAppCertificate();
-    },
-    24 * 60 * 60 * 1_000,
-  );
+  runtime.__opensessionPrivateAppRenewal = setInterval(() => {
+    void renewPrivateAppCertificate();
+  }, DAY_MS);
+}
+
+/** "expires in N days" style summary for health output. */
+export function privateAppCertificateHealth(now = Date.now()): Array<{
+  domain: string;
+  expiresAt: string;
+  daysLeft: number | null;
+  renewalError: string;
+}> {
+  const credential = safeCredential();
+  if (!credential) return [];
+  const state = readRenewalState();
+  return privateAppCertificateDomains(credential).map((domain) => {
+    const expiresAt = state[domain]?.expiresAt || certificateExpiry(domain);
+    const time = expiresAt ? new Date(expiresAt).getTime() : NaN;
+    return {
+      domain,
+      expiresAt,
+      daysLeft: Number.isFinite(time)
+        ? Math.floor((time - now) / DAY_MS)
+        : null,
+      renewalError: state[domain]?.error || "",
+    };
+  });
 }

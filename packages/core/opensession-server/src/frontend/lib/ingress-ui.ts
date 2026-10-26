@@ -137,3 +137,25 @@ export function configuredIngressDrafts(
         : suggestedDomain,
   };
 }
+
+/** "Expires in N days" for one private app certificate, plus the last
+ * renewal failure when there is one. */
+export function privateAppCertificateSummary(
+  certificate: { expiresAt: string; renewalError: string },
+  now = Date.now(),
+): string {
+  const time = certificate.expiresAt
+    ? new Date(certificate.expiresAt).getTime()
+    : NaN;
+  const days = Math.floor((time - now) / (24 * 60 * 60 * 1_000));
+  const expiry = !Number.isFinite(time)
+    ? "Expiry unknown"
+    : days < 0
+      ? "Expired"
+      : days === 0
+        ? "Expires today"
+        : `Expires in ${days} day${days === 1 ? "" : "s"}`;
+  return certificate.renewalError
+    ? `${expiry}. Renewal failing: ${certificate.renewalError}`
+    : `${expiry}.`;
+}

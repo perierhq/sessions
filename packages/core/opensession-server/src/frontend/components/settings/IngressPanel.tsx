@@ -20,6 +20,7 @@ import {
   ingressHealthLabel,
   ingressHostname,
   privateAppCaddyConfig,
+  privateAppCertificateSummary,
   privateAppDnsRecord,
 } from "../../lib/ingress-ui";
 import { useIsPhone } from "../../hooks/useIsPhone";
@@ -246,6 +247,24 @@ function PrivateAppSetup({
               </SettingRowText>
             </SettingRow>
           )}
+          {settings.app.domain.credentialConfigured &&
+            settings.app.domain.certificates?.map((certificate) => (
+              <SettingRow key={certificate.domain}>
+                <SettingRowText>
+                  <SettingRowTitle className="break-all font-mono">
+                    {certificate.domain}
+                  </SettingRowTitle>
+                  <SettingRowDescription
+                    className={cn(
+                      "break-words",
+                      certificate.renewalError && "text-red",
+                    )}
+                  >
+                    {privateAppCertificateSummary(certificate)}
+                  </SettingRowDescription>
+                </SettingRowText>
+              </SettingRow>
+            ))}
         </SettingCard>
       )}
       <SettingsForm
