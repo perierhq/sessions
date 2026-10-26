@@ -15,7 +15,7 @@ export const KNOWLEDGE_SECTION_COUNT_VALUE =
 export const KNOWLEDGE_SECTION_COUNT_LABEL = "text-meta text-dim";
 
 /** The back link and the tab bar under the page header. */
-export const KNOWLEDGE_PAGE_BACK = "mb-3 px-5 phone:px-3";
+export const KNOWLEDGE_PAGE_BACK = "mb-3 px-5";
 /** The tabs scroll sideways on a phone rather than wrapping or shrinking. */
 export const KNOWLEDGE_TABS_SCROLL =
   "mb-5 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";

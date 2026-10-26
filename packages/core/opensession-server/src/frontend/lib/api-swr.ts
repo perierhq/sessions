@@ -88,6 +88,8 @@ export const apiSWRKey = {
     ["api", "knowledge", project, "jobs"] as const,
   knowledgeNeedsCheck: (project: string) =>
     ["api", "knowledge", project, "needs-check"] as const,
+  knowledgeNeedsCheckChange: (project: string, path: string) =>
+    ["api", "knowledge", project, "needs-check", path] as const,
   knowledgeHistory: (project: string, path = "") =>
     ["api", "knowledge", project, "history", path] as const,
 };

@@ -103,9 +103,10 @@ export function KnowledgePage({
             variant="ghost"
             className="phone:min-h-11"
             icon={<IconChevronLeft size={18} />}
+            aria-label={`Back to ${repoLabel(project)}`}
             onClick={onBack}
           >
-            {repoLabel(project)}
+            Back
           </Button>
         </div>
         <SettingsHeader

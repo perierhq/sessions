@@ -39,10 +39,34 @@ export interface KnowledgeNeedsCheckChange {
   link?: string;
 }
 
-export interface KnowledgeNeedsCheckRow {
-  item: KnowledgeItem;
-  body: string;
-  change: KnowledgeNeedsCheckChange;
+/** The front matter a person sends. The server sets `origin` (from the
+ *  folder) and `approvedBy` (the signed-in person) itself, so they are
+ *  never sent (withoutServerFields strips them). */
+export type KnowledgeFrontMatterInput = Omit<
+  KnowledgeFrontMatter,
+  "origin" | "approvedBy"
+>;
+
+/** Front matter as read (with `origin`/`approvedBy`) or as written. */
+export type KnowledgeFrontMatterDraft = KnowledgeFrontMatterInput &
+  Partial<Pick<KnowledgeFrontMatter, "origin" | "approvedBy">>;
+
+function withoutServerFields(
+  fm: KnowledgeFrontMatterDraft,
+): KnowledgeFrontMatterInput {
+  const { origin: _origin, approvedBy: _approvedBy, ...rest } = fm;
+  return rest;
+}
+
+/** Where an attachment may hang: an article or a suggestion. */
+export function canAttachTo(path: string): boolean {
+  const [folder, ...rest] = path.split("/");
+  return (
+    (folder === "articles" || folder === "suggestions") &&
+    rest.length > 0 &&
+    rest.every((part) => part !== "" && part !== "." && part !== "..") &&
+    path.endsWith(".md")
+  );
 }
 
 /** A commit in the knowledge repository's history. */
@@ -66,7 +90,7 @@ export interface KnowledgeRevalidateResult {
 
 /** The article to save: new when `path` is left out. */
 export interface KnowledgeSave {
-  fm: KnowledgeFrontMatter;
+  fm: KnowledgeFrontMatterDraft;
   body: string;
   /** The item's path; omit to create a new article. */
   path?: string;
@@ -76,10 +100,15 @@ export interface KnowledgeSave {
 
 /** What PUT item takes: `path` and `expectedBlob` travel together. */
 interface KnowledgeSaveBody {
-  fm: KnowledgeFrontMatter;
+  fm: KnowledgeFrontMatterInput;
   body: string;
   path?: string;
   expectedBlob?: string | null;
+}
+
+interface KnowledgeApproveBody {
+  paths: string[];
+  edits?: Record<string, { fm: KnowledgeFrontMatterInput; body: string }>;
 }
 
 function base(project: string): string {
@@ -117,7 +146,10 @@ export function saveKnowledgeItem(
   project: string,
   save: KnowledgeSave,
 ): Promise<{ item: KnowledgeItem | null; commit: string | null }> {
-  const body: KnowledgeSaveBody = { fm: save.fm, body: save.body };
+  const body: KnowledgeSaveBody = {
+    fm: withoutServerFields(save.fm),
+    body: save.body,
+  };
   if (save.path !== undefined) {
     body.path = save.path;
     body.expectedBlob = save.expectedBlob ?? null;
@@ -156,11 +188,17 @@ export function retireKnowledge(
 export function approveSuggestions(
   project: string,
   paths: string[],
-  edits?: Record<string, { fm: KnowledgeFrontMatter; body: string }>,
+  edits?: Record<string, { fm: KnowledgeFrontMatterDraft; body: string }>,
 ): Promise<{ commit: string | null; approved: string[] }> {
+  const body: KnowledgeApproveBody = { paths };
+  if (edits) {
+    body.edits = {};
+    for (const [path, edit] of Object.entries(edits))
+      body.edits[path] = { fm: withoutServerFields(edit.fm), body: edit.body };
+  }
   return request(`${base(project)}/suggestions/approve`, {
     method: "POST",
-    body: edits ? { paths, edits } : { paths },
+    body,
     label: "Couldn't approve",
   });
 }
@@ -176,15 +214,30 @@ export function discardSuggestions(
   });
 }
 
-/** Up to 100 items that need a check, each with what changed. */
+/** Up to 100 items that need a check. Each carries its check note
+ *  (`check.reason`, `since`, `source`, `conflictWith`) and a body excerpt;
+ *  what changed is fetched per item (fetchNeedsCheckChange). */
 export async function fetchNeedsCheck(
   project: string,
-): Promise<KnowledgeNeedsCheckRow[]> {
-  const body = await request<{ items: KnowledgeNeedsCheckRow[] } | null>(
+): Promise<KnowledgeItem[]> {
+  const body = await request<{ items: KnowledgeItem[] } | null>(
     `${base(project)}/needs-check`,
     { label: "Couldn't load what needs a check" },
   );
   return body?.items ?? [];
+}
+
+/** What changed under one item that needs a check: the patch, the text
+ *  before and after, or the item it disagrees with. */
+export async function fetchNeedsCheckChange(
+  project: string,
+  path: string,
+): Promise<KnowledgeNeedsCheckChange> {
+  const body = await request<{ change: KnowledgeNeedsCheckChange }>(
+    `${base(project)}/needs-check/item${query({ path })}`,
+    { label: "Couldn't load what changed" },
+  );
+  return body.change;
 }
 
 export async function fetchKnowledgeHistory(
@@ -284,6 +337,10 @@ export function attachKnowledgeFile(
   articlePath: string,
   file: File,
 ): Promise<{ path: string; commit: string | null }> {
+  if (!canAttachTo(articlePath))
+    return Promise.reject(
+      new ApiError("Files can be attached to articles and suggestions", 400),
+    );
   const form = new FormData();
   form.append("file", file);
   form.append("path", articlePath);
