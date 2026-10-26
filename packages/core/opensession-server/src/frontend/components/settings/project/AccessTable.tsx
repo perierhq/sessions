@@ -14,6 +14,7 @@ import {
   ACCESS_GRID,
   ACCESS_GROUP_LABEL,
   ACCESS_HEAD_CELL,
+  ACCESS_KNOWLEDGE_CELL,
   ACCESS_ROW_DETAIL,
   ACCESS_ROW_TITLE,
   ACCESS_ROW_WARNING,
@@ -36,6 +37,7 @@ import { SettingCard } from "../../../ui/settings";
 import { IconWarningTriangle } from "../../icons";
 import { CellFace } from "./CellFace";
 import { PlainButton } from "../../../ui/plain-button";
+import { WebsiteKnowledgeSwitch } from "./WebsiteKnowledgeSwitch";
 
 /**
  * What agents may use, on a desktop: a row per capability and a column per
@@ -46,10 +48,13 @@ export function AccessTable({
   access,
   onCellChange,
   onAllowAgents,
+  onKnowledgeChange,
 }: {
   access: AccessTableView;
   onCellChange: (change: AccessCellChange) => void;
   onAllowAgents: (server: string) => void;
+  /** A Support website's "Use as knowledge" switch changed. */
+  onKnowledgeChange: (host: string, on: boolean) => void;
 }) {
   return (
     <SettingCard role="table" aria-label="What agents may use">
@@ -72,7 +77,9 @@ export function AccessTable({
               </span>
             </div>
           )}
-          {group.rows.map((row) => accessRow(row, onCellChange, onAllowAgents))}
+          {group.rows.map((row) =>
+            accessRow(row, onCellChange, onAllowAgents, onKnowledgeChange),
+          )}
         </div>
       ))}
     </SettingCard>
@@ -83,6 +90,7 @@ function accessRow(
   row: AccessRowView,
   onCellChange: (change: AccessCellChange) => void,
   onAllowAgents: (server: string) => void,
+  onKnowledgeChange: (host: string, on: boolean) => void,
 ): React.ReactNode {
   return (
     <div key={rowKeyId(row.key)} role="row" className={ACCESS_GRID}>
@@ -120,6 +128,19 @@ function accessRow(
           {accessCell(row, role, onCellChange)}
         </div>
       ))}
+      {/* A Support website's knowledge switch: a line of its own under the
+          row, across the columns, so the title cell keeps its width. */}
+      {row.key.kind === "website" && row.knowledge !== undefined && (
+        <div role="cell" aria-colspan={7} className={ACCESS_KNOWLEDGE_CELL}>
+          <WebsiteKnowledgeSwitch
+            host={row.key.host}
+            on={row.knowledge}
+            onChange={(on) =>
+              row.key.kind === "website" && onKnowledgeChange(row.key.host, on)
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }

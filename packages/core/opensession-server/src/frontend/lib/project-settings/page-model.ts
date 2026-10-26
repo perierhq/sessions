@@ -329,28 +329,80 @@ export function cellAfter(
   return "standing";
 }
 
+/** A website row's knowledge switch once a Support cell change lands:
+ *  shown (as it was, or off) when Support is ticked, gone when unticked. */
+function knowledgeAfter(
+  row: AccessRowView,
+  change: AccessCellChange,
+): Pick<AccessRowView, "knowledge"> {
+  if (change.row.kind !== "website" || change.role !== "support")
+    return row.knowledge === undefined ? {} : { knowledge: row.knowledge };
+  return change.value === true ? { knowledge: row.knowledge ?? false } : {};
+}
+
 /** The view with a cell change applied, before the server answers. */
 export function applyCellChange<
   V extends { access: { groups: AccessTableView["groups"] } },
 >(view: V, change: AccessCellChange): V {
   const groups = view.access.groups.map((group) => ({
     ...group,
+    rows: group.rows.map((row) => {
+      if (!sameRowKey(row.key, change.row)) return row;
+      const { knowledge: _knowledge, ...rest } = row;
+      return {
+        ...rest,
+        ...knowledgeAfter(row, change),
+        cells: {
+          ...row.cells,
+          [change.role]: {
+            ...row.cells[change.role],
+            value: cellAfter(row, change),
+          },
+        },
+      };
+    }),
+  }));
+  return { ...view, access: { ...view.access, groups } };
+}
+
+/** What a website's "Use as knowledge" switch does, under it. A wildcard
+ *  names no pages to import (ingest/website.ts skips it). */
+export function knowledgeHint(host: string): string {
+  return host.includes("*")
+    ? "A wildcard isn't imported. List the site's exact host"
+    : "Import this site's pages as knowledge replies can rely on";
+}
+
+/** The view with a website's "Use as knowledge" switch set, before the
+ *  server answers: the access row and the stored row both. */
+export function applyWebsiteKnowledge(
+  view: ProjectSettingsView,
+  host: string,
+  on: boolean,
+): ProjectSettingsView {
+  const groups = view.access.groups.map((group) => ({
+    ...group,
     rows: group.rows.map((row) =>
-      sameRowKey(row.key, change.row)
-        ? {
-            ...row,
-            cells: {
-              ...row.cells,
-              [change.role]: {
-                ...row.cells[change.role],
-                value: cellAfter(row, change),
-              },
-            },
-          }
+      row.key.kind === "website" &&
+      row.key.host === host &&
+      row.knowledge !== undefined
+        ? { ...row, knowledge: on }
         : row,
     ),
   }));
-  return { ...view, access: { ...view.access, groups } };
+  const websites = view.document.access.websites.map((w) => {
+    if (w.host !== host) return w;
+    const { knowledge: _knowledge, ...rest } = w;
+    return on ? { ...rest, knowledge: true as const } : rest;
+  });
+  return {
+    ...view,
+    access: { ...view.access, groups },
+    document: {
+      ...view.document,
+      access: { ...view.document.access, websites },
+    },
+  };
 }
 
 /** The view with an incident policy patch laid over it, for the paint

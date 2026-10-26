@@ -10,6 +10,7 @@ import {
   PROJECT_SECTIONS,
   visibleSections,
   applyCellChange,
+  applyWebsiteKnowledge,
   rowSummary,
   cellLabel,
   cellSpokenLabel,
@@ -268,6 +269,37 @@ describe("optimistic cells", () => {
     expect(find(next, "Linear").cells.reviews.value).toBe("no");
     expect(find(READY_4_OF_6, "Linear").cells.reviews.value).toBe("yes");
     expect(find(next, "Sentry").cells.reviews.value).toBe("yes");
+  });
+
+  test("ticking a website for Support shows its knowledge switch, off", () => {
+    const site = { kind: "website" as const, host: "status.example.test" };
+    const on = applyCellChange(READY_4_OF_6, {
+      row: site,
+      role: "support",
+      value: true,
+    });
+    expect(find(on, "status.example.test").knowledge).toBe(false);
+    const used = applyWebsiteKnowledge(on, "status.example.test", true);
+    expect(find(used, "status.example.test").knowledge).toBe(true);
+    expect(
+      used.document.access.websites.find(
+        (w) => w.host === "status.example.test",
+      )?.knowledge,
+    ).toBe(true);
+    // Unticked for Support: the switch goes with it.
+    const off = applyCellChange(used, {
+      row: site,
+      role: "support",
+      value: false,
+    });
+    expect("knowledge" in find(off, "status.example.test")).toBe(false);
+    const unused = applyWebsiteKnowledge(used, "status.example.test", false);
+    expect(
+      "knowledge" in
+        unused.document.access.websites.find(
+          (w) => w.host === "status.example.test",
+        )!,
+    ).toBe(false);
   });
 
   test("ticking a blocked connector stays blocked", () => {

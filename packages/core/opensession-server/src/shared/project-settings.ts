@@ -292,6 +292,9 @@ export interface AccessRowView {
   detail?: string;
   warning?: { text: string; fix?: { kind: "allow-agents"; server: string } };
   cells: Record<ProjectRole, AccessCellView>;
+  /** A website row ticked for Support: its "Use as knowledge" switch.
+   *  Absent on every other row. */
+  knowledge?: boolean;
 }
 
 export type AccessGroupId =

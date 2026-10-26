@@ -18,6 +18,7 @@ import {
   jobProgress,
   monthsLabel,
   pollJobs,
+  websiteCardLine,
   websiteHosts,
 } from "./import-model";
 
@@ -79,12 +80,22 @@ test("jobs are polled every 2 s while one is queued or running, then not", () =>
 test("a wildcard host is listed as skipped", () => {
   expect(
     websiteHosts([
-      { host: "help.acme.example.test", roles: ["support"] },
-      { host: "*.acme.example.test", roles: ["support"] },
-      { host: "*", roles: ["support", "automations"] },
-      { host: "docs.acme.example.test", roles: ["automations"] },
-      { host: "Help.Acme.Example.Test", roles: ["support"] },
-      { host: "status.acme.example.test:8443", roles: ["support"] },
+      { host: "help.acme.example.test", roles: ["support"], knowledge: true },
+      { host: "*.acme.example.test", roles: ["support"], knowledge: true },
+      { host: "*", roles: ["support", "automations"], knowledge: true },
+      {
+        host: "docs.acme.example.test",
+        roles: ["automations"],
+        knowledge: true,
+      },
+      { host: "Help.Acme.Example.Test", roles: ["support"], knowledge: true },
+      {
+        host: "status.acme.example.test:8443",
+        roles: ["support"],
+        knowledge: true,
+      },
+      // Links-only: a Support website not used as knowledge.
+      { host: "blog.acme.example.test", roles: ["support"] },
     ]),
   ).toEqual([
     { host: "help.acme.example.test", skipped: null },
@@ -157,4 +168,18 @@ test("a failed job names the failure on its own line; a cancelled one doesn't", 
   const running = job({ state: "running", done: 3, total: 10 });
   expect(jobTitle(running)).toBe("Mailbox · 3 of 10");
   expect(jobError(running)).toBeNull();
+});
+
+test("the website card says which sites it reads, or how to add one", () => {
+  expect(websiteCardLine(null)).toEqual({
+    text: "Support websites used as knowledge",
+  });
+  expect(websiteCardLine(0)).toEqual({
+    text: "No Support website is used as knowledge yet.",
+    link: "Turn one on in Access",
+  });
+  expect(websiteCardLine(2)).toEqual({
+    text: "Support websites used as knowledge, up to 200 pages.",
+    link: "Edit in Access",
+  });
 });

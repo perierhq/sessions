@@ -235,6 +235,42 @@ describe("buildAccessTable", () => {
     ]);
   });
 
+  test("a website ticked for Support carries its 'Use as knowledge' switch", () => {
+    const doc = {
+      ...READY_4_OF_6.document,
+      access: {
+        ...READY_4_OF_6.document.access,
+        websites: [
+          {
+            host: "help.acme.example.test",
+            roles: ["support" as const],
+            knowledge: true as const,
+          },
+          { host: "blog.acme.example.test", roles: ["support" as const] },
+          // Used as knowledge but no longer ticked for Support: no switch.
+          {
+            host: "docs.acme.example.test",
+            roles: ["reviews" as const],
+            knowledge: true as const,
+          },
+        ],
+      },
+    };
+    const table = buildAccessTable(doc, env());
+    const site = (host: string) =>
+      row(table, (r) => r.key.kind === "website" && r.key.host === host);
+    expect(site("help.acme.example.test").knowledge).toBe(true);
+    expect(site("blog.acme.example.test").knowledge).toBe(false);
+    expect("knowledge" in site("docs.acme.example.test")).toBe(false);
+    expect(
+      "knowledge" in
+        row(
+          table,
+          (r) => r.key.kind === "website" && r.key.host === ANY_WEBSITE_HOST,
+        ),
+    ).toBe(false);
+  });
+
   test("Support: a column in every row, mode and search set here, keychain and hosts never", () => {
     const table = buildAccessTable(READY_4_OF_6.document, env());
     for (const group of table.groups)

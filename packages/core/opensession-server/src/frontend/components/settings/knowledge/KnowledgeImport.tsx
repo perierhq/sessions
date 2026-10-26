@@ -49,6 +49,7 @@ import {
   jobTitle,
   monthOptions,
   pollJobs,
+  websiteCardLine,
   websiteHosts,
 } from "../../../lib/knowledge/import-model";
 import {
@@ -112,6 +113,7 @@ export function KnowledgeImport({ project }: { project: string }) {
     choices.find((c) => c.value === inboxId)?.value ?? choices[0]?.value;
   const hosts = websiteHosts(settings.data?.document.access.websites ?? []);
   const crawlable = hosts.some((h) => h.skipped === null);
+  const siteLine = websiteCardLine(settings.data ? hosts.length : null);
   const running = (kind: KnowledgeImportKind) =>
     (jobs.data ?? []).some((job) => job.kind === kind && isActiveJob(job));
 
@@ -218,19 +220,13 @@ export function KnowledgeImport({ project }: { project: string }) {
           <div className={IMPORT_SOURCE_TEXT}>
             <div className={IMPORT_SOURCE_TITLE}>Website</div>
             <div className={IMPORT_SOURCE_LINE}>
-              {hosts.length ? (
+              {siteLine.text}
+              {siteLine.link ? (
                 <>
-                  The websites Support may open, up to 200 pages.{" "}
-                  <TextLink onClick={openAccess}>Edit in Access</TextLink>
+                  {" "}
+                  <TextLink onClick={openAccess}>{siteLine.link}</TextLink>
                 </>
-              ) : settings.data ? (
-                <>
-                  No websites are ticked for Support.{" "}
-                  <TextLink onClick={openAccess}>Add one in Access</TextLink>
-                </>
-              ) : (
-                "The websites Support may open"
-              )}
+              ) : null}
             </div>
             {hosts.length ? (
               <ul className={IMPORT_HOSTS}>

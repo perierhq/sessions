@@ -30,6 +30,7 @@ import {
 import {
   PROJECT_SECTIONS,
   applyCellChange,
+  applyWebsiteKnowledge,
   applyIncidentsPatch,
   sectionAnchorId,
   type ProjectSectionId,
@@ -188,6 +189,11 @@ export function ProjectSettingsPage({
 
   const changeCell = (change: AccessCellChange) =>
     saveNow({ access: { cells: [change] } }, (v) => applyCellChange(v, change));
+
+  const changeKnowledge = (host: string, on: boolean) =>
+    saveNow({ access: { websiteKnowledge: [{ host, on }] } }, (v) =>
+      applyWebsiteKnowledge(v, host, on),
+    );
 
   const allowAgents = (server: string) =>
     confirm({
@@ -359,6 +365,7 @@ export function ProjectSettingsPage({
             onAddingChange={setAdding}
             onCellChange={changeCell}
             onAllowAgents={allowAgents}
+            onKnowledgeChange={changeKnowledge}
             onSave={(b) => save(b)}
           />
           <SignalExceptions

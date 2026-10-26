@@ -90,18 +90,23 @@ export interface WebsiteHost {
 const EXACT_HOST = /^([a-z0-9-]+(?:\.[a-z0-9-]+)*)\.?(:\d{1,5})?$/;
 
 /**
- * The project's Support websites, in the access table's order: an exact
- * host is crawled, a wildcard (or anything else that isn't one host) is
- * listed as skipped. Rows not ticked for Support are left out; a host
+ * The project's Support websites switched to "Use as knowledge", in the
+ * access table's order: an exact host is crawled, a wildcard (or anything
+ * else that isn't one host) is listed as skipped. Rows not ticked for
+ * Support or not used as knowledge (links-only) are left out; a host
  * listed twice is listed once.
  */
 export function websiteHosts(
-  rows: ReadonlyArray<{ host: string; roles: readonly string[] }>,
+  rows: ReadonlyArray<{
+    host: string;
+    roles: readonly string[];
+    knowledge?: boolean;
+  }>,
 ): WebsiteHost[] {
   const out: WebsiteHost[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
-    if (!row.roles.includes("support")) continue;
+    if (!row.roles.includes("support") || row.knowledge !== true) continue;
     const entry = row.host.trim().toLowerCase();
     const m = EXACT_HOST.exec(entry);
     const host = m ? `${m[1]}${m[2] ?? ""}` : entry;
@@ -117,6 +122,27 @@ export function websiteHosts(
     });
   }
   return out;
+}
+
+export interface WebsiteCardLine {
+  text: string;
+  /** The words of the link to Access, after the text. */
+  link?: string;
+}
+
+/** The website card's line: what it reads, with the way to Access (to turn
+ *  a site's "Use as knowledge" on); `count` is null while settings load. */
+export function websiteCardLine(count: number | null): WebsiteCardLine {
+  if (count === null) return { text: "Support websites used as knowledge" };
+  if (count === 0)
+    return {
+      text: "No Support website is used as knowledge yet.",
+      link: "Turn one on in Access",
+    };
+  return {
+    text: "Support websites used as knowledge, up to 200 pages.",
+    link: "Edit in Access",
+  };
 }
 
 // The server's refusals (ingest/files.ts), word for word; the test pins

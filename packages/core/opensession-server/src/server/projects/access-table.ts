@@ -190,7 +190,14 @@ function websiteRows(doc: AccessTableDocument): AccessRowView[] {
     .filter((w) => w.host !== ANY_WEBSITE_HOST)
     .map((w) =>
       row(
-        { key: { kind: "website", host: w.host }, title: w.host },
+        {
+          key: { kind: "website", host: w.host },
+          title: w.host,
+          // Only a Support website can be used as knowledge.
+          ...(w.roles.includes("support")
+            ? { knowledge: w.knowledge === true }
+            : {}),
+        },
         YOU_YES,
         (role) => tick(w.roles.includes(role)),
       ),

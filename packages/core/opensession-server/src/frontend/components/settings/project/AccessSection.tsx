@@ -25,6 +25,7 @@ export function AccessSection({
   onAddingChange,
   onCellChange,
   onAllowAgents,
+  onKnowledgeChange,
   onSave,
 }: {
   view: ProjectSettingsView;
@@ -33,6 +34,8 @@ export function AccessSection({
   onAddingChange: (adding: number | null) => void;
   onCellChange: (change: AccessCellChange) => void;
   onAllowAgents: (server: string) => void;
+  /** A Support website's "Use as knowledge" switch changed. */
+  onKnowledgeChange: (host: string, on: boolean) => void;
   onSave: (body: ProjectPatchBody) => Promise<void>;
 }) {
   const phone = useIsPhone();
@@ -43,12 +46,14 @@ export function AccessSection({
           access={view.access}
           onCellChange={onCellChange}
           onAllowAgents={onAllowAgents}
+          onKnowledgeChange={onKnowledgeChange}
         />
       ) : (
         <AccessTable
           access={view.access}
           onCellChange={onCellChange}
           onAllowAgents={onAllowAgents}
+          onKnowledgeChange={onKnowledgeChange}
         />
       )}
       <p className={ACCESS_KEY}>{phone ? PHONE_KEY : KEY}</p>

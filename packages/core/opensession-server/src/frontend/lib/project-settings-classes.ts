@@ -144,6 +144,18 @@ export const ACCESS_CELL_STATIC =
   "focus-ring relative flex min-h-11 w-full cursor-default items-center justify-center rounded-control text-center text-balance text-supporting before:absolute before:inset-0 before:content-['']";
 export const ACCESS_KEY = "mt-2 px-5 text-supporting text-faint";
 
+/** A Support website's "Use as knowledge" switch under its title: the
+ *  whole label is the 44px target. */
+export const KNOWLEDGE_SWITCH =
+  "flex min-h-11 w-fit cursor-pointer items-center gap-2.5 select-none";
+/** One line on a desktop (label, then the hint), stacked on a phone. */
+export const KNOWLEDGE_SWITCH_TEXT =
+  "flex flex-wrap items-baseline gap-x-2 phone:block";
+export const KNOWLEDGE_SWITCH_LABEL = "text-supporting text-fg phone:block";
+export const KNOWLEDGE_SWITCH_HINT = "text-meta text-faint phone:block";
+/** The desktop table's line under a Support website row. */
+export const ACCESS_KNOWLEDGE_CELL = "col-span-7 -mt-2 pb-1 pl-5 pr-3";
+
 /** The phone role picker: sticky, wrapping, every chip a 44px target. */
 export const ROLE_CHIPS =
   "sticky top-0 z-10 -mx-1 flex flex-wrap gap-x-1.5 gap-y-0 bg-surface px-1 py-1";
