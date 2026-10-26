@@ -20,7 +20,13 @@ import {
   runbookPathsFor,
   slugify,
 } from "./prompts";
-import { parseInvestigatorReport } from "./reports";
+import {
+  REPORT_REPAIRS,
+  REPORT_RULES,
+  parseInvestigatorReport,
+  parseVerifierReport,
+  reportRules,
+} from "./reports";
 
 const incident: Incident = {
   id: "inc-1",
@@ -625,4 +631,116 @@ test("the verifier is never asked for next steps", () => {
   });
   expect(p).not.toContain("nextSteps");
   expect(p).not.toContain("Next steps");
+});
+
+const fenced = (o: unknown) =>
+  `Done.\n\n\`\`\`incident-report\n${JSON.stringify(o)}\n\`\`\``;
+const reportCtx = {
+  actionIds: new Set(["rollback", "deploy"]),
+  actionKinds: new Map([
+    ["rollback", "rollback" as const],
+    ["deploy", "deploy" as const],
+  ]),
+  signalOrigin: "https://acme.example.test",
+};
+
+test("every reason a report is refused is in that agent's brief", () => {
+  const investigator = buildInvestigatorPrompt({
+    incident,
+    signal,
+    otherSignals: [],
+    evaluation,
+    recent,
+    baseBranch: "main",
+    round: 1,
+    maxRounds: 2,
+    actions: [rollbackAction],
+  });
+  const verifier = buildVerifierPrompt({
+    incident,
+    signal,
+    candidate,
+    headSha: "abc1234",
+    proof,
+    mode: "ask",
+    runnerLabel: "Production · acme",
+    independence: "other-provider",
+    round: 1,
+  });
+  expect(reportRules("investigator").length).toBeGreaterThan(5);
+  for (const rule of reportRules("investigator"))
+    expect(investigator).toContain(rule);
+  for (const rule of reportRules("verifier")) expect(verifier).toContain(rule);
+  // What Sessions repairs instead of refusing is in the brief as well, so
+  // guidance never reads as a rule.
+  for (const repair of REPORT_REPAIRS) expect(investigator).toContain(repair);
+
+  // Every refusal the parser returns names one of those rules.
+  const bad: unknown[] = [
+    { ...report, summary: "" },
+    { ...report, cause: "" },
+    { ...report, attempts: [] },
+    { ...report, attempts: [{ cost: "free" }] },
+    { ...report, candidate: undefined },
+    { ...report, candidate: { pr: "maybe" } },
+    { ...report, candidate: { pr: false, actions: [] } },
+    { ...report, candidate: { pr: false, actions: ["scale-up"] } },
+    { ...report, candidate: { pr: false, actions: ["deploy"] } },
+    { ...report, candidate: { pr: false, actions: {} } },
+    { ...report, check: undefined },
+    {
+      ...report,
+      check: { kind: "request", source: { kind: "http", url: "http://x/" } },
+    },
+    { ...report, claims: [] },
+    { ...report, notePath: "notes.md" },
+  ];
+  const texts = [
+    "no block",
+    "```incident-report\n{nope\n```",
+    "```incident-report\n[1]\n```",
+    `${fenced(report)}\n${fenced(report)}`,
+    ...bad.map(fenced),
+  ];
+  for (const text of texts) {
+    const r = parseInvestigatorReport(text, reportCtx);
+    if (!("error" in r)) throw new Error(`accepted: ${text}`);
+    expect(REPORT_RULES[r.rule].roles).toContain("investigator");
+    expect(investigator).toContain(REPORT_RULES[r.rule].text);
+  }
+  const claims = [{ text: "A" }];
+  for (const v of [
+    { verdict: undefined, claims: [] },
+    { verdict: "certain", claims: [] },
+  ]) {
+    const r = parseVerifierReport(fenced({ role: "verifier", ...v }), {
+      claims,
+    });
+    if (!("error" in r)) throw new Error("accepted");
+    expect(REPORT_RULES[r.rule].roles).toContain("verifier");
+    expect(verifier).toContain(REPORT_RULES[r.rule].text);
+  }
+});
+
+test("guidance in the brief is repaired, never refused", () => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(
+    fenced({
+      ...report,
+      summary: "s".repeat(300),
+      readFirst: [],
+      // Expensive before free: the brief calls cheapest-first guidance.
+      attempts: [
+        { ...report.attempts[0], cost: "expensive", source: "tool:logs" },
+        { step: "Read the runbook", cost: "free", result: "informative" },
+      ],
+      claims: [{ text: "Upstream blocks us", source: "https://x.test/" }],
+    }),
+    { ...reportCtx, warnings },
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.attempts.map((a) => a.cost)).toEqual(["free", "expensive"]);
+  expect(warnings).toContain(
+    "The attempts were not cheapest-first; sorted by cost",
+  );
 });

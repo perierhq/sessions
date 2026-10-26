@@ -33,7 +33,13 @@ import type {
 import { MCP_SEARCH_TOOL } from "@tellahq/opensession-protocol/tool-presentation";
 import type { ConnectionProblem } from "../access/mcp";
 import { redactSignal } from "../signal-validation";
-import { REPORT_FENCE, RESULT_VALUES, cleanReportText } from "./reports";
+import {
+  REPORT_FENCE,
+  REPORT_REPAIRS,
+  RESULT_VALUES,
+  cleanReportText,
+  reportRules,
+} from "./reports";
 
 const RUNBOOK = "docs/incidents/runbook.md";
 const RECENT_LINES = 20;
@@ -506,8 +512,10 @@ export function buildInvestigatorPrompt(
 
   out.push("## Report", "");
   out.push(
-    `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
-    "List at least one claim when there is a candidate; a claim's source must also be the source of one of your attempts. With nothing to run, set candidate to null and explain noCandidateReason.",
+    ...refusalLines("investigator"),
+    `Everything else is guidance; Sessions repairs it and notes a warning instead of refusing the report: ${REPORT_REPAIRS.join("; ")}.`,
+    "",
+    "List at least one claim when there is a candidate; give a claim the source of the attempt that backs it. With nothing to run, set candidate to null and explain noCandidateReason.",
     `Each attempt's cost is one of: free, cheap, expensive. Its result is one of: ${RESULT_VALUES}. Use ruled-out when the step excluded a cause, confirmed when it backed one, inconclusive when it tried to and could not tell, and informative when it only gathered context.`,
     'Write the cause for the owner, who reads it on the incident page: first one plain sentence saying what went wrong and why, with no metric names, field names or thresholds. Then, only if it helps, a blank line and at most three short lines starting with "- ": the detail and how you know. It is Markdown; put code, config keys and commands in backticks.',
     "",
@@ -748,7 +756,7 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 
   out.push("## Report", "");
   out.push(
-    `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
+    ...refusalLines("verifier"),
     "List every claim above exactly once with its text unchanged; status is verified, refuted or unverifiable. With not-certain, give at least one reason.",
     "Write each reason as one plain sentence the owner can read without the code: what is wrong and why, with no metric names, field names or thresholds.",
     "",
@@ -767,6 +775,16 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
     }),
   );
   return out.join("\n");
+}
+
+/** The rules a report is refused for, as `reportRules` words them: the
+ *  same table the parser refuses by. */
+function refusalLines(role: AgentRole): string[] {
+  return [
+    "Sessions refuses your report only when it breaks one of these rules, and then names every rule it broke:",
+    ...reportRules(role).map((rule) => `- ${rule}`),
+    "",
+  ];
 }
 
 /** The allowed values a report's enum fields take, by role. */

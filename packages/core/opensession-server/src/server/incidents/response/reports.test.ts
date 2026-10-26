@@ -319,7 +319,7 @@ test.each([
     "note",
   ],
 ])("rejects %s", (_name, text, message, problem) => {
-  expect(parseInvestigatorReport(text, ctx)).toEqual({
+  expect(parseInvestigatorReport(text, ctx)).toMatchObject({
     error: expect.stringContaining(message),
     problem: problem as ReportProblem,
   });
@@ -327,7 +327,7 @@ test.each([
 test("request checks need an http signal", () => {
   expect(
     parseInvestigatorReport(fence(good), { ...ctx, signalOrigin: null }),
-  ).toEqual({
+  ).toMatchObject({
     error: "A request check needs an http signal",
     problem: "check",
   });
@@ -353,13 +353,13 @@ test("verifier must check every claim", () => {
     proofAccepted: false,
     claims: [{ text: "A", status: "verified", evidence: "seen" }],
   };
-  expect(parseVerifierReport(fence(v), { claims })).toEqual({
+  expect(parseVerifierReport(fence(v), { claims })).toMatchObject({
     error: 'Check every claim: missing "B"',
     problem: "claims",
   });
   expect(
     parseVerifierReport(fence({ ...v, verdict: undefined }), { claims }),
-  ).toEqual({
+  ).toMatchObject({
     error: "The verdict field must be certain or not-certain",
     problem: "conclusion",
   });
@@ -496,7 +496,9 @@ test("request checks read unless the signal itself sends that request", () => {
   ).toMatchObject({ error: expect.stringContaining("GET or HEAD") });
 });
 test("a candidate needs claims; a source outside the table is dropped", () => {
-  expect(parseInvestigatorReport(fence({ ...good, claims: [] }), ctx)).toEqual({
+  expect(
+    parseInvestigatorReport(fence({ ...good, claims: [] }), ctx),
+  ).toMatchObject({
     error: "Give at least one claim for the candidate",
     problem: "claims",
   });
