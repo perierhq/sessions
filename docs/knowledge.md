@@ -195,13 +195,34 @@ the issue.
    The mailbox import reads the inbox's `INBOX` and Sent folders over its
    own read-only connection (no flags change; the inbox's live connection,
    position and conversations stay as they are) for the last 12 months by
-   default (at most 36). A reply of ours pairs with the customer message it
-   answers; automatic replies and machine mail are left out. A reference
-   item's first line says why: `> Imported as reference: <reason>`. Items
-   already imported are skipped, so running it again adds only new pairs.
-   Commits go in batches of 50 by Pat: `Import mail: <n> answers (<trusted>
-trusted)`. One import of a kind runs per project at a time; an import a
+   default (at most 36). Only mail in the Sent folder from this inbox's own
+   addresses is ours; mail in `INBOX` from any of our addresses is a loop or
+   a spoof and is dropped, and an inbox without a Sent folder gives no
+   answers. A reply of ours pairs with the customer message it answers (not
+   a follow-up to our own message); automatic replies and machine mail are
+   left out. A reply's time is the earlier of its arrival and its Date
+   header; when the two are more than a day apart, or the default branch
+   couldn't be fetched, the pair is reference. Envelopes are read first and
+   the full mail only of paired messages; a run looks at up to 20,000
+   messages and imports the newest 500 pairs (a run cut short is marked
+   so), and fails after 30 minutes. A reference item's first line says
+   why: `> Imported as reference: <reason>`. Items already imported are
+   skipped, so running it again adds only new pairs. Commits go in batches
+   of 50 by Pat: `Import mail: <n> answers (<trusted> trusted)`. One import
+   of a kind runs per project at a time and a person may cancel a running
+   one (`POST /api/knowledge/<project>/jobs/<id>/cancel`); an import a
    restart cut off shows "Interrupted by a restart. Start it again."
+
+   The repository import mirrors `README.md`, `docs/**/*.md` and everything
+   under `docs/incidents/` at the fetched default-branch head as trusted
+   `sources/repo/` items (runbooks under `docs/incidents/` are `internal`:
+   they steer, and are never quoted), then the newest 30 GitHub releases as
+   `sources/releases/<tag>.md`. Text is copied as written: a file that looks
+   like it holds a credential, is binary, empty or over the article size is
+   skipped and counted, never redacted. A doc deleted upstream retires its
+   item (text kept); an unchanged item is left alone, so running it again at
+   the same head commits nothing. One commit each by Pat: `Import
+repository docs: <n> files` and `Import releases: <n>`.
 
    The website import crawls the exact hosts of the project's Support
    websites (wildcard entries never), over https only. Per host it reads
