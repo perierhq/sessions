@@ -29,10 +29,11 @@
  * strip.ts, mirrors.ts, jobs.ts and the website import's write-and-retry shape.
  * Nothing runs at import.
  */
-import type {
-  KnowledgeFrontMatter,
-  KnowledgeImportJob,
-  KnowledgeItem,
+import {
+  KNOWLEDGE_SKIP,
+  type KnowledgeFrontMatter,
+  type KnowledgeImportJob,
+  type KnowledgeItem,
 } from "../../../shared/knowledge";
 import type { Author } from "../../memory-repo/git-store";
 import { MemoryRepoError } from "../../memory-repo/git-store";
@@ -52,7 +53,7 @@ import {
 } from "../freshness/revalidate";
 import { issueItemPath, knowledgeRepoName } from "../layout";
 import type { KnowledgeChange } from "../service";
-import { startJob } from "./jobs";
+import { type ReportPhase, type ReportSkip, skipTally, startJob } from "./jobs";
 import { stripCustomerData } from "./strip";
 import { lastWrittenByPat } from "./mirrors";
 import { exactHosts } from "./website";
@@ -72,6 +73,10 @@ export interface KnownProblemsDeps {
   hosts(project: string): Promise<string[]>;
   /** GitHub readers' deps (ghRepo, request); reads always skip the cache. */
   github: GithubReadOptions;
+  /** Hears what the sync is doing now. */
+  phase?: ReportPhase;
+  /** Hears why each skipped issue was left out. */
+  skipped?: ReportSkip;
 }
 
 export interface KnownProblemsResult {
@@ -94,6 +99,8 @@ function bind(over: Partial<KnownProblemsDeps>): KnownProblemsDeps {
         return (await roleWebAccess(project, "support")).websites;
       }),
     github: over.github ?? {},
+    phase: over.phase,
+    skipped: over.skipped,
   };
 }
 
@@ -152,13 +159,13 @@ interface Planned {
   body: string;
 }
 
-/** The item's title and body for `issue`; null when its text holds
- *  anything credential-like. */
+/** The item's title and body for `issue`; else why it is left out (a
+ *  KNOWLEDGE_SKIP reason) when its text holds anything credential-like. */
 function planned(
   issue: KnownProblem,
   ghRepo: string,
   keepHosts: string[],
-): Planned | null {
+): Planned | string {
   // Nobody's name is known here: every address, phone number, id, foreign
   // link and quoted line goes.
   const party = { address: "" };
@@ -167,7 +174,8 @@ function planned(
     structure: false,
   });
   const text = stripCustomerData(issue.body, party, { keepHosts });
-  if (!title.clean || !text.clean) return null;
+  // Not clean: secret-looking text (strip.ts fails closed).
+  if (!title.clean || !text.clean) return KNOWLEDGE_SKIP.credential;
   const url = /^https:\/\/github\.com\//.test(issue.url)
     ? issue.url
     : `https://github.com/${ghRepo}/issues/${issue.number}`;
@@ -179,7 +187,8 @@ function planned(
       ? `Known problem, open: ${url}\n\n${shown}`
       : `Known problem, open: ${url}`,
   };
-  if (findSecrets(`${plan.title}\n${plan.body}`).length) return null;
+  if (findSecrets(`${plan.title}\n${plan.body}`).length)
+    return KNOWLEDGE_SKIP.credential;
   return plan;
 }
 
@@ -197,6 +206,7 @@ export async function syncKnownProblems(
   checkProject(project);
   const deps = bind(over);
   const result: KnownProblemsResult = { written: 0, retired: 0, skipped: 0 };
+  const phase = deps.phase ?? (() => undefined);
   const ghRepo = await ghRepoOf(project, deps.github);
   if (!ghRepo) return result;
   const github: GithubReadOptions = {
@@ -204,6 +214,7 @@ export async function syncKnownProblems(
     ghRepo: () => ghRepo,
     fresh: true,
   };
+  phase("Reading open bug issues");
   const open = await openBugIssues(project, github);
   if (!open)
     throw new GithubReadError(`${ghRepo}'s open bug issues couldn't be read`);
@@ -215,8 +226,11 @@ export async function syncKnownProblems(
   let skipped = 0;
   for (const issue of open) {
     const plan = planned(issue, ghRepo, keepHosts);
-    if (plan) plans.set(issue.number, plan);
-    else skipped++;
+    if (typeof plan !== "string") plans.set(issue.number, plan);
+    else {
+      skipped++;
+      deps.skipped?.(plan);
+    }
   }
   result.skipped = skipped;
 
@@ -227,7 +241,9 @@ export async function syncKnownProblems(
     let written = 0;
     let retired = 0;
     let personal = 0;
+    let checked = 0;
     for (const [number, plan] of plans) {
+      phase("Writing open issues", { done: checked++, total: plans.size });
       const path = issueItemPath(number);
       // Read directly: the "all" list leaves retired items out, and a
       // reopened issue's item is there all the same.
@@ -270,9 +286,12 @@ export async function syncKnownProblems(
       expected[path] = current?.item.blob ?? null;
       written++;
     }
+    const unlisted = [...items.keys()].filter((n) => !listed.has(n)).length;
+    checked = 0;
     for (const [number, current] of items) {
       // Listed: open and a bug (a skipped one stays as it was).
       if (listed.has(number)) continue;
+      phase("Checking closed issues", { done: checked++, total: unlisted });
       // Retired only on GitHub's word for this issue: closed, gone (404 or
       // 410, the list just read proves access), or open without the label.
       const state = await issueStatus(project, number, github);
@@ -307,7 +326,12 @@ export async function syncKnownProblems(
     result.written = written;
     result.retired = retired;
     result.skipped = skipped + personal;
-    if (!changes.length) return result;
+    const done = () => {
+      if (personal) deps.skipped?.(KNOWLEDGE_SKIP.editedByPerson, personal);
+      return result;
+    };
+    if (!changes.length) return done();
+    phase("Committing");
     try {
       await knowledgeRepo.call("write", project, changes, {
         message: retired
@@ -317,7 +341,7 @@ export async function syncKnownProblems(
         trailers: [PAT_TRAILER],
         expected,
       });
-      return result;
+      return done();
     } catch (error) {
       // Someone wrote meanwhile: plan again from what is there now.
       const conflict =
@@ -342,12 +366,19 @@ export async function startKnownProblemsImport(
     "known-problems",
     { by: input.by.name },
     async (job) => {
+      job.phase("Opening the knowledge repository");
       await knowledgeRepo.call("ensureRepo", project);
       job.signal.throwIfAborted();
-      const result = await syncKnownProblems(project, over);
+      const tally = skipTally();
+      const result = await syncKnownProblems(project, {
+        ...over,
+        phase: job.phase,
+        skipped: tally.skip,
+      });
       await job.progress({
         reference: result.written,
         skipped: result.skipped,
+        skippedBy: tally.take(),
         done: result.written + result.retired + result.skipped,
       });
     },

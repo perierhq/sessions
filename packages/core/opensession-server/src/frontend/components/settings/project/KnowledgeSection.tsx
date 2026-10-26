@@ -1,4 +1,5 @@
 import useSWR from "swr";
+import { useKnowledgeLiveConnected } from "../../../hooks/useKnowledgeLive";
 import { apiSWRKey } from "../../../lib/api-swr";
 import type { KnowledgeRoute } from "../../../lib/app-route";
 import { fetchKnowledge, fetchKnowledgeJobs } from "../../../lib/api/knowledge";
@@ -9,10 +10,10 @@ import {
   KNOWLEDGE_SECTION_COUNT_VALUE,
 } from "../../../lib/knowledge-classes";
 import {
-  jobLine,
   knowledgeAlert,
   knowledgeErrorMessage,
   runningJob,
+  runningJobLine,
   sectionCounts,
   type KnowledgeSectionCounts,
 } from "../../../lib/knowledge/models";
@@ -28,7 +29,8 @@ import {
 } from "../../../ui/settings";
 import { InlineAlert } from "../../../ui/state";
 
-/** While an import runs, its line on the page follows it. */
+/** While an import runs and the live channel is down, its line on the
+ *  page follows it this often. */
 const JOB_POLL_MS = 5_000;
 
 const COUNTS: Array<{
@@ -62,12 +64,13 @@ export function KnowledgeSection({
   const list = useSWR(apiSWRKey.knowledge(project, "all"), () =>
     fetchKnowledge(project),
   );
+  const live = useKnowledgeLiveConnected();
   const jobs = useSWR(
     apiSWRKey.knowledgeJobs(project),
     () => fetchKnowledgeJobs(project),
     {
       refreshInterval: (latest) =>
-        latest && runningJob(latest) ? JOB_POLL_MS : 0,
+        !live && latest && runningJob(latest) ? JOB_POLL_MS : 0,
     },
   );
 
@@ -104,7 +107,7 @@ export function KnowledgeSection({
         <SettingRowText>
           <SettingRowDescription className="mt-0">
             {job
-              ? jobLine(job)
+              ? runningJobLine(job)
               : "What support replies can rely on: articles your team writes, and what is imported from mail, docs and your website"}
           </SettingRowDescription>
         </SettingRowText>

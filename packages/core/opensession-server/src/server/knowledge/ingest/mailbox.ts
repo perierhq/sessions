@@ -37,6 +37,7 @@ import type { Author } from "../../memory-repo/git-store";
 import { MemoryRepoError } from "../../memory-repo/git-store";
 import type { classifyRoute } from "../../route-classifier";
 import {
+  KNOWLEDGE_SKIP,
   type KnowledgeFrontMatter,
   type KnowledgeImportJob,
   MAX_BACKFILL_MONTHS,
@@ -66,6 +67,7 @@ import {
   DEADLINE_COPY,
   type JobHandle,
   JOB_DEADLINE_MS,
+  type ReportPhase,
   type Step,
   StopRun,
   startJob,
@@ -251,6 +253,8 @@ const MESSAGE_ID = /<[^<>\s]+>/g;
  * messages of the newest `maxPairs` pairs. A message's time is the earlier
  * of its arrival and its Date header; a reply whose two are more than a
  * day apart is marked (`dateMismatch`). No Sent folder: no pairs.
+ * `phase` hears each folder's count as its envelopes are read, then the
+ * pairing and the full reads.
  */
 async function readPairs(
   inbox: InboxConfig,
@@ -258,6 +262,7 @@ async function readPairs(
   since: number,
   deps: MailboxDeps,
   step: Step,
+  phase: ReportPhase = () => undefined,
 ): Promise<{ pairs: QaPair[]; truncated: boolean }> {
   const others = (await listInboxes())
     .filter((i) => i.id !== inbox.id)
@@ -282,6 +287,7 @@ async function readPairs(
   client.on("error", () => undefined);
   let truncated = false;
   try {
+    phase("Connecting to the mail server");
     await client.connect();
     const sent = answersFolder(await client.list());
     // Without a Sent folder nothing is provably ours: no answers.
@@ -297,6 +303,8 @@ async function readPairs(
     let scanned = 0;
     for (const [path, folder] of folderList) {
       step();
+      const reading = `Reading ${path}`;
+      phase(reading);
       await client.mailboxOpen(path, { readOnly: true });
       const found = await client.search(
         { since: new Date(since) },
@@ -311,6 +319,7 @@ async function readPairs(
       scanned += uids.length;
       for (let i = 0; i < uids.length; i += PAGE_SIZE) {
         step();
+        phase(reading, { done: i, total: uids.length });
         for await (const item of client.fetch(
           uids.slice(i, i + PAGE_SIZE).join(","),
           {
@@ -361,6 +370,7 @@ async function readPairs(
       }
     }
 
+    phase("Pairing");
     let pairs = pairThreads([...seen.keys()]).sort((a, b) =>
       a.answer.at < b.answer.at ? -1 : a.answer.at > b.answer.at ? 1 : 0,
     );
@@ -379,11 +389,15 @@ async function readPairs(
         wanted.set(at.path, list);
       }
     const full = new Map<MailRecord, MailRecord>();
+    const toRead = [...wanted.values()].reduce((n, l) => n + l.length, 0);
+    let read = 0;
     for (const [path, list] of wanted) {
       step();
+      phase("Reading messages", { done: read, total: toRead });
       const mailbox = await client.mailboxOpen(path, { readOnly: true });
       for (const at of list) {
         step();
+        phase("Reading messages", { done: read++, total: toRead });
         // One byte past the cap: a source cut at maxLength is longer than
         // the cap and skipped, never parsed half.
         const one = await client.fetchOne(
@@ -515,6 +529,8 @@ export async function planMailItem(
     /** Why the item is reference whatever the trust rule says (a capture
      *  of a draft its knowledge check held). */
     reference?: string | null;
+    /** Hears why the pair is skipped (a KNOWLEDGE_SKIP reason). */
+    skipped?: (reason: string) => void;
   },
 ): Promise<Planned | null> {
   const { question, answer } = pair;
@@ -527,7 +543,10 @@ export async function planMailItem(
       supportHosts: ctx.hosts,
       docPaths: ctx.docPaths,
     },
-    ctx.deps.classify ? { classify: ctx.deps.classify } : {},
+    {
+      ...(ctx.deps.classify ? { classify: ctx.deps.classify } : {}),
+      ...(ctx.skipped ? { skipped: ctx.skipped } : {}),
+    },
   );
   if (!extracted) return null;
   const { repoChanges, github } = ctx.deps;
@@ -543,6 +562,7 @@ export async function planMailItem(
     );
   } catch {
     // Not a date the rule can place: skipped, not guessed.
+    ctx.skipped?.(KNOWLEDGE_SKIP.undated);
     return null;
   }
   // What the trust rule can't see makes the answer reference: history
@@ -658,13 +678,21 @@ async function backfill(
 
   const step = stepper(job.signal, deps.deadlineMs);
   step();
-  const read = await readPairs(input.inbox, input.password, since, deps, step);
+  const read = await readPairs(
+    input.inbox,
+    input.password,
+    since,
+    deps,
+    step,
+    job.phase,
+  );
   if (read.truncated) await job.markTruncated();
   const pairs = read.pairs;
   await job.setTotal(pairs.length);
   if (!pairs.length) return;
 
   step();
+  job.phase("Reading the repository");
   await knowledgeRepo.call("ensureRepo", project);
   // The trust rule reads the default branch as last fetched; when the
   // fetch fails every answer is reference ("History couldn't be read").
@@ -678,31 +706,44 @@ async function backfill(
 
   let batch: Planned[] = [];
   const imported: string[] = [];
+  let handled = 0;
+  const total = pairs.length;
   const flush = async () => {
     if (!batch.length) return;
+    job.phase("Committing", { done: handled, total });
     const written = await commitBatch(project, batch, today);
     imported.push(...written.paths);
     await job.progress({
       trusted: written.trusted,
       reference: written.reference,
       skipped: written.dropped,
+      ...(written.dropped
+        ? { skippedBy: { [KNOWLEDGE_SKIP.alreadyImported]: written.dropped } }
+        : {}),
       done: batch.length,
     });
     batch = [];
   };
   for (const pair of pairs) {
     step();
+    job.phase("Writing answers", { done: handled, total });
     const path = mailItemPath(pair.answer.messageId, pair.answer.at);
-    const planned = (await exists(project, path, today))
+    const known = await exists(project, path, today);
+    let why: string = known
+      ? KNOWLEDGE_SKIP.alreadyImported
+      : KNOWLEDGE_SKIP.notReusable;
+    const planned = known
       ? null
       : await planMailItem(project, pair, path, {
           hosts,
           docPaths,
           deps,
           historyRead,
+          skipped: (reason) => (why = reason),
         });
+    handled++;
     if (!planned) {
-      await job.progress({ skipped: 1, done: 1 });
+      await job.progress({ done: 1, skippedBy: { [why]: 1 } });
       continue;
     }
     batch.push(planned);
@@ -713,6 +754,7 @@ async function backfill(
   // Questions answered by hand in more than one thread: suggestions
   // (capture.ts). The import stands when this fails.
   step();
+  job.phase("Finding repeated questions");
   try {
     const { suggestRepeats } = await import("./capture");
     const made = await suggestRepeats(project, imported, {

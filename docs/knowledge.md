@@ -240,6 +240,18 @@ the issue.
    one (`POST /api/knowledge/<project>/jobs/<id>/cancel`); an import a
    restart cut off shows "Interrupted by a restart. Start it again."
 
+   Every import says what it is doing from its first second (`phase`:
+   "Reading INBOX 120 of 900", "Pairing", "Writing answers 12 of 40",
+   "Committing"), with its counts when known, and counts what it skipped
+   by reason (already imported, a credential, edited by a person); the
+   file import names each skipped file. Its record is written at most
+   every 500 ms, and each write, like each write to a knowledge
+   repository, sends `knowledge_changed {project, what: jobs|items}` to
+   every client over the socket (`server/knowledge/broadcast.ts`, the same
+   channel as the incident views). The Knowledge page revalidates that
+   project's views on it (`frontend/lib/knowledge/live.ts`) and polls the
+   jobs every 2 s only while the socket is down.
+
    The repository import mirrors `README.md`, `docs/**/*.md` and everything
    under `docs/incidents/` at the fetched default-branch head as trusted
    `sources/repo/` items (runbooks under `docs/incidents/` are `internal`:

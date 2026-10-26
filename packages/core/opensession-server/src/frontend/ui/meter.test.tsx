@@ -30,6 +30,24 @@ test("a meter is its label, value, track and note", () => {
   expect(html).toContain("width:42%");
 });
 
+test("an indeterminate track moves a fill and gives no value", () => {
+  const html = renderToStaticMarkup(
+    <MeterTrack
+      pct={null}
+      indeterminate
+      tone="normal"
+      aria-label="Mailbox import"
+      aria-valuetext="Pairing"
+    />,
+  );
+  expect(html).toContain("meter-indeterminate");
+  expect(html).toContain("motion-reduce:animate-[pulse");
+  expect(html).toContain("bg-faint");
+  expect(html).not.toContain("aria-valuenow");
+  expect(html).toContain('aria-valuetext="Pairing"');
+  expect(html).not.toContain("width:");
+});
+
 test("a progress track keeps its tone and names itself", () => {
   const html = renderToStaticMarkup(
     <MeterTrack pct={95} tone="normal" aria-label="Mailbox import" />,

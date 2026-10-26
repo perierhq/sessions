@@ -721,3 +721,74 @@ describe("a usage poll releases model-scoped sidelines it disproves", () => {
     expect(sidelinedFor("fable-scoped", fable)).toBeLessThan(1000);
   });
 });
+
+describe("an account out of paid credits", () => {
+  // Blind accounts: no usage refresh reaches the network.
+  const blind = (id: string) => ({
+    ...mkAccount(id),
+    usageScope: "missing" as const,
+  });
+  const originalStore = readFileSync(storePath, "utf-8");
+  const poll = (extra: {
+    enabled: boolean;
+    usedCredits: number;
+    monthlyLimit: number;
+  }) => ({
+    fetchedAt: new Date().toISOString(),
+    fiveHour: { utilization: 5, resetsAt: null },
+    sevenDay: { utilization: 5, resetsAt: null },
+    extraUsage: extra,
+  });
+  const benched = (id: string) =>
+    accounts.listAccountsPublic().find((a) => a.id === id)?.usable === false;
+
+  beforeAll(() => {
+    const parsed = JSON.parse(originalStore);
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        accounts: [
+          ...parsed.accounts,
+          blind("credits-spent"),
+          blind("credits-added"),
+        ],
+      }),
+    );
+  });
+
+  afterAll(() => writeFileSync(storePath, originalStore));
+
+  test("stays benched through plan headroom and a restart, until the next month", () => {
+    const now = Date.now();
+    const d = new Date(now);
+    const nextMonth = new Date(
+      Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1),
+    ).toISOString();
+    accounts.markCreditsExhausted("credits-spent", now);
+    accounts.__reloadSidelinesForTest();
+    accounts.__applyUsagePollForTest(
+      "credits-spent",
+      poll({ enabled: true, usedCredits: 100, monthlyLimit: 100 }),
+    );
+    expect(benched("credits-spent")).toBe(true);
+    expect(
+      accounts.listAccountsPublic().find((a) => a.id === "credits-spent")
+        ?.exhaustedUntil,
+    ).toBe(nextMonth);
+    expect(
+      accounts.pickAccount(
+        new Set(["fresh", "maxed", "credits-added", "reboot"]),
+      ),
+    ).toBeUndefined();
+  });
+
+  test("comes back once a poll shows credit headroom", () => {
+    accounts.markCreditsExhausted("credits-added");
+    expect(benched("credits-added")).toBe(true);
+    accounts.__applyUsagePollForTest(
+      "credits-added",
+      poll({ enabled: true, usedCredits: 20, monthlyLimit: 200 }),
+    );
+    expect(benched("credits-added")).toBe(false);
+  });
+});
