@@ -2,7 +2,9 @@
  * The mailbox backfill: an inbox's history of answered questions as
  * knowledge items under `sources/mail/`.
  *
- * Reads `INBOX` and the `\Sent` special-use folder over their own,
+ * Reads `INBOX` and the `\Sent` special-use folder (one imapflow only
+ * guessed from its name only when it is where appendSentCopy saves our
+ * sent copies; answersFolder) over their own,
  * read-only IMAP connection (EXAMINE: no flag changes), for the mail of the
  * last `months` months (the folders' internal dates). The inbox's live
  * connection, its cursor and its conversations are never touched; no
@@ -179,6 +181,37 @@ function toRecord(
   };
 }
 
+/** A listed folder as answersFolder reads it (imapflow's ListResponse). */
+export interface ListedFolder {
+  path: string;
+  specialUse?: string;
+  /** How imapflow knows the special use: "name" is only a guess. */
+  specialUseSource?: "user" | "extension" | "name";
+}
+
+/** The folder appendSentCopy saves our sent copies to, for a listing (its
+ *  choice with no folder hint, as the email adapter calls it). */
+function sentCopyFolder(folders: readonly ListedFolder[]): string {
+  return folders.find((f) => f.specialUse === "\\Sent")?.path ?? "Sent";
+}
+
+/**
+ * The folder our answers are read from: the `\Sent` special-use folder,
+ * not INBOX. One imapflow only guessed from its name counts only when it
+ * is where appendSentCopy saves our sent copies (`copyFolder`); otherwise
+ * it may hold anything, and there are no answers (null).
+ */
+export function answersFolder(
+  folders: readonly ListedFolder[],
+  copyFolder: (folders: readonly ListedFolder[]) => string = sentCopyFolder,
+): string | null {
+  const sent = folders.find((f) => f.specialUse === "\\Sent");
+  if (!sent || sent.path.toUpperCase() === "INBOX") return null;
+  if (sent.specialUseSource === "name" && sent.path !== copyFolder(folders))
+    return null;
+  return sent.path;
+}
+
 type Folder = "sent" | "inbox";
 
 /** What the first pass knows of a message (envelope and References). */
@@ -237,11 +270,9 @@ async function readPairs(
   let truncated = false;
   try {
     await client.connect();
-    const folders = await client.list();
-    const sent = folders.find((f) => f.specialUse === "\\Sent")?.path;
+    const sent = answersFolder(await client.list());
     // Without a Sent folder nothing is provably ours: no answers.
-    if (!sent || sent.toUpperCase() === "INBOX")
-      return { pairs: [], truncated };
+    if (!sent) return { pairs: [], truncated };
     // Sent first: a message in both folders counts as our copy.
     const folderList: Array<[string, Folder]> = [
       [sent, "sent"],

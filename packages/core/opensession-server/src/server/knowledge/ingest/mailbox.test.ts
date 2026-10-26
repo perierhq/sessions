@@ -47,6 +47,7 @@ import {
   DEADLINE_COPY,
   type MailboxDeps,
   startMailboxBackfill,
+  answersFolder,
 } from "./mailbox";
 
 const kernel = useSupportTestKernel();
@@ -599,5 +600,42 @@ describe("mailbox backfill", () => {
         deps(),
       ),
     ).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("answersFolder", () => {
+  const folder = (
+    path: string,
+    specialUse?: string,
+    specialUseSource?: "user" | "extension" | "name",
+  ) => ({
+    path,
+    ...(specialUse ? { specialUse } : {}),
+    ...(specialUseSource ? { specialUseSource } : {}),
+  });
+
+  test("a Sent folder the server declares is read", () => {
+    expect(
+      answersFolder([
+        folder("INBOX", "\\Inbox"),
+        folder("Sent", "\\Sent", "extension"),
+      ]),
+    ).toBe("Sent");
+  });
+
+  test("a Sent folder guessed from its name is read only where our sent copies go", () => {
+    // appendSentCopy saves to the \Sent folder of the same listing, so a
+    // guessed one is where our copies are.
+    expect(answersFolder([folder("Sent Items", "\\Sent", "name")])).toBe(
+      "Sent Items",
+    );
+    expect(
+      answersFolder([folder("Sent Items", "\\Sent", "name")], () => "Sent"),
+    ).toBeNull();
+  });
+
+  test("no Sent folder, or INBOX flagged Sent: none", () => {
+    expect(answersFolder([folder("INBOX"), folder("Sent")])).toBeNull();
+    expect(answersFolder([folder("INBOX", "\\Sent", "extension")])).toBeNull();
   });
 });
