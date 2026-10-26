@@ -191,8 +191,11 @@ describe("buildRunInstructions", () => {
     // agents from starting the dev server for the app they changed.
     // The scratch line in "Working directory" adds ~150: agents saved
     // screenshots to /tmp, which the file tools refuse, then copied them
-    // into another session's checkout to read them.
-    expect(prompt.length).toBeLessThan(5_150);
+    // into another session's checkout to read them. The stop rule in
+    // "Background work" adds ~170: agents stopped what they started with
+    // `pkill -f`, which on a shared host also matches other sessions'
+    // processes.
+    expect(prompt.length).toBeLessThan(5_350);
   });
 
   test("tells a code run it may start dev servers in its workspace", () => {
@@ -254,6 +257,9 @@ describe("buildRunInstructions", () => {
     expect(local).toContain("## Background work");
     expect(local).toContain("`opensession.session=$OPENSESSION_SESSION_ID`");
     expect(local).toContain('`--description="$OPENSESSION_UNIT_LABEL"`');
+    // `pkill -f` on a pattern from the agent's own command killed its shell,
+    // and on a shared host it also matches other sessions' processes.
+    expect(local).toContain("never `pkill -f` or `pgrep -f`");
     for (const prompt of [
       buildRunInstructions({ isAsk: true, hasSession: true }),
       buildRunInstructions({ isAsk: false, hasSession: true, sandboxed: true }),

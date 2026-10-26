@@ -18,6 +18,7 @@ import {
   PODMAN_BASE_IMAGE,
   PODMAN_BUN_SHA256,
   PODMAN_BUN_VERSION,
+  PODMAN_MEDIA_PACKAGES,
   PODMAN_JUST_SHA256,
   podmanImageSignature,
   podmanContainerfile,
@@ -57,6 +58,15 @@ describe("podman image", () => {
     expect(REMOTE_LINUX_PACKAGES.length).toBeGreaterThan(5);
     for (const pkg of REMOTE_LINUX_PACKAGES)
       expect(file).toMatch(new RegExp(`\\b${pkg}\\b`));
+  });
+
+  test("bakes ffmpeg and ImageMagick for recordings and image work", () => {
+    expect(PODMAN_MEDIA_PACKAGES).toEqual(["ffmpeg", "imagemagick"]);
+    const install = lines.find((line) => line.includes("apt-get install"));
+    for (const pkg of PODMAN_MEDIA_PACKAGES)
+      expect(install).toMatch(new RegExp(`\\b${pkg}\\b`));
+    expect(file).toContain("command -v ffmpeg");
+    expect(file).toContain("command -v convert");
   });
 
   test("verifies downloads and leaves no route to root", () => {

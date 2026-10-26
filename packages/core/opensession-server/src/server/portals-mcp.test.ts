@@ -3,6 +3,8 @@ import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
 import type { Sandbox } from "./sandbox/provider";
 import {
   createPortalsMcpServer,
+  hostPortalLocalUrls,
+  portalReadyText,
   type PortalsMcpContext,
   settleBefore,
   settleWithin,
@@ -453,5 +455,29 @@ describe("Simulator Portal MCP", () => {
       type: "text",
       text: expect.stringContaining("no workspace"),
     });
+  });
+});
+
+describe("loopback URLs for the session's own shell", () => {
+  test("a host Portal that is awake is reachable on its port without sign-in", () => {
+    const local = hostPortalLocalUrls([
+      { name: "web", port: 4000, state: "awake" },
+      { name: "api", port: 4001, state: "sleeping" },
+      { name: "docs", port: 4002, state: "failed" },
+    ]);
+    expect([...local]).toEqual([["web", "http://localhost:4000"]]);
+  });
+
+  test("the ready answer names the loopback URL beside the signed-in one", () => {
+    expect(
+      portalReadyText("web", "https://portal.example.test:10000/", {
+        local: "http://localhost:4000",
+      }),
+    ).toBe(
+      "web is ready at https://portal.example.test:10000/ (needs the person's sign-in, so a curl or headless browser here gets 401). From this shell use http://localhost:4000: no sign-in.",
+    );
+    expect(portalReadyText("web", "https://portal.example.test:10000/")).toBe(
+      "web is ready at https://portal.example.test:10000/.",
+    );
   });
 });

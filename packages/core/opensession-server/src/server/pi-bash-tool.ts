@@ -155,6 +155,33 @@ export function incidentUserHomeEnv(key: string): Record<string, string> {
   };
 }
 
+/** The variable that carries a local command into its shell. */
+const BASH_COMMAND_VAR = "OPENSESSION_BASH_COMMAND";
+
+/**
+ * The shell for a local command. The command rides in the environment, never
+ * in argv: `pkill -f <pattern>` matches every process whose command line
+ * holds the pattern and Linux's pkill spares only itself, so a shell whose
+ * argv was the command killed itself (exit 143) whenever the command ran
+ * `pkill -f` or `pgrep -f | xargs kill` on a pattern it named. The shell
+ * unsets the variable before running the command, so nothing it starts
+ * inherits it. The same parser runs the text (eval), so line numbers,
+ * heredocs and exit codes are those of `bash -c`.
+ */
+export function localBashCommand(command: string): {
+  argv: string[];
+  env: Record<string, string>;
+} {
+  return {
+    argv: [
+      "/bin/bash",
+      "-c",
+      `eval "unset -v ${BASH_COMMAND_VAR}; \$${BASH_COMMAND_VAR}"`,
+    ],
+    env: { [BASH_COMMAND_VAR]: command },
+  };
+}
+
 /** Run as the incident agent user before its first command: create its
  *  home and TMPDIR private to it, and refuse a path someone else made
  *  (another user's directory or a symlink planted in /tmp). */
@@ -390,9 +417,11 @@ export function makePiBashTool(input: {
       // direct-child kill. As the incident agent user, sudo runs bash and
       // relays TERM and KILL to it.
       const setsidPath = Bun.which("setsid");
-      const shell = runAs
-        ? hostBashArgv(runAs, command)
-        : ["/bin/bash", "-c", command];
+      // sudo drops variables it does not know, so the incident agent user's
+      // shell still takes the command as an argument.
+      const local = runAs ? null : localBashCommand(command);
+      const shell = local ? local.argv : hostBashArgv(runAs!, command);
+      const commandEnv = local ? { ...input.env, ...local.env } : input.env;
       const directCommand = setsidPath ? [setsidPath, ...shell] : shell;
       // A scope outlives the command while anything it backgrounded (a dev
       // server) still runs; its labelled description lets archive stop it.
@@ -401,11 +430,11 @@ export function makePiBashTool(input: {
         "agent command",
       );
       const scoped = hooks.scope
-        ? hooks.scope(directCommand, input.env)
+        ? hooks.scope(directCommand, commandEnv)
         : controlPlaneWorkloadCommand(
             directCommand,
             `opensession-agent-cmd-${crypto.randomUUID().slice(0, 13)}`,
-            { env: input.env, ...(description ? { description } : {}) },
+            { env: commandEnv, ...(description ? { description } : {}) },
           );
       // This service's user cannot signal the incident agent user's
       // processes, so in the gateway each command needs a scope that is

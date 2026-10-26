@@ -105,6 +105,16 @@ separate app listener on 3850 serves the private UI and API.
   (custom-domain public callbacks, or an externally configured Access-protected
   private tunnel, without inbound ports),
   `whisper.cpp`/Groq/OpenAI key (voice dictation).
+- Optional: tools agents use to check web work from a session on this host.
+  A headless Chromium and [agent-browser](https://github.com/vercel-labs/agent-browser)
+  for browser checks (sessions get one browser each; see
+  [session-resources.md](../session-resources.md)), `ffmpeg` for screen
+  recordings, and ImageMagick for resizing and comparing screenshots. On
+  Debian or Ubuntu: `sudo apt-get install -y ffmpeg imagemagick`. On Fedora,
+  RHEL, Oracle Linux or Rocky with EPEL enabled:
+  `sudo dnf install -y ffmpeg-free ImageMagick`. On macOS:
+  `brew install ffmpeg imagemagick`. The This machine (container) Sandbox
+  image already carries `ffmpeg` and ImageMagick.
 
 ## Network model
 
