@@ -36,7 +36,12 @@ function issue(
   };
 }
 
-/** A fake GitHub: `answers` by request path; anything else is a 404. */
+/** An answer that is only an HTTP error status. */
+class Status {
+  constructor(readonly status: number) {}
+}
+
+/** A fake GitHub: `answers` by request path; anything else is a 500. */
 function fakeGithub(answers: Record<string, unknown>) {
   const requests: string[] = [];
   return {
@@ -44,9 +49,11 @@ function fakeGithub(answers: Record<string, unknown>) {
     answers,
     request: async (path: string) => {
       requests.push(path);
-      if (!(path in answers)) return { ok: false, status: 404, data: null };
+      if (!(path in answers)) return { ok: false, status: 500, data: null };
       const data = answers[path];
       if (data instanceof Error) throw data;
+      if (data instanceof Status)
+        return { ok: false, status: data.status, data: null };
       return { ok: true, status: 200, data };
     },
   };
@@ -236,11 +243,50 @@ describe("syncKnownProblems", () => {
     expect((await read(1))!.item.status).toBe("active");
   });
 
-  test("an open issue that lost its bug label is retired, and comes back when relabelled", async () => {
+  test("an issue off the list that still has its bug label stays", async () => {
     const gh = fakeGithub({ [LIST]: [issue(1, "CSV export fails")] });
     await syncKnownProblems("acme", deps(gh));
     gh.answers[LIST] = [];
     gh.answers[`/repos/${GH}/issues/1`] = issue(1, "CSV export fails");
+    expect(await syncKnownProblems("acme", deps(gh))).toEqual({
+      written: 0,
+      retired: 0,
+      skipped: 0,
+    });
+    expect((await read(1))!.item.status).toBe("active");
+  });
+
+  test("a deleted or gone issue (404, 410) is retired; a server error keeps it", async () => {
+    const gh = fakeGithub({
+      [LIST]: [issue(1, "CSV export fails"), issue(2, "Slow search")],
+    });
+    await syncKnownProblems("acme", deps(gh));
+    gh.answers[LIST] = [];
+    gh.answers[`/repos/${GH}/issues/1`] = new Status(404);
+    gh.answers[`/repos/${GH}/issues/2`] = new Status(502);
+    expect(await syncKnownProblems("acme", deps(gh))).toEqual({
+      written: 0,
+      retired: 1,
+      skipped: 0,
+    });
+    expect((await read(1))!.item.status).toBe("retired");
+    expect((await read(2))!.item.status).toBe("active");
+    gh.answers[`/repos/${GH}/issues/2`] = new Status(410);
+    expect(await syncKnownProblems("acme", deps(gh))).toEqual({
+      written: 0,
+      retired: 1,
+      skipped: 0,
+    });
+    expect((await read(2))!.item.status).toBe("retired");
+  });
+
+  test("an open issue that lost its bug label is retired, and comes back when relabelled", async () => {
+    const gh = fakeGithub({ [LIST]: [issue(1, "CSV export fails")] });
+    await syncKnownProblems("acme", deps(gh));
+    gh.answers[LIST] = [];
+    gh.answers[`/repos/${GH}/issues/1`] = issue(1, "CSV export fails", "", {
+      labels: [{ name: "enhancement" }],
+    });
     expect(await syncKnownProblems("acme", deps(gh))).toEqual({
       written: 0,
       retired: 1,

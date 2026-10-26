@@ -225,6 +225,50 @@ export async function latestRelease(
   return (await listReleases(project, deps))?.[0] ?? null;
 }
 
+/** An issue's label names, as GitHub lists them (strings or objects). */
+function labelNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return (value as unknown[])
+    .map((l) =>
+      typeof l === "string" ? l : text((l as { name?: unknown } | null)?.name),
+    )
+    .filter(Boolean);
+}
+
+/**
+ * Issue `number` read fresh (never cached): open or closed with its own
+ * labels, or "gone" when GitHub answers 404 or 410 (deleted, or moved out
+ * of the repository); null when it couldn't tell. A 404 also means "no
+ * access", so read "gone" as proof only after a read of the same
+ * repository succeeded (the known-problems sync reads its list first).
+ */
+export async function issueStatus(
+  project: string,
+  number: number,
+  deps: GithubReadOptions = {},
+): Promise<
+  { state: "open" | "closed"; labels: string[] } | { state: "gone" } | null
+> {
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  const ghRepo = await ghRepoOrNull(project, deps);
+  if (!ghRepo) return null;
+  let result: { ok: boolean; status: number; data: unknown };
+  try {
+    result = await (deps.request ?? defaultRequest)(
+      `/repos/${ghRepo}/issues/${number}`,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[knowledge] GitHub read failed: ${detail}`);
+    return null;
+  }
+  if (result.status === 404 || result.status === 410) return { state: "gone" };
+  const data = result.data as Record<string, unknown> | null;
+  if (!result.ok || !data || typeof data !== "object") return null;
+  if (data.state !== "open" && data.state !== "closed") return null;
+  return { state: data.state, labels: labelNames(data.labels) };
+}
+
 /** Whether issue or pull request `number` is open, closed or (a pull
  *  request) merged, and when it closed or merged; null when unreadable. */
 export async function refState(
@@ -284,21 +328,12 @@ export async function openBugIssues(
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || entry.pull_request) continue;
     if (typeof entry.number !== "number" || entry.state === "closed") continue;
-    const labels = Array.isArray(entry.labels)
-      ? (entry.labels as unknown[])
-          .map((l) =>
-            typeof l === "string"
-              ? l
-              : text((l as { name?: unknown } | null)?.name),
-          )
-          .filter(Boolean)
-      : [];
     issues.push({
       number: entry.number,
       title: text(entry.title),
       body: text(entry.body),
       url: text(entry.html_url),
-      labels,
+      labels: labelNames(entry.labels),
       updatedAt: isoTime(entry.updated_at) ?? "",
     });
   }

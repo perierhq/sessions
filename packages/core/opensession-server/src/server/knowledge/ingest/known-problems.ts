@@ -13,9 +13,10 @@
  * holds anything credential-like is skipped, never redacted into knowledge.
  *
  * An item whose issue is no longer listed is retired only when GitHub says
- * so for that issue: closed (refState), or open while the list was read in
- * full (the `bug` label went). A truncated list or an unreadable state
- * leaves the item as it is: absence alone is no proof. An item a person
+ * so for that issue (issueStatus, read fresh): closed, gone (404 or 410),
+ * or open without the `bug` label among its own labels. An issue still
+ * labelled `bug` (past the page cap, or the list lagging) or an unreadable
+ * state leaves the item as it is: absence alone is no proof. An item a person
  * edited or retired last is left alone (mirrors.ts lastWrittenByPat), so
  * only an item Pat retired comes back when its issue does. A list that can't be
  * read throws (the daily step retries, the import fails) and changes
@@ -24,7 +25,7 @@
  * changed goes in one commit by Pat.
  *
  * Runs daily (maintenance.ts KNOWLEDGE_DAILY_STEPS) and as the
- * `known-problems` import. Reuses github.ts (openBugIssues, refState),
+ * `known-problems` import. Reuses github.ts (openBugIssues, issueStatus),
  * strip.ts, mirrors.ts, jobs.ts and the website import's write-and-retry shape.
  * Nothing runs at import.
  */
@@ -40,8 +41,8 @@ import { knowledgeRepo } from "../client";
 import {
   GithubReadError,
   type GithubReadOptions,
+  issueStatus,
   openBugIssues,
-  refState,
   type KnownProblem,
 } from "../freshness/github";
 import {
@@ -61,6 +62,7 @@ export const ISSUE_TEXT_CHARS = 2000;
 const MAX_TITLE = 200;
 const LIST_PAGE = 200;
 const WRITE_ATTEMPTS = 3;
+const BUG_LABEL = "bug";
 const ISSUE_PATH = /^sources\/issues\/([1-9]\d*)\.md$/;
 
 export interface KnownProblemsDeps {
@@ -75,7 +77,7 @@ export interface KnownProblemsDeps {
 export interface KnownProblemsResult {
   /** Items written (new, changed or back from retired). */
   written: number;
-  /** Items retired because their issue closed or lost the label. */
+  /** Items retired because their issue closed, went or lost the label. */
   retired: number;
   /** Open issues left out (credential-like text), and items a person
    *  edited or retired last, left alone. */
@@ -271,10 +273,16 @@ export async function syncKnownProblems(
     for (const [number, current] of items) {
       // Listed: open and a bug (a skipped one stays as it was).
       if (listed.has(number)) continue;
-      const state = await refState(project, { type: "issue", number }, github);
+      // Retired only on GitHub's word for this issue: closed, gone (404 or
+      // 410, the list just read proves access), or open without the label.
+      const state = await issueStatus(project, number, github);
       if (!state) continue;
-      // Open but not on a complete list: the bug label went.
-      if (state.state === "open" && open.truncated) continue;
+      // GitHub matches label names regardless of case.
+      if (
+        state.state === "open" &&
+        state.labels.some((label) => label.toLowerCase() === BUG_LABEL)
+      )
+        continue;
       const read = await knowledgeRepo.call(
         "read",
         project,
