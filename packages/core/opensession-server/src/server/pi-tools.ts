@@ -94,6 +94,7 @@ export function piMcpRuntimeOptions(input: {
         tool: e.tool,
         ok: e.ok,
         ms: e.ms,
+        ...(e.error ? { error: e.error } : {}),
       }),
   };
 }

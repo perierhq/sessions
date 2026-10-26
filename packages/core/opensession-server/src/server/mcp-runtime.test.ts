@@ -140,6 +140,75 @@ describe("MCP runtime catalog and exact calls", () => {
     ).toEqual({ type: "text", text: "echo:alive" });
   });
 
+  test("a failed listing or call is audited with its error, secrets masked", async () => {
+    const audits: Array<{ tool: string; ok: boolean; error?: string }> = [];
+    const broken = server();
+    broken.instance.connect = async () => {
+      throw new Error(
+        'Streamable HTTP error: Error POSTing to http://127.0.0.1:1/relay/acme?t=relay-secret-1: {"error": "invalid_token"} Bearer abcdefghijklmnop',
+      );
+    };
+    const { runtime } = await make({
+      inProcessMcp: { alpha: server(), acme: broken },
+      onAudit: (event) =>
+        audits.push({ tool: event.tool, ok: event.ok, error: event.error }),
+    });
+    await expect(
+      runtime.callExact("alpha_boom", {}, { toolCallId: "x" }),
+    ).rejects.toThrow("bad input");
+    await runtime.callExact("alpha_echo", { text: "ok" }, { toolCallId: "y" });
+
+    const listing = audits.find((a) => a.tool === "tools/list");
+    expect(listing).toMatchObject({ ok: false });
+    expect(listing?.error).toContain("invalid_token");
+    expect(listing?.error).not.toContain("relay-secret-1");
+    expect(listing?.error).not.toContain("abcdefghijklmnop");
+    expect(audits.find((a) => a.tool === "boom")).toEqual({
+      tool: "boom",
+      ok: false,
+      error: "bad input",
+    });
+    expect(audits.find((a) => a.tool === "echo")).toEqual({
+      tool: "echo",
+      ok: true,
+      error: undefined,
+    });
+  });
+
+  test("each bound server that can't be listed is reported once, eager or deferred", async () => {
+    const reported: Array<[string, string]> = [];
+    const broken = server();
+    broken.instance.connect = async () => {
+      throw new Error("connect refused ?t=relay-secret-2");
+    };
+    const { runtime } = await make({
+      inProcessMcp: { alpha: server(), acme: broken },
+      legacyProxyMcp: {
+        configs: {
+          later: {
+            type: "run-rpc-relay",
+            createServer: () => ({
+              connect: async () => {
+                throw new Error("relay down");
+              },
+              close: async () => {},
+            }),
+          },
+        },
+      },
+      onUnavailable: (name, reason) => reported.push([name, reason]),
+    });
+    // The eager listing failed at creation; the deferred one has not run.
+    expect(reported).toEqual([["acme", "connect refused ?t=***"]]);
+    await runtime.catalog();
+    await runtime.catalog();
+    expect(reported).toEqual([
+      ["acme", "connect refused ?t=***"],
+      ["later", "relay down"],
+    ]);
+    expect([...runtime.unavailable()]).toEqual(reported);
+  });
+
   test("own servers' calls are not bound by the external call timeout", async () => {
     const { runtime } = await make({ callTimeoutMs: 50 });
 

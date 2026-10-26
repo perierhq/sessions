@@ -361,6 +361,46 @@ test("verifier prompt never carries the investigator's reasoning", () => {
   expect(code).toContain("Roll back");
   expect(code).not.toContain("merge and deploy");
 });
+test("both agents are told which connections they can and can't use", () => {
+  const base = {
+    incident,
+    signal,
+    candidate,
+    headSha: "abc1234",
+    proof,
+    mode: "ask" as const,
+    runnerLabel: "Production · acme",
+    independence: "other-provider" as const,
+    round: 1,
+  };
+  expect(buildVerifierPrompt(base)).not.toContain("## Connections");
+  expect(
+    buildVerifierPrompt({
+      ...base,
+      connections: { connections: [], unavailable: [] },
+    }),
+  ).not.toContain("## Connections");
+  const p = buildVerifierPrompt({
+    ...base,
+    connections: {
+      connections: ["logs", "tickets", "metrics"],
+      unavailable: [{ connection: "tickets", reason: "sign-in expired." }],
+    },
+  });
+  expect(p).toContain(
+    "## Connections\n\nYou can use logs, metrics. Find their tools with tool_search.\n\nThese can't be used now, so don't spend attempts on them. If what you need is behind one, say so in your report so the owner can fix it:\n- tickets: sign-in expired.\n",
+  );
+  const none = buildVerifierPrompt({
+    ...base,
+    connections: {
+      connections: ["tickets"],
+      unavailable: [{ connection: "tickets", reason: "sign-in expired." }],
+    },
+  });
+  expect(none).not.toContain("You can use");
+  expect(none).toContain("- tickets: sign-in expired.");
+});
+
 test("send-back and reminder copy", () => {
   expect(
     buildSendBackMessage(2, 2, {
