@@ -30,6 +30,7 @@ import { mcpRelayUrl, mintMcpRelayToken } from "./mcp-relay";
 import type { InProcessMcpServer } from "./inprocess-mcp";
 import { RPC_TOOL_CALL_TIMEOUT_MS } from "./run-rpc-protocol";
 import { workloadCommand } from "./workload-scope";
+import { redactSecrets } from "./shared/redact";
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** Open Session's own servers bound their calls themselves, and some wait on
@@ -82,6 +83,29 @@ export interface McpAuditEvent {
   tool: string;
   ok: boolean;
   ms: number;
+  /** Why a listing or call failed, secrets masked (auditableError). */
+  error?: string;
+}
+
+const MAX_AUDITED_ERROR_CHARS = 500;
+
+/** What the agent and the person read about a bound server it can't use. */
+export function mcpUnavailableMessage(server: string, reason: string): string {
+  return `MCP server "${server}" is not available in this session: ${reason}`;
+}
+
+/** A failure's text as it may be audited and logged: credentials masked,
+ *  the relay's run-scoped token included, and clipped to one short line. */
+export function auditableError(error: unknown): string {
+  const text = redactSecrets(
+    error instanceof Error ? error.message : String(error),
+  )
+    .replace(/([?&]t=)[^\s&"']+/g, "$1***")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > MAX_AUDITED_ERROR_CHARS
+    ? `${text.slice(0, MAX_AUDITED_ERROR_CHARS)}…`
+    : text;
 }
 
 /** Explicit migration boundary for detached runner-host proxy configs.
@@ -348,6 +372,10 @@ export async function createMcpRuntime(opts: {
   inProcessMcp?: Readonly<Record<string, InProcessMcpServer>>;
   legacyProxyMcp?: LegacyProxyMcpBoundary;
   onAudit?: (event: McpAuditEvent) => void;
+  /** A bound server could not be listed, with the reason the agent sees;
+   *  called once per server, when its listing fails (at creation or when a
+   *  deferred server is first hydrated). */
+  onUnavailable?: (server: string, reason: string) => void;
   /** Connect, list and external tool calls. */
   callTimeoutMs?: number;
   /** Tool calls to Open Session's own in-process and proxied servers. */
@@ -559,6 +587,7 @@ export async function createMcpRuntime(opts: {
   };
   const unavailable = (entry: Entry, started: number, error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
+    const audited = auditableError(error);
     // A server signed in through Sessions that refuses the sign-in reads the
     // same as an expired one: a person has to reconnect it.
     const reason =
@@ -566,17 +595,20 @@ export async function createMcpRuntime(opts: {
         ? message
         : looksUnauthorized(message) && hasMcpOauthGrant(entry.name)
           ? SIGN_IN_EXPIRED_REASON
-          : message;
+          : audited;
     failures.set(entry.name, reason);
+    try {
+      opts.onUnavailable?.(entry.name, reason);
+    } catch {}
     console.warn(
-      `[mcp-runtime] server "${entry.name}" unavailable, skipping:`,
-      error,
+      `[mcp-runtime] server "${entry.name}" unavailable, skipping: ${audited}`,
     );
     opts.onAudit?.({
       server: entry.name,
       tool: "tools/list",
       ok: false,
       ms: Date.now() - started,
+      error: audited,
     });
   };
   for (const entry of entries) {
@@ -641,15 +673,12 @@ export async function createMcpRuntime(opts: {
       const server = entry?.name ?? id.split("_")[0];
       if (!entry)
         throw new Error(
-          `MCP server "${server}" is not available in this session: not bound for this run.`,
+          mcpUnavailableMessage(server, "not bound for this run."),
         );
       // Direct calls must use the same run-scoped discovery as search.
       await hydrate();
       const failure = failures.get(server);
-      if (failure)
-        throw new Error(
-          `MCP server "${server}" is not available in this session: ${failure}`,
-        );
+      if (failure) throw new Error(mcpUnavailableMessage(server, failure));
       const tool = byId.get(id);
       if (!tool) {
         const name = id.slice(server.length + 1);
@@ -703,6 +732,7 @@ export async function createMcpRuntime(opts: {
           tool: tool.name,
           ok: false,
           ms: Date.now() - started,
+          error: auditableError(error),
         });
         throw error instanceof Error ? error : new Error(String(error));
       }

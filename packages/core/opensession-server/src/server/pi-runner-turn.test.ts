@@ -35,6 +35,7 @@ import {
   steerPiRun,
 } from "./pi-runner";
 import { EMPTY_REPLY_RETRY_PROMPT } from "./auto-continue";
+import { createSdkMcpServer } from "./inprocess-mcp";
 import { __setCodexAccountsPathForTest } from "./codex-accounts";
 import { wrapContext } from "./prompt-context";
 import { PI_TURN_CHECKPOINT_FILE } from "./pi-turn-checkpoint";
@@ -150,6 +151,8 @@ function scriptedSdk(script: Script) {
       }),
     },
     SettingsManager: { inMemory: () => ({}) },
+    // Codemode registers only when a turn has custom tools (an MCP catalog).
+    createCodemodeExtension: () => () => {},
     DefaultResourceLoader: class {
       async reload() {}
       getSkills() {
@@ -825,6 +828,38 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
       },
     });
     expect(turn.log).not.toContain("abortRetry");
+  });
+
+  // ── 7b. A bound MCP server that can't be listed ─────────────────────────
+  test("a bound MCP server that can't be listed becomes a visible, persisted notice", async () => {
+    const broken = createSdkMcpServer({ name: "acme", tools: [] });
+    broken.instance.connect = async () => {
+      throw new Error('Streamable HTTP error: {"error": "invalid_token"}');
+    };
+    const turn = await runTurn(
+      {
+        onPrompt: (ctx) => {
+          ctx.emit(assistantEnd([{ type: "text", text: "ok" }]));
+        },
+      },
+      { inProcessMcp: { acme: broken } },
+    );
+    const notice =
+      'MCP server "acme" is not available in this session: Streamable HTTP error: {"error": "invalid_token"}';
+    expect(turn.events.filter((e) => e.type === "runner_notice")).toEqual([
+      { type: "runner_notice", text: notice },
+    ]);
+    expect(turn.lines[1]).toEqual({
+      type: "user",
+      uuid: expect.any(String),
+      timestamp: expect.any(String),
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: `<runner-notice>${notice}</runner-notice>` },
+        ],
+      },
+    });
   });
 
   // ── 8. Usage-limit auto-retry ────────────────────────────────────────────

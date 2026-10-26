@@ -41,7 +41,11 @@ import {
   prewarmPiSdk as prewarmPiSdkBinding,
 } from "./pi-runtime-binding";
 import { createPiMcpBridge, type PiMcpBridge } from "./pi-mcp-bridge";
-import { createMcpRuntime, type McpRuntime } from "./mcp-runtime";
+import {
+  createMcpRuntime,
+  mcpUnavailableMessage,
+  type McpRuntime,
+} from "./mcp-runtime";
 import { expandSkillCommand } from "./skill-paths";
 import { remoteWorkspaceForRun } from "./remote-workspace";
 import type { TranscriptEntry } from "./types";
@@ -561,9 +565,18 @@ async function* runPiAttempt(
     // turn. Pi only adapts its exact catalog into tool_search/tool_call. The
     // detached runner-host proxy shape remains solely at this named migration
     // boundary until Agent operation routing replaces it.
-    mcpRuntime = await createMcpRuntime(
-      piMcpRuntimeOptions({ opts, policy, stripeApprovals, requestId }),
-    );
+    // A bound server that can't be listed reaches the person too, not only
+    // the agent's tool_search: a notice and a transcript row, once per
+    // server. Ones found before the event pump exists wait for it.
+    const earlyMcpNotices: string[] = [];
+    let mcpNotice = (text: string) => {
+      earlyMcpNotices.push(text);
+    };
+    mcpRuntime = await createMcpRuntime({
+      ...piMcpRuntimeOptions({ opts, policy, stripeApprovals, requestId }),
+      onUnavailable: (server, reason) =>
+        mcpNotice(mcpUnavailableMessage(server, reason)),
+    });
     mcpBridge = await createPiMcpBridge(mcpRuntime);
     const localTools = piLocalToolNames({
       isAsk,
@@ -853,6 +866,11 @@ async function* runPiAttempt(
       push({ type: "runner_notice", text: notice });
       persistRunEntries([piSystemEntry(notice)]);
     }
+    mcpNotice = (text) => {
+      push({ type: "runner_notice", text });
+      persistRunEntries([piSystemEntry(text)]);
+    };
+    for (const text of earlyMcpNotices.splice(0)) mcpNotice(text);
     // What the ENGINE receives; journal/store keep the raw prompt. Fenced the
     // way every other injection is (prompt-context.ts): the fence is what
     // makes the payload readable to the context log, and it keeps the note
