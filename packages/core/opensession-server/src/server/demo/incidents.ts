@@ -386,7 +386,7 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
           role: "investigator",
           summary: "Search times out since the 12:02 release",
           cause:
-            "The 12:02 release dropped the search index's read replica, so every query waits on the primary until it times out",
+            "The 12:02 release dropped the search index's read replica, so every query waits on the primary until it times out.\n\n- `search.replicas` went from 2 to 0 in that release\n- The primary's query queue has grown since 12:02",
           readFirst: [],
           attempts: [],
           candidate: { pr: true, actions: [] },
