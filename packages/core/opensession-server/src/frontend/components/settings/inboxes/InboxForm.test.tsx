@@ -59,6 +59,22 @@ mock.module("../../../lib/api/support", () => ({
   },
 }));
 
+const imports: Array<[string, string, unknown]> = [];
+let importError: Error | null = null;
+const realKnowledgeApi = await import("../../../lib/api/knowledge");
+mock.module("../../../lib/api/knowledge", () => ({
+  ...realKnowledgeApi,
+  startKnowledgeImport: async (
+    project: string,
+    kind: string,
+    body: unknown,
+  ) => {
+    imports.push([project, kind, body]);
+    if (importError) throw importError;
+    return { id: "kj_1" };
+  },
+}));
+
 const realToast = await import("../../../ui/toast");
 mock.module("../../../ui/toast", () => ({
   ...realToast,
@@ -130,6 +146,8 @@ beforeEach(() => {
   calls.length = 0;
   testAnswer = null;
   patchError = null;
+  imports.length = 0;
+  importError = null;
   saved = 0;
   reloaded = 0;
 });
@@ -424,4 +442,61 @@ test("a new SMTP host resets the Sent copy", async () => {
 test("without a repository the form says to add one", async () => {
   const tree = await mountForm(null, { projects: [] });
   expect(text(tree)).toContain("Add a repository first");
+});
+
+async function connectNew() {
+  const tree = await mountForm(null);
+  input(tree, "Address").onChange({
+    target: { value: "help@acme.example.test" },
+  });
+  input(tree, "Name shown to customers").onChange({
+    target: { value: "Acme help" },
+  });
+  for (const which of ["IMAP", "SMTP"]) {
+    input(tree, `${which} server`).onChange({
+      target: { value: `${which.toLowerCase()}.example.test` },
+    });
+    input(tree, `${which} user name`).onChange({
+      target: { value: "help@acme.example.test" },
+    });
+    input(tree, `${which} password`).onChange({ target: { value: "pw" } });
+  }
+  await settle();
+  saveForm(tree);
+  await settle();
+  return tree;
+}
+
+test("a connected inbox offers to learn from its past replies", async () => {
+  const tree = await connectNew();
+  expect(calls.map((c) => c[0])).toEqual(["create"]);
+  expect(saved).toBe(1);
+  expect(text(tree)).toContain("Learn from past replies");
+  expect(select(tree, "How far back").value).toBe("12");
+  expect(
+    select(tree, "How far back").options.map((o: { value: string }) => o.value),
+  ).toEqual(["3", "6", "12", "24", "36"]);
+  select(tree, "How far back").onChange("24");
+  await settle();
+  button(tree, "Import").onClick();
+  await settle();
+  expect(imports).toEqual([
+    ["acme", "mailbox", { inboxId: "inb_0001", months: 24 }],
+  ]);
+});
+
+test("a refused import says why and keeps the row", async () => {
+  importError = new ApiError("An import of this kind is already running", 409);
+  const tree = await connectNew();
+  button(tree, "Import").onClick();
+  await settle();
+  expect(find(tree.output(), SettingsDialog)!.props.error).toBe(
+    "An import of this kind is already running",
+  );
+  expect(text(tree)).toContain("Learn from past replies");
+});
+
+test("editing an inbox doesn't offer the import", async () => {
+  const tree = await mountForm();
+  expect(text(tree)).not.toContain("Learn from past replies");
 });

@@ -19,6 +19,7 @@ import {
   patchInbox,
   testInbox,
 } from "../../../lib/api/support";
+import { startKnowledgeImport } from "../../../lib/api/knowledge";
 import { ApiError } from "../../../lib/api/request";
 import { errorMessage } from "../../../lib/error-message";
 import {
@@ -47,9 +48,15 @@ import {
   tlsChoices,
 } from "../../../lib/inbox-form";
 import {
+  DEFAULT_IMPORT_MONTHS,
+  monthOptions,
+} from "../../../lib/knowledge/import-model";
+import {
   INBOX_AUTONOMY_CHOICE,
   INBOX_AUTONOMY_CHOICES,
   INBOX_FORM_PAIR,
+  INBOX_LEARN_ROW,
+  INBOX_LEARN_CONTROLS,
   INBOX_LEGEND,
   INBOX_LEGEND_ROW,
   INBOX_SELECT,
@@ -81,12 +88,17 @@ const SERVER_TITLES: Record<MailServerKind, string> = {
 const CONNECTOR_WARNING =
   "Routine replies can carry what the project's connectors, web search and websites return. Draft is safer while you get to know the agent.";
 
+const LEARN_COPY =
+  "Pat reads the replies your team sent from this inbox and adds them to the project's knowledge. Answers older than the latest change to the docs or a release come in as reference";
+
 /**
  * Connect or edit one support inbox: the mailbox and its two servers (with
  * Test connection), how its mail is handled, what happens in the mailbox,
  * and how long Sessions keeps it. A centred dialog on a desktop and a
  * bottom sheet on a phone (`SettingsDialog`). Callers key it by the inbox
- * and each opening, so it starts from the stored values.
+ * and each opening, so it starts from the stored values. Once a new inbox
+ * is connected the dialog offers one more step, "Learn from past replies":
+ * a mailbox import of the inbox's Sent mail into its project's knowledge.
  */
 export function InboxForm({
   open,
@@ -125,6 +137,9 @@ export function InboxForm({
   const [testError, setTestError] = useState<string | null>(null);
   const [confirm, confirmDialog] = useConfirm();
   const autonomyId = useId();
+  // The inbox just connected: the dialog becomes the import offer.
+  const [created, setCreated] = useState<InboxView | null>(null);
+  const [months, setMonths] = useState(String(DEFAULT_IMPORT_MONTHS));
 
   const editing = inbox !== null;
   const set = (patch: Partial<InboxFormState>) =>
@@ -178,11 +193,11 @@ export function InboxForm({
     }
     setBusy(true);
     createInbox(newInboxFromForm(form)).then(
-      () => {
+      ({ inbox: connected }) => {
         setBusy(false);
         toast("Inbox connected");
         onSaved();
-        onClose();
+        setCreated(connected);
       },
       (cause) => {
         setBusy(false);
@@ -348,6 +363,63 @@ export function InboxForm({
       </div>
     );
   };
+
+  const learn = () => {
+    if (!created) return;
+    setBusy(true);
+    setError(null);
+    startKnowledgeImport(created.project, "mailbox", {
+      inboxId: created.id,
+      months: Number(months),
+    }).then(
+      () => {
+        setBusy(false);
+        toast("Importing past replies");
+        onClose();
+      },
+      (cause) => {
+        setBusy(false);
+        setError(errorMessage(cause, "Couldn't start the import"));
+      },
+    );
+  };
+
+  if (created)
+    return (
+      <SettingsDialog
+        open={open}
+        onClose={onClose}
+        title="Inbox connected"
+        error={error}
+      >
+        <div className={INBOX_LEARN_ROW}>
+          <div className="min-w-0 flex-1">
+            <div className="text-item-title font-medium text-fg">
+              Learn from past replies
+            </div>
+            <p className={`${FIELD_HINT} mt-1`}>{LEARN_COPY}</p>
+          </div>
+          <div className={INBOX_LEARN_CONTROLS}>
+            <OptionSelect
+              label="How far back"
+              className={INBOX_SELECT}
+              value={months}
+              options={monthOptions()}
+              onChange={setMonths}
+            />
+            <Button
+              type="button"
+              variant="primary"
+              className="phone:min-h-11"
+              disabled={busy}
+              onClick={learn}
+            >
+              Import
+            </Button>
+          </div>
+        </div>
+      </SettingsDialog>
+    );
 
   const ownerOptions = [
     ...(editing ? [] : [{ value: "", label: "You" }]),
