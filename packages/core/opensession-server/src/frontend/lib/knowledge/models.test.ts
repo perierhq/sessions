@@ -1,0 +1,194 @@
+import { describe, expect, test } from "bun:test";
+import type {
+  KnowledgeImportJob,
+  KnowledgeItem,
+} from "../../../shared/knowledge";
+import {
+  emptyCopy,
+  filterLabel,
+  formatDay,
+  freshnessLine,
+  itemBadges,
+  jobLine,
+  sectionCounts,
+} from "./models";
+
+const TODAY = "2026-10-26";
+
+function item(over: Partial<KnowledgeItem> = {}): KnowledgeItem {
+  return {
+    project: "acme",
+    path: "articles/export.md",
+    blob: "b".repeat(40),
+    commit: "c".repeat(40),
+    updatedAt: "2026-10-20T08:00:00Z",
+    effective: "active",
+    excerpt: "",
+    title: "Exporting a project as CSV",
+    kind: "answer",
+    trust: "trusted",
+    status: "active",
+    origin: "article",
+    topics: [],
+    sources: [],
+    dependsOn: [],
+    validAsOf: TODAY,
+    ...over,
+  };
+}
+
+const labels = (i: KnowledgeItem) => itemBadges(i).map((b) => b.label);
+
+describe("itemBadges", () => {
+  test("a trusted answer is just an answer", () => {
+    expect(labels(item())).toEqual(["Answer"]);
+  });
+
+  test("a reference item", () => {
+    expect(labels(item({ trust: "reference", origin: "mail" }))).toEqual([
+      "Answer",
+      "Reference",
+    ]);
+  });
+
+  test("an item past its review date is overdue and needs a check", () => {
+    const overdue = item({ reviewBy: "2026-10-01", effective: "needs-check" });
+    expect(labels(overdue)).toEqual(["Answer", "Overdue", "Needs check"]);
+    const tones = itemBadges(overdue).map((b) => b.tone);
+    expect(tones).toEqual(["neutral", "danger", "warning"]);
+  });
+
+  test("an item flipped by a change needs a check, not overdue", () => {
+    expect(
+      labels(
+        item({
+          status: "needs-check",
+          effective: "needs-check",
+          check: { reason: "docs/export.md changed", since: TODAY },
+        }),
+      ),
+    ).toEqual(["Answer", "Needs check"]);
+  });
+
+  test("internal and retired", () => {
+    expect(
+      labels(
+        item({ kind: "internal", status: "retired", effective: "retired" }),
+      ),
+    ).toEqual(["Internal", "Retired"]);
+  });
+});
+
+describe("freshnessLine", () => {
+  test("valid as of", () => {
+    expect(freshnessLine(item(), TODAY)).toBe("Valid as of 26 Oct 2026");
+  });
+
+  test("needs a check, with the reason", () => {
+    expect(
+      freshnessLine(
+        item({
+          status: "needs-check",
+          effective: "needs-check",
+          check: { reason: "docs/export.md changed in 9c1d2e0", since: TODAY },
+        }),
+        TODAY,
+      ),
+    ).toBe("Needs a check: docs/export.md changed in 9c1d2e0");
+  });
+
+  test("review by", () => {
+    expect(freshnessLine(item({ reviewBy: "2027-01-31" }), TODAY)).toBe(
+      "Review by 31 Jan 2027",
+    );
+  });
+
+  test("a passed review date", () => {
+    expect(freshnessLine(item({ reviewBy: "2026-10-01" }), TODAY)).toBe(
+      "Needs a check: Review date passed (1 Oct 2026)",
+    );
+  });
+});
+
+test("formatDay", () => {
+  expect(formatDay("2026-10-26")).toBe("26 Oct 2026");
+  expect(formatDay("not a day")).toBe("not a day");
+});
+
+test("filterLabel and emptyCopy cover every filter", () => {
+  expect(filterLabel("needs-check")).toBe("Needs check");
+  expect(filterLabel("answer")).toBe("Answers");
+  expect(emptyCopy("needs-check")).toBe("Nothing needs a check");
+  expect(emptyCopy("suggestions")).toContain("No suggestions");
+});
+
+describe("jobLine", () => {
+  const job = (over: Partial<KnowledgeImportJob> = {}): KnowledgeImportJob => ({
+    id: "j1",
+    project: "acme",
+    kind: "mailbox",
+    state: "running",
+    startedAt: "2026-10-26T08:00:00Z",
+    done: 120,
+    total: 340,
+    created: { trusted: 80, reference: 30, suggestions: 6, skipped: 0 },
+    options: {},
+    ...over,
+  });
+
+  test("a running mailbox import", () => {
+    expect(jobLine(job())).toBe(
+      "Mailbox · 120 of 340 · 80 trusted, 30 reference, 6 suggestions",
+    );
+  });
+
+  test("an unknown total, nothing created yet", () => {
+    expect(
+      jobLine(
+        job({
+          kind: "website",
+          done: 4,
+          total: null,
+          created: { trusted: 0, reference: 0, suggestions: 0, skipped: 0 },
+        }),
+      ),
+    ).toBe("Website · 4 so far");
+  });
+
+  test("queued and failed", () => {
+    expect(jobLine(job({ state: "queued" }))).toBe(
+      "Mailbox · Waiting to start",
+    );
+    expect(
+      jobLine(job({ kind: "files", state: "failed", error: "Bad PDF" })),
+    ).toBe("Files · Failed: Bad PDF");
+  });
+
+  test("one suggestion, skipped items", () => {
+    expect(
+      jobLine(
+        job({
+          kind: "known-problems",
+          state: "done",
+          done: 3,
+          total: 3,
+          created: { trusted: 0, reference: 2, suggestions: 1, skipped: 1 },
+        }),
+      ),
+    ).toBe("Known problems · Done · 2 reference, 1 suggestion, 1 skipped");
+  });
+});
+
+test("sectionCounts", () => {
+  expect(
+    sectionCounts({
+      all: 20,
+      answer: 7,
+      internal: 2,
+      "needs-check": 3,
+      reference: 5,
+      suggestions: 4,
+      retired: 1,
+    }),
+  ).toEqual({ articles: 9, needsCheck: 3, suggestions: 4, reference: 5 });
+});

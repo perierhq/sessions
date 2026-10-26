@@ -1197,8 +1197,17 @@ export function AppContent({
     openCatchUp: () => navigate({ view: "catchup" }),
     openIncidents: () => navigate({ view: "incidents" }),
     openIncident: (id) => navigate({ view: "incidents", id }),
-    openProjectSettings: (project, section) =>
-      navigate({ view: "projectSettings", project, section }),
+    openProjectSettings: (project, section, knowledge) =>
+      navigate(
+        knowledge
+          ? {
+              view: "projectSettings",
+              project,
+              section: "knowledge",
+              knowledge,
+            }
+          : { view: "projectSettings", project, section },
+      ),
     openProjectDefaults: () =>
       navigate({ view: "settings", section: "projectDefaults" }),
     openSession,

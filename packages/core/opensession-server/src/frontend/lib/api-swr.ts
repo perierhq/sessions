@@ -80,6 +80,16 @@ export const apiSWRKey = {
   // Settings → Inboxes and the email pane (projects to move to, whether
   // the signed-in person is the instance owner).
   supportInboxes: () => ["api", "support-inboxes"] as const,
+  // A project's Knowledge: the list per filter and query, and its imports.
+  // Writes revalidate every key starting ["api", "knowledge", project].
+  knowledge: (project: string, filter: string, q = "", offset = 0) =>
+    ["api", "knowledge", project, "list", filter, q, offset] as const,
+  knowledgeJobs: (project: string) =>
+    ["api", "knowledge", project, "jobs"] as const,
+  knowledgeNeedsCheck: (project: string) =>
+    ["api", "knowledge", project, "needs-check"] as const,
+  knowledgeHistory: (project: string, path = "") =>
+    ["api", "knowledge", project, "history", path] as const,
 };
 
 /**

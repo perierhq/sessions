@@ -11,6 +11,27 @@ import {
   type ProjectSectionId,
 } from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
+
+/** The Knowledge page's tabs (`/settings/projects/<p>/knowledge/<tab>`). */
+export const KNOWLEDGE_TABS = [
+  "articles",
+  "suggestions",
+  "needs-check",
+  "import",
+  "history",
+] as const;
+export type KnowledgeTab = (typeof KNOWLEDGE_TABS)[number];
+
+/** Where the Knowledge page is: a tab, and the item open in it. */
+export interface KnowledgeRoute {
+  tab: KnowledgeTab;
+  /** A repository path, e.g. `articles/export.md`. */
+  path?: string;
+}
+
+function knowledgeTab(raw: string): KnowledgeTab {
+  return KNOWLEDGE_TABS.find((tab) => tab === raw) ?? "articles";
+}
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
 
 /**
@@ -49,7 +70,14 @@ export type Route =
   | { view: "security" }
   | { view: "goals"; id?: string }
   | { view: "incidents"; id?: string; intent?: OwnerDecision }
-  | { view: "projectSettings"; project: string; section?: ProjectSectionId }
+  /** `knowledge` (only with section "knowledge") opens the Knowledge page;
+   *  without it the section is an anchor on the project's page. */
+  | {
+      view: "projectSettings";
+      project: string;
+      section?: ProjectSectionId;
+      knowledge?: KnowledgeRoute;
+    }
   | { view: "settings"; section?: SettingsSectionKey }
   | { view: "archived" }
   | { view: "inbox" }
@@ -108,6 +136,15 @@ export function isToolView(
 
 function isSettingsSection(value: string): value is SettingsSectionKey {
   return SETTINGS_SECTIONS.has(value);
+}
+
+/** A decoded path segment; a malformed escape is kept as written. */
+function segment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function sessionRoute(rest: string): Route {
@@ -212,6 +249,22 @@ export function parseRoute(pathname: string): Route {
     const route: Extract<Route, { view: "incidents" }> = { view: "incidents" };
     if (incident[1]) route.id = decodeURIComponent(incident[1]);
     return route;
+  }
+  // A project's Knowledge page: a tab, then the item's path as one
+  // encoded segment (a path written with plain slashes reads the same).
+  const knowledge = path.match(
+    /^\/settings\/projects\/([^/]+)\/knowledge\/([^/]+)(?:\/(.+))?$/,
+  );
+  if (knowledge) {
+    const [, project, tab, itemPath] = knowledge;
+    const route: KnowledgeRoute = { tab: knowledgeTab(segment(tab!)) };
+    if (itemPath) route.path = segment(itemPath);
+    return {
+      view: "projectSettings",
+      project: segment(project!),
+      section: "knowledge",
+      knowledge: route,
+    };
   }
   // Before the generic /settings/<key>: a project and its section ride
   // after the key. /settings/incidents is the old incident settings page,
@@ -341,8 +394,14 @@ export function routePath(route: Route): string {
       return route.id
         ? `${BASE_PATH}/incidents/${encodeURIComponent(route.id)}${route.intent ? `?intent=${route.intent}` : ""}`
         : `${BASE_PATH}/incidents`;
-    case "projectSettings":
-      return `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}${route.section ? `/${route.section}` : ""}`;
+    case "projectSettings": {
+      const base = `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}`;
+      if (route.knowledge) {
+        const { tab, path } = route.knowledge;
+        return `${base}/knowledge/${tab}${path ? `/${encodeURIComponent(path)}` : ""}`;
+      }
+      return `${base}${route.section ? `/${route.section}` : ""}`;
+    }
     case "settings":
       if (route.section === "projectDefaults") {
         return `${BASE_PATH}/settings/projects`;

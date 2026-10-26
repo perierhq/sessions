@@ -288,11 +288,74 @@ describe("project settings routes", () => {
     ).toBe(true);
   });
 
+  test("the Knowledge page and its tabs", () => {
+    expect(parseRoute("/settings/projects/acme/knowledge")).toEqual({
+      view: "projectSettings",
+      project: "acme",
+      section: "knowledge",
+    });
+    expect(parseRoute("/settings/projects/acme/knowledge/needs-check")).toEqual(
+      {
+        view: "projectSettings",
+        project: "acme",
+        section: "knowledge",
+        knowledge: { tab: "needs-check" },
+      },
+    );
+    // An unknown tab opens the articles.
+    expect(parseRoute("/settings/projects/acme/knowledge/nope")).toEqual({
+      view: "projectSettings",
+      project: "acme",
+      section: "knowledge",
+      knowledge: { tab: "articles" },
+    });
+    expect(
+      parseRoute(
+        "/settings/projects/acme/knowledge/articles/articles/export.md",
+      ),
+    ).toEqual({
+      view: "projectSettings",
+      project: "acme",
+      section: "knowledge",
+      knowledge: { tab: "articles", path: "articles/export.md" },
+    });
+  });
+
+  test("an item path with slashes round-trips", () => {
+    const route: Route = {
+      view: "projectSettings",
+      project: "acme web",
+      section: "knowledge",
+      knowledge: {
+        tab: "suggestions",
+        path: "sources/mail/2026-10/<a1@mail.example.test>.md",
+      },
+    };
+    const path = routePath(route);
+    expect(path).toBe(
+      `${BASE_PATH}/settings/projects/acme%20web/knowledge/suggestions/sources%2Fmail%2F2026-10%2F%3Ca1%40mail.example.test%3E.md`,
+    );
+    expect(parseRoute(path.slice(BASE_PATH.length))).toEqual(route);
+  });
+
   test("round trips", () => {
     const routes: Route[] = [
       { view: "settings", section: "projectDefaults" },
       { view: "projectSettings", project: "acme-web" },
       { view: "projectSettings", project: "docs-site", section: "incidents" },
+      { view: "projectSettings", project: "acme", section: "knowledge" },
+      {
+        view: "projectSettings",
+        project: "acme",
+        section: "knowledge",
+        knowledge: { tab: "import" },
+      },
+      {
+        view: "projectSettings",
+        project: "acme",
+        section: "knowledge",
+        knowledge: { tab: "history", path: "articles/export.md" },
+      },
     ];
     for (const route of routes) {
       expect(parseRoute(routePath(route).slice(BASE_PATH.length))).toEqual(

@@ -1,7 +1,9 @@
 import type { ProjectListItem } from "../../../shared/project-settings";
 import { projectStatusPhrase } from "../../lib/project-settings/defaults-model";
+import type { KnowledgeRoute } from "../../lib/app-route";
 import {
   PROJECT_SECTIONS,
+  type ProjectSection,
   type ProjectSectionId,
 } from "../../lib/project-settings/page-model";
 import {
@@ -20,7 +22,12 @@ import { RepoTile } from "../RepoTile";
 // the open one with its page's sections under it. The list comes from
 // /api/project-settings, so these are not rows of the SECTIONS table.
 
-export type ActiveProject = { project: string; section?: ProjectSectionId };
+export type ActiveProject = {
+  project: string;
+  section?: ProjectSectionId;
+  /** The Knowledge page, when it is open. */
+  knowledge?: KnowledgeRoute;
+};
 
 /** The phrase on the right of a project row. */
 function StatusPhrase({ item }: { item: ProjectListItem }) {
@@ -34,17 +41,20 @@ function StatusPhrase({ item }: { item: ProjectListItem }) {
 /** Desktop nav rows: one per project, and the open project's sections. */
 export function ProjectNavRows({
   projects,
+  sections = PROJECT_SECTIONS,
   active,
   query,
   onOpen,
 }: {
   projects: ProjectListItem[];
+  /** The sections this server shows (visibleSections). */
+  sections?: readonly ProjectSection[];
   active: ActiveProject | null;
   query: string;
   onOpen(project: string, section?: ProjectSectionId): void;
 }) {
   const shown = matchProjects(projects, query);
-  const sectionHits = matchProjectSections(projects, query);
+  const sectionHits = matchProjectSections(projects, query, sections);
   return (
     <>
       {shown.map((item) => {
@@ -65,7 +75,7 @@ export function ProjectNavRows({
             </PlainButton>
             {open && !query && (
               <div className="flex flex-col">
-                {PROJECT_SECTIONS.map(([id, label]) => (
+                {sections.map(([id, label]) => (
                   <PlainButton
                     key={id}
                     type="button"
@@ -127,18 +137,20 @@ interface SheetRow {
 /** The phone sheet's rows, inside the Projects card under Defaults. */
 export function ProjectSheetRows({
   projects,
+  sections = PROJECT_SECTIONS,
   query,
   onOpen,
   rowClassName,
 }: {
   projects: ProjectListItem[];
+  sections?: readonly ProjectSection[];
   query: string;
   onOpen(project: string, section?: ProjectSectionId): void;
   /** The card's own row class, so the separators line up with Defaults. */
   rowClassName?: string;
 }) {
   const shown = matchProjects(projects, query);
-  const sectionHits = matchProjectSections(projects, query);
+  const sectionHits = matchProjectSections(projects, query, sections);
   const rows: SheetRow[] = [
     ...shown.map((item) => ({
       key: item.id,

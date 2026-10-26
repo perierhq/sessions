@@ -8,6 +8,7 @@ import type { AccessCellView } from "../../../shared/project-settings";
 import {
   applyIncidentsPatch,
   PROJECT_SECTIONS,
+  visibleSections,
   applyCellChange,
   rowSummary,
   cellLabel,
@@ -234,8 +235,23 @@ describe("chips and copy", () => {
       "models",
       "production",
       "access",
+      "knowledge",
       "incidents",
     ]);
+  });
+
+  test("the Knowledge section shows only while email support is on", () => {
+    const ids = (emailSupport: boolean) =>
+      visibleSections({ emailSupport }).map(([id]) => id);
+    expect(ids(false)).not.toContain("knowledge");
+    expect(ids(false)).toEqual([
+      "where",
+      "models",
+      "production",
+      "access",
+      "incidents",
+    ]);
+    expect(ids(true)).toContain("knowledge");
   });
 });
 

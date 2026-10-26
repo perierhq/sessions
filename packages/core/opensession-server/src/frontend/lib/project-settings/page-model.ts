@@ -31,12 +31,30 @@ export const PROJECT_SECTIONS = [
   ["models", "Models"],
   ["production", "Production"],
   ["access", "What agents may use"],
+  ["knowledge", "Knowledge"],
   ["incidents", "Incidents"],
 ] as const;
 export type ProjectSectionId = (typeof PROJECT_SECTIONS)[number][0];
+export type ProjectSection = (typeof PROJECT_SECTIONS)[number];
 
 export function isProjectSectionId(v: unknown): v is ProjectSectionId {
   return PROJECT_SECTIONS.some(([id]) => id === v);
+}
+
+/** What decides which sections a project's page shows. */
+export interface ProjectSectionFlags {
+  /** Email support is on (Settings, Inboxes); Knowledge lives only then. */
+  emailSupport: boolean;
+}
+
+/** The project page's sections, in page order, without the ones that are
+ *  off on this server. */
+export function visibleSections(
+  flags: ProjectSectionFlags,
+): readonly ProjectSection[] {
+  return PROJECT_SECTIONS.filter(
+    ([id]) => id !== "knowledge" || flags.emailSupport,
+  );
 }
 
 export type SegmentState = "ready" | "todo" | "blocked";

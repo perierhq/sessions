@@ -12,7 +12,7 @@ import {
   useProjectDefaults,
   useProjectSettings,
 } from "../../../hooks/useProjects";
-import { routePath } from "../../../lib/app-route";
+import { routePath, type KnowledgeRoute } from "../../../lib/app-route";
 import {
   allowAgentsOnConnector,
   ApiError,
@@ -45,6 +45,7 @@ import { Button } from "../../../ui/button";
 import { useConfirm } from "../../../ui/confirm";
 import { SettingCardSkeleton, SettingsPanel } from "../../../ui/settings";
 import { InlineAlert } from "../../../ui/state";
+import { KnowledgeSection } from "./KnowledgeSection";
 import { toast } from "../../../ui/toast";
 import { IconPlus } from "../../icons";
 import { AccessSection } from "./AccessSection";
@@ -64,7 +65,8 @@ const TITLES = new Map<ProjectSectionId, string>(PROJECT_SECTIONS);
 
 /**
  * One project's settings: the readiness checklist, where its agents run,
- * their models, production, what they may use, and its incident policy.
+ * their models, production, what they may use, its support knowledge (with
+ * email support on), and its incident policy.
  * Every control saves at once against the revision the page loaded. A stale
  * revision refetches; a small change is sent once more, a whole list or
  * object is refused so the person sees the other tab's edit first.
@@ -73,11 +75,17 @@ export function ProjectSettingsPage({
   project,
   section,
   onOpenSection,
+  showKnowledge = false,
+  onOpenKnowledge,
   onOpenSettings,
 }: {
   project: string;
   section?: ProjectSectionId;
+  /** Show the Knowledge section: email support is on (visibleSections). */
+  showKnowledge?: boolean;
   onOpenSection: (id: ProjectSectionId) => void;
+  /** Open the project's Knowledge page (shown while email support is on). */
+  onOpenKnowledge?: (route: KnowledgeRoute) => void;
   /** Open another Settings page (a fix that lives elsewhere). */
   onOpenSettings?: (section: "providers" | "sandboxes" | "connections") => void;
 }) {
@@ -358,6 +366,25 @@ export function ProjectSettingsPage({
             onSave={(b) => save(b)}
           />
         </Section>
+        {showKnowledge && (
+          <Section id="knowledge">
+            <KnowledgeSection
+              project={project}
+              onOpen={(route) => {
+                if (onOpenKnowledge) onOpenKnowledge(route);
+                else
+                  window.location.assign(
+                    routePath({
+                      view: "projectSettings",
+                      project,
+                      section: "knowledge",
+                      knowledge: route,
+                    }),
+                  );
+              }}
+            />
+          </Section>
+        )}
         <Section id="incidents">
           <IncidentsSection
             project={project}
