@@ -64,6 +64,7 @@ import {
 import { engineSessionPatch } from "./sessions";
 import { githubRepoOwner } from "./github-app";
 import { recordRunOutcome, updateSessionFile } from "./session-cache";
+import { withRunUsageRecorded } from "./session-usage";
 import { sessionKernel } from "./session-kernel";
 import { resolvePlainWorkspace } from "./workspace-resolve";
 import { SUPPORT_EVENT_KEY } from "../shared/support";
@@ -2692,6 +2693,12 @@ export async function runAutomation(
               journal: { osSessionId: bksId, kind: "automation" },
             });
     }
+    // Save what the run spent before its terminal settles the session. The
+    // run key matches the one boot recovery folds under, so a restart in
+    // between cannot count the run twice.
+    events = withRunUsageRecorded(bksId, events, {
+      runId: automationRunKey,
+    });
     for await (const event of events) {
       // The engine stream is now physically adopted by agent-runner accounting.
       automationPreparations.delete(bksId);

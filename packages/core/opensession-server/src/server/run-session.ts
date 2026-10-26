@@ -70,7 +70,6 @@ import { duplicateContextSessionIds } from "./session-duplicate";
 import { onSessionIdle as onHumanAsksSessionIdle } from "./human-asks";
 import { parseTranscriptAsync } from "./jsonl-parser";
 import {
-  contextWindowFor,
   interactiveFallbackModel,
   modelLabel,
   providerFor,
@@ -216,6 +215,9 @@ import { markRecapPendingIfUnwatched } from "./recap";
 import { noteYouShouldKnowStep } from "./you-should-know";
 import { scheduleSessionHistoryIndex } from "./session-index";
 import { broadcastToSession, sessionWatchers } from "./ws-hub";
+import { foldSessionUsage, persistRunUsage } from "./session-usage";
+
+export { foldSessionUsage };
 import {
   earlyToolUseFrame,
   recoveredEventOpensLiveTurn,
@@ -1167,28 +1169,8 @@ export async function persistRecoveredRunUsage(
   runId?: string,
 ): Promise<void> {
   const session = findSession(osSessionId);
-  const turnUsage = event.usage;
-  if (!session || session.source !== "opensession" || !turnUsage) return;
-  let usage: SessionUsage | undefined;
-  await updateSessionFile(osSessionId, (data) => {
-    if (runId && data.usageRunId === runId) {
-      usage = data.usage;
-      return data;
-    }
-    usage = foldSessionUsage(data.usage, turnUsage, event.model || data.model);
-    return {
-      ...data,
-      usage,
-      ...(runId ? { usageRunId: runId } : {}),
-      lastActivity: new Date().toISOString(),
-    };
-  });
-  if (usage)
-    broadcastToSession(osSessionId, {
-      type: "usage_update",
-      sessionId: osSessionId,
-      usage,
-    });
+  if (!session || session.source !== "opensession" || !event.usage) return;
+  await persistRunUsage(osSessionId, event, runId);
 }
 
 export async function recordRecoveredRunEvent(
@@ -1837,41 +1819,6 @@ export async function abortTurnAndDrain(
   stoppedSessions.delete(sessionId);
   watchExternalRunAndDrain(sessionId);
   return true;
-}
-
-/**
- * Fold a completed run's usage into a session's cumulative totals. Cost and
- * token counts accumulate; context size (contextTokens/contextWindow) reflects
- * the latest turn rather than a sum — it's the current window fill, not lifetime
- * throughput.
- */
-export function foldSessionUsage(
-  prev: SessionUsage | undefined,
-  turn: TurnUsage,
-  model?: string | null,
-): SessionUsage {
-  const base: SessionUsage = prev ?? {
-    costUsd: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    contextTokens: 0,
-    contextWindow: 0,
-    turns: 0,
-    updatedAt: "",
-  };
-  return {
-    costUsd: base.costUsd + (turn.costUsd ?? 0),
-    inputTokens: base.inputTokens + turn.inputTokens,
-    outputTokens: base.outputTokens + turn.outputTokens,
-    cacheReadTokens: base.cacheReadTokens + turn.cacheReadTokens,
-    cacheCreationTokens: base.cacheCreationTokens + turn.cacheCreationTokens,
-    contextTokens: turn.contextTokens || base.contextTokens,
-    contextWindow: contextWindowFor(model) || base.contextWindow,
-    turns: base.turns + 1,
-    updatedAt: new Date().toISOString(),
-  };
 }
 
 /**
