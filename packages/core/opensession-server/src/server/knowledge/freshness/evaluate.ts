@@ -16,8 +16,8 @@
  *     affects it; only items with topics are checked;
  *  5. a `reviewBy` date in the past.
  *
- * A signal that fails throws; the caller records it and leaves the item as
- * it is (the send-time check in backing.ts is the fail-closed gate).
+ * A signal that fails throws, never reads as "no change"; revalidate.ts
+ * then sends the item to a person ("Knowledge couldn't be checked").
  * Retired items are never evaluated.
  */
 
@@ -48,10 +48,7 @@ export interface Signals {
     body: string,
     release: ReleaseInfo,
   ): Promise<boolean>;
-  refState(ref: {
-    type: "issue" | "pr";
-    number: number;
-  }): Promise<{
+  refState(ref: { type: "issue" | "pr"; number: number }): Promise<{
     state: "open" | "closed" | "merged";
     at: string | null;
   } | null>;

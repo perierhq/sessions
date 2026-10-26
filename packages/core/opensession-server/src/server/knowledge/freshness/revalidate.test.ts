@@ -234,7 +234,10 @@ describe("revalidateProject", () => {
     );
     const result = await revalidateProject("acme", { deps: deps() });
     expect(result.flipped).toEqual([
-      { path: "articles/refunds.md", reason: "Review date passed (2026-10-01)" },
+      {
+        path: "articles/refunds.md",
+        reason: "Review date passed (2026-10-01)",
+      },
     ]);
     const refunds = await body("articles/refunds.md");
     expect(refunds.item.status).toBe("needs-check");
@@ -295,7 +298,7 @@ describe("revalidateProject", () => {
     expect(mirror.item.status).toBe("active");
   });
 
-  test("a failing signal is reported and flips nothing", async () => {
+  test("a throwing signal sends the item to a person", async () => {
     await knowledgeRepo.call(
       "write",
       "acme",
@@ -309,7 +312,6 @@ describe("revalidateProject", () => {
       ],
       { message: "Add issue", author: ADA },
     );
-    const before = await knowledgeRepo.call("history", "acme");
     const result = await revalidateProject("acme", {
       deps: deps({
         refState: async () => {
@@ -317,10 +319,51 @@ describe("revalidateProject", () => {
         },
       }),
     });
-    expect(result.flipped).toEqual([]);
     expect(result.errors).toEqual(["articles/issue.md: GitHub is down"]);
-    expect((await knowledgeRepo.call("history", "acme")).length).toBe(
-      before.length,
+    expect(result.flipped).toEqual([
+      { path: "articles/issue.md", reason: "Knowledge couldn't be checked" },
+    ]);
+    const issue = await body("articles/issue.md");
+    expect(issue.item.status).toBe("needs-check");
+    expect(issue.item.check).toEqual({
+      reason: "Knowledge couldn't be checked",
+      since: TODAY,
+    });
+    expect(issue.body.trim()).toBe("We're on it.");
+  });
+
+  test("a code checkout that is gone is never read as unchanged", async () => {
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path: "articles/import.md",
+          fm: fm({
+            title: "Importing",
+            dependsOn: ["repo:docs/import.md"],
+            validAsOfCommit: sha.c3,
+          }),
+          body: "Upload a CSV.\n",
+        },
+      ],
+      { message: "Add import", author: ADA },
+    );
+    const result = await revalidateProject("acme", {
+      deps: deps({
+        repoCommits: async () => {
+          throw new Error("The code repository isn't available");
+        },
+      }),
+    });
+    // Every active item with a repo dependency, the mirror included.
+    expect(result.flipped).toEqual([
+      { path: "articles/import.md", reason: "Knowledge couldn't be checked" },
+      { path: MIRROR, reason: "Knowledge couldn't be checked" },
+    ]);
+    expect(result.errors).toContain(
+      "articles/import.md: The code repository isn't available",
     );
   });
 
@@ -339,7 +382,11 @@ describe("revalidateProject", () => {
 
   test("a mirror whose file was deleted is retired with its text kept", async () => {
     await run(work, ["rm", "-q", "--", "docs/export.md"]);
-    await run(work, ["commit", "-q", "-m", "drop export"], "2026-10-25T12:00:00Z");
+    await run(
+      work,
+      ["commit", "-q", "-m", "drop export"],
+      "2026-10-25T12:00:00Z",
+    );
     await run(work, ["push", "-q", "origin", "main"]);
     const result = await revalidateProject("acme", { deps: deps() });
     expect(result.errors).toEqual([]);

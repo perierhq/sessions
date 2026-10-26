@@ -15,13 +15,17 @@
  *    same path or page are what flip.
  *
  * Runs on the gateway: signals are network and git reads; the knowledge
- * repository is reached through the worker client. A signal that fails is
- * recorded in `errors` and leaves that item as it is (the send-time check
- * is the fail-closed gate). Nothing runs at import.
+ * repository is reached through the worker client. Can't tell is never
+ * "unchanged": when a signal fails (the code checkout is gone, GitHub
+ * can't say whether an issue is open, a changed mirror can't be rewritten)
+ * the item goes to `needs-check` with "Knowledge couldn't be checked" and
+ * the failure is listed in `errors`. An unreadable page alone is not a
+ * change (the next run fetches it again). Nothing runs at import.
  */
 
 import {
   effectiveStatus,
+  KNOWLEDGE_COPY,
   type KnowledgeFrontMatter,
   type KnowledgeItem,
 } from "../../../shared/knowledge";
@@ -72,7 +76,8 @@ export interface RevalidateDeps extends Signals {
   fetchPage(
     url: string,
   ): Promise<
-    { url: string; title?: string; text: string; hash: string } | { error: string }
+    | { url: string; title?: string; text: string; hash: string }
+    | { error: string }
   >;
   /** Passed to the repo-changes defaults (tests point them at a tmp repo). */
   repoChanges: Partial<RepoChangeDeps>;
@@ -200,7 +205,17 @@ function bindDeps(
       (async (at) =>
         ((await listReleases(project, github)) ?? []).filter((r) => r.at > at)),
     releaseMentions: over.releaseMentions ?? defaultReleaseMentions,
-    refState: over.refState ?? ((ref) => refState(project, ref, github)),
+    refState:
+      over.refState ??
+      (async (ref) => {
+        const state = await refState(project, ref, github);
+        // Unreadable (no GitHub repository, GitHub down): can't tell.
+        if (!state)
+          throw new Error(
+            `${ref.type === "pr" ? "Pull request" : "Issue"} #${ref.number} couldn't be read`,
+          );
+        return state;
+      }),
   };
   if (scope === "repo") {
     // After a push: only the code repository moved.
@@ -243,7 +258,9 @@ function replaceSource(
   entry: string,
 ): string[] {
   const kept = sources.filter((s) => !matches(s));
-  return kept.length === sources.length ? [...sources, entry] : [entry, ...kept];
+  return kept.length === sources.length
+    ? [...sources, entry]
+    : [entry, ...kept];
 }
 
 /** Refuse a rewrite the repository would refuse, so one bad mirror can't
@@ -318,6 +335,7 @@ async function refreshRepoMirror(
 
 async function refreshWebMirror(
   item: KnowledgeItem,
+  _body: string,
   source: string,
   d: RevalidateDeps,
 ): Promise<KnowledgeChange> {
@@ -352,43 +370,52 @@ async function plan(project: string, d: RevalidateDeps): Promise<Planned> {
   for (const listed of await listItems(project)) {
     if (effectiveStatus(listed, d.today) === "retired") continue;
     result.checked++;
+    let read: { item: KnowledgeItem; body: string } | null;
     try {
-      const read = await knowledgeRepo.call("read", project, listed.path);
-      if (!read) continue;
-      const { item, body } = read;
+      read = await knowledgeRepo.call("read", project, listed.path);
+    } catch (error) {
+      result.errors.push(`${listed.path}: ${message(error)}`);
+      continue;
+    }
+    if (!read) continue;
+    const { item, body } = read;
+    const flip = (reason: string, source?: string): void => {
+      // Already waiting for a person: one note is enough.
+      if (item.status === "needs-check") return;
+      changes.push({
+        op: "put",
+        path: item.path,
+        fm: {
+          ...frontMatterOf(item),
+          status: "needs-check",
+          check: { reason, since: d.today, ...(source ? { source } : {}) },
+        },
+        body,
+      });
+      expected[item.path] = item.blob;
+      result.flipped.push({ path: item.path, reason });
+    };
+    try {
       const verdict = await evaluateItem(item, body, d);
       if (!verdict.stale) continue;
       const source = verdict.source ?? "";
-      let change: KnowledgeChange;
-      if (item.origin === "repo" && source.startsWith("repo:")) {
-        change = await refreshRepoMirror(item, body, source, d);
-        result.refreshed++;
-      } else if (item.origin === "web" && source.startsWith("url:")) {
-        change = await refreshWebMirror(item, source, d);
-        result.refreshed++;
-      } else {
-        // Already waiting for a person: one note is enough.
-        if (item.status === "needs-check") continue;
-        change = {
-          op: "put",
-          path: item.path,
-          fm: {
-            ...frontMatterOf(item),
-            status: "needs-check",
-            check: {
-              reason: verdict.reason,
-              since: d.today,
-              ...(verdict.source ? { source: verdict.source } : {}),
-            },
-          },
-          body,
-        };
-        result.flipped.push({ path: item.path, reason: verdict.reason });
+      const mirror =
+        item.origin === "repo" && source.startsWith("repo:")
+          ? refreshRepoMirror
+          : item.origin === "web" && source.startsWith("url:")
+            ? refreshWebMirror
+            : null;
+      if (!mirror) {
+        flip(verdict.reason, verdict.source);
+        continue;
       }
-      changes.push(change);
+      changes.push(await mirror(item, body, source, d));
       expected[item.path] = item.blob;
+      result.refreshed++;
     } catch (error) {
-      result.errors.push(`${listed.path}: ${message(error)}`);
+      // Can't tell is never "unchanged": a person looks.
+      result.errors.push(`${item.path}: ${message(error)}`);
+      flip(KNOWLEDGE_COPY.unchecked);
     }
   }
   return { changes, expected, result };
@@ -434,9 +461,11 @@ export async function revalidateProject(
       return {
         ...empty,
         checked: result.checked,
-        errors: [...result.errors, `Writing the check failed: ${message(error)}`],
+        errors: [
+          ...result.errors,
+          `Writing the check failed: ${message(error)}`,
+        ],
       };
     }
   }
 }
-
