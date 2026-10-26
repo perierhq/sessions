@@ -7,9 +7,12 @@
  * Read through the GitHub App (agents/github/github-rest.ts githubRequest,
  * `mint: "read"`) in the project's `ghRepo`. Answers are kept in memory for
  * 10 minutes per request, so a re-validation run over many items costs one
- * request per release list or issue. Failures are not cached and read as
- * null ("couldn't tell"); callers decide what null means. Nothing runs at
- * import: the cache is an empty Map and the request is imported lazily.
+ * request per release list or issue. `{ fresh: true }` skips the cached
+ * answer (and stores the new one). The cache holds at most
+ * GITHUB_SIGNAL_CACHE_SIZE answers and drops the least recently used.
+ * Failures are not cached and read as null ("couldn't tell"); callers
+ * decide what null means. Nothing runs at import: the cache is an empty
+ * Map and the request is imported lazily.
  */
 
 export interface ReleaseInfo {
@@ -29,6 +32,10 @@ export interface KnownProblem {
   updatedAt: string;
 }
 
+/** openBugIssues' answer. `truncated`: the last page read (page
+ *  OPEN_BUG_PAGES) was full, so there may be more that were not read. */
+export type KnownProblems = KnownProblem[] & { truncated: boolean };
+
 export interface GithubSignalDeps {
   /** The project's GitHub `owner/name`; null when it has none. */
   ghRepo(project: string): string | null;
@@ -39,11 +46,21 @@ export interface GithubSignalDeps {
   now(): number;
 }
 
-export const GITHUB_SIGNAL_TTL_MS = 10 * 60_000;
-const OWNER_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+/** Deps, plus `fresh: true` to skip the cached answer. */
+export type GithubReadOptions = Partial<GithubSignalDeps> & {
+  fresh?: boolean;
+};
 
-/** Past this many entries, expired ones are dropped before adding. */
-const MAX_CACHED = 500;
+export const GITHUB_SIGNAL_TTL_MS = 10 * 60_000;
+/** Most answers kept; past it the least recently used goes. */
+export const GITHUB_SIGNAL_CACHE_SIZE = 500;
+/** Most pages of 100 open bug issues read. */
+export const OPEN_BUG_PAGES = 10;
+const PER_PAGE = 100;
+/** `owner/name`, neither part only dots (`..` would climb the API path). */
+const OWNER_NAME = /^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/;
+
+/** Insertion order is recency order: a hit is moved to the end. */
 const cache = new Map<string, { at: number; data: unknown }>();
 
 /** Forget every cached answer (tests). */
@@ -67,7 +84,7 @@ async function defaultRequest(
 
 async function ghRepoOf(
   project: string,
-  deps: Partial<GithubSignalDeps>,
+  deps: GithubReadOptions,
 ): Promise<string | null> {
   const ghRepo = deps.ghRepo
     ? deps.ghRepo(project)
@@ -75,22 +92,32 @@ async function ghRepoOf(
   return ghRepo && OWNER_NAME.test(ghRepo) ? ghRepo : null;
 }
 
-/** The answer to `GET path`, from the cache when it is fresh; null when
- *  GitHub didn't answer with success. */
+/** The answer to `GET path`, from the cache when it is fresh (and not
+ *  `fresh`); null when GitHub didn't answer with success. */
 async function cachedGet(
   path: string,
-  deps: Partial<GithubSignalDeps>,
+  deps: GithubReadOptions,
 ): Promise<unknown> {
   const now = (deps.now ?? Date.now)();
   const hit = cache.get(path);
-  if (hit && now - hit.at < GITHUB_SIGNAL_TTL_MS) return hit.data;
+  if (hit && !deps.fresh && now - hit.at < GITHUB_SIGNAL_TTL_MS) {
+    cache.delete(path);
+    cache.set(path, hit);
+    return hit.data;
+  }
   try {
     const result = await (deps.request ?? defaultRequest)(path);
     if (!result.ok || result.data === null || result.data === undefined)
       return null;
-    if (cache.size >= MAX_CACHED)
+    cache.delete(path);
+    if (cache.size >= GITHUB_SIGNAL_CACHE_SIZE)
       for (const [key, entry] of cache)
         if (now - entry.at >= GITHUB_SIGNAL_TTL_MS) cache.delete(key);
+    while (cache.size >= GITHUB_SIGNAL_CACHE_SIZE) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
     cache.set(path, { at: now, data: result.data });
     return result.data;
   } catch (error) {
@@ -115,7 +142,7 @@ function isoTime(value: unknown): string | null {
  *  has no GitHub repository or the list can't be read. */
 export async function listReleases(
   project: string,
-  deps: Partial<GithubSignalDeps> = {},
+  deps: GithubReadOptions = {},
 ): Promise<ReleaseInfo[] | null> {
   const ghRepo = await ghRepoOf(project, deps);
   if (!ghRepo) return null;
@@ -141,7 +168,7 @@ export async function listReleases(
  *  can't be read. */
 export async function latestRelease(
   project: string,
-  deps: Partial<GithubSignalDeps> = {},
+  deps: GithubReadOptions = {},
 ): Promise<ReleaseInfo | null> {
   return (await listReleases(project, deps))?.[0] ?? null;
 }
@@ -151,7 +178,7 @@ export async function latestRelease(
 export async function refState(
   project: string,
   ref: { type: "issue" | "pr"; number: number },
-  deps: Partial<GithubSignalDeps> = {},
+  deps: GithubReadOptions = {},
 ): Promise<{ state: "open" | "closed" | "merged"; at: string | null } | null> {
   if (!Number.isSafeInteger(ref.number) || ref.number <= 0) return null;
   const ghRepo = await ghRepoOf(project, deps);
@@ -169,21 +196,40 @@ export async function refState(
   return { state: "closed", at: isoTime(data.closed_at) };
 }
 
-/** Open issues labelled `bug` (pull requests left out); null when the
- *  project has no GitHub repository or the list can't be read. */
+/**
+ * Open issues labelled `bug` (pull requests left out); null when the
+ * project has no GitHub repository or any page can't be read. Pages of 100
+ * are read until a short one, at most OPEN_BUG_PAGES; `truncated` says
+ * there were more. (githubRequest doesn't hand back the Link header, so
+ * pages are asked for by number, which walks the same rel="next" chain.)
+ *
+ * An issue missing from the list is NOT proof it closed: it may sit past
+ * the page cap, have lost its label, or the list may have changed between
+ * pages. Ask refState for one issue's state.
+ */
 export async function openBugIssues(
   project: string,
-  deps: Partial<GithubSignalDeps> = {},
-): Promise<KnownProblem[] | null> {
+  deps: GithubReadOptions = {},
+): Promise<KnownProblems | null> {
   const ghRepo = await ghRepoOf(project, deps);
   if (!ghRepo) return null;
-  const data = await cachedGet(
-    `/repos/${ghRepo}/issues?state=open&labels=bug&per_page=100`,
-    deps,
-  );
-  if (!Array.isArray(data)) return null;
+  const entries: Array<Record<string, unknown>> = [];
+  let truncated = false;
+  for (let page = 1; ; page++) {
+    const data = await cachedGet(
+      `/repos/${ghRepo}/issues?state=open&labels=bug&per_page=${PER_PAGE}&page=${page}`,
+      deps,
+    );
+    if (!Array.isArray(data)) return null;
+    entries.push(...(data as Array<Record<string, unknown>>));
+    if (data.length < PER_PAGE) break;
+    if (page >= OPEN_BUG_PAGES) {
+      truncated = true;
+      break;
+    }
+  }
   const issues: KnownProblem[] = [];
-  for (const entry of data as Array<Record<string, unknown>>) {
+  for (const entry of entries) {
     if (!entry || typeof entry !== "object" || entry.pull_request) continue;
     if (typeof entry.number !== "number" || entry.state === "closed") continue;
     const labels = Array.isArray(entry.labels)
@@ -204,5 +250,5 @@ export async function openBugIssues(
       updatedAt: isoTime(entry.updated_at) ?? "",
     });
   }
-  return issues;
+  return Object.assign(issues, { truncated });
 }

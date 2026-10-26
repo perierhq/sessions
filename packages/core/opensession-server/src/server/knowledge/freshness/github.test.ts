@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   __clearGithubSignalCacheForTest,
+  GITHUB_SIGNAL_CACHE_SIZE,
+  OPEN_BUG_PAGES,
   type GithubSignalDeps,
   latestRelease,
   listReleases,
@@ -34,7 +36,20 @@ function stub(
 }
 
 const RELEASES = "/repos/acme/app/releases?per_page=100";
-const BUGS = "/repos/acme/app/issues?state=open&labels=bug&per_page=100";
+const BUGS = "/repos/acme/app/issues?state=open&labels=bug&per_page=100&page=1";
+const bugsPage = (n: number) =>
+  `/repos/acme/app/issues?state=open&labels=bug&per_page=100&page=${n}`;
+
+function bug(number: number) {
+  return {
+    number,
+    title: `Bug ${number}`,
+    body: "",
+    html_url: `https://github.com/acme/app/issues/${number}`,
+    labels: [{ name: "bug" }],
+    updated_at: "2026-10-20T00:00:00Z",
+  };
+}
 
 beforeEach(() => __clearGithubSignalCacheForTest());
 
@@ -202,7 +217,9 @@ describe("open bug issues", () => {
         ],
       },
     });
-    expect(await openBugIssues("acme", deps)).toEqual([
+    const issues = await openBugIssues("acme", deps);
+    expect(issues?.truncated).toBe(false);
+    expect(issues ? [...issues] : null).toEqual([
       {
         number: 42,
         title: "Export fails",
@@ -217,5 +234,104 @@ describe("open bug issues", () => {
   test("no ghRepo is null", async () => {
     const { deps } = stub({}, null);
     expect(await openBugIssues("acme", deps)).toBeNull();
+  });
+});
+
+describe("open bug issues across pages", () => {
+  test("follows pages until a short one", async () => {
+    const { deps, calls } = stub({
+      [bugsPage(1)]: {
+        ok: true,
+        status: 200,
+        data: Array.from({ length: 100 }, (_, i) => bug(i + 1)),
+      },
+      [bugsPage(2)]: { ok: true, status: 200, data: [bug(101)] },
+    });
+    const issues = await openBugIssues("acme", deps);
+    expect(issues).toHaveLength(101);
+    expect(issues?.truncated).toBe(false);
+    expect(calls).toEqual([bugsPage(1), bugsPage(2)]);
+  });
+
+  test("stops at the page cap and says it truncated", async () => {
+    const answers: Record<string, Answer> = {};
+    for (let n = 1; n <= 20; n++)
+      answers[bugsPage(n)] = {
+        ok: true,
+        status: 200,
+        data: Array.from({ length: 100 }, (_, i) => bug((n - 1) * 100 + i + 1)),
+      };
+    const { deps, calls } = stub(answers);
+    const issues = await openBugIssues("acme", deps);
+    expect(issues?.truncated).toBe(true);
+    expect(calls).toHaveLength(OPEN_BUG_PAGES);
+    expect(issues).toHaveLength(OPEN_BUG_PAGES * 100);
+  });
+
+  test("an unreadable later page makes the whole list unreadable", async () => {
+    const { deps } = stub({
+      [bugsPage(1)]: {
+        ok: true,
+        status: 200,
+        data: Array.from({ length: 100 }, (_, i) => bug(i + 1)),
+      },
+    });
+    expect(await openBugIssues("acme", deps)).toBeNull();
+  });
+});
+
+describe("cache", () => {
+  const issue = (n: number) => `/repos/acme/app/issues/${n}`;
+  const open = { ok: true, status: 200, data: { state: "open" } };
+
+  test("{ fresh: true } skips the cache and refreshes it", async () => {
+    const { deps, calls } = stub({
+      [issue(7)]: open,
+      [RELEASES]: { ok: true, status: 200, data: [] },
+    });
+    await refState("acme", { type: "issue", number: 7 }, deps);
+    await refState(
+      "acme",
+      { type: "issue", number: 7 },
+      { ...deps, fresh: true },
+    );
+    await refState("acme", { type: "issue", number: 7 }, deps);
+    expect(calls).toEqual([issue(7), issue(7)]);
+    await latestRelease("acme", deps);
+    await latestRelease("acme", { ...deps, fresh: true });
+    expect(calls.filter((c) => c === RELEASES)).toHaveLength(2);
+  });
+
+  test("a full cache evicts the least recently used answer", async () => {
+    const answers: Record<string, Answer> = {};
+    for (let n = 1; n <= GITHUB_SIGNAL_CACHE_SIZE + 1; n++)
+      answers[issue(n)] = open;
+    const { deps, calls } = stub(answers);
+    for (let n = 1; n <= GITHUB_SIGNAL_CACHE_SIZE; n++)
+      await refState("acme", { type: "issue", number: n }, deps);
+    await refState("acme", { type: "issue", number: 1 }, deps); // a hit
+    await refState(
+      "acme",
+      { type: "issue", number: GITHUB_SIGNAL_CACHE_SIZE + 1 },
+      deps,
+    );
+    calls.length = 0;
+    await refState("acme", { type: "issue", number: 1 }, deps);
+    expect(calls).toEqual([]);
+    await refState("acme", { type: "issue", number: 2 }, deps);
+    expect(calls).toEqual([issue(2)]);
+  });
+});
+
+describe("repository names", () => {
+  test("dot-only owner or name is refused", async () => {
+    for (const repo of ["../app", "./app", "acme/..", "acme/.", "../.."]) {
+      const { deps, calls } = stub({}, repo);
+      expect(await listReleases("acme", deps)).toBeNull();
+      expect(calls).toEqual([]);
+    }
+    const { deps, calls } = stub({}, "acme.io/app.js");
+    await listReleases("acme", deps);
+    expect(calls).toEqual(["/repos/acme.io/app.js/releases?per_page=100"]);
   });
 });
