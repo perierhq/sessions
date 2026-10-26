@@ -1,0 +1,28 @@
+diff --git a/dist/config.js b/dist/config.js
+index 62eb303e5ca396e4107081868790506673344faa..4eb47cb496605dcddd5b66fb78e712f7301035c2 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -401,7 +401,11 @@ export function setEmbeddedQuickJSWasmPath(path) {
+  * compiled module cached per path keeps working after an update removes this install (#10439).
+  */
+ export function getQuickJSWasmPath() {
+-    quickJSWasmPath ??= createRequire(import.meta.url).resolve("quickjs-wasi/quickjs.wasm");
++    // Perier Sessions: an executable compiled from the SDK cannot resolve the package file, so it
++    // ships quickjs.wasm beside itself, as it does photon_rs_bg.wasm.
++    quickJSWasmPath ??= isBunBinary
++        ? join(dirname(process.execPath), "quickjs.wasm")
++        : createRequire(import.meta.url).resolve("quickjs-wasi/quickjs.wasm");
+     return quickJSWasmPath;
+ }
+ /** Resolve the codemode worker entry for a release runtime. */
+@@ -421,6 +425,10 @@ let codemodeWorkerDataUrl;
+  * The Bun and Node release builds both pass the worker as an extra entrypoint.
+  */
+ export function getCodemodeWorkerSpecifier() {
++    // Perier Sessions: an executable compiled from the SDK does not embed pi's worker entry, so it
++    // ships the bundled worker beside itself as codemode-worker.js.
++    if (isBunBinary)
++        return join(dirname(process.execPath), "codemode-worker.js");
+     const runtime = isBunBinary ? "bun-binary" : isBundledNode ? "bundled-node" : "unbundled";
+     const specifier = resolveCodemodeWorkerSpecifier(runtime, import.meta.url);
+     if (runtime !== "bundled-node" || !(specifier instanceof URL))

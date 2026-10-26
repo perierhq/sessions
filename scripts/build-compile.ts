@@ -18,7 +18,9 @@
  *       The full release artefact `opensession-<ver>-<os>-<arch>.tar.gz`:
  *         opensession                 the target binary
  *         node_modules/               sharp + @img/sharp-<target> sidecar
- *         photon_rs_bg.wasm           pi's image resizer (scripts/lib/photon-wasm.ts)
+ *         photon_rs_bg.wasm           pi's runtime files, loaded from beside the
+ *         quickjs.wasm                binary (scripts/lib/pi-runtime-files.ts)
+ *         codemode-worker.js
  *         opensession*.service        system service and socket templates
  *         opensession.socket          (see scripts/lib/release-artefact.ts)
  *         deploy/                     fixed executor credential/helper policy
@@ -52,7 +54,7 @@ import {
   withGeneratedModules,
   writeSimulatorViewerDist,
 } from "./lib/compile-embeds";
-import { copyPhotonWasm } from "./lib/photon-wasm";
+import { shipPiRuntimeFiles } from "./lib/pi-runtime-files";
 import { RELEASE_SERVICE_TEMPLATES } from "./lib/release-artefact";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -490,7 +492,7 @@ async function main(): Promise<void> {
       viewerDist,
     );
     await buildWorkerSidecars(dirname(outfile));
-    copyPhotonWasm(dirname(outfile));
+    await shipPiRuntimeFiles(dirname(outfile));
     const mb = (statSync(outfile).size / 1e6).toFixed(1);
     console.log(`\n[compile] built ${outfile} (${mb} MB, v=${fver})`);
     return;
@@ -536,10 +538,12 @@ async function main(): Promise<void> {
   await buildWorkerSidecars(stage);
   console.log("\n== sharp sidecar");
   await buildSharpSidecar(stage, sharpVersion);
-  // Without it pi omits every image an agent reads; copyPhotonWasm throws if
-  // the file is missing, so a release cannot ship without it.
-  console.log("\n== image resizer");
-  console.log(`[compile] ${relative(OUT, copyPhotonWasm(stage))}`);
+  // Without them pi omits every image an agent reads and codemode cannot run;
+  // shipPiRuntimeFiles throws if one is missing, so a release cannot ship
+  // without it.
+  console.log("\n== pi runtime files");
+  for (const file of await shipPiRuntimeFiles(stage))
+    console.log(`[compile] ${relative(OUT, file)}`);
 
   console.log("\n== licenses and SBOM");
   for (const rel of [
