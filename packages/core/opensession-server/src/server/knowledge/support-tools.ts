@@ -201,20 +201,21 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
           return text(
             "Not a knowledge item. Give a path from search_knowledge, under articles/, suggestions/ or sources/.",
           );
+        const day = today();
         let found;
         try {
-          found = await knowledgeRepo.call("read", current.c.project, path);
+          found = await knowledgeRepo.call(
+            "read",
+            current.c.project,
+            path,
+            day,
+          );
         } catch {
           return text(KNOWLEDGE_UNAVAILABLE);
         }
         if (!found) return text(`No knowledge item at ${path}.`);
         const { item, body } = found;
-        let effective: KnowledgeItem["effective"];
-        try {
-          effective = effectiveStatus(item, today());
-        } catch {
-          effective = "needs-check";
-        }
+        const effective = effectiveStatus(item, day);
         recordKnowledgeSeen(ctx.sessionId, item.path, item.commit);
         const head = frontMatterLines(item);
         if (effective !== item.status)
