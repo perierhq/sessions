@@ -66,6 +66,14 @@ weights let agent builds consume idle capacity while yielding promptly to
 control-plane requests during contention. Preview scopes use a lower-priority
 slice inside the user manager. The weights do not impose a fixed CPU quota.
 
+`opensession-workloads.slice` also caps the memory of all detached hosts
+together: `MemoryHigh=50%` throttles and reclaims, and `MemoryMax=75%` kills
+the largest process, both as shares of physical memory so the budget fits any
+host. To size it differently on one host, add a drop-in such as
+`/etc/systemd/system/opensession-workloads.slice.d/memory.conf` with a
+`[Slice]` section and its own values, then `systemctl daemon-reload`. The root
+deploy reinstalls the slice unit but never touches drop-ins.
+
 Before persisting a detached launch, the gateway checks the active and pending
 host count, Linux `MemAvailable`, and CPU PSI `some avg10`. A launch waits with
 bounded backoff when a present signal is over its limit. Missing `/proc` signals

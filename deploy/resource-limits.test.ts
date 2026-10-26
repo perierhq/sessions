@@ -18,6 +18,22 @@ describe("host resource-limit deployment", () => {
     expect(workloads).toContain("IOWeight=100");
   });
 
+  test("agent workloads have a memory budget proportional to the host", async () => {
+    const workloads = await Bun.file(
+      resolve(import.meta.dir, "systemd/opensession-workloads.slice"),
+    ).text();
+    // Percentages of physical memory: the same shares the engine and
+    // preview scopes default to (systemd-scopes.ts), on any host size.
+    expect(workloads).toMatch(/^MemoryHigh=50%$/m);
+    expect(workloads).toMatch(/^MemoryMax=75%$/m);
+    // Operators override with a drop-in, which the installer never touches.
+    expect(workloads).toContain("opensession-workloads.slice.d/");
+    const installer = await Bun.file(
+      resolve(import.meta.dir, "install-resource-control.sh"),
+    ).text();
+    expect(installer).not.toContain(".slice.d");
+  });
+
   test("the aggregate user slice reserves host headroom", async () => {
     const slice = await Bun.file(
       resolve(import.meta.dir, "systemd/user/opensession.slice"),
@@ -81,8 +97,9 @@ describe("host resource-limit deployment", () => {
     ).text();
     expect(serviceInstaller).toContain("install-resource-control.sh");
 
+    // The compiled release ships these files from this list (build-compile.ts).
     const compiler = await Bun.file(
-      resolve(repoRoot, "scripts/build-compile.ts"),
+      resolve(repoRoot, "scripts/lib/release-artefact.ts"),
     ).text();
     expect(compiler).toContain("deploy/install-resource-control.sh");
     expect(compiler).toContain("deploy/systemd/opensession-control.slice");
