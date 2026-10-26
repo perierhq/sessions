@@ -153,6 +153,18 @@ test("a session worktree fetches with the person's credential, else the service'
   expect(tokens()).toEqual(["ghs_service"]);
 });
 
+test("a credential handed to one fetch stays with that fetch", async () => {
+  // Bun's `$.env()` sets the environment of every later `$` command in the
+  // process: a person's token would ride along with the next unrelated
+  // command, and the service token with a dependency install.
+  await createWorktree("scoped-person", "acme", {
+    gitEnv: githubGitCredentialEnv("ghu_person"),
+  });
+  await createWorktree("scoped-service", "acme");
+  const after = await $`sh -c ${'echo "[$GH_TOKEN]"'}`.text();
+  expect(after.trim()).toBe(`[${process.env.GH_TOKEN ?? ""}]`);
+});
+
 test("reviving a checkout fetches its branch with the service credential", async () => {
   await git(repo, "branch", "revived", "main");
   await reviveWorktree("revived", "acme");

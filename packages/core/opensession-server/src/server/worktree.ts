@@ -1132,15 +1132,20 @@ async function serviceCredentialEnv(
   return env;
 }
 
-/** Bun $ for a fetch from GitHub: with the caller's credential (a person's,
- *  for a session they open) when there is one, else the service one. */
+/** A Bun shell of its own for fetches from GitHub: with the caller's
+ *  credential (a person's, for a session they open) when there is one, else
+ *  the service one. Never `$.env()`: that sets the environment of every
+ *  later `$` command in the process, so the token would ride along with
+ *  unrelated commands (a dependency install, another person's fetch). */
 async function githubFetchShell(
   ghRepo: string | undefined,
   gitEnv?: Record<string, string>,
 ): Promise<typeof $> {
-  return $.env(
+  const shell = new $.Shell();
+  shell.env(
     gitEnv ? { ...process.env, ...gitEnv } : await githubServiceGitEnv(ghRepo),
   );
+  return shell;
 }
 
 type ServiceCredentialEnv = (

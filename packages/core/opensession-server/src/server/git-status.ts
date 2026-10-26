@@ -36,7 +36,8 @@ async function gitText(
       throw new Error(r.stderr.trim() || `git ${args[0]} failed`);
     return r.stdout;
   }
-  return await (env ? $.env(env) : $)`${argv}`.quiet().text();
+  // Per command: `$.env()` would set it for every later `$` in the process.
+  return await (env ? $`${argv}`.env(env) : $`${argv}`).quiet().text();
 }
 
 export interface GitStatusInfo {
