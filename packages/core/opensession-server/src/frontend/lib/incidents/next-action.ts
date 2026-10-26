@@ -281,6 +281,30 @@ export function nextCard(input: {
   const recovery = recoveryLine(incident, input.signals ?? [], input.now);
 
   if (next.kind === "done") {
+    const openPrs = r.openPrs ?? [];
+    if (
+      incident.state === "closed-without-action" &&
+      next.options.includes("close-prs") &&
+      openPrs.length
+    ) {
+      const one = openPrs.length === 1;
+      const numbers = openPrs.map((p) => `#${p.number}`);
+      const listed = one
+        ? numbers[0]
+        : `${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
+      return shell({
+        tone: "blue",
+        eyebrow: "Closed",
+        headline: `${one ? "PR" : "PRs"} ${listed} from the investigator ${one ? "is" : "are"} still open`,
+        body: one
+          ? "It changes code, so Sessions left it for you to close or keep"
+          : "They change code, so Sessions left them for you to close or keep",
+        buttons: [
+          decisionButton("close-prs", "primary"),
+          decisionButton("keep-prs", "soft"),
+        ],
+      });
+    }
     if (incident.state !== "resolved" || !next.options.includes("roll-back"))
       return null;
     return shell({

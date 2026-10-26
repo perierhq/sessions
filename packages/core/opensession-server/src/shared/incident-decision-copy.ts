@@ -39,6 +39,14 @@ export const DECISION_COPY: Readonly<
     description:
       "Sessions runs the rollback action and the investigator gets another round",
   },
+  "close-prs": {
+    label: "Close on GitHub",
+    description: "Sessions closes the pull request with a short comment",
+  },
+  "keep-prs": {
+    label: "Keep open",
+    description: "Leave the pull request open to review it",
+  },
 };
 
 const DECISIONS: ReadonlySet<string> = new Set(OWNER_DECISIONS);

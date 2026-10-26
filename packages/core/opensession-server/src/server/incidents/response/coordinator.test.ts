@@ -280,6 +280,11 @@ async function world(
   const merges: Array<{ ghRepo: string; n: number; sha: string }> = [];
   const prComments: Array<{ ghRepo: string; n: number; body: string }> = [];
   const prCloses: Array<{ ghRepo: string; n: number }> = [];
+  // Agents' pull requests other than the candidate's, by number.
+  const prs = new Map<
+    number,
+    { state: "OPEN" | "MERGED" | "CLOSED"; headSha: string; files: string[] }
+  >();
   const actions: Array<
     Parameters<CoordinatorDeps["runAction"]>[0] & { actionId: string }
   > = [];
@@ -306,6 +311,9 @@ async function world(
   const bound = new Map<string, IncidentRunBound>();
   const retired: string[] = [];
   let retireFailures = 0;
+  // Sessions a fresh one can't branch from: their branch is not pushed at
+  // its last commit, or they left uncommitted work.
+  const unstackable = new Set<string>();
   // Each session's branch and Sandbox checkpoint, as the session store has them.
   const works = new Map<
     string,
@@ -350,6 +358,16 @@ async function world(
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
     },
+    async head(id) {
+      return works.get(id)?.checkpoint?.head;
+    },
+    async stackable(id) {
+      return !unstackable.has(id);
+    },
+    async usage(id) {
+      const l = live.get(id);
+      return l ? { costUsd: l.costUsd, tokens: l.tokens } : undefined;
+    },
     async finalText(id) {
       return texts.get(id);
     },
@@ -364,8 +382,22 @@ async function world(
     },
   };
   const github = {
-    verdict: async () => prVerdict(pr, merged),
-    files: async () => ["src/search.ts", NOTE, "docs/incidents/runbook.md"],
+    verdict: async (t: { number: number }) => {
+      const other = prs.get(t.number);
+      if (!other) return prVerdict(pr, merged);
+      const v = verdict(other.headSha);
+      return {
+        ...v,
+        pr: {
+          ...v.pr,
+          number: t.number,
+          url: `https://github.com/acme/web/pull/${t.number}`,
+        },
+        state: other.state,
+      } as PrMergeVerdict;
+    },
+    files: async (_repo: string, n: number) =>
+      prs.get(n)?.files ?? ["src/search.ts", NOTE, "docs/incidents/runbook.md"],
     mergeCommit: async () => (merged ? "9f9f9f9" : undefined),
     mergeMethods: async () => ["squash"],
     merge: async (ghRepo: string, n: number, o: { sha: string }) => {
@@ -481,6 +513,8 @@ async function world(
     works,
     prComments,
     prCloses,
+    prs,
+    unstackable,
     failRetire(times: number) {
       retireFailures = times;
     },
@@ -2801,4 +2835,417 @@ test("runOn must be a production Runner of the project", async () => {
       runOn: out.runner.id,
     }),
   ).toBe("Only http checks can run on a Runner");
+});
+
+test("sending back a round no agent worked in keeps the round and briefs the note", async () => {
+  let fail = true;
+  const w = await world();
+  w.deps.workspace = async () =>
+    fail
+      ? { error: "No sandbox" }
+      : { kind: "sandbox" as const, provider: "daytona" };
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  fail = false;
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Look at the egress logs first",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "investigating", response: { round: 1 } });
+  await __waitForCoordinatorForTest();
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns).toEqual([
+    expect.objectContaining({
+      round: 1,
+      prompt: expect.stringContaining("Look at the egress logs first"),
+    }),
+  ]);
+  const ledger = (await getIncident(w.incident.id))?.response?.ledger ?? [];
+  expect(ledger.map((e) => e.detail).join("\n")).not.toMatch(/of 2/);
+});
+
+test("an extra round past the limit is never 'round 3 of 2'", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  for (const note of ["Try again", "Once more"]) {
+    expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+    await applyOwnerDecision(w.incident.id, "send-back", "Bo", note, w.deps);
+    await __waitForCoordinatorForTest();
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish(
+      "child-1",
+      fence({
+        ...investigatorReport,
+        candidate: null,
+        noCandidateReason: "No logs",
+      }),
+    );
+    await advanceIncident(w.incident.id, w.deps);
+  }
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.round).toBe(3);
+  const details = (i?.response?.ledger ?? []).map((e) => e.detail);
+  expect(details).toContain("Sent the investigator round 2 of 2");
+  expect(details).toContain(
+    "Sent the investigator round 3, an extra round past the limit of 2",
+  );
+  expect(details.join("\n")).not.toMatch(/round 3 of 2/);
+});
+
+test("the card's cost counts the owner's own turns in an agent's session", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+    { costUsd: 4.66, tokens: 1000 },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.costUsd).toBe(4.66);
+  // The owner asks the agent a follow-up in its own session.
+  w.live("child-1", { costUsd: 6.92, tokens: 1500 });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.agents[0]).toMatchObject({
+    costUsd: 6.92,
+    tokens: 1500,
+  });
+  expect(i?.response?.costUsd).toBe(6.92);
+  // Closed, a later turn still counts.
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  w.live("child-1", { costUsd: 7.5 });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("closed-without-action");
+  expect(i?.response?.costUsd).toBe(7.5);
+});
+
+test("a run that failed to start still counts the turns a person ran in it", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.live("child-1", { status: "error", error: "Session setup failed" });
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.agents[0]?.status).toBe(
+    "error",
+  );
+  w.live("child-1", { status: "done", costUsd: 1.47, tokens: 300 });
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.agents[0]).toMatchObject({
+    status: "error",
+    costUsd: 1.47,
+  });
+  expect(i?.response?.costUsd).toBe(1.47);
+});
+
+test("a fresh investigator whose predecessor could not push starts clean and carries its commits", async () => {
+  const w = await sentBackWidened([], ["logs"], {
+    beforeSendBack: (world) => {
+      world.unstackable.add("child-1");
+      world.works.set("child-1", {
+        branch: "session-branch-1",
+        checkpoint: {
+          ref: "refs/opensession/checkpoints/child-1",
+          head: "ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+        },
+      });
+    },
+  });
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  // Never stacked on a branch the controller would refuse.
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  expect(fresh.prompt).toContain(
+    "git cherry-pick origin/main..ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+  );
+  expect(fresh.prompt).not.toContain("another incident");
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("investigating");
+  expect(i?.response?.ledger.at(-1)?.detail).toContain("(logs)");
+});
+
+test("a new round after the project's sandbox changed starts a fresh session there", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.works.set("child-1", {
+    branch: "session-branch-1",
+    checkpoint: {
+      ref: "refs/opensession/checkpoints/child-1",
+      head: "1111111111111111111111111111111111111111",
+    },
+  });
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  // The project moves to This machine (container) before the send-back.
+  w.deps.workspace = async () => ({ kind: "sandbox", provider: "podman" });
+  const sendsBefore = w.sends.length;
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+  // The old session, in the old sandbox, gets nothing.
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({
+    role: "investigator",
+    round: 2,
+    attempt: 2,
+    workspace: { kind: "sandbox", provider: "podman" },
+  });
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain("Check the search logs");
+  expect(fresh.prompt).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.agents.at(-1)).toMatchObject({
+    workspace: { kind: "sandbox", provider: "podman" },
+    status: "running",
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toContain(
+    "the project's sandbox changed",
+  );
+});
+
+test("a retry after the project's sandbox changed starts in the current one", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.live("child-1", {
+    status: "error",
+    error: "Session setup failed: Sandbox provider is not configured",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  w.deps.workspace = async () => ({ kind: "sandbox", provider: "podman" });
+  await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({
+    attempt: 2,
+    workspace: { kind: "sandbox", provider: "podman" },
+  });
+  expect(fresh.baseSessionId).toBeUndefined();
+});
+
+/** An investigator that opened `prNumber`, reported no fix, and whose last
+ *  pushed commit was `head`; the incident waits for the owner. */
+async function noFixWithPr(prNumber: number, head?: string) {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.works.set("child-1", {
+    branch: "session-branch-1",
+    ...(head
+      ? {
+          checkpoint: {
+            ref: "refs/opensession/checkpoints/child-1",
+            head,
+          },
+        }
+      : {}),
+  });
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+    { prUrl: `https://github.com/acme/web/pull/${prNumber}` },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  return w;
+}
+
+const HEAD_A = "a".repeat(40);
+
+test("closing an incident closes the pull requests its agents opened", async () => {
+  const w = await noFixWithPr(21, HEAD_A);
+  w.prs.set(21, {
+    state: "OPEN",
+    headSha: HEAD_A,
+    files: [NOTE, "docs/incidents/runbook.md"],
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(w.prComments).toEqual([
+    {
+      ghRepo: "acme/web",
+      n: 21,
+      body: expect.stringContaining("closed without action"),
+    },
+  ]);
+  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 21 }]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("closed-without-action");
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "Closed the investigator's pull request #21",
+  );
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.next).toEqual({
+    kind: "done",
+    detail: "Closed without action",
+    options: [],
+  });
+});
+
+test("a code fix stays open and the card asks about it", async () => {
+  const w = await noFixWithPr(22, HEAD_A);
+  w.prs.set(22, {
+    state: "OPEN",
+    headSha: HEAD_A,
+    files: ["src/search.ts", NOTE],
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(w.prCloses).toEqual([]);
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.openPrs).toEqual([
+    {
+      url: "https://github.com/acme/web/pull/22",
+      number: 22,
+      sessionId: "child-1",
+    },
+  ]);
+  expect(i?.response?.next).toEqual({
+    kind: "done",
+    detail: "Closed without action",
+    options: ["close-prs", "keep-prs"],
+  });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "close-prs",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "closed-without-action" });
+  await __waitForCoordinatorForTest();
+  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 22 }]);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.next).toMatchObject({ options: [] });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "keep-prs",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toEqual({ error: "No pull request is waiting for you", status: 409 });
+});
+
+test("keeping a code fix open clears the question", async () => {
+  const w = await noFixWithPr(22, HEAD_A);
+  w.prs.set(22, { state: "OPEN", headSha: HEAD_A, files: ["src/search.ts"] });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  await applyOwnerDecision(w.incident.id, "keep-prs", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  const i = await getIncident(w.incident.id);
+  expect(w.prCloses).toEqual([]);
+  expect(i?.response?.openPrs).toBeUndefined();
+  expect(i?.response?.ledger.at(-1)?.detail).toBe("Bo: keep-prs");
+});
+
+test("a merged pull request, or one a person pushed to, is never closed", async () => {
+  for (const [state, headSha, head] of [
+    ["MERGED", HEAD_A, HEAD_A],
+    ["OPEN", "b".repeat(40), HEAD_A],
+    ["OPEN", HEAD_A, undefined],
+  ] as const) {
+    const w = await noFixWithPr(23, head);
+    w.prs.set(23, { state, headSha, files: [NOTE] });
+    await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+    await __waitForCoordinatorForTest();
+    expect(w.prCloses).toEqual([]);
+    expect(w.prComments).toEqual([]);
+    const i = await getIncident(w.incident.id);
+    expect(i?.response?.openPrs).toBeUndefined();
+    if (state === "OPEN")
+      expect(i?.response?.ledger.at(-1)?.detail).toContain(
+        "Left pull request #23 open",
+      );
+    __resetCoordinatorForTest();
+  }
+});
+
+test("the coordinator session is created only when an agent starts", async () => {
+  let fail = true;
+  let created = 0;
+  const w = await world();
+  w.deps.workspace = async () =>
+    fail
+      ? { error: "No sandbox" }
+      : { kind: "sandbox" as const, provider: "daytona" };
+  w.deps.coordinatorSession = async () => {
+    created++;
+    return "coord-1";
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // No agent could start: no empty coordinator session is left behind.
+  expect(i?.state).toBe("needs-you");
+  expect(created).toBe(0);
+  expect(i?.response?.coordinatorSessionId).toBeUndefined();
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(created).toBe(0);
+  // Reopened once a sandbox exists: the first agent brings it.
+  fail = false;
+  await updateIncident(w.incident.id, (c) => {
+    const moved = transitionIncident(c, "investigating", {
+      by: "sessions",
+      detail: "3 failures in a row",
+      at: new Date(w.clock).toISOString(),
+    });
+    return "error" in moved ? moved : moved;
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(created).toBe(1);
+  expect(i?.response).toMatchObject({
+    coordinatorSessionId: "coord-1",
+    automationId: "auto-1",
+    agents: [{ role: "investigator", sessionId: "child-1", round: 1 }],
+  });
 });

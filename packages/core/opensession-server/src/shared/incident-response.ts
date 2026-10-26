@@ -112,6 +112,16 @@ export const DEFAULT_AUTONOMY: AutonomyLevel = "deploy-after-veto";
 export const DEFAULT_VETO_MS = 600_000;
 export const DEFAULT_WATCH_MS = 600_000;
 export const DEFAULT_MAX_ROUNDS = 2;
+
+/**
+ * "2 of 2", or past the limit (a person sent the work back once the rounds
+ * were used up) "3, an extra round past the limit of 2": never "3 of 2".
+ */
+export function roundOfMax(round: number, maxRounds: number): string {
+  return round <= maxRounds
+    ? `${round} of ${maxRounds}`
+    : `${round}, an extra round past the limit of ${maxRounds}`;
+}
 export const DEFAULT_BUDGET: IncidentBudget = {
   perIncidentUsd: 20,
   perMonthUsd: 200,
@@ -510,6 +520,8 @@ export const OWNER_DECISIONS = [
   "resolve",
   "close",
   "roll-back",
+  "close-prs",
+  "keep-prs",
 ] as const;
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
@@ -522,7 +534,9 @@ export const SEND_BACK_NOTE_MAX = 2000;
 
 /**
  * `options` on `watching` and `done` is `["roll-back"]` when a manual
- * rollback is available, else `[]`.
+ * rollback is available, else `[]`. Closed without action with code-fix
+ * pull requests still open (`openPrs`), `done` offers
+ * `["close-prs", "keep-prs"]`.
  */
 export type NextAction =
   | { kind: "working"; detail: string }
@@ -600,6 +614,13 @@ export type SendBackReason =
   | { kind: "reopened"; detail: string }
   | { kind: "check-failed"; detail: string };
 
+/** A pull request one of the incident's agents opened. */
+export interface AgentPullRequest {
+  url: string;
+  number: number;
+  sessionId: string;
+}
+
 export interface IncidentResponse {
   phase: ResponsePhase;
   round: number;
@@ -644,6 +665,10 @@ export interface IncidentResponse {
     fix?: SetupFix;
   };
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
+  /** Closed without action: pull requests the incident's agents opened that
+   *  change code, left open for the owner to close or keep. Their note-only
+   *  pull requests are closed without asking. */
+  openPrs?: AgentPullRequest[];
   next: NextAction;
   ledger: LedgerEntry[];
   droppedLedger: number;

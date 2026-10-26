@@ -819,3 +819,36 @@ test("every settings target opens a project settings section", () => {
   expect(NEXT_STEP_SECTION.signals).toBe("incidents");
   expect(NEXT_STEP_SECTION.sandbox).toBe("where");
 });
+
+test("closed without action with a code fix still open asks what to do with it", () => {
+  const open = (numbers: number[]) =>
+    nextCard({
+      ...base,
+      incident: inc("closed-without-action", {
+        openPrs: numbers.map((n) => ({
+          url: `https://github.com/acme/web/pull/${n}`,
+          number: n,
+          sessionId: "child-1",
+        })),
+        next: {
+          kind: "done",
+          detail: "Closed without action",
+          options: ["close-prs", "keep-prs"],
+        },
+      }),
+    });
+  expect(open([465])).toMatchObject({
+    tone: "blue",
+    eyebrow: "Closed",
+    headline: "PR #465 from the investigator is still open",
+    body: "It changes code, so Sessions left it for you to close or keep",
+    buttons: [
+      { decision: "close-prs", label: "Close on GitHub", weight: "primary" },
+      { decision: "keep-prs", label: "Keep open", weight: "soft" },
+    ],
+  });
+  expect(open([465, 469])).toMatchObject({
+    headline: "PRs #465 and #469 from the investigator are still open",
+    body: "They change code, so Sessions left them for you to close or keep",
+  });
+});

@@ -8,8 +8,10 @@
 // runs at import.
 import {
   type ActionRun,
+  type AgentPullRequest,
   type AgentRole,
   type AgentRun,
+  type AgentWorkspace,
   type CancelReason,
   type CandidateState,
   type IncidentProjectSettings,
@@ -21,6 +23,7 @@ import {
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
   type SetupFix,
+  roundOfMax,
 } from "../../../shared/incident-response";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
@@ -75,6 +78,7 @@ import {
   manualRollbackAvailable,
   nextActionFor,
   rereadsReport,
+  roundRan,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -85,6 +89,7 @@ import {
   fetchPrSnapshot,
   mergeIncidentPr,
   parsePrUrl,
+  prFilePaths,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { budgetProblem } from "./policy";
@@ -98,6 +103,7 @@ import {
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
+  INCIDENT_DOCS_DIR,
   buildInvestigatorPrompt,
   buildReminder,
   buildSendBackMessage,
@@ -452,22 +458,31 @@ function guardOf(view: ResponseView): { state: IncidentState; phase?: string } {
 
 // ── Sync and view ──────────────────────────────────────────────────────────
 
-/** Copies the agents' live status into the record; one write at most. */
+/**
+ * Copies the agents' live status into the record; one write at most. A run
+ * that is no longer watched (it reported, stopped or failed) still has its
+ * cost followed: a person may keep working in its session, and those turns
+ * are the incident's too.
+ */
 async function syncAgents(
   incident: Incident,
   d: CoordinatorDeps,
   settings: IncidentProjectSettings,
 ): Promise<Incident> {
   const r = incident.response;
-  if (!r) return incident;
-  const watched = r.agents.filter(watchedRun);
-  if (!watched.length) return incident;
+  if (!r?.agents.length) return incident;
   const agents = await agentsFor(incident, d);
   if (!agents) return incident;
   const lives = new Map<string, AgentLive>();
-  for (const run of watched) {
+  const usages = new Map<string, { costUsd: number; tokens: number }>();
+  for (const run of r.agents) {
     try {
-      lives.set(run.sessionId, await agents.status(run.sessionId));
+      if (watchedRun(run))
+        lives.set(run.sessionId, await agents.status(run.sessionId));
+      else {
+        const usage = await agents.usage(run.sessionId);
+        if (usage) usages.set(run.sessionId, usage);
+      }
     } catch (error) {
       console.warn(
         `[incidents] Could not read agent ${run.sessionId}:`,
@@ -475,6 +490,14 @@ async function syncAgents(
       );
     }
   }
+  const costChanged = (run: AgentRun): boolean => {
+    const usage = usages.get(run.sessionId);
+    return (
+      !!usage &&
+      !watchedRun(run) &&
+      (usage.costUsd !== run.costUsd || usage.tokens !== run.tokens)
+    );
+  };
   const changed = (run: AgentRun): boolean => {
     const live = lives.get(run.sessionId);
     if (!live || !watchedRun(run)) return false;
@@ -486,13 +509,18 @@ async function syncAgents(
       (live.error !== undefined && live.error !== run.error)
     );
   };
-  if (!r.agents.some(changed)) return incident;
+  if (!r.agents.some((run) => changed(run) || costChanged(run)))
+    return incident;
 
   const finished: AgentRun[] = [];
   const next = await write(incident.id, d, settings, null, (c, base, at) => {
     finished.length = 0;
     let response = base;
     const runs = response.agents.map((run) => {
+      if (costChanged(run)) {
+        const usage = usages.get(run.sessionId)!;
+        return { ...run, costUsd: usage.costUsd, tokens: usage.tokens };
+      }
       if (!changed(run)) return run;
       const live = lives.get(run.sessionId)!;
       const status = liveRunStatus(live);
@@ -848,21 +876,9 @@ async function init(
   const { incident, settings } = view;
   const release = rollbackFirst ? releaseToRollBack(settings) : undefined;
   const rollback = projectAction(settings, "rollback");
-  let automation: Automation | undefined;
-  let coordinatorSessionId: string | undefined;
-  try {
-    automation = await d.automation(incident.project);
-    coordinatorSessionId = await d.coordinatorSession(incident, automation);
-  } catch (error) {
-    // The rollback needs no agent: it starts anyway, and the parallel
-    // investigator is skipped when it finds no coordinator session.
-    if (!release || !rollback)
-      return setupProblem(
-        view,
-        d,
-        `Incident agents could not start: ${errorMessage(error)}`,
-      );
-  }
+  // The coordinator session is created with the first agent
+  // (withCoordinator), so an incident no agent ever starts on leaves no
+  // empty session in the list.
   const primary = view.signals.get(incident.primarySignalId);
   const notePath = await incidentNotePath(incident, d);
   const next = await write(
@@ -876,8 +892,6 @@ async function init(
         now: at,
         maxRounds: settings.maxRounds,
         phase: release && rollback ? "deciding" : "investigating",
-        ...(coordinatorSessionId ? { coordinatorSessionId } : {}),
-        ...(automation ? { automationId: automation.id } : {}),
       });
       if (!release || !rollback) return { incident: c, response: r };
       const time = hhmm(release.at);
@@ -911,11 +925,48 @@ async function init(
 }
 
 /** A run a fresh session takes over from, and why: the access that is
- *  wider, or (`carry`) its branch is another incident's too. */
+ *  wider, its branch is another incident's too (a `shared-branch` carry),
+ *  or the project's sandbox changed since it ran (`moved`). `carry` set:
+ *  the fresh session starts clean and brings the commits over (its brief
+ *  says how); unset, it branches from the run's session. */
 interface Supersede {
   run: AgentRun;
   widened: AccessWidening[];
   carry?: CarriedWork;
+  moved?: boolean;
+}
+
+/** A carry for a branch another incident uses (#83's original case). */
+function sharedCarry(carry: CarriedWork | undefined): boolean {
+  return !!carry && (carry.reason ?? "shared-branch") === "shared-branch";
+}
+
+function sameWorkspace(a: AgentWorkspace, b: AgentWorkspace): boolean {
+  return a.kind === "host"
+    ? b.kind === "host" && a.user === b.user
+    : b.kind === "sandbox" && a.provider === b.provider;
+}
+
+/**
+ * Whether the project's agents now run somewhere other than where `run`'s
+ * session did: its sandbox changed (or moved to or from the host) since.
+ * That session can't take another turn there, so a new round goes to a
+ * fresh one. False when the current workspace can't be read: the message
+ * goes as before, and starting a session would report the setup problem.
+ */
+async function workspaceMoved(
+  view: ResponseView,
+  run: AgentRun,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const model =
+    "error" in view.models ? run.model : view.models[run.role].model;
+  try {
+    const current = await d.workspace(view.incident.project, model);
+    return !("error" in current) && !sameWorkspace(current, run.workspace);
+  } catch {
+    return false;
+  }
 }
 
 async function startAgent(
@@ -1025,7 +1076,9 @@ async function startAgent(
               ...(supersede?.carry ? { carry: supersede.carry } : {}),
             },
           }
-        : {}),
+        : r.sendBack
+          ? { sendBack: r.sendBack }
+          : {}),
       ...(release
         ? {
             rollbackFirst: {
@@ -1109,11 +1162,14 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
+    const fresh = `${roleLabel(role)} started in a fresh session on ${label}, round ${round}`;
     const started = !supersede
       ? `${roleLabel(role)} started on ${label}, round ${round}`
-      : supersede.carry
-        ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its branch is another incident's too (${supersede.carry.branch})`
-        : `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
+      : sharedCarry(supersede.carry)
+        ? `${fresh}: its branch is another incident's too (${supersede.carry!.branch})`
+        : supersede.moved
+          ? `${fresh}: the project's sandbox changed since its last session ran`
+          : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const detail = [
       started,
       ...unavailable.map((p) => `${p.connection} can't be used: ${p.reason}`),
@@ -1131,7 +1187,7 @@ async function startAgent(
         retryRequested: undefined,
         parallelInvestigatorRetryAt: undefined,
         // The send-back reason went into the fresh session's brief.
-        ...(earlier ? { sendBack: undefined } : {}),
+        ...(role === "investigator" ? { sendBack: undefined } : {}),
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1156,8 +1212,19 @@ async function startAgent(
     const agents = await agentsFor(next, d);
     if (agents) await retire(agents, supersede.run.sessionId);
     // A pull request on a shared branch is the other incident's: it stays.
-    if (!supersede.carry)
-      await closeSupersededPr(view, supersede.run, { round, branch }, d);
+    if (!sharedCarry(supersede.carry))
+      await closeSupersededPr(
+        view,
+        supersede.run,
+        {
+          round,
+          branch,
+          why: supersede.moved
+            ? "the project's sandbox changed since this session ran"
+            : "the investigator's access was widened after it started",
+        },
+        d,
+      );
   }
   return true;
 }
@@ -1180,7 +1247,7 @@ function cappedList(items: string[]): string {
 async function closeSupersededPr(
   view: ResponseView,
   run: AgentRun,
-  fresh: { round: number; branch: string },
+  fresh: { round: number; branch: string; why: string },
   d: CoordinatorDeps,
 ): Promise<void> {
   const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
@@ -1193,7 +1260,7 @@ async function closeSupersededPr(
     await d.github.comment(
       pr.ghRepo,
       pr.number,
-      `Superseded: the investigator's access was widened after it started, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
+      `Superseded: ${fresh.why}, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
       credential,
     );
     await d.github.close(pr.ghRepo, pr.number, credential);
@@ -1428,8 +1495,22 @@ async function messageAgent(
   // goes to a fresh session; the old one is archived.
   if (sendBack) {
     const widened = await widenedSinceStart(view, run, agents, d);
-    const carry = await sharedBranch(view, run, agents, d);
-    if (widened.length || carry)
+    const shared = await sharedBranch(view, run, agents, d);
+    const moved = await workspaceMoved(view, run, d);
+    if (widened.length || shared || moved) {
+      // The fresh session branches from this one only where the controller
+      // would allow it: same workspace, its branch pushed at its last
+      // commit and nothing uncommitted. Otherwise it starts clean and
+      // brings the commits over from the session's checkpoint.
+      let carry: CarriedWork | undefined = shared;
+      if (!carry && (moved || !(await agents.stackable(run.sessionId)))) {
+        const work = await agents.work(run.sessionId);
+        carry = {
+          branch: work?.branch ?? "",
+          ...(work?.checkpoint ? { checkpoint: work.checkpoint } : {}),
+          reason: moved ? "workspace" : "unpushed",
+        };
+      }
       return startAgent(
         view,
         {
@@ -1439,8 +1520,14 @@ async function messageAgent(
           attempt: run.attempt + 1,
         },
         d,
-        { run, widened, ...(carry ? { carry } : {}) },
+        {
+          run,
+          widened,
+          ...(carry ? { carry } : {}),
+          ...(moved ? { moved } : {}),
+        },
       );
+    }
   }
   const text = sendBack
     ? buildSendBackMessage(
@@ -1494,7 +1581,7 @@ async function messageAgent(
             });
       });
       const detail = sendBack
-        ? `Sent the ${run.role} round ${base.round} of ${base.maxRounds}`
+        ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
         : `Asked the ${run.role} for a valid report`;
       const response = ledger(
         patched(base, {
@@ -1839,6 +1926,8 @@ async function applyTransition(
       };
     },
   );
+  if (next?.state === "closed-without-action")
+    void enqueue(incident.id, () => settleAgentPrs(incident.id, d));
   return next !== null;
 }
 
@@ -2291,6 +2380,139 @@ async function mergeNote(
   return next !== null;
 }
 
+// ── Pull requests after a close ────────────────────────────────────────────
+
+const CLOSED_WITHOUT_ACTION_COMMENT =
+  "The incident this pull request was opened for was closed without action, so Sessions is closing it. Reopen it if the change is still wanted.";
+
+/**
+ * Comments on and closes an agent's pull request in the project's own
+ * repository. True, or why it was not closed.
+ */
+async function closeAgentPr(
+  incident: Incident,
+  prUrl: string,
+  body: string,
+  d: CoordinatorDeps,
+): Promise<true | string> {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return "not a GitHub pull request";
+  try {
+    const own = d.ghRepoOf(incident.project);
+    if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase())
+      return "it is in another repository";
+    const credential = await d.github.appCredential(pr.ghRepo);
+    await d.github.comment(pr.ghRepo, pr.number, body, credential);
+    await d.github.close(pr.ghRepo, pr.number, credential);
+    return true;
+  } catch (error) {
+    return errorMessage(error);
+  }
+}
+
+/** Whether every file is the incident's note or a runbook. Unreadable
+ *  files count as code. */
+function noteOnly(files: string[] | null): boolean {
+  return !!files?.length && files.every((f) => f.startsWith(INCIDENT_DOCS_DIR));
+}
+
+/**
+ * An incident closed without action: the open pull requests its own agents
+ * opened are closed with a short comment, when nobody pushed to them after
+ * the agent (the head is still the agent's last commit) and they hold only
+ * the incident note and runbooks. A code fix is left open and asked about
+ * on the card (`openPrs`). A merged or closed pull request, one in another
+ * repository, and one whose head can't be matched to the agent are left
+ * alone. Best effort: what was done is written to the ledger.
+ */
+async function settleAgentPrs(
+  incidentId: string,
+  d: CoordinatorDeps,
+): Promise<void> {
+  const incident = await d.getIncident(incidentId);
+  if (incident?.state !== "closed-without-action") return;
+  const r = incident.response;
+  if (!r?.agents.some((a) => a.role === "investigator")) return;
+  const agents = await agentsFor(incident, d);
+  if (!agents) return;
+  const own = (() => {
+    try {
+      return d.ghRepoOf(incident.project)?.toLowerCase();
+    } catch {
+      return undefined;
+    }
+  })();
+  const lines: string[] = [];
+  const ask: AgentPullRequest[] = [];
+  const seen = new Set<string>();
+  for (const run of r.agents) {
+    if (run.role !== "investigator") continue;
+    let url = run.prUrl;
+    if (!url)
+      url = await agents
+        .status(run.sessionId)
+        .then((live) => live.prUrl)
+        .catch(() => undefined);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pr = parsePrUrl(url);
+    if (!pr || !own || own !== pr.ghRepo.toLowerCase()) continue;
+    try {
+      const v = await d.github.verdict({
+        repoId: incident.project,
+        ghRepo: pr.ghRepo,
+        number: pr.number,
+      });
+      if (v.state !== "OPEN") continue;
+      const head = await agents.head(run.sessionId);
+      if (!head || head !== v.pr.headSha) {
+        lines.push(
+          head
+            ? `Left pull request #${pr.number} open: it changed after the investigator's last commit`
+            : `Left pull request #${pr.number} open: Sessions can't tell whether anyone pushed to it after the investigator`,
+        );
+        continue;
+      }
+      if (!noteOnly(prFilePaths(await d.github.files(pr.ghRepo, pr.number)))) {
+        ask.push({ url, number: pr.number, sessionId: run.sessionId });
+        lines.push(
+          `Left pull request #${pr.number} open for you: it changes code`,
+        );
+        continue;
+      }
+      const closed = await closeAgentPr(
+        incident,
+        url,
+        CLOSED_WITHOUT_ACTION_COMMENT,
+        d,
+      );
+      lines.push(
+        closed === true
+          ? `Closed the investigator's pull request #${pr.number}`
+          : `Could not close pull request #${pr.number}: ${closed}`,
+      );
+    } catch (error) {
+      lines.push(
+        `Could not check pull request #${pr.number}: ${errorMessage(error)}`,
+      );
+    }
+  }
+  if (!lines.length) return;
+  const settings = await d.settings(incident.project);
+  await write(incidentId, d, settings, null, (c, base, at) => {
+    if (c.state !== "closed-without-action")
+      return { error: "The incident reopened meanwhile" };
+    let response = patched(base, { openPrs: ask.length ? ask : undefined });
+    for (const detail of lines)
+      response = ledger(response, at, {
+        actor: "sessions",
+        kind: "merge",
+        detail,
+      });
+    return { incident: c, response };
+  });
+}
+
 // ── Wake-ups ───────────────────────────────────────────────────────────────
 
 /** Whether the tick should look at this incident at all. `recovering`:
@@ -2402,6 +2624,8 @@ const REFUSALS: Record<OwnerDecision, string> = {
   resolve: "This incident can't be resolved now",
   close: "This incident can't be closed now",
   "roll-back": "Nothing to roll back",
+  "close-prs": "No pull request is waiting for you",
+  "keep-prs": "No pull request is waiting for you",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -2474,6 +2698,9 @@ function decisionAllowed(
       return c.state === "needs-you" || c.state === "investigating";
     case "roll-back":
       return manualRollbackAvailable(c, settings);
+    case "close-prs":
+    case "keep-prs":
+      return c.state === "closed-without-action" && !!r.openPrs?.length;
   }
 }
 
@@ -2536,7 +2763,13 @@ function decisionMove(
   c: Incident,
   base: IncidentResponse,
   at: string,
-  input: { by: string; note: string; cancelled: ReadonlySet<string> },
+  input: {
+    by: string;
+    note: string;
+    cancelled: ReadonlySet<string>;
+    /** Close it: the pull requests GitHub would not close. */
+    stillOpen: ReadonlySet<string>;
+  },
 ): Mutation {
   const { by } = input;
   const move = (
@@ -2599,7 +2832,9 @@ function decisionMove(
         `Sent back by ${by}`,
         patched(base, {
           phase: "investigating",
-          round: base.round + 1,
+          // A round no investigator worked in is not used up: it is the
+          // one sent back.
+          round: roundRan(base) ? base.round + 1 : base.round,
           sendBack: { kind: "owner", by, note: input.note },
           candidate: undefined,
           proof: undefined,
@@ -2662,6 +2897,17 @@ function decisionMove(
         }),
       );
     }
+    case "close-prs":
+    case "keep-prs": {
+      // Closing them happened before the record; one GitHub refused stays.
+      const left = (base.openPrs ?? []).filter((p) =>
+        input.stillOpen.has(p.url),
+      );
+      return {
+        incident: c,
+        response: patched(base, { openPrs: left.length ? left : undefined }),
+      };
+    }
   }
 }
 
@@ -2701,8 +2947,8 @@ async function ownerDecision(
       ? { error: "Agents still can't start: fix the setup first", status: 409 }
       : refused;
 
-  // Effects first, the record after: cancelling agents, and a coordinator
-  // session for a retry whose start failed before it had one.
+  // Effects first, the record after: cancelling agents, closing pull
+  // requests.
   const cancelled =
     decision === "stop" || decision === "resolve" || decision === "close"
       ? await cancelWorking(
@@ -2711,23 +2957,23 @@ async function ownerDecision(
           decision === "stop" ? "stopped" : "closed",
         )
       : new Set<string>();
-  let coordinator:
-    | { coordinatorSessionId: string; automationId: string }
-    | undefined;
-  if (decision === "retry" && !incident.response.coordinatorSessionId) {
-    try {
-      const automation = await d.automation(incident.project);
-      coordinator = {
-        coordinatorSessionId: await d.coordinatorSession(incident, automation),
-        automationId: automation.id,
-      };
-    } catch (error) {
-      return {
-        error: `Incident agents could not start: ${errorMessage(error)}`,
-        status: 409,
-      };
+  const prLines: string[] = [];
+  const stillOpen = new Set<string>();
+  if (decision === "close-prs")
+    for (const pr of incident.response.openPrs ?? []) {
+      const closed = await closeAgentPr(
+        incident,
+        pr.url,
+        "The incident this pull request was opened for was closed without action, and its owner chose to close it too. Reopen it if the change is still wanted.",
+        d,
+      );
+      if (closed === true)
+        prLines.push(`Closed the investigator's pull request #${pr.number}`);
+      else {
+        stillOpen.add(pr.url);
+        prLines.push(`Could not close pull request #${pr.number}: ${closed}`);
+      }
     }
-  }
 
   const result = await writeOrError(
     incidentId,
@@ -2741,9 +2987,22 @@ async function ownerDecision(
         by,
         note: text,
         cancelled,
+        stillOpen,
       });
       if ("error" in moved) return moved;
       const detail = `${by}: ${decision}`;
+      let response = ledger({ ...moved.response, ownerTouched: true }, at, {
+        actor: "owner",
+        kind: "decision",
+        detail,
+        by,
+      });
+      for (const line of prLines)
+        response = ledger(response, at, {
+          actor: "sessions",
+          kind: "merge",
+          detail: line,
+        });
       return {
         incident: appendEvent(moved.incident, {
           at,
@@ -2751,11 +3010,7 @@ async function ownerDecision(
           by,
           detail,
         }),
-        response: ledger(
-          { ...moved.response, ownerTouched: true, ...coordinator },
-          at,
-          { actor: "owner", kind: "decision", detail, by },
-        ),
+        response,
       };
     },
   );
@@ -2768,6 +3023,10 @@ async function ownerDecision(
     decision,
     by,
   });
+  // The agents' pull requests, after the close is recorded: in the chain,
+  // so the decision returns without waiting on GitHub.
+  if (decision === "close")
+    void enqueue(incidentId, () => settleAgentPrs(incidentId, d));
   if (decision === "stop" && incident.state === "veto")
     incidentAudit({
       kind: "incident_veto",

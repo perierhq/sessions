@@ -20,6 +20,7 @@ import {
   runbookPathsFor,
   slugify,
 } from "./prompts";
+import type { CarriedWork } from "./prompts";
 import {
   REPORT_REPAIRS,
   REPORT_RULES,
@@ -668,6 +669,55 @@ test("the verifier is never asked for next steps", () => {
   });
   expect(p).not.toContain("nextSteps");
   expect(p).not.toContain("Next steps");
+});
+
+test("a fresh investigator is told how to bring over work it can't branch from", () => {
+  const brief = (carry: CarriedWork) =>
+    buildInvestigatorPrompt({
+      incident,
+      signal,
+      otherSignals: [],
+      evaluation: null,
+      recent: [],
+      baseBranch: "main",
+      round: 2,
+      maxRounds: 2,
+      actions: [],
+      earlier: {
+        round: 1,
+        prUrl: "https://github.com/acme/web/pull/12",
+        carry,
+      },
+    });
+  const checkpoint = {
+    ref: "refs/opensession/checkpoints/child-1",
+    head: "ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+  };
+  const unpushed = brief({
+    branch: "incident/search",
+    checkpoint,
+    reason: "unpushed",
+  });
+  expect(unpushed).toContain("is not pushed at its last commit");
+  expect(unpushed).toContain(
+    "git cherry-pick origin/main..ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+  );
+  // Its own pull request is still the incident's: read it.
+  expect(unpushed).toContain("https://github.com/acme/web/pull/12");
+  expect(unpushed).not.toContain("another incident");
+  const moved = brief({
+    branch: "incident/search",
+    checkpoint,
+    reason: "workspace",
+  });
+  expect(moved).toContain("the project's sandbox changed since");
+  expect(moved).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  // A shared branch keeps the other incident's pull request out.
+  const shared = brief({ branch: "incident/search", checkpoint });
+  expect(shared).toContain("Never push incident/search");
+  expect(shared).not.toContain("https://github.com/acme/web/pull/12");
 });
 
 const fenced = (o: unknown) =>
