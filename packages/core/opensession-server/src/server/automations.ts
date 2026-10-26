@@ -3030,7 +3030,7 @@ export async function fireAutomationsForEvent(
 /**
  * Replay a refused run in its own session after `delayMs`: the durable intent
  * is still on disk, so the replay reuses its identity, session and accepted
- * time. Skipped when the automation was deleted or switched off meanwhile.
+ * time. Skipped when the automation was deleted, or switched off meanwhile.
  * In memory only: after a restart the run waits for its next schedule.
  */
 function scheduleAutomationLaunchRetry(
@@ -3043,8 +3043,15 @@ function scheduleAutomationLaunchRetry(
     if (isShuttingDown()) return;
     void (async () => {
       const current = await getAutomation(automationId);
-      // A consumed one-off is disabled by design and still owes its run.
-      if (!current || (!current.enabled && !options.deleteAutomationAfterRun))
+      // Switched off meanwhile: drop a scheduled or event run. A manual run
+      // (allowed on a disabled automation) and a consumed one-off (disabled
+      // by design) still owe theirs.
+      if (
+        !current ||
+        (!current.enabled &&
+          options.trigger !== "manual" &&
+          !options.deleteAutomationAfterRun)
+      )
         return;
       console.log(
         `[automations] Retrying "${current.name}" in ${options.osSessionId} (attempt ${options.launchAttempt})`,
