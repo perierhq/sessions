@@ -1033,6 +1033,13 @@ if (!g.__opensessionBooted) {
     // file lock keeps a rotating refresh token from being spent twice.
     startMcpOauthRefresher();
 
+    // Checkouts carried over from another install keep its paths (a
+    // credential helper this user can't run, a warm template linked to the
+    // other install's checkout). Repair them once, before the sweeps fetch.
+    void import("./src/server/checkout-repair")
+      .then((m) => m.repairForeignCheckoutPaths())
+      .catch((e) => console.error("[checkout-repair] failed:", e));
+
     // Warm dev-server pool + warm git templates: docker-level sweeps, so only
     // the server that owns the daemon runs them.
     ensureWarmTemplateScheduler();

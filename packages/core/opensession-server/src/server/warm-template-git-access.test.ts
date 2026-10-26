@@ -88,6 +88,26 @@ beforeAll(async () => {
     ].join("\n"),
   );
   chmodSync(helper, 0o755);
+  // A remote whose credential helper is another install's until the
+  // checkout is repaired; then it refuses the credential like GitHub.
+  const helperCheck = join(bin, "git-remote-helpercheck");
+  writeFileSync(
+    helperCheck,
+    [
+      "#!/bin/sh",
+      `echo x >> '${join(root, "remote-attempts")}'`,
+      "if git config --get-all credential.https://github.com.helper | grep -q /nonexistent-other-install/; then",
+      '  echo "/nonexistent-other-install/bin/opensession github-credential get: Permission denied" >&2',
+      "  echo \"fatal: could not read Username for 'https://github.com': terminal prompts disabled\" >&2",
+      "else",
+      '  echo "remote: Invalid username or token." >&2',
+      "  echo \"fatal: Authentication failed for 'https://github.com/acme/app.git/'\" >&2",
+      "fi",
+      "exit 128",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(helperCheck, 0o755);
   process.env.PATH = `${bin}:${process.env.PATH}`;
 
   writeFileSync(
@@ -185,4 +205,28 @@ test("Refresh now tries at once, and a fetch that works clears the issue", async
     kind: "access_failing",
     delivery: "quiet",
   });
+});
+
+test("a helper from another install is repaired at fetch time and tried again", async () => {
+  await git(
+    repo,
+    "config",
+    "--replace-all",
+    "credential.https://github.com.helper",
+    "!/nonexistent-other-install/bin/opensession github-credential",
+  );
+  const template = join(root, "worktrees", "acme-warm-template");
+  await git(template, "remote", "set-url", "origin", "helpercheck::acme");
+  const before = attempts();
+  told.length = 0;
+  await refreshWarmTemplate("acme");
+  // One try with the foreign helper, one after the repair.
+  expect(attempts()).toBe(before + 2);
+  const helpers = (
+    await $`git -C ${repo} config --get-all credential.https://github.com.helper`.text()
+  ).trim();
+  expect(helpers).not.toContain("/nonexistent-other-install/");
+  // The token itself is still refused: that is an ordinary sign-in issue.
+  expect(gitAccessIssue("acme")).toMatchObject({ kind: "auth", failures: 1 });
+  expect(told).toHaveLength(1);
 });
