@@ -323,7 +323,10 @@ function toParts(
 ): MessageSplit["parts"] {
   const parts: MessageSplit["parts"] = [];
   for (let i = 0; i < lines.length; i++) {
-    const kind = kinds[i]!;
+    // A blank line stays with the part before it, so no part is only
+    // whitespace between two others.
+    const kind =
+      lines[i]!.blank && parts.length ? parts.at(-1)!.kind : kinds[i]!;
     const start = lines[i]!.start;
     const end = i + 1 < lines.length ? lines[i + 1]!.start : text.length;
     if (end <= start) continue;

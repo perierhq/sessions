@@ -114,6 +114,16 @@ describe("splitEmailText", () => {
     expect(fresh(text)).toBe("Danke, jetzt geht es.");
   });
 
+  test("blank lines join the part before them", () => {
+    const text =
+      "Yes.\n\nOn Mon, 3 Nov 2026 at 10:12, Acme <help@example.test> wrote:\n> hi\n\n-- \nAlice\n";
+    expect(splitEmailText(text).parts.map((p) => p.kind)).toEqual([
+      "new",
+      "quoted",
+      "signature",
+    ]);
+  });
+
   test("Apple Mail on iPhone: the signature line and the quoted attribution", () => {
     const text = [
       "Yes please, reset it.",
@@ -284,6 +294,9 @@ describe("splitEmailText", () => {
     expect(s.parts.at(-1)!.end).toBe(text.length);
     for (let i = 1; i < s.parts.length; i++)
       expect(s.parts[i]!.start).toBe(s.parts[i - 1]!.end);
+    // No part is only whitespace.
+    for (const p of s.parts)
+      expect(text.slice(p.start, p.end).trim()).not.toBe("");
     expect(newTextOf({ text, split: s })).toBe("Thanks!");
   });
 
