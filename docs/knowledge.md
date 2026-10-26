@@ -261,7 +261,8 @@ The support agent has two tools, only in a support session:
 `read_knowledge(path)`. Both print the knowledge commit they read, and a draft
 cites an item as `knowledge:<path>@<commit>`. Search only lists items;
 `read_knowledge` prints an item's trust, status, any check note and the ref to
-cite first, then its text inside a wrapper the text can't close. An item that
+cite first, then its other front matter and its text inside a wrapper they
+can't close; search wraps each title the same way. An item that
 can't back a reply says so next to its ref ("can't back a reply alone").
 
 When an agent's draft is checked, and again when it is about to be sent
@@ -284,14 +285,17 @@ draft waits for a person when:
   `validAsOf`, read from GitHub without the cache ("Issue #42 was closed").
   Changed pages and new releases are left to the daily run;
 - this session didn't open it with `read_knowledge` ("This session didn't read
-  it"); a search listing is not enough;
+  it"); a search listing is not enough. What the session read when the draft
+  was checked is stored with the draft, so a server restart during the veto
+  window doesn't hold it;
 - the session read an item that can't back a reply and the draft doesn't cite
   it: the reply may rest on it, so it waits too (that item's reason), whatever
   else the draft cites;
 - the knowledge service, the index, the code repository or GitHub can't answer
   ("Knowledge couldn't be checked"). This also applies to a draft that cites
   nothing on a project that has a knowledge repository: the server never sends
-  on data it couldn't check;
+  on data it couldn't check. A session that read more than 20 items it
+  doesn't cite waits with "This session read more than 20 knowledge items";
 - the draft contains 12 or more consecutive words of an `internal` article
   ("The reply quotes an internal note").
 

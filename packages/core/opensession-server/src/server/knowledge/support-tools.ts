@@ -9,8 +9,9 @@
 // read_knowledge as read, so a draft's knowledge citations can be checked
 // against what the session actually read (knowledge/backing.ts). An
 // item's text is data: read_knowledge prints its trust, status and
-// citation first, then the text inside a wrapper with a fresh nonce that
-// the text can't close. Nothing runs at import.
+// citation first, then its front matter and text inside a wrapper with a
+// fresh nonce that neither can close; search_knowledge wraps each title
+// the same way. Nothing runs at import.
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -45,17 +46,17 @@ export const BODY_CUT = "(cut: don't rely on parts you didn't see)";
 /** Entries of `sources` and `dependsOn` printed at most. */
 export const MAX_LISTED_REFS = 20;
 const WRAPPER = "knowledge_item";
+const TITLE_WRAPPER = "knowledge_title";
 const NONCE = () => randomUUID().replaceAll("-", "").slice(0, 12);
 export const KNOWLEDGE_UNAVAILABLE =
   "Knowledge couldn't be read right now. Answer without it or leave the question to a person.";
 
-/** The front matter as read_knowledge prints it, in the order files keep
- *  it (format.ts renderArticle). */
+/** The front matter read_knowledge prints inside the wrapper, in the
+ *  order files keep it (format.ts renderArticle); trust and status are
+ *  printed outside it, as the server states them. */
 const KEYS: Array<keyof KnowledgeFrontMatter> = [
   "title",
   "kind",
-  "trust",
-  "status",
   "origin",
   "topics",
   "sources",
@@ -135,8 +136,10 @@ function itemText(body: string, tag: string): string {
   );
 }
 
-function hitLine(item: KnowledgeItem): string {
-  return `- ${formatKnowledgeCitation(item.path, item.commit.slice(0, 7))} · ${item.kind} · ${item.trust} · ${item.effective} · valid as of ${item.validAsOf} — ${oneLine(item.title)}`;
+/** One hit; its title is data, inside the call's `tag`. */
+function hitLine(item: KnowledgeItem, tag: string): string {
+  const title = wrapBody(oneLine(item.title), [TITLE_WRAPPER, tag]);
+  return `- ${formatKnowledgeCitation(item.path, item.commit.slice(0, 7))} · ${item.kind} · ${item.trust} · ${item.effective} · valid as of ${item.validAsOf} — <${tag}>${title}</${tag}>`;
 }
 
 function frontMatterLines(fm: KnowledgeFrontMatter): string[] {
@@ -212,6 +215,8 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
         }
         if (!hits.length) return text(`No knowledge matches "${oneLine(q)}".`);
         const lines: string[] = [];
+        // Unguessable, so a title can't name the closing tag.
+        const tag = `${TITLE_WRAPPER}_${NONCE()}`;
         for (const { item } of hits) {
           recordKnowledgeSeen(
             ctx.sessionId,
@@ -220,7 +225,7 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
             item.commit,
             "listed",
           );
-          lines.push(hitLine(item), ...notes(item, item.effective));
+          lines.push(hitLine(item, tag), ...notes(item, item.effective));
         }
         return text(lines.join("\n"));
       },
@@ -264,7 +269,7 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
           item.commit,
           "read",
         );
-        const head = frontMatterLines(item);
+        const head = [`trust: ${item.trust}`, `status: ${item.status}`];
         if (effective !== item.status)
           head.push(`effectiveStatus: ${effective}`);
         head.push(...notes(item, effective).map((l) => l.trim()));
@@ -275,10 +280,16 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
             : `Cite as ${citation} ${CANT_BACK}`,
         );
         const cut = body.length > MAX_KNOWLEDGE_BODY;
-        // Unguessable, so the item's text can't name the closing tag.
+        // Unguessable, so the item's text can't name the closing tag. The
+        // front matter is the item's data too.
         const tag = `${WRAPPER}_${NONCE()}`;
         const shown = itemText(
-          cut ? body.slice(0, MAX_KNOWLEDGE_BODY) : body,
+          [
+            "---",
+            ...frontMatterLines(item),
+            "---",
+            cut ? body.slice(0, MAX_KNOWLEDGE_BODY) : body,
+          ].join("\n"),
           tag,
         );
         const parts = [

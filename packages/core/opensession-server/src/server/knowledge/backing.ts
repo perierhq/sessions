@@ -80,6 +80,9 @@ type KnowledgeRead = NonNullable<KnowledgeVerdict["read"]>[number];
 
 export interface BackingDeps {
   call: typeof knowledgeRepo.call;
+  /** Whether the project has a knowledge repository (a "no" is reused
+   *  for a minute, client.ts). */
+  hasRepo: (project: string) => Promise<boolean>;
   /** How the code repository is read (repo-changes.ts). */
   repo: Partial<RepoChangeDeps>;
   refState: (
@@ -281,6 +284,11 @@ function readSet(entries: KnowledgeRead[]): KnowledgeRead[] {
 function deps(over: Partial<BackingDeps>): BackingDeps {
   return {
     call: over.call ?? knowledgeRepo.call,
+    hasRepo:
+      over.hasRepo ??
+      (over.call
+        ? (project) => over.call!("hasRepo", project)
+        : (project) => knowledgeRepo.hasRepo(project)),
     repo: over.repo ?? {},
     refState:
       over.refState ?? ((project, ref, opts) => refState(project, ref, opts)),
@@ -311,7 +319,7 @@ export async function knowledgeVerdict(
       failed: false,
       at,
     };
-    if (!(await d.call("hasRepo", input.project))) {
+    if (!(await d.hasRepo(input.project))) {
       if (!cited.length) return null;
       for (const ref of cited) {
         const path = parseKnowledgeCitation(ref)?.path ?? ref;

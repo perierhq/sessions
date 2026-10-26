@@ -6,7 +6,11 @@ import { __setMemoryDirForTest } from "../../agents/slack/memory";
 import type { KnowledgeFrontMatter } from "../../shared/knowledge";
 import { MemoryRepoError } from "../memory-repo/git-store";
 import { KNOWLEDGE_METHODS } from "../memory-repo/protocol";
-import { __setKnowledgeServiceForTest, knowledgeRepo } from "./client";
+import {
+  NO_REPO_TTL_MS,
+  __setKnowledgeServiceForTest,
+  knowledgeRepo,
+} from "./client";
 import { dispatchKnowledge } from "./dispatch";
 import { KnowledgeConflictError, KnowledgeService } from "./service";
 
@@ -44,6 +48,35 @@ afterAll(async () => {
 });
 
 describe("knowledgeRepo client", () => {
+  test("a project's 'no repository' is reused for a minute, until ensureRepo", async () => {
+    const now = Date.now();
+    expect(await knowledgeRepo.hasRepo("acme-new", now)).toBe(false);
+    // The repository appears behind the facade's back: still "no" within
+    // the minute, asked again after it.
+    await service.ensureRepo("acme-new");
+    expect(await knowledgeRepo.hasRepo("acme-new", now + 1_000)).toBe(false);
+    expect(await knowledgeRepo.hasRepo("acme-new", now + NO_REPO_TTL_MS)).toBe(
+      true,
+    );
+    // ensureRepo through the facade forgets the answer at once.
+    expect(await knowledgeRepo.hasRepo("acme-later", now)).toBe(false);
+    await knowledgeRepo.call("ensureRepo", "acme-later");
+    expect(await knowledgeRepo.hasRepo("acme-later", now + 1)).toBe(true);
+    // A "yes" is never reused: an outage fails that project's checks.
+    try {
+      __setKnowledgeServiceForTest({
+        hasRepo: async () => {
+          throw new MemoryRepoError("The memory worker is unavailable.", 503);
+        },
+      } as unknown as KnowledgeService);
+      await expect(
+        knowledgeRepo.hasRepo("acme-later", now + 2),
+      ).rejects.toThrow("unavailable");
+    } finally {
+      __setKnowledgeServiceForTest(service);
+    }
+  });
+
   test("write then search finds the item without an explicit fresh", async () => {
     await knowledgeRepo.call("ensureRepo", "acme");
     expect(await knowledgeRepo.call("hasRepo", "acme")).toBe(true);
