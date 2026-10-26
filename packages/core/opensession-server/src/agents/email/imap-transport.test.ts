@@ -253,6 +253,51 @@ describe("ImapTransport", () => {
     expect(again.cursor.value?.lastMessageAt).toBe(at!);
   });
 
+  test("a first connect counts the unread mail already there; a person brings in the last days", async () => {
+    const f = await fixture();
+    const day = 86_400_000;
+    f.deliver(mail(1), "INBOX", { date: new Date(Date.now() - 10 * day) });
+    f.deliver(mail(2), "INBOX", { flags: ["\\Seen"] });
+    f.deliver(mail(3));
+    const h = harness(f);
+    await h.transport.start();
+    expect(h.received).toEqual([]);
+    expect(h.transport.health().existingMail).toMatchObject({ unread: 2 });
+    expect(h.cursor.value?.existingMail?.unread).toBe(2);
+
+    // Only unread mail of the last days, through the same sink.
+    expect(await h.transport.bringIn(7)).toBe(1);
+    expect(h.received.map((m) => m.subject)).toEqual(["Mail 3"]);
+    expect(h.transport.health().existingMail?.broughtIn).toMatchObject({
+      days: 7,
+      count: 1,
+    });
+
+    // New mail still flows, and the record stays with the cursor.
+    f.deliver(mail(4));
+    await waitFor(() => h.cursor.value?.lastUid === 4, 2000);
+    expect(h.received.map((m) => m.subject)).toEqual(["Mail 3", "Mail 4"]);
+    expect(h.cursor.value?.existingMail).toMatchObject({
+      unread: 2,
+      broughtIn: { days: 7, count: 1 },
+    });
+
+    // A restart reads it back and counts nothing again.
+    await h.transport.stop();
+    const again = harness(f, { initialCursor: h.cursor.value });
+    await again.transport.start();
+    expect(again.transport.health().existingMail).toMatchObject({
+      unread: 2,
+      broughtIn: { count: 1 },
+    });
+  });
+
+  test("bringing mail in needs a live connection", async () => {
+    const f = await fixture();
+    const h = harness(f);
+    await expect(h.transport.bringIn(7)).rejects.toThrow("not connected");
+  });
+
   test("a restart catches up from the stored cursor, in order", async () => {
     const f = await fixture();
     for (const n of [1, 2, 3]) f.deliver(mail(n));
@@ -725,6 +770,7 @@ describe("ImapTransport", () => {
       uidValidity: "1",
       lastUid: 0,
       lastReceivedAt: new Date(START).toISOString(),
+      existingMail: { at: new Date(START).toISOString(), unread: 0 },
     });
   });
 

@@ -69,6 +69,20 @@ const sendsRightAway = (c: InboxConfig | null | undefined) =>
   c?.autonomy === "routine" && c.vetoMs === null;
 
 const NOT_SIGNED_IN = "Only a signed-in person can change inboxes";
+const OWNER_BRINGS_IN =
+  "Only the instance owner can bring in mail on an inbox that sends on its own";
+
+/** Why `actor` may not bring in older mail on `inbox`, or null: old mail
+ *  on an inbox that sends on its own could be answered without a person. */
+export function bringInRefusal(
+  actor: Actor | null,
+  inbox: InboxConfig,
+): string | null {
+  if (!actor?.verified) return NOT_SIGNED_IN;
+  if (inbox.autonomy === "routine" && !isOwnerActor(actor))
+    return OWNER_BRINGS_IN;
+  return null;
+}
 const OWNER_SENDS = "Only the instance owner can let Sessions send right away";
 const OWNER_INTERNAL =
   "Only the instance owner can allow internal mail servers";

@@ -314,6 +314,12 @@ export class EmailChannelAdapter implements SupportChannelAdapter {
     );
   }
 
+  bringIn(days: number): Promise<number> {
+    if (this.closed || !this.imap)
+      return Promise.reject(new Error("The inbox is not connected"));
+    return this.imap.bringIn(days);
+  }
+
   health(): InboxHealth {
     const health = this.imap ? this.imap.health() : { ...this.idle };
     if (!this.smtpError) return health;

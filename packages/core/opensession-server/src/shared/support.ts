@@ -613,7 +613,26 @@ export interface InboxHealth {
   reason: string | null;
   retryAt: string | null;
   lastMessageAt: string | null;
+  /** Mail already in the inbox when it first connected; absent before
+   *  that, and for inboxes connected before it was counted. */
+  existingMail?: InboxExistingMail;
 }
+
+/** The first connect starts with the mail that arrives after it: the
+ *  unread mail already there is counted, and a person may bring in what
+ *  arrived in the last days (POST /api/support/inboxes/:id/bring-in). */
+export interface InboxExistingMail {
+  /** When the inbox first connected. */
+  at: string;
+  /** Unread messages already in the inbox then. */
+  unread: number;
+  /** Set once a person brought mail in. */
+  broughtIn?: { at: string; days: number; count: number };
+}
+
+/** The choices of "Bring in the last N days". */
+export const BRING_IN_DAYS = [1, 3, 7, 14, 30] as const;
+export const DEFAULT_BRING_IN_DAYS = 7;
 
 type ServerView = Omit<MailServerConfig, "passwordRef"> & {
   hasPassword: boolean;

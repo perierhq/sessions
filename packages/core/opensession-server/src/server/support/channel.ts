@@ -59,6 +59,11 @@ export interface SupportChannelAdapter {
    *  passed. Does nothing while connected or backing off. */
   resume?(): Promise<void>;
   health(): InboxHealth;
+  /** Takes in the unread mail of the last `days` days that was already
+   *  there when the inbox first connected, through the inbound sink;
+   *  resolves to how many messages were offered. Rejects when not
+   *  connected. */
+  bringIn?(days: number): Promise<number>;
   /** Throws SendError. */
   send(out: OutboundDraft): Promise<SentReceipt>;
   mark?(

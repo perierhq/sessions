@@ -38,8 +38,13 @@ export interface MailFixture {
   smtpServer: FixtureServer;
   /** The hoodiecrow server (it ships no types), for scripted handlers. */
   imap: any;
-  /** Appends to `folder` (INBOX by default) and notifies IDLE sessions. */
-  deliver(raw: string, folder?: string): void;
+  /** Appends to `folder` (INBOX by default) and notifies IDLE sessions;
+   *  `flags` (e.g. \\Seen) and `date` (the internal date) are optional. */
+  deliver(
+    raw: string,
+    folder?: string,
+    opts?: { flags?: string[]; date?: Date },
+  ): void;
   sent: Array<{ envelope: { from: string; to: string[] }; raw: string }>;
   /** Answer for the next DATA command instead of 250; cleared once used. */
   smtpReply: { code: number; message: string } | null;
@@ -117,8 +122,13 @@ export async function startMailFixture(
     imapServer: server(imapPort),
     smtpServer: server(0),
     imap,
-    deliver(raw, folder = "INBOX") {
-      imap.appendMessage(folder, [], new Date(), raw);
+    deliver(raw, folder = "INBOX", opts = {}) {
+      imap.appendMessage(
+        folder,
+        opts.flags ?? [],
+        opts.date ?? new Date(),
+        raw,
+      );
     },
     sent,
     smtpReply: null,
