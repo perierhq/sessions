@@ -265,6 +265,24 @@ known problems: <n> open`. An approved article that relies on a known
    text past the article size is cut with a note. One commit by the person
    who uploaded: `Import files: <n>`.
 
+   Every reply a person sends from a support conversation (written by hand,
+   or an agent's draft a person sent, edited or not) is captured the same
+   way as an imported pair: the customer messages it answered and the sent
+   text, stripped and rewritten, under `sources/mail/` with the send time as
+   `answeredAt` (so normally trusted), sourced `mail:<Message-ID>` and
+   `conversation:<id>`. Automatic sends are never captured. A capture is
+   queued first (`knowledge-pending`, `capture:<message id>`), so one a
+   restart or an error cut off is retried hourly (up to 5 tries). One commit
+   by Pat: `Capture a reply a person sent (<trust>)`.
+
+   When a captured or imported question was also answered by hand in
+   another conversation (up to 3 full-text candidates, each confirmed by the
+   small model) and no article covers it (none cites those replies, and the
+   model doesn't call the top article hit the same question), Pat writes a
+   reference suggestion citing every such reply, its text the newest answer
+   generalised by the small model. A later repeat adds its reply to that
+   suggestion instead of making another.
+
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
 6. The run happens daily, after a push to the default branch, and on demand
