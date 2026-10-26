@@ -15,7 +15,9 @@
  * An item whose issue is no longer listed is retired only when GitHub says
  * so for that issue: closed (refState), or open while the list was read in
  * full (the `bug` label went). A truncated list or an unreadable state
- * leaves the item as it is: absence alone is no proof. A list that can't be
+ * leaves the item as it is: absence alone is no proof. An item a person
+ * edited or retired last is left alone (mirrors.ts lastWrittenByPat), so
+ * only an item Pat retired comes back when its issue does. A list that can't be
  * read throws (the daily step retries, the import fails) and changes
  * nothing; a project without a GitHub repository has nothing to sync.
  * Unchanged items are not rewritten, so a rerun makes no commit; what
@@ -23,7 +25,7 @@
  *
  * Runs daily (maintenance.ts KNOWLEDGE_DAILY_STEPS) and as the
  * `known-problems` import. Reuses github.ts (openBugIssues, refState),
- * strip.ts, jobs.ts and the website import's write-and-retry shape.
+ * strip.ts, mirrors.ts, jobs.ts and the website import's write-and-retry shape.
  * Nothing runs at import.
  */
 import type {
@@ -51,6 +53,7 @@ import { issueItemPath, knowledgeRepoName } from "../layout";
 import type { KnowledgeChange } from "../service";
 import { startJob } from "./jobs";
 import { stripCustomerData } from "./strip";
+import { lastWrittenByPat } from "./mirrors";
 import { exactHosts } from "./website";
 
 /** Characters of (stripped) issue text kept. */
@@ -74,7 +77,8 @@ export interface KnownProblemsResult {
   written: number;
   /** Items retired because their issue closed or lost the label. */
   retired: number;
-  /** Open issues left out: credential-like text. */
+  /** Open issues left out (credential-like text), and items a person
+   *  edited or retired last, left alone. */
   skipped: number;
 }
 
@@ -206,11 +210,13 @@ export async function syncKnownProblems(
 
   const listed = new Set(open.map((issue) => issue.number));
   const plans = new Map<number, Planned>();
+  let skipped = 0;
   for (const issue of open) {
     const plan = planned(issue, ghRepo, keepHosts);
     if (plan) plans.set(issue.number, plan);
-    else result.skipped++;
+    else skipped++;
   }
+  result.skipped = skipped;
 
   for (let attempt = 1; ; attempt++) {
     const items = await issueItems(project, today);
@@ -218,21 +224,29 @@ export async function syncKnownProblems(
     const expected: Record<string, string | null> = {};
     let written = 0;
     let retired = 0;
+    let personal = 0;
     for (const [number, plan] of plans) {
       const path = issueItemPath(number);
-      const current = items.get(number);
+      // Read directly: the "all" list leaves retired items out, and a
+      // reopened issue's item is there all the same.
+      const current = await knowledgeRepo.call("read", project, path, today);
       const dependsOn = [`issue:${number}`];
       if (
         current &&
-        current.status !== "retired" &&
-        current.title === plan.title &&
-        current.kind === "answer" &&
-        current.trust === "reference" &&
-        same(current.sources, dependsOn) &&
-        same(current.dependsOn, dependsOn)
-      ) {
-        const read = await knowledgeRepo.call("read", project, path, today);
-        if (read && read.body.trim() === plan.body) continue;
+        current.item.status !== "retired" &&
+        current.item.title === plan.title &&
+        current.item.kind === "answer" &&
+        current.item.trust === "reference" &&
+        same(current.item.sources, dependsOn) &&
+        same(current.item.dependsOn, dependsOn) &&
+        current.body.trim() === plan.body
+      )
+        continue;
+      // A person's edit or retire wins over the issue: only what Pat
+      // wrote last (a retire included) is rewritten or reopened.
+      if (current && !(await lastWrittenByPat(project, path))) {
+        personal++;
+        continue;
       }
       const fm: KnowledgeFrontMatter = {
         title: plan.title,
@@ -246,17 +260,12 @@ export async function syncKnownProblems(
         validAsOf: today,
       };
       // Waiting for a person stays waiting: new text, same question.
-      if (current?.status === "needs-check" && current.check) {
+      if (current?.item.status === "needs-check" && current.item.check) {
         fm.status = "needs-check";
-        fm.check = current.check;
+        fm.check = current.item.check;
       }
       changes.push({ op: "put", path, fm, body: plan.body });
-      // The "all" list leaves retired items out: a reopened issue's item
-      // is there all the same.
-      expected[path] =
-        current?.blob ??
-        (await knowledgeRepo.call("read", project, path, today))?.item.blob ??
-        null;
+      expected[path] = current?.item.blob ?? null;
       written++;
     }
     for (const [number, current] of items) {
@@ -273,6 +282,10 @@ export async function syncKnownProblems(
         today,
       );
       if (!read) continue;
+      if (!(await lastWrittenByPat(project, current.path))) {
+        personal++;
+        continue;
+      }
       const { check: _check, ...fm } = frontMatterOf(read.item);
       changes.push({
         op: "put",
@@ -285,6 +298,7 @@ export async function syncKnownProblems(
     }
     result.written = written;
     result.retired = retired;
+    result.skipped = skipped + personal;
     if (!changes.length) return result;
     try {
       await knowledgeRepo.call("write", project, changes, {

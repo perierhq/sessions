@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import { __clearGithubSignalCacheForTest } from "../freshness/github";
+import { frontMatterOf } from "../freshness/revalidate";
 import { issueItemPath } from "../layout";
 import { KnowledgeService } from "../service";
 import { __waitForJobForTest, listJobs } from "./jobs";
@@ -71,6 +72,29 @@ describe("syncKnownProblems", () => {
     (await knowledgeRepo.call("history", "acme", undefined, 100)).length;
   const read = (n: number) =>
     knowledgeRepo.call("read", "acme", issueItemPath(n), TODAY);
+
+  /** A person's edit of issue item `n`: its status set, a line added. */
+  async function personSets(n: number, status: "retired" | "active") {
+    const current = (await read(n))!;
+    const { check: _check, ...fm } = frontMatterOf(current.item);
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path: issueItemPath(n),
+          fm: { ...fm, status },
+          body: `${current.body}\n\nWorkaround: export as JSON.`,
+        },
+      ],
+      {
+        message: "Ada's edit",
+        author: { name: "Ada" },
+        expected: { [issueItemPath(n)]: current.item.blob },
+      },
+    );
+  }
 
   function deps(
     gh: ReturnType<typeof fakeGithub>,
@@ -230,6 +254,46 @@ describe("syncKnownProblems", () => {
       skipped: 0,
     });
     expect((await read(1))!.item.status).toBe("active");
+  });
+
+  test("an item a person edited last is left alone and counted; only Pat's retires reopen", async () => {
+    const gh = fakeGithub({
+      [LIST]: [issue(1, "CSV export fails"), issue(2, "Slow search")],
+    });
+    await syncKnownProblems("acme", deps(gh));
+    // Ada retires 1 while it is open, and edits 2.
+    await personSets(1, "retired");
+    await personSets(2, "active");
+    const one = await read(1);
+    const two = await read(2);
+    const after = await commits();
+
+    // 1 still listed (no reopen); 2 retitled (no rewrite).
+    gh.answers[LIST] = [
+      issue(1, "CSV export fails"),
+      issue(2, "Slow search everywhere"),
+    ];
+    expect(await syncKnownProblems("acme", deps(gh))).toEqual({
+      written: 0,
+      retired: 0,
+      skipped: 2,
+    });
+    expect((await read(1))!.item.blob).toBe(one!.item.blob);
+    expect((await read(2))!.item.blob).toBe(two!.item.blob);
+
+    // 2 closes: Ada's edit stays active.
+    gh.answers[LIST] = [issue(1, "CSV export fails")];
+    gh.answers[`/repos/${GH}/issues/2`] = {
+      ...issue(2, "Slow search"),
+      state: "closed",
+    };
+    expect(await syncKnownProblems("acme", deps(gh))).toEqual({
+      written: 0,
+      retired: 0,
+      skipped: 2,
+    });
+    expect((await read(2))!.item.status).toBe("active");
+    expect(await commits()).toBe(after);
   });
 
   test("a changed title rewrites the item", async () => {
