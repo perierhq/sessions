@@ -5,7 +5,10 @@
 // on the server (run-session.ts, session-create.ts), as the Plain
 // discussion mirror is (agents/plain/discussion-mirror.ts). In memory and
 // bounded: a restart forgets it, so a draft cites nothing verifiable and
-// waits for a person. Never logged. Nothing runs at import.
+// waits for a person. The knowledge items the session's own
+// search_knowledge and read_knowledge printed are recorded by those tools
+// (knowledge/support-tools.ts), at the commit they printed. Never logged.
+// Nothing runs at import.
 import { MCP_CALL_TOOL } from "@tellahq/opensession-protocol/tool-presentation";
 import type { StreamEvent } from "../run-events";
 import { WEB_FETCH_TOOL } from "../pi-web-search";
@@ -25,6 +28,8 @@ interface Evidence {
   urls: Set<string>;
   /** `<connector>\0<id>` */
   records: Set<string>;
+  /** `<path>\0<commit>`, the commit as printed (7 or 40 hex). */
+  knowledge: Set<string>;
 }
 
 const sessions = new Map<string, Evidence>();
@@ -46,7 +51,7 @@ function evidenceFor(sessionId: string): Evidence {
     sessions.set(sessionId, e);
     return e;
   }
-  e = { urls: new Set(), records: new Set() };
+  e = { urls: new Set(), records: new Set(), knowledge: new Set() };
   sessions.set(sessionId, e);
   while (sessions.size > MAX_SESSIONS)
     sessions.delete(sessions.keys().next().value!);
@@ -170,4 +175,41 @@ export function sessionReturnedRecord(
   id: string,
 ): boolean {
   return !!sessions.get(sessionId)?.records.has(`${connector}\u0000${id}`);
+}
+
+const KNOWLEDGE_COMMIT = /^[0-9a-f]{7,64}$/;
+
+/** A knowledge tool of `sessionId` printed item `path` at `commit`. */
+export function recordKnowledgeSeen(
+  sessionId: string,
+  path: string,
+  commit: string,
+): void {
+  const sha = commit.toLowerCase();
+  if (!path || path.length > MAX_ID_CHARS || !KNOWLEDGE_COMMIT.test(sha))
+    return;
+  add(evidenceFor(sessionId).knowledge, `${path}\u0000${sha}`, MAX_IDS);
+}
+
+/** Whether a knowledge tool of `sessionId` printed `path` at `commit`. A
+ *  short commit (search_knowledge prints seven hex) and the full one name
+ *  the same commit: either may be a prefix of the other, at least seven
+ *  hex long. */
+export function sessionSawKnowledge(
+  sessionId: string,
+  path: string,
+  commit: string,
+): boolean {
+  const sha = commit.toLowerCase();
+  if (!KNOWLEDGE_COMMIT.test(sha)) return false;
+  const seen = sessions.get(sessionId)?.knowledge;
+  if (!seen) return false;
+  if (seen.has(`${path}\u0000${sha}`)) return true;
+  const key = `${path}\u0000`;
+  for (const entry of seen) {
+    if (!entry.startsWith(key)) continue;
+    const printed = entry.slice(key.length);
+    if (printed.startsWith(sha) || sha.startsWith(printed)) return true;
+  }
+  return false;
 }

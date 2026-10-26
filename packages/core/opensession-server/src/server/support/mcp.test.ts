@@ -28,6 +28,19 @@ import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
 import { TEST_SITES, cleanLabels } from "./testing/reply-testbed";
 import { __setProjectSitesForTest } from "./reply";
 import { __setDraftCheckForTest } from "./verify";
+import { createMcpRuntime } from "../mcp-runtime";
+import { createRepoMemoryMcpServer } from "../memory-repo/tools";
+
+/** createRepoMemoryMcpServer's tools with file tools on, as before
+ *  knowledge: knowledge adds nothing to it. */
+const MEMORY_TOOL_IDS = [
+  "opensession-memory_delete_memory_file",
+  "opensession-memory_list_memory_files",
+  "opensession-memory_read_memory_file",
+  "opensession-memory_search_memory",
+  "opensession-memory_sync_memory_repository",
+  "opensession-memory_write_memory_file",
+];
 
 const kernel = useSupportTestKernel();
 const INBOX = "help@acme.example.test";
@@ -311,7 +324,55 @@ test("the agent has no tool to move a conversation", () => {
   const names = supportToolDefinitions({ sessionId: "os-1" }).map(
     (t) => t.name,
   );
-  expect(names).toEqual(["get_conversation", "draft_reply", "report_bug"]);
+  expect(names).toEqual([
+    "get_conversation",
+    "draft_reply",
+    "search_knowledge",
+    "read_knowledge",
+    "report_bug",
+  ]);
+});
+
+test("only the support server carries the knowledge tools", async () => {
+  const runtime = await createMcpRuntime({
+    mcpServers: [],
+    deniedToolIds: new Set(),
+    inProcessMcp: {
+      ...supportSessionMcp("os-1"),
+      "opensession-memory": createRepoMemoryMcpServer({
+        scopeKeys: () => ["workspace"],
+        fileTools: () => true,
+      }),
+    },
+  });
+  try {
+    const ids = (await runtime.catalog()).map((t) => t.id);
+    expect(ids).toContain(`${SUPPORT_MCP_SERVER}_search_knowledge`);
+    expect(ids).toContain(`${SUPPORT_MCP_SERVER}_read_knowledge`);
+    // The memory server is unchanged: no knowledge tool, nothing that
+    // writes knowledge.
+    expect(
+      ids.filter((id) => id.startsWith("opensession-memory_")).sort(),
+    ).toEqual(MEMORY_TOOL_IDS);
+    expect(ids.filter((id) => id.includes("knowledge")).sort()).toEqual([
+      `${SUPPORT_MCP_SERVER}_read_knowledge`,
+      `${SUPPORT_MCP_SERVER}_search_knowledge`,
+    ]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("draft_reply takes a knowledge item as a source", () => {
+  const sources = draftReplyTool("os-1").inputSchema.sources;
+  const parsed = sources.safeParse([
+    { kind: "knowledge", ref: "articles/export.md@3f2a1b0" },
+  ]);
+  expect(parsed.success).toBe(true);
+  expect(sources.description ?? "").toBeTruthy();
+  expect(JSON.stringify(z.toJSONSchema(sources))).toContain(
+    "knowledge: path@commit as read_knowledge gave it",
+  );
 });
 
 test("a session that no longer answers the conversation can't report it", async () => {
