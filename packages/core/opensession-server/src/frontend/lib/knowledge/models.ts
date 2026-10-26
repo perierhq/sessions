@@ -8,10 +8,10 @@ import {
   type KnowledgeImportJob,
   type KnowledgeImportKind,
   type KnowledgeItem,
+  type KnowledgeOrigin,
 } from "../../../shared/knowledge";
 
 export type KnowledgeBadgeLabel =
-  | "Answer"
   | "Internal"
   | "Reference"
   | "Needs check"
@@ -36,14 +36,13 @@ function isOverdue(item: BadgeItem): boolean {
   return item.status === "active" && item.effective === "needs-check";
 }
 
-/** What an item is, then why it can't back a reply. A trusted, active
- *  answer carries only "Answer". */
+/** What an item is, then why it can't back a reply. An answer is the
+ *  default kind, so a trusted, active answer carries no badge at all and a
+ *  list of them stays calm. */
 export function itemBadges(item: BadgeItem): KnowledgeBadge[] {
-  const badges: KnowledgeBadge[] = [
-    item.kind === "internal"
-      ? { label: "Internal", tone: "info" }
-      : { label: "Answer", tone: "neutral" },
-  ];
+  const badges: KnowledgeBadge[] = [];
+  if (item.kind === "internal")
+    badges.push({ label: "Internal", tone: "info" });
   if (item.trust === "reference")
     badges.push({ label: "Reference", tone: "neutral" });
   if (item.effective === "retired")
@@ -96,6 +95,23 @@ export function freshnessLine(
     return `Review by ${formatDay(item.reviewBy)}`;
   }
   return `Valid as of ${formatDay(item.validAsOf)}`;
+}
+
+const ORIGIN_LABELS: Record<KnowledgeOrigin, string | null> = {
+  article: null,
+  suggestion: "Suggestion",
+  mail: "From the mailbox",
+  repo: "From the docs",
+  release: "From release notes",
+  web: "From the website",
+  issue: "From an issue",
+  file: "From a file",
+};
+
+/** Where an item came from, for a list row; null for an article the team
+ *  wrote, which is most of them. */
+export function originLabel(origin: KnowledgeOrigin): string | null {
+  return ORIGIN_LABELS[origin];
 }
 
 const FILTER_LABELS: Record<KnowledgeFilter, string> = {

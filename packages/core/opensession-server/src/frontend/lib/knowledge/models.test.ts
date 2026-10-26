@@ -10,6 +10,7 @@ import {
   freshnessLine,
   itemBadges,
   jobLine,
+  originLabel,
   sectionCounts,
 } from "./models";
 
@@ -40,22 +41,21 @@ function item(over: Partial<KnowledgeItem> = {}): KnowledgeItem {
 const labels = (i: KnowledgeItem) => itemBadges(i).map((b) => b.label);
 
 describe("itemBadges", () => {
-  test("a trusted answer is just an answer", () => {
-    expect(labels(item())).toEqual(["Answer"]);
+  test("a trusted, active answer carries no badge", () => {
+    expect(labels(item())).toEqual([]);
   });
 
   test("a reference item", () => {
     expect(labels(item({ trust: "reference", origin: "mail" }))).toEqual([
-      "Answer",
       "Reference",
     ]);
   });
 
   test("an item past its review date is overdue and needs a check", () => {
     const overdue = item({ reviewBy: "2026-10-01", effective: "needs-check" });
-    expect(labels(overdue)).toEqual(["Answer", "Overdue", "Needs check"]);
+    expect(labels(overdue)).toEqual(["Overdue", "Needs check"]);
     const tones = itemBadges(overdue).map((b) => b.tone);
-    expect(tones).toEqual(["neutral", "danger", "warning"]);
+    expect(tones).toEqual(["danger", "warning"]);
   });
 
   test("an item flipped by a change needs a check, not overdue", () => {
@@ -67,7 +67,7 @@ describe("itemBadges", () => {
           check: { reason: "docs/export.md changed", since: TODAY },
         }),
       ),
-    ).toEqual(["Answer", "Needs check"]);
+    ).toEqual(["Needs check"]);
   });
 
   test("internal and retired", () => {
@@ -77,6 +77,12 @@ describe("itemBadges", () => {
       ),
     ).toEqual(["Internal", "Retired"]);
   });
+});
+
+test("originLabel: nothing for the team's own articles", () => {
+  expect(originLabel("article")).toBeNull();
+  expect(originLabel("mail")).toBe("From the mailbox");
+  expect(originLabel("repo")).toBe("From the docs");
 });
 
 describe("freshnessLine", () => {
