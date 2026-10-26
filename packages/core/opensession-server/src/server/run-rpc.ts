@@ -138,6 +138,40 @@ export function unregisterSessionMcpServers(sessionId: string): void {
   sessionServers.delete(sessionId);
 }
 
+/**
+ * The named opensession-* servers a run with this context reaches: the
+ * session's registered override first, then the registered builder. Names
+ * the run's policy does not bind are left out. Run-rpc resolves each relayed
+ * call through this; a run with no detached host (host-client.ts
+ * runAgentInProcess) mounts the same set in-process, so both paths serve
+ * exactly the servers named in the run's proxyMcpServers. Null when no
+ * builder is registered yet.
+ */
+export async function resolveRunMcpServers(
+  ctx: RunTokenContext,
+  names: readonly string[],
+): Promise<Record<string, any> | null> {
+  const builder: InteractiveMcpBuilder | undefined = g.__runRpcMcpBuilder;
+  if (!builder) return null;
+  const perSession = sessionServers.get(ctx.sessionId);
+  let built: Record<string, any> | undefined;
+  const servers: Record<string, any> = {};
+  for (const name of names) {
+    let cfg = perSession?.[name];
+    if (!cfg) {
+      built ??= await builder(
+        ctx.sessionId,
+        ctx.user,
+        ctx.promptEntryId,
+        ctx.humanPrompter,
+      );
+      cfg = built[name];
+    }
+    if (cfg?.instance) servers[name] = cfg;
+  }
+  return servers;
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -195,21 +229,10 @@ export async function dispatchRunRpc(
     return { kind: "call", done };
   }
 
-  const builder: InteractiveMcpBuilder | undefined = g.__runRpcMcpBuilder;
-  if (!builder) return imm(503, { error: "MCP builder not registered yet" });
-
   const serverName = String(body?.server || "");
-  const perSession = sessionServers.get(ctx.sessionId);
-  const cfg =
-    perSession?.[serverName] ??
-    (
-      await builder(
-        ctx.sessionId,
-        ctx.user,
-        ctx.promptEntryId,
-        ctx.humanPrompter,
-      )
-    )[serverName];
+  const resolved = await resolveRunMcpServers(ctx, [serverName]);
+  if (!resolved) return imm(503, { error: "MCP builder not registered yet" });
+  const cfg = resolved[serverName];
   if (!cfg?.instance) {
     return imm(404, {
       error: `MCP server "${serverName}" is not available in this session: not bound by this run's MCP policy.`,
