@@ -17,7 +17,7 @@ import type { PrDetails, PrDiffData } from "./pr-info";
 import { workspaceExecFor, type WorkspaceExec } from "./sandbox/workspace-exec";
 import { sessionTouchedPaths } from "./session-touched";
 import { resolveSessionRepoContext } from "./session-repos";
-import { getRepo, isSharedCheckoutDir } from "./worktree";
+import { getRepo, githubServiceGitEnv, isSharedCheckoutDir } from "./worktree";
 import { supportsCodeFlow } from "./vendor/calldiff/extract";
 import type {
   CodeFlowAnalysisInput,
@@ -491,12 +491,16 @@ export async function sessionCodeFlow(
   }
 }
 
-async function git(dir: string, args: string[]): Promise<string> {
+async function git(
+  dir: string,
+  args: string[],
+  env: Record<string, string | undefined> = processEnvWithoutPrompts(),
+): Promise<string> {
   const child = Bun.spawn(["git", "-C", dir, ...args], {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...processEnvWithoutPrompts(), GIT_TERMINAL_PROMPT: "0" },
+    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
   });
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -567,29 +571,42 @@ async function ensurePrObjects(
           repo.host === "codestorage"
             ? `+refs/heads/${details.headRefName}:${headRef}`
             : `+refs/pull/${details.number}/head:${headRef}`;
-        await git(repo.repo, [
-          "fetch",
-          "--quiet",
-          "--no-tags",
-          "--no-write-fetch-head",
-          "origin",
-          `+refs/heads/${details.baseRefName}:${baseRef}`,
-          headSpec,
-        ]);
+        // GitHub fetches sign in the way worktree.ts's do.
+        const fetchEnv =
+          repo.host === "codestorage"
+            ? undefined
+            : await githubServiceGitEnv(repo.ghRepo);
+        await git(
+          repo.repo,
+          [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "origin",
+            `+refs/heads/${details.baseRefName}:${baseRef}`,
+            headSpec,
+          ],
+          fetchEnv,
+        );
         const fetchedHead = await git(repo.repo, ["rev-parse", headRef]);
         if (fetchedHead !== diff.headRefOid)
           throw new Error("Pull request changed during code-flow analysis");
         if (diff.baseRefOid) {
           const fetchedBase = await git(repo.repo, ["rev-parse", baseRef]);
           if (fetchedBase !== diff.baseRefOid) {
-            await git(repo.repo, [
-              "fetch",
-              "--quiet",
-              "--no-tags",
-              "--no-write-fetch-head",
-              "origin",
-              `+${diff.baseRefOid}:${baseRef}`,
-            ]);
+            await git(
+              repo.repo,
+              [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "origin",
+                `+${diff.baseRefOid}:${baseRef}`,
+              ],
+              fetchEnv,
+            );
           }
         }
       });

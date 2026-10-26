@@ -988,7 +988,10 @@ async function localPrDiffPatch(
   )?.repo;
   if (!local) throw new Error(`no local checkout configured for ${ghRepo}`);
   const headRef = `pull/${meta.number}/head`;
-  await $`git -C ${local} fetch -q origin ${meta.baseRefName} ${headRef}`.quiet();
+  const { githubServiceGitEnv } = await import("./worktree");
+  await $`git -C ${local} fetch -q origin ${meta.baseRefName} ${headRef}`
+    .env(await githubServiceGitEnv(ghRepo))
+    .quiet();
   const base = `origin/${meta.baseRefName}`;
   if (maxPatchBytes)
     return boundedCommandPatch(

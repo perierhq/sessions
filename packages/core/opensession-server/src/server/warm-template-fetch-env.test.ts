@@ -12,7 +12,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { $ } from "bun";
 import { getConfigAsync } from "./config";
-import { __setGitAccessSeamsForTest, gitAccessIssue } from "./git-access-health";
+import {
+  __setGitAccessSeamsForTest,
+  gitAccessIssue,
+} from "./git-access-health";
 import { githubGitCredentialEnv } from "./github-git-credential";
 import type { NotificationEvent } from "./notification-threads";
 import { __setSessionsDirForTest } from "./paths";

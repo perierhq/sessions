@@ -176,9 +176,13 @@ test("a fetch with no token to offer: the App isn't installed for the repository
   expect(told[0]?.reason).toBe("Git can't sign in to GitHub");
   // Other failures are not sign-in failures, token or not.
   expect(
-    await recordGitAccessFailure(repo, "fatal: unable to access: Could not resolve host", {
-      token: false,
-    }),
+    await recordGitAccessFailure(
+      repo,
+      "fatal: unable to access: Could not resolve host",
+      {
+        token: false,
+      },
+    ),
   ).toBeNull();
 });
 
