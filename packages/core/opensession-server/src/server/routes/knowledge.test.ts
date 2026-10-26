@@ -400,6 +400,47 @@ describe("suggestions", () => {
   });
 });
 
+describe("discard and revert", () => {
+  test("discard removes a suggestion and revert brings it back", async () => {
+    await seed([
+      {
+        path: "suggestions/export.md",
+        fm: fm({ origin: "suggestion", trust: "reference" }),
+        body: "Export it.\n",
+      },
+    ]);
+    const discarded = await call(
+      "POST",
+      "/api/knowledge/acme/suggestions/discard",
+      { body: { paths: ["suggestions/export.md"] } },
+    );
+    expect(discarded.status).toBe(200);
+    const { commit } = (await discarded.json()) as { commit: string };
+    expect(await service.read("acme", "suggestions/export.md", TODAY)).toBe(
+      null,
+    );
+    const reverted = await call("POST", "/api/knowledge/acme/revert", {
+      body: { sha: commit },
+    });
+    expect(reverted.status).toBe(200);
+    expect(
+      (await service.read("acme", "suggestions/export.md", TODAY))?.item.title,
+    ).toBe("Exporting a project as CSV");
+  });
+
+  test("discard refuses an article", async () => {
+    await seed([
+      { path: "articles/export.md", fm: fm(), body: "Export it.\n" },
+    ]);
+    const response = await call(
+      "POST",
+      "/api/knowledge/acme/suggestions/discard",
+      { body: { paths: ["articles/export.md"] } },
+    );
+    expect(response.status).toBe(400);
+  });
+});
+
 describe("needs-check", () => {
   test("a repo change comes with its patch", async () => {
     await seed([
@@ -473,7 +514,7 @@ describe("imports", () => {
 });
 
 describe("attachments", () => {
-  test("an .html attachment is served as opaque bytes", async () => {
+  test("a PDF attachment is served as opaque bytes", async () => {
     await seed([
       { path: "articles/export.md", fm: fm(), body: "Export it.\n" },
     ]);
@@ -482,7 +523,7 @@ describe("attachments", () => {
       [
         {
           op: "attach",
-          path: "attachments/export/page.html",
+          path: "attachments/export/guide.pdf",
           bytes: new TextEncoder().encode("<script>alert(1)</script>"),
         },
       ],
@@ -490,7 +531,7 @@ describe("attachments", () => {
     );
     const response = await call(
       "GET",
-      "/api/knowledge/acme/attachment?path=attachments/export/page.html",
+      "/api/knowledge/acme/attachment?path=attachments/export/guide.pdf",
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe(
@@ -499,6 +540,21 @@ describe("attachments", () => {
     expect(response.headers.get("content-disposition")).toStartWith(
       "attachment",
     );
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  test("an .html attachment is never served", async () => {
+    // The knowledge layout refuses .html attachments, so none can be stored
+    // through the service; the route refuses the path before reading.
+    await seed([
+      { path: "articles/export.md", fm: fm(), body: "Export it.\n" },
+    ]);
+    const response = await call(
+      "GET",
+      "/api/knowledge/acme/attachment?path=attachments/export/page.html",
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).not.toContain("text/html");
   });
 
   test("an uploaded image lands next to its article", async () => {
