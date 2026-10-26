@@ -22,8 +22,10 @@ import {
   NC_LINK,
   NC_MISSING,
   NC_PANE,
+  NC_PANE_BODY,
   NC_PANE_LABEL,
   NC_PANE_TEXT,
+  NC_PANE_TEXT_ALONE,
   NC_PANES,
   NC_PATCH_LINE,
   NC_REASON,
@@ -350,32 +352,32 @@ function NeedsCheckItem({
 
   if (editing)
     return (
-      <div className="-mx-5">
-        <div className="px-5">{back}</div>
+      <>
+        {back}
         <KnowledgeEditor
           project={project}
           path={path}
           onSaved={(p) => void saved(p)}
           onHistory={(p) => onNavigate({ tab: "history", path: p })}
         />
-      </div>
+      </>
     );
 
   if (read.error && !read.data)
     return (
-      <div className="px-5">
+      <>
         {back}
         <InlineAlert onRetry={() => void read.mutate()}>
           {errorMessage(read.error, "Couldn't load what changed")}
         </InlineAlert>
-      </div>
+      </>
     );
   if (!read.data)
     return (
-      <div className="px-5">
+      <>
         {back}
         <SettingCardSkeleton rows={6} />
-      </div>
+      </>
     );
 
   const { item, body, change } = read.data;
@@ -388,7 +390,7 @@ function NeedsCheckItem({
     );
 
   return (
-    <div className="px-5">
+    <>
       {back}
       <div className={NC_HEAD}>
         <h2 className={NC_TITLE}>{item.title}</h2>
@@ -445,14 +447,16 @@ function NeedsCheckItem({
         <Pane
           side={{ label: pane.left.label, text: pane.left.text }}
           hidden={side !== "article"}
+          switchLabel="Article"
         />
         <Pane
           side={pane.right}
           hidden={side !== "change"}
+          switchLabel="What changed"
           onOpen={change.kind === "conflict" ? openLink : undefined}
         />
       </div>
-    </div>
+    </>
   );
 }
 
@@ -460,55 +464,64 @@ function NeedsCheckItem({
 function Pane({
   side,
   hidden,
+  switchLabel,
   onOpen,
 }: {
   side: PaneSide;
   hidden: boolean;
+  /** What the phone's switch calls this side; a label that only repeats
+   *  it is left out there. */
+  switchLabel: string;
   /** Opens `side.link` in the app (another article); without it a link is
    *  a web address. */
   onOpen?: (link: string) => void;
 }) {
   const link = side.link;
+  const labelAlone = side.label === switchLabel && !link;
   return (
     <SettingCard className={cn(NC_PANE, hidden && "phone:hidden")}>
-      <div className={NC_PANE_LABEL}>
-        <span className="shrink-0">{side.label}</span>
-        {link && onOpen ? (
-          <PlainButton className={NC_LINK} onClick={() => onOpen(link)}>
-            {link}
-          </PlainButton>
-        ) : link ? (
-          <a
-            className={NC_LINK}
-            href={link}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            {link}
-          </a>
-        ) : null}
-      </div>
-      {side.patchLines ? (
-        <pre className={NC_PANE_TEXT}>
-          {side.patchLines.map((line, index) => (
-            <div
-              key={index}
-              className={cn(
-                NC_PATCH_LINE,
-                line.tone === "add" && "text-green",
-                line.tone === "remove" && "text-red",
-                line.tone === "meta" && "text-dim",
-              )}
+      <div className={NC_PANE_BODY}>
+        <div className={cn(NC_PANE_LABEL, labelAlone && "phone:hidden")}>
+          <span className="shrink-0">{side.label}</span>
+          {link && onOpen ? (
+            <PlainButton className={NC_LINK} onClick={() => onOpen(link)}>
+              {link}
+            </PlainButton>
+          ) : link ? (
+            <a
+              className={NC_LINK}
+              href={link}
+              target="_blank"
+              rel="noreferrer noopener"
             >
-              {line.text || " "}
-            </div>
-          ))}
+              {link}
+            </a>
+          ) : null}
+        </div>
+        <pre
+          className={cn(
+            NC_PANE_TEXT,
+            labelAlone && NC_PANE_TEXT_ALONE,
+            side.missing && NC_MISSING,
+          )}
+        >
+          {side.patchLines
+            ? side.patchLines.map((line, index) => (
+                <div
+                  key={index}
+                  className={cn(
+                    NC_PATCH_LINE,
+                    line.tone === "add" && "text-green",
+                    line.tone === "remove" && "text-red",
+                    line.tone === "meta" && "text-dim",
+                  )}
+                >
+                  {line.text || " "}
+                </div>
+              ))
+            : side.text}
         </pre>
-      ) : (
-        <pre className={cn(NC_PANE_TEXT, side.missing && NC_MISSING)}>
-          {side.text}
-        </pre>
-      )}
+      </div>
     </SettingCard>
   );
 }

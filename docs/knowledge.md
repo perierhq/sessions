@@ -183,6 +183,8 @@ the issue.
      again on the next run.
    - When a person clears a conflict check without changing either text,
      that pair is not compared again until one of the two texts changes.
+     Still true on the Needs check tab records the pair at once; a check
+     cleared any other way is noticed by the next run.
 4. Imported mail is time-aware. A question-and-reply pair older than the
    latest change to what it touches (the newest release, or a default-branch
    commit touching those paths, committed up to 2 days before the reply,
@@ -347,6 +349,21 @@ draft waits for a person when:
 The headline people see on such a draft is "Knowledge may be out of date:
 <article title>" (or the internal-note line), with the reasons per citation
 underneath.
+
+### Needs check
+
+The Knowledge page's Needs check tab lists what needs a person, grouped by
+what caused it: one changed source ("docs/export.md changed in 9c1d2e0 · 4
+articles"), one article it disagrees with, or a review date that passed.
+Opening an item shows its text beside what changed: the patch of the code
+repository file, the page as it is now, the release notes, or the other
+article. On a phone the two are one at a time, under an Article / What
+changed switch. Each item has Still true (marks it checked today, against
+the code repository's current head), Edit (saving the edit also marks it
+checked, unless it was saved as retired) and Retire. A group of more than
+one has Still true for all, which asks first. Check now runs the check for
+the whole project and says how many items it checked and how many now need
+a check.
 
 ## Customer data
 
