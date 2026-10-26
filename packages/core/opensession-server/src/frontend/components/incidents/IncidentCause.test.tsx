@@ -16,7 +16,9 @@ test("sentence, source and verification", () => {
     <IncidentCause cause={cause} waiting={false} />,
   );
   expect(html).toContain("Cause");
-  expect(html).toContain("The upstream wants the app&#x27;s own user agent");
+  expect(html).toContain(
+    "<p>The upstream wants the app&#39;s own user agent</p>",
+  );
   expect(html).toContain('href="https://example.test/acme/db-info/issues/3"');
   expect(html).toContain('rel="noreferrer"');
   expect(html).toContain(
@@ -24,20 +26,49 @@ test("sentence, source and verification", () => {
   );
 });
 
-test("doubt and no verification yet are said in words", () => {
+test("doubt and no verification yet are said in words, in sentence case when they lead", () => {
   expect(
     renderToStaticMarkup(
       <IncidentCause cause={{ ...cause, status: "doubted" }} waiting={false} />,
     ),
-  ).toContain("the verifier is not certain");
-  expect(
-    renderToStaticMarkup(
-      <IncidentCause
-        cause={{ text: "x", status: "unverified" }}
-        waiting={false}
-      />,
-    ),
-  ).toContain("not verified yet");
+  ).toContain("· the verifier is not certain");
+  const html = renderToStaticMarkup(
+    <IncidentCause
+      cause={{ text: "x", status: "unverified" }}
+      waiting={false}
+    />,
+  );
+  expect(html).toContain(">Not verified yet</p>");
+  expect(html).toContain('class="m-0 text-meta text-dim');
+});
+
+test("the cause reads as Markdown: a sentence, then detail lines with inline code", () => {
+  const html = renderToStaticMarkup(
+    <IncidentCause
+      cause={{
+        text: "Requests to acme time out because the pool is full.\n\n- `slowP95Ms` is 6000\n- see example.test",
+        status: "unverified",
+      }}
+      waiting={false}
+    />,
+  );
+  expect(html).toContain(
+    "<p>Requests to acme time out because the pool is full.</p>",
+  );
+  expect(html).toContain("<code>slowP95Ms</code>");
+  expect(html).toContain("<li>");
+  expect(html).toContain("markdown");
+});
+
+test("raw HTML in the cause stays text", () => {
+  const html = renderToStaticMarkup(
+    <IncidentCause
+      cause={{ text: '<img src=x onerror="alert(1)">', status: "unverified" }}
+      waiting={false}
+    />,
+  );
+  expect(html).not.toContain("<img");
+  expect(html).toContain("&lt;img");
 });
 
 test("an unbroken URL in the sentence wraps", () => {

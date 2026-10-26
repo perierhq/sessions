@@ -1,4 +1,5 @@
 import type { IncidentCauseView } from "../../lib/incidents/cause";
+import { renderMarkdown } from "../../lib/markdown";
 import {
   INCIDENT_CAUSE_PROVENANCE,
   INCIDENT_CAUSE_TEXT,
@@ -11,9 +12,15 @@ const STATUS_WORDS: Record<IncidentCauseView["status"], string> = {
   unverified: "not verified yet",
 };
 
+/** A status that starts the line reads as a sentence. */
+function leading(words: string): string {
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /**
- * The cause in one sentence, then where it came from and whether the
- * verifier stood behind it. While agents work and nothing is known it keeps
+ * The cause as the investigator wrote it, in Markdown: one plain sentence,
+ * then any detail lines in a quieter voice. Under it, where it came from and
+ * whether the verifier stood behind it. While agents work and nothing is known it keeps
  * its slot with "Not known yet", so the details below never jump down.
  */
 export function IncidentCause({
@@ -30,9 +37,13 @@ export function IncidentCause({
       <div className="flex min-w-0 flex-col gap-1 px-2">
         {cause ? (
           <>
-            <p className={INCIDENT_CAUSE_TEXT}>{cause.text}</p>
+            <div
+              className={INCIDENT_CAUSE_TEXT}
+              // renderMarkdown escapes raw HTML and keeps only safe links.
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(cause.text) }}
+            />
             <p className={INCIDENT_CAUSE_PROVENANCE}>
-              {cause.source && (
+              {cause.source ? (
                 <>
                   <a
                     href={cause.source.url}
@@ -43,9 +54,11 @@ export function IncidentCause({
                     {cause.source.label}
                   </a>
                   {" · "}
+                  {STATUS_WORDS[cause.status]}
                 </>
+              ) : (
+                leading(STATUS_WORDS[cause.status])
               )}
-              {STATUS_WORDS[cause.status]}
             </p>
           </>
         ) : (
