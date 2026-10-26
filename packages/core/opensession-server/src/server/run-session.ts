@@ -16,7 +16,7 @@ import {
 import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
-import { ownedWorktreeHeadBranch } from "./session-branch-ownership";
+import { ownedWorktreeWorkBranch } from "./session-branch-ownership";
 import {
   mirrorSlackSessionReply,
   SLACK_SESSION_NOTE,
@@ -4034,9 +4034,11 @@ async function runSessionPromptInner(
     // handoff keep resolving this session. Shared checkouts (a repo's main
     // or ask checkout) are exempt: no session owns their HEAD, so syncing
     // would stamp whatever branch another flow left parked there onto this
-    // session (bks-019f97ec, 2026-07-25).
+    // session (bks-019f97ec, 2026-07-25). A sub-task session that reset its
+    // own branch onto another one and pushed there records that branch, the
+    // one its PR and CI are under (ownedWorktreeWorkBranch).
     const headBranch = session.branch
-      ? await ownedWorktreeHeadBranch(session.worktreeDir)
+      ? await ownedWorktreeWorkBranch(session.worktreeDir)
       : null;
     // Export the engine identity and usage before settling or draining the
     // next prompt, whose resume inputs can still come from the session file.
