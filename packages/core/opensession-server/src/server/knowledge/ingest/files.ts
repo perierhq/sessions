@@ -20,9 +20,10 @@
  * with a note (the job records it was cut). One commit per request,
  * authored by the person who uploaded.
  *
- * PDF text comes from `unpdf` (pdf.js, no worker, scripts off), loaded on
- * first use. Reuses web-fetch.ts htmlToText, the job records of jobs.ts,
- * layout's freeSlugPath and the validator. Nothing runs at import.
+ * PDF text comes from `unpdf` (pdf.js without a worker; this pdf.js never
+ * evaluates code from a file), loaded on first use. Reuses web-fetch.ts
+ * htmlToText, the job records of jobs.ts, layout's freeSlugPath and the
+ * validator. Nothing runs at import.
  */
 import type { KnowledgeImportJob } from "../../../shared/knowledge";
 import type { Author } from "../../memory-repo/git-store";
@@ -162,7 +163,6 @@ async function pdfText(bytes: Uint8Array): Promise<string> {
   const { getDocumentProxy } = await import("unpdf");
   // pdf.js may take the buffer over; it gets a copy.
   const pdf = await getDocumentProxy(new Uint8Array(bytes), {
-    isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
     stopAtErrors: false,
