@@ -39,6 +39,7 @@ import {
   CONFLICT_COPY,
   NEW_ARTICLE,
   attachmentLink,
+  withLink,
   bodyAttachments,
   editorState,
   sameEdit,
@@ -218,19 +219,19 @@ export function KnowledgeEditorForm({
     if (path) onSaved(path);
   }
 
-  async function run(kind: "save" | "retire", task: () => Promise<void>) {
+  function run(kind: "save" | "retire", task: () => Promise<void>) {
     setBusy(kind);
-    try {
-      await task();
-    } catch (error) {
-      setFailure(
-        error instanceof ApiError && error.status === 409
-          ? { conflict: true }
-          : { message: errorMessage(error, "Couldn't save the article") },
-      );
-    } finally {
-      setBusy(null);
-    }
+    return task().then(
+      () => setBusy(null),
+      (error: Error) => {
+        setFailure(
+          error instanceof ApiError && error.status === 409
+            ? { conflict: true }
+            : { message: errorMessage(error, "Couldn't save the article") },
+        );
+        setBusy(null);
+      },
+    );
   }
 
   const save = () => run("save", () => write(state, "Saved"));
@@ -251,29 +252,30 @@ export function KnowledgeEditorForm({
       onReload();
     });
 
-  async function attach(file: File | undefined) {
-    if (!file || !state.path) return;
+  function attach(file: File | undefined) {
+    const article = state.path;
+    if (!file || !article) return;
     setBusy("attach");
-    try {
-      const { path } = await attachKnowledgeFile(project, state.path, file);
-      const link = attachmentLink(state.path, path);
-      setState((s) => ({
-        ...s,
-        body: s.body
-          ? `${s.body.replace(/\n*$/, "")}\n\n${link}\n`
-          : `${link}\n`,
-      }));
-      toast(`Attached ${file.name}. Save to keep the link`, {
-        variant: "success",
-      });
-    } catch (error) {
-      toast(errorMessage(error, "Couldn't attach the file"), {
-        variant: "error",
-      });
-    } finally {
+    const settled = () => {
       setBusy(null);
       if (fileRef.current) fileRef.current.value = "";
-    }
+    };
+    void attachKnowledgeFile(project, article, file).then(
+      ({ path }) => {
+        const link = attachmentLink(article, path);
+        setState((s) => ({ ...s, body: withLink(s.body, link) }));
+        toast(`Attached ${file.name}. Save to keep the link`, {
+          variant: "success",
+        });
+        settled();
+      },
+      (error: Error) => {
+        toast(errorMessage(error, "Couldn't attach the file"), {
+          variant: "error",
+        });
+        settled();
+      },
+    );
   }
 
   const attachments = state.path ? bodyAttachments(state.path, state.body) : [];
@@ -365,7 +367,7 @@ export function KnowledgeEditorForm({
                   type="file"
                   accept={ATTACH_ACCEPT}
                   className="hidden"
-                  onChange={(e) => void attach(e.target.files?.[0])}
+                  onChange={(e) => attach(e.target.files?.[0])}
                 />
                 <Button
                   type="button"

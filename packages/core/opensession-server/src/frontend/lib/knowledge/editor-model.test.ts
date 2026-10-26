@@ -6,6 +6,7 @@ import {
   editorState,
   toSave,
   validateEditor,
+  withLink,
   type EditorState,
 } from "./editor-model";
 
@@ -194,6 +195,11 @@ describe("attachments", () => {
     expect(
       attachmentLink("articles/export.md", "attachments/export/guide.pdf"),
     ).toBe("[guide.pdf](../attachments/export/guide.pdf)");
+  });
+
+  test("a new link goes on its own line at the end", () => {
+    expect(withLink("", "[a](x)")).toBe("[a](x)\n");
+    expect(withLink("Text\n\n\n", "[a](x)")).toBe("Text\n\n[a](x)\n");
   });
 
   test("the body's attachment links, once each", () => {

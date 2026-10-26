@@ -268,6 +268,12 @@ export function attachmentLink(
   return IMAGE.test(name) ? `![${name}](${href})` : `[${name}](${href})`;
 }
 
+/** `body` with `link` on its own line at the end. */
+export function withLink(body: string, link: string): string {
+  const trimmed = body.replace(/\n*$/, "");
+  return trimmed ? `${trimmed}\n\n${link}\n` : `${link}\n`;
+}
+
 const MARKDOWN_LINK = /!?\[[^\]]*\]\(([^)\s]+)\)/g;
 
 /** The attachments `body` links to, in order, once each. */
