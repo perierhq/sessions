@@ -2768,3 +2768,71 @@ test("runOn must be a production Runner of the project", async () => {
     }),
   ).toBe("Only http checks can run on a Runner");
 });
+
+test("sending back a round no agent worked in keeps the round and briefs the note", async () => {
+  let fail = true;
+  const w = await world();
+  w.deps.workspace = async () =>
+    fail
+      ? { error: "No sandbox" }
+      : { kind: "sandbox" as const, provider: "daytona" };
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  fail = false;
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Look at the egress logs first",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "investigating", response: { round: 1 } });
+  await __waitForCoordinatorForTest();
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns).toEqual([
+    expect.objectContaining({
+      round: 1,
+      prompt: expect.stringContaining("Look at the egress logs first"),
+    }),
+  ]);
+  const ledger = (await getIncident(w.incident.id))?.response?.ledger ?? [];
+  expect(ledger.map((e) => e.detail).join("\n")).not.toMatch(/of 2/);
+});
+
+test("an extra round past the limit is never 'round 3 of 2'", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  for (const note of ["Try again", "Once more"]) {
+    expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+    await applyOwnerDecision(w.incident.id, "send-back", "Bo", note, w.deps);
+    await __waitForCoordinatorForTest();
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish(
+      "child-1",
+      fence({
+        ...investigatorReport,
+        candidate: null,
+        noCandidateReason: "No logs",
+      }),
+    );
+    await advanceIncident(w.incident.id, w.deps);
+  }
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.round).toBe(3);
+  const details = (i?.response?.ledger ?? []).map((e) => e.detail);
+  expect(details).toContain("Sent the investigator round 2 of 2");
+  expect(details).toContain(
+    "Sent the investigator round 3, an extra round past the limit of 2",
+  );
+  expect(details.join("\n")).not.toMatch(/round 3 of 2/);
+});

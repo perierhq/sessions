@@ -112,6 +112,16 @@ export const DEFAULT_AUTONOMY: AutonomyLevel = "deploy-after-veto";
 export const DEFAULT_VETO_MS = 600_000;
 export const DEFAULT_WATCH_MS = 600_000;
 export const DEFAULT_MAX_ROUNDS = 2;
+
+/**
+ * "2 of 2", or past the limit (a person sent the work back once the rounds
+ * were used up) "3, an extra round past the limit of 2": never "3 of 2".
+ */
+export function roundOfMax(round: number, maxRounds: number): string {
+  return round <= maxRounds
+    ? `${round} of ${maxRounds}`
+    : `${round}, an extra round past the limit of ${maxRounds}`;
+}
 export const DEFAULT_BUDGET: IncidentBudget = {
   perIncidentUsd: 20,
   perMonthUsd: 200,

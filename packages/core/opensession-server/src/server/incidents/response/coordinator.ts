@@ -21,6 +21,7 @@ import {
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
   type SetupFix,
+  roundOfMax,
 } from "../../../shared/incident-response";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
@@ -75,6 +76,7 @@ import {
   manualRollbackAvailable,
   nextActionFor,
   rereadsReport,
+  roundRan,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -1025,7 +1027,9 @@ async function startAgent(
               ...(supersede?.carry ? { carry: supersede.carry } : {}),
             },
           }
-        : {}),
+        : r.sendBack
+          ? { sendBack: r.sendBack }
+          : {}),
       ...(release
         ? {
             rollbackFirst: {
@@ -1131,7 +1135,7 @@ async function startAgent(
         retryRequested: undefined,
         parallelInvestigatorRetryAt: undefined,
         // The send-back reason went into the fresh session's brief.
-        ...(earlier ? { sendBack: undefined } : {}),
+        ...(role === "investigator" ? { sendBack: undefined } : {}),
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1487,7 +1491,7 @@ async function messageAgent(
             });
       });
       const detail = sendBack
-        ? `Sent the ${run.role} round ${base.round} of ${base.maxRounds}`
+        ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
         : `Asked the ${run.role} for a valid report`;
       const response = ledger(
         patched(base, {
@@ -2590,7 +2594,9 @@ function decisionMove(
         `Sent back by ${by}`,
         patched(base, {
           phase: "investigating",
-          round: base.round + 1,
+          // A round no investigator worked in is not used up: it is the
+          // one sent back.
+          round: roundRan(base) ? base.round + 1 : base.round,
           sendBack: { kind: "owner", by, note: input.note },
           candidate: undefined,
           proof: undefined,

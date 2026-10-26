@@ -21,6 +21,7 @@ import {
   type ProofSample,
   type ReportProblem,
   type SendBackReason,
+  roundOfMax,
 } from "../../../shared/incident-response";
 import type {
   Incident,
@@ -261,6 +262,9 @@ export interface InvestigatorPromptInput {
   rollbackFirst?: { releaseAt: string; ref?: string };
   /** The earlier round this fresh session takes over, when there is one. */
   earlier?: EarlierRound;
+  /** Why the work came back when no earlier session takes it over: a
+   *  person sent back a round no agent could start in. */
+  sendBack?: SendBackReason;
   /** The incident's note, when another incident shares its title and day
    *  (notePathFor with the project's incidents). */
   notePath?: string;
@@ -383,12 +387,14 @@ export function buildInvestigatorPrompt(
   out.push(DATA_NOTE, "");
   out.push(...dataBlock("Incident title", [dataText(incident.title)]), "");
   out.push(
-    `Project ${incident.project} · opened ${incident.openedAt} · Round ${round} of ${maxRounds}`,
+    `Project ${incident.project} · opened ${incident.openedAt} · Round ${roundOfMax(round, maxRounds)}`,
     "",
   );
 
   if (input.earlier)
     out.push(...earlierRoundLines(input.earlier, round, maxRounds));
+  else if (input.sendBack)
+    out.push(sendBackHead(round, maxRounds, input.sendBack), "");
 
   if (input.rollbackFirst) {
     const ref = input.rollbackFirst.ref ?? "no ref";
@@ -606,7 +612,7 @@ function sendBackHead(
   switch (why.kind) {
     case "not-certain":
       head = block(
-        `The verifier was not certain (round ${round} of ${maxRounds}). Their reasons`,
+        `The verifier was not certain (round ${roundOfMax(round, maxRounds)}). Their reasons`,
         why.reasons.map((r) => `- ${dataText(r)}`),
       );
       break;
