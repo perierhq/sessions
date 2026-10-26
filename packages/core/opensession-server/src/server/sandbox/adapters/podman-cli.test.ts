@@ -27,6 +27,10 @@ import {
   volumeCreateArgs,
   workloadCreateArgs,
 } from "./podman-cli";
+import {
+  parseRemoteCommandOutput,
+  remoteCommandScript,
+} from "../../remote-workspace";
 
 /** Every value that follows a flag in argv, e.g. all `-v` operands. */
 function operands(argv: string[], flag: string): string[] {
@@ -562,13 +566,13 @@ describe("podman exec", () => {
         },
         {
           workload: names.workload,
-          env: { A: "b", KEY: "two\nlines" },
+          env: { A: "b", KEY: "nul\0byte" },
           timeoutSec: 5,
           cmd: "true",
           runtimeDir: dir,
         },
       ),
-    ).rejects.toThrow("KEY contains a line break");
+    ).rejects.toThrow("KEY contains a NUL byte");
     expect(calls).toHaveLength(1);
     expect(await readdir(join(dir, "opensession"))).toEqual([]);
   });
@@ -794,5 +798,177 @@ describe("podman runner", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("podman exec carries any value to the shell", () => {
+  const names = podmanNames("sess-1");
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of dirs.splice(0))
+      await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A stand-in for the workload: reads `--env-file` the way podman does (one
+   * `NAME=value` per line, a trailing `\r` dropped), then runs the
+   * in-container command locally with exactly that environment.
+   */
+  function container(): PodmanRunner {
+    return async (argv) => {
+      const envFile = operands(argv, "--env-file")[0];
+      const env: Record<string, string> = {};
+      if (envFile)
+        for (const line of (await readFile(envFile, "utf8")).split("\n")) {
+          if (!line) continue;
+          const at = line.indexOf("=");
+          env[line.slice(0, at)] = line.slice(at + 1).replace(/\r$/, "");
+        }
+      const inner = argv.slice(argv.indexOf("/bin/bash"));
+      const proc = Bun.spawn(inner, {
+        env: { PATH: "/usr/bin:/bin", ...env },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { exitCode, stdout, stderr };
+    };
+  }
+
+  async function runtimeDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "podman-exec-carry-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  test("a heredoc command in OS_CMD runs unchanged", async () => {
+    const command = "cat <<'EOF'\nline1\nline2\nEOF";
+    const result = await podmanExec(container(), {
+      workload: names.workload,
+      env: { OS_CMD: command },
+      timeoutSec: 30,
+      cmd: 'bash -c "$OS_CMD"',
+      runtimeDir: await runtimeDir(),
+    });
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: "line1\nline2\n",
+      stderr: "",
+    });
+  });
+
+  test("the remote bash wrapper runs a multi-line command unchanged", async () => {
+    const dir = await runtimeDir();
+    const scratch = join(dir, "scratch");
+    const command =
+      "cat <<'EOF'\nline1\n  \"two\" 'three' $HOME\nEOF\nprintf 'tail\\n'";
+    const result = await podmanExec(container(), {
+      workload: names.workload,
+      env: {
+        OS_CMD: command,
+        OS_PIDFILE: join(scratch, ".os-cmd-test.pid"),
+        OPENSESSION_SCRATCH: scratch,
+        OS_TMPDIR: join(dir, "tmp"),
+      },
+      timeoutSec: 30,
+      cmd: remoteCommandScript({ timeoutS: 20, outputCap: 10_000 }),
+      runtimeDir: dir,
+    });
+    expect(parseRemoteCommandOutput(result.stdout, 10_000)).toEqual({
+      output: "line1\n  \"two\" 'three' $HOME\ntail\n",
+      droppedChars: 0,
+      exitCode: 0,
+      timedOut: false,
+    });
+  });
+
+  test("values keep every line break, quote and trailing newline", async () => {
+    const values = {
+      MULTI: "one\ntwo\n\n",
+      CRLF: "a\r\nb\r",
+      QUOTES: `it's "quoted" $HOME \`x\` \\ \n$(echo no)`,
+      UNICODE: "zażółć\ngęślą",
+      PLAIN: "single line",
+    };
+    const result = await podmanExec(container(), {
+      workload: names.workload,
+      env: values,
+      timeoutSec: 30,
+      cmd: 'for n in MULTI CRLF QUOTES UNICODE PLAIN; do printf "%s=%s\\0" "$n" "${!n}"; done; env | grep -c "^OPENSESSION_ENV_B64_" || true',
+      runtimeDir: await runtimeDir(),
+    });
+    expect(result.exitCode).toBe(0);
+    const [pairs, leftover] = [
+      result.stdout.slice(0, result.stdout.lastIndexOf("\0") + 1),
+      result.stdout.slice(result.stdout.lastIndexOf("\0") + 1),
+    ];
+    const seen = Object.fromEntries(
+      pairs
+        .split("\0")
+        .filter(Boolean)
+        .map((pair) => [
+          pair.slice(0, pair.indexOf("=")),
+          pair.slice(pair.indexOf("=") + 1),
+        ]),
+    );
+    expect(seen).toEqual(values);
+    // The carriers are gone before the command runs.
+    expect(leftover.trim()).toBe("0");
+  });
+
+  test("the env file never holds a line break and argv never holds a value", async () => {
+    const dir = await runtimeDir();
+    const seen: { argv: string[]; text: string }[] = [];
+    await podmanExec(
+      async (argv) => {
+        const file = operands(argv, "--env-file")[0]!;
+        seen.push({ argv, text: await readFile(file, "utf8") });
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      {
+        workload: names.workload,
+        env: { GH_TOKEN: "secret-1", KEY: "secret-2\nsecret-3" },
+        timeoutSec: 5,
+        cmd: "true",
+        runtimeDir: dir,
+      },
+    );
+    expect(seen).toHaveLength(1);
+    const { argv, text } = seen[0]!;
+    expect(text.split("\n").filter(Boolean)).toHaveLength(2);
+    expect(text).not.toContain("secret-2");
+    expect(argv.join(" ")).not.toContain("secret");
+    expect(argv.join(" ")).not.toContain(
+      Buffer.from("secret-2\nsecret-3").toString("base64"),
+    );
+  });
+
+  test("refuses NUL and a caller name in the carrier namespace", async () => {
+    const dir = await runtimeDir();
+    const calls: string[][] = [];
+    const run: PodmanRunner = async (argv) => {
+      calls.push(argv);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const base = { workload: names.workload, timeoutSec: 5, runtimeDir: dir };
+    await expect(
+      podmanExec(run, { ...base, env: { OS_CMD: "a\nb\0c" }, cmd: "true" }),
+    ).rejects.toThrow("OS_CMD contains a NUL byte");
+    await expect(
+      podmanExec(run, {
+        ...base,
+        env: { OPENSESSION_ENV_B64_X: "x" },
+        cmd: "true",
+      }),
+    ).rejects.toThrow("OPENSESSION_ENV_B64_X");
+    await expect(
+      podmanExec(run, { ...base, env: { "BAD;NAME": "a\nb" }, cmd: "true" }),
+    ).rejects.toThrow("invalid environment variable name");
+    expect(calls).toHaveLength(0);
   });
 });

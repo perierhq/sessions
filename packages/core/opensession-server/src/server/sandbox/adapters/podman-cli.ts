@@ -108,6 +108,7 @@ export function podmanEnv(uid: number): PodmanEnv {
  * variable (podman does no quoting or expansion). Throws on a name outside
  * `[A-Za-z_][A-Za-z0-9_]*`, and on a value with a line break or NUL, or too
  * long for podman's line reader, rather than letting it be cut or split.
+ * `podmanExec` carries a multi-line value through `carryExecEnv` first.
  */
 export function execEnvFileText(env: Record<string, string>): string {
   let text = "";
@@ -128,6 +129,55 @@ export function execEnvFileText(env: Record<string, string>): string {
     text += `${line}\n`;
   }
   return text;
+}
+
+/** Names of the variables that carry, base64-encoded, a value an env file
+ *  line cannot hold. A caller may not use the prefix. */
+export const CARRIED_ENV_PREFIX = "OPENSESSION_ENV_B64_";
+
+/**
+ * Splits an exec's env into what the `--env-file` holds as is and a bash
+ * prelude for the rest. A value with a line break (a multi-line command,
+ * a heredoc, a PEM key) goes in the file base64-encoded as
+ * `OPENSESSION_ENV_B64_<NAME>`; the prelude decodes it into `<NAME>`,
+ * byte for byte, and unsets the carrier before the command runs. The same
+ * base64 hand-over the Mac VM driver uses for its guest script, so the
+ * file stays one line per variable and no value ever reaches argv. A NUL
+ * byte, which no environment can hold, is refused.
+ */
+export function carryExecEnv(env: Record<string, string>): {
+  env: Record<string, string>;
+  prelude: string;
+} {
+  const out: Record<string, string> = {};
+  const lines: string[] = [];
+  const scratch = CARRIED_ENV_PREFIX;
+  for (const [name, value] of Object.entries(env)) {
+    if (!ENV_NAME.test(name))
+      throw new Error(
+        `invalid environment variable name: ${JSON.stringify(name)}`,
+      );
+    if (name.startsWith(CARRIED_ENV_PREFIX))
+      throw new Error(
+        `environment variable ${name} uses the reserved prefix ${CARRIED_ENV_PREFIX}`,
+      );
+    if (value.includes("\0"))
+      throw new Error(`environment variable ${name} contains a NUL byte`);
+    if (!/[\r\n]/.test(value)) {
+      out[name] = value;
+      continue;
+    }
+    const carrier = `${CARRIED_ENV_PREFIX}${name}`;
+    out[carrier] = Buffer.from(value, "utf8").toString("base64");
+    // The bare prefix is a scratch name no carrier can take. The trailing
+    // `x` keeps trailing newlines through `$(...)`.
+    lines.push(
+      `${scratch}="$(printf %s "$${carrier}" | base64 -d && printf x)" || { echo "could not decode ${name} in the sandbox" >&2; exit 125; }`,
+      `export ${name}="\${${scratch}%x}"; unset ${carrier}`,
+    );
+  }
+  if (lines.length) lines.push(`unset ${scratch}`);
+  return { env: out, prelude: lines.join("\n") };
 }
 
 function errorText(err: unknown): string {
@@ -530,9 +580,11 @@ function defaultRuntimeDir(): string {
 
 /**
  * Runs `podman exec` (see `execArgs`) with `env` delivered in-container via a
- * 0600 `--env-file` under `$XDG_RUNTIME_DIR/opensession/` (0700). The file is
- * removed when the exec returns or throws. Throws before spawning on an env
- * the file cannot carry.
+ * 0600 `--env-file` under `$XDG_RUNTIME_DIR/opensession/` (0700); values with
+ * line breaks travel base64-encoded and are decoded before `cmd` runs
+ * (`carryExecEnv`). The file is removed when the exec returns or throws.
+ * Throws before spawning on an env the file cannot carry (a NUL byte, a bad
+ * name, a value too long for one line).
  */
 export async function podmanExec(
   run: PodmanRunner,
@@ -550,16 +602,17 @@ export async function podmanExec(
     runtimeDir?: string;
   },
 ): Promise<ExecResult> {
+  const carried = carryExecEnv(o.env ?? {});
+  const env = carried.env;
   const base = {
     workload: o.workload,
     cwd: o.cwd,
     timeoutSec: o.timeoutSec,
     detached: o.detached,
     stdin: o.stdin !== undefined,
-    cmd: o.cmd,
+    cmd: carried.prelude ? `${carried.prelude}\n${o.cmd}` : o.cmd,
   };
   const runOpts: PodmanRunOpts = { stdin: o.stdin, timeoutMs: o.timeoutMs };
-  const env = o.env ?? {};
   if (Object.keys(env).length === 0) return run(execArgs(base), runOpts);
   const text = execEnvFileText(env);
   const dir = await privateRuntimeDir(o.runtimeDir ?? defaultRuntimeDir());
