@@ -9,8 +9,15 @@ import type {
 import {
   type EngineSnapshot,
   type IncidentOp,
+  QUIET_BREAKTHROUGH_MS,
+  QUIET_FAILING_MS,
+  QUIET_HEALTHY_MS,
+  QUIET_WINDOW_MS,
+  type SignalRun,
   applyIncidentOps,
   decideIncidentOps,
+  nextSignalRun,
+  quietNeeds,
 } from "./engine";
 import { getIncident } from "./incident-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
@@ -357,11 +364,7 @@ describe("decide", () => {
         a,
         "ok",
         E("sig-a", "failing"),
-        snap(
-          [a],
-          [],
-          [I("inc-1", "closed-without-action", { closedAt: iso(600_000) })],
-        ),
+        snap([a], [], [I("inc-1", "resolved", { closedAt: iso(600_000) })]),
       ),
     ).toEqual([
       {
@@ -394,6 +397,180 @@ describe("decide", () => {
         snap([a], [], [I("inc-1", "resolved", { closedAt: iso(2_400_000) })]),
       )[0],
     ).toMatchObject({ op: "open" });
+  });
+
+  test("closed without action, a flapping signal stays quiet", () => {
+    const a = S("sig-a");
+    const closedAt = iso(7_200_000);
+    const closedMs = Date.parse(closedAt);
+    const closed = I("inc-1", "closed-without-action", { closedAt });
+    const quiet = (run?: SignalRun, state: SignalState = "failing") =>
+      decide(a, "ok", E("sig-a", state), {
+        ...snap([a], [E("sig-a", state)], [closed]),
+        runs: new Map(run ? [["sig-a", run]] : []),
+      });
+    const hold = (until?: number): IncidentOp[] => [
+      {
+        op: "hold",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        ...(until === undefined
+          ? {}
+          : { until: new Date(until).toISOString() }),
+      },
+    ];
+    const reopen: IncidentOp[] = [
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ];
+    // Ok 3 minutes, failing again: the same flap. Only failing for an hour
+    // would break through.
+    const flap = { badSince: NOW, problemSince: NOW, healthyBefore: 180_000 };
+    expect(quiet(flap)).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
+    // Nothing known about before: the same.
+    expect(quiet()).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
+    // Flaky after a flap is a flap; nothing to wait for.
+    expect(quiet({ badSince: NOW, healthyBefore: 180_000 }, "flaky")).toEqual(
+      hold(),
+    );
+    // Ok 20 minutes, then failing: a new problem once it stays failing.
+    const settled = {
+      badSince: NOW - 300_000,
+      problemSince: NOW - 300_000,
+      healthyBefore: 1_200_000,
+    };
+    expect(quiet(settled)).toEqual(hold(NOW - 300_000 + QUIET_FAILING_MS));
+    expect(
+      quiet({
+        ...settled,
+        badSince: NOW - QUIET_FAILING_MS,
+        problemSince: NOW - QUIET_FAILING_MS,
+      }),
+    ).toEqual(reopen);
+    // Failing for an hour after a flap breaks through too.
+    expect(
+      quiet({
+        badSince: NOW - QUIET_BREAKTHROUGH_MS - 60_000,
+        problemSince: NOW - QUIET_BREAKTHROUGH_MS,
+        healthyBefore: 0,
+      }),
+    ).toEqual(reopen);
+    // A bad run that began before the close was closed knowingly.
+    expect(
+      quiet({
+        badSince: closedMs - 60_000,
+        problemSince: closedMs - 60_000,
+        healthyBefore: 3_600_000,
+      }),
+    ).toEqual([]);
+  });
+
+  test("the quiet outlasts the reopen window, and then ends", () => {
+    const a = S("sig-a");
+    const flap = new Map([
+      ["sig-a", { badSince: NOW, problemSince: NOW, healthyBefore: 60_000 }],
+    ]);
+    const after = (closedMsAgo: number) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap(
+          [a],
+          [],
+          [
+            I("inc-1", "closed-without-action", {
+              closedAt: iso(closedMsAgo),
+            }),
+          ],
+        ),
+        runs: flap,
+      });
+    // 40 minutes after the close: past the reopen window, no new incident.
+    expect(after(2_400_000)).toEqual([
+      {
+        op: "hold",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        until: new Date(NOW + QUIET_BREAKTHROUGH_MS).toISOString(),
+      },
+    ]);
+    // A new problem there reopens the quiet incident rather than opening
+    // another.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap(
+          [a],
+          [],
+          [I("inc-1", "closed-without-action", { closedAt: iso(7_200_000) })],
+        ),
+        runs: new Map([
+          [
+            "sig-a",
+            {
+              badSince: NOW - QUIET_FAILING_MS,
+              healthyBefore: QUIET_HEALTHY_MS,
+            },
+          ],
+        ]),
+      })[0],
+    ).toMatchObject({ op: "transition", incidentId: "inc-1" });
+    // A run that begins past the quiet window is judged as before.
+    expect(after(QUIET_WINDOW_MS + 60_000)[0]).toMatchObject({ op: "open" });
+    // A resolved incident is not quiet: its signal reopens it at once.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [], [I("inc-1", "resolved", { closedAt: iso(600_000) })]),
+        runs: flap,
+      })[0],
+    ).toMatchObject({ op: "transition", incidentId: "inc-1" });
+  });
+
+  test("a signal's own debounce sets the floor of its quiet window", () => {
+    const slow = S("sig-a", {
+      intervalMs: 300_000,
+      rule: { kind: "consecutive", failures: 4, recoveries: 6 },
+    });
+    expect(quietNeeds(slow)).toEqual({
+      healthyMs: 1_800_000,
+      failingMs: 1_200_000,
+    });
+    expect(quietNeeds(S("sig-a"))).toEqual({
+      healthyMs: QUIET_HEALTHY_MS,
+      failingMs: QUIET_FAILING_MS,
+    });
+  });
+
+  test("a signal's run: how long it was healthy before it went bad", () => {
+    const at = (msAgo: number, state: SignalState) => ({
+      ...E("sig-a", state),
+      since: iso(msAgo),
+    });
+    let run = nextSignalRun(undefined, at(1_200_000, "ok"));
+    expect(run).toEqual({ okSince: NOW - 1_200_000, healthyBefore: 0 });
+    run = nextSignalRun(run, at(300_000, "failing"));
+    expect(run).toEqual({
+      badSince: NOW - 300_000,
+      problemSince: NOW - 300_000,
+      healthyBefore: 900_000,
+    });
+    expect(nextSignalRun(run, at(240_000, "slow"))).toBe(run);
+    // Flaky is still the same bad run, but no longer a problem.
+    run = nextSignalRun(run, at(120_000, "flaky"));
+    expect(run).toEqual({ badSince: NOW - 300_000, healthyBefore: 900_000 });
+    expect(nextSignalRun(run, at(60_000, "failing"))).toEqual({
+      badSince: NOW - 300_000,
+      problemSince: NOW - 60_000,
+      healthyBefore: 900_000,
+    });
+    // Unknown says nothing about health: the next run starts unsettled.
+    run = nextSignalRun(run, at(30_000, "unknown"));
+    expect(nextSignalRun(run, at(0, "failing"))).toEqual({
+      badSince: NOW,
+      problemSince: NOW,
+      healthyBefore: 0,
+    });
   });
 
   test("boot leaves alone an incident closed while the signal was already bad", () => {
