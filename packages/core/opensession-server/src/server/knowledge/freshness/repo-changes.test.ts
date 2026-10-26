@@ -337,6 +337,55 @@ describe("first-parent dates, caps, fetch flags and odd paths", () => {
     expect(fetch).toContain("--no-write-fetch-head");
   });
 
+  test("the fetch authenticates the way worktree.ts fetches do", async () => {
+    // A checkout registered by an earlier install keeps that install's
+    // helper in .git/config. Git runs every helper in the list, so the
+    // fetch has to replace the list, not only add to it.
+    const stale = "!/nonexistent/opensession github-credential";
+    const key = "credential.https://github.com.helper";
+    await run(co, ["config", "--replace-all", key, ""]);
+    await run(co, ["config", "--add", key, stale]);
+    const envs: Record<string, string | undefined>[] = [];
+    expect(
+      await fetchDefaultBranch("acme", {
+        repo: () => ({
+          dir: co,
+          defaultBranch: "main",
+          ghRepo: "acme/widgets",
+        }),
+        git: async (_dir, args, opts) => {
+          if (args.includes("fetch")) envs.push(opts?.env ?? {});
+          return "";
+        },
+      }),
+    ).toBe(true);
+    expect(envs).toHaveLength(1);
+    const { githubServiceGitEnv } = await import("../../worktree");
+    const worktreeEnv = await githubServiceGitEnv("acme/widgets");
+    const credential = Object.fromEntries(
+      Object.entries(worktreeEnv).filter(
+        ([k]) => k.startsWith("GIT_CONFIG_") || k.endsWith("_TOKEN"),
+      ),
+    );
+    expect(Object.keys(credential)).toContain("GIT_CONFIG_COUNT");
+    expect(envs[0]).toMatchObject(credential);
+    // With that env git's helper list ends in the server's own helper; the
+    // stale one is cleared before it.
+    const helpers = (
+      await git(["config", "--get-all", key], {
+        cwd: co,
+        env: { ...isolatedGitEnv(), ...credential },
+      })
+    ).stdout
+      .replace(/\n$/, "")
+      .split("\n");
+    const last = helpers.lastIndexOf("");
+    expect(helpers.slice(0, last)).toContain(stale);
+    expect(helpers.slice(last + 1).filter(Boolean)).toEqual([
+      worktreeEnv.GIT_CONFIG_VALUE_1!,
+    ]);
+  });
+
   test("a real fetch waits for the server's git lock", async () => {
     const { withGitLock } = await import("../../worktree");
     let release!: () => void;
