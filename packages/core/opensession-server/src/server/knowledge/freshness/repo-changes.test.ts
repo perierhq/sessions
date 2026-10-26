@@ -83,8 +83,10 @@ describe("repo change signals", () => {
   });
 
   test("paths are literal, not pathspec magic", async () => {
-    expect(await commitsSince("acme", sha.c1!, ["docs/*"], deps)).toEqual([]);
-    expect(await commitsSince("acme", sha.c1!, [":/"], deps)).toEqual([]);
+    expect(await commitsSince("acme", sha.c1!, ["docs/*"], deps)).toHaveLength(
+      0,
+    );
+    expect(await commitsSince("acme", sha.c1!, [":/"], deps)).toHaveLength(0);
   });
 
   test("latestChange finds the newest commit across paths", async () => {
