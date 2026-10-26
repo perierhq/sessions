@@ -321,6 +321,8 @@ describe("new conversations", () => {
       expect(opts.createdByLogin).toBeUndefined();
       expect(opts.workspaceId).toBe(`ws-${c.id}`);
       expect(opts.requestId).toBe(`support-${c.id}-new`);
+      // Titled from the conversation's subject, never the prompt.
+      expect(opts.title).toBe("Export is broken");
       expect(workspaces).toEqual([
         {
           // No customer text in the workspace.
@@ -706,6 +708,24 @@ describe("Watch only and the hourly cap", () => {
     const asked = await conversation();
     expect(await startSupportSession(asked, "person")).not.toBeNull();
     expect(created).toHaveLength(MAX_NEW_SESSIONS_PER_HOUR + 1);
+  });
+});
+
+describe("the support session's title", () => {
+  test("is the subject without reply prefixes, on one short line", async () => {
+    const c = await conversation(
+      message("Hi", "Re: FWD:  Export\n is   broken " + "x".repeat(100)),
+    );
+    await onInbound(c, c.messages[0]!, true);
+    const title = created[0]!.title!;
+    expect(title.startsWith("Export is broken x")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("a conversation without a subject gets a plain name", async () => {
+    const c = await conversation(message("Hi", "  "));
+    await onInbound(c, c.messages[0]!, true);
+    expect(created[0]!.title).toBe("Support email");
   });
 });
 

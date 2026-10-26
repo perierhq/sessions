@@ -218,6 +218,17 @@ export function supportOpeningPrompt(
   ].join("\n");
 }
 
+/** The support session's title: the conversation's subject without reply
+ *  and forward prefixes, on one line. */
+export function supportSessionTitle(subject: string): string {
+  let title = subject.replace(/[\p{Cc}\s]+/gu, " ").trim();
+  for (let prev = ""; prev !== title;) {
+    prev = title;
+    title = title.replace(/^(?:re|fwd?|aw|wg)\s*:\s*/i, "");
+  }
+  return title.slice(0, 80).trim() || "Support email";
+}
+
 /** How a later customer email reaches the running session: a notice with
  *  its id, never its text; the session reads it with get_conversation. */
 export function supportDelivery(m: SupportMessage): string {
@@ -413,6 +424,8 @@ export async function startSupportSession(
     const prompt = supportOpeningPrompt(current, inbox, record.through);
     const opts: CreateSessionOpts = {
       prompt: whyLine ? `${whyLine}\n\n${prompt}` : prompt,
+      // The subject, not the prompt's first line (the same for every one).
+      title: supportSessionTitle(current.subject),
       requestId,
       repo: current.project,
       workspaceId: workspace.id,
