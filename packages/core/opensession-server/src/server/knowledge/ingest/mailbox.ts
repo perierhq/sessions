@@ -109,7 +109,8 @@ function windowStart(now: number, months: number): number {
   return d.getTime();
 }
 
-async function defaultSupportHosts(project: string): Promise<string[]> {
+/** The project's Support websites; none when they can't be read. */
+export async function projectSupportHosts(project: string): Promise<string[]> {
   try {
     const { roleWebAccess } = await import("../../projects/effective");
     return (await roleWebAccess(project, "support")).websites;
@@ -119,13 +120,13 @@ async function defaultSupportHosts(project: string): Promise<string[]> {
   }
 }
 
-function bind(over: Partial<MailboxDeps>): MailboxDeps {
+export function bindMailboxDeps(over: Partial<MailboxDeps>): MailboxDeps {
   return {
     now: over.now ?? Date.now,
     classify: over.classify as typeof classifyRoute,
     repoChanges: over.repoChanges ?? {},
     github: over.github ?? {},
-    supportHosts: over.supportHosts ?? defaultSupportHosts,
+    supportHosts: over.supportHosts ?? projectSupportHosts,
     maxSourceBytes: over.maxSourceBytes ?? MAX_SOURCE_BYTES,
     maxScanned: over.maxScanned ?? MAX_SCANNED,
     maxPairs: over.maxPairs ?? MAX_PAIRS,
@@ -400,14 +401,14 @@ async function readPairs(
 
 // ── Writing items ───────────────────────────────────────────────────────
 
-interface Planned {
+export interface Planned {
   path: string;
   change: KnowledgeChange & { op: "put" };
   trusted: boolean;
 }
 
 /** The code repository paths the project's mirror items stand for. */
-async function mirroredPaths(project: string, today: string) {
+export async function mirroredPaths(project: string, today: string) {
   const paths = new Set<string>();
   for (let offset = 0; ; offset += LIST_PAGE) {
     const page = await knowledgeRepo.call("index.list", project, "all", {
@@ -447,7 +448,7 @@ function body(
 }
 
 /** The pair as an item; null when it must be skipped. */
-async function plan(
+export async function planMailItem(
   project: string,
   pair: QaPair,
   path: string,
@@ -535,7 +536,12 @@ async function commitBatch(
   project: string,
   batch: Planned[],
   today: string,
-): Promise<{ trusted: number; reference: number; dropped: number }> {
+): Promise<{
+  trusted: number;
+  reference: number;
+  dropped: number;
+  paths: string[];
+}> {
   let items = batch;
   let dropped = 0;
   for (let attempt = 1; items.length; attempt++) {
@@ -552,7 +558,12 @@ async function commitBatch(
           expected: Object.fromEntries(items.map((i) => [i.path, null])),
         },
       );
-      return { trusted, reference: items.length - trusted, dropped };
+      return {
+        trusted,
+        reference: items.length - trusted,
+        dropped,
+        paths: items.map((i) => i.path),
+      };
     } catch (error) {
       const conflict =
         error instanceof Error && error.name === "KnowledgeConflictError";
@@ -564,7 +575,7 @@ async function commitBatch(
       items = left;
     }
   }
-  return { trusted: 0, reference: 0, dropped };
+  return { trusted: 0, reference: 0, dropped, paths: [] };
 }
 
 async function backfill(
@@ -603,9 +614,11 @@ async function backfill(
   ]);
 
   let batch: Planned[] = [];
+  const imported: string[] = [];
   const flush = async () => {
     if (!batch.length) return;
     const written = await commitBatch(project, batch, today);
+    imported.push(...written.paths);
     await job.progress({
       trusted: written.trusted,
       reference: written.reference,
@@ -619,7 +632,7 @@ async function backfill(
     const path = mailItemPath(pair.answer.messageId, pair.answer.at);
     const planned = (await exists(project, path, today))
       ? null
-      : await plan(project, pair, path, {
+      : await planMailItem(project, pair, path, {
           hosts,
           docPaths,
           deps,
@@ -633,6 +646,26 @@ async function backfill(
     if (batch.length >= BATCH_SIZE) await flush();
   }
   await flush();
+
+  // Questions answered by hand in more than one thread: suggestions
+  // (capture.ts). The import stands when this fails.
+  step();
+  try {
+    const { suggestRepeats } = await import("./capture");
+    const made = await suggestRepeats(project, imported, {
+      now: deps.now,
+      ...(deps.classify ? { classify: deps.classify } : {}),
+      repoChanges: deps.repoChanges,
+      github: deps.github,
+      supportHosts: deps.supportHosts,
+    });
+    if (made.created) await job.progress({ suggestions: made.created });
+  } catch (error) {
+    console.warn(
+      "[knowledge] suggestions after the mailbox import failed:",
+      error instanceof Error ? error.name : typeof error,
+    );
+  }
 }
 
 /**
@@ -661,7 +694,7 @@ export async function startMailboxBackfill(
     throw new MemoryRepoError(INBOX_NOT_FOUND, 404);
   const password = await inboxPassword(inbox, "imap");
   if (!password) throw new MemoryRepoError(NO_PASSWORD);
-  const deps = bind(over);
+  const deps = bindMailboxDeps(over);
   return startJob(
     project,
     "mailbox",

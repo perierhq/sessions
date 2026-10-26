@@ -151,6 +151,7 @@ import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
 import { startKnowledgeMaintenance } from "./src/server/knowledge/maintenance";
+import { installKnowledgeCapture } from "./src/server/knowledge/ingest/capture";
 import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
@@ -909,6 +910,9 @@ if (!g.__opensessionBooted) {
     // its inbox only watches, answered by a support session under the
     // project's Support role; replies reach that session.
     installSupportPipeline();
+    // Every reply a person sends becomes knowledge; a question answered by
+    // hand in two conversations becomes an article suggestion.
+    installKnowledgeCapture();
     // Veto windows end, support sends retry and pipeline hand-offs are
     // retried on a 15 s tick over the support work index.
     startSupportTick();

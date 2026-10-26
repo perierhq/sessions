@@ -51,7 +51,8 @@ export interface KnowledgeFrontMatter {
   origin: KnowledgeOrigin;
   /** At most 12, each at most 60 characters. */
   topics: string[];
-  /** What the text was taken from: `mail:<id>`, `repo:<path>@<sha>`,
+  /** What the text was taken from: `mail:<id>`, `conversation:<id>` (the
+   *  support conversation a captured reply was sent in), `repo:<path>@<sha>`,
    *  `url:<url>#sha256=<hex>`, `issue:<n>`, `release:<tag>`, `file:<name>`. */
   sources: string[];
   /** What would make it stale (parseDependency). */

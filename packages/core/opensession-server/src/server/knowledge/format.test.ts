@@ -416,6 +416,22 @@ describe("knowledge article format", () => {
     );
   });
 
+  test("a conversation source is a conversation id", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines(),
+        `sources: ["conversation:sc_0192ab-cd", "conversation:../x", "conversation:"]`,
+      ]),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual(
+      ["conversation:../x", "conversation:"].map(
+        (s) =>
+          `Unknown source "${s}". Use mail:, repo:, url:, issue:, release:, file: followed by the reference.`,
+      ),
+    );
+  });
+
   test("answeredAt must be a full timestamp and mail items need one", () => {
     const path = "sources/mail/2026-10/abc@x.md";
     const mail = (answeredAt: string | null) =>

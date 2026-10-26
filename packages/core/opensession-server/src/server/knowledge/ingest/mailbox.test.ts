@@ -296,6 +296,37 @@ async function item(path: string) {
 }
 
 describe("mailbox backfill", () => {
+  test("a question answered in two threads becomes a suggestion", async () => {
+    const extract = model.classify;
+    const classify = (async (input) =>
+      input.label === "knowledge-repeat"
+        ? { route: "same", reason: "", raw: { route: "same" } }
+        : input.label === "knowledge-extract"
+          ? extract(input)
+          : null) as MailboxDeps["classify"];
+    const job = await backfill(12, { classify });
+    expect(job.created).toMatchObject({ suggestions: 1 });
+    const { items } = await knowledgeRepo.call(
+      "index.list",
+      "acme",
+      "suggestions",
+      {
+        today: TODAY,
+      },
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      origin: "suggestion",
+      trust: "reference",
+      suggestedBy: "Pat",
+      title: "Exporting a project as CSV",
+    });
+    expect([...items[0]!.sources].sort()).toEqual([
+      "mail:a1@acme.example.test",
+      "mail:a2@acme.example.test",
+    ]);
+  });
+
   test("imports answers with the time-aware trust rule", async () => {
     const flagsBefore = flags();
     const conversationsBefore = (await listIndexRows()).length;

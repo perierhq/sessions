@@ -338,6 +338,31 @@ function answeredMessages(
     : answered;
 }
 
+/** The customer messages a stored reply answered, as answeredMessages
+ *  saw them when it was sent: those since the reply before it, and the one
+ *  it is In-Reply-To. Empty when `messageId` is no reply of ours. */
+export function messagesAnsweredBy(
+  c: SupportConversation,
+  messageId: string,
+): SupportMessage[] {
+  const at = c.messages.findIndex((m) => m.id === messageId);
+  const reply = c.messages[at];
+  if (!reply || reply.direction !== "out") return [];
+  const before = { ...c, messages: c.messages.slice(0, at) };
+  const inReplyTo = normalizeMessageId(reply.keys.inReplyTo);
+  const target = inReplyTo
+    ? before.messages.find(
+        (m) =>
+          m.direction === "in" &&
+          normalizeMessageId(m.keys.messageId) === inReplyTo,
+      )
+    : undefined;
+  return answeredMessages(before, {
+    answersMessageId: target?.id ?? null,
+    to: [],
+  });
+}
+
 /** What a draft says about itself, for the policy. */
 export interface DraftMeta {
   sources?: DraftSource[];

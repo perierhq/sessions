@@ -83,6 +83,7 @@ export const PERSON_CHECK_REASON = "Marked by a person";
 /** Where `sources` entries may come from (server/knowledge/format.ts). */
 const SOURCE_PREFIXES = [
   "mail:",
+  "conversation:",
   "repo:",
   "url:",
   "issue:",

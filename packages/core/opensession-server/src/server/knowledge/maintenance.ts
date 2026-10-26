@@ -19,7 +19,7 @@
  * tell (an unreadable mark) counts as due. Nothing runs while email support
  * is off.
  *
- * Adding a step (C7 known problems, C8 captures, C5 website crawl with
+ * Adding a step (C7 known problems, C8 captures (hourly), C5 website crawl with
  * `everyMs: WEB_REFRESH_MS`) is one entry in KNOWLEDGE_DAILY_STEPS.
  */
 
@@ -74,6 +74,15 @@ export const KNOWLEDGE_DAILY_STEPS: KnowledgeStep[] = [
     name: "known-problems",
     run: async (project) =>
       (await import("./ingest/known-problems")).syncKnownProblems(project),
+  },
+  {
+    // Replies a person sent that a crash or a failure left uncaptured.
+    name: "captures",
+    everyMs: KNOWLEDGE_TICK_MS,
+    run: async (project) =>
+      (await import("./ingest/capture")).retryPendingCaptures(Date.now(), {
+        project,
+      }),
   },
 ];
 
