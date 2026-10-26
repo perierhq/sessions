@@ -270,6 +270,10 @@ export const SUPPORT_TOPICS = [
 ] as const;
 export type SupportTopic = (typeof SUPPORT_TOPICS)[number];
 
+/** The conversation's triage. `route`, `reason` and `at` are one
+ *  message's verdict: the newest labelled customer message (`messageId`),
+ *  or a person's call when `messageId` is absent. `topics` and `bug`
+ *  gather every labelled message of the conversation. */
 export interface TriageVerdict {
   route: TriageRoute;
   reason: string;
@@ -277,6 +281,8 @@ export interface TriageVerdict {
   topics: SupportTopic[] | null;
   bug: boolean;
   at: string;
+  /** The message `route`, `reason` and `at` come from. */
+  messageId?: string;
   failed?: true;
 }
 

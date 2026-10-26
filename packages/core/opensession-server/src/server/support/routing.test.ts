@@ -732,6 +732,49 @@ describe("every customer message is labelled", () => {
     });
   });
 
+  test("the verdict follows the newest labelled message", async () => {
+    const c = await started();
+    const first = (await fresh(c.id)).triage!;
+    expect(first.messageId).toBe(c.messages[0]!.id);
+    route = "simple";
+    labels["Thanks, one more thing."] = { at: "2026-01-02T00:00:00.000Z" };
+    await reply(c.id, "Thanks, one more thing.");
+    route = "work";
+    labels["It crashes on save."] = {
+      bug: true,
+      at: "2026-01-03T00:00:00.000Z",
+    };
+    const last = await reply(c.id, "It crashes on save.");
+    const after = await fresh(c.id);
+    // Route, reason and time are the newest message's, never a mix.
+    expect(after.triage).toMatchObject({
+      route: "work",
+      bug: true,
+      at: "2026-01-03T00:00:00.000Z",
+      messageId: last.id,
+    });
+  });
+
+  test("an older message labelled late doesn't take the verdict back", async () => {
+    const c = await started();
+    labels["Any news?"] = { failed: true, topics: null };
+    const late = await reply(c.id, "Any news?");
+    labels["Hello?"] = { at: "2026-01-03T00:00:00.000Z" };
+    labels["Any news?"] = { topics: ["refund"], bug: true };
+    const newest = await reply(c.id, "Hello?");
+    const after = await fresh(c.id);
+    expect(after.messages.find((y) => y.id === late.id)!.triage!.failed).toBe(
+      undefined,
+    );
+    // The aggregate keeps every topic and the bug flag.
+    expect(after.triage).toMatchObject({
+      messageId: newest.id,
+      at: "2026-01-03T00:00:00.000Z",
+      topics: ["refund"],
+      bug: true,
+    });
+  });
+
   test("topics of later messages only add", async () => {
     const c = await started();
     labels["I want my money back."] = { topics: ["refund"] };

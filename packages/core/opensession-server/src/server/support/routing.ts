@@ -524,10 +524,13 @@ export const STRIKE_ONE =
 export const STRIKE_TWO =
   "Possible manipulation attempt. The agent stopped and a person handles this conversation.";
 
-/** Stores one message's labels and folds them into the conversation: the
- *  first labelled message sets the conversation's verdict, later ones only
- *  add topics and the bug flag; an injection flag counts a strike, and the
- *  second strike hands the conversation to a person for good. */
+/** Stores one message's labels and folds them into the conversation. The
+ *  conversation's route, reason and time are those of its newest labelled
+ *  message (`messageId`); topics and the bug flag gather every labelled
+ *  message's, so a topic that needs a person keeps holding. A failed label
+ *  sets the verdict only while nothing better is known. An injection flag
+ *  counts a strike, and the second strike hands the conversation to a
+ *  person for good. */
 function applyTriage(
   x: SupportConversation,
   id: string,
@@ -549,16 +552,25 @@ function applyTriage(
       route: t.route,
       reason,
       topics: t.topics,
-      bug: t.bug,
+      bug: t.bug || x.triage?.bug === true,
       at: t.at,
+      messageId: id,
       ...(t.failed ? { failed: true as const } : {}),
-      ...(x.triage?.bug ? { bug: true } : {}),
     };
   else {
     const known = triage.topics;
     const topics: SupportTopic[] | null =
       known && t.topics ? [...new Set([...known, ...t.topics])] : known;
-    triage = { ...triage, topics, bug: triage.bug || t.bug };
+    const bug = triage.bug || t.bug;
+    // The verdict's own message, or -1 for one set without a message (a
+    // person's call, or an older record): any newer label takes over.
+    const from = triage.messageId
+      ? x.messages.findIndex((y) => y.id === triage!.messageId)
+      : -1;
+    triage =
+      !t.failed && i >= from
+        ? { route: t.route, reason, topics, bug, at: t.at, messageId: id }
+        : { ...triage, topics, bug };
   }
   const events = [...x.events];
   const before = x.injectionFlags ?? 0;

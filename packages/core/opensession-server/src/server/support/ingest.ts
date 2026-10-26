@@ -683,7 +683,10 @@ async function publishAfterTriage(
 ): Promise<void> {
   try {
     const c = await getConversation(conversationId);
-    if (!c || c.status === "spam" || c.triage?.route === "spam") return;
+    // The verdict follows the newest message; only a new conversation
+    // labelled spam is spam (a reply's label never files a thread).
+    if (!c || c.status === "spam" || (isNew && c.triage?.route === "spam"))
+      return;
     await publishSupportEvent(supportCloudEvent(c, message, isNew));
   } catch (error) {
     console.warn(
