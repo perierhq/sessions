@@ -23,10 +23,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { LITERAL_PATHSPECS } from "../../shared/knowledge";
 import { git, gitBytes, isolatedGitEnv, listTree, SERVICE_AUTHOR } from "./git";
 import { formatProblems, type FileProblem } from "./validate";
 
 export const PUSH_LOG = "opensession-pushes.jsonl";
+
+/** Pass before any caller-supplied path used as a git pathspec
+ *  (`git --literal-pathspecs log -- <path>`), so `:(magic)` and wildcards
+ *  read as plain characters. Defined with the dependency parser in
+ *  shared/knowledge.ts; re-exported here for server code. */
+export { LITERAL_PATHSPECS };
 
 export interface Author {
   name: string;
@@ -39,6 +46,10 @@ export interface WorkContext {
   write(path: string, text: string): Promise<void>;
   remove(path: string): Promise<void>;
   list(): Promise<string[]>;
+  /** Raw git in the checkout. Files it changes (`git mv`, `git rm`) skip
+   *  the validator unless the caller runs GitRepoStore.validateStagedPaths
+   *  afterwards; anything that approves content must go through write,
+   *  remove or that helper. */
   git(args: string[]): Promise<string>;
 }
 
@@ -69,6 +80,10 @@ export interface GitRepoStoreOptions {
   validate(path: string, bytes: Uint8Array): FileProblem[];
   /** After a successful push from the service checkout. */
   onPushed?(name: string): Promise<void>;
+  /** When onPushed throws after the push landed: false (the default, what
+   *  memory uses) rejects withWork although the commit is in; true logs the
+   *  error and resolves with the new HEAD. */
+  logOnPushedErrors?: boolean;
   /** Command prefix that runs the receive hook (memory only). */
   hookCommand?: string[];
   /** "Memory" | "Knowledge", for error copy. */
@@ -121,8 +136,19 @@ function safePath(path: string): string {
     !clean ||
     clean
       .split("/")
-      .some((part) => part === ".." || part === ".git" || part === "")
+      .some(
+        (part) => part === "" || part === ".." || part.toLowerCase() === ".git",
+      )
   )
+    throw new MemoryRepoError(`Invalid path "${path}".`);
+  return clean;
+}
+
+/** safePath for `<commit>:<path>` reads, where a `.` segment would make git
+ *  resolve the path against a working directory. */
+function safeTreePath(path: string): string {
+  const clean = safePath(path);
+  if (clean.split("/").includes("."))
     throw new MemoryRepoError(`Invalid path "${path}".`);
   return clean;
 }
@@ -276,7 +302,9 @@ export class GitRepoStore {
     }
   }
 
-  /** Serialize work per repository in this process, and lock across processes. */
+  /** Serialize work per repository in this process, and lock across processes.
+   *  @deprecated Use withLockedWork; kept public for memory's remote sync
+   *  (service.ts) until it moves over. */
   serial<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.chains.get(name) ?? Promise.resolve();
     const next = previous
@@ -293,7 +321,19 @@ export class GitRepoStore {
     return next;
   }
 
-  /** Bring the service checkout to the canonical `main`. Call inside serial. */
+  /** Run `fn` with the repository locked and its service checkout synced to
+   *  the canonical `main`. Nothing is committed or pushed for the caller. */
+  withLockedWork<T>(
+    name: string,
+    env: Record<string, string>,
+    fn: (dir: string) => Promise<T>,
+  ): Promise<T> {
+    return this.serial(name, async () => fn(await this.syncWork(name, env)));
+  }
+
+  /** Bring the service checkout to the canonical `main`. Call inside serial.
+   *  @deprecated Use withLockedWork; kept public for memory's remote sync
+   *  (service.ts) until it moves over. */
   async syncWork(name: string, env: Record<string, string>): Promise<string> {
     const dir = this.workDir(name);
     if (!(await exists(join(dir, ".git")))) {
@@ -411,7 +451,15 @@ export class GitRepoStore {
           { cwd: dir, env, check: false },
         );
         if (push.code === 0) {
-          await this.opts.onPushed?.(name);
+          try {
+            await this.opts.onPushed?.(name);
+          } catch (error) {
+            if (!this.opts.logOnPushedErrors) throw error;
+            console.warn(
+              `[${this.opts.label.toLowerCase()}-repo] after pushing ${name} failed:`,
+              error,
+            );
+          }
           return after;
         }
         const output = `${push.stderr}\n${push.stdout}`;
@@ -471,7 +519,7 @@ export class GitRepoStore {
     if (opts.grep) args.push("-S", opts.grep);
     args.push("main");
     if (opts.path) args.push("--", opts.path);
-    const { stdout } = await git(args);
+    const { stdout } = await git([LITERAL_PATHSPECS, ...args]);
     const pushes = await this.pushLog(name);
     return stdout
       .split("\x1e")
@@ -568,27 +616,11 @@ export class GitRepoStore {
     return result.code === 0 ? result.stdout : null;
   }
 
-  /** One file's bytes at `rev`, or null when it is not there. */
-  async readAt(
-    name: string,
-    rev: string,
-    path: string,
-  ): Promise<Uint8Array | null> {
-    const spec = `${safeRev(rev)}:${safePath(path)}`;
-    const bare = this.bareDir(name);
-    const type = await git(["--git-dir", bare, "cat-file", "-t", spec], {
-      check: false,
-    });
-    if (type.code !== 0 || type.stdout.trim() !== "blob") return null;
-    return gitBytes(["--git-dir", bare, "cat-file", "blob", spec]);
-  }
-
-  /** The blob id of one file at `rev`, or null when it is not there. */
-  async blobAt(
-    name: string,
-    rev: string,
-    path: string,
-  ): Promise<string | null> {
+  /** The full commit id `rev` names (a branch, tag, commit or short id), or
+   *  null when it names nothing or something other than a commit (a tree or
+   *  blob id). Throws MemoryRepoError for a revision that isn't safe to pass
+   *  to git (an option, a range, reflog syntax). */
+  async commitOf(name: string, rev: string): Promise<string | null> {
     const result = await git(
       [
         "--git-dir",
@@ -596,7 +628,7 @@ export class GitRepoStore {
         "rev-parse",
         "--verify",
         "--quiet",
-        `${safeRev(rev)}:${safePath(path)}`,
+        `${safeRev(rev)}^{commit}`,
       ],
       { check: false },
     );
@@ -604,17 +636,120 @@ export class GitRepoStore {
     return result.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
   }
 
-  /** Whether commit `a` is `b` or one of its ancestors. */
+  /** The blob id at `<commit>:<path>`, or null when the commit is unknown or
+   *  the path isn't a file there (missing, a directory, a submodule). */
+  private async blobOf(
+    name: string,
+    rev: string,
+    path: string,
+  ): Promise<string | null> {
+    const clean = safeTreePath(path);
+    const commit = await this.commitOf(name, rev);
+    if (!commit) return null;
+    const bare = this.bareDir(name);
+    const resolved = await git(
+      [
+        "--git-dir",
+        bare,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `${commit}:${clean}`,
+      ],
+      { check: false },
+    );
+    const id = resolved.stdout.trim();
+    if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(id)) return null;
+    const type = await git(["--git-dir", bare, "cat-file", "-t", id], {
+      check: false,
+    });
+    return type.code === 0 && type.stdout.trim() === "blob" ? id : null;
+  }
+
+  /** One file's bytes at `rev`, or null when it is not a file there. The
+   *  path resolves to a blob id once and that id is read, so a push between
+   *  the two steps can't change what comes back. */
+  async readAt(
+    name: string,
+    rev: string,
+    path: string,
+  ): Promise<Uint8Array | null> {
+    const id = await this.blobOf(name, rev, path);
+    if (!id) return null;
+    return gitBytes(["--git-dir", this.bareDir(name), "cat-file", "blob", id]);
+  }
+
+  /** The blob id of one file at `rev`, or null when it is not a file there
+   *  (missing, a directory) or `rev` isn't a commit. */
+  async blobAt(
+    name: string,
+    rev: string,
+    path: string,
+  ): Promise<string | null> {
+    return this.blobOf(name, rev, path);
+  }
+
+  /** Whether commit `a` is `b` or one of its ancestors. Both must be hex
+   *  commit ids (MemoryRepoError 400 otherwise). Throws MemoryRepoError
+   *  "Unknown commit." (404) when either isn't a commit in this repository,
+   *  including tree and blob ids; callers checking freshness treat that as
+   *  "not backed" (fail closed). */
   async isAncestor(name: string, a: string, b: string): Promise<boolean> {
     if (!COMMIT.test(a) || !COMMIT.test(b))
       throw new MemoryRepoError("Invalid commit.");
+    const [ca, cb] = await Promise.all([
+      this.commitOf(name, a),
+      this.commitOf(name, b),
+    ]);
+    if (!ca || !cb) throw new MemoryRepoError("Unknown commit.", 404);
     const result = await git(
-      ["--git-dir", this.bareDir(name), "merge-base", "--is-ancestor", a, b],
+      ["--git-dir", this.bareDir(name), "merge-base", "--is-ancestor", ca, cb],
       { check: false },
     );
     if (result.code === 0) return true;
     if (result.code === 1) return false;
     throw new MemoryRepoError("Unknown commit.", 404);
+  }
+
+  /** For withWork callers that change files with raw git (`git mv`,
+   *  `git rm`): stage everything, run the validator on every added or
+   *  changed path, and throw MemoryRepoError on any problem. Returns the
+   *  checked paths, sorted. Approval flows must use write/remove or call
+   *  this before returning from their withWork function. */
+  async validateStagedPaths(work: Pick<WorkContext, "dir">): Promise<string[]> {
+    const env = isolatedGitEnv();
+    await git(["add", "-A"], { cwd: work.dir, env });
+    const hasHead =
+      (
+        await git(["rev-parse", "--verify", "--quiet", "HEAD"], {
+          cwd: work.dir,
+          env,
+          check: false,
+        })
+      ).code === 0;
+    const { stdout } = await git(
+      [
+        "diff",
+        "--cached",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-filter=ACMT",
+        ...(hasHead ? ["HEAD"] : []),
+      ],
+      { cwd: work.dir, env },
+    );
+    const paths = stdout.split("\0").filter(Boolean).sort();
+    const problems: FileProblem[] = [];
+    for (const path of paths) {
+      const bytes = await gitBytes(["cat-file", "blob", `:0:${path}`], {
+        cwd: work.dir,
+        env,
+      });
+      problems.push(...this.opts.validate(path, bytes));
+    }
+    if (problems.length) throw new MemoryRepoError(formatProblems(problems));
+    return paths;
   }
 }
 

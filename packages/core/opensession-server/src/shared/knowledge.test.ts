@@ -187,9 +187,9 @@ describe("effectiveStatus", () => {
 describe("effectiveStatus dates", () => {
   test("a malformed review date needs a check", () => {
     for (const reviewBy of ["2026-1-01", "next week", "2026-10-26T00:00", "9"])
-      expect(effectiveStatus({ status: "active", reviewBy }, "2026-10-26")).toBe(
-        "needs-check",
-      );
+      expect(
+        effectiveStatus({ status: "active", reviewBy }, "2026-10-26"),
+      ).toBe("needs-check");
   });
   test("today must be YYYY-MM-DD", () => {
     expect(() =>

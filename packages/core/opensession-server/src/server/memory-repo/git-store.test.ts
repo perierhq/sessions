@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitRepoStore, MemoryRepoError } from "./git-store";
+import { git, isolatedGitEnv } from "./git";
+import { GitRepoStore, LITERAL_PATHSPECS, MemoryRepoError } from "./git-store";
 import type { FileProblem } from "./validate";
 
 let base: string;
@@ -104,6 +105,119 @@ describe("GitRepoStore", () => {
     expect(await store.isAncestor(name, second, first)).toBe(false);
   });
 
+  test("commitOf resolves commits and refuses trees and unknown ids", async () => {
+    expect(await store.commitOf(name, first)).toBe(first);
+    expect(await store.commitOf(name, first.slice(0, 10))).toBe(first);
+    expect(await store.commitOf(name, "main")).toBe(second);
+    const tree = (
+      await git([
+        "--git-dir",
+        store.bareDir(name),
+        "rev-parse",
+        `${first}^{tree}`,
+      ])
+    ).stdout.trim();
+    expect(await store.commitOf(name, tree)).toBeNull();
+    expect(await store.commitOf(name, "0".repeat(40))).toBeNull();
+    expect(await store.commitOf(name, "nope")).toBeNull();
+    await expect(store.commitOf(name, "-x")).rejects.toThrow(MemoryRepoError);
+    await expect(store.commitOf(name, "a..b")).rejects.toThrow(MemoryRepoError);
+    // A tree id is not a revision readAt, blobAt or isAncestor accept.
+    expect(await store.readAt(name, tree, "a.md")).toBeNull();
+    expect(await store.blobAt(name, tree, "a.md")).toBeNull();
+    await expect(store.isAncestor(name, tree, second)).rejects.toThrow(
+      "Unknown commit.",
+    );
+  });
+
+  test("blobAt and readAt return null for a directory", async () => {
+    const withDir = (await store.withWork(
+      name,
+      async (work) => {
+        await work.write("docs/b.md", "b\n");
+      },
+      { message: "Add docs/b" },
+    ))!;
+    expect(await store.blobAt(name, withDir, "docs")).toBeNull();
+    expect(await store.readAt(name, withDir, "docs")).toBeNull();
+    expect(await store.blobAt(name, withDir, "docs/b.md")).toMatch(
+      /^[0-9a-f]{40}$/,
+    );
+    await store.withWork(
+      name,
+      async (work) => {
+        await work.remove("docs/b.md");
+      },
+      { message: "Remove docs/b" },
+    );
+  });
+
+  test("reads refuse options, ranges and escaping paths", async () => {
+    for (const rev of ["-x", "--output=/tmp/x", "a..b", "HEAD@{0}", ""]) {
+      await expect(store.readAt(name, rev, "a.md")).rejects.toThrow(
+        MemoryRepoError,
+      );
+      await expect(store.blobAt(name, rev, "a.md")).rejects.toThrow(
+        MemoryRepoError,
+      );
+    }
+    for (const path of [
+      "../a.md",
+      "x/../../a.md",
+      ".git/config",
+      "x/.GIT/y",
+      "./a.md",
+    ]) {
+      await expect(store.readAt(name, first, path)).rejects.toThrow(
+        MemoryRepoError,
+      );
+      await expect(store.blobAt(name, first, path)).rejects.toThrow(
+        MemoryRepoError,
+      );
+    }
+    // Unknown commits read as absent.
+    expect(await store.readAt(name, "0".repeat(40), "a.md")).toBeNull();
+    expect(await store.blobAt(name, "0".repeat(40), "a.md")).toBeNull();
+  });
+
+  test("isAncestor refuses non-hex and throws on unknown commits", async () => {
+    await expect(store.isAncestor(name, "main", second)).rejects.toThrow(
+      "Invalid commit.",
+    );
+    await expect(store.isAncestor(name, first, "zz")).rejects.toThrow(
+      "Invalid commit.",
+    );
+    const unknown = "0".repeat(40);
+    try {
+      await store.isAncestor(name, unknown, second);
+      throw new Error("expected a throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MemoryRepoError);
+      expect((error as MemoryRepoError).status).toBe(404);
+    }
+    await expect(store.isAncestor(name, first, unknown)).rejects.toThrow(
+      "Unknown commit.",
+    );
+  });
+
+  test("history reads its path literally", async () => {
+    expect(LITERAL_PATHSPECS).toBe("--literal-pathspecs");
+    expect(await store.history(name, { path: "*.md" })).toEqual([]);
+    expect((await store.history(name, { path: "a.md" })).length).toBe(2);
+  });
+
+  test("withLockedWork hands a synced checkout to fn", async () => {
+    const seen = await store.withLockedWork(
+      name,
+      isolatedGitEnv(),
+      async (dir) => {
+        const head = await git(["rev-parse", "HEAD"], { cwd: dir });
+        return head.stdout.trim();
+      },
+    );
+    expect(seen).toBe((await store.head(name))!);
+  });
+
   test("revert of the last commit restores the file", async () => {
     const reverted = await store.revert(name, second, { name: "Ada" });
     expect(reverted).toMatch(/^[0-9a-f]{40}$/);
@@ -148,5 +262,96 @@ describe("GitRepoStore", () => {
     }
     expect(await store.head(name)).toBe(before);
     expect(await store.readFile(name, "b.md")).toBeNull();
+  });
+});
+
+describe("GitRepoStore extras", () => {
+  test("validateStagedPaths checks files moved with git", async () => {
+    const name = "test-move";
+    await store.initBare(name);
+    await store.withWork(
+      name,
+      async (work) => {
+        await work.write("a.md", "a\n");
+      },
+      { message: "Add a" },
+    );
+    const seen: string[] = [];
+    const strict = new GitRepoStore({
+      ...store.opts,
+      validate: (path) => {
+        seen.push(path);
+        return path.startsWith("bad/")
+          ? [{ path, line: 1, message: "Not allowed here." }]
+          : [];
+      },
+    });
+    const before = await store.head(name);
+    await expect(
+      strict.withWork(
+        name,
+        async (work) => {
+          await mkdir(join(work.dir, "bad"));
+          await work.git(["mv", "a.md", "bad/a.md"]);
+          await strict.validateStagedPaths(work);
+        },
+        { message: "Move a" },
+      ),
+    ).rejects.toThrow("bad/a.md:1: Not allowed here.");
+    expect(await store.head(name)).toBe(before);
+    seen.length = 0;
+    const moved = await strict.withWork(
+      name,
+      async (work) => {
+        await mkdir(join(work.dir, "good"));
+        await work.git(["mv", "a.md", "good/a.md"]);
+        expect(await strict.validateStagedPaths(work)).toEqual(["good/a.md"]);
+      },
+      { message: "Move a" },
+    );
+    expect(moved).toMatch(/^[0-9a-f]{40}$/);
+    expect(seen).toEqual(["good/a.md"]);
+    expect(await store.listFiles(name)).toEqual(["good/a.md"]);
+  });
+
+  test("an onPushed failure throws unless logOnPushedErrors is set", async () => {
+    const name = "test-pushed";
+    const failing = (log: boolean) =>
+      new GitRepoStore({
+        ...store.opts,
+        onPushed: async () => {
+          throw new Error("refresh broke");
+        },
+        logOnPushedErrors: log,
+      });
+    await store.initBare(name);
+    await expect(
+      failing(false).withWork(
+        name,
+        async (work) => {
+          await work.write("a.md", "a\n");
+        },
+        { message: "Add a" },
+      ),
+    ).rejects.toThrow("refresh broke");
+    const warn = console.warn;
+    const warned: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warned.push(args);
+    };
+    try {
+      const head = await failing(true).withWork(
+        name,
+        async (work) => {
+          await work.write("a.md", "b\n");
+        },
+        { message: "Edit a" },
+      );
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      expect(await store.head(name)).toBe(head);
+    } finally {
+      console.warn = warn;
+    }
+    expect(warned.length).toBe(1);
   });
 });
