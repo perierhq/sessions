@@ -1,10 +1,15 @@
-import type { ProjectGitAccessIssue } from "../../../../shared/project-settings";
+import {
+  gitAccessTitle,
+  type ProjectGitAccessIssue,
+} from "../../../../shared/project-settings";
 import { clockTime, shortTime } from "../../../lib/time";
 import { InlineAlert } from "../../../ui/state";
 
 /**
- * Background git fetches for this project can't sign in to GitHub, so they
- * back off instead of retrying every few minutes. Says since when, when the
+ * Background git fetches for this project can't sign in to GitHub (a refused
+ * credential, a helper that can't run, or no token because the GitHub App
+ * isn't installed for the repository), so they back off instead of retrying
+ * every few minutes. Says since when, when the
  * next try is, and what git said; the next fetch that works clears it.
  */
 export function GitAccessNotice({ issue }: { issue: ProjectGitAccessIssue }) {
@@ -13,13 +18,11 @@ export function GitAccessNotice({ issue }: { issue: ProjectGitAccessIssue }) {
   const cause =
     issue.kind === "helper"
       ? "The checkout's credential helper can't run."
-      : "GitHub refused the project's credential.";
+      : issue.kind === "not-installed"
+        ? `The server has no GitHub token for this repository. Install the GitHub App on ${issue.ghRepo?.split("/")[0] || "its owner"} with access to it.`
+        : "GitHub refused the project's credential.";
   return (
-    <InlineAlert
-      variant="warn"
-      className="mb-3"
-      title="Git can't sign in to GitHub"
-    >
+    <InlineAlert variant="warn" className="mb-3" title={gitAccessTitle(issue)}>
       <p>
         {cause} Background fetches have failed
         {since && since !== "now" ? ` for ${since}` : ""} and back off

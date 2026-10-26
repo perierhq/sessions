@@ -17,11 +17,15 @@ import {
   __setGitAccessSeamsForTest,
   gitAccessIssue,
 } from "./git-access-health";
+import { githubGitCredentialEnv } from "./github-git-credential";
 import type { NotificationEvent } from "./notification-threads";
 import { __setSessionsDirForTest } from "./paths";
 import { __setWorkloadScopingForTest } from "./workload-scope";
 import { refreshWarmTemplate, warmTemplateStatus } from "./warm-template";
-import { __setSetupOutcomePublisherForTest } from "./worktree";
+import {
+  __setGithubServiceCredentialForTest,
+  __setSetupOutcomePublisherForTest,
+} from "./worktree";
 
 /**
  * The warm-template sweep fetches every enabled project every five minutes.
@@ -142,6 +146,10 @@ beforeAll(async () => {
       told.push(event);
     },
   });
+  // The App hands out a token; the remotes below refuse it.
+  __setGithubServiceCredentialForTest(async () =>
+    githubGitCredentialEnv("ghs_refused"),
+  );
   await getConfigAsync();
   // A healthy first build.
   await refreshWarmTemplate("acme", { force: true });
@@ -152,6 +160,7 @@ afterAll(() => {
   __setWorkloadScopingForTest(null);
   __setSetupOutcomePublisherForTest(null);
   __setGitAccessSeamsForTest(undefined);
+  __setGithubServiceCredentialForTest(undefined);
   for (const key of ENV_KEYS) {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];

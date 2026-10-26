@@ -716,6 +716,7 @@ async function refreshAskCheckoutLocked(
   // update only FETCH_HEAD (see fetchBranchesWithTracking).
   const fetch =
     await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", `+refs/heads/${repo.defaultBranch}:refs/remotes/origin/${repo.defaultBranch}`, "--quiet"], "git")}`
+      .env(await githubServiceGitEnv(repo.ghRepo))
       .quiet()
       .nothrow();
   if (fetch.exitCode !== 0) {
@@ -830,7 +831,9 @@ export async function ensureAskCheckout(repoId?: string): Promise<string> {
       }
       return dir;
     }
-    await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`.nothrow();
+    await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+      .env(await githubServiceGitEnv(repo.ghRepo))
+      .nothrow();
     await $`git -C ${repo.repo} worktree prune`.quiet().nothrow();
     const add =
       await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", "--detach", dir, `origin/${repo.defaultBranch}`], "git")}`
@@ -1027,15 +1030,16 @@ export async function reviveWorktree(
         await $`git -C ${repo.repo} show-ref --verify --quiet refs/heads/${branch}`.nothrow()
       ).exitCode === 0;
     let add;
+    const fetchShell = await githubFetchShell(repo.ghRepo);
     if (hasBranch) {
-      await fastForwardBranchFromOrigin(repo.repo, branch);
+      await fastForwardBranchFromOrigin(repo.repo, branch, fetchShell);
       add =
         await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", wtPath, branch], "git")}`
           .quiet()
           .nothrow();
     } else {
       const fetchBranch =
-        await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`, "--quiet"], "git")}`
+        await fetchShell`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`, "--quiet"], "git")}`
           .quiet()
           .nothrow();
       const hasRemote =
@@ -1044,7 +1048,7 @@ export async function reviveWorktree(
           await $`git -C ${repo.repo} show-ref --verify --quiet refs/remotes/origin/${branch}`.nothrow()
         ).exitCode === 0;
       if (!hasRemote) {
-        await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`;
+        await fetchShell`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`;
       }
       const startPoint = hasRemote
         ? `origin/${branch}`
@@ -1122,8 +1126,62 @@ export async function fastForwardBranchFromOrigin(
  * it too.
  */
 export async function githubServiceGitEnv(ghRepo: string | undefined) {
+  return { ...process.env, ...(await serviceCredentialEnv(ghRepo)) };
+}
+
+/** How long a minted service credential serves further fetches of the same
+ *  repository. Installation tokens live an hour; background fetches (the
+ *  warm-template sweep, the git status poll) would otherwise mint one per
+ *  fetch. */
+const SERVICE_CREDENTIAL_REUSE_MS = 10 * 60_000;
+const serviceCredentials = new Map<
+  string,
+  { env: Record<string, string>; at: number }
+>();
+
+async function serviceCredentialEnv(
+  ghRepo: string | undefined,
+): Promise<Record<string, string>> {
+  if (serviceCredentialOverride) return serviceCredentialOverride(ghRepo);
+  const key = ghRepo || "";
+  const hit = serviceCredentials.get(key);
+  if (hit && Date.now() - hit.at < SERVICE_CREDENTIAL_REUSE_MS) return hit.env;
   const { githubServiceCredentialEnv } = await import("./github-app");
-  return { ...process.env, ...(await githubServiceCredentialEnv(ghRepo)) };
+  const env = await githubServiceCredentialEnv(ghRepo);
+  // No token is never kept: an App installed a minute later counts at once.
+  if (env.GH_TOKEN) serviceCredentials.set(key, { env, at: Date.now() });
+  else serviceCredentials.delete(key);
+  return env;
+}
+
+/** A Bun shell of its own for fetches from GitHub: with the caller's
+ *  credential (a person's, for a session they open) when there is one, else
+ *  the service one. Never `$.env()`: that sets the environment of every
+ *  later `$` command in the process, so the token would ride along with
+ *  unrelated commands (a dependency install, another person's fetch). */
+async function githubFetchShell(
+  ghRepo: string | undefined,
+  gitEnv?: Record<string, string>,
+): Promise<typeof $> {
+  const shell = new $.Shell();
+  shell.env(
+    gitEnv ? { ...process.env, ...gitEnv } : await githubServiceGitEnv(ghRepo),
+  );
+  return shell;
+}
+
+type ServiceCredentialEnv = (
+  ghRepo: string | undefined,
+) => Promise<Record<string, string>>;
+let serviceCredentialOverride: ServiceCredentialEnv | undefined;
+
+/** Replace the service credential behind githubServiceGitEnv (tests);
+ *  undefined restores the GitHub App. */
+export function __setGithubServiceCredentialForTest(
+  fn: ServiceCredentialEnv | undefined,
+): void {
+  serviceCredentialOverride = fn;
+  serviceCredentials.clear();
 }
 
 /**
@@ -1270,7 +1328,9 @@ export async function createWorktreeForFollowup(
   await withGitLock(async () => {
     await $`git -C ${repo.repo} worktree prune`.quiet();
     if (existsSync(wtPath)) return; // pruned stale registration; dir already usable
-    await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", baseRef, "--quiet"], "git")}`.nothrow();
+    await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", baseRef, "--quiet"], "git")}`
+      .env(await githubServiceGitEnv(repo.ghRepo))
+      .nothrow();
     const startPoint =
       (
         await $`git -C ${repo.repo} rev-parse --verify --quiet origin/${baseRef}`.nothrow()
@@ -1308,11 +1368,11 @@ export async function createWorktreeForExistingBranch(
   const repo = getRepo(repoId);
   // No new worktree in a repository that is being removed.
   assertRepoNotBeingRemoved(repo.id);
-  const shell = gitEnv ? $.env({ ...process.env, ...gitEnv }) : $;
   const existing = (await listWorktrees(repo.id)).find(
     (w) => w.branch === branch,
   );
   if (existing) return existing.path;
+  const shell = await githubFetchShell(repo.ghRepo, gitEnv);
 
   const wtPath = `${worktreesDir()}/${repo.wtPrefix}-${branch}`;
   await withGitLock(async () => {
@@ -1370,7 +1430,7 @@ export async function withClaimedBranchWorktree<T>(
   }) => Promise<T>,
 ): Promise<T> {
   const repo = getRepo(repoId);
-  const shell = gitEnv ? $.env({ ...process.env, ...gitEnv }) : $;
+  const shell = await githubFetchShell(repo.ghRepo, gitEnv);
   return withGitLock(async () => {
     await $`git -C ${repo.repo} worktree prune`.quiet().nothrow();
     const existing = (await listWorktrees(repo.id)).find(
@@ -1586,7 +1646,6 @@ export async function createWorktree(
   const repo = getRepo(repoId);
   // No new worktree in a repository that is being removed.
   assertRepoNotBeingRemoved(repo.id);
-  const shell = opts?.gitEnv ? $.env({ ...process.env, ...opts.gitEnv }) : $;
 
   // Shared-checkout repos (opensession) don't get a per-session worktree: the
   // session works in the live main checkout on the default branch so its edits
@@ -1599,6 +1658,7 @@ export async function createWorktree(
   // whole instance out the same way (sharedCheckoutForNewSessions).
   if (sharedCheckoutForNewSessions(repo) && !opts?.isolated) return repo.repo;
 
+  const shell = await githubFetchShell(repo.ghRepo, opts?.gitEnv);
   const wtPath = `${worktreesDir()}/${repo.wtPrefix}-${branch}`;
   const base = opts?.base;
 

@@ -77,8 +77,11 @@ export function hostWorkspaceExec(dir: string): WorkspaceExec {
       ]);
       return { exitCode, stdout, stderr };
     }
-    const shell = opts?.env ? $.env({ ...process.env, ...opts.env } as any) : $;
-    const r = await shell`${cmd}`.cwd(dir).nothrow().quiet();
+    // Per command: `$.env()` would set it for every later `$` in the
+    // process, credentials included.
+    const run = $`${cmd}`;
+    if (opts?.env) run.env({ ...process.env, ...opts.env } as any);
+    const r = await run.cwd(dir).nothrow().quiet();
     return {
       exitCode: r.exitCode,
       stdout: r.stdout.toString(),

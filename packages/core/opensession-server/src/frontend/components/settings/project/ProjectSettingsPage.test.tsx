@@ -194,6 +194,24 @@ describe("git access", () => {
     expect(html).toContain("remote: Invalid username or token.");
   });
 
+  test("a project the server has no token for names the missing App", () => {
+    const html = render({
+      ...READY_4_OF_6,
+      gitAccess: {
+        kind: "not-installed",
+        ghRepo: "acme/app",
+        since: "2026-10-25T21:39:00.000Z",
+        lastError:
+          "fatal: could not read Username for 'https://github.com': No such device or address",
+        failures: 1,
+        nextAttemptAt: "2026-10-25T21:44:00.000Z",
+      },
+    });
+    expect(html).toContain("The GitHub App isn&#x27;t installed for acme/app");
+    expect(html).toContain("Install the GitHub App on acme");
+    expect(html).not.toContain("refused the project&#x27;s credential");
+  });
+
   test("a healthy project shows no notice", () => {
     expect(render(READY_4_OF_6)).not.toContain("sign in to GitHub");
   });

@@ -76,7 +76,10 @@ export async function analyzeMergedPrForMissedBugs(
 
   // Make sure the base commit is resolvable locally, then blame at it.
   try {
-    await $`git -C ${repo.repo} fetch --quiet origin ${baseRef || baseSha}`.quiet();
+    const { githubServiceGitEnv } = await import("../../server/worktree");
+    await $`git -C ${repo.repo} fetch --quiet origin ${baseRef || baseSha}`
+      .env(await githubServiceGitEnv(repo.ghRepo || repoFull))
+      .quiet();
     await $`git -C ${repo.repo} cat-file -e ${baseSha}`.quiet();
   } catch {
     console.warn(

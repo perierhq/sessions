@@ -9,10 +9,12 @@
  * journal line per attempt. Now a background fetch asks `gitAccessDue`
  * first and reports what happened:
  *
- *  - `recordGitAccessFailure` with git's stderr. A sign-in failure (bad
- *    token, no credential, a credential helper that cannot run) opens an
- *    issue for the project and backs off exponentially (5 min doubling to
- *    6 h). The first failure of an issue notifies the instance owner through
+ *  - `recordGitAccessFailure` with git's stderr and whether the fetch was
+ *    handed a token. A sign-in failure (bad token, no credential, a
+ *    credential helper that cannot run) opens an issue for the project and
+ *    backs off exponentially (5 min doubling to 6 h). A fetch that had no
+ *    token to offer is its own kind: the GitHub App isn't installed for the
+ *    repository, which no amount of retrying fixes. The first failure of an issue notifies the instance owner through
  *    the inbox (notifications.ts, the path incident alerts take), keyed so
  *    a restart or a repeat never alerts twice. Any other failure (network,
  *    a missing branch) is not this module's business and changes nothing.
@@ -27,6 +29,7 @@
  * mark survive a restart. Nothing runs at import.
  */
 import { existsSync, readFileSync } from "fs";
+import { gitAccessTitle } from "../shared/project-settings";
 import type { NotificationEvent } from "./notification-threads";
 import { stateDir } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
@@ -35,12 +38,17 @@ export const GIT_ACCESS_BASE_BACKOFF_MS = 5 * 60_000;
 export const GIT_ACCESS_MAX_BACKOFF_MS = 6 * 60 * 60_000;
 
 /** `auth`: the remote refused the credential or none was available.
- *  `helper`: the configured credential helper could not run at all. */
-export type GitAccessFailureKind = "auth" | "helper";
+ *  `helper`: the configured credential helper could not run at all.
+ *  `not-installed`: the server had no token for the repository, so it had
+ *  nothing to offer: the GitHub App isn't installed for its owner, or not
+ *  with access to it. */
+export type GitAccessFailureKind = "auth" | "helper" | "not-installed";
 
 export interface GitAccessIssue {
   repoId: string;
   kind: GitAccessFailureKind;
+  /** `owner/name` on GitHub, when the project has one. */
+  ghRepo?: string;
   /** First failure of this issue (ISO). */
   since: string;
   /** Last failure (ISO). */
@@ -72,10 +80,12 @@ const AUTH_FAILURE = [
   /HTTP Basic: Access denied/i,
 ];
 
-/** Whether git's stderr from a fetch says it could not sign in, and how. */
+/** Whether git's stderr from a fetch says it could not sign in, and how.
+ *  Only stderr: `not-installed` needs to know the fetch had no token
+ *  (recordGitAccessFailure). */
 export function classifyGitFetchFailure(
   stderr: string,
-): GitAccessFailureKind | null {
+): "auth" | "helper" | null {
   for (const line of stderr.split("\n"))
     if (HELPER_FAILURE.test(line) && HELPER_CANNOT_RUN.test(line))
       return "helper";
@@ -194,22 +204,30 @@ function minutes(ms: number): string {
 /**
  * Report a failed fetch for `repo`. Returns the open issue when git's
  * stderr says it could not sign in, null for any other failure (nothing is
- * recorded then).
+ * recorded then). `token: false` says the fetch was handed no token (the
+ * server could not mint one for the repository); a sign-in failure is then
+ * `not-installed` rather than a refused credential. A change of kind is a
+ * new issue, and the owner hears about it.
  */
 export async function recordGitAccessFailure(
-  repo: { id: string; label?: string },
+  repo: { id: string; label?: string; ghRepo?: string },
   stderr: string,
+  opts: { token?: boolean } = {},
 ): Promise<GitAccessIssue | null> {
-  const kind = classifyGitFetchFailure(stderr);
-  if (!kind) return null;
+  const seen = classifyGitFetchFailure(stderr);
+  if (!seen) return null;
+  const kind: GitAccessFailureKind =
+    seen === "auth" && opts.token === false ? "not-installed" : seen;
   const now = clock();
   const state = readState();
-  const prev = state.issues[repo.id];
+  const open = state.issues[repo.id];
+  const prev = open?.kind === kind ? open : undefined;
   const failures = (prev?.failures ?? 0) + 1;
   const wait = gitAccessBackoffMs(failures);
   const issue: GitAccessIssue = {
     repoId: repo.id,
     kind,
+    ...(repo.ghRepo ? { ghRepo: repo.ghRepo } : {}),
     since: prev?.since ?? new Date(now).toISOString(),
     lastFailureAt: new Date(now).toISOString(),
     lastError: gitErrorLine(stderr),
@@ -220,15 +238,18 @@ export async function recordGitAccessFailure(
   state.issues[repo.id] = issue;
   writeState(state);
   console.warn(
-    `[git-access] ${repo.id}: fetch could not sign in (${failures} in a row since ${issue.since}); next background try in ${minutes(wait)}: ${issue.lastError}`,
+    `[git-access] ${repo.id}: fetch could not sign in${kind === "not-installed" ? ` (${gitAccessTitle(issue)})` : ""} (${failures} in a row since ${issue.since}); next background try in ${minutes(wait)}: ${issue.lastError}`,
   );
   if (!issue.notified) {
     try {
       await notifyOwner({
         kind: "access_failing",
         subject: { type: "repo", id: repo.id, title: repo.label || repo.id },
-        reason: "Git can't sign in to GitHub",
-        body: `Background fetches back off until this is fixed. ${issue.lastError}`,
+        reason: gitAccessTitle(issue),
+        body:
+          kind === "not-installed"
+            ? `The server has no GitHub token for this repository. Install the GitHub App on ${repo.ghRepo?.split("/")[0] || "its owner"} with access to it; background fetches back off until then. ${issue.lastError}`
+            : `Background fetches back off until this is fixed. ${issue.lastError}`,
         url: settingsUrl(repo.id),
         eventKey: `git-access:${repo.id}:${issue.since}`,
         at: now,

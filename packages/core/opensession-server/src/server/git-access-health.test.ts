@@ -156,6 +156,57 @@ test("other failures leave no issue and no backoff", async () => {
   expect(told).toHaveLength(0);
 });
 
+test("a fetch with no token to offer: the App isn't installed for the repository", async () => {
+  fresh();
+  const repo = { id: "acme", label: "Acme", ghRepo: "acme/app" };
+  const NO_ANSWER =
+    "fatal: could not read Username for 'https://github.com': No such device or address";
+  const issue = await recordGitAccessFailure(repo, NO_ANSWER, {
+    token: false,
+  });
+  expect(issue).toMatchObject({ kind: "not-installed", ghRepo: "acme/app" });
+  expect(told).toHaveLength(1);
+  expect(told[0]?.reason).toBe("The GitHub App isn't installed for acme/app");
+  expect(told[0]?.body).toContain("Install the GitHub App on acme");
+  // A token that was handed over and refused stays a refused credential.
+  fresh();
+  expect(
+    await recordGitAccessFailure(repo, BAD_TOKEN, { token: true }),
+  ).toMatchObject({ kind: "auth" });
+  expect(told[0]?.reason).toBe("Git can't sign in to GitHub");
+  // Other failures are not sign-in failures, token or not.
+  expect(
+    await recordGitAccessFailure(
+      repo,
+      "fatal: unable to access: Could not resolve host",
+      {
+        token: false,
+      },
+    ),
+  ).toBeNull();
+});
+
+test("a different cause is a new issue, and the owner hears about it", async () => {
+  fresh();
+  const repo = { id: "acme", label: "Acme", ghRepo: "acme/app" };
+  await recordGitAccessFailure(repo, BAD_TOKEN, { token: true });
+  now += GIT_ACCESS_BASE_BACKOFF_MS;
+  await recordGitAccessFailure(repo, BAD_TOKEN, { token: true });
+  expect(gitAccessIssue("acme")?.failures).toBe(2);
+  expect(told).toHaveLength(1);
+  now += 2 * GIT_ACCESS_BASE_BACKOFF_MS;
+  const issue = await recordGitAccessFailure(repo, BAD_TOKEN, {
+    token: false,
+  });
+  expect(issue).toMatchObject({
+    kind: "not-installed",
+    failures: 1,
+    since: new Date(now).toISOString(),
+  });
+  expect(told).toHaveLength(2);
+  expect(told[1]?.eventKey).not.toBe(told[0]?.eventKey);
+});
+
 test("an owner who could not be told is told on the next failure", async () => {
   fresh();
   let fail = true;

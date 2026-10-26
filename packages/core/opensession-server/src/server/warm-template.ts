@@ -492,8 +492,12 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     );
     // Lazy import: worktree.ts imports back into this module's consumers —
     // keep the static graph acyclic.
-    const { withGitLock, installWorktreeDeps, worktreeSetupTimeoutMs } =
-      await import("./worktree");
+    const {
+      githubServiceGitEnv,
+      withGitLock,
+      installWorktreeDeps,
+      worktreeSetupTimeoutMs,
+    } = await import("./worktree");
 
     // 1. Ensure the detached template worktree exists (and still belongs
     //    to this checkout: one carried over from another install is
@@ -506,7 +510,9 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
       await withGitLock(async () => {
         await $`git -C ${repo.repo} worktree prune`.quiet().nothrow();
         if (existsSync(dir)) return;
-        await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`.nothrow();
+        await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+          .env(await githubServiceGitEnv(repo.ghRepo))
+          .nothrow();
         await $`${workloadArgv(["git", "-C", repo.repo, "worktree", "add", "--detach", dir, `origin/${repo.defaultBranch}`], "git")}`;
       });
     }
@@ -671,13 +677,18 @@ async function dropForeignTemplate(
 }
 
 /** Fetch the default branch into the template and report the outcome to
- *  git-access-health.ts. A credential helper that can't run because it
+ *  git-access-health.ts. The fetch signs in the way session worktrees do
+ *  (githubServiceGitEnv): the checkout's helper answers only from the
+ *  GH_TOKEN it is handed. A credential helper that can't run because it
  *  names another install's path is repaired, and the fetch tried once
  *  more. Never throws: a failed fetch leaves the old remote-tracking ref,
  *  which the caller compares against as before. */
 async function fetchTemplate(repo: Repo, dir: string): Promise<void> {
+  const { githubServiceGitEnv } = await import("./worktree");
+  const env = await githubServiceGitEnv(repo.ghRepo);
   const run = () =>
     $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+      .env(env)
       .quiet()
       .nothrow();
   let fetched = await run();
@@ -702,7 +713,7 @@ async function fetchTemplate(repo: Repo, dir: string): Promise<void> {
     return;
   }
   const stderr = fetched.stderr.toString();
-  if (!(await recordGitAccessFailure(repo, stderr)))
+  if (!(await recordGitAccessFailure(repo, stderr, { token: !!env.GH_TOKEN })))
     console.warn(
       `[warm-template] ${repo.id}: fetch failed (exit ${fetched.exitCode}): ${gitErrorLine(stderr)}`,
     );

@@ -398,8 +398,11 @@ export interface ProjectSettingsView {
 
 export interface ProjectGitAccessIssue {
   /** `auth`: the remote refused the credential; `helper`: the credential
-   *  helper could not run. */
-  kind: "auth" | "helper";
+   *  helper could not run; `not-installed`: the server had no token for the
+   *  repository (the GitHub App isn't installed for it). */
+  kind: "auth" | "helper" | "not-installed";
+  /** `owner/name` on GitHub, when the project has one. */
+  ghRepo?: string;
   /** First failure (ISO). */
   since: string;
   /** What git said. */
@@ -407,6 +410,17 @@ export interface ProjectGitAccessIssue {
   failures: number;
   /** When a background fetch tries again (ISO). */
   nextAttemptAt: string;
+}
+
+/** The headline of a git access issue: the project page's notice and the
+ *  owner's inbox row say the same thing. */
+export function gitAccessTitle(issue: {
+  kind: ProjectGitAccessIssue["kind"];
+  ghRepo?: string;
+}): string {
+  if (issue.kind === "not-installed")
+    return `The GitHub App isn't installed for ${issue.ghRepo || "this repository"}`;
+  return "Git can't sign in to GitHub";
 }
 
 export interface ProjectListItem {

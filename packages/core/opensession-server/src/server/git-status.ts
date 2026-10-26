@@ -14,7 +14,11 @@
 import { $ } from "bun";
 import { audited } from "./audit";
 import { personaName } from "./config";
-import { isSharedCheckoutDir } from "./worktree";
+import {
+  githubServiceGitEnv,
+  isSharedCheckoutDir,
+  repoForPathOrNull,
+} from "./worktree";
 import type { WorkspaceExec } from "./sandbox/workspace-exec";
 
 /** `git -C <dir> <args>` on the host (Bun $) or through the workspace exec.
@@ -23,6 +27,7 @@ async function gitText(
   dir: string,
   args: string[],
   exec?: WorkspaceExec,
+  env?: Record<string, string | undefined>,
 ): Promise<string> {
   const argv = ["git", "-C", dir, ...args];
   if (exec) {
@@ -31,7 +36,8 @@ async function gitText(
       throw new Error(r.stderr.trim() || `git ${args[0]} failed`);
     return r.stdout;
   }
-  return await $`${argv}`.quiet().text();
+  // Per command: `$.env()` would set it for every later `$` in the process.
+  return await (env ? $`${argv}`.env(env) : $`${argv}`).quiet().text();
 }
 
 export interface GitStatusInfo {
@@ -143,10 +149,15 @@ async function refreshBase(
   if (Date.now() - last < FETCH_TTL) return;
   lastFetch.set(dir, Date.now());
   try {
+    // On the host the fetch signs in the way worktree.ts's do. A workspace
+    // exec (a sandbox) never gets the service token; it keeps its own
+    // transport.
+    const repo = exec ? undefined : repoForPathOrNull(dir);
     await gitText(
       dir,
       ["fetch", "origin", baseBranch, "--no-tags", "--quiet"],
       exec,
+      repo ? await githubServiceGitEnv(repo.ghRepo) : undefined,
     );
   } catch {
     // Offline or no remote — counts fall back to the last-known tracking refs.

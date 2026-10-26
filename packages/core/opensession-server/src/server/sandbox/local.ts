@@ -57,11 +57,12 @@ function makeLocalSandbox(cwd: string): Sandbox {
 
     // One-shot host command in the workspace. Never throws on non-zero exit.
     async exec(cmd: string[], opts?: ExecOpts): Promise<ExecResult> {
-      const shell = opts?.env
-        ? $.env({ ...process.env, ...opts.env } as any)
-        : $;
       // Bun's shell expands an array interpolation into escaped argv words.
-      const r = await shell`${cmd}`.cwd(cwd).nothrow().quiet();
+      // The env is per command: `$.env()` would set it for every later `$`
+      // in the process, credentials included.
+      const run = $`${cmd}`;
+      if (opts?.env) run.env({ ...process.env, ...opts.env } as any);
+      const r = await run.cwd(cwd).nothrow().quiet();
       return {
         exitCode: r.exitCode,
         stdout: r.stdout.toString(),

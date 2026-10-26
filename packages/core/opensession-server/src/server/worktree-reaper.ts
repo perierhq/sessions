@@ -88,6 +88,7 @@ import {
 import type { UnifiedSession } from "./types";
 import {
   canonicalPath,
+  githubServiceGitEnv,
   repoForPathOrNull,
   repoFromGitPointer,
 } from "./worktree";
@@ -809,6 +810,7 @@ export async function sweepWorktreeReaper(
     if (!fetched.has(repo.id)) {
       fetched.add(repo.id);
       await $`${workloadArgv(["git", "-C", repo.repo, "fetch", "origin", repo.defaultBranch, "-q"], "git")}`
+        .env(await githubServiceGitEnv(repo.ghRepo))
         .nothrow()
         .quiet();
     }
