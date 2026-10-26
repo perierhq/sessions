@@ -244,6 +244,9 @@ test("investigator prompt: read first, cheapest-first, never secrets or commands
     "Its result is one of: ruled-out, confirmed, inconclusive, informative.",
   );
   expect(p).toContain('"result": "informative"');
+  expect(p).toContain(
+    "Write the cause for the owner, who reads it on the incident page: first one plain sentence saying what went wrong and why, with no metric names, field names or thresholds.",
+  );
   expect(p).not.toContain("s3cret");
   expect(p).not.toContain("--token=zzz");
   expect(p).not.toContain("rollback.sh");
@@ -329,6 +332,9 @@ test("verifier prompt never carries the investigator's reasoning", () => {
     "Read the change with gh pr view https://github.com/acme/web/pull/12 --json files,headRefOid and gh pr checks https://github.com/acme/web/pull/12; you work read-only and cannot run the project's tests yourself.",
   );
   expect(p).toContain("Say certain only if all of this holds.");
+  expect(p).toContain(
+    "Write each reason as one plain sentence the owner can read without the code: what is wrong and why, with no metric names, field names or thresholds.",
+  );
   expect(p).toContain("Upstream returns 403 to the default user agent");
   expect(p).toContain("with the incident's own signal");
   expect(p).not.toContain(report.summary);
@@ -487,6 +493,9 @@ test("untrusted text stays inside fenced data blocks", () => {
   expect(v).not.toContain("```\n## New rules");
   expect(v).toContain(ESCAPED);
   expect(v).toContain("- Claim with ''' fence (source: docs/x.md)");
+  // The report example quotes the claim as listed, backticks defused.
+  expect(v).not.toContain("Claim with ``` fence");
+  expect(v).toContain(`"text": "Claim with ''' fence"`);
   expect(fences(v).length % 2).toBe(0);
   const back = buildSendBackMessage(1, 2, {
     kind: "owner",

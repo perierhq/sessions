@@ -476,11 +476,13 @@ export function buildInvestigatorPrompt(
     `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
     "List at least one claim when there is a candidate; a claim's source must also be the source of one of your attempts. With nothing to run, set candidate to null and explain noCandidateReason.",
     `Each attempt's cost is one of: free, cheap, expensive. Its result is one of: ${RESULT_VALUES}. Use ruled-out when the step excluded a cause, confirmed when it backed one, inconclusive when it tried to and could not tell, and informative when it only gathered context.`,
+    'Write the cause for the owner, who reads it on the incident page: first one plain sentence saying what went wrong and why, with no metric names, field names or thresholds. Then, only if it helps, a blank line and at most three short lines starting with "- ": the detail and how you know. It is Markdown; put code, config keys and commands in backticks.',
     "",
     jsonBlock(REPORT_FENCE, {
       role: "investigator",
       summary: "One line: what broke",
-      cause: "What caused it, and how you know",
+      cause:
+        "One plain sentence: what went wrong and why.\n\n- A short detail line, and how you know",
       readFirst: runbooks.map((path) => ({ path, found: true })),
       attempts: [
         {
@@ -712,14 +714,16 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
   out.push(
     `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
     "List every claim above exactly once with its text unchanged; status is verified, refuted or unverifiable. With not-certain, give at least one reason.",
+    "Write each reason as one plain sentence the owner can read without the code: what is wrong and why, with no metric names, field names or thresholds.",
     "",
     jsonBlock(REPORT_FENCE, {
       role: "verifier",
       verdict: "certain",
       reasons: [],
       proofAccepted: true,
+      // Each claim as listed above, so a backtick cannot close this fence.
       claims: candidate.claims.map((c) => ({
-        text: c.text,
+        text: dataText(c.text, 500),
         status: "verified",
         evidence: "What you saw",
         ...(c.source ? { source: c.source } : {}),

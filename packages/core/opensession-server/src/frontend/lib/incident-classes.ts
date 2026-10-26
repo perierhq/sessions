@@ -70,9 +70,10 @@ export const STATUS_LINE_DOT_SLOT = "flex h-[1lh] shrink-0 items-center";
 export const STATUS_LINE_FACTS =
   "m-0 pl-6 text-supporting text-dim [overflow-wrap:anywhere]";
 
-/** The cause sentence: content, so it is selectable. */
+/** The cause, rendered Markdown: content, so it is selectable. The first
+ *  block is the sentence; any block after it is detail, one step quieter. */
 export const INCIDENT_CAUSE_TEXT =
-  "m-0 select-text text-body text-fg [overflow-wrap:anywhere]";
+  "markdown select-text text-body text-fg [overflow-wrap:anywhere] [&>:not(:first-child)]:text-supporting [&>:not(:first-child)]:text-dim";
 
 /** Where the cause came from and whether it was verified. */
 export const INCIDENT_CAUSE_PROVENANCE =

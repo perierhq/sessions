@@ -246,15 +246,18 @@ const INVISIBLE =
   /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
-/** Report text without terminal escapes or invisible characters. Single-line
- *  fields also fold newlines into spaces. */
+/** Report text without terminal escapes or invisible characters. Multiline
+ *  fields keep their paragraphs (at most one blank line between them) and
+ *  inline code; single-line fields fold newlines into spaces. */
 export function cleanReportText(value: string, multiline: boolean): string {
   const out = value
     .replace(/\r\n?/g, "\n")
     .replace(ANSI_ESCAPE, "")
     .replace(/\t/g, " ")
     .replace(INVISIBLE, "");
-  return multiline ? out : out.replace(/\s*\n\s*/g, " ");
+  return multiline
+    ? out.replace(/[ ]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+    : out.replace(/\s*\n\s*/g, " ");
 }
 
 /** `value` as clean, trimmed text, or "" when it is not text. */
@@ -338,12 +341,6 @@ function listOf(
 function checkRole(value: unknown, role: AgentRole, warnings: string[]): void {
   if (enumKey(value) !== role)
     warnings.push(`role was ${shownValue(value)}; read as ${role}`);
-}
-
-/** A claim's text, with backticks as plain quotes: the verifier quotes
- *  claims back from a fenced data block, where a backtick cannot stand. */
-function claimText(value: unknown): string {
-  return cleanText(value).replace(/`/g, "'");
 }
 
 /** An http(s) URL or a repository path, at most 2048 characters; null when
@@ -540,7 +537,7 @@ function claimsOf(value: unknown, warnings: string[]): Claim[] {
   for (const [i, item] of items.entries()) {
     const at = `Claim ${i + 1}`;
     const record = isRecord(item) ? item : { text: item };
-    const raw = claimText(record.text);
+    const raw = cleanText(record.text);
     if (!raw) {
       warnings.push(`${at} had no text; dropped`);
       continue;
@@ -1008,7 +1005,9 @@ export function parseVerifierReport(
       repaired.push(`${at} was not an object; dropped`);
       continue;
     }
-    const quoted = claimText(item.text);
+    // Claims reach the verifier in a data block, where backticks are plain
+    // quotes; claimKey reads both alike.
+    const quoted = cleanText(item.text);
     const text = quoted ? byKey.get(claimKey(quoted)) : undefined;
     if (text === undefined) {
       repaired.push(
