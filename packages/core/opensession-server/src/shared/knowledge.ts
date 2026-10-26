@@ -333,11 +333,43 @@ export interface KnowledgeImportJob {
   /** Inputs the run skipped and why (the file import), at most
    *  MAX_SKIPPED_RECORDED. */
   skippedFiles?: Array<{ name: string; reason: string }>;
+  /** What the run is doing now, or last did once it ended. */
+  phase?: KnowledgeJobPhase;
+  /** Skipped inputs counted by why (a KNOWLEDGE_SKIP reason), at most
+   *  MAX_SKIP_REASONS reasons; `created.skipped` is the total. */
+  skippedReasons?: Record<string, number>;
   options: Record<string, unknown>;
 }
 
+/** What an import run is doing: `text` reads on its own ("Reading INBOX
+ *  120 of 900"); `done` and `total` are its counts when known. */
+export interface KnowledgeJobPhase {
+  text: string;
+  done?: number;
+  total?: number;
+}
+
+/** Why an import left an input out, as a job counts it. */
+export const KNOWLEDGE_SKIP = {
+  alreadyImported: "Already imported",
+  customerData: "Customer data couldn't be removed",
+  notReusable: "Not a reusable answer",
+  modelSilent: "The small model didn't answer",
+  undated: "Its date couldn't be placed",
+  editedByPerson: "Edited by a person",
+  credential: "Looks like it holds a credential",
+  tooLarge: "Too large",
+  empty: "Empty",
+  binary: "Not text",
+  unreadable: "Couldn't be read",
+  badName: "Its name can't be stored",
+  duplicate: "Listed twice",
+} as const;
+
 /** Skipped inputs a job record names. */
 export const MAX_SKIPPED_RECORDED = 50;
+/** Skip reasons a job record counts. */
+export const MAX_SKIP_REASONS = 20;
 
 /** Mailbox backfill window, in months. */
 export const DEFAULT_BACKFILL_MONTHS = 12;

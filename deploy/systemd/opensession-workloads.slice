@@ -7,3 +7,13 @@ Description=Open Session agent workloads
 # the control plane when both groups are busy.
 CPUWeight=100
 IOWeight=100
+# Memory budget for all agent workloads together, as a share of physical
+# memory so it fits any host: past MemoryHigh the slice is throttled and
+# reclaimed, at MemoryMax its largest process is killed, before one runaway
+# build can squeeze the gateway, the session kernel or the OS. The shares match
+# the engine and preview scope defaults (systemd-scopes.ts). To change them on
+# one host, add a drop-in such as
+# /etc/systemd/system/opensession-workloads.slice.d/memory.conf with its own
+# [Slice] MemoryHigh=/MemoryMax= lines; the installer never replaces drop-ins.
+MemoryHigh=50%
+MemoryMax=75%

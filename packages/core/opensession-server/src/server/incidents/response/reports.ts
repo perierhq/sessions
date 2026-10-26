@@ -5,7 +5,8 @@
 // unusable: the block, the conclusion, all of the evidence, the candidate
 // decision, or what a candidate needs to be run and proven safely. The
 // refusal's detail is short, names the field and goes back to the agent;
-// the owner reads `plainReportProblem` instead. Everything else is
+// the owner reads `plainReportProblem` instead. Each refusal names one of
+// `REPORT_RULES`, which the briefs list word for word. Everything else is
 // normalised and noted as a warning: order (attempts are sorted
 // cheapest-first), case, spacing and synonyms of enum values, unknown enum
 // values (to the least certain value), text too long (cut), repeats (kept
@@ -39,6 +40,7 @@ import {
   type ProofResult,
   SEND_BACK_NOTE_MAX,
   type ReadFirst,
+  type ReportIssue,
   type ReportProblem,
   type VerifierReport,
 } from "../../../shared/incident-response";
@@ -149,21 +151,154 @@ export function extractReportBlock(text: string): string | null {
   return blocks.length === 1 ? blocks[0] : null;
 }
 
-/** A refused report: the parser's detail for the agent and the logs, and
- *  the kind of problem the owner is told about in plain words. */
+const BOTH: readonly AgentRole[] = ["investigator", "verifier"];
+const INVESTIGATOR: readonly AgentRole[] = ["investigator"];
+const VERIFIER: readonly AgentRole[] = ["verifier"];
+
+/** One reason a report is refused: who it binds, what the owner is told
+ *  when it is broken, and the rule as the agent's brief states it. */
+export interface ReportRule {
+  roles: readonly AgentRole[];
+  problem: ReportProblem;
+  text: string;
+}
+
+/**
+ * Every reason a report is refused, and nothing else. The briefs list
+ * these words (`reportRules`) and the parsers refuse only by naming one,
+ * so the brief and the check cannot drift apart. Guidance the brief gives
+ * (cheapest-first order, lengths, sources, readFirst) is never a rule
+ * here: it is repaired and noted as a warning (`REPORT_REPAIRS`).
+ */
+export const REPORT_RULES = {
+  block: {
+    roles: BOTH,
+    problem: "missing",
+    text: `End your final message with exactly one fenced block tagged ${REPORT_FENCE}.`,
+  },
+  json: {
+    roles: BOTH,
+    problem: "unreadable",
+    text: "The block holds one JSON object of at most 64 KB.",
+  },
+  summary: {
+    roles: INVESTIGATOR,
+    problem: "conclusion",
+    text: "summary says in one line what broke.",
+  },
+  cause: {
+    roles: INVESTIGATOR,
+    problem: "conclusion",
+    text: "cause says what caused it.",
+  },
+  attempts: {
+    roles: INVESTIGATOR,
+    problem: "evidence",
+    text: "attempts has at least one row with a step.",
+  },
+  candidate: {
+    roles: INVESTIGATOR,
+    problem: "decision",
+    text: "candidate is { pr, actions } with pr true or false and the PR or at least one action, or null with noCandidateReason saying why.",
+  },
+  actions: {
+    roles: INVESTIGATOR,
+    problem: "action",
+    text: `candidate.actions lists at most ${CANDIDATE_ACTIONS_MAX} ids from the actions you may propose, never a deploy (it runs with the PR).`,
+  },
+  check: {
+    roles: INVESTIGATOR,
+    problem: "check",
+    text: "With a candidate, check is a request or an after-deploy check as described under Deliverable.",
+  },
+  claims: {
+    roles: INVESTIGATOR,
+    problem: "claims",
+    text: "With a candidate, claims lists at least one claim.",
+  },
+  note: {
+    roles: INVESTIGATOR,
+    problem: "note",
+    text: "With a candidate, notePath is docs/incidents/YYYY-MM-DD-<slug>.md.",
+  },
+  pr: {
+    roles: INVESTIGATOR,
+    problem: "pr",
+    text: "With a candidate, this session's pull request is open when you end. If pushing or opening it fails, say what failed and keep the candidate.",
+  },
+  verdict: {
+    roles: VERIFIER,
+    problem: "conclusion",
+    text: "verdict is certain or not-certain.",
+  },
+  rulings: {
+    roles: VERIFIER,
+    problem: "claims",
+    text: "claims has a ruling on every listed claim, with its text unchanged.",
+  },
+} as const satisfies Record<string, ReportRule>;
+export type ReportRuleId = keyof typeof REPORT_RULES;
+
+/** The rules a role's report is refused for, in the brief's words. */
+export function reportRules(role: AgentRole): string[] {
+  return Object.values(REPORT_RULES)
+    .filter((r: ReportRule) => r.roles.includes(role))
+    .map((r) => r.text);
+}
+
+/** What Sessions repairs and notes instead of refusing, in the
+ *  investigator brief's words. */
+export const REPORT_REPAIRS: readonly string[] = [
+  "attempts out of cost order are sorted cheapest-first",
+  "an unknown cost is recorded as expensive and an unknown result as inconclusive",
+  "text that is too long is cut",
+  "a source that is not an http(s) URL or a repository path is dropped, and so is a claim's source no attempt cites",
+  "a missing readFirst entry or runbook path is noted",
+  "unknown keys and unusable next steps are dropped",
+];
+
+/** One broken rule: which, and the parser's detail for the agent. */
+export interface ReportRuleIssue extends ReportIssue {
+  rule: ReportRuleId;
+}
+
+/** A refused report, with every rule it broke found in one pass, so the
+ *  agent can fix them all at once. `error`, `problem` and `rule` are the
+ *  first issue's (all the errors, for `error`); `candidate` says whether
+ *  the report meant to propose a fix, which then needs its pull request. */
 export interface ReportRejection {
   error: string;
   problem: ReportProblem;
+  rule: ReportRuleId;
+  issues: ReportRuleIssue[];
+  candidate: boolean;
 }
 
-type Result<T> = T | ReportRejection;
-function reject(problem: ReportProblem, error: string): ReportRejection {
-  return { error, problem };
+type Result<T> = T | ReportRuleIssue;
+function reject(
+  rule: ReportRuleId,
+  error: string,
+  problem: ReportProblem = REPORT_RULES[rule].problem,
+): ReportRuleIssue {
+  return { rule, problem, error };
 }
-function failed<T>(r: Result<T>): r is ReportRejection {
+function failed<T>(r: Result<T>): r is ReportRuleIssue {
   return (
     typeof r === "object" && r !== null && !Array.isArray(r) && "error" in r
   );
+}
+function rejected(
+  issues: ReportRuleIssue[],
+  candidate: boolean,
+): ReportRejection {
+  const first = issues[0]!;
+  return {
+    error: issues.map((i) => i.error).join("; "),
+    problem: first.problem,
+    rule: first.rule,
+    issues,
+    candidate,
+  };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -216,25 +351,26 @@ export function plainReportProblem(
 /** Wrapped, so a report with its own `error` key is not taken for a failure. */
 function parseBlock(
   text: string,
-): { value: Record<string, unknown> } | ReportRejection {
+): { value: Record<string, unknown> } | ReportRuleIssue {
   const blocks = reportBlocks(text);
-  if (blocks.length === 0) return reject("missing", "No incident-report block");
+  if (blocks.length === 0) return reject("block", "No incident-report block");
   if (blocks.length > 1)
-    return reject("unreadable", "End with exactly one incident-report block");
+    return reject(
+      "block",
+      "End with exactly one incident-report block",
+      "unreadable",
+    );
   const block = blocks[0];
   if (Buffer.byteLength(block, "utf8") > REPORT_BLOCK_MAX_BYTES)
-    return reject("unreadable", "The incident-report block is too large");
+    return reject("json", "The incident-report block is too large");
   let value: unknown;
   try {
     value = JSON.parse(block);
   } catch {
-    return reject("unreadable", "The incident-report block is not valid JSON");
+    return reject("json", "The incident-report block is not valid JSON");
   }
   if (!isRecord(value))
-    return reject(
-      "unreadable",
-      "The incident-report block must be a JSON object",
-    );
+    return reject("json", "The incident-report block must be a JSON object");
   return { value };
 }
 
@@ -468,7 +604,7 @@ function cheapestFirst(rows: EvidenceRow[]): EvidenceRow[] {
 function attemptsOf(value: unknown, warnings: string[]): Result<EvidenceRow[]> {
   const items = listOf(value, "attempts", ATTEMPTS_MAX, warnings);
   if (items.length === 0)
-    return reject("evidence", "The evidence table is empty");
+    return reject("attempts", "The evidence table is empty");
   const rows: EvidenceRow[] = [];
   const seen = new Set<string>();
   for (const [i, item] of items.entries()) {
@@ -522,7 +658,7 @@ function attemptsOf(value: unknown, warnings: string[]): Result<EvidenceRow[]> {
     rows.push(row);
   }
   if (rows.length === 0)
-    return reject("evidence", "No row of attempts has a step");
+    return reject("attempts", "No row of attempts has a step");
   const sorted = cheapestFirst(rows);
   if (sorted !== rows)
     warnings.push("The attempts were not cheapest-first; sorted by cost");
@@ -670,17 +806,17 @@ function candidateOf(
   if (value === null) return null;
   if (value === undefined)
     return reject(
-      "decision",
+      "candidate",
       "Set candidate to { pr, actions }, or to null and explain noCandidateReason",
     );
   if (!isRecord(value))
     return reject(
-      "decision",
+      "candidate",
       "The candidate field must be null or { pr, actions }",
     );
   const pr = booleanOf(value.pr);
   if (pr === null)
-    return reject("decision", "The candidate.pr field must be true or false");
+    return reject("candidate", "The candidate.pr field must be true or false");
   if (typeof value.pr !== "boolean")
     warnings.push(`candidate.pr was ${shownValue(value.pr)}; read as ${pr}`);
   let raw = value.actions ?? [];
@@ -690,16 +826,23 @@ function candidateOf(
   }
   if (!Array.isArray(raw))
     return reject(
-      "decision",
+      "actions",
       "The candidate.actions field must be a list of action ids",
     );
   const actions: string[] = [];
+  const unknown: string[] = [];
+  let deployWithoutPr = false;
   for (const entry of raw) {
     const id = actionId(entry, ctx.actionIds, warnings);
-    if (id === null)
-      return reject("action", `Unknown action "${String(entry)}"`);
+    if (id === null) {
+      unknown.push(`"${String(entry)}"`);
+      continue;
+    }
     if (ctx.actionKinds.get(id) === "deploy") {
-      if (!pr) return reject("action", "Deploy runs only with the PR");
+      if (!pr) {
+        deployWithoutPr = true;
+        continue;
+      }
       warnings.push(
         `Action "${id}" is a deploy, which runs with the PR; dropped from the actions`,
       );
@@ -711,11 +854,19 @@ function candidateOf(
     }
     actions.push(id);
   }
-  if (actions.length > CANDIDATE_ACTIONS_MAX)
-    return reject("action", `Propose at most ${CANDIDATE_ACTIONS_MAX} actions`);
+  const wrong = [
+    ...(unknown.length
+      ? [`Unknown action${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}`]
+      : []),
+    ...(deployWithoutPr ? ["Deploy runs only with the PR"] : []),
+    ...(actions.length > CANDIDATE_ACTIONS_MAX
+      ? [`Propose at most ${CANDIDATE_ACTIONS_MAX} actions`]
+      : []),
+  ];
+  if (wrong.length) return reject("actions", wrong.join("; "));
   if (!pr && actions.length === 0)
     return reject(
-      "decision",
+      "candidate",
       "The candidate field needs a PR or at least one action",
     );
   return { pr, actions };
@@ -825,25 +976,31 @@ export function parseInvestigatorReport(
   ctx: InvestigatorReportContext,
 ): InvestigatorReport | ReportRejection {
   const parsed = parseBlock(report);
-  if ("error" in parsed) return parsed;
+  if ("error" in parsed) return rejected([parsed], false);
   const value = parsed.value;
   const repaired: string[] = [];
+  const issues: ReportRuleIssue[] = [];
   checkRole(value.role, "investigator", repaired);
   const rawSummary = cleanText(value.summary);
   if (!rawSummary)
-    return reject("conclusion", "The summary field must say what broke");
+    issues.push(reject("summary", "The summary field must say what broke"));
   const summary = fitted(rawSummary, 200, "summary", repaired);
   const rawCause = cleanText(value.cause, true);
   if (!rawCause)
-    return reject("conclusion", "The cause field must say what caused it");
+    issues.push(reject("cause", "The cause field must say what caused it"));
   const cause = fitted(rawCause, 1000, "cause", repaired);
   const readFirst = readFirstOf(value.readFirst, repaired);
-  const attempts = attemptsOf(value.attempts, repaired);
-  if (failed(attempts)) return attempts;
-  const candidate = candidateOf(value.candidate, ctx, repaired);
-  if (failed(candidate)) return candidate;
+  const table = attemptsOf(value.attempts, repaired);
+  if (failed(table)) issues.push(table);
+  const attempts = failed(table) ? [] : table;
+  const plan = candidateOf(value.candidate, ctx, repaired);
+  if (failed(plan)) issues.push(plan);
+  const candidate = failed(plan) ? null : plan;
+  // A candidate that is there but unusable still needs what every
+  // candidate needs, so those problems come back in the same reply.
+  const proposes = failed(plan) ? isRecord(value.candidate) : plan !== null;
   let noCandidateReason: string | undefined;
-  if (candidate === null) {
+  if (!proposes) {
     const reason = cleanText(value.noCandidateReason, true);
     if (reason)
       noCandidateReason = fitted(reason, 1000, "noCandidateReason", repaired);
@@ -854,16 +1011,16 @@ export function parseInvestigatorReport(
   }
   let check = checkOf(value.check, ctx, repaired);
   if (failed(check)) {
-    if (candidate !== null) return check;
-    if (value.check !== undefined && value.check !== null)
+    if (proposes) issues.push(check);
+    else if (value.check !== undefined && value.check !== null)
       repaired.push(
         `Ignored the check, as there is no candidate: ${check.error}`,
       );
     check = { kind: "after-deploy", reason: "No fix was proposed." };
   }
   const claims = claimsOf(value.claims, repaired);
-  if (candidate !== null && claims.length === 0)
-    return reject("claims", "Give at least one claim for the candidate");
+  if (proposes && claims.length === 0)
+    issues.push(reject("claims", "Give at least one claim for the candidate"));
   const cited = new Set(attempts.flatMap((a) => (a.source ? [a.source] : [])));
   const citedClaims = claims.map((claim, i) => {
     if (claim.source === undefined || cited.has(claim.source)) return claim;
@@ -874,16 +1031,20 @@ export function parseInvestigatorReport(
   });
   let notePath = repoPath(value.notePath);
   if (!NOTE_PATH.test(notePath)) {
-    if (candidate !== null)
-      return reject(
-        "note",
-        "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+    if (proposes)
+      issues.push(
+        reject(
+          "note",
+          "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+        ),
       );
-    repaired.push(
-      `notePath ${shownValue(value.notePath)} is not docs/incidents/YYYY-MM-DD-<slug>.md; ignored, as there is no candidate`,
-    );
+    else
+      repaired.push(
+        `notePath ${shownValue(value.notePath)} is not docs/incidents/YYYY-MM-DD-<slug>.md; ignored, as there is no candidate`,
+      );
     notePath = "";
   }
+  if (issues.length) return rejected(issues, proposes);
   const runbookPaths = runbookPathsOf(value.runbookPaths, repaired);
   const nextSteps = nextStepsOf(value.nextSteps, repaired);
   ctx.warnings?.push(...repaired);
@@ -949,17 +1110,17 @@ export function parseVerifierReport(
   ctx: { claims: Claim[]; warnings?: string[] },
 ): VerifierReport | ReportRejection {
   const parsed = parseBlock(report);
-  if ("error" in parsed) return parsed;
+  if ("error" in parsed) return rejected([parsed], false);
   const value = parsed.value;
   const repaired: string[] = [];
+  const issues: ReportRuleIssue[] = [];
   checkRole(value.role, "verifier", repaired);
   const verdict = normaliseVerdict(value.verdict);
   if (verdict === null)
-    return reject(
-      "conclusion",
-      "The verdict field must be certain or not-certain",
+    issues.push(
+      reject("verdict", "The verdict field must be certain or not-certain"),
     );
-  if (value.verdict !== verdict)
+  else if (value.verdict !== verdict)
     repaired.push(
       `verdict was ${shownValue(value.verdict)}; read as ${verdict}`,
     );
@@ -1046,9 +1207,15 @@ export function parseVerifierReport(
       ...(s ? { source: s } : {}),
     });
   }
-  for (const t of expected)
-    if (!checks.has(t))
-      return reject("claims", `Check every claim: missing "${t}"`);
+  const missing = expected.filter((t) => !checks.has(t));
+  if (missing.length)
+    issues.push(
+      reject(
+        "rulings",
+        `Check every claim: missing ${missing.map((t) => `"${t}"`).join(", ")}`,
+      ),
+    );
+  if (verdict === null || issues.length) return rejected(issues, false);
   ctx.warnings?.push(...repaired);
   return {
     role: "verifier",

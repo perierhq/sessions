@@ -4,6 +4,7 @@ import type {
   KnowledgeImportJob,
   KnowledgeImportKind,
 } from "../../../../shared/knowledge";
+import { useKnowledgeLiveConnected } from "../../../hooks/useKnowledgeLive";
 import { useProjectSettings } from "../../../hooks/useProjects";
 import { apiSWRKey, knowledgeKeyFilter } from "../../../lib/api-swr";
 import { routePath } from "../../../lib/app-route";
@@ -26,6 +27,8 @@ import {
   IMPORT_JOB_FOOT,
   IMPORT_JOB_LINE,
   IMPORT_JOB_META,
+  IMPORT_JOB_PHASE,
+  IMPORT_JOB_SKIPS,
   IMPORT_JOB_TRACK,
   IMPORT_MAILBOX_PICKS,
   IMPORT_REFUSED,
@@ -45,7 +48,9 @@ import {
   importChoices,
   isActiveJob,
   jobError,
+  jobPhase,
   jobProgress,
+  jobSkips,
   jobTitle,
   monthOptions,
   pollJobs,
@@ -75,16 +80,19 @@ import { toast } from "../../../ui/toast";
  * Knowledge → Import: the sources a project's knowledge can be filled from
  * (the mailbox's past replies, the Support websites, the repository's docs
  * and release notes, open bug issues, uploaded files), each with the button
- * that starts it, then the imports with their progress. The jobs list is
- * read every 2 s while one is under way. One column at both widths: each
- * source's button goes under its words on a phone.
+ * that starts it, then the imports with what each is doing and its
+ * progress. The jobs list is read again on each knowledge_changed message
+ * (lib/knowledge/live.ts), and every 2 s while one is under way only when
+ * the socket is down. One column at both widths: each source's button goes
+ * under its words on a phone.
  */
 export function KnowledgeImport({ project }: { project: string }) {
   const { mutate } = useSWRConfig();
+  const live = useKnowledgeLiveConnected();
   const jobs = useSWR(
     apiSWRKey.knowledgeJobs(project),
     () => fetchKnowledgeJobs(project),
-    { refreshInterval: (latest) => pollJobs(latest) },
+    { refreshInterval: (latest) => pollJobs(latest, live) },
   );
   const inboxes = useSWR(apiSWRKey.supportInboxes(), fetchInboxes);
   const settings = useProjectSettings(project);
@@ -425,17 +433,23 @@ function Jobs({
       {jobs.data.map((job) => {
         const pct = jobProgress(job);
         const active = isActiveJob(job);
+        const phase = jobPhase(job);
+        const skips = jobSkips(job);
         return (
           <div key={job.id} className={IMPORT_JOB}>
             <div className={IMPORT_JOB_LINE}>{jobTitle(job)}</div>
-            {active && pct !== null ? (
+            {phase ? <div className={IMPORT_JOB_PHASE}>{phase}</div> : null}
+            {job.state === "running" ? (
               <MeterTrack
                 pct={pct}
+                indeterminate={pct === null}
                 tone="normal"
                 className={IMPORT_JOB_TRACK}
                 aria-label={`${importLabel(job.kind)} import`}
+                aria-valuetext={phase ?? undefined}
               />
             ) : null}
+            {skips ? <div className={IMPORT_JOB_SKIPS}>{skips}</div> : null}
             {jobError(job) ? (
               <div className={IMPORT_JOB_ERROR}>{jobError(job)}</div>
             ) : null}

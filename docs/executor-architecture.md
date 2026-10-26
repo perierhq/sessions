@@ -66,27 +66,40 @@ weights let agent builds consume idle capacity while yielding promptly to
 control-plane requests during contention. Preview scopes use a lower-priority
 slice inside the user manager. The weights do not impose a fixed CPU quota.
 
+`opensession-workloads.slice` also caps the memory of all detached hosts
+together: `MemoryHigh=50%` throttles and reclaims, and `MemoryMax=75%` kills
+the largest process, both as shares of physical memory so the budget fits any
+host. To size it differently on one host, add a drop-in such as
+`/etc/systemd/system/opensession-workloads.slice.d/memory.conf` with a
+`[Slice]` section and its own values, then `systemctl daemon-reload`. The root
+deploy reinstalls the slice unit but never touches drop-ins.
+
 Before persisting a detached launch, the gateway checks the active and pending
 host count, Linux `MemAvailable`, and CPU PSI `some avg10`. A launch waits with
 bounded backoff when a present signal is over its limit. Missing `/proc` signals
-fail open so non-Linux development remains usable. After the admission timeout,
-the turn fails visibly instead of falling back into the gateway process and
-consuming the same scarce resources.
+fail open so non-Linux development remains usable. After the admission timeout
+(one minute by default), the launch is refused with its reason, for example
+"not enough free memory: 1266 MiB free, 2171 MiB needed", instead of falling
+back into the gateway process and consuming the same scarce resources. Nothing
+ran, so unattended work is requeued: GitHub reviews and automation runs try
+again after 2 minutes, doubling up to 30 minutes per attempt. The memory floor
+scales with the host: 5% of total memory, at least 1 GiB and at most 4 GiB,
+like the Portal floor.
 
 Gateway settings can be placed in `~/.opensession.env`:
 
-| Setting                                         | Default | Purpose                                  |
-| ----------------------------------------------- | ------: | ---------------------------------------- |
-| `OPENSESSION_RUN_HOST_MAX_ACTIVE`               |     128 | Active plus admitted detached hosts      |
-| `OPENSESSION_RUN_HOST_MIN_AVAILABLE_MB`         |    4096 | Memory headroom retained for the machine |
-| `OPENSESSION_RUN_HOST_RESERVED_MB`              |    1024 | Memory reserved for each pending launch  |
-| `OPENSESSION_RUN_HOST_MAX_CPU_PRESSURE`         |      85 | Maximum CPU PSI `some avg10` percentage  |
-| `OPENSESSION_RUN_HOST_ADMISSION_TIMEOUT_S`      |     900 | Maximum capacity wait before refusal     |
-| `OPENSESSION_ONESHOT_CONCURRENCY`               |       4 | Concurrent gateway one-shot jobs         |
-| `OPENSESSION_OPENING_TURN_CONCURRENCY`          |       8 | Concurrent session opening turns         |
-| `OPENSESSION_KERNEL_TIMER_CONCURRENCY`          |       8 | Concurrent durable timer effects         |
-| `OPENSESSION_KERNEL_OUTBOX_CONCURRENCY`         |       8 | Concurrent general outbox effects        |
-| `OPENSESSION_KERNEL_OPENING_OUTBOX_CONCURRENCY` |     100 | Concurrent opening-turn effects          |
+| Setting                                         |   Default | Purpose                                  |
+| ----------------------------------------------- | --------: | ---------------------------------------- |
+| `OPENSESSION_RUN_HOST_MAX_ACTIVE`               |       128 | Active plus admitted detached hosts      |
+| `OPENSESSION_RUN_HOST_MIN_AVAILABLE_MB`         | 5% of RAM | Memory headroom retained for the machine |
+| `OPENSESSION_RUN_HOST_RESERVED_MB`              |      1024 | Memory reserved for each pending launch  |
+| `OPENSESSION_RUN_HOST_MAX_CPU_PRESSURE`         |        85 | Maximum CPU PSI `some avg10` percentage  |
+| `OPENSESSION_RUN_HOST_ADMISSION_TIMEOUT_S`      |        60 | Maximum capacity wait before refusal     |
+| `OPENSESSION_ONESHOT_CONCURRENCY`               |         4 | Concurrent gateway one-shot jobs         |
+| `OPENSESSION_OPENING_TURN_CONCURRENCY`          |         8 | Concurrent session opening turns         |
+| `OPENSESSION_KERNEL_TIMER_CONCURRENCY`          |         8 | Concurrent durable timer effects         |
+| `OPENSESSION_KERNEL_OUTBOX_CONCURRENCY`         |         8 | Concurrent general outbox effects        |
+| `OPENSESSION_KERNEL_OPENING_OUTBOX_CONCURRENCY` |       100 | Concurrent opening-turn effects          |
 
 The independently supervised executor does not read `~/.opensession.env`. Set
 `OPENSESSION_EXECUTOR_LAUNCH_CONCURRENCY` (default 8) with an `Environment=`

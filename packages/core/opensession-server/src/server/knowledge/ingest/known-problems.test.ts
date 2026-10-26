@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { KNOWLEDGE_SKIP } from "../../../shared/knowledge";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import { __clearGithubSignalCacheForTest } from "../freshness/github";
 import { frontMatterOf } from "../freshness/revalidate";
 import { issueItemPath } from "../layout";
 import { KnowledgeService } from "../service";
-import { __waitForJobForTest, listJobs } from "./jobs";
+import {
+  __setJobPhaseListenerForTest,
+  __waitForJobForTest,
+  listJobs,
+} from "./jobs";
 import {
   type KnownProblemsDeps,
   startKnownProblemsImport,
@@ -372,5 +377,41 @@ describe("syncKnownProblems", () => {
       state: "done",
       created: { trusted: 0, reference: 2, suggestions: 0, skipped: 0 },
     });
+  });
+
+  test("the import job says what it is doing, and why it skipped", async () => {
+    const gh = fakeGithub({
+      [LIST]: [
+        issue(
+          6,
+          "Token leak",
+          "Our key is ghp_abcdefghijklmnopqrstuvwxyz0123456789AB",
+        ),
+        issue(7, "Slow search"),
+      ],
+    });
+    const phases: string[] = [];
+    __setJobPhaseListenerForTest((_p, _id, phase) => phases.push(phase.text));
+    try {
+      const job = await startKnownProblemsImport(
+        { project: "acme", by: { name: "Ada" } },
+        deps(gh),
+      );
+      await __waitForJobForTest(job.id);
+      const [done] = await listJobs("acme");
+      expect(done).toMatchObject({
+        created: { reference: 1, skipped: 1 },
+        skippedReasons: { [KNOWLEDGE_SKIP.credential]: 1 },
+        phase: { text: "Committing" },
+      });
+      expect([...new Set(phases)]).toEqual([
+        "Opening the knowledge repository",
+        "Reading open bug issues",
+        "Writing open issues 0 of 1",
+        "Committing",
+      ]);
+    } finally {
+      __setJobPhaseListenerForTest(undefined);
+    }
   });
 });

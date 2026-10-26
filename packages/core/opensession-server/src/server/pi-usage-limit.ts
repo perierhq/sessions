@@ -1,4 +1,5 @@
 import {
+  isClaudeCreditsExhaustedError,
   isClaudeSubscriptionError,
   isClaudeUsageLimitError,
   isCodexUsageLimitError,
@@ -72,7 +73,8 @@ export function isPiUsageLimitShape(
     return false;
   if (
     isClaudeUsageLimitError(message, true) ||
-    isClaudeSubscriptionError(message)
+    isClaudeSubscriptionError(message) ||
+    isClaudeCreditsExhaustedError(message)
   )
     return true;
   const s = message.toLowerCase();
@@ -105,7 +107,8 @@ export function isPiSideRequestUsageLimit(
     return isPiUsageLimitShape(message, providerID, anthropicUnifiedStatus);
   return (
     isClaudeUsageLimitError(message, false) ||
-    isClaudeSubscriptionError(message)
+    isClaudeSubscriptionError(message) ||
+    isClaudeCreditsExhaustedError(message)
   );
 }
 

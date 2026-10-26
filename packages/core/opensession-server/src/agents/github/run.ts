@@ -40,6 +40,7 @@ import {
   type GitIdentity,
 } from "../../server/shared/user-mappings";
 import { resolvePrWorkspace } from "../../server/workspace-resolve";
+import { withRunUsageRecorded } from "../../server/session-usage";
 import { repoForPath } from "../../server/worktree";
 import { PR_EVENT_KEY, prKey, repoForFullName } from "./constants";
 import type { NativeSessionFile } from "../../server/types";
@@ -652,6 +653,11 @@ async function runGithubAgentTurn(
       });
     }
 
+    // Save what the run spent, whichever provider served it. A reattached
+    // host reports its whole run's total, folded once under its run key.
+    events = withRunUsageRecorded(bksId, events, {
+      runId: recoveredRun?.runKey,
+    });
     for await (const event of events) {
       if (event.type === "init") {
         engineSessionId = event.sessionId || engineSessionId;

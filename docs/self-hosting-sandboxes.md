@@ -616,9 +616,10 @@ fix when one is missing:
 - Public ingress whose callback origin resolves to a public address. A
   `callbackBaseUrl` on the tailnet, a private range or loopback is refused,
   since the firewall would have to open that address to the sandbox.
-- Registry access and about 1 GB free on Podman's storage for the sandbox
+- Registry access and about 1.5 GB free on Podman's storage for the sandbox
   image (`localhost/opensession-sandbox:<tag>`, built from a pinned
-  `ubuntu:24.04` at qualification, never during a session), and at least
+  `ubuntu:24.04` at qualification, never during a session; it carries the
+  workspace tools plus `ffmpeg` and ImageMagick), and at least
   5 GiB free there for sandboxes to start (see Disk limits).
 - SELinux enforcing is recommended. Without it qualification passes with a
   warning, and containers rely on namespaces and seccomp alone.

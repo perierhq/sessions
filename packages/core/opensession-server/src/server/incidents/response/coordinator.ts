@@ -1449,9 +1449,14 @@ async function messageAgent(
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
       )
     : buildReminder(
-        run.reportError ?? "No incident-report block",
+        // A run refused before every issue was kept has its first one.
+        run.reportIssues ?? [
+          {
+            problem: run.reportProblem ?? "missing",
+            error: run.reportError ?? "No incident-report block",
+          },
+        ],
         run.role,
-        run.reportProblem,
       );
   await agents.send(
     run.sessionId,
@@ -1475,6 +1480,7 @@ async function messageAgent(
               report: undefined,
               reportError: undefined,
               reportProblem: undefined,
+              reportIssues: undefined,
               reminded: false,
             })
           : patched(a, {
@@ -1483,6 +1489,7 @@ async function messageAgent(
               endedAt: undefined,
               reportError: undefined,
               reportProblem: undefined,
+              reportIssues: undefined,
               reminded: true,
             });
       });
@@ -1554,11 +1561,13 @@ async function recordReport(
                     // A report read again replaces the refusal.
                     reportError: undefined,
                     reportProblem: undefined,
+                    reportIssues: undefined,
                     ...(step.prUrl ? { prUrl: step.prUrl } : {}),
                   }
                 : {
                     reportError: step.error ?? "Invalid",
                     reportProblem: step.problem,
+                    reportIssues: step.issues,
                   },
             ),
       );

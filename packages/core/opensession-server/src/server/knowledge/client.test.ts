@@ -11,6 +11,10 @@ import {
   __setKnowledgeServiceForTest,
   knowledgeRepo,
 } from "./client";
+import {
+  __setKnowledgeBroadcastForTest,
+  type KnowledgeBroadcast,
+} from "./broadcast";
 import { dispatchKnowledge } from "./dispatch";
 import { KnowledgeConflictError, KnowledgeService } from "./service";
 
@@ -101,6 +105,62 @@ describe("knowledgeRepo client", () => {
       "articles/export-csv.md",
     ]);
     expect(hits[0].item.commit).toBe(sha!);
+  });
+
+  test("a write, a revert or a new repository tells the project's clients; reads and refused writes don't", async () => {
+    const sent: KnowledgeBroadcast[] = [];
+    __setKnowledgeBroadcastForTest((m) => sent.push(m));
+    try {
+      await knowledgeRepo.call("ensureRepo", "acme-live");
+      const sha = await knowledgeRepo.call(
+        "write",
+        "acme-live",
+        [
+          {
+            op: "put",
+            path: "articles/export-csv.md",
+            fm: fm(),
+            body: "Open the project, choose Export, then CSV.\n",
+          },
+        ],
+        { message: "Add export article", author: ADA },
+      );
+      expect(sent).toEqual([
+        { type: "knowledge_changed", project: "acme-live", what: "items" },
+        { type: "knowledge_changed", project: "acme-live", what: "items" },
+      ]);
+      await knowledgeRepo.call("read", "acme-live", "articles/export-csv.md");
+      await knowledgeRepo.call("index.counts", "acme-live", TODAY);
+      await knowledgeRepo
+        .call(
+          "write",
+          "acme-live",
+          [
+            {
+              op: "put",
+              path: "articles/export-csv.md",
+              fm: fm(),
+              body: "Changed.\n",
+            },
+          ],
+          {
+            message: "Edit",
+            author: ADA,
+            expected: { "articles/export-csv.md": null },
+          },
+        )
+        .catch(() => undefined);
+      expect(sent).toHaveLength(2);
+      await knowledgeRepo.call("revert", "acme-live", sha!, ADA);
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toEqual({
+        type: "knowledge_changed",
+        project: "acme-live",
+        what: "items",
+      });
+    } finally {
+      __setKnowledgeBroadcastForTest(undefined);
+    }
   });
 
   test("index calls bring the index up to date first", async () => {

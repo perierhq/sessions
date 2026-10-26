@@ -16,8 +16,9 @@ export function envCapacity(
   fallback: number,
   min: number,
   max: number,
+  env: Record<string, string | undefined> = process.env,
 ): number {
-  const raw = process.env[name]?.trim();
+  const raw = env[name]?.trim();
   if (!raw) return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {

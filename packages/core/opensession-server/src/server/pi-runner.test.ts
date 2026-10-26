@@ -764,6 +764,15 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
     ).toBe(false);
   });
 
+  test("an account out of extra usage counts as exhausted", () => {
+    expect(
+      isPiUsageLimitShape(
+        '400 {"type":"error","error":{"type":"invalid_request_error","message":"You\'re out of extra usage. Add more at claude.ai/settings/usage and keep going."}}',
+        "anthropic",
+      ),
+    ).toBe(true);
+  });
+
   test("anthropic overload is left to pi's retry", () => {
     const overloaded =
       '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
@@ -2264,6 +2273,41 @@ describe("runPi pi/anthropic account walk (fake engine, no network)", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  test("an account out of extra usage hands the turn to the next account and stays benched", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const outOfCredits = {
+      error:
+        '400 {"type":"error","error":{"type":"invalid_request_error","message":"You\'re out of extra usage. Add more at claude.ai/settings/usage and keep going."}}',
+      response: { status: 400, headers: {} },
+    };
+    const fake = fakeNativeSdk((token) =>
+      token === a.token ? outOfCredits : undefined,
+    );
+    const started = Date.now();
+    const first = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}-1`,
+      accountAffinityKey: `affinity-${suffix}-1`,
+    });
+    expect(first.errors).toHaveLength(0);
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+    // Plan headroom does not bring it back: it waits for paid credits,
+    // at the latest the next billing month.
+    const until = sidelines()[`${a.id}#credits`];
+    expect(until).toBeGreaterThan(started + 24 * 60 * 60_000 - 1);
+    // New turns, on any key, never try it again.
+    for (const turn of [2, 3]) {
+      const { errors } = await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${turn}`,
+        accountAffinityKey: `affinity-${suffix}-${turn}`,
+      });
+      expect(errors).toHaveLength(0);
+    }
+    expect(fake.usedTokens).toEqual([a.token, b.token, b.token, b.token]);
   });
 
   test("a session keeps its account from turn to turn", async () => {

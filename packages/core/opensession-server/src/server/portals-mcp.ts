@@ -29,6 +29,7 @@ import {
   startSandboxPortalService,
   stopPortalService,
   stopSandboxPortalService,
+  type PortalRecord,
 } from "./portal-supervisor";
 import {
   listRunnerPortalServices,
@@ -380,6 +381,35 @@ type PortalStartInput = {
   shutdownGraceMs?: number;
 };
 
+/**
+ * Where the session's own shell reaches its host Portals: the port each one
+ * listens on, on loopback. The Portal URL authenticates every request
+ * against the person's web sign-in, so a curl or a headless browser in the
+ * session gets 401 there; loopback needs no sign-in and is not reachable
+ * from outside this machine. Portal Sandboxes report theirs through the
+ * relay (sandboxPortalLocalUrls); a host Portal is already on this machine.
+ */
+export function hostPortalLocalUrls(
+  portals: ReadonlyArray<Pick<PortalRecord, "name" | "port" | "state">>,
+): Map<string, string> {
+  return new Map(
+    portals
+      .filter((portal) => portal.state === "awake")
+      .map((portal) => [portal.name, `http://localhost:${portal.port}`]),
+  );
+}
+
+/** The answer for a Portal that is ready. */
+export function portalReadyText(
+  name: string,
+  previewUrl: string,
+  options: { local?: string } = {},
+): string {
+  return options.local
+    ? `${name} is ready at ${previewUrl} (needs the person's sign-in, so a curl or headless browser here gets 401). From this shell use ${options.local}: no sign-in.`
+    : `${name} is ready at ${previewUrl}.`;
+}
+
 async function startPortalForContext(
   ctx: PortalsMcpContext,
   dir: string,
@@ -420,7 +450,13 @@ async function startPortalForContext(
     (candidate) => candidate.key === portal.key,
   );
   return service?.previewUrl
-    ? `${portal.name} is ready at ${service.previewUrl}.`
+    ? portalReadyText(portal.name, service.previewUrl, {
+        local: sandbox
+          ? undefined
+          : hostPortalLocalUrls([{ ...portal, state: "awake" }]).get(
+              portal.name,
+            ),
+      })
     : `${portal.name} is listening on port ${portal.port}, but its authenticated Portal URL is unavailable. Configure this instance's Caddy HTTPS Portal routing, then check list_portals. Do not share the raw local port.`;
 }
 
@@ -618,9 +654,11 @@ export function createPortalsMcpServer(ctx: PortalsMcpContext) {
                     .map((portal) => portal.name),
                 )
               : new Set<string>(),
-            sandbox && ctx.shellOnHost?.()
-              ? sandboxPortalLocalUrls(ctx.sessionId)
-              : new Map<string, string>(),
+            sandbox
+              ? ctx.shellOnHost?.()
+                ? sandboxPortalLocalUrls(ctx.sessionId)
+                : new Map<string, string>()
+              : hostPortalLocalUrls(portals),
             // A dev server that stopped listening in a Sandbox is most often
             // an out-of-memory kill; say so instead of a bare "failed".
             sandbox && failed[0]

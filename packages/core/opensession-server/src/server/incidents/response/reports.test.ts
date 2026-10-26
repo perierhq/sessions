@@ -319,7 +319,7 @@ test.each([
     "note",
   ],
 ])("rejects %s", (_name, text, message, problem) => {
-  expect(parseInvestigatorReport(text, ctx)).toEqual({
+  expect(parseInvestigatorReport(text, ctx)).toMatchObject({
     error: expect.stringContaining(message),
     problem: problem as ReportProblem,
   });
@@ -327,7 +327,7 @@ test.each([
 test("request checks need an http signal", () => {
   expect(
     parseInvestigatorReport(fence(good), { ...ctx, signalOrigin: null }),
-  ).toEqual({
+  ).toMatchObject({
     error: "A request check needs an http signal",
     problem: "check",
   });
@@ -353,14 +353,15 @@ test("verifier must check every claim", () => {
     proofAccepted: false,
     claims: [{ text: "A", status: "verified", evidence: "seen" }],
   };
-  expect(parseVerifierReport(fence(v), { claims })).toEqual({
+  expect(parseVerifierReport(fence(v), { claims })).toMatchObject({
     error: 'Check every claim: missing "B"',
     problem: "claims",
   });
   expect(
     parseVerifierReport(fence({ ...v, verdict: undefined }), { claims }),
-  ).toEqual({
-    error: "The verdict field must be certain or not-certain",
+  ).toMatchObject({
+    error:
+      'The verdict field must be certain or not-certain; Check every claim: missing "B"',
     problem: "conclusion",
   });
   const ok = parseVerifierReport(
@@ -496,7 +497,9 @@ test("request checks read unless the signal itself sends that request", () => {
   ).toMatchObject({ error: expect.stringContaining("GET or HEAD") });
 });
 test("a candidate needs claims; a source outside the table is dropped", () => {
-  expect(parseInvestigatorReport(fence({ ...good, claims: [] }), ctx)).toEqual({
+  expect(
+    parseInvestigatorReport(fence({ ...good, claims: [] }), ctx),
+  ).toMatchObject({
     error: "Give at least one claim for the candidate",
     problem: "claims",
   });
@@ -1004,4 +1007,68 @@ test("a refused report reads plainly for the owner", () => {
     expect(copy).toMatch(/try again/i);
     expect(copy).not.toMatch(/incident-report|field|\[|attempts/);
   }
+});
+
+test("a refused report names every problem at once", () => {
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      summary: "",
+      cause: " ",
+      attempts: [],
+      candidate: { pr: false, actions: ["scale-up", "restart-all"] },
+      check: undefined,
+      claims: [],
+      notePath: "notes.md",
+    }),
+    ctx,
+  );
+  if (!("error" in r)) throw new Error("accepted");
+  expect(r.issues.map((i) => i.rule)).toEqual([
+    "summary",
+    "cause",
+    "attempts",
+    "actions",
+    "check",
+    "claims",
+    "note",
+  ]);
+  expect(r.issues[3]?.error).toBe('Unknown actions "scale-up", "restart-all"');
+  // The first problem is the one the owner is told about.
+  expect(r.problem).toBe("conclusion");
+  expect(r.error).toBe(r.issues.map((i) => i.error).join("; "));
+  // A candidate was meant, so a missing pull request belongs in the list.
+  expect(r.candidate).toBe(true);
+
+  // Without a candidate, what only a candidate needs is not asked for.
+  const none = parseInvestigatorReport(
+    fence({ ...good, summary: "", candidate: null, claims: [] }),
+    ctx,
+  );
+  expect(none).toMatchObject({
+    issues: [{ rule: "summary", problem: "conclusion" }],
+    candidate: false,
+  });
+
+  const claims = [{ text: "A" }, { text: "B" }, { text: "C" }];
+  const v = parseVerifierReport(
+    fence({
+      role: "verifier",
+      claims: [{ text: "A", status: "verified", evidence: "seen" }],
+    }),
+    { claims },
+  );
+  if (!("error" in v)) throw new Error("accepted");
+  expect(v.issues).toEqual([
+    {
+      rule: "verdict",
+      problem: "conclusion",
+      error: "The verdict field must be certain or not-certain",
+    },
+    {
+      rule: "rulings",
+      problem: "claims",
+      error: 'Check every claim: missing "B", "C"',
+    },
+  ]);
 });
