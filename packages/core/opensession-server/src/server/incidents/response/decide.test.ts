@@ -561,6 +561,9 @@ test("investigation: start, remind once, then needs you", () => {
     sessionId: "child-1",
     error: "No incident-report block",
     problem: "missing",
+    issues: [
+      { rule: "block", problem: "missing", error: "No incident-report block" },
+    ],
   });
   expect(
     decideNextStep(done({ reportError: "No incident-report block" })),
@@ -638,11 +641,17 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
     sessionId: "child-1",
     report: { role: "investigator", summary: "Upstream blocks our user agent" },
   });
+  const noPr = {
+    rule: "pr",
+    problem: "pr" as const,
+    error: "Open a pull request with the note and the runbook update",
+  };
   expect(decideNextStep(finished())).toEqual({
     step: "record-report",
     sessionId: "child-1",
-    error: "Open a pull request with the note and the runbook update",
+    error: noPr.error,
     problem: "pr",
+    issues: [noPr],
   });
   // Finished without any final message: no report after a grace period.
   const silent = (sentAgoMs: number) =>
@@ -661,6 +670,59 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
     sessionId: "child-1",
     error: "No incident-report block",
     problem: "missing",
+    issues: [
+      { rule: "block", problem: "missing", error: "No incident-report block" },
+    ],
+  });
+});
+
+test("reports: a refused fix without its PR names the block's problems and the PR at once", () => {
+  const v = view({
+    incident: incident(
+      "investigating",
+      response({ agents: [run("investigator")] }),
+    ),
+    agents: new Map([
+      [
+        "child-1",
+        {
+          status: "done",
+          costUsd: 1,
+          tokens: 10,
+          finalText: fence({
+            ...goodInvestigator,
+            summary: "",
+            notePath: "notes.md",
+          }),
+        },
+      ],
+    ]),
+  });
+  expect(decideNextStep(v)).toEqual({
+    step: "record-report",
+    sessionId: "child-1",
+    error:
+      "The summary field must say what broke; The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+    // The owner hears about the report first: a PR alone would be found
+    // again on a Retry.
+    problem: "conclusion",
+    issues: [
+      {
+        rule: "summary",
+        problem: "conclusion",
+        error: "The summary field must say what broke",
+      },
+      {
+        rule: "note",
+        problem: "note",
+        error: "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+      },
+      {
+        rule: "pr",
+        problem: "pr",
+        error: "Open a pull request with the note and the runbook update",
+      },
+    ],
   });
 });
 

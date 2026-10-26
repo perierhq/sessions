@@ -717,7 +717,7 @@ test("a missing block gets one reminder, then needs you with Retry", async () =>
     {
       id: "child-1",
       message:
-        "Your last message did not end with a valid incident-report block: No incident-report block. Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ruled-out, confirmed, inconclusive, informative. Reply with only the corrected block.",
+        "Your last message did not end with an incident-report block. End your reply with exactly one, as your brief describes. Allowed values: attempts[].cost is free, cheap or expensive; attempts[].result is ruled-out, confirmed, inconclusive, informative.",
     },
   ]);
   w.finish("child-1", "Still no block");
@@ -746,7 +746,7 @@ test("a refused report: the agent gets the detail, the owner plain words", async
   });
   await advanceIncident(w.incident.id, w.deps);
   expect(w.sends[0]?.message).toStartWith(
-    "Your last message did not end with a valid incident-report block: The summary field must say what broke.",
+    "Sessions could not use your incident-report block. Fix every problem below at once:\n- The summary field must say what broke\n",
   );
   w.finish("child-1", noConclusion);
   await advanceIncident(w.incident.id, w.deps);
@@ -760,9 +760,43 @@ test("a refused report: the agent gets the detail, the owner plain words", async
   const run = i?.response?.agents.find((a) => a.sessionId === "child-1");
   expect(run?.reportProblem).toBe("conclusion");
   expect(run?.reportError).toBe("The summary field must say what broke");
+  expect(run?.reportIssues).toEqual([
+    {
+      rule: "summary",
+      problem: "conclusion",
+      error: "The summary field must say what broke",
+    },
+  ]);
   const shown = i?.response?.ledger.map((e) => e.detail) ?? [];
   expect(shown).toContain(plain);
   expect(shown.join("\n")).not.toContain("summary field");
+});
+
+test("one reminder names every problem with a fix's report, its missing pull request too", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({ ...investigatorReport, summary: "", notePath: "notes.md" }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends).toHaveLength(1);
+  const message = w.sends[0]!.message;
+  expect(message).toContain("- The summary field must say what broke\n");
+  expect(message).toContain(
+    "- The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md\n",
+  );
+  expect(message).toContain(
+    "push this session's branch and open the pull request",
+  );
+  expect(message).toContain("Keep the candidate");
+  expect(message).not.toContain("only the corrected block");
+  // The owner reads about the report, not the pull request: a Retry starts
+  // the investigator over rather than reading this report again.
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.ledger.map((e) => e.detail)).toContain(
+    "The investigator's report was missing its conclusion. Try again so it finishes the report.",
+  );
 });
 
 /** An investigator whose fix report was refused twice because Sessions did
