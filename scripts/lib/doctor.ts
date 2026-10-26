@@ -278,8 +278,27 @@ async function checkService(
     const res = await fetch(`http://${host}:${port}/api/health`, {
       signal: AbortSignal.timeout(4000),
     });
-    if (res.ok) ok(`responding on ${host}:${port}`);
-    else {
+    if (res.ok) {
+      ok(`responding on ${host}:${port}`);
+      const body = (await res.json().catch(() => null)) as {
+        housekeeping?: Record<
+          string,
+          {
+            failing?: boolean;
+            consecutiveFailures?: number;
+            lastError?: string;
+          }
+        >;
+      } | null;
+      for (const [job, health] of Object.entries(body?.housekeeping ?? {})) {
+        if (!health?.failing) continue;
+        warn(
+          `${job} failed ${health.consecutiveFailures} runs in a row`,
+          health.lastError || undefined,
+        );
+        t.warnings++;
+      }
+    } else {
       warn(`health endpoint returned ${res.status}`, `http://${host}:${port}`);
       t.warnings++;
     }

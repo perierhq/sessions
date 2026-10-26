@@ -272,6 +272,18 @@ describe("worktree reaper wiring", () => {
     expect(source).not.toContain("lstatSync");
   });
 
+  it("never runs git as root in a tree an agent wrote", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "worktree-reaper.ts"),
+      "utf8",
+    );
+    // A repo's config names programs git runs (fsmonitor, hooks).
+    expect(source).not.toMatch(/sudo\s+git\b|"sudo",\s*"git"/);
+    expect(source).toContain(
+      "-c core.fsmonitor=false -c core.hooksPath=/dev/null",
+    );
+  });
+
   it("spares a checkout younger than the activity window on its own age", () => {
     const source = readFileSync(
       join(import.meta.dir, "worktree-reaper.ts"),

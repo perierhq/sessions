@@ -45,6 +45,7 @@ import { serviceReadiness } from "../service-readiness";
 import { runtimeGeneration } from "../runtime-generation";
 import { controlPlaneResidents } from "../workload-scope";
 import { privateAppCertificateHealth } from "../private-app-domain";
+import { housekeepingHealth } from "../housekeeping-health";
 import { webAuthRequired } from "../web-auth";
 import {
   HeapSnapshotBusyError,
@@ -317,6 +318,9 @@ export async function handleSystemRoutes(
       // Private app certificates Open Session renews: days left and the last
       // renewal failure, so a stuck renewal shows before the certificate ends.
       privateAppCertificates: privateAppCertificateHealth(),
+      // Background cleanup jobs: last run, last error and whether one has
+      // failed several runs in a row (housekeeping-health.ts).
+      housekeeping: housekeepingHealth(),
     });
   }
 
