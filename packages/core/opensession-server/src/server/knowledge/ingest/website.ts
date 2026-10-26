@@ -90,6 +90,10 @@ export interface CrawlDeps {
   known: string[];
   /** A page that is no page: `gone` for 404 and 410. */
   onMiss?(url: string, error: string, gone: boolean): void;
+  /** Called once when maxPages (or the sitemap cap) left pages out. */
+  onTruncated?(): void;
+  /** Aborted: the crawl throws before its next request. */
+  signal?: AbortSignal;
 }
 
 export interface WebsiteDeps {
@@ -105,6 +109,8 @@ export interface WebsiteDeps {
 export interface WebsiteResult {
   /** Pages fetched (readable or not). */
   pages: number;
+  /** maxPages left pages out. */
+  truncated: boolean;
   /** Pages written (new or changed). */
   written: number;
   /** Mirrors retired because their page is gone. */
@@ -121,6 +127,8 @@ function bindCrawl(over: Partial<CrawlDeps>): CrawlDeps {
     maxPages: over.maxPages ?? DEFAULT_MAX_PAGES,
     known: over.known ?? [],
     onMiss: over.onMiss,
+    onTruncated: over.onTruncated,
+    signal: over.signal,
   };
 }
 
@@ -287,15 +295,25 @@ export async function* crawlHosts(
 ): AsyncGenerator<CrawledPage> {
   const d = bindCrawl(over);
   let budget = Math.max(0, Math.floor(d.maxPages));
+  let cut = false;
+  const truncate = () => {
+    if (!cut) d.onTruncated?.();
+    cut = true;
+  };
   const requested = new Set<string>();
   for (const host of exactHosts(hosts)) {
-    if (budget <= 0) return;
+    if (budget <= 0) {
+      truncate();
+      return;
+    }
     const only = [host];
     const root = `https://${host}/`;
     let last = Number.NEGATIVE_INFINITY;
     const get = async (url: string) => {
+      d.signal?.throwIfAborted();
       const wait = last + HOST_INTERVAL_MS - d.now();
       if (wait > 0) await d.sleep(wait);
+      d.signal?.throwIfAborted();
       last = d.now();
       return d.fetchRaw(url, only);
     };
@@ -320,9 +338,11 @@ export async function* crawlHosts(
     const listedSet = new Set<string>();
     const maps = new Set<string>();
     const visitMap = async (url: string, depth: number): Promise<void> => {
-      if (depth > SITEMAP_DEPTH || maps.has(url) || maps.size >= MAX_SITEMAPS)
+      if (depth > SITEMAP_DEPTH || maps.has(url)) return;
+      if (maps.size >= MAX_SITEMAPS || listed.length >= budget) {
+        truncate();
         return;
-      if (listed.length >= budget) return;
+      }
       maps.add(url);
       const raw = await get(url);
       if ("error" in raw || !ok(raw)) return;
@@ -332,7 +352,9 @@ export async function* crawlHosts(
         const target = withoutHash(loc);
         if (!target || !allowed(target)) continue;
         if (index) await visitMap(target, depth + 1);
-        else if (!listedSet.has(target) && listed.length < budget) {
+        else if (listedSet.has(target)) continue;
+        else if (listed.length >= budget) truncate();
+        else {
           listedSet.add(target);
           listed.push(target);
         }
@@ -349,6 +371,10 @@ export async function* crawlHosts(
       depth: number,
     ): AsyncGenerator<CrawledPage> {
       if (requested.has(url) || !allowed(url)) return;
+      if (budget <= 0) {
+        truncate();
+        return;
+      }
       requested.add(url);
       budget--;
       const raw = await get(url);
@@ -378,13 +404,12 @@ export async function* crawlHosts(
       yield page;
     }
 
-    while (queue.length && budget > 0) {
+    while (queue.length) {
       const { url, depth } = queue.shift()!;
       yield* visit(url, depth);
     }
     // Pages mirrored before and not listed now: still there?
     for (const url of d.known) {
-      if (budget <= 0) break;
       const target = withoutHash(url);
       if (target) yield* visit(target, LINK_DEPTH);
     }
@@ -454,6 +479,7 @@ export async function crawlWebsites(
   const hosts = exactHosts(await deps.hosts(project));
   const result: WebsiteResult = {
     pages: 0,
+    truncated: false,
     written: 0,
     retired: 0,
     skipped: 0,
@@ -479,6 +505,10 @@ export async function crawlWebsites(
   for await (const page of crawlHosts(hosts, {
     ...deps.crawl,
     known: [...(deps.crawl.known ?? []), ...known],
+    onTruncated: () => {
+      result.truncated = true;
+      deps.crawl.onTruncated?.();
+    },
     onMiss: (url, error, isGone) => {
       deps.crawl.onMiss?.(url, error, isGone);
       // A host skipped for its robots.txt is no page.
@@ -550,6 +580,7 @@ export async function crawlWebsites(
     result.written = changes.length - retired;
     result.retired = retired;
     if (!changes.length) return result;
+    deps.crawl.signal?.throwIfAborted();
     try {
       await knowledgeRepo.call("write", project, changes, {
         message: retired
@@ -599,7 +630,7 @@ export async function startWebsiteCrawl(
       let reported = 0;
       const result = await crawlWebsites(project, {
         ...over,
-        crawl: { ...deps.crawl, maxPages },
+        crawl: { ...deps.crawl, maxPages, signal: job.signal },
         onProgress: async (pages) => {
           await job.progress({ done: pages - reported });
           reported = pages;
@@ -610,6 +641,7 @@ export async function startWebsiteCrawl(
         skipped: result.skipped,
         done: result.pages - reported,
       });
+      if (result.truncated) await job.markTruncated();
     },
   );
 }

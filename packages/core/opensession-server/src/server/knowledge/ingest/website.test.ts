@@ -143,8 +143,13 @@ describe("crawlHosts", () => {
     };
     for (const url of urls) site[url] = { body: html(url) };
     const web = fakeWeb(site);
-    const pages = await collect([HOST], web.deps);
+    let truncated = 0;
+    const pages = await collect([HOST], {
+      ...web.deps,
+      onTruncated: () => void truncated++,
+    });
     expect(pages).toHaveLength(200);
+    expect(truncated).toBeGreaterThan(0);
     expect(web.urls()).toContain(`${SITE}/p200`);
     expect(web.urls()).not.toContain(`${SITE}/p201`);
   });
@@ -185,6 +190,44 @@ describe("crawlHosts", () => {
       expect(
         web.requests[i]!.at - web.requests[i - 1]!.at,
       ).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("a site within maxPages is not cut short", async () => {
+    const web = fakeWeb({
+      [`${SITE}/sitemap.xml`]: {
+        type: "application/xml",
+        body: urlset([`${SITE}/a`]),
+      },
+      [`${SITE}/a`]: { body: html("A") },
+    });
+    let truncated = 0;
+    await collect([HOST], { ...web.deps, onTruncated: () => void truncated++ });
+    expect(truncated).toBe(0);
+  });
+
+  test("stops when cancelled", async () => {
+    const ac = new AbortController();
+    const web = fakeWeb({
+      [`${SITE}/sitemap.xml`]: {
+        type: "application/xml",
+        body: urlset([`${SITE}/a`, `${SITE}/b`]),
+      },
+      [`${SITE}/a`]: { body: html("A") },
+      [`${SITE}/b`]: { body: html("B") },
+    });
+    const seen: string[] = [];
+    const run = (async () => {
+      for await (const page of crawlHosts([HOST], {
+        ...web.deps,
+        signal: ac.signal,
+      })) {
+        seen.push(page.url);
+        ac.abort();
+      }
+    })();
+    await expect(run).rejects.toThrow();
+    expect(seen).toEqual([`${SITE}/a`]);
+    expect(web.urls()).not.toContain(`${SITE}/b`);
   });
 
   test("a page that answers 404 is reported gone", async () => {
@@ -352,6 +395,20 @@ describe("crawlWebsites", () => {
       kind: "website",
       state: "done",
       created: { trusted: 2, reference: 0, suggestions: 0, skipped: 0 },
+    });
+  });
+
+  test("a job cut at maxPages is marked truncated", async () => {
+    const job = await startWebsiteCrawl(
+      { project: "acme", by: { name: "Ada" }, maxPages: 1 },
+      deps(pages),
+    );
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({
+      state: "done",
+      truncated: true,
+      created: { trusted: 1 },
     });
   });
 
