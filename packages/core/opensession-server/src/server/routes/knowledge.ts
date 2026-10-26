@@ -37,7 +37,6 @@ import {
 } from "../knowledge/freshness/repo-changes";
 import {
   PAT_TRAILER,
-  revalidateProject,
   type RevalidateResult,
 } from "../knowledge/freshness/revalidate";
 import { freeSlugPath, isAttachmentPath } from "../knowledge/layout";
@@ -127,7 +126,9 @@ const defaults: KnowledgeRouteDeps = {
   },
   release: async (project, tag) =>
     (await listReleases(project))?.find((r) => r.tag === tag) ?? null,
-  revalidate: (project) => revalidateProject(project),
+  // One run at a time per project, shared with the daily tick and nudges.
+  revalidate: async (project) =>
+    (await import("../knowledge/maintenance")).requestRevalidation(project),
   startImport: async () => {
     throw new MemoryRepoError("This import isn't available yet.", 501);
   },

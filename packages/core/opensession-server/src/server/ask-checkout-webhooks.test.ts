@@ -1,11 +1,19 @@
 import { getConfigAsync } from "./config";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { createHmac } from "crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { handleCsWebhook } from "./codestorage/webhook";
-import { handlePrWebhookEvent } from "./pr-webhook";
+import { __setKnowledgeNudgeForTest, handlePrWebhookEvent } from "./pr-webhook";
 import { GITHUB_APP_MANIFEST_EVENTS } from "./routes/setup-github-manifest";
 import { askCheckoutInvalidationGeneration } from "./worktree";
 
@@ -114,6 +122,35 @@ describe("GitHub deliveries", () => {
       repository: { full_name: "acme/elsewhere" },
     });
     expect(askCheckoutInvalidationGeneration("gh")).toBe(before);
+  });
+});
+
+describe("knowledge nudge", () => {
+  let nudged: string[];
+  beforeEach(() => {
+    nudged = [];
+    __setKnowledgeNudgeForTest((repoId) => nudged.push(repoId));
+  });
+  afterEach(() => __setKnowledgeNudgeForTest(null));
+
+  test("a push to the default branch nudges the project's knowledge once", () => {
+    handlePrWebhookEvent("push", {
+      ref: "refs/heads/main",
+      repository: { full_name: "acme/widget" },
+    });
+    expect(nudged).toEqual(["gh"]);
+  });
+
+  test("a push to another branch never does", () => {
+    handlePrWebhookEvent("push", {
+      ref: "refs/heads/feature",
+      repository: { full_name: "acme/widget" },
+    });
+    handlePrWebhookEvent("push", {
+      ref: "refs/heads/main",
+      repository: { full_name: "acme/elsewhere" },
+    });
+    expect(nudged).toEqual([]);
   });
 });
 

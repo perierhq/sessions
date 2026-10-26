@@ -170,8 +170,14 @@ trusted)`. One import of a kind runs per project at a time; an import a
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
 6. The run happens daily, after a push to the default branch, and on demand
-   from the Knowledge page. It re-fetches trusted pages, re-checks dependent
-   paths and re-runs the conflict check on changed items. The small model may
+   from the Knowledge page. The daily run re-fetches trusted pages, re-checks
+   dependent paths and re-runs the conflict check on changed items; an hourly
+   tick starts it for each project whose last full run is a day old (a failed
+   run is tried again the next hour). A push re-checks only what depends on
+   the code repository, a minute after the first push (later pushes in that
+   minute ride along). One run per project goes at a time; a request while
+   another waits to start joins it. Nothing runs while email support is off.
+   The small model may
    draft updated text for a `needs-check` item; a person still approves it.
 7. Only fresh, trusted, active items back a reply. Anything else makes the
    draft wait for a person with "Knowledge may be out of date: <article
