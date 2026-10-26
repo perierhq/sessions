@@ -11,11 +11,19 @@
 // secret), and nothing in the conversation needs a person: an injection
 // flag, a request for a person, anger, a repeated question, a
 // never-without-a-person topic, unknown labels, unverified mail or a reply
-// address that differs. One short clarifying question per conversation may
+// address that differs. Knowledge it cites must back it at the moment of
+// deciding (knowledge/backing.ts): a stale, unread or changed item, an
+// internal note quoted, or a check that couldn't run holds it. One short
+// clarifying question per conversation may
 // send without a source. The triage route ("simple" included) never
 // permits a send. A person's reply always goes; an automatic one never on
 // a spam or closed conversation, nor after a person stopped the last one.
 // Pure.
+import {
+  KNOWLEDGE_COPY,
+  type KnowledgeVerdict,
+  parseKnowledgeCitation,
+} from "../../shared/knowledge";
 import { SUPPORT_TOPIC_LABELS } from "../../shared/support-copy";
 import {
   AUTO_SENDS_PER_HOUR,
@@ -64,10 +72,17 @@ export const RULES = {
   authUnverified: "The sender's mail wasn't authenticated",
   autoSendCap: `${AUTO_SENDS_PER_HOUR} automatic replies in the last hour`,
   inboxAutoSendCap: `${AUTO_SENDS_PER_INBOX_PER_HOUR} automatic replies from this inbox in the last hour`,
+  knowledgeUnchecked: KNOWLEDGE_COPY.unchecked,
+  internalQuoted: KNOWLEDGE_COPY.internalQuoted,
   veto: "Sends when the window ends unless someone stops it",
   newerMessage: "A newer message arrived",
   agentSent: "Sent by the agent",
 } as const;
+
+/** The rule of a draft whose cited knowledge can't back it. */
+export function knowledgeRule(title: string): string {
+  return KNOWLEDGE_COPY.stale(title);
+}
 
 const needsPerson = (rule: string): ReplyDecision => ({
   kind: "needs-person",
@@ -115,6 +130,9 @@ export function decideReply(input: {
   /** A person stopped or discarded the conversation's last draft, or its
    *  last send may have gone out (reply.ts): held until a person acts. */
   personStoppedLast: boolean;
+  /** The knowledge check of the draft as of now (knowledge/backing.ts);
+   *  null when the draft cites none and the project has no knowledge. */
+  knowledge: KnowledgeVerdict | null;
 }): ReplyDecision {
   const { author, inbox, triage } = input;
   if (author.kind === "person")
@@ -158,7 +176,17 @@ export function decideReply(input: {
   );
   if (heldInDraft) return needsPerson(topicRule(heldInDraft));
   if (check.promises) return needsPerson(RULES.draftPromise);
-  const cited = check.verified.some((x) => validSource(x, input.sites));
+  const { knowledge } = input;
+  if (knowledge?.failed) return needsPerson(RULES.knowledgeUnchecked);
+  if (knowledge?.internalQuoted) return needsPerson(RULES.internalQuoted);
+  const stale = knowledge?.blocked[0];
+  if (stale) return needsPerson(knowledgeRule(stale.title));
+  // Knowledge backs a reply only through the verdict of now, never through
+  // what was verified when the draft was written.
+  const cited = [
+    ...check.verified.filter((x) => x?.kind !== "knowledge"),
+    ...(knowledge?.backing ?? []),
+  ].some((x) => validSource(x, input.sites));
   if (!cited) {
     if (!isClarifyingQuestion(draft))
       return needsPerson(draft.promises ? RULES.promise : RULES.noSource);
@@ -484,8 +512,9 @@ export function recordSource(
 
 /** Whether a cited source has a shape the policy accepts: a relative file
  *  path in the project's repository, an http(s) URL an automatic reply may
- *  link to (linkAllowed), or `<connector>:<record id>` of one of its
- *  Support connectors. Whether it exists is verify.ts's check. */
+ *  link to (linkAllowed), `<connector>:<record id>` of one of its Support
+ *  connectors, or a knowledge citation `<path>@<commit>`. Whether it exists
+ *  is verify.ts's check (knowledge/backing.ts for knowledge). */
 export function validSource(source: DraftSource, sites: ProjectSites): boolean {
   if (!source || typeof source.ref !== "string") return false;
   if (source.kind === "repo") return repoSourcePath(source.ref) !== null;
@@ -494,6 +523,7 @@ export function validSource(source: DraftSource, sites: ProjectSites): boolean {
     const record = recordSource(source.ref);
     return record !== null && sites.connectors.includes(record.connector);
   }
-  if (source.kind === "knowledge") return false; // D2 replaces this
+  if (source.kind === "knowledge")
+    return parseKnowledgeCitation(source.ref.trim()) !== null;
   return false;
 }
