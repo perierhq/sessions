@@ -209,7 +209,6 @@ async function capture(
   const { project } = c;
   const path = mailItemPath(mailId, reply.at);
   const today = utcDay(deps.now());
-  await knowledgeRepo.call("ensureRepo", project);
   if (await knowledgeRepo.call("index.get", project, path, today))
     return { result: "exists", project, path };
 
@@ -289,6 +288,8 @@ async function capture(
   const fm = planned.change.fm;
   fm.sources = [...fm.sources, `conversation:${c.id}`];
   fm.dependsOn = [...new Set([...fm.dependsOn, ...(cited ?? [])])];
+  // The project's first captured reply creates its knowledge repository.
+  await knowledgeRepo.call("ensureRepo", project);
   try {
     await knowledgeRepo.call("write", project, [planned.change], {
       message: `Capture a reply a person sent (${fm.trust})`,

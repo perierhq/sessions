@@ -228,6 +228,19 @@ test("a person's reply becomes one trusted mail item without the customer", asyn
   expect(await captureReply(c.id, message.id, deps())).toBe("exists");
 });
 
+test("a reply that can't be kept creates no knowledge repository", async () => {
+  const { c, message } = await answeredUncaptured();
+  expect(
+    await captureReply(c.id, message.id, {
+      ...deps(),
+      classify: (async () => null) as CaptureDeps["classify"],
+    }),
+  ).toBe("skipped");
+  expect(await knowledgeRepo.call("hasRepo", "acme")).toBe(false);
+  expect(await captureReply(c.id, message.id, deps())).toBe("written");
+  expect(await knowledgeRepo.call("hasRepo", "acme")).toBe(true);
+});
+
 test("an automatic send is not captured", async () => {
   await tb.setInbox({ autonomy: "routine", vetoMs: null });
   const c = await tb.conversation({ text: QUESTION });

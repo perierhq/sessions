@@ -271,19 +271,35 @@ known problems: <n> open`. An approved article that relies on a known
    or an agent's draft a person sent, edited or not) is captured the same
    way as an imported pair: the customer messages it answered and the sent
    text, stripped and rewritten, under `sources/mail/` with the send time as
-   `answeredAt` (so normally trusted), sourced `mail:<Message-ID>` and
-   `conversation:<id>`. Automatic sends are never captured. A capture is
+   `answeredAt` (so normally trusted), sourced `mail:<Message-ID>`,
+   `thread:<sha256>` and `conversation:<id>`. Each customer message loses
+   its own sender, and both texts lose every sender of the conversation.
+   Automatic sends are never captured. An agent draft whose knowledge check
+   held it (an internal note quoted, an item that couldn't back it) is
+   captured as reference with that reason; one that cited knowledge also
+   depends on what the cited items depend on (reference, "Knowledge
+   couldn't be checked", when a cited item can't be read). A capture is
    queued first (`knowledge-pending`, `capture:<message id>`), so one a
    restart or an error cut off is retried hourly (up to 5 tries). One commit
-   by Pat: `Capture a reply a person sent (<trust>)`.
+   by Pat: `Capture a reply a person sent (<trust>)`. The project's first
+   captured reply creates its knowledge repository; a reply that can't be
+   kept creates nothing.
 
-   When a captured or imported question was also answered by hand in
-   another conversation (up to 3 full-text candidates, each confirmed by the
-   small model) and no article covers it (none cites those replies, and the
+   Mail items record their thread as `thread:<sha256>`, the hash of the
+   thread's root Message-ID (References root, else the question replied
+   to); the Message-ID itself is never stored. When a captured or imported
+   question was also answered by hand in another thread (items sharing a
+   thread or a conversation count as one; up to 3 full-text candidates,
+   each confirmed by the small model) and no article covers it (none cites those replies, and the
    model doesn't call the top article hit the same question), Pat writes a
    reference suggestion citing every such reply, its text the newest answer
    generalised by the small model. A later repeat adds its reply to that
-   suggestion instead of making another.
+   suggestion instead of making another. A run makes at most 60 small-model
+   calls; what it didn't reach is queued (`repeats:<project>`) for the
+   hourly step, and an import that left some marks its job truncated.
+   Discarding a suggestion remembers its `mail:` sources
+   (`rejected:<project>` in `knowledge-jobs`); a group that includes one
+   makes no suggestion again.
 
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
