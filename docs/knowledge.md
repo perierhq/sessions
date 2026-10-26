@@ -56,6 +56,13 @@ attachments live under `attachments/`, at most 10 MB; symbolic links,
 submodules and executable files are refused; and anything that looks like a
 credential is refused ("Knowledge never stores credentials").
 
+A person attaches files to an article or a suggestion: an article's files go
+in `attachments/<slug>/`, a suggestion's in `attachments/suggestion+<slug>/`
+(so the two never share a folder), and the editor links them relatively
+(`../attachments/…`). Approving a suggestion moves its files to the new
+article's folder and rewrites those links, also when the article gets a `-2`
+name; discarding a suggestion deletes its files.
+
 ## Items
 
 An item is a Markdown file with YAML front matter between `---` lines. The
@@ -104,6 +111,9 @@ answeredAt: 2026-10-19T08:12:00Z # mail items only
 - `dependsOn` lists what would make the item wrong. `repo:docs/` (trailing
   slash) covers everything under that folder.
 - When a person sets an item back to `active`, `check` goes away.
+- `origin`, `suggestedBy` and `approvedBy` are set by the server, never by
+  the editor: `origin` follows the folder, `suggestedBy` keeps what ingestion
+  wrote, and an article is approved by the person who saved or approved it.
 
 ## Trust
 

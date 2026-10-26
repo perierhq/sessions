@@ -121,6 +121,48 @@ export function isAttachmentPath(path: string): boolean {
   );
 }
 
+/** Marks a suggestion's attachment folder. Slugs never contain it and
+ *  articleSlug refuses it, so a suggestion's files never share a folder with
+ *  an article of the same slug. */
+const SUGGESTION_ATTACHMENTS = "suggestion+";
+
+/** The slug of `<folder>/<slug>.md`, an item directly in `articles/` or
+ *  `suggestions/` (isItemPath, no subfolder, no `+` in the slug); null for
+ *  anything else. */
+export function articleSlug(
+  path: string,
+  folder: "articles" | "suggestions",
+): string | null {
+  if (!isItemPath(path) || !path.startsWith(`${folder}/`)) return null;
+  const name = path.slice(folder.length + 1);
+  if (name.includes("/") || name.includes("+")) return null;
+  const slug = name.replace(/\.(md|markdown)$/i, "");
+  return slug && isSafeSegment(slug) ? slug : null;
+}
+
+/** `articles/<slug>.md`. */
+export function isArticlePath(path: string): boolean {
+  return articleSlug(path, "articles") !== null;
+}
+
+/** `suggestions/<slug>.md`. */
+export function isSuggestionPath(path: string): boolean {
+  return articleSlug(path, "suggestions") !== null;
+}
+
+/** Where an article's or a suggestion's attachments live, without a
+ *  trailing slash: `attachments/<slug>` for `articles/<slug>.md`,
+ *  `attachments/suggestion+<slug>` for `suggestions/<slug>.md`. Null for
+ *  any other path. */
+export function attachmentFolder(itemPath: string): string | null {
+  const article = articleSlug(itemPath, "articles");
+  if (article) return `${ATTACHMENTS_DIR}/${article}`;
+  const suggestion = articleSlug(itemPath, "suggestions");
+  return suggestion
+    ? `${ATTACHMENTS_DIR}/${SUGGESTION_ATTACHMENTS}${suggestion}`
+    : null;
+}
+
 export function hasAttachmentExtension(name: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return false;

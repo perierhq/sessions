@@ -92,6 +92,7 @@ export const KNOWLEDGE_METHODS = [
   "diff",
   "revert",
   "readAttachment",
+  "listAttachments",
   "index.search",
   "index.list",
   "index.counts",

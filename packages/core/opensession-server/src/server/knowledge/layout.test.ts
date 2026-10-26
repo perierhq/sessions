@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { isValidRepoName } from "../memory-repo/layout";
 import {
+  articleSlug,
+  attachmentFolder,
+  isArticlePath,
+  isSuggestionPath,
   folderFor,
   freeSlugPath,
   isAttachmentPath,
@@ -192,6 +196,34 @@ describe("knowledge layout", () => {
     expect(freeSlugPath(new Set(), "articles", "Café crème")).toBe(
       "articles/cafe-creme.md",
     );
+  });
+});
+
+describe("articles, suggestions and their attachments", () => {
+  test("only <folder>/<slug>.md directly in the folder counts", () => {
+    expect(articleSlug("articles/export.md", "articles")).toBe("export");
+    expect(isArticlePath("articles/export.md")).toBe(true);
+    expect(isSuggestionPath("suggestions/export.md")).toBe(true);
+    for (const path of [
+      "articles/a/b.md",
+      "articles/../x.md",
+      "articles/x.txt",
+      "articles/a+b.md",
+      "suggestions/export.md",
+      "sources/files/x.md",
+      "KNOWLEDGE.md",
+    ])
+      expect(isArticlePath(path)).toBe(false);
+    expect(isSuggestionPath("suggestions/nested/x.md")).toBe(false);
+  });
+
+  test("a suggestion's folder never meets an article's", () => {
+    expect(attachmentFolder("articles/export.md")).toBe("attachments/export");
+    expect(attachmentFolder("suggestions/export.md")).toBe(
+      "attachments/suggestion+export",
+    );
+    expect(attachmentFolder("sources/files/export.md")).toBe(null);
+    expect(isAttachmentPath("attachments/suggestion+export/a.png")).toBe(true);
   });
 });
 

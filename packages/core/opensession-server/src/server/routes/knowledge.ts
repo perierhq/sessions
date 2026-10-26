@@ -40,7 +40,14 @@ import {
   PAT_TRAILER,
   type RevalidateResult,
 } from "../knowledge/freshness/revalidate";
-import { freeSlugPath, isAttachmentPath } from "../knowledge/layout";
+import {
+  articleSlug,
+  attachmentFolder,
+  freeSlugPath,
+  isAttachmentPath,
+  isSuggestionPath,
+  originForPath,
+} from "../knowledge/layout";
 import type { KnowledgeChange } from "../knowledge/service";
 import { MAX_ATTACHMENT_BYTES } from "../knowledge/validate";
 import { type Author, MemoryRepoError } from "../memory-repo/git-store";
@@ -71,8 +78,8 @@ const MAX_IMPORT_FILES = 20;
 const PAGE_SIZE = 50;
 const MAX_NEEDS_CHECK = 100;
 const MAX_BATCH = 200;
-/** A side of the needs-check comparison is cut here. */
-const MAX_CHANGE_CHARS = 100_000;
+/** Each side of a needs-check comparison, and the item's body, is cut here. */
+const MAX_CHANGE_CHARS = 20_000;
 const SHA = /^[0-9a-f]{7,64}$/;
 const SIGN_IN = "Sign in to use project knowledge";
 const ATTACH_TYPES_COPY = "Attach an image (PNG, JPEG, GIF or WebP) or a PDF";
@@ -310,23 +317,86 @@ async function readItem(
   return read;
 }
 
-/** The first free `<dir>/<slug>.md` for `title`, skipping `taken`. */
+/** The first free `<dir>/<slug>.md` for `title`, skipping `taken` and any
+ *  path `usable` refuses. */
 async function freePath(
   project: string,
   dir: string,
   title: string,
   taken: Set<string> = new Set(),
+  usable: (path: string) => Promise<boolean> = async () => true,
 ): Promise<string> {
   const existing = new Set(taken);
   for (;;) {
     const path = freeSlugPath(existing, dir, title);
     if (
       !existing.has(path) &&
-      !(await knowledgeRepo.call("index.get", project, path))
+      !(await knowledgeRepo.call("index.get", project, path)) &&
+      (await usable(path))
     )
       return path;
     existing.add(path);
   }
+}
+
+/** The front matter a person may set: who suggested or approved an item
+ *  and its origin are the server's to say. `origin` follows the folder,
+ *  `suggestedBy` stays what was stored, and an article is approved by the
+ *  person writing it. */
+function serverSet(
+  fm: KnowledgeFrontMatter,
+  path: string,
+  stored: KnowledgeItem | null,
+  by: Author,
+): KnowledgeFrontMatter {
+  const {
+    approvedBy: _approvedBy,
+    suggestedBy: _suggestedBy,
+    origin: _origin,
+    ...rest
+  } = fm;
+  const origin = originForPath(path);
+  if (!origin) throw new BadRequest("Invalid path");
+  const approvedBy =
+    origin === "article" ? by.name : (stored?.approvedBy ?? undefined);
+  return {
+    ...rest,
+    origin,
+    ...(stored?.suggestedBy ? { suggestedBy: stored.suggestedBy } : {}),
+    ...(approvedBy ? { approvedBy } : {}),
+  };
+}
+
+/** `body` with links into the `from` attachment folder pointed at `to`
+ *  (relative `../attachments/…` or `attachments/…`, `+` written plainly or
+ *  as `%2B`). */
+function movedLinks(body: string, from: string, to: string): string {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const folder = from.split("+").map(escape).join("(?:\\+|%2[Bb])");
+  return body.replace(
+    new RegExp(`(^|[\\s(<"'\\[])((?:\\.\\./)?)${folder}/`, "g"),
+    (_match, lead: string, up: string) => `${lead}${up}${to}/`,
+  );
+}
+
+/** The changes that move every attachment in `from` to `to`. */
+async function attachmentMoves(
+  project: string,
+  from: string,
+  to: string,
+): Promise<{ changes: KnowledgeChange[]; targets: string[] }> {
+  const files = await knowledgeRepo.call("listAttachments", project, from);
+  const changes: KnowledgeChange[] = [];
+  const targets: string[] = [];
+  for (const file of files) {
+    const bytes = await knowledgeRepo.call("readAttachment", project, file);
+    if (!bytes) continue;
+    const target = `${to}${file.slice(from.length)}`;
+    changes.push({ op: "attach", path: target, bytes });
+    changes.push({ op: "delete", path: file });
+    targets.push(target);
+  }
+  return { changes, targets };
 }
 
 /** The code repository's default-branch head for a confirmation or an
@@ -375,6 +445,28 @@ function batchMessage(
 
 async function currentHead(project: string): Promise<string | null> {
   return knowledgeRepo.call("head", project);
+}
+
+/** What a needs-check item's change is about, from its check alone. */
+function changeKind(item: KnowledgeItem): KnowledgeNeedsCheckChange["kind"] {
+  const check = item.check;
+  if (check?.conflictWith) return "conflict";
+  const source = check?.source ?? "";
+  if (source.startsWith("repo:")) return "repo";
+  if (source.startsWith("url:")) return "url";
+  if (source.startsWith("release:")) return "release";
+  if (source.startsWith("issue:") || source.startsWith("pr:")) return "issue";
+  return "review";
+}
+
+/** The line that says why an item needs a check. */
+function checkNote(item: KnowledgeItem, today: string): string {
+  return (
+    item.check?.reason ??
+    (item.reviewBy && item.reviewBy < today
+      ? KNOWLEDGE_COPY.reviewPassed(item.reviewBy)
+      : "Needs a check")
+  );
 }
 
 function cut(text: string | null | undefined): string | undefined {
@@ -455,12 +547,9 @@ async function changeFor(
   today: string,
 ): Promise<KnowledgeNeedsCheckChange> {
   const check = item.check;
-  const title =
-    check?.reason ??
-    (item.reviewBy && item.reviewBy < today
-      ? KNOWLEDGE_COPY.reviewPassed(item.reviewBy)
-      : "Needs a check");
-  if (check?.conflictWith) {
+  const title = checkNote(item, today);
+  const kind = changeKind(item);
+  if (kind === "conflict" && check?.conflictWith) {
     const other = await quietly(() =>
       knowledgeRepo.call("read", project, check.conflictWith!, today),
     );
@@ -473,7 +562,7 @@ async function changeFor(
     };
   }
   const source = check?.source ?? "";
-  if (source.startsWith("repo:")) {
+  if (kind === "repo") {
     const ref = source.slice("repo:".length);
     const at = ref.lastIndexOf("@");
     const path = at > 0 ? ref.slice(0, at) : ref;
@@ -495,7 +584,7 @@ async function changeFor(
       ...(patch ? { patch: cut(patch) } : {}),
     };
   }
-  if (source.startsWith("url:")) {
+  if (kind === "url") {
     const raw = source.slice("url:".length);
     const mark = raw.lastIndexOf("#sha256=");
     const link = mark >= 0 ? raw.slice(0, mark) : raw;
@@ -508,7 +597,7 @@ async function changeFor(
       link,
     };
   }
-  if (source.startsWith("release:")) {
+  if (kind === "release") {
     const release = await quietly(() =>
       deps.release(project, source.slice("release:".length)),
     );
@@ -519,37 +608,36 @@ async function changeFor(
       ...(release ? { after: cut(release.body) } : {}),
     };
   }
-  if (source.startsWith("issue:") || source.startsWith("pr:"))
-    return { kind: "issue", title };
-  return { kind: "review", title };
+  return { kind, title };
 }
 
+/** What needs a check, light: up to MAX_NEEDS_CHECK indexed items, each
+ *  with its check note (`check`) and the index excerpt. What changed
+ *  (patches, pages, release notes) is computed per item by needsCheckItem. */
 async function needsCheck(project: string): Promise<Response> {
   if (!(await hasRepo(project))) return Response.json({ items: [] });
-  const today = deps.today();
   const { items } = await knowledgeRepo.call(
     "index.list",
     project,
     "needs-check",
-    { today, limit: MAX_NEEDS_CHECK },
+    { today: deps.today(), limit: MAX_NEEDS_CHECK },
   );
-  const rows = await Promise.all(
-    items.map(async (listed) => {
-      const read = await knowledgeRepo.call(
-        "read",
-        project,
-        listed.path,
-        today,
-      );
-      if (!read) return null;
-      return {
-        item: read.item,
-        body: read.body,
-        change: await changeFor(project, read.item, read.body, today),
-      };
-    }),
+  return Response.json({ items });
+}
+
+/** One needs-check item with its body and what changed. */
+async function needsCheckItem(project: string, url: URL): Promise<Response> {
+  const today = deps.today();
+  const read = await readItem(
+    project,
+    url.searchParams.get("path") ?? "",
+    today,
   );
-  return Response.json({ items: rows.filter((row) => row !== null) });
+  return Response.json({
+    item: read.item,
+    body: cut(read.body),
+    change: await changeFor(project, read.item, read.body, today),
+  });
 }
 
 async function attachment(project: string, url: URL): Promise<Response> {
@@ -596,13 +684,25 @@ async function putItem(ctx: RouteContext, project: string): Promise<Response> {
     ? await freePath(project, "articles", fm.title)
     : (body.path as string);
   const expectedBlob = creating ? null : (body.expectedBlob as string | null);
+  const author = authorOf(ctx);
+  const stored =
+    expectedBlob === null
+      ? null
+      : await knowledgeRepo.call("index.get", project, path);
   const commit = await knowledgeRepo.call(
     "write",
     project,
-    [{ op: "put", path, fm, body: body.body }],
+    [
+      {
+        op: "put",
+        path,
+        fm: serverSet(fm, path, stored, author),
+        body: body.body,
+      },
+    ],
     {
       message: `${creating || expectedBlob === null ? "Add" : "Edit"} ${fm.title}`,
-      author: authorOf(ctx),
+      author,
       expected: { [path]: expectedBlob },
     },
   );
@@ -681,10 +781,11 @@ async function approve(ctx: RouteContext, project: string): Promise<Response> {
   if (!isObject(edits)) throw new BadRequest("Invalid edits");
   const today = deps.today();
   const author = authorOf(ctx);
+  for (const path of paths)
+    if (!isSuggestionPath(path))
+      throw new BadRequest(`"${path}" isn't a suggestion`);
   const reads = await Promise.all(
     paths.map(async (path) => {
-      if (!path.startsWith("suggestions/"))
-        throw new BadRequest(`"${path}" isn't a suggestion`);
       const read = await readItem(project, path, today);
       const edit = edits[path];
       if (edit === undefined) return read;
@@ -709,29 +810,51 @@ async function approve(ctx: RouteContext, project: string): Promise<Response> {
   const approved: string[] = [];
   for (const [i, read] of reads.entries()) {
     const fm = fms[i]!;
-    const name = read.item.path.slice("suggestions/".length);
-    const preferred = `articles/${name}`;
+    const from = read.item.path;
+    const fromFolder = attachmentFolder(from)!;
+    const files = await knowledgeRepo.call(
+      "listAttachments",
+      project,
+      fromFolder,
+    );
+    // An article path whose attachment folder can take this suggestion's
+    // files (a deleted article may have left some behind).
+    const usable = async (to: string) => {
+      const folder = attachmentFolder(to);
+      if (!folder) return false;
+      return (
+        !files.length ||
+        !(await knowledgeRepo.call("listAttachments", project, folder)).length
+      );
+    };
+    const preferred = `articles/${articleSlug(from, "suggestions")}.md`;
     const to =
       !taken.has(preferred) &&
-      !(await knowledgeRepo.call("index.get", project, preferred))
+      !(await knowledgeRepo.call("index.get", project, preferred)) &&
+      (await usable(preferred))
         ? preferred
-        : await freePath(project, "articles", fm.title, taken);
+        : await freePath(project, "articles", fm.title, taken, usable);
+    const toFolder = attachmentFolder(to);
+    if (!toFolder) throw new BadRequest(`"${to}" can't hold an article`);
     taken.add(to);
+    const moved = await attachmentMoves(project, fromFolder, toFolder);
+    const { suggestedBy } = read.item;
     changes.push({
       op: "move",
-      from: read.item.path,
+      from,
       to,
       fm: {
-        ...stamped(fm, today, head),
-        origin: "article",
+        ...serverSet(stamped(fm, today, head), to, null, author),
+        ...(suggestedBy ? { suggestedBy } : {}),
         trust: "trusted",
         status: "active",
-        approvedBy: author.name,
       },
-      body: read.body,
+      body: movedLinks(read.body, fromFolder, toFolder),
     });
-    expected[read.item.path] = read.item.blob;
+    changes.push(...moved.changes);
+    expected[from] = read.item.blob;
     expected[to] = null;
+    for (const target of moved.targets) expected[target] = null;
     approved.push(to);
   }
   const commit = await knowledgeRepo.call("write", project, changes, {
@@ -753,17 +876,29 @@ async function approve(ctx: RouteContext, project: string): Promise<Response> {
 async function discard(ctx: RouteContext, project: string): Promise<Response> {
   const paths = pathsFrom(await readJson(ctx.req));
   const today = deps.today();
+  for (const path of paths)
+    if (!isSuggestionPath(path))
+      throw new BadRequest(`"${path}" isn't a suggestion`);
   const items = await Promise.all(
-    paths.map(async (path) => {
-      if (!path.startsWith("suggestions/"))
-        throw new BadRequest(`"${path}" isn't a suggestion`);
-      return (await readItem(project, path, today)).item;
-    }),
+    paths.map(async (path) => (await readItem(project, path, today)).item),
+  );
+  // A suggestion's attachments go with it (revert brings both back).
+  const attached = await Promise.all(
+    items.map((item) =>
+      knowledgeRepo.call(
+        "listAttachments",
+        project,
+        attachmentFolder(item.path)!,
+      ),
+    ),
   );
   const commit = await knowledgeRepo.call(
     "write",
     project,
-    items.map((item) => ({ op: "delete" as const, path: item.path })),
+    [...items.map((item) => item.path), ...attached.flat()].map((path) => ({
+      op: "delete" as const,
+      path,
+    })),
     {
       message: batchMessage("Discard", items, "suggestions"),
       author: authorOf(ctx),
@@ -778,14 +913,14 @@ async function attach(ctx: RouteContext, project: string): Promise<Response> {
   const file = form.get("file");
   const article = form.get("path");
   if (!(file instanceof File)) throw new BadRequest("Choose a file to attach");
-  if (typeof article !== "string" || !article.endsWith(".md"))
-    throw new BadRequest("Say which article the file belongs to");
+  const folder = typeof article === "string" ? attachmentFolder(article) : null;
+  if (!folder)
+    throw new BadRequest("Attach files to an article or a suggestion");
   const type = ATTACHMENT_TYPES[extensionOf(file.name)];
   if (!type) throw new BadRequest(ATTACH_TYPES_COPY);
   if (file.size > MAX_ATTACHMENT_BYTES) throw new BadRequest(TOO_BIG);
-  await readItem(project, article, deps.today());
-  const slug = article.split("/").pop()!.replace(/\.md$/i, "");
-  const path = `attachments/${slug}/${safeFileName(file.name)}`;
+  await readItem(project, article as string, deps.today());
+  const path = `${folder}/${safeFileName(file.name)}`;
   if (await knowledgeRepo.call("readAttachment", project, path))
     throw new MemoryRepoError(
       "A file with this name is already attached. Rename it and try again",
@@ -796,13 +931,15 @@ async function attach(ctx: RouteContext, project: string): Promise<Response> {
     project,
     [{ op: "attach", path, bytes: new Uint8Array(await file.arrayBuffer()) }],
     {
-      message: `Attach ${path.split("/").pop()} to ${slug}`,
+      message: `Attach ${path.split("/").pop()} to ${article}`,
       author: authorOf(ctx),
       expected: { [path]: null },
     },
   );
   return Response.json({
     path,
+    // The relative Markdown link from the article to the file.
+    link: `../${path}`,
     commit: commit ?? (await currentHead(project)),
   });
 }
@@ -928,6 +1065,8 @@ export async function handleKnowledgeRoutes(
         return await discard(ctx, project);
       case "GET needs-check":
         return await needsCheck(project);
+      case "GET needs-check/item":
+        return await needsCheckItem(project, url);
       case "GET history": {
         const filePath = url.searchParams.get("path") || undefined;
         const limit = intParam(

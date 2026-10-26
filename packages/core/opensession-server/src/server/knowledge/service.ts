@@ -487,6 +487,15 @@ export class KnowledgeService {
     return this.store.readAt(name, "main", path);
   }
 
+  /** The attachment paths in `folder` (`attachments/<slug>`) at HEAD. */
+  async listAttachments(project: string, folder: string): Promise<string[]> {
+    const name = this.repo(project);
+    const prefix = `${folder.replace(/\/+$/, "")}/`;
+    return (await this.store.listFiles(name)).filter(
+      (path) => path.startsWith(prefix) && attachmentPath(path),
+    );
+  }
+
   // ── Writes ──────────────────────────────────────────────────────────
 
   /**
