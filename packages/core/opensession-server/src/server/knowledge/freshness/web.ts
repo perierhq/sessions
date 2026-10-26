@@ -134,12 +134,14 @@ export interface RawResponse {
  * the name is resolved and again before it is dialled. Any refusal or
  * network failure comes back as `{ error }`; every status is an answer.
  * fetchPage reads pages through it; the crawler reads robots.txt,
- * sitemaps and a page's links through it.
+ * sitemaps and a page's links through it. `signal` aborts the request
+ * (it then comes back as `{ error }` like any failure).
  */
 export async function fetchRaw(
   url: string,
   hosts: string[],
   deps: WebFetchDeps = defaultDeps,
+  signal?: AbortSignal,
 ): Promise<RawResponse | { error: string }> {
   const start = withoutHash(url);
   if (!start || !allowed(start, hosts))
@@ -166,11 +168,7 @@ export async function fetchRaw(
     },
   };
   try {
-    const { response, finalUrl } = await fetchChecked(
-      start,
-      undefined,
-      guarded,
-    );
+    const { response, finalUrl } = await fetchChecked(start, signal, guarded);
     if (!allowed(finalUrl, hosts))
       return { error: `Redirected off the project's websites: ${finalUrl}` };
     return {

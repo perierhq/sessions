@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { RawResponse } from "../freshness/web";
+import { frontMatterOf } from "../freshness/revalidate";
 import { webItemPath } from "../layout";
 import { KnowledgeService } from "../service";
 import { __waitForJobForTest, listJobs } from "./jobs";
@@ -44,31 +45,46 @@ function sitemapIndex(urls: string[]): string {
     .join("")}</sitemapindex>`;
 }
 
-type Site = Record<string, { status?: number; type?: string; body: string }>;
+type Site = Record<
+  string,
+  { status?: number; type?: string; body: string; redirect?: string }
+>;
 
 /** A fake web: the site map answers, anything else is a 404. Records every
  *  request with the fake clock's time. */
 function fakeWeb(site: Site) {
   let now = 0;
   const requests: Array<{ url: string; at: number }> = [];
+  const signals: Array<AbortSignal | undefined> = [];
   const deps: Partial<CrawlDeps> = {
     now: () => now,
     sleep: async (ms) => {
       now += ms;
     },
-    fetchRaw: async (url): Promise<RawResponse | { error: string }> => {
+    fetchRaw: async (
+      url,
+      _hosts,
+      signal,
+    ): Promise<RawResponse | { error: string }> => {
       requests.push({ url, at: now });
+      signals.push(signal);
       now += 10;
-      const page = site[url];
+      const redirect = site[url]?.redirect;
+      const page = site[redirect ?? url];
       return {
-        url,
+        url: redirect ?? url,
         status: page ? (page.status ?? 200) : 404,
         contentType: page?.type ?? "text/html; charset=utf-8",
         body: new TextEncoder().encode(page?.body ?? "Not found"),
       };
     },
   };
-  return { deps, requests, urls: () => requests.map((r) => r.url) };
+  return {
+    deps,
+    requests,
+    signals,
+    urls: () => requests.map((r) => r.url),
+  };
 }
 
 async function collect(
@@ -294,6 +310,38 @@ describe("crawlHosts", () => {
     expect(web.urls()).not.toContain(`${SITE}/b`);
   });
 
+  test("hands the cancel signal to every request", async () => {
+    const ac = new AbortController();
+    const web = fakeWeb({
+      [`${SITE}/sitemap.xml`]: {
+        type: "application/xml",
+        body: urlset([`${SITE}/a`]),
+      },
+      [`${SITE}/a`]: { body: html("A") },
+    });
+    await collect([HOST], { ...web.deps, signal: ac.signal });
+    expect(web.signals.length).toBeGreaterThan(0);
+    for (const signal of web.signals) expect(signal).toBe(ac.signal);
+  });
+
+  test("stops at its deadline and says it was cut", async () => {
+    const urls = Array.from({ length: 10 }, (_, i) => `${SITE}/p${i + 1}`);
+    const site: Site = {
+      [`${SITE}/sitemap.xml`]: { type: "application/xml", body: urlset(urls) },
+    };
+    for (const url of urls) site[url] = { body: html(url) };
+    const web = fakeWeb(site);
+    let cut = 0;
+    const pages = await collect([HOST], {
+      ...web.deps,
+      deadlineMs: 4_500,
+      onTruncated: () => cut++,
+    });
+    expect(pages.length).toBeGreaterThan(0);
+    expect(pages.length).toBeLessThan(10);
+    expect(cut).toBe(1);
+  });
+
   test("a page that answers 404 is reported gone", async () => {
     const web = fakeWeb({
       [`${SITE}/sitemap.xml`]: {
@@ -490,6 +538,97 @@ describe("crawlWebsites", () => {
       truncated: true,
       created: { trusted: 1 },
     });
+  });
+
+  test("a known page that now redirects to another page retires its old path", async () => {
+    await crawlWebsites("acme", deps(pages));
+    const result = await crawlWebsites(
+      "acme",
+      deps({
+        [`${SITE}/sitemap.xml`]: {
+          type: "application/xml",
+          body: urlset([`${SITE}/export`]),
+        },
+        [`${SITE}/export`]: { body: html("Exporting") },
+        [`${SITE}/billing`]: { redirect: `${SITE}/plans`, body: "" },
+        [`${SITE}/plans`]: { body: html("Plans and billing") },
+      }),
+    );
+    expect(result).toMatchObject({ written: 1, retired: 1 });
+    expect(
+      (
+        await knowledgeRepo.call(
+          "read",
+          "acme",
+          webItemPath(`${SITE}/billing`),
+          TODAY,
+        )
+      )?.item.status,
+    ).toBe("retired");
+    expect(
+      (
+        await knowledgeRepo.call(
+          "read",
+          "acme",
+          webItemPath(`${SITE}/plans`),
+          TODAY,
+        )
+      )?.item.status,
+    ).toBe("active");
+  });
+
+  test("a mirrored page that now holds a credential flips to needs-check, text kept", async () => {
+    await crawlWebsites("acme", deps(pages));
+    const path = webItemPath(`${SITE}/billing`);
+    const before = (await knowledgeRepo.call("read", "acme", path, TODAY))!;
+    const result = await crawlWebsites(
+      "acme",
+      deps({
+        ...pages,
+        [`${SITE}/billing`]: {
+          body: html("Billing", "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"),
+        },
+      }),
+    );
+    expect(result).toMatchObject({ written: 0, skipped: 1 });
+    const after = (await knowledgeRepo.call("read", "acme", path, TODAY))!;
+    expect(after.item.status).toBe("needs-check");
+    expect(after.item.check?.reason).toContain("credential");
+    expect(after.body).toBe(before.body);
+  });
+
+  test("a mirror a person edited last is never overwritten", async () => {
+    await crawlWebsites("acme", deps(pages));
+    const path = webItemPath(`${SITE}/export`);
+    const current = (await knowledgeRepo.call("read", "acme", path, TODAY))!;
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path,
+          fm: frontMatterOf(current.item),
+          body: `${current.body}\n\nAda's note.`,
+        },
+      ],
+      {
+        message: "Ada's edit",
+        author: { name: "Ada" },
+        expected: { [path]: current.item.blob },
+      },
+    );
+    const result = await crawlWebsites(
+      "acme",
+      deps({
+        ...pages,
+        [`${SITE}/export`]: { body: html("Exporting", "Now also as JSON.") },
+      }),
+    );
+    expect(result).toMatchObject({ written: 0, skipped: 1 });
+    const after = (await knowledgeRepo.call("read", "acme", path, TODAY))!;
+    expect(after.body).toContain("Ada's note.");
+    expect(after.body).not.toContain("JSON");
   });
 
   test("refuses to start without an exact support website", async () => {

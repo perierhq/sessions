@@ -11,7 +11,10 @@
  * from `/` following same-host links to depth 3. Pages the project already
  * mirrors are fetched again too, so a page dropped from the sitemap that
  * now answers 404 or 410 is noticed. At most `maxPages` pages per run
- * (default 200), one request per second per host.
+ * (default 200), one request per second per host, for at most
+ * JOB_DEADLINE_MS (then the run writes what it read and is `truncated`).
+ * A known page that now redirects to another page that reads retires its
+ * old path.
  *
  * A page is mirrored as web.ts reads it (fetchPage's text and hash, so
  * B2's re-validation hashes it the same way): `trust: trusted`,
@@ -19,7 +22,10 @@
  * today. An unchanged hash is left alone (a rerun makes no commit); a page
  * gone (404, 410) retires its mirror, text kept. Text is stored as read,
  * never redacted: a page that looks like it holds a credential, or is too
- * large, is skipped and counted. One commit per run, authored by Pat.
+ * large, is skipped and counted, and its existing mirror flips to
+ * needs-check (text kept). A mirror whose last commit isn't Pat's (a
+ * person edited or retired it) is never overwritten: skipped and counted.
+ * One commit per run, authored by Pat.
  *
  * Reuses web.ts (fetchRaw, pageOf, crawlable), jobs.ts, B2's frontMatterOf
  * and PAT author and trailer, the repo import's write-and-retry shape.
@@ -48,7 +54,8 @@ import {
 import { knowledgeRepoName, webItemPath } from "../layout";
 import type { KnowledgeChange } from "../service";
 import { MAX_ARTICLE_BYTES } from "../validate";
-import { startJob } from "./jobs";
+import { JOB_DEADLINE_MS, startJob } from "./jobs";
+import { lastWrittenByPat, needsCheckChange } from "./mirrors";
 
 export const DEFAULT_MAX_PAGES = 200;
 export const MAX_PAGES_LIMIT = 1000;
@@ -80,8 +87,11 @@ export interface CrawlDeps {
   fetchRaw(
     url: string,
     hosts: string[],
+    signal?: AbortSignal,
   ): Promise<RawResponse | { error: string }>;
   now(): number;
+  /** How long a crawl may take (by `now`); then it stops, truncated. */
+  deadlineMs: number;
   sleep(ms: number): Promise<void>;
   /** Pages fetched per run, across hosts. */
   maxPages: number;
@@ -90,8 +100,11 @@ export interface CrawlDeps {
   known: string[];
   /** A page that is no page: `gone` for 404 and 410. */
   onMiss?(url: string, error: string, gone: boolean): void;
-  /** Called once when maxPages (or the sitemap cap) left pages out. */
+  /** Called once when maxPages, the deadline or a sitemap cap left pages
+   *  out. */
   onTruncated?(): void;
+  /** `from` answered with a redirect to `to`, another URL. */
+  onMoved?(from: string, to: string): void;
   /** Aborted: the crawl throws before its next request. */
   signal?: AbortSignal;
 }
@@ -115,19 +128,24 @@ export interface WebsiteResult {
   written: number;
   /** Mirrors retired because their page is gone. */
   retired: number;
-  /** Pages left out: unreadable, a credential, too large. */
+  /** Pages left out: unreadable, a credential, too large, or a mirror a
+   *  person edited last. */
   skipped: number;
 }
 
 function bindCrawl(over: Partial<CrawlDeps>): CrawlDeps {
   return {
-    fetchRaw: over.fetchRaw ?? ((url, hosts) => fetchRaw(url, hosts)),
+    fetchRaw:
+      over.fetchRaw ??
+      ((url, hosts, signal) => fetchRaw(url, hosts, undefined, signal)),
     now: over.now ?? (() => Date.now()),
+    deadlineMs: over.deadlineMs ?? JOB_DEADLINE_MS,
     sleep: over.sleep ?? ((ms) => Bun.sleep(ms)),
     maxPages: over.maxPages ?? DEFAULT_MAX_PAGES,
     known: over.known ?? [],
     onMiss: over.onMiss,
     onTruncated: over.onTruncated,
+    onMoved: over.onMoved,
     signal: over.signal,
   };
 }
@@ -359,25 +377,40 @@ export async function* crawlHosts(
     if (!cut) d.onTruncated?.();
     cut = true;
   };
+  const end = d.now() + d.deadlineMs;
+  /** Past the deadline: no more requests, the run is cut. */
+  const late = () => {
+    if (d.now() < end) return false;
+    budget = 0;
+    truncate();
+    return true;
+  };
   const requested = new Set<string>();
   for (const host of exactHosts(hosts)) {
-    if (budget <= 0) {
+    if (budget <= 0 || late()) {
       truncate();
       return;
     }
     const only = [host];
     const root = `https://${host}/`;
     let last = Number.NEGATIVE_INFINITY;
-    const get = async (url: string) => {
+    const get = async (
+      url: string,
+    ): Promise<RawResponse | { error: string }> => {
       d.signal?.throwIfAborted();
       const wait = last + HOST_INTERVAL_MS - d.now();
       if (wait > 0) await d.sleep(wait);
       d.signal?.throwIfAborted();
+      if (late()) return { error: "The crawl ran out of time" };
       last = d.now();
-      return d.fetchRaw(url, only);
+      const raw = await d.fetchRaw(url, only, d.signal);
+      // An aborted request is the cancel, not a page that failed.
+      d.signal?.throwIfAborted();
+      return raw;
     };
 
     const robots = await get(`${root}robots.txt`);
+    if (budget <= 0) return;
     if ("error" in robots || robots.status >= 500 || robots.status < 200) {
       d.onMiss?.(
         `${root}robots.txt`,
@@ -441,13 +474,15 @@ export async function* crawlHosts(
         return;
       }
       requested.add(url);
-      budget--;
       const raw = await get(url);
+      if (budget <= 0) return; // ran out of time while waiting
+      budget--;
       if ("error" in raw) {
         d.onMiss?.(url, raw.error, false);
         return;
       }
       const final = withoutHash(raw.url) ?? url;
+      if (final !== url) d.onMoved?.(url, final);
       if (final !== url) {
         if (requested.has(final) || !allowed(final)) return;
         requested.add(final);
@@ -524,10 +559,13 @@ function titleOf(page: CrawledPage): string {
   return (page.title || `${url.host}${url.pathname}`).slice(0, 200);
 }
 
-/** Text that can be stored as read: not too large, no credential. */
-function storable(page: CrawledPage): boolean {
-  if (new TextEncoder().encode(page.text).length > BODY_BYTES) return false;
-  return findSecrets(`${titleOf(page)}\n${page.text}`).length === 0;
+/** Why a page's text can't be stored as read; null when it can. */
+function unstorable(page: CrawledPage): string | null {
+  if (new TextEncoder().encode(page.text).length > BODY_BYTES)
+    return "The page is now too large to mirror";
+  if (findSecrets(`${titleOf(page)}\n${page.text}`).length)
+    return "The page now looks like it holds a credential";
+  return null;
 }
 
 /**
@@ -561,6 +599,10 @@ export async function crawlWebsites(
 
   const pages = new Map<string, CrawledPage>();
   const gone = new Set<string>();
+  /** Mirrored pages that read but can't be stored, and why. */
+  const unreadable = new Map<string, string>();
+  /** Item paths whose URL redirected to another item path. */
+  const moved = new Map<string, string>();
   let reported = 0;
   const report = async () => {
     if (result.pages - reported < PROGRESS_EVERY) return;
@@ -573,6 +615,12 @@ export async function crawlWebsites(
     onTruncated: () => {
       result.truncated = true;
       deps.crawl.onTruncated?.();
+    },
+    onMoved: (from, to) => {
+      deps.crawl.onMoved?.(from, to);
+      const a = pathOf(from);
+      const b = pathOf(to);
+      if (a && b && a !== b) moved.set(a, b);
     },
     onMiss: (url, error, isGone) => {
       deps.crawl.onMiss?.(url, error, isGone);
@@ -587,18 +635,26 @@ export async function crawlWebsites(
     result.pages++;
     await report();
     const path = pathOf(page.url);
-    if (!path || pages.has(path) || !storable(page)) {
+    const why = unstorable(page);
+    if (!path || pages.has(path) || why) {
+      if (path && why && !pages.has(path)) unreadable.set(path, why);
       result.skipped++;
       continue;
     }
     pages.set(path, page);
   }
+  // Redirected to another page that read: the old path is gone.
+  for (const [from, to] of moved)
+    if (pages.has(to) && !pages.has(from)) gone.add(from);
 
+  const skippedBefore = result.skipped;
   for (let attempt = 1; ; attempt++) {
     const items = attempt === 1 ? before : await webItems(project, today);
     const changes: KnowledgeChange[] = [];
     const expected: Record<string, string | null> = {};
     let retired = 0;
+    let flipped = 0;
+    let personal = 0;
     for (const [path, page] of pages) {
       // The "all" list leaves retired items out: a page that comes back
       // is read by its path, so the write expects its blob.
@@ -613,6 +669,11 @@ export async function crawlWebsites(
         current.sources.includes(source)
       )
         continue;
+      // A person's edit or retire wins over the page.
+      if (current && !(await lastWrittenByPat(project, path))) {
+        personal++;
+        continue;
+      }
       const fm: KnowledgeFrontMatter = {
         title: titleOf(page),
         kind: current?.kind ?? "answer",
@@ -637,6 +698,10 @@ export async function crawlWebsites(
       if (!current || current.status === "retired" || pages.has(path)) continue;
       const read = await knowledgeRepo.call("read", project, path, today);
       if (!read) continue;
+      if (!(await lastWrittenByPat(project, path))) {
+        personal++;
+        continue;
+      }
       const { check: _check, ...fm } = frontMatterOf(read.item);
       changes.push({
         op: "put",
@@ -647,15 +712,28 @@ export async function crawlWebsites(
       expected[path] = read.item.blob;
       retired++;
     }
-    result.written = changes.length - retired;
+    for (const [path, reason] of unreadable) {
+      if (expected[path] !== undefined || !items.has(path)) continue;
+      const flip = await needsCheckChange(project, path, reason, today);
+      if (!flip) continue;
+      changes.push(flip.change);
+      expected[path] = flip.blob;
+      flipped++;
+    }
+    result.written = changes.length - retired - flipped;
     result.retired = retired;
+    result.skipped = skippedBefore + personal;
     if (!changes.length) return result;
     deps.crawl.signal?.throwIfAborted();
     try {
       await knowledgeRepo.call("write", project, changes, {
-        message: retired
-          ? `Import website: ${result.written} pages (${retired} retired)`
-          : `Import website: ${result.written} pages`,
+        message:
+          retired || flipped
+            ? `Import website: ${result.written} pages (${[
+                ...(retired ? [`${retired} retired`] : []),
+                ...(flipped ? [`${flipped} need a check`] : []),
+              ].join(", ")})`
+            : `Import website: ${result.written} pages`,
         author: PAT_AUTHOR,
         trailers: [PAT_TRAILER],
         expected,
