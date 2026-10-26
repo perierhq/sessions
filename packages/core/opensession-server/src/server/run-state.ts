@@ -106,18 +106,14 @@ export async function decideRunStateTransition(
       });
       return { accepted: false, from, to: from, reason: "invalid_transition" };
     }
+    // Not audited: the server records the authoritative transition for the
+    // same run, and auditing this private copy too logged every run twice
+    // (a failure as one `runner_terminal` line from the host and one from
+    // the server).
     detachedHostStates.set(sessionId, {
       state: next,
       since: new Date().toISOString(),
       lastEvent: event,
-    });
-    emit({
-      msg: "run_state_transition",
-      session_id: sessionId,
-      from,
-      to: next,
-      event,
-      ...detail,
     });
     return { accepted: true, from, to: next };
   }
