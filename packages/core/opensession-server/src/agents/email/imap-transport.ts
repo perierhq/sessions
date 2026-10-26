@@ -48,6 +48,9 @@ export interface ImapCursor {
   /** When the last offered message arrived (or when the cursor was set),
    *  ISO; where a UIDVALIDITY change looks back from. */
   lastReceivedAt?: string;
+  /** When we last took a message in, ISO: the inbox health's last message,
+   *  kept across restarts. */
+  lastMessageAt?: string;
 }
 
 export interface ImapTransportOptions {
@@ -265,7 +268,17 @@ export class ImapTransport {
     if (!this.stopped) return;
     this.stopped = false;
     this.attempt = 0;
+    // The last message as of the stored cursor, before the server answers.
+    const stored = await this.opts.loadCursor().catch(() => null);
+    this.rememberLastMessage(stored);
     await this.connect();
+  }
+
+  /** Takes the stored last-message time when none is known yet. */
+  private rememberLastMessage(cursor: ImapCursor | null): void {
+    if (this.current.lastMessageAt || !cursor?.lastMessageAt) return;
+    if (Number.isNaN(Date.parse(cursor.lastMessageAt))) return;
+    this.current = { ...this.current, lastMessageAt: cursor.lastMessageAt };
   }
 
   /** Tries again now after a pause with no retry planned (a refused login
@@ -447,6 +460,7 @@ export class ImapTransport {
           : null;
       const stored = await this.opts.loadCursor();
       if (gen !== this.generation) return;
+      this.rememberLastMessage(stored);
       let cursor = stored;
       if (!cursor || cursor.uidValidity !== uidValidity) {
         const lastUid =
@@ -458,7 +472,13 @@ export class ImapTransport {
           );
         }
         if (gen !== this.generation) return;
-        cursor = { uidValidity, lastUid, lastReceivedAt: this.iso() };
+        const lastMessageAt = this.current.lastMessageAt;
+        cursor = {
+          uidValidity,
+          lastUid,
+          lastReceivedAt: this.iso(),
+          ...(lastMessageAt ? { lastMessageAt } : {}),
+        };
         await this.persist(cursor);
         if (gen !== this.generation) return;
         log(this.inboxId, "imap cursor reset", { uidValidity, lastUid });
@@ -608,19 +628,23 @@ export class ImapTransport {
         if (gen !== this.generation) return;
         if (message) await this.deliver(message, item.uid);
         if (gen !== this.generation) return;
+        const lastMessageAt = message
+          ? this.iso()
+          : (this.current.lastMessageAt ?? undefined);
         if (advance) {
           const next: ImapCursor = {
             uidValidity,
             lastUid: item.uid,
             lastReceivedAt:
               message?.receivedAt ?? this.cursor?.lastReceivedAt ?? this.iso(),
+            ...(lastMessageAt ? { lastMessageAt } : {}),
           };
           await this.persist(next);
           if (gen !== this.generation) return;
           this.cursor = next;
         }
         if (message) {
-          this.current = { ...this.current, lastMessageAt: this.iso() };
+          this.current = { ...this.current, lastMessageAt: lastMessageAt! };
           this.opts.onHealth(this.health());
         }
       }

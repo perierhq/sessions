@@ -234,6 +234,25 @@ describe("ImapTransport", () => {
     expect(h.transport.health().lastMessageAt).not.toBeNull();
   });
 
+  test("the last message time is kept across a restart", async () => {
+    const f = await fixture();
+    for (const n of [1, 2]) f.deliver(mail(n));
+    const h = harness(f);
+    await h.transport.start();
+    f.deliver(mail(3));
+    await waitFor(() => h.cursor.value?.lastUid === 3, 2000);
+    const at = h.transport.health().lastMessageAt;
+    expect(at).not.toBeNull();
+    expect(h.cursor.value?.lastMessageAt).toBe(at!);
+    await h.transport.stop();
+    // A new process: the same stored cursor, nothing new in the inbox.
+    const again = harness(f, { initialCursor: h.cursor.value });
+    await again.transport.start();
+    expect(again.received).toEqual([]);
+    expect(again.transport.health().lastMessageAt).toBe(at);
+    expect(again.cursor.value?.lastMessageAt).toBe(at!);
+  });
+
   test("a restart catches up from the stored cursor, in order", async () => {
     const f = await fixture();
     for (const n of [1, 2, 3]) f.deliver(mail(n));
