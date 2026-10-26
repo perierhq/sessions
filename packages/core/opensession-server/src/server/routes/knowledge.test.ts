@@ -846,6 +846,18 @@ describe("imports", () => {
     expect(asked).toEqual(["acme:kj_running", "acme:kj_done"]);
   });
 
+  test("a website import needs an exact support website", async () => {
+    __setKnowledgeRouteDepsForTest({ today: () => TODAY });
+    const response = await call("POST", "/api/knowledge/acme/import/website", {
+      body: {},
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Add the project's support website under Support websites first.",
+    );
+    expect(await service.hasRepo("acme")).toBe(false);
+  });
+
   test("a repository import runs through the default starter", async () => {
     __setKnowledgeRouteDepsForTest({
       today: () => TODAY,

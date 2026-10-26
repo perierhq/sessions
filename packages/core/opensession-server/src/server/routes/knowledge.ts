@@ -173,6 +173,10 @@ async function startImportOf(
         { repoChanges: deps.repoChanges, today: deps.today },
       );
     }
+    case "website": {
+      const { startWebsiteCrawl } = await import("../knowledge/ingest/website");
+      return startWebsiteCrawl({ project, by }, { today: deps.today });
+    }
     default:
       throw new MemoryRepoError("This import isn't available yet.", 501);
   }
