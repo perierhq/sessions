@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { isValidRepoName } from "../memory-repo/layout";
 import {
   folderFor,
   freeSlugPath,
+  isAttachmentPath,
   isItemPath,
   isKnowledgeRepoName,
   issueItemPath,
@@ -93,7 +95,7 @@ describe("knowledge layout", () => {
 
   test("web item paths drop the query", () => {
     expect(webItemPath("https://help.acme.example.test/a/b?x=1")).toBe(
-      "sources/web/help.acme.example.test/a-b.md",
+      `sources/web/help.acme.example.test/a-b-${hash8("a/b")}.md`,
     );
     expect(webItemPath("https://help.acme.example.test/")).toBe(
       "sources/web/help.acme.example.test/index.md",
@@ -123,4 +125,76 @@ describe("knowledge layout", () => {
     expect(isItemPath(releaseItemPath("release/1.0"))).toBe(true);
     expect(issueItemPath(42)).toBe("sources/issues/42.md");
   });
+
+  test("web slugs never collide and fold accents", () => {
+    const paths = [
+      "https://h.example.test/a-b",
+      "https://h.example.test/a/b",
+      "https://h.example.test/a_b",
+      "https://h.example.test/A/B",
+      "https://h.example.test/index",
+      "https://h.example.test/",
+    ].map(webItemPath);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(webItemPath("https://h.example.test/caf%C3%A9")).toBe(
+      `sources/web/h.example.test/cafe-${hash8("café")}.md`,
+    );
+    const nonLatin = webItemPath("https://h.example.test/%E6%97%A5%E6%9C%AC");
+    expect(nonLatin).toBe(
+      `sources/web/h.example.test/page-${hash8("日本")}.md`,
+    );
+    expect(nonLatin).not.toBe(
+      webItemPath("https://h.example.test/%E4%B8%AD%E6%96%87"),
+    );
+    for (const path of paths) expect(isItemPath(path)).toBe(true);
+  });
+
+  test("item segments are plain ASCII names without a leading dot", () => {
+    expect(isItemPath("articles/My Guide.md")).toBe(false);
+    expect(isItemPath("articles/.hidden.md")).toBe(false);
+    expect(isItemPath("articles/caf\u00e9.md")).toBe(false);
+    expect(isItemPath("articles/cafe\u0301.md")).toBe(false);
+    expect(isItemPath(`articles/${"a".repeat(198)}.md`)).toBe(false);
+    expect(isItemPath(`articles/${"a".repeat(197)}.md`)).toBe(true);
+    expect(isItemPath("sources/repo/.github/x.md")).toBe(false);
+  });
+
+  test("repo item paths make every segment safe", () => {
+    const spaced = repoItemPath("docs/My Guide.md");
+    expect(spaced).toBe(`sources/repo/docs/My-Guide-${hash8("My Guide")}.md`);
+    expect(isItemPath(spaced)).toBe(true);
+    const dotted = repoItemPath(".github/CONTRIBUTING.md");
+    expect(dotted).toBe(
+      `sources/repo/github-${hash8(".github")}/CONTRIBUTING.md`,
+    );
+    expect(isItemPath(dotted)).toBe(true);
+    expect(isItemPath(repoItemPath("docs/\u00e9t\u00e9.rst"))).toBe(true);
+  });
+
+  test("mail item paths are lower case", () => {
+    expect(
+      mailItemPath("<ABC.123@Mail.Example.test>", "2026-10-19T08:12:00Z"),
+    ).toBe("sources/mail/2026-10/abc.123@mail.example.test.md");
+  });
+
+  test("attachments are exactly attachments/<slug>/<name> with a known type", () => {
+    expect(isAttachmentPath("attachments/export/guide.pdf")).toBe(true);
+    expect(isAttachmentPath("attachments/export/Shot.PNG")).toBe(true);
+    expect(isAttachmentPath("attachments/export/a/guide.pdf")).toBe(false);
+    expect(isAttachmentPath("attachments/export/guide.html")).toBe(false);
+    expect(isAttachmentPath("attachments/export/guide.svg")).toBe(false);
+    expect(isAttachmentPath("attachments/export/.guide.pdf")).toBe(false);
+    expect(isAttachmentPath("attachments/export/my guide.pdf")).toBe(false);
+    expect(isAttachmentPath("attachments/export/guide")).toBe(false);
+  });
+
+  test("free slugs fold accents", () => {
+    expect(freeSlugPath(new Set(), "articles", "Café crème")).toBe(
+      "articles/cafe-creme.md",
+    );
+  });
 });
+
+function hash8(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 8);
+}

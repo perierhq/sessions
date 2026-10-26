@@ -198,7 +198,7 @@ describe("knowledge article format", () => {
   test("origin must match the folder", () => {
     const parsed = parseArticle(
       "sources/mail/2026-10/abc.md",
-      withFrontMatter(minimalLines()),
+      withFrontMatter([...minimalLines(), "answeredAt: 2026-10-19T08:12:00Z"]),
     );
     expect(parsed.problems.map((p) => p.message)).toEqual([
       "`origin: article` doesn't match the folder; items under sources/mail/ use `origin: mail`.",
@@ -223,5 +223,232 @@ describe("knowledge article format", () => {
   test("Windows line endings parse", () => {
     const text = renderArticle(MINIMAL, "Body").replace(/\n/g, "\r\n");
     expect(parseArticle("articles/reset.md", text).fm).toEqual(MINIMAL);
+  });
+
+  test("keys with regex characters don't crash or hang the line lookup", () => {
+    const evil = "(a+)+c";
+    const started = performance.now();
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines(),
+        `"${evil}${"a".repeat(30)}": 1`,
+        '"[": 2',
+      ]),
+    );
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(parsed.fm).toBeNull();
+    expect(parsed.problems.map((p) => p.message)).toContain(
+      "Keys can't be quoted; write `key: value`.",
+    );
+  });
+
+  test("unknown keys that look like regex are reported on their line", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([...minimalLines(), "a_b: 1"]),
+    );
+    expect(parsed.problems).toEqual([
+      { line: 8, message: 'Unknown key "a_b".' },
+    ]);
+  });
+
+  test("duplicate top-level keys are refused", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([...minimalLines(), "trust: reference"]),
+    );
+    expect(parsed.fm).toBeNull();
+    expect(parsed.problems).toEqual([
+      { line: 8, message: "`trust` appears more than once." },
+    ]);
+  });
+
+  test("merge keys, anchors, aliases and tags are refused before parsing", () => {
+    for (const line of [
+      "<<: {trust: trusted}",
+      "check: {<<: {reason: x}, since: 2026-10-26}",
+      "topics: &t [a]",
+      "sources: *t",
+      "topics: [*t]",
+      "suggestedBy: !!str Pat",
+      "approvedBy: !custom Ada",
+    ]) {
+      const parsed = parseArticle(
+        "articles/x.md",
+        withFrontMatter([...minimalLines(), line]),
+      );
+      expect(parsed.fm).toBeNull();
+      expect(parsed.problems).toHaveLength(1);
+      expect(parsed.problems[0].line).toBe(8);
+    }
+  });
+
+  test("ampersands and stars inside text are fine", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines({ title: '"Q&A: *all* !important"' }),
+        "topics: [q&a, a*b]",
+      ]),
+    );
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.fm?.title).toBe("Q&A: *all* !important");
+  });
+
+  test("non-text values for enum, date and check fields are refused", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter(
+        minimalLines({
+          kind: "[answer]",
+          validAsOf: "20261020",
+          status: "needs-check",
+        }).concat(["check: {reason: 5, since: 2026-10-26, source: [x]}"]),
+      ),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual([
+      "`kind` must be text.",
+      "`validAsOf` must be text.",
+      "`check.reason` must be text.",
+      "`check.source` must be text.",
+    ]);
+  });
+
+  test("[trusted] is not a trust value", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter(minimalLines({ trust: "[trusted]" })),
+    );
+    expect(parsed.fm).toBeNull();
+    expect(parsed.problems.map((p) => p.message)).toEqual([
+      "`trust` must be text.",
+    ]);
+  });
+
+  test("suggestions, issues and files are reference until approved", () => {
+    for (const [path, origin, folder] of [
+      ["suggestions/x.md", "suggestion", "suggestions"],
+      ["sources/issues/42.md", "issue", "sources/issues"],
+      ["sources/files/handbook.md", "file", "sources/files"],
+    ]) {
+      const parsed = parseArticle(
+        path,
+        withFrontMatter(minimalLines({ origin })),
+      );
+      expect(parsed.problems).toEqual([
+        {
+          line: 4,
+          message: `Items under ${folder}/ are reference until approved.`,
+        },
+      ]);
+      expect(
+        parseArticle(
+          path,
+          withFrontMatter(minimalLines({ origin, trust: "reference" })),
+        ).problems,
+      ).toEqual([]);
+    }
+  });
+
+  test("text fields refuse line breaks and control characters", () => {
+    const cases: Array<[string, string, string]> = [
+      ["title", '"Line\\nTwo"', "`title`"],
+      ["title", '"Tab\\there"', "`title`"],
+      ["title", '"Sep\\u2028x"', "`title`"],
+      ["topics", '["a\\u0007"]', "`topics`"],
+    ];
+    for (const [key, value, name] of cases) {
+      const parsed = parseArticle(
+        "articles/x.md",
+        withFrontMatter(minimalLines({ [key]: value })),
+      );
+      expect(parsed.fm).toBeNull();
+      expect(parsed.problems.map((p) => p.message)).toEqual([
+        `${name} can't hold line breaks or control characters.`,
+      ]);
+    }
+    const reason = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines({ status: "needs-check" }),
+        'check: {reason: "a\\rb", since: 2026-10-26}',
+      ]),
+    );
+    expect(reason.problems.map((p) => p.message)).toEqual([
+      "`check.reason` can't hold line breaks or control characters.",
+    ]);
+  });
+
+  test("check.conflictWith must be an item path and check.source followable", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines({ status: "needs-check" }),
+        "check: {reason: old, since: 2026-10-26, source: repo:../x, conflictWith: notes.md}",
+      ]),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual([
+      'Unknown source "repo:../x". Use mail:, repo:, url:, issue:, release:, file: followed by the reference.',
+      "`check.conflictWith` must be an item path, like articles/<slug>.md.",
+    ]);
+  });
+
+  test("repo and url sources are checked like dependencies", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([
+        ...minimalLines(),
+        `sources: ["repo:docs/a.md@${SHA}", "repo:../a.md", "url:javascript:alert(1)", "url:https://u:p@example.test/", "url:https://example.test/a#sha256=${"ab".repeat(32)}", "repo:docs/a.md@zz", "issue:x"]`,
+      ]),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual(
+      [
+        "repo:../a.md",
+        "url:javascript:alert(1)",
+        "url:https://u:p@example.test/",
+        "repo:docs/a.md@zz",
+        "issue:x",
+      ].map(
+        (s) =>
+          `Unknown source "${s}". Use mail:, repo:, url:, issue:, release:, file: followed by the reference.`,
+      ),
+    );
+  });
+
+  test("answeredAt must be a full timestamp and mail items need one", () => {
+    const path = "sources/mail/2026-10/abc@x.md";
+    const mail = (answeredAt: string | null) =>
+      parseArticle(
+        path,
+        withFrontMatter([
+          ...minimalLines({ origin: "mail" }),
+          ...(answeredAt === null ? [] : [`answeredAt: ${answeredAt}`]),
+        ]),
+      ).problems.map((p) => p.message);
+    expect(mail(null)).toEqual([
+      "Mail items need `answeredAt`. Use YYYY-MM-DDTHH:MM:SSZ.",
+    ]);
+    expect(mail("2026-10-19T08:12:00Z")).toEqual([]);
+    expect(mail('"2026-10-19T08:12:00.123+02:00"')).toEqual([]);
+    for (const bad of [
+      "2026-10-19T08:12:00",
+      "2026-02-30T08:12:00Z",
+      "2026-10-19T25:12:00Z",
+      "2026-10-19Tnope",
+    ])
+      expect(mail(bad)).toEqual([
+        `\`answeredAt: ${bad}\` is not a timestamp. Use YYYY-MM-DDTHH:MM:SSZ.`,
+      ]);
+  });
+
+  test("validAsOfCommit names both sha lengths", () => {
+    const parsed = parseArticle(
+      "articles/x.md",
+      withFrontMatter([...minimalLines(), "validAsOfCommit: abc1234"]),
+    );
+    expect(parsed.problems.map((p) => p.message)).toEqual([
+      "`validAsOfCommit: abc1234` is not a full commit sha (40 or 64 lowercase hex characters).",
+    ]);
   });
 });
