@@ -494,5 +494,6 @@ export function validSource(source: DraftSource, sites: ProjectSites): boolean {
     const record = recordSource(source.ref);
     return record !== null && sites.connectors.includes(record.connector);
   }
+  if (source.kind === "knowledge") return false; // D2 replaces this
   return false;
 }

@@ -175,6 +175,7 @@ async function verified(
   checkout: () => Promise<string | null>,
 ): Promise<boolean> {
   if (!validSource(source, input.sites)) return false;
+  if (source.kind === "knowledge") return false; // D2 replaces this
   if (source.kind === "repo") {
     const path = repoSourcePath(source.ref);
     const dir = await checkout();

@@ -80,6 +80,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   "support-pending",
   // IMAP UID cursor per inbox and folder (agents/email/imap-transport.ts).
   "support-cursors",
+  // Knowledge import jobs and their progress (knowledge/ingest/jobs.ts).
+  "knowledge-jobs",
+  // Knowledge capture queue, `capture:<messageId>` (knowledge/ingest/capture.ts).
+  "knowledge-pending",
 ] as const;
 
 export type ApplicationCatalogNamespace =

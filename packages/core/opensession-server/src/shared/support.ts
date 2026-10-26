@@ -5,6 +5,7 @@
 // Types, constant lists and small pure helpers only.
 
 import { DEFAULT_VETO_MS } from "./incident-response";
+import type { KnowledgeVerdict } from "./knowledge";
 
 export type SupportChannelKind = "email" | "plain" | (string & {});
 
@@ -185,8 +186,16 @@ export type DraftState = (typeof DRAFT_STATES)[number];
  *  - `repo`: a file path in the project's repository (`docs/setup.md`)
  *  - `url`: an http(s) URL on the project's Support websites
  *  - `record`: a Support connector record id (`stripe:cus_123`)
+ *  - `knowledge`: a knowledge item at the knowledge repository commit the
+ *    agent read (`articles/export.md@3f2a1b0`, shared/knowledge.ts
+ *    parseKnowledgeCitation); re-checked at the moment of sending
  *  A draft without a valid source never sends on its own. */
-export const DRAFT_SOURCE_KINDS = ["repo", "url", "record"] as const;
+export const DRAFT_SOURCE_KINDS = [
+  "repo",
+  "url",
+  "record",
+  "knowledge",
+] as const;
 export type DraftSourceKind = (typeof DRAFT_SOURCE_KINDS)[number];
 export interface DraftSource {
   kind: DraftSourceKind;
@@ -206,6 +215,9 @@ export interface DraftCheck {
   /** The small model says the draft promises something about policy, a
    *  price or a deadline. */
   promises: boolean;
+  /** The send-time knowledge check (server/knowledge/backing.ts); absent
+   *  when the draft cites no knowledge and the project has none. */
+  knowledge?: KnowledgeVerdict;
   at: string;
 }
 

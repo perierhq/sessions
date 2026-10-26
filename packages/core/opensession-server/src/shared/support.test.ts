@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_FOLDERS,
+  DRAFT_SOURCE_KINDS,
   MAIL_TLS_MODES,
   defaultMailPort,
   type MailServerConfig,
@@ -16,6 +17,12 @@ import {
   SUPPORT_CHANNELS,
   supportItemId,
 } from "./support";
+
+describe("DRAFT_SOURCE_KINDS", () => {
+  test("includes knowledge citations", () => {
+    expect(DRAFT_SOURCE_KINDS).toContain("knowledge");
+  });
+});
 
 describe("normalizeMessageId", () => {
   test("strips brackets and lowercases only the domain part", () => {

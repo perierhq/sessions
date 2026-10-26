@@ -115,6 +115,9 @@ export function draftSources(draft: SupportDraft): SourceRow[] {
   return (draft.sources ?? []).flatMap((source): SourceRow[] => {
     const ref = source.ref.trim();
     if (!ref) return [];
+    // D2 replaces this: a knowledge citation reads as its ref for now.
+    if (source.kind === "knowledge")
+      return [{ kind: source.kind, label: ref, href: null }];
     if (source.kind !== "url")
       return [{ kind: source.kind, label: ref, href: null }];
     let url: URL;
