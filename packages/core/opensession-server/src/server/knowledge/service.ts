@@ -31,6 +31,7 @@ import {
   type HistoryCommit,
 } from "../memory-repo/git-store";
 import { findSecrets } from "../memory-repo/secrets";
+import { KnowledgeConflictError } from "./errors";
 import { parseArticle, renderArticle } from "./format";
 import { excerptOf, KnowledgeIndex } from "./index-store";
 import {
@@ -76,13 +77,7 @@ export interface KnowledgeWriteOptions {
   expected?: Record<string, string | null>;
 }
 
-/** Someone else changed a file between the caller's read and this write. */
-export class KnowledgeConflictError extends MemoryRepoError {
-  constructor(message = "Someone changed this article. Reload and try again.") {
-    super(message, 409);
-    this.name = "KnowledgeConflictError";
-  }
-}
+export { KnowledgeConflictError };
 
 const STARTER = `# Knowledge
 
@@ -385,6 +380,17 @@ export class KnowledgeService {
     const item = this.index.get(project, path, today);
     if (!item) return null;
     return { item, body: this.index.body(project, path) ?? "" };
+  }
+
+  /** KnowledgeIndex.get after a freshness check: the item without its
+   *  body. */
+  async get(
+    project: string,
+    path: string,
+    today?: string,
+  ): Promise<KnowledgeItem | null> {
+    await this.fresh(project);
+    return this.index.get(project, path, today);
   }
 
   /** KnowledgeIndex.search after a freshness check. */

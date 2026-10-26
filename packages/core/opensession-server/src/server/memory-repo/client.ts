@@ -18,11 +18,10 @@ import { memoryDir } from "../../agents/slack/memory";
 import { configuredServer } from "../config";
 import { SLACK_ID_TO_NAME } from "../shared/user-mappings";
 import type { MemoryStore } from "../memory-v2/store";
-import { dispatchKnowledge } from "../knowledge/dispatch";
-import {
-  KnowledgeConflictError,
-  type KnowledgeService,
-} from "../knowledge/service";
+// Knowledge code loads only where it runs (the worker, or LocalBackend in
+// tests); the error class is all a memory client needs.
+import { KnowledgeConflictError } from "../knowledge/errors";
+import type { KnowledgeService } from "../knowledge/service";
 import type {
   IndexMethod,
   KnowledgeMethod,
@@ -102,6 +101,7 @@ class LocalBackend implements Backend {
     if (target === "knowledge") {
       if (!this.knowledge)
         throw new MemoryRepoError("Knowledge isn't set up in this test.", 503);
+      const { dispatchKnowledge } = await import("../knowledge/dispatch");
       return dispatchKnowledge(this.knowledge, method, args);
     }
     if (!this.service)
