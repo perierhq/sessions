@@ -506,4 +506,22 @@ describe("canOwnPrWork", () => {
     expect(canOwnPrWork({ ...base, archived: true })).toBe(false);
     expect(canOwnPrWork({ ...base, state: "archived" })).toBe(false);
   });
+
+  test("a session pinned to a model this instance can't serve cannot", () => {
+    const prior = process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG;
+    process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG =
+      "/nonexistent/providers.json";
+    try {
+      expect(canOwnPrWork({ ...base, model: "pi/acme-gateway/fast" })).toBe(
+        false,
+      );
+      expect(
+        canOwnPrWork({ ...base, model: "pi/anthropic/claude-opus-5" }),
+      ).toBe(true);
+    } finally {
+      if (prior === undefined)
+        delete process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG;
+      else process.env.OPENSESSION_MODEL_PROVIDERS_CONFIG = prior;
+    }
+  });
 });

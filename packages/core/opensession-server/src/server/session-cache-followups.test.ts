@@ -489,3 +489,71 @@ test("a CAS conflict cannot report an automatic retry that never committed", asy
     ),
   ).toMatchObject({ model: "human" });
 });
+
+test("a model that can't be served moves the session to the default model once, keeping last active", async () => {
+  const id = "unservable-model";
+  const fallback = (await import("./models")).getDefaultModel();
+  const unservable = (model: string) =>
+    model.startsWith("pi/acme/") ? 'no credentials for provider "acme"' : null;
+  await cache.updateSessionFile(id, () =>
+    doc(id, { model: "pi/acme/fast", autoFallbackModel: "pi/acme/fast" }),
+  );
+  expect(await cache.fallBackFromUnservableModel(id, unservable)).toEqual({
+    fromModel: "pi/acme/fast",
+    model: fallback,
+    reason: 'no credentials for provider "acme"',
+  });
+  const stored = JSON.parse(
+    (await kernel.sessionMetadata({ op: "get", sessionId: id }))!.doc,
+  );
+  expect(stored).toMatchObject({
+    model: fallback,
+    lastActivity: "2026-09-01T00:00:00.000Z",
+  });
+  // A permanent switch: the auto-retry never puts the dead model back.
+  expect(stored.autoFallbackModel).toBeUndefined();
+  expect(stored.modelHistory.at(-1)).toMatchObject({
+    model: fallback,
+    from: "pi/acme/fast",
+    by: `auto-switch — ${(await import("./models")).modelLabel("pi/acme/fast")} can't be used: no credentials for provider "acme"`,
+  });
+  expect(
+    await cache.fallBackFromUnservableModel(id, unservable),
+  ).toBeUndefined();
+});
+
+test("no switch when the default model can't be served either", async () => {
+  const id = "unservable-default";
+  await cache.updateSessionFile(id, () => doc(id, { model: "pi/acme/fast" }));
+  const before = await kernel.sessionMetadata({ op: "get", sessionId: id });
+  expect(
+    await cache.fallBackFromUnservableModel(id, () => "nothing is configured"),
+  ).toBeUndefined();
+  expect(await kernel.sessionMetadata({ op: "get", sessionId: id })).toEqual(
+    before,
+  );
+});
+
+test("a metadata write for a turn that never ran keeps last active", async () => {
+  const id = "no-run-activity";
+  await cache.updateSessionFile(id, () => doc(id));
+  await cache.touchNativeSessionStrict(
+    id,
+    { lastEngineModel: "pi/acme/fast" },
+    { keepLastActivity: true },
+  );
+  expect(
+    JSON.parse(
+      (await kernel.sessionMetadata({ op: "get", sessionId: id }))!.doc,
+    ),
+  ).toMatchObject({
+    lastEngineModel: "pi/acme/fast",
+    lastActivity: "2026-09-01T00:00:00.000Z",
+  });
+  await cache.touchNativeSessionStrict(id, { lastEngineModel: "pi/acme/x" });
+  expect(
+    JSON.parse(
+      (await kernel.sessionMetadata({ op: "get", sessionId: id }))!.doc,
+    ).lastActivity,
+  ).not.toBe("2026-09-01T00:00:00.000Z");
+});

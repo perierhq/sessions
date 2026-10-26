@@ -17,6 +17,7 @@ import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
 import { ownedWorktreeWorkBranch } from "./session-branch-ownership";
+import { piModelUnservableReason } from "./pi-model-routing";
 import {
   mirrorSlackSessionReply,
   SLACK_SESSION_NOTE,
@@ -203,6 +204,7 @@ import {
   publishSessionChange,
   persistAutoModelSwitch,
   retryAutoFallbackModel,
+  fallBackFromUnservableModel,
   recordRunOutcome,
   applyRunOutcomeProjection,
   touchNativeSession,
@@ -2839,6 +2841,13 @@ async function runSessionPromptInner(
   slackProgress?: SlackTurnProgress,
 ): Promise<void> {
   const autoRetry = await retryAutoFallbackModel(sessionId);
+  // A model this instance can no longer serve (its provider's credentials
+  // were removed) fails every run; move the session to the default model
+  // first, the way a usage fallback switches it, and say so.
+  const unservable = await fallBackFromUnservableModel(
+    sessionId,
+    piModelUnservableReason,
+  );
   const session = findSession(sessionId);
   if (!session) return;
   // Admission: a repository being removed takes no new turns, and one that
@@ -2861,6 +2870,23 @@ async function runSessionPromptInner(
       from: autoRetry.fromModel,
       by: autoRetry.by,
     });
+  }
+  if (unservable) {
+    const message = `${modelLabel(unservable.fromModel)} can't be used here anymore (${unservable.reason}). This session now uses ${modelLabel(unservable.model)}, the default model.`;
+    broadcastToSession(sessionId, { type: "notice", sessionId, message });
+    broadcastToSession(sessionId, {
+      type: "model_changed",
+      sessionId,
+      model: unservable.model,
+      from: unservable.fromModel,
+      by: `auto-switch — ${modelLabel(unservable.fromModel)} can't be used`,
+    });
+    // Kept in the transcript too, where the reason still reads later.
+    await storeAppendUserLineEarly(
+      sessionId,
+      transcriptLineRunnerNotice(message),
+    ).catch(() => {});
+    await publishSessionChange(sessionId);
   }
 
   // A fresh human prompt re-arms the announce-then-stop guard (the nudge's
@@ -4040,22 +4066,31 @@ async function runSessionPromptInner(
     const headBranch = session.branch
       ? await ownedWorktreeWorkBranch(session.worktreeDir)
       : null;
+    // A turn that failed before the model wrote or did anything (a notice
+    // delivered into a session whose run could not start) is not activity:
+    // "last active" stays on the last real exchange.
+    const nothingRan =
+      endedWithError && firstTokenMs === undefined && toolUseCount === 0;
     // Export the engine identity and usage before settling or draining the
     // next prompt, whose resume inputs can still come from the session file.
-    await touchNativeSession(session.id, {
-      ...engineSessionPatch(effectiveProvider, finalSessionId),
-      lastEngineProvider: effectiveProvider,
-      ...(effectiveModel ? { lastEngineModel: effectiveModel } : {}),
-      ...(latestUsage
-        ? {
-            usage: latestUsage,
-            ...(startToken ? { usageRunId: startToken } : {}),
-          }
-        : {}),
-      ...(headBranch && headBranch !== session.branch
-        ? { branch: headBranch }
-        : {}),
-    });
+    await touchNativeSession(
+      session.id,
+      {
+        ...engineSessionPatch(effectiveProvider, finalSessionId),
+        lastEngineProvider: effectiveProvider,
+        ...(effectiveModel ? { lastEngineModel: effectiveModel } : {}),
+        ...(latestUsage
+          ? {
+              usage: latestUsage,
+              ...(startToken ? { usageRunId: startToken } : {}),
+            }
+          : {}),
+        ...(headBranch && headBranch !== session.branch
+          ? { branch: headBranch }
+          : {}),
+      },
+      { keepLastActivity: nothingRan },
+    );
   } else if (finalSessionId) {
     syncAgentSessionEngine(
       session,
