@@ -227,17 +227,23 @@ export async function fetchNeedsCheck(
   return body?.items ?? [];
 }
 
-/** What changed under one item that needs a check: the patch, the text
- *  before and after, or the item it disagrees with. */
-export async function fetchNeedsCheckChange(
+/** One item that needs a check: the item, its body, and what changed under
+ *  it (the patch, the text before and after, or the item it disagrees
+ *  with). The body and each side are cut at 20 000 characters. */
+export interface KnowledgeNeedsCheckRead {
+  item: KnowledgeItem;
+  body: string;
+  change: KnowledgeNeedsCheckChange;
+}
+
+export function fetchNeedsCheckChange(
   project: string,
   path: string,
-): Promise<KnowledgeNeedsCheckChange> {
-  const body = await request<{ change: KnowledgeNeedsCheckChange }>(
+): Promise<KnowledgeNeedsCheckRead> {
+  return request<KnowledgeNeedsCheckRead>(
     `${base(project)}/needs-check/item${query({ path })}`,
     { label: "Couldn't load what changed" },
   );
-  return body.change;
 }
 
 export async function fetchKnowledgeHistory(

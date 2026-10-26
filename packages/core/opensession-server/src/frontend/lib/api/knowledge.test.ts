@@ -19,7 +19,7 @@ const calls: Array<{ url: string; body?: string }> = [];
 /** What a stubbed route answers: the JSON the server would send. */
 type Answer =
   | { items: Array<{ path: string }> }
-  | { change: KnowledgeNeedsCheckChange }
+  | { item: { path: string }; body: string; change: KnowledgeNeedsCheckChange }
   | { path: string; commit: string | null }
   | { commit: string | null; approved?: string[] }
   | Record<string, never>;
@@ -93,9 +93,15 @@ test("needs-check: the list, then what changed per item", async () => {
   const items = await fetchNeedsCheck("acme");
   expect(items.map((i) => i.path)).toEqual(["articles/a.md"]);
   expect(calls[0]!.url).toEndWith("/api/knowledge/acme/needs-check");
-  serve({ change: { kind: "repo", title: "docs changed", patch: "+x" } });
-  const change = await fetchNeedsCheckChange("acme", "articles/a b.md");
-  expect(change.patch).toBe("+x");
+  serve({
+    item: { path: "articles/a b.md" },
+    body: "Export it.\n",
+    change: { kind: "repo", title: "docs changed", patch: "+x" },
+  });
+  const read = await fetchNeedsCheckChange("acme", "articles/a b.md");
+  expect(read.item.path).toBe("articles/a b.md");
+  expect(read.body).toBe("Export it.\n");
+  expect(read.change.patch).toBe("+x");
   expect(calls[0]!.url).toEndWith(
     "/api/knowledge/acme/needs-check/item?path=articles%2Fa+b.md",
   );
