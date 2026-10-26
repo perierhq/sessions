@@ -807,6 +807,109 @@ describe("session environment and container shims", () => {
   });
 });
 
+describe("agent-browser shim", () => {
+  /** A fake agent-browser that prints its arguments and the environment the
+   *  shim gives it. */
+  function fakeAgentBrowser(): void {
+    const file = join(bin, "agent-browser");
+    writeFileSync(
+      file,
+      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS"\n',
+    );
+    chmodSync(file, 0o755);
+  }
+
+  async function runBrowser(
+    args: string[],
+    env: Record<string, string>,
+  ): Promise<string[]> {
+    const proc = Bun.spawn(
+      [join(containerShimDir(), "agent-browser"), ...args],
+      {
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const out = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    return out.trim().split("\n");
+  }
+
+  test("goes first on PATH when agent-browser is installed", () => {
+    fakeAgentBrowser();
+    const env = sessionOwnershipEnv("os-1", bin);
+    expect(env.PATH).toBe(`${containerShimDir()}:${bin}`);
+    expect(
+      statSync(join(containerShimDir(), "agent-browser")).mode & 0o111,
+    ).toBeTruthy();
+    expect(existsSync(join(containerShimDir(), "podman"))).toBe(false);
+  });
+
+  test("gives each session its own browser with a short TMPDIR", async () => {
+    fakeAgentBrowser();
+    const scratch = `/home/acme/.opensession/session-scratch/os-01a17720-2dbe-79fb-87e1-35633fb7ef3a`;
+    const envFor = (id: string) => ({
+      ...sessionOwnershipEnv(id, `${bin}:/usr/bin:/bin`),
+      TMPDIR: scratch,
+    });
+    const a = await runBrowser(
+      ["open", "https://example.test"],
+      envFor("os-a"),
+    );
+    const b = await runBrowser(
+      ["open", "https://example.test"],
+      envFor("os-b"),
+    );
+    expect(a.slice(0, 2)).toEqual(["open", "https://example.test"]);
+    const session = (out: string[]) =>
+      out.find((line) => line.startsWith("session="))!.slice("session=".length);
+    expect(session(a)).toMatch(/^os-[0-9]+$/);
+    expect(session(a)).not.toBe(session(b));
+    expect(session(await runBrowser(["snapshot"], envFor("os-a")))).toBe(
+      session(a),
+    );
+    // Chrome binds TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket, and a
+    // Unix socket path holds at most 107 bytes.
+    const tmp = a.find((line) => line.startsWith("tmp="))!.slice(4);
+    expect(
+      `${tmp}/org.chromium.Chromium.XXXXXX/SingletonSocket`.length,
+    ).toBeLessThan(108);
+    expect(a).toContain("idle=1800000");
+  });
+
+  test("keeps the caller's own session and idle timeout", async () => {
+    fakeAgentBrowser();
+    const env = {
+      ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+      AGENT_BROWSER_SESSION: "mine",
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "5000",
+    };
+    const out = await runBrowser(["get", "url"], env);
+    expect(out).toContain("session=mine");
+    expect(out).toContain("idle=5000");
+  });
+
+  test("outside a session it reaches agent-browser unchanged", async () => {
+    fakeAgentBrowser();
+    const { OPENSESSION_SESSION_ID: _id, ...outside } = sessionOwnershipEnv(
+      "os-1",
+      `${bin}:/usr/bin:/bin`,
+    );
+    const out = await runBrowser(["open", "https://example.test"], {
+      ...outside,
+      TMPDIR: "/var/acme-tmp",
+    });
+    expect(out).toEqual([
+      "open",
+      "https://example.test",
+      "session=",
+      "tmp=/var/acme-tmp",
+      "idle=",
+    ]);
+  });
+});
+
 describe("memory", () => {
   test("reads the used half of a stats MemUsage cell", () => {
     expect(parseMemUsage("12.5MiB / 7.6GiB")).toBe(

@@ -54,6 +54,18 @@ it does nothing in a shell without `OPENSESSION_SESSION_ID`. Your own shells
 and system services never have the shim on `PATH`, so podman and docker
 behave as before outside sessions.
 
+When `agent-browser` is installed, the same directory carries an
+`agent-browser` shim. In a session it gives the session a browser of its own
+unless the caller chose otherwise: `AGENT_BROWSER_SESSION=os-<checksum of
+the session id>`, `AGENT_BROWSER_IDLE_TIMEOUT_MS=1800000`, and `TMPDIR=/tmp`.
+Chrome binds its singleton socket at
+`$TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket`, and under the
+session scratch that path is longer than a Unix socket path may be, so every
+launch failed with `Socket path too long`. One daemon per session also means
+no session sees another's tabs or cookies, and the daemon, started from an
+agent command, lives in that command's labelled scope, so archive stops it.
+Outside a session the shim passes through unchanged.
+
 Why a shim rather than the alternatives:
 
 - `containers.conf` has no per-session default label (and docker has no
