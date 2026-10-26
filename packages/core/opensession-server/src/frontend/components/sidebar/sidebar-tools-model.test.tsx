@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { isValidElement } from "react";
 import type { NavigationActions } from "../../lib/navigation";
+import type { FeedDescriptor } from "../../lib/types";
 
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -76,6 +77,7 @@ const model = (
     borrowedLens: false,
     productEmpty: false,
     feeds: [],
+    emailSupport: false,
     archivedActive: false,
     ...over,
   });
@@ -130,4 +132,58 @@ test("hiding Incidents takes the row out and leaves it in the chooser", () => {
 
 test("a borrowed sidebar has no tools, Incidents included", () => {
   expect(model({ borrowedLens: true }).visibleTools).toEqual([]);
+});
+
+const plainFeed: FeedDescriptor = {
+  id: "plain",
+  title: "Plain",
+  refKind: "plain",
+};
+
+test("with email support alone, Support stays in the menu as a tick", () => {
+  store.clear();
+  const emailOnly = model({
+    emailSupport: true,
+    hiddenTools: new Set(["plain"]),
+  });
+  const row = emailOnly.sidebarMenuTools.find((t) => t.id === "plain");
+  expect(row).toMatchObject({ label: "Support", shown: false });
+  expect(row?.surface).toBeUndefined();
+  expect(emailOnly.visibleTools.some((t) => t.id === "plain")).toBe(false);
+  const shown = model({ emailSupport: true });
+  expect(shown.visibleTools.find((t) => t.id === "plain")?.title).toBe(
+    "Support conversations",
+  );
+});
+
+test("with no support channel, the Support menu row drops out", () => {
+  store.clear();
+  expect(
+    model({ emailSupport: false }).sidebarMenuTools.some(
+      (t) => t.id === "plain",
+    ),
+  ).toBe(false);
+});
+
+test("with a Plain feed, Support still names its surface", () => {
+  store.clear();
+  const page = model({ feeds: [plainFeed] });
+  expect(page.sidebarMenuTools.find((t) => t.id === "plain")?.surface).toBe(
+    "page",
+  );
+  expect(page.visibleTools.some((t) => t.id === "plain")).toBe(true);
+  const band = model({
+    feeds: [plainFeed],
+    hiddenTools: new Set(["plain"]),
+  });
+  expect(band.sidebarMenuTools.find((t) => t.id === "plain")?.surface).toBe(
+    "sidebar",
+  );
+  expect(band.visibleTools.some((t) => t.id === "plain")).toBe(false);
+  // Email support on top changes nothing about the Plain choice.
+  expect(
+    model({ feeds: [plainFeed], emailSupport: true }).sidebarMenuTools.find(
+      (t) => t.id === "plain",
+    )?.surface,
+  ).toBe("page");
 });

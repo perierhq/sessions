@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from "react";
+import useSWR from "swr";
 import { IconCheck } from "../icons";
 import { fetchFeeds, type RepoInfo } from "../../lib/api";
+import { fetchInboxes } from "../../lib/api/support";
+import { API_SWR_OPTIONS, apiSWRKey } from "../../lib/api-swr";
 import { errorMessage } from "../../lib/error-message";
 import {
   ACCENT_THEME_OPTIONS,
@@ -519,6 +522,17 @@ export function SidebarItemsSection() {
   const [hiddenSidebarFeeds, setHiddenSidebarFeeds] = useState(
     readHiddenSidebarFeeds,
   );
+  // The Inboxes page's request (same key): `enabled` is whether email
+  // support is on, a support channel the Support tool serves without Plain.
+  const { data: inboxes } = useSWR(
+    apiSWRKey.supportInboxes(),
+    fetchInboxes,
+    API_SWR_OPTIONS,
+  );
+  const plainQueueExists = sidebarFeeds.some((feed) => feed.id === PLAIN_ID);
+  // Without a Plain feed there is no band to choose between, so with email
+  // support Support is an ordinary tool switch in the list below.
+  const emailOnlySupport = !plainQueueExists && inboxes?.enabled === true;
   useEffect(() => {
     let alive = true;
     fetchFeeds()
@@ -559,8 +573,8 @@ export function SidebarItemsSection() {
 				    sidebar band are the same queue reached two ways, so they are
 				    set together here and left out of the lists below. Only
 				    offered when Plain is actually connected: with no queue behind
-				    it there is nowhere for either surface to lead. */}
-        {sidebarFeeds.some((feed) => feed.id === PLAIN_ID) && (
+				    it there is no band to place it in. */}
+        {plainQueueExists && (
           <SettingRow
             title="Support tickets"
             desc="Choose where tickets appear."
@@ -578,7 +592,9 @@ export function SidebarItemsSection() {
           />
         )}
         {SIDEBAR_TOOL_IDS.filter(
-          (toolId) => toolFitsViewport(toolId, isPhone) && toolId !== PLAIN_ID,
+          (toolId) =>
+            toolFitsViewport(toolId, isPhone) &&
+            (toolId !== PLAIN_ID || emailOnlySupport),
         ).map((toolId) => (
           <SettingRow
             key={toolId}
