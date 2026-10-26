@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   __clearGithubSignalCacheForTest,
   GITHUB_SIGNAL_CACHE_SIZE,
+  GithubReadError,
   OPEN_BUG_PAGES,
   type GithubSignalDeps,
   latestRelease,
@@ -101,14 +102,37 @@ describe("releases", () => {
     expect(calls).toEqual([RELEASES, RELEASES]);
   });
 
-  test("no ghRepo or an unreadable answer is null, and failures are not cached", async () => {
+  test("no ghRepo is null without a request", async () => {
     const none = stub({}, null);
     expect(await listReleases("acme", none.deps)).toBeNull();
+    expect(await latestRelease("acme", none.deps)).toBeNull();
     expect(none.calls).toEqual([]);
+  });
+
+  test("a GitHub repository whose releases can't be read throws, and failures are not cached", async () => {
     const failing = stub({});
-    expect(await listReleases("acme", failing.deps)).toBeNull();
-    expect(await latestRelease("acme", failing.deps)).toBeNull();
+    await expect(listReleases("acme", failing.deps)).rejects.toBeInstanceOf(
+      GithubReadError,
+    );
+    await expect(latestRelease("acme", failing.deps)).rejects.toThrow(
+      "acme/app's releases couldn't be read",
+    );
     expect(failing.calls).toEqual([RELEASES, RELEASES]);
+
+    const throwing = stub({});
+    throwing.deps.request = async () => {
+      throw new Error("socket hang up");
+    };
+    await expect(listReleases("acme", throwing.deps)).rejects.toBeInstanceOf(
+      GithubReadError,
+    );
+
+    const notAList = stub({
+      [RELEASES]: { ok: true, status: 200, data: { message: "odd" } },
+    });
+    await expect(listReleases("acme", notAList.deps)).rejects.toBeInstanceOf(
+      GithubReadError,
+    );
   });
 
   test("no releases at all is an empty list, not null", async () => {
@@ -327,11 +351,18 @@ describe("repository names", () => {
   test("dot-only owner or name is refused", async () => {
     for (const repo of ["../app", "./app", "acme/..", "acme/.", "../.."]) {
       const { deps, calls } = stub({}, repo);
-      expect(await listReleases("acme", deps)).toBeNull();
+      // A configured but unusable name can't be read: releases fail
+      // closed, refState reads it as "couldn't tell".
+      await expect(listReleases("acme", deps)).rejects.toBeInstanceOf(
+        GithubReadError,
+      );
+      expect(await refState("acme", { type: "issue", number: 1 }, deps)).toBe(
+        null,
+      );
       expect(calls).toEqual([]);
     }
     const { deps, calls } = stub({}, "acme.io/app.js");
-    await listReleases("acme", deps);
+    await listReleases("acme", deps).catch(() => null);
     expect(calls).toEqual(["/repos/acme.io/app.js/releases?per_page=100"]);
   });
 });

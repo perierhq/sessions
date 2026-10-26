@@ -255,6 +255,8 @@ function bindDeps(
     releasesSince:
       over.releasesSince ??
       (async (at) =>
+        // null only when the project has no GitHub repository; a list
+        // that can't be read throws (GithubReadError), never [].
         ((await listReleases(project, github)) ?? []).filter((r) => r.at > at)),
     releaseMentions: over.releaseMentions ?? defaultReleaseMentions,
     refState:

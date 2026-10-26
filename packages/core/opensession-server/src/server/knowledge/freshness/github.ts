@@ -10,9 +10,16 @@
  * request per release list or issue. `{ fresh: true }` skips the cached
  * answer (and stores the new one). The cache holds at most
  * GITHUB_SIGNAL_CACHE_SIZE answers and drops the least recently used.
- * Failures are not cached and read as null ("couldn't tell"); callers
- * decide what null means. Nothing runs at import: the cache is an empty
- * Map and the request is imported lazily.
+ * Failures are not cached.
+ *
+ * Releases fail closed: listReleases and latestRelease THROW
+ * GithubReadError when the project has a GitHub repository but the list
+ * couldn't be read (GitHub down, the App not installed, an odd answer).
+ * null means only "no GitHub repository", and [] / null-latest only "no
+ * releases", so a caller can never mistake an outage for "nothing was
+ * released". refState and openBugIssues still read a failure as null
+ * ("couldn't tell"); their callers decide what null means. Nothing runs at
+ * import: the cache is an empty Map and the request is imported lazily.
  */
 
 export interface ReleaseInfo {
@@ -57,6 +64,11 @@ export const GITHUB_SIGNAL_CACHE_SIZE = 500;
 /** Most pages of 100 open bug issues read. */
 export const OPEN_BUG_PAGES = 10;
 const PER_PAGE = 100;
+
+/** A GitHub read failed for a project that has a GitHub repository. */
+export class GithubReadError extends Error {
+  override name = "GithubReadError";
+}
 /** `owner/name`, neither part only dots (`..` would climb the API path). */
 const OWNER_NAME = /^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/;
 
@@ -89,13 +101,33 @@ async function ghRepoOf(
   const ghRepo = deps.ghRepo
     ? deps.ghRepo(project)
     : await defaultGhRepo(project);
-  return ghRepo && OWNER_NAME.test(ghRepo) ? ghRepo : null;
+  if (!ghRepo) return null;
+  // A configured name that isn't `owner/name` is a repository we can't
+  // read, not "no repository".
+  if (!OWNER_NAME.test(ghRepo))
+    throw new GithubReadError(`${project}'s GitHub repository name is invalid`);
+  return ghRepo;
+}
+
+/** ghRepoOf, with an invalid name read as null (refState, openBugIssues:
+ *  their null already means "couldn't tell"). */
+async function ghRepoOrNull(
+  project: string,
+  deps: GithubReadOptions,
+): Promise<string | null> {
+  try {
+    return await ghRepoOf(project, deps);
+  } catch {
+    return null;
+  }
 }
 
 /** The answer to `GET path`, from the cache when it is fresh (and not
- *  `fresh`); null when GitHub didn't answer with success. */
-async function cachedGet(
+ *  `fresh`); throws GithubReadError when GitHub didn't answer with
+ *  success. */
+async function cachedGetOrThrow(
   path: string,
+  what: string,
   deps: GithubReadOptions,
 ): Promise<unknown> {
   const now = (deps.now ?? Date.now)();
@@ -105,25 +137,37 @@ async function cachedGet(
     cache.set(path, hit);
     return hit.data;
   }
+  let result: { ok: boolean; status: number; data: unknown };
   try {
-    const result = await (deps.request ?? defaultRequest)(path);
-    if (!result.ok || result.data === null || result.data === undefined)
-      return null;
-    cache.delete(path);
-    if (cache.size >= GITHUB_SIGNAL_CACHE_SIZE)
-      for (const [key, entry] of cache)
-        if (now - entry.at >= GITHUB_SIGNAL_TTL_MS) cache.delete(key);
-    while (cache.size >= GITHUB_SIGNAL_CACHE_SIZE) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-    cache.set(path, { at: now, data: result.data });
-    return result.data;
+    result = await (deps.request ?? defaultRequest)(path);
   } catch (error) {
-    console.warn(
-      `[knowledge] GitHub read failed: ${error instanceof Error ? error.message : error}`,
-    );
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[knowledge] GitHub read failed: ${detail}`);
+    throw new GithubReadError(`${what} couldn't be read: ${detail}`);
+  }
+  if (!result.ok || result.data === null || result.data === undefined)
+    throw new GithubReadError(`${what} couldn't be read (${result.status})`);
+  cache.delete(path);
+  if (cache.size >= GITHUB_SIGNAL_CACHE_SIZE)
+    for (const [key, entry] of cache)
+      if (now - entry.at >= GITHUB_SIGNAL_TTL_MS) cache.delete(key);
+  while (cache.size >= GITHUB_SIGNAL_CACHE_SIZE) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  cache.set(path, { at: now, data: result.data });
+  return result.data;
+}
+
+/** cachedGetOrThrow, with a failure read as null ("couldn't tell"). */
+async function cachedGet(
+  path: string,
+  deps: GithubReadOptions,
+): Promise<unknown> {
+  try {
+    return await cachedGetOrThrow(path, path, deps);
+  } catch {
     return null;
   }
 }
@@ -138,16 +182,23 @@ function isoTime(value: unknown): string | null {
     : null;
 }
 
-/** The project's releases, newest first, drafts left out; null when it
- *  has no GitHub repository or the list can't be read. */
+/** The project's releases, newest first, drafts left out; null only when
+ *  it has no GitHub repository, [] when it has no releases. Throws
+ *  GithubReadError when the repository's list can't be read. */
 export async function listReleases(
   project: string,
   deps: GithubReadOptions = {},
 ): Promise<ReleaseInfo[] | null> {
   const ghRepo = await ghRepoOf(project, deps);
   if (!ghRepo) return null;
-  const data = await cachedGet(`/repos/${ghRepo}/releases?per_page=100`, deps);
-  if (!Array.isArray(data)) return null;
+  const what = `${ghRepo}'s releases`;
+  const data = await cachedGetOrThrow(
+    `/repos/${ghRepo}/releases?per_page=100`,
+    what,
+    deps,
+  );
+  if (!Array.isArray(data))
+    throw new GithubReadError(`${what} couldn't be read (not a list)`);
   const releases: ReleaseInfo[] = [];
   for (const entry of data as Array<Record<string, unknown>>) {
     if (!entry || typeof entry !== "object" || entry.draft !== false) continue;
@@ -164,8 +215,9 @@ export async function listReleases(
   return releases.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
-/** The newest published release; null when there is none or the list
- *  can't be read. */
+/** The newest published release; null when the project has no GitHub
+ *  repository or no releases. Throws GithubReadError when the list can't
+ *  be read. */
 export async function latestRelease(
   project: string,
   deps: GithubReadOptions = {},
@@ -181,7 +233,7 @@ export async function refState(
   deps: GithubReadOptions = {},
 ): Promise<{ state: "open" | "closed" | "merged"; at: string | null } | null> {
   if (!Number.isSafeInteger(ref.number) || ref.number <= 0) return null;
-  const ghRepo = await ghRepoOf(project, deps);
+  const ghRepo = await ghRepoOrNull(project, deps);
   if (!ghRepo) return null;
   const kind = ref.type === "pr" ? "pulls" : "issues";
   const data = (await cachedGet(
@@ -211,7 +263,7 @@ export async function openBugIssues(
   project: string,
   deps: GithubReadOptions = {},
 ): Promise<KnownProblems | null> {
-  const ghRepo = await ghRepoOf(project, deps);
+  const ghRepo = await ghRepoOrNull(project, deps);
   if (!ghRepo) return null;
   const entries: Array<Record<string, unknown>> = [];
   let truncated = false;

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { RepoCommit } from "../freshness/repo-changes";
-import type { ReleaseInfo } from "../freshness/github";
+import {
+  __clearGithubSignalCacheForTest,
+  latestRelease,
+  type ReleaseInfo,
+} from "../freshness/github";
 import { DOCS_FALLBACK, mailTrust, type TrustDeps } from "./trust";
 
 const C1 = "1".repeat(40);
@@ -145,6 +149,21 @@ describe("mailTrust", () => {
     );
     expect(noCommit.trust).toBe("reference");
     expect(noCommit.reason).toBe("History couldn't be read");
+  });
+
+  test("a GitHub outage is history that can't be read, never 'no release'", async () => {
+    __clearGithubSignalCacheForTest();
+    const github = {
+      ghRepo: () => "acme/app",
+      request: async () => ({ ok: false, status: 502, data: null }),
+    };
+    const decision = await mailTrust(
+      { answeredAt: "2026-10-20T08:00:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps({ latestRelease: () => latestRelease("acme", github) }),
+    );
+    expect(decision.trust).toBe("reference");
+    expect(decision.reason).toBe("History couldn't be read");
+    expect(decision.validAsOfCommit).toBeUndefined();
   });
 
   test("an unreadable answer time is refused", async () => {

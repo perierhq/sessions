@@ -29,7 +29,10 @@ export interface TrustInput {
 }
 
 export interface TrustDeps {
-  /** The newest published release; null when the project has none. */
+  /** The newest published release; null when the project has no GitHub
+   *  repository or no releases. Must THROW when the releases can't be read
+   *  (freshness/github.ts latestRelease does), so an outage is reference
+   *  ("History couldn't be read"), never "nothing released". */
   latestRelease(): Promise<ReleaseInfo | null>;
   /** The newest default-branch commit touching any of `paths`. */
   latestChange(paths: string[]): Promise<RepoCommit | null>;

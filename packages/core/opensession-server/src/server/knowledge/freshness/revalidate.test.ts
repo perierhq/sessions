@@ -351,6 +351,37 @@ describe("revalidateProject", () => {
     expect(issue.body.trim()).toBe("We're on it.");
   });
 
+  test("releases GitHub can't list send release-sensitive items to a person", async () => {
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path: "articles/sso.md",
+          fm: fm({ title: "Single sign-on", topics: ["sso"] }),
+          body: "Turn on SSO in Settings.\n",
+        },
+      ],
+      { message: "Add sso", author: ADA },
+    );
+    const result = await revalidateProject("acme", {
+      deps: deps({
+        releasesSince: undefined,
+        github: {
+          ghRepo: () => "acme/app",
+          request: async () => ({ ok: false, status: 503, data: null }),
+        },
+      }),
+    });
+    expect(result.flipped).toEqual([
+      { path: "articles/sso.md", reason: "Knowledge couldn't be checked" },
+    ]);
+    expect(result.errors).toEqual([
+      "articles/sso.md: acme/app's releases couldn't be read (503)",
+    ]);
+  });
+
   test("a code checkout that is gone is never read as unchanged", async () => {
     await knowledgeRepo.call(
       "write",
