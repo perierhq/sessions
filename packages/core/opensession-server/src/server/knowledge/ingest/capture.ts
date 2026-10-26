@@ -34,9 +34,11 @@
  * runs at import.
  */
 import { randomBytes } from "node:crypto";
-import type {
-  KnowledgeFrontMatter,
-  KnowledgeItem,
+import {
+  KNOWLEDGE_COPY,
+  type KnowledgeFrontMatter,
+  type KnowledgeItem,
+  parseKnowledgeCitation,
 } from "../../../shared/knowledge";
 import {
   normalizeMessageId,
@@ -44,7 +46,11 @@ import {
 } from "../../../shared/support";
 import { catalogDocuments } from "../../catalog-documents";
 import type { classifyRoute } from "../../route-classifier";
-import { onReplySent, messagesAnsweredBy } from "../../support/reply";
+import {
+  onReplySent,
+  messagesAnsweredBy,
+  type ReplySent,
+} from "../../support/reply";
 import { wrapBody } from "../../support/wrap";
 import { knowledgeRepo } from "../client";
 import { fetchDefaultBranch } from "../freshness/repo-changes";
@@ -157,11 +163,35 @@ function threadSenders(c: SupportConversation): Party[] {
 
 type CaptureResult = "written" | "skipped" | "exists";
 
+/** What the send said about the draft (support/reply.ts ReplySent). */
+export type SentDraft = Partial<Pick<ReplySent, "knowledgeHold" | "citations">>;
+
+/** The `dependsOn` of the knowledge items a draft cited; null when one of
+ *  them can't be read (its dependencies are unknown). */
+async function citedDependencies(
+  project: string,
+  citations: readonly string[],
+  today: string,
+): Promise<string[] | null> {
+  const deps: string[] = [];
+  for (const ref of citations) {
+    const cited = parseKnowledgeCitation(ref);
+    if (!cited) return null;
+    const item = await knowledgeRepo
+      .call("index.get", project, cited.path, today)
+      .catch(() => null);
+    if (!item) return null;
+    deps.push(...item.dependsOn);
+  }
+  return deps;
+}
+
 /** The captured reply's item path and project, or skipped. */
 async function capture(
   conversationId: string,
   messageId: string,
   deps: CaptureDeps,
+  sent: SentDraft = {},
 ): Promise<{ result: CaptureResult; project?: string; path?: string }> {
   const c = await deps.conversation(conversationId);
   const reply = c?.messages.find((m) => m.id === messageId);
@@ -229,6 +259,14 @@ async function capture(
   }
   const question = { ...record(last, false), text: parts.join("\n\n") };
   if (!question.text) return { result: "skipped" };
+  // A draft its knowledge check held (an internal note quoted, an item
+  // that couldn't back it) is never trusted through a person's send; one
+  // that cited knowledge goes stale with what it cited.
+  const cited = sent.knowledgeHold
+    ? []
+    : await citedDependencies(project, sent.citations ?? [], today);
+  const reference =
+    sent.knowledgeHold ?? (cited ? null : KNOWLEDGE_COPY.unchecked);
   const planned = await planMailItem(
     project,
     { question, answer, senders: threadSenders(c) },
@@ -238,11 +276,13 @@ async function capture(
       docPaths,
       deps: mailboxDeps,
       historyRead,
+      reference,
     },
   );
   if (!planned) return { result: "skipped" };
   const fm = planned.change.fm;
   fm.sources = [...fm.sources, `conversation:${c.id}`];
+  fm.dependsOn = [...new Set([...fm.dependsOn, ...(cited ?? [])])];
   try {
     await knowledgeRepo.call("write", project, [planned.change], {
       message: `Capture a reply a person sent (${fm.trust})`,
@@ -267,8 +307,9 @@ export async function captureReply(
   conversationId: string,
   messageId: string,
   over: Partial<CaptureDeps> = {},
+  sent: SentDraft = {},
 ): Promise<CaptureResult> {
-  return (await capture(conversationId, messageId, bind(over))).result;
+  return (await capture(conversationId, messageId, bind(over), sent)).result;
 }
 
 // ── Repeats ─────────────────────────────────────────────────────────────
@@ -742,6 +783,9 @@ interface PendingCapture {
   attempts: number;
   /** Not retried before this (ISO), after a failed attempt. */
   nextAt?: string;
+  /** What the send said about the draft (ReplySent). */
+  knowledgeHold?: string | null;
+  citations?: string[];
 }
 
 function isPendingCapture(value: unknown): value is PendingCapture {
@@ -771,7 +815,10 @@ async function processPending(
   if (running.has(key)) return;
   running.add(key);
   try {
-    const done = await capture(entry.conversationId, entry.messageId, deps);
+    const done = await capture(entry.conversationId, entry.messageId, deps, {
+      knowledgeHold: entry.knowledgeHold ?? null,
+      citations: entry.citations ?? [],
+    });
     if (done.result !== "skipped" && done.project && done.path)
       await suggestRepeats(done.project, [done.path], deps);
     await pending().delete(key);
@@ -809,10 +856,7 @@ export async function retryPendingCaptures(
 }
 
 /** Queue and process the capture of a person's sent reply. */
-async function enqueue(
-  e: { conversationId: string; messageId: string },
-  deps: CaptureDeps,
-): Promise<void> {
+async function enqueue(e: ReplySent, deps: CaptureDeps): Promise<void> {
   const c = await deps.conversation(e.conversationId);
   if (!c) return;
   const key = `${PENDING_PREFIX}${e.messageId}`;
@@ -822,6 +866,8 @@ async function enqueue(
     project: c.project,
     at: new Date(deps.now()).toISOString(),
     attempts: 0,
+    knowledgeHold: e.knowledgeHold,
+    citations: e.citations,
   };
   await pending().set(key, entry);
   await processPending(key, entry, deps);

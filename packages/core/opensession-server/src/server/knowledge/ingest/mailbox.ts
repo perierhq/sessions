@@ -506,6 +506,9 @@ export async function planMailItem(
     deps: MailboxDeps;
     /** False when the default branch couldn't be fetched. */
     historyRead: boolean;
+    /** Why the item is reference whatever the trust rule says (a capture
+     *  of a draft its knowledge check held). */
+    reference?: string | null;
   },
 ): Promise<Planned | null> {
   const { question, answer } = pair;
@@ -538,11 +541,13 @@ export async function planMailItem(
   }
   // What the trust rule can't see makes the answer reference: history
   // that couldn't be fetched, or a reply whose own dates disagree.
-  const forced = !ctx.historyRead
-    ? HISTORY_UNREADABLE
-    : answer.dateMismatch
-      ? DATES_DISAGREE
-      : null;
+  const forced = ctx.reference
+    ? ctx.reference
+    : !ctx.historyRead
+      ? HISTORY_UNREADABLE
+      : answer.dateMismatch
+        ? DATES_DISAGREE
+        : null;
   if (forced)
     decision = {
       ...decision,

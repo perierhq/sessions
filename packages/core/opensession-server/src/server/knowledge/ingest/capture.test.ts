@@ -412,3 +412,87 @@ test("every sender of the thread is stripped from the question and the answer", 
   for (const word of ["Carol", "Dave", "Okafor"])
     expect(all).not.toContain(word);
 });
+
+/** A conversation answered by Ada, not captured by the listener. */
+async function answeredUncaptured() {
+  onReplySent(null);
+  const c = await tb.conversation({ text: QUESTION });
+  const sent = await replyAsPerson(c.id, ANSWER, "Ada");
+  if (!sent.ok) throw new Error(sent.error);
+  return { c, message: sent.message };
+}
+
+test("a reply whose draft the knowledge check held is captured as reference with the reason", async () => {
+  const { c, message } = await answeredUncaptured();
+  expect(
+    await captureReply(c.id, message.id, deps(), {
+      knowledgeHold: "The reply quotes an internal note",
+      citations: [],
+    }),
+  ).toBe("written");
+  const read = await knowledgeRepo.call(
+    "read",
+    "acme",
+    itemPath(message),
+    TODAY,
+  );
+  expect(read!.item.trust).toBe("reference");
+  expect(read!.item.validAsOfCommit).toBeUndefined();
+  expect(read!.body.split("\n")[0]).toBe(
+    "> Imported as reference: The reply quotes an internal note",
+  );
+});
+
+test("a reply citing knowledge depends on what the cited items depend on", async () => {
+  await knowledgeRepo.call("ensureRepo", "acme");
+  const commit = await knowledgeRepo.call(
+    "write",
+    "acme",
+    [
+      {
+        op: "put",
+        path: "articles/export-csv.md",
+        fm: {
+          title: "Exporting",
+          kind: "answer",
+          trust: "trusted",
+          status: "active",
+          origin: "article",
+          topics: [],
+          sources: [],
+          dependsOn: ["issue:12"],
+          validAsOf: TODAY,
+        },
+        body: "Press Export.\n",
+      },
+    ],
+    { message: "Add article", author: { name: "Ada" } },
+  );
+  const { c, message } = await answeredUncaptured();
+  await captureReply(c.id, message.id, deps(), {
+    knowledgeHold: null,
+    citations: [`articles/export-csv.md@${commit}`],
+  });
+  const read = await knowledgeRepo.call(
+    "read",
+    "acme",
+    itemPath(message),
+    TODAY,
+  );
+  expect(read!.item.trust).toBe("trusted");
+  expect(read!.item.dependsOn).toContain("issue:12");
+
+  // A citation that can't be read leaves the dependencies unknown.
+  const other = await answeredUncaptured();
+  await captureReply(other.c.id, other.message.id, deps(), {
+    knowledgeHold: null,
+    citations: [`articles/gone.md@${commit}`],
+  });
+  const gone = await knowledgeRepo.call(
+    "read",
+    "acme",
+    itemPath(other.message),
+    TODAY,
+  );
+  expect(gone!.item.trust).toBe("reference");
+});

@@ -1119,8 +1119,50 @@ describe("reply-sent listener", () => {
         messageId: result.message.id,
         by: ADA,
         author: ADA,
+        rule: "Sent by Ada",
+        knowledgeHold: null,
+        citations: [],
       },
     ]);
+  });
+
+  test("a person sending an agent draft its knowledge check held carries the hold and the citations", async () => {
+    const seen: Sent[] = [];
+    onReplySent((e) => seen.push(e));
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    if (!proposed.ok) throw new Error(proposed.error);
+    const ref = `articles/export.md@${"a".repeat(40)}`;
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: {
+        ...x.draft!,
+        sources: [...(x.draft!.sources ?? []), { kind: "knowledge", ref }],
+        check: {
+          verified: [],
+          topics: [],
+          promises: false,
+          knowledge: {
+            backing: [],
+            blocked: [],
+            internalQuoted: { path: "articles/notes.md", title: "Notes" },
+            failed: false,
+            at: new Date().toISOString(),
+          },
+          at: new Date().toISOString(),
+        },
+      },
+    }));
+    const sent = await sendDraft(c.id, proposed.draft.id, ADA);
+    expect(sent.ok).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      by: ADA,
+      author: AGENT,
+      rule: "Sent by Ada",
+      knowledgeHold: "The reply quotes an internal note",
+      citations: [ref],
+    });
   });
 
   test("an automatic send fires it by sessions", async () => {

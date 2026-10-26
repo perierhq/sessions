@@ -65,6 +65,7 @@ import {
   type ReplyDecision,
   RULES,
   decideReply,
+  knowledgeHoldRule,
   replyLabels,
 } from "./policy";
 import {
@@ -179,21 +180,53 @@ export function sendingInProcess(conversationId: string): boolean {
   return inFlight.has(conversationId);
 }
 
-/** Told once a delivered reply is stored: its conversation, the stored
- *  message's id, who sent it (a person, or sessions for an automatic send)
- *  and who wrote the draft. Knowledge capture listens (ingest/capture.ts). */
-export type ReplySentListener = (e: {
+/** A delivered reply, as reply-sent listeners are told of it. */
+export interface ReplySent {
   conversationId: string;
+  /** The stored message's id. */
   messageId: string;
+  /** Who sent it: a person, or sessions for an automatic send. */
   by: SupportActor;
+  /** Who wrote the draft. */
   author: SupportActor;
-}) => void;
+  /** The draft's rule as it went out ("Sent by Ada"). */
+  rule: string;
+  /** Why the draft's stored knowledge check held it (policy
+   *  knowledgeHoldRule: an internal note quoted, an item that can't back
+   *  it, a check that failed); null when it didn't or there was none. */
+  knowledgeHold: string | null;
+  /** The draft's knowledge citations (`<path>@<commit>` refs). */
+  citations: string[];
+}
+
+/** Told once a delivered reply is stored. Knowledge capture listens
+ *  (ingest/capture.ts). */
+export type ReplySentListener = (e: ReplySent) => void;
 
 let replySentListener: ReplySentListener | null = null;
 
 /** Set (or with null clear) the one reply-sent listener. */
 export function onReplySent(l: ReplySentListener | null): void {
   replySentListener = l;
+}
+
+function sentEvent(
+  conversationId: string,
+  messageId: string,
+  by: SupportActor,
+  draft: SupportDraft,
+): ReplySent {
+  return {
+    conversationId,
+    messageId,
+    by,
+    author: draft.author,
+    rule: draft.rule,
+    knowledgeHold: knowledgeHoldRule(draft.check?.knowledge),
+    citations: (draft.sources ?? []).flatMap((s) =>
+      s.kind === "knowledge" ? [s.ref.trim()] : [],
+    ),
+  };
 }
 
 /** Never awaited and never fails a send: a listener's error (thrown or
@@ -1174,13 +1207,7 @@ async function deliverInFlight(
       ? { autoClarified: true }
       : {}),
   }));
-  if (updated)
-    notifyReplySent({
-      conversationId: c.id,
-      messageId: message.id,
-      by,
-      author: draft.author,
-    });
+  if (updated) notifyReplySent(sentEvent(c.id, message.id, by, draft));
   await Promise.allSettled([
     ourId !== draft.messageId
       ? rememberMessageIds(c.inboxId, c.id, [ourId], [])

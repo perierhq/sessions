@@ -84,6 +84,18 @@ export function knowledgeRule(title: string): string {
   return KNOWLEDGE_COPY.stale(title);
 }
 
+/** Why a knowledge verdict holds a draft (a failed check, an internal
+ *  note quoted, an item that can't back it); null when it doesn't. */
+export function knowledgeHoldRule(
+  knowledge: KnowledgeVerdict | null | undefined,
+): string | null {
+  if (!knowledge) return null;
+  if (knowledge.failed) return knowledge.reason || RULES.knowledgeUnchecked;
+  if (knowledge.internalQuoted) return RULES.internalQuoted;
+  const stale = knowledge.blocked[0];
+  return stale ? knowledgeRule(stale.title) : null;
+}
+
 const needsPerson = (rule: string): ReplyDecision => ({
   kind: "needs-person",
   rule,
@@ -177,11 +189,8 @@ export function decideReply(input: {
   if (heldInDraft) return needsPerson(topicRule(heldInDraft));
   if (check.promises) return needsPerson(RULES.draftPromise);
   const { knowledge } = input;
-  if (knowledge?.failed)
-    return needsPerson(knowledge.reason || RULES.knowledgeUnchecked);
-  if (knowledge?.internalQuoted) return needsPerson(RULES.internalQuoted);
-  const stale = knowledge?.blocked[0];
-  if (stale) return needsPerson(knowledgeRule(stale.title));
+  const knowledgeHeld = knowledgeHoldRule(knowledge);
+  if (knowledgeHeld) return needsPerson(knowledgeHeld);
   // Knowledge backs a reply only through the verdict of now, never through
   // what was verified when the draft was written.
   const cited = [
