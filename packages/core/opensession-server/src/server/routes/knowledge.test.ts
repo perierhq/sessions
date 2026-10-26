@@ -997,6 +997,34 @@ describe("imports", () => {
       "Unzip the export and upload the files",
     );
   });
+
+  test("a file import while one runs is refused before the upload is read", async () => {
+    __setKnowledgeRouteDepsForTest({
+      listJobs: async () => [
+        {
+          id: "kj_running",
+          project: "acme",
+          kind: "files",
+          state: "running",
+          startedAt: "2026-10-26T08:00:00.000Z",
+          done: 0,
+          total: 1,
+          created: { trusted: 0, reference: 0, suggestions: 0, skipped: 0 },
+          options: {},
+        },
+      ],
+      startImport: async () => {
+        throw new Error("never started");
+      },
+    });
+    // An upload that would be refused (400) once read: the 409 comes first.
+    const zip = new FormData();
+    zip.append("file", new File(["PK"], "notion.zip"));
+    const response = await call("POST", "/api/knowledge/acme/import/files", {
+      form: zip,
+    });
+    expect(response.status).toBe(409);
+  });
 });
 
 describe("attachments", () => {

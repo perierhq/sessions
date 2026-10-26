@@ -1094,6 +1094,18 @@ async function startImport(
   let options: Record<string, unknown> = {};
   let files: KnowledgeImportRequest["files"];
   if (kind === "files") {
+    // Up to 200 MB of uploads: refuse a second file import before reading
+    // them (startJob refuses it again, race-free).
+    const jobs = await deps.listJobs(project);
+    if (
+      jobs.some(
+        (j) =>
+          j.kind === kind && (j.state === "running" || j.state === "queued"),
+      )
+    ) {
+      const { JOB_RUNNING_COPY } = await import("../knowledge/ingest/jobs");
+      throw new MemoryRepoError(JOB_RUNNING_COPY, 409);
+    }
     const form = await readForm(
       ctx.req,
       MAX_IMPORT_REQUEST,
