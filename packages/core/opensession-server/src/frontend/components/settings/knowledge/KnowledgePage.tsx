@@ -10,6 +10,7 @@ import {
 import { relativeTime } from "../../../lib/api/request";
 import { errorMessage } from "../../../lib/error-message";
 import {
+  KNOWLEDGE_EDITOR_FRAME,
   KNOWLEDGE_PAGE_BACK,
   KNOWLEDGE_ROW,
   KNOWLEDGE_ROW_HEAD,
@@ -100,7 +101,7 @@ export function KnowledgePage({
   // An item open in the editor: the page is the item, and Back is the list.
   if (route.tab === "articles" && route.path)
     return (
-      <div className={PROJECT_PAGE_FRAME}>
+      <div className={KNOWLEDGE_EDITOR_FRAME}>
         <SettingsPanel className="self-start">
           <div className={KNOWLEDGE_PAGE_BACK}>
             <Button

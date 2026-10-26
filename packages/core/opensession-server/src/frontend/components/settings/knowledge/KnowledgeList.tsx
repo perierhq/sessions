@@ -9,6 +9,7 @@ import { fetchKnowledge } from "../../../lib/api/knowledge";
 import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_CHIP,
+  KNOWLEDGE_CHIP_ON,
   KNOWLEDGE_CHIPS,
   KNOWLEDGE_MORE,
   KNOWLEDGE_ROW_BUTTON,
@@ -71,7 +72,7 @@ export function KnowledgeList({
           name="q"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search titles, topics and text"
+          placeholder="Search"
           aria-label="Search knowledge"
           className={KNOWLEDGE_SEARCH}
         />
@@ -90,9 +91,9 @@ export function KnowledgeList({
             key={f}
             type="button"
             size="sm"
-            variant={f === filter ? "primary" : "ghost"}
+            variant={f === filter ? "soft" : "ghost"}
             aria-pressed={f === filter}
-            className={KNOWLEDGE_CHIP}
+            className={f === filter ? KNOWLEDGE_CHIP_ON : KNOWLEDGE_CHIP}
             onClick={() => {
               setFilter(f);
               setPages(1);

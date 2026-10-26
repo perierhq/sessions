@@ -414,6 +414,11 @@ export function KnowledgeEditorForm({
                 Internal
               </SegmentedOption>
             </Segmented>
+            <span className={KNOWLEDGE_EDITOR_HINT}>
+              {state.kind === "internal"
+                ? "For the team only: a reply that quotes it waits for a person"
+                : "Pat may say this to a customer"}
+            </span>
           </Labeled>
           <Labeled label="Status" labelId={labelId("status")}>
             <OptionSelect
@@ -425,11 +430,7 @@ export function KnowledgeEditorForm({
             />
           </Labeled>
         </div>
-        <p className={cn(KNOWLEDGE_EDITOR_HINT, "-mt-2")}>
-          {state.kind === "internal"
-            ? "For the team only: a reply that quotes it waits for a person"
-            : "Pat may say this to a customer"}
-        </p>
+
         <Labeled
           label="Topics"
           labelId={labelId("topics")}

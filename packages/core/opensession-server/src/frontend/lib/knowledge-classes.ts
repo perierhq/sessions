@@ -1,3 +1,6 @@
+import { cn } from "../ui/cn";
+import { PROJECT_PAGE_FRAME } from "./project-settings-classes";
+
 // Class strings for a project's Knowledge: the summary on the project page
 // (components/settings/project/KnowledgeSection) and the Knowledge page
 // (components/settings/knowledge).
@@ -44,8 +47,19 @@ export const KNOWLEDGE_SEARCH =
 export const KNOWLEDGE_CHIPS =
   "mb-4 flex gap-1 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 export const KNOWLEDGE_CHIP = "shrink-0 phone:min-h-11";
+/** The chip in effect: a grey plate in ink, quieter than the accent, which
+ *  stays for the page's one action. */
+export const KNOWLEDGE_CHIP_ON = `${KNOWLEDGE_CHIP} text-fg hover:text-fg`;
 /** "Show more" under the list. */
 export const KNOWLEDGE_MORE = "mt-3 flex justify-center";
+
+/** The editor's page frame: the project page's frame without its own
+ *  overflow, so the page's scroller (not this box, which never scrolls) is
+ *  what the sticky Save bar sticks to. */
+export const KNOWLEDGE_EDITOR_FRAME = cn(
+  PROJECT_PAGE_FRAME,
+  "overflow-visible",
+);
 
 /** The editor: groups of fields on the settings plate. */
 export const KNOWLEDGE_EDITOR_GROUP = "mb-3 flex flex-col gap-4 p-5";
@@ -71,6 +85,6 @@ export const KNOWLEDGE_EDITOR_ATTACHMENT =
 /** Save and Retire, stuck to the bottom of the page while it scrolls, over
  *  the home indicator on a phone. */
 export const KNOWLEDGE_EDITOR_BAR =
-  "sticky bottom-0 z-10 flex flex-col gap-2 bg-bg px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]";
+  "sticky bottom-0 z-10 flex flex-col gap-2 border-t border-divider-soft bg-bg px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]";
 export const KNOWLEDGE_EDITOR_ACTIONS = "flex items-center justify-end gap-2";
 export const KNOWLEDGE_EDITOR_ACTION = "phone:min-h-11";
