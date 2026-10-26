@@ -194,6 +194,40 @@ describe("KnowledgeIndex", () => {
     );
   });
 
+  test("anyTerm skips the all-terms pass", () => {
+    // Only the new-flow article holds both words; with anyTerm the items
+    // holding one of them come back too.
+    const all = index
+      .search("acme", "flow csv", { today: TODAY })
+      .map((hit) => hit.item.path);
+    expect(all).toEqual(["articles/export-new.md"]);
+    const any = index
+      .search("acme", "flow csv", { today: TODAY, anyTerm: true })
+      .map((hit) => hit.item.path);
+    expect(any[0]).toBe("articles/export-new.md");
+    expect(any).toContain("articles/export.md");
+    expect(any).toContain("articles/checking.md");
+  });
+
+  test("exclude leaves one path out of both passes", () => {
+    const all = index
+      .search("acme", "exporting project", {
+        today: TODAY,
+        exclude: "articles/export-new.md",
+      })
+      .map((hit) => hit.item.path);
+    expect(all).toEqual(["articles/export.md"]);
+    const any = index
+      .search("acme", "flow csv", {
+        today: TODAY,
+        anyTerm: true,
+        exclude: "articles/export.md",
+      })
+      .map((hit) => hit.item.path);
+    expect(any).not.toContain("articles/export.md");
+    expect(any.length).toBeGreaterThan(0);
+  });
+
   test("includeReference false leaves reference items out", () => {
     const paths = index
       .search("acme", "export csv", { today: TODAY, includeReference: false })

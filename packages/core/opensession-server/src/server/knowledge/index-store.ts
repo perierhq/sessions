@@ -39,6 +39,18 @@ interface ItemRow {
   effective: KnowledgeStatus;
 }
 
+export interface KnowledgeSearchOptions {
+  /** YYYY-MM-DD; decides `effective` and the tier. */
+  today: string;
+  limit?: number;
+  /** false leaves reference items out. */
+  includeReference?: boolean;
+  /** Leave this path out (an item searching for its neighbours). */
+  exclude?: string;
+  /** Skip the all-terms pass: any term may match, bm25 before validAsOf. */
+  anyTerm?: boolean;
+}
+
 /** Today's UTC day, for a call that wasn't given one. */
 export function utcDay(): string {
   return new Date().toISOString().slice(0, 10);
@@ -372,17 +384,21 @@ export class KnowledgeIndex {
    * Order: tier (backing, needs a check, reference), then newer `validAsOf`,
    * then bm25 (title 8, topics 4, body 1). In the any-term fallback bm25
    * comes before `validAsOf`, since matches differ in how much they match.
-   * Retired items never come back.
+   * Retired items never come back. `anyTerm` goes straight to the any-term
+   * pass (the conflict check's "what else talks about this"); `exclude`
+   * leaves one path out of both passes.
    */
   search(
     project: string,
     query: string,
-    opts: { limit?: number; includeReference?: boolean; today: string },
+    opts: KnowledgeSearchOptions,
   ): KnowledgeSearchHit[] {
     if (opts.today === undefined) throw new Error("Search needs today's date.");
     checkDay(opts.today);
-    const all = this.searchTerms(project, ftsQuery(query), false, opts);
-    if (all.length) return all;
+    if (!opts.anyTerm) {
+      const all = this.searchTerms(project, ftsQuery(query), false, opts);
+      if (all.length) return all;
+    }
     return this.searchTerms(project, ftsQuery(query, true), true, opts);
   }
 
@@ -390,11 +406,12 @@ export class KnowledgeIndex {
     project: string,
     terms: string,
     anyTerm: boolean,
-    opts: { limit?: number; includeReference?: boolean; today: string },
+    opts: KnowledgeSearchOptions,
   ): KnowledgeSearchHit[] {
     if (!terms) return [];
     const reference =
       opts.includeReference === false ? ` AND i.trust <> 'reference'` : "";
+    const exclude = opts.exclude === undefined ? "" : ` AND i.path <> ?`;
     const order = anyTerm
       ? "tier, rank, i.valid_as_of DESC, i.path"
       : "tier, i.valid_as_of DESC, rank, i.path";
@@ -407,7 +424,7 @@ export class KnowledgeIndex {
          FROM knowledge_fts f
          JOIN knowledge_items i ON i.project = f.project AND i.path = f.path
          WHERE knowledge_fts MATCH ? AND f.project = ?
-           AND i.status <> 'retired'${reference}
+           AND i.status <> 'retired'${reference}${exclude}
          ORDER BY ${order}
          LIMIT ?`,
       )
@@ -416,6 +433,7 @@ export class KnowledgeIndex {
         opts.today,
         terms,
         project,
+        ...(opts.exclude === undefined ? [] : [opts.exclude]),
         clampLimit(opts.limit ?? 10),
       ) as Array<ItemRow & { rank: number }>;
     return rows.map((row) => ({ item: fromRow(row), rank: row.rank }));

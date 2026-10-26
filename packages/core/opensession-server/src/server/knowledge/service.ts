@@ -33,7 +33,11 @@ import {
 import { findSecrets } from "../memory-repo/secrets";
 import { KnowledgeConflictError } from "./errors";
 import { parseArticle, renderArticle } from "./format";
-import { excerptOf, KnowledgeIndex } from "./index-store";
+import {
+  excerptOf,
+  KnowledgeIndex,
+  type KnowledgeSearchOptions,
+} from "./index-store";
 import {
   isAttachmentPath,
   isItemPath,
@@ -397,7 +401,7 @@ export class KnowledgeService {
   async search(
     project: string,
     query: string,
-    opts: { today: string; limit?: number; includeReference?: boolean },
+    opts: KnowledgeSearchOptions,
   ): Promise<KnowledgeSearchHit[]> {
     await this.fresh(project);
     return this.index.search(project, query, opts);
