@@ -229,3 +229,36 @@ describe("read-only ask mode", () => {
     expect(h.spawned).toHaveLength(0);
   });
 });
+
+describe("org command policy on unattended runs", () => {
+  const cwd = "/srv/acme/worktrees/acme-fix";
+  const gatedTool = (h: ReturnType<typeof hooks>, ownWorktree?: string) =>
+    makePiBashTool({
+      cwd,
+      env: { PATH: "/usr/bin:/bin" },
+      gated: true,
+      unattended: true,
+      ...(ownWorktree ? { ownWorktree } : {}),
+      __testHooks: h.hooks,
+    });
+
+  test("cleanup inside the run's own worktree runs", async () => {
+    const h = hooks();
+    const tool = gatedTool(h, cwd);
+    await run(tool, "rm -f apps/search-service/.probe.ts");
+    await run(tool, "git rm --cached -q docs/a.md; git status --short");
+    await run(tool, "rm -rf .tmp-shots");
+    expect(h.spawned).toHaveLength(3);
+  });
+
+  test("a recursive delete is refused without an own worktree, or outside it", async () => {
+    const h = hooks();
+    await expect(run(gatedTool(h), "rm -rf .tmp-shots")).rejects.toThrow(
+      "org command policy",
+    );
+    await expect(run(gatedTool(h, cwd), "rm -rf ../other")).rejects.toThrow(
+      "org command policy",
+    );
+    expect(h.spawned).toHaveLength(0);
+  });
+});

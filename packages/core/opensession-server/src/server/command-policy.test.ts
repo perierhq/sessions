@@ -42,6 +42,76 @@ describe("org floor", () => {
     expect(evaluateCommand("rm -f file.txt", p).decision).toBe("allow");
   });
 
+  // Both live refusals of ordinary cleanup were false positives: the rule
+  // read a hyphen inside a path (`search-service`) and an option of the NEXT
+  // command (`git status --short`) as `-r`.
+  test("recursive delete reads only the rm invocation's own options", () => {
+    const p = orgFloorPolicy();
+    for (const c of [
+      "rm -f apps/search-service/.probe.ts apps/search-service/.probe2.ts && git status --short | head",
+      "rm -f docs/x-ray.md",
+      "rm notes/re-run.md; ls -R src",
+      "git rm --cached -q docs/a.md docs/b-morning.md; git status --short",
+      "rm -f a.txt && grep -r foo src",
+      "rm -f a.txt; cp -r a b",
+    ]) {
+      expect(evaluateCommand(c, p).decision, c).toBe("allow");
+    }
+    for (const c of [
+      "rm build -rf",
+      "ls && rm -rf build",
+      "/bin/rm -Rf build",
+      "git rm -r docs",
+    ]) {
+      expect(evaluateCommand(c, p).decision, c).toBe("require_approval");
+    }
+  });
+
+  test("git rm --cached only untracks, so it is never a recursive delete", () => {
+    const p = orgFloorPolicy();
+    expect(evaluateCommand("git rm -r --cached docs/old", p).decision).toBe(
+      "allow",
+    );
+    expect(
+      evaluateCommand("git rm -r --cached docs/old && rm -rf /", p).decision,
+    ).toBe("require_approval");
+  });
+
+  test("recursive delete of literal paths inside the session's own worktree is allowed", () => {
+    const p = orgFloorPolicy();
+    const ws = { workspace: "/srv/acme/worktrees/acme-fix" };
+    for (const c of [
+      "rm -rf build",
+      "rm -rf ./build dist/",
+      "rm -rf /srv/acme/worktrees/acme-fix/.tmp-shots",
+      "git rm -r docs/old",
+      "rm -rf node_modules/.cache && bun install",
+    ]) {
+      expect(evaluateCommand(c, p, ws).decision, c).toBe("allow");
+    }
+    for (const c of [
+      "rm -rf .",
+      "rm -rf ./",
+      "rm -rf /srv/acme/worktrees/acme-fix",
+      "rm -rf ..",
+      "rm -rf ../other",
+      "rm -rf /srv/acme/worktrees/acme-other",
+      "rm -rf .git",
+      "rm -rf .git/objects",
+      "rm -rf *",
+      "rm -rf build/*",
+      "rm -rf $HOME/x",
+      "rm -rf ~/x",
+      "rm -rf",
+      "cd /srv && rm -rf acme",
+      "sudo rm -rf build",
+      "git -C /srv/acme rm -r x",
+      "rm -rf build /etc",
+    ]) {
+      expect(evaluateCommand(c, p, ws).decision, c).toBe("require_approval");
+    }
+  });
+
   test("fork bomb is denied", () => {
     const p = orgFloorPolicy();
     expect(evaluateCommand(":(){ :|:& };:", p).decision).toBe("deny");
@@ -845,6 +915,16 @@ describe("bashAskPolicyReply", () => {
         gated: false,
       }),
     ).toBeNull();
+  });
+
+  test("a recursive delete inside the run's own worktree answers its own ask", () => {
+    expect(
+      bashAskPolicyReply(bashAsk("rm -rf .tmp-shots"), {
+        unattended: true,
+        gated: true,
+        workspace: "/srv/acme/worktrees/acme-fix",
+      }),
+    ).toBe("once");
   });
 
   test("falls back to the ask title when metadata carries no command", () => {

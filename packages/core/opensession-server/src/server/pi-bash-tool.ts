@@ -201,6 +201,9 @@ export function makePiBashTool(input: {
   /** Run commands in this Sandbox workspace instead of on this machine. */
   remote?: RemoteWorkspace;
   gated: boolean;
+  /** The run's own isolated checkout: the org command policy lets
+   *  housekeeping deletes inside it through (command-policy.ts). */
+  ownWorktree?: string;
   /** Ask mode: every command must pass the read-only allowlist
    *  (askBashDenyReason over ASK_BASH_PERMISSIONS, runner-shared.ts). */
   askReadOnly?: boolean;
@@ -304,6 +307,7 @@ export function makePiBashTool(input: {
             gated: true,
             sessionId: input.sessionId,
             runKind: input.runKind,
+            workspace: input.ownWorktree,
           },
         );
         if (reply !== "once") {

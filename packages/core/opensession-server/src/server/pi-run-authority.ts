@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import type { PrivateTermsGuard } from "./command-policy";
 import type { RunAgentOpts } from "./agent-runner";
 import {
@@ -28,6 +29,9 @@ export interface PiRunAuthority {
   policy: RunToolPolicy;
   bashGated: boolean;
   cwdRepo: Repo | undefined;
+  /** The run's own isolated checkout (runOwnWorktree), where the command
+   *  policy lets housekeeping deletes through. */
+  ownWorktree: string | undefined;
   publicRepo: boolean;
   privateTermsGuard: PrivateTermsGuard | undefined;
   githubUser: string | undefined;
@@ -65,18 +69,31 @@ export async function resolvePiRunAuthority(
   // The repo owning this run's cwd, or undefined for a repo-less one (a
   // scratch dir, a repo-less ask session). Dynamic import to avoid a static
   // module-init cycle through "./worktree".
-  const cwdRepo = await (async () => {
+  const { cwdRepo, ownWorktree } = await (async () => {
     try {
-      const { getRepo, repoForPathOrNull } = await import("./worktree");
+      const { canonicalPath, getRepo, repoForPathOrNull } =
+        await import("./worktree");
       // A Sandbox checkout's path means nothing on this machine: the
       // launcher names its repository instead.
       if (remote)
-        return opts.remoteWorkspace?.repo
-          ? getRepo(opts.remoteWorkspace.repo)
-          : undefined;
-      return repoForPathOrNull(cwd);
+        return {
+          cwdRepo: opts.remoteWorkspace?.repo
+            ? getRepo(opts.remoteWorkspace.repo)
+            : undefined,
+          ownWorktree: runOwnWorktree({ cwd, remote: true }),
+        };
+      const repo = repoForPathOrNull(cwd);
+      return {
+        cwdRepo: repo,
+        ownWorktree: runOwnWorktree({
+          cwd,
+          remote: false,
+          repoCheckout: repo?.repo,
+          canonical: canonicalPath,
+        }),
+      };
     } catch {
-      return undefined;
+      return { cwdRepo: undefined, ownWorktree: undefined };
     }
   })();
   // A run that can publish must know when the whole internet reads what it
@@ -135,6 +152,7 @@ export async function resolvePiRunAuthority(
     policy,
     bashGated,
     cwdRepo,
+    ownWorktree,
     publicRepo,
     privateTermsGuard,
     githubUser,
@@ -146,4 +164,26 @@ export async function resolvePiRunAuthority(
     agentGitEnv,
     mergeGuard,
   };
+}
+
+/**
+ * The run's own isolated checkout, or undefined. A Sandbox is its own
+ * machine; on this machine only a registered repository's worktree counts,
+ * never its shared checkout (other sessions edit there) nor a repo-less
+ * directory, whose bounds nothing guarantees.
+ */
+export function runOwnWorktree(input: {
+  cwd: string;
+  remote: boolean;
+  /** The registered repository's shared checkout. */
+  repoCheckout?: string;
+  canonical?: (path: string) => string;
+}): string | undefined {
+  if (input.remote) return input.cwd || undefined;
+  if (!input.repoCheckout || !input.cwd) return undefined;
+  const canonical = input.canonical ?? ((path: string) => path);
+  const cwd = canonical(input.cwd);
+  const shared = canonical(input.repoCheckout);
+  if (cwd === shared || cwd.startsWith(shared + sep)) return undefined;
+  return input.cwd;
 }

@@ -111,6 +111,8 @@ export function buildPiToolset(input: {
   mcpBridge: PiMcpBridge;
   policy: RunToolPolicy;
   bashGated: boolean;
+  /** The run's own isolated checkout (runOwnWorktree). */
+  ownWorktree?: string;
   mergeGuard: MergeGuard | undefined;
   privateTermsGuard: PrivateTermsGuard | undefined;
   abort: AbortController;
@@ -136,6 +138,7 @@ export function buildPiToolset(input: {
     mcpBridge,
     policy,
     bashGated,
+    ownWorktree,
     mergeGuard,
     privateTermsGuard,
     abort,
@@ -212,6 +215,7 @@ export function buildPiToolset(input: {
             env: commandEnv,
             remote,
             gated: bashGated,
+            ...(ownWorktree ? { ownWorktree } : {}),
             askReadOnly: isAsk,
             unattended: policy.unattended,
             sessionId: journal?.osSessionId,
