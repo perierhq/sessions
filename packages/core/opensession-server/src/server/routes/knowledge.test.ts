@@ -355,6 +355,88 @@ describe("articles", () => {
     expect(read?.item.validAsOfCommit).toBe(newSha);
   });
 
+  test("confirming an item that disagreed with another settles the pair", async () => {
+    const resolved: string[][] = [];
+    __setKnowledgeRouteDepsForTest({
+      today: () => TODAY,
+      repoChanges: {
+        repo: (project) =>
+          project === "acme" ? { dir: code, defaultBranch: "main" } : null,
+      },
+      resolveConflict: async (project, a, b) => {
+        resolved.push([project, a, b]);
+        return true;
+      },
+    });
+    const check = (other: string) => ({
+      reason: `Disagrees with ${other}`,
+      since: "2026-10-25",
+      conflictWith: other,
+    });
+    await seed([
+      {
+        path: "articles/export.md",
+        fm: fm({
+          status: "needs-check",
+          dependsOn: [],
+          check: check("articles/export-old.md"),
+        }),
+        body: "Export from Settings.\n",
+      },
+      {
+        path: "articles/export-old.md",
+        fm: fm({
+          title: "Exporting (old)",
+          status: "needs-check",
+          dependsOn: [],
+          check: check("articles/export.md"),
+        }),
+        body: "Export from the menu.\n",
+      },
+      { path: "articles/other.md", fm: fm(), body: "Other.\n" },
+    ]);
+    const response = await call("POST", "/api/knowledge/acme/confirm", {
+      body: { paths: ["articles/export.md", "articles/other.md"] },
+    });
+    expect(response.status).toBe(200);
+    expect(resolved).toEqual([
+      ["acme", "articles/export.md", "articles/export-old.md"],
+    ]);
+    // The other side keeps its own check until a person looks at it.
+    const other = await service.read("acme", "articles/export-old.md", TODAY);
+    expect(other?.item.status).toBe("needs-check");
+  });
+
+  test("a confirm still succeeds when settling the pair fails", async () => {
+    __setKnowledgeRouteDepsForTest({
+      today: () => TODAY,
+      resolveConflict: async () => {
+        throw new Error("catalog down");
+      },
+    });
+    await seed([
+      {
+        path: "articles/export.md",
+        fm: fm({
+          status: "needs-check",
+          dependsOn: [],
+          check: {
+            reason: "Disagrees with Exporting (old)",
+            since: "2026-10-25",
+            conflictWith: "articles/export-old.md",
+          },
+        }),
+        body: "Export from Settings.\n",
+      },
+    ]);
+    const response = await call("POST", "/api/knowledge/acme/confirm", {
+      body: { paths: ["articles/export.md"] },
+    });
+    expect(response.status).toBe(200);
+    const read = await service.read("acme", "articles/export.md", TODAY);
+    expect(read?.item.status).toBe("active");
+  });
+
   test("retire sets status retired", async () => {
     await seed([
       { path: "articles/export.md", fm: fm(), body: "Export it.\n" },

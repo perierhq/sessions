@@ -155,6 +155,9 @@ export interface KnowledgeRouteDeps {
   listJobs(project: string): Promise<KnowledgeImportJob[]>;
   /** Cancel a running job; null when none runs under that id. */
   cancelJob(project: string, id: string): Promise<KnowledgeImportJob | null>;
+  /** Record that `a` and `b` don't disagree after all (a person confirmed
+   *  `a`, whose check named `b`); false when either can't be read. */
+  resolveConflict(project: string, a: string, b: string): Promise<boolean>;
 }
 
 const defaults: KnowledgeRouteDeps = {
@@ -176,6 +179,12 @@ const defaults: KnowledgeRouteDeps = {
     (await import("../knowledge/ingest/jobs")).listJobs(project),
   cancelJob: async (project, id) =>
     (await import("../knowledge/ingest/jobs")).cancelJob(project, id),
+  resolveConflict: async (project, a, b) =>
+    (await import("../knowledge/freshness/conflicts")).resolveConflictPair(
+      project,
+      a,
+      b,
+    ),
 };
 
 /** The default starter of each import kind. Each sets the knowledge
@@ -849,15 +858,36 @@ async function rewrite(
 async function confirm(ctx: RouteContext, project: string): Promise<Response> {
   const today = deps.today();
   let head: string | null = null;
-  return rewrite(
+  let confirmed: KnowledgeItem[] = [];
+  const response = await rewrite(
     ctx,
     project,
     "Confirm",
     (fm) => ({ ...stamped(fm, today, head), status: "active" }),
     async (items) => {
+      confirmed = items;
       head = await codeHead(project, items.map(frontMatterOf));
     },
   );
+  // A confirmed item that disagreed with another: the person read both and
+  // kept this text, so the pair is settled and the next conflict run won't
+  // ask about the same two texts again. Best effort: that run also notices
+  // the cleared check and records the pair itself.
+  await Promise.all(
+    confirmed.map(async (item) => {
+      const other = item.check?.conflictWith;
+      if (!other) return;
+      await deps
+        .resolveConflict(project, item.path, other)
+        .catch((error: unknown) =>
+          console.warn(
+            `[knowledge] Couldn't record ${item.path} and ${other} as settled:`,
+            error instanceof Error ? error.message : error,
+          ),
+        );
+    }),
+  );
+  return response;
 }
 
 async function retire(ctx: RouteContext, project: string): Promise<Response> {
