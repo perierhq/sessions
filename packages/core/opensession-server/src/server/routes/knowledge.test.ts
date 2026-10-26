@@ -1,4 +1,12 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -79,6 +87,8 @@ beforeAll(async () => {
   await git(["init", "--quiet", "-b", "main"], { cwd: code });
   oldSha = await commitCode("docs/export.md", "Export from the menu.\n");
   newSha = await commitCode("docs/export.md", "Export from Settings.\n");
+  // The fetched default branch the freshness reads look at.
+  await git(["update-ref", "refs/remotes/origin/main", newSha], { cwd: code });
 });
 
 afterAll(async () => {
@@ -412,7 +422,12 @@ describe("needs-check", () => {
     const { items } = (await response.json()) as {
       items: Array<{
         item: KnowledgeItem;
-        change: { kind: string; patch?: string; before?: string; after?: string };
+        change: {
+          kind: string;
+          patch?: string;
+          before?: string;
+          after?: string;
+        };
       }>;
     };
     expect(items).toHaveLength(1);

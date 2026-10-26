@@ -49,6 +49,7 @@ import { handleProjectDefaultsRoutes } from "./project-defaults";
 import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
+import { handleKnowledgeRoutes } from "./knowledge";
 import { handleSupportRoutes } from "./support";
 import { handleSupportActionRoutes } from "./support-actions";
 import { handleSupportInboxRoutes } from "./support-inboxes";
@@ -140,6 +141,7 @@ export const routeHandlers: RouteHandler[] = [
   handleIncidentsRoutes,
   handleIncidentResponseRoutes,
   handleSupportRoutes,
+  handleKnowledgeRoutes,
   handleSupportInboxRoutes,
   handleSupportReplyRoutes,
   handleSupportActionRoutes,

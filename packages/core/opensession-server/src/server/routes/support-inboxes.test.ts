@@ -20,9 +20,9 @@ import {
 } from "../support/testing/kernel-fixture";
 import type { RouteContext } from "./context";
 import { routeHandlers } from "./index";
+import { __setEmailSupportEnabledForTest } from "../support/enabled";
 import {
   __resetInboxTestLimitsForTest,
-  __setEmailSupportEnabledForTest,
   handleSupportInboxRoutes,
 } from "./support-inboxes";
 
