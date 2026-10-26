@@ -15,6 +15,7 @@ import { startAnalyticsPrewarm } from "./src/server/analytics";
 import { startDiskGc } from "./src/server/disk-gc";
 import { installUnhandledRejectionGuard } from "./src/server/process-guards";
 import { startWorktreeReaper } from "./src/server/worktree-reaper";
+import { startArchiveSweep } from "./src/server/archive-sweep";
 import { startMemoryRepoMaintenance } from "./src/server/memory-repo/maintenance";
 import { startPortalReaper } from "./src/server/portal-supervisor";
 import { startRunnerPortalReaper } from "./src/server/runner-portals";
@@ -131,8 +132,6 @@ import {
 } from "./src/server/session-cache";
 import { getSessionControl } from "./src/server/session-control";
 import { buildReposNote } from "./src/server/session-repos";
-import { destroySessionSandbox } from "./src/server/session-sandbox";
-import { getAllSessions } from "./src/server/sessions";
 import {
   crossSiteViolation,
   ensureAutomationWebSession,
@@ -167,7 +166,6 @@ import {
   sessionSocialCardPublicRoutes,
   socialSessionIdFromPath,
 } from "./src/server/session-social-card";
-import { sweepArchivedWorktrees } from "./src/server/worktree";
 import { type WSClientData, broadcastToAll } from "./src/server/ws-hub";
 import { clientAcceptsCompressedFrames } from "./src/server/ws-compression";
 import { mkdirSync, watch, writeFileSync } from "fs";
@@ -1033,6 +1031,13 @@ if (!g.__opensessionBooted) {
     // file lock keeps a rotating refresh token from being spent twice.
     startMcpOauthRefresher();
 
+    // Checkouts carried over from another install keep its paths (a
+    // credential helper this user can't run, a warm template linked to the
+    // other install's checkout). Repair them once, before the sweeps fetch.
+    void import("./src/server/checkout-repair")
+      .then((m) => m.repairForeignCheckoutPaths())
+      .catch((e) => console.error("[checkout-repair] failed:", e));
+
     // Warm dev-server pool + warm git templates: docker-level sweeps, so only
     // the server that owns the daemon runs them.
     ensureWarmTemplateScheduler();
@@ -1349,42 +1354,10 @@ if (!g.__opensessionBooted) {
     setServiceReadiness("ready");
   }
 
-  // Ongoing hygiene (every 6h): remove worktrees of sessions that were manually
-  // archived more than 14 days ago and have no WIP. Destructive on the shared
-  // filesystem/docker daemon, so dev instances skip it too.
-  if (!devInstance)
-    setInterval(
-      async () => {
-        try {
-          const removed = await sweepArchivedWorktrees(getAllSessions(), 14);
-          if (removed.length > 0) {
-            console.log(
-              `[worktree-sweep] Removed ${removed.length} clean worktree(s): ${removed.join(", ")}`,
-            );
-            invalidateSessionsCache();
-          }
-        } catch (e) {
-          console.error("[worktree-sweep] Sweep failed:", e);
-        }
-        // Sandboxes of long-idle archived sessions, same cadence as the
-        // worktree sweep: containers + engine-state volumes are provider-owned
-        // and safe to drop (bind-mode worktrees belong to the sweep above and
-        // are untouched). Volume-mode workspaces die with the sandbox — the
-        // documented contract of that mode (push your work). A revived session
-        // just re-ensures a fresh container on its next prompt.
-        try {
-          const cutoff = Date.now() - 14 * 86_400_000;
-          for (const s of getAllSessions()) {
-            if (!s.sandbox?.sandboxId || !s.archived || s.isRunning) continue;
-            if (new Date(s.lastActivity).getTime() >= cutoff) continue;
-            destroySessionSandbox(s, "archive-sweep", true);
-          }
-        } catch (e) {
-          console.error("[sandbox-sweep] Sweep failed:", e);
-        }
-      },
-      6 * 60 * 60 * 1000,
-    );
+  // Ongoing hygiene: worktrees and Sandboxes of sessions archived more than
+  // 14 days ago (archive-sweep.ts). Destructive on the shared filesystem and
+  // container engine, so dev instances skip it too.
+  if (!devInstance) startArchiveSweep();
 
   // Run agent startup hooks
   for (const agent of agents) {

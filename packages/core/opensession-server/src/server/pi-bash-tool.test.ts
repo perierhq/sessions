@@ -243,3 +243,70 @@ describe("the command line of the shell", () => {
     );
   });
 });
+
+describe("read-only ask mode", () => {
+  const cwd = "/srv/acme/worktrees/acme-review";
+  const scratch = "/srv/acme/scratch/s1";
+  const askTool = (h: ReturnType<typeof hooks>) =>
+    makePiBashTool({
+      cwd,
+      env: { PATH: "/usr/bin:/bin", OPENSESSION_SCRATCH: scratch },
+      gated: false,
+      askReadOnly: true,
+      unattended: true,
+      __testHooks: h.hooks,
+    });
+
+  test("cd into the session's own worktree or scratch runs", async () => {
+    const h = hooks();
+    const tool = askTool(h);
+    await run(tool, `cd ${cwd} && git diff origin/main...HEAD | head`);
+    await run(tool, `cd ${scratch} && ls`);
+    expect(h.spawned).toHaveLength(2);
+  });
+
+  test("cd elsewhere and writes are refused before anything runs", async () => {
+    const h = hooks();
+    const tool = askTool(h);
+    await expect(run(tool, "cd /etc && ls")).rejects.toThrow(
+      `Commands already run in ${cwd}`,
+    );
+    await expect(run(tool, `cd ${cwd} && rm -f a.txt`)).rejects.toThrow(
+      "read-only allowlist",
+    );
+    expect(h.spawned).toHaveLength(0);
+  });
+});
+
+describe("org command policy on unattended runs", () => {
+  const cwd = "/srv/acme/worktrees/acme-fix";
+  const gatedTool = (h: ReturnType<typeof hooks>, ownWorktree?: string) =>
+    makePiBashTool({
+      cwd,
+      env: { PATH: "/usr/bin:/bin" },
+      gated: true,
+      unattended: true,
+      ...(ownWorktree ? { ownWorktree } : {}),
+      __testHooks: h.hooks,
+    });
+
+  test("cleanup inside the run's own worktree runs", async () => {
+    const h = hooks();
+    const tool = gatedTool(h, cwd);
+    await run(tool, "rm -f apps/search-service/.probe.ts");
+    await run(tool, "git rm --cached -q docs/a.md; git status --short");
+    await run(tool, "rm -rf .tmp-shots");
+    expect(h.spawned).toHaveLength(3);
+  });
+
+  test("a recursive delete is refused without an own worktree, or outside it", async () => {
+    const h = hooks();
+    await expect(run(gatedTool(h), "rm -rf .tmp-shots")).rejects.toThrow(
+      "org command policy",
+    );
+    await expect(run(gatedTool(h, cwd), "rm -rf ../other")).rejects.toThrow(
+      "org command policy",
+    );
+    expect(h.spawned).toHaveLength(0);
+  });
+});

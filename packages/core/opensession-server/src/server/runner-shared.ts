@@ -21,6 +21,7 @@ import { userMatchesAny } from "./shared/user-mappings";
 export type { McpScope } from "@tellahq/opensession-protocol/runner";
 import type { McpScope } from "@tellahq/opensession-protocol/runner";
 import { GH_CHECKS_CLI_PATH } from "./run-instructions";
+import { askSegmentVerdict, type AskRoots } from "./ask-bash-commands";
 
 /**
  * Resolve the MCP servers for a run: all configured, or just the allowlist,
@@ -532,6 +533,13 @@ export function hasRunStatusDeclaration(text: string): boolean {
 export const ASK_BASH_PERMISSIONS: Record<string, "allow" | "deny"> = {
   "*": "deny",
   "cat *": "allow",
+  // Bare filters end pipelines (`git log | head`); `head *` needs an argument.
+  cat: "allow",
+  head: "allow",
+  tail: "allow",
+  wc: "allow",
+  echo: "allow",
+  true: "allow",
   "ls*": "allow",
   "rg *": "allow",
   "grep *": "allow",
@@ -581,11 +589,17 @@ export const ASK_BASH_PERMISSIONS: Record<string, "allow" | "deny"> = {
   "git cat-file*": "allow",
   "git describe*": "allow",
   "git merge-base*": "allow",
+  "git ls-tree*": "allow",
+  "git range-diff*": "allow",
+  "git remote": "allow",
+  "git remote -v": "allow",
+  "git --version": "allow",
   // Read-only stdout filters — the usual tails on allowed git/gh reads
   // (`git show X:f | nl -ba`, `… | cut -d…`); an unlisted filter denies the
   // whole pipeline (each sub-command is evaluated, see rev-parse note).
-  // Deliberately NOT sort/uniq (`sort -o FILE` and `uniq in out` both write
-  // files) and not awk/perl (arbitrary code; sed's exclusion is noted below).
+  // sort, uniq, sed and awk are not globs here: a glob cannot tell `sort -u`
+  // from `sort -o FILE`, so ask-bash-commands.ts reads their words (as it
+  // does for cd, git -C, git tag and find). perl stays out (arbitrary code).
   nl: "allow",
   "nl *": "allow",
   "cut *": "allow",
@@ -604,10 +618,9 @@ export const ASK_BASH_PERMISSIONS: Record<string, "allow" | "deny"> = {
   // Read-only by construction: it wraps `gh pr checks` with a short-lived
   // read-only App installation token.
   [`bun ${GH_CHECKS_CLI_PATH} *`]: "allow",
-  // NOTE: sed stays denied even as `sed -n` — "sed -n *" also matches
-  // `sed -n -i …` (in-place edit) and scripts with the `w /path` write
-  // command, so no sed glob is actually read-only. Use head/tail/cat/rg
-  // for line ranges instead.
+  // NOTE: no sed glob: "sed -n *" also matches `sed -n -i …` (in-place
+  // edit) and scripts with the `w /path` write command. A print-only
+  // `sed -n '<range>p'` is allowed by ask-bash-commands.ts instead.
   // Read-only GitHub inspection (PR-backlog digests, review triage). Only the
   // non-mutating `gh pr`/`gh run` read verbs — NOT bare "gh *" (that would
   // allow pr create/merge/close/comment, run rerun/cancel/delete) and NOT
@@ -619,6 +632,11 @@ export const ASK_BASH_PERMISSIONS: Record<string, "allow" | "deny"> = {
   "gh run view*": "allow",
   "gh run list*": "allow",
   "gh run watch*": "allow",
+  "gh pr diff*": "allow",
+  "gh issue view*": "allow",
+  "gh issue list*": "allow",
+  "gh release view*": "allow",
+  "gh release list*": "allow",
   // jq: a pure read-only JSON filter (no file writes, no shell-out, no code
   // exec — its language is sandboxed data transformation), so it's on par with
   // grep/wc for the allowlist. Lets ask-mode runs process `gh --json` / API
@@ -678,7 +696,12 @@ function askBashVerdict(segment: string): "allow" | "deny" {
  * a file, so both are refused outright. Fd dups (2>&1) and redirects to
  * /dev/null stay allowed, since they appear in ordinary read pipelines.
  */
-export function askBashDenyReason(command: string): string | null {
+export function askBashDenyReason(
+  command: string,
+  /** The session's working directory and scratch dir: `cd` and `git -C`
+   *  may move within them. Without a workspace, both stay refused. */
+  roots: AskRoots = {},
+): string | null {
   const REFUSE =
     "Read-only ask mode: bash is limited to a read-only allowlist (file, git, gh and system reads). " +
     "Propose the exact command in your reply for a human to run.";
@@ -770,8 +793,12 @@ export function askBashDenyReason(command: string): string | null {
   }
   push();
   for (const raw of segments) {
-    const segment = raw.trim();
+    let segment = raw.trim();
     if (!segment) continue;
+    const checked = askSegmentVerdict(segment, roots);
+    if (checked?.kind === "allow") continue;
+    if (checked?.kind === "deny") return `${checked.reason} ${REFUSE}`;
+    if (checked?.kind === "rewrite") segment = checked.segment;
     if (askBashVerdict(segment) === "deny") {
       return `"${segment}" is not on the read-only allowlist. ${REFUSE}`;
     }

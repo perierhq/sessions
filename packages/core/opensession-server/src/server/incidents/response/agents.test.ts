@@ -579,3 +579,92 @@ test("tool calls are summarised without their full input", async () => {
   expect(calls[1]!.summary).toBe("src/search.ts");
   expect(calls[2]!.summary).toBe("describe_access");
 });
+
+test("an agent's pull request is the one opened from its own session branch", async () => {
+  // As on a live server: the session store does not hold the PR the agent
+  // opened with `gh pr create`; the PR cache has it under the branch.
+  const h = fakeWorld({ existing: ["child-7"] });
+  h.sessions.set(
+    "child-7",
+    summary("child-7", {
+      parentSessionId: "coord",
+      branch: "search-503-one-slow-call",
+      createdAt: "2026-10-20T10:00:00Z",
+    }),
+  );
+  const prs = new Map<
+    string,
+    { url: string; state: "OPEN" | "MERGED" | "CLOSED"; createdAt: string }
+  >([
+    [
+      "search-503-one-slow-call",
+      {
+        url: "https://github.com/acme/web/pull/469",
+        state: "OPEN",
+        createdAt: "2026-10-20T10:10:00Z",
+      },
+    ],
+  ]);
+  const lookups: Array<[string, string]> = [];
+  const agents = createIncidentAgents(
+    { ...incident, response: responseWith([{ sessionId: "child-7" }]) },
+    { coordinatorSessionId: "coord", automation },
+    {
+      ...h.deps,
+      pullRequest: (repo, branch) => {
+        lookups.push([repo, branch]);
+        return prs.get(branch);
+      },
+    },
+  );
+  expect((await agents.status("child-7")).prUrl).toBe(
+    "https://github.com/acme/web/pull/469",
+  );
+  expect(lookups).toEqual([["acme", "search-503-one-slow-call"]]);
+
+  // A closed one is not the agent's open pull request.
+  prs.set("search-503-one-slow-call", {
+    ...prs.get("search-503-one-slow-call")!,
+    state: "CLOSED",
+  });
+  expect((await agents.status("child-7")).prUrl).toBeUndefined();
+
+  // Nor is one opened on the same branch before the session started: an
+  // older release gave two incidents' agents one branch.
+  prs.set("search-503-one-slow-call", {
+    url: "https://github.com/acme/web/pull/467",
+    state: "OPEN",
+    createdAt: "2026-10-20T09:00:00Z",
+  });
+  expect((await agents.status("child-7")).prUrl).toBeUndefined();
+
+  // One the session store already holds wins.
+  h.sessions.set(
+    "child-7",
+    summary("child-7", {
+      parentSessionId: "coord",
+      branch: "search-503-one-slow-call",
+      prUrl: "https://github.com/acme/web/pull/470",
+    }),
+  );
+  expect((await agents.status("child-7")).prUrl).toBe(
+    "https://github.com/acme/web/pull/470",
+  );
+});
+
+test("an agent on the default branch has no pull request of its own", async () => {
+  const h = fakeWorld({ existing: ["child-7"] });
+  const agents = createIncidentAgents(
+    { ...incident, response: responseWith([{ sessionId: "child-7" }]) },
+    { coordinatorSessionId: "coord", automation },
+    {
+      ...h.deps,
+      pullRequest: () => ({
+        url: "https://github.com/acme/web/pull/1",
+        state: "OPEN",
+        createdAt: "2026-10-20T10:10:00Z",
+      }),
+    },
+  );
+  expect((await agents.status("child-7")).prUrl).toBeUndefined();
+});

@@ -3,9 +3,21 @@ import {
   classifyTopology,
   parseRemotes,
   parseSha256Checksum,
+  pruneReleases,
+  releasesToKeep,
   restartReleaseWithRollback,
 } from "./update";
-import { mkdtempSync, readlinkSync, rmSync, symlinkSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -171,3 +183,78 @@ describe.each(["restart", "health"])(
     );
   },
 );
+
+describe("release retention", () => {
+  function releasesDir(names: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "opensession-releases-test-"));
+    names.forEach((name, index) => {
+      const release = join(dir, name);
+      mkdirSync(release);
+      writeFileSync(join(release, "release.json"), "{}");
+      // Oldest first: the order releases were built in.
+      const at = new Date(Date.UTC(2026, 0, 1 + index));
+      utimesSync(release, at, at);
+    });
+    return dir;
+  }
+  const names = (n: number) =>
+    Array.from({ length: n }, (_, i) => `opensession-0.${i}.0-linux-arm64`);
+
+  test("keeps the current release and the three before it", () => {
+    const all = names(8);
+    const dir = releasesDir(all);
+    try {
+      const removed = pruneReleases(dir, {
+        current: join(dir, all[7]!),
+        keep: 3,
+        inUse: new Set(),
+      });
+      expect(removed.sort()).toEqual(all.slice(0, 4).sort());
+      expect(readdirSync(dir).sort()).toEqual(all.slice(4).sort());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("never removes the rollback target, a release in use, or anything that is not a release", () => {
+    const all = names(7);
+    const dir = releasesDir(all);
+    mkdirSync(join(dir, ".incoming.123"));
+    mkdirSync(join(dir, "notes"));
+    try {
+      const removed = pruneReleases(dir, {
+        // Rolled back: current is older than the newest unpacked one.
+        current: join(dir, all[2]!),
+        keep: 1,
+        protect: [join(dir, all[0]!)],
+        inUse: new Set([join(dir, all[1]!)]),
+      });
+      expect(removed.sort()).toEqual([all[3], all[4], all[5]].sort());
+      expect(existsSync(join(dir, all[6]!))).toBe(true);
+      expect(existsSync(join(dir, ".incoming.123"))).toBe(true);
+      expect(existsSync(join(dir, "notes"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps everything when the current release is unknown", () => {
+    const dir = releasesDir(names(6));
+    try {
+      expect(
+        pruneReleases(dir, { current: "", keep: 0, inUse: new Set() }),
+      ).toEqual([]);
+      expect(readdirSync(dir)).toHaveLength(6);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the number kept is configurable", () => {
+    expect(releasesToKeep(undefined)).toBe(3);
+    expect(releasesToKeep("5")).toBe(5);
+    expect(releasesToKeep("0")).toBe(0);
+    expect(releasesToKeep("-1")).toBe(3);
+    expect(releasesToKeep("many")).toBe(3);
+  });
+});

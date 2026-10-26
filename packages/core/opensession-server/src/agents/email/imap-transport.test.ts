@@ -437,6 +437,54 @@ describe("ImapTransport", () => {
     expect(login.count()).toBe(1);
   });
 
+  test("a backoff logs the error that caused it", async () => {
+    const f = await fixture();
+    scriptLogin(f, () => ({
+      code: "",
+      text: "Too many simultaneous connections",
+    }));
+    const clock = fakeClock();
+    const h = harness(f, { timers: clock, random: () => 1 });
+    const warned: unknown[][] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args);
+    try {
+      await h.transport.start();
+    } finally {
+      console.warn = original;
+    }
+    const line = warned.find((args) => args[0] === "[email] imap backing off");
+    expect(line?.[1]).toMatchObject({
+      inboxId: "inb_test",
+      kind: "too-many-connections",
+      delayMs: 30_000,
+    });
+    expect(String((line?.[1] as { error?: unknown }).error)).toContain(
+      "Too many simultaneous connections",
+    );
+  });
+
+  test("a refused connection logs its error code", async () => {
+    const f = await fixture();
+    const inbox = inboxFor(f);
+    // Nothing listens on the fixture's port once it is closed.
+    await f.close();
+    fixtures = fixtures.filter((x) => x !== f);
+    const clock = fakeClock();
+    const warned: unknown[][] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args);
+    try {
+      const h = harness(f, { inbox, timers: clock, random: () => 1 });
+      await h.transport.start();
+      expect(h.transport.health().state).toBe("backing-off");
+    } finally {
+      console.warn = original;
+    }
+    const line = warned.find((args) => args[0] === "[email] imap backing off");
+    expect(line?.[1]).toMatchObject({ kind: "network", code: "ECONNREFUSED" });
+  });
+
   test("five minutes live resets the backoff", async () => {
     const f = await fixture();
     scriptLogin(f, (n) =>

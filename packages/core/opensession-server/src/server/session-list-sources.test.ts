@@ -27,6 +27,9 @@ function sourceFiles(dir: string): string[] {
 const productionFiles = () => [
   ...sourceFiles(serverDir),
   ...sourceFiles(resolve(serverDir, "../agents")),
+  // The gateway entry runs the boot-time and periodic sweeps; a scanner call
+  // there throws on every pass in a live gateway.
+  resolve(serverDir, "../../opensession.ts"),
 ];
 /** `server/x.ts` or `agents/x.ts`. */
 const relativeTo = (path: string) => relative(resolve(serverDir, ".."), path);

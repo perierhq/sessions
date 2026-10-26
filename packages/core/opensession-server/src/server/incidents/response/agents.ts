@@ -29,6 +29,7 @@ import {
   saveAutomation,
 } from "../../automations";
 import { newSessionId } from "../../paths";
+import { type PrInfo, getPrsByRepo } from "../../pr-cache";
 import {
   type SessionControl,
   type SessionSummary,
@@ -174,6 +175,11 @@ export interface AgentDeps {
   now: () => number;
   /** Archive a session the way a person does from the sidebar. */
   archive: (id: string, session: SessionSummary) => Promise<unknown>;
+  /** The pull request the PR cache holds for a branch of a repo. */
+  pullRequest: (
+    repoId: string,
+    branch: string,
+  ) => Pick<PrInfo, "url" | "state" | "createdAt"> | undefined;
   controllerDeps?: Partial<WorkflowSessionControllerDeps>;
 }
 
@@ -193,6 +199,9 @@ function agentDeps(over: Partial<AgentDeps> = {}): AgentDeps {
       over.archive ??
       (async (id, session) =>
         (await import("../../session-archive")).archiveSession(id, session)),
+    pullRequest:
+      over.pullRequest ??
+      ((repoId, branch) => getPrsByRepo().get(repoId)?.get(branch)),
     ...(over.controllerDeps ? { controllerDeps: over.controllerDeps } : {}),
   };
 }
@@ -294,6 +303,40 @@ export async function agentToolCalls(
     }));
 }
 
+/** A pull request opened on a branch at most this long before its session
+ *  started still counts as the session's: the two clocks differ. */
+const PR_CLOCK_SKEW_MS = 60_000;
+
+/**
+ * The pull request an agent opened from its own session branch. An agent
+ * opens it with `gh pr create`, which writes nothing to its session, so it is
+ * looked up the way the session list finds a session's PR: in the PR cache,
+ * by the session's repo and branch (a webhook puts a new PR there within
+ * seconds). A closed one does not count, nor one opened before the session
+ * started: an older release gave two incidents' agents one branch.
+ */
+function ownPullRequest(
+  d: AgentDeps,
+  session: SessionSummary | undefined,
+): string | undefined {
+  const branch = session?.branch;
+  const repoId = session?.repo;
+  if (!session || !branch || !repoId) return undefined;
+  let defaultBranch: string | undefined;
+  try {
+    defaultBranch = d.repo(repoId).defaultBranch;
+  } catch {
+    return undefined;
+  }
+  if (branch === defaultBranch) return undefined;
+  const pr = d.pullRequest(repoId, branch);
+  if (!pr?.url || pr.state === "CLOSED") return undefined;
+  const opened = Date.parse(pr.createdAt);
+  const started = Date.parse(session.createdAt);
+  if (opened < started - PR_CLOCK_SKEW_MS) return undefined;
+  return pr.url;
+}
+
 export function createIncidentAgents(
   incident: Incident,
   ctx: { coordinatorSessionId: string; automation: Automation },
@@ -386,11 +429,12 @@ export function createIncidentAgents(
 
     async status(id) {
       const s = await controller.status(id);
+      const prUrl = s.prUrl || ownPullRequest(d, d.control.getSession(id));
       return {
         status: s.status,
         costUsd: s.costUsd ?? 0,
         tokens: s.tokens ?? 0,
-        ...(s.prUrl ? { prUrl: s.prUrl } : {}),
+        ...(prUrl ? { prUrl } : {}),
         ...(s.error ? { error: s.error } : {}),
       };
     },

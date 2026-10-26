@@ -2482,6 +2482,42 @@ describe("local-tool path containment", () => {
     await expect(ops.edit.access("/etc/hosts")).rejects.toThrow(/outside/);
   });
 
+  test("the session scratch dir is a second root; elsewhere stays refused", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "pi-guard-scratch-"));
+    try {
+      const ops = makeGuardedToolOps(ws, [scratch]);
+      await ops.write.writeFile(join(scratch, "shot.png"), "png");
+      expect(
+        (await ops.read.readFile(join(scratch, "shot.png"))).toString(),
+      ).toBe("png");
+      expect(await ops.ls.readdir(scratch)).toContain("shot.png");
+      // The working directory still works, and nothing else opened up.
+      expect(await ops.ls.readdir(ws)).toContain("sub");
+      await expect(ops.read.readFile("/etc/passwd")).rejects.toThrow(
+        /\$OPENSESSION_SCRATCH/,
+      );
+      await expect(
+        ops.read.readFile(join(scratch, "..", "elsewhere.png")),
+      ).rejects.toThrow(/outside/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test("a scratch root that is a symlink is not trusted", async () => {
+    const link = join(tmpdir(), `pi-guard-link-${process.pid}`);
+    rmSync(link, { force: true });
+    symlinkSync("/etc", link);
+    try {
+      const ops = makeGuardedToolOps(ws, [link]);
+      await expect(ops.read.readFile(join(link, "hosts"))).rejects.toThrow(
+        /outside/,
+      );
+    } finally {
+      rmSync(link, { force: true });
+    }
+  });
+
   test("guarded find.glob walks in-process, contained, with ignores", async () => {
     const ops = makeGuardedToolOps(ws);
     const hits = await ops.find.glob("*.ts", ws, {

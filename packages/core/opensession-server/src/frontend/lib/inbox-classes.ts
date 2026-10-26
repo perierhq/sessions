@@ -90,6 +90,7 @@ export const INBOX_KIND_ICON_INK: Record<NotificationKind, string> = {
   support_needs_you: "text-accent",
   support_veto: "text-yellow",
   support_failed: "text-red",
+  access_failing: "text-red",
 };
 
 /** Stretched over the row, so a click anywhere opens the notification. */

@@ -763,6 +763,70 @@ test("a refused report: the agent gets the detail, the owner plain words", async
   expect(shown.join("\n")).not.toContain("summary field");
 });
 
+/** An investigator whose fix report was refused twice because Sessions did
+ *  not see its pull request: needs you, "did not open a pull request". */
+async function prNotSeen() {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence(investigatorReport));
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends.at(-1)?.message).toStartWith(
+    "Your report proposes a fix, but this session has no pull request yet.",
+  );
+  w.finish("child-1", fence(investigatorReport));
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.next).toMatchObject({
+    needsYou: "no-report",
+    reason:
+      "The investigator proposed a fix but did not open a pull request. Try again so it opens one.",
+    options: ["retry", "resolve", "close"],
+  });
+  return w;
+}
+
+test("Try again reads the report again when the investigator's own pull request is found", async () => {
+  const w = await prNotSeen();
+  const sendsBefore = w.sends.length;
+  // Sessions now sees the pull request opened from the session's branch.
+  w.live("child-1", { prUrl: "https://github.com/acme/web/pull/469" });
+  await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+
+  // No new investigator and no message: its last report is used as it is.
+  expect(w.spawns).toHaveLength(2);
+  expect(w.spawns.at(-1)).toMatchObject({ role: "verifier" });
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const i = await getIncident(w.incident.id);
+  const run = i?.response?.agents.find((a) => a.sessionId === "child-1");
+  expect(run).toMatchObject({
+    report: { summary: investigatorReport.summary },
+    prUrl: "https://github.com/acme/web/pull/469",
+  });
+  expect(run?.reportError).toBeUndefined();
+  expect(run?.reportProblem).toBeUndefined();
+  expect(i?.response?.retryRequested).toBeUndefined();
+  expect(i?.response?.candidate?.prUrl).toBe(
+    "https://github.com/acme/web/pull/469",
+  );
+  expect(i?.state).toBe("fix-ready");
+  expect(i?.response?.ledger.map((e) => e.detail)).toContain(
+    "Found the investigator's pull request https://github.com/acme/web/pull/469. Investigator reported: Upstream blocks our user agent",
+  );
+});
+
+test("Try again with still no pull request starts the investigator again", async () => {
+  const w = await prNotSeen();
+  await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(w.spawns.at(-1)).toMatchObject({
+    role: "investigator",
+    round: 1,
+    attempt: 2,
+  });
+});
+
 test("no sandbox and no agent user: needs you with the reason, never a silent stall", async () => {
   const reason =
     "Incident agents need a sandbox or the incident agent user. Set a default sandbox for acme, or create the system user opensession-incident (see docs/incident-host-agents.md), then retry.";

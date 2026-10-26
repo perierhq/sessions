@@ -12,6 +12,7 @@ import {
   type ProjectSettingsDocument,
 } from "../../shared/project-settings";
 import { configuredPaths, configuredRepos } from "../config";
+import { gitAccessIssue } from "../git-access-health";
 import { setMcpAllowUnattended } from "../connections";
 import { incidentAudit } from "../incidents/audit-sink";
 import { connectionStatusFrom } from "../incidents/access/environment";
@@ -218,6 +219,7 @@ function liveViewDeps(): ProjectViewDeps {
       (await projectMonthSpend(project, Date.now())).monthUsd,
     drift: legacyDrift,
     sandboxLabel: (provider) => sandboxLabel(provider),
+    gitAccess: (project) => gitAccessIssue(project),
   };
 }
 

@@ -113,9 +113,16 @@ export function buildRunInstructions(input: {
       "reference, so write one, not both. Name each PR by number once per reply, " +
       "then by what it does.",
   );
+  // Agents saved screenshots to /tmp, which the file tools refuse, and then
+  // copied them into another checkout to read them. The scratch dir is the
+  // runner's $TMPDIR and a file-tool root (pi-tools.ts).
   parts.push(
     "## Working directory\nRelative paths in this prompt resolve against the working " +
-      "directory named in the session context.",
+      "directory named in the session context." +
+      (input.hasSession
+        ? " Save screenshots and temporary files in `$OPENSESSION_SCRATCH` (also " +
+          "`$TMPDIR`), not `/tmp`: file tools reach only it and the working directory."
+        : ""),
   );
   // Models carry rules written for a person's own computer ("never start a
   // dev server") into this workspace and refuse to run the app they changed.

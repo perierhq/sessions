@@ -22,6 +22,7 @@
 import { $ } from "bun";
 import { CADDY_STREAM_CLOSE_DELAY } from "./caddy-stream";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { createConnection } from "net";
 import { basename, dirname, join, resolve } from "path";
 import type { Repo } from "./config";
 import { repoForPathOrNull } from "./worktree";
@@ -41,6 +42,7 @@ import {
 import {
   lookupSandboxHttpsPort,
   releaseSandboxPreviewPorts,
+  SANDBOX_HTTPS_BASE,
   sandboxAllocationForHttpsPort,
   sandboxHttpsPortFor,
 } from "./sandbox/preview-ports";
@@ -626,6 +628,140 @@ async function removePreviewRoute(httpsPort: number): Promise<void> {
     );
   } catch {}
   previewRoutes.delete(httpsPort);
+}
+
+// ── Stale Portal route sweep ────────────────────────────────────────────────
+// Caddy outlives the gateway, and removePreviewRoute only deletes routes this
+// process has cached. A Portal whose service stopped before a restart (or
+// whose worktree went away) kept its Caddy server for good, proxying to a
+// closed port. The Portal reaper calls this every few minutes.
+
+/** A route must look abandoned on two sweeps at least this far apart before
+ *  it is deleted, so a dev server that is still starting keeps its route. */
+const STALE_PORTAL_ROUTE_GRACE_MS = 10 * 60_000;
+const staleRouteSince: Map<number, number> = new Map();
+
+/** The app upstream of a Portal server: the reverse proxy that is not the
+ *  forward-auth check (which rewrites to /api/portal-auth). */
+export function portalRouteUpstreamPort(server: unknown): number | null {
+  const dials: string[] = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record.handler === "reverse_proxy" && !record.rewrite) {
+      for (const upstream of (record.upstreams as { dial?: unknown }[]) ?? [])
+        if (typeof upstream?.dial === "string") dials.push(upstream.dial);
+      return;
+    }
+    Object.values(record).forEach(walk);
+  };
+  walk(server);
+  const match = dials[0]?.match(/^127\.0\.0\.1:(\d{1,5})$/);
+  return match ? Number(match[1]) : null;
+}
+
+/** Does anything accept a TCP connection on 127.0.0.1:<port>? A probe that
+ *  neither connects nor is refused counts as listening (keep the route). */
+function loopbackListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const done = (listening: boolean) => {
+      socket.destroy();
+      resolve(listening);
+    };
+    socket.setTimeout(1_000, () => done(true));
+    socket.once("connect", () => done(true));
+    socket.once("error", (error: NodeJS.ErrnoException) =>
+      done(error.code !== "ECONNREFUSED"),
+    );
+  });
+}
+
+export type StalePortalRouteDeps = {
+  isListening?: (port: number) => Promise<boolean>;
+  /** A host Portal record (awake, starting or sleeping) owns this source port. */
+  hostPortalOwned?: (sourcePort: number) => Promise<boolean>;
+  sandboxAllocated?: (httpsPort: number) => boolean;
+  now?: () => number;
+};
+
+/**
+ * Delete `preview_<port>` Caddy servers nothing owns any more, through the
+ * admin API (never a Caddyfile reload, which would drop every live Portal).
+ * Kept: routes this process registered; Sandbox routes whose https port is
+ * still allocated (a sleeping Sandbox keeps its URLs on purpose); host routes
+ * whose Portal record is live or sleeping; any route whose upstream accepts
+ * connections. Everything else is deleted once it has looked abandoned for
+ * STALE_PORTAL_ROUTE_GRACE_MS. No Caddy admin API, nothing to do.
+ */
+export async function sweepStalePortalRoutes(
+  deps: StalePortalRouteDeps = {},
+): Promise<{ removed: number[] }> {
+  const now = deps.now ?? Date.now;
+  const isListening = deps.isListening ?? loopbackListening;
+  const sandboxAllocated =
+    deps.sandboxAllocated ??
+    ((httpsPort: number) => sandboxAllocationForHttpsPort(httpsPort) !== null);
+  const hostPortalOwned =
+    deps.hostPortalOwned ??
+    (async (sourcePort: number) => {
+      const { hostPortalRouteOwned } = await import("./portal-supervisor");
+      return hostPortalRouteOwned(sourcePort);
+    });
+  let servers: Record<string, unknown>;
+  try {
+    const res = await caddyFetch(`${caddyAdmin()}/config/apps/http/servers`);
+    if (res.status === 404) return { removed: [] };
+    if (!res.ok) throw new Error(`Caddy admin API answered ${res.status}`);
+    servers = ((await res.json()) ?? {}) as Record<string, unknown>;
+  } catch (error) {
+    // No Caddy on this instance (or its admin API is off): no routes to keep
+    // or remove. Anything else is a real failure for the health record.
+    if (error instanceof TypeError || (error as Error)?.name === "TimeoutError")
+      return { removed: [] };
+    throw error;
+  }
+  const stale = new Set<number>();
+  for (const [key, server] of Object.entries(servers)) {
+    const match = key.match(/^preview_(\d+)$/);
+    if (!match) continue;
+    const httpsPort = Number(match[1]);
+    if (previewRoutes.has(httpsPort)) continue;
+    if (httpsPort >= SANDBOX_HTTPS_BASE) {
+      if (sandboxAllocated(httpsPort)) continue;
+    } else if (await hostPortalOwned(httpsPort - 6_000)) continue;
+    const upstream = portalRouteUpstreamPort(server);
+    if (upstream !== null && (await isListening(upstream))) continue;
+    stale.add(httpsPort);
+  }
+  for (const port of staleRouteSince.keys())
+    if (!stale.has(port)) staleRouteSince.delete(port);
+  const removed: number[] = [];
+  for (const httpsPort of stale) {
+    const since = staleRouteSince.get(httpsPort);
+    if (since === undefined) {
+      staleRouteSince.set(httpsPort, now());
+      continue;
+    }
+    if (now() - since < STALE_PORTAL_ROUTE_GRACE_MS) continue;
+    const res = await caddyFetch(
+      `${caddyAdmin()}/config/apps/http/servers/preview_${httpsPort}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok && res.status !== 404)
+      throw new Error(
+        `Caddy refused to delete preview_${httpsPort}: ${res.status}`,
+      );
+    staleRouteSince.delete(httpsPort);
+    previewRoutes.delete(httpsPort);
+    removed.push(httpsPort);
+  }
+  if (removed.length)
+    console.log(
+      `[portals] removed ${removed.length} stale Caddy route(s): ${removed.map((p) => `preview_${p}`).join(", ")}`,
+    );
+  return { removed };
 }
 
 /** Expose a pre-built loopback relay through the same permission-coupled

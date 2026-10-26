@@ -111,6 +111,8 @@ export function buildPiToolset(input: {
   mcpBridge: PiMcpBridge;
   policy: RunToolPolicy;
   bashGated: boolean;
+  /** The run's own isolated checkout (runOwnWorktree). */
+  ownWorktree?: string;
   mergeGuard: MergeGuard | undefined;
   privateTermsGuard: PrivateTermsGuard | undefined;
   abort: AbortController;
@@ -136,6 +138,7 @@ export function buildPiToolset(input: {
     mcpBridge,
     policy,
     bashGated,
+    ownWorktree,
     mergeGuard,
     privateTermsGuard,
     abort,
@@ -148,9 +151,11 @@ export function buildPiToolset(input: {
   // Every enabled name is derived from a custom definition below. Pi falls
   // back to its in-process built-ins for a name without an override, so a
   // separately maintained enabled-name list would be a containment escape.
+  // The session scratch dir is where the runner points $TMPDIR, so files a
+  // command saves there (screenshots) are readable by the file tools too.
   const guardedOps = remote
     ? makeRemoteToolOps(remote, shippedSkillRoots())
-    : makeGuardedToolOps(cwd);
+    : makeGuardedToolOps(cwd, opts.scratchDir ? [opts.scratchDir] : []);
   const commandEnv = remote
     ? remoteCommandEnv(bashEnv, remote, runKey, Boolean(opts.publicationPolicy))
     : bashEnv;
@@ -212,6 +217,7 @@ export function buildPiToolset(input: {
             env: commandEnv,
             remote,
             gated: bashGated,
+            ...(ownWorktree ? { ownWorktree } : {}),
             askReadOnly: isAsk,
             unattended: policy.unattended,
             sessionId: journal?.osSessionId,

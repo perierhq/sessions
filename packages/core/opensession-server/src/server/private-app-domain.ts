@@ -987,6 +987,29 @@ function readCertificate(path: string): X509Certificate | null {
   }
 }
 
+/** The installed certificate. The TLS directory is root:<caddy group> 0750,
+ * so the service user usually cannot read it and it is read through sudo,
+ * like the Caddyfile. Reading it as missing installed the same certificate
+ * and reloaded Caddy on every check. */
+async function readInstalledCertificate(
+  path: string,
+): Promise<X509Certificate | null> {
+  const direct = readCertificate(path);
+  if (direct) return direct;
+  const sudo = Bun.which("sudo");
+  if (!sudo) return null;
+  const read = await runCommand(
+    [sudo, "-n", "cat", path],
+    commandEnvironment(),
+  );
+  if (read.code !== 0) return null;
+  try {
+    return new X509Certificate(read.stdout);
+  } catch {
+    return null;
+  }
+}
+
 /** The leaf certificate Caddy serves for `domain` on its tailnet address, or
  * null when it cannot be reached (then the installed file stands in). */
 async function servedCertificate(
@@ -1054,7 +1077,9 @@ async function renewDomain(
   const renewed = readCertificate(source.certificate);
   if (!renewed)
     throw new Error(`lego's certificate for ${domain} is unreadable`);
-  const installed = readCertificate(certificatePaths(domain).certificate);
+  const installed = await readInstalledCertificate(
+    certificatePaths(domain).certificate,
+  );
   const served = await probe(domain);
   const fileStale =
     installed?.fingerprint256 !== renewed.fingerprint256 &&

@@ -35,6 +35,7 @@
  * one-liner. Defense in depth on top of worktree isolation, the minimal run
  * env, and the credential-scope containment.
  */
+import { resolve, sep } from "node:path";
 import { compileSafeRegex } from "./shared/safe-regex";
 import { audit } from "./audit";
 
@@ -44,6 +45,22 @@ export interface CommandRule {
   pattern: string;
   decision: CommandDecision;
   reason?: string;
+  /** Built-in rules only: a match this returns true for is not a hit, and
+   *  matching continues after it. */
+  exempt?: (hit: RuleHit, context: CommandContext) => boolean;
+}
+
+/** One match of a rule's pattern in the scannable command. */
+export interface RuleHit {
+  scannable: string;
+  index: number;
+}
+
+/** What the policy knows about where a command runs. */
+export interface CommandContext {
+  /** The run's own isolated worktree (never a repository's shared
+   *  checkout); absent when there is none. */
+  workspace?: string;
 }
 
 export interface CommandPolicy {
@@ -65,14 +82,20 @@ export interface CommandPolicy {
  */
 const ORG_FLOOR_RULES: CommandRule[] = [
   {
-    pattern: "\\brm\\b[^\\n]*(?:-[a-zA-Z]*r|--recursive)",
+    // A whole option word of the same invocation: the rule used to span the
+    // rest of the line, so a hyphen inside a path (`search-service`) or the
+    // next command's `--short` read as `-r`.
+    pattern: "\\brm\\b[^\\n;&|]*\\s(-[a-z]*r[a-z]*|--recursive)([\\s;&|)]|$)",
     decision: "require_approval",
     reason: "recursive delete",
+    exempt: recursiveDeleteExempt,
   },
   {
     // `--force-with-lease` only overwrites what the pusher last saw, so it
     // is not a blind force.
-    pattern: "\\bgit\\s+push\\b.*(?:--force(?:\\s|$)|(?:^|\\s)-[a-zA-Z]*f\\b)",
+    // Options of the same push only: `.*` used to reach a later `rm -f`.
+    pattern:
+      "\\bgit\\s+push\\b[^\\n;&|]*\\s(--force|-[a-z]*f[a-z]*)([\\s;&|)]|$)",
     decision: "require_approval",
     reason: "force push",
   },
@@ -97,6 +120,54 @@ const ORG_FLOOR_RULES: CommandRule[] = [
     reason: "pipe-to-shell",
   },
 ];
+
+/** The words of the simple command around `index` in a scannable command. */
+function invocationAt(scannable: string, index: number): string[] {
+  let start = index;
+  while (start > 0 && !"\n;&|(".includes(scannable[start - 1]!)) start--;
+  let end = index;
+  while (end < scannable.length && !"\n;&|)".includes(scannable[end]!)) end++;
+  return scannable.slice(start, end).trim().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Recursive deletes that are ordinary worktree housekeeping:
+ * - `git rm --cached` only untracks; it never touches a file.
+ * - `rm -r` / `git rm -r` whose every target is a literal path strictly
+ *   inside the run's own isolated worktree, and not its `.git`.
+ * Lexical, like the rest of this tripwire: no globs, variables or `~`, and
+ * relative targets only when nothing in the command changes directory.
+ */
+function recursiveDeleteExempt(hit: RuleHit, context: CommandContext): boolean {
+  const words = invocationAt(hit.scannable, hit.index);
+  const git = words[0] === "git";
+  const rmAt = git ? 1 : 0;
+  if (!/^(?:\/(?:usr\/)?bin\/)?rm$/.test(words[rmAt] ?? "")) return false;
+  const args = words.slice(rmAt + 1);
+  if (git && args.includes("--cached")) return true;
+  const workspace = context.workspace;
+  if (!workspace) return false;
+  const root = resolve(workspace);
+  const changesDir = /(?:^|[\s;&|(])(?:cd|pushd|popd)(?:\s|$)/.test(
+    hit.scannable,
+  );
+  const targets: string[] = [];
+  let options = true;
+  for (const arg of args) {
+    if (options && arg === "--") options = false;
+    else if (options && arg.startsWith("-")) continue;
+    else targets.push(arg);
+  }
+  if (!targets.length) return false;
+  return targets.every((target) => {
+    if (!target || /[$`*?[\]{}~'"\\]/.test(target)) return false;
+    if (changesDir && !target.startsWith("/")) return false;
+    const full = resolve(root, target);
+    if (!full.startsWith(root + sep)) return false;
+    const gitDir = resolve(root, ".git");
+    return full !== gitDir && !full.startsWith(gitDir + sep);
+  });
+}
 
 export function orgFloorPolicy(): CommandPolicy {
   return { mode: "denylist", rules: ORG_FLOOR_RULES };
@@ -1248,19 +1319,21 @@ function executedShellPayloads(input: string): string[] {
 function firstMatch(
   scannable: string,
   rules: readonly CommandRule[],
+  context: CommandContext,
 ): CommandEvaluation | null {
   for (const rule of rules) {
     let re: RegExp;
     try {
-      re = compileSafeRegex(rule.pattern, "i");
+      re = compileSafeRegex(rule.pattern, "gi");
     } catch {
       console.error(
         `[command-policy] skipping invalid stored rule pattern ${JSON.stringify(rule.pattern)} (${rule.decision}) — re-save it to migrate`,
       );
       continue;
     }
-    const hit = re.exec(scannable);
-    if (hit) {
+    for (let hit = re.exec(scannable); hit; hit = re.exec(scannable)) {
+      if (hit[0] === "") re.lastIndex++;
+      if (rule.exempt?.({ scannable, index: hit.index }, context)) continue;
       return {
         decision: rule.decision,
         ...(rule.reason ? { reason: rule.reason } : {}),
@@ -1275,8 +1348,9 @@ function firstMatch(
 export function evaluateCommand(
   command: string,
   policy: CommandPolicy,
+  context: CommandContext = {},
 ): CommandEvaluation {
-  const matched = firstMatch(scannableCommand(command), policy.rules);
+  const matched = firstMatch(scannableCommand(command), policy.rules, context);
   if (matched) return matched;
   if (policy.mode === "allowlist") {
     return { decision: "deny", reason: "not in allowlist" };
@@ -1314,13 +1388,19 @@ export function bashAskPolicyReply(
     gated: boolean;
     sessionId?: string;
     runKind?: string;
+    /** The run's own isolated worktree (CommandContext.workspace). */
+    workspace?: string;
   },
 ): "once" | "reject" | null {
   const kind = String(ask?.permission ?? ask?.action ?? "");
   if (kind !== "bash") return null;
   const meta = (ask?.metadata ?? {}) as { command?: unknown };
   const command = String(meta.command ?? ask?.title ?? "").trim();
-  const verdict = command ? evaluateCommand(command, orgFloorPolicy()) : null;
+  const verdict = command
+    ? evaluateCommand(command, orgFloorPolicy(), {
+        workspace: opts.workspace,
+      })
+    : null;
 
   if (verdict && verdict.decision !== "allow") {
     audit({

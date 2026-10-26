@@ -228,6 +228,9 @@ export function makePiBashTool(input: {
   /** Run commands in this Sandbox workspace instead of on this machine. */
   remote?: RemoteWorkspace;
   gated: boolean;
+  /** The run's own isolated checkout: the org command policy lets
+   *  housekeeping deletes inside it through (command-policy.ts). */
+  ownWorktree?: string;
   /** Ask mode: every command must pass the read-only allowlist
    *  (askBashDenyReason over ASK_BASH_PERMISSIONS, runner-shared.ts). */
   askReadOnly?: boolean;
@@ -305,7 +308,10 @@ export function makePiBashTool(input: {
       const command = String((params as { command?: unknown })?.command ?? "");
       if (!command.trim()) throw new Error("Empty command");
       if (input.askReadOnly) {
-        const reason = askBashDenyReason(command);
+        const reason = askBashDenyReason(command, {
+          workspace: input.cwd,
+          scratchDir: input.env.OPENSESSION_SCRATCH,
+        });
         if (reason) throw new Error(reason);
       }
       const mergeDenial = input.mergeGuard
@@ -328,6 +334,7 @@ export function makePiBashTool(input: {
             gated: true,
             sessionId: input.sessionId,
             runKind: input.runKind,
+            workspace: input.ownWorktree,
           },
         );
         if (reply !== "once") {

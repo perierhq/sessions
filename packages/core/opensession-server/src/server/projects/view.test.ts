@@ -47,6 +47,32 @@ describe("buildProjectSettingsView", () => {
     expect(view?.drift).toBe(true);
   });
 
+  test("a project whose fetches can't sign in carries the issue", async () => {
+    const { deps } = testProjectViewDeps();
+    const issue = {
+      repoId: "acme-web",
+      kind: "auth" as const,
+      since: "2026-10-25T21:39:00.000Z",
+      lastFailureAt: "2026-10-25T22:19:00.000Z",
+      lastError: "remote: Invalid username or token.",
+      failures: 4,
+      nextAttemptAt: "2026-10-25T22:59:00.000Z",
+      notified: true,
+    };
+    const view = await buildProjectSettingsView(
+      "acme-web",
+      { person: true },
+      { ...deps, gitAccess: (p) => (p === "acme-web" ? issue : null) },
+    );
+    expect(view?.gitAccess).toEqual({
+      kind: "auth",
+      since: issue.since,
+      lastError: issue.lastError,
+      failures: 4,
+      nextAttemptAt: issue.nextAttemptAt,
+    });
+  });
+
   test("a bound Runner that isn't paired any more is a production problem", async () => {
     const { deps } = testProjectViewDeps();
     const view = await buildProjectSettingsView(

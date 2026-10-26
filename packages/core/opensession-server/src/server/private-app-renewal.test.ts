@@ -138,6 +138,9 @@ case "$1" in
     while [ $# -gt 0 ]; do case "$1" in -o|-g) shift 2;; *) args="$args $1"; shift;; esac; done
     exec install $args;;
   systemctl) exit 0;;
+  # Root reads files the service user cannot.
+  cat) [ -r "$2" ] && exec cat "$2"
+    chmod u+r "$2"; cat "$2"; status=$?; chmod u-r "$2"; exit $status;;
   *) exec "$@";;
 esac`,
   );
@@ -262,6 +265,28 @@ describe("private app certificate renewal", () => {
     expect(adminRequests).toEqual([]);
     expect(await readFile(paths().calls, "utf8")).not.toContain("sudo");
   });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "does nothing when the installed certificate is readable only through sudo",
+    async () => {
+      // The TLS directory is root:caddy 0750: the service user cannot read
+      // the installed file, which read as "missing" and reinstalled it and
+      // reloaded Caddy on every check.
+      await configure({
+        lego: { [DOMAIN]: NEW_CERT },
+        installed: { [DOMAIN]: NEW_CERT },
+      });
+      await chmod(join(paths().tls, `${DOMAIN}.crt`), 0o200);
+      const current = {
+        servedCertificate: async () => new X509Certificate(NEW_CERT),
+      };
+      expect(await renewPrivateAppCertificate(current)).toBe(true);
+      expect(patches()).toEqual([]);
+      expect(await readFile(paths().calls, "utf8")).not.toContain(
+        "sudo install",
+      );
+    },
+  );
 
   test("never replaces a certificate with one that expires sooner", async () => {
     await configure({
