@@ -118,12 +118,13 @@ const bodies = new Map<string, string>([
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "knowledge-index-"));
   index = new KnowledgeIndex(join(dir, "index.sqlite"));
-  index.replaceProject("acme", COMMIT, items, bodies);
+  index.replaceProject("acme", COMMIT, items, bodies, null);
   index.replaceProject(
     "acme-api",
     COMMIT,
     [item("articles/api.md", { title: "API keys" }, "acme-api")],
     new Map([["articles/api.md", "Rotate api keys in settings."]]),
+    null,
   );
 });
 
@@ -285,9 +286,84 @@ describe("KnowledgeIndex", () => {
   });
 
   test("replaceProject drops items that are gone", () => {
-    index.replaceProject("acme-api", "a".repeat(40), [], new Map());
+    expect(
+      index.replaceProject("acme-api", "a".repeat(40), [], new Map(), COMMIT),
+    ).toBe(true);
     expect(index.head("acme-api")).toBe("a".repeat(40));
-    expect(index.list("acme-api", "all").total).toBe(0);
-    expect(index.list("acme", "all").total).toBe(9);
+    expect(index.list("acme-api", "all", { today: TODAY }).total).toBe(0);
+    expect(index.list("acme", "all", { today: TODAY }).total).toBe(9);
+  });
+
+  test("replaceProject refuses when the head moved since the caller read it", () => {
+    const head = index.head("acme-api");
+    expect(
+      index.replaceProject(
+        "acme-api",
+        "b".repeat(40),
+        [item("articles/stale.md", { title: "Stale" }, "acme-api")],
+        new Map(),
+        COMMIT,
+      ),
+    ).toBe(false);
+    expect(index.head("acme-api")).toBe(head);
+    expect(index.get("acme-api", "articles/stale.md", TODAY)).toBeNull();
+  });
+
+  test("stamps give each path's blob and first-indexed time", () => {
+    expect(index.stamps("acme").get("articles/export.md")).toEqual({
+      blob: "blob-articles/export.md",
+      updatedAt: "2026-10-20T10:00:00.000Z",
+    });
+    expect(index.stamps("nobody").size).toBe(0);
+  });
+
+  test("FTS5 operators in a query are plain text and never throw", () => {
+    for (const query of [
+      "export AND csv",
+      "NOT export",
+      "export OR",
+      "title:export",
+      "exp*",
+      "NEAR(export csv)",
+      '"export',
+      "(export",
+      "^export",
+      "-",
+      "export + csv",
+      "{title}: csv",
+    ]) {
+      expect(() => index.search("acme", query, { today: TODAY })).not.toThrow();
+      expect(() =>
+        index.list("acme", "all", { query, today: TODAY }),
+      ).not.toThrow();
+    }
+    expect(
+      index.search("acme", "title:escalate", { today: TODAY }).length,
+    ).toBe(0);
+  });
+
+  test("an overdue reviewBy ranks with needs-check in search", () => {
+    const paths = index
+      .search("acme", "export", { today: TODAY })
+      .map((hit) => hit.item.path);
+    const overdue = paths.indexOf("articles/overdue.md");
+    expect(overdue).toBeGreaterThan(paths.indexOf("articles/export.md"));
+    expect(overdue).toBeGreaterThan(paths.indexOf("articles/export-new.md"));
+    expect(overdue).toBeLessThan(paths.indexOf("sources/mail/2026-09/ref.md"));
+    // The day before it was due, it is a trusted answer again.
+    const early = index
+      .search("acme", "export", { today: "2026-09-30" })
+      .map((hit) => hit.item.path);
+    expect(early.indexOf("articles/overdue.md")).toBeLessThan(
+      early.indexOf("articles/checking.md"),
+    );
+  });
+
+  test("every day-dependent call refuses a day that isn't YYYY-MM-DD", () => {
+    expect(() => index.get("acme", "articles/export.md", "today")).toThrow();
+    expect(() => index.list("acme", "all", { today: "2026-1-1" })).toThrow();
+    expect(() =>
+      index.dependents("acme", { type: "issue", number: 42 }, "x"),
+    ).toThrow();
   });
 });

@@ -39,7 +39,8 @@ interface ItemRow {
   effective: KnowledgeStatus;
 }
 
-function today(): string {
+/** Today's UTC day, for a call that wasn't given one. */
+export function utcDay(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -48,7 +49,8 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(Math.max(Math.floor(limit), 1), MAX_LIMIT);
 }
 
-function excerptOf(body: string): string {
+/** The list and search excerpt: the body's first characters on one line. */
+export function excerptOf(body: string): string {
   const text = body.replace(/\s+/g, " ").trim();
   return text.length > EXCERPT_CHARS
     ? `${text.slice(0, EXCERPT_CHARS - 1).trimEnd()}…`
@@ -64,8 +66,12 @@ const EFFECTIVE = `CASE WHEN i.status = 'active' AND i.review_by IS NOT NULL
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-function checkDay(day: string): string {
-  if (!DAY.test(day)) throw new Error(`Invalid date "${day}".`);
+/** `today` as given (YYYY-MM-DD, throws otherwise), or today's UTC day when
+ *  the caller left it out. Every call that computes `effective` takes it. */
+function checkDay(day: string | undefined): string {
+  if (day === undefined) return utcDay();
+  if (typeof day !== "string" || !DAY.test(day))
+    throw new Error(`Invalid date "${day}".`);
   return day;
 }
 
@@ -193,13 +199,17 @@ export class KnowledgeIndex {
     this.db.close();
   }
 
-  /** Replace everything indexed for a project with the items at `commit`. */
+  /** Replace everything indexed for a project with the items at `commit`,
+   *  if the project is still indexed at `expectedHead` (null: never
+   *  indexed). Returns false and changes nothing when another reindex got
+   *  there first, so an older head never overwrites a newer one. */
   replaceProject(
     project: string,
     commit: string,
     items: KnowledgeItem[],
     bodies: Map<string, string>,
-  ): void {
+    expectedHead: string | null,
+  ): boolean {
     const insertItem = this.db.prepare(
       `INSERT INTO knowledge_items
         (project, path, title, kind, trust, status, review_by, valid_as_of,
@@ -214,7 +224,8 @@ export class KnowledgeIndex {
       `INSERT INTO knowledge_deps (project, path, type, value, prefix)
        VALUES (?, ?, ?, ?, ?)`,
     );
-    this.db.transaction(() => {
+    return this.db.transaction(() => {
+      if (this.head(project) !== expectedHead) return false;
       for (const table of [
         "knowledge_items",
         "knowledge_fts",
@@ -260,7 +271,28 @@ export class KnowledgeIndex {
            ON CONFLICT(project) DO UPDATE SET commit_sha = excluded.commit_sha`,
         )
         .run(project, commit);
+      return true;
     })();
+  }
+
+  /** Each indexed path's blob and the time it was first indexed with that
+   *  blob, so a reindex keeps `updatedAt` for files that didn't change. */
+  stamps(project: string): Map<string, { blob: string; updatedAt: string }> {
+    const rows = this.db
+      .query(
+        `SELECT path, blob, updated_at FROM knowledge_items WHERE project = ?`,
+      )
+      .all(project) as Array<{
+      path: string;
+      blob: string;
+      updated_at: string;
+    }>;
+    return new Map(
+      rows.map((row) => [
+        row.path,
+        { blob: row.blob, updatedAt: row.updated_at },
+      ]),
+    );
   }
 
   /** The repository commit the project was last indexed at. */
@@ -277,10 +309,10 @@ export class KnowledgeIndex {
       FROM knowledge_items i WHERE i.project = ? AND ${where}`;
   }
 
-  get(project: string, path: string): KnowledgeItem | null {
+  get(project: string, path: string, today?: string): KnowledgeItem | null {
     const row = this.db
       .query(this.select("i.path = ?"))
-      .get(today(), project, path) as ItemRow | null;
+      .get(checkDay(today), project, path) as ItemRow | null;
     return row ? fromRow(row) : null;
   }
 
@@ -295,9 +327,14 @@ export class KnowledgeIndex {
   list(
     project: string,
     filter: KnowledgeFilter,
-    opts: { query?: string; limit?: number; offset?: number } = {},
+    opts: {
+      query?: string;
+      limit?: number;
+      offset?: number;
+      today?: string;
+    } = {},
   ): { items: KnowledgeItem[]; total: number } {
-    const day = today();
+    const day = checkDay(opts.today);
     const { sql, days } = filterSql(filter);
     const dayBinds = Array<string>(days).fill(day);
     const terms = opts.query ? ftsQuery(opts.query) : "";
@@ -342,6 +379,8 @@ export class KnowledgeIndex {
     query: string,
     opts: { limit?: number; includeReference?: boolean; today: string },
   ): KnowledgeSearchHit[] {
+    if (opts.today === undefined) throw new Error("Search needs today's date.");
+    checkDay(opts.today);
     const all = this.searchTerms(project, ftsQuery(query), false, opts);
     if (all.length) return all;
     return this.searchTerms(project, ftsQuery(query, true), true, opts);
@@ -354,7 +393,6 @@ export class KnowledgeIndex {
     opts: { limit?: number; includeReference?: boolean; today: string },
   ): KnowledgeSearchHit[] {
     if (!terms) return [];
-    checkDay(opts.today);
     const reference =
       opts.includeReference === false ? ` AND i.trust <> 'reference'` : "";
     const order = anyTerm
@@ -383,8 +421,9 @@ export class KnowledgeIndex {
     return rows.map((row) => ({ item: fromRow(row), rank: row.rank }));
   }
 
-  counts(project: string, day: string): Record<KnowledgeFilter, number> {
-    checkDay(day);
+  counts(project: string, today: string): Record<KnowledgeFilter, number> {
+    if (today === undefined) throw new Error("Counts need today's date.");
+    const day = checkDay(today);
     const parts = KNOWLEDGE_FILTERS.map((filter) => {
       const { sql, days } = filterSql(filter);
       return { filter, sql, days };
@@ -424,7 +463,12 @@ export class KnowledgeIndex {
   /** Items whose `dependsOn` covers `dep`. A repo folder entry (`docs/`)
    *  covers every path under it; a folder `dep` matches every entry under
    *  it. */
-  dependents(project: string, dep: DependencyRef): KnowledgeItem[] {
+  dependents(
+    project: string,
+    dep: DependencyRef,
+    today?: string,
+  ): KnowledgeItem[] {
+    const day = checkDay(today);
     const key = depKey(dep);
     let where: string;
     let binds: Array<string | number>;
@@ -443,7 +487,7 @@ export class KnowledgeIndex {
           `i.path IN (SELECT d.path FROM knowledge_deps d WHERE d.project = ? AND ${where}) ORDER BY i.path`,
         ),
       )
-      .all(today(), project, project, ...binds) as ItemRow[];
+      .all(day, project, project, ...binds) as ItemRow[];
     return rows.map(fromRow);
   }
 }

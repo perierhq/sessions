@@ -76,8 +76,9 @@ export interface GitRepoStoreOptions {
   /** repos/, repo-work/ and repo-locks/ live here. */
   base: string;
   isValidName(name: string): boolean;
-  /** Run on every touched file before a commit. */
-  validate(path: string, bytes: Uint8Array): FileProblem[];
+  /** Run on every touched file before a commit. `mode` (git's, e.g.
+   *  "100755") is passed when known: validateStagedPaths knows it. */
+  validate(path: string, bytes: Uint8Array, mode?: string): FileProblem[];
   /** After a successful push from the service checkout. */
   onPushed?(name: string): Promise<void>;
   /** When onPushed throws after the push landed: false (the default, what
@@ -221,11 +222,13 @@ export class GitRepoStore {
     const bare = this.bareDir(name);
     await mkdir(dirname(bare), { recursive: true });
     await git(["init", "--bare", "--quiet", "--initial-branch=main", bare]);
+    // Pushes over HTTP only where a receive hook validates them.
+    const served = !!this.opts.hookCommand?.length;
     for (const [key, value] of [
       ["receive.denyNonFastForwards", "true"],
       ["receive.denyDeletes", "true"],
       ["receive.advertisePushOptions", "true"],
-      ["http.receivepack", "true"],
+      ...(served ? [["http.receivepack", "true"]] : []),
       ["core.logAllRefUpdates", "true"],
     ]) {
       await git(["--git-dir", bare, "config", key, value]);
@@ -565,10 +568,14 @@ export class GitRepoStore {
     return stdout.length > 200_000 ? `${stdout.slice(0, 200_000)}\n…` : stdout;
   }
 
+  /** Revert `sha` as a new commit. With `validate`, every path the revert
+   *  adds or changes goes through the validator first (validateStagedPaths),
+   *  so a revert can't bring back a file the current rules refuse. */
   async revert(
     name: string,
     sha: string,
     author?: Author,
+    opts: { validate?: boolean } = {},
   ): Promise<string | null> {
     if (!COMMIT.test(sha)) throw new MemoryRepoError("Invalid commit.");
     return this.withWork(
@@ -585,6 +592,14 @@ export class GitRepoStore {
             "This change cannot be reverted automatically because later changes touched the same lines.",
             409,
           );
+        }
+        if (opts.validate) {
+          try {
+            await this.validateStagedPaths(work);
+          } catch (error) {
+            await git(["revert", "--abort"], { cwd: work.dir, check: false });
+            throw error;
+          }
         }
       },
       {
@@ -713,9 +728,10 @@ export class GitRepoStore {
 
   /** For withWork callers that change files with raw git (`git mv`,
    *  `git rm`): stage everything, run the validator on every added or
-   *  changed path, and throw MemoryRepoError on any problem. Returns the
-   *  checked paths, sorted. Approval flows must use write/remove or call
-   *  this before returning from their withWork function. */
+   *  changed path with its staged mode, and throw MemoryRepoError on any
+   *  problem. Returns the checked paths, sorted. Approval flows must use
+   *  write/remove or call this before returning from their withWork
+   *  function. */
   async validateStagedPaths(work: Pick<WorkContext, "dir">): Promise<string[]> {
     const env = isolatedGitEnv();
     await git(["add", "-A"], { cwd: work.dir, env });
@@ -727,11 +743,12 @@ export class GitRepoStore {
           check: false,
         })
       ).code === 0;
+    // `--raw -z`: ":<old mode> <new mode> <old> <new> <status>\0<path>\0".
     const { stdout } = await git(
       [
         "diff",
         "--cached",
-        "--name-only",
+        "--raw",
         "-z",
         "--no-renames",
         "--diff-filter=ACMT",
@@ -739,14 +756,25 @@ export class GitRepoStore {
       ],
       { cwd: work.dir, env },
     );
-    const paths = stdout.split("\0").filter(Boolean).sort();
+    const fields = stdout.split("\0");
+    const staged = new Map<string, string>();
+    for (let n = 0; n + 1 < fields.length; n += 2) {
+      if (!fields[n].startsWith(":")) break;
+      staged.set(fields[n + 1], fields[n].slice(1).split(" ")[1] ?? "100644");
+    }
+    const paths = [...staged.keys()].sort();
     const problems: FileProblem[] = [];
     for (const path of paths) {
-      const bytes = await gitBytes(["cat-file", "blob", `:0:${path}`], {
-        cwd: work.dir,
-        env,
-      });
-      problems.push(...this.opts.validate(path, bytes));
+      const mode = staged.get(path)!;
+      // A submodule entry has no blob to read.
+      const bytes =
+        mode === "160000"
+          ? new Uint8Array()
+          : await gitBytes(["cat-file", "blob", `:0:${path}`], {
+              cwd: work.dir,
+              env,
+            });
+      problems.push(...this.opts.validate(path, bytes, mode));
     }
     if (problems.length) throw new MemoryRepoError(formatProblems(problems));
     return paths;
