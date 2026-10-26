@@ -10,6 +10,7 @@ import { setPersonalOutputStyle } from "./personal-output-style";
 import { setPersonalPrompt } from "./personal-prompts";
 import { workerActor } from "./session-actors";
 import { buildSessionNote } from "./session-repos";
+import { sessionFallbackCwd } from "./worktree";
 import type { UnifiedSession } from "./types";
 
 /**
@@ -100,5 +101,20 @@ describe("session note across the turns of one session", () => {
     const blocks = parseContextBlocks(context!);
     expect(blocks.map((block) => block.source)).toEqual(["desk-state"]);
     expect(blocks[0].body).toContain("## The user's live state");
+  });
+
+  // A Desk is repo-less and records no checkout. Resolved like a bare ask
+  // session, it ran in the default repo's checkout and loaded that repo's
+  // AGENTS.md into its system prompt, which came and went with the checkout.
+  test("a repo-less session without a checkout runs in its own scratch dir", async () => {
+    const desk = session({ desk: true, id: "os-desk-cwd" });
+    const cwd = await sessionFallbackCwd(desk);
+    expect(cwd).not.toBe(process.cwd());
+    expect(cwd).toContain("os-desk-cwd");
+    expect(await sessionFallbackCwd(desk)).toBe(cwd);
+    // A bare ask session that names a repo still reads that repo.
+    expect(
+      await sessionFallbackCwd(session({ repoLess: false, repo: "acme" })),
+    ).toBe(process.cwd());
   });
 });

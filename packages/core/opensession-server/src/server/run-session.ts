@@ -168,12 +168,11 @@ import {
 import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { startWatching } from "./file-watcher";
 import {
-  ensureAskCheckout,
-  ensureScratchDir,
   getRepo,
   repoForPath,
   repoForPathOrNull,
   reviveWorktree,
+  sessionFallbackCwd,
   sessionRepoId,
 } from "./worktree";
 import { sessionRepoBlocker, sessionRepoOrThrow } from "./repo-removal-guard";
@@ -3064,13 +3063,8 @@ async function runSessionPromptInner(
   // files): resolve them to the pinned ask checkout, never the mutable main
   // checkout, whose parked branch is a false context clue (ensureAskCheckout —
   // 82a296a6 covered the create paths but missed this prompt-path fallback).
-  let cwd =
-    session.worktreeDir ||
-    (session.mode === "scratch"
-      ? ensureScratchDir(session.workspaceId || session.id)
-      : session.mode === "ask"
-        ? await ensureAskCheckout(session.repo)
-        : defaultRepo().repo);
+  // Repo-less ones (the Desk) get their own scratch dir (sessionFallbackCwd).
+  let cwd = session.worktreeDir || (await sessionFallbackCwd(session));
   if (!repoForPathOrNull(cwd)) {
     // A dir no registered repo owns: a scratch dir, or a repo-less ask
     // session's inert cwd. Nothing to revive — just make sure it exists
