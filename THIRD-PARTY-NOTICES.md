@@ -41,3 +41,10 @@ The web frontend draws Mac VM desktops with the noVNC core library.
 Copyright (C) 2022 The noVNC authors. noVNC's core library is licensed under
 the Mozilla Public License 2.0, used unmodified from the npm package. See
 `THIRD-PARTY-LICENSES/MPL-2.0.txt`.
+
+## PDF.js
+
+Open Session reads the text of uploaded PDFs with unpdf (MIT, Copyright Johann
+Schopplich), which bundles Mozilla's PDF.js. PDF.js is Copyright Mozilla and
+its contributors, licensed under the Apache License 2.0. See
+`THIRD-PARTY-LICENSES/Apache-2.0.txt`.

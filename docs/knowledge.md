@@ -43,7 +43,7 @@ code repository or on GitHub. Backup is the server state directory.
 | `sources/web/<host>/<path>.md`           | Text of a page on the project's Support websites, with its hash           | trusted       |
 | `sources/issues/<n>.md`                  | Open issues labelled `bug` ("known problem")                              | reference     |
 | `sources/files/<slug>.md`                | Text of an uploaded PDF, Markdown file or export                          | reference     |
-| `attachments/<slug>/<name>`              | The uploaded files themselves                                             | not an item   |
+| `attachments/<slug>/<name>`              | Attached files; uploads in `attachments/file+<slug>/`                     | not an item   |
 
 Every change is a commit. Its author is the signed-in person; imports are
 authored by `Pat` with a `Suggested-by: Pat` trailer, and approving a
@@ -251,6 +251,19 @@ repository docs: <n> files` and `Import releases: <n>`.
 known problems: <n> open`. An approved article that relies on a known
    problem lists `issue:<n>` in `dependsOn`, so it needs a check once the
    issue closes.
+
+   The file import takes up to 20 files of up to 10 MB each: Markdown
+   (`.md`, `.markdown`), text (`.txt`), HTML exports from Notion or Google
+   Docs (`.html`, read as text) and PDFs (their text, read with `unpdf`). A
+   zip is refused ("Unzip the export and upload the files"), as is any
+   other type. Each file becomes a reference `sources/files/<slug>.md` item
+   (`sources: file:<name>`, valid as of the upload day) and keeps its
+   original in `attachments/file+<slug>/` (HTML keeps only its text).
+   Uploading a name again replaces its item; another name with the same
+   slug gets `-2`. A file without readable text (a scanned PDF) or that
+   looks like it holds a credential is skipped and counted, never stored;
+   text past the article size is cut with a note. One commit by the person
+   who uploaded: `Import files: <n>`.
 
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
