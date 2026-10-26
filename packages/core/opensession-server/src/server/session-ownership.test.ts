@@ -814,7 +814,7 @@ describe("agent-browser shim", () => {
     const file = join(bin, "agent-browser");
     writeFileSync(
       file,
-      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS"\n',
+      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS" "shots=$AGENT_BROWSER_SCREENSHOT_DIR"\n',
     );
     chmodSync(file, 0o755);
   }
@@ -852,6 +852,7 @@ describe("agent-browser shim", () => {
     const envFor = (id: string) => ({
       ...sessionOwnershipEnv(id, `${bin}:/usr/bin:/bin`),
       TMPDIR: scratch,
+      OPENSESSION_SCRATCH: scratch,
     });
     const a = await runBrowser(
       ["open", "https://example.test"],
@@ -876,6 +877,9 @@ describe("agent-browser shim", () => {
       `${tmp}/org.chromium.Chromium.XXXXXX/SingletonSocket`.length,
     ).toBeLessThan(108);
     expect(a).toContain("idle=1800000");
+    // Screenshots without a path still land in the session scratch, where
+    // they landed while TMPDIR pointed there.
+    expect(a).toContain(`shots=${scratch}`);
   });
 
   test("keeps the caller's own session and idle timeout", async () => {
@@ -884,10 +888,13 @@ describe("agent-browser shim", () => {
       ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
       AGENT_BROWSER_SESSION: "mine",
       AGENT_BROWSER_IDLE_TIMEOUT_MS: "5000",
+      AGENT_BROWSER_SCREENSHOT_DIR: "/srv/acme-shots",
+      OPENSESSION_SCRATCH: "/srv/acme-scratch",
     };
     const out = await runBrowser(["get", "url"], env);
     expect(out).toContain("session=mine");
     expect(out).toContain("idle=5000");
+    expect(out).toContain("shots=/srv/acme-shots");
   });
 
   test("outside a session it reaches agent-browser unchanged", async () => {
@@ -906,6 +913,7 @@ describe("agent-browser shim", () => {
       "session=",
       "tmp=/var/acme-tmp",
       "idle=",
+      "shots=",
     ]);
   });
 });

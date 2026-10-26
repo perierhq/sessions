@@ -852,9 +852,11 @@ export const AGENT_BROWSER_IDLE_TIMEOUT_MS = 30 * 60_000;
  * keep Chrome running; and TMPDIR=/tmp. Chrome binds its singleton socket
  * at TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket, and with TMPDIR
  * at the session scratch that is longer than a Unix socket path may be, so
- * every launch failed with "Socket path too long". A daemon keeps the
- * environment of the command that started it, so the setting has to be on
- * every call (html-render/headless.ts starts its own Chrome the same way).
+ * every launch failed with "Socket path too long". Screenshots taken without
+ * a path stay in the session scratch (AGENT_BROWSER_SCREENSHOT_DIR). A
+ * daemon keeps the environment of the command that started it, so the
+ * setting has to be on every call (html-render/headless.ts starts its own
+ * Chrome the same way).
  */
 export function agentBrowserShimScript(shimDir: string): string {
   return `#!/bin/sh
@@ -870,6 +872,12 @@ ${shimRealLookup(AGENT_BROWSER_CLI, shimDir)}if [ -n "\${OPENSESSION_SESSION_ID:
   if [ -z "\${AGENT_BROWSER_IDLE_TIMEOUT_MS:-}" ]; then
     AGENT_BROWSER_IDLE_TIMEOUT_MS=${AGENT_BROWSER_IDLE_TIMEOUT_MS}
     export AGENT_BROWSER_IDLE_TIMEOUT_MS
+  fi
+  # Screenshots without a path go where they went while TMPDIR was the
+  # session scratch.
+  if [ -z "\${AGENT_BROWSER_SCREENSHOT_DIR:-}" ] && [ -n "\${OPENSESSION_SCRATCH:-}" ]; then
+    AGENT_BROWSER_SCREENSHOT_DIR=$OPENSESSION_SCRATCH
+    export AGENT_BROWSER_SCREENSHOT_DIR
   fi
   TMPDIR=/tmp
   export TMPDIR

@@ -57,7 +57,8 @@ behave as before outside sessions.
 When `agent-browser` is installed, the same directory carries an
 `agent-browser` shim. In a session it gives the session a browser of its own
 unless the caller chose otherwise: `AGENT_BROWSER_SESSION=os-<checksum of
-the session id>`, `AGENT_BROWSER_IDLE_TIMEOUT_MS=1800000`, and `TMPDIR=/tmp`.
+the session id>`, `AGENT_BROWSER_IDLE_TIMEOUT_MS=1800000`,
+`AGENT_BROWSER_SCREENSHOT_DIR=$OPENSESSION_SCRATCH`, and `TMPDIR=/tmp`.
 Chrome binds its singleton socket at
 `$TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket`, and under the
 session scratch that path is longer than a Unix socket path may be, so every
