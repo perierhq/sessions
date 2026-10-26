@@ -183,38 +183,165 @@ export interface PublicationPolicy {
 }
 
 /** `git [global options] <subcommand> <args>` out of one scanned command, or
- * null when the command is not a git invocation. */
+ * null when the command is not a git invocation. `config` holds each `-c`
+ * value. A path to git (`/usr/bin/git`) is git too. */
 function gitInvocation(
   words: string[],
-): { subcommand: string | undefined; args: string[] } | null {
-  const gitIndex = words.indexOf("git");
+): { subcommand: string | undefined; args: string[]; config: string[] } | null {
+  const gitIndex = words.findIndex((word) => /(?:^|\/)git$/.test(word));
   if (gitIndex < 0) return null;
+  const config: string[] = [];
   let index = gitIndex + 1;
   while (index < words.length && words[index].startsWith("-")) {
     const option = words[index++];
+    if (option === "-c" && index < words.length) config.push(words[index]);
     if (
       ["-C", "-c", "--git-dir", "--work-tree", "--namespace"].includes(option)
     )
       index++;
   }
-  return { subcommand: words[index], args: words.slice(index + 1) };
+  return { subcommand: words[index], args: words.slice(index + 1), config };
 }
 
-/** Branch names a `git push` argument list targets: `main`, `HEAD:main`,
- * `refs/heads/main`, and `:main` (a delete) all normalize to `main`. */
-function pushDestinations(pushArgs: string[]): string[] {
-  return pushArgs
-    .filter((arg) => !arg.startsWith("-") && arg !== "origin")
-    .map((arg) =>
-      (arg.includes(":") ? arg.split(":").at(-1)! : arg).replace(
-        /^refs\/heads\//,
-        "",
-      ),
-    );
+/** What one `git push` argument list would publish. */
+interface PushPlan {
+  /** The repository named: the first positional or `--repo`. */
+  remotes: string[];
+  /** Branch names the push writes, `refs/heads/` dropped; other refs
+   *  (`refs/tags/v1`) stay whole. The current branch is not listed. */
+  destinations: string[];
+  /** It writes the current branch: no refspec, or `HEAD` / `@`. */
+  current: boolean;
+  /** Refs it deletes: `:branch`, or every refspec under `--delete`. */
+  deletes: string[];
+  /** A flag that publishes refs no refspec names (`--all`, `--tags`). */
+  bulk?: string;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PUSH_BULK_FLAGS = new Set([
+  "--all",
+  "--branches",
+  "--mirror",
+  "--tags",
+  "--follow-tags",
+  "--prune",
+]);
+const PUSH_VALUE_OPTIONS = new Set([
+  "--repo",
+  "--push-option",
+  "--receive-pack",
+  "--exec",
+]);
+
+/** A shell redirection the scanner keeps as a word (`2>&1`,
+ *  `>/tmp/log`, `>`). A git ref name never holds `<` or `>`. */
+function redirection(word: string): "alone" | "joined" | undefined {
+  if (!/^\d*[<>]/.test(word)) return undefined;
+  return /^\d*(?:>>?|<<?|>&|<&|>\|)$/.test(word) ? "alone" : "joined";
+}
+
+function pushPlan(pushArgs: string[]): PushPlan {
+  const plan: PushPlan = {
+    remotes: [],
+    destinations: [],
+    current: false,
+    deletes: [],
+  };
+  const positional: string[] = [];
+  let deleting = false;
+  let options = true;
+  for (let index = 0; index < pushArgs.length; index++) {
+    const arg = pushArgs[index];
+    const redirect = redirection(arg);
+    if (redirect) {
+      if (redirect === "alone") index++;
+      continue;
+    }
+    if (!options || !arg.startsWith("-") || arg === "-") {
+      positional.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      options = false;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const [name, inline] = arg.split(/=(.*)/s, 2);
+      if (PUSH_BULK_FLAGS.has(name)) plan.bulk ??= name;
+      else if (name === "--delete") deleting = true;
+      else if (PUSH_VALUE_OPTIONS.has(name)) {
+        const value = inline ?? pushArgs[++index];
+        if (name === "--repo" && value !== undefined) plan.remotes.push(value);
+      }
+      continue;
+    }
+    // A short cluster: `-uq`, `-d`, `-o value`, `-ovalue`.
+    for (let at = 1; at < arg.length; at++) {
+      const flag = arg.charAt(at);
+      if (flag === "d") deleting = true;
+      if (flag === "o") {
+        if (at === arg.length - 1) index++;
+        break;
+      }
+    }
+  }
+  const [remote, ...refspecs] = positional;
+  if (remote !== undefined) plan.remotes.push(remote);
+  if (refspecs.length === 0) plan.current = !deleting;
+  for (const refspec of refspecs) {
+    const spec = refspec.replace(/^\+/, "");
+    const colon = spec.indexOf(":");
+    const source = colon < 0 ? spec : spec.slice(0, colon);
+    const target = colon < 0 ? spec : spec.slice(colon + 1) || source;
+    // A pattern (`refs/heads/*`) is shown whole.
+    const name = target.includes("*")
+      ? target
+      : target.replace(/^refs\/heads\//, "");
+    if (deleting || (colon >= 0 && source === "")) {
+      plan.deletes.push(name);
+      continue;
+    }
+    if (name === "HEAD" || name === "@") plan.current = true;
+    else plan.destinations.push(name);
+  }
+  return plan;
+}
+
+/** A repository named by URL or path rather than by remote name. */
+function repositoryLocation(remote: string): boolean {
+  return (
+    /^(?:[a-z][a-z0-9+.-]*:\/\/|file:)/i.test(remote) ||
+    /^[\w.-]+@[\w.-]+:/.test(remote) ||
+    /^(?:\/|\.\.?(?:\/|$)|~)/.test(remote)
+  );
+}
+
+/** `git -c` keys that change what or where a push publishes. */
+function pushConfigKey(config: string[]): string | undefined {
+  return config
+    .map((entry) => entry.split("=", 1)[0])
+    .find((key) => /^(?:remote|push|url|branch)\./i.test(key));
+}
+
+/** The `git push` segments in raw scanned text, each as its argument
+ *  words: a fallback for shapes the scanner does not split. A segment ends
+ *  at the next command (`;`, `&`, `|` or a newline). */
+function rawPushArgs(scan: string): string[][] {
+  return [...scan.matchAll(/\bgit\s+push\b([^\n;&|]*)/g)].map((match) =>
+    match[1].trim().split(/\s+/).filter(Boolean),
+  );
+}
+
+/** How a refused destination reads in a refusal. */
+function shownRef(name: string): string {
+  return name === "" || name === '""' || name === "''"
+    ? "a quoted or computed refspec"
+    : name;
+}
+
+/** Whether a push updates or deletes `branch` by name. */
+function writesBranch(plan: PushPlan, branch: string): boolean {
+  return plan.destinations.includes(branch) || plan.deletes.includes(branch);
 }
 
 export interface MergeGuard {
@@ -248,7 +375,7 @@ export function mergeGuardDenyReason(
     if (
       guard.baseBranch &&
       (git?.subcommand === "push" || git?.subcommand === "send-pack") &&
-      pushDestinations(git.args).includes(guard.baseBranch)
+      writesBranch(pushPlan(git.args), guard.baseBranch)
     )
       return baseRefusal;
     const ghIndex = words.indexOf("gh");
@@ -278,11 +405,10 @@ export function mergeGuardDenyReason(
   }
   // Raw-text fallbacks for shapes the scanner does not split (heredocs,
   // eval strings): mirror the word checks above.
+  const base = guard.baseBranch;
   if (
-    guard.baseBranch &&
-    new RegExp(
-      `\\bgit\\s+push\\b[^\\n]*(?:\\s|:|refs/heads/)${escapeRegExp(guard.baseBranch)}(?:\\s|$)`,
-    ).test(scan)
+    base &&
+    rawPushArgs(scan).some((args) => writesBranch(pushPlan(args), base))
   )
     return baseRefusal;
   if (mergeRefusal && /\bgh\s+pr\s+merge\b/.test(scan)) return mergeRefusal;
@@ -324,18 +450,8 @@ export function publicationPolicyDenyReason(
       if (subcommand === "send-pack")
         return "automation descendants cannot use git send-pack";
       if (subcommand === "push") {
-        if (pushArgs.some((arg) => /^(?:https?:\/\/|git@|ssh:\/\/)/i.test(arg)))
-          return "automation descendants cannot push to an external repository URL";
-        const normalizedDestinations = pushDestinations(pushArgs);
-        if (normalizedDestinations.includes(policy.branch))
-          return `automation descendants cannot push the protected base branch ${policy.branch}`;
-        if (
-          normalizedDestinations.length === 0 ||
-          normalizedDestinations.some(
-            (destination) => destination !== policy.headBranch,
-          )
-        )
-          return `automation descendants may only push their owned branch ${policy.headBranch}`;
+        const reason = pushDenyReason(pushPlan(pushArgs), policy, git.config);
+        if (reason) return reason;
       }
     }
     const ghIndex = words.indexOf("gh");
@@ -355,22 +471,11 @@ export function publicationPolicyDenyReason(
         return "automation descendants cannot merge pull requests";
     }
   }
-  const escapedBranch = escapeRegExp(policy.branch);
-  if (
-    new RegExp(
-      `\\bgit\\s+push\\b[^\\n]*(?:HEAD:|refs/heads/)?${escapedBranch}(?:\\s|$)`,
-    ).test(scan)
-  )
-    return `automation descendants cannot push the protected base branch ${policy.branch}`;
-  if (/\bgit\s+push\s+(?:https?:\/\/|git@|ssh:\/\/)/i.test(scan))
-    return "automation descendants cannot push to an external repository URL";
-  if (/\bgit\s+push\b/i.test(scan)) {
-    const escapedHead = escapeRegExp(policy.headBranch);
-    const ownsDestination = new RegExp(
-      `(?:HEAD:)?(?:refs/heads/)?${escapedHead}(?:\\s|$)`,
-    ).test(scan);
-    if (!ownsDestination)
-      return `automation descendants may only push their owned branch ${policy.headBranch}`;
+  // Raw-text fallback for shapes the scanner does not split: the same
+  // reading of each `git push` segment.
+  for (const args of rawPushArgs(scan)) {
+    const reason = pushDenyReason(pushPlan(args), policy, []);
+    if (reason) return reason;
   }
   for (const match of scan.matchAll(
     /\bgh\b[^\n]*\s(?:--repo|-R)\s+([^\s]+)/g,
@@ -384,6 +489,38 @@ export function publicationPolicyDenyReason(
     if (match[1] !== policy.repo)
       return `automation descendants cannot write to repository ${match[1]}`;
   }
+  return undefined;
+}
+
+/**
+ * Why one `git push` is refused for an automation descendant, or undefined
+ * when it writes only the owned branch. A push with no refspec, or of
+ * `HEAD`, writes the current branch: the descendant's isolated worktree is
+ * created on its owned branch, and the token and rulesets stay the boundary
+ * (docs/github-authority.md).
+ */
+function pushDenyReason(
+  plan: PushPlan,
+  policy: PublicationPolicy,
+  config: string[],
+): string | undefined {
+  const owned = `automation descendants may only push their owned branch ${policy.headBranch}`;
+  const key = pushConfigKey(config);
+  if (key)
+    return `automation descendants cannot override push configuration (${key}); push with git push origin ${policy.headBranch}`;
+  if (plan.remotes.some(repositoryLocation))
+    return "automation descendants cannot push to an external repository URL";
+  if (plan.bulk) return `${owned}; ${plan.bulk} pushes other refs too`;
+  if (writesBranch(plan, policy.branch))
+    return `automation descendants cannot push the protected base branch ${policy.branch}`;
+  if (plan.deletes.length)
+    return `automation descendants cannot delete a branch (${plan.deletes.map(shownRef).join(", ")})`;
+  const remote = plan.remotes.find((r) => r !== "origin");
+  if (remote !== undefined)
+    return `automation descendants may only push to origin; this push names remote ${shownRef(remote)}`;
+  const others = plan.destinations.filter((d) => d !== policy.headBranch);
+  if (others.length)
+    return `${owned}; this push targets ${others.map(shownRef).join(", ")}`;
   return undefined;
 }
 
