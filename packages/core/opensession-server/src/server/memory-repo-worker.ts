@@ -4,6 +4,10 @@
  * thread never opens the index; it posts requests through memory-repo/client.ts
  * and this thread answers them. Requests for one repository are serialized by
  * the service itself, so a slow push or reindex never blocks the gateway.
+ *
+ * The same thread hosts each project's knowledge repository and its index
+ * (knowledge/service.ts), opened on the first knowledge call over the same
+ * memory directory. Knowledge calls go through knowledge/dispatch.ts.
  */
 import {
   INDEX_METHODS,
@@ -16,17 +20,27 @@ import {
   MemoryRepoService,
   type MemoryRepoServiceOptions,
 } from "./memory-repo/service";
+import { dispatchKnowledge } from "./knowledge/dispatch";
+import { KnowledgeService } from "./knowledge/service";
 
 declare const self: Worker;
 
 let options: MemoryRepoServiceOptions | undefined;
 let service: MemoryRepoService | undefined;
+let knowledge: KnowledgeService | undefined;
 
 function open(): MemoryRepoService {
   if (service) return service;
   if (!options) throw new Error("Memory repository worker was not opened.");
   service = new MemoryRepoService(options);
   return service;
+}
+
+function openKnowledge(): KnowledgeService {
+  if (knowledge) return knowledge;
+  if (!options) throw new Error("Memory repository worker was not opened.");
+  knowledge = new KnowledgeService({ base: options.base });
+  return knowledge;
 }
 
 function reply(response: MemoryRepoWorkerResponse): void {
@@ -39,15 +53,23 @@ self.onmessage = async (event: MessageEvent<MemoryRepoWorkerRequest>) => {
     if (options && options.base !== request.options.base) {
       service?.close();
       service = undefined;
+      knowledge?.close();
+      knowledge = undefined;
     }
     options = request.options;
     if (service) Object.assign(service.opts, request.options);
     return;
   }
   try {
-    const target = open();
     let value: unknown;
-    if (request.target === "service") {
+    if (request.target === "knowledge") {
+      value = await dispatchKnowledge(
+        openKnowledge(),
+        request.method,
+        request.args,
+      );
+    } else if (request.target === "service") {
+      const target = open();
       if (!(SERVICE_METHODS as readonly string[]).includes(request.method))
         throw new Error(`Unknown memory service method ${request.method}`);
       const fn = (
@@ -55,6 +77,7 @@ self.onmessage = async (event: MessageEvent<MemoryRepoWorkerRequest>) => {
       )[request.method];
       value = await fn.apply(target, request.args);
     } else {
+      const target = open();
       if (!(INDEX_METHODS as readonly string[]).includes(request.method))
         throw new Error(`Unknown memory index method ${request.method}`);
       const index = target.index as unknown as Record<
