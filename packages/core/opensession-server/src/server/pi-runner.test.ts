@@ -638,6 +638,7 @@ describe("piToolNames", () => {
       async catalog() {
         return catalog;
       },
+      unavailable: () => new Map(),
       async callExact() {
         return { content: [] };
       },

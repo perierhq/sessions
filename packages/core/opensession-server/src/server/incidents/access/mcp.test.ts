@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { statePath } from "../../paths";
 import type { AgentAccess } from "../../../shared/incident-access";
 import { automationSessionMcp } from "../../interactive-mcp";
 import {
@@ -117,6 +120,45 @@ test("describe_access lists only what this run is bound to, and names what was a
   expect(
     JSON.parse(textOf(await tools[0].handler({}, {}))).note,
   ).toBeUndefined();
+});
+// The grant store's path is fixed when mcp-oauth loads, before the kernel
+// fixture moves the state root.
+const oauthStorePath = statePath(".opensession-mcp-oauth.json");
+test("describe_access names a connection whose sign-in expired", async () => {
+  const storePath = oauthStorePath;
+  mkdirSync(dirname(storePath), { recursive: true });
+  writeFileSync(
+    storePath,
+    JSON.stringify({
+      stacked: {
+        serverUrl: "https://mcp.example.test/mcp",
+        endpoints: { authorize: "", token: "https://mcp.example.test/token" },
+        clientInfo: { clientId: "c" },
+        shared: {
+          tokens: { accessToken: "old", expiresAt: Date.now() - 60_000 },
+          updatedAt: new Date(0).toISOString(),
+          connectedBy: "Example",
+        },
+      },
+    }),
+  );
+  try {
+    __setBindingResolverForTest(async () =>
+      agentAccessFixture({ connections: ["sentry", "stacked"] }),
+    );
+    const tools = incidentAccessToolDefinitions({
+      sessionId: "os-1",
+      binding,
+      access: agentAccessFixture(),
+    });
+    const out = JSON.parse(textOf(await tools[0].handler({}, {})));
+    expect(out.connections).toEqual(["sentry", "stacked"]);
+    expect(out.unavailable).toEqual([
+      "stacked: sign-in expired. A person needs to reconnect it in Settings → Connections.",
+    ]);
+  } finally {
+    rmSync(storePath, { force: true });
+  }
 });
 test("every call re-resolves: a revoked agent gets nothing", async () => {
   const granted = agentAccessFixture({

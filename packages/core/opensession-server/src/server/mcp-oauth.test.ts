@@ -1,14 +1,26 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as dns from "node:dns/promises";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "./paths";
 import {
   CLIENT_METADATA_PATH,
   completeMcpOauthFlow,
+  freshMcpAuthHeader,
   mcpOauthPublicRoutes,
+  mcpOauthStatus,
   mcpSharedGrantHeader,
+  mcpSignInProblem,
+  mcpSignInProblems,
+  SIGN_IN_EXPIRED_REASON,
   startMcpOauthFlow,
+  startMcpOauthRefresher,
   supportsManualToken,
   validateManualMcpToken,
 } from "./mcp-oauth";
@@ -16,6 +28,10 @@ import {
   installPinnedFetchDouble,
   type PinnedCall,
 } from "./testing/pinned-fetch-double";
+import {
+  type OauthMcpFixture,
+  startOauthMcpFixture,
+} from "./testing/oauth-mcp-fixture";
 
 let pinned: PinnedCall[] = [];
 let restorePinned = () => {};
@@ -465,5 +481,149 @@ describe("MCP OAuth requests pin the address they connect to", () => {
       "https://elsewhere.example.test/collect",
     );
     expect(asked.has("elsewhere.example.test")).toBe(false);
+  });
+});
+
+describe("shared sign-ins for unattended runs", () => {
+  const storePath = statePath(".opensession-mcp-oauth.json");
+  const realTicker = (globalThis as Record<string, unknown>).__osMcpOauthTicker;
+  let fixture: OauthMcpFixture;
+
+  function seed(name: string, tokens: Record<string, unknown>) {
+    let store: Record<string, unknown> = {};
+    try {
+      store = JSON.parse(readFileSync(storePath, "utf8"));
+    } catch {}
+    store[name] = {
+      serverUrl: fixture.mcpUrl,
+      endpoints: {
+        authorize: `${fixture.url}/authorize`,
+        token: fixture.tokenUrl,
+      },
+      clientInfo: { clientId: "fixture-client" },
+      shared: {
+        tokens,
+        updatedAt: new Date(0).toISOString(),
+        connectedBy: "Example",
+      },
+    };
+    writeFileSync(storePath, JSON.stringify(store));
+  }
+  const stored = (name: string) =>
+    JSON.parse(readFileSync(storePath, "utf8"))[name].shared;
+  const expired = () => Date.now() - 60_000;
+
+  /** Earlier tests leave refreshes in flight that write the store. */
+  const settled = () =>
+    Promise.allSettled([
+      ...((
+        (globalThis as Record<string, unknown>).__osMcpOauthRefreshing as
+          | Map<string, Promise<unknown>>
+          | undefined
+      )?.values() ?? []),
+    ]);
+
+  beforeEach(async () => {
+    await settled();
+    mkdirSync(dirname(storePath), { recursive: true });
+    (globalThis as Record<string, unknown>).__osMcpOauthTicker = true;
+    fixture = startOauthMcpFixture({ delayMs: 50 });
+  });
+  afterEach(async () => {
+    await settled();
+    fixture.stop();
+    rmSync(storePath, { force: true });
+    (globalThis as Record<string, unknown>).__osMcpOauthTicker = realTicker;
+  });
+
+  test("an expired grant is refreshed before use, once for concurrent callers", async () => {
+    const pair = fixture.issue();
+    seed("acme", {
+      accessToken: "old",
+      refreshToken: pair.refreshToken,
+      expiresAt: expired(),
+    });
+    expect(mcpSignInProblem("acme")).toBeUndefined();
+    const headers = await Promise.all([
+      freshMcpAuthHeader("acme"),
+      freshMcpAuthHeader("acme"),
+      freshMcpAuthHeader("acme"),
+    ]);
+    expect(fixture.tokenRequests).toHaveLength(1);
+    const grant = stored("acme");
+    expect(new Set(headers)).toEqual(
+      new Set([`Bearer ${grant.tokens.accessToken}`]),
+    );
+    // The rotated refresh token was kept, and the next refresh uses it.
+    expect(grant.tokens.refreshToken).not.toBe(pair.refreshToken);
+    expect(grant.tokens.expiresAt).toBeGreaterThan(Date.now());
+    expect(statSync(storePath).mode & 0o777).toBe(0o600);
+  });
+
+  test("a grant with no refresh token says its sign-in expired", async () => {
+    seed("acme", { accessToken: "old", expiresAt: expired() });
+    expect(await freshMcpAuthHeader("acme")).toBeUndefined();
+    expect(fixture.tokenRequests).toHaveLength(0);
+    expect(mcpSignInProblem("acme")).toBe(SIGN_IN_EXPIRED_REASON);
+    expect(await mcpSignInProblems(["acme", "other"])).toEqual({
+      acme: SIGN_IN_EXPIRED_REASON,
+    });
+    expect(mcpOauthStatus("acme").shared?.expired).toBe(true);
+  });
+
+  test("a refused refresh is logged, kept, and not retried", async () => {
+    const pair = fixture.issue();
+    seed("acme", {
+      accessToken: "old",
+      refreshToken: pair.refreshToken,
+      expiresAt: expired(),
+    });
+    fixture.failRefreshWith("invalid_grant");
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await freshMcpAuthHeader("acme")).toBeUndefined();
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        "refresh refused for acme/shared: invalid_grant",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    expect(stored("acme").refreshError.message).toContain("invalid_grant");
+    expect(mcpSignInProblem("acme")).toBe(SIGN_IN_EXPIRED_REASON);
+    expect(mcpOauthStatus("acme").shared?.expired).toBe(true);
+    await freshMcpAuthHeader("acme");
+    expect(fixture.tokenRequests).toHaveLength(1);
+  });
+
+  test("the background check refreshes a shared grant ahead of expiry", async () => {
+    const pair = fixture.issue();
+    // Still valid, but inside the refresh window.
+    seed("acme", {
+      accessToken: "soon",
+      refreshToken: pair.refreshToken,
+      expiresAt: Date.now() + 60_000,
+    });
+    const g = globalThis as Record<string, unknown>;
+    g.__osMcpOauthTicker = undefined;
+    startMcpOauthRefresher();
+    try {
+      for (
+        let i = 0;
+        i < 100 && stored("acme").tokens.accessToken === "soon";
+        i++
+      )
+        await Bun.sleep(20);
+      expect(fixture.tokenRequests).toHaveLength(1);
+      expect(stored("acme").tokens.accessToken).not.toBe("soon");
+    } finally {
+      clearInterval(g.__osMcpOauthTicker as ReturnType<typeof setInterval>);
+    }
+  });
+
+  test("a current grant is used as is", async () => {
+    seed("acme", { accessToken: "live", expiresAt: Date.now() + 60 * 60_000 });
+    expect(await freshMcpAuthHeader("acme")).toBe("Bearer live");
+    expect(mcpSignInProblem("acme")).toBeUndefined();
+    expect(mcpOauthStatus("acme").shared?.expired).toBeUndefined();
   });
 });

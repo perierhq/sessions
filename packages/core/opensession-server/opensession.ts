@@ -156,7 +156,10 @@ import { startIncidentImpact } from "./src/server/incidents/impact";
 import { incidentReleaseHookRoutes } from "./src/server/incidents/response/actions";
 import { startIncidentResponse } from "./src/server/incidents/response/coordinator";
 import { prImagePublicRoutes } from "./src/server/pr-images";
-import { mcpOauthPublicRoutes } from "./src/server/mcp-oauth";
+import {
+  mcpOauthPublicRoutes,
+  startMcpOauthRefresher,
+} from "./src/server/mcp-oauth";
 import {
   sessionHtmlWithSocialMeta,
   sessionSocialCardPublicRoutes,
@@ -1016,6 +1019,11 @@ if (!g.__opensessionBooted) {
     // refresh rotates the shared refresh token, so a second ticker anywhere
     // invalidates the grant.
     startGithubTokenRefresher();
+
+    // Refresh shared and personal MCP sign-ins ahead of expiry (mcp-oauth.ts),
+    // so an unattended run finds a current one. Runs refresh on use too; a
+    // file lock keeps a rotating refresh token from being spent twice.
+    startMcpOauthRefresher();
 
     // Warm dev-server pool + warm git templates: docker-level sweeps, so only
     // the server that owns the daemon runs them.

@@ -108,8 +108,9 @@ export interface ToolAccountDto {
   /** null = no probe has finished for this tool yet, so whether it offers a
    *  personal sign-in is still unknown. Not the same as false. */
   capable: boolean | null;
-  /** The workspace-wide grant, when one exists. */
-  shared?: { connectedBy?: string };
+  /** The workspace-wide grant, when one exists. `expired`: its sign-in
+   *  can't be refreshed any more, so a person has to reconnect it. */
+  shared?: { connectedBy?: string; expired?: true };
   /** Team members who have connected their own account. */
   users: string[];
 }

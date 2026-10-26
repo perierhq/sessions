@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { createPiMcpBridge, DIRECT_MCP_TOOLS } from "./pi-mcp-bridge";
 import type { McpRuntime, McpRuntimeTool } from "./mcp-runtime";
 
-function fakeRuntime(catalog: McpRuntimeTool[]): McpRuntime & {
+function fakeRuntime(
+  catalog: McpRuntimeTool[],
+  unavailable: ReadonlyMap<string, string> = new Map(),
+): McpRuntime & {
   calls: Array<{
     id: string;
     args: Record<string, unknown>;
@@ -18,10 +21,11 @@ function fakeRuntime(catalog: McpRuntimeTool[]): McpRuntime & {
   }> = [];
   return {
     calls,
-    hasCatalog: catalog.length > 0,
+    hasCatalog: catalog.length > 0 || unavailable.size > 0,
     async catalog() {
       return catalog;
     },
+    unavailable: () => unavailable,
     async callExact(id, args, options) {
       if (!catalog.some((tool) => tool.id === id))
         throw new Error(`MCP tool "${id}" is unavailable`);
@@ -54,6 +58,34 @@ const exec = (
 ) => definition.execute("call-42", params, signal, undefined, {} as any);
 
 describe("Pi MCP adapter", () => {
+  test("search names bound servers that could not be listed, and why", async () => {
+    const bridge = await createPiMcpBridge(
+      fakeRuntime(
+        [tool("alpha_echo", "Echo text")],
+        new Map([
+          [
+            "stacked",
+            "sign-in expired. A person needs to reconnect it in Settings → Connections.",
+          ],
+        ]),
+      ),
+    );
+    const search = bridge.discoveryTools.find((t) => t.name === "tool_search")!;
+    const text = (await exec(search, { query: "stacked" })).content[0].text;
+    expect(text).toBe(
+      'No permitted MCP tools matched "stacked". Try broader capability words.\n\n' +
+        "Bound to this run but unavailable:\n" +
+        "- stacked: sign-in expired. A person needs to reconnect it in Settings → Connections.",
+    );
+  });
+
+  test("tool search is offered when every bound server failed", async () => {
+    const bridge = await createPiMcpBridge(
+      fakeRuntime([], new Map([["stacked", "unreachable"]])),
+    );
+    expect(bridge.discoveryTools.map((t) => t.name)).toContain("tool_search");
+  });
+
   test("exposes exactly the compact dispatcher names", async () => {
     const bridge = await createPiMcpBridge(
       fakeRuntime([tool("alpha_echo", "Echo text")]),

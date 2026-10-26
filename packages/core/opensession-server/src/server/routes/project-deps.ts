@@ -49,6 +49,7 @@ import {
 } from "../projects/store";
 import { setProjectViewDeps, type ProjectViewDeps } from "../projects/view";
 import type { ConnectorState } from "../projects/readiness";
+import { mcpSignInProblems } from "../mcp-oauth";
 import { listRunners } from "../runners";
 import {
   repoPortalSandbox,
@@ -133,6 +134,7 @@ async function readMcpServers(): Promise<Record<string, unknown>> {
 
 async function liveConnectors(): Promise<ConnectorState[]> {
   const servers = await readMcpServers();
+  const expired = await mcpSignInProblems(Object.keys(servers));
   return Object.entries(servers)
     .filter(([name]) => connectionStatusFrom(name, servers) !== "internal")
     .map(([name, raw]) => {
@@ -151,6 +153,7 @@ async function liveConnectors(): Promise<ConnectorState[]> {
         status: "ok" as const,
         allowedUsers: allowed,
         allowUnattended: entry.allowUnattended === true,
+        ...(expired[name] ? { signInExpired: true } : {}),
       };
     });
 }

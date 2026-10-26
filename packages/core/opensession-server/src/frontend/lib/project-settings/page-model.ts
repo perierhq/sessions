@@ -403,6 +403,8 @@ export function fixLabel(fix: ReadinessFix): string {
       return fix.action === "rollback" ? "Add rollback" : "Add deploy";
     case "allow-agents":
       return "Allow agents";
+    case "reconnect":
+      return "Reconnect";
     case "unpause":
       return "Resume agents";
   }

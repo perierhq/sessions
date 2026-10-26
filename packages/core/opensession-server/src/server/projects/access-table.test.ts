@@ -150,6 +150,27 @@ describe("buildAccessTable", () => {
     expect(linear.cells.verifier.value).toBe("no");
   });
 
+  test("a connector whose sign-in expired says so", () => {
+    const table = buildAccessTable(
+      READY_4_OF_6.document,
+      env({
+        connectors: [
+          { ...connector("linear", "Linear"), signInExpired: true },
+          connector("sentry", "Sentry"),
+          connector("grafana", "Grafana", 2, true),
+        ],
+      }),
+    );
+    const linear = row(
+      table,
+      (r) => r.key.kind === "connection" && r.key.server === "linear",
+    );
+    expect(linear.warning).toEqual({
+      text: "Sign-in expired, so agents can't open it",
+    });
+    expect(linear.cells.automations.value).toBe("blocked");
+  });
+
   test("a standing credential, an ssh host, a stored any-website row and exceptions", () => {
     const doc = {
       ...READY_4_OF_6.document,

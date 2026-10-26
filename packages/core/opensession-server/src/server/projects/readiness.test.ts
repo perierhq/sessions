@@ -239,6 +239,23 @@ describe("computeReadiness", () => {
     expect(unticked.steps.find((s) => s.id === "access")?.state).toBe("ready");
   });
 
+  test("a ticked connector whose sign-in expired asks for a reconnect", () => {
+    const expired = computeReadiness(
+      input({
+        connectors: allowed.map((c) =>
+          c.server === "sentry" ? { ...c, signInExpired: true } : c,
+        ),
+      }),
+    );
+    expect(expired.steps.find((s) => s.id === "access")).toMatchObject({
+      state: "todo",
+      title: "Errors for agents",
+      detail:
+        "Sentry's sign-in expired, so agents can't open it. A person needs to reconnect it",
+      fix: { kind: "reconnect", server: "sentry" },
+    });
+  });
+
   test("an ok workspace on this machine without a sandbox reads plainly", () => {
     const place: RunPlace = {
       state: "ok",

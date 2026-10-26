@@ -111,7 +111,9 @@ function connectionRows(
             text: `Limited to ${peopleCount(problem.people)}, so agents can't open it`,
             fix: { kind: "allow-agents" as const, server: entry.server },
           }
-        : { text: "Not connected, so agents can't open it" }
+        : problem.kind === "signin-expired"
+          ? { text: "Sign-in expired, so agents can't open it" }
+          : { text: "Not connected, so agents can't open it" }
       : undefined;
     const base: Omit<AccessRowView, "cells"> = {
       key: { kind: "connection", server: entry.server },

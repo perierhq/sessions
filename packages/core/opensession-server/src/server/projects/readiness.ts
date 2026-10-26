@@ -27,6 +27,9 @@ export interface ConnectorState {
   allowedUsers: number;
   /** Runs without a person may use it despite `allowedUsers`. */
   allowUnattended: boolean;
+  /** Its workspace sign-in expired and can't be refreshed: a person has to
+   *  reconnect it. */
+  signInExpired?: boolean;
 }
 
 export type ReadinessDocument = Pick<
@@ -60,6 +63,7 @@ const CONNECTOR_CATEGORY: Record<string, string> = {
 
 export type ConnectorProblem =
   | { kind: "limited"; people: number }
+  | { kind: "signin-expired" }
   | { kind: "error" };
 
 /** Why agents can't open a connector ticked for them, or `null`. A
@@ -71,6 +75,7 @@ export function connectorProblem(
   if (state.allowedUsers > 0 && !state.allowUnattended) {
     return { kind: "limited", people: state.allowedUsers };
   }
+  if (state.signInExpired) return { kind: "signin-expired" };
   return null;
 }
 
@@ -244,6 +249,15 @@ function accessStep(input: ReadinessInput): ReadinessStep {
         title,
         detail: `${label} is limited to ${peopleCount(problem.people)}, so agents can't open it`,
         fix: { kind: "allow-agents", server: row.server },
+      };
+    }
+    if (problem.kind === "signin-expired") {
+      return {
+        id: "access",
+        state: "todo",
+        title,
+        detail: `${label}'s sign-in expired, so agents can't open it. A person needs to reconnect it`,
+        fix: { kind: "reconnect", server: row.server },
       };
     }
     return {
