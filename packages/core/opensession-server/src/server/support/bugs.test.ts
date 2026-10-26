@@ -235,6 +235,18 @@ describe("a person edits the prepared issue before creating it", () => {
     expect(posted[0]!.body).toBe(`The export returns 500.${issueFooter()}`);
   });
 
+  test("a footer naming an earlier persona is replaced, not kept", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    // Prepared before the persona was renamed, edited after.
+    const result = await approvePendingIssue(c.id, OWNER_ACTOR, seen.revision, {
+      body: "The export returns 500.\n\nReported by Old Name from a support conversation.\n",
+    });
+    expect(result).toEqual({ ok: true });
+    expect(posted[0]!.body).toBe(`The export returns 500.${issueFooter()}`);
+  });
+
   test("only the edited part changes; the rest stays as prepared", async () => {
     const c = await bugConversation();
     await reportBug(c.id, SUMMARY, AGENT);

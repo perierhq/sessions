@@ -189,10 +189,13 @@ const fail = (status: Failure["status"], error: string): Failure => ({
   error,
 });
 
-/** Display name, for rules ("Stopped by Ada"): the person, else the
- *  assistant persona the support session belongs to. */
+/** Display name, for rules ("Stopped by Ada"): the person, the persona
+ *  for the agent and Sessions' own rules (the support session belongs to
+ *  it), and the customer as such. */
 function actorLabel(actor: SupportActor): string {
-  return actor.kind === "person" ? actor.name : personaName();
+  if (actor.kind === "person") return actor.name;
+  if (actor.kind === "agent" || actor.kind === "sessions") return personaName();
+  return "the customer";
 }
 
 /** Who acted, for audit rows: the signed-in login (else the name) and

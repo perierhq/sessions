@@ -114,6 +114,7 @@ import { plainDiscussionDeniedTools } from "./automation-denied-tools";
 import {
   type RunInputsSession,
   isSupportSession,
+  runCommitAuthor,
   resolveSessionRunInputs,
   supportTurnScope,
 } from "./session-run-inputs";
@@ -168,7 +169,7 @@ import {
 
 import { ownedWorktree } from "./session-workspace";
 import { engineSessionPatch, mergedSessionTranscriptAsync } from "./sessions";
-import { commitAuthorFor, userMatchesAny } from "./shared/user-mappings";
+import { userMatchesAny } from "./shared/user-mappings";
 import { envCapacity } from "./shared/env-capacity";
 import { sanitizeBranchSlug } from "./suggest-branch";
 import {
@@ -2215,7 +2216,7 @@ export async function openCreatedSession(
               ...(openingBashRunAs ? { bashRunAs: openingBashRunAs } : {}),
               confirmTools: STRIPE_CONFIRM_TOOLS,
               aws: openingTrust.aws,
-              author: commitAuthorFor(spec.user, spec.createdBy),
+              author: runCommitAuthor(spec, spec.user, spec.createdBy),
               user: openingTrust.user,
               journalKind: automationChild ? "automation" : "create",
               trustProfile: openingTrust.trustProfile,

@@ -6,23 +6,29 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentAccess } from "../shared/incident-access";
 import {
   AgentAccessError,
   __setBindingResolverForTest,
 } from "./incidents/access/resolve";
 import { automationDeniedTools } from "./automations";
-import { personaName } from "./config";
+import { getConfigAsync, personaName } from "./config";
 import { __setIncidentAuditForTest } from "./incidents/audit-sink";
 import {
   type ProjectSettingsDocument,
   defaultProjectDocument,
 } from "../shared/project-settings";
 import { projectDocuments } from "./projects/store";
+import { isMachineActor } from "./session-actors";
+import { __setIdentitiesForTest } from "./shared/user-mappings";
 import { useSupportTestKernel } from "./support/testing/kernel-fixture";
 import type { AutomationDescendantPolicy } from "./types";
 import {
   resolveSessionRunInputs,
+  runCommitAuthor,
   sessionInProcessMcpBranch,
   sessionMcpScopeSource,
   type RunInputsSession,
@@ -591,6 +597,72 @@ describe("support sessions", () => {
     expect(inputs.humanPrompter).toBeUndefined();
     expect(inputs.mcpGrantUser).toBeUndefined();
     expect(inputs.sessionNote).toBe(false);
+  });
+
+  /** Run `body` with persona "Pat" and a roster holding "Pat Smith", so the
+   *  persona reads as her (isMachineActor gives a teammate precedence). */
+  async function withPersonaCollision(body: () => Promise<void>) {
+    const restoreTeam = __setIdentitiesForTest([
+      { name: "Pat Smith", email: "pat@example.test", github: "pat-smith" },
+    ]);
+    const previousConfig = process.env.OPENSESSION_CONFIG;
+    const dir = mkdtempSync(join(tmpdir(), "run-inputs-persona-"));
+    try {
+      writeFileSync(
+        join(dir, "config.json"),
+        JSON.stringify({ persona: { name: "Pat" } }),
+      );
+      process.env.OPENSESSION_CONFIG = join(dir, "config.json");
+      await getConfigAsync();
+      expect(personaName()).toBe("Pat");
+      expect(isMachineActor("Pat")).toBe(false);
+      await body();
+    } finally {
+      restoreTeam();
+      if (previousConfig === undefined) delete process.env.OPENSESSION_CONFIG;
+      else process.env.OPENSESSION_CONFIG = previousConfig;
+      await getConfigAsync();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a persona named like a teammate gives the support turn none of her rights", async () => {
+    await storeProject(() => {});
+    await withPersonaCollision(async () => {
+      // A support session credited to the colliding persona, and a turn
+      // sent as the persona or straight under the teammate's own name.
+      const owned: RunInputsSession = {
+        ...support,
+        startedBy: "Pat",
+        createdByLogin: "pat-smith",
+      };
+      for (const user of ["Pat", "Pat Smith", "pat-smith"]) {
+        const inputs = await resolveSessionRunInputs(owned, { user });
+        expect(inputs.inProcessMcpBranch).toBe("support");
+        expect(inputs.user).toBeUndefined();
+        expect(inputs.accountUser).toBeUndefined();
+        expect(inputs.humanPrompter).toBeUndefined();
+        expect(inputs.mcpGrantUser).toBeUndefined();
+        expect(inputs.sessionNote).toBe(false);
+      }
+      // The same sender on an ordinary session is the teammate.
+      const ordinary = await resolveSessionRunInputs(plain, { user: "Pat" });
+      expect(ordinary.accountUser).toBe("Pat");
+      expect(ordinary.humanPrompter).toBe("Pat");
+    });
+  });
+
+  test("a support session's commits carry no teammate's identity", async () => {
+    await withPersonaCollision(async () => {
+      expect(runCommitAuthor(support, "Pat", "Pat")).toBeNull();
+      expect(runCommitAuthor(support, "Pat Smith", "Pat Smith")).toBeNull();
+      expect(runCommitAuthor(support, undefined, personaName())).toBeNull();
+      // An ordinary session still credits the person behind the turn.
+      expect(runCommitAuthor(plain, "Pat", undefined)).toEqual({
+        name: "Pat Smith",
+        email: "pat@example.test",
+      });
+    });
   });
 
   test("a support session with no connectors gets none, never every server", async () => {

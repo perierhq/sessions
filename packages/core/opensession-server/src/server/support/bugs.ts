@@ -52,10 +52,11 @@ import { getConversation, updateConversation } from "./store";
 export function issueFooter(): string {
   return `\n\nReported by ${personaName()} from a support conversation.`;
 }
-/** The footer issues were prepared with before they named the persona;
- *  still taken off a stored body so an edit keeps one footer. */
-const LEGACY_ISSUE_FOOTER =
-  "\n\nReported from a support conversation in Sessions.";
+/** Any footer this code has prepared: today's, one naming an earlier
+ *  persona (a rename), or the one from before footers named the persona.
+ *  Taken off a stored body so an edit keeps exactly one footer. */
+const ISSUE_FOOTER_PATTERN =
+  /\n\nReported (?:by .+? )?from a support conversation(?: in Sessions)?\.\s*$/;
 export const HELD_PUBLIC = "Waiting for a person: the repository is public";
 export const HELD_QUOTE =
   "Waiting for a person: the report quotes the customer's email";
@@ -569,12 +570,7 @@ export function issueEditError(edit: IssueEdit): string | null {
 }
 
 function withoutFooter(body: string): string {
-  const trimmed = body.trimEnd();
-  for (const footer of [issueFooter(), LEGACY_ISSUE_FOOTER]) {
-    const tail = footer.trim();
-    if (trimmed.endsWith(tail)) return trimmed.slice(0, -tail.length);
-  }
-  return trimmed;
+  return body.trimEnd().replace(ISSUE_FOOTER_PATTERN, "").trimEnd();
 }
 
 /** The issue as it will be posted: the prepared one, with a person's

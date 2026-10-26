@@ -3,6 +3,7 @@ import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import type { UnifiedSession } from "./types";
 import {
   resolveSessionRunInputs,
+  runCommitAuthor,
   type SessionRunInputs,
 } from "./session-run-inputs";
 import { filterMcpServers, STRIPE_CONFIRM_TOOLS } from "./runner-shared";
@@ -13,7 +14,7 @@ import {
   requiresAllowedUsers,
 } from "./connections";
 import { mcpSharedGrantHeader, mcpUserGrantHeader } from "./mcp-oauth";
-import { userMatchesAny, commitAuthorFor } from "./shared/user-mappings";
+import { userMatchesAny } from "./shared/user-mappings";
 import { sessionPrincipal } from "./session-actors";
 import { configuredPaths } from "./config";
 import {
@@ -482,7 +483,7 @@ export async function buildSessionEffectiveConfig(
       "host-client.ts / sandbox provider",
     ),
   };
-  const git = commitAuthorFor(inputs.user, sessionPrincipal(session));
+  const git = runCommitAuthor(session, inputs.user, sessionPrincipal(session));
   const identity: Record<string, ConfigRow> = {
     user: row(inputs.user ?? null, "request identity"),
     accountUser: row(

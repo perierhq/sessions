@@ -17,6 +17,7 @@ import {
 } from "../../shared/support";
 
 const SESSIONS_ACTOR: SupportActor = { kind: "sessions" };
+import { personaName } from "../config";
 import { resolveOwner } from "../incidents/owner";
 import { type SessionControl, getSessionControl } from "../session-control";
 import { channelAdapterFor } from "./channel";
@@ -52,10 +53,13 @@ function deps(): ActionDeps {
 
 const iso = () => new Date(deps().now()).toISOString();
 
+/** Display name, for events ("Ada closed this"): the person, the customer,
+ *  else the assistant persona the support session belongs to, the same
+ *  label reply.ts uses for the agent and Sessions' own rules. */
 function actorName(actor: SupportActor): string {
   if (actor.kind === "person") return actor.name;
-  if (actor.kind === "agent") return "The support agent";
-  return "Sessions";
+  if (actor.kind === "customer") return "The customer";
+  return personaName();
 }
 
 function event(
