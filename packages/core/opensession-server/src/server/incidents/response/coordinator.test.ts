@@ -306,6 +306,9 @@ async function world(
   const bound = new Map<string, IncidentRunBound>();
   const retired: string[] = [];
   let retireFailures = 0;
+  // Sessions a fresh one can't branch from: their branch is not pushed at
+  // its last commit, or they left uncommitted work.
+  const unstackable = new Set<string>();
   // Each session's branch and Sandbox checkpoint, as the session store has them.
   const works = new Map<
     string,
@@ -349,6 +352,9 @@ async function world(
     },
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
+    },
+    async stackable(id) {
+      return !unstackable.has(id);
     },
     async usage(id) {
       const l = live.get(id);
@@ -485,6 +491,7 @@ async function world(
     works,
     prComments,
     prCloses,
+    unstackable,
     failRetire(times: number) {
       retireFailures = times;
     },
@@ -2892,4 +2899,110 @@ test("a run that failed to start still counts the turns a person ran in it", asy
     costUsd: 1.47,
   });
   expect(i?.response?.costUsd).toBe(1.47);
+});
+
+test("a fresh investigator whose predecessor could not push starts clean and carries its commits", async () => {
+  const w = await sentBackWidened([], ["logs"], {
+    beforeSendBack: (world) => {
+      world.unstackable.add("child-1");
+      world.works.set("child-1", {
+        branch: "session-branch-1",
+        checkpoint: {
+          ref: "refs/opensession/checkpoints/child-1",
+          head: "ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+        },
+      });
+    },
+  });
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  // Never stacked on a branch the controller would refuse.
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  expect(fresh.prompt).toContain(
+    "git cherry-pick origin/main..ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+  );
+  expect(fresh.prompt).not.toContain("another incident");
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("investigating");
+  expect(i?.response?.ledger.at(-1)?.detail).toContain("(logs)");
+});
+
+test("a new round after the project's sandbox changed starts a fresh session there", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.works.set("child-1", {
+    branch: "session-branch-1",
+    checkpoint: {
+      ref: "refs/opensession/checkpoints/child-1",
+      head: "1111111111111111111111111111111111111111",
+    },
+  });
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "No logs",
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  // The project moves to This machine (container) before the send-back.
+  w.deps.workspace = async () => ({ kind: "sandbox", provider: "podman" });
+  const sendsBefore = w.sends.length;
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+  // The old session, in the old sandbox, gets nothing.
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({
+    role: "investigator",
+    round: 2,
+    attempt: 2,
+    workspace: { kind: "sandbox", provider: "podman" },
+  });
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain("Check the search logs");
+  expect(fresh.prompt).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.agents.at(-1)).toMatchObject({
+    workspace: { kind: "sandbox", provider: "podman" },
+    status: "running",
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toContain(
+    "the project's sandbox changed",
+  );
+});
+
+test("a retry after the project's sandbox changed starts in the current one", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  w.live("child-1", {
+    status: "error",
+    error: "Session setup failed: Sandbox provider is not configured",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  w.deps.workspace = async () => ({ kind: "sandbox", provider: "podman" });
+  await applyOwnerDecision(w.incident.id, "retry", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({
+    attempt: 2,
+    workspace: { kind: "sandbox", provider: "podman" },
+  });
+  expect(fresh.baseSessionId).toBeUndefined();
 });

@@ -85,7 +85,8 @@ export interface WorkflowSessionControllerOpts {
   deps?: Partial<WorkflowSessionControllerDeps>;
 }
 
-function branchPushed(session: SessionSummary): Promise<boolean> {
+/** Whether the session's branch is on origin at its local commit. */
+export function branchPushed(session: SessionSummary): Promise<boolean> {
   if (!session.branch || !session.repo) return Promise.resolve(false);
   const repo = getRepo(session.repo);
   return Promise.all([
@@ -100,7 +101,7 @@ function branchPushed(session: SessionSummary): Promise<boolean> {
   );
 }
 
-async function hasUncommittedChanges(
+export async function hasUncommittedChanges(
   session: SessionSummary,
 ): Promise<boolean> {
   if (!session.worktreeDir) return false;

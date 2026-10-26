@@ -39,7 +39,9 @@ import { updateSessionFile } from "../../session-cache";
 import type { AutomationDescendantPolicy } from "../../types";
 import {
   type WorkflowSessionControllerDeps,
+  branchPushed,
   createWorkflowSessionController,
+  hasUncommittedChanges,
 } from "../../workflow-sessions";
 import { getRepo } from "../../worktree";
 import type { IncidentRunBound } from "../access/resolve";
@@ -264,6 +266,10 @@ export interface IncidentAgents {
   /** A session's branch and Sandbox checkpoint, from the session store;
    *  undefined when the session is gone. */
   work(id: string): Promise<SessionWork | undefined>;
+  /** Whether a fresh session may branch from this one (`baseSessionId`):
+   *  the controller's own checks, its branch pushed at its last commit and
+   *  nothing left uncommitted. False when they can't be read. */
+  stackable(id: string): Promise<boolean>;
   status(id: string): Promise<AgentLive>;
   /** What the session has cost so far, every turn in it counted (a
    *  person's own turns too); undefined when the session is gone. Cheap: it
@@ -429,6 +435,19 @@ export function createIncidentAgents(
           ? { checkpoint: { ref: checkpoint.ref, head: checkpoint.head } }
           : {}),
       };
+    },
+
+    async stackable(id) {
+      const session = d.control.getSession(id);
+      if (!session?.branch) return false;
+      const pushed = d.controllerDeps?.branchPushed ?? branchPushed;
+      const dirty =
+        d.controllerDeps?.hasUncommittedChanges ?? hasUncommittedChanges;
+      try {
+        return (await pushed(session)) && !(await dirty(session));
+      } catch {
+        return false;
+      }
     },
 
     async status(id) {

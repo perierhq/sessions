@@ -306,23 +306,70 @@ export interface EarlierRound {
   sendBack?: SendBackReason;
   report?: InvestigatorReport;
   prUrl?: string;
-  /** The earlier round's work sits on a branch another incident uses: the
-   *  fresh session brings its commits over instead of building on it. */
+  /** The fresh session starts clean and brings the earlier round's commits
+   *  over instead of building on its branch (see CarriedWork). */
   carry?: CarriedWork;
 }
 
-/** Where an earlier session's commits are when its branch is not its own. */
+/**
+ * Where an earlier session's commits are when a fresh session can't build
+ * on its branch: the branch is another incident's too (`shared-branch`, the
+ * default), it is not pushed at its last commit (`unpushed`), or the
+ * project's sandbox changed since that session ran (`workspace`).
+ */
 export interface CarriedWork {
   branch: string;
   /** Its Sandbox checkpoint on origin: the hidden ref, and the branch tip
    *  the checkpoint was taken on. */
   checkpoint?: { ref: string; head: string };
+  reason?: "shared-branch" | "unpushed" | "workspace";
+}
+
+function carryLines(
+  carry: CarriedWork,
+  round: number,
+  baseBranch: string,
+): string[] {
+  const { branch, checkpoint } = carry;
+  if ((carry.reason ?? "shared-branch") === "shared-branch")
+    return [
+      `Round ${round}'s commits are on ${branch}, a branch another incident's pull request also uses. Never push ${branch} or open a pull request from it. Bring this incident's commits onto your own branch instead:`,
+      ...(checkpoint
+        ? [
+            `- git fetch origin ${checkpoint.ref}`,
+            `- git cherry-pick ${checkpoint.head} (round ${round}'s last commit; \`git log FETCH_HEAD\` shows the commits before it)`,
+          ]
+        : [
+            `- git log ${branch} shows them; git cherry-pick the ones round ${round} made for this incident.`,
+          ]),
+      "Leave out the other incident's commits. Then push your branch and open the pull request.",
+      "",
+    ];
+  const why =
+    carry.reason === "workspace"
+      ? `Round ${round} ran in another workspace: the project's sandbox changed since, so its session does not go on.`
+      : `Round ${round}'s branch ${branch} is not pushed at its last commit, so you start on a branch of your own.`;
+  return [
+    `${why} Bring round ${round}'s work onto your own branch:`,
+    ...(checkpoint
+      ? [
+          `- git fetch origin ${checkpoint.ref}`,
+          `- git cherry-pick origin/${baseBranch}..${checkpoint.head} (round ${round}'s commits)`,
+          `- git diff ${checkpoint.head} FETCH_HEAD shows what round ${round} left uncommitted; apply what this incident needs.`,
+        ]
+      : [
+          `- If round ${round} pushed ${branch}: git fetch origin ${branch} and cherry-pick its commits for this incident.`,
+        ]),
+    "Then push your branch and open the pull request.",
+    "",
+  ];
 }
 
 function earlierRoundLines(
   earlier: EarlierRound,
   round: number,
   maxRounds: number,
+  baseBranch: string,
 ): string[] {
   const out: string[] = ["## The earlier round", ""];
   out.push(
@@ -346,23 +393,13 @@ function earlierRoundLines(
     ];
     out.push(...dataBlock(`What round ${earlier.round} found`, lines), "");
   }
-  if (earlier.carry) {
-    const { branch, checkpoint } = earlier.carry;
-    out.push(
-      `Round ${earlier.round}'s commits are on ${branch}, a branch another incident's pull request also uses. Never push ${branch} or open a pull request from it. Bring this incident's commits onto your own branch instead:`,
-      ...(checkpoint
-        ? [
-            `- git fetch origin ${checkpoint.ref}`,
-            `- git cherry-pick ${checkpoint.head} (round ${earlier.round}'s last commit; \`git log FETCH_HEAD\` shows the commits before it)`,
-          ]
-        : [
-            `- git log ${branch} shows them; git cherry-pick the ones round ${earlier.round} made for this incident.`,
-          ]),
-      "Leave out the other incident's commits. Then push your branch and open the pull request.",
-      "",
-    );
-  }
-  if (earlier.prUrl && !earlier.carry)
+  if (earlier.carry)
+    out.push(...carryLines(earlier.carry, earlier.round, baseBranch));
+  // A pull request on a shared branch is the other incident's.
+  const shared =
+    earlier.carry &&
+    (earlier.carry.reason ?? "shared-branch") === "shared-branch";
+  if (earlier.prUrl && !shared)
     out.push(
       ...dataBlock(`Round ${earlier.round}'s pull request`, [
         dataText(earlier.prUrl, 200),
@@ -392,7 +429,9 @@ export function buildInvestigatorPrompt(
   );
 
   if (input.earlier)
-    out.push(...earlierRoundLines(input.earlier, round, maxRounds));
+    out.push(
+      ...earlierRoundLines(input.earlier, round, maxRounds, input.baseBranch),
+    );
   else if (input.sendBack)
     out.push(sendBackHead(round, maxRounds, input.sendBack), "");
 

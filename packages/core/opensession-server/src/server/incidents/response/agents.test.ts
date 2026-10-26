@@ -695,3 +695,33 @@ test("an agent's usage counts every turn in its session, a person's too", async 
   });
   expect(await agents.usage("gone")).toBeUndefined();
 });
+
+test("a session is stackable only with its branch pushed and nothing uncommitted", async () => {
+  const check = async (pushed: boolean, dirty: boolean | Error) => {
+    const h = fakeWorld();
+    h.sessions.set(
+      "child-9",
+      summary("child-9", { parentSessionId: "coord", branch: "fix" }),
+    );
+    const agents = createIncidentAgents(
+      incident,
+      { coordinatorSessionId: "coord", automation },
+      {
+        ...h.deps,
+        controllerDeps: {
+          ...h.deps.controllerDeps,
+          branchPushed: async () => pushed,
+          hasUncommittedChanges: async () => {
+            if (dirty instanceof Error) throw dirty;
+            return dirty;
+          },
+        },
+      },
+    );
+    return agents.stackable("child-9");
+  };
+  expect(await check(true, false)).toBe(true);
+  expect(await check(false, false)).toBe(false);
+  expect(await check(true, true)).toBe(false);
+  expect(await check(true, new Error("worktree gone"))).toBe(false);
+});

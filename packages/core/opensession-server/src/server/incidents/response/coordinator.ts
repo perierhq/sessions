@@ -10,6 +10,7 @@ import {
   type ActionRun,
   type AgentRole,
   type AgentRun,
+  type AgentWorkspace,
   type CancelReason,
   type CandidateState,
   type IncidentProjectSettings,
@@ -935,11 +936,48 @@ async function init(
 }
 
 /** A run a fresh session takes over from, and why: the access that is
- *  wider, or (`carry`) its branch is another incident's too. */
+ *  wider, its branch is another incident's too (a `shared-branch` carry),
+ *  or the project's sandbox changed since it ran (`moved`). `carry` set:
+ *  the fresh session starts clean and brings the commits over (its brief
+ *  says how); unset, it branches from the run's session. */
 interface Supersede {
   run: AgentRun;
   widened: AccessWidening[];
   carry?: CarriedWork;
+  moved?: boolean;
+}
+
+/** A carry for a branch another incident uses (#83's original case). */
+function sharedCarry(carry: CarriedWork | undefined): boolean {
+  return !!carry && (carry.reason ?? "shared-branch") === "shared-branch";
+}
+
+function sameWorkspace(a: AgentWorkspace, b: AgentWorkspace): boolean {
+  return a.kind === "host"
+    ? b.kind === "host" && a.user === b.user
+    : b.kind === "sandbox" && a.provider === b.provider;
+}
+
+/**
+ * Whether the project's agents now run somewhere other than where `run`'s
+ * session did: its sandbox changed (or moved to or from the host) since.
+ * That session can't take another turn there, so a new round goes to a
+ * fresh one. False when the current workspace can't be read: the message
+ * goes as before, and starting a session would report the setup problem.
+ */
+async function workspaceMoved(
+  view: ResponseView,
+  run: AgentRun,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const model =
+    "error" in view.models ? run.model : view.models[run.role].model;
+  try {
+    const current = await d.workspace(view.incident.project, model);
+    return !("error" in current) && !sameWorkspace(current, run.workspace);
+  } catch {
+    return false;
+  }
 }
 
 async function startAgent(
@@ -1135,11 +1173,14 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
+    const fresh = `${roleLabel(role)} started in a fresh session on ${label}, round ${round}`;
     const started = !supersede
       ? `${roleLabel(role)} started on ${label}, round ${round}`
-      : supersede.carry
-        ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its branch is another incident's too (${supersede.carry.branch})`
-        : `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
+      : sharedCarry(supersede.carry)
+        ? `${fresh}: its branch is another incident's too (${supersede.carry!.branch})`
+        : supersede.moved
+          ? `${fresh}: the project's sandbox changed since its last session ran`
+          : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const detail = [
       started,
       ...unavailable.map((p) => `${p.connection} can't be used: ${p.reason}`),
@@ -1182,8 +1223,19 @@ async function startAgent(
     const agents = await agentsFor(next, d);
     if (agents) await retire(agents, supersede.run.sessionId);
     // A pull request on a shared branch is the other incident's: it stays.
-    if (!supersede.carry)
-      await closeSupersededPr(view, supersede.run, { round, branch }, d);
+    if (!sharedCarry(supersede.carry))
+      await closeSupersededPr(
+        view,
+        supersede.run,
+        {
+          round,
+          branch,
+          why: supersede.moved
+            ? "the project's sandbox changed since this session ran"
+            : "the investigator's access was widened after it started",
+        },
+        d,
+      );
   }
   return true;
 }
@@ -1206,7 +1258,7 @@ function cappedList(items: string[]): string {
 async function closeSupersededPr(
   view: ResponseView,
   run: AgentRun,
-  fresh: { round: number; branch: string },
+  fresh: { round: number; branch: string; why: string },
   d: CoordinatorDeps,
 ): Promise<void> {
   const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
@@ -1219,7 +1271,7 @@ async function closeSupersededPr(
     await d.github.comment(
       pr.ghRepo,
       pr.number,
-      `Superseded: the investigator's access was widened after it started, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
+      `Superseded: ${fresh.why}, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
       credential,
     );
     await d.github.close(pr.ghRepo, pr.number, credential);
@@ -1454,8 +1506,22 @@ async function messageAgent(
   // goes to a fresh session; the old one is archived.
   if (sendBack) {
     const widened = await widenedSinceStart(view, run, agents, d);
-    const carry = await sharedBranch(view, run, agents, d);
-    if (widened.length || carry)
+    const shared = await sharedBranch(view, run, agents, d);
+    const moved = await workspaceMoved(view, run, d);
+    if (widened.length || shared || moved) {
+      // The fresh session branches from this one only where the controller
+      // would allow it: same workspace, its branch pushed at its last
+      // commit and nothing uncommitted. Otherwise it starts clean and
+      // brings the commits over from the session's checkpoint.
+      let carry: CarriedWork | undefined = shared;
+      if (!carry && (moved || !(await agents.stackable(run.sessionId)))) {
+        const work = await agents.work(run.sessionId);
+        carry = {
+          branch: work?.branch ?? "",
+          ...(work?.checkpoint ? { checkpoint: work.checkpoint } : {}),
+          reason: moved ? "workspace" : "unpushed",
+        };
+      }
       return startAgent(
         view,
         {
@@ -1465,8 +1531,14 @@ async function messageAgent(
           attempt: run.attempt + 1,
         },
         d,
-        { run, widened, ...(carry ? { carry } : {}) },
+        {
+          run,
+          widened,
+          ...(carry ? { carry } : {}),
+          ...(moved ? { moved } : {}),
+        },
       );
+    }
   }
   const text = sendBack
     ? buildSendBackMessage(
