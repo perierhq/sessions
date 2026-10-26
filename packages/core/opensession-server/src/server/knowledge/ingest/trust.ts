@@ -35,7 +35,8 @@ export const CHANGE_BUFFER_MS = 48 * 3_600_000;
 /** How far ahead of now an answer time may be (clock skew). */
 export const FUTURE_SKEW_MS = 5 * 60_000;
 /** An ISO 8601 time with a zone: `Z` or `±hh:mm` / `±hhmm`. */
-const ZONED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+const ZONED =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
 export interface TrustInput {
   /** When our reply was sent, ISO 8601. */
