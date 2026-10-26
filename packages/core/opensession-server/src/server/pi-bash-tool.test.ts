@@ -230,11 +230,14 @@ describe("the command line of the shell", () => {
   );
 
   test("the command keeps bash -c semantics: exit codes, lines and heredocs", async () => {
-    const result = await run(
-      tool(),
-      'set -e\ncat <<\'EOF\'\nline $LINENO\nEOF\necho "$LINENO" "$#"',
-    );
-    expect(result.content[0]!.text).toBe("line $LINENO\n4 0\n");
+    const command =
+      'set -e\ncat <<\'EOF\'\nline $LINENO\nEOF\necho "$LINENO" "$#"\necho two\necho "$LINENO"';
+    const plain = Bun.spawnSync(["/bin/bash", "-c", command], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    const result = await run(tool(), command);
+    expect(result.content[0]!.text).toBe(plain.stdout.toString());
+    expect(result.content[0]!.text).toStartWith("line $LINENO\n");
     await expect(run(tool(), "echo out; exit 7")).rejects.toThrow(
       "Command exited with code 7",
     );
