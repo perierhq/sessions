@@ -13,9 +13,9 @@ import {
 } from "../../../lib/inbox-form";
 import {
   INBOX_EXISTING,
+  INBOX_EXISTING_SELECT,
   INBOX_EXISTING_TEXT,
   INBOX_LEARN_CONTROLS,
-  INBOX_SELECT,
 } from "../../../lib/support-inbox-classes";
 import { Button } from "../../../ui/button";
 import { OptionSelect } from "../../../ui/select";
@@ -67,7 +67,7 @@ export function InboxExistingMail({
         <div className={INBOX_LEARN_CONTROLS}>
           <OptionSelect
             label="How far back"
-            className={INBOX_SELECT}
+            className={INBOX_EXISTING_SELECT}
             value={days}
             options={bringInChoices()}
             disabled={busy}
