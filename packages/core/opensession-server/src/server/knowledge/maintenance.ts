@@ -70,6 +70,11 @@ export interface KnowledgeMaintenanceDeps {
 /** Per project, in order; each step's mark is `<name>:<project>`. */
 export const KNOWLEDGE_DAILY_STEPS: KnowledgeStep[] = [
   { name: "revalidate", run: (project) => requestRevalidation(project) },
+  {
+    name: "known-problems",
+    run: async (project) =>
+      (await import("./ingest/known-problems")).syncKnownProblems(project),
+  },
 ];
 
 function catalogMarks(): KnowledgeMaintenanceDeps["marks"] {

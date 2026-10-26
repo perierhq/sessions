@@ -238,6 +238,20 @@ repository docs: <n> files` and `Import releases: <n>`.
    credential is skipped, never stored. One commit by Pat: `Import website:
 <n> pages`. The import needs at least one exact Support website.
 
+   The known-problems import (also run daily) turns each open GitHub issue
+   labelled `bug` into a `sources/issues/<n>.md` item: reference, never
+   trusted, its text "Known problem, open: <issue link>" and the first 2,000
+   characters of the issue. Issue text can quote customers, so it is
+   stripped like mail (addresses, phone numbers, ids, quoted lines, links
+   off the Support websites); an issue that looks like it holds a credential
+   is skipped, never stored. An item is retired when GitHub says its issue
+   closed, or that it is open but no longer labelled `bug`; an issue merely
+   missing from a list GitHub cut short, or whose state can't be read, keeps
+   its item. An unchanged issue is left alone. One commit by Pat: `Import
+known problems: <n> open`. An approved article that relies on a known
+   problem lists `issue:<n>` in `dependsOn`, so it needs a check once the
+   issue closes.
+
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
 6. The run happens daily, after a push to the default branch, and on demand

@@ -209,6 +209,11 @@ async function startImportOf(
       const { startWebsiteCrawl } = await import("../knowledge/ingest/website");
       return startWebsiteCrawl({ project, by }, { today: deps.today });
     }
+    case "known-problems": {
+      const { startKnownProblemsImport } =
+        await import("../knowledge/ingest/known-problems");
+      return startKnownProblemsImport({ project, by }, { today: deps.today });
+    }
     default:
       throw new MemoryRepoError("This import isn't available yet.", 501);
   }
