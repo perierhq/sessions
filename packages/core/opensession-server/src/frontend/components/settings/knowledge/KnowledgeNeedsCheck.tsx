@@ -196,7 +196,7 @@ function NeedsCheckQueue({
                   });
                   return refresh(project);
                 })
-                .catch((failure: unknown) =>
+                .catch((failure: Error) =>
                   toast(errorMessage(failure, "Couldn't confirm"), {
                     variant: "error",
                   }),

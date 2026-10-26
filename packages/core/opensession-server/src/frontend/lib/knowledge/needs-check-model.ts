@@ -30,7 +30,12 @@ const REVIEW_PASSED = "Review date passed";
 
 /** What groups an item: its check's source, else its reason. An item with
  *  no check note is there because its review date passed. */
-function groupOf(item: KnowledgeItem): { key: string; reason: string } {
+interface GroupOf {
+  key: string;
+  reason: string;
+}
+
+function groupOf(item: KnowledgeItem): GroupOf {
   const check = item.check;
   if (!check) return { key: "review", reason: REVIEW_PASSED };
   if (check.source)
@@ -189,18 +194,21 @@ export function changePane(
   }
 }
 
+/** What the group's confirm dialog says, and what it does once accepted. */
+export interface GroupConfirmRequest<T> {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<T>;
+}
+
 /** The confirm a group's "Still true for all" asks first; `onConfirm`
  *  confirms every item in the group as one commit. */
 export function confirmGroupRequest<T>(
   project: string,
   group: NeedsCheckGroup,
   confirm: (project: string, paths: string[]) => Promise<T>,
-): {
-  title: string;
-  description: string;
-  confirmLabel: string;
-  onConfirm: () => Promise<T>;
-} {
+): GroupConfirmRequest<T> {
   const n = group.items.length;
   return {
     title: `Mark ${countLine(group.items)} still true?`,
