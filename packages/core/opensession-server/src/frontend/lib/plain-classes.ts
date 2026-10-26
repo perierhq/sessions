@@ -60,3 +60,19 @@ export const plainEntryMeta = "text-meta text-faint";
 export const plainEntryBody =
   "markdown break-words text-body leading-relaxed text-fg " +
   "[&>:first-child]:mt-0 [&>:last-child]:mb-0";
+
+/** An email's quoted history and signature, once shown: the message's own
+ *  reading type, a step quieter, so what the sender wrote this time stays
+ *  the loudest thing in the row. */
+export const plainEntryQuoted =
+  "markdown break-words text-body leading-relaxed text-dim " +
+  "[&>:first-child]:mt-0 [&>:last-child]:mb-0";
+
+/** The "Show quoted text" / "Show signature" toggle: a small pill under the new text, the way
+ *  a mail client folds the history. `before:` grows the 24px pill to a 44px
+ *  target without moving the text around it. */
+export const plainEntryQuoteToggle =
+  "relative inline-flex h-6 items-center gap-1.5 self-start rounded-[999px] " +
+  "bg-active px-2.5 text-meta text-dim transition-colors hover:bg-hover " +
+  "hover:text-fg before:absolute before:-inset-x-1 before:-inset-y-2.5 " +
+  "before:content-['']";

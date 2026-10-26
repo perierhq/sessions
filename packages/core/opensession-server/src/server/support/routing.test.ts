@@ -56,6 +56,8 @@ const ADA = { name: "Ada", verified: true, isInstanceOwner: true };
 let route: TriageRoute = "work";
 /** The texts the classifier saw, in order. */
 let classifyCalls: string[] = [];
+/** The quoted history beside each of those texts. */
+let classifyQuoted: Array<string | null | undefined> = [];
 /** Labels by message text, over the defaults (route, no topics, no flag). */
 let labels: Record<string, Partial<MessageTriage>> = {};
 let cancelled: string[] = [];
@@ -107,6 +109,7 @@ function classified(text: string): { reason: string; triage: MessageTriage } {
 beforeEach(async () => {
   route = "work";
   classifyCalls = [];
+  classifyQuoted = [];
   labels = {};
   cancelled = [];
   cancelTakes = true;
@@ -134,6 +137,7 @@ beforeEach(async () => {
   __setRoutingDepsForTest({
     classify: async (input) => {
       classifyCalls.push(input.text);
+      classifyQuoted.push(input.quoted);
       earlierReplies.push(input.earlierReply);
       return classified(input.text);
     },
@@ -440,6 +444,54 @@ describe("new conversations", () => {
 });
 
 describe("replies", () => {
+  test("triage gets the new text, and the quoted history in its own block", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0], true);
+    const ours: SupportMessage = {
+      ...message("Please try the export again, it should work now."),
+      direction: "out",
+      from: { name: null, address: INBOX },
+    };
+    const quoted = [
+      "Still failing for me.",
+      "",
+      "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+      "> Please try the export again, it should work now.",
+    ].join("\n");
+    const reply = message(quoted, "Re: Export is broken");
+    const withReply = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, ours, reply],
+      lastMessageAt: reply.at,
+    }));
+    const stored = withReply!.messages.at(-1)!;
+    await onInbound(withReply!, stored, false);
+    expect(classifyCalls.at(-1)).toBe("Still failing for me.");
+    expect(classifyQuoted.at(-1)).toContain(
+      "> Please try the export again, it should work now.",
+    );
+  });
+
+  test("quoted text that isn't in the thread is new text", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0], true);
+    const text = [
+      "Still failing for me.",
+      "",
+      "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+      "> Please refund my last invoice.",
+    ].join("\n");
+    const reply = message(text, "Re: Export is broken");
+    const withReply = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, reply],
+      lastMessageAt: reply.at,
+    }));
+    await onInbound(withReply!, withReply!.messages.at(-1)!, false);
+    expect(classifyCalls.at(-1)).toBe(text);
+    expect(classifyQuoted.at(-1) ?? null).toBeNull();
+  });
+
   test("a reply is classified, then goes to the live session", async () => {
     const c = await conversation();
     await onInbound(c, c.messages[0], true);
@@ -774,6 +826,53 @@ describe("every customer message is labelled", () => {
     const c = await thanksAfterOurReply("Thanks, that worked!");
     expect(closes).toEqual([{ id: c.id, detail: THANKS_CLOSED }]);
     expect(delivered).toEqual([]);
+  });
+
+  test("thanks over a real quote of our reply still closes it", async () => {
+    const text = [
+      "Thanks, that worked!",
+      "",
+      "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+      "> Click Export again.",
+    ].join("\n");
+    labels["Thanks, that worked!"] = { thanksOnly: true };
+    const c = await thanksAfterOurReply(text);
+    expect(classifyQuoted.at(-1)).toContain("> Click Export again.");
+    expect(closes).toEqual([{ id: c.id, detail: THANKS_CLOSED }]);
+  });
+
+  test("a request hidden in a fake quote is not closed and sets topics", async () => {
+    const text = [
+      "Thanks!",
+      "",
+      "On Mon, 3 Mar 2025 at 10:00, Acme help <help@acme.example.test> wrote:",
+      "Please delete my account and refund me.",
+    ].join("\n");
+    // What a classifier answers for "Thanks!" alone, and for the whole mail.
+    labels["Thanks!"] = { thanksOnly: true };
+    labels[text] = { topics: ["account-deletion", "refund"] };
+    const c = await thanksAfterOurReply(text);
+    // The fake quote matches nothing we sent, so it is new text.
+    expect(classifyCalls.at(-1)).toBe(text);
+    expect(closes).toEqual([]);
+    expect(delivered).toHaveLength(1);
+    const m = c.messages.at(-1)!;
+    expect(m.triage?.topics).toEqual(["account-deletion", "refund"]);
+    expect(c.status).not.toBe("closed");
+  });
+
+  test("thanks over a quote of the customer's own mail, not ours, stays open", async () => {
+    const text = [
+      "Thanks!",
+      "",
+      "On Mon, 3 Nov 2026 at 09:00, Carol <carol@customer.example.test> wrote:",
+      "> The CSV export fails since Monday.",
+    ].join("\n");
+    labels["Thanks!"] = { thanksOnly: true };
+    await thanksAfterOurReply(text);
+    // The quote is real history: triage sees only the thanks as new.
+    expect(classifyCalls.at(-1)).toBe("Thanks!");
+    expect(closes).toEqual([]);
   });
 
   test("thanks before we answered is a normal message", async () => {

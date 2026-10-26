@@ -8,6 +8,7 @@ import type {
   SupportConversation,
   SupportMessage,
 } from "../../shared/support";
+import { SPLIT_VERSION } from "../../agents/email/quote";
 import { catalogDocuments } from "../catalog-documents";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import { __setIdentitiesForTest } from "../shared/user-mappings";
@@ -178,6 +179,67 @@ describe("ingestInbound", () => {
     expect(events[0]!.id).toBe(c.messages[0]!.id);
     expect(events[0]!.data.isNewConversation).toBe(true);
     expect(await pending()).toEqual([]);
+  });
+
+  test("a reply's split is matched against the thread; the transport's HTML hint is kept", async () => {
+    await ingested(inbound());
+    const c = await onlyConversation();
+    const ours: SupportMessage = {
+      ...c.messages[0]!,
+      id: "sm_out1",
+      direction: "out",
+      from: { name: null, address: INBOX },
+      text: "Please sign out and in again, then try once more.",
+      keys: {
+        messageId: "out1@acme.example.test",
+        inReplyTo: null,
+        references: [],
+      },
+      providerId: null,
+    };
+    await updateConversation(c.id, (current) => ({
+      ...current,
+      messages: [...current.messages, ours],
+    }));
+    await rememberMessageIds(inbox.id, c.id, ["out1@acme.example.test"], []);
+    const reply = (text: string, n: number) =>
+      inbound({
+        text,
+        // As the transport splits it: no thread yet, its HTML hint at 9.
+        split: {
+          v: SPLIT_VERSION,
+          parts: [
+            { kind: "new", start: 0, end: 9 },
+            { kind: "quoted", start: 9, end: text.length },
+          ],
+          html: 9,
+        },
+        keys: {
+          messageId: `reply${n}@example.test`,
+          inReplyTo: "out1@acme.example.test",
+          references: [],
+        },
+      });
+    const real = "Thanks!\n\nPlease sign out and in again, then try once more.";
+    const fake = "Thanks!\n\nPlease delete my account and refund me.";
+    await ingested(reply(real, 1));
+    await ingested(reply(fake, 2));
+    const [, , first, second] = (await onlyConversation()).messages;
+    expect(first!.text).toBe(real);
+    expect(first!.split).toEqual({
+      v: SPLIT_VERSION,
+      parts: [
+        { kind: "new", start: 0, end: 9 },
+        { kind: "quoted", start: 9, end: real.length },
+      ],
+      html: 9,
+    });
+    // Nothing in the thread says that: it is new text.
+    expect(second!.split).toEqual({
+      v: SPLIT_VERSION,
+      parts: [{ kind: "new", start: 0, end: fake.length }],
+      html: 9,
+    });
   });
 
   test("a new conversation is owned by the inbox's owner", async () => {

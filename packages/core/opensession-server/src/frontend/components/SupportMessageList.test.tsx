@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  foldedLabel,
   SupportMessage as PlainEntryRow,
   SupportMessageList,
 } from "./SupportMessageList";
@@ -211,4 +212,48 @@ test("an agent's Plain note links to its triage session only with a thread id", 
   expect(
     renderToStaticMarkup(<SupportMessageList entries={[note]} />),
   ).not.toContain("plain-triage");
+});
+
+const quotedEntry = entry({
+  text: "Yes please, reset it.",
+  hiddenParts: [
+    { kind: "signature", text: "Sent from my iPhone" },
+    { kind: "quoted", text: "> Shall we reset your workspace?" },
+  ],
+});
+
+test("an email with quoted history shows the new text and a closed toggle", () => {
+  const html = renderToStaticMarkup(<PlainEntryRow entry={quotedEntry} />);
+  expect(html).toContain("Yes please, reset it.");
+  expect(html).toContain("Show quoted text and signature");
+  expect(html).toContain('aria-expanded="false"');
+  // The toggle names the region it opens, and the region starts hidden.
+  expect(html).toMatch(/aria-controls="([^"]+)"[\s\S]*id="\1"[^>]*hidden/);
+  expect(html).not.toContain("Shall we reset");
+  expect(html).not.toContain("Sent from my iPhone");
+});
+
+test("the toggle names what it folds", () => {
+  const only = (kind: "quoted" | "signature") =>
+    renderToStaticMarkup(
+      <PlainEntryRow
+        entry={{
+          ...quotedEntry,
+          hiddenParts: quotedEntry.hiddenParts!.filter((p) => p.kind === kind),
+        }}
+      />,
+    );
+  expect(only("signature")).toContain("Show signature");
+  expect(only("signature")).not.toContain("quoted text");
+  expect(only("quoted")).toContain("Show quoted text<");
+  expect(foldedLabel(quotedEntry.hiddenParts!)).toBe(
+    "quoted text and signature",
+  );
+});
+
+test("an email without quoted history has no toggle", () => {
+  const html = renderToStaticMarkup(
+    <PlainEntryRow entry={{ ...quotedEntry, hiddenParts: undefined }} />,
+  );
+  expect(html).not.toContain("quoted text");
 });

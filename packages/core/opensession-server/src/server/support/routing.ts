@@ -1,7 +1,8 @@
 // Routing: the support pipeline ingest hands every customer message to.
 // Every inbound customer message is labelled by triage (one small-model
 // call each: route, topics, injection, a request for a person, anger, a
-// repeat, thanks only). A new conversation is then filed as spam, listed
+// repeat, thanks only); an email's new text and the history it quotes go
+// to it apart (quote.ts). A new conversation is then filed as spam, listed
 // for a person (Watch only), or answered by a support session: a normal
 // session (getSessionControl().createSession) in the project's repo, in a
 // workspace stamped with a `support` external ref, so session-run-inputs.ts
@@ -31,14 +32,18 @@
 // through get_conversation (mcp.ts), still inside the <customer_email>
 // wrapper (wrap.ts). Nothing runs at import.
 
-import type {
-  InboxConfig,
-  MessageTriage,
-  SupportActor,
-  SupportConversation,
-  SupportMessage,
-  SupportTopic,
+import {
+  type InboxConfig,
+  type MessageTriage,
+  type SupportActor,
+  type SupportConversation,
+  type SupportMessage,
+  type SupportTopic,
+  foldedTextOf,
+  messageParts,
+  newTextOf,
 } from "../../shared/support";
+import { quoteMatchesThread, threadOf } from "../../agents/email/quote";
 import {
   type CreateSessionOpts,
   type SessionControl,
@@ -508,7 +513,8 @@ function sinceLastReply(c: SupportConversation): SupportMessage[] {
 function replyBefore(c: SupportConversation, id: string): string | null {
   const at = c.messages.findIndex((m) => m.id === id);
   const before = at < 0 ? c.messages : c.messages.slice(0, at);
-  return before.findLast((m) => m.direction === "out")?.text ?? null;
+  const ours = before.findLast((m) => m.direction === "out");
+  return ours ? newTextOf(ours) : null;
 }
 
 export const STRIKE_ONE =
@@ -599,7 +605,10 @@ async function classifyPending(
     const { triage, reason } = takeTriage(c.inboxId, d.now())
       ? await d.classify({
           subject: current.subject,
-          text: current.text ?? "",
+          // What the customer wrote this time, and apart from it the
+          // history it quotes: topics and injection read both.
+          text: newTextOf(current) ?? "",
+          quoted: foldedTextOf(current),
           from: current.from.address,
           earlierReply: replyBefore(c, current.id),
           now,
@@ -806,11 +815,25 @@ export const THANKS_MAX_CHARS = 300;
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/** Whether every quoted part of `m` matches mail we sent before it. */
+function quotesOnlyOurs(c: SupportConversation, m: SupportMessage): boolean {
+  const quoted = (messageParts(m) ?? []).filter((p) => p.kind === "quoted");
+  if (quoted.length === 0) return true;
+  const at = c.messages.findIndex((y) => y.id === m.id);
+  const ours = threadOf(
+    c.messages
+      .slice(0, at < 0 ? undefined : at)
+      .filter((y) => y.direction === "out"),
+  );
+  return quoted.every((p) => quoteMatchesThread(p.text, ours));
+}
+
 /** Whether message `id` closes the conversation without a reply: we were
  *  waiting on the customer (our reply is the newest before it, and the
  *  conversation wasn't closed), it is the only customer message since,
  *  the customer wrote it from their verified address, it only says thanks
- *  (no other label, no topic, no attachment, short), and nothing waits for
+ *  (no other label, no topic, no attachment, short, quoting only mail we
+ *  sent), and nothing waits for
  *  a person (no draft, prepared issue or fix task). Anything else is a
  *  normal message. */
 export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
@@ -834,7 +857,10 @@ export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
   if (!Array.isArray(t.topics) || t.topics.length > 0) return false;
   if (t.injection || t.wantsHuman || t.angry || t.repeat || t.bug) return false;
   if (m.attachments.length > 0) return false;
-  if ((m.text ?? "").trim().length >= THANKS_MAX_CHARS) return false;
+  // A "thanks!" over the quoted thread is still short, as long as all it
+  // quotes is mail we sent.
+  if ((newTextOf(m) ?? "").length >= THANKS_MAX_CHARS) return false;
+  if (!quotesOnlyOurs(c, m)) return false;
   const d = c.draft;
   if (d && d.state !== "sent" && d.state !== "discarded") return false;
   if (c.pendingIssue || c.fixTask) return false;
