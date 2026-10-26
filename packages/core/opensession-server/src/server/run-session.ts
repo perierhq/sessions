@@ -2883,9 +2883,15 @@ async function runSessionPromptInner(
       by: autoRetry.by,
     });
   }
+  const unservableNotice = unservable
+    ? `${modelLabel(unservable.fromModel)} can't be used here anymore (${unservable.reason}). This session now uses ${modelLabel(unservable.model)}, the default model.`
+    : null;
   if (unservable) {
-    const message = `${modelLabel(unservable.fromModel)} can't be used here anymore (${unservable.reason}). This session now uses ${modelLabel(unservable.model)}, the default model.`;
-    broadcastToSession(sessionId, { type: "notice", sessionId, message });
+    broadcastToSession(sessionId, {
+      type: "notice",
+      sessionId,
+      message: unservableNotice,
+    });
     broadcastToSession(sessionId, {
       type: "model_changed",
       sessionId,
@@ -2893,11 +2899,6 @@ async function runSessionPromptInner(
       from: unservable.fromModel,
       by: `auto-switch — ${modelLabel(unservable.fromModel)} can't be used`,
     });
-    // Kept in the transcript too, where the reason still reads later.
-    await storeAppendUserLineEarly(
-      sessionId,
-      transcriptLineRunnerNotice(message),
-    ).catch(() => {});
     await publishSessionChange(sessionId);
   }
 
@@ -2975,6 +2976,13 @@ async function runSessionPromptInner(
       { required: true },
     );
   }
+  // The switch off a model that can't be served, kept in the transcript
+  // under the prompt it happened on, where the reason still reads later.
+  if (unservableNotice)
+    await storeAppendUserLineEarly(
+      sessionId,
+      transcriptLineRunnerNotice(unservableNotice),
+    ).catch(() => {});
 
   // Cross-provider handoff: the session's model was switched to the other engine
   // (Fable orchestrator → gpt-5.5 executor, or back) since the last run. The
