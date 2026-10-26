@@ -389,6 +389,22 @@ export interface ProjectSettingsView {
   monthSpendUsd: number;
   /** A legacy store changed after this project was migrated. */
   drift: boolean;
+  /** Background git fetches for this project can't sign in and are backing
+   *  off (server/git-access-health.ts). Absent while they work. */
+  gitAccess?: ProjectGitAccessIssue;
+}
+
+export interface ProjectGitAccessIssue {
+  /** `auth`: the remote refused the credential; `helper`: the credential
+   *  helper could not run. */
+  kind: "auth" | "helper";
+  /** First failure (ISO). */
+  since: string;
+  /** What git said. */
+  lastError: string;
+  failures: number;
+  /** When a background fetch tries again (ISO). */
+  nextAttemptAt: string;
 }
 
 export interface ProjectListItem {

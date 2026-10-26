@@ -17,6 +17,7 @@ import {
   type ProjectSettingsDocument,
   type ProjectSettingsView,
 } from "../../shared/project-settings";
+import type { GitAccessIssue } from "../git-access-health";
 import type { RoleModels } from "../incidents/response/models";
 import { buildAccessTable } from "./access-table";
 import { computeReadiness, type ConnectorState } from "./readiness";
@@ -57,6 +58,8 @@ export interface ProjectViewDeps {
   drift(): Promise<string[]>;
   /** How a sandbox provider id reads ("Daytona eu"). */
   sandboxLabel(provider: string): string;
+  /** The project's open git sign-in issue, if any. */
+  gitAccess?(project: string): GitAccessIssue | null;
 }
 
 let liveDeps: (() => ProjectViewDeps) | undefined;
@@ -160,7 +163,16 @@ export async function buildProjectSettingsView(
     runners: runners.map(({ bound: _b, problem: _p, ...r }) => r),
     monthSpendUsd: spend,
     drift: drift.includes(project),
+    ...gitAccessView(deps.gitAccess?.(project) ?? null),
   };
+}
+
+function gitAccessView(
+  issue: GitAccessIssue | null,
+): Pick<ProjectSettingsView, "gitAccess"> {
+  if (!issue) return {};
+  const { kind, since, lastError, failures, nextAttemptAt } = issue;
+  return { gitAccess: { kind, since, lastError, failures, nextAttemptAt } };
 }
 
 /** One row per configured project, in sidebar order, with its status. */

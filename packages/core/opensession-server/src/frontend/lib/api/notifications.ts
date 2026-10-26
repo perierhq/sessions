@@ -22,6 +22,7 @@ export const NOTIFICATION_KINDS = [
   "support_needs_you",
   "support_veto",
   "support_failed",
+  "access_failing",
 ] as const;
 
 export const notificationThreadSchema = z.object({
@@ -34,6 +35,7 @@ export const notificationThreadSchema = z.object({
       "reminder",
       "incident",
       "support",
+      "repo",
     ]),
     id: z.string(),
     title: z.string(),

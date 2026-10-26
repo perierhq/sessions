@@ -54,6 +54,13 @@ import {
 } from "fs";
 import { dirname, join } from "path";
 import { configuredPaths, configuredRepos, type Repo } from "./config";
+import {
+  classifyGitFetchFailure,
+  gitAccessDue,
+  gitErrorLine,
+  recordGitAccessFailure,
+  recordGitAccessOk,
+} from "./git-access-health";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
 import { readFile } from "fs/promises";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
@@ -488,7 +495,10 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
     const { withGitLock, installWorktreeDeps, worktreeSetupTimeoutMs } =
       await import("./worktree");
 
-    // 1. Ensure the detached template worktree exists.
+    // 1. Ensure the detached template worktree exists (and still belongs
+    //    to this checkout: one carried over from another install is
+    //    rebuilt).
+    await dropForeignTemplate(repo, dir);
     if (!existsSync(dir)) {
       console.log(
         `[warm-template] ${repoId}: creating template worktree at ${dir}`,
@@ -503,8 +513,10 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
 
     stopIfRetired();
     // 2. Fetch; skip the expensive rebuild when nothing moved and the last
-    //    refresh was good.
-    await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`.nothrow();
+    //    refresh was good. A fetch that can't sign in backs off
+    //    (git-access-health.ts); "Refresh now" (force) tries regardless.
+    //    Either way the template keeps serving its last good build.
+    if (force || gitAccessDue(repo.id)) await fetchTemplate(repo, dir);
     const sha = (
       await $`git -C ${dir} rev-parse --short origin/${repo.defaultBranch}`
         .nothrow()
@@ -613,6 +625,87 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
       unlinkSync(refreshLockFile(repoId));
     } catch {}
   }
+}
+
+/** The admin dir a linked worktree's `.git` file names, or null when the
+ *  path holds no such file (absent, or a full repository). */
+function linkedGitDir(dir: string): string | null {
+  try {
+    const f = join(dir, ".git");
+    if (!statSync(f).isFile()) return null;
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(f, "utf-8"));
+    return m?.[1]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A template whose `.git` names an admin dir that isn't there (it was built
+ * by another install: another user's home, another prefix, then copied or
+ * re-pointed) is unusable: every git command in it fails with "not a git
+ * repository". The template is ours and disposable, so it is removed and
+ * the next refresh builds it again from this checkout. Returns the foreign
+ * admin dir when it removed the template, null otherwise.
+ */
+export async function repairWarmTemplateLink(
+  repo: Repo,
+): Promise<string | null> {
+  if (repo.sharedCheckout) return null;
+  if (refreshing.has(repo.id)) return null; // the refresh repairs it itself
+  return dropForeignTemplate(repo, warmTemplateDir(repo));
+}
+
+async function dropForeignTemplate(
+  repo: Repo,
+  dir: string,
+): Promise<string | null> {
+  const gitDir = linkedGitDir(dir);
+  if (!gitDir || existsSync(gitDir)) return null;
+  console.warn(
+    `[warm-template] ${repo.id}: template at ${dir} links to ${gitDir}, which this checkout doesn't have (another install's path); rebuilding it`,
+  );
+  await removeTree(dir);
+  await $`git -C ${repo.repo} worktree prune`.quiet().nothrow();
+  return gitDir;
+}
+
+/** Fetch the default branch into the template and report the outcome to
+ *  git-access-health.ts. A credential helper that can't run because it
+ *  names another install's path is repaired, and the fetch tried once
+ *  more. Never throws: a failed fetch leaves the old remote-tracking ref,
+ *  which the caller compares against as before. */
+async function fetchTemplate(repo: Repo, dir: string): Promise<void> {
+  const run = () =>
+    $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+      .quiet()
+      .nothrow();
+  let fetched = await run();
+  if (
+    fetched.exitCode !== 0 &&
+    classifyGitFetchFailure(fetched.stderr.toString()) === "helper"
+  ) {
+    const { repairGithubCredentialHelper } =
+      await import("./github-git-credential");
+    const stale = await repairGithubCredentialHelper(repo.repo).catch(
+      () => null,
+    );
+    if (stale) {
+      console.warn(
+        `[checkout-repair] ${repo.id}: credential helper ${stale} can't run here (another install's path); now ${repo.repo} uses this install's`,
+      );
+      fetched = await run();
+    }
+  }
+  if (fetched.exitCode === 0) {
+    await recordGitAccessOk(repo);
+    return;
+  }
+  const stderr = fetched.stderr.toString();
+  if (!(await recordGitAccessFailure(repo, stderr)))
+    console.warn(
+      `[warm-template] ${repo.id}: fetch failed (exit ${fetched.exitCode}): ${gitErrorLine(stderr)}`,
+    );
 }
 
 // ── Seeding ──────────────────────────────────────────────────────────────────

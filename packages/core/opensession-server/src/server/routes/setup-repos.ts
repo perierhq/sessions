@@ -18,7 +18,6 @@
  *        going, and what it deleted or kept once done.
  */
 
-import { $ } from "bun";
 import {
   chmodSync,
   existsSync,
@@ -62,7 +61,10 @@ import {
   serviceGithubCredential,
   type GithubCredential,
 } from "../github-auth";
-import { githubCredentialHelperCommand } from "../github-git-credential";
+import {
+  configureGithubCredentialHelper,
+  githubCredentialHelperCommand,
+} from "../github-git-credential";
 import { managedCheckoutsRoot } from "../paths";
 import { isPathBeingDeleted, isRepoBeingRemoved } from "../repo-removal-guard";
 import type { WebIdentity } from "../web-auth";
@@ -748,14 +750,6 @@ async function createLocalRepo(input: {
     await rm(origin, { recursive: true, force: true });
     throw error;
   }
-}
-
-async function configureGithubCredentialHelper(
-  checkoutPath: string,
-): Promise<void> {
-  const helperKey = "credential.https://github.com.helper";
-  await $`git -C ${checkoutPath} config --replace-all ${helperKey} ${""}`.quiet();
-  await $`git -C ${checkoutPath} config --add ${helperKey} ${githubCredentialHelperCommand()}`.quiet();
 }
 
 /**
