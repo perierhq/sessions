@@ -24,9 +24,13 @@
 // compares the pin with the conversation's current target: a newer target
 // sends the draft back to a person, re-pinned, so nobody's reply is
 // redirected by mail that came after they decided. An automatic retry
-// also runs the policy again. Nothing runs at import.
+// also runs the policy again. Every automatic send of an agent's draft (a
+// veto's end, a retry) checks the knowledge it cites again first
+// (knowledge/backing.ts), so knowledge that went stale while the draft
+// waited sends it to a person. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import { buildReply, newMessageId, replyTarget } from "../../agents/email/mime";
+import type { KnowledgeVerdict } from "../../shared/knowledge";
 import {
   AUTO_SENDS_PER_INBOX_PER_HOUR,
   MAX_TEXT_CHARS,
@@ -45,6 +49,7 @@ import {
 } from "../../shared/support";
 import { digest } from "../audit";
 import { catalogDocuments } from "../catalog-documents";
+import { knowledgeVerdict } from "../knowledge/backing";
 import { supportAudit } from "./audit-sink";
 import {
   INTERRUPTED_SEND,
@@ -377,8 +382,9 @@ function autoSendsSince(c: SupportConversation, now: number): number {
 }
 
 /** decideReply for `author` on `c` answering `pin`; `inboxSends` is the
- *  inbox's automatic sends in the last hour (inboxAutoSends). A removed
- *  inbox counts as off. */
+ *  inbox's automatic sends in the last hour (inboxAutoSends); `knowledge`
+ *  the draft's knowledge verdict as of `now` (knowledge/backing.ts). A
+ *  removed inbox counts as off. */
 function decide(
   c: SupportConversation,
   author: SupportActor,
@@ -388,6 +394,7 @@ function decide(
   inboxSends: number,
   draft: { text: string; check?: DraftCheck | null } & DraftMeta,
   sites: ProjectSites,
+  knowledge: KnowledgeVerdict | null,
 ): ReplyDecision {
   return decideReply({
     author,
@@ -417,6 +424,7 @@ function decide(
     lastInboundTrust: pinTrust(c, pin),
     status: c.status,
     personStoppedLast: heldByPerson(c.draft),
+    knowledge,
   });
 }
 
@@ -518,6 +526,7 @@ async function propose(
     inboxSends,
     { text, ...meta },
     sites,
+    meta.check?.knowledge ?? null,
   );
   if (provisional.kind === "veto")
     await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
@@ -557,6 +566,7 @@ async function propose(
         ...meta,
       },
       sites,
+      meta.check?.knowledge ?? null,
     );
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
@@ -791,6 +801,24 @@ async function claimAndDeliver(
       : fail(404, "Draft not found");
   const { inbox, others, own, sites } = await context(current);
   const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
+  // An automatic send of an agent's draft checks its knowledge again, now
+  // and outside the compare-and-swap below (which stays synchronous): an
+  // article may have gone stale while the draft waited.
+  const d0 = current.draft;
+  const automatic =
+    opts.mode === "retry"
+      ? d0?.decidedBy?.kind !== "person"
+      : by.kind === "sessions";
+  const knowledge =
+    d0?.author.kind === "agent" && automatic
+      ? await knowledgeVerdict({
+          project: current.project,
+          sessionId: d0.author.sessionId,
+          sources: d0.sources ?? [],
+          text: d0.text,
+          now,
+        })
+      : null;
 
   // The work index first (see the header); the claim below decides.
   const key = sendKey(conversationId, draftId);
@@ -857,6 +885,7 @@ async function claimAndDeliver(
           inboxSends,
           d,
           sites,
+          knowledge,
         );
         if (decision.kind === "needs-person") return toPerson(decision.rule);
       }
@@ -896,6 +925,7 @@ async function claimAndDeliver(
               inboxSends,
               d,
               sites,
+              knowledge,
             );
             if (decision.kind === "needs-person")
               return toPerson(decision.rule);

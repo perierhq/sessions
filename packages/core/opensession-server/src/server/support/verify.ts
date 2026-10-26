@@ -3,7 +3,9 @@
 // word: a repo path must be a file in the project's checkout at the
 // session's HEAD (`git cat-file`), a URL must be one this session's
 // web_fetch read and a record id one this session's Support connector call
-// returned (evidence.ts). The draft text gets one tool-less small-model
+// returned (evidence.ts); knowledge citations go through the knowledge
+// verdict (knowledge/backing.ts), stored on the check and run again when
+// the draft is sent. The draft text gets one tool-less small-model
 // call (route-classifier.ts, as triage) for the topics it touches and
 // whether it promises anything about policy, a price or a deadline. The
 // result is stored on the draft for people; the agent only learns that the
@@ -15,6 +17,7 @@ import {
   SUPPORT_TOPICS,
   type SupportTopic,
 } from "../../shared/support";
+import { knowledgeVerdict } from "../knowledge/backing";
 import {
   ROUTE_CLASSIFIER_MAX_CHARS,
   ROUTE_CLASSIFIER_MODEL,
@@ -175,7 +178,8 @@ async function verified(
   checkout: () => Promise<string | null>,
 ): Promise<boolean> {
   if (!validSource(source, input.sites)) return false;
-  if (source.kind === "knowledge") return false; // D2 replaces this
+  // Knowledge backs through the verdict only (checkDraft).
+  if (source.kind === "knowledge") return false;
   if (source.kind === "repo") {
     const path = repoSourcePath(source.ref);
     const dir = await checkout();
@@ -198,16 +202,27 @@ export async function checkDraft(input: DraftCheckInput): Promise<DraftCheck> {
   let dir: Promise<string | null> | undefined;
   const checkout = () =>
     (dir ??= d.checkout(input.sessionId, input.project).catch(() => null));
-  const [ok, read] = await Promise.all([
+  const [ok, read, knowledge] = await Promise.all([
     Promise.all(
       input.sources.map((s) => verified(s, input, checkout).catch(() => false)),
     ),
     d.classify(input.text).catch(() => null),
+    knowledgeVerdict({
+      project: input.project,
+      sessionId: input.sessionId,
+      sources: input.sources,
+      text: input.text,
+      now: input.now,
+    }),
   ]);
   return {
-    verified: input.sources.filter((_, i) => ok[i]),
+    verified: [
+      ...input.sources.filter((_, i) => ok[i]),
+      ...(knowledge?.backing ?? []),
+    ],
     topics: read ? read.topics : null,
     promises: read ? read.promises : true,
+    ...(knowledge ? { knowledge } : {}),
     at: new Date(input.now).toISOString(),
   };
 }

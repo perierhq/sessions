@@ -91,7 +91,10 @@ async function project(
   return head;
 }
 
-const cite = (path: string, commit: string): DraftSource => ({
+const cite = (
+  path: string,
+  commit: string,
+): { kind: "knowledge"; ref: string } => ({
   kind: "knowledge",
   ref: `${path}@${commit}`,
 });

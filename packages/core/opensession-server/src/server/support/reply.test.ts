@@ -6,13 +6,20 @@ import {
   type SupportActor,
   type SupportMessage,
 } from "../../shared/support";
+import type { KnowledgeVerdict } from "../../shared/knowledge";
 import { catalogDocuments } from "../catalog-documents";
+import {
+  type VerdictInput,
+  __setKnowledgeVerdictForTest,
+} from "../knowledge/backing";
 import {
   INTERRUPTED_SEND,
   discardDraft,
   proposeDraft,
   replyAsPerson,
+  retrySend,
   sendDraft,
+  sendDueVeto,
   stopVeto,
 } from "./reply";
 import { getConversation, lookupMessageIds, updateConversation } from "./store";
@@ -890,5 +897,146 @@ describe("automatic sends answer the customer", () => {
     expect(result.ok && result.draft.rule).toBe("No source cited");
     expect(result.ok && result.draft.check?.verified).toEqual([]);
     expect(tb.fixture().sent).toHaveLength(0);
+  });
+});
+
+describe("knowledge at the moment of sending", () => {
+  const ARTICLE = "articles/export.md@3f2a1b0";
+  const KNOWLEDGE = {
+    sources: [{ kind: "knowledge" as const, ref: ARTICLE }],
+  };
+  const backing = (at: number): KnowledgeVerdict => ({
+    backing: [{ kind: "knowledge", ref: ARTICLE }],
+    blocked: [],
+    internalQuoted: null,
+    failed: false,
+    at: new Date(at).toISOString(),
+  });
+  const blocked = (at: number): KnowledgeVerdict => ({
+    backing: [],
+    blocked: [
+      {
+        ref: ARTICLE,
+        path: "articles/export.md",
+        title: "Export",
+        reason: "docs/export.md changed in 9c1d2e0",
+      },
+    ],
+    internalQuoted: null,
+    failed: false,
+    at: new Date(at).toISOString(),
+  });
+
+  /** A routine inbox with a veto window and an agent draft citing an
+   *  article that backs it when proposed. */
+  async function vetoed() {
+    await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });
+    const asked: VerdictInput[] = [];
+    __setKnowledgeVerdictForTest(async (i) => {
+      asked.push(i);
+      return backing(i.now);
+    });
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(
+      c.id,
+      DRAFT,
+      AGENT,
+      undefined,
+      KNOWLEDGE,
+    );
+    if (!proposed.ok) throw new Error(proposed.error);
+    expect(proposed.draft.state).toBe("veto");
+    expect(proposed.draft.check?.knowledge?.backing).toHaveLength(1);
+    return {
+      c,
+      draft: proposed.draft,
+      deadline: Date.parse(proposed.draft.vetoDeadline!),
+      asked,
+    };
+  }
+
+  test("claimAndDeliver re-verifies knowledge at veto end", async () => {
+    const { c, draft, deadline } = await vetoed();
+    const asked: VerdictInput[] = [];
+    __setKnowledgeVerdictForTest(async (i) => {
+      asked.push(i);
+      return blocked(i.now);
+    });
+    const result = await sendDueVeto(c.id, draft.id, deadline + 1);
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Knowledge may be out of date: Export",
+    });
+    expect(asked).toEqual([
+      {
+        project: "acme",
+        sessionId: "os-1",
+        sources: KNOWLEDGE.sources,
+        text: DRAFT,
+        now: deadline + 1,
+      },
+    ]);
+    const after = (await getConversation(c.id))!.draft!;
+    expect(after.state).toBe("needs-person");
+    expect(after.rule).toBe("Knowledge may be out of date: Export");
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a check that fails at veto end holds the draft", async () => {
+    const { c, draft, deadline } = await vetoed();
+    __setKnowledgeVerdictForTest(async (i) => ({
+      ...backing(i.now),
+      backing: [],
+      failed: true,
+    }));
+    await sendDueVeto(c.id, draft.id, deadline + 1);
+    expect((await getConversation(c.id))!.draft!.rule).toBe(
+      "Knowledge couldn't be checked",
+    );
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a still-backing article sends at veto end", async () => {
+    const { c, draft, deadline } = await vetoed();
+    const result = await sendDueVeto(c.id, draft.id, deadline + 1);
+    expect(result.ok).toBe(true);
+    expect(tb.fixture().sent).toHaveLength(1);
+  });
+
+  test("a retry re-verifies knowledge too", async () => {
+    const { c, draft } = await vetoed();
+    const now = Date.now();
+    // A first attempt failed and the retry is due.
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: {
+        ...x.draft!,
+        state: "sending",
+        vetoDeadline: null,
+        attempts: 1,
+        nextAttemptAt: new Date(now - 1).toISOString(),
+        decidedBy: { kind: "sessions" },
+      },
+    }));
+    __setKnowledgeVerdictForTest(async (i) => blocked(i.now));
+    const result = await retrySend(c.id, draft.id, now);
+    expect(result.ok).toBe(false);
+    const after = (await getConversation(c.id))!.draft!;
+    expect(after.state).toBe("needs-person");
+    expect(after.rule).toBe("Knowledge may be out of date: Export");
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
+  test("a person sending the draft is not gated by knowledge", async () => {
+    const { c, draft } = await vetoed();
+    let calls = 0;
+    __setKnowledgeVerdictForTest(async (i) => {
+      calls++;
+      return blocked(i.now);
+    });
+    const result = await sendDraft(c.id, draft.id, ADA);
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(0);
+    expect(tb.fixture().sent).toHaveLength(1);
   });
 });
