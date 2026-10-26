@@ -462,14 +462,23 @@ describe("decide", () => {
         healthyBefore: 0,
       }),
     ).toEqual(reopen);
-    // A bad run that began before the close was closed knowingly.
+    // A bad run that began before the close was closed knowingly: it never
+    // reopens, however long it lasts.
     expect(
       quiet({
         badSince: closedMs - 60_000,
         problemSince: closedMs - 60_000,
         healthyBefore: 3_600_000,
       }),
-    ).toEqual([]);
+    ).toEqual(hold(undefined, null));
+    // Its turns to failing after the close still count as flaps.
+    expect(
+      quiet({
+        badSince: closedMs - 60_000,
+        problemSince: NOW - 60_000,
+        healthyBefore: 0,
+      }),
+    ).toEqual(hold(undefined, NOW - 60_000));
   });
 
   test("the quiet outlasts the reopen window, and then ends", () => {

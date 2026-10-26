@@ -206,10 +206,10 @@ export function quietNeeds(signal: Signal): {
 }
 
 type Quiet =
-  /** Stay closed; decide again at `until`, or at the next change. */
+  /** Stay closed; decide again at `until`, or at the next change. A run
+   *  that began before the close was closed knowingly: it never reopens
+   *  the incident, so it has no `until`. */
   | { kind: "hold"; incident: Incident; since?: number; until?: number }
-  /** The bad run began before the close: closed knowingly. */
-  | { kind: "known"; incident: Incident }
   /** A new problem: reopen this one. */
   | { kind: "reopen"; incident: Incident };
 
@@ -225,24 +225,25 @@ function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
     return Number.isFinite(closedAt) && badSince - closedAt <= QUIET_WINDOW_MS;
   });
   if (!incident) return undefined;
-  if (badSince < Date.parse(incident.closedAt!))
-    return { kind: "known", incident };
-  const needs = quietNeeds(signal);
-  const due: number[] = [];
-  if ((run?.healthyBefore ?? 0) >= needs.healthyMs)
-    due.push(badSince + needs.failingMs);
+  const closedAt = Date.parse(incident.closedAt!);
   const problemSince =
     run?.problemSince ??
     (isProblem(snapshot.evaluations.get(signal.id)?.state)
       ? badSince
       : undefined);
+  // Each turn to failing or slow after the close is a flap, even inside
+  // one flaky run; a flaky spell alone is not counted.
+  const hold: Extract<Quiet, { kind: "hold" }> = { kind: "hold", incident };
+  if (problemSince !== undefined && problemSince >= closedAt)
+    hold.since = problemSince;
+  if (badSince < closedAt) return hold;
+  const needs = quietNeeds(signal);
+  const due: number[] = [];
+  if ((run?.healthyBefore ?? 0) >= needs.healthyMs)
+    due.push(badSince + needs.failingMs);
   if (problemSince !== undefined)
     due.push(problemSince + QUIET_BREAKTHROUGH_MS);
   if (due.some((at) => snapshot.now >= at)) return { kind: "reopen", incident };
-  // Each turn to failing or slow is a flap, even inside one flaky run; a
-  // flaky spell alone is not counted.
-  const hold: Extract<Quiet, { kind: "hold" }> = { kind: "hold", incident };
-  if (problemSince !== undefined) hold.since = problemSince;
   if (due.length) hold.until = Math.min(...due);
   return hold;
 }
@@ -483,7 +484,6 @@ function decideBad(
   // reopens or opens nothing until it shows a new problem.
   if (!target || target.kind === "reopen") {
     const quiet = quietFor(signal, snapshot);
-    if (quiet?.kind === "known") return;
     if (quiet?.kind === "hold") {
       ops.add({
         op: "hold",
