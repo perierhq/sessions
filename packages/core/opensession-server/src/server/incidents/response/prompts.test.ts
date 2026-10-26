@@ -182,6 +182,38 @@ test("paths, slugs, branches", () => {
   );
   expect(notePathFor(afternoon)).not.toBe(notePathFor(uuid));
 });
+test("investigator prompt: a fix it cannot publish is reported, not dropped", () => {
+  const base = {
+    incident,
+    signal,
+    otherSignals: [],
+    evaluation,
+    recent,
+    baseBranch: "main",
+    maxRounds: 2,
+    actions: [],
+  };
+  const p = buildInvestigatorPrompt({ ...base, round: 1 });
+  expect(p).toContain(
+    "If you committed a fix but cannot push it or open the pull request, keep the candidate and add unpublished: { commit, blocker }",
+  );
+  expect(p).toContain("Never set candidate to null because of it");
+  // A fresh session after a send-back is told about the commit.
+  const fresh = buildInvestigatorPrompt({
+    ...base,
+    round: 2,
+    earlier: {
+      round: 1,
+      report: {
+        ...report,
+        unpublished: { commit: "ae4a79c", blocker: "git push was refused" },
+      },
+    },
+  });
+  expect(fresh).toContain(
+    "Unpublished fix: commit ae4a79c · git push was refused",
+  );
+});
 test("investigator prompt: read first, cheapest-first, never secrets or commands", () => {
   const p = buildInvestigatorPrompt({
     incident,

@@ -302,6 +302,11 @@ function earlierRoundLines(
       ...(report.noCandidateReason
         ? [`No candidate: ${dataText(report.noCandidateReason)}`]
         : []),
+      ...(report.unpublished
+        ? [
+            `Unpublished fix: commit ${dataText(report.unpublished.commit, 64)} · ${dataText(report.unpublished.blocker)}`,
+          ]
+        : []),
       ...report.attempts.map(
         (a) =>
           `- ${dataText(a.step, 120)} · ${a.cost} · ${a.result} · ${dataText(a.evidence, 200)}`,
@@ -410,6 +415,8 @@ export function buildInvestigatorPrompt(
     `Commit on this session's branch and open one pull request into ${input.baseBranch}. The PR holds the fix (if it is code), the incident note at ${notePath}, and an update to the runbook (${runbooks.join(" or ")}).`,
     "",
     "If the fix is an action rather than code, the PR contains only the note and the runbook update.",
+    "",
+    "If you committed a fix but cannot push it or open the pull request, keep the candidate and add unpublished: { commit, blocker } to the report: the fix commit's sha, and the refusal or error word for word. Never set candidate to null because of it: Sessions tells the owner the fix is ready and what stopped it. Add a send-back next step so the owner can send it back once it can be published.",
     "",
     "Declare how Sessions should prove the fix (the check field), one of:",
     origin

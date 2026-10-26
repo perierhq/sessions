@@ -272,6 +272,13 @@ export type NextStep =
     }
   | { kind: "close-provider"; title: string; why: string };
 
+export interface UnpublishedFix {
+  /** The fix commit's sha, lowercase, 7 to 64 hex characters. */
+  commit: string;
+  /** What stopped the push or the pull request, as the agent saw it. */
+  blocker: string;
+}
+
 export interface InvestigatorReport {
   role: "investigator";
   summary: string;
@@ -280,6 +287,10 @@ export interface InvestigatorReport {
   attempts: EvidenceRow[];
   candidate: CandidatePlan | null;
   noCandidateReason?: string;
+  /** A candidate whose commit is ready but could not be pushed or put on
+   *  a pull request: the commit and what stopped it. Only with a
+   *  candidate; once its pull request exists it no longer matters. */
+  unpublished?: UnpublishedFix;
   check: CandidateCheck;
   claims: Claim[];
   notePath: string;
@@ -477,6 +488,7 @@ export const NEEDS_YOU_KINDS = [
   "agent-error",
   "no-report",
   "no-candidate",
+  "unpublished",
   "question",
   "proof-stopped",
   "merge",
