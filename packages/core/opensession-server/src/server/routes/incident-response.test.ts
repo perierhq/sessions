@@ -322,6 +322,28 @@ function seedAgentErrorNeedsYou(): Promise<Incident> {
     response: {
       ...emptyResponse({ now: at, maxRounds: 2, phase: "needs-you" }),
       coordinatorSessionId: "coord-1",
+      // The investigator whose session stopped: round 1 was worked in.
+      agents: [
+        {
+          role: "investigator",
+          round: 1,
+          attempt: 1,
+          sessionId: "child-1",
+          model: "pi/anthropic/claude-opus-5-5",
+          provider: "anthropic",
+          workspace: { kind: "sandbox", provider: "podman" },
+          accessSummary: "Investigator · no connections · can edit acme",
+          accessRevision: "r1",
+          status: "error",
+          error: "Session setup failed",
+          startedAt: at,
+          turnSentAt: at,
+          endedAt: at,
+          costUsd: 0,
+          tokens: 0,
+          reminded: false,
+        },
+      ],
       needsYou: {
         kind: "agent-error",
         reason: "The investigator stopped: Session setup failed",

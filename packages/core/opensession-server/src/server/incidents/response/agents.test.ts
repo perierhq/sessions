@@ -668,3 +668,102 @@ test("an agent on the default branch has no pull request of its own", async () =
   );
   expect((await agents.status("child-7")).prUrl).toBeUndefined();
 });
+
+test("an agent's usage counts every turn in its session, a person's too", async () => {
+  const h = fakeWorld();
+  h.sessions.set(
+    "child-9",
+    summary("child-9", {
+      parentSessionId: "coord",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 800,
+        cacheCreationTokens: 50,
+        costUsd: 6.92,
+      } as SessionSummary["usage"],
+    }),
+  );
+  const agents = createIncidentAgents(
+    incident,
+    { coordinatorSessionId: "coord", automation },
+    h.deps,
+  );
+  expect(await agents.usage("child-9")).toEqual({
+    costUsd: 6.92,
+    tokens: 1000,
+  });
+  expect(await agents.usage("gone")).toBeUndefined();
+});
+
+test("a session is stackable only with its branch pushed and nothing uncommitted", async () => {
+  const check = async (pushed: boolean, dirty: boolean | Error) => {
+    const h = fakeWorld();
+    h.sessions.set(
+      "child-9",
+      summary("child-9", { parentSessionId: "coord", branch: "fix" }),
+    );
+    const agents = createIncidentAgents(
+      incident,
+      { coordinatorSessionId: "coord", automation },
+      {
+        ...h.deps,
+        controllerDeps: {
+          ...h.deps.controllerDeps,
+          branchPushed: async () => pushed,
+          hasUncommittedChanges: async () => {
+            if (dirty instanceof Error) throw dirty;
+            return dirty;
+          },
+        },
+      },
+    );
+    return agents.stackable("child-9");
+  };
+  expect(await check(true, false)).toBe(true);
+  expect(await check(false, false)).toBe(false);
+  expect(await check(true, true)).toBe(false);
+  expect(await check(true, new Error("worktree gone"))).toBe(false);
+});
+
+test("an agent's head is its checkpoint's tip, or its host worktree's HEAD", async () => {
+  const h = fakeWorld();
+  const checkpointed = "c".repeat(40);
+  const hostHead = "d".repeat(40);
+  h.sessions.set(
+    "child-sbx",
+    summary("child-sbx", {
+      sandbox: { provider: "podman" },
+      worktreeDir: "/worktrees/acme-a",
+      sandboxCheckpoint: {
+        ref: "refs/opensession/checkpoints/child-sbx",
+        head: checkpointed,
+      },
+    } as Partial<SessionSummary>),
+  );
+  h.sessions.set(
+    "child-nocp",
+    summary("child-nocp", {
+      sandbox: { provider: "podman" },
+      worktreeDir: "/worktrees/acme-b",
+    } as Partial<SessionSummary>),
+  );
+  h.sessions.set(
+    "child-host",
+    summary("child-host", { worktreeDir: "/worktrees/acme-c" }),
+  );
+  const agents = createIncidentAgents(
+    incident,
+    { coordinatorSessionId: "coord", automation },
+    {
+      ...h.deps,
+      worktreeHead: async (dir) =>
+        dir === "/worktrees/acme-c" ? hostHead : undefined,
+    },
+  );
+  expect(await agents.head("child-sbx")).toBe(checkpointed);
+  // A sandboxed session's host worktree is not where it worked.
+  expect(await agents.head("child-nocp")).toBeUndefined();
+  expect(await agents.head("child-host")).toBe(hostHead);
+  expect(await agents.head("gone")).toBeUndefined();
+});

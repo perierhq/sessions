@@ -48,9 +48,9 @@ import {
 } from "./memory-repo/session";
 import { sessionLink } from "./run-instructions";
 import { DESK_NOTE } from "./desk";
-import { deskBriefingFor } from "./desk-state";
 import { personalOutputStyleNoteFor } from "./personal-output-style";
 import { personalPromptNoteFor } from "./personal-prompts";
+import { humanPrompter, sessionCreationOwner } from "./session-actors";
 import { PSTACK_MODE_NOTE } from "./pstack-mode";
 import {
   findSession,
@@ -355,24 +355,42 @@ export function attachedGithubRepos(session: UnifiedSession): string[] {
 }
 
 /**
+ * The person whose standing preferences a turn's session note carries: the
+ * one this session acts for (`sessionCreationOwner`), never a machine sender.
+ *
+ * The note rides in the system prompt, so it must read the same on every turn
+ * of a session. A turn nobody typed (a background wait's wake, an
+ * auto-continue, a worker's report, a scheduled check-back) used to render
+ * it for its sender, which has no output style, personal prompt or personal
+ * memory; the note dropped those sections and the next person's turn put them
+ * back, re-caching the whole conversation each time. Only another person
+ * prompting the session, or the person changing a setting, changes it now.
+ */
+export function sessionNotePerson(
+  session: UnifiedSession,
+  user: string | undefined,
+): string | undefined {
+  return humanPrompter(sessionCreationOwner(user ?? "", session)) ?? undefined;
+}
+
+/**
  * The full per-session system-prompt note for an interactive run: repos/branch
  * discipline (buildReposNote) + the session's repo/user/team memory. Memory
  * failures never block a run — the note just goes out without it.
  */
 export async function buildSessionNote(
   session: UnifiedSession,
-  user?: string,
+  turnSender?: string,
 ): Promise<string | undefined> {
+  const user = sessionNotePerson(session, turnSender);
   return (
     [
       session.pstackMode ? PSTACK_MODE_NOTE : "",
       // The standing Desk session gets its concierge charter first — role
-      // discipline for the summonable overlay (see desk.ts) — then the
-      // user's live state, rebuilt per turn (desk-state.ts) so it can
-      // answer "what's happening" without a tool round-trip and won't
-      // spawn a worker onto work that's already running.
+      // discipline for the summonable overlay (see desk.ts). Its live state
+      // changes every turn, so it rides in the turn's message instead
+      // (deskStateContext, run-session.ts).
       session.desk ? DESK_NOTE : "",
-      session.desk ? await deskBriefingFor(user) : "",
       buildReposNote(session),
       await memoryNoteFor(
         user,

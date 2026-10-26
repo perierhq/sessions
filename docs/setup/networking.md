@@ -266,9 +266,16 @@ address:
 os.company.dev {
     bind 100.64.12.34
     tls /etc/opensession/tls/os.company.dev.crt /etc/opensession/tls/os.company.dev.key
-    reverse_proxy 127.0.0.1:3850
+    reverse_proxy 127.0.0.1:3850 {
+        lb_try_duration 15s
+        lb_try_interval 250ms
+    }
 }
 ```
+
+`lb_try_duration` makes Caddy hold a request while Open Session restarts (a
+deploy closes its port for a few seconds) and send it once the new process
+listens, instead of answering 502.
 
 The `bind` line is essential. Without it Caddy may listen on every interface,
 quietly undoing the private-network boundary. A TLS proxy adds encryption, not
@@ -414,7 +421,11 @@ allowlist:
 ingress.example.com {
     # BEGIN OPENSESSION SANDBOX INGRESS
     handle {
-        reverse_proxy 127.0.0.1:3860
+        reverse_proxy 127.0.0.1:3860 {
+            lb_try_duration 15s
+            lb_try_interval 250ms
+            stream_close_delay 1h
+        }
     }
     # END OPENSESSION SANDBOX INGRESS
 }

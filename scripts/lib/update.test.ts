@@ -6,6 +6,7 @@ import {
   pruneReleases,
   releasesToKeep,
   restartReleaseWithRollback,
+  syncUnitsAt,
 } from "./update";
 import {
   existsSync,
@@ -183,6 +184,126 @@ describe.each(["restart", "health"])(
     );
   },
 );
+
+describe("unit sync after an update", () => {
+  function release(): string {
+    const dir = mkdtempSync(join(tmpdir(), "opensession-sync-test-"));
+    writeFileSync(join(dir, "release.json"), "{}");
+    writeFileSync(join(dir, "opensession"), "");
+    return dir;
+  }
+
+  test("runs the new release's own `service sync`, so its templates and renderer apply", async () => {
+    const root = release();
+    const calls: string[][] = [];
+    try {
+      const code = await syncUnitsAt(root, {
+        installed: async () => true,
+        runCommand: async (cmd) => {
+          calls.push(cmd);
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(calls).toEqual([[join(root, "opensession"), "service", "sync"]]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a source checkout syncs through its own CLI", async () => {
+    const root = mkdtempSync(join(tmpdir(), "opensession-sync-src-"));
+    const calls: string[][] = [];
+    try {
+      await syncUnitsAt(root, {
+        installed: async () => true,
+        bun: "/usr/local/bin/bun",
+        runCommand: async (cmd) => {
+          calls.push(cmd);
+          return 0;
+        },
+      });
+      expect(calls).toEqual([
+        [
+          "/usr/local/bin/bun",
+          join(root, "scripts", "cli.ts"),
+          "service",
+          "sync",
+        ],
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("no systemd service installed: nothing to sync", async () => {
+    const calls: string[][] = [];
+    const code = await syncUnitsAt("/nonexistent", {
+      installed: async () => false,
+      runCommand: async (cmd) => {
+        calls.push(cmd);
+        return 0;
+      },
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  test("a failed sync is reported but does not fail the update", async () => {
+    const root = release();
+    const messages: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((message) => {
+      messages.push(String(message));
+    });
+    try {
+      const code = await syncUnitsAt(root, {
+        installed: async () => true,
+        runCommand: async () => 1,
+      });
+      expect(code).toBe(1);
+      expect(messages.join("\n")).toContain("opensession doctor");
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a rollback puts the previous release's units back before restarting it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "opensession-rollback-sync-"));
+    const src = join(dir, "src");
+    const previous = join(dir, "previous");
+    symlinkSync(join(dir, "candidate"), src);
+    const calls: string[] = [];
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await restartReleaseWithRollback(
+        src,
+        previous,
+        {},
+        {
+          healthBaseUrl: async () => "http://127.0.0.1:3850",
+          syncUnits: async (root) => {
+            calls.push(`sync ${root}`);
+            return 0;
+          },
+          service: {
+            isInstalled: async () => true,
+            restartExecutor: async () => 0,
+            control: async () => {
+              calls.push("restart");
+              return 0;
+            },
+            waitHealthy: async () => calls.length > 2,
+          },
+        },
+      );
+      expect(calls).toEqual(["restart", `sync ${previous}`, "restart"]);
+    } finally {
+      log.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("release retention", () => {
   function releasesDir(names: string[]): string {

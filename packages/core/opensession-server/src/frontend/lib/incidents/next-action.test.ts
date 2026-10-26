@@ -856,6 +856,24 @@ test("closed without action, a flapping signal's card offers a stricter rule or 
     ["signal-fix", "Need 6 failures in a row"],
     ["signal-fix", "Mute for a day"],
   ]);
+  // Its open pull requests are asked about first.
+  const withPr: Incident = {
+    ...closed,
+    response: {
+      ...closed.response!,
+      openPrs: [
+        {
+          url: "https://github.com/acme/web/pull/465",
+          number: 465,
+          sessionId: "child-1",
+        },
+      ],
+      next: { kind: "done", detail: "", options: ["close-prs", "keep-prs"] },
+    },
+  };
+  expect(
+    nextCard({ ...base, incident: withPr, signals: [signal] }),
+  ).toMatchObject({ eyebrow: "Closed" });
   // Without the flaps it is a closed incident like any other: no card.
   expect(
     nextCard({
@@ -864,4 +882,37 @@ test("closed without action, a flapping signal's card offers a stricter rule or 
       signals: [signal],
     }),
   ).toBeNull();
+});
+
+test("closed without action with a code fix still open asks what to do with it", () => {
+  const open = (numbers: number[]) =>
+    nextCard({
+      ...base,
+      incident: inc("closed-without-action", {
+        openPrs: numbers.map((n) => ({
+          url: `https://github.com/acme/web/pull/${n}`,
+          number: n,
+          sessionId: "child-1",
+        })),
+        next: {
+          kind: "done",
+          detail: "Closed without action",
+          options: ["close-prs", "keep-prs"],
+        },
+      }),
+    });
+  expect(open([465])).toMatchObject({
+    tone: "blue",
+    eyebrow: "Closed",
+    headline: "PR #465 from the investigator is still open",
+    body: "It changes code, so Sessions left it for you to close or keep",
+    buttons: [
+      { decision: "close-prs", label: "Close on GitHub", weight: "primary" },
+      { decision: "keep-prs", label: "Keep open", weight: "soft" },
+    ],
+  });
+  expect(open([465, 469])).toMatchObject({
+    headline: "PRs #465 and #469 from the investigator are still open",
+    body: "They change code, so Sessions left them for you to close or keep",
+  });
 });

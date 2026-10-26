@@ -20,7 +20,11 @@
  * outbound Portal relay (sandbox-portal-relay.ts).
  */
 import { $ } from "bun";
-import { CADDY_STREAM_CLOSE_DELAY } from "./caddy-stream";
+import {
+  CADDY_STREAM_CLOSE_DELAY,
+  CADDY_UPSTREAM_TRY_DURATION,
+  CADDY_UPSTREAM_TRY_INTERVAL,
+} from "./caddy-stream";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { createConnection } from "net";
 import { basename, dirname, join, resolve } from "path";
@@ -537,6 +541,12 @@ export function previewServerConfig(
                   {
                     handler: "reverse_proxy",
                     upstreams: [{ dial: authUpstream }],
+                    // The sign-in check is this server, which a deploy
+                    // restarts: hold the request until it listens again.
+                    load_balancing: {
+                      try_duration: CADDY_UPSTREAM_TRY_DURATION,
+                      try_interval: CADDY_UPSTREAM_TRY_INTERVAL,
+                    },
                     rewrite: {
                       method: "GET",
                       uri: `/api/portal-auth/${httpsPort}`,

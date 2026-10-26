@@ -12,6 +12,7 @@
 // what each child's run is bound to, so a child another session took over
 // from is archived.
 import type { TranscriptEntry } from "@tellahq/opensession-protocol/session";
+import { $ } from "bun";
 import type { AgentAccess } from "../../../shared/incident-access";
 import type {
   AgentRole,
@@ -39,7 +40,9 @@ import { updateSessionFile } from "../../session-cache";
 import type { AutomationDescendantPolicy } from "../../types";
 import {
   type WorkflowSessionControllerDeps,
+  branchPushed,
   createWorkflowSessionController,
+  hasUncommittedChanges,
 } from "../../workflow-sessions";
 import { getRepo } from "../../worktree";
 import type { IncidentRunBound } from "../access/resolve";
@@ -175,6 +178,8 @@ export interface AgentDeps {
   now: () => number;
   /** Archive a session the way a person does from the sidebar. */
   archive: (id: string, session: SessionSummary) => Promise<unknown>;
+  /** The commit checked out in a host worktree; undefined when unreadable. */
+  worktreeHead: (dir: string) => Promise<string | undefined>;
   /** The pull request the PR cache holds for a branch of a repo. */
   pullRequest: (
     repoId: string,
@@ -199,6 +204,13 @@ function agentDeps(over: Partial<AgentDeps> = {}): AgentDeps {
       over.archive ??
       (async (id, session) =>
         (await import("../../session-archive")).archiveSession(id, session)),
+    worktreeHead:
+      over.worktreeHead ??
+      (async (dir) => {
+        const out = await $`git -C ${dir} rev-parse HEAD`.nothrow().quiet();
+        const sha = out.exitCode === 0 ? out.stdout.toString().trim() : "";
+        return /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
+      }),
     pullRequest:
       over.pullRequest ??
       ((repoId, branch) => getPrsByRepo().get(repoId)?.get(branch)),
@@ -208,8 +220,11 @@ function agentDeps(over: Partial<AgentDeps> = {}): AgentDeps {
 
 /**
  * The incident's coordinator session: the parent every agent is spawned
- * under. Reused while it exists; otherwise written as an ask session of the
- * incident automation. It runs no turn.
+ * under (the session controller's ownership, spawn depth and automation
+ * policy hang off it). Reused while it exists; otherwise written as an ask
+ * session of the incident automation, when the incident's first agent
+ * starts. It runs no turn: coordination is server code, so its transcript
+ * stays empty and its children hold the work.
  */
 export async function ensureCoordinatorSession(
   incident: Incident,
@@ -264,7 +279,19 @@ export interface IncidentAgents {
   /** A session's branch and Sandbox checkpoint, from the session store;
    *  undefined when the session is gone. */
   work(id: string): Promise<SessionWork | undefined>;
+  /** The last commit the session's own work reached: its Sandbox
+   *  checkpoint's branch tip, or a host worktree's HEAD. Undefined when it
+   *  can't be told. */
+  head(id: string): Promise<string | undefined>;
+  /** Whether a fresh session may branch from this one (`baseSessionId`):
+   *  the controller's own checks, its branch pushed at its last commit and
+   *  nothing left uncommitted. False when they can't be read. */
+  stackable(id: string): Promise<boolean>;
   status(id: string): Promise<AgentLive>;
+  /** What the session has cost so far, every turn in it counted (a
+   *  person's own turns too); undefined when the session is gone. Cheap: it
+   *  reads the session store only. */
+  usage(id: string): Promise<{ costUsd: number; tokens: number } | undefined>;
   finalText(id: string, since: string): Promise<string | undefined>;
   send(id: string, message: string, requestId: string): Promise<void>;
   cancel(id: string, requestId: string): Promise<void>;
@@ -427,6 +454,31 @@ export function createIncidentAgents(
       };
     },
 
+    async head(id) {
+      const session = d.control.getSession(id);
+      if (!session) return undefined;
+      const checkpoint = session.sandboxCheckpoint?.head;
+      if (checkpoint) return checkpoint;
+      // A sandboxed session's host worktree is not where it works.
+      const provider = session.sandbox?.provider;
+      if ((provider && provider !== "local") || !session.worktreeDir)
+        return undefined;
+      return d.worktreeHead(session.worktreeDir).catch(() => undefined);
+    },
+
+    async stackable(id) {
+      const session = d.control.getSession(id);
+      if (!session?.branch) return false;
+      const pushed = d.controllerDeps?.branchPushed ?? branchPushed;
+      const dirty =
+        d.controllerDeps?.hasUncommittedChanges ?? hasUncommittedChanges;
+      try {
+        return (await pushed(session)) && !(await dirty(session));
+      } catch {
+        return false;
+      }
+    },
+
     async status(id) {
       const s = await controller.status(id);
       const prUrl = s.prUrl || ownPullRequest(d, d.control.getSession(id));
@@ -436,6 +488,19 @@ export function createIncidentAgents(
         tokens: s.tokens ?? 0,
         ...(prUrl ? { prUrl } : {}),
         ...(s.error ? { error: s.error } : {}),
+      };
+    },
+
+    async usage(id) {
+      const usage = d.control.getSession(id)?.usage;
+      if (!usage) return undefined;
+      return {
+        costUsd: usage.costUsd,
+        tokens:
+          usage.inputTokens +
+          usage.outputTokens +
+          usage.cacheReadTokens +
+          usage.cacheCreationTokens,
       };
     },
 

@@ -11,6 +11,7 @@ import type {
   ProofResult,
   VerifierReport,
 } from "../../../shared/incident-response";
+import { roundOfMax } from "../../../shared/incident-response";
 import type {
   Incident,
   IncidentState,
@@ -987,17 +988,24 @@ test("a send-back goes to the same investigator; a reopen starts the next round"
   expect(
     decideNextStep(
       view({
-        incident: incident("investigating", response({ phase: "done" }), {
-          events: [
-            {
-              id: "evt-1",
-              at: iso(0),
-              kind: "reopened",
-              by: "sessions",
-              detail: "Search failing again",
-            },
-          ],
-        }),
+        incident: incident(
+          "investigating",
+          response({
+            phase: "done",
+            agents: [run("investigator", { status: "done" })],
+          }),
+          {
+            events: [
+              {
+                id: "evt-1",
+                at: iso(0),
+                kind: "reopened",
+                by: "sessions",
+                detail: "Search failing again",
+              },
+            ],
+          },
+        ),
       }),
     ),
   ).toMatchObject({
@@ -1015,7 +1023,14 @@ test("a send-back goes to the same investigator; a reopen starts the next round"
       view({
         incident: incident(
           "investigating",
-          response({ phase: "done", round: 2 }),
+          response({
+            phase: "done",
+            round: 2,
+            agents: [
+              run("investigator", { status: "done" }),
+              run("investigator", { round: 2, status: "done" }),
+            ],
+          }),
         ),
       }),
     ),
@@ -1023,6 +1038,56 @@ test("a send-back goes to the same investigator; a reopen starts the next round"
     step: "needs-you",
     kind: "rounds",
     reason: "Reopened after 2 rounds",
+  });
+});
+
+test("a reopen counts only rounds an investigator worked in", () => {
+  // Closed before any agent ran (no sandbox yet): the round never ran, so
+  // the reopen starts it instead of counting it as used.
+  expect(
+    decideNextStep(
+      view({
+        incident: incident(
+          "investigating",
+          response({ phase: "done", round: 1 }),
+        ),
+      }),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    to: null,
+    phase: "investigating",
+    detail: "Reopened",
+    patch: { round: 1 },
+  });
+  // Round 2 never ran: one round was used, not two.
+  expect(
+    decideNextStep(
+      view({
+        incident: incident(
+          "investigating",
+          response({
+            phase: "done",
+            round: 2,
+            agents: [run("investigator", { status: "done" })],
+          }),
+        ),
+      }),
+    ),
+  ).toMatchObject({ step: "transition", patch: { round: 2 } });
+});
+
+test("a round past the limit is labelled as an extra round", () => {
+  expect(roundOfMax(2, 2)).toBe("2 of 2");
+  expect(roundOfMax(3, 2)).toBe("3, an extra round past the limit of 2");
+  expect(
+    nextActionFor(
+      incident("investigating", response({ round: 3, maxRounds: 2 })),
+      defaultProjectSettings("acme"),
+    ),
+  ).toEqual({
+    kind: "working",
+    detail: "Investigator working, round 3, an extra round past the limit of 2",
   });
 });
 

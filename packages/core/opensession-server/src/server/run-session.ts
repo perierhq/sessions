@@ -167,12 +167,11 @@ import {
 import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { startWatching } from "./file-watcher";
 import {
-  ensureAskCheckout,
-  ensureScratchDir,
   getRepo,
   repoForPath,
   repoForPathOrNull,
   reviveWorktree,
+  sessionFallbackCwd,
   sessionRepoId,
 } from "./worktree";
 import { sessionRepoBlocker, sessionRepoOrThrow } from "./repo-removal-guard";
@@ -269,8 +268,10 @@ import {
   attachedGithubRepos,
   buildSessionNote,
   retrievedMemoryNoteFor,
+  sessionNotePerson,
   sessionRepoIds,
 } from "./session-repos";
+import { deskStateContext } from "./desk-state";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -3018,13 +3019,8 @@ async function runSessionPromptInner(
   // files): resolve them to the pinned ask checkout, never the mutable main
   // checkout, whose parked branch is a false context clue (ensureAskCheckout —
   // 82a296a6 covered the create paths but missed this prompt-path fallback).
-  let cwd =
-    session.worktreeDir ||
-    (session.mode === "scratch"
-      ? ensureScratchDir(session.workspaceId || session.id)
-      : session.mode === "ask"
-        ? await ensureAskCheckout(session.repo)
-        : defaultRepo().repo);
+  // Repo-less ones (the Desk) get their own scratch dir (sessionFallbackCwd).
+  let cwd = session.worktreeDir || (await sessionFallbackCwd(session));
   if (!repoForPathOrNull(cwd)) {
     // A dir no registered repo owns: a scratch dir, or a repo-less ask
     // session's inert cwd. Nothing to revive — just make sure it exists
@@ -3178,6 +3174,14 @@ async function runSessionPromptInner(
     const foldersNote = localFoldersContextNote(session.id, user);
     if (foldersNote)
       prompt = `${wrapContext(foldersNote, "local-folders-note")}\n\n${prompt}`;
+  }
+
+  // The Desk's live state (what is waiting, running, unread) changes on
+  // nearly every turn, so it rides in this turn's message rather than the
+  // system prompt, where each change re-cached the whole conversation.
+  if (session.desk && runInputs.sessionNote) {
+    const deskState = deskStateContext(sessionNotePerson(session, user));
+    if (deskState) prompt = `${deskState}\n\n${prompt}`;
   }
 
   // Retrieval is query-specific context for this turn. Keep it out of the

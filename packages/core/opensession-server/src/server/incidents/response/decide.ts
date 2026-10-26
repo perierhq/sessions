@@ -17,6 +17,7 @@ import type {
   SendBackReason,
   Verdict,
 } from "../../../shared/incident-response";
+import { roundOfMax } from "../../../shared/incident-response";
 import {
   RECOVERED_MIN_PASSES,
   closesWhenRecovered,
@@ -214,7 +215,7 @@ function runningActionLabel(r: IncidentResponse): string {
 function workingDetail(r: IncidentResponse): string {
   switch (r.phase) {
     case "investigating":
-      return `Investigator working, round ${r.round} of ${r.maxRounds}`;
+      return `Investigator working, round ${roundOfMax(r.round, r.maxRounds)}`;
     case "proving":
       return "Measuring the candidate from production";
     case "verifying":
@@ -262,7 +263,10 @@ export function nextActionFor(
       kind: "done",
       detail:
         incident.state === "resolved" ? "Resolved" : "Closed without action",
-      options: rollback(),
+      options:
+        incident.state === "closed-without-action" && r?.openPrs?.length
+          ? ["close-prs", "keep-prs"]
+          : rollback(),
     };
   if (incident.state === "paused")
     return {
@@ -342,7 +346,7 @@ export function sendBack(
   return {
     step: "needs-you",
     kind: "rounds",
-    reason: `Not certain after ${r.maxRounds} rounds: ${firstReason}`,
+    reason: `Not certain after ${r.round} rounds: ${firstReason}`,
   };
 }
 
@@ -641,7 +645,10 @@ function starting(view: ResponseView): ResponseStep | undefined {
     (r.phase === "done" || r.phase === "documenting") &&
     incident.state === "investigating"
   ) {
-    if (r.round + 1 > r.maxRounds)
+    // A round no investigator worked in (closed before any agent could
+    // start) is not used up: the reopen starts it.
+    const ran = roundRan(r);
+    if (ran && r.round + 1 > r.maxRounds)
       return {
         step: "needs-you",
         kind: "rounds",
@@ -654,7 +661,7 @@ function starting(view: ResponseView): ResponseStep | undefined {
       phase: "investigating",
       detail: "Reopened",
       patch: {
-        round: r.round + 1,
+        round: ran ? r.round + 1 : r.round,
         sendBack: { kind: "reopened", detail: reopened?.detail ?? "Reopened" },
         candidate: undefined,
         proof: undefined,
@@ -666,6 +673,7 @@ function starting(view: ResponseView): ResponseStep | undefined {
         note: undefined,
         mergingSince: undefined,
         documentingSince: undefined,
+        openPrs: undefined,
       },
     };
   }
@@ -677,6 +685,12 @@ function starting(view: ResponseView): ResponseStep | undefined {
       detail: "Agents back on",
     };
   return undefined;
+}
+
+/** Whether an investigator worked in the response's current round. A round
+ *  closed before any agent started is not one of the rounds used. */
+export function roundRan(r: IncidentResponse): boolean {
+  return r.agents.some((a) => a.role === "investigator" && a.round === r.round);
 }
 
 /** Whether a Retry reads `run`'s refused report again rather than starting
@@ -1519,7 +1533,7 @@ function afterRollback(view: ResponseView): ResponseStep {
   return {
     step: "needs-you",
     kind: "rounds",
-    reason: `Rolled back after ${r.maxRounds} rounds`,
+    reason: `Rolled back after ${r.round} rounds`,
   };
 }
 
