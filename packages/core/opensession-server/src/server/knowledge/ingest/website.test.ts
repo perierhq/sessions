@@ -393,6 +393,22 @@ describe("crawlWebsites", () => {
     expect(read!.body).toContain("Billing explains");
   });
 
+  test("a retired page that comes back is active again", async () => {
+    await crawlWebsites("acme", deps(pages));
+    const { [`${SITE}/billing`]: _gone, ...rest } = pages;
+    await crawlWebsites("acme", deps(rest));
+    const result = await crawlWebsites("acme", deps(pages));
+    expect(result).toMatchObject({ written: 1, retired: 0 });
+    const read = await knowledgeRepo.call(
+      "read",
+      "acme",
+      webItemPath(`${SITE}/billing`),
+      TODAY,
+    );
+    expect(read!.item.status).toBe("active");
+    expect(read!.body).toContain("Billing explains");
+  });
+
   test("a page dropped from the sitemap is checked and retired when gone", async () => {
     await crawlWebsites("acme", deps(pages));
     const result = await crawlWebsites(

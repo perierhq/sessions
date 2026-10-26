@@ -600,7 +600,12 @@ export async function crawlWebsites(
     const expected: Record<string, string | null> = {};
     let retired = 0;
     for (const [path, page] of pages) {
-      const current = items.get(path);
+      // The "all" list leaves retired items out: a page that comes back
+      // is read by its path, so the write expects its blob.
+      const current =
+        items.get(path) ??
+        (await knowledgeRepo.call("index.get", project, path, today)) ??
+        undefined;
       const source = `url:${page.url}#sha256=${page.hash}`;
       if (
         current &&
