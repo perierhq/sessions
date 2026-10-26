@@ -234,7 +234,7 @@ export const REPORT_RULES = {
   rulings: {
     roles: VERIFIER,
     problem: "claims",
-    text: "claims rules on every listed claim, with its text unchanged.",
+    text: "claims has a ruling on every listed claim, with its text unchanged.",
   },
 } as const satisfies Record<string, ReportRule>;
 export type ReportRuleId = keyof typeof REPORT_RULES;
