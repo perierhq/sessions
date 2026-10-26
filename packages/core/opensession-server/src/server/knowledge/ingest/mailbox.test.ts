@@ -412,6 +412,33 @@ describe("mailbox backfill", () => {
     ]);
   });
 
+  test("suggestions the call budget didn't reach mark the job truncated and come on the next tick", async () => {
+    const extract = model.classify;
+    const classify = (async (input) =>
+      input.label === "knowledge-repeat"
+        ? { route: "same", reason: "", raw: { route: "same" } }
+        : input.label === "knowledge-extract"
+          ? extract(input)
+          : null) as MailboxDeps["classify"];
+    const job = await backfill(12, { classify, repeatCalls: 0 });
+    expect(job.state).toBe("done");
+    expect(job.truncated).toBe(true);
+    const suggestions = async () =>
+      (
+        await knowledgeRepo.call("index.list", "acme", "suggestions", {
+          today: TODAY,
+        })
+      ).items;
+    expect(await suggestions()).toEqual([]);
+    const { retryPendingCaptures } = await import("./capture");
+    await retryPendingCaptures(NOW, { deps: deps({ classify }) });
+    expect(await suggestions()).toHaveLength(1);
+    const queued = (await catalogDocuments("knowledge-pending").list()).filter(
+      (r) => r.key.startsWith("repeats:"),
+    );
+    expect(queued).toEqual([]);
+  });
+
   test("imports answers with the time-aware trust rule", async () => {
     const flagsBefore = flags();
     const conversationsBefore = (await listIndexRows()).length;

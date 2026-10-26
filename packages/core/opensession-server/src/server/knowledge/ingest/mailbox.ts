@@ -96,6 +96,9 @@ export interface MailboxDeps {
   maxPairs: number;
   /** How long a run may take before it fails (DEADLINE_MS). */
   deadlineMs: number;
+  /** Small-model calls for the suggestions after the import (capture.ts
+   *  MAX_REPEAT_CALLS when unset). */
+  repeatCalls?: number;
 }
 
 /** Items per commit. */
@@ -147,6 +150,9 @@ export function bindMailboxDeps(over: Partial<MailboxDeps>): MailboxDeps {
     maxScanned: over.maxScanned ?? MAX_SCANNED,
     maxPairs: over.maxPairs ?? MAX_PAIRS,
     deadlineMs: over.deadlineMs ?? DEADLINE_MS,
+    ...(over.repeatCalls !== undefined
+      ? { repeatCalls: over.repeatCalls }
+      : {}),
   };
 }
 
@@ -715,8 +721,13 @@ async function backfill(
       repoChanges: deps.repoChanges,
       github: deps.github,
       supportHosts: deps.supportHosts,
+      ...(deps.repeatCalls !== undefined
+        ? { repeatCalls: deps.repeatCalls }
+        : {}),
     });
     if (made.created) await job.progress({ suggestions: made.created });
+    // The calls ran out: the rest waits for the hourly step.
+    if (made.left.length) await job.markTruncated();
   } catch (error) {
     console.warn(
       "[knowledge] suggestions after the mailbox import failed:",

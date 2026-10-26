@@ -78,6 +78,8 @@ export interface CaptureDeps extends Pick<
   /** Every small-model call: extract, repeat and suggest. */
   classify: typeof classifyRoute;
   conversation(id: string): Promise<SupportConversation | null>;
+  /** Small-model calls per suggestion run (MAX_REPEAT_CALLS). */
+  repeatCalls: number;
 }
 
 /** FTS candidates confirmed by the model per item. */
@@ -94,6 +96,9 @@ const MAX_TITLE = 200;
 const MAX_PART_CHARS = 3000;
 const WRITE_ATTEMPTS = 3;
 const PENDING_PREFIX = "capture:";
+const REPEATS_PREFIX = "repeats:";
+/** Most queued repeat paths per project (the newest kept). */
+const MAX_QUEUED_REPEATS = 5000;
 
 type Classify = typeof classifyRoute;
 
@@ -124,6 +129,7 @@ function bind(over: Partial<CaptureDeps>): CaptureDeps {
     github: mailbox.github,
     supportHosts: mailbox.supportHosts,
     conversation: over.conversation ?? defaultConversation,
+    repeatCalls: over.repeatCalls ?? MAX_REPEAT_CALLS,
   };
 }
 
@@ -317,6 +323,8 @@ export async function captureReply(
 /** Small-model calls left in one run. */
 interface Budget {
   calls: number;
+  /** A comparison was wanted after the calls ran out. */
+  denied?: boolean;
 }
 
 /** What ties an item to its thread: its `thread:` (the mail thread's
@@ -391,7 +399,10 @@ async function sameQuestion(
   deps: CaptureDeps,
   budget: Budget,
 ): Promise<boolean> {
-  if (budget.calls <= 0) return false;
+  if (budget.calls <= 0) {
+    budget.denied = true;
+    return false;
+  }
   budget.calls--;
   const suffix = randomBytes(6).toString("hex");
   const ta = `question_a_${suffix}`;
@@ -466,7 +477,8 @@ export async function findRepeats(
   path: string,
   over: Partial<CaptureDeps> = {},
 ): Promise<string[]> {
-  return repeatsOf(project, path, bind(over), { calls: MAX_REPEAT_CALLS });
+  const deps = bind(over);
+  return repeatsOf(project, path, deps, { calls: deps.repeatCalls });
 }
 
 /** Every listed item of `filter` (pages of LIST_PAGE). */
@@ -727,18 +739,31 @@ function serial<T>(project: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** suggestFromRepeats with counts, for the backfill's job progress. */
-export async function suggestRepeats(
+interface RepeatRun {
+  created: number;
+  updated: number;
+  last: string | null;
+  /** Paths left for a later run: the calls ran out before or while they
+   *  were compared. */
+  left: string[];
+}
+
+/** One budgeted pass over `paths` (serialised per project). */
+function runRepeats(
   project: string,
   paths: string[],
-  over: Partial<CaptureDeps> = {},
-): Promise<{ created: number; updated: number; last: string | null }> {
-  const deps = bind(over);
+  deps: CaptureDeps,
+): Promise<RepeatRun> {
   return serial(project, async () => {
-    const budget = { calls: MAX_REPEAT_CALLS };
-    const result = { created: 0, updated: 0, last: null as string | null };
-    for (const path of [...new Set(paths)]) {
-      if (budget.calls <= 0) break;
+    const budget: Budget = { calls: deps.repeatCalls };
+    const result: RepeatRun = { created: 0, updated: 0, last: null, left: [] };
+    const unique = [...new Set(paths)];
+    for (const [i, path] of unique.entries()) {
+      if (budget.calls <= 0) {
+        result.left = unique.slice(i);
+        break;
+      }
+      budget.denied = false;
       let outcome: Outcome = null;
       for (let attempt = 1; ; attempt++) {
         try {
@@ -749,13 +774,33 @@ export async function suggestRepeats(
           if (!isConflict(error) || attempt >= WRITE_ATTEMPTS) throw error;
         }
       }
-      if (!outcome) continue;
-      if (outcome.created) result.created++;
-      else result.updated++;
-      result.last = outcome.path;
+      if (outcome) {
+        if (outcome.created) result.created++;
+        else result.updated++;
+        result.last = outcome.path;
+      }
+      if (budget.denied) {
+        result.left = unique.slice(i);
+        break;
+      }
     }
     return result;
   });
+}
+
+/**
+ * suggestFromRepeats with counts, for the backfill's job progress. Paths
+ * the run's calls didn't reach are queued (`repeats:<project>` in
+ * `knowledge-pending`) for the hourly step; `left` counts them.
+ */
+export async function suggestRepeats(
+  project: string,
+  paths: string[],
+  over: Partial<CaptureDeps> = {},
+): Promise<RepeatRun> {
+  const result = await runRepeats(project, paths, bind(over));
+  if (result.left.length) await queueRepeats(project, result.left, []);
+  return result;
 }
 
 /**
@@ -802,6 +847,40 @@ function isPendingCapture(value: unknown): value is PendingCapture {
 let pendingDocs: ReturnType<typeof catalogDocuments> | undefined;
 const pending = () => (pendingDocs ??= catalogDocuments("knowledge-pending"));
 
+interface QueuedRepeats {
+  project: string;
+  paths: string[];
+}
+
+function isQueuedRepeats(value: unknown): value is QueuedRepeats {
+  const v = value as QueuedRepeats | null;
+  return (
+    !!v &&
+    typeof v.project === "string" &&
+    Array.isArray(v.paths) &&
+    v.paths.every((p) => typeof p === "string")
+  );
+}
+
+/** Add `add` to `project`'s queued repeat paths and take `done` out. */
+async function queueRepeats(
+  project: string,
+  add: string[],
+  done: string[],
+): Promise<void> {
+  const finished = new Set(done);
+  await pending().update<QueuedRepeats>(
+    `${REPEATS_PREFIX}${project}`,
+    (value) => {
+      const before = isQueuedRepeats(value) ? value.paths : [];
+      const paths = [
+        ...new Set([...before.filter((p) => !finished.has(p)), ...add]),
+      ].slice(-MAX_QUEUED_REPEATS);
+      return paths.length ? { project, paths } : null;
+    },
+  );
+}
+
 /** Keys being processed in this process. */
 const running = new Set<string>();
 /** Captures started by the listener, for tests. */
@@ -839,8 +918,9 @@ async function processPending(
 
 /**
  * Process the captures a crash or a failure left in `knowledge-pending`
- * (of `project`, or all), skipping those not due yet. Run hourly by the
- * knowledge maintenance tick.
+ * (of `project`, or all), skipping those not due yet, and the repeat
+ * paths a spent budget queued. Run hourly by the knowledge maintenance
+ * tick.
  */
 export async function retryPendingCaptures(
   now: number,
@@ -848,6 +928,17 @@ export async function retryPendingCaptures(
 ): Promise<void> {
   const deps = bind(opts.deps ?? {});
   for (const { key, value } of await pending().list()) {
+    if (key.startsWith(REPEATS_PREFIX) && isQueuedRepeats(value)) {
+      if (opts.project && value.project !== opts.project) continue;
+      try {
+        const run = await runRepeats(value.project, value.paths, deps);
+        const reached = value.paths.filter((p) => !run.left.includes(p));
+        await queueRepeats(value.project, [], reached);
+      } catch (error) {
+        console.warn("[knowledge] queued repeats failed:", errorName(error));
+      }
+      continue;
+    }
     if (!key.startsWith(PENDING_PREFIX) || !isPendingCapture(value)) continue;
     if (opts.project && value.project !== opts.project) continue;
     if (value.nextAt && Date.parse(value.nextAt) > now) continue;
