@@ -5,6 +5,7 @@ import type {
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
 import type { Incident, SignalView } from "../../../shared/incidents";
+import type { SignalInput } from "../../lib/api/incidents";
 import { useDeadlinePassed } from "../../hooks/useDeadlinePassed";
 import {
   useDeferredMergeDeadline,
@@ -15,6 +16,7 @@ import { useSecondsLeft } from "../../hooks/useSecondsLeft";
 import {
   decideIncidentApi,
   updateProjectSettingsApi,
+  updateSignalApi,
 } from "../../lib/api/incidents";
 import { apiSWRKey } from "../../lib/api-swr";
 import { ASK_CARD_PLATE } from "../../lib/ask-card-classes";
@@ -355,8 +357,58 @@ export function NextAction({
     setBusy(null);
   };
 
+  /** A stricter rule or a mute for the incident's flapping signal; its
+   *  toast offers Undo, which offers none of its own. */
+  const writeSignal = async (
+    signalId: string,
+    change: SignalInput,
+    landed: string,
+    key: string,
+    undo: SignalInput | null,
+  ) => {
+    setBusy(key);
+    try {
+      await updateSignalApi(signalId, change);
+      void mutate(apiSWRKey.incidentSignals());
+      toast(
+        landed,
+        undo
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  void writeSignal(
+                    signalId,
+                    undo,
+                    `Undone for ${primaryName}`,
+                    key,
+                    null,
+                  ),
+              },
+            }
+          : {},
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`Couldn't change ${primaryName}: ${message}`, {
+        variant: "error",
+      });
+    }
+    setBusy(null);
+  };
+
   const onButton = (button: CardButton) => {
     switch (button.kind) {
+      case "signal-fix":
+        if (button.signalId && button.fix)
+          void writeSignal(
+            button.signalId,
+            button.fix.patch,
+            button.fix.landed,
+            button.key,
+            button.fix.undo,
+          );
+        return;
       case "stop":
         void decide("stop", button.label, button.key);
         return;

@@ -351,6 +351,10 @@ export interface Incident {
   /** The fix loop's record (agents, proof, policy, actions). */
   response?: IncidentResponse;
   findings: IncidentFinding[];
+  /** Closed without action: the bad runs of its signals it stayed closed
+   *  through while quiet (server/incidents/engine.ts), and when the latest
+   *  began. */
+  quiet?: { flaps: number; lastAt: string };
   events: IncidentEvent[];
   droppedEvents: number;
 }

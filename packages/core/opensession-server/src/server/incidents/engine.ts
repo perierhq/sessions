@@ -113,10 +113,12 @@ export type IncidentOp =
     }
   | {
       /** The signal is bad but its quiet incident stays closed: decide
-       *  again at `until`, else at its next change. Stores nothing. */
+       *  again at `until`, else at its next change. The incident counts
+       *  the turn to failing or slow at `since` once. */
       op: "hold";
       incidentId: string;
       signalId: string;
+      since?: string;
       until?: string;
     };
 
@@ -205,7 +207,7 @@ export function quietNeeds(signal: Signal): {
 
 type Quiet =
   /** Stay closed; decide again at `until`, or at the next change. */
-  | { kind: "hold"; incident: Incident; until?: number }
+  | { kind: "hold"; incident: Incident; since?: number; until?: number }
   /** The bad run began before the close: closed knowingly. */
   | { kind: "known"; incident: Incident }
   /** A new problem: reopen this one. */
@@ -237,9 +239,12 @@ function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
   if (problemSince !== undefined)
     due.push(problemSince + QUIET_BREAKTHROUGH_MS);
   if (due.some((at) => snapshot.now >= at)) return { kind: "reopen", incident };
-  return due.length
-    ? { kind: "hold", incident, until: Math.min(...due) }
-    : { kind: "hold", incident };
+  // Each turn to failing or slow is a flap, even inside one flaky run; a
+  // flaky spell alone is not counted.
+  const hold: Extract<Quiet, { kind: "hold" }> = { kind: "hold", incident };
+  if (problemSince !== undefined) hold.since = problemSince;
+  if (due.length) hold.until = Math.min(...due);
+  return hold;
 }
 
 /** Signals related to `signal` by a declared dependency, either direction,
@@ -484,6 +489,9 @@ function decideBad(
         op: "hold",
         incidentId: quiet.incident.id,
         signalId: signal.id,
+        ...(quiet.since === undefined
+          ? {}
+          : { since: new Date(quiet.since).toISOString() }),
         ...(quiet.until === undefined
           ? {}
           : { until: new Date(quiet.until).toISOString() }),
@@ -807,7 +815,7 @@ function sameFinding(
 /** One op against the stored incident, or an error to skip it. */
 function applyOp(
   incident: Incident,
-  op: Exclude<IncidentOp, { op: "open" } | { op: "hold" }>,
+  op: Exclude<IncidentOp, { op: "open" }>,
   at: string,
 ): Incident | { error: string } {
   switch (op.op) {
@@ -880,6 +888,16 @@ function applyOp(
         },
       );
     }
+    case "hold": {
+      // Counted once per turn: deciding the same one again is no flap.
+      if (op.since === undefined) return incident;
+      const last = incident.quiet ? Date.parse(incident.quiet.lastAt) : NaN;
+      if (Date.parse(op.since) <= last) return incident;
+      return {
+        ...incident,
+        quiet: { flaps: (incident.quiet?.flaps ?? 0) + 1, lastAt: op.since },
+      };
+    }
     case "resolve-finding": {
       let changed = false;
       const findings = incident.findings.map((f) => {
@@ -912,7 +930,6 @@ export async function applyIncidentOps(
       touched.set(created.id, created);
       continue;
     }
-    if (op.op === "hold") continue;
     const result = await updateIncident(op.incidentId, (current) =>
       applyOp(current, op, at),
     );

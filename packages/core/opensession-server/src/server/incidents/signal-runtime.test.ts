@@ -211,6 +211,8 @@ test("closed without action, a flapping signal reopens and opens nothing", async
   expect(all).toHaveLength(1);
   expect(all[0]!.state).toBe("closed-without-action");
   expect(all[0]!.events.filter((e) => e.kind === "reopened")).toEqual([]);
+  // Each flap it stayed closed through is counted, once.
+  expect(all[0]!.quiet?.flaps).toBe(10);
 });
 
 test("after a close, a new problem reopens once it stays failing", async () => {

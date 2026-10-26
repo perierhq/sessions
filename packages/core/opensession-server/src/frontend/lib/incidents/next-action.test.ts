@@ -820,3 +820,48 @@ test("every settings target opens a project settings section", () => {
   expect(NEXT_STEP_SECTION.signals).toBe("incidents");
   expect(NEXT_STEP_SECTION.sandbox).toBe("where");
 });
+
+test("closed without action, a flapping signal's card offers a stricter rule or a mute", () => {
+  const signal: SignalView = {
+    id: "sig-a",
+    name: "Search",
+    project: "acme",
+    enabled: true,
+    severity: "major",
+    source: { kind: "http", url: "https://acme.example.test" },
+    rule: { kind: "consecutive", failures: 3 },
+    createdBy: "Ada",
+    createdAt: "2026-10-19T12:00:00Z",
+    updatedAt: "2026-10-19T12:00:00Z",
+    evaluation: null,
+  };
+  const closed: Incident = {
+    ...inc("closed-without-action", {
+      next: { kind: "done", detail: "", options: [] },
+    }),
+    closedAt: "2026-10-20T12:00:00Z",
+    quiet: { flaps: 6, lastAt: "2026-10-20T12:20:00Z" },
+  };
+  const card = nextCard({ ...base, incident: closed, signals: [signal] });
+  expect(card).toMatchObject({
+    mode: "shell",
+    tone: "faint",
+    eyebrow: "On and off",
+    headline: "Search failed 7 times and passed again each time",
+    body: "Closed without action. Make its rule stricter or mute it for a day",
+  });
+  expect(
+    card?.mode === "shell" && card.buttons.map((b) => [b.kind, b.label]),
+  ).toEqual([
+    ["signal-fix", "Need 6 failures in a row"],
+    ["signal-fix", "Mute for a day"],
+  ]);
+  // Without the flaps it is a closed incident like any other: no card.
+  expect(
+    nextCard({
+      ...base,
+      incident: { ...closed, quiet: undefined },
+      signals: [signal],
+    }),
+  ).toBeNull();
+});

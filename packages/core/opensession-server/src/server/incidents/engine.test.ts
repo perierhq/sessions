@@ -409,11 +409,12 @@ describe("decide", () => {
         ...snap([a], [E("sig-a", state)], [closed]),
         runs: new Map(run ? [["sig-a", run]] : []),
       });
-    const hold = (until?: number): IncidentOp[] => [
+    const hold = (until?: number, since: number | null = NOW): IncidentOp[] => [
       {
         op: "hold",
         incidentId: "inc-1",
         signalId: "sig-a",
+        ...(since === null ? {} : { since: new Date(since).toISOString() }),
         ...(until === undefined
           ? {}
           : { until: new Date(until).toISOString() }),
@@ -433,9 +434,9 @@ describe("decide", () => {
     expect(quiet(flap)).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
     // Nothing known about before: the same.
     expect(quiet()).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
-    // Flaky after a flap is a flap; nothing to wait for.
+    // Flaky after a flap is a flap, not counted; nothing to wait for.
     expect(quiet({ badSince: NOW, healthyBefore: 180_000 }, "flaky")).toEqual(
-      hold(),
+      hold(undefined, null),
     );
     // Ok 20 minutes, then failing: a new problem once it stays failing.
     const settled = {
@@ -443,7 +444,9 @@ describe("decide", () => {
       problemSince: NOW - 300_000,
       healthyBefore: 1_200_000,
     };
-    expect(quiet(settled)).toEqual(hold(NOW - 300_000 + QUIET_FAILING_MS));
+    expect(quiet(settled)).toEqual(
+      hold(NOW - 300_000 + QUIET_FAILING_MS, NOW - 300_000),
+    );
     expect(
       quiet({
         ...settled,
@@ -493,6 +496,7 @@ describe("decide", () => {
         op: "hold",
         incidentId: "inc-1",
         signalId: "sig-a",
+        since: iso(),
         until: new Date(NOW + QUIET_BREAKTHROUGH_MS).toISOString(),
       },
     ]);
@@ -1420,6 +1424,55 @@ describe("providers and disagreements", () => {
 
 describe("apply", () => {
   useIncidentTestKernel();
+
+  test("a hold counts each bad run a quiet incident stayed closed through", async () => {
+    const [opened] = await applyIncidentOps(
+      [
+        {
+          op: "open",
+          incident: {
+            project: "acme",
+            title: "Search",
+            state: "investigating",
+            severity: "major",
+            owner: "Ada",
+            openedBy: { kind: "rule", ref: "sig-a" },
+            signalIds: ["sig-a"],
+            primarySignalId: "sig-a",
+            at: iso(600_000),
+            detail: "x",
+          },
+        },
+      ],
+      iso(600_000),
+    );
+    const id = opened!.id;
+    await applyIncidentOps(
+      [
+        {
+          op: "transition",
+          incidentId: id,
+          to: "closed-without-action",
+          detail: "Closed",
+        },
+      ],
+      iso(500_000),
+    );
+    const hold = (since: string): IncidentOp => ({
+      op: "hold",
+      incidentId: id,
+      signalId: "sig-a",
+      since,
+    });
+    await applyIncidentOps([hold(iso(300_000))], iso(300_000));
+    // Decided again for the same run: not another flap.
+    await applyIncidentOps([hold(iso(300_000))], iso(200_000));
+    await applyIncidentOps([hold(iso(100_000))], iso(100_000));
+    const stored = await getIncident(id);
+    expect(stored?.quiet).toEqual({ flaps: 2, lastAt: iso(100_000) });
+    expect(stored?.events.map((e) => e.kind)).toEqual(["opened", "state"]);
+    expect(stored?.updatedAt).toBe(iso(500_000));
+  });
 
   test("a finding that comes back is the same finding, counted", async () => {
     const [opened] = await applyIncidentOps(
