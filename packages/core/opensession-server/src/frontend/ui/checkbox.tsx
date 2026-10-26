@@ -22,15 +22,20 @@ type CheckboxProps = Omit<
  *     <Checkbox checked={x} onCheckedChange={setX} />
  *     Include thread replies
  *   </label>
+ *
+ * `indeterminate` (a select-all over a partial selection) draws a dash on the
+ * same fill. Base UI drops `data-checked` while it is set, so the fill and the
+ * glyph key off `data-indeterminate` on the root.
  */
 export function Checkbox({ className, ...props }: CheckboxProps) {
   return (
     <BaseCheckbox.Root
       className={cn(
-        "flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm border border-line-strong bg-surface p-0 outline-none",
+        "group flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm border border-line-strong bg-surface p-0 outline-none",
         "transition-[background-color,border-color] duration-[var(--dur-micro)] ease-[var(--ease)]",
         "hover:border-faint",
         "data-[checked]:border-accent-control data-[checked]:bg-accent-control data-[checked]:hover:border-accent-control",
+        "data-[indeterminate]:border-accent-control data-[indeterminate]:bg-accent-control data-[indeterminate]:hover:border-accent-control",
         "focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
         "data-[disabled]:cursor-default data-[disabled]:opacity-40",
         className,
@@ -48,7 +53,14 @@ export function Checkbox({ className, ...props }: CheckboxProps) {
           strokeLinejoin="round"
           aria-hidden
         >
-          <path d="M2.4 6.3 4.7 8.6 9.6 3.5" />
+          <path
+            d="M2.4 6.3 4.7 8.6 9.6 3.5"
+            className="group-data-[indeterminate]:hidden"
+          />
+          <path
+            d="M3 6h6"
+            className="hidden group-data-[indeterminate]:block"
+          />
         </svg>
       </BaseCheckbox.Indicator>
     </BaseCheckbox.Root>

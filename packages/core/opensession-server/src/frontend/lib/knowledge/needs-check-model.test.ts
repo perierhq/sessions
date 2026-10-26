@@ -139,6 +139,8 @@ describe("changePane", () => {
     );
     expect(pane.right.patchLines).toBeUndefined();
     expect(pane.right.text).toBe("Export from Settings.\n");
+    // A source file reads as written, not as Markdown.
+    expect(pane.right.code).toBe(true);
   });
 
   test("url: the page as it is now, with its link", () => {

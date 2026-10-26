@@ -132,14 +132,24 @@ export interface SourceRow {
   knowledge?: SourceKnowledge;
 }
 
-/** A knowledge row's state as StatusChip draws it. "Out of date" for
- *  every hold, as the draft's rule says it (`Knowledge may be out of
- *  date: <title>`); the reason under it says which. */
+/** A knowledge row's state as StatusChip draws it. A hold that isn't
+ *  about age names itself: "Reference" (not approved for replies, a
+ *  faint dot since nothing is wrong with the item), "Internal" (the reply
+ *  quotes an internal note), "Not read" (this session never read it).
+ *  Every other hold is "Out of date", as the draft's rule says it
+ *  (`Knowledge may be out of date: <title>`); the reason under it says
+ *  which. */
 export function knowledgeChip(k: SourceKnowledge) {
   switch (k.state) {
     case "backing":
       return { label: "Fresh", dot: "var(--green)" };
     case "blocked":
+      if (k.reason === KNOWLEDGE_COPY.notTrusted)
+        return { label: "Reference", dot: "var(--text-faint)" };
+      if (k.reason === KNOWLEDGE_COPY.internalQuoted)
+        return { label: "Internal", dot: "var(--yellow)" };
+      if (k.reason === KNOWLEDGE_COPY.notRead)
+        return { label: "Not read", dot: "var(--yellow)" };
       return { label: "Out of date", dot: "var(--yellow)" };
     default:
       return { label: "Not checked", dot: "var(--text-faint)" };

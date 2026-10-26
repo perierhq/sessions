@@ -24,6 +24,8 @@ import {
   NC_PANE,
   NC_PANE_BODY,
   NC_PANE_LABEL,
+  NC_PANE_CODE,
+  NC_PANE_PROSE,
   NC_PANE_TEXT,
   NC_PANE_TEXT_ALONE,
   NC_PANES,
@@ -50,8 +52,10 @@ import {
   rowLine,
   type PaneSide,
 } from "../../../lib/knowledge/needs-check-model";
+import { renderMarkdown } from "../../../lib/markdown";
 import { Badge } from "../../../ui/badge";
 import { Button } from "../../../ui/button";
+import { Card } from "../../../ui/card";
 import { cn } from "../../../ui/cn";
 import { useConfirm } from "../../../ui/confirm";
 import { PlainButton } from "../../../ui/plain-button";
@@ -64,6 +68,7 @@ import {
 import { EmptyState, InlineAlert } from "../../../ui/state";
 import { toast } from "../../../ui/toast";
 import { IconCheck, IconChevronLeft } from "../../icons";
+import { MarkdownBody } from "../../MarkdownBody";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 
 /**
@@ -333,6 +338,7 @@ function NeedsCheckItem({
     next();
   }
 
+  // The page's one Back: to the queue, or to the comparison while editing.
   const back = (
     <div className={NC_BACK}>
       <Button
@@ -341,6 +347,7 @@ function NeedsCheckItem({
         variant="ghost"
         className={NC_TAP}
         icon={<IconChevronLeft size={18} />}
+        aria-label={editing ? "Back to what changed" : "Back to needs check"}
         onClick={() =>
           editing ? setEditing(false) : onNavigate({ tab: "needs-check" })
         }
@@ -359,6 +366,8 @@ function NeedsCheckItem({
           path={path}
           onSaved={(p) => void saved(p)}
           onHistory={(p) => onNavigate({ tab: "history", path: p })}
+          saveLabel="Save and mark still true"
+          savedMessage="Saved and marked still true"
         />
       </>
     );
@@ -478,8 +487,11 @@ function Pane({
 }) {
   const link = side.link;
   const labelAlone = side.label === switchLabel && !link;
+  // Articles, pages and release notes read as the Markdown they are; a
+  // patch, a source file and a "couldn't be read" note stay as written.
+  const prose = !side.patchLines && !side.missing && !side.code;
   return (
-    <SettingCard className={cn(NC_PANE, hidden && "phone:hidden")}>
+    <Card className={cn(NC_PANE, hidden && "phone:hidden")}>
       <div className={NC_PANE_BODY}>
         <div className={cn(NC_PANE_LABEL, labelAlone && "phone:hidden")}>
           <span className="shrink-0">{side.label}</span>
@@ -498,30 +510,38 @@ function Pane({
             </a>
           ) : null}
         </div>
-        <pre
-          className={cn(
-            NC_PANE_TEXT,
-            labelAlone && NC_PANE_TEXT_ALONE,
-            side.missing && NC_MISSING,
-          )}
-        >
-          {side.patchLines
-            ? side.patchLines.map((line, index) => (
-                <div
-                  key={index}
-                  className={cn(
-                    NC_PATCH_LINE,
-                    line.tone === "add" && "text-green",
-                    line.tone === "remove" && "text-red",
-                    line.tone === "meta" && "text-dim",
-                  )}
-                >
-                  {line.text || " "}
-                </div>
-              ))
-            : side.text}
-        </pre>
+        {prose ? (
+          <MarkdownBody
+            className={cn(NC_PANE_PROSE, labelAlone && NC_PANE_TEXT_ALONE)}
+            html={renderMarkdown(side.text ?? "")}
+          />
+        ) : (
+          <pre
+            className={cn(
+              NC_PANE_TEXT,
+              NC_PANE_CODE,
+              labelAlone && NC_PANE_TEXT_ALONE,
+              side.missing && NC_MISSING,
+            )}
+          >
+            {side.patchLines
+              ? side.patchLines.map((line, index) => (
+                  <div
+                    key={index}
+                    className={cn(
+                      NC_PATCH_LINE,
+                      line.tone === "add" && "text-green",
+                      line.tone === "remove" && "text-red",
+                      line.tone === "meta" && "text-dim",
+                    )}
+                  >
+                    {line.text || " "}
+                  </div>
+                ))
+              : side.text}
+          </pre>
+        )}
       </div>
-    </SettingCard>
+    </Card>
   );
 }

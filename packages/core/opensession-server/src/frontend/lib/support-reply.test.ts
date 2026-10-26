@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { KnowledgeVerdict } from "../../shared/knowledge";
+import { KNOWLEDGE_COPY, type KnowledgeVerdict } from "../../shared/knowledge";
 import type { SupportConversation } from "../../shared/support";
 import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
@@ -517,6 +517,27 @@ describe("knowledge sources", () => {
     expect(chip("unchecked")).toEqual({
       label: "Not checked",
       dot: "var(--text-faint)",
+    });
+  });
+
+  test("a hold that isn't about age names itself", () => {
+    const blocked = (reason: string) =>
+      knowledgeChip({ title: "Export", state: "blocked", reason });
+    expect(blocked(KNOWLEDGE_COPY.notTrusted)).toEqual({
+      label: "Reference",
+      dot: "var(--text-faint)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.internalQuoted)).toEqual({
+      label: "Internal",
+      dot: "var(--yellow)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.notRead)).toEqual({
+      label: "Not read",
+      dot: "var(--yellow)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.changedSinceRead)).toEqual({
+      label: "Out of date",
+      dot: "var(--yellow)",
     });
   });
 

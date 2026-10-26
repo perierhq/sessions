@@ -36,7 +36,14 @@ export const NC_PANE_TEXT_ALONE = "phone:pt-5";
 export const NC_PANE_LABEL =
   "flex min-h-11 items-center justify-between gap-2 px-5 pt-1 text-label font-medium text-dim";
 export const NC_PANE_TEXT =
-  "m-0 px-5 pb-5 font-mono text-meta leading-relaxed text-fg whitespace-pre-wrap [overflow-wrap:anywhere] desktop:max-h-[60vh] desktop:overflow-auto";
+  "m-0 px-5 pb-5 leading-relaxed text-fg whitespace-pre-wrap [overflow-wrap:anywhere] desktop:max-h-[60vh] desktop:overflow-auto";
+/** A patch, a source file or a "couldn't be read" note: as written, in
+ *  the data face. */
+export const NC_PANE_CODE = "font-mono text-meta";
+/** An article, a page or release notes: rendered Markdown (`markdown` is
+ *  the shared prose styling in base.css), with the pane's own scroll. */
+export const NC_PANE_PROSE =
+  "markdown px-5 pb-5 [overflow-wrap:anywhere] desktop:max-h-[60vh] desktop:overflow-auto";
 /** A patch line, toned like the memory repository's diffs. */
 export const NC_PATCH_LINE = "whitespace-pre-wrap [overflow-wrap:anywhere]";
 export const NC_MISSING = "text-dim";

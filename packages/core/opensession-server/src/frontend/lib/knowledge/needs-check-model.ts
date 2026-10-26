@@ -99,6 +99,9 @@ export interface PaneSide {
   link?: string;
   /** The change couldn't be read; `text` says so. */
   missing?: true;
+  /** `text` is a source file (a repository change with no patch), shown
+   *  as written rather than as Markdown. */
+  code?: true;
 }
 
 export interface ChangePane {
@@ -154,13 +157,14 @@ export function changePane(
           label: "What changed",
           patchLines: patchLines(change.patch),
         });
-      return pane(
-        readOrMissing(
+      return pane({
+        ...readOrMissing(
           "What changed",
           change.after,
           "The change couldn't be read right now",
         ),
-      );
+        code: true,
+      });
     case "url":
       return pane(
         readOrMissing(

@@ -121,6 +121,22 @@ export function KnowledgePage({
       </div>
     );
 
+  // An item open beside its change: the page is the item, the same frame as
+  // the editor's so Edit's Save bar sticks, and its own Back (to the queue,
+  // or to the comparison while editing) is the only one.
+  if (route.tab === "needs-check" && route.path)
+    return (
+      <div className={KNOWLEDGE_EDITOR_FRAME}>
+        <SettingsPanel className="self-start">
+          <KnowledgeNeedsCheck
+            project={project}
+            path={route.path}
+            onNavigate={onNavigate}
+          />
+        </SettingsPanel>
+      </div>
+    );
+
   // An item's history (the repository's without a path): Back is the item.
   if (route.tab === "history")
     return (
@@ -206,11 +222,7 @@ export function KnowledgePage({
         ) : route.tab === "suggestions" ? (
           <KnowledgeSuggestions project={project} />
         ) : route.tab === "needs-check" ? (
-          <KnowledgeNeedsCheck
-            project={project}
-            path={route.path}
-            onNavigate={onNavigate}
-          />
+          <KnowledgeNeedsCheck project={project} onNavigate={onNavigate} />
         ) : filter ? (
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (

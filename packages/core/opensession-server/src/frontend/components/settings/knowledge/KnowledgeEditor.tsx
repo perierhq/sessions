@@ -87,12 +87,19 @@ export function KnowledgeEditor({
   path,
   onSaved,
   onHistory,
+  saveLabel,
+  savedMessage,
 }: {
   project: string;
   path: string;
   /** Saved: the item's path (a new article's is known only now). */
   onSaved: (path: string) => void;
   onHistory: (path: string) => void;
+  /** The Save button's word, when saving does more than save (Needs check
+   *  marks the item still true too). */
+  saveLabel?: string;
+  /** The toast once saved, to match `saveLabel`. */
+  savedMessage?: string;
 }) {
   const creating = path === NEW_ARTICLE;
   const read = useSWR(
@@ -140,6 +147,8 @@ export function KnowledgeEditor({
       onSaved={onSaved}
       onReload={reload}
       onHistory={() => onHistory(path)}
+      saveLabel={saveLabel}
+      savedMessage={savedMessage}
     />
   );
 }
@@ -153,6 +162,8 @@ export function KnowledgeEditorForm({
   onSaved,
   onReload,
   onHistory,
+  saveLabel = "Save",
+  savedMessage = "Saved",
 }: {
   project: string;
   read: KnowledgeRead | null;
@@ -160,6 +171,8 @@ export function KnowledgeEditorForm({
   onSaved: (path: string) => void;
   onReload: () => void;
   onHistory?: () => void;
+  saveLabel?: string;
+  savedMessage?: string;
 }) {
   const [initial] = useState(() => editorState(read, today));
   const [state, setState] = useState(initial);
@@ -234,7 +247,15 @@ export function KnowledgeEditorForm({
     );
   }
 
-  const save = () => run("save", () => write(state, "Saved"));
+  const save = () =>
+    run("save", () =>
+      write(
+        state,
+        // A Needs check save marks the item still true, but not one saved as
+        // retired (it stays retired).
+        state.status === "retired" ? "Saved" : savedMessage,
+      ),
+    );
 
   // A clean item retires as its own commit ("Retire <title>"); one with
   // unsaved edits keeps them and saves as retired.
@@ -577,7 +598,7 @@ export function KnowledgeEditorForm({
             disabled={busy !== null || (!!state.path && !dirty)}
             onClick={() => void save()}
           >
-            {busy === "save" ? "Saving" : "Save"}
+            {busy === "save" ? "Saving" : saveLabel}
           </Button>
         </div>
       </div>
