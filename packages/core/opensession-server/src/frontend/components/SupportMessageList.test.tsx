@@ -212,3 +212,29 @@ test("an agent's Plain note links to its triage session only with a thread id", 
     renderToStaticMarkup(<SupportMessageList entries={[note]} />),
   ).not.toContain("plain-triage");
 });
+
+const quotedEntry = entry({
+  text: "Yes please, reset it.",
+  hiddenParts: [
+    { kind: "signature", text: "Sent from my iPhone" },
+    { kind: "quoted", text: "> Shall we reset your workspace?" },
+  ],
+});
+
+test("an email with quoted history shows the new text and a closed toggle", () => {
+  const html = renderToStaticMarkup(<PlainEntryRow entry={quotedEntry} />);
+  expect(html).toContain("Yes please, reset it.");
+  expect(html).toContain("Show quoted text");
+  expect(html).toContain('aria-expanded="false"');
+  // The toggle names the region it opens, and the region starts hidden.
+  expect(html).toMatch(/aria-controls="([^"]+)"[\s\S]*id="\1"[^>]*hidden/);
+  expect(html).not.toContain("Shall we reset");
+  expect(html).not.toContain("Sent from my iPhone");
+});
+
+test("an email without quoted history has no toggle", () => {
+  const html = renderToStaticMarkup(
+    <PlainEntryRow entry={{ ...quotedEntry, hiddenParts: undefined }} />,
+  );
+  expect(html).not.toContain("quoted text");
+});

@@ -24,13 +24,14 @@
 // through get_conversation (mcp.ts), still inside the <customer_email>
 // wrapper (wrap.ts). Nothing runs at import.
 
-import type {
-  InboxConfig,
-  MessageTriage,
-  SupportActor,
-  SupportConversation,
-  SupportMessage,
-  SupportTopic,
+import {
+  type InboxConfig,
+  type MessageTriage,
+  type SupportActor,
+  type SupportConversation,
+  type SupportMessage,
+  type SupportTopic,
+  newTextOf,
 } from "../../shared/support";
 import {
   type CreateSessionOpts,
@@ -475,7 +476,8 @@ function sinceLastReply(c: SupportConversation): SupportMessage[] {
 function replyBefore(c: SupportConversation, id: string): string | null {
   const at = c.messages.findIndex((m) => m.id === id);
   const before = at < 0 ? c.messages : c.messages.slice(0, at);
-  return before.findLast((m) => m.direction === "out")?.text ?? null;
+  const ours = before.findLast((m) => m.direction === "out");
+  return ours ? newTextOf(ours) : null;
 }
 
 export const STRIKE_ONE =
@@ -566,7 +568,8 @@ async function classifyPending(
     const { triage, reason } = takeTriage(c.inboxId, d.now())
       ? await d.classify({
           subject: current.subject,
-          text: current.text ?? "",
+          // What the customer wrote this time, not the history it quotes.
+          text: newTextOf(current) ?? "",
           from: current.from.address,
           earlierReply: replyBefore(c, current.id),
           now,
@@ -801,7 +804,8 @@ export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
   if (!Array.isArray(t.topics) || t.topics.length > 0) return false;
   if (t.injection || t.wantsHuman || t.angry || t.repeat || t.bug) return false;
   if (m.attachments.length > 0) return false;
-  if ((m.text ?? "").trim().length >= THANKS_MAX_CHARS) return false;
+  // A "thanks!" over the quoted thread is still short.
+  if ((newTextOf(m) ?? "").length >= THANKS_MAX_CHARS) return false;
   const d = c.draft;
   if (d && d.state !== "sent" && d.state !== "discarded") return false;
   if (c.pendingIssue || c.fixTask) return false;

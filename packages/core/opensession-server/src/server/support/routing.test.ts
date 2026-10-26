@@ -380,6 +380,26 @@ describe("new conversations", () => {
 });
 
 describe("replies", () => {
+  test("triage reads what the customer wrote, not the history it quotes", async () => {
+    const c = await conversation();
+    await onInbound(c, c.messages[0], true);
+    const quoted = [
+      "Still failing for me.",
+      "",
+      "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+      "> Please try the export again.",
+    ].join("\n");
+    const reply = message(quoted, "Re: Export is broken");
+    const withReply = await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, reply],
+      lastMessageAt: reply.at,
+    }));
+    const stored = withReply!.messages.at(-1)!;
+    await onInbound(withReply!, stored, false);
+    expect(classifyCalls.at(-1)).toBe("Still failing for me.");
+  });
+
   test("a reply is classified, then goes to the live session", async () => {
     const c = await conversation();
     await onInbound(c, c.messages[0], true);

@@ -61,6 +61,9 @@ export interface InboundMessage {
   subject: string;
   /** text/plain, else HTML rendered as text; at most MAX_TEXT_CHARS. */
   text: string;
+  /** Which parts of `text` are new, quoted or the signature, when the
+   *  transport split it (email: from the text and its HTML part). */
+  split?: MessageSplit;
   keys: ThreadKeys;
   /** Lowercased names to values, only: auto-submitted, precedence, list-id,
    *  list-unsubscribe, x-autoreply, x-auto-response-suppress, return-path,
@@ -118,6 +121,80 @@ export interface SupportMessage {
   /** @deprecated Older documents: topics classified before per-message
    *  triage. Read as "not triaged". */
   topicsChecked?: true;
+  /** Email only: which parts of `text` are new, quoted history or the
+   *  signature (agents/email/quote.ts). `text` stays whole. Set on ingest;
+   *  older documents get it when they are read (store.ts). */
+  split?: MessageSplit;
+}
+
+/** What a stretch of an email's text is: what the sender wrote this time,
+ *  the earlier mail it quotes, or the sender's signature. */
+export type MessagePartKind = "new" | "quoted" | "signature";
+
+/** An email's text as ordered, contiguous ranges of `text` ([start, end),
+ *  UTF-16 offsets) that cover all of it. `v` is the splitter's version. */
+export interface MessageSplit {
+  v: number;
+  parts: Array<{ kind: MessagePartKind; start: number; end: number }>;
+}
+
+export interface MessagePart {
+  kind: MessagePartKind;
+  text: string;
+}
+
+/** The message's text in its parts, in order. One "new" part when it has no
+ *  split or the split doesn't fit the text; null once retention removed the
+ *  text. */
+export function messageParts(
+  m: Pick<SupportMessage, "text" | "split">,
+): MessagePart[] | null {
+  if (m.text === null) return null;
+  const text = m.text;
+  const parts = m.split?.parts;
+  let at = 0;
+  const fits =
+    Array.isArray(parts) &&
+    parts.length > 0 &&
+    parts.every((p) => {
+      const ok =
+        (p.kind === "new" || p.kind === "quoted" || p.kind === "signature") &&
+        p.start === at &&
+        p.end > p.start;
+      at = p.end;
+      return ok;
+    }) &&
+    at === text.length;
+  if (!fits) return [{ kind: "new", text }];
+  return parts.map((p) => ({
+    kind: p.kind,
+    text: text.slice(p.start, p.end),
+  }));
+}
+
+/** Whether the message carries quoted history or a signature beside what
+ *  the sender wrote this time. */
+export function hasQuotedParts(
+  m: Pick<SupportMessage, "text" | "split">,
+): boolean {
+  return (messageParts(m) ?? []).some((p) => p.kind !== "new");
+}
+
+/** What the sender wrote this time, without quoted history or signature;
+ *  the whole text when nothing was split off. null once retention removed
+ *  the text. */
+export function newTextOf(
+  m: Pick<SupportMessage, "text" | "split">,
+): string | null {
+  const parts = messageParts(m);
+  if (!parts) return null;
+  const fresh = parts
+    .filter((p) => p.kind === "new")
+    .map((p) => p.text)
+    .join("")
+    .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n")
+    .trim();
+  return fresh || (m.text ?? "").trim();
 }
 
 /** The triage classifier's labels for one inbound customer message. */

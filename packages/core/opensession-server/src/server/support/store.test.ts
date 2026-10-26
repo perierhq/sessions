@@ -5,6 +5,8 @@ import {
   MAX_TEXT_CHARS,
   type SupportConversation,
   type SupportMessage,
+  hasQuotedParts,
+  newTextOf,
 } from "../../shared/support";
 import {
   type ConversationListener,
@@ -137,6 +139,26 @@ test("createConversation stores an open conversation and its index row", async (
   expect(rows[0]!.id).toBe(c.id);
   expect(rows[0]!.unansweredSince).toBe(c.messages[0]!.at);
   expect(rows[0]).toEqual(indexRowFor(c));
+});
+
+test("older email messages get their split on read, without a rewrite", async () => {
+  const text = [
+    "Thanks, that fixed it.",
+    "",
+    "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+    "> Try signing out and in again.",
+  ].join("\n");
+  const c = await create(message(0, { text }));
+  const stored = (await catalogDocuments("support-conversations").get(
+    c.id,
+  )) as SupportConversation;
+  expect(stored.messages[0]!.split).toBeUndefined();
+  const read = (await getConversation(c.id))!;
+  expect(read.messages[0]!.text).toBe(text);
+  expect(newTextOf(read.messages[0]!)).toBe("Thanks, that fixed it.");
+  expect(hasQuotedParts(read.messages[0]!)).toBe(true);
+  // The list preview is the new text.
+  expect((await listIndexRows())[0]!.preview).toBe("Thanks, that fixed it.");
 });
 
 test("getConversation refuses ids that are not conversation ids", async () => {

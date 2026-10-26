@@ -180,6 +180,22 @@ describe("ingestInbound", () => {
     expect(await pending()).toEqual([]);
   });
 
+  test("the transport's split is stored with the message, the text kept whole", async () => {
+    const text =
+      "Thanks!\n\nOn Mon, 3 Nov 2026, Acme <help@example.test> wrote:\n> hi";
+    const split = {
+      v: 1,
+      parts: [
+        { kind: "new" as const, start: 0, end: 9 },
+        { kind: "quoted" as const, start: 9, end: text.length },
+      ],
+    };
+    await ingested(inbound({ text, split }));
+    const [m] = (await onlyConversation()).messages;
+    expect(m!.text).toBe(text);
+    expect(m!.split).toEqual(split);
+  });
+
   test("a new conversation is owned by the inbox's owner", async () => {
     expect(inbox.owner).toBe("Ada");
     await ingested(inbound());

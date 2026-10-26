@@ -144,7 +144,7 @@ test("get_conversation returns the session's own conversation only", async () =>
   sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
   const tool = getConversationTool("os-1");
   // The tool takes no conversation id.
-  expect(Object.keys(tool.inputSchema)).toEqual([]);
+  expect(Object.keys(tool.inputSchema)).toEqual(["full"]);
   const out = JSON.parse(textOf(await tool.handler({}, {})));
   expect(out.project).toBe("acme");
   expect(out.inbox).toBe("Acme help");
@@ -160,6 +160,34 @@ test("get_conversation returns the session's own conversation only", async () =>
   });
   expect(out.note).toContain("untrusted");
   expect(JSON.stringify(out)).not.toContain("conversation 2");
+});
+
+test("get_conversation shows the new text unless full is asked for", async () => {
+  const quoted = [
+    "Still broken, sorry.",
+    "",
+    "On Mon, 3 Nov 2026 at 10:12, Acme help <help@acme.example.test> wrote:",
+    "> Please try again now.",
+    "",
+  ].join("\n");
+  const mine = await conversation(1);
+  // Stored before the split existed: no split on the document.
+  await updateConversation(mine.id, (c) => ({
+    ...c,
+    sessionId: "os-1",
+    messages: [...c.messages, message(2, quoted)],
+  }));
+  sessions["os-1"] = { externalRefs: [{ kind: "support", id: mine.id }] };
+  const tool = getConversationTool("os-1");
+  const brief = JSON.parse(textOf(await tool.handler({}, {})));
+  const [plain, reply] = brief.messages;
+  expect(plain.quotedHistory).toBeUndefined();
+  expect(reply.quotedHistory).toBe(true);
+  expect(reply.email).toContain("Still broken, sorry.");
+  expect(reply.email).not.toContain("Please try again now.");
+  const full = JSON.parse(textOf(await tool.handler({ full: true }, {})));
+  expect(full.messages[1].quotedHistory).toBeUndefined();
+  expect(full.messages[1].email).toContain("> Please try again now.");
 });
 
 test("the server is named opensession-support", () => {

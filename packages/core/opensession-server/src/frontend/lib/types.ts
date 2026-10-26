@@ -103,7 +103,11 @@ export interface PlainTimelineEntry {
   /** "message" = a CustomEntry, e.g. the in-app support form's original message. */
   kind: "email" | "chat" | "note" | "message";
   subject?: string;
+  /** For an email: only what the sender wrote this time. */
   text: string;
+  /** An email's quoted history and signature, in order, shown behind a
+   *  "Show quoted text" toggle. */
+  hiddenParts?: Array<{ kind: "quoted" | "signature"; text: string }>;
   attachments?: PlainEntryAttachment[];
 }
 

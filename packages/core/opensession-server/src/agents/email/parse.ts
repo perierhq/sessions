@@ -17,6 +17,7 @@ import {
   normalizeAddress,
   normalizeMessageId,
 } from "../../shared/support";
+import { splitEmailText } from "./quote";
 
 /** The headers isAutomatedMail and ingest read. */
 const LOOP_HEADERS = new Set([
@@ -184,6 +185,35 @@ function stripTags(html: string): string {
     .replace(/ ?\n[ \t\n]*/g, "\n");
 }
 
+/** Where a mail client's HTML starts the quoted mail: Gmail, Apple Mail,
+ *  Outlook (classic and new), Thunderbird, Yahoo, Proton. */
+const HTML_QUOTE_MARKERS = [
+  'class="gmail_quote',
+  "class='gmail_quote",
+  'type="cite"',
+  'id="appendonsend"',
+  'id="divrplyfwdmsg"',
+  'id="mail-editor-reference-message-container"',
+  'class="moz-cite-prefix"',
+  'class="yahoo_quoted"',
+  'class="protonmail_quote"',
+];
+
+/** The text of `html` before its first quote container, or null when it
+ *  has none. */
+export function htmlNewText(html: string | false | undefined): string | null {
+  if (!html) return null;
+  const lower = cutText(html, MAX_HTML_TO_PARSE).toLowerCase();
+  let at = -1;
+  for (const marker of HTML_QUOTE_MARKERS) {
+    const found = lower.indexOf(marker);
+    if (found >= 0 && (at < 0 || found < at)) at = found;
+  }
+  if (at < 0) return null;
+  const open = lower.lastIndexOf("<", at);
+  return stripTags(html.slice(0, open < 0 ? at : open)).trim() || null;
+}
+
 export async function parseInbound(
   source: Uint8Array,
   ctx: {
@@ -266,6 +296,11 @@ export async function parseInbound(
   };
   if (ctx.unreadable) message.unreadable = true;
   else if (ctx.oversize) message.oversize = true;
+  else if (message.text)
+    message.split = splitEmailText(message.text, {
+      subject: message.subject,
+      htmlNewText: htmlNewText(parsed.html),
+    });
   return message;
 }
 

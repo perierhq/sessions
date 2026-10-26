@@ -16,7 +16,9 @@ import {
   type SupportConversation,
   type SupportIndexRow,
   type SupportMessage,
+  newTextOf,
 } from "../../shared/support";
+import { SPLIT_VERSION, splitEmailText } from "../../agents/email/quote";
 import { catalogDocuments } from "../catalog-documents";
 
 const PREVIEW_CHARS = 160;
@@ -73,9 +75,12 @@ function notify(
   next: SupportConversation | null,
   previous: SupportConversation | null,
 ): void {
+  if (!listeners.size) return;
+  const nextView = next && withSplits(next);
+  const previousView = previous && withSplits(previous);
   for (const listener of [...listeners])
     void Promise.resolve()
-      .then(() => listener(next, previous))
+      .then(() => listener(nextView, previousView))
       .catch((error: unknown) => {
         console.warn(
           "[support] conversation listener failed:",
@@ -117,7 +122,8 @@ function fitDocument(c: SupportConversation): SupportConversation {
     const m = messages[i]!;
     if (m.text === null) continue;
     bytes -= size(m.text) - "null".length;
-    messages[i] = { ...m, text: null };
+    const { split: _split, ...rest } = m;
+    messages[i] = { ...rest, text: null };
   }
   // Each entry also costs its separating comma.
   while (bytes > MAX_DOC_BYTES && events.length)
@@ -134,6 +140,9 @@ function collapse(text: string): string {
 /** The list row for a conversation. Pure. */
 export function indexRowFor(c: SupportConversation): SupportIndexRow {
   const withText = c.messages.findLast((m) => m.text !== null);
+  const previewText = !withText
+    ? ""
+    : (newTextOf(c.channel === "email" ? withSplit(withText) : withText) ?? "");
   let unansweredSince: string | null = null;
   if (c.status !== "closed" && c.status !== "spam")
     for (let i = c.messages.length - 1; i >= 0; i--) {
@@ -156,7 +165,7 @@ export function indexRowFor(c: SupportConversation): SupportIndexRow {
     inboxId: c.inboxId,
     project: c.project,
     subject: c.subject,
-    preview: withText ? collapse(withText.text!).slice(0, PREVIEW_CHARS) : "",
+    preview: collapse(previewText).slice(0, PREVIEW_CHARS),
     customer: c.customer,
     status: c.status,
     owner: c.owner,
@@ -198,12 +207,31 @@ async function writeIndexRow(c: SupportConversation): Promise<void> {
   }
 }
 
+/** Email messages stored before the split existed (or by an older
+ *  splitter) get it here, in what every read and write hands back; the
+ *  document itself is not rewritten for it. */
+function withSplits(c: SupportConversation): SupportConversation {
+  if (c.channel !== "email") return c;
+  let changed = false;
+  const messages = c.messages.map((m) => {
+    const next = withSplit(m);
+    if (next !== m) changed = true;
+    return next;
+  });
+  return changed ? { ...c, messages } : c;
+}
+
+function withSplit(m: SupportMessage): SupportMessage {
+  if (m.text === null || m.split?.v === SPLIT_VERSION) return m;
+  return { ...m, split: splitEmailText(m.text, { subject: m.subject }) };
+}
+
 export async function getConversation(
   id: string,
 ): Promise<SupportConversation | null> {
   if (!isConversationId(id)) return null;
   const value = await conversations().get(id);
-  return isConversationRecord(value) ? value : null;
+  return isConversationRecord(value) ? withSplits(value) : null;
 }
 
 /** The ids among `ids` whose conversation document still exists. */
@@ -284,10 +312,11 @@ export async function createConversation(init: {
       return value;
     },
   );
-  if (!created || committed === null) return committed ?? conversation;
+  if (!created || committed === null)
+    return withSplits(committed ?? conversation);
   await writeIndexRow(conversation);
   notify(conversation, null);
-  return conversation;
+  return withSplits(conversation);
 }
 
 /** CAS on `support-conversations`; `mutate` returns null for "no change".
@@ -326,11 +355,11 @@ export async function updateConversation(
   if (committed === null || previous === null) return null;
   if (!changed) {
     if (staleIndex.has(id)) await writeIndexRow(committed);
-    return committed;
+    return withSplits(committed);
   }
   await writeIndexRow(committed);
   notify(committed, previous);
-  return committed;
+  return withSplits(committed);
 }
 
 /** Deletes the conversation's message-id keys, then the document, then its

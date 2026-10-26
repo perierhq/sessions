@@ -494,6 +494,8 @@ export async function ingestInbound(
     providerId: m.providerId,
     attachments: attachments.map((a) => a.meta),
   };
+  // The transport's split, when it describes the text stored here.
+  if (m.split && message.text === m.text) message.split = m.split;
   if (!ours) {
     message.trust = trust;
     const replyTo = m.replyTo.flatMap((a) => normalizeAddress(a) ?? []);

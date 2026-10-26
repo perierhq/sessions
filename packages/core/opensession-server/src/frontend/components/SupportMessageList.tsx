@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useId, useState } from "react";
 import type { PlainEntryAttachment, PlainTimelineEntry } from "../lib/types";
 import { API_BASE } from "../lib/api";
 import { BASE_PATH } from "../lib/base";
@@ -12,10 +12,13 @@ import {
   plainEntryName,
   plainEntryNote,
   plainEntryOut,
+  plainEntryQuoteToggle,
+  plainEntryQuoted,
   plainEntryRow,
 } from "../lib/plain-classes";
 import { QUIET_EVENT } from "../lib/support-classes";
 import { cn } from "../ui/cn";
+import { PlainButton } from "../ui/plain-button";
 import { IconArrowUpRight, IconPaperclip } from "./icons";
 import { MarkdownBody } from "./MarkdownBody";
 
@@ -181,6 +184,46 @@ function EntryText({ text }: { text: string }) {
 }
 
 /**
+ * An email's quoted history and signature, folded behind one toggle under the
+ * new text, the way a mail client does it: the thread already shows every
+ * earlier message, so the copy each reply carries is noise until someone asks
+ * for it. Opening it shows the folded parts in their original order below the
+ * toggle, which stays where it was so focus and the pointer don't lose it.
+ */
+function QuotedParts({
+  parts,
+}: {
+  parts: NonNullable<PlainTimelineEntry["hiddenParts"]>;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <PlainButton
+        className={plainEntryQuoteToggle}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span aria-hidden="true">···</span>
+        {open ? "Hide quoted text" : "Show quoted text"}
+      </PlainButton>
+      <div id={id} hidden={!open} className="flex flex-col gap-2">
+        {open &&
+          parts.map((part, i) => (
+            <MarkdownBody
+              // Parts never reorder; their index is their identity.
+              key={i}
+              className={plainEntryQuoted}
+              html={renderMarkdown(part.text)}
+            />
+          ))}
+      </div>
+    </>
+  );
+}
+
+/**
  * Notes posted from here carry an author prefix (see the reply route) because
  * Plain's API can't attribute a write to a workspace user — everything lands
  * as our machine user. Unpick that so a teammate's note shows *their* name,
@@ -306,6 +349,9 @@ export function SupportMessage({
           <div className="text-body font-semibold text-fg">{subject}</div>
         )}
         {entry.text && <EntryText text={entry.text} />}
+        {entry.hiddenParts?.length ? (
+          <QuotedParts parts={entry.hiddenParts} />
+        ) : null}
         {entry.attachments?.length ? (
           <SupportAttachments attachments={entry.attachments} />
         ) : null}
