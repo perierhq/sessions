@@ -105,13 +105,6 @@ export function syncMemoryRemote(
   });
 }
 
-/** Lines of a unified diff, tagged for colouring. */
-export function diffLineTone(
-  line: string,
-): "add" | "remove" | "meta" | "plain" {
-  if (line.startsWith("+++") || line.startsWith("---")) return "meta";
-  if (line.startsWith("@@") || line.startsWith("diff --git")) return "meta";
-  if (line.startsWith("+")) return "add";
-  if (line.startsWith("-")) return "remove";
-  return "plain";
-}
+/** Moved to lib/commit-diff with the diff block it colours; kept here for
+ *  the callers that import it from this module. */
+export { diffLineTone } from "./commit-diff";

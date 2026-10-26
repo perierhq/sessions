@@ -4,7 +4,6 @@ import { BASE_PATH } from "../../lib/base";
 import { errorMessage } from "../../lib/error-message";
 import { cn } from "../../ui/cn";
 import {
-  diffLineTone,
   fetchMemoryCommit,
   fetchMemoryFile,
   fetchMemoryFiles,
@@ -37,6 +36,7 @@ import {
 import { EmptyState, InlineAlert } from "../../ui/state";
 import { toast } from "../../ui/toast";
 import { IconChevronLeft, IconChevronRight } from "../icons";
+import { CommitDiff } from "./CommitDiff";
 
 // Memory repositories (git, Agent Memory Repo format) in Settings: the list on
 // the Memories page, and one page per repository with its remote, recent
@@ -103,29 +103,6 @@ function RemoteChip({ status }: { status: MemoryRemoteStatus }) {
     return <StatusChip label="Sync failed" dot="var(--red)" />;
   if (status.ok) return <StatusChip label="Synced" dot="var(--green)" />;
   return <StatusChip label="Not synced yet" dot="var(--text-faint)" />;
-}
-
-function DiffView({ diff }: { diff: string }) {
-  return (
-    <pre className="m-0 max-h-96 overflow-auto rounded-xl bg-code-well p-3 font-mono text-meta leading-relaxed text-code-well-ink">
-      {diff.split("\n").map((line, index) => {
-        const tone = diffLineTone(line);
-        return (
-          <div
-            key={index}
-            className={cn(
-              "whitespace-pre-wrap break-words",
-              tone === "add" && "text-green",
-              tone === "remove" && "text-red",
-              tone === "meta" && "text-dim",
-            )}
-          >
-            {line || " "}
-          </div>
-        );
-      })}
-    </pre>
-  );
 }
 
 function CommitRow({
@@ -225,7 +202,7 @@ function CommitRow({
           {diff === null ? (
             <div className="text-meta text-dim">Loading the change…</div>
           ) : (
-            <DiffView diff={diff} />
+            <CommitDiff diff={diff} />
           )}
         </div>
       )}

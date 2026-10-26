@@ -2,11 +2,7 @@ import useSWR from "swr";
 import type { KnowledgeFilter } from "../../../../shared/knowledge";
 import { apiSWRKey } from "../../../lib/api-swr";
 import type { KnowledgeRoute, KnowledgeTab } from "../../../lib/app-route";
-import {
-  fetchKnowledge,
-  fetchKnowledgeHistory,
-  fetchKnowledgeJobs,
-} from "../../../lib/api/knowledge";
+import { fetchKnowledge, fetchKnowledgeJobs } from "../../../lib/api/knowledge";
 import { relativeTime } from "../../../lib/api/request";
 import { errorMessage } from "../../../lib/error-message";
 import {
@@ -42,6 +38,7 @@ import {
 import { EmptyState, InlineAlert } from "../../../ui/state";
 import { IconChevronLeft } from "../../icons";
 import { KnowledgeEditor } from "./KnowledgeEditor";
+import { KnowledgeHistory } from "./KnowledgeHistory";
 import { KnowledgeList } from "./KnowledgeList";
 import { KnowledgeSuggestions } from "./KnowledgeSuggestions";
 import { KnowledgeNeedsCheck } from "./KnowledgeNeedsCheck";
@@ -128,6 +125,37 @@ export function KnowledgePage({
       </div>
     );
 
+  // An item's history (the repository's without a path): Back is the item.
+  if (route.tab === "history")
+    return (
+      <div className={PROJECT_PAGE_FRAME}>
+        <SettingsPanel className="self-start">
+          <div className={KNOWLEDGE_PAGE_BACK}>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="phone:min-h-11"
+              icon={<IconChevronLeft size={18} />}
+              aria-label={
+                route.path ? "Back to the article" : "Back to articles"
+              }
+              onClick={() =>
+                onNavigate(
+                  route.path
+                    ? { tab: "articles", path: route.path }
+                    : { tab: "articles" },
+                )
+              }
+            >
+              {route.path ? "Article" : "Articles"}
+            </Button>
+          </div>
+          <KnowledgeHistory project={project} path={route.path} />
+        </SettingsPanel>
+      </div>
+    );
+
   return (
     <div className={PROJECT_PAGE_FRAME}>
       <SettingsPanel className="self-start">
@@ -191,9 +219,7 @@ export function KnowledgePage({
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (
           <ImportJobs project={project} />
-        ) : (
-          <History project={project} path={route.path} />
-        )}
+        ) : null}
       </SettingsPanel>
     </div>
   );
@@ -267,33 +293,6 @@ function ImportJobs({ project }: { project: string }) {
           <div className={KNOWLEDGE_ROW_TITLE}>{jobLine(job)}</div>
           <div className={KNOWLEDGE_ROW_LINE}>
             Started {relativeTime(job.startedAt)}
-          </div>
-        </div>
-      ))}
-    </SettingCard>
-  );
-}
-
-function History({ project, path }: { project: string; path?: string }) {
-  const history = useSWR(apiSWRKey.knowledgeHistory(project, path), () =>
-    fetchKnowledgeHistory(project, { path }),
-  );
-  if (history.error && !history.data)
-    return (
-      <InlineAlert onRetry={() => void history.mutate()}>
-        {errorMessage(history.error, "Couldn't load the history")}
-      </InlineAlert>
-    );
-  if (!history.data) return <SettingCardSkeleton rows={4} />;
-  if (!history.data.length)
-    return <EmptyState placement="card">No changes yet</EmptyState>;
-  return (
-    <SettingCard>
-      {history.data.map((commit) => (
-        <div key={commit.sha} className={KNOWLEDGE_ROW}>
-          <div className={KNOWLEDGE_ROW_TITLE}>{commit.subject}</div>
-          <div className={KNOWLEDGE_ROW_LINE}>
-            {commit.author} · {relativeTime(commit.date)}
           </div>
         </div>
       ))}
