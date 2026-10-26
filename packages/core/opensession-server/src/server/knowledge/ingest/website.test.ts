@@ -6,13 +6,18 @@ import {
   getProjectDocument,
   updateProjectDocument,
 } from "../../projects/store";
+import { KNOWLEDGE_SKIP } from "../../../shared/knowledge";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { RawResponse } from "../freshness/web";
 import { frontMatterOf } from "../freshness/revalidate";
 import { webItemPath } from "../layout";
 import { KnowledgeService } from "../service";
-import { __waitForJobForTest, listJobs } from "./jobs";
+import {
+  __setJobPhaseListenerForTest,
+  __waitForJobForTest,
+  listJobs,
+} from "./jobs";
 import {
   type CrawlDeps,
   type CrawledPage,
@@ -530,6 +535,39 @@ describe("crawlWebsites", () => {
       state: "done",
       created: { trusted: 2, reference: 0, suggestions: 0, skipped: 0 },
     });
+  });
+
+  test("the job says which site it reads, and why it skipped", async () => {
+    const phases: string[] = [];
+    __setJobPhaseListenerForTest((_p, _id, phase) => phases.push(phase.text));
+    try {
+      const job = await startWebsiteCrawl(
+        { project: "acme", by: { name: "Ada" } },
+        deps({
+          ...pages,
+          [`${SITE}/billing`]: {
+            body: html("Billing", "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"),
+          },
+        }),
+      );
+      await __waitForJobForTest(job.id);
+      const [done] = await listJobs("acme");
+      expect(done).toMatchObject({
+        created: { trusted: 1, skipped: 1 },
+        skippedReasons: { [KNOWLEDGE_SKIP.credential]: 1 },
+        phase: { text: "Committing" },
+      });
+      const steps = [...new Set(phases)];
+      expect(steps.slice(0, 3)).toEqual([
+        "Opening the knowledge repository",
+        `Reading ${HOST}, 0 so far`,
+        `Reading ${HOST}, 1 so far`,
+      ]);
+      expect(steps).toContain(`Reading ${HOST}, 2 so far`);
+      expect(steps).toContain("Writing pages 0 of 1");
+    } finally {
+      __setJobPhaseListenerForTest(undefined);
+    }
   });
 
   test("a job cut at maxPages is marked truncated", async () => {

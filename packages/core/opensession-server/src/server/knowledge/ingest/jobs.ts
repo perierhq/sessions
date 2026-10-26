@@ -60,6 +60,23 @@ export function addSkips(into: SkipCounts, more: SkipCounts): SkipCounts {
   return into;
 }
 
+/** Hear that `n` inputs (default 1) were skipped for `reason` (a
+ *  KNOWLEDGE_SKIP reason). */
+export type ReportSkip = (reason: string, n?: number) => void;
+
+/** Skip reasons heard so far; `take` hands them over and starts again. */
+export function skipTally(): { skip: ReportSkip; take(): SkipCounts } {
+  let counts: SkipCounts = {};
+  return {
+    skip: (reason, n = 1) => void addSkips(counts, { [reason]: n }),
+    take: () => {
+      const out = counts;
+      counts = {};
+      return out;
+    },
+  };
+}
+
 const whole = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n)
     ? Math.max(0, Math.floor(n))

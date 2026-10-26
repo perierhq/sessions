@@ -334,8 +334,8 @@ export async function extractPair(
   const answer = stripCustomerData(input.answer, input.customer, {
     keepHosts,
   });
-  if (!question.clean || !answer.clean)
-    return skip(KNOWLEDGE_SKIP.customerData);
+  // Not clean: secret-looking text (strip.ts fails closed).
+  if (!question.clean || !answer.clean) return skip(KNOWLEDGE_SKIP.credential);
   if (!question.text || !answer.text) return skip(KNOWLEDGE_SKIP.notReusable);
 
   const classify = deps.classify ?? classifyRoute;

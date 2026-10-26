@@ -10,6 +10,7 @@ import {
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KNOWLEDGE_SKIP } from "../../../shared/knowledge";
 import { git, isolatedGitEnv } from "../../memory-repo/git";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
@@ -23,6 +24,7 @@ import {
 import { releaseItemPath, repoItemPath } from "../layout";
 import { KnowledgeService } from "../service";
 import {
+  __setJobPhaseListenerForTest,
   __waitForJobForTest,
   CANCELLED_COPY,
   cancelJob,
@@ -420,6 +422,40 @@ describe("repo import job", () => {
       state: "done",
       created: { trusted: 4, reference: 30, suggestions: 0, skipped: 2 },
     });
+  });
+
+  test("says what it is doing, and why it skipped", async () => {
+    const phases: string[] = [];
+    __setJobPhaseListenerForTest((_p, _id, phase) => phases.push(phase.text));
+    try {
+      const job = await startRepoImport(
+        { project: "acme", by: { name: "Ada" } },
+        deps(),
+      );
+      await __waitForJobForTest(job.id);
+      const [done] = await listJobs("acme");
+      expect(done!.skippedReasons).toEqual({
+        [KNOWLEDGE_SKIP.credential]: 1,
+        [KNOWLEDGE_SKIP.tooLarge]: 1,
+      });
+      expect(done!.phase).toEqual({ text: "Committing releases" });
+      const steps = [...new Set(phases)];
+      expect(steps.slice(0, 3)).toEqual([
+        "Opening the knowledge repository",
+        "Fetching the repository",
+        "Reading docs 0 of 6",
+      ]);
+      for (const step of [
+        "Reading docs 5 of 6",
+        "Writing docs 0 of 4",
+        "Committing docs",
+        "Reading releases",
+        "Writing releases 29 of 30",
+      ])
+        expect(steps).toContain(step);
+    } finally {
+      __setJobPhaseListenerForTest(undefined);
+    }
   });
 
   test("a cancelled import ends Cancelled. and writes no releases", async () => {

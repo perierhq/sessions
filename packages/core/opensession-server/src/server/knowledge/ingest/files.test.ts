@@ -14,7 +14,11 @@ import {
   TOO_MANY_FILES_COPY,
   ZIP_COPY,
 } from "./files";
-import { __waitForJobForTest, listJobs } from "./jobs";
+import {
+  __setJobPhaseListenerForTest,
+  __waitForJobForTest,
+  listJobs,
+} from "./jobs";
 import { PDF_MAX_PAGES, pdfTextInChild } from "./pdf-text";
 import { htmlToText } from "../../web-fetch";
 
@@ -149,6 +153,34 @@ describe("fileText", () => {
 });
 
 describe("importFiles", () => {
+  test("says which file it reads, then that it commits", async () => {
+    const phases: string[] = [];
+    __setJobPhaseListenerForTest((_p, _id, phase) => phases.push(phase.text));
+    try {
+      const job = await importFiles(
+        {
+          project: "acme",
+          by: ADA,
+          files: [
+            { name: "export.md", type: "text/markdown", bytes: enc(MARKDOWN) },
+            { name: "billing.html", type: "text/html", bytes: enc(HTML) },
+          ],
+        },
+        { today: () => TODAY },
+      );
+      const done = await finished("acme", job.id);
+      expect(done.phase).toEqual({ text: "Committing" });
+      expect(phases).toEqual([
+        "Opening the knowledge repository",
+        "Reading files 0 of 2",
+        "Reading files 1 of 2",
+        "Committing",
+      ]);
+    } finally {
+      __setJobPhaseListenerForTest(undefined);
+    }
+  });
+
   test("one commit by the uploader; items are reference with the original attached", async () => {
     const pdf = await helloPdf();
     const job = await importFiles(

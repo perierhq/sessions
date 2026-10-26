@@ -432,11 +432,13 @@ export async function importFiles(
     { by: by.name, files: names },
     async (job) => {
       await job.setTotal(files.length);
+      job.phase("Opening the knowledge repository");
       await knowledgeRepo.call("ensureRepo", project);
       const ready: Prepared[] = [];
       const skipped: Array<{ name: string; reason: string }> = [];
-      for (const file of files) {
+      for (const [i, file] of files.entries()) {
         job.signal.throwIfAborted();
+        job.phase("Reading files", { done: i, total: files.length });
         const prepared = await prepare(file, job.signal);
         if (typeof prepared === "string")
           skipped.push({ name: baseName(file.name), reason: prepared });
@@ -451,6 +453,7 @@ export async function importFiles(
       for (let attempt = 1; ; attempt++) {
         job.signal.throwIfAborted();
         const { changes, expected, cut } = await plan(project, ready, day);
+        job.phase("Committing");
         try {
           await knowledgeRepo.call("write", project, changes, {
             message: `Import files: ${ready.length}`,

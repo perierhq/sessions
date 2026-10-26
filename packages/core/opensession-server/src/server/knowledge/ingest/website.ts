@@ -34,10 +34,11 @@
  * and PAT author and trailer, the repo import's write-and-retry shape.
  * Nothing runs at import.
  */
-import type {
-  KnowledgeFrontMatter,
-  KnowledgeImportJob,
-  KnowledgeItem,
+import {
+  KNOWLEDGE_SKIP,
+  type KnowledgeFrontMatter,
+  type KnowledgeImportJob,
+  type KnowledgeItem,
 } from "../../../shared/knowledge";
 import type { Author } from "../../memory-repo/git-store";
 import { MemoryRepoError } from "../../memory-repo/git-store";
@@ -57,7 +58,13 @@ import {
 import { knowledgeRepoName, webItemPath } from "../layout";
 import type { KnowledgeChange } from "../service";
 import { MAX_ARTICLE_BYTES } from "../validate";
-import { JOB_DEADLINE_MS, startJob } from "./jobs";
+import {
+  JOB_DEADLINE_MS,
+  type ReportPhase,
+  type ReportSkip,
+  skipTally,
+  startJob,
+} from "./jobs";
 import { lastWrittenByPat, needsCheckChange } from "./mirrors";
 
 export const DEFAULT_MAX_PAGES = 200;
@@ -108,6 +115,8 @@ export interface CrawlDeps {
   onTruncated?(): void;
   /** `from` answered with a redirect to `to`, another URL. */
   onMoved?(from: string, to: string): void;
+  /** The crawl moved on to `host`. */
+  onHost?(host: string): void;
   /** Aborted: the crawl throws before its next request. */
   signal?: AbortSignal;
 }
@@ -121,6 +130,10 @@ export interface WebsiteDeps {
   crawl: Partial<CrawlDeps>;
   /** Called every few pages with the pages handled so far. */
   onProgress?(handled: number): Promise<void> | void;
+  /** Hears what the crawl is doing now. */
+  phase?: ReportPhase;
+  /** Hears why each skipped page was left out. */
+  skipped?: ReportSkip;
 }
 
 export interface WebsiteResult {
@@ -151,6 +164,7 @@ function bindCrawl(over: Partial<CrawlDeps>): CrawlDeps {
     onMiss: over.onMiss,
     onTruncated: over.onTruncated,
     onMoved: over.onMoved,
+    onHost: over.onHost,
     signal: over.signal,
   };
 }
@@ -166,6 +180,8 @@ function bind(over: Partial<WebsiteDeps>): WebsiteDeps {
       }),
     crawl: over.crawl ?? {},
     onProgress: over.onProgress,
+    phase: over.phase,
+    skipped: over.skipped,
   };
 }
 
@@ -396,6 +412,7 @@ export async function* crawlHosts(
       truncate();
       return;
     }
+    d.onHost?.(host);
     const only = [host];
     const root = `https://${host}/`;
     let last = Number.NEGATIVE_INFINITY;
@@ -574,12 +591,19 @@ function titleOf(page: CrawledPage): string {
   return (page.title || `${url.host}${url.pathname}`).slice(0, 200);
 }
 
-/** Why a page's text can't be stored as read; null when it can. */
-function unstorable(page: CrawledPage): string | null {
+/** Why a page's text can't be stored as read (`why`, a needs-check
+ *  reason, and `skip`, a KNOWLEDGE_SKIP reason); null when it can. */
+function unstorable(page: CrawledPage): { why: string; skip: string } | null {
   if (new TextEncoder().encode(page.text).length > BODY_BYTES)
-    return "The page is now too large to mirror";
+    return {
+      why: "The page is now too large to mirror",
+      skip: KNOWLEDGE_SKIP.tooLarge,
+    };
   if (findSecrets(`${titleOf(page)}\n${page.text}`).length)
-    return "The page now looks like it holds a credential";
+    return {
+      why: "The page now looks like it holds a credential",
+      skip: KNOWLEDGE_SKIP.credential,
+    };
   return null;
 }
 
@@ -626,6 +650,13 @@ export async function crawlWebsites(
     reported = result.pages;
     await deps.onProgress?.(result.pages);
   };
+  const phase = deps.phase ?? (() => undefined);
+  const skip = (reason: string) => {
+    result.skipped++;
+    deps.skipped?.(reason);
+  };
+  const reading = (host: string) =>
+    phase(`Reading ${host}`, { done: result.pages });
   for await (const page of crawlHosts(hosts, {
     ...deps.crawl,
     known: [...(deps.crawl.known ?? []), ...known],
@@ -639,23 +670,37 @@ export async function crawlWebsites(
       const b = pathOf(to);
       if (a && b && a !== b) moved.set(a, b);
     },
+    onHost: (host) => {
+      deps.crawl.onHost?.(host);
+      reading(host);
+    },
     onMiss: (url, error, isGone) => {
       deps.crawl.onMiss?.(url, error, isGone);
       // A host skipped for its robots.txt is no page.
       if (url.endsWith("/robots.txt") && !isGone) return;
       result.pages++;
+      reading(hostOf(url));
       const path = pathOf(url);
       if (isGone && path) gone.add(path);
-      else result.skipped++;
+      else skip(KNOWLEDGE_SKIP.unreadable);
     },
   })) {
     result.pages++;
+    reading(hostOf(page.url));
     await report();
     const path = pathOf(page.url);
-    const why = unstorable(page);
-    if (!path || pages.has(path) || why) {
-      if (path && why && !pages.has(path)) unreadable.set(path, why);
-      result.skipped++;
+    if (!path) {
+      skip(KNOWLEDGE_SKIP.badName);
+      continue;
+    }
+    if (pages.has(path)) {
+      skip(KNOWLEDGE_SKIP.duplicate);
+      continue;
+    }
+    const bad = unstorable(page);
+    if (bad) {
+      unreadable.set(path, bad.why);
+      skip(bad.skip);
       continue;
     }
     pages.set(path, page);
@@ -672,7 +717,9 @@ export async function crawlWebsites(
     let retired = 0;
     let flipped = 0;
     let personal = 0;
+    let checked = 0;
     for (const [path, page] of pages) {
+      phase("Writing pages", { done: checked++, total: pages.size });
       // The "all" list leaves retired items out: a page that comes back
       // is read by its path, so the write expects its blob.
       const current =
@@ -740,8 +787,13 @@ export async function crawlWebsites(
     result.written = changes.length - retired - flipped;
     result.retired = retired;
     result.skipped = skippedBefore + personal;
-    if (!changes.length) return result;
+    const done = () => {
+      if (personal) deps.skipped?.(KNOWLEDGE_SKIP.editedByPerson, personal);
+      return result;
+    };
+    if (!changes.length) return done();
     deps.crawl.signal?.throwIfAborted();
+    phase("Committing");
     try {
       await knowledgeRepo.call("write", project, changes, {
         message:
@@ -755,7 +807,7 @@ export async function crawlWebsites(
         trailers: [PAT_TRAILER],
         expected,
       });
-      return result;
+      return done();
     } catch (error) {
       // Someone wrote meanwhile: plan again from what is there now.
       const conflict =
@@ -791,8 +843,10 @@ export async function startWebsiteCrawl(
     "website",
     { by: input.by.name, maxPages },
     async (job) => {
+      job.phase("Opening the knowledge repository");
       await knowledgeRepo.call("ensureRepo", project);
       let reported = 0;
+      const tally = skipTally();
       const result = await crawlWebsites(project, {
         ...over,
         crawl: { ...deps.crawl, maxPages, signal: job.signal },
@@ -800,10 +854,13 @@ export async function startWebsiteCrawl(
           await job.progress({ done: pages - reported });
           reported = pages;
         },
+        phase: job.phase,
+        skipped: tally.skip,
       });
       await job.progress({
         trusted: result.written,
         skipped: result.skipped,
+        skippedBy: tally.take(),
         done: result.pages - reported,
       });
       if (result.truncated) await job.markTruncated();
