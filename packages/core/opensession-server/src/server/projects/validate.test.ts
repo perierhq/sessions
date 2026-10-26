@@ -122,6 +122,22 @@ test("loosening is judged on the policy fields alone", () => {
   ).toEqual([]);
 });
 
+test("pausing new incidents is a tightening; resuming them loosens", () => {
+  const before = defaultProjectDocument("acme-web", "t").incidents;
+  expect(before.incidentsPaused).toBe(false);
+  const paused = { ...before, incidentsPaused: true };
+  expect(loosenedFields(before, paused)).toEqual([]);
+  expect(loosenedFields(paused, before)).toEqual(["incidentsPaused"]);
+  expect(
+    validatePolicyFields({ incidentsPaused: true }, { budget: before.budget }),
+  ).toEqual({ incidentsPaused: true });
+  expect(
+    validatePolicyFields({ incidentsPaused: "yes" }, { budget: before.budget }),
+  ).toEqual({
+    error: "Pause new incidents (incidentsPaused) must be true or false",
+  });
+});
+
 test("a document keeps its whole-record rules", () => {
   const doc = defaultProjectDocument("acme-web", "t");
   expect(documentInvariantProblem(doc)).toBeNull();

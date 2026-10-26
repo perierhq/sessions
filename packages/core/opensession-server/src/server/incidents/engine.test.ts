@@ -527,6 +527,36 @@ describe("decide", () => {
     ).toMatchObject({ op: "transition", incidentId: "inc-1" });
   });
 
+  test("a project with new incidents paused opens and reopens nothing", () => {
+    const a = S("sig-a");
+    const paused = (incidents: Incident[]) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")], incidents),
+        incidentsPaused: new Set(["acme"]),
+      });
+    expect(paused([])).toEqual([]);
+    expect(
+      paused([I("inc-1", "resolved", { closedAt: iso(600_000) })]),
+    ).toEqual([]);
+    // An incident already open still hears from its signal.
+    expect(paused([I("inc-1", "investigating")])).toEqual([
+      {
+        op: "event",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        signalState: "failing",
+        detail: "3 failures in a row",
+      },
+    ]);
+    // Another project is not paused.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")]),
+        incidentsPaused: new Set(["other"]),
+      })[0],
+    ).toMatchObject({ op: "open" });
+  });
+
   test("a signal's own debounce sets the floor of its quiet window", () => {
     const slow = S("sig-a", {
       intervalMs: 300_000,

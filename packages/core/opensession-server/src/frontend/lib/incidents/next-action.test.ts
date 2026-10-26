@@ -36,6 +36,7 @@ const NOW = Date.parse("2026-10-20T12:31:12Z");
 const settings: RedactedProjectSettings = {
   project: "acme",
   agentsPaused: false,
+  incidentsPaused: false,
   autonomy: "deploy-after-veto",
   vetoMs: 600_000,
   watchMs: 600_000,

@@ -113,6 +113,7 @@ test("a full legacy pair composes field by field", () => {
   );
   expect(d.incidents).toEqual({
     agentsPaused: true,
+    incidentsPaused: false,
     autonomy: "propose",
     vetoMs: 1_200_000,
     watchMs: 900_000,

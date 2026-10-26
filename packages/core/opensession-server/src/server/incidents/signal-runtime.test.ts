@@ -20,6 +20,10 @@ import {
   reevaluateSignal,
 } from "./signal-runtime";
 import { __setOwnerRosterForTest } from "./owner";
+import {
+  __setProjectSettingsContextForTest,
+  patchProjectSettings,
+} from "./response/project-settings";
 import { createSignal, getSignal, updateSignal } from "./signal-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
@@ -168,6 +172,32 @@ const closeByHand = async (id: string) => {
   if (!closed || "error" in closed) throw new Error("close failed");
   return closed;
 };
+
+test("a project that pauses new incidents opens none; resumed, it does", async () => {
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme",
+    runnerProblem: () => null,
+    modelProblem: () => null,
+  });
+  try {
+    await patchProjectSettings("acme", (s) => ({
+      ...s,
+      incidentsPaused: true,
+    }));
+    const s = await make();
+    await feed(s.id, "fail", "fail", "fail", "fail");
+    expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+    expect(await listIncidents()).toEqual([]);
+    await patchProjectSettings("acme", (s) => ({
+      ...s,
+      incidentsPaused: false,
+    }));
+    await feed(s.id, "ok", "ok", "fail", "fail", "fail");
+    expect(await listIncidents()).toHaveLength(1);
+  } finally {
+    __setProjectSettingsContextForTest(undefined);
+  }
+});
 
 test("closed without action, a flapping signal reopens and opens nothing", async () => {
   const s = await make();

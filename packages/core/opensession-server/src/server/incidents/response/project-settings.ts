@@ -75,6 +75,7 @@ export function defaultProjectSettings(
   return {
     project,
     agentsPaused: false,
+    incidentsPaused: false,
     autonomy: DEFAULT_AUTONOMY,
     vetoMs: DEFAULT_VETO_MS,
     watchMs: DEFAULT_WATCH_MS,
@@ -132,6 +133,7 @@ function documentWithSettings(
     models,
     incidents: {
       agentsPaused: s.agentsPaused,
+      incidentsPaused: s.incidentsPaused,
       autonomy: s.autonomy,
       vetoMs: s.vetoMs,
       watchMs: s.watchMs,
@@ -204,6 +206,7 @@ export type SettingsRefusal = { error: string; forbidden?: true };
 
 const POLICY_KEYS = [
   "agentsPaused",
+  "incidentsPaused",
   "autonomy",
   "vetoMs",
   "watchMs",

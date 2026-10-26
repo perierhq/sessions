@@ -156,6 +156,7 @@ const veto = (deadlineMs: number) =>
 const settings: RedactedProjectSettings = {
   project: "acme",
   agentsPaused: false,
+  incidentsPaused: false,
   autonomy: "deploy-after-veto",
   vetoMs: 600_000,
   watchMs: 600_000,

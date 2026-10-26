@@ -89,6 +89,7 @@ describe("defaultProjectDocument", () => {
     expect(doc.production).toEqual({ runners: [], actions: [], releases: [] });
     expect(doc.incidents).toEqual({
       agentsPaused: false,
+      incidentsPaused: false,
       autonomy: DEFAULT_AUTONOMY,
       vetoMs: DEFAULT_VETO_MS,
       watchMs: DEFAULT_WATCH_MS,

@@ -40,6 +40,7 @@ const { PolicySection } = await import("./PolicySection");
 const settings: RedactedProjectSettings = {
   project: "acme",
   agentsPaused: false,
+  incidentsPaused: false,
   autonomy: DEFAULT_AUTONOMY,
   vetoMs: DEFAULT_VETO_MS,
   watchMs: DEFAULT_WATCH_MS,

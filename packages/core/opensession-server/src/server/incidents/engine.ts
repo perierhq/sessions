@@ -71,6 +71,9 @@ export interface EngineSnapshot {
   /** Each signal's current run ({@link nextSignalRun}); none known reads
    *  as a bad run that starts now, unsettled. */
   runs?: ReadonlyMap<string, SignalRun>;
+  /** Projects whose settings pause new incidents: their signals open and
+   *  reopen nothing; incidents already open still hear from them. */
+  incidentsPaused?: ReadonlySet<string>;
 }
 
 export type IncidentOp =
@@ -466,6 +469,11 @@ function decideBad(
     ? disagreementsWith(signal, current.state, snapshot)
     : [];
   let target = pickTarget(signal, snapshot);
+  if (
+    (!target || target.kind === "reopen") &&
+    snapshot.incidentsPaused?.has(signal.project)
+  )
+    return;
   // A signal of an incident closed without action is quiet a while: it
   // reopens or opens nothing until it shows a new problem.
   if (!target || target.kind === "reopen") {

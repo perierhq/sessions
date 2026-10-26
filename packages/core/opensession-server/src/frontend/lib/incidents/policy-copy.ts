@@ -71,7 +71,8 @@ export function nightDescription(night: NightRule | undefined): string {
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** A project's row on the Incidents settings index: `3 signals · Deploy
- *  after veto`, `· paused` when its agents are paused. */
+ *  after veto`, `· paused` when its agents are paused, `· no new
+ *  incidents` when its signals open none. */
 export function projectSummary(
   settings: RedactedProjectSettings | null,
   signalCount: number,
@@ -80,6 +81,7 @@ export function projectSummary(
   if (settings) {
     parts.push(AUTONOMY_COPY[settings.autonomy].label);
     if (settings.agentsPaused) parts.push("paused");
+    if (settings.incidentsPaused) parts.push("no new incidents");
   }
   return parts.join(" · ");
 }

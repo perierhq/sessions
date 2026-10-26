@@ -30,6 +30,7 @@ export function isStaleRevision<Rejected>(error: Rejected): boolean {
 /** Incident policy fields that are one value each. */
 const SCALAR_INCIDENT_FIELDS = new Set([
   "agentsPaused",
+  "incidentsPaused",
   "autonomy",
   "vetoMs",
   "watchMs",

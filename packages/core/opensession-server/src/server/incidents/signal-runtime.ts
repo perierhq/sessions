@@ -28,6 +28,7 @@ import {
   hydrationLookbackMs,
   recentObservations,
 } from "./observation-store";
+import { getProjectSettings } from "./response/project-settings";
 import { evaluateSignal, replaySignal } from "./rules";
 import { signalOwner } from "./owner";
 import { getSignal, listSignals } from "./signal-store";
@@ -183,21 +184,25 @@ function engineIncidents(
 
 async function snapshotAt(
   now: number,
-  signalId: string,
+  signal: Signal,
   current: SignalEvaluation,
 ): Promise<EngineSnapshot> {
-  const [signals, incidents] = await Promise.all([
+  const [signals, incidents, settings] = await Promise.all([
     listSignals(),
     listIncidents(),
+    getProjectSettings(signal.project),
   ]);
   return {
     // A disabled signal is as good as gone: its stale state must not hold
     // an incident open or correlate with anything.
     signals: new Map(signals.filter((s) => s.enabled).map((s) => [s.id, s])),
     evaluations,
-    incidents: engineIncidents(incidents, now, signalId, current),
+    incidents: engineIncidents(incidents, now, signal.id, current),
     now,
     runs,
+    ...(settings.incidentsPaused
+      ? { incidentsPaused: new Set([signal.project]) }
+      : {}),
   };
 }
 
@@ -214,7 +219,7 @@ function runEngine(
 ): Promise<void> {
   const run = engineChain.then(async () => {
     try {
-      const snapshot = await snapshotAt(now, signal.id, current);
+      const snapshot = await snapshotAt(now, signal, current);
       // A person owns what it opens, never the principal that created it:
       // "" when there is nobody, which the notifier reports.
       const owned = { ...signal, owner: signalOwner(signal) };

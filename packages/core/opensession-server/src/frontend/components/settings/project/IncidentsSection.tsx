@@ -15,7 +15,7 @@ import { SignalsSection } from "../incidents/SignalsSection";
 import { SettingRow } from "../shared";
 
 /**
- * The project's incident settings: the pause switch, its signals and
+ * The project's incident settings: the pause switches, its signals and
  * maintenance windows, what agents may do on their own, and the budget.
  * `addSignal` opens a new signal's editor (the checklist's fix).
  */
@@ -45,32 +45,45 @@ export function IncidentsSection({
       problem: null,
     }));
 
-  const setPaused = (paused: boolean) => {
-    onSave({ incidents: { agentsPaused: paused } }).then(
+  /** Save one of the two pause switches; a save that lands offers Undo. */
+  const setSwitch = (
+    field: "agentsPaused" | "incidentsPaused",
+    on: boolean,
+    landed: string,
+  ) => {
+    onSave({ incidents: { [field]: on } }).then(
       () =>
-        toast(
-          paused
-            ? `Agents paused for ${project}`
-            : `Agents resumed for ${project}`,
-          {
-            action: {
-              label: "Undo",
-              onClick: () =>
-                void onSave({ incidents: { agentsPaused: !paused } }).catch(
-                  (error) =>
-                    toast(errorMessage(error, "Couldn't save the setting"), {
-                      variant: "error",
-                    }),
-                ),
-            },
+        toast(landed, {
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void onSave({ incidents: { [field]: !on } }).catch((error) =>
+                toast(errorMessage(error, "Couldn't save the setting"), {
+                  variant: "error",
+                }),
+              ),
           },
-        ),
+        }),
       (error) =>
         toast(errorMessage(error, "Couldn't save the setting"), {
           variant: "error",
         }),
     );
   };
+  const setPaused = (paused: boolean) =>
+    setSwitch(
+      "agentsPaused",
+      paused,
+      paused ? `Agents paused for ${project}` : `Agents resumed for ${project}`,
+    );
+  const setIncidentsPaused = (paused: boolean) =>
+    setSwitch(
+      "incidentsPaused",
+      paused,
+      paused
+        ? `New incidents paused for ${project}`
+        : `New incidents resumed for ${project}`,
+    );
 
   return (
     <>
@@ -83,6 +96,18 @@ export function IncidentsSection({
               checked={incidents.agentsPaused}
               onCheckedChange={setPaused}
               aria-label="Pause all agents"
+              className={SETTING_SWITCH_HIT}
+            />
+          }
+        />
+        <SettingRow
+          title="Pause new incidents"
+          desc={`Signals keep checking, but none opens or reopens an incident for ${project}`}
+          control={
+            <Switch
+              checked={incidents.incidentsPaused}
+              onCheckedChange={setIncidentsPaused}
+              aria-label="Pause new incidents"
               className={SETTING_SWITCH_HIT}
             />
           }

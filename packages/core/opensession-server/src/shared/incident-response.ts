@@ -84,6 +84,8 @@ export interface IncidentRelease {
 export interface IncidentProjectSettings {
   project: string;
   agentsPaused: boolean;
+  /** Signals keep checking but open and reopen no incident. */
+  incidentsPaused: boolean;
   autonomy: AutonomyLevel;
   vetoMs: number;
   watchMs: number;
