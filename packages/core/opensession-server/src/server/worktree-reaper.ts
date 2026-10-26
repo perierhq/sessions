@@ -68,6 +68,7 @@ import {
   existsSync,
   readdirSync,
   readlinkSync,
+  rmdirSync,
   statSync,
 } from "node:fs";
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
@@ -360,8 +361,11 @@ function worktreesWithProcesses(root: string): Set<string> | null {
       continue;
     }
     if (!cwd.startsWith(prefix)) continue;
-    const name = cwd.slice(prefix.length).split("/")[0];
+    const [name, nested] = cwd.slice(prefix.length).split("/");
     if (name) inUse.add(join(root, name));
+    // A slash-named branch's worktree sits one level down
+    // (`<prefix>-cursor/<name>`); see branchDirectoryEntries.
+    if (name && nested) inUse.add(join(root, name, nested));
   }
   return inUse;
 }
@@ -400,26 +404,74 @@ async function closedPrReason(
   return `PR #${pr.number} ${pr.merged_at ? "merged" : "closed"}`;
 }
 
+/** Git in a tree an agent controls, as the service user and with the repo's
+ *  own hooks and fsmonitor disabled: a repo's config can name programs git
+ *  runs, and these trees are written by agents. */
+function inertGit(repoDir: string, args: string[]) {
+  return $`git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C ${repoDir} ${args}`
+    .quiet()
+    .nothrow();
+}
+
 /** Does any real (non-node_modules) git repo inside `dir` hold dirty or
- *  unpushed work? sudo because husk contents can be root-owned. */
+ *  unpushed work? `find` runs through sudo because husk contents can be
+ *  root-owned (build output); git never does. A repo git cannot read as the
+ *  service user counts as holding work (fail closed); only a dead pointer
+ *  ("not a git repository") counts as empty. */
 async function huskHasWork(dir: string): Promise<boolean> {
   const found =
-    await $`${workloadArgv(["sudo", "find", dir, "-name", ".git", "-not", "-path", "*/node_modules/*"], "reaper")}`
+    await $`${workloadArgv(["sudo", "-n", "find", dir, "-name", ".git", "-not", "-path", "*/node_modules/*"], "reaper")}`
       .nothrow()
       .text();
   for (const g of found.split("\n").filter(Boolean)) {
     const repoDir = g.replace(/\/\.git$/, "");
-    const dirty = await $`sudo git -C ${repoDir} status --porcelain`
-      .nothrow()
-      .text();
-    if (dirty.trim()) return true;
-    const unpushed =
-      await $`sudo git -C ${repoDir} log --oneline @ --not --remotes`
-        .nothrow()
-        .text();
-    if (unpushed.trim()) return true;
+    for (const args of [
+      ["status", "--porcelain"],
+      ["log", "--oneline", "@", "--not", "--remotes"],
+    ]) {
+      const out = await inertGit(repoDir, args);
+      if (out.exitCode !== 0) {
+        if (/not a git repository/i.test(out.stderr.toString())) break;
+        return true;
+      }
+      if (out.text().trim()) return true;
+    }
   }
   return false;
+}
+
+/** Husks found holding work, and when: they are re-checked (and logged) once
+ *  a day, not on every hourly pass and every restart. */
+const huskWithWorkSeen = new Map<string, { at: number; mtimeMs: number }>();
+registerMemoryGauge(
+  "worktree-reaper.huskWithWorkSeen",
+  () => huskWithWorkSeen.size,
+);
+const HUSK_RECHECK_MS = 24 * 60 * 60_000;
+
+/** The worktree dirs of slash-named branches. A branch `cursor/x` of a repo
+ *  with prefix `acme` lives at `<root>/acme-cursor/x`, so the top-level
+ *  `acme-cursor` has no .git of its own. It is a directory of worktrees, not
+ *  a husk: the sweep looks at each worktree inside, and never removes the
+ *  directory while anything is left in it. Null when `dir` is not one. */
+function branchDirectoryEntries(dir: string): string[] | null {
+  if (existsSync(join(dir, ".git"))) return null;
+  let children: Dirent[];
+  try {
+    children = readdirSync(dir, { withFileTypes: true }).filter((c) =>
+      c.isDirectory(),
+    );
+  } catch {
+    return null;
+  }
+  const worktreeInside = children.some((c) => {
+    try {
+      return statSync(join(dir, c.name, ".git")).isFile();
+    } catch {
+      return false;
+    }
+  });
+  return worktreeInside ? children.map((c) => c.name) : null;
 }
 
 /** Archive the branch's linked Slack channel via the slack module's webhook
@@ -652,13 +704,28 @@ export async function sweepWorktreeReaper(
 
   const debug = process.env.OPENSESSION_REAPER_DEBUG === "1";
   const fetched = new Set<string>();
+  // Top-level entries, with each directory of slash-named branch worktrees
+  // replaced by the worktrees inside it (branchDirectoryEntries).
+  const candidates: Array<{ name: string; dir: string }> = [];
+  const branchDirs: string[] = [];
   for (const e of entries) {
     // Dotdirs in the worktrees root are infrastructure, not session trees
     // (.warm-spares = the warm-template dep spares, .claude = CLI state).
     if (e.name.startsWith(".")) continue;
-    const dir = join(root, e.name);
-    if (debug) console.log(`[worktree-reaper] considering ${e.name}`);
     if (PROTECTED_SUFFIXES.some((s) => e.name.endsWith(s))) continue;
+    const dir = join(root, e.name);
+    const nested = branchDirectoryEntries(dir);
+    if (!nested) {
+      candidates.push({ name: e.name, dir });
+      continue;
+    }
+    branchDirs.push(dir);
+    for (const child of nested)
+      candidates.push({ name: `${e.name}/${child}`, dir: join(dir, child) });
+  }
+  for (const e of candidates) {
+    const dir = e.dir;
+    if (debug) console.log(`[worktree-reaper] considering ${e.name}`);
     if (inUse.has(dir)) {
       result.skipped.inUse++;
       continue;
@@ -695,13 +762,24 @@ export async function sweepWorktreeReaper(
         mtimeMs = statSync(dir).mtimeMs;
       } catch {}
       if (Date.now() - mtimeMs < 7 * 86_400_000) continue;
+      const seen = huskWithWorkSeen.get(dir);
+      if (
+        seen &&
+        seen.mtimeMs === mtimeMs &&
+        Date.now() - seen.at < HUSK_RECHECK_MS
+      ) {
+        result.skipped.huskWithWork++;
+        continue;
+      }
       if (await huskHasWork(dir)) {
+        huskWithWorkSeen.set(dir, { at: Date.now(), mtimeMs });
         result.skipped.huskWithWork++;
         console.log(
-          `[worktree-reaper] SKIP husk ${e.name}: nested repo has dirty/unpushed work`,
+          `[worktree-reaper] SKIP husk ${e.name}: nested repo has dirty/unpushed work (next check in 24h)`,
         );
         continue;
       }
+      huskWithWorkSeen.delete(dir);
       if (opts.dryRun) {
         console.log(`[worktree-reaper] would sweep husk ${e.name}`);
         result.husksSwept.push(e.name);
@@ -860,6 +938,15 @@ export async function sweepWorktreeReaper(
       console.warn(`[worktree-reaper] could not fully remove ${dir}`);
     }
   }
+
+  // A directory of branch worktrees goes once its last worktree has; rmdir
+  // never removes anything that is still in it.
+  if (!opts.dryRun)
+    for (const dir of branchDirs) {
+      try {
+        if (readdirSync(dir).length === 0) rmdirSync(dir);
+      } catch {}
+    }
 
   if (result.removed.length || result.husksSwept.length) {
     audit({

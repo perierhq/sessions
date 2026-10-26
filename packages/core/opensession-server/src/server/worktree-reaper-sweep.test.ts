@@ -23,6 +23,7 @@ let worktrees: string;
 
 async function addDoneWorktree(branch: string): Promise<string> {
   const dir = join(worktrees, `acme-${branch}`);
+  mkdirSync(join(dir, ".."), { recursive: true });
   await $`git -C ${repoDir} worktree add -q -b ${branch} ${dir} origin/main`.quiet();
   // Gitignored state a session keeps in its checkout (screenshots, installs).
   mkdirSync(join(dir, "target", "shots"), { recursive: true });
@@ -155,6 +156,74 @@ describe("sweepWorktreeReaper", () => {
     );
     expect(result.skipped.sessionOpen).toBe(1);
     expect(result.removed).not.toContain("acme-awaiting-deploy");
+  });
+
+  it("reaps worktrees of slash-named branches instead of calling their directory a husk", async () => {
+    const { sweepWorktreeReaper } = await import("./worktree-reaper");
+    // `cursor/<name>` branches live at `<wt>/acme-cursor/<name>`: the
+    // directory between them has no .git of its own.
+    const namespace = join(worktrees, "acme-cursor");
+    const done = await addDoneWorktree("cursor/review-done");
+    const open = await addDoneWorktree("cursor/review-open");
+    expect(done).toBe(join(namespace, "review-done"));
+    const old = new Date(NOW - 30 * 24 * HOUR);
+    utimesSync(namespace, old, old);
+    const quiet = new Date(NOW - 8 * HOUR).toISOString();
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    let result;
+    try {
+      result = await sweepWorktreeReaper({
+        nowMs: NOW,
+        sessions: [
+          {
+            worktreeDir: done,
+            branch: "cursor/review-done",
+            repo: "acme",
+            lastActivity: quiet,
+            isRunning: false,
+            archived: true,
+          },
+          {
+            worktreeDir: open,
+            branch: "cursor/review-open",
+            repo: "acme",
+            lastActivity: quiet,
+            isRunning: false,
+          },
+        ],
+      });
+    } finally {
+      console.log = log;
+    }
+    expect(
+      lines.filter((line) => /SKIP husk|swept husk|sweep husk/.test(line)),
+    ).toEqual([]);
+    expect(result.skipped.huskWithWork).toBe(0);
+    const nested = (names: string[]) =>
+      names.filter((name) => name.startsWith("acme-cursor"));
+    expect(nested(result.removed)).toEqual(["acme-cursor/review-done"]);
+    expect(existsSync(done)).toBe(false);
+    expect(existsSync(join(open, "target", "shots", "after.png"))).toBe(true);
+    expect(result.skipped.sessionOpen).toBe(1);
+
+    // Once its last worktree goes, the empty directory goes with it.
+    const later = await sweepWorktreeReaper({
+      nowMs: NOW,
+      sessions: [
+        {
+          worktreeDir: open,
+          branch: "cursor/review-open",
+          repo: "acme",
+          lastActivity: quiet,
+          isRunning: false,
+          archived: true,
+        },
+      ],
+    });
+    expect(nested(later.removed)).toEqual(["acme-cursor/review-open"]);
+    expect(existsSync(namespace)).toBe(false);
   });
 
   it("parks, never reaps, an open session's done checkout past the idle horizon", async () => {
