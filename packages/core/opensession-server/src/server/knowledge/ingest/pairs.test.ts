@@ -151,6 +151,51 @@ describe("pairThreads", () => {
       ours: true,
       inReplyTo: "q1@customer.example.test",
     });
-    expect(pairThreads([q, a, { ...a }, { ...q }])).toHaveLength(1);
+    // Our reply in Sent and in INBOX (a copy to ourselves): one pair. Two
+    // customer messages with one ID are the ambiguous case below.
+    expect(pairThreads([q, a, { ...a, ours: false }])).toHaveLength(1);
+    expect(pairThreads([q, a, { ...a }])).toHaveLength(1);
+  });
+
+  test("a question dated after the answer (past 5 minutes) makes no pair", () => {
+    const q = mail("q1@customer.example.test", {
+      at: "2026-10-20T08:06:00.000Z",
+    });
+    const a = mail("a1@acme.example.test", {
+      ours: true,
+      inReplyTo: "q1@customer.example.test",
+      at: "2026-10-20T08:00:00.000Z",
+    });
+    expect(pairThreads([q, a])).toEqual([]);
+    // Within the 5-minute skew it still pairs.
+    const close = { ...q, at: "2026-10-20T08:04:00.000Z" };
+    expect(ids(pairThreads([close, a]))).toHaveLength(1);
+  });
+
+  test("a Message-ID on two INBOX messages pairs with neither", () => {
+    const q = mail("q1@customer.example.test", { text: "Real" });
+    const spoof = mail("q1@customer.example.test", { text: "Spoof" });
+    const a = mail("a1@acme.example.test", {
+      ours: true,
+      inReplyTo: "q1@customer.example.test",
+    });
+    const b = mail("a2@acme.example.test", {
+      ours: true,
+      references: ["q1@customer.example.test"],
+    });
+    expect(pairThreads([q, spoof, a, b])).toEqual([]);
+    // Without the duplicate both pair.
+    expect(pairThreads([q, a, b])).toHaveLength(2);
+  });
+
+  test("a duplicate further up References is never fallen back past", () => {
+    const old = mail("q0@customer.example.test");
+    const q = mail("q1@customer.example.test");
+    const dup = mail("q1@customer.example.test");
+    const a = mail("a1@acme.example.test", {
+      ours: true,
+      references: ["q0@customer.example.test", "q1@customer.example.test"],
+    });
+    expect(pairThreads([old, q, dup, a])).toEqual([]);
   });
 });

@@ -7,6 +7,10 @@
  * message above it (outreach, a thread whose start is outside the window)
  * or whose In-Reply-To is our own message (a follow-up) makes none, and a
  * customer message is never an answer. Message-IDs compare as normalizeMessageId writes them.
+ * A question dated more than QUESTION_SKEW_MS after its answer makes no
+ * pair (a reply can't come first), and a Message-ID that two customer
+ * messages share is ambiguous: no pair uses it, nor anything further up
+ * the References past it.
  * Automated mail is left out before this (mailbox.ts). Pure.
  */
 import { normalizeMessageId } from "../../../shared/support";
@@ -33,20 +37,35 @@ export interface QaPair {
   answer: MailRecord;
 }
 
+/** How much later than its answer a question may be dated (clock skew). */
+export const QUESTION_SKEW_MS = 5 * 60_000;
+
+const AMBIGUOUS = Symbol("ambiguous");
+
 export function pairThreads(records: MailRecord[]): QaPair[] {
   // A message can sit in two folders; the first counts (mailbox.ts reads
-  // Sent first, so our copy wins).
+  // Sent first, so our copy wins). Two customer messages with one ID are
+  // two different messages: which one was answered can't be told.
   const byId = new Map<string, MailRecord>();
+  const ambiguous = new Set<string>();
   const order: Array<{ id: string; record: MailRecord }> = [];
   for (const record of records) {
     const id = normalizeMessageId(record.messageId);
-    if (!id || byId.has(id)) continue;
+    if (!id) continue;
+    const first = byId.get(id);
+    if (first) {
+      if (!first.ours && !record.ours) ambiguous.add(id);
+      continue;
+    }
     byId.set(id, record);
     order.push({ id, record });
   }
 
-  const customer = (raw: string | null): MailRecord | null => {
+  const customer = (
+    raw: string | null,
+  ): MailRecord | typeof AMBIGUOUS | null => {
     const id = normalizeMessageId(raw);
+    if (id && ambiguous.has(id)) return AMBIGUOUS;
     const found = id ? byId.get(id) : undefined;
     return found && !found.ours ? found : null;
   };
@@ -61,7 +80,11 @@ export function pairThreads(records: MailRecord[]): QaPair[] {
     let question = customer(record.inReplyTo);
     for (let i = record.references.length - 1; !question && i >= 0; i--)
       question = customer(record.references[i]!);
-    if (question) pairs.push({ question, answer: record });
+    if (!question || question === AMBIGUOUS) continue;
+    const asked = Date.parse(question.at);
+    const answered = Date.parse(record.at);
+    if (!(asked <= answered + QUESTION_SKEW_MS)) continue;
+    pairs.push({ question, answer: record });
   }
   return pairs;
 }
