@@ -49,6 +49,10 @@ import { handleProjectDefaultsRoutes } from "./project-defaults";
 import { handleIncidentAccessRoutes } from "./incident-access";
 import { handleIncidentResponseRoutes } from "./incident-response";
 import { handleIncidentsRoutes } from "./incidents";
+import { handleSupportRoutes } from "./support";
+import { handleSupportActionRoutes } from "./support-actions";
+import { handleSupportInboxRoutes } from "./support-inboxes";
+import { handleSupportReplyRoutes } from "./support-replies";
 import { handleHumanAsksRoutes } from "./human-asks";
 import { handleKeychainRoutes } from "./keychain";
 import { handleMacKeychainRoutes } from "./mac-keychain";
@@ -135,6 +139,10 @@ export const routeHandlers: RouteHandler[] = [
   handleIncidentAccessRoutes,
   handleIncidentsRoutes,
   handleIncidentResponseRoutes,
+  handleSupportRoutes,
+  handleSupportInboxRoutes,
+  handleSupportReplyRoutes,
+  handleSupportActionRoutes,
   handleHumanAsksRoutes,
   handleKeychainRoutes,
   handleMacKeychainRoutes,

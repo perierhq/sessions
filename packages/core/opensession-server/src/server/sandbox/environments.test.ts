@@ -49,7 +49,7 @@ afterEach(() => {
 describe("sandbox project environments", () => {
   test("every provider starts unprepared and a disabled connection removes readiness", async () => {
     const repo = Object.keys(REPOS)[0]!;
-    connectSandboxProvider("daytona", { secret: "test-daytona-key" });
+    await connectSandboxProvider("daytona", { secret: "test-daytona-key" });
     setSandboxConnectionQualification("daytona", {
       status: "ready",
       checkedAt: new Date().toISOString(),
@@ -71,7 +71,7 @@ describe("sandbox project environments", () => {
   });
 
   test("rejects unknown repositories before allocating provider work", async () => {
-    connectSandboxProvider("daytona", { secret: "test-daytona-key" });
+    await connectSandboxProvider("daytona", { secret: "test-daytona-key" });
     setSandboxConnectionQualification("daytona", { status: "ready" });
     await expect(
       prepareSandboxEnvironment("not-a-repository", "daytona"),
@@ -80,13 +80,13 @@ describe("sandbox project environments", () => {
 
   test("rejects invalid project machine settings before allocating provider work", async () => {
     const repo = Object.keys(REPOS)[0]!;
-    connectSandboxProvider("daytona", { secret: "test-daytona-key" });
+    await connectSandboxProvider("daytona", { secret: "test-daytona-key" });
     setSandboxConnectionQualification("daytona", { status: "ready" });
     await expect(
       prepareSandboxEnvironment(repo, "daytona", { settings: { cpu: 0 } }),
     ).rejects.toMatchObject({ code: "MACHINE_SETTINGS_INVALID" });
 
-    connectSandboxProvider("box", { secret: "test-box-key" });
+    await connectSandboxProvider("box", { secret: "test-box-key" });
     setSandboxConnectionQualification("box", { status: "ready" });
     await expect(
       prepareSandboxEnvironment(repo, "box", {

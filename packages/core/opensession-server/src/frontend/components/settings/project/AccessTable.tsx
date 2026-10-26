@@ -39,7 +39,7 @@ import { PlainButton } from "../../../ui/plain-button";
 
 /**
  * What agents may use, on a desktop: a row per capability and a column per
- * role, five equal columns, every editable cell a button. A cell that can't
+ * role, six equal columns, every editable cell a button. A cell that can't
  * change says why on hover, focus or tap.
  */
 export function AccessTable({

@@ -1,8 +1,11 @@
 // The project page's access table: one row per capability, one column per
 // role. The You column is computed from what interactive sessions get
 // today, never stored. Keychain and production cells apply only to the
-// incident agents; for Automations and Reviews they read "no" and can't be
-// edited. A group with no rows is left out. Pure: plain data in, view out.
+// incident agents; for Automations, Reviews and Support they read "no" and
+// can't be edited. Support reads untrusted mail, so it starts read-only,
+// with no connectors, websites or web search; each is a cell a signed-in
+// person turns on here. A group with no rows is left out. Pure:
+// plain data in, view out.
 
 import type { CredentialInfo } from "../../shared/incident-access";
 import {
@@ -72,6 +75,7 @@ function row(
     investigator: unattended("investigator"),
     verifier: unattended("verifier"),
     reviews: unattended("reviews"),
+    support: unattended("support"),
   };
   return { ...base, cells };
 }

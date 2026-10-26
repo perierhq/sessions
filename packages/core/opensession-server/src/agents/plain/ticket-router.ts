@@ -17,16 +17,16 @@
  *
  * The routing prompt is editable from the Plain integration modal (stored in
  * ~/.opensession-plain-router.json); the JSON output contract is appended by
- * code so prompt tweaks can't break parsing.
+ * code so prompt tweaks can't break parsing. The call and the JSON parsing
+ * live in server/route-classifier.ts, shared with support triage.
  */
 import { stateDir } from "../../server/paths";
 import { existsSync, readFileSync } from "fs";
-import { oneShot } from "../../server/one-shot";
+import { classifyRoute } from "../../server/route-classifier";
 import { writeJsonAtomic } from "../../server/shared/atomic-write";
 import { resolveModel } from "../../server/models";
 import { personaCompany, personaProduct } from "../../server/config";
 
-const ROUTER_MODEL = process.env.PLAIN_SPAM_CHECK_MODEL || "claude-haiku-5-5";
 const CONFIG_PATH = stateDir("plain-router.json");
 
 export type TicketRoute = "spam" | "basic" | "full";
@@ -110,43 +110,18 @@ export function setRouterConfig(patch: {
   return getRouterConfig();
 }
 
+const TICKET_ROUTES: readonly TicketRoute[] = ["spam", "basic", "full"];
+
 /** Route a ticket. Returns null when no verdict could be reached (fail open → full triage). */
 export async function classifyTicketRoute(
   ticketContent: string,
 ): Promise<RouteVerdict | null> {
-  try {
-    // Untrusted ticket text — the one-shot is tool-less by construction, so
-    // the content can only influence the classification, never act.
-    const resultText = await oneShot(
-      `Classify this support ticket:\n\n${ticketContent.slice(0, 8000)}`,
-      {
-        system: `${getRouterConfig().prompt}\n\n${OUTPUT_CONTRACT}`,
-        model: ROUTER_MODEL,
-        label: "ticket-router",
-      },
-    );
-    if (!resultText) return null;
-
-    const match = resultText.match(/\{[\s\S]*?\}/);
-    if (!match) {
-      console.error(
-        `[plain] Ticket router returned no JSON: ${resultText.slice(0, 200)}`,
-      );
-      return null;
-    }
-    const parsed = JSON.parse(match[0]);
-    if (
-      parsed.route !== "spam" &&
-      parsed.route !== "basic" &&
-      parsed.route !== "full"
-    )
-      return null;
-    return {
-      route: parsed.route,
-      reason: typeof parsed.reason === "string" ? parsed.reason : "",
-    };
-  } catch (e) {
-    console.error("[plain] Ticket router failed:", e);
-    return null;
-  }
+  const verdict = await classifyRoute({
+    content: `Classify this support ticket:\n\n${ticketContent}`,
+    system: getRouterConfig().prompt,
+    contract: OUTPUT_CONTRACT,
+    routes: TICKET_ROUTES,
+    label: "ticket-router",
+  });
+  return verdict ? { route: verdict.route, reason: verdict.reason } : null;
 }

@@ -21,6 +21,7 @@ import {
   applyNotificationEvent,
   bannerText,
   cleanDocument,
+  hasFixedPush,
   markNotificationThreads,
   pushSafeText,
   shouldAlert,
@@ -110,17 +111,18 @@ async function topicFor(threadId: string): Promise<string> {
 
 /**
  * The push for a row: the one place a push is built from a thread. Rows
- * other than incidents keep their plain payload and default options. An
- * incident push says the event's fixed `push.body` when it has one, never
- * the row's own text, and every push is cleaned of control and bidi
- * characters.
+ * other than incidents and support keep their plain payload and default
+ * options. An incident or support push says the event's fixed `push.body`
+ * when it has one, never the row's own text, and every push is cleaned of
+ * control and bidi characters.
  */
 export async function pushFor(
   thread: NotificationThread,
   event: NotificationEvent,
   delivery: Exclude<NotificationDelivery, "quiet">,
 ): Promise<{ payload: PushPayload; options?: PushSendOptions }> {
-  const hints = thread.subject.type === "incident" ? event.push : undefined;
+  const fixed = hasFixedPush(thread.subject.type);
+  const hints = fixed ? event.push : undefined;
   const { title, body } = bannerText(
     hints?.body !== undefined ? { ...thread, body: hints.body } : thread,
   );
@@ -133,7 +135,7 @@ export async function pushFor(
     tag: `os-notification-${thread.id}`,
     id: thread.id,
   };
-  if (thread.subject.type !== "incident") return { payload };
+  if (!fixed) return { payload };
   const alert = delivery === "alert";
   if (hints?.actions?.length)
     payload.actions = hints.actions.map((a) => ({

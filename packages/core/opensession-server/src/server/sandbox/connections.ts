@@ -18,8 +18,8 @@ import { clampPodmanLimits, podmanSettings } from "./adapters/podman-settings";
 import { stateDir } from "../paths";
 import { writeJsonAtomic } from "../shared/atomic-write";
 import {
-  deleteWorkspaceSecret,
-  putWorkspaceSecret,
+  deleteWorkspaceSecretAsync,
+  putWorkspaceSecretAsync,
   resolveWorkspaceSecret,
   workspaceSecretExists,
 } from "../workspace-secrets";
@@ -537,20 +537,24 @@ export interface ConnectSandboxInput {
   settings?: SandboxConnectionSettings;
 }
 
-export function connectSandboxProvider(
+/** Async because the key goes through the workspace secrets' one write
+ *  chain; a synchronous write there could be undone by a concurrent one. */
+export async function connectSandboxProvider(
   provider: WorkspaceSandboxProvider,
   input: ConnectSandboxInput,
-): SandboxConnection {
-  const previous = getSandboxConnection(provider);
+): Promise<SandboxConnection> {
+  let previous = getSandboxConnection(provider);
   let credentialRef = previous?.credentialRef;
   // A provider that takes no credential never stores one, whatever a client
   // sends.
   if (input.secret && sandboxProviderNeedsCredential(provider)) {
-    credentialRef = putWorkspaceSecret(
+    credentialRef = await putWorkspaceSecretAsync(
       `sandbox.${provider}`,
       input.secret.trim(),
       credentialRef,
     );
+    // The connection may have changed while the key was written.
+    previous = getSandboxConnection(provider);
   }
   if (!credentialRef && sandboxProviderNeedsCredential(provider)) {
     throw new Error(
@@ -662,9 +666,9 @@ export function setPodmanConnectionFacts(
   return next;
 }
 
-export function disconnectSandboxProvider(
+export async function disconnectSandboxProvider(
   provider: WorkspaceSandboxProvider,
-): boolean {
+): Promise<boolean> {
   const connection = getSandboxConnection(provider);
   if (!connection) return false;
   const raw = readRaw();
@@ -672,7 +676,8 @@ export function disconnectSandboxProvider(
     (candidate) => candidate.provider !== provider,
   );
   writeRaw(raw);
-  if (connection.credentialRef) deleteWorkspaceSecret(connection.credentialRef);
+  if (connection.credentialRef)
+    await deleteWorkspaceSecretAsync(connection.credentialRef);
   audit({
     kind: "sandbox_connection_disconnected",
     provider,

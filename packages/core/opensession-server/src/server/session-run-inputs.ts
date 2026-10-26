@@ -23,7 +23,10 @@ import {
   automationMcpServersByName,
 } from "./automations";
 import { humanPrompter, interactivePrompter } from "./session-actors";
-import { plainDiscussionDeniedTools } from "./automation-denied-tools";
+import {
+  plainDiscussionDeniedTools,
+  supportDeniedTools,
+} from "./automation-denied-tools";
 import { INCIDENT_ACCESS_SERVER } from "../shared/incident-access";
 import type { IncidentTurnScope } from "./incidents/access/session-policy";
 
@@ -54,6 +57,10 @@ export type InProcessMcpBranch =
   /** Plain discussion session: only the approval server
    *  (opensession-plain-discussion), never the interactive siblings. */
   | "plain-discussion"
+  /** Support session (an `externalRefs` entry of kind `support`): only
+   *  opensession-support, never the interactive siblings. It reads
+   *  untrusted customer mail and runs with no person at the keyboard. */
+  | "support"
   /** Goal-driven session: the interactive set plus opensession-goal-self. */
   | "interactive+goal-self"
   /** The normal interactive self-management set. */
@@ -72,8 +79,9 @@ export interface SessionRunInputs {
   mcpServersSource: McpScopeSource;
   /** Tool-permission denials, or undefined when the run carries none. */
   deniedTools: Record<string, string> | undefined;
-  /** An incident agent's egress hosts, which its web_fetch is held to
-   *  (pi-web-search.ts); undefined for every other run. */
+  /** The hosts web_fetch is held to (pi-web-search.ts): an incident
+   *  agent's egress hosts, or a support session's websites (global plus the
+   *  project's ticked for Support); undefined for every other run. */
   webFetchHosts?: string[];
   /** The prompter, or undefined for automation-owned sessions (which must
    *  never clear a server's `allowedUsers` gate). */
@@ -123,6 +131,56 @@ export type RunInputsSession = Pick<
 > &
   Partial<Pick<UnifiedSession, "id" | "mode" | "repo" | "runner">>;
 
+/** A session that answers a support conversation: its workspace (and so
+ *  the session) carries an `externalRefs` entry of kind `support`. */
+export function isSupportSession(
+  session: Pick<RunInputsSession, "externalRefs">,
+): boolean {
+  return !!session.externalRefs?.some((r) => r.kind === "support");
+}
+
+/** One support turn's scope, read fresh from the project's access table so
+ *  a settings change applies to the next turn of a running session: the
+ *  connectors ticked for Support (never people-restricted ones), the
+ *  support deny-set plus a web_search denial when Support's cell is off,
+ *  and web_fetch held to the global websites plus the project's websites
+ *  ticked for Support. Unreadable settings give no connectors and no web
+ *  search. Used by every turn (resolveSessionRunInputs) and the opening
+ *  turn (session-create.ts). */
+export async function supportTurnScope(project: string | undefined): Promise<{
+  mcpServers: string[];
+  deniedTools: Record<string, string>;
+  webFetchHosts: string[];
+}> {
+  const [effective, { globalWebsites }, { supportMcpServers }] =
+    await Promise.all([
+      import("./projects/effective"),
+      import("./projects/global-defaults"),
+      import("./support/session-policy"),
+    ]);
+  let mcpServers: string[] = [];
+  let web: { deniedTools: Record<string, string>; websites: string[] } = {
+    deniedTools: { web_search: effective.WEB_SEARCH_OFF },
+    websites: [],
+  };
+  if (project) {
+    try {
+      mcpServers = await supportMcpServers(project);
+    } catch (error) {
+      console.warn(
+        `[support] ${project} settings unreadable, the support turn gets no connectors:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+    web = await effective.roleWebAccess(project, "support");
+  }
+  return {
+    mcpServers,
+    deniedTools: { ...supportDeniedTools(), ...web.deniedTools },
+    webFetchHosts: [...new Set([...globalWebsites(), ...web.websites])],
+  };
+}
+
 /** Which in-process server set the next turn carries. Pure — mirrors the
  *  `inProcessMcp` ternary at the runAgent call site. `humanPrompter` is the
  *  person who sent this turn themselves (`interactivePrompter(user)`), if
@@ -134,6 +192,7 @@ export function sessionInProcessMcpBranch(
   if (session.automationDescendantPolicy) return "automation-self-improve";
   if (session.automation)
     return humanPrompter ? "automation+human-spawn" : "automation-self-improve";
+  if (isSupportSession(session)) return "support";
   if (session.plainDiscussionId) return "plain-discussion";
   return session.goalId ? "interactive+goal-self" : "interactive";
 }
@@ -180,7 +239,14 @@ export async function resolveSessionRunInputs(
   // invisible to it. An automation-owned session that reports into a
   // discussion keeps its automation branch and takes the same wider deny-set.
   const isPlainDiscussionSession = !!session.plainDiscussionId;
-  const source = sessionMcpScopeSource(session);
+  // A support session reads untrusted customer mail with no person at the
+  // keyboard: per turn, the project's Support row decides its connectors
+  // and web reach, it carries the support deny-set and no user.
+  const supportScope =
+    !isAutomationSession && isSupportSession(session)
+      ? await supportTurnScope(session.repo)
+      : null;
+  const source = supportScope ? "session" : sessionMcpScopeSource(session);
   // An incident agent re-resolves its access before every turn; a refusal
   // throws so the turn never starts, and the scope is never wider than the
   // spawn snapshot (incidents/access/session-policy.ts). A view resolves it
@@ -200,22 +266,24 @@ export async function resolveSessionRunInputs(
   }
   const mcpServers = incidentScope
     ? [...incidentScope.mcpServers]
-    : incidentRefusal !== undefined
-      ? []
-      : session.automationDescendantPolicy
-        ? [...session.automationDescendantPolicy.mcpServers]
-        : isAutomationSession
-          ? await automationMcpServersByName(session.automation!)
-          : source === "session"
-            ? session.mcpServers
-            : source === "feed"
-              ? // Feed-workspace sessions are scoped to their feed's declared MCP
-                // servers even when the session file predates the stamping (least
-                // privilege — the feeds design).
-                await (
-                  await import("./feeds")
-                ).feedMcpServersForRefs(session.externalRefs!)
-              : undefined;
+    : supportScope
+      ? supportScope.mcpServers
+      : incidentRefusal !== undefined
+        ? []
+        : session.automationDescendantPolicy
+          ? [...session.automationDescendantPolicy.mcpServers]
+          : isAutomationSession
+            ? await automationMcpServersByName(session.automation!)
+            : source === "session"
+              ? session.mcpServers
+              : source === "feed"
+                ? // Feed-workspace sessions are scoped to their feed's declared MCP
+                  // servers even when the session file predates the stamping (least
+                  // privilege — the feeds design).
+                  await (
+                    await import("./feeds")
+                  ).feedMcpServersForRefs(session.externalRefs!)
+                : undefined;
   const accountUser = humanPrompter(opts.user) ?? undefined;
   const prompter = interactivePrompter(opts.user) ?? undefined;
   return {
@@ -227,22 +295,28 @@ export async function resolveSessionRunInputs(
     deniedTools: incidentScope
       ? // The automation deny-set always stays; access can only add to it.
         { ...automationDeniedTools(), ...incidentScope.deniedTools }
-      : isPlainDiscussionSession
-        ? plainDiscussionDeniedTools()
-        : isAutomationSession
-          ? automationDeniedTools()
-          : undefined,
+      : supportScope
+        ? supportScope.deniedTools
+        : isPlainDiscussionSession
+          ? plainDiscussionDeniedTools()
+          : isAutomationSession
+            ? automationDeniedTools()
+            : undefined,
     user:
-      isAutomationSession || isPlainDiscussionSession ? undefined : opts.user,
+      isAutomationSession || isPlainDiscussionSession || supportScope
+        ? undefined
+        : opts.user,
     mcpGrantUser: session.createdByLogin || undefined,
     accountUser,
     humanPrompter: prompter,
     inProcessMcpBranch: sessionInProcessMcpBranch(session, prompter),
-    sessionNote: !isAutomationSession,
+    sessionNote: !isAutomationSession && !supportScope,
     incidentProxyMcpServers: incidentScope ? [INCIDENT_ACCESS_SERVER] : [],
     ...(incidentScope?.access.egress?.hosts.length
       ? { webFetchHosts: [...incidentScope.access.egress.hosts] }
-      : {}),
+      : supportScope
+        ? { webFetchHosts: supportScope.webFetchHosts }
+        : {}),
     ...(incidentRefusal !== undefined ? { incidentRefusal } : {}),
   };
 }

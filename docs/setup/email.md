@@ -1,0 +1,317 @@
+# Email support
+
+Email support connects ordinary mailboxes to Sessions. Each inbox is read over
+IMAP and answered over SMTP, with a password or an app password. New mail is
+labelled on the small model, listed under Support, and answered or drafted by
+a support session in the inbox's project, under the autonomy you choose for
+the inbox.
+
+The integration lives in `packages/core/opensession-server/src/agents/email/`
+(the IMAP and SMTP transports and the channel adapter) and
+`packages/core/opensession-server/src/server/support/` (conversations,
+triage, the reply path and retention). The security rules are in
+[security-model.md](../security-model.md#support-mail).
+
+## Turn it on
+
+Email support is off by default. Put the flag in `~/.opensession.env` and
+restart the service:
+
+```sh
+ENABLE_EMAIL_SUPPORT=true
+```
+
+Only the literal value `true` enables it. With the flag unset,
+`integrations.email.enabled: true` in `~/.opensession/config.json` does the
+same. No credentials go in the env file: inboxes and their passwords are set
+up in **Settings → Inboxes**. See
+[integrations-misc.md](integrations-misc.md#boot-guards).
+
+## Connect an inbox
+
+1. Open **Settings → Inboxes** and choose **Connect an inbox**.
+2. Fill in the inbox:
+   - **Name shown to customers**: the display name on replies, for example
+     `Acme support`.
+   - **Address**: the address customers write to, for example
+     `help@acme.example.test`. It must be the mailbox itself or an alias the
+     account may send as (see [Sending as the inbox address](#sending-as-the-inbox-address)).
+   - **Project**: where support sessions for this inbox run.
+   - **IMAP** and **SMTP**: host, port, security, user name and password.
+3. Choose **Test**. Sessions logs in to both servers once and reports what it
+   found. A test changes nothing in the mailbox.
+4. Save. Sessions connects within a few seconds; the inbox row shows its
+   state.
+
+The first connect starts at "now". Mail already in the mailbox is not
+imported; only mail that arrives after the inbox is connected becomes a
+conversation.
+
+### Security
+
+Each server has its own security setting:
+
+| Setting      | Port (usual)       | What it does                                                                                                                  |
+| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Implicit TLS | IMAP 993, SMTP 465 | TLS from the first byte.                                                                                                      |
+| STARTTLS     | IMAP 143, SMTP 587 | Upgrades to TLS before logging in. A server that doesn't offer it is refused.                                                 |
+| None         | any                | No TLS. Only for a server on this machine, such as a local mail bridge, and only when the inbox allows internal mail servers. |
+
+Certificates are always checked.
+
+Mail server addresses are checked when Sessions connects, against the address
+the name resolves to. Public addresses are allowed. Link-local and cloud
+metadata addresses are always refused. Loopback, private network and tailnet
+addresses are allowed only when the inbox allows internal mail servers, which
+only the instance owner can turn on.
+
+### App passwords
+
+Use an app password where the provider offers one. An account with two-step
+sign-in refuses its normal password over IMAP and SMTP.
+
+**Google (Gmail and Google Workspace)**
+
+1. Turn on 2-Step Verification for the account.
+2. Create an app password at
+   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+   Google shows it once; paste it into both password fields.
+3. Servers: IMAP `imap.gmail.com`, port 993, implicit TLS. SMTP
+   `smtp.gmail.com`, port 465, implicit TLS (or port 587, STARTTLS).
+4. The user name is the full address of the mailbox.
+
+In Google Workspace an administrator can turn off IMAP access or app
+passwords for the organisation; if the test reports a refused login, check
+those settings in the Admin console.
+
+**Microsoft (Microsoft 365 and Outlook.com)**
+
+Microsoft has been turning off password sign-in for IMAP and SMTP. Sessions
+v1 signs in with a password only, so many Microsoft mailboxes can't connect
+yet. Where your tenant or account still allows it:
+
+1. Turn on two-step verification and create an app password (for a personal
+   account, in the account's security settings under advanced security
+   options).
+2. In Microsoft 365, an administrator must allow IMAP and authenticated SMTP
+   (SMTP AUTH) for the mailbox, in the Microsoft 365 admin center under the
+   user's mail apps.
+3. Servers: IMAP `outlook.office365.com`, port 993, implicit TLS. SMTP
+   `smtp.office365.com` (Outlook.com: `smtp-mail.outlook.com`), port 587,
+   STARTTLS.
+
+If the test reports a refused login with the right app password, the tenant
+doesn't accept password sign-in. Use a mailbox at a provider that does, or
+forward the support address to one.
+
+## Sending as the inbox address
+
+Sessions hands each reply to your provider's SMTP server, logged in as the
+inbox's SMTP user. The provider delivers it, so deliverability is the
+provider's and your domain's:
+
+- **The provider signs outgoing mail (DKIM).** Sessions doesn't sign
+  anything. For a custom domain, turn on DKIM signing at the provider (Google
+  Admin console, Microsoft Defender portal) and publish the DNS record it
+  gives you.
+- **The inbox address must be the mailbox or a verified send-as alias.** If
+  the address differs from the SMTP user, add it as an alias the account may
+  send as: in Gmail, "Send mail as" with the address verified; in Microsoft
+  365, a "Send As" permission on the mailbox. Otherwise the server refuses the
+  reply and the draft shows "This account can't send as the inbox address".
+- **The domain's SPF record must include the provider.** For example
+  `include:_spf.google.com` for Google or `include:spf.protection.outlook.com`
+  for Microsoft 365. With SPF and DKIM in place, replies also pass the
+  domain's DMARC check.
+
+## What each setting does
+
+| Setting                   | Default                     | What it does                                                                                                                                                                                                                                                                                        |
+| ------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Autonomy                  | Draft                       | **Watch only**: sort and list new mail; no agent, no drafts. **Draft**: the agent drafts, a person sends every reply. **Send routine replies**: a reply that cites its source and needs no judgement sends on its own (after the veto window, when one is set); everything else waits for a person. |
+| Veto window in minutes    | 10                          | For routine replies: how long a reply waits before it sends, from 1 minute to 24 hours, or none (sends right away).                                                                                                                                                                                 |
+| Never without a person    | All six topics              | Money and refunds, legal, security, data export, data deletion and account deletion always wait for a person, whatever the autonomy. When a message's topics are unknown (the classifier failed), every send waits.                                                                                 |
+| Owner                     | Whoever connected the inbox | The owner of each new conversation, who is told when a reply needs a person. A person can hand a conversation to someone else on the team.                                                                                                                                                          |
+| Mailbox behaviour         | Leave untouched             | What Sessions does in the mailbox when a conversation is handled (see below).                                                                                                                                                                                                                       |
+| Save a copy in Sent       | Depends on the SMTP host    | Appends each reply to the Sent folder (see below).                                                                                                                                                                                                                                                  |
+| Keep conversations (days) | 180                         | How long a conversation's text is kept after it closes.                                                                                                                                                                                                                                             |
+| Keep attachments (days)   | 30                          | How long attachment files are kept; afterwards only their name and size remain.                                                                                                                                                                                                                     |
+| Send limit per minute     | 30                          | The most replies this inbox sends in a minute (at most 120).                                                                                                                                                                                                                                        |
+
+Next to the autonomy choice each inbox shows how many of the agent's drafts in
+the last 30 days a person sent unchanged, sent after an edit, or discarded: the
+evidence for moving from Draft to routine replies. Replies that went out on
+their own (routine) are counted apart and never count as sent unchanged.
+
+Any signed-in person can connect and edit inboxes. Only the instance owner can
+let routine replies send right away (no veto window), allow internal mail
+servers, remove an inbox and forget a customer.
+
+## What Sessions does on its own, and what waits for a person
+
+The rule is "repetitive work is automatic, judgement is a person's".
+
+Automatic, whatever the autonomy:
+
+- Auto-replies, bounces and mailing-list mail are dropped; spam is filed.
+- A customer reply that only says thanks closes the conversation without a
+  reply, but only when we were waiting on the customer, it is their only
+  message since our reply, it comes from the customer's own verified address,
+  it carries no other label, topic or attachment, it is short (under 300
+  characters), and nothing waits for a person (no draft, prepared issue or fix
+  task). Otherwise it is a normal message. A later question opens a closed
+  conversation again.
+- A conversation waiting on the customer closes after 7 days without a reply
+  from them, unless something waits for a person there (a draft, a failed
+  send, a prepared issue, a fix task or a fix session). No reminder mail goes
+  out.
+
+A routine reply sends on its own only when it answers a customer message we
+haven't answered yet and the agent cites where its facts come from. Sessions
+checks every source itself and never takes the agent's word for it:
+
+- a file in the project's repository counts when it exists as a file (not a
+  folder) in the session's checkout at its current commit;
+- a page counts when the session read it with `web_fetch` and it is on one of
+  the project's Support websites;
+- a record (`<connector>:<record id>`) counts when a Support connector call in
+  the same session returned it.
+
+The reply's text is then checked too: a small model looks for a "never without
+a person" topic and for any promise about policy, prices or deadlines, and a
+scan looks for anything that looks like a password, key or token. Any hit
+waits for a person.
+
+Links in a routine reply: at most two, no query strings, no HTML or images, and
+each one must be on a host listed exactly on the project's Support websites (a
+`*.` wildcard entry doesn't count). Shared hosting, where anyone can publish
+(`github.com`, `*.github.io`, `*.vercel.app`, `*.netlify.app` and the like),
+never counts, even when listed. Bare names like `example.com/login` or
+`www.example.com` count as links, as a mail client would make them.
+
+The agent may also ask one short clarifying question per conversation without a
+source (under 600 characters, no links, no promise, nothing sensitive); a
+second one waits for a person.
+
+Always a person's call:
+
+- The customer asks for a person, is upset, or repeats a question that was
+  already answered.
+- A "never without a person" topic, a reply without a verified source, a
+  reply that promises anything about policy, prices or deadlines, or one whose
+  check failed. The agent is only told that the reply waits for a person, not
+  which rule held it; the reason shows in the reply box.
+- A message whose labels are unknown: the classifier failed, or the inbox used
+  up its 200 labelling calls for the hour. Sessions tries the label again
+  later, and a good label replaces the failed one.
+- A message that tries to instruct the agent. The first one stops automatic
+  sends on that conversation; a second one stops the agent and leaves the
+  conversation to a person. From then on the agent can neither draft nor
+  prepare an issue there, and if stopping its session didn't take, Sessions
+  tries again. Strikes are kept per sender address in each inbox, so a new
+  conversation from the same sender starts with them.
+- Bug reports: the agent prepares an issue and a fix task on the
+  conversation. A person creates the issue (only the instance owner, when the
+  repository is public) and starts the fix session. When the fix's pull
+  request merges or the issue is closed as completed (not as not planned or a
+  duplicate), Sessions prepares an "it's fixed" note that a person reviews and
+  sends.
+- Moving a conversation to another project.
+
+When a reply needs a person, will send at the end of its veto window, or
+couldn't send, Sessions notifies the conversation's owner (the instance owner
+when it has none) with fixed wording: "A support reply is
+ready", "A support reply will send", "A support reply could not send". The
+switch is **Support replies that need you** in **Settings → Notifications**.
+
+## Rate limits and connections
+
+- **One IMAP connection per inbox.** Sessions waits for new mail with IDLE
+  and fetches only messages newer than the last one it read. A server without
+  IDLE is checked every 5 minutes.
+- **Reconnects back off.** A lost connection is retried after a random delay
+  that grows from 30 seconds to 15 minutes. A connection limit ("too many
+  connections") or a throttling response backs off the same way. A server
+  alert that ends the connection shows the inbox as paused with the alert's
+  text, and it is retried on the same schedule; the inbox row shows the
+  reason and when Sessions tries again.
+- **A refused login is not retried.** Providers lock accounts after repeated
+  failed logins, so the inbox stays paused until someone saves the inbox
+  (any change, or a new password) or a test with its saved passwords
+  passes. Then Sessions logs in once more.
+- **One SMTP connection per inbox**, reused for every reply, within the
+  inbox's send limit. A conversation gets at most 3 automatic sends an hour.
+- **Provider limits still apply.** Gmail allows about 15 IMAP connections per
+  account at once and caps how many messages an account sends a day. Every
+  mail client on the same account counts towards them.
+
+Auto-replies, bounces, mailing-list mail and copies of our own replies never
+start an agent or trigger a send.
+
+## What Sessions changes in the mailbox
+
+Sessions never deletes mail. What it changes depends on **Mailbox behaviour**:
+
+- **Leave untouched**: the inbox is opened read-only. Nothing changes: no
+  flags, no folders, no moves.
+- **Mark read when handled**: when a reply is sent, a conversation is
+  closed or triage files it as spam, its messages get the `\Seen` flag.
+  Nothing else changes.
+- **Move to Sessions folders**: when a reply is sent or a conversation is
+  closed, its messages move to `Sessions/Done`; spam moves to
+  `Sessions/Spam`. Sessions
+  creates the folders when they are missing, under the server's own folder
+  prefix if it has one (for example `INBOX.Sessions.Done`).
+
+Only the messages of that conversation are touched, including our own mail
+that Sessions read from the inbox. A mailbox action that fails (the
+connection is down, the folder can't be created) is logged and dropped; it
+never holds up a reply.
+
+### Save a copy in Sent
+
+With **Save a copy in Sent** on, Sessions appends each reply, marked read, to
+the account's Sent folder over the inbox's IMAP connection after the server
+accepted it. If a message with the same Message-ID is in Sent already, the
+copy is skipped. If the IMAP connection is down at that moment, the copy is
+skipped; the reply still counts as sent.
+
+Gmail and Microsoft 365 save mail sent through their SMTP servers in Sent
+themselves, so a second copy would be a duplicate. The setting starts off when
+the SMTP host is `smtp.gmail.com`, `smtp.googlemail.com`,
+`smtp.office365.com` or `smtp-mail.outlook.com`, and on for any other host.
+Changing the SMTP host decides it again. If you turn it on for one of those
+hosts, the provider may save its own copy after Sessions has checked, and Sent
+can end up with two.
+
+## Retention
+
+- A conversation's text is deleted 180 days after it closes (per inbox).
+- Attachment files are deleted after 30 days; their name and size stay.
+- **Forget a customer** (instance owner only) deletes everything Sessions
+  holds for one address: conversations, attachments and the support sessions
+  that answered them. It can't delete mail in the mailbox or GitHub issues,
+  and says which ones remain.
+- Retention never changes the mailbox.
+
+Conversations are stored in the Sessions catalog and also written as JSON
+files under the state directory (for example
+`~/.opensession/support-conversations/`). Treat the state directory as
+holding customer mail.
+
+## Troubleshooting
+
+| Inbox state | Meaning                                                                                                                                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live        | Connected and waiting for mail with IDLE.                                                                                                                                                                                                   |
+| Polling     | Connected; the server has no IDLE, so Sessions checks every 5 minutes.                                                                                                                                                                      |
+| Backing off | The connection was lost, or the server asked Sessions to slow down; the row shows when Sessions tries again.                                                                                                                                |
+| Paused      | A refused login, a missing password or a refused server address: Sessions stopped trying. Fix the setting and save the inbox, or run a test that passes. A server alert also shows as paused, with the time Sessions tries again by itself. |
+
+The state is the IMAP connection's. When a reply fails for a reason that
+won't go away by retrying (a refused SMTP login, an address the account
+can't send as), the row also shows "Sending failed" and the reason until a
+reply sends or the SMTP settings change.
+
+The service log has a line per connection event with the inbox id and an
+error code. It never contains a password, an address or message text.

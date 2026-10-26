@@ -1,0 +1,604 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { createServer } from "node:net";
+import {
+  type InboxConfig,
+  type MailServerConfig,
+  defaultInboxConfig,
+} from "../../shared/support";
+import { INTERRUPTED_SEND, SendError } from "../../server/support/channel";
+import {
+  MAIL_HOST_REFUSED,
+  MAIL_TLS_NONE_REFUSED,
+  __setMailHostResolverForTest,
+  __setMailTlsCaForTest,
+} from "../../server/support/mail-host";
+import {
+  MAIL_PASSWORD,
+  MAIL_USER,
+  type MailFixture,
+  rawMail,
+  selfSignedCert,
+  startMailFixture,
+} from "../../server/support/testing/mail-fixture";
+import { type ImapCursor, ImapTransport } from "./imap-transport";
+import type { OutgoingMail } from "./mime";
+import {
+  SMTP_NO_RECIPIENT,
+  SMTP_SEND_AS_REFUSED,
+  SMTP_SEND_BUSY,
+  SmtpTransport,
+  appendSentCopy,
+  classifySmtpError,
+  testSmtpLogin,
+} from "./smtp-transport";
+
+const NOW = "2026-10-25T10:00:00.000Z";
+
+let fixtures: MailFixture[] = [];
+let closers: Array<() => unknown> = [];
+
+afterEach(async () => {
+  __setMailHostResolverForTest(undefined);
+  __setMailTlsCaForTest(undefined);
+  for (const close of closers) await close();
+  await Promise.all(fixtures.map((f) => f.close()));
+  closers = [];
+  fixtures = [];
+});
+
+async function fixture(
+  opts: Parameters<typeof startMailFixture>[0] = {},
+): Promise<MailFixture> {
+  const f = await startMailFixture(opts);
+  fixtures.push(f);
+  return f;
+}
+
+function serverFor(port: number): MailServerConfig {
+  return {
+    host: "127.0.0.1",
+    port,
+    tls: "none",
+    user: MAIL_USER,
+    passwordRef: "ref",
+  };
+}
+
+function inboxFor(f: MailFixture, over: Partial<InboxConfig> = {}) {
+  return {
+    ...defaultInboxConfig({
+      id: "inb_test",
+      label: "Acme help",
+      address: "help@acme.example.test",
+      project: "acme",
+      owner: "Ada",
+      createdBy: "Ada",
+      now: NOW,
+      imap: serverFor(f.imapPort),
+      smtp: serverFor(f.smtpPort),
+    }),
+    allowInternalHost: true,
+    ...over,
+  };
+}
+
+function transport(
+  f: MailFixture,
+  over: Partial<InboxConfig> = {},
+  rateDeltaMs?: number,
+  sendTimeoutMs?: number,
+): SmtpTransport {
+  const t = new SmtpTransport({
+    inbox: inboxFor(f, over),
+    password: MAIL_PASSWORD,
+    ...(rateDeltaMs !== undefined ? { rateDeltaMs } : {}),
+    ...(sendTimeoutMs !== undefined ? { sendTimeoutMs } : {}),
+  });
+  closers.push(() => t.close());
+  return t;
+}
+
+function mail(n = 1): OutgoingMail {
+  return {
+    from: { name: "Acme help", address: "help@acme.example.test" },
+    to: [{ name: "Ada", address: "ada@example.test" }],
+    subject: "Re: Help",
+    text: `Thanks, fixed (${n}).`,
+    messageId: `out${n}@acme.example.test`,
+    inReplyTo: "m2@example.test",
+    references: ["m1@example.test", "m2@example.test"],
+    headers: { "Auto-Submitted": "auto-replied" },
+  };
+}
+
+async function closedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+const INTERNAL = { allowInternalHost: true };
+
+const decode = (raw: Uint8Array) => new TextDecoder().decode(raw);
+
+describe("SmtpTransport.send", () => {
+  test("sends with the threading headers to the customer", async () => {
+    const f = await fixture();
+    const result = await transport(f).send(mail());
+    expect(f.sent).toHaveLength(1);
+    const sent = f.sent[0]!;
+    expect(sent.raw).toContain("Message-ID: <out1@acme.example.test>");
+    expect(sent.raw).toContain("In-Reply-To: <m2@example.test>");
+    expect(sent.raw).toContain(
+      "References: <m1@example.test> <m2@example.test>",
+    );
+    expect(sent.raw).toContain("Auto-Submitted: auto-replied");
+    expect(sent.envelope).toEqual({
+      from: "help@acme.example.test",
+      to: ["ada@example.test"],
+    });
+    expect(result.messageId).toBe("out1@acme.example.test");
+    expect(result.accepted).toEqual(["ada@example.test"]);
+    expect(f.smtpAuthCalls).toBe(1);
+    // The bytes for the Sent copy are the bytes that went out.
+    expect(decode(result.raw).trimEnd()).toBe(sent.raw.trimEnd());
+  });
+
+  test("a 5xx answer is a permanent SendError", async () => {
+    const f = await fixture();
+    f.smtpReply = { code: 550, message: "No such user" };
+    const error = await transport(f)
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).not.toContain("No such user");
+  });
+
+  test("a 4xx answer is a transient SendError", async () => {
+    const f = await fixture();
+    f.smtpReply = { code: 451, message: "Try later" };
+    const error = await transport(f)
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(false);
+  });
+
+  test("the send limit holds the third send until the window ends", async () => {
+    const f = await fixture();
+    const t = transport(f, { sendLimitPerMinute: 2 }, 500);
+    const started = performance.now();
+    await Promise.all([t.send(mail(1)), t.send(mail(2))]);
+    await t.send(mail(3));
+    expect(performance.now() - started).toBeGreaterThanOrEqual(450);
+    expect(f.sent).toHaveLength(3);
+  });
+
+  test("more sends waiting than the limit allows are refused at once as busy", async () => {
+    const f = await fixture();
+    const t = transport(f, { sendLimitPerMinute: 1 }, 10_000);
+    const first = t.send(mail(1));
+    const started = performance.now();
+    const error = await t.send(mail(2)).catch((e: unknown) => e);
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).message).toBe(SMTP_SEND_BUSY);
+    expect((error as SendError).permanent).toBe(false);
+    await first;
+    expect(f.sent).toHaveLength(1);
+  });
+
+  test("a send that takes too long after DATA may have gone out: never retried", async () => {
+    const f = await fixture();
+    f.smtpHoldData = true;
+    const t = transport(f, {}, undefined, 300);
+    const started = performance.now();
+    const error = await t.send(mail()).catch((e: unknown) => e);
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(INTERRUPTED_SEND);
+  });
+
+  test("a connection dropped after DATA is not sent again", async () => {
+    const f = await fixture();
+    f.smtpDropAfterData = true;
+    const error = await transport(f)
+      .send(mail())
+      .catch((e: unknown) => e);
+    // Give a requeue (if any) time to reconnect and send again.
+    await Bun.sleep(300);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(INTERRUPTED_SEND);
+    expect(f.sent.length).toBeLessThanOrEqual(1);
+  });
+
+  test("no recipient is a permanent SendError, and nothing connects", async () => {
+    const f = await fixture();
+    const error = await transport(f)
+      .send({ ...mail(), to: [] })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).message).toBe(SMTP_NO_RECIPIENT);
+    expect((error as SendError).permanent).toBe(true);
+    expect(f.smtpConnections.opened).toBe(0);
+  });
+
+  test("a refusal to send as the inbox address has its own copy", async () => {
+    const f = await fixture();
+    f.smtpReply = {
+      code: 550,
+      message:
+        "5.7.60 SMTP; Client does not have permissions to send as this sender",
+    };
+    const error = await transport(f)
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).message).toBe(SMTP_SEND_AS_REFUSED);
+    expect((error as SendError).permanent).toBe(true);
+  });
+
+  test("concurrent sends share one connection", async () => {
+    const f = await fixture();
+    const t = transport(f);
+    await Promise.all([1, 2, 3, 4, 5].map((n) => t.send(mail(n))));
+    expect(f.sent).toHaveLength(5);
+    expect(f.smtpConnections.opened).toBe(1);
+    expect(f.smtpConnections.maxLive).toBe(1);
+  });
+
+  test("a wrong password is a permanent SendError", async () => {
+    const f = await fixture();
+    const t = new SmtpTransport({ inbox: inboxFor(f), password: "wrong" });
+    closers.push(() => t.close());
+    const error = await t.send(mail()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+  });
+
+  test("an internal address needs allowInternalHost, and nothing is sent", async () => {
+    const f = await fixture();
+    const error = await transport(f, { allowInternalHost: false })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(MAIL_HOST_REFUSED);
+    expect(f.smtpConnections.opened).toBe(0);
+  });
+
+  test("a name is resolved and the checked address is dialled", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["127.0.0.1"]);
+    await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), host: "mail.acme.example.test" },
+    }).send(mail());
+    expect(f.sent).toHaveLength(1);
+  });
+
+  test("no TLS off this machine is refused", async () => {
+    const f = await fixture();
+    __setMailHostResolverForTest(async () => ["93.184.216.34"]);
+    const error = await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), host: "mail.acme.example.test" },
+    })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(MAIL_TLS_NONE_REFUSED);
+  });
+
+  test("starttls is required: a server without it is refused before login", async () => {
+    const f = await fixture();
+    const error = await transport(f, {
+      smtp: { ...serverFor(f.smtpPort), tls: "starttls" },
+    })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect(f.sent).toHaveLength(0);
+    // The password never went over the plain connection.
+    expect(f.smtpAuthCalls).toBe(0);
+  });
+
+  test("a closed port is a transient SendError", async () => {
+    const f = await fixture();
+    const t = new SmtpTransport({
+      inbox: inboxFor(f, { smtp: serverFor(await closedPort()) }),
+      password: MAIL_PASSWORD,
+    });
+    closers.push(() => t.close());
+    const error = await t.send(mail()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(false);
+  });
+});
+
+const CERT = selfSignedCert("mail.example.test");
+
+describe.skipIf(!CERT)("SmtpTransport over TLS", () => {
+  async function tlsFixture(): Promise<MailFixture> {
+    __setMailTlsCaForTest(CERT!.cert);
+    __setMailHostResolverForTest(async () => ["127.0.0.1"]);
+    return await fixture({ smtpTls: CERT! });
+  }
+
+  const tlsServer = (f: MailFixture, host: string): MailServerConfig => ({
+    ...serverFor(f.smtpPort),
+    host,
+    tls: "implicit",
+  });
+
+  test("the certificate's name passes", async () => {
+    const f = await tlsFixture();
+    await transport(f, { smtp: tlsServer(f, "mail.example.test") }).send(
+      mail(),
+    );
+    expect(f.sent).toHaveLength(1);
+  });
+
+  test("another name fails as a permanent TLS error, before login", async () => {
+    const f = await tlsFixture();
+    const error = await transport(f, {
+      smtp: tlsServer(f, "wrong.example.test"),
+    })
+      .send(mail())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendError);
+    expect((error as SendError).permanent).toBe(true);
+    expect((error as SendError).message).toBe(
+      "The mail server didn't offer a secure connection",
+    );
+    expect(f.sent).toHaveLength(0);
+    expect(f.smtpAuthCalls).toBe(0);
+  });
+
+  test("Test login checks the certificate too", async () => {
+    const f = await tlsFixture();
+    expect(
+      await testSmtpLogin(
+        tlsServer(f, "mail.example.test"),
+        MAIL_PASSWORD,
+        INTERNAL,
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      await testSmtpLogin(
+        tlsServer(f, "wrong.example.test"),
+        MAIL_PASSWORD,
+        INTERNAL,
+      ),
+    ).toMatchObject({ ok: false, permanent: true });
+  });
+});
+
+describe("classifySmtpError", () => {
+  const err = (props: Record<string, unknown>) =>
+    Object.assign(new Error("x"), props);
+
+  test("4xx answers and failures before DATA are transient", () => {
+    for (const e of [
+      err({ responseCode: 421 }),
+      err({ responseCode: 451, code: "EENVELOPE", command: "MAIL FROM" }),
+      err({ responseCode: 450, code: "EENVELOPE", command: "RCPT TO" }),
+      err({ responseCode: 451, code: "EMESSAGE", command: "DATA" }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "CONNECT_TIMEOUT",
+      }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "GREETING_TIMEOUT",
+      }),
+      err({ code: "EDNS", command: "CONN" }),
+      err({ code: "ECONNECTION", originalCode: "ECONNREFUSED" }),
+      err({ code: "ESOCKET", originalCode: "EHOSTUNREACH" }),
+    ])
+      expect(classifySmtpError(e).permanent).toBe(false);
+  });
+
+  test("a timeout or broken connection without an answer may have sent: never retried", () => {
+    for (const e of [
+      err({ code: "ECONNECTION", command: "CONN" }),
+      err({
+        code: "ETIMEDOUT",
+        command: "CONN",
+        timeoutType: "SOCKET_TIMEOUT",
+      }),
+      err({ code: "ETIMEDOUT" }),
+      err({ code: "ESOCKET", command: "CONN" }),
+      err({ code: "EPIPE" }),
+      new Error("anything else"),
+    ]) {
+      const classified = classifySmtpError(e);
+      expect(classified.permanent).toBe(true);
+      expect(classified.message).toBe(INTERRUPTED_SEND);
+    }
+  });
+
+  test("5xx, auth and envelope errors are permanent", () => {
+    for (const e of [
+      err({ responseCode: 550 }),
+      err({ responseCode: 554, code: "EMESSAGE" }),
+      err({ code: "EAUTH", responseCode: 535 }),
+      err({ code: "EENVELOPE" }),
+    ])
+      expect(classifySmtpError(e).permanent).toBe(true);
+  });
+
+  test("a send-as refusal has fixed copy", () => {
+    for (const response of [
+      "550 5.7.60 SMTP; Client does not have permissions to send as this sender",
+      "554 5.2.0 STOREDRV.Submission.Exception:SendAsDeniedException",
+      "553 5.7.1 <help@acme.example.test>: Sender address rejected: not owned by user testuser",
+    ]) {
+      const e = classifySmtpError(
+        err({
+          code: "EENVELOPE",
+          responseCode: Number(response.slice(0, 3)),
+          response,
+        }),
+      );
+      expect(e.message).toBe(SMTP_SEND_AS_REFUSED);
+      expect(e.permanent).toBe(true);
+    }
+    // Other 5.7 refusals keep the general copy.
+    expect(
+      classifySmtpError(
+        err({ responseCode: 550, response: "550 5.7.1 Relaying denied" }),
+      ).message,
+    ).not.toBe(SMTP_SEND_AS_REFUSED);
+  });
+
+  test("passes a SendError through", () => {
+    const e = new SendError("x", true);
+    expect(classifySmtpError(e)).toBe(e);
+  });
+});
+
+describe("appendSentCopy", () => {
+  async function connectedImap(f: MailFixture): Promise<ImapTransport> {
+    const imap = new ImapTransport({
+      inbox: inboxFor(f),
+      password: MAIL_PASSWORD,
+      sink: async () => "stored",
+      loadCursor: async () => null,
+      saveCursor: async () => undefined,
+      onHealth: () => undefined,
+    });
+    closers.push(() => imap.stop());
+    await imap.start();
+    const until = Date.now() + 3000;
+    while (imap.health().state !== "live") {
+      if (Date.now() > until) throw new Error("imap not live");
+      await Bun.sleep(10);
+    }
+    return imap;
+  }
+
+  test("a copy already in Sent is not appended again, and INBOX stays read", async () => {
+    const f = await fixture();
+    const seen: string[] = [];
+    let cursor: ImapCursor | null = null;
+    const imap = new ImapTransport({
+      inbox: inboxFor(f),
+      password: MAIL_PASSWORD,
+      sink: async (m) => {
+        seen.push(m.keys.messageId ?? "");
+        return "stored";
+      },
+      loadCursor: async () => cursor,
+      saveCursor: async (c) => {
+        cursor = c;
+      },
+      onHealth: () => undefined,
+      autoIdleDelayMs: 50,
+    });
+    closers.push(() => imap.stop());
+    await imap.start();
+    const until = Date.now() + 3000;
+    while (imap.health().state !== "live") {
+      if (Date.now() > until) throw new Error("imap not live");
+      await Bun.sleep(10);
+    }
+    const { raw } = await transport(f).send(mail());
+    expect(await appendSentCopy(imap, raw, null)).toBe(true);
+    expect(await appendSentCopy(imap, raw, null)).toBe(true);
+    expect(f.imap.getMailbox("Sent").messages).toHaveLength(1);
+    // The live connection is back on INBOX: new mail still arrives.
+    f.deliver(
+      rawMail({ from: "ada@example.test", messageId: "new@example.test" }),
+    );
+    const deadline = Date.now() + 3000;
+    while (!seen.includes("new@example.test")) {
+      if (Date.now() > deadline) throw new Error("INBOX mail not seen");
+      await Bun.sleep(10);
+    }
+  });
+
+  test("puts the sent bytes into the Sent folder", async () => {
+    const f = await fixture();
+    const imap = await connectedImap(f);
+    const { raw } = await transport(f).send(mail());
+    expect(await appendSentCopy(imap, raw, null)).toBe(true);
+    const copies = f.imap.getMailbox("Sent").messages;
+    expect(copies).toHaveLength(1);
+    expect(String(copies[0].raw)).toContain(
+      "Message-ID: <out1@acme.example.test>",
+    );
+  });
+
+  test("returns false without a connection and does not throw", async () => {
+    const f = await fixture();
+    const imap = new ImapTransport({
+      inbox: inboxFor(f),
+      password: MAIL_PASSWORD,
+      sink: async () => "stored",
+      loadCursor: async () => null,
+      saveCursor: async () => undefined,
+      onHealth: () => undefined,
+    });
+    expect(
+      await appendSentCopy(imap, new TextEncoder().encode("x"), "Sent"),
+    ).toBe(false);
+    expect(f.imap.getMailbox("Sent").messages).toHaveLength(0);
+  });
+});
+
+describe("testSmtpLogin", () => {
+  test("logs in to the fixture", async () => {
+    const f = await fixture();
+    expect(
+      await testSmtpLogin(serverFor(f.smtpPort), MAIL_PASSWORD, INTERNAL),
+    ).toEqual({
+      ok: true,
+    });
+  });
+
+  test("EHLO names the inbox's domain when the login isn't an address", async () => {
+    const f = await fixture();
+    await testSmtpLogin(
+      serverFor(f.smtpPort),
+      MAIL_PASSWORD,
+      INTERNAL,
+      "help@acme.example.test",
+    );
+    expect(f.smtpEhlo.at(-1)).toBe("acme.example.test");
+  });
+
+  test("a wrong password is permanent", async () => {
+    const f = await fixture();
+    const result = await testSmtpLogin(
+      serverFor(f.smtpPort),
+      "wrong",
+      INTERNAL,
+    );
+    expect(result).toMatchObject({ ok: false, permanent: true });
+  });
+
+  test("a closed port is not permanent", async () => {
+    const result = await testSmtpLogin(
+      serverFor(await closedPort()),
+      MAIL_PASSWORD,
+      INTERNAL,
+    );
+    expect(result).toMatchObject({ ok: false, permanent: false });
+  });
+
+  test("an internal address without allowInternalHost is refused", async () => {
+    const f = await fixture();
+    expect(
+      await testSmtpLogin(serverFor(f.smtpPort), MAIL_PASSWORD, {
+        allowInternalHost: false,
+      }),
+    ).toEqual({ ok: false, permanent: true, error: MAIL_HOST_REFUSED });
+  });
+});

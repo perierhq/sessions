@@ -214,6 +214,40 @@ describe("buildAccessTable", () => {
     ]);
   });
 
+  test("Support: a column in every row, mode and search set here, keychain and hosts never", () => {
+    const table = buildAccessTable(READY_4_OF_6.document, env());
+    for (const group of table.groups)
+      for (const r of group.rows) expect(r.cells.support).toBeDefined();
+    const mode = row(table, (r) => r.key.kind === "mode");
+    expect(mode.cells.support).toEqual({ value: "read", editable: true });
+    const search = row(table, (r) => r.key.kind === "webSearch");
+    expect(search.cells.support).toEqual({ value: "no", editable: true });
+    for (const kind of ["credential", "host"] as const)
+      expect(row(table, (r) => r.key.kind === kind).cells.support).toEqual({
+        value: "no",
+        editable: false,
+        reason: "Only incident agents have this enforced",
+      });
+
+    const doc = structuredClone(READY_4_OF_6.document);
+    doc.access.modes.support = "code";
+    doc.access.connections[0]!.roles.push("support");
+    doc.access.webSearch.push("support");
+    const ticked = buildAccessTable(doc, env());
+    expect(row(ticked, (r) => r.key.kind === "mode").cells.support.value).toBe(
+      "branch",
+    );
+    expect(
+      row(
+        ticked,
+        (r) => r.key.kind === "connection" && r.key.server === "linear",
+      ).cells.support,
+    ).toEqual({ value: "yes", editable: true });
+    expect(
+      row(ticked, (r) => r.key.kind === "webSearch").cells.support.value,
+    ).toBe("yes");
+  });
+
   test("a group with no rows is left out", () => {
     const doc = structuredClone(READY_4_OF_6.document);
     doc.access.credentials = [];

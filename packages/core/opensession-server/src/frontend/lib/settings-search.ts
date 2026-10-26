@@ -190,6 +190,7 @@ export const SETTINGS_KEYWORDS = {
     "private key",
     "client secret",
   ],
+  inboxes: ["inbox", "email", "imap", "smtp", "support", "mailbox"],
   connections: ["mcp servers", "tools", "agents", "add mcp server"],
   memory: ["facts", "remember", "scopes"],
   automations: ["scheduled", "cron", "triggers", "watchers", "jobs"],

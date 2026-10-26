@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from "react";
+import {
+  SUPPORT_EMAIL_LIST_LIMIT,
+  type SupportChannelKind,
+  type SupportIntent,
+  type SupportListItem,
+} from "../../shared/support";
 import { useIsPhone } from "../hooks/useIsPhone";
-import { fetchSupportThreads } from "../lib/api";
+import { type SupportItems, fetchSupportItems } from "../lib/api/support";
 import {
   SIDEBAR_GROUP_HEADER,
   SIDEBAR_GROUP_HEADER_INSET,
@@ -17,18 +23,27 @@ import {
   SUPPORT_PRIORITY_GROUPS,
 } from "../lib/sidebar-filter";
 import { SUPPORT_COLUMN_BAR } from "../lib/support-classes";
+import {
+  filterByChannel,
+  liveSessionFor,
+  supportItemProviderId,
+  supportLanes,
+} from "../lib/support-list";
 import { mineStatus } from "../lib/sidebar-lanes";
 import { MINE_STATUS_META } from "../lib/sidebar-types";
-import { shortTime } from "../lib/time";
-import type { SupportThread, UnifiedSession } from "../lib/types";
+import { clockTime, shortTime } from "../lib/time";
+import type { UnifiedSession } from "../lib/types";
 import { cn } from "../ui/cn";
+import { Segmented, SegmentedOption } from "../ui/segmented";
 import { EmptyState, InlineAlert, LoadingState } from "../ui/state";
+import { Tooltip } from "../ui/tooltip";
 import { ConversationPane } from "./ConversationPane";
-import { IconMail } from "./icons";
+import { IconMail, IconMessage } from "./icons";
 
 /**
- * The Plain queue as a place of its own: the tickets in a column beside the
- * sidebar, the one you picked open next to them, and no chat anywhere.
+ * The support queue as a place of its own: every channel's conversations in
+ * one column beside the sidebar (email from the inboxes, Plain's TODO queue),
+ * the one you picked open next to them, and no chat anywhere.
  *
  * It is the second way into the same queue, running beside the Plain band at
  * the bottom of the sidebar rather than replacing it — the two are being tried
@@ -57,6 +72,28 @@ const COLUMN_TITLE =
 const COLUMN_COUNT =
   "ml-auto shrink-0 text-meta font-medium tabular-nums text-faint";
 
+/** The channel filter, under the bar. Only there when a second channel has
+ *  something to say, so a one-inbox instance never sees it. */
+const FILTER_ROW = "shrink-0 px-3 pt-2.5";
+const FILTER_OPTION = "phone:min-h-11";
+
+/** The glyph and accessible name for a channel's mark; null for a channel
+ *  this build has no mark for. */
+function channelMark(channel: SupportChannelKind) {
+  if (channel === "email") return { label: "Email", Icon: IconMail };
+  if (channel === "plain") return { label: "Plain", Icon: IconMessage };
+  return null;
+}
+
+type ChannelFilter = SupportChannelKind | "all";
+
+/** Each failed channel's own copy from the server, as one line: "Plain
+ *  could not be reached." */
+function channelErrorText(channels: SupportItems["channels"]): string | null {
+  const errors = channels.flatMap((c) => (c.error ? [c.error] : []));
+  return errors.length ? errors.map((e) => `${e}.`).join(" ") : null;
+}
+
 const LIST =
   "min-h-0 flex-1 overflow-y-auto px-1.5 pt-2 pb-3 " +
   "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
@@ -77,42 +114,53 @@ const ROW_NAME =
 
 const ROW_TIME = "shrink-0 text-right text-meta tabular-nums text-faint";
 
+/** The channel mark before the time: which door the conversation came in. */
+const ROW_MARK = "inline-flex shrink-0 self-center text-faint";
+
 const ROW_SUBJECT =
   "mt-1 block truncate text-label text-faint " +
   "group-data-active:text-dim phone:text-[14px]";
 
 interface Props {
-  /** The open ticket, or null for the list on its own. */
-  threadId: string | null;
-  /** Live sessions, for the rail dot: a ticket already being worked on wears
-   *  its session's status instead of its priority. */
+  /** The open item (`email:sc_…`, `plain:th_…`), or null for the list on
+   *  its own. */
+  itemId: string | null;
+  /** A support push's button on the open email conversation (`?intent=`). */
+  intent?: SupportIntent;
+  /** The intent was asked about: drop it from the route. */
+  onIntentHandled?: () => void;
+  /** Live sessions, for the rail dot: a conversation already being worked on
+   *  wears its session's status instead of its priority. */
   sessions: UnifiedSession[];
-  /** Open a ticket (drives the route, so the pane is deep-linkable). */
-  onSelectThread: (threadId: string) => void;
+  /** Open an item (drives the route, so the pane is deep-linkable). */
+  onSelectItem: (itemId: string) => void;
   /** Navigate into a session — what the pane's triage button resolves to. */
   onOpenSession: (id: string) => void;
 }
 
 export function SupportInbox({
-  threadId,
+  itemId,
+  intent,
+  onIntentHandled,
   sessions,
-  onSelectThread,
+  onSelectItem,
   onOpenSession,
 }: Props) {
   const isPhone = useIsPhone();
-  const [threads, setThreads] = useState<SupportThread[] | null>(null);
+  const [data, setData] = useState<SupportItems | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [channel, setChannel] = useState<ChannelFilter>("all");
 
   // The same gentle cadence the sidebar polls Plain on (the server caches
-  // ~60s). A poll that fails while tickets are already on screen keeps them:
+  // ~60s). A poll that fails while items are already on screen keeps them:
   // the list is the queue as of the last good answer, not an error page.
   useEffect(() => {
     let alive = true;
     const load = () =>
-      fetchSupportThreads()
-        .then((t) => {
+      fetchSupportItems()
+        .then((next) => {
           if (!alive) return;
-          setThreads(t);
+          setData(next);
           setError(null);
         })
         .catch((e) => {
@@ -129,38 +177,55 @@ export function SupportInbox({
     };
   }, []);
 
-  // Newest live session per thread — the same rule the sidebar's Support rows
-  // use to decide what their dot says.
-  const sessionByThread = (() => {
-    const m = new Map<string, UnifiedSession>();
-    for (const s of sessions) {
-      if (s.archived || !s.plainThreadId) continue;
-      const prev = m.get(s.plainThreadId);
-      if (!prev || s.lastActivity > prev.lastActivity)
-        m.set(s.plainThreadId, s);
-    }
-    return m;
-  })();
+  const allItems = data?.items ?? null;
+  const channels = data?.channels ?? [];
+  // The filter shows only when more than one channel has items or an error.
+  const speaking = channels.filter(
+    (c) => c.error || allItems?.some((i) => i.channel === c.channel),
+  );
+  const showFilter = speaking.length > 1;
+  const items =
+    allItems && filterByChannel(allItems, showFilter ? channel : "all");
+  const channelError = channelErrorText(channels);
+  const openItem = allItems?.find((i) => i.id === itemId) ?? null;
+  const openChannel = itemId?.slice(0, itemId.indexOf(":")) ?? null;
 
-  // Phone: list and ticket are separate pages, with a back button between.
-  const showList = !isPhone || !threadId;
-  const showTicket = !isPhone || !!threadId;
+  // Phone: list and conversation are separate pages, with a back button
+  // between.
+  const showList = !isPhone || !itemId;
+  const showTicket = !isPhone || !!itemId;
 
-  function renderRow(t: SupportThread) {
-    const session = sessionByThread.get(t.id) || null;
-    const customer = t.customer.name || t.customer.email || "Unknown";
+  function renderMark(item: SupportListItem) {
+    const mark = channelMark(item.channel);
+    if (!mark) return null;
+    const glyph = (
+      <span className={ROW_MARK} role="img" aria-label={mark.label}>
+        {/* dense: a 14px glyph riding in the meta line, which the 20px
+				    icon floor would otherwise make taller than the time. */}
+        <mark.Icon size={14} dense />
+      </span>
+    );
+    return isPhone ? glyph : <Tooltip label={mark.label}>{glyph}</Tooltip>;
+  }
+
+  function renderRow(item: SupportListItem) {
+    const session = liveSessionFor(item, sessions);
+    const customer = item.customer.name || item.customer.email || "Unknown";
     const dot =
       (session
         ? MINE_STATUS_META.find((m) => m.key === mineStatus(session))?.dotColor
-        : SUPPORT_PRIORITY_DOT[t.priority ?? 2]) || "var(--text-faint)";
-    const stamp = t.statusChangedAt || t.createdAt;
+        : SUPPORT_PRIORITY_DOT[item.priority ?? 2]) || "var(--text-faint)";
+    // A send waiting out its veto window shows when it goes, not when the
+    // mail came in.
+    const veto = item.draftState === "veto" && item.vetoDeadline;
+    const stamp = veto ? item.vetoDeadline : item.at;
     return (
       <button
-        key={t.id}
+        key={item.id}
         type="button"
         className={ROW}
-        data-active={(threadId === t.id && !isPhone) || undefined}
-        onClick={() => onSelectThread(t.id)}
+        data-active={(itemId === item.id && !isPhone) || undefined}
+        onClick={() => onSelectItem(item.id)}
       >
         <span className={SIDEBAR_RAIL}>
           <span
@@ -171,17 +236,18 @@ export function SupportInbox({
         <span className="min-w-0 flex-1">
           <span className={ROW_HEAD}>
             <span className={ROW_NAME}>{customer}</span>
+            {renderMark(item)}
             {stamp && (
               <span
                 className={ROW_TIME}
                 title={new Date(stamp).toLocaleString()}
               >
-                {shortTime(stamp)}
+                {veto ? `sends ${clockTime(stamp)}` : shortTime(stamp)}
               </span>
             )}
           </span>
           <span className={ROW_SUBJECT}>
-            {t.title || t.previewText || "No subject"}
+            {item.title || item.preview || "No subject"}
           </span>
         </span>
       </button>
@@ -194,25 +260,66 @@ export function SupportInbox({
         <aside className={COLUMN}>
           <div className={SUPPORT_COLUMN_BAR}>
             <h1 className={COLUMN_TITLE}>Support</h1>
-            {threads && <span className={COLUMN_COUNT}>{threads.length}</span>}
+            {items && <span className={COLUMN_COUNT}>{items.length}</span>}
           </div>
+          {showFilter && (
+            <div className={FILTER_ROW}>
+              <Segmented
+                label="Channel"
+                size="sm"
+                value={channel}
+                onValueChange={setChannel}
+              >
+                <SegmentedOption value="all" className={FILTER_OPTION}>
+                  All
+                </SegmentedOption>
+                {speaking.map((c) => (
+                  <SegmentedOption
+                    key={c.channel}
+                    value={c.channel}
+                    className={FILTER_OPTION}
+                  >
+                    {c.label}
+                  </SegmentedOption>
+                ))}
+              </Segmented>
+            </div>
+          )}
           <div className={LIST}>
-            {threads === null ? (
-              <LoadingState>Loading tickets…</LoadingState>
-            ) : error && threads.length === 0 ? (
-              <InlineAlert className="mt-2">{error}</InlineAlert>
-            ) : threads.length === 0 ? (
-              <div className="px-3 py-6 text-center text-label text-faint">
-                Nothing waiting in Plain.
-              </div>
+            {/* A channel that can't answer is a warning over the rows the
+						    others sent, not an error page; only a failed request is. */}
+            {channelError && items && items.length > 0 && (
+              <InlineAlert variant="warn" className="mx-1.5 mb-2">
+                {channelError}
+              </InlineAlert>
+            )}
+            {items === null ? (
+              error ? (
+                <InlineAlert className="mt-2">{error}</InlineAlert>
+              ) : (
+                <LoadingState>Loading conversations…</LoadingState>
+              )
+            ) : items.length === 0 ? (
+              channelError ? (
+                <InlineAlert variant="warn" className="mt-2">
+                  {channelError}
+                </InlineAlert>
+              ) : (
+                <div className="px-3 py-6 text-center text-label text-faint">
+                  Nothing waiting.
+                </div>
+              )
             ) : (
-              SUPPORT_PRIORITY_GROUPS.map((group) => {
-                const items = threads.filter(
-                  (t) => (t.priority ?? 2) === group.p,
-                );
-                if (items.length === 0) return null;
+              supportLanes(items).map((lane) => {
+                // "Needs you" wears the urgent lane's colour.
+                const tone =
+                  lane.key === "needs-you"
+                    ? SUPPORT_PRIORITY_GROUPS[0].cls
+                    : lane.key <= 1
+                      ? SUPPORT_PRIORITY_GROUPS[lane.key].cls
+                      : null;
                 return (
-                  <div key={group.p}>
+                  <div key={lane.key}>
                     {/* The sidebar's lane caption, not a heading of its
 										    own: same tokens, same colour per priority. */}
                     <div
@@ -227,19 +334,32 @@ export function SupportInbox({
                         className={cn(
                           SIDEBAR_GROUP_NAME,
                           SIDEBAR_LANE_NAME,
-                          group.p <= 1 && group.cls,
+                          tone,
                         )}
                       >
-                        {group.label}
+                        {lane.label}
                       </span>
-                      <span className={cn(SIDEBAR_LANE_COUNT, group.cls)}>
-                        {items.length}
+                      <span
+                        className={cn(
+                          SIDEBAR_LANE_COUNT,
+                          lane.key === "needs-you"
+                            ? tone
+                            : SUPPORT_PRIORITY_GROUPS[lane.key].cls,
+                        )}
+                      >
+                        {lane.items.length}
                       </span>
                     </div>
-                    {items.map(renderRow)}
+                    {lane.items.map(renderRow)}
                   </div>
                 );
               })
+            )}
+            {data?.truncated && (
+              <p className="m-0 px-3 pt-3 text-meta text-faint">
+                Showing the newest {SUPPORT_EMAIL_LIST_LIMIT} email
+                conversations.
+              </p>
             )}
           </div>
         </aside>
@@ -247,29 +367,48 @@ export function SupportInbox({
 
       {showTicket && (
         <section className="flex min-w-0 flex-1 flex-col">
-          {/* An open ticket brings its own bar, with its subject and
-					    customer in it. This is the one for when nothing is open, and
+          {/* An open conversation (a Plain ticket, an email) brings its
+					    own bar, with its subject and customer in it. This is the
+					    one for everything else, and
 					    for phones, where the app's floating back control sits here
-					    and the ticket keeps its header inline — a second back button
-					    would be the same gesture twice. Either way the two columns
+					    and the ticket keeps its header inline (a second back button
+					    would be the same gesture twice). Either way the two columns
 					    start on one line. */}
-          {(!threadId || isPhone) && <div className={SUPPORT_COLUMN_BAR} />}
-          {threadId ? (
+          {(!itemId || isPhone) && <div className={SUPPORT_COLUMN_BAR} />}
+          {itemId && (openChannel === "plain" || openChannel === "email") ? (
             <ConversationPane
-              key={threadId}
-              threadId={threadId}
+              key={itemId}
+              threadId={supportItemProviderId(itemId)}
+              itemId={itemId}
+              intent={intent}
+              onIntentHandled={onIntentHandled}
               onOpenSession={onOpenSession}
-              session={sessionByThread.get(threadId) || null}
+              session={liveSessionFor(
+                openItem ?? {
+                  id: itemId,
+                  channel: openChannel,
+                  sessionId: null,
+                },
+                sessions,
+              )}
               headerInBar
             />
+          ) : itemId ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+              <EmptyState
+                icon={<IconMail size={22} />}
+                title={openItem?.title || "Conversation"}
+              >
+                {openItem?.preview || "This channel can't be opened here yet."}
+              </EmptyState>
+            </div>
           ) : (
             <div className="flex min-h-0 flex-1 items-center justify-center p-8">
               <EmptyState
                 icon={<IconMail size={22} />}
-                title="No ticket selected"
+                title="Nothing selected"
               >
-                Pick a ticket to read the conversation, reply, and set its
-                status without leaving this page.
+                Open a conversation to read it here.
               </EmptyState>
             </div>
           )}

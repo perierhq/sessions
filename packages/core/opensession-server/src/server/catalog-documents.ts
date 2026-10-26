@@ -65,6 +65,21 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // from incident-projects, incident-access and the sandbox config instead
   // (projects/migrate.ts).
   "projects",
+  // Support inbox configuration; passwords are workspace-secret refs only
+  // (support/inboxes.ts).
+  "support-inboxes",
+  // Support conversations with their messages and drafts (support/store.ts).
+  "support-conversations",
+  // One list row per support conversation, also the retention and veto
+  // sweeps' work index (support/store.ts).
+  "support-index",
+  // Message-ID and provider id to conversation, per inbox (support/store.ts).
+  "support-message-ids",
+  // Support work due later: triage, veto deadlines, send retries
+  // (support/ingest.ts, support/tick.ts).
+  "support-pending",
+  // IMAP UID cursor per inbox and folder (agents/email/imap-transport.ts).
+  "support-cursors",
 ] as const;
 
 export type ApplicationCatalogNamespace =

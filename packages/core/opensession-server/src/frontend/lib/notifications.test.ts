@@ -304,3 +304,66 @@ describe("incident notifications on this device", () => {
     ).toBe(true);
   });
 });
+
+describe("support notifications on this device", () => {
+  const supportThread = (
+    over: Partial<NotificationThread> = {},
+  ): NotificationThread => ({
+    id: "support:sc_1",
+    subject: {
+      type: "support",
+      id: "sc_1",
+      title: "A support reply is ready",
+      context: "acme",
+    },
+    kind: "support_needs_you",
+    reason: "Drafts wait for a person",
+    body: "Open Sessions to read it and send",
+    url: "/support/email:sc_1",
+    updatedAt: 1_000,
+    unread: true,
+    done: false,
+    ...over,
+  });
+
+  test("support rows parse, lead with the project and say why", () => {
+    expect(notificationThreadSchema.safeParse(supportThread()).success).toBe(
+      true,
+    );
+    for (const kind of [
+      "support_needs_you",
+      "support_veto",
+      "support_failed",
+    ] as const)
+      expect(
+        notificationThreadSchema.safeParse(supportThread({ kind })).success,
+      ).toBe(true);
+    expect(store.notificationBannerText(supportThread())).toEqual({
+      title: "A support reply is ready",
+      body: "acme · Open Sessions to read it and send",
+    });
+    expect(store.notificationRowText(supportThread())).toEqual({
+      title: "A support reply is ready",
+      line: "Drafts wait for a person",
+    });
+  });
+
+  test("a support row links to its email conversation", () => {
+    const opened: string[] = [];
+    store.startNotifications((url) => opened.push(url));
+    store.openNotification(supportThread({ unread: false }));
+    expect(opened).toEqual(["/support/email:sc_1"]);
+    store.startNotifications(() => {});
+  });
+
+  test("an older server without the support switch reads as on", () => {
+    expect(
+      alertsSchema.parse({
+        reviews: true,
+        mentions: true,
+        collaborators: true,
+        reminders: true,
+      }).support,
+    ).toBe(true);
+  });
+});

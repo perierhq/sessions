@@ -50,7 +50,13 @@ import { runAgentHosted } from "./host-client";
 import { getRunState, transitionRunState } from "./run-state";
 import { settlePromptThrowRunState } from "./prompt-throw-settlement";
 import { retryOnKernelSaturation } from "./session-projection-executor";
-import { resolveSessionRunInputs, runAccountSpec } from "./session-run-inputs";
+import {
+  isSupportSession,
+  resolveSessionRunInputs,
+  runAccountSpec,
+} from "./session-run-inputs";
+import { supportSessionMcp } from "./support/mcp";
+import { supportToolResult, supportToolUse } from "./support/evidence";
 import { defaultRepo } from "./config";
 import { agentAwsCredsForUntrustedRuns } from "./aws-creds";
 import { isDevInstance } from "./dev-mode";
@@ -2010,20 +2016,25 @@ export function sandboxRunSecuritySpec(
         : []
       : opts.isAutomationSession
         ? (opts.automationProxyMcpServers ?? [])
-        : session.plainDiscussionId
-          ? Object.keys(
-              plainDiscussionSessionMcp(session.id, session.plainDiscussionId),
-            )
-          : [
-              ...Object.keys(
-                interactiveMcpServers(
-                  opts.user,
+        : isSupportSession(session)
+          ? Object.keys(supportSessionMcp(session.id))
+          : session.plainDiscussionId
+            ? Object.keys(
+                plainDiscussionSessionMcp(
                   session.id,
-                  opts.promptEntryId,
+                  session.plainDiscussionId,
                 ),
-              ),
-              ...(session.goalId ? ["opensession-goal-self"] : []),
-            ],
+              )
+            : [
+                ...Object.keys(
+                  interactiveMcpServers(
+                    opts.user,
+                    session.id,
+                    opts.promptEntryId,
+                  ),
+                ),
+                ...(session.goalId ? ["opensession-goal-self"] : []),
+              ],
     reposNote: undefined,
     deniedTools: opts.deniedTools,
     publicationPolicy: descendant
@@ -2037,9 +2048,15 @@ export function sandboxRunSecuritySpec(
     // discussion sessions (which read customer ticket text), unless the
     // instance opts them in (`integrations.aws.untrustedRuns`).
     aws:
-      (!opts.isAutomationSession && !session.plainDiscussionId) ||
+      (!opts.isAutomationSession &&
+        !session.plainDiscussionId &&
+        !isSupportSession(session)) ||
       agentAwsCredsForUntrustedRuns(),
-    user: opts.isAutomationSession ? undefined : opts.user,
+    // A support session's run inputs already dropped the user.
+    user:
+      opts.isAutomationSession || isSupportSession(session)
+        ? undefined
+        : opts.user,
     mcpGrantUser: opts.isAutomationSession
       ? undefined
       : session.createdByLogin || undefined,
@@ -2345,9 +2362,12 @@ export async function maybeLaunchSandboxedRun(
       // they do for any session here; an automation keeps its allowlist.
       mcpServers: opts.mcpServers ?? "all",
       proxyMcpServers: security.proxyMcpServers,
-      reposNote: opts.isAutomationSession
-        ? undefined
-        : await buildSessionNote(session, opts.user),
+      // No repos, memory or personal note for untrusted runs: automation
+      // turns and support sessions (customer mail, no person).
+      reposNote:
+        opts.isAutomationSession || isSupportSession(session)
+          ? undefined
+          : await buildSessionNote(session, opts.user),
       deniedTools: opts.deniedTools,
       // An unattended run's web_fetch reads only its egress allowlist: the
       // disposable Executor's domains, or an incident agent's hosts.
@@ -2381,7 +2401,10 @@ export async function maybeLaunchSandboxedRun(
       ...runAccountSpec(session, opts, owningAutomation),
       trustProfile: security.trustProfile,
       journalKind: security.journalKind,
-      onAskUser: makeAskHandler(session.id),
+      // No one answers a support session's questions.
+      onAskUser: isSupportSession(session)
+        ? undefined
+        : makeAskHandler(session.id),
       // A steer that reached the run too late must not evaporate. Hand it
       // back to the queue, receipt and all.
       onSteerFailed: (text: string) =>
@@ -3197,9 +3220,12 @@ async function runSessionPromptInner(
   const isAutomationSession = runInputs.isAutomationSession;
   const mcpServers = runInputs.mcpServers;
   const deniedTools = runInputs.deniedTools;
+  // A support session reads untrusted customer mail with no person at the
+  // keyboard: no personal notes, memory, folders or AWS credentials.
+  const supportSession = runInputs.inProcessMcpBranch === "support";
   // Folders on the prompter's own computer (local-folders.ts). Interactive
   // turns only, and only folders this prompter connected.
-  if (!isAutomationSession && !session.plainDiscussionId) {
+  if (!isAutomationSession && !session.plainDiscussionId && !supportSession) {
     const foldersNote = localFoldersContextNote(session.id, user);
     if (foldersNote)
       prompt = `${wrapContext(foldersNote, "local-folders-note")}\n\n${prompt}`;
@@ -3208,7 +3234,7 @@ async function runSessionPromptInner(
   // Retrieval is query-specific context for this turn. Keep it out of the
   // stable system prefix so an unrelated memory write cannot invalidate every
   // cached token behind the run instructions.
-  if (!isAutomationSession) {
+  if (runInputs.sessionNote) {
     const memoryContext = await retrievedMemoryNoteFor(
       content,
       user,
@@ -3220,7 +3246,7 @@ async function runSessionPromptInner(
 
   // @session:<id> mentions → footer resolving them for the agent's
   // opensession-sessions tools. Interactive sessions only (same gate as the tools).
-  if (!isAutomationSession) {
+  if (!isAutomationSession && !supportSession) {
     const mentionsNote = sessionMentionsNote(prompt, inlinedSessionIds);
     if (mentionsNote) prompt += `\n\n${mentionsNote}`;
   }
@@ -3418,7 +3444,7 @@ async function runSessionPromptInner(
     attachments,
     mcpServers: mcpServers ?? "all",
     user,
-    reposNote: isAutomationSession
+    reposNote: !runInputs.sessionNote
       ? undefined
       : await buildSessionNote(session, user),
     automationProxyMcpServers,
@@ -3509,7 +3535,8 @@ async function runSessionPromptInner(
   // builder serves, resolved once above as automationMcp) so a Slack thread
   // reply reaches a session with the same tools its unattended run had. A
   // Plain discussion session gets only its approval server: it reads
-  // untrusted ticket text. A goal-driven session also gets its own
+  // untrusted ticket text. A support session gets only opensession-support,
+  // for the same reason (customer mail). A goal-driven session also gets its own
   // opensession-goal-self controls, so an interactive turn (a human steering
   // it in the UI) can set the next wake, append to the ledger, or
   // pause/finish — the same tools the headless wake has.
@@ -3518,16 +3545,22 @@ async function runSessionPromptInner(
       ? incidentMcp
       : isAutomationSession
         ? automationMcp
-        : session.plainDiscussionId
-          ? plainDiscussionSessionMcp(sessionId, session.plainDiscussionId)
-          : session.goalId
-            ? {
-                ...interactiveMcpServers(user, sessionId, durablePromptEntryId),
-                "opensession-goal-self": createGoalSelfMcpServer(
-                  session.goalId,
-                ),
-              }
-            : interactiveMcpServers(user, sessionId, durablePromptEntryId);
+        : supportSession
+          ? supportSessionMcp(sessionId)
+          : session.plainDiscussionId
+            ? plainDiscussionSessionMcp(sessionId, session.plainDiscussionId)
+            : session.goalId
+              ? {
+                  ...interactiveMcpServers(
+                    user,
+                    sessionId,
+                    durablePromptEntryId,
+                  ),
+                  "opensession-goal-self": createGoalSelfMcpServer(
+                    session.goalId,
+                  ),
+                }
+              : interactiveMcpServers(user, sessionId, durablePromptEntryId);
   const hostedRun =
     !runnerRun && !sandboxRun && routedEngine === "pi"
       ? runAgentHosted({
@@ -3551,7 +3584,7 @@ async function runSessionPromptInner(
           proxyMcpServers: session.automationDescendantPolicy
             ? Object.keys(incidentMcp)
             : Object.keys(inProcessMcpForTurn()),
-          reposNote: isAutomationSession
+          reposNote: !runInputs.sessionNote
             ? undefined
             : await buildSessionNote(session, user),
           deniedTools,
@@ -3568,7 +3601,9 @@ async function runSessionPromptInner(
           ...(bashRunAs ? { bashRunAs } : {}),
           confirmTools: STRIPE_CONFIRM_TOOLS,
           aws:
-            (!isAutomationSession && !session.plainDiscussionId) ||
+            (!isAutomationSession &&
+              !session.plainDiscussionId &&
+              !supportSession) ||
             agentAwsCredsForUntrustedRuns(),
           readRepos: automationReadRepos,
           attachedRepos: attachedGhRepos,
@@ -3588,7 +3623,7 @@ async function runSessionPromptInner(
           ...runAccountSpec(session, runInputs),
           trustProfile: isAutomationSession ? "automation" : "interactive",
           journalKind: "prompt",
-          onAskUser: makeAskHandler(sessionId),
+          onAskUser: supportSession ? undefined : makeAskHandler(sessionId),
           onSteerFailed: (text) => requeueFailedSteer(session.id, text, user),
           fallbackInProcessMcp: inProcessMcpForTurn,
         })
@@ -3664,7 +3699,7 @@ async function runSessionPromptInner(
       inProcessMcp: session.automationDescendantPolicy
         ? incidentMcp
         : inProcessMcpForTurn(),
-      reposNote: isAutomationSession
+      reposNote: !runInputs.sessionNote
         ? undefined
         : await buildSessionNote(session, user),
       deniedTools,
@@ -3684,7 +3719,9 @@ async function runSessionPromptInner(
       // ticket text) receive AWS credentials only when the instance opts
       // them in (`integrations.aws.untrustedRuns`).
       aws:
-        (!isAutomationSession && !session.plainDiscussionId) ||
+        (!isAutomationSession &&
+          !session.plainDiscussionId &&
+          !supportSession) ||
         agentAwsCredsForUntrustedRuns(),
       // Attribute any commits this turn makes to whoever sent the prompt, or
       // to the person the session acts for when nobody did (an auto-continue,
@@ -3702,7 +3739,7 @@ async function runSessionPromptInner(
       mcpGrantUser: runInputs.mcpGrantUser,
       journal: { osSessionId: session.id, kind: "prompt" },
       startToken,
-      onAskUser: makeAskHandler(sessionId),
+      onAskUser: supportSession ? undefined : makeAskHandler(sessionId),
     })) {
     firstEventMs ??= Date.now() - turnMetricStartedAt;
     recordIncidentDeclarations(event);
@@ -3857,6 +3894,7 @@ async function runSessionPromptInner(
             model: session.model,
           });
         plainDiscussionToolUse(session.plainDiscussionId, event);
+        supportToolUse(sessionId, supportSession, event);
         broadcastToSession(sessionId, {
           type: "stream_tool_use",
           sessionId,
@@ -3873,6 +3911,7 @@ async function runSessionPromptInner(
         break;
       case "tool_result":
         plainDiscussionToolResult(session.plainDiscussionId, event);
+        supportToolResult(event);
         broadcastToSession(sessionId, {
           type: "stream_tool_result",
           sessionId,

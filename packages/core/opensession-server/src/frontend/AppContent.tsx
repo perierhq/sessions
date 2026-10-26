@@ -28,8 +28,7 @@ import {
   Reports,
   Reviews,
   Security,
-  SupportInbox,
-  SupportPreview,
+  SupportPane,
   SupportTinder,
   Tasks,
   WorkspacePane,
@@ -1608,23 +1607,14 @@ export function AppContent({
                       addHandler={addHandler}
                       onOpenSession={(id) => navigate({ view: "session", id })}
                     />
-                  ) : route.view === "plain" ? (
-                    <SupportInbox
-                      threadId={route.threadId ?? null}
+                  ) : route.view === "support" || route.view === "plain" ? (
+                    <SupportPane
+                      route={route}
                       sessions={sessions}
-                      onSelectThread={(threadId) =>
-                        navigate({ view: "plain", threadId })
-                      }
-                      onOpenSession={(id) => navigate({ view: "session", id })}
-                    />
-                  ) : route.view === "support" ? (
-                    <SupportPreview
-                      key={route.threadId}
-                      threadId={route.threadId}
                       connected={connected}
                       send={send}
                       addHandler={addHandler}
-                      onOpenSession={(id) => navigate({ view: "session", id })}
+                      navigate={navigate}
                     />
                   ) : route.view === "issues" ? (
                     <Issues

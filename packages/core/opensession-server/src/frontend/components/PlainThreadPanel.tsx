@@ -1,13 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  PlainEntryAttachment,
   PlainLabelType,
   PlainThread,
-  PlainTimelineEntry,
   PlainWorkspaceUser,
 } from "../lib/types";
 import {
-  API_BASE,
   changePlainThreadLabelsApi,
   fetchPlainLabelTypesApi,
   fetchPlainThreadApi,
@@ -24,48 +21,22 @@ import {
   setPlainThreadTitleApi,
   uploadPlainAttachmentApi,
 } from "../lib/api";
-import { BASE_PATH } from "../lib/base";
 import { Menu } from "../ui/menu";
-import { renderMarkdown } from "../lib/markdown";
-import { MarkdownBody } from "./MarkdownBody";
-import { loadDraft, saveDraft, clearDraft } from "../lib/drafts";
 import { useCurrentUser } from "./UserPicker";
 import { cn } from "../ui/cn";
 import { PLAIN_WORKSPACE_ID, PRODUCT_NAME } from "../lib/brand";
 import { PlainStatusBadge } from "./PlainStatusBadge";
-import {
-  composerBox,
-  composerBoxExpanded,
-  composerSend,
-  composerSendDefault,
-  composerTextarea,
-  composerTextareaPadding,
-  composerToolbar,
-} from "../lib/composer-classes";
-import { noAutofill } from "../lib/composer-autofill";
 import { noteSurface } from "../lib/tinted-surface";
 import { paletteIconBtn, palettePill } from "../lib/palette-classes";
-import {
-  plainEntryBody,
-  plainEntryHead,
-  plainEntryIn,
-  plainEntryMeta,
-  plainEntryName,
-  plainEntryNote,
-  plainEntryOut,
-  plainEntryRow,
-} from "../lib/plain-classes";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import {
-  IconArrowUp,
   IconArrowUpRight,
   IconCheck,
   IconDotsHorizontal,
   IconClock,
   IconFlag,
   IconForbid,
-  IconPaperclip,
   IconPencil,
   IconPerson,
   IconPlus,
@@ -74,6 +45,10 @@ import {
 } from "./icons";
 import { FileChips } from "./FileChips";
 import { UserAvatar } from "./UserAvatar";
+import { SupportMessageList } from "./SupportMessageList";
+import { SupportComposer, SupportSendButton } from "./SupportComposer";
+import { useSavedDraft } from "../hooks/useSavedDraft";
+import { PlainButton } from "../ui/plain-button";
 import { errorMessage } from "../lib/error-message";
 
 interface Props {
@@ -90,17 +65,6 @@ export function plainThreadUrl(threadId: string): string {
   return PLAIN_WORKSPACE_ID
     ? `https://app.plain.com/workspace/${PLAIN_WORKSPACE_ID}/thread/${threadId}/`
     : "";
-}
-
-function timeOf(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 /**
@@ -218,20 +182,13 @@ export function PlainThreadPanel({ sessionId, threadId, plainUrl }: Props) {
           <div className="mt-5 text-center text-label text-faint">
             Couldn't load Plain thread: {error}
           </div>
-        ) : thread && thread.entries.length === 0 ? (
-          <div className="mt-5 text-center text-label text-faint">
-            No messages in this thread yet.
-          </div>
-        ) : (
-          thread?.entries.map((e) => (
-            <PlainEntryRow
-              key={e.id}
-              entry={e}
-              threadId={threadId}
-              threadTitle={thread?.title}
-            />
-          ))
-        )}
+        ) : thread ? (
+          <SupportMessageList
+            entries={thread.entries}
+            threadId={threadId}
+            threadTitle={thread.title}
+          />
+        ) : null}
       </div>
 
       {thread && (
@@ -764,10 +721,7 @@ export function PlainReplyBox({
   className?: string;
 }) {
   const draftKey = `plain-reply:${threadId}`;
-  const [text, setText] = useState(() => loadDraft(draftKey).text);
-  useEffect(() => {
-    saveDraft(draftKey, { text });
-  }, [draftKey, text]);
+  const [text, setText] = useSavedDraft(draftKey);
   const [kind, setKind] = useState<"reply" | "note">("reply");
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -778,14 +732,7 @@ export function PlainReplyBox({
   );
   useEffect(() => () => clearTimeout(sentTimer.current), []);
   const currentUser = useCurrentUser();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "";
-    if (text) el.style.height = `${el.scrollHeight}px`;
-  }, [text]);
 
   async function handleSend() {
     const t = text.trim();
@@ -818,7 +765,6 @@ export function PlainReplyBox({
       await sendPlainReplyApi(threadId, t, kind, currentUser, attachmentIds);
       setText("");
       setAttachments([]);
-      clearDraft(draftKey);
       setSent(true);
       clearTimeout(sentTimer.current);
       sentTimer.current = setTimeout(() => setSent(false), 3000);
@@ -839,148 +785,115 @@ export function PlainReplyBox({
       : undefined;
 
   return (
-    <div
-      className={cn(
-        "composer shrink-0",
-        composerBox,
-        composerBoxExpanded,
-        className,
-      )}
+    <SupportComposer
+      value={text}
+      onChange={setText}
+      onSubmit={handleSend}
+      label={kind === "note" ? "Internal note" : "Reply"}
+      placeholder={
+        kind === "note"
+          ? "Internal note for the team (English)…"
+          : `Reply to ${customerName || "the customer"}, sent via Plain…`
+      }
+      disabled={sending}
+      error={error}
+      className={className}
       style={noteStyle}
-    >
-      <FileChips
-        files={attachments.map((file) => ({
-          name: file.name,
-          type: file.type,
-        }))}
-        onRemove={(index) =>
-          setAttachments((current) => current.filter((_, i) => i !== index))
-        }
-        disabled={sending}
-      />
-      <textarea
-        ref={textareaRef}
-        rows={1}
-        {...noAutofill}
-        className={cn(
-          "composer-textarea min-h-12 text-fg placeholder:text-faint",
-          composerTextarea,
-          composerTextareaPadding,
-        )}
-        placeholder={
-          kind === "note"
-            ? "Internal note for the team (English)…"
-            : `Reply to ${customerName || "the customer"}, sent via Plain…`
-        }
-        value={text}
-        disabled={sending}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            handleSend();
+      header={
+        <FileChips
+          files={attachments.map((file) => ({
+            name: file.name,
+            type: file.type,
+          }))}
+          onRemove={(index) =>
+            setAttachments((current) => current.filter((_, i) => i !== index))
           }
+          disabled={sending}
+        />
+      }
+    >
+      <Tooltip label="Add attachments">
+        <PlainButton
+          className={cn(paletteIconBtn, "-ml-1.5")}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={sending}
+          aria-label="Add attachments"
+        >
+          <IconPlus size={20} />
+        </PlainButton>
+      </Tooltip>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(event) => {
+          const picked = Array.from(event.target.files || []);
+          const accepted = picked.filter(
+            (file) => file.size <= PLAIN_ATTACHMENT_MAX_BYTES,
+          );
+          const rejected = picked.find(
+            (file) => file.size > PLAIN_ATTACHMENT_MAX_BYTES,
+          );
+          if (accepted.length) {
+            setAttachments((current) => {
+              const available = PLAIN_ATTACHMENTS_MAX_COUNT - current.length;
+              if (accepted.length > available) {
+                setError(
+                  `You can attach up to ${PLAIN_ATTACHMENTS_MAX_COUNT} files`,
+                );
+              }
+              return [...current, ...accepted.slice(0, Math.max(0, available))];
+            });
+          }
+          if (rejected) setError(`${rejected.name} is too large (25 MB max)`);
+          event.target.value = "";
         }}
       />
-      {error && (
-        <div className="mt-1 truncate text-label text-red" title={error}>
-          {error}
-        </div>
-      )}
-      <div className={composerToolbar}>
-        <Tooltip label="Add attachments">
-          <button
-            type="button"
-            className={cn(paletteIconBtn, "-ml-1.5")}
-            onClick={() => fileInputRef.current?.click()}
-            disabled={sending}
-            aria-label="Add attachments"
-          >
-            <IconPlus size={20} />
-          </button>
-        </Tooltip>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(event) => {
-            const picked = Array.from(event.target.files || []);
-            const accepted = picked.filter(
-              (file) => file.size <= PLAIN_ATTACHMENT_MAX_BYTES,
-            );
-            const rejected = picked.find(
-              (file) => file.size > PLAIN_ATTACHMENT_MAX_BYTES,
-            );
-            if (accepted.length) {
-              setAttachments((current) => {
-                const available = PLAIN_ATTACHMENTS_MAX_COUNT - current.length;
-                if (accepted.length > available) {
-                  setError(
-                    `You can attach up to ${PLAIN_ATTACHMENTS_MAX_COUNT} files`,
-                  );
-                }
-                return [
-                  ...current,
-                  ...accepted.slice(0, Math.max(0, available)),
-                ];
-              });
-            }
-            if (rejected) setError(`${rejected.name} is too large (25 MB max)`);
-            event.target.value = "";
-          }}
-        />
-        {/* A labelled toggle rather than a bare glyph: which of the two
-				    things this box sends — a customer-facing reply or an internal
-				    note — is the one thing you must never have to guess. Same
-				    "Note" marker the session composer puts beside its own "+". */}
-        <Tooltip
-          label={
-            kind === "note"
-              ? "Switch to a customer reply"
-              : "Write a note only the team sees"
+      {/* A labelled toggle rather than a bare glyph: which of the two
+          things this box sends — a customer-facing reply or an internal
+          note — is the one thing you must never have to guess. Same
+          "Note" marker the session composer puts beside its own "+". */}
+      <Tooltip
+        label={
+          kind === "note"
+            ? "Switch to a customer reply"
+            : "Write a note only the team sees"
+        }
+      >
+        <PlainButton
+          aria-pressed={kind === "note"}
+          className={cn(
+            palettePill,
+            "shrink-0",
+            kind === "note" &&
+              "bg-[color-mix(in_srgb,var(--yellow-tint)_22%,transparent)] text-yellow hover:bg-[color-mix(in_srgb,var(--yellow-tint)_32%,transparent)] hover:text-yellow",
+          )}
+          onClick={() =>
+            setKind((current) => (current === "note" ? "reply" : "note"))
           }
+          disabled={sending}
         >
-          <button
-            type="button"
-            aria-pressed={kind === "note"}
-            className={cn(
-              palettePill,
-              "shrink-0",
-              kind === "note" &&
-                "bg-[color-mix(in_srgb,var(--yellow-tint)_22%,transparent)] text-yellow hover:bg-[color-mix(in_srgb,var(--yellow-tint)_32%,transparent)] hover:text-yellow",
-            )}
-            onClick={() =>
-              setKind((current) => (current === "note" ? "reply" : "note"))
-            }
-            disabled={sending}
-          >
-            <IconPencil size={14} />
-            Internal note
-          </button>
-        </Tooltip>
-        <span className="min-w-0 truncate text-meta text-faint phone:hidden">
-          {kind === "note"
-            ? `Posted as ${currentUser} (via ${PRODUCT_NAME})`
-            : `Via Plain, signed “${currentUser.split(/\s+/)[0]}”`}
+          <IconPencil size={14} />
+          Internal note
+        </PlainButton>
+      </Tooltip>
+      <span className="min-w-0 truncate text-meta text-faint phone:hidden">
+        {kind === "note"
+          ? `Posted as ${currentUser} (via ${PRODUCT_NAME})`
+          : `Via Plain, signed “${currentUser.split(/\s+/)[0]}”`}
+      </span>
+      {sent && (
+        <span className="shrink-0 text-meta font-semibold text-green">
+          Sent ✓
         </span>
-        {sent && (
-          <span className="shrink-0 text-meta font-semibold text-green">
-            Sent ✓
-          </span>
-        )}
-        <button
-          type="button"
-          className={cn("ml-auto", composerSend, composerSendDefault)}
-          onClick={handleSend}
-          disabled={sending || (!text.trim() && attachments.length === 0)}
-          title="Send (⌘↵)"
-          aria-label={kind === "note" ? "Add internal note" : "Send reply"}
-        >
-          <IconArrowUp size={24} />
-        </button>
-      </div>
-    </div>
+      )}
+      <SupportSendButton
+        label={kind === "note" ? "Add internal note" : "Send reply"}
+        onClick={handleSend}
+        disabled={sending || (!text.trim() && attachments.length === 0)}
+      />
+    </SupportComposer>
   );
 }
 
@@ -1033,224 +946,6 @@ export function PlainWaitingBanner({
         )}
         <span className="text-dim"> · {waited}</span>
       </span>
-    </div>
-  );
-}
-
-/** Human-readable file size for an attachment chip. */
-function fileSize(bytes: number): string {
-  if (!bytes) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * A message's attachments. Images render inline — on a visual bug report the
- * screenshot usually *is* the report — and click through to the full-size file.
- * Everything else gets a download chip.
- */
-function PlainAttachments({
-  attachments,
-}: {
-  attachments: PlainEntryAttachment[];
-}) {
-  const [failed, setFailed] = useState<Record<string, boolean>>({});
-  return (
-    <div className="flex flex-wrap gap-2 mt-2">
-      {attachments.map((a) => {
-        const href = `${API_BASE}/plain/attachments/${encodeURIComponent(a.id)}`;
-        const isImage = a.mimeType.startsWith("image/") && !failed[a.id];
-        return (
-          <a
-            key={a.id}
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            title={`${a.fileName}${a.sizeBytes ? ` · ${fileSize(a.sizeBytes)}` : ""}`}
-            className={cn(
-              "block overflow-hidden rounded-lg no-underline",
-              isImage
-                ? "md-image-link bg-surface"
-                : "inline-flex items-center gap-1.5 bg-active px-2.5 py-1.5 text-label text-dim hover:bg-hover hover:text-fg",
-            )}
-          >
-            {isImage ? (
-              <img
-                src={href}
-                alt={a.fileName}
-                loading="lazy"
-                onError={() => setFailed((f) => ({ ...f, [a.id]: true }))}
-                /* md-image is what opens the lightbox. Its own block
-								   treatment is for a full-width transcript image, so the
-								   thumbnail keeps its cap and drops the border and margin
-								   the wrapper already provides. */
-                className="md-image m-0 block max-h-[220px] max-w-full border-0 bg-surface object-contain"
-              />
-            ) : (
-              <>
-                <IconPaperclip size={16} className="shrink-0 opacity-60" />
-                <span className="truncate">{a.fileName}</span>
-                {a.sizeBytes ? (
-                  <span className="shrink-0 text-faint">
-                    {fileSize(a.sizeBytes)}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </a>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
- * A message body, rendered as markdown. Customer mail and our own replies get
- * the same treatment a session message does: `**test**` is bold, a pasted
- * stack trace in a fence is highlighted, and an inline image opens the shared
- * lightbox (markdown.ts emits the `md-image` class the delegated handler in
- * MediaLightbox.tsx watches for).
- *
- * Deliberately rendered with no context: a bare `#123` in a customer's mail is
- * their order number rather than a PR in our repo, and raw HTML they paste
- * stays literal text, which is the renderer's default.
- */
-function PlainEntryText({ text }: { text: string }) {
-  const html = renderMarkdown(text);
-  return <MarkdownBody className={plainEntryBody} html={html} />;
-}
-
-/**
- * Notes posted from here carry an author prefix (see the reply route) because
- * Plain's API can't attribute a write to a workspace user — everything lands
- * as our machine user. Unpick that so a teammate's note shows *their* name,
- * and so anything else from the machine user is honestly labelled as the
- * agent rather than passing for a human.
- */
-const NOTE_VIA_PREFIX = /^\*\*(.+?) \(via [^)]+\):\*\*\s*/;
-
-function noteAuthor(entry: PlainTimelineEntry) {
-  const viaUs = entry.text.match(NOTE_VIA_PREFIX);
-  if (viaUs)
-    return {
-      name: viaUs[1],
-      isAgent: false,
-      text: entry.text.slice(viaUs[0].length),
-    };
-  if (entry.actorType === "bot") {
-    // Agents open their notes with their own name; the badge says it now.
-    const selfSigned = new RegExp(
-      `^${entry.actorName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*`,
-    );
-    return {
-      name: entry.actorName,
-      isAgent: true,
-      text: entry.text.replace(selfSigned, ""),
-    };
-  }
-  return { name: entry.actorName, isAgent: false, text: entry.text };
-}
-
-/**
- * A message repeats the thread's own subject on almost every line ("Re: …"),
- * which is the loudest thing in the timeline and the one fact the reader
- * already has. Show it only where it says something new.
- */
-function subjectWorthShowing(
-  subject: string | null | undefined,
-  threadTitle?: string | null,
-): string | null {
-  const s = subject?.trim();
-  if (!s) return null;
-  if (!threadTitle) return s;
-  const bare = (t: string) =>
-    t
-      .replace(/^((re|fwd|fw)\s*:\s*)+/i, "")
-      .trim()
-      .toLowerCase();
-  return bare(s) === bare(threadTitle) ? null : s;
-}
-
-export function PlainEntryRow({
-  entry,
-  threadId,
-  threadTitle,
-}: {
-  entry: PlainTimelineEntry;
-  /** Enables the "open the triage session" link on agent notes. */
-  threadId?: string;
-  /** The thread's own subject, so a message that only echoes it stays quiet. */
-  threadTitle?: string | null;
-}) {
-  if (entry.kind === "note") {
-    const author = noteAuthor(entry);
-    return (
-      <div
-        className={plainEntryNote}
-        style={{ background: noteSurface("transparent") }}
-      >
-        <div className={plainEntryHead}>
-          <span className={plainEntryName}>{author.name}</span>
-          <span
-            className="text-meta font-semibold text-yellow"
-            title="Only the team sees this note"
-          >
-            Note
-          </span>
-          {author.isAgent && (
-            <span
-              className={plainEntryMeta}
-              title="Written by an agent run, not a teammate"
-            >
-              agent
-            </span>
-          )}
-          <span className={plainEntryMeta}>{timeOf(entry.timestamp)}</span>
-          {author.isAgent && threadId && (
-            <a
-              className="ml-auto inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-meta font-semibold text-link no-underline hover:underline"
-              href={`${BASE_PATH}/plain-triage/${encodeURIComponent(threadId)}`}
-              target="_blank"
-              rel="noreferrer"
-              title="Open the triage session for this ticket"
-            >
-              Session
-              <IconArrowUpRight size={13} />
-            </a>
-          )}
-        </div>
-        <PlainEntryText text={author.text} />
-        {entry.attachments?.length ? (
-          <PlainAttachments attachments={entry.attachments} />
-        ) : null}
-      </div>
-    );
-  }
-
-  const ours = entry.actorType !== "customer";
-  const subject = subjectWorthShowing(entry.subject, threadTitle);
-  return (
-    <div className={plainEntryRow}>
-      {/* The head sits above the message rather than inside it, so our own
-			    bubble holds nothing but the words — the transcript's grammar for a
-			    speaker label, and the only way the customer's side can lose its
-			    plate without losing who wrote it. */}
-      <div className={cn(plainEntryHead, ours && "flex-row-reverse")}>
-        <span className={plainEntryName}>{entry.actorName}</span>
-        <span className={plainEntryMeta}>
-          {entry.kind} · {timeOf(entry.timestamp)}
-        </span>
-      </div>
-      <div className={ours ? plainEntryOut : plainEntryIn}>
-        {subject && (
-          <div className="text-body font-semibold text-fg">{subject}</div>
-        )}
-        {entry.text && <PlainEntryText text={entry.text} />}
-        {entry.attachments?.length ? (
-          <PlainAttachments attachments={entry.attachments} />
-        ) : null}
-      </div>
     </div>
   );
 }

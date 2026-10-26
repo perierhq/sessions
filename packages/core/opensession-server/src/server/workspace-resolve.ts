@@ -355,15 +355,31 @@ export async function resolvePlainWorkspace(input: {
   return { workspace, created: true };
 }
 
+/** External ref kinds only the server stamps: a workspace carrying one
+ *  changes how its sessions run (a `support` ref runs them under the
+ *  Support role), so no client may resolve one. */
+export const RESERVED_EXTERNAL_REF_KINDS: ReadonlySet<string> = new Set([
+  "support",
+]);
+
+/** The reserved kind `kind` spells, case and spaces aside; null if none. */
+export function reservedExternalRefKind(kind: string): string | null {
+  const k = kind.trim().toLowerCase();
+  return RESERVED_EXTERNAL_REF_KINDS.has(k) ? k : null;
+}
+
 /**
  * Resolve the one workspace for a generic feed item (a video, …) by its
  * ExternalRef. The generic sibling of resolvePlainWorkspace: dedupe key
  * `<kind>-<id>`, adopt a filed session already carrying the ref, else mint a
- * session-less workspace stamped with the ref (the feeds design).
+ * session-less workspace stamped with the ref (the feeds design). With
+ * `repo`, a new workspace is created in that repo (a support conversation
+ * answers for its project); the key stays `<kind>-<id>`.
  */
 export async function resolveExternalWorkspace(input: {
   ref: ExternalRef;
   createdBy: string;
+  repo?: string;
 }): Promise<ResolvedWorkspace> {
   const { ref } = input;
   const key = `${ref.kind}-${ref.id}`;
@@ -390,10 +406,12 @@ export async function resolveExternalWorkspace(input: {
     return { workspace: stamped, created: false };
   }
 
-  // Deliberately repo-less: feed-item workspaces start their sessions in
-  // scratch mode (repo-less scratch dir), not in a repo checkout.
+  // Repo-less unless the caller names a repo: feed-item workspaces start
+  // their sessions in scratch mode (repo-less scratch dir), not in a repo
+  // checkout.
   const workspace = await createWorkspace({
     name: (ref.title || "").trim().slice(0, 120) || `${ref.kind} ${ref.id}`,
+    ...(input.repo ? { repo: input.repo } : {}),
     createdBy: input.createdBy,
     key,
     externalRefs: [ref],

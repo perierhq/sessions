@@ -6,7 +6,9 @@
 // sandbox setting asks for it; neither the project's nor the global
 // sandbox moves them. Reviews run on this machine (D4). Incident agents use the project's
 // sandbox, else This machine (container) when Ready, else the experimental
-// host path, else they can't start.
+// host path, else they can't start. Support runs where incident agents
+// run, except the host path: it reads untrusted mail, so it never runs
+// unsandboxed on this machine and can't start instead.
 import {
   defaultProjectDocument,
   type EffectiveSandbox,
@@ -200,6 +202,20 @@ async function incidentPlace(
   return { state: "cant-start", reason: NO_SANDBOX_REASON };
 }
 
+/** Where Support runs: where incident agents run, but never unsandboxed
+ *  on this machine. It reads untrusted mail, so the host path that
+ *  incident agents may fall back to is a can't-start for Support. */
+async function supportPlace(
+  doc: ProjectSettingsDocument,
+  model: string,
+  d: EffectiveDeps,
+): Promise<RunPlace> {
+  const out = await incidentPlace(doc, model, d);
+  if (out.state === "ok" && out.provider === null)
+    return { state: "cant-start", reason: NO_SANDBOX_REASON };
+  return out;
+}
+
 function sameProvider(a: RunPlace, b: RunPlace): boolean {
   return a.state === "ok" && b.state === "ok" && a.provider === b.provider;
 }
@@ -207,6 +223,8 @@ function sameProvider(a: RunPlace, b: RunPlace): boolean {
 function sandboxNote(s: Omit<EffectiveSandbox, "note">): string | null {
   if (s.incidentAgents.state === "cant-start")
     return "No sandbox provider is connected, so incident agents can't start. Connect one in the checklist above";
+  if (s.support.state === "cant-start")
+    return "Support reads customer mail, so it never runs on this machine without a sandbox and can't start. Connect a sandbox provider in the checklist above";
   if (s.you.state !== "ok" || s.you.provider === null) return null;
   if (!sameProvider(s.you, s.incidentAgents)) return null;
   return "Sessions and incident agents run here. Reviews run on this machine, and automations where they ran before";
@@ -222,10 +240,12 @@ export async function effectiveSandboxes(
   const model = await effectiveRoleModel(project, "investigator", document);
   const you = youPlace(document, d);
   const incidentAgents = await incidentPlace(document, model, d);
+  const supportModel = await effectiveRoleModel(project, "support", document);
+  const support = await supportPlace(document, supportModel, d);
   // Reviews run on this machine in v1 (D4).
   const reviews = place(null, "fallback");
   const automations = await automationPlace(project, d);
-  const base = { you, reviews, automations, incidentAgents };
+  const base = { you, reviews, automations, incidentAgents, support };
   return { ...base, note: sandboxNote(base) };
 }
 
@@ -338,14 +358,14 @@ export const WEB_SEARCH_OFF =
   "Web search is off for this agent in the project's access settings.";
 
 /**
- * What the access table lets Automations or Reviews do on the web: a
+ * What the access table lets Automations, Reviews or Support do on the web: a
  * `web_search` denial when the role's web search cell is off, and the
  * project's websites ticked for the role (callers add the global list).
  * Unreadable settings deny web search and add no websites.
  */
 export async function roleWebAccess(
   project: string,
-  role: "automations" | "reviews",
+  role: "automations" | "reviews" | "support",
 ): Promise<{ deniedTools: Record<string, string>; websites: string[] }> {
   try {
     const doc = await getProjectDocument(project);

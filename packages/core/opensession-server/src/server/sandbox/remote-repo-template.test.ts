@@ -15,7 +15,7 @@ beforeEach(async () => {
     process.env.OPENSESSION_SANDBOX_CONFIG,
     JSON.stringify({ runnerSha: "abc" }),
   );
-  connectSandboxProvider("daytona", {
+  await connectSandboxProvider("daytona", {
     secret: "test-daytona-key",
     settings: { snapshot: "base-v1" },
   });

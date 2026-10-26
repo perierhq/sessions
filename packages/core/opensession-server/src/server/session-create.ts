@@ -113,8 +113,12 @@ import { type McpScope, STRIPE_CONFIRM_TOOLS } from "./runner-shared";
 import { plainDiscussionDeniedTools } from "./automation-denied-tools";
 import {
   type RunInputsSession,
+  isSupportSession,
   resolveSessionRunInputs,
+  supportTurnScope,
 } from "./session-run-inputs";
+import { supportSessionMcp } from "./support/mcp";
+import { supportToolResult, supportToolUse } from "./support/evidence";
 import {
   mirrorTurnToPlainDiscussion,
   plainDiscussionToolResult,
@@ -168,6 +172,7 @@ import { commitAuthorFor, userMatchesAny } from "./shared/user-mappings";
 import { envCapacity } from "./shared/env-capacity";
 import { sanitizeBranchSlug } from "./suggest-branch";
 import {
+  type ExternalRef,
   type NativeSessionFile,
   type SessionUsage,
   type UnifiedSession,
@@ -501,6 +506,17 @@ export interface ResolvedCreate {
   finish: "drain" | "auto-continue-guard";
 }
 
+/** The @session/@workspace footer for an opening prompt; none for a support
+ *  session, whose prompt is customer mail and whose agent must not learn
+ *  about other sessions from it. */
+export function openingMentionsNote(
+  openingPrompt: string,
+  externalRefs: ExternalRef[] | undefined,
+): string | null {
+  if (isSupportSession({ externalRefs })) return null;
+  return sessionMentionsNote(openingPrompt);
+}
+
 /** Per-path transport for a create: who hears the announce/stream/failures. */
 export function openingCreateTrustPolicy(
   spec: Pick<
@@ -511,6 +527,7 @@ export function openingCreateTrustPolicy(
     | "user"
     | "createdByLogin"
     | "plainDiscussionId"
+    | "externalRefs"
   >,
 ): {
   automation: boolean;
@@ -522,6 +539,9 @@ export function openingCreateTrustPolicy(
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
 } {
   const policy = spec.automationDescendantPolicy;
+  // A support session reads untrusted customer mail with no person at the
+  // keyboard: no user and no AWS credentials, like a discussion session.
+  const untrusted = !!spec.plainDiscussionId || isSupportSession(spec);
   return {
     automation: !!policy,
     // A descendant's own allow-list: empty for every descendant except an
@@ -532,10 +552,9 @@ export function openingCreateTrustPolicy(
     // A Plain discussion session reads untrusted ticket text: like an
     // automation run it passes no user, so an allowedUsers-gated server
     // stays invisible (session-run-inputs.ts makes the same call on resume).
-    user: policy || spec.plainDiscussionId ? undefined : spec.user,
+    user: policy || untrusted ? undefined : spec.user,
     mcpGrantUser: policy ? undefined : spec.createdByLogin,
-    aws:
-      (!policy && !spec.plainDiscussionId) || agentAwsCredsForUntrustedRuns(),
+    aws: (!policy && !untrusted) || agentAwsCredsForUntrustedRuns(),
     trustProfile: policy ? "automation" : "interactive",
     ...(policy
       ? {
@@ -1846,12 +1865,22 @@ export async function openCreatedSession(
       assertCreateReposNotBeingRemoved(spec);
 
       if (spec.slackOrigin) spec.openingPrompt += "\n\n" + SLACK_SESSION_NOTE;
-      const retrievedMemory = await retrievedMemoryNoteFor(
-        spec.openingPrompt,
-        spec.user,
-        [...spec.memoryRepoIds, ...attachedRepoIds],
-        bksId,
-      );
+      // A support session's opening turn has the scope every later turn
+      // gets (session-run-inputs.ts): the project's Support row, the
+      // support deny-set, and web_fetch held to its websites.
+      const supportOpening =
+        isSupportSession(spec) && !spec.automationDescendantPolicy
+          ? await supportTurnScope(spec.repoId || undefined)
+          : null;
+      // No memory for a support session: its prompt is customer mail.
+      const retrievedMemory = supportOpening
+        ? null
+        : await retrievedMemoryNoteFor(
+            spec.openingPrompt,
+            spec.user,
+            [...spec.memoryRepoIds, ...attachedRepoIds],
+            bksId,
+          );
       const openingPromptForRun = retrievedMemory
         ? `${retrievedMemory}\n\n${spec.openingPrompt}`
         : spec.openingPrompt;
@@ -1894,10 +1923,14 @@ export async function openCreatedSession(
                 : (spec.runMcpServers ?? []),
               ...(descendantScope?.deniedTools
                 ? { deniedTools: descendantScope.deniedTools }
-                : {}),
+                : supportOpening
+                  ? { deniedTools: supportOpening.deniedTools }
+                  : {}),
               ...(descendantScope?.webFetchHosts
                 ? { webFetchHosts: descendantScope.webFetchHosts }
-                : {}),
+                : supportOpening
+                  ? { webFetchHosts: supportOpening.webFetchHosts }
+                  : {}),
               incidentProxyMcpServers:
                 descendantScope?.incidentProxyMcpServers ?? [],
               isAutomationSession: !!spec.automationDescendantPolicy,
@@ -2074,48 +2107,53 @@ export async function openCreatedSession(
               automationDescendantPolicy: spec.automationDescendantPolicy,
             })
           : {}
-        : spec.plainDiscussionId
-          ? plainDiscussionSessionMcp(bksId, spec.plainDiscussionId)
-          : interactiveMcpServers(spec.user, bksId);
+        : supportOpening
+          ? supportSessionMcp(bksId)
+          : spec.plainDiscussionId
+            ? plainDiscussionSessionMcp(bksId, spec.plainDiscussionId)
+            : interactiveMcpServers(spec.user, bksId);
       const openingDeniedTools = automationChild
         ? {
             ...(await import("./automations")).automationDeniedTools(),
             ...localDescendantScope?.deniedTools,
           }
-        : spec.plainDiscussionId
-          ? plainDiscussionDeniedTools()
-          : undefined;
-      const openingReposNote = automationChild
-        ? undefined
-        : [
-            pstackMode ? PSTACK_MODE_NOTE : "",
-            // A session that spans repos is handed the persisted map rather
-            // than a reconstructed branch note.
-            spanning
-              ? buildReposNote({
-                  ...spanning,
-                  existingBranch: spec.worktreeKind === "existing",
-                  pstackMode,
-                })
-              : buildBranchNote({
-                  mode: spec.mode,
-                  branch: spec.branch,
-                  worktreeDir: spec.wtPath,
-                  stackedOn: spec.stackedOn,
-                  existingBranch: spec.worktreeKind === "existing",
-                  pstackMode,
-                }),
-            await memoryNoteFor(
-              spec.user,
-              [...spec.memoryRepoIds, ...attachedRepoIds],
-              bksId,
-              !!spec.sandboxProvider ||
-                !!sandboxOpeningRun ||
-                !!runnerOpeningRun,
-            ),
-          ]
-            .filter(Boolean)
-            .join("\n\n") || undefined;
+        : supportOpening
+          ? supportOpening.deniedTools
+          : spec.plainDiscussionId
+            ? plainDiscussionDeniedTools()
+            : undefined;
+      const openingReposNote =
+        automationChild || supportOpening
+          ? undefined
+          : [
+              pstackMode ? PSTACK_MODE_NOTE : "",
+              // A session that spans repos is handed the persisted map rather
+              // than a reconstructed branch note.
+              spanning
+                ? buildReposNote({
+                    ...spanning,
+                    existingBranch: spec.worktreeKind === "existing",
+                    pstackMode,
+                  })
+                : buildBranchNote({
+                    mode: spec.mode,
+                    branch: spec.branch,
+                    worktreeDir: spec.wtPath,
+                    stackedOn: spec.stackedOn,
+                    existingBranch: spec.worktreeKind === "existing",
+                    pstackMode,
+                  }),
+              await memoryNoteFor(
+                spec.user,
+                [...spec.memoryRepoIds, ...attachedRepoIds],
+                bksId,
+                !!spec.sandboxProvider ||
+                  !!sandboxOpeningRun ||
+                  !!runnerOpeningRun,
+              ),
+            ]
+              .filter(Boolean)
+              .join("\n\n") || undefined;
       // A descendant that reaches the local path must be an incident agent
       // whose bash runs as the incident agent user, ready right now.
       let openingBashRunAs: string | undefined;
@@ -2170,7 +2208,9 @@ export async function openCreatedSession(
               deniedTools: openingDeniedTools,
               ...(localDescendantScope?.webFetchHosts
                 ? { webFetchHosts: localDescendantScope.webFetchHosts }
-                : {}),
+                : supportOpening
+                  ? { webFetchHosts: supportOpening.webFetchHosts }
+                  : {}),
               publicationPolicy: openingTrust.publicationPolicy,
               ...(openingBashRunAs ? { bashRunAs: openingBashRunAs } : {}),
               confirmTools: STRIPE_CONFIRM_TOOLS,
@@ -2179,7 +2219,10 @@ export async function openCreatedSession(
               user: openingTrust.user,
               journalKind: automationChild ? "automation" : "create",
               trustProfile: openingTrust.trustProfile,
-              onAskUser: automationChild ? undefined : makeAskHandler(bksId),
+              onAskUser:
+                automationChild || supportOpening
+                  ? undefined
+                  : makeAskHandler(bksId),
               fallbackInProcessMcp: () => openingMcp,
             });
       const openingRun =
@@ -2277,6 +2320,7 @@ export async function openCreatedSession(
         if (event.type === "tool_use") {
           toolUseCount++;
           plainDiscussionToolUse(spec.plainDiscussionId, event);
+          supportToolUse(bksId, isSupportSession(spec), event);
           const entry = {
             id: event.toolUseId || crypto.randomUUID(),
             type: "tool_use" as const,
@@ -2290,6 +2334,7 @@ export async function openCreatedSession(
         }
         if (event.type === "tool_result") {
           plainDiscussionToolResult(spec.plainDiscussionId, event);
+          supportToolResult(event);
           const entry = {
             id: event.toolUseId ? `tr-${event.toolUseId}` : crypto.randomUUID(),
             type: "tool_result" as const,
@@ -3199,7 +3244,10 @@ export async function handleCreateSessionMessage(
     // resolving footer as prompts on existing sessions (see
     // runSessionPromptInner) — this create path bypasses it.
     {
-      const mentionsNote = sessionMentionsNote(openingPrompt);
+      const mentionsNote = openingMentionsNote(
+        openingPrompt,
+        (sourceWorkspace ?? workspace)?.externalRefs,
+      );
       if (mentionsNote) openingPrompt += `\n\n${mentionsNote}`;
     }
     // Folders the creator connected from the New-session box, on their own

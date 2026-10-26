@@ -36,3 +36,31 @@ export const SUPPORT_COLUMN_BAR =
 export const SUPPORT_TOP_RAIL =
   "pointer-events-none absolute top-3 left-1/2 z-[5] flex max-w-[calc(100%-32px)] " +
   "-translate-x-1/2 flex-col items-center gap-1.5";
+
+/** A draft's sources under its header: "Sources" and each cited link,
+ *  path or record id on one wrapping line. */
+export const DRAFT_SOURCES =
+  "flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 pb-1.5 text-meta";
+
+/** A cited public link: the hit area runs past the line so a finger can
+ *  take it (TextLink's recipe). */
+export const DRAFT_SOURCE_LINK =
+  "relative max-w-full truncate text-link no-underline before:absolute " +
+  "before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:underline";
+
+/** A repository path or a connector record id, read as it is. */
+export const DRAFT_SOURCE_REF = "max-w-full truncate font-mono text-dim";
+
+/** A prepared action over the reply box (issue, fix task, fixed note). */
+export const PREPARED_CARD =
+  "flex flex-col gap-2.5 rounded-xl bg-panel px-4 py-3";
+
+/** The prepared issue's body: the scrubbed text as it would be posted,
+ *  scrolling past a few lines. */
+export const PREPARED_TEXT =
+  "max-h-40 overflow-y-auto rounded-md bg-surface px-3 py-2 text-label " +
+  "whitespace-pre-wrap text-dim [overflow-wrap:anywhere] select-text";
+
+/** A quiet event line in the thread: something Sessions did on its own. */
+export const QUIET_EVENT =
+  "m-0 py-1 text-center text-meta text-faint [overflow-wrap:anywhere]";

@@ -759,6 +759,112 @@ mint sets. Changing and auditing public-intake settings remains a one-time
 human-admin task. See [GitHub authority](github-authority.md) for the
 connected-user and host-private-key implications.
 
+## Support mail
+
+Email support ([setup/email.md](setup/email.md)) reads mail anyone can send.
+The code is in `packages/core/opensession-server/src/server/support/` and
+`packages/core/opensession-server/src/agents/email/`.
+
+- **Mail is data, never instructions.** Subject, sender and body reach a
+  model only inside the untrusted-data wrapper. Triage is a tool-less call
+  on the small model (the Plain ticket router) for every customer message;
+  it labels the route, the topics, an attempt to instruct the agent, a
+  request for a person, anger, a repeated question and thanks only. Its
+  failure, or an inbox past its 200 labelling calls in an hour, routes the
+  mail as work and its topics as unknown, which holds every send for a
+  person until a later try labels it. A support session never gets customer
+  text in its prompt: the opening prompt and the notice of a new message
+  carry ids only, and the mail arrives as JSON data in the
+  `get_conversation` tool result (the newest messages, about 60,000
+  characters at most), still inside the wrapper, with the sender address
+  escaped as an attribute. The first message flagged as an attempt to
+  instruct the agent stops automatic sends on its conversation; a second
+  stops the agent (tried again until the stop takes) and leaves the
+  conversation to a person, after which the agent can neither draft nor
+  prepare an issue there. Strikes are kept per sender address in each inbox
+  (under a keyed digest, never the address, and deleted by "Forget a
+  customer"), so a new conversation from that sender starts with them.
+  The `support:message_received` event on the automation bus carries ids,
+  the subject and the customer address, never the body, and automation
+  prompts fence its text as untrusted data. Auto-replies, bounces,
+  mailing-list mail and our own sent copies never start an agent or a send,
+  and a conversation gets at most 3 automatic sends an hour.
+- **Support sessions run like Plain discussion sessions.** A support session
+  is a normal session with a `support` external ref, no user and the
+  automation deny-set, plus the Stripe money movers and other ways to mail
+  someone. Its connectors are the ones the project ticks for the Support
+  role, never one restricted to named people, and web search follows
+  Support's cell; both are read again for every turn. The session itself
+  is always in ask mode. It writes to the customer only through the
+  in-process `opensession-support` server's draft tool. Support runs where
+  incident agents run (the project's sandbox, else the default one), but
+  never unsandboxed on this machine: without a sandbox it can't start and
+  the conversation waits for a person. Watch only starts no session at all.
+- **One send path.** Every customer-facing send goes through `sendDraft()`
+  in `server/support/reply.ts`; no other code calls a channel's `send`. An
+  agent's reply sends on its own only on an inbox set to routine replies,
+  when it answers a customer message not yet answered, cites a source the
+  server verified itself, carries at most two links with no query string,
+  each on a host listed exactly (no `*.` wildcard, never shared hosting such
+  as `github.com` or `*.vercel.app`) on the project's Support websites, has
+  no HTML, images or other schemes, and nothing it answers is flagged or
+  touches a "never without a person" topic. Links are found the way a
+  linkifier finds them: bare names, `www.` after quotes, colons or `>`, and
+  `http:` without slashes count. Sources are checked on the server: a
+  repository path must be a file at the session's checkout HEAD (`git
+cat-file`), a URL must be one this session's `web_fetch` read, and a
+  record id one this session's Support connector call returned (kept in
+  memory per session, bounded, from the run's tool events). The draft text
+  then gets a tool-less small-model check for sensitive topics and
+  promises about policy, prices or deadlines, and a scan for anything that
+  looks like a password, key or token; any hit, or a failed check, waits for
+  a person. The agent learns only that its reply waits for a person, never
+  which rule held it. One short clarifying question per conversation (under
+  600 characters, no links, no promise) may send without a source.
+  Everything else waits for a person. The triage route alone never permits
+  a send. Each
+  send writes one `support.reply` audit row with a digest of the text, never
+  the text. A reply goes to one address, never to one of our own or a
+  machine sender; when it would go somewhere other than the sender's
+  address, or the sender failed authentication, a person decides.
+- **Passwords are workspace secrets.** IMAP and SMTP passwords live in
+  `workspace-secrets.ts` behind opaque refs on the inbox record. They are
+  resolved only by the transports, never put in a prompt, a log line, an API
+  response or the catalog. Changing a server's host, port, security or user
+  needs its password again, so a saved password is never sent to a server it
+  wasn't entered for.
+- **Mail servers are checked when Sessions connects.** The host name is
+  resolved and Sessions connects to the checked address. Link-local and
+  cloud metadata addresses are always refused; loopback, private and tailnet
+  addresses only when the inbox allows internal servers, which only the
+  instance owner can turn on. STARTTLS is required when chosen, and no TLS
+  is allowed only on loopback, so it also needs internal servers allowed.
+  Server error text is never shown or logged; a fixed message is.
+- **Who may do what.** Any signed-in person may connect and edit inboxes.
+  Only the instance owner may let an inbox send right away, allow internal
+  servers, remove an inbox, or forget a customer.
+- **A push says nothing about the customer.** Support pushes use fixed
+  wording ("A support reply is ready", "A support reply will send", "A
+  support reply could not send") with the project as context; no customer
+  name, address, subject or text reaches a lock screen, and a failed send
+  never quotes the server's error.
+- **Issues and fixes need a person.** The agent's bug report only prepares
+  a GitHub issue and a fix task on the conversation, written from its
+  summary with every email address and the customer's name taken out. A
+  person creates the issue (the instance owner, when the repository is
+  public or its visibility can't be read) and starts the fix session; the
+  agent can't move a conversation either. An issue creator must be signed
+  in. The "it's fixed" note, prepared when the fix merges or the issue is
+  closed as completed, always waits for a person.
+- **Logs and health carry ids.** Transport logs carry the inbox id, an event
+  and an error code or UID; `/health` lists inbox ids, states and reasons
+  with any address cut (server alert text can carry one). A refused login
+  is never retried on a timer; the inbox tries once more only when someone
+  saves it or a test with its saved passwords passes. Conversations
+  themselves are customer data: they are stored in the catalog and mirrored
+  as JSON under the state directory, and retention and "Forget a customer"
+  delete them there.
+
 ## Private information and public repositories
 
 A run's inputs are the organization's private record: session context, memory,

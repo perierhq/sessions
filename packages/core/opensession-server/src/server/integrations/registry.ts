@@ -260,6 +260,19 @@ export const INTEGRATIONS: IntegrationSpec[] = [
       return new CodeStorageIntegration();
     },
   },
+  {
+    id: "email",
+    label: "Email support",
+    doc: "docs/setup/email.md",
+    // Flag-gated for the first rollout phase. Inboxes, with their passwords,
+    // are set up in Settings → Inboxes, so nothing comes from env.
+    enableFlag: "ENABLE_EMAIL_SUPPORT",
+    env: [],
+    load: async () => {
+      const { EmailAgent } = await import("../../agents/email/index");
+      return new EmailAgent();
+    },
+  },
 ];
 
 export function findIntegration(id: string): IntegrationSpec | undefined {

@@ -61,3 +61,26 @@ test("every new-session response carries the workspace PR projection", async () 
   expect(route).not.toContain("session: existing }");
   expect(route).not.toContain("session: (await findSessionAsync(bksId))");
 });
+
+test("resolve refuses an external ref kind the server reserves", async () => {
+  const { handleWorkspaceRoutes } = await import("./workspace");
+  for (const kind of ["support", " Support "]) {
+    const url = new URL("http://localhost/api/workspaces/resolve");
+    const res = await handleWorkspaceRoutes({
+      req: new Request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          externalRef: { kind, id: "sc_0190-acme", title: "Hi" },
+        }),
+      }),
+      url,
+      path: url.pathname,
+      publicPrefix: "/backstage",
+    });
+    expect(res?.status).toBe(400);
+    expect(await res?.json()).toEqual({
+      error: `External ref kind "${kind.trim().toLowerCase()}" is reserved`,
+    });
+  }
+});

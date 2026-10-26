@@ -10,8 +10,8 @@ registry.
 
 - Every registry integration is **off by default**.
 - Flags: `ENABLE_PLAIN_AGENT`, `ENABLE_LINEAR_AGENT`, `ENABLE_SLACK_AGENT`,
-  `ENABLE_STRIPE_AGENT`, `ENABLE_GRAFANA_POLLER`, `ENABLE_GITHUB_AGENT`, and
-  `ENABLE_CODESTORAGE`.
+  `ENABLE_STRIPE_AGENT`, `ENABLE_GRAFANA_POLLER`, `ENABLE_GITHUB_AGENT`,
+  `ENABLE_CODESTORAGE`, and `ENABLE_EMAIL_SUPPORT`.
 - **Only the literal string `true` enables via env.** For example,
   `ENABLE_SLACK_AGENT=1` does not enable Slack; any set value other than
   `true` disables it.

@@ -77,6 +77,9 @@ export const apiSWRKey = {
     ["api", "incident-project", project] as const,
   incidentAccessSettings: (project: string) =>
     ["api", "incident-access-settings", project] as const,
+  // Settings → Inboxes and the email pane (projects to move to, whether
+  // the signed-in person is the instance owner).
+  supportInboxes: () => ["api", "support-inboxes"] as const,
 };
 
 /**

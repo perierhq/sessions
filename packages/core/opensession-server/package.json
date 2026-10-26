@@ -36,11 +36,14 @@
     "effect": "4.0.0-rc.112",
     "emoji-datasource": "^16.0.0",
     "ghostty-web": "^0.4.0",
+    "imapflow": "2.9.1",
     "katex": "0.16.47",
+    "mailparser": "3.12.4",
     "marked": "^15.0.0",
     "mermaid": "^11.16.1",
     "modal": "0.9.0",
     "motion": "^12.42.2",
+    "nodemailer": "10.2.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "scheduler": "0.27.0",
@@ -62,6 +65,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/web-push": "^3.6.4",
+    "hoodiecrow-imap": "3.3.1",
+    "smtp-server": "3.21.1",
     "tailwindcss": "^4.3.2"
   }
 }

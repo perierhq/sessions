@@ -72,7 +72,8 @@ describe("routePath", () => {
     { view: "workspace", id: "workspace 1", tab: "conversation" },
     { view: "pr", repo: "tellahq/opensession", branch: "feature/route" },
     { view: "pr", repo: "tellahq/opensession", number: 42 },
-    { view: "support", threadId: "thread/1" },
+    { view: "support", threadId: "plain:thread/1" },
+    { view: "support", threadId: "email:sc_1" },
     { view: "plain", threadId: "thread/1" },
     { view: "reports", automationId: "daily check", reportId: "report/1" },
     { view: "databases", databaseId: "tickets-4f3a", table: "open/tickets" },
@@ -86,6 +87,17 @@ describe("routePath", () => {
     for (const route of routes) {
       expect(parseRoute(routePath(route))).toEqual(route);
     }
+  });
+
+  test("support item ids keep their colon in the path", () => {
+    expect(routePath({ view: "support", threadId: "email:sc_1" })).toBe(
+      `${BASE_PATH}/support/email:sc_1`,
+    );
+    // Only known channels prefix an id; anything else is a bare Plain id.
+    expect(parseRoute("/support/sms:x1")).toEqual({
+      view: "support",
+      threadId: "plain:sms:x1",
+    });
   });
 
   test("writes the root and prompt routes", () => {
@@ -209,6 +221,25 @@ describe("incident routes", () => {
     expect(routePath({ view: "incidents", id: "inc-1", intent: "retry" })).toBe(
       `${BASE_PATH}/incidents/inc-1?intent=retry`,
     );
+  });
+
+  test("support push intents open an email conversation", () => {
+    expect(parseRouteWithSearch("/support/email:sc_1", "?intent=stop")).toEqual(
+      { view: "support", threadId: "email:sc_1", intent: "stop" },
+    );
+    expect(
+      parseRouteWithSearch("/support/email:sc_1", "?intent=review"),
+    ).toEqual({ view: "support", threadId: "email:sc_1", intent: "review" });
+    expect(parseRouteWithSearch("/support/email:sc_1", "?intent=send")).toEqual(
+      { view: "support", threadId: "email:sc_1" },
+    );
+    expect(parseRouteWithSearch("/support/th_1", "?intent=stop")).toEqual({
+      view: "support",
+      threadId: "plain:th_1",
+    });
+    expect(
+      routePath({ view: "support", threadId: "email:sc_1", intent: "stop" }),
+    ).toBe(`${BASE_PATH}/support/email:sc_1?intent=stop`);
   });
 });
 

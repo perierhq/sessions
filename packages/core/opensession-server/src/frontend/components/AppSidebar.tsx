@@ -8,6 +8,7 @@ import type { useSessions } from "../hooks/useSessions";
 import type { RepoInfo } from "../lib/api";
 import { renameSessionApi } from "../lib/api";
 import type { Route } from "../lib/app-route";
+import { supportPageItem } from "../lib/support-list";
 import { SIDEBAR_CHROME_BTN } from "../lib/sidebar-classes";
 import type { UnifiedSession, Workspace } from "../lib/types";
 import { cn } from "../ui/cn";
@@ -243,7 +244,7 @@ export function AppSidebar({
           tasksActive={route.view === "tasks"}
           taskCount={taskCount}
           selectedWorkspaceId={sidebarWorkspaceId}
-          plainActive={route.view === "plain"}
+          plainActive={supportPageItem(route) !== undefined}
           supportTinderActive={route.view === "supporttinder"}
           reportsActive={route.view === "reports"}
           activeIncidentId={

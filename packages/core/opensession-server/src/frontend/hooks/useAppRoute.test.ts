@@ -226,6 +226,22 @@ describe("initial route", () => {
     expect(fake.calls).toEqual([]);
   });
 
+  test.each([
+    ["/support/email:sc_1", "email:sc_1"],
+    ["/support/email%3Asc_1", "email:sc_1"],
+    ["/support/plain:thread-1", "plain:thread-1"],
+    // A legacy link carries a bare Plain thread id.
+    ["/support/thread-1", "plain:thread-1"],
+  ])("reads the support item in %s", (path, threadId) => {
+    const fake = fakeBrowser({ path, stored: remembered });
+    const controller = new AppRouteController(fake.browser);
+
+    expect(controller.getCurrentRoute()).toEqual({
+      view: "support",
+      threadId,
+    });
+  });
+
   test("treats an unknown path that parses as home as a restorable landing", () => {
     const fake = fakeBrowser({ path: "/unknown", stored: remembered });
     const controller = new AppRouteController(fake.browser);

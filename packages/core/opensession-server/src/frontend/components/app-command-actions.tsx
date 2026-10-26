@@ -341,7 +341,7 @@ export function buildAppCommandActions({
     {
       id: "support",
       label: "Support",
-      description: "Read and answer Plain tickets",
+      description: "Read and answer support conversations",
       category: "Navigate",
       keywords: ["tickets", "plain", "inbox"],
       icon: <IconMail size={18} />,

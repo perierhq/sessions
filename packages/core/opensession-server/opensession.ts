@@ -146,6 +146,10 @@ import { boatWebhookRoutes } from "./src/server/sandbox/boat-webhook";
 import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
+import { startSupportNotifications } from "./src/server/support/notify";
+import { startSupportRetention } from "./src/server/support/retention";
+import { installSupportPipeline } from "./src/server/support/routing";
+import { startSupportTick } from "./src/server/support/tick";
 import { startIncidentBroadcasts } from "./src/server/incidents/broadcast";
 import { startIncidentAccess } from "./src/server/incidents/access/lifecycle";
 import { startIncidentImpact } from "./src/server/incidents/impact";
@@ -455,7 +459,10 @@ const server: import("bun").Server<WSClientData> = hotServe({
       "/catchup",
       "/reviews",
       "/reviews/*",
+      "/support",
       "/support/*",
+      "/plain",
+      "/plain/*",
     ].map((p) => [
       p,
       p === "/session/*" || p === "/workspace/*" ? sessionSpaEntry : spaEntry,
@@ -891,6 +898,19 @@ if (!g.__opensessionBooted) {
     // Incident owners hear about their incidents in the inbox and by push;
     // alerts held at night go out once after it.
     startIncidentNotifications();
+    // Support conversations and attachments past their inbox's retention
+    // are deleted hourly; the mailbox is never touched.
+    startSupportRetention();
+    // Each new support conversation is triaged and, unless it is spam or
+    // its inbox only watches, answered by a support session under the
+    // project's Support role; replies reach that session.
+    installSupportPipeline();
+    // Veto windows end, support sends retry and pipeline hand-offs are
+    // retried on a 15 s tick over the support work index.
+    startSupportTick();
+    // A support conversation's owner hears when its reply waits on them,
+    // is about to send or failed, in fixed wording.
+    startSupportNotifications();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

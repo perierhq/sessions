@@ -1,5 +1,10 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
 import type { OwnerDecision } from "../../shared/incident-response";
+import {
+  parseSupportIntent,
+  parseSupportItemId,
+  type SupportIntent,
+} from "../../shared/support";
 import { BASE_PATH, stripBasePath } from "./base";
 import {
   isProjectSectionId,
@@ -7,6 +12,15 @@ import {
 } from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
+
+/**
+ * A Support list item id (`<channel>:<id>`) from a `/support/<id>` path. A
+ * bare id, from a link written before email joined the list, is a Plain
+ * thread; so is one whose prefix is not a known channel. Idempotent.
+ */
+export function supportItemIdFromPath(raw: string): string {
+  return parseSupportItemId(raw) ? raw : `plain:${raw}`;
+}
 
 export type Route =
   | { view: "prs" }
@@ -21,7 +35,9 @@ export type Route =
     }
   | { view: "pr"; repo: string; branch: string; number?: number }
   | { view: "pr"; repo: string; branch?: undefined; number: number }
-  | { view: "support"; threadId: string }
+  /** threadId: a Support list item id (`email:sc_…`, `plain:th_…`);
+   *  intent: a support push's button, on an email conversation. */
+  | { view: "support"; threadId: string; intent?: SupportIntent }
   | { view: "plain"; threadId?: string }
   | { view: "reports"; automationId?: string; reportId?: string }
   | { view: "databases"; databaseId?: string; table?: string }
@@ -56,6 +72,7 @@ const SETTINGS_SECTIONS: ReadonlySet<string> = new Set<SettingsSectionKey>([
   "runners",
   "library",
   "integrations",
+  "inboxes",
   "connections",
   "memory",
   "ingress",
@@ -141,8 +158,13 @@ export function parseRoute(pathname: string): Route {
 
   const support = path.match(/^\/support\/(.+)$/);
   if (support) {
-    return { view: "support", threadId: decodeURIComponent(support[1]!) };
+    return {
+      view: "support",
+      threadId: supportItemIdFromPath(decodeURIComponent(support[1]!)),
+    };
   }
+  // The Support list itself lives on the Support tool's page.
+  if (path === "/support") return { view: "plain" };
   const plain = path.match(/^\/plain(?:\/(.+))?$/);
   if (plain) {
     const route: Extract<Route, { view: "plain" }> = { view: "plain" };
@@ -238,7 +260,6 @@ export function parseRoute(pathname: string): Route {
   return { view: "prs" };
 }
 
-/** parseRoute plus what the query carries: a push intent on an incident. */
 /**
  * The current path of a link written in an old form, or `null` when the
  * path is already current. /settings/incidents/<project> became the
@@ -250,8 +271,17 @@ export function legacyRoutePath(pathname: string): string | null {
   return routePath(parseRoute(pathname));
 }
 
+/** parseRoute plus what the query carries: a push intent on an incident
+ *  or on an email conversation. */
 export function parseRouteWithSearch(pathname: string, search: string): Route {
   const route = parseRoute(pathname);
+  if (route.view === "support") {
+    if (!route.threadId.startsWith("email:")) return route;
+    const intent = parseSupportIntent(
+      new URLSearchParams(search).get("intent"),
+    );
+    return intent ? { ...route, intent } : route;
+  }
   if (route.view !== "incidents" || !route.id) return route;
   const intent = parseIncidentIntent(new URLSearchParams(search).get("intent"));
   return intent ? { ...route, intent } : route;
@@ -270,7 +300,9 @@ export function routePath(route: Route): string {
           : encodeURIComponent(route.branch)
       }`;
     case "support":
-      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId)}`;
+      // The item id's `:` reads better left as it is, and parseRoute
+      // decodes either form.
+      return `${BASE_PATH}/support/${encodeURIComponent(route.threadId).replace(/%3A/gi, ":")}${route.intent ? `?intent=${route.intent}` : ""}`;
     case "plain":
       return route.threadId
         ? `${BASE_PATH}/plain/${encodeURIComponent(route.threadId)}`

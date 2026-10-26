@@ -308,3 +308,76 @@ describe("incident delivery", () => {
     expect(pushes[0].payload.actions).toHaveLength(1);
   });
 });
+
+describe("support delivery", () => {
+  const supportVeto = (
+    over: Partial<NotificationEvent> = {},
+  ): NotificationEvent => ({
+    kind: "support_veto",
+    subject: {
+      type: "support",
+      id: "sc_1",
+      title: "A support reply will send",
+      context: "acme",
+    },
+    reason: "Sends when the window ends unless someone stops it",
+    body: "Sends at 14:05 unless you stop it",
+    url: "/support/email:sc_1",
+    eventKey: "sc_1:sd_1:veto",
+    at: 1_000,
+    push: {
+      body: "Sends at 14:05 unless you stop it",
+      actions: [
+        {
+          action: "stop",
+          title: "Stop",
+          url: "/support/email:sc_1?intent=stop",
+        },
+      ],
+      requireInteraction: true,
+      ttlSeconds: 300,
+      urgency: "high",
+    },
+    ...over,
+  });
+
+  test("a veto pushes the fixed wording, the Stop button and its time to live", async () => {
+    await notifyUser("Ada", supportVeto());
+    expect(pushes).toEqual([
+      {
+        user: "Ada",
+        payload: {
+          title: "A support reply will send",
+          body: "acme · Sends at 14:05 unless you stop it",
+          url: "/support/email:sc_1",
+          tag: "os-notification-support:sc_1",
+          id: "support:sc_1",
+          actions: [
+            {
+              action: "stop",
+              title: "Stop",
+              url: "/support/email:sc_1?intent=stop",
+            },
+          ],
+          requireInteraction: true,
+          renotify: true,
+          timestamp: 1_000,
+        },
+        options: {
+          ttlSeconds: 300,
+          urgency: "high",
+          topic: pushTopic("support:sc_1"),
+        },
+      },
+    ]);
+  });
+
+  test("support alerts switched off: nothing pushes, the row still lands", async () => {
+    await setAlertPrefs("Ada", { support: false });
+    await notifyUser("Ada", supportVeto());
+    expect(pushes).toEqual([]);
+    expect((await getNotificationInbox("Ada")).threads[0].id).toBe(
+      "support:sc_1",
+    );
+  });
+});

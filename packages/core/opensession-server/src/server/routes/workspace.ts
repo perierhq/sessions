@@ -72,6 +72,7 @@ import {
   workspaceListVersion,
 } from "../workspaces";
 import {
+  reservedExternalRefKind,
   resolveExternalWorkspace,
   resolvePlainWorkspace,
   resolvePrWorkspace,
@@ -589,6 +590,12 @@ export async function handleWorkspaceRoutes(
     };
     const createdBy = requestUser(ctx, body.user) || "Anonymous";
     if (body.externalRef?.kind && body.externalRef?.id) {
+      const reserved = reservedExternalRefKind(String(body.externalRef.kind));
+      if (reserved)
+        return Response.json(
+          { error: `External ref kind "${reserved}" is reserved` },
+          { status: 400 },
+        );
       const { workspace, created } = await resolveExternalWorkspace({
         ref: {
           kind: body.externalRef.kind,

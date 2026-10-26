@@ -35,6 +35,7 @@ export const PROJECT_ROLES = [
   "investigator",
   "verifier",
   "reviews",
+  "support",
 ] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
 
@@ -44,6 +45,7 @@ export const UNATTENDED_ROLES = [
   "investigator",
   "verifier",
   "reviews",
+  "support",
 ] as const;
 export type UnattendedRole = (typeof UNATTENDED_ROLES)[number];
 
@@ -56,6 +58,7 @@ export const ROLE_LABELS: Record<ProjectRole, string> = {
   investigator: "Investigator",
   verifier: "Verifier",
   reviews: "Reviews",
+  support: "Support",
 };
 
 export const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
@@ -64,6 +67,7 @@ export const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   investigator: "Incidents: finds the cause and drafts the fix",
   verifier: "Incidents: proves the fix on a different provider",
   reviews: "Pull request reviews and fixes",
+  support: "Conversations from your support inboxes",
 };
 
 /** The line over one role's access on a phone. You differs from the Models
@@ -244,6 +248,8 @@ export interface EffectiveSandbox {
   reviews: RunPlace;
   automations: RunPlace;
   incidentAgents: RunPlace;
+  /** Support runs where incident agents run: it reads untrusted mail. */
+  support: RunPlace;
   note: string | null;
 }
 
@@ -434,7 +440,8 @@ export interface ProjectRemigrateResult {
 
 /** A project nobody has set anything for: every role on the global
  *  defaults, incident policy at today's defaults, no production, and the
- *  access today's defaults give (verifier read-only, no web search). */
+ *  access today's defaults give (verifier read-only, no web search;
+ *  Support read-only, no connectors, no web search). */
 export function defaultProjectDocument(
   project: string,
   now: string,
@@ -461,6 +468,8 @@ export function defaultProjectDocument(
         investigator: "code",
         verifier: "ask",
         reviews: "code",
+        // Support reads untrusted mail: read-only until someone says so.
+        support: "ask",
       },
       connections: [],
       credentials: [],

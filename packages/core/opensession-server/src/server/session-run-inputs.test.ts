@@ -13,6 +13,12 @@ import {
 } from "./incidents/access/resolve";
 import { automationDeniedTools } from "./automations";
 import { __setIncidentAuditForTest } from "./incidents/audit-sink";
+import {
+  type ProjectSettingsDocument,
+  defaultProjectDocument,
+} from "../shared/project-settings";
+import { projectDocuments } from "./projects/store";
+import { useSupportTestKernel } from "./support/testing/kernel-fixture";
 import type { AutomationDescendantPolicy } from "./types";
 import {
   resolveSessionRunInputs,
@@ -20,6 +26,9 @@ import {
   sessionMcpScopeSource,
   type RunInputsSession,
 } from "./session-run-inputs";
+
+// Support sessions read the project's access table from the catalog.
+useSupportTestKernel();
 
 const plain: RunInputsSession = {
   automation: undefined,
@@ -524,5 +533,75 @@ describe("resolveSessionRunInputs", () => {
     expect(
       (await resolveSessionRunInputs(plain)).incidentProxyMcpServers,
     ).toEqual([]);
+  });
+});
+
+describe("support sessions", () => {
+  const support: RunInputsSession = {
+    ...plain,
+    repo: "acme",
+    mcpServers: ["acme-crm"],
+    externalRefs: [{ kind: "support", id: "sc_1" }],
+  };
+
+  async function storeProject(
+    change: (doc: ProjectSettingsDocument) => void,
+  ): Promise<void> {
+    const doc = defaultProjectDocument("acme", "2026-10-01T09:00:00.000Z");
+    change(doc);
+    await projectDocuments().set("acme", doc);
+  }
+
+  test("run under the support branch, with no user and the deny-set", async () => {
+    await storeProject((doc) => {
+      doc.access.connections = [
+        { server: "acme-crm", roles: ["support"] },
+        { server: "acme-billing", roles: ["automations"] },
+      ];
+    });
+    expect(sessionInProcessMcpBranch(support)).toBe("support");
+    const inputs = await resolveSessionRunInputs(support, { user: "Kent" });
+    expect(inputs.inProcessMcpBranch).toBe("support");
+    expect(inputs.user).toBeUndefined();
+    expect(inputs.isAutomationSession).toBe(false);
+    expect(inputs.mcpServers).toEqual(["acme-crm"]);
+    for (const key of Object.keys(automationDeniedTools()))
+      expect(inputs.deniedTools).toHaveProperty(key);
+    expect(inputs.deniedTools).toHaveProperty("mcp__gmail__send_email");
+    expect(inputs.deniedTools).toHaveProperty("mcp__stripe__create_refund");
+    expect(inputs.sessionNote).toBe(false);
+  });
+
+  test("a support session with no connectors gets none, never every server", async () => {
+    await storeProject(() => {});
+    const inputs = await resolveSessionRunInputs(
+      { ...support, mcpServers: undefined },
+      { user: "Kent" },
+    );
+    expect(inputs.mcpServers).toEqual([]);
+  });
+
+  test("web search follows the Support cell, read every turn", async () => {
+    await storeProject(() => {});
+    const off = await resolveSessionRunInputs(support, {});
+    expect(off.deniedTools?.web_search).toBeDefined();
+    await storeProject((doc) => {
+      doc.access.webSearch = [...doc.access.webSearch, "support"];
+      doc.access.websites = [
+        { host: "docs.example.test", roles: ["support"] },
+        { host: "status.example.test", roles: ["automations"] },
+      ];
+    });
+    const on = await resolveSessionRunInputs(support, {});
+    expect(on.deniedTools?.web_search).toBeUndefined();
+    expect(on.webFetchHosts).toContain("docs.example.test");
+    expect(on.webFetchHosts).not.toContain("status.example.test");
+  });
+
+  test("an interactive session is unchanged", async () => {
+    const inputs = await resolveSessionRunInputs(plain, { user: "Kent" });
+    expect(inputs.inProcessMcpBranch).toBe("interactive");
+    expect(inputs.deniedTools).toBeUndefined();
+    expect(inputs.webFetchHosts).toBeUndefined();
   });
 });

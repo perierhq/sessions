@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import useSWR from "swr";
+import { fetchInboxes } from "../../lib/api/support";
 import { errorMessage } from "../../lib/error-message";
-import { NOTIFICATION_ALERT_ROWS } from "../../lib/notification-alert-rows";
+import { notificationAlertRows } from "../../lib/notification-alert-rows";
 import {
   ensureNotificationPermission,
   getNotifSettings,
@@ -90,6 +92,15 @@ export function NotificationsPanel() {
   const [s, setS] = useState<NotifSettings>(getNotifSettings);
   const { alerts } = useNotifications();
   const [alertError, setAlertError] = useState<string | null>(null);
+  // The Inboxes page's request (same key): `enabled` is whether the email
+  // integration is on.
+  const { data: inboxes } = useSWR(
+    ["api", "support-inboxes"] as const,
+    fetchInboxes,
+  );
+  const alertRows = notificationAlertRows({
+    emailSupport: inboxes?.enabled === true,
+  });
   useEffect(() => onNotifSettingsChanged(() => setS(getNotifSettings())), []);
 
   function patch(p: Partial<NotifSettings>) {
@@ -167,7 +178,7 @@ export function NotificationsPanel() {
 
       <SettingsGroupLabel>Notify me when</SettingsGroupLabel>
       <SettingCard>
-        {NOTIFICATION_ALERT_ROWS.map((row) => (
+        {alertRows.map((row) => (
           <SettingRow
             key={row.group}
             title={row.title}

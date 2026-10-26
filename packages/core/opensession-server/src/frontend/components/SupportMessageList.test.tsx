@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PlainEntryRow } from "./PlainThreadPanel";
+import {
+  SupportMessage as PlainEntryRow,
+  SupportMessageList,
+} from "./SupportMessageList";
 import type { PlainTimelineEntry } from "../lib/types";
 
 // MarkdownBody reads the theme preference while rendering, and lib/theme keeps
@@ -160,4 +163,52 @@ test("a non-image attachment stays a download chip", () => {
 
   expect(html).toContain("logs.zip");
   expect(html).not.toContain("md-image");
+});
+
+test("the list draws a quiet event as one line between messages", () => {
+  const html = renderToStaticMarkup(
+    <SupportMessageList
+      entries={[
+        entry({ id: "m1", text: "Found it, thanks" }),
+        {
+          ...entry({ id: "q1", text: "Closed without a reply" }),
+          quiet: true,
+        },
+      ]}
+    />,
+  );
+  expect(html).toContain("Found it, thanks");
+  expect(html).toMatch(/<p class="[^"]*">Closed without a reply<\/p>/);
+  expect(html.indexOf("Found it")).toBeLessThan(html.indexOf("Closed"));
+});
+
+test("an empty list says there are no messages yet", () => {
+  const html = renderToStaticMarkup(<SupportMessageList entries={[]} />);
+  expect(html).toContain("No messages in this thread yet.");
+});
+
+test("a message that only repeats the subject keeps it quiet", () => {
+  const html = renderToStaticMarkup(
+    <SupportMessageList
+      threadTitle="Login broken"
+      entries={[
+        entry({ id: "a", subject: "Re: Login broken", text: "first" }),
+        entry({ id: "b", subject: "Another topic", text: "second" }),
+      ]}
+    />,
+  );
+  expect(html).not.toContain("Re: Login broken");
+  expect(html).toContain("Another topic");
+});
+
+test("an agent's Plain note links to its triage session only with a thread id", () => {
+  const note = entry({ kind: "note", actorType: "bot", actorName: "Triage" });
+  expect(
+    renderToStaticMarkup(
+      <SupportMessageList entries={[note]} threadId="th_1" />,
+    ),
+  ).toContain("/plain-triage/th_1");
+  expect(
+    renderToStaticMarkup(<SupportMessageList entries={[note]} />),
+  ).not.toContain("plain-triage");
 });

@@ -24,6 +24,7 @@ describe("single session ownership", () => {
       "routes/mention-palette.ts",
       "routes/sessions.ts",
       "routes/workspace.ts",
+      "session-delete.ts",
     ]) {
       expect(read(file)).not.toContain("getAllSessions(");
     }
@@ -748,7 +749,9 @@ describe("single session ownership", () => {
     expect(wiring).toContain('op: "fail_cancel_command"');
     expect(wiring).not.toContain("cancelAgentRun(");
     const routes = read("routes/sessions.ts");
-    expect(routes).toContain("await cancelAgentRunAndWait(runIds)");
+    // Deletion lives in its own module, shared with support retention.
+    const deletion = read("session-delete.ts");
+    expect(deletion).toContain("await cancelAgentRunAndWait(runIds)");
     // Archive's run stop is shared with repository removal.
     expect(routes).toContain("archiveSession(sessionId, session)");
     expect(read("session-archive.ts")).toContain(
@@ -757,8 +760,8 @@ describe("single session ownership", () => {
     const prRoutes = read("routes/pr.ts");
     expect(prRoutes).toContain("requestTurnCancel(bksId, reviewSession");
     expect(prRoutes).not.toContain("cancelAgentRun(");
-    expect(routes).toContain('operation: "delete_session"');
-    expect(routes).toContain("withSessionMutationLock(session.id");
+    expect(deletion).toContain('operation: "delete_session"');
+    expect(deletion).toContain("withSessionMutationLock(session.id");
   });
 
   test("create and sandbox recovery establish one execution owner", () => {

@@ -122,11 +122,11 @@ afterAll(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   _resetPrewarmForTest();
   rmSync(prewarmDir(), { recursive: true, force: true });
   rmSync(environmentsPath(), { force: true });
-  writeConfig({});
+  await writeConfig({});
 });
 
 afterEach(() => {
@@ -134,7 +134,7 @@ afterEach(() => {
   _resetPrewarmForTest();
 });
 
-function writeConfig(overrides: Record<string, unknown>): void {
+async function writeConfig(overrides: Record<string, unknown>): Promise<void> {
   const snapshot =
     typeof overrides.connectionSnapshot === "string"
       ? overrides.connectionSnapshot
@@ -149,7 +149,7 @@ function writeConfig(overrides: Record<string, unknown>): void {
       ...runtimeOverrides,
     }),
   );
-  connectSandboxProvider("daytona", {
+  await connectSandboxProvider("daytona", {
     secret: "test-key",
     settings: { snapshot },
   });
@@ -351,7 +351,7 @@ describe("requestPrewarm", () => {
 
   test.skipIf(killSwitch)("prewarm disabled by config → disabled", async () => {
     makeFakeAdapter();
-    writeConfig({ prewarm: { enabled: false } });
+    await writeConfig({ prewarm: { enabled: false } });
     expect((await requestPrewarm("daytona", "tella-fusion")).state).toBe(
       "disabled",
     );
@@ -447,7 +447,7 @@ describe("claimPrewarm (adoption)", () => {
       await until(() => readyEntry()?.state === "ready");
       // The retired runner pin used to invalidate every prewarm per deploy;
       // a Sandbox now carries only the base runtime, which names no commit.
-      writeConfig({ runnerSha: "sha-B" });
+      await writeConfig({ runnerSha: "sha-B" });
       expect(claimPrewarm("daytona", "tella-fusion", "bks-s")?.sandboxId).toBe(
         fake.created[0],
       );
@@ -461,7 +461,7 @@ describe("claimPrewarm (adoption)", () => {
       const fake = makeFakeAdapter();
       await requestPrewarm("daytona", "tella-fusion");
       await until(() => readyEntry()?.state === "ready");
-      writeConfig({ connectionSnapshot: "snap-B" });
+      await writeConfig({ connectionSnapshot: "snap-B" });
       expect(claimPrewarm("daytona", "tella-fusion", "bks-s")).toBeNull();
       await until(() => fake.destroyed.includes(fake.created[0]));
     },
@@ -513,7 +513,7 @@ describe("keep-ready prewarms", () => {
   test.skipIf(killSwitch)(
     "starts eagerly, replenishes after claim, and survives TTL",
     async () => {
-      writeConfig({
+      await writeConfig({
         prewarm: {
           enabled: true,
           ttlMinutes: 10,

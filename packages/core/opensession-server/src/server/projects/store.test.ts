@@ -13,6 +13,7 @@ import {
   patchProjectDocumentAsServer,
   peekProjectDocument,
   type ProjectActor,
+  projectDocuments,
   updateProjectDocument,
 } from "./store";
 
@@ -83,6 +84,86 @@ test("a project without a document reads as the defaults, unwritten", async () =
   expect(doc).toMatchObject({ revision: 0, sandbox: "default", models: {} });
   expect(await listProjectDocuments()).toEqual([]);
   expect(peekProjectDocument("acme-web")?.revision).toBe(0);
+});
+
+test("a document stored before the Support role reads it as read-only, without search", async () => {
+  // Stored by a build that had five roles: no `support` key anywhere.
+  await projectDocuments().set("acme-web", {
+    schema: 1,
+    project: "acme-web",
+    revision: 3,
+    sandbox: "podman",
+    models: { reviews: "pi/anthropic/claude-opus-5-5" },
+    access: {
+      modes: {
+        automations: "code",
+        investigator: "code",
+        verifier: "ask",
+        reviews: "code",
+      },
+      connections: [
+        { server: "linear", roles: ["automations", "investigator", "reviews"] },
+      ],
+      credentials: [],
+      hosts: [],
+      websites: [{ host: "api.example.test", roles: ["automations"] }],
+      webSearch: ["automations", "investigator", "reviews"],
+      routes: {
+        investigator: { route: "server" },
+        verifier: { route: "server" },
+      },
+      deniedTools: { investigator: [], verifier: [] },
+      signalExceptions: [],
+    },
+    updatedAt: "2026-10-01T09:00:00.000Z",
+    updatedBy: "Ada",
+  });
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.revision).toBe(3);
+  expect(doc.access.modes.support).toBe("ask");
+  expect(
+    doc.access.connections.some((c) =>
+      (c.roles as string[]).includes("support"),
+    ),
+  ).toBe(false);
+  expect(doc.access.webSearch as string[]).not.toContain("support");
+  expect(doc.models.support).toBeUndefined();
+  expect(
+    ((await projectDocuments().get("acme-web")) as { revision: number })
+      .revision,
+  ).toBe(3);
+});
+
+test("Support's Changes code and connector cells are set here", async () => {
+  const doc = await written({
+    access: {
+      cells: [
+        { row: { kind: "mode" }, role: "support", value: "code" },
+        {
+          row: { kind: "connection", server: "linear" },
+          role: "support",
+          value: true,
+        },
+      ],
+    },
+  });
+  expect(doc.access.modes.support).toBe("code");
+  expect(doc.access.connections).toEqual([
+    { server: "linear", roles: ["support"] },
+  ]);
+  expect(
+    await write({
+      access: {
+        cells: [
+          {
+            row: { kind: "host", runner: "runner-prod" },
+            role: "support",
+            value: true,
+          },
+        ],
+      },
+    }),
+  ).toMatchObject({ status: 400 });
 });
 
 test("unknown projects answer 404", async () => {
@@ -481,6 +562,76 @@ test("removing a signal exception is a widening: it may have narrowed", async ()
     (await getProjectDocument("acme-web")).access.signalExceptions,
   ).toHaveLength(1);
   expect((await written(remove)).access.signalExceptions).toEqual([]);
+});
+
+test("only a signed-in person widens what Support may use", async () => {
+  const widenings: Array<
+    [Omit<ProjectSettingsPatch, "expectedRevision">, string]
+  > = [
+    [
+      {
+        access: {
+          cells: [{ row: { kind: "webSearch" }, role: "support", value: true }],
+        },
+      },
+      "access.webSearch.support",
+    ],
+    [
+      {
+        access: {
+          cells: [
+            {
+              row: { kind: "connection", server: "linear" },
+              role: "support",
+              value: true,
+            },
+          ],
+        },
+      },
+      "access.connections.linear.support",
+    ],
+    [
+      {
+        access: {
+          cells: [{ row: { kind: "mode" }, role: "support", value: "code" }],
+        },
+      },
+      "access.modes.support",
+    ],
+  ];
+  for (const [patch, field] of widenings) {
+    expect(await write(patch, agent)).toEqual(WIDEN);
+    expect(kit.audits.at(-1)).toEqual({
+      kind: "project_settings_refused",
+      project: "acme-web",
+      by: "agent",
+      fields: [field],
+    });
+  }
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.revision).toBe(0);
+  expect(doc.access.modes.support).toBe("ask");
+  expect(doc.access.webSearch as string[]).not.toContain("support");
+  expect(doc.access.connections).toEqual([]);
+});
+
+test("Support gets no websites by default", async () => {
+  expect((await getProjectDocument("acme-web")).access.websites).toEqual([]);
+  // A website added for Automations is not ticked for Support.
+  const doc = await written({
+    access: {
+      cells: [
+        {
+          row: { kind: "website", host: "docs.example.test" },
+          role: "automations",
+          value: true,
+        },
+      ],
+    },
+  });
+  expect(doc.access.websites).toEqual([
+    { host: "docs.example.test", roles: ["automations"] },
+  ]);
 });
 
 test("Changes code for Automations and Reviews is not set here", async () => {

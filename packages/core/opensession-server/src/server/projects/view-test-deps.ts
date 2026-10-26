@@ -87,6 +87,12 @@ const DAYTONA: EffectiveSandbox = {
     label: "Daytona eu",
     source: "default",
   },
+  support: {
+    state: "ok",
+    provider: "daytona",
+    label: "Daytona eu",
+    source: "default",
+  },
   note: null,
 };
 
@@ -96,6 +102,7 @@ const GLOBAL_MODELS = {
   investigator: "pi/anthropic/claude-opus-5-5",
   verifier: "pi/openai/gpt-5.5",
   reviews: "pi/anthropic/claude-opus-5-5",
+  support: "pi/anthropic/claude-sonnet-5",
 } as const;
 
 const LABELS: Record<string, string> = {

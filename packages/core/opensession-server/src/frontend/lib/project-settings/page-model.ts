@@ -365,7 +365,7 @@ export function roleForKey(
   return null;
 }
 
-/** "4 of 5 roles": how many roles a row is on for, You included. */
+/** "4 of 6 roles": how many roles a row is on for, You included. */
 export function rowSummary(row: AccessRowView): string {
   const on = PROJECT_ROLES.filter((role) => cellIsOn(row.cells[role].value));
   if (on.length === PROJECT_ROLES.length) return "Every role";
@@ -379,12 +379,13 @@ export function joinDots(label: string): string {
   return label.replaceAll(" · ", "\u00a0·\u00a0");
 }
 
-/** The 4 places in the "Where agents run" grid, in the design's order. */
+/** The 5 places in the "Where agents run" grid, in the design's order. */
 export const RUN_PLACES = [
   ["you", "You"],
   ["reviews", "Reviews"],
   ["automations", "Automations"],
   ["incidentAgents", INCIDENT_AGENTS_LABEL],
+  ["support", "Support"],
 ] as const;
 
 /** The words on a step's fix button. */

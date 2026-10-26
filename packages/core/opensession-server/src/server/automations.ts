@@ -66,6 +66,8 @@ import { githubRepoOwner } from "./github-app";
 import { recordRunOutcome, updateSessionFile } from "./session-cache";
 import { sessionKernel } from "./session-kernel";
 import { resolvePlainWorkspace } from "./workspace-resolve";
+import { SUPPORT_EVENT_KEY } from "../shared/support";
+import { supportEventPrompt } from "./support/events";
 import { getWorkspace } from "./workspaces";
 import type { NativeSessionFile } from "./types";
 import { stateDir } from "./paths";
@@ -2341,7 +2343,12 @@ export async function runAutomation(
           : automation.slackWatch
             ? `a new message in the Slack channel this automation watches (<#${automation.slackWatch.channel}>)`
             : `an internal event (${automation.eventKey})`;
-      prompt += `\n\n## Triggering event\n\nThis run was triggered by ${source}. Event payload:\n\n\`\`\`\n${options.eventContext.slice(0, 10_000)}\n\`\`\``;
+      // Support events carry a customer's subject and address: wrapped as
+      // untrusted data in a fence their text cannot close.
+      prompt +=
+        trigger === "event" && automation.eventKey === SUPPORT_EVENT_KEY
+          ? `\n\n## Triggering event\n\nThis run was triggered by ${source}. Event payload:\n\n${supportEventPrompt(options.eventContext.slice(0, 10_000))}`
+          : `\n\n## Triggering event\n\nThis run was triggered by ${source}. Event payload:\n\n\`\`\`\n${options.eventContext.slice(0, 10_000)}\n\`\`\``;
     }
 
     const memoryQuery = prompt;

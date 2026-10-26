@@ -189,6 +189,7 @@ function connectionRow(
       investigator: value("investigator"),
       verifier: value("verifier"),
       reviews: value("reviews"),
+      support: value("support"),
     }),
   };
   if (blockedBy) {
@@ -216,6 +217,7 @@ function keychainRow(
         investigator: cell(investigator),
         verifier: cell(verifier),
         reviews: cell("no", false, INCIDENT_ONLY),
+        support: cell("no", false, INCIDENT_ONLY),
       },
     ),
   };
@@ -245,6 +247,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
                 ...cell("elsewhere", false, MODE_NOT_SET_HERE.reviews),
                 label: MODE_SET_ELSEWHERE_LABEL.reviews,
               },
+              support: cell("read"),
             }),
           },
         ],
@@ -298,6 +301,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
               investigator: cell("yes"),
               verifier: cell("yes"),
               reviews: cell("no", false, INCIDENT_ONLY),
+              support: cell("no", false, INCIDENT_ONLY),
             }),
           },
         ],
@@ -319,6 +323,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
               ),
               verifier: cell("locked", false, "Unattended runs need a list"),
               reviews: cell("locked", false, "Unattended runs need a list"),
+              support: cell("locked", false, "Unattended runs need a list"),
             }),
           },
           {
@@ -329,6 +334,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
               investigator: tick(true),
               verifier: tick(true),
               reviews: tick(true),
+              support: tick(false),
             }),
           },
           {
@@ -339,6 +345,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
               investigator: tick(true),
               verifier: tick(true),
               reviews: tick(false),
+              support: tick(false),
             }),
           },
         ],
@@ -356,6 +363,7 @@ function accessTable(opts: { grafanaBlocked: boolean }): AccessTableView {
               investigator: tick(true),
               verifier: cell("locked", false, "Never the verifier, by design"),
               reviews: tick(true),
+              support: tick(false),
             }),
           },
         ],
@@ -494,6 +502,12 @@ const SANDBOX_PODMAN: EffectiveSandbox = {
     label: CONTAINER,
     source: "project",
   },
+  support: {
+    state: "ok",
+    provider: "podman",
+    label: CONTAINER,
+    source: "project",
+  },
   note: "Sessions, reviews and incident agents run here. Automations use the global default",
 };
 
@@ -512,6 +526,10 @@ const SANDBOX_NONE: EffectiveSandbox = {
     source: "fallback",
   },
   incidentAgents: {
+    state: "cant-start",
+    reason: "Agents can't start: this project has no sandbox",
+  },
+  support: {
     state: "cant-start",
     reason: "Agents can't start: this project has no sandbox",
   },
@@ -543,6 +561,12 @@ const SANDBOX_DAYTONA: EffectiveSandbox = {
     label: "Daytona eu",
     source: "project",
   },
+  support: {
+    state: "ok",
+    provider: "daytona",
+    label: "Daytona eu",
+    source: "project",
+  },
   note: null,
 };
 
@@ -552,6 +576,7 @@ const DEFAULT_MODELS: Record<ProjectRole, string> = {
   investigator: OPUS,
   verifier: GPT,
   reviews: OPUS,
+  support: SONNET,
 };
 
 function effectiveModels(

@@ -591,6 +591,7 @@ export const ROLE_DEFAULT_MODEL_KEYS = [
   "investigatorModel",
   "verifierModel",
   "reviewsModel",
+  "supportModel",
 ] as const;
 export type RoleDefaultModelKey = (typeof ROLE_DEFAULT_MODEL_KEYS)[number];
 

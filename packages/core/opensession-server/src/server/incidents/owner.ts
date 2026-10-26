@@ -117,6 +117,22 @@ export function instanceOwner(): string {
   return member ? firstName(member) : "";
 }
 
+/** The roster member who is the instance owner (as `instanceOwner()`), or
+ *  null without a roster. Permission checks compare their GitHub login with
+ *  the signed-in one, since a first name can be shared. */
+export function instanceOwnerMember(): TeamMember | null {
+  const team = roster();
+  const notifyUser = configuredNotifyUser();
+  const configured = isPersonName(notifyUser)
+    ? memberFor(notifyUser, team)
+    : undefined;
+  return (
+    configured ??
+    team.find((m) => m.directory !== false && firstName(m)) ??
+    null
+  );
+}
+
 /** Who owns `signal` now: its owner, else a person who created it, else
  *  the instance owner; "" when there is nobody. */
 export function signalOwner(

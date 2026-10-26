@@ -41,8 +41,12 @@ const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
 const { __resetWorkspaceProjectionForTest, createWorkspace, getWorkspace } =
   await import("./workspaces");
-const { __setPrLookupForTest, resolvePrWorkspace, workspaceBacksOpenPr } =
-  await import("./workspace-resolve");
+const {
+  __setPrLookupForTest,
+  resolveExternalWorkspace,
+  resolvePrWorkspace,
+  workspaceBacksOpenPr,
+} = await import("./workspace-resolve");
 
 // Workspaces live in the kernel catalog: a fresh in-memory store per test.
 let store: InstanceType<typeof SessionKernelStore>;
@@ -236,5 +240,39 @@ describe("resolvePrWorkspace", () => {
     });
 
     expect(resolved).toBeNull();
+  });
+});
+
+describe("resolveExternalWorkspace", () => {
+  const ref = { kind: "support", id: "sc_1", title: "Export is broken" };
+
+  test("with a repo, the workspace is created in that repo", async () => {
+    const first = await resolveExternalWorkspace({
+      ref,
+      createdBy: "Sessions",
+      repo: "acme",
+    });
+    expect(first.created).toBe(true);
+    expect(first.workspace.repo).toBe("acme");
+    expect(first.workspace.key).toBe("support-sc_1");
+    expect(first.workspace.externalRefs).toEqual([ref]);
+
+    const again = await resolveExternalWorkspace({
+      ref,
+      createdBy: "Sessions",
+      repo: "acme",
+    });
+    expect(again.created).toBe(false);
+    expect(again.workspace.id).toBe(first.workspace.id);
+  });
+
+  test("without a repo, the workspace stays repo-less", async () => {
+    const resolved = await resolveExternalWorkspace({
+      ref: { kind: "tella-video", id: "v1", title: "Demo" },
+      createdBy: "Kent",
+    });
+    expect(resolved.created).toBe(true);
+    expect(resolved.workspace.repo).toBeUndefined();
+    expect(resolved.workspace.key).toBe("tella-video-v1");
   });
 });

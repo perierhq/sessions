@@ -12,6 +12,9 @@
  * docs/generated/mcp-tools.md, which is generated from both.
  */
 
+import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
+import { REACH_TOOLS } from "./turn-outcome";
+
 // Automation runs are headless and often driven by untrusted text (e.g.
 // customer ticket content), so they must stay read-only toward the customer:
 // no replying to or changing the state of a Plain thread. Enforced at the
@@ -109,4 +112,45 @@ export const PLAIN_DISCUSSION_DENIED_TOOLS: Record<string, string> = {
 };
 export function plainDiscussionDeniedTools(): Record<string, string> {
   return PLAIN_DISCUSSION_DENIED_TOOLS;
+}
+
+// A support session (an email conversation) reads untrusted customer mail and
+// runs with no person at the keyboard. It answers only through
+// opensession-support's draft_reply, which goes through the one reply path
+// (support/reply.ts) and the inbox's autonomy: everything the automation
+// deny-set closes stays closed, and so does every tool that reaches someone
+// outside the run (turn-outcome.ts REACH_TOOLS: Slack, Linear, Plain notes,
+// Gmail, ...) and every Stripe write, money-moving or not.
+const SUPPORT_SEND_DENIAL =
+  "This tool isn't available in a support session. Write the reply with " +
+  "draft_reply (opensession-support); the inbox's settings decide whether a " +
+  "person approves it first. Anything else for a person goes in the draft.";
+const SUPPORT_MONEY_DENIAL =
+  "Stripe changes can't run in a support session. Describe the exact action " +
+  "in your draft or notes for a person to do.";
+/** The Stripe MCP's write tools beyond the confirm-listed money movers:
+ *  each creates or changes something on the account a customer can see or
+ *  be billed by. */
+const STRIPE_WRITE_TOOLS = [
+  "mcp__stripe__create_customer",
+  "mcp__stripe__create_product",
+  "mcp__stripe__create_price",
+  "mcp__stripe__create_payment_link",
+  "mcp__stripe__create_invoice",
+  "mcp__stripe__create_invoice_item",
+  "mcp__stripe__finalize_invoice",
+  "mcp__stripe__create_coupon",
+  "mcp__stripe__update_dispute",
+];
+export const SUPPORT_DENIED_TOOLS: Record<string, string> = {
+  ...AUTOMATION_DENIED_TOOLS,
+  ...Object.fromEntries(REACH_TOOLS.map((name) => [name, SUPPORT_SEND_DENIAL])),
+  ...Object.fromEntries(
+    [...Object.keys(STRIPE_CONFIRM_TOOLS), ...STRIPE_WRITE_TOOLS].map(
+      (name) => [name, SUPPORT_MONEY_DENIAL],
+    ),
+  ),
+};
+export function supportDeniedTools(): Record<string, string> {
+  return SUPPORT_DENIED_TOOLS;
 }

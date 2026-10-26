@@ -91,7 +91,7 @@ export const ROW_CONTROLS =
   "ml-auto flex shrink-0 items-center gap-2 phone:ml-0 phone:min-w-0 phone:basis-full phone:justify-end [&>*:last-child]:min-w-0";
 
 export const ROLE_GRID =
-  "grid grid-cols-4 gap-x-4 gap-y-3 px-5 pb-2.5 phone:grid-cols-2";
+  "grid grid-cols-5 gap-x-4 gap-y-3 px-5 pb-2.5 phone:grid-cols-2";
 export const ROLE_GRID_LABEL = "text-meta text-faint";
 export const ROLE_GRID_VALUE =
   "mt-0.5 flex items-start gap-1.5 text-supporting text-fg [&>span:first-child]:mt-0.5";
@@ -121,14 +121,15 @@ export const OFFLINE_DOT = "size-1.5 rounded-full bg-faint";
 
 // ── What agents may use ──────────────────────────────────────────────────
 
-/** Five equal 96px role columns beside the row titles. */
+/** Six equal 80px role columns beside the row titles: the titles keep the
+ *  width they had with five 96px columns. */
 export const ACCESS_GRID =
-  "grid grid-cols-[minmax(0,1fr)_repeat(5,96px)] items-center";
+  "grid grid-cols-[minmax(0,1fr)_repeat(6,80px)] items-center";
 export const ACCESS_HEAD_CELL =
   "py-2.5 text-center text-meta font-medium text-dim";
 export const ACCESS_GROUP_LABEL =
-  "col-span-6 px-5 pt-3.5 pb-1 text-meta font-medium text-faint";
-export const ACCESS_ROW_RULE = "col-span-6 mx-5 h-px bg-line";
+  "col-span-7 px-5 pt-3.5 pb-1 text-meta font-medium text-faint";
+export const ACCESS_ROW_RULE = "col-span-7 mx-5 h-px bg-line";
 export const ACCESS_TITLE_CELL = "min-w-0 py-2.5 pl-5 pr-3";
 export const ACCESS_ROW_TITLE =
   "flex items-center gap-1.5 text-item-title font-medium text-fg";

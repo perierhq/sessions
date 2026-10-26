@@ -11,6 +11,7 @@ import {
   MAX_THREADS,
   RETENTION_MS,
   shouldAlert,
+  SUPPORT_NOTIFICATION_KINDS,
   unreadCount,
   wireThread,
   type NotificationDocument,
@@ -391,5 +392,88 @@ describe("incident notifications", () => {
         body: "look",
       }),
     ).toEqual({ title: "Ada mentioned you", body: "Fix login: look" });
+  });
+});
+
+describe("support notifications", () => {
+  test("every support kind alerts under the support group", () => {
+    expect(kindAlertGroup("support_veto")).toBe("support");
+    for (const kind of SUPPORT_NOTIFICATION_KINDS)
+      expect(kindAlertGroup(kind)).toBe("support");
+  });
+
+  test("a stored document without the support switch reads as on", () => {
+    const stored = cleanDocument({
+      threads: [],
+      alerts: { reviews: false, incidents: true },
+    });
+    expect(alertPrefs(stored).support).toBe(true);
+    expect(alertPrefs(stored).reviews).toBe(false);
+    expect(alertPrefs(null).support).toBe(true);
+  });
+
+  test("support rows survive a round trip and lead the banner with the project", () => {
+    const doc: NotificationDocument = { threads: [] };
+    const r = applyNotificationEvent(
+      doc,
+      event({
+        kind: "support_needs_you",
+        subject: {
+          type: "support",
+          id: "sc_1",
+          title: "A support reply is ready",
+          context: "acme",
+        },
+        reason: "Drafts wait for a person",
+        body: "Open Sessions to read it and send",
+        url: "/support/email:sc_1",
+      }),
+    );
+    const round = cleanDocument(JSON.parse(JSON.stringify(r.doc)));
+    expect(round.threads.map((t) => t.id)).toEqual(["support:sc_1"]);
+    expect(bannerText(round.threads[0])).toEqual({
+      title: "A support reply is ready",
+      body: "acme · Open Sessions to read it and send",
+    });
+  });
+
+  test("an existing-only event updates a row but never opens one", () => {
+    const settle = event({
+      kind: "support_needs_you",
+      subject: {
+        type: "support",
+        id: "sc_1",
+        title: "Reply sent",
+        context: "acme",
+      },
+      reason: "Nothing waits on you",
+      body: "Nothing waits on you",
+      url: "/support/email:sc_1",
+      delivery: "replace",
+      existingOnly: true,
+    });
+    const none = applyNotificationEvent(empty, settle);
+    expect(none.thread).toBeNull();
+    expect(none.doc).toBe(empty);
+    const opened = applyNotificationEvent(
+      empty,
+      event({
+        kind: "support_veto",
+        subject: {
+          type: "support",
+          id: "sc_1",
+          title: "A support reply will send",
+        },
+        reason: "Sends when the window ends unless someone stops it",
+        url: "/support/email:sc_1",
+      }),
+    );
+    const settled = applyNotificationEvent(opened.doc, {
+      ...settle,
+      at: T0 + 60_000,
+    });
+    expect(settled.delivery).toBe("replace");
+    expect(settled.thread?.subject.title).toBe("Reply sent");
+    expect(settled.thread?.unread).toBe(true);
   });
 });

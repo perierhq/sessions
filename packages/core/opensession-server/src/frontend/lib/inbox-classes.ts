@@ -87,6 +87,9 @@ export const INBOX_KIND_ICON_INK: Record<NotificationKind, string> = {
   incident_rolled_back: "text-red",
   incident_resolved: "text-green",
   incident_update: "text-dim",
+  support_needs_you: "text-accent",
+  support_veto: "text-yellow",
+  support_failed: "text-red",
 };
 
 /** Stretched over the row, so a click anywhere opens the notification. */
