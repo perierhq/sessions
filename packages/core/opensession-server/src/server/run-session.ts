@@ -20,6 +20,11 @@ import { ownedWorktreeWorkBranch } from "./session-branch-ownership";
 import { piModelUnservableReason } from "./pi-model-routing";
 import { logDetail, reported } from "./reported-errors";
 import {
+  readShutdownSnapshot,
+  shutdownSnapshotPath,
+  writeShutdownSnapshot,
+} from "./shutdown-snapshot";
+import {
   mirrorSlackSessionReply,
   SLACK_SESSION_NOTE,
 } from "../agents/slack/session-reply";
@@ -30,7 +35,7 @@ import {
 
 import { deskTextNavigation } from "./desk-text-navigation";
 import type { McpScope } from "./runner-shared";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import {
   runAgent,
   isAgentSessionBusy,
@@ -166,7 +171,6 @@ import {
   clearComposerPrediction,
   maybePredictComposer,
 } from "./composer-prediction";
-import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { startWatching } from "./file-watcher";
 import {
   getRepo,
@@ -1035,13 +1039,11 @@ export async function restorePromptQueues(
 // SIGTERM arrives (before the drain) and, on boot, nudge any that the journal
 // resume didn't already cover. Crash (no graceful shutdown) still falls back to
 // the journal, so both paths are covered.
-const RESUME_SNAPSHOT_PATH = `${SESSIONS_DIR}/active-at-shutdown.json`;
-
+// The snapshot lives beside the session store (shutdown-snapshot.ts).
 export function readActiveShutdownSnapshot(): ActiveRunRecord[] {
   try {
-    if (!existsSync(RESUME_SNAPSHOT_PATH)) return [];
-    const records = JSON.parse(readFileSync(RESUME_SNAPSHOT_PATH, "utf-8"));
-    return Array.isArray(records) ? records : [];
+    // SAFETY: only snapshotActiveSessions writes this list, of run records.
+    return readShutdownSnapshot(SESSIONS_DIR) as ActiveRunRecord[];
   } catch (e) {
     console.error("[resume] Failed to read active-session snapshot:", e);
     return [];
@@ -1070,11 +1072,11 @@ export function snapshotActiveSessions(): void {
   try {
     const records = activeRunRecords();
     if (records.length === 0) {
-      if (existsSync(RESUME_SNAPSHOT_PATH))
-        writeFileAtomic(RESUME_SNAPSHOT_PATH, "[]");
+      if (existsSync(shutdownSnapshotPath(SESSIONS_DIR)))
+        writeShutdownSnapshot(SESSIONS_DIR, []);
       return;
     }
-    writeJsonAtomic(RESUME_SNAPSHOT_PATH, records, false);
+    writeShutdownSnapshot(SESSIONS_DIR, records);
     console.log(
       `[resume] Snapshotted ${records.length} active session(s) for wake-up on restart`,
     );
@@ -1093,7 +1095,7 @@ export function resumeDrainedSessions(
   if (!records.length) return;
   // Consume the snapshot so the next (non-graceful) boot doesn't replay it.
   try {
-    writeFileAtomic(RESUME_SNAPSHOT_PATH, "[]");
+    writeShutdownSnapshot(SESSIONS_DIR, []);
   } catch {}
 
   let woken = 0;
