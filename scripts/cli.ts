@@ -22,6 +22,7 @@ import { repos } from "./lib/repos";
 import { team } from "./lib/team";
 import { ENV_PATH, REPO_ROOT } from "./lib/paths";
 import * as service from "./lib/service";
+import { syncUnits } from "./lib/unit-sync";
 import { update } from "./lib/update";
 import {
   bold,
@@ -85,6 +86,7 @@ ${bold("Setup")}
   doctor                   check tooling, config, integrations and the server
   service install          install and start the user service (--system: root unit)
   service uninstall        stop and remove it
+  service sync             re-render installed systemd units from this release (--check: only report)
   sandbox test <provider>  re-run a connection qualification (daytona, box)
   sandbox disable <provider> stop new use without deleting live sandboxes
   sandbox ingress install <https-origin> install an owned Caddy fragment
@@ -438,7 +440,24 @@ async function main(): Promise<number> {
       }
       if (positional[0] === "uninstall")
         return (await service.uninstall()) ? 0 : 1;
-      fail("usage: opensession service install [--system] | uninstall");
+      if (positional[0] === "sync") {
+        const scope = service.installedScope();
+        if (service.supervisor() !== "systemd" || !scope) {
+          info(dim("no systemd service installed; nothing to sync"));
+          return 0;
+        }
+        // A person at a terminal may answer a sudo prompt; `opensession
+        // update` runs this without one and must not hang on it.
+        const result = await syncUnits({
+          scope,
+          check: flags.has("--check"),
+          sudo: process.stdin.isTTY ? ["sudo"] : ["sudo", "-n"],
+        });
+        return result.code;
+      }
+      fail(
+        "usage: opensession service install [--system] | uninstall | sync [--check]",
+      );
       return 1;
 
     case "update":

@@ -420,6 +420,46 @@ async function passwordlessRoot(): Promise<boolean> {
   return (await run(["sudo", "-n", "true"])).code === 0;
 }
 
+/**
+ * Bring the installed systemd units in step with the release at `root`, by
+ * running that release's own `service sync` (unit-sync.ts). The new release's
+ * templates and renderer apply, not this process's: the CLI running the update
+ * is still the old release. Only `service install` rendered units before, so a
+ * template change never reached an install that only updated. A failure is
+ * reported and the update goes on: the restart still works under the old
+ * units, and `opensession doctor` keeps showing the drift.
+ */
+export async function syncUnitsAt(
+  root: string,
+  deps: {
+    installed?: () => Promise<boolean>;
+    bun?: string;
+    runCommand?: (cmd: string[], cwd?: string) => Promise<number>;
+  } = {},
+): Promise<number> {
+  const installed =
+    deps.installed ??
+    (async () =>
+      service.supervisor() === "systemd" && (await service.isInstalled()));
+  if (!(await installed())) return 0;
+  const binary = join(root, "opensession");
+  const cli =
+    existsSync(join(root, "release.json")) && existsSync(binary)
+      ? [binary]
+      : [deps.bun ?? service.bunPath(), join(root, "scripts", "cli.ts")];
+  heading("Service units");
+  const code = await (deps.runCommand ?? runInherit)(
+    [...cli, "service", "sync"],
+    root,
+  );
+  if (code !== 0)
+    warn(
+      "the systemd units were not brought up to date",
+      "`opensession doctor` lists what differs; `opensession service sync` applies it",
+    );
+  return code;
+}
+
 export async function update(opts: UpdateOptions = {}): Promise<number> {
   heading("Update");
 
@@ -442,6 +482,8 @@ export async function update(opts: UpdateOptions = {}): Promise<number> {
     // updateRelease returns 0 both when it swapped and when already current;
     // only a real swap needs a restart, and only then is there a rollback target.
     if (!newTarget || newTarget === prevTarget) return 0;
+    // Synced even with --no-restart: the units take effect at the next one.
+    await syncUnitsAt(newTarget);
     const code = await restartReleaseWithRollback(
       rel.srcLink,
       prevTarget,
@@ -652,7 +694,9 @@ export async function restartReleaseWithRollback(
       "isInstalled" | "restartExecutor" | "control" | "waitHealthy"
     >;
     healthBaseUrl: () => Promise<string>;
-  } = { service, healthBaseUrl },
+    /** Re-sync the units to a release root (syncUnitsAt). */
+    syncUnits?: (root: string) => Promise<number>;
+  } = { service, healthBaseUrl, syncUnits: syncUnitsAt },
 ): Promise<number> {
   const { service: services, healthBaseUrl: getHealthBaseUrl } = runtime;
   if (opts.restart === false) return 0;
@@ -698,6 +742,9 @@ export async function restartReleaseWithRollback(
     );
     return 1;
   }
+  // The units were synced to the new release; put the previous release's
+  // back before it restarts under them.
+  await runtime.syncUnits?.(prevTarget);
   const rollbackRestarted =
     (await services.restartExecutor()) === 0 &&
     (await services.control("restart")) === 0;
@@ -751,6 +798,9 @@ async function restartAfterUpdate(
       return 1;
     }
   } else if (await service.isInstalled()) {
+    // self-deploy.sh renders and installs the units itself; a plain
+    // restart has to sync them first.
+    await syncUnitsAt(REPO_ROOT);
     heading("Restart");
     if ((await service.control("restart")) === 0) ok("service restarted");
     else warn("restart failed — do it by hand");
