@@ -120,9 +120,22 @@ describe("private-domain platform and CLI preflight", () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(await Bun.file(join(scratch, "calls")).text()).toBe("--version\n");
       expect(await Bun.file(credentialPath).text()).toBe(saved);
-      expect(await readdir(process.env.OPENSESSION_STATE_DIR!)).toEqual([
+      // Only the renewal status changes: it records why renewal failed.
+      expect(
+        (await readdir(process.env.OPENSESSION_STATE_DIR!)).sort(),
+      ).toEqual([
         ".opensession-private-app-dns.json",
+        ".opensession-private-app-renewal.json",
       ]);
+      const status = JSON.parse(
+        await Bun.file(
+          join(
+            process.env.OPENSESSION_STATE_DIR!,
+            ".opensession-private-app-renewal.json",
+          ),
+        ).text(),
+      );
+      expect(status.domains["os.example.test"].error).toContain("lego 4.x CLI");
     } finally {
       error.mockRestore();
     }

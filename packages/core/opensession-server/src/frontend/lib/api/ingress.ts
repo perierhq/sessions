@@ -23,6 +23,13 @@ export interface PublicIngressSettings {
       credentialConfigured: boolean;
       certificateEmailConfigured: boolean;
       certificateExpiresAt: string;
+      /** Every renewed certificate, primary first. Older servers omit it. */
+      certificates?: Array<{
+        domain: string;
+        expiresAt: string;
+        checkedAt: string;
+        renewalError: string;
+      }>;
       legoInstalled: boolean;
     };
   };

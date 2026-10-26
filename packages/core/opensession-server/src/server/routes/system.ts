@@ -44,6 +44,7 @@ import { audit, auditAsync } from "../audit";
 import { serviceReadiness } from "../service-readiness";
 import { runtimeGeneration } from "../runtime-generation";
 import { controlPlaneResidents } from "../workload-scope";
+import { privateAppCertificateHealth } from "../private-app-domain";
 import { webAuthRequired } from "../web-auth";
 import {
   HeapSnapshotBusyError,
@@ -313,6 +314,9 @@ export async function handleSystemRoutes(
       // The lifecycle reaper's last pass over session-owned setup,
       // containers and units (session-resources.ts). Cheap: no listing here.
       sessionResources: lastSessionResourceSweep(),
+      // Private app certificates Open Session renews: days left and the last
+      // renewal failure, so a stuck renewal shows before the certificate ends.
+      privateAppCertificates: privateAppCertificateHealth(),
     });
   }
 

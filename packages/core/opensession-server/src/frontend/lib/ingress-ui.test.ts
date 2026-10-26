@@ -9,6 +9,7 @@ import {
   ingressHealthLabel,
   ingressHostname,
   privateAppCaddyConfig,
+  privateAppCertificateSummary,
   privateAppDnsRecord,
   publicUrlForMethod,
   suggestedPublicIngressDomain,
@@ -112,5 +113,35 @@ describe("public ingress form", () => {
     expect(customCaddyConfig("new.example.test")).toContain(
       "new.example.test {",
     );
+  });
+});
+
+describe("private app certificate summary", () => {
+  const now = Date.parse("2026-11-01T00:00:00.000Z");
+  test("counts the days left and names a failing renewal", () => {
+    expect(
+      privateAppCertificateSummary(
+        { expiresAt: "2026-11-30T20:32:50.000Z", renewalError: "" },
+        now,
+      ),
+    ).toBe("Expires in 29 days.");
+    expect(
+      privateAppCertificateSummary(
+        {
+          expiresAt: "2026-11-02T12:00:00.000Z",
+          renewalError: "Caddy did not reload",
+        },
+        now,
+      ),
+    ).toBe("Expires in 1 day. Renewal failing: Caddy did not reload");
+    expect(
+      privateAppCertificateSummary(
+        { expiresAt: "2026-10-30T00:00:00.000Z", renewalError: "" },
+        now,
+      ),
+    ).toBe("Expired.");
+    expect(
+      privateAppCertificateSummary({ expiresAt: "", renewalError: "" }, now),
+    ).toBe("Expiry unknown.");
   });
 });
