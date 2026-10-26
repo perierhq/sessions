@@ -1100,8 +1100,23 @@ export async function fastForwardBranchFromOrigin(
  * it too.
  */
 export async function githubServiceGitEnv(ghRepo: string | undefined) {
-  const { githubServiceCredentialEnv } = await import("./github-app");
-  return { ...process.env, ...(await githubServiceCredentialEnv(ghRepo)) };
+  const credentialEnv =
+    serviceCredentialOverride ??
+    (await import("./github-app")).githubServiceCredentialEnv;
+  return { ...process.env, ...(await credentialEnv(ghRepo)) };
+}
+
+type ServiceCredentialEnv = (
+  ghRepo: string | undefined,
+) => Promise<Record<string, string>>;
+let serviceCredentialOverride: ServiceCredentialEnv | undefined;
+
+/** Replace the service credential behind githubServiceGitEnv (tests);
+ *  undefined restores the GitHub App. */
+export function __setGithubServiceCredentialForTest(
+  fn: ServiceCredentialEnv | undefined,
+): void {
+  serviceCredentialOverride = fn;
 }
 
 /**
