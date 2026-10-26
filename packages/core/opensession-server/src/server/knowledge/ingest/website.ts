@@ -1,9 +1,12 @@
 /**
- * The website import: the project's support websites as trusted knowledge
- * mirrors, one `sources/web/<host>/<slug>.md` item per page.
+ * The website import: the project's support websites switched to "Use as
+ * knowledge" as trusted knowledge mirrors, one `sources/web/<host>/<slug>.md`
+ * item per page. A Support website without the switch only lets replies
+ * link to it: it is not crawled, and mirrors of a host whose switch was
+ * turned off (or that left the list) are retired on the next crawl, text
+ * kept.
  *
- * Only exact, non-wildcard hosts of the project's Support websites are
- * crawled, over https, through web.ts fetchRaw (pinned, private addresses
+ * Only exact, non-wildcard hosts of those websites are crawled, over https, through web.ts fetchRaw (pinned, private addresses
  * refused, the host rule checked on every redirect hop). Per host:
  * `robots.txt` first (its `Disallow`/`Allow` rules for `*` are honoured; a
  * robots.txt that can't be read skips the host), then `/sitemap.xml` with
@@ -73,7 +76,7 @@ const WRITE_ATTEMPTS = 3;
 const PROGRESS_EVERY = 10;
 
 export const NO_WEBSITES_COPY =
-  "Add the project's support website under Support websites first.";
+  "Turn on Use as knowledge for a Support website in Access first.";
 
 export interface CrawledPage {
   url: string;
@@ -112,7 +115,8 @@ export interface CrawlDeps {
 export interface WebsiteDeps {
   /** YYYY-MM-DD, UTC. */
   today(): string;
-  /** The project's Support websites (roleWebAccess). */
+  /** The project's Support websites switched to "Use as knowledge"
+   *  (projects/effective.ts knowledgeWebsites). */
   hosts(project: string): Promise<string[]>;
   crawl: Partial<CrawlDeps>;
   /** Called every few pages with the pages handled so far. */
@@ -126,7 +130,8 @@ export interface WebsiteResult {
   truncated: boolean;
   /** Pages written (new or changed). */
   written: number;
-  /** Mirrors retired because their page is gone. */
+  /** Mirrors retired because their page is gone or their website is no
+   *  longer used as knowledge. */
   retired: number;
   /** Pages left out: unreadable, a credential, too large, or a mirror a
    *  person edited last. */
@@ -156,8 +161,8 @@ function bind(over: Partial<WebsiteDeps>): WebsiteDeps {
     hosts:
       over.hosts ??
       (async (project) => {
-        const { roleWebAccess } = await import("../../projects/effective");
-        return (await roleWebAccess(project, "support")).websites;
+        const { knowledgeWebsites } = await import("../../projects/effective");
+        return knowledgeWebsites(project);
       }),
     crawl: over.crawl ?? {},
     onProgress: over.onProgress,
@@ -546,6 +551,16 @@ function mirrorUrl(item: KnowledgeItem): string | null {
   return null;
 }
 
+/** A URL's `host[:port]`, lowercased as exactHosts writes it; "" when it
+ *  isn't a URL. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function pathOf(url: string): string | null {
   try {
     return webItemPath(url);
@@ -587,18 +602,20 @@ export async function crawlWebsites(
     retired: 0,
     skipped: 0,
   };
-  if (!hosts.length) return result;
-
   const before = await webItems(project, today);
   const known: string[] = [];
+  /** Mirrors of a website no longer used as knowledge: retired. */
+  const gone = new Set<string>();
+  const crawled = new Set(hosts);
   for (const item of before.values())
     if (item.status !== "retired") {
       const url = mirrorUrl(item);
-      if (url) known.push(url);
+      if (!url) continue;
+      if (crawled.has(hostOf(url))) known.push(url);
+      else gone.add(item.path);
     }
 
   const pages = new Map<string, CrawledPage>();
-  const gone = new Set<string>();
   /** Mirrored pages that read but can't be stored, and why. */
   const unreadable = new Map<string, string>();
   /** Item paths whose URL redirected to another item path. */

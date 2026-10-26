@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { __setLegacyEnvironmentForTest } from "../../projects/legacy";
+import {
+  __setProjectStoreContextForTest,
+  getProjectDocument,
+  updateProjectDocument,
+} from "../../projects/store";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { RawResponse } from "../freshness/web";
@@ -629,6 +635,103 @@ describe("crawlWebsites", () => {
     const after = (await knowledgeRepo.call("read", "acme", path, TODAY))!;
     expect(after.body).toContain("Ada's note.");
     expect(after.body).not.toContain("JSON");
+  });
+
+  const OTHER = "status.acme.example.test";
+  const both: Site = {
+    ...pages,
+    [`https://${OTHER}/sitemap.xml`]: {
+      type: "application/xml",
+      body: urlset([`https://${OTHER}/uptime`]),
+    },
+    [`https://${OTHER}/uptime`]: { body: html("Uptime") },
+  };
+
+  test("only Support websites switched to 'Use as knowledge' are crawled", async () => {
+    __setLegacyEnvironmentForTest({
+      projects: () => ["acme"],
+      sandbox: () => ({ perRepo: {} }),
+      automations: async () => [],
+      mcpServers: async () => [],
+      webSearch: async () => "auto",
+      defaultReviewServers: async () => [],
+    });
+    __setProjectStoreContextForTest({
+      projectExists: (id) => id === "acme",
+      modelProblem: () => null,
+      runnerProblem: () => null,
+    });
+    try {
+      const site = (host: string) => ({
+        row: { kind: "website" as const, host },
+        role: "support" as const,
+        value: true,
+      });
+      const { revision } = await getProjectDocument("acme");
+      const out = await updateProjectDocument(
+        "acme",
+        {
+          expectedRevision: revision,
+          access: {
+            cells: [site(HOST), site(OTHER)],
+            websiteKnowledge: [{ host: OTHER, on: true }],
+          },
+        },
+        { name: "Ada", verified: true, login: "ada" },
+      );
+      if ("error" in out) throw new Error(out.error);
+      const web = fakeWeb(both);
+      const result = await crawlWebsites("acme", {
+        today: () => TODAY,
+        crawl: web.deps,
+      });
+      expect(result).toMatchObject({ written: 1 });
+      expect(web.urls().some((u) => u.startsWith(SITE))).toBe(false);
+      expect(
+        await knowledgeRepo.call(
+          "read",
+          "acme",
+          webItemPath(`https://${OTHER}/uptime`),
+          TODAY,
+        ),
+      ).not.toBeNull();
+    } finally {
+      __setLegacyEnvironmentForTest(undefined);
+      __setProjectStoreContextForTest(undefined);
+    }
+  });
+
+  test("a website switched off retires its mirrors on the next crawl, text kept", async () => {
+    const hosts = (list: string[]) => ({
+      today: () => TODAY,
+      hosts: async () => list,
+      crawl: fakeWeb(both).deps,
+    });
+    const first = await crawlWebsites("acme", hosts([HOST, OTHER]));
+    expect(first).toMatchObject({ written: 3, retired: 0 });
+    const result = await crawlWebsites("acme", hosts([OTHER]));
+    expect(result).toMatchObject({ written: 0, retired: 2 });
+    const read = await knowledgeRepo.call(
+      "read",
+      "acme",
+      webItemPath(`${SITE}/export`),
+      TODAY,
+    );
+    expect(read!.item.status).toBe("retired");
+    expect(read!.body).toContain("Exporting explains");
+    const kept = await knowledgeRepo.call(
+      "read",
+      "acme",
+      webItemPath(`https://${OTHER}/uptime`),
+      TODAY,
+    );
+    expect(kept!.item.status).toBe("active");
+    // The last one switched off: nothing to crawl, its mirror still goes.
+    const none = await crawlWebsites("acme", hosts(["*.acme.example.test"]));
+    expect(none).toMatchObject({ pages: 0, retired: 1 });
+    // Switched on again: the pages come back.
+    const again = await crawlWebsites("acme", hosts([HOST, OTHER]));
+    expect(again).toMatchObject({ written: 3, retired: 0 });
   });
 
   test("refuses to start without an exact support website", async () => {

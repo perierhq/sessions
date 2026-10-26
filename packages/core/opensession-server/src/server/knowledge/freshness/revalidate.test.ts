@@ -94,6 +94,7 @@ function deps(over: Partial<RevalidateDeps> = {}): Partial<RevalidateDeps> {
     releasesSince: async () => [],
     refState: async () => null,
     pageHash: async () => null,
+    knowledgeHosts: async () => ["help.acme.example.test"],
     classifyConflict: async () => "unrelated",
     conflictMarks: memoryMarks().conflictMarks,
     state: memoryRunState(),
@@ -465,6 +466,52 @@ describe("revalidateProject", () => {
     const mirror = await body(MIRROR);
     expect(mirror.item.status).toBe("retired");
     expect(mirror.body.trim()).toBe("v2");
+  });
+
+  test("a page of a website no longer used as knowledge is retired, text kept", async () => {
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path: WEB,
+          fm: fm({
+            title: "Export",
+            origin: "web",
+            status: "needs-check",
+            check: { reason: "Something changed", since: "2026-10-21" },
+            sources: [`url:${PAGE}#sha256=${"a".repeat(64)}`],
+            dependsOn: [`url:${PAGE}`],
+          }),
+          body: "Page text.\n",
+        },
+      ],
+      { message: "Add web", author: ADA },
+    );
+    const asked: string[] = [];
+    const result = await revalidateProject("acme", {
+      deps: deps({
+        knowledgeHosts: async () => ["status.acme.example.test"],
+        pageHash: async (url) => {
+          asked.push(url);
+          return "a".repeat(64);
+        },
+      }),
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.refreshed).toBe(1);
+    expect(asked).not.toContain(PAGE);
+    const mirror = await body(WEB);
+    expect(mirror.item.status).toBe("retired");
+    expect(mirror.item.check).toBeUndefined();
+    expect(mirror.item.trust).toBe("trusted");
+    expect(mirror.body.trim()).toBe("Page text.");
+    // Retired stays retired: the next run writes nothing.
+    const again = await revalidateProject("acme", {
+      deps: deps({ knowledgeHosts: async () => [] }),
+    });
+    expect(again.refreshed).toBe(0);
   });
 
   test("a project without knowledge is a no-op", async () => {

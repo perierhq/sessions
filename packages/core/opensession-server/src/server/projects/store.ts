@@ -246,7 +246,10 @@ export function withDocumentDefaults(
       connections: list(access.connections, []),
       credentials: list(access.credentials, []),
       hosts: list(access.hosts, []),
-      websites: list(access.websites, []),
+      websites: list<ProjectAccess["websites"][number]>(
+        access.websites,
+        [],
+      ).map(websiteRow),
       webSearch: list<ProjectAccess["webSearch"][number]>(
         access.webSearch,
         base.access.webSearch,
@@ -256,6 +259,16 @@ export function withDocumentDefaults(
       signalExceptions: list(access.signalExceptions, []),
     },
   };
+}
+
+/** A stored website row: "Use as knowledge" is on only when stored as
+ *  `true` (missing or anything else is off). */
+function websiteRow(
+  row: ProjectAccess["websites"][number],
+): ProjectAccess["websites"][number] {
+  if (!isRecord(row)) return row;
+  const { knowledge, ...rest } = row;
+  return knowledge === true ? { ...rest, knowledge: true } : rest;
 }
 
 const cache = new Map<string, ProjectSettingsDocument>();
@@ -731,6 +744,15 @@ function applyAccessPatch(s: PatchState, input: unknown): void {
       (e) => !(e.signalId === item.signalId && e.role === item.role),
     );
   }
+  for (const item of rowsOf(input.websiteKnowledge, "Knowledge switches")) {
+    if (!isRecord(item) || typeof item.on !== "boolean")
+      refuse("Each knowledge switch needs a website and on or off");
+    const host = websiteHost(item.host);
+    const ref = findRow(s, { kind: "website", host });
+    if (ref?.kind !== "website") refuse(`Add ${host} to the websites first`);
+    if (item.on) ref.row.knowledge = true;
+    else delete ref.row.knowledge;
+  }
 }
 
 function applyModels(
@@ -850,6 +872,10 @@ function rowPaths<R>(
   return out;
 }
 
+/** A website row's roles, plus `knowledge` when it is used as knowledge. */
+const websiteGrants = (r: ProjectAccess["websites"][number]): string[] =>
+  r.knowledge ? [...r.roles, "knowledge"] : r.roles;
+
 const roleSet = (roles: readonly string[]) =>
   Object.fromEntries(roles.map((r) => [r, true]));
 
@@ -902,7 +928,7 @@ export function changedFieldPaths(
       ba.websites,
       aa.websites,
       (r) => r.host,
-      (r) => roleSet(r.roles),
+      (r) => roleSet(websiteGrants(r)),
     ),
   );
   for (const role of UNATTENDED_ROLES)
@@ -967,13 +993,8 @@ export function widenedFieldPaths(
     (r) => r.roles,
   );
   added("hosts", ba.hosts, aa.hosts, hostKey, (r) => r.roles);
-  added(
-    "websites",
-    ba.websites,
-    aa.websites,
-    (r) => r.host,
-    (r) => r.roles,
-  );
+  // "Use as knowledge" turned on widens what replies may rely on.
+  added("websites", ba.websites, aa.websites, (r) => r.host, websiteGrants);
   for (const role of aa.webSearch)
     if (!(ba.webSearch as string[]).includes(role))
       out.push(`access.webSearch.${role}`);

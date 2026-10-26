@@ -12,7 +12,11 @@
  *    file changed is rewritten from the new default-branch head (or retired
  *    when the file is gone), a `sources/web/*` item whose page changed is
  *    rewritten with the new text and hash. The articles that depend on the
- *    same path or page are what flip.
+ *    same path or page are what flip. A refresh keeps the mirror's trust.
+ *  - A `sources/web/*` mirror of a website no longer used as knowledge (its
+ *    "Use as knowledge" switch turned off, or gone from the Support
+ *    websites) is retired, its text kept, without fetching the page. Not
+ *    in the `repo` scope.
  *
  * Runs on the gateway: signals are network and git reads; the knowledge
  * repository is reached through the worker client. Can't tell is never
@@ -101,7 +105,10 @@ export interface RevalidateDeps extends Signals {
   head(): Promise<string | null>;
   /** A code repository file at a commit; null when it isn't a file. */
   showAt(sha: string, path: string): Promise<string | null>;
-  /** A page's text and hash (web.ts fetchPage on the Support websites). */
+  /** The Support websites used as knowledge (projects/effective.ts
+   *  knowledgeWebsites): web mirrors of other hosts are retired. */
+  knowledgeHosts(): Promise<string[]>;
+  /** A page's text and hash (web.ts fetchPage on the knowledge websites). */
   fetchPage(
     url: string,
   ): Promise<
@@ -260,16 +267,18 @@ function bindDeps(
   // it.
   const pages = new Map<string, ReturnType<RevalidateDeps["fetchPage"]>>();
   let hosts: Promise<string[]> | null = null;
+  const knowledgeHosts =
+    over.knowledgeHosts ??
+    (() =>
+      (hosts ??= import("../../projects/effective").then(
+        ({ knowledgeWebsites }) => knowledgeWebsites(project),
+      )));
   const fetchPage =
     over.fetchPage ??
     ((url: string) => {
       let page = pages.get(url);
       if (!page) {
-        hosts ??= import("../../projects/effective").then(
-          async ({ roleWebAccess }) =>
-            (await roleWebAccess(project, "support")).websites,
-        );
-        page = hosts.then(async (list) =>
+        page = knowledgeHosts().then(async (list) =>
           (await import("./web")).fetchPage(url, list),
         );
         pages.set(url, page);
@@ -289,6 +298,7 @@ function bindDeps(
     fetchRepo: over.fetchRepo ?? (() => fetchDefaultBranch(project, repo)),
     head: over.head ?? (() => defaultHead(project, repo)),
     showAt: over.showAt ?? ((sha, path) => showAt(project, sha, path, repo)),
+    knowledgeHosts,
     fetchPage,
     classifyConflict: over.classifyConflict,
     conflictMarks: over.conflictMarks,
@@ -491,6 +501,18 @@ function mirrorUrl(item: KnowledgeItem): string | null {
   return null;
 }
 
+/** The `host[:port]` of a web mirror's own URL, lowercased; null when it
+ *  has none. */
+function mirrorHost(item: KnowledgeItem): string | null {
+  const url = mirrorUrl(item);
+  if (url === null) return null;
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 /** The refresh for a stale mirror whose own source changed; null when the
  *  change is something else (the mirror then flips like an article). */
 function mirrorRefresh(
@@ -581,7 +603,11 @@ async function refreshWebMirror(
   );
 }
 
-async function plan(project: string, d: RevalidateDeps): Promise<Planned> {
+async function plan(
+  project: string,
+  d: RevalidateDeps,
+  scope: "all" | "repo",
+): Promise<Planned> {
   const result: RevalidateResult = {
     checked: 0,
     flipped: [],
@@ -593,6 +619,19 @@ async function plan(project: string, d: RevalidateDeps): Promise<Planned> {
   const expected: Record<string, string> = {};
   const flips = new Set<string>();
   let usedRepo = false;
+  // null: web mirrors are left as they are (the repo scope, or settings
+  // that can't be read: never a reason to retire).
+  let knowledgeHosts: Set<string> | null = null;
+  if (scope === "all")
+    try {
+      knowledgeHosts = new Set(
+        (await d.knowledgeHosts()).map((h) => h.trim().toLowerCase()),
+      );
+    } catch (error) {
+      result.errors.push(
+        `The websites used as knowledge couldn't be read: ${message(error)}`,
+      );
+    }
   for (const item of await listItems(project, d.today)) {
     if (effectiveStatus(item, d.today) === "retired") continue;
     // Already waiting for a person: one note is enough. Mirrors still
@@ -616,6 +655,22 @@ async function plan(project: string, d: RevalidateDeps): Promise<Planned> {
     } catch (error) {
       result.errors.push(`${item.path}: ${message(error)}`);
       continue;
+    }
+    if (item.origin === "web" && knowledgeHosts) {
+      const host = mirrorHost(item);
+      if (host !== null && !knowledgeHosts.has(host)) {
+        // Its website is no longer used as knowledge: retired, text kept.
+        const { check: _check, ...fm } = frontMatterOf(item);
+        changes.push({
+          op: "put",
+          path: item.path,
+          fm: { ...fm, status: "retired" },
+          body,
+        });
+        expected[item.path] = item.blob;
+        result.refreshed++;
+        continue;
+      }
     }
     const flip = (reason: string, source?: string): void => {
       if (item.status === "needs-check") return;
@@ -697,7 +752,7 @@ export async function revalidateProject(
   // until it is STALE_FETCH_MS old (assertFetched).
   run.fetched = await d.fetchRepo().catch(() => false);
   if (run.fetched) state.fetchedAt = new Date(run.now).toISOString();
-  const result = await revalidateItems(project, d, empty, run);
+  const result = await revalidateItems(project, d, empty, run, scope);
   result.errors.unshift(...stateErrors);
   if (scope !== "repo") await runConflictCheck(project, d, result);
 
@@ -743,6 +798,7 @@ async function revalidateItems(
   d: RevalidateDeps,
   empty: RevalidateResult,
   run: RunContext,
+  scope: "all" | "repo",
 ): Promise<RevalidateResult> {
   const write =
     d.write ??
@@ -764,6 +820,7 @@ async function revalidateItems(
     const { changes, expected, flips, usedRepo, result } = await plan(
       project,
       d,
+      scope,
     );
     if (usedRepo && !run.fetched)
       result.errors.unshift(

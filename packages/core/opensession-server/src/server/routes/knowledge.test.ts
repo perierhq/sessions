@@ -940,14 +940,14 @@ describe("imports", () => {
     expect(asked).toEqual(["acme:kj_running", "acme:kj_done"]);
   });
 
-  test("a website import needs an exact support website", async () => {
+  test("a website import needs a Support website used as knowledge", async () => {
     __setKnowledgeRouteDepsForTest({ today: () => TODAY });
     const response = await call("POST", "/api/knowledge/acme/import/website", {
       body: {},
     });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Add the project's support website under Support websites first.",
+      "Turn on Use as knowledge for a Support website in Access first.",
     );
     expect(await service.hasRepo("acme")).toBe(false);
   });

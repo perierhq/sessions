@@ -643,3 +643,80 @@ test("Changes code for Automations and Reviews is not set here", async () => {
   }
   expect((await getProjectDocument("acme-web")).revision).toBe(0);
 });
+
+test("a Support website's 'Use as knowledge' switch is off until turned on", async () => {
+  const site = { kind: "website", host: "help.acme.example.test" } as const;
+  const added = await written({
+    access: { cells: [{ row: site, role: "support", value: true }] },
+  });
+  // Missing means off: an existing row reads as links-only.
+  expect(added.access.websites).toEqual([
+    { host: "help.acme.example.test", roles: ["support"] },
+  ]);
+  // Turning it on gives Pat's replies more to rely on: a person's change.
+  expect(
+    await write(
+      { access: { websiteKnowledge: [{ host: site.host, on: true }] } },
+      agent,
+    ),
+  ).toMatchObject({ status: 403 });
+  expect(kit.audits.at(-1)).toMatchObject({
+    kind: "project_settings_refused",
+    fields: ["access.websites.help.acme.example.test.knowledge"],
+  });
+  const on = await written({
+    access: { websiteKnowledge: [{ host: site.host, on: true }] },
+  });
+  expect(on.access.websites).toEqual([
+    { host: "help.acme.example.test", roles: ["support"], knowledge: true },
+  ]);
+  expect(kit.audits.at(-1)).toMatchObject({
+    kind: "project_settings_updated",
+    fields: ["access.websites.help.acme.example.test.knowledge"],
+  });
+  // Turning it off narrows: anyone may.
+  const off = await written(
+    { access: { websiteKnowledge: [{ host: site.host, on: false }] } },
+    agent,
+  );
+  expect(off.access.websites).toEqual([
+    { host: "help.acme.example.test", roles: ["support"] },
+  ]);
+  // Only a listed website has the switch.
+  expect(
+    await write({
+      access: {
+        websiteKnowledge: [{ host: "other.example.test", on: true }],
+      },
+    }),
+  ).toEqual({
+    error: "Add other.example.test to the websites first",
+    status: 400,
+  });
+  expect(
+    await write({
+      access: { websiteKnowledge: [{ host: site.host, on: "yes" }] },
+    } as never),
+  ).toMatchObject({ status: 400 });
+});
+
+test("a stored website row with a stray knowledge value reads as off", async () => {
+  await projectDocuments().set("acme-web", {
+    schema: 1,
+    project: "acme-web",
+    revision: 3,
+    access: {
+      websites: [
+        { host: "a.example.test", roles: ["support"], knowledge: "yes" },
+        { host: "b.example.test", roles: ["support"], knowledge: true },
+      ],
+    },
+    updatedAt: "2026-10-20T00:00:00.000Z",
+    updatedBy: "Ada",
+  });
+  const doc = await getProjectDocument("acme-web");
+  expect(doc.access.websites).toEqual([
+    { host: "a.example.test", roles: ["support"] },
+    { host: "b.example.test", roles: ["support"], knowledge: true },
+  ]);
+});

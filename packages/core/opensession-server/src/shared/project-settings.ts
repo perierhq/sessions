@@ -142,6 +142,15 @@ export interface ProjectSignalException {
   updatedAt: string;
 }
 
+/** A website agents may open. `knowledge` ("Use as knowledge"): the
+ *  knowledge import crawls it and its pages may back replies. Missing
+ *  means off: listing a site only lets replies link to it. */
+export interface ProjectWebsiteRow {
+  host: string;
+  roles: UnattendedRole[];
+  knowledge?: true;
+}
+
 /** Web search for the roles listed; never the verifier. */
 export type WebSearchRole = Exclude<UnattendedRole, "verifier">;
 
@@ -150,7 +159,7 @@ export interface ProjectAccess {
   connections: Array<{ server: string; roles: UnattendedRole[] }>;
   credentials: ProjectCredentialRow[];
   hosts: ProjectHostRow[];
-  websites: Array<{ host: string; roles: UnattendedRole[] }>;
+  websites: ProjectWebsiteRow[];
   webSearch: WebSearchRole[];
   /** How each incident agent reaches the web; null means no egress. */
   routes: Record<IncidentRole, EgressRoute | null>;
@@ -228,6 +237,8 @@ export interface ProjectSettingsPatch {
     addRows?: AccessRowKey[];
     removeRows?: AccessRowKey[];
     removeSignalExceptions?: Array<{ signalId: string; role: IncidentRole }>;
+    /** Each listed website's "Use as knowledge" switch. */
+    websiteKnowledge?: Array<{ host: string; on: boolean }>;
   };
 }
 
