@@ -4,7 +4,13 @@
 ingress.example.com {
     # BEGIN OPENSESSION SANDBOX INGRESS
     handle {
-        reverse_proxy 127.0.0.1:3860
+        # Hold requests while the gateway restarts instead of answering 502:
+        # webhook senders do not redeliver.
+        reverse_proxy 127.0.0.1:3860 {
+            lb_try_duration 15s
+            lb_try_interval 250ms
+            stream_close_delay 1h
+        }
     }
     # END OPENSESSION SANDBOX INGRESS
 }

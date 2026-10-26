@@ -1,6 +1,10 @@
 /** Discovery and generated Caddy configuration for sandbox ingress. */
 
-import { CADDY_STREAM_CLOSE_DELAY } from "../caddy-stream";
+import {
+  CADDY_STREAM_CLOSE_DELAY,
+  CADDY_UPSTREAM_TRY_DURATION,
+  CADDY_UPSTREAM_TRY_INTERVAL,
+} from "../caddy-stream";
 import { configuredIngress, configuredServer } from "../config";
 
 export interface SandboxIngressStatus {
@@ -62,6 +66,8 @@ function managedRoutes(indent = "    ", bindAddress?: string): string {
   return `${indent}${MANAGED_START}
 ${bind}${indent}handle {
 ${indent}    reverse_proxy 127.0.0.1:3860 {
+${indent}        lb_try_duration ${CADDY_UPSTREAM_TRY_DURATION}
+${indent}        lb_try_interval ${CADDY_UPSTREAM_TRY_INTERVAL}
 ${indent}        stream_close_delay ${CADDY_STREAM_CLOSE_DELAY}
 ${indent}    }
 ${indent}}
