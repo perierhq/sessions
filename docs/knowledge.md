@@ -155,6 +155,18 @@ check`. When the model gives no answer, nothing flips and the item is
    commit touching those paths) is imported as reference. When the pair's
    touched paths can't be told, it counts as touching all of `docs/` and
    `README.md`.
+
+   The mailbox import reads the inbox's `INBOX` and Sent folders over its
+   own read-only connection (no flags change; the inbox's live connection,
+   position and conversations stay as they are) for the last 12 months by
+   default (at most 36). A reply of ours pairs with the customer message it
+   answers; automatic replies and machine mail are left out. A reference
+   item's first line says why: `> Imported as reference: <reason>`. Items
+   already imported are skipped, so running it again adds only new pairs.
+   Commits go in batches of 50 by Pat: `Import mail: <n> answers (<trusted>
+trusted)`. One import of a kind runs per project at a time; an import a
+   restart cut off shows "Interrupted by a restart. Start it again."
+
 5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
    still counts as active.
 6. The run happens daily, after a push to the default branch, and on demand
