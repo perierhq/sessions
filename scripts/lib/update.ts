@@ -37,7 +37,9 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -267,6 +269,103 @@ async function updateRelease(
   }
 }
 
+/** Previous releases kept beside the current one, for rollback. Each is a
+ *  full unpacked release (~200 MB); without a limit every update added one. */
+export const DEFAULT_RELEASES_KEEP = 3;
+
+/** `OPENSESSION_RELEASES_KEEP` (process env or the service env file): how
+ *  many previous releases to keep. 0 keeps only the current one. */
+export function releasesToKeep(
+  raw: string | undefined = process.env.OPENSESSION_RELEASES_KEEP ??
+    envFileValue("OPENSESSION_RELEASES_KEEP"),
+): number {
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isInteger(n) && n >= 0
+    ? n
+    : DEFAULT_RELEASES_KEEP;
+}
+
+/** Release dirs that are the cwd or executable of a live process (a
+ *  detached run host can outlive a gateway restart on an older release).
+ *  Empty where there is no /proc. */
+function releasesInUse(releasesDir: string): Set<string> {
+  const inUse = new Set<string>();
+  let root: string;
+  let pids: string[];
+  try {
+    root = realpathSync(releasesDir);
+    pids = readdirSync("/proc").filter((p) => /^\d+$/.test(p));
+  } catch {
+    return inUse;
+  }
+  for (const pid of pids) {
+    for (const link of ["cwd", "exe"]) {
+      try {
+        const target = readlinkSync(`/proc/${pid}/${link}`);
+        if (!target.startsWith(`${root}/`)) continue;
+        const name = target.slice(root.length + 1).split("/")[0];
+        if (name) inUse.add(join(root, name));
+      } catch {}
+    }
+  }
+  return inUse;
+}
+
+/**
+ * Remove old unpacked releases: keep `current`, the `keep` newest others
+ * (by build time, the directory mtime tar restores), every path in `protect`
+ * (the rollback target) and any release a live process runs from. Only
+ * complete releases (a `release.json` at the root) are candidates; staging
+ * dirs and anything else are left alone. Without a known current release
+ * nothing is removed. Returns the removed names.
+ */
+export function pruneReleases(
+  releasesDir: string,
+  opts: {
+    current: string;
+    keep?: number;
+    protect?: string[];
+    inUse?: Set<string>;
+  },
+): string[] {
+  if (!opts.current) return [];
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const current = real(opts.current);
+  const kept = new Set([current, ...(opts.protect ?? []).map(real)]);
+  const inUse = opts.inUse ?? releasesInUse(releasesDir);
+  for (const path of inUse) kept.add(real(path));
+  let releases: { path: string; name: string; mtimeMs: number }[];
+  try {
+    releases = readdirSync(releasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => ({ name: e.name, path: real(join(releasesDir, e.name)) }))
+      .filter((r) => existsSync(join(r.path, "release.json")))
+      .map((r) => ({ ...r, mtimeMs: statSync(r.path).mtimeMs }));
+  } catch {
+    return [];
+  }
+  if (!releases.some((r) => r.path === current)) return [];
+  const previous = releases
+    .filter((r) => r.path !== current)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keep = opts.keep ?? releasesToKeep();
+  const removed: string[] = [];
+  for (const release of previous.slice(keep)) {
+    if (kept.has(release.path)) continue;
+    try {
+      rmSync(release.path, { recursive: true, force: true });
+      removed.push(release.name);
+    } catch {}
+  }
+  return removed;
+}
+
 /** The upstream project this source came from. */
 const UPSTREAM_URL_RE = /github\.com[/:]perierhq\/sessions(\.git)?$/;
 
@@ -343,7 +442,23 @@ export async function update(opts: UpdateOptions = {}): Promise<number> {
     // updateRelease returns 0 both when it swapped and when already current;
     // only a real swap needs a restart, and only then is there a rollback target.
     if (!newTarget || newTarget === prevTarget) return 0;
-    return await restartReleaseWithRollback(rel.srcLink, prevTarget, opts);
+    const code = await restartReleaseWithRollback(
+      rel.srcLink,
+      prevTarget,
+      opts,
+    );
+    if (code === 0) {
+      const removed = pruneReleases(dirname(newTarget), {
+        current: newTarget,
+        protect: prevTarget ? [prevTarget] : [],
+      });
+      if (removed.length)
+        ok(
+          `removed ${removed.length} old release(s)`,
+          `kept the current one and ${releasesToKeep()} before it (OPENSESSION_RELEASES_KEEP)`,
+        );
+    }
+    return code;
   }
 
   const { code: isRepo } = await git(["rev-parse", "--git-dir"]);

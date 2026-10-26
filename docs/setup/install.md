@@ -264,8 +264,11 @@ the current one under `~/.opensession/releases/`, and swaps the `src` symlink
 atomically. With a service installed it performs a health-gated restart; if the
 new release does not become healthy, it repoints `src` to the previous release
 and restarts it. Without a service, restart the foreground server yourself.
-The previous release stays on disk. `OPENSESSION_RELEASE_BASE` overrides the
-release base URL; `--channel <url>` points at a specific tarball.
+After a healthy update it removes old releases, keeping the current one and
+the three before it; `OPENSESSION_RELEASES_KEEP` (process or service env)
+changes how many previous releases stay, and a release a running process still
+uses is never removed. `OPENSESSION_RELEASE_BASE` overrides the release base
+URL; `--channel <url>` points at a specific tarball.
 
 A source checkout can live anywhere: the CLI derives its root from the code it
 is running, and onboarding writes instance paths into
