@@ -25,6 +25,7 @@ import {
   type HostPortalActivity,
 } from "./portal-lifecycle";
 import { audit } from "./audit";
+import { runHousekeeping } from "./housekeeping-health";
 import {
   hostPortalMemoryFloorMb,
   meminfoMb,
@@ -1304,6 +1305,19 @@ async function hostPortalRecord(
   return { ref, record };
 }
 
+/** A host Portal record that still wants its Caddy route (anything but
+ *  stopped or failed) owns this source port. Records no activity. */
+export async function hostPortalRouteOwned(
+  sourcePort: number,
+): Promise<boolean> {
+  const found = await hostPortalRecord(sourcePort);
+  return (
+    !!found &&
+    found.record.state !== "stopped" &&
+    found.record.state !== "failed"
+  );
+}
+
 /** Resolve one Caddy host-Portal upstream and record real HTTP activity. */
 export async function hostPortalRouteStatus(
   sourcePort: number,
@@ -1786,6 +1800,12 @@ export function startPortalReaper(
       const { slept } = await sleepIdlePortalServices(sessions);
       if (slept.length)
         console.log(`[portals] slept ${slept.length} idle Portal service(s)`);
+      // Caddy routes outlive the gateway; drop the ones nothing owns now
+      // that the reaper above has settled which Portals are still alive.
+      await runHousekeeping("portal-routes", async () => {
+        const { sweepStalePortalRoutes } = await import("./preview");
+        return sweepStalePortalRoutes();
+      });
       const { migrated } = await migrateUnscopedPortalServices(
         sessions.filter((session) => !session.archived),
       );
