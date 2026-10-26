@@ -5,6 +5,7 @@ import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import { KnowledgeService } from "../service";
 import {
+  DUPLICATE_NAMES_COPY,
   FILE_TYPES_COPY,
   FILE_TOO_BIG_COPY,
   fileText,
@@ -14,6 +15,8 @@ import {
   ZIP_COPY,
 } from "./files";
 import { __waitForJobForTest, listJobs } from "./jobs";
+import { PDF_MAX_PAGES, pdfTextInChild } from "./pdf-text";
+import { htmlToText } from "../../web-fetch";
 
 const kernel = useSupportTestKernel();
 const TODAY = "2026-10-26";
@@ -22,6 +25,42 @@ const enc = (text: string) => new TextEncoder().encode(text);
 
 const helloPdf = async () =>
   new Uint8Array(await readFile(join(import.meta.dir, "testdata/hello.pdf")));
+
+const TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
+
+/** A PDF with one text line per page (uncompressed, Helvetica) and an
+ *  info dictionary. */
+function makePdf(pages: string[], info: Record<string, string> = {}) {
+  const esc = (t: string) => t.replace(/[\\()]/g, (c) => `\\${c}`);
+  const objs: string[] = [];
+  const font = 3 + pages.length * 2;
+  const kids = pages.map((_, i) => `${3 + i * 2} 0 R`).join(" ");
+  objs.push("<</Type/Catalog/Pages 2 0 R>>");
+  objs.push(`<</Type/Pages/Kids[${kids}]/Count ${pages.length}>>`);
+  pages.forEach((text, i) => {
+    const stream = `BT /F1 12 Tf 72 720 Td (${esc(text)}) Tj ET`;
+    objs.push(
+      `<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 ${font} 0 R>>>>/Contents ${4 + i * 2} 0 R>>`,
+    );
+    objs.push(`<</Length ${stream.length}>>\nstream\n${stream}\nendstream`);
+  });
+  objs.push("<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>");
+  const infoEntries = Object.entries(info)
+    .map(([k, v]) => `/${k} (${esc(v)})`)
+    .join("");
+  objs.push(`<<${infoEntries}>>`);
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objs.forEach((o, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) out += `${String(o).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<</Size ${objs.length + 1}/Root 1 0 R/Info ${objs.length} 0 R>>\nstartxref\n${xref}\n%%EOF\n`;
+  return enc(out);
+}
 
 const MARKDOWN = "# Exporting a project\n\nOpen the project, press Export.\n";
 const HTML = `<!doctype html><html><head><title>Billing FAQ</title>
@@ -201,6 +240,9 @@ describe("importFiles", () => {
     expect(done.state).toBe("done");
     expect(done.created.reference).toBe(1);
     expect(done.created.skipped).toBe(1);
+    expect(done.skippedFiles).toEqual([
+      { name: "keys.md", reason: '"keys.md" looks like it holds a credential' },
+    ]);
     expect(await read("sources/files/keys.md")).toBeNull();
     expect(
       await knowledgeRepo.call(
@@ -279,6 +321,148 @@ describe("importFiles", () => {
       ),
     ).rejects.toThrow(TOO_MANY_FILES_COPY);
     await expect(start([])).rejects.toThrow();
+    expect(await listJobs("acme")).toEqual([]);
+  });
+});
+
+describe("PDFs are read in a child process", () => {
+  const sleeper = [process.execPath, "-e", "await Bun.sleep(20000)"];
+
+  test("a credential on a page past the text an item holds skips the file", async () => {
+    const pdf = makePdf(["a ".repeat(150_000), `token ${TOKEN}`]);
+    expect(await fileText("long.pdf", "application/pdf", pdf)).toEqual({
+      error: '"long.pdf" looks like it holds a credential',
+    });
+  });
+
+  test("a credential in the metadata skips the file", async () => {
+    const pdf = makePdf(["Hello there."], { Title: `Key ${TOKEN}` });
+    expect(await fileText("meta.pdf", "application/pdf", pdf)).toEqual({
+      error: '"meta.pdf" looks like it holds a credential',
+    });
+  });
+
+  test("an ordinary PDF yields its text and says whether it was cut", async () => {
+    const result = await pdfTextInChild(makePdf(["Hello there.", "Page 2."]));
+    expect(result).toMatchObject({ cut: false, partial: false });
+    expect("text" in result && result.text).toContain("Page 2.");
+  });
+
+  test("a child past its time is killed", async () => {
+    const started = Date.now();
+    expect(
+      await pdfTextInChild(enc("%PDF-"), { argv: sleeper, timeoutMs: 300 }),
+    ).toEqual({ error: "timeout" });
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  test("a child past its memory is killed", async () => {
+    expect(
+      await pdfTextInChild(enc("%PDF-"), { argv: sleeper, maxRssBytes: 1 }),
+    ).toEqual({ error: "memory" });
+  });
+
+  test("the job's signal kills the child", async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    setTimeout(() => controller.abort(new Error("Cancelled.")), 200);
+    await expect(
+      pdfTextInChild(enc("%PDF-"), {
+        argv: sleeper,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("Cancelled.");
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  test("a PDF too long to check in full keeps its text but isn't attached", async () => {
+    const pages = Array.from(
+      { length: PDF_MAX_PAGES + 1 },
+      (_, i) => `Page ${i + 1}.`,
+    );
+    const job = await importFiles(
+      {
+        project: "acme",
+        by: ADA,
+        files: [{ name: "long.pdf", type: "", bytes: makePdf(pages) }],
+      },
+      { today: () => TODAY },
+    );
+    const done = await finished("acme", job.id);
+    expect(done.state).toBe("done");
+    expect(done.created.reference).toBe(1);
+    expect(done.truncated).toBe(true);
+    const item = await read("sources/files/long.md");
+    expect(item?.body).toContain(`Page ${PDF_MAX_PAGES}.`);
+    expect(item?.body).not.toContain(`Page ${PDF_MAX_PAGES + 1}.`);
+    expect(
+      await knowledgeRepo.call(
+        "readAttachment",
+        "acme",
+        "attachments/file+long/long.pdf",
+      ),
+    ).toBeNull();
+  }, 60_000);
+
+  test("a PDF that can't be checked in time is skipped", async () => {
+    // fileText reads with the default limits; the child itself is
+    // checked above. Here: a broken PDF is an error, not a crash.
+    expect(
+      await fileText("broken.pdf", "application/pdf", enc("%PDF-1.4 junk")),
+    ).toEqual({ error: expect.stringContaining("broken.pdf") });
+  });
+});
+
+describe("adversarial text finishes fast", () => {
+  const fast = async (fn: () => Promise<unknown>) => {
+    const started = performance.now();
+    await fn();
+    return performance.now() - started;
+  };
+
+  test("trailing blanks, headings and tags over megabytes", async () => {
+    const spaces = `x${" \t".repeat(2_000_000)}x`;
+    expect(await fast(() => fileText("s.txt", "", enc(spaces)))).toBeLessThan(
+      2000,
+    );
+    const hashes = `# a${" #".repeat(2_000_000)}x\n`;
+    expect(await fast(() => fileText("h.md", "", enc(hashes)))).toBeLessThan(
+      2000,
+    );
+    const brackets = "<".repeat(5_000_000);
+    expect(await fast(() => htmlToText(brackets))).toBeLessThan(2000);
+    expect(
+      await fast(() => fileText("b.html", "", enc(`<p>${brackets}</p>`))),
+    ).toBeLessThan(3000);
+  });
+
+  test("markdown titles keep their meaning", async () => {
+    const title = async (text: string) => {
+      const r = await fileText("t.md", "", enc(text));
+      return "title" in r ? r.title : r.error;
+    };
+    expect(await title("# Hello ##\n\nx")).toBe("Hello");
+    expect(await title("intro\n#\tTabbed title\t\nx")).toBe("Tabbed title");
+    expect(await title("#NoSpace\nx")).toBe("t");
+    expect(await title("# C# tips\nx")).toBe("C# tips");
+  });
+});
+
+describe("one request", () => {
+  test("two files with the same name are refused before any job", async () => {
+    await expect(
+      importFiles(
+        {
+          project: "acme",
+          by: ADA,
+          files: [
+            { name: "a/guide.md", type: "", bytes: enc("one") },
+            { name: "b/guide.md", type: "", bytes: enc("two") },
+          ],
+        },
+        { today: () => TODAY },
+      ),
+    ).rejects.toThrow(DUPLICATE_NAMES_COPY);
     expect(await listJobs("acme")).toEqual([]);
   });
 });

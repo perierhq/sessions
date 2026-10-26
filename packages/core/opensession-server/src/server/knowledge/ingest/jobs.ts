@@ -9,9 +9,10 @@
  * kept. Nothing runs at import.
  */
 import { randomBytes } from "node:crypto";
-import type {
-  KnowledgeImportJob,
-  KnowledgeImportKind,
+import {
+  type KnowledgeImportJob,
+  type KnowledgeImportKind,
+  MAX_SKIPPED_RECORDED,
 } from "../../../shared/knowledge";
 import { catalogDocuments } from "../../catalog-documents";
 import { MemoryRepoError } from "../../memory-repo/git-store";
@@ -34,6 +35,11 @@ export interface JobHandle {
   signal: AbortSignal;
   /** Record that the run left part of its input out. */
   markTruncated(): Promise<void>;
+  /** Name inputs the run skipped and why (kept up to
+   *  MAX_SKIPPED_RECORDED); the count still goes through progress. */
+  recordSkipped(
+    skipped: Array<{ name: string; reason: string }>,
+  ): Promise<void>;
   setTotal(n: number): Promise<void>;
   progress(
     delta: Partial<KnowledgeImportJob["created"]> & { done?: number },
@@ -187,6 +193,17 @@ export async function startJob(
     signal: ac.signal,
     markTruncated: () =>
       update(project, id, (j) => ({ ...j, truncated: true })),
+    recordSkipped: (skipped) =>
+      update(project, id, (j) => ({
+        ...j,
+        skippedFiles: [
+          ...(j.skippedFiles ?? []),
+          ...skipped.map((s) => ({
+            name: s.name.slice(0, MAX_ERROR_CHARS),
+            reason: errorText(s.reason),
+          })),
+        ].slice(0, MAX_SKIPPED_RECORDED),
+      })),
     setTotal: (n) =>
       update(project, id, (j) => ({ ...j, total: Math.max(0, n) })),
     progress: (delta) =>

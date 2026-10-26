@@ -13,17 +13,21 @@
  * name with the same slug gets `-2`, `-3`.
  *
  * A request is refused (400) before any job starts when it has no file,
- * more than MAX_IMPORT_FILES, a zip, a file over 10 MB or a type this
- * doesn't read. In the job, a file whose text can't be read (a scanned
- * PDF, not UTF-8) or that looks like it holds a credential is skipped and
- * counted, never redacted into knowledge. Text over the article cap is cut
- * with a note (the job records it was cut). One commit per request,
- * authored by the person who uploaded.
+ * more than MAX_IMPORT_FILES, two files with the same name, a zip, a file
+ * over 10 MB or a type this doesn't read. In the job, a file whose text
+ * can't be read (a scanned PDF, not UTF-8) or that looks like it holds a
+ * credential is skipped, counted and named in the job record with why,
+ * never redacted into knowledge. Text over the article cap is cut with a
+ * note (the job records it was cut). One commit per request, authored by
+ * the person who uploaded.
  *
  * PDF text comes from `unpdf` (pdf.js without a worker; this pdf.js never
- * evaluates code from a file), loaded on first use. Reuses web-fetch.ts
- * htmlToText, the job records of jobs.ts, layout's freeSlugPath and the
- * validator. Nothing runs at import.
+ * evaluates code from a file), read in a child process with a time and
+ * memory limit (pdf-text.ts). That child checks every page and the
+ * metadata for credentials; a PDF too long to check in full keeps its
+ * text but isn't attached. Reuses web-fetch.ts htmlToText, the job records
+ * of jobs.ts, layout's freeSlugPath and the validator. Nothing runs at
+ * import.
  */
 import type { KnowledgeImportJob } from "../../../shared/knowledge";
 import type { Author } from "../../memory-repo/git-store";
@@ -45,6 +49,7 @@ import {
   validateKnowledgeFile,
 } from "../validate";
 import { startJob } from "./jobs";
+import { type PdfChildOptions, pdfTextInChild } from "./pdf-text";
 
 export interface ImportedFile {
   name: string;
@@ -62,13 +67,13 @@ export const ZIP_COPY = "Unzip the export and upload the files";
 export const FILE_TOO_BIG_COPY = "Files can be up to 10 MB";
 export const TOO_MANY_FILES_COPY = `Import up to ${MAX_IMPORT_FILES} files at a time`;
 export const NO_FILES_COPY = "Choose the files to import";
+export const DUPLICATE_NAMES_COPY =
+  "Two files have the same name; rename one and import again";
 export const FILE_TYPES_COPY =
   "Import Markdown, text, HTML or PDF files (.md, .txt, .html, .pdf)";
 
 /** Room left for the front matter and the cut note under the article cap. */
 const BODY_BYTES = MAX_ARTICLE_BYTES - 4096;
-/** Pages read from one PDF. */
-const MAX_PDF_PAGES = 2000;
 const MAX_TITLE = 200;
 const WRITE_ATTEMPTS = 3;
 const FILES_DIR = folderFor("file");
@@ -132,7 +137,7 @@ function tidy(text: string): string {
     .normalize("NFC")
     .replace(/\r\n?/g, "\n")
     .split("\n")
-    .map((line) => line.replace(/[ \t\f\v\u00a0]+$/, ""))
+    .map((line) => line.trimEnd())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -149,58 +154,71 @@ function utf8(bytes: Uint8Array): string | null {
   }
 }
 
-/** The first `# heading` of Markdown. */
+const isBlank = (c: string | undefined) => c === " " || c === "\t";
+
+/** The first `# heading` of Markdown, without a closing `#` run. Read by
+ *  hand: a regex with a lazy group before a trailing class backtracks over
+ *  a long line of `#`s. */
 function markdownTitle(text: string): string | null {
-  return /^#[ \t]+(.+?)[ \t#]*$/m.exec(text)?.[1]?.trim() || null;
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf("\n", start);
+    if (end < 0) end = text.length;
+    if (text[start] === "#" && isBlank(text[start + 1])) {
+      let head = start + 2;
+      let tail = end;
+      while (head < tail && isBlank(text[head])) head++;
+      while (tail > head && /\s/.test(text[tail - 1]!)) tail--;
+      // A closing run of `#`s counts only after a blank.
+      let hashes = tail;
+      while (hashes > head && text[hashes - 1] === "#") hashes--;
+      if (hashes < tail && (hashes === head || isBlank(text[hashes - 1]))) {
+        tail = hashes;
+        while (tail > head && isBlank(text[tail - 1])) tail--;
+      }
+      const title = text.slice(head, tail).trim();
+      if (title) return title;
+    }
+    start = end + 1;
+  }
+  return null;
 }
+
+const credentialCopy = (base: string) =>
+  `"${base}" looks like it holds a credential`;
 
 const isPdf = (bytes: Uint8Array) =>
   new TextDecoder("latin1").decode(bytes.subarray(0, 1024)).includes("%PDF-");
 
-/** The text of a PDF's pages, a blank line between pages. Stops reading
- *  once there is more text than an item holds. */
-async function pdfText(bytes: Uint8Array): Promise<string> {
-  const { getDocumentProxy } = await import("unpdf");
-  // pdf.js may take the buffer over; it gets a copy.
-  const pdf = await getDocumentProxy(new Uint8Array(bytes), {
-    disableFontFace: true,
-    useSystemFonts: false,
-    stopAtErrors: false,
-    // Errors only: a missing standard font still yields its text.
-    verbosity: 0,
-  });
-  try {
-    const pages: string[] = [];
-    let size = 0;
-    const last = Math.min(pdf.numPages, MAX_PDF_PAGES);
-    for (let n = 1; n <= last && size <= BODY_BYTES; n++) {
-      const page = await pdf.getPage(n);
-      const content = await page.getTextContent();
-      let text = "";
-      for (const item of content.items)
-        if ("str" in item) text += item.str + (item.hasEOL ? "\n" : "");
-      page.cleanup();
-      pages.push(text);
-      size += text.length;
-    }
-    return pages.join("\n\n");
-  } finally {
-    await pdf.loadingTask.destroy();
-  }
+/** What fileText reads from an upload. `cut`: the PDF had more text than
+ *  its reader sends. `partial`: pages past PDF_MAX_PAGES weren't read or
+ *  checked, so the file isn't attached. */
+export type FileText =
+  | { title: string; text: string; cut?: boolean; partial?: boolean }
+  | { error: string };
+
+/** Why a PDF's reader gave no text, in a skipped file's words. */
+function pdfError(base: string, error: "timeout" | "memory" | "unreadable") {
+  if (error === "timeout") return `"${base}" took too long to read`;
+  if (error === "memory") return `"${base}" needed too much memory to read`;
+  return `"${base}" couldn't be read as a PDF`;
 }
 
 /**
  * The title and text of an uploaded file, or why it can't be read: a zip
  * (ZIP_COPY), over 10 MB, a type other than Markdown, text, HTML or PDF,
- * not valid for its type, or without any text. The title is the first
- * Markdown heading or the HTML `<title>`, else the file name without its
- * extension.
+ * not valid for its type, a PDF that looks like it holds a credential
+ * (its reader checks every page and the metadata), or without any text.
+ * The title is the first Markdown heading or the HTML `<title>`, else the
+ * file name without its extension. Rejects with `pdf.signal`'s reason when
+ * it aborts while a PDF is read.
  */
 export async function fileText(
   name: string,
   type: string,
   bytes: Uint8Array,
-): Promise<{ title: string; text: string } | { error: string }> {
+  pdf: PdfChildOptions = {},
+): Promise<FileText> {
   const base = baseName(name);
   const refused = refusal({ name, type, bytes });
   if (refused) return { error: refused };
@@ -208,13 +226,14 @@ export async function fileText(
   const fallback = oneLine(stemOf(base)) || "file";
   let title: string | null = null;
   let text: string;
+  let cut = false;
+  let partial = false;
   if (format === "pdf") {
     if (!isPdf(bytes)) return { error: `"${base}" isn't a PDF` };
-    try {
-      text = await pdfText(bytes);
-    } catch {
-      return { error: `"${base}" couldn't be read as a PDF` };
-    }
+    const read = await pdfTextInChild(bytes, pdf);
+    if ("error" in read) return { error: pdfError(base, read.error) };
+    if ("secret" in read) return { error: credentialCopy(base) };
+    ({ text, cut, partial } = read);
   } else {
     const decoded = utf8(bytes);
     if (decoded === null) return { error: `"${base}" isn't UTF-8 text` };
@@ -235,7 +254,12 @@ export async function fileText(
           ? `"${base}" has no text to import (a scanned PDF needs text recognition first)`
           : `"${base}" has no text to import`,
     };
-  return { title: (title && oneLine(title)) || fallback, text };
+  return {
+    title: (title && oneLine(title)) || fallback,
+    text,
+    ...(cut ? { cut } : {}),
+    ...(partial ? { partial } : {}),
+  };
 }
 
 /** Text that fits an item: cut at the last line break under the cap, with
@@ -281,6 +305,8 @@ interface Prepared {
   text: string;
   attachName: string | null;
   bytes: Uint8Array;
+  /** Part of the file was left out (a PDF's reader cut or stopped). */
+  cut: boolean;
 }
 
 const slugOf = (path: string) =>
@@ -289,13 +315,17 @@ const attachmentFolder = (path: string) =>
   `${ATTACHMENTS_DIR}/file+${slugOf(path)}`;
 
 /** Read, check and fit one upload; a string says why it is skipped. */
-async function prepare(file: ImportedFile): Promise<Prepared | string> {
+async function prepare(
+  file: ImportedFile,
+  signal: AbortSignal,
+): Promise<Prepared | string> {
   const name = baseName(file.name);
-  const read = await fileText(file.name, file.type, file.bytes);
+  const read = await fileText(file.name, file.type, file.bytes, { signal });
   if ("error" in read) return read.error;
-  const attachName = attachmentName(name);
+  // A PDF too long to check in full keeps its text, never its bytes.
+  const attachName = read.partial ? null : attachmentName(name);
   if (findSecrets(`${name}\n${read.title}\n${read.text}`).length)
-    return `"${name}" looks like it holds a credential`;
+    return credentialCopy(name);
   if (
     attachName &&
     validateKnowledgeFile(`${ATTACHMENTS_DIR}/file+x/${attachName}`, file.bytes)
@@ -308,6 +338,7 @@ async function prepare(file: ImportedFile): Promise<Prepared | string> {
     text: read.text,
     attachName,
     bytes: file.bytes,
+    cut: read.cut === true || read.partial === true,
   };
 }
 
@@ -343,7 +374,7 @@ async function plan(
       }
     }
     const fit = fitted(file.text, file.attachName !== null);
-    if (fit.cut) cut++;
+    if (fit.cut || file.cut) cut++;
     changes.push({
       op: "put",
       path,
@@ -373,8 +404,9 @@ async function plan(
 /**
  * Start importing `files` for `project`; resolves with the job (it runs in
  * the background). Refuses (400) a request without files, with more than
- * MAX_IMPORT_FILES, or with a zip, an oversize file or an unread type; a
- * second file import while one runs is refused (409).
+ * MAX_IMPORT_FILES, with two files of the same name, or with a zip, an
+ * oversize file or an unread type; a second file import while one runs is
+ * refused (409). Each skipped file is named in the job with why.
  */
 export async function importFiles(
   input: { project: string; by: Author; files: ImportedFile[] },
@@ -389,8 +421,11 @@ export async function importFiles(
     const refused = refusal(file);
     if (refused) throw new MemoryRepoError(refused);
   }
-  const today = over.today ?? (() => new Date().toISOString().slice(0, 10));
   const names = files.map((f) => baseName(f.name));
+  // Both would claim one item (`file:<name>`), the second silently.
+  if (new Set(names).size < names.length)
+    throw new MemoryRepoError(DUPLICATE_NAMES_COPY);
+  const today = over.today ?? (() => new Date().toISOString().slice(0, 10));
   return startJob(
     project,
     "files",
@@ -399,14 +434,18 @@ export async function importFiles(
       await job.setTotal(files.length);
       await knowledgeRepo.call("ensureRepo", project);
       const ready: Prepared[] = [];
-      let skipped = 0;
+      const skipped: Array<{ name: string; reason: string }> = [];
       for (const file of files) {
         job.signal.throwIfAborted();
-        const prepared = await prepare(file);
-        if (typeof prepared === "string") skipped++;
+        const prepared = await prepare(file, job.signal);
+        if (typeof prepared === "string")
+          skipped.push({ name: baseName(file.name), reason: prepared });
         else ready.push(prepared);
       }
-      if (skipped) await job.progress({ skipped, done: skipped });
+      if (skipped.length) {
+        await job.recordSkipped(skipped);
+        await job.progress({ skipped: skipped.length, done: skipped.length });
+      }
       if (!ready.length) return;
       const day = today();
       for (let attempt = 1; ; attempt++) {

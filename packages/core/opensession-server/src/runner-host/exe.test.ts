@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   isCompiledBinary,
+  knowledgePdfTextArgv,
   runnerHostArgv,
   simulatorPortalArgv,
   transcriptSearchWorkerArgv,
@@ -41,6 +42,10 @@ test("compiled mode re-execs the binary with the simulator-portal subcommand", (
   expect(transcriptSearchWorkerArgv("bun", "/src/worker.ts")).toEqual([
     "/opt/acme/opensession",
     "transcript-search-worker",
+  ]);
+  expect(knowledgePdfTextArgv("bun", "/src/pdf-text.ts")).toEqual([
+    "/opt/acme/opensession",
+    "knowledge-pdf-text",
   ]);
   pretendCompiled("/opt/acme/opensession-0.4.67-darwin-arm64");
   expect(isCompiledBinary()).toBe(true);

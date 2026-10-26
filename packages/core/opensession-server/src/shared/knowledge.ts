@@ -330,8 +330,14 @@ export interface KnowledgeImportJob {
   error?: string;
   /** The run left part of its input out (a cap was reached). */
   truncated?: boolean;
+  /** Inputs the run skipped and why (the file import), at most
+   *  MAX_SKIPPED_RECORDED. */
+  skippedFiles?: Array<{ name: string; reason: string }>;
   options: Record<string, unknown>;
 }
+
+/** Skipped inputs a job record names. */
+export const MAX_SKIPPED_RECORDED = 50;
 
 /** Mailbox backfill window, in months. */
 export const DEFAULT_BACKFILL_MONTHS = 12;

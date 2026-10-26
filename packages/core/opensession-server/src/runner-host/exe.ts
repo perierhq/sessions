@@ -8,8 +8,8 @@
  *     the executable itself (not `bun`) and there is no `.ts` tree to `run`.
  *     The same executable re-invokes itself with a subcommand instead, such as
  *     `opensession runner-host <spec>`, `opensession mcp-proxy`,
- *     `opensession transcript-search-worker`, or
- *     `opensession simulator-portal <flags>`. src/main.ts is the front
+ *     `opensession transcript-search-worker`, `opensession knowledge-pdf-text`,
+ *     or `opensession simulator-portal <flags>`. src/main.ts is the front
  *     controller that dispatches those subcommands.
  *
  * The spawn sites build their argv through the helpers here so one detection
@@ -70,6 +70,14 @@ export function transcriptSearchWorkerArgv(
 ): string[] {
   return isCompiledBinary()
     ? [process.execPath, "transcript-search-worker"]
+    : [bun, entry];
+}
+
+/** argv to run the knowledge import's PDF text reader
+ *  (server/knowledge/ingest/pdf-text.ts). */
+export function knowledgePdfTextArgv(bun: string, entry: string): string[] {
+  return isCompiledBinary()
+    ? [process.execPath, "knowledge-pdf-text"]
     : [bun, entry];
 }
 
