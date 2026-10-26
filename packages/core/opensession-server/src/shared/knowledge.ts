@@ -80,16 +80,37 @@ export type DependencyRef =
   | { type: "pr"; number: number }
   | { type: "release"; tag: string };
 
-/** A relative path with no empty, `.` or `..` segment and no backslash.
- *  `allowTrailingSlash` lets a folder prefix through. */
+/** A relative path with no empty, `.`, `..` or `.git` segment and no
+ *  backslash or control character. `allowTrailingSlash` lets a folder prefix
+ *  through. */
 function safeRelativePath(path: string, allowTrailingSlash: boolean): boolean {
   if (!path || path.startsWith("/") || path.includes("\\")) return false;
   if (/[\u0000-\u001f\u007f]/.test(path)) return false;
   const body =
     allowTrailingSlash && path.endsWith("/") ? path.slice(0, -1) : path;
   if (!body) return false;
-  return body.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+  return body
+    .split("/")
+    .every(
+      (s) => s !== "" && s !== "." && s !== ".." && s.toLowerCase() !== ".git",
+    );
 }
+
+/** Git's flag that makes every pathspec in a command literal: no `:(magic)`,
+ *  no `*`, `?` or `[...]` wildcards. Every git call that passes a `repo:`
+ *  dependency path (or any other caller-supplied path) as a pathspec must
+ *  pass it first, e.g. `git --literal-pathspecs log -- <path>`. parseDependency
+ *  already refuses those characters; this is the second lock. */
+export const LITERAL_PATHSPECS = "--literal-pathspecs";
+
+/** Characters git reads as pathspec magic or wildcards. */
+const PATHSPEC_SPECIAL = /[*?[\]]/;
+
+/** A tag name git accepts and no caller can turn into an option or a range. */
+const RELEASE_TAG = /^[A-Za-z0-9][A-Za-z0-9._+/-]{0,127}$/;
+
+/** YYYY-MM-DD. */
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const POSITIVE_INT = /^[1-9]\d{0,9}$/;
 
@@ -103,6 +124,9 @@ export function parseDependency(raw: string): DependencyRef | null {
   const value = raw.slice(colon + 1);
   switch (type) {
     case "repo":
+      // Read as a literal path (LITERAL_PATHSPECS); refuse what git would
+      // read as magic (`:(exclude)…`, `:/…`) or a wildcard anyway.
+      if (value.startsWith(":") || PATHSPEC_SPECIAL.test(value)) return null;
       if (!safeRelativePath(value, true)) return null;
       return { type: "repo", path: value, prefix: value.endsWith("/") };
     case "url": {
@@ -114,6 +138,8 @@ export function parseDependency(raw: string): DependencyRef | null {
         return null;
       }
       if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+      // Credentials don't belong in front matter (and would be fetched).
+      if (url.username || url.password) return null;
       return { type: "url", url: value };
     }
     case "issue":
@@ -121,7 +147,7 @@ export function parseDependency(raw: string): DependencyRef | null {
       if (!POSITIVE_INT.test(value)) return null;
       return { type, number: Number(value) };
     case "release":
-      if (!value || /\s/.test(value)) return null;
+      if (!RELEASE_TAG.test(value) || value.includes("..")) return null;
       return { type: "release", tag: value };
     default:
       return null;
@@ -175,14 +201,16 @@ export function formatKnowledgeCitation(path: string, commit: string): string {
   return `${CITATION_PREFIX}${path}@${commit}`;
 }
 
-/** The status that counts today: an active item past its review date needs
- *  a check. Dates are YYYY-MM-DD and compare as strings. */
+/** The status that counts today: an active item past its review date, or
+ *  with a review date that isn't YYYY-MM-DD, needs a check. Dates compare as
+ *  strings. Throws when `today` isn't YYYY-MM-DD (a caller bug). */
 export function effectiveStatus(
   fm: Pick<KnowledgeFrontMatter, "status" | "reviewBy">,
   today: string,
 ): KnowledgeStatus {
-  if (fm.status === "active" && fm.reviewBy && fm.reviewBy < today)
-    return "needs-check";
+  if (!DAY.test(today)) throw new Error(`Invalid date "${today}".`);
+  if (fm.status !== "active" || fm.reviewBy == null) return fm.status;
+  if (!DAY.test(fm.reviewBy) || fm.reviewBy < today) return "needs-check";
   return fm.status;
 }
 

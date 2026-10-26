@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   KNOWLEDGE_COPY,
+  LITERAL_PATHSPECS,
   effectiveStatus,
   formatDependency,
   formatKnowledgeCitation,
@@ -36,6 +37,8 @@ describe("parseKnowledgeCitation", () => {
       "articles/../KNOWLEDGE.md@3f2a1b0",
       "articles/x.md@3f2a1b",
       "articles/@3f2a1b0",
+      "articles/.git/config@3f2a1b0",
+      "sources/.git@3f2a1b0",
       "",
     ])
       expect(parseKnowledgeCitation(ref)).toBeNull();
@@ -88,6 +91,56 @@ describe("dependencies", () => {
       expect(parseDependency(raw)).toBeNull();
   });
 
+  test("repo paths can't carry git pathspec magic or wildcards", () => {
+    for (const raw of [
+      "repo::(exclude)docs",
+      "repo::/docs",
+      "repo:docs/*.md",
+      "repo:docs/?.md",
+      "repo:docs/[ab].md",
+      "repo:docs/a].md",
+      "repo:.git/config",
+      "repo:docs/.git/",
+    ])
+      expect(parseDependency(raw)).toBeNull();
+    expect(parseDependency("repo:docs/a:b.md")).toEqual({
+      type: "repo",
+      path: "docs/a:b.md",
+      prefix: false,
+    });
+    expect(LITERAL_PATHSPECS).toBe("--literal-pathspecs");
+  });
+
+  test("release tags are plain git tag names", () => {
+    for (const tag of ["v1.4.0", "1.0", "release/2026-10", "v2.0.0+build.1"])
+      expect(parseDependency(`release:${tag}`)).toEqual({
+        type: "release",
+        tag,
+      });
+    for (const raw of [
+      "release:-v1",
+      "release:.v1",
+      "release:v1..2",
+      "release:v1 2",
+      "release:v1~1",
+      "release:v1^",
+      "release:v1:x",
+      "release:v1@{0}",
+      `release:v${"1".repeat(128)}`,
+    ])
+      expect(parseDependency(raw)).toBeNull();
+    expect(parseDependency(`release:v${"1".repeat(127)}`)).not.toBeNull();
+  });
+
+  test("urls with credentials are refused", () => {
+    for (const raw of [
+      "url:https://user@help.acme.example.test/x",
+      "url:https://user:pass@help.acme.example.test/x",
+      "url:https://:pass@help.acme.example.test/x",
+    ])
+      expect(parseDependency(raw)).toBeNull();
+  });
+
   test("round-trips the front-matter examples", () => {
     for (const s of [
       "repo:docs/export.md",
@@ -128,6 +181,21 @@ describe("effectiveStatus", () => {
     expect(effectiveStatus({ status: "needs-check" }, "2026-10-26")).toBe(
       "needs-check",
     );
+  });
+});
+
+describe("effectiveStatus dates", () => {
+  test("a malformed review date needs a check", () => {
+    for (const reviewBy of ["2026-1-01", "next week", "2026-10-26T00:00", "9"])
+      expect(effectiveStatus({ status: "active", reviewBy }, "2026-10-26")).toBe(
+        "needs-check",
+      );
+  });
+  test("today must be YYYY-MM-DD", () => {
+    expect(() =>
+      effectiveStatus({ status: "active" }, "2026-10-26T10:00:00Z"),
+    ).toThrow();
+    expect(() => effectiveStatus({ status: "active" }, "")).toThrow();
   });
 });
 
