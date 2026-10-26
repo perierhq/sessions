@@ -60,7 +60,15 @@ import {
 import { PAT_AUTHOR, PAT_TRAILER } from "../freshness/revalidate";
 import { knowledgeRepoName, mailItemPath } from "../layout";
 import { extractPair } from "./extract";
-import { CANCELLED_COPY, type JobHandle, startJob } from "./jobs";
+import {
+  DEADLINE_COPY,
+  type JobHandle,
+  JOB_DEADLINE_MS,
+  type Step,
+  StopRun,
+  startJob,
+  stepper,
+} from "./jobs";
 import { type MailRecord, pairThreads, type QaPair } from "./pairs";
 import { HISTORY_UNREADABLE, mailTrust } from "./trust";
 
@@ -85,9 +93,8 @@ export interface MailboxDeps {
 export const BATCH_SIZE = 50;
 export const MAX_SCANNED = 20_000;
 export const MAX_PAIRS = 500;
-export const DEADLINE_MS = 30 * 60 * 1000;
-export const DEADLINE_COPY =
-  "The import took too long and stopped. Start it again to continue.";
+export const DEADLINE_MS = JOB_DEADLINE_MS;
+export { DEADLINE_COPY };
 export const DATES_DISAGREE =
   "The reply's Date header and arrival time are more than a day apart";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -169,20 +176,6 @@ function toRecord(
     at: m.receivedAt,
     text,
     ours,
-  };
-}
-
-/** Stops a run: cancelled, or past its deadline. Never wrapped. */
-class StopRun extends Error {}
-
-/** A run's cancel and deadline check, called between steps. */
-type Step = () => void;
-
-function stepper(signal: AbortSignal, deadlineMs: number): Step {
-  const end = performance.now() + deadlineMs;
-  return () => {
-    if (signal.aborted) throw new StopRun(CANCELLED_COPY);
-    if (performance.now() >= end) throw new StopRun(DEADLINE_COPY);
   };
 }
 

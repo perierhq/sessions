@@ -19,6 +19,10 @@ import { MemoryRepoError } from "../../memory-repo/git-store";
 export const JOB_RUNNING_COPY = "An import of this kind is running";
 export const INTERRUPTED_COPY = "Interrupted by a restart. Start it again.";
 export const CANCELLED_COPY = "Cancelled.";
+export const DEADLINE_COPY =
+  "The import took too long and stopped. Start it again to continue.";
+/** How long an import run may take before it stops (DEADLINE_COPY). */
+export const JOB_DEADLINE_MS = 30 * 60 * 1000;
 /** How many jobs per project are listed (and kept). */
 export const MAX_LISTED_JOBS = 20;
 const MAX_ERROR_CHARS = 300;
@@ -109,6 +113,23 @@ function errorText(error: unknown): string {
     text.replace(/\s+/g, " ").trim().slice(0, MAX_ERROR_CHARS) ||
     "The import failed."
   );
+}
+
+/** Stops a run: cancelled (CANCELLED_COPY) or past its deadline
+ *  (DEADLINE_COPY). Callers that wrap errors rethrow it as it is. */
+export class StopRun extends Error {}
+
+/** A run's cancel and deadline check, called between steps. */
+export type Step = () => void;
+
+/** The check for a run that started now: throws StopRun once `signal` is
+ *  aborted or `deadlineMs` have passed. */
+export function stepper(signal: AbortSignal, deadlineMs: number): Step {
+  const end = performance.now() + deadlineMs;
+  return () => {
+    if (signal.aborted) throw new StopRun(CANCELLED_COPY);
+    if (performance.now() >= end) throw new StopRun(DEADLINE_COPY);
+  };
 }
 
 /** Whether a run's error is its cancellation: the signal's own reason

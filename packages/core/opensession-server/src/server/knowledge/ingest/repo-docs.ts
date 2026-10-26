@@ -13,10 +13,16 @@
  * RELEASES_KEPT GitHub releases to `sources/releases/<tag>.md`.
  *
  * Text is copied as written, never redacted: a file that looks like it
- * holds a credential, is binary, empty or too large is skipped and
- * counted. A mirror whose text and kind are unchanged is left alone, so a
- * re-run at the same head makes no commit. One commit per mirror run,
- * authored by Pat.
+ * holds a credential, is binary, empty, a Git LFS pointer or too large is
+ * skipped and counted, and a mirror it already has is flipped to
+ * needs-check (its old text can't stand as trusted). A mirror whose text
+ * and kind are unchanged is left alone, so a re-run at the same head makes
+ * no commit. A mirror whose last commit isn't Pat's (a person retired or
+ * edited it) is never overwritten: skipped and counted. A run reads at
+ * most MAX_FILES files or MAX_TOTAL_BYTES (then `truncated`), stops when
+ * cancelled and fails past its deadline (jobs.ts stepper). One commit per
+ * mirror run, authored by Pat. A release gone from GitHub retires its
+ * mirror.
  *
  * Reuses repo-changes.ts (fetch, head, showAt with its size cap), github.ts
  * listReleases, the job records of jobs.ts and B2's frontMatterOf, PAT
@@ -56,7 +62,7 @@ import {
 import { knowledgeRepoName, releaseItemPath, repoItemPath } from "../layout";
 import type { KnowledgeChange } from "../service";
 import { MAX_ARTICLE_BYTES } from "../validate";
-import { startJob } from "./jobs";
+import { JOB_DEADLINE_MS, type Step, startJob, stepper } from "./jobs";
 
 export interface RepoDocsDeps {
   /** YYYY-MM-DD, UTC. */
@@ -66,6 +72,15 @@ export interface RepoDocsDeps {
   /** The project's releases, newest first; null when it has no GitHub
    *  repository. Throws when they can't be read (default listReleases). */
   releases(project: string): Promise<ReleaseInfo[] | null>;
+  /** Files read per run at most (MAX_FILES). */
+  maxFiles: number;
+  /** Bytes of files read per run at most (MAX_TOTAL_BYTES). */
+  maxBytes: number;
+  /** How long a job may take before it stops (JOB_DEADLINE_MS). */
+  deadlineMs: number;
+  /** Throws when the run must stop (cancelled, past its deadline); called
+   *  per file and release and before each write. The job sets it. */
+  step: Step;
 }
 
 export interface MirrorResult {
@@ -73,9 +88,18 @@ export interface MirrorResult {
   written: number;
   /** Mirrors retired because their file is gone. */
   retired: number;
-  /** Files left out: a credential, binary, empty or too large. */
+  /** Files left out: a credential, binary, empty, an LFS pointer, too
+   *  large, or a mirror a person edited last. */
   skipped: number;
+  /** MAX_FILES or MAX_TOTAL_BYTES left files out. */
+  truncated: boolean;
 }
+
+/** Files read per run at most. */
+export const MAX_FILES = 2000;
+/** Bytes of files read per run at most. */
+export const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const LFS_POINTER = "version https://git-lfs";
 
 /** Releases mirrored, newest first. */
 export const RELEASES_KEPT = 30;
@@ -94,6 +118,10 @@ function bind(over: Partial<RepoDocsDeps>): RepoDocsDeps {
     repoChanges: over.repoChanges ?? {},
     github,
     releases: over.releases ?? ((project) => listReleases(project, github)),
+    maxFiles: over.maxFiles ?? MAX_FILES,
+    maxBytes: over.maxBytes ?? MAX_TOTAL_BYTES,
+    deadlineMs: over.deadlineMs ?? JOB_DEADLINE_MS,
+    step: over.step ?? (() => undefined),
   };
 }
 
@@ -216,13 +244,59 @@ function titleOf(text: string, fallback: string): string {
   return (heading || fallback).slice(0, 200);
 }
 
-/** Text that can be stored as written; null when it must be skipped. */
-function storable(title: string, text: string): string | null {
-  if (!text.trim() || text.includes("\0") || text.includes("\uFFFD"))
-    return null;
-  if (new TextEncoder().encode(text).length > BODY_BYTES) return null;
-  if (findSecrets(`${title}\n${text}`).length) return null;
-  return text;
+/** Why text can't be stored as written; null when it can. */
+function unstorable(title: string, text: string): string | null {
+  if (!text.trim()) return "The file is now empty";
+  if (text.includes("\0") || text.includes("\uFFFD"))
+    return "The file is now binary";
+  if (text.startsWith(LFS_POINTER)) return "The file is now a Git LFS pointer";
+  if (new TextEncoder().encode(text).length > BODY_BYTES)
+    return "The file is now too large to mirror";
+  if (findSecrets(`${title}\n${text}`).length)
+    return "The file now looks like it holds a credential";
+  return null;
+}
+
+/** Whether Pat wrote `path` last: an import may overwrite only its own
+ *  writes; a person's retire or edit wins. True for a path with no
+ *  history. */
+export async function lastWrittenByPat(
+  project: string,
+  path: string,
+): Promise<boolean> {
+  const [last] = await knowledgeRepo.call("history", project, path, 1);
+  if (!last) return true;
+  return (
+    last.author === PAT_AUTHOR.name &&
+    last.body.split("\n").some((line) => line.trim() === PAT_TRAILER)
+  );
+}
+
+/** A mirror whose source can't be copied any more, flipped to needs-check
+ *  with `reason` and its text kept; null when it is retired, already
+ *  waiting for a person, or a person wrote it last. */
+export async function needsCheckChange(
+  project: string,
+  path: string,
+  reason: string,
+  today: string,
+): Promise<{ change: KnowledgeChange; blob: string } | null> {
+  const current = await knowledgeRepo.call("read", project, path, today);
+  if (!current || current.item.status !== "active") return null;
+  if (!(await lastWrittenByPat(project, path))) return null;
+  return {
+    change: {
+      op: "put",
+      path,
+      fm: {
+        ...frontMatterOf(current.item),
+        status: "needs-check",
+        check: { reason, since: today },
+      },
+      body: current.body,
+    },
+    blob: current.item.blob,
+  };
 }
 
 const sameText = (a: string, b: string) => a.trimEnd() === b.trimEnd();
@@ -236,10 +310,12 @@ async function commit(
   project: string,
   build: () => Promise<Plan>,
   message: (plan: Plan) => string,
+  step: Step,
 ): Promise<Plan> {
   for (let attempt = 1; ; attempt++) {
     const plan = await build();
     if (!plan.changes.length) return plan;
+    step();
     try {
       await knowledgeRepo.call("write", project, plan.changes, {
         message: message(plan),
@@ -272,9 +348,10 @@ export async function mirrorRepoDocs(
   const deps = bind(over);
   const rc = deps.repoChanges;
   const today = deps.today();
+  deps.step();
   await fetchDefaultBranch(project, rc);
   const head = await latestChange(project, [], rc);
-  if (!head) return { written: 0, retired: 0, skipped: 0 };
+  if (!head) return { written: 0, retired: 0, skipped: 0, truncated: false };
   const validAsOf = head.at.slice(0, 10);
 
   // What the head holds, read once (the retry only re-reads knowledge).
@@ -282,12 +359,25 @@ export async function mirrorRepoDocs(
     string,
     { repoPath: string; kind: KnowledgeKind; title: string; text: string }
   >();
+  /** Mirrors whose file is there but can't be copied, and why. */
+  const unreadable = new Map<string, string>();
   const present = new Set<string>();
   let skipped = 0;
+  let truncated = false;
+  let files = 0;
+  let bytes = 0;
   for (const file of await listFiles(project, head.sha, rc)) {
     const kind = mirroredKind(file.path);
     if (!kind) continue;
+    // Listed files count as present even past the cap: never retired
+    // for being left unread.
     present.add(file.path);
+    if (truncated) continue;
+    if (files + 1 > deps.maxFiles || bytes + file.size > deps.maxBytes) {
+      truncated = true;
+      continue;
+    }
+    deps.step();
     let path: string;
     try {
       path = repoItemPath(file.path);
@@ -295,32 +385,42 @@ export async function mirrorRepoDocs(
       skipped++;
       continue;
     }
-    if (
-      wanted.has(path) ||
-      !parseDependency(`repo:${file.path}`) ||
-      file.size > BODY_BYTES
-    ) {
+    if (wanted.has(path) || !parseDependency(`repo:${file.path}`)) {
       skipped++;
       continue;
     }
+    if (file.size > BODY_BYTES) {
+      unreadable.set(path, "The file is now too large to mirror");
+      skipped++;
+      continue;
+    }
+    files++;
+    bytes += file.size;
     const raw = await showAt(project, head.sha, file.path, rc);
     const title = titleOf(raw ?? "", file.path);
-    const text = raw === null ? null : storable(title, raw);
-    if (text === null) {
+    const why =
+      raw === null ? "The file couldn't be read" : unstorable(title, raw);
+    if (raw === null || why) {
+      unreadable.set(path, why ?? "The file couldn't be read");
       skipped++;
       continue;
     }
-    wanted.set(path, { repoPath: file.path, kind, title, text });
+    wanted.set(path, { repoPath: file.path, kind, title, text: raw });
   }
 
   let retired = 0;
+  let flipped = 0;
+  let personal = 0;
   const plan = await commit(
     project,
     async () => {
       const changes: KnowledgeChange[] = [];
       const expected: Record<string, string | null> = {};
       retired = 0;
+      flipped = 0;
+      personal = 0;
       for (const [path, doc] of wanted) {
+        deps.step();
         const current = await knowledgeRepo.call("read", project, path, today);
         if (
           current &&
@@ -330,6 +430,10 @@ export async function mirrorRepoDocs(
           sameText(current.body, doc.text)
         )
           continue;
+        if (current && !(await lastWrittenByPat(project, path))) {
+          personal++;
+          continue;
+        }
         const fm: KnowledgeFrontMatter = {
           title: doc.title,
           kind: doc.kind,
@@ -345,12 +449,21 @@ export async function mirrorRepoDocs(
         changes.push({ op: "put", path, fm, body: doc.text });
         expected[path] = current?.item.blob ?? null;
       }
+      for (const [path, reason] of unreadable) {
+        deps.step();
+        const flip = await needsCheckChange(project, path, reason, today);
+        if (!flip) continue;
+        changes.push(flip.change);
+        expected[path] = flip.blob;
+        flipped++;
+      }
       for (const item of await listItems(project, today)) {
         if (item.origin !== "repo" || item.status === "retired") continue;
         if (expected[item.path] !== undefined || wanted.has(item.path))
           continue;
         const repoPath = mirroredPath(item);
         if (!repoPath || present.has(repoPath)) continue;
+        deps.step();
         // Gone from the default branch: retired, text kept.
         const current = await knowledgeRepo.call(
           "read",
@@ -359,6 +472,10 @@ export async function mirrorRepoDocs(
           today,
         );
         if (!current) continue;
+        if (!(await lastWrittenByPat(project, item.path))) {
+          personal++;
+          continue;
+        }
         const { check: _check, ...fm } = frontMatterOf(current.item);
         changes.push({
           op: "put",
@@ -372,19 +489,37 @@ export async function mirrorRepoDocs(
       return { changes, expected };
     },
     (p) => {
-      const files = p.changes.length - retired;
-      return retired
-        ? `Import repository docs: ${files} files (${retired} retired)`
+      const files = p.changes.length - retired - flipped;
+      const parts = [
+        ...(retired ? [`${retired} retired`] : []),
+        ...(flipped ? [`${flipped} need a check`] : []),
+      ];
+      return parts.length
+        ? `Import repository docs: ${files} files (${parts.join(", ")})`
         : `Import repository docs: ${files} files`;
     },
+    deps.step,
   );
-  return { written: plan.changes.length - retired, retired, skipped };
+  return {
+    written: plan.changes.length - retired - flipped,
+    retired,
+    skipped: skipped + personal,
+    truncated,
+  };
 }
 
 // ── Releases ────────────────────────────────────────────────────────────
 
+/** The tag a release mirror stands for. */
+function mirroredTag(item: KnowledgeItem): string | null {
+  const source = item.sources.find((s) => s.startsWith("release:"));
+  return source ? source.slice("release:".length) : null;
+}
+
 /** Mirror the newest RELEASES_KEPT releases. A project without a GitHub
- *  repository has none; a list that can't be read throws. */
+ *  repository has none; a list that can't be read throws. A mirrored
+ *  release GitHub no longer lists is retired, unless it is older than
+ *  everything listed (the list may just stop before it). */
 export async function mirrorReleases(
   project: string,
   over: Partial<RepoDocsDeps> = {},
@@ -392,10 +527,18 @@ export async function mirrorReleases(
   checkProject(project);
   const deps = bind(over);
   const today = deps.today();
-  const releases = [...((await deps.releases(project)) ?? [])]
-    .filter((r) => Number.isFinite(Date.parse(r.at)))
+  deps.step();
+  const listed = await deps.releases(project);
+  const all = [...(listed ?? [])].filter((r) =>
+    Number.isFinite(Date.parse(r.at)),
+  );
+  const releases = [...all]
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
     .slice(0, RELEASES_KEPT);
+  const listedTags = new Set((listed ?? []).map((r) => r.tag));
+  const oldestListed = all.length
+    ? Math.min(...all.map((r) => Date.parse(r.at)))
+    : Number.NEGATIVE_INFINITY;
   let skipped = 0;
   const wanted: Array<{ path: string; release: ReleaseInfo; text: string }> =
     [];
@@ -409,24 +552,27 @@ export async function mirrorReleases(
       continue;
     }
     const title = (release.name || release.tag).slice(0, 200);
-    const text = storable(
-      title,
-      release.body.trim() || "No release notes were published.",
-    );
-    if (seen.has(path) || !parseDependency(`release:${release.tag}`) || !text) {
+    const body = release.body.trim() || "No release notes were published.";
+    const why = unstorable(title, body);
+    if (seen.has(path) || !parseDependency(`release:${release.tag}`) || why) {
       skipped++;
       continue;
     }
     seen.add(path);
-    wanted.push({ path, release, text });
+    wanted.push({ path, release, text: body });
   }
 
+  let retired = 0;
+  let personal = 0;
   const plan = await commit(
     project,
     async () => {
       const changes: KnowledgeChange[] = [];
       const expected: Record<string, string | null> = {};
+      retired = 0;
+      personal = 0;
       for (const { path, release, text } of wanted) {
+        deps.step();
         const title = (release.name || release.tag).slice(0, 200);
         const current = await knowledgeRepo.call("read", project, path, today);
         if (
@@ -436,6 +582,10 @@ export async function mirrorReleases(
           sameText(current.body, text)
         )
           continue;
+        if (current && !(await lastWrittenByPat(project, path))) {
+          personal++;
+          continue;
+        }
         changes.push({
           op: "put",
           path,
@@ -454,11 +604,52 @@ export async function mirrorReleases(
         });
         expected[path] = current?.item.blob ?? null;
       }
+      // Gone from GitHub (a readable list without it): retired, text kept.
+      if (listed)
+        for (const item of await listItems(project, today)) {
+          if (item.origin !== "release" || item.status === "retired") continue;
+          if (expected[item.path] !== undefined || seen.has(item.path))
+            continue;
+          const tag = mirroredTag(item);
+          if (!tag || listedTags.has(tag)) continue;
+          if (Date.parse(`${item.validAsOf}T23:59:59Z`) < oldestListed)
+            continue;
+          deps.step();
+          const current = await knowledgeRepo.call(
+            "read",
+            project,
+            item.path,
+            today,
+          );
+          if (!current) continue;
+          if (!(await lastWrittenByPat(project, item.path))) {
+            personal++;
+            continue;
+          }
+          const { check: _check, ...fm } = frontMatterOf(current.item);
+          changes.push({
+            op: "put",
+            path: item.path,
+            fm: { ...fm, status: "retired" },
+            body: current.body,
+          });
+          expected[item.path] = current.item.blob;
+          retired++;
+        }
       return { changes, expected };
     },
-    (p) => `Import releases: ${p.changes.length}`,
+    (p) =>
+      retired
+        ? `Import releases: ${p.changes.length - retired} (${retired} retired)`
+        : `Import releases: ${p.changes.length}`,
+    deps.step,
   );
-  return { written: plan.changes.length, retired: 0, skipped };
+  return {
+    written: plan.changes.length - retired,
+    retired,
+    skipped: skipped + personal,
+    truncated: false,
+  };
 }
 
 // ── The job ─────────────────────────────────────────────────────────────
@@ -466,7 +657,8 @@ export async function mirrorReleases(
 /**
  * Start the repository import (docs, then releases) for `project`;
  * resolves with the job (it runs in the background). A second repository
- * import while one runs is refused (409).
+ * import while one runs is refused (409). The job stops when cancelled
+ * and fails past its deadline.
  */
 export async function startRepoImport(
   input: { project: string; by: Author },
@@ -475,18 +667,23 @@ export async function startRepoImport(
   const { project } = input;
   checkProject(project);
   return startJob(project, "repo", { by: input.by.name }, async (job) => {
+    const run = {
+      ...over,
+      step: stepper(job.signal, over.deadlineMs ?? JOB_DEADLINE_MS),
+    };
     await knowledgeRepo.call("ensureRepo", project);
-    const docs = await mirrorRepoDocs(project, over);
+    const docs = await mirrorRepoDocs(project, run);
     await job.progress({
       trusted: docs.written,
       skipped: docs.skipped,
       done: docs.written + docs.retired + docs.skipped,
     });
-    const releases = await mirrorReleases(project, over);
+    if (docs.truncated) await job.markTruncated();
+    const releases = await mirrorReleases(project, run);
     await job.progress({
       trusted: releases.written,
       skipped: releases.skipped,
-      done: releases.written + releases.skipped,
+      done: releases.written + releases.retired + releases.skipped,
     });
   });
 }
