@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { KnowledgeItem } from "../../../shared/knowledge";
-import { evaluateItem, type Signals } from "./evaluate";
+import { evaluateItem, type ReleaseMatch, type Signals } from "./evaluate";
 import type { ReleaseInfo } from "./github";
 import type { RepoCommit } from "./repo-changes";
 
@@ -32,11 +32,16 @@ function item(over: Partial<KnowledgeItem> = {}): KnowledgeItem {
 }
 
 function signals(over: Partial<Signals> = {}): Signals & {
-  asked: { repo: Array<[string[], string]>; release: string[] };
+  asked: {
+    repo: Array<[string[], string]>;
+    release: string[];
+    match: ReleaseMatch[];
+  };
 } {
   const asked = {
     repo: [] as Array<[string[], string]>,
     release: [] as string[],
+    match: [] as ReleaseMatch[],
   };
   return {
     asked,
@@ -47,8 +52,9 @@ function signals(over: Partial<Signals> = {}): Signals & {
     },
     pageHash: async () => null,
     releasesSince: async () => [],
-    releaseMentions: async (_item, _body, release) => {
+    releaseMentions: async (_item, _body, release, match) => {
       asked.release.push(release.tag);
+      asked.match.push(match);
       return true;
     },
     refState: async () => null,
@@ -105,6 +111,80 @@ describe("evaluateItem", () => {
       reason: `${URL} changed on ${TODAY}`,
       source: `url:${URL}#sha256=bb`,
     });
+  });
+
+  test("a url dependency without a recorded hash can't be checked", async () => {
+    await expect(
+      evaluateItem(
+        item({ dependsOn: [`url:${URL}`], sources: [`url:${URL}`] }),
+        BODY,
+        signals({ pageHash: async () => "bb" }),
+      ),
+    ).rejects.toThrow(`No hash was recorded for ${URL}`);
+  });
+
+  test("a page that is gone or no longer allowed is a change", async () => {
+    const verdict = await evaluateItem(
+      item({ dependsOn: [`url:${URL}`], sources: [`url:${URL}#sha256=aa`] }),
+      BODY,
+      signals({ pageHash: async () => ({ gone: "The page answered 404" }) }),
+    );
+    expect(verdict).toEqual({
+      stale: true,
+      reason: `${URL} can't be read any more: The page answered 404`,
+      source: `url:${URL}`,
+    });
+  });
+
+  test("a commit that lists no paths is still a change", async () => {
+    const verdict = await evaluateItem(
+      item({ dependsOn: ["repo:docs/export.md"], validAsOfCommit: C1 }),
+      BODY,
+      signals({
+        repoCommits: async () => [
+          { sha: C2, at: "2026-10-25T10:00:00Z", paths: [] },
+        ],
+      }),
+    );
+    expect(verdict).toEqual({
+      stale: true,
+      reason: "docs/export.md changed in 9c1d2e0",
+      source: `repo:docs/export.md@${C2}`,
+    });
+  });
+
+  test("an issue closed at an unknown time is stale", async () => {
+    const verdict = await evaluateItem(
+      item({ dependsOn: ["issue:42"] }),
+      BODY,
+      signals({ refState: async () => ({ state: "closed", at: null }) }),
+    );
+    expect(verdict).toEqual({
+      stale: true,
+      reason: "Issue #42 was closed",
+      source: "issue:42",
+    });
+  });
+
+  test("the release check is told which terms matched and whether a topic did", async () => {
+    const s = signals({ releasesSince: async () => [v140] });
+    await evaluateItem(item(), BODY, s);
+    expect(s.asked.match).toEqual([
+      { topic: "export", verbatim: true, terms: ["export"] },
+    ]);
+    const t = signals({
+      releasesSince: async () => [
+        { ...v140, body: "Projects can be exported again." },
+      ],
+    });
+    await evaluateItem(
+      item({ topics: ["spreadsheets"], title: "Projects exported" }),
+      BODY,
+      t,
+    );
+    expect(t.asked.match).toEqual([
+      { topic: "projects", verbatim: false, terms: ["projects", "exported"] },
+    ]);
   });
 
   test("an unreadable page is not a change", async () => {

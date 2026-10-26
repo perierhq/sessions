@@ -6,11 +6,15 @@
  *
  * Checks, in order; the first that finds a change is the reason:
  *  1. `repo:` dependencies: a default-branch commit after `validAsOfCommit`
- *     (or, without one, from the `validAsOf` day on) touched the path;
+ *     (or, without one, from two days before the `validAsOf` day on)
+ *     touched the path; a commit that lists no paths still counts;
  *  2. `url:` dependencies: the page's hash differs from the `#sha256=`
- *     recorded in the matching `url:` source (an unreadable page is not a
- *     change);
- *  3. `issue:` / `pr:` dependencies closed or merged after `validAsOf`;
+ *     recorded in the matching `url:` source, or the page is gone (404,
+ *     410) or no longer on the allowed hosts. A page unreadable for another
+ *     reason is not a change this run (revalidate.ts counts the runs). A
+ *     dependency without a recorded hash can't be checked (throws);
+ *  3. `issue:` / `pr:` dependencies closed or merged after `validAsOf`, or
+ *     at a time GitHub doesn't give;
  *  4. a release published after `validAsOf` whose notes name one of the
  *     item's topics (or a title word) and that the small model says
  *     affects it; only items with topics are checked;
@@ -37,21 +41,33 @@ export interface Signals {
    *  first. `since` is a commit sha, or a YYYY-MM-DD day (commits from that
    *  day on count). */
   repoCommits(paths: string[], since: string): Promise<RepoCommit[]>;
-  /** The page's current hash; null = unreadable this run (not a change). */
-  pageHash(url: string): Promise<string | null>;
+  /** The page's current hash; `{ gone }` when it no longer exists (404,
+   *  410) or is no longer allowed (a change); null = unreadable this run
+   *  (not a change). */
+  pageHash(url: string): Promise<string | { gone: string } | null>;
   /** Releases published after `at` (YYYY-MM-DD), newest first. */
   releasesSince(at: string): Promise<ReleaseInfo[]>;
   /** Small model: does the release change what the item says? Fail closed:
-   *  true when it can't tell. */
+   *  true when it can't tell. `match` says what the notes named. */
   releaseMentions(
     item: KnowledgeItem,
     body: string,
     release: ReleaseInfo,
+    match: ReleaseMatch,
   ): Promise<boolean>;
   refState(ref: { type: "issue" | "pr"; number: number }): Promise<{
     state: "open" | "closed" | "merged";
     at: string | null;
   } | null>;
+}
+
+/** What a release's notes name of an item: `topic` is the first match (the
+ *  reason's word), `verbatim` whether it is one of the item's own topics
+ *  (not a title word), `terms` every topic and title word they name. */
+export interface ReleaseMatch {
+  topic: string;
+  verbatim: boolean;
+  terms: string[];
 }
 
 export type Verdict =
@@ -97,22 +113,37 @@ export function recordedHash(sources: string[], url: string): string | null {
   return null;
 }
 
+/** The item's topics, then its longer title words, that the release notes
+ *  name (case-insensitive); null when none. */
+export function releaseMatch(
+  item: Pick<KnowledgeItem, "topics" | "title">,
+  release: Pick<ReleaseInfo, "body" | "name">,
+): ReleaseMatch | null {
+  const text = `${release.name}\n${release.body}`.toLowerCase();
+  const topics: string[] = [];
+  for (const topic of item.topics) {
+    const t = topic.trim();
+    if (t && text.includes(t.toLowerCase()) && !topics.includes(t))
+      topics.push(t);
+  }
+  const words: string[] = [];
+  for (const word of item.title.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (word.length < 5 || COMMON_WORDS.has(word) || words.includes(word))
+      continue;
+    if (text.includes(word)) words.push(word);
+  }
+  const terms = [...topics, ...words];
+  if (!terms.length) return null;
+  return { topic: terms[0]!, verbatim: topics.length > 0, terms };
+}
+
 /** The first of the item's topics, then its longer title words, that the
  *  release notes name (case-insensitive); null when none. */
 export function releaseTopic(
   item: Pick<KnowledgeItem, "topics" | "title">,
   release: Pick<ReleaseInfo, "body" | "name">,
 ): string | null {
-  const text = `${release.name}\n${release.body}`.toLowerCase();
-  for (const topic of item.topics) {
-    const t = topic.trim().toLowerCase();
-    if (t && text.includes(t)) return topic.trim();
-  }
-  for (const word of item.title.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    if (word.length < 5 || COMMON_WORDS.has(word)) continue;
-    if (text.includes(word)) return word;
-  }
-  return null;
+  return releaseMatch(item, release)?.topic ?? null;
 }
 
 /** Whether `at` (ISO timestamp) is after `day` (YYYY-MM-DD): any time on
@@ -132,8 +163,8 @@ async function repoVerdict(
     item.validAsOfCommit ?? item.validAsOf,
   );
   for (const commit of commits) {
-    const path = commit.paths[0];
-    if (!path) continue;
+    // A commit that lists no paths (git couldn't say) still touched them.
+    const path = commit.paths[0] ?? paths[0]!;
     return {
       stale: true,
       reason: `${path} changed in ${commit.sha.slice(0, 7)}`,
@@ -162,8 +193,15 @@ export async function evaluateItem(
   for (const dep of deps) {
     if (dep.type !== "url") continue;
     const recorded = recordedHash(item.sources, dep.url);
-    if (!recorded) continue;
+    // Nothing to compare against: can't tell, a person looks.
+    if (!recorded) throw new Error(`No hash was recorded for ${dep.url}`);
     const hash = await s.pageHash(dep.url);
+    if (hash && typeof hash === "object")
+      return {
+        stale: true,
+        reason: `${dep.url} can't be read any more: ${hash.gone}`,
+        source: `url:${dep.url}`,
+      };
     if (hash && hash.toLowerCase() !== recorded)
       return {
         stale: true,
@@ -175,8 +213,9 @@ export async function evaluateItem(
   for (const dep of deps) {
     if (dep.type !== "issue" && dep.type !== "pr") continue;
     const state = await s.refState({ type: dep.type, number: dep.number });
-    if (!state || state.state === "open" || !state.at) continue;
-    if (!after(state.at, item.validAsOf)) continue;
+    if (!state || state.state === "open") continue;
+    // Closed at a time GitHub doesn't give: can't say it was before.
+    if (state.at && !after(state.at, item.validAsOf)) continue;
     const what =
       dep.type === "pr"
         ? `Pull request #${dep.number} was ${state.state}`
@@ -193,12 +232,12 @@ export async function evaluateItem(
     // Oldest first: the first release that changed things is the reason.
     for (const release of [...releases].reverse()) {
       if (!after(release.at, item.validAsOf)) continue;
-      const topic = releaseTopic(item, release);
-      if (!topic) continue;
-      if (!(await s.releaseMentions(item, body, release))) continue;
+      const match = releaseMatch(item, release);
+      if (!match) continue;
+      if (!(await s.releaseMentions(item, body, release, match))) continue;
       return {
         stale: true,
-        reason: `Release ${release.tag} mentions ${topic}`,
+        reason: `Release ${release.tag} mentions ${match.topic}`,
         source: `release:${release.tag}`,
       };
     }
