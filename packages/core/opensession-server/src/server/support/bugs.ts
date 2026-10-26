@@ -44,6 +44,7 @@ import { type Actor, isOwnerActor } from "./actor";
 import { type SessionControl, getSessionControl } from "../session-control";
 import { getInbox } from "./inboxes";
 import { getConversation, updateConversation } from "./store";
+import { overlapsDateOrTime } from "../knowledge/ingest/strip";
 
 /** The issue's attribution footer. Only the support agent reports bugs
  *  (mcp.ts report_bug), so it names the assistant persona the support
@@ -222,15 +223,15 @@ const SPOKEN_ADDRESS = new RegExp(
   "giu",
 );
 /** International (+48 601 234 567), bracketed area code ((555) 123-4567)
- *  or grouped (0601 234 567). Dates and versions are let through below. */
+ *  or grouped (0601 234 567). Dates, clock times and versions are let
+ *  through below. */
 const PHONE =
   /(?<![\p{L}\p{N}+])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,5}\)[\s.-]?)?\d{2,5}(?:[\s.-]\d{2,5}){1,4}(?![\p{L}\p{N}])|\+\d{7,15}(?!\d)/gu;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 function scrubPhones(text: string): string {
-  return text.replace(PHONE, (match) => {
+  return text.replace(PHONE, (match, offset: number) => {
     const digits = match.replace(/\D/g, "").length;
-    if (digits < 7 || digits > 15 || ISO_DATE.test(match)) return match;
+    if (digits < 7 || digits > 15) return match;
+    if (overlapsDateOrTime(text, offset, match.length)) return match;
     const grouped = /^[+(]/.test(match) || /[\s-]/.test(match);
     return grouped ? "[phone removed]" : match;
   });

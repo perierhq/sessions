@@ -543,6 +543,23 @@ describe("issueText scrubbing", () => {
     expect(body).toContain("10.2.1");
   });
 
+  test("timestamps, dates and clock times are not phone numbers", async () => {
+    const text = [
+      "Failed at 2026-10-26 09:03:00 UTC and 2026-10-26T09:03:15Z,",
+      "again on 26-10-2026 14:05 and 10/26/2026, last at 9:03:15.",
+      "Call +48 601 234 567 or 601-12-12-34.",
+    ].join(" ");
+    const body = await scrubbed(text);
+    expect(body).toContain("2026-10-26 09:03:00 UTC");
+    expect(body).toContain("2026-10-26T09:03:15Z");
+    expect(body).toContain("26-10-2026 14:05");
+    expect(body).toContain("10/26/2026");
+    expect(body).toContain("9:03:15");
+    expect(body).not.toContain("601 234 567");
+    // A date inside a longer digit run is a phone number.
+    expect(body).not.toContain("12-12-34");
+  });
+
   test("mentions and issue references are neutralized", async () => {
     const body = await scrubbed("Ping @octocat about #12.");
     expect(body).toContain("`@octocat`");
