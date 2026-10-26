@@ -214,6 +214,13 @@ async function startImportOf(
         await import("../knowledge/ingest/known-problems");
       return startKnownProblemsImport({ project, by }, { today: deps.today });
     }
+    case "files": {
+      const { importFiles } = await import("../knowledge/ingest/files");
+      return importFiles(
+        { project, by, files: request.files ?? [] },
+        { today: deps.today },
+      );
+    }
     default:
       throw new MemoryRepoError("This import isn't available yet.", 501);
   }

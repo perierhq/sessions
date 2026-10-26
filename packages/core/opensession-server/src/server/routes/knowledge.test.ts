@@ -883,6 +883,38 @@ describe("imports", () => {
     expect(body.jobs[0]!.created.trusted).toBe(1);
     expect(await service.hasRepo("acme")).toBe(true);
   });
+
+  test("a file import runs through the default starter as the uploader", async () => {
+    __setKnowledgeRouteDepsForTest({ today: () => TODAY });
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(["# Refunds\n\nRefunds take five days.\n"], "refunds.md", {
+        type: "text/markdown",
+      }),
+    );
+    const response = await call("POST", "/api/knowledge/acme/import/files", {
+      form,
+    });
+    expect(response.status).toBe(200);
+    const { job } = (await response.json()) as { job: KnowledgeImportJob };
+    expect(job).toMatchObject({ kind: "files", project: "acme" });
+    await __waitForJobForTest(job.id);
+    const read = await service.read("acme", "sources/files/refunds.md", TODAY);
+    expect(read?.item).toMatchObject({ title: "Refunds", trust: "reference" });
+    const [latest] = await service.history("acme", undefined, 1);
+    expect(latest!.subject).toBe("Import files: 1");
+
+    const zip = new FormData();
+    zip.append("file", new File(["PK"], "notion.zip"));
+    const refused = await call("POST", "/api/knowledge/acme/import/files", {
+      form: zip,
+    });
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toBe(
+      "Unzip the export and upload the files",
+    );
+  });
 });
 
 describe("attachments", () => {
