@@ -7,7 +7,9 @@ import type {
   SupportMessage,
   TriageRoute,
 } from "../../shared/support";
+import { personaName } from "../config";
 import type { CreateSessionOpts } from "../session-control";
+import { isMachineActor } from "../session-actors";
 import { registerChannelAdapter } from "./channel";
 import {
   __setInboxProjectCheckForTest,
@@ -147,7 +149,7 @@ beforeEach(async () => {
         }
         return {
           id,
-          createdBy: "Sessions",
+          createdBy: opts.user ?? "Anonymous",
           createdAt: new Date().toISOString(),
         };
       },
@@ -301,14 +303,17 @@ describe("new conversations", () => {
       expect(opts.model).toBe(spec.model);
       expect(opts.sandbox).toBe("daytona");
       expect(opts.agentStarted).toBe(true);
-      expect(opts.user).toBe("Sessions");
+      // The session belongs to the assistant persona, a machine actor.
+      expect(opts.user).toBe(personaName());
+      expect(isMachineActor(opts.user)).toBe(true);
+      expect(opts.createdByLogin).toBeUndefined();
       expect(opts.workspaceId).toBe(`ws-${c.id}`);
       expect(opts.requestId).toBe(`support-${c.id}-new`);
       expect(workspaces).toEqual([
         {
           // No customer text in the workspace.
           ref: { kind: "support", id: c.id, title: `Support ${c.id}` },
-          createdBy: "Sessions",
+          createdBy: personaName(),
           repo: "acme",
         },
       ]);

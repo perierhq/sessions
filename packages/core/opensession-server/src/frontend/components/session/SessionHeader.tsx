@@ -5,7 +5,10 @@ import { brandLogo } from "../../brand-logos";
 import { sessionSourceName } from "../../lib/brand";
 import type { ModelOption } from "../../lib/api";
 import type { NavigationActions } from "../../lib/navigation";
-import { sessionWasAgentStarted } from "../../lib/sidebar-placement";
+import {
+  agentStartedLabel,
+  sessionWasAgentStarted,
+} from "../../lib/sidebar-placement";
 import { SOURCE_CHIP, sourceChipTone } from "../../lib/source-chip-classes";
 import type { UnifiedSession } from "../../lib/types";
 import {
@@ -260,8 +263,8 @@ export function SessionHeader({
           <span
             className="-ml-1 inline-flex size-6 shrink-0 items-center justify-center text-faint"
             role="img"
-            aria-label="Started by an agent"
-            title="Started by an agent"
+            aria-label={agentStartedLabel(session)}
+            title={agentStartedLabel(session)}
           >
             <IconRobot size={18} />
           </span>

@@ -12,6 +12,7 @@ import {
   __setBindingResolverForTest,
 } from "./incidents/access/resolve";
 import { automationDeniedTools } from "./automations";
+import { personaName } from "./config";
 import { __setIncidentAuditForTest } from "./incidents/audit-sink";
 import {
   type ProjectSettingsDocument,
@@ -569,6 +570,26 @@ describe("support sessions", () => {
       expect(inputs.deniedTools).toHaveProperty(key);
     expect(inputs.deniedTools).toHaveProperty("mcp__gmail__send_email");
     expect(inputs.deniedTools).toHaveProperty("mcp__stripe__create_refund");
+    expect(inputs.sessionNote).toBe(false);
+  });
+
+  test("the persona that owns a support session gets no person's rights", async () => {
+    await storeProject(() => {});
+    // As routing.ts creates it: started by the persona, no login, and the
+    // opening turn sent under the persona's name.
+    const owned: RunInputsSession = {
+      ...support,
+      startedBy: personaName(),
+      createdByLogin: undefined,
+    };
+    const inputs = await resolveSessionRunInputs(owned, {
+      user: personaName(),
+    });
+    expect(inputs.inProcessMcpBranch).toBe("support");
+    expect(inputs.user).toBeUndefined();
+    expect(inputs.accountUser).toBeUndefined();
+    expect(inputs.humanPrompter).toBeUndefined();
+    expect(inputs.mcpGrantUser).toBeUndefined();
     expect(inputs.sessionNote).toBe(false);
   });
 

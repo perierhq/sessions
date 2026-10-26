@@ -20,7 +20,10 @@ import {
   MOBILE_TOP_BAR_CONTROL,
 } from "../lib/app-header-classes";
 import type { Route } from "../lib/app-route";
-import { sessionWasAgentStarted } from "../lib/sidebar-placement";
+import {
+  agentStartedLabel,
+  sessionWasAgentStarted,
+} from "../lib/sidebar-placement";
 import type { UnifiedSession, Workspace } from "../lib/types";
 import { cn } from "../ui/cn";
 import { OverflowFadeText } from "../ui/overflow-fade-text";
@@ -202,7 +205,7 @@ export function AppMobileHeader({
                         <IconRobot
                           size={16}
                           className="shrink-0 text-faint"
-                          aria-label="Started by an agent"
+                          aria-label={agentStartedLabel(currentSession)}
                         />
                       )}
                   </span>

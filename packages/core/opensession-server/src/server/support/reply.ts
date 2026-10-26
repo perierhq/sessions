@@ -45,6 +45,7 @@ import {
 } from "../../shared/support";
 import { digest } from "../audit";
 import { catalogDocuments } from "../catalog-documents";
+import { personaName } from "../config";
 import { supportAudit } from "./audit-sink";
 import {
   INTERRUPTED_SEND,
@@ -188,15 +189,18 @@ const fail = (status: Failure["status"], error: string): Failure => ({
   error,
 });
 
-/** Display name, for rules ("Stopped by Ada"). */
+/** Display name, for rules ("Stopped by Ada"): the person, else the
+ *  assistant persona the support session belongs to. */
 function actorLabel(actor: SupportActor): string {
-  return actor.kind === "person" ? actor.name : actor.kind;
+  return actor.kind === "person" ? actor.name : personaName();
 }
 
 /** Who acted, for audit rows: the signed-in login (else the name) and
- *  the display name. */
+ *  the display name. The agent and Sessions' own rules keep their kind as
+ *  `by`, so a row never reads as a person's login, and name the persona. */
 function auditActor(actor: SupportActor): { by: string; byName?: string } {
-  if (actor.kind !== "person") return { by: actor.kind };
+  if (actor.kind === "customer") return { by: actor.kind };
+  if (actor.kind !== "person") return { by: actor.kind, byName: personaName() };
   return { by: actor.login || actor.name, byName: actor.name };
 }
 

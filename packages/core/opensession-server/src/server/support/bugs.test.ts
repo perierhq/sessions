@@ -11,6 +11,7 @@ import {
   HELD_PREPARED,
   HELD_PUBLIC,
   HELD_QUOTE,
+  issueFooter,
   issueText,
   MAX_SUMMARY,
   MAX_FIX_TASK,
@@ -19,6 +20,7 @@ import {
   reportBug,
   startFixSession,
 } from "./bugs";
+import { personaName } from "../config";
 import { getConversation, updateConversation } from "./store";
 import { useReplyTestbed } from "./testing/reply-testbed";
 
@@ -110,8 +112,10 @@ describe("reportBug", () => {
     expect(issue.body).not.toContain("@");
     expect(issue.body).not.toContain("example.test");
     expect(issue.body).toContain("[email removed]");
-    expect(issue.body).toEndWith(
-      "\n\nReported from a support conversation in Sessions.",
+    // The footer credits the assistant persona, not a person or "Sessions".
+    expect(issue.body).toEndWith(issueFooter());
+    expect(issueFooter()).toBe(
+      `\n\nReported by ${personaName()} from a support conversation.`,
     );
     expect(issue.title).not.toContain("Carol");
     expect(stored.fixTask?.project).toBe("acme");
@@ -215,9 +219,20 @@ describe("a person edits the prepared issue before creating it", () => {
     expect(posted[0]!.body).not.toContain("example.test");
     expect(posted[0]!.body).not.toContain("Carol");
     expect(posted[0]!.body).toContain("export returns 500");
-    expect(
-      posted[0]!.body.split("Reported from a support conversation").length,
-    ).toBe(2);
+    expect(posted[0]!.body.split("from a support conversation").length).toBe(2);
+    // The legacy footer is replaced by the persona's.
+    expect(posted[0]!.body).toEndWith(issueFooter());
+  });
+
+  test("an edit that keeps the persona footer still ends with exactly one", async () => {
+    const c = await bugConversation();
+    await reportBug(c.id, SUMMARY, AGENT);
+    const seen = (await getConversation(c.id))!;
+    const result = await approvePendingIssue(c.id, OWNER_ACTOR, seen.revision, {
+      body: `The export returns 500.${issueFooter()}`,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(posted[0]!.body).toBe(`The export returns 500.${issueFooter()}`);
   });
 
   test("only the edited part changes; the rest stays as prepared", async () => {

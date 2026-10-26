@@ -7,6 +7,7 @@ import {
   type SupportMessage,
 } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
+import { personaName } from "../config";
 import {
   INTERRUPTED_SEND,
   discardDraft,
@@ -640,6 +641,25 @@ describe("who acted", () => {
     const row = tb.kernel.audits.find((a) => a.type === "support.reply")!;
     expect(row.by).toBe("ada");
     expect(row.byName).toBe("Ada");
+  });
+
+  test("an automatic send's audit rows name the persona, never as a login", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(result.ok && result.draft.state).toBe("sent");
+    const rows = tb.kernel.audits.filter(
+      (a) =>
+        a.conversationId === c.id && String(a.type).startsWith("support.reply"),
+    );
+    expect(rows.map((a) => a.type)).toEqual([
+      "support.reply.attempt",
+      "support.reply",
+    ]);
+    for (const row of rows) {
+      expect(row.by).toBe("sessions");
+      expect(row.byName).toBe(personaName());
+    }
   });
 });
 

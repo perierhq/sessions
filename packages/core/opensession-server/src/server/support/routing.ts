@@ -5,7 +5,12 @@
 // for a person (Watch only), or answered by a support session: a normal
 // session (getSessionControl().createSession) in the project's repo, in a
 // workspace stamped with a `support` external ref, so session-run-inputs.ts
-// runs it under the Support role with the support deny-set and no user. A
+// runs it under the Support role with the support deny-set and no user. The
+// session and its workspace are credited to the assistant persona
+// (personaName()), the name every agent-started session without a person
+// already carries (session-control-wiring.ts); that name is a machine actor
+// (session-actors.ts isMachineActor), so it is display only and never a
+// person's rights. A
 // reply on a conversation with a session is announced to that session,
 // queued behind a running turn; one that arrived while the conversation was
 // being routed is announced once the session exists. Topics only ever add
@@ -43,6 +48,7 @@ import { getInbox } from "./inboxes";
 import { setSupportPipeline } from "./ingest";
 import { type SupportRunSpec, supportRunSpec } from "./session-policy";
 import { catalogDocuments } from "../catalog-documents";
+import { personaName } from "../config";
 import { getConversation, updateConversation } from "./store";
 import { addSenderStrike, senderStrikes } from "./strikes";
 import { classifyMessage, failedTriage } from "./triage";
@@ -53,7 +59,6 @@ import { wrapAttribute } from "./wrap";
 export const MAX_NEW_SESSIONS_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 
-const SESSIONS_USER = "Sessions";
 const SESSIONS_ACTOR: SupportActor = { kind: "sessions" };
 
 export interface RoutingDeps {
@@ -367,7 +372,7 @@ export async function startSupportSession(
     const { workspace } = await d.resolveWorkspace({
       // No customer text: the subject stays in the conversation.
       ref: { kind: "support", id: current.id, title: `Support ${current.id}` },
-      createdBy: SESSIONS_USER,
+      createdBy: personaName(),
       repo: current.project,
     });
     const whyLine = WHY_LINE[why];
@@ -384,7 +389,8 @@ export async function startSupportSession(
       mcpServers: spec.mcpServers,
       sandbox: spec.sandbox.request,
       agentStarted: true,
-      user: SESSIONS_USER,
+      // Credit only: the support ref, not this name, decides what it may do.
+      user: personaName(),
     };
     const created = await d.control().createSession(opts);
     // Compare-and-set: a session stored meanwhile (an earlier attempt that
