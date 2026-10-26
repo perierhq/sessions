@@ -84,6 +84,38 @@ const SHA = /^[0-9a-f]{7,64}$/;
 const SIGN_IN = "Sign in to use project knowledge";
 const ATTACH_TYPES_COPY = "Attach an image (PNG, JPEG, GIF or WebP) or a PDF";
 const TOO_BIG = "Files can be up to 10 MB";
+const WRONG_TYPE = "This file isn't the type its name says";
+/** Room for the multipart framing and the other fields of an upload. */
+const FORM_MARGIN = 256 * 1024;
+const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_ATTACH_REQUEST = MAX_ATTACHMENT_BYTES + FORM_MARGIN;
+const MAX_IMPORT_REQUEST =
+  MAX_IMPORT_FILES * MAX_ATTACHMENT_BYTES + FORM_MARGIN;
+
+/** The first bytes each binary type starts with. */
+const MAGIC: Record<string, (b: Uint8Array) => boolean> = {
+  "image/png": (b) =>
+    [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
+      (x, i) => b[i] === x,
+    ),
+  "image/jpeg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  "image/gif": (b) =>
+    ascii(b, 0, 6) === "GIF87a" || ascii(b, 0, 6) === "GIF89a",
+  "image/webp": (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP",
+  "application/pdf": (b) => ascii(b, 0, 5) === "%PDF-",
+};
+
+function ascii(bytes: Uint8Array, from: number, to: number): string {
+  return String.fromCharCode(...bytes.subarray(from, to));
+}
+
+/** Bytes that start the way the type their extension names does; true for
+ *  an extension with no binary type to check. */
+function bytesMatchName(name: string, bytes: Uint8Array): boolean {
+  const type = ATTACHMENT_TYPES[extensionOf(name)];
+  const check = type ? MAGIC[type] : undefined;
+  return check ? check(bytes) : true;
+}
 
 // ── Seams ───────────────────────────────────────────────────────────────
 
@@ -237,10 +269,49 @@ function authorOf(ctx: RouteContext): Author {
   };
 }
 
+class TooLarge extends MemoryRepoError {
+  constructor(message: string) {
+    super(message, 413);
+  }
+}
+
+/** The request body, refused (413) once past `max` bytes: by its declared
+ *  Content-Length before anything is read, else while reading. */
+async function readBody(
+  req: Request,
+  max: number,
+  copy: string,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const declared = Number(req.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > max) throw new TooLarge(copy);
+  if (!req.body) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = req.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new TooLarge(copy);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function readJson(req: Request): Promise<Record<string, unknown>> {
+  const bytes = await readBody(req, MAX_JSON_BYTES, "The request is too large");
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     body = undefined;
   }
@@ -249,9 +320,16 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
-async function readForm(req: Request): Promise<FormData> {
+async function readForm(
+  req: Request,
+  max: number,
+  copy: string,
+): Promise<FormData> {
+  const bytes = await readBody(req, max, copy);
   try {
-    return await req.formData();
+    return await new Response(bytes, {
+      headers: { "content-type": req.headers.get("content-type") ?? "" },
+    }).formData();
   } catch {
     throw new BadRequest("Send the file as multipart/form-data");
   }
@@ -913,7 +991,7 @@ async function discard(ctx: RouteContext, project: string): Promise<Response> {
 }
 
 async function attach(ctx: RouteContext, project: string): Promise<Response> {
-  const form = await readForm(ctx.req);
+  const form = await readForm(ctx.req, MAX_ATTACH_REQUEST, TOO_BIG);
   const file = form.get("file");
   const article = form.get("path");
   if (!(file instanceof File)) throw new BadRequest("Choose a file to attach");
@@ -923,6 +1001,8 @@ async function attach(ctx: RouteContext, project: string): Promise<Response> {
   const type = ATTACHMENT_TYPES[extensionOf(file.name)];
   if (!type) throw new BadRequest(ATTACH_TYPES_COPY);
   if (file.size > MAX_ATTACHMENT_BYTES) throw new BadRequest(TOO_BIG);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!bytesMatchName(file.name, bytes)) throw new BadRequest(WRONG_TYPE);
   await readItem(project, article as string, deps.today());
   const path = `${folder}/${safeFileName(file.name)}`;
   if (await knowledgeRepo.call("readAttachment", project, path))
@@ -933,7 +1013,7 @@ async function attach(ctx: RouteContext, project: string): Promise<Response> {
   const commit = await knowledgeRepo.call(
     "write",
     project,
-    [{ op: "attach", path, bytes: new Uint8Array(await file.arrayBuffer()) }],
+    [{ op: "attach", path, bytes }],
     {
       message: `Attach ${path.split("/").pop()} to ${article}`,
       author: authorOf(ctx),
@@ -972,7 +1052,11 @@ async function startImport(
   let options: Record<string, unknown> = {};
   let files: KnowledgeImportRequest["files"];
   if (kind === "files") {
-    const form = await readForm(ctx.req);
+    const form = await readForm(
+      ctx.req,
+      MAX_IMPORT_REQUEST,
+      `Import up to ${MAX_IMPORT_FILES} files of up to 10 MB each`,
+    );
     const picked = form.getAll("file");
     if (!picked.length || !picked.every((f) => f instanceof File))
       throw new BadRequest("Choose the files to import");
@@ -981,11 +1065,9 @@ async function startImport(
     files = [];
     for (const file of picked as File[]) {
       if (file.size > MAX_ATTACHMENT_BYTES) throw new BadRequest(TOO_BIG);
-      files.push({
-        name: file.name,
-        type: file.type,
-        bytes: new Uint8Array(await file.arrayBuffer()),
-      });
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!bytesMatchName(file.name, bytes)) throw new BadRequest(WRONG_TYPE);
+      files.push({ name: file.name, type: file.type, bytes });
     }
   } else {
     const body = await readJson(ctx.req);

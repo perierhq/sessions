@@ -152,7 +152,10 @@ async function call(
   const url = new URL(`http://localhost${path}`);
   const init: RequestInit = { method };
   if (opts.form) init.body = opts.form;
-  else if (opts.body !== undefined) {
+  else if (typeof opts.body === "string") {
+    init.body = opts.body;
+    init.headers = { "content-type": "application/json" };
+  } else if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
     init.headers = { "content-type": "application/json" };
   }
@@ -1018,9 +1021,13 @@ describe("attachments", () => {
     form.set("path", "articles/export.md");
     form.set(
       "file",
-      new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1])], "shot.png", {
-        type: "image/png",
-      }),
+      new File(
+        [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0])],
+        "shot.png",
+        {
+          type: "image/png",
+        },
+      ),
     );
     const response = await call("POST", "/api/knowledge/acme/attachments", {
       form,
@@ -1033,5 +1040,76 @@ describe("attachments", () => {
       `/api/knowledge/acme/attachment?path=${path}`,
     );
     expect(served.headers.get("content-type")).toBe("image/png");
+  });
+
+  test("a file whose bytes aren't what its name says is refused", async () => {
+    await seed([
+      { path: "articles/export.md", fm: fm(), body: "Export it.\n" },
+    ]);
+    const form = new FormData();
+    form.set("path", "articles/export.md");
+    form.set(
+      "file",
+      new File(["<html><script>alert(1)</script>"], "shot.png", {
+        type: "image/png",
+      }),
+    );
+    const response = await call("POST", "/api/knowledge/acme/attachments", {
+      form,
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "This file isn't the type its name says",
+    );
+    expect(await service.hasRepo("acme")).toBe(true);
+  });
+
+  test("an upload past the size cap answers 413", async () => {
+    const form = new FormData();
+    form.set("path", "articles/export.md");
+    form.set(
+      "file",
+      new File([new Uint8Array(11 * 1024 * 1024)], "big.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    const response = await call("POST", "/api/knowledge/acme/attachments", {
+      form,
+    });
+    expect(response.status).toBe(413);
+  });
+
+  test("a declared Content-Length past the cap answers 413 unread", async () => {
+    const url = new URL("http://localhost/api/knowledge/acme/attachments");
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(new Uint8Array(1024));
+        if (pulled > 4) controller.close();
+      },
+    });
+    const response = await handleKnowledgeRoutes({
+      req: new Request(url, {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "multipart/form-data; boundary=x",
+          "content-length": String(50 * 1024 * 1024),
+        },
+      }),
+      url,
+      path: url.pathname,
+      publicPrefix: "/backstage",
+      authUser: ADA,
+    });
+    expect(response?.status).toBe(413);
+  });
+
+  test("a JSON body past the cap answers 413", async () => {
+    const response = await call("PUT", "/api/knowledge/acme/item", {
+      body: JSON.stringify({ path: "articles/x.md", body: "x".repeat(2e6) }),
+    });
+    expect(response.status).toBe(413);
   });
 });
