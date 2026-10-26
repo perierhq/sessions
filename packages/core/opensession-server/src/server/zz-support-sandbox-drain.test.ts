@@ -217,6 +217,30 @@ describe("support session in a podman Sandbox (queue drain)", () => {
     expect(opts.user).toBeUndefined();
   });
 
+  // OPENSESSION_TEST_IN_PROCESS_RUNS=1 runs the turn in this process, as on
+  // a host without detached run hosts. It must still get the opensession-*
+  // servers a detached host would proxy (proxyMcpServers), and only those.
+  test("the in-process Sandbox turn offers the support tools and nothing else", async () => {
+    if (!redirected) return;
+    const { opts } = await runOneTurn("bks-zz-support-mcp", true);
+    const servers = (opts.inProcessMcp ?? {}) as Record<string, any>;
+    expect(Object.keys(servers)).toEqual(["opensession-support"]);
+    const tools = Object.keys(
+      servers["opensession-support"].instance._registeredTools,
+    );
+    expect(tools).toContain("get_conversation");
+    expect(tools).toContain("draft_reply");
+  });
+
+  test("an ordinary in-process Sandbox turn gets its interactive servers, no support tools", async () => {
+    if (!redirected) return;
+    const { opts } = await runOneTurn("bks-zz-plain-mcp", false);
+    const names = Object.keys(opts.inProcessMcp ?? {});
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((n) => n.startsWith("opensession-"))).toBe(true);
+    expect(names).not.toContain("opensession-support");
+  });
+
   test("an ordinary session in the same Sandbox still gets them", async () => {
     if (!redirected) return;
     const { opts, prompt } = await runOneTurn("bks-zz-plain-sandbox", false);

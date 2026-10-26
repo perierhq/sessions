@@ -73,7 +73,11 @@ import {
   hostRunCount,
   type HostRunControl,
 } from "./host-registry";
-import { registerRunToken, unregisterRunToken } from "./run-rpc";
+import {
+  registerRunToken,
+  resolveRunMcpServers,
+  unregisterRunToken,
+} from "./run-rpc";
 import {
   ndjsonReader,
   runHostsDir,
@@ -233,7 +237,9 @@ export interface HostedRunOpts {
   mcpServers?: McpScope;
   /** opensession-* servers to expose through the RPC proxy. Names must
    *  resolve through the run-rpc builder: the interactive set, or the
-   *  fail-closed automation-bar set for automation-owned sessions. */
+   *  fail-closed automation-bar set for automation-owned sessions. A run
+   *  without a detached host mounts the same named servers in-process
+   *  unless the caller passes fallbackInProcessMcp. */
   proxyMcpServers?: string[];
   /** The run's tools act on this Sandbox; the engine still runs here. */
   remoteWorkspace?: RemoteWorkspaceSpec;
@@ -288,7 +294,8 @@ export interface HostedRunOpts {
   shouldCancel?: () => boolean;
   /** A steer arrived too late at the host — queue it so it isn't dropped. */
   onSteerFailed?: (text: string) => void;
-  /** Builds SDK MCP servers only on platforms without detached run hosts. */
+  /** Builds SDK MCP servers only on platforms without detached run hosts;
+   *  overrides the proxyMcpServers set there. */
   fallbackInProcessMcp?: () =>
     | Record<string, unknown>
     | Promise<Record<string, unknown> | undefined>
@@ -463,6 +470,34 @@ export async function* runAuxiliaryAgentHosted(
   }
 }
 
+/**
+ * The opensession-* servers an in-process run mounts. A caller's own
+ * fallback set wins (it may carry run-specific context); otherwise the run
+ * gets exactly the servers named in proxyMcpServers, resolved as run-rpc
+ * resolves them for a detached host. So a run serves the same named servers
+ * on either path, and never more than its proxyMcpServers allow.
+ */
+async function inProcessMcpForRun(
+  opts: HostedRunOpts,
+): Promise<Record<string, unknown> | undefined> {
+  if (opts.fallbackInProcessMcp) return opts.fallbackInProcessMcp();
+  if (!opts.proxyMcpServers?.length) return undefined;
+  const servers = await resolveRunMcpServers(
+    {
+      sessionId: opts.osSessionId,
+      user: opts.user,
+      humanPrompter: opts.accountUser,
+      promptEntryId: opts.promptEntryId,
+    },
+    opts.proxyMcpServers,
+  );
+  if (!servers)
+    console.warn(
+      `[host-client] ${opts.osSessionId}: MCP builder not registered; in-process run gets no opensession-* servers`,
+    );
+  return servers ?? undefined;
+}
+
 /** The in-process execution tail for platforms without local run-host support. */
 async function* runAgentInProcess(
   opts: HostedRunOpts,
@@ -499,7 +534,7 @@ async function* runAgentInProcess(
       forkSession: opts.forkSession,
       resumeSessionAt: opts.resumeSessionAt,
       mcpServers: opts.mcpServers ?? "all",
-      inProcessMcp: await opts.fallbackInProcessMcp?.(),
+      inProcessMcp: await inProcessMcpForRun(opts),
       reposNote: opts.reposNote,
       deniedTools: opts.deniedTools,
       webFetchHosts: opts.webFetchHosts,
