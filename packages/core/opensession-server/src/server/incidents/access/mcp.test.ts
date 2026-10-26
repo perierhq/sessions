@@ -4,11 +4,13 @@ import { automationSessionMcp } from "../../interactive-mcp";
 import {
   agentAccessFixture,
   descendantFixture,
+  supersededIncidentFixture,
 } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   incidentAccessMcpForSession,
   incidentAccessToolDefinitions,
+  incidentAccessToolsForSession,
 } from "./mcp";
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 
@@ -86,6 +88,36 @@ test("describe_access reports the fresh access and no secrets", async () => {
     narrowed: [],
   });
 });
+test("describe_access lists only what this run is bound to, and names what was allowed later", async () => {
+  const policy = {
+    ...descendantFixture,
+    mcpServers: ["sentry"],
+    incident: binding,
+  };
+  __setBindingResolverForTest(async () =>
+    agentAccessFixture({ connections: ["sentry", "logs", "tickets"] }),
+  );
+  const tools = await incidentAccessToolsForSession({
+    id: "os-1",
+    mode: "ask",
+    automationDescendantPolicy: policy,
+  });
+  const out = JSON.parse(textOf(await tools[0].handler({}, {})));
+  expect(out.connections).toEqual(["sentry"]);
+  expect(out.mode).toBe("ask");
+  expect(out.summary).not.toContain("logs");
+  expect(out.summary).not.toContain("can edit");
+  expect(out.note).toBe(
+    "logs and tickets were allowed after this agent started. They apply from the next round.",
+  );
+  // Nothing allowed later: no note.
+  __setBindingResolverForTest(async () =>
+    agentAccessFixture({ connections: ["sentry"] }),
+  );
+  expect(
+    JSON.parse(textOf(await tools[0].handler({}, {}))).note,
+  ).toBeUndefined();
+});
 test("every call re-resolves: a revoked agent gets nothing", async () => {
   const granted = agentAccessFixture({
     hosts: [{ runner: "rn-prod", runnerName: "prod-1", access: "read-only" }],
@@ -138,6 +170,29 @@ test("a narrowed access applies at call time even if the tool was listed", async
     ok: false,
     error: "prod-1 is not one of this agent's hosts",
   });
+});
+test("a superseded agent is refused at call time and gets no tools", async () => {
+  const incidentId = await supersededIncidentFixture("os-1", "os-2");
+  const ours = { ...binding, incidentId };
+  __setBindingResolverForTest(async () => agentAccessFixture({ incidentId }));
+  const tools = incidentAccessToolDefinitions({
+    sessionId: "os-1",
+    binding: ours,
+    access: agentAccessFixture({ incidentId }),
+  });
+  expect(textOf(await tools[0].handler({}, {}))).toBe(
+    "Access refused: this agent was superseded by os-2",
+  );
+  const session = (id: string) => ({
+    id,
+    mode: "code",
+    automationDescendantPolicy: { ...descendantFixture, incident: ours },
+  });
+  expect(await incidentAccessMcpForSession(session("os-1"))).toEqual({});
+  // The session that took over keeps its tools.
+  expect(
+    Object.keys(await incidentAccessMcpForSession(session("os-2"))),
+  ).toEqual(["opensession-incident-access"]);
 });
 test("session builder fails closed", async () => {
   expect(await incidentAccessMcpForSession({ id: "os-1" })).toEqual({});

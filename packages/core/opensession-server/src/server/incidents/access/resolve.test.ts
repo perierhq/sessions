@@ -8,10 +8,15 @@ import { catalogDocuments } from "../../catalog-documents";
 import { __setIdentitiesForTest } from "../../shared/user-mappings";
 import { createIncident } from "../incident-store";
 import { createSignal } from "../signal-store";
-import { useAccessTestEnv } from "../testing/access-fixture";
+import {
+  agentAccessFixture,
+  useAccessTestEnv,
+} from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
   accessSpawnSnapshot,
+  accessWidenedBeyond,
+  clampToRun,
   registerAccessGate,
   resolveAgentAccess,
   resolveAgentAccessForBinding,
@@ -623,6 +628,7 @@ test("widening mid-incident reaches only new agents; narrowing applies at once",
       runner: "rn-prod",
       hosts: ["search.example.test"],
     },
+    deniedTools: Object.keys(first.deniedTools).sort(),
   });
 
   const widened = structuredClone(spawned);
@@ -984,4 +990,142 @@ test("egress off in the access table resolves to no egress", async () => {
   expect(a.egress).toBeNull();
   const v = await resolveAgentAccess("verifier", incident(), signal);
   expect(v.egress).toMatchObject({ route: "server" });
+});
+
+test("a run's access: wider than its binding is named, the same or narrower is not", () => {
+  const spawned = agentAccessFixture({
+    connections: ["sentry"],
+    mode: "ask",
+    hosts: [{ runner: "rn-prod", runnerName: "prod-1", access: "read-only" }],
+    credentials: [
+      {
+        credential: "kc-shared",
+        service: "status-api",
+        host: "status.example.test",
+        mode: "once",
+        scope: "workspace",
+      },
+    ],
+    egress: { route: "server", hosts: ["search.example.test"] },
+  });
+  const run = {
+    connections: ["sentry"],
+    runners: [],
+    mode: "ask" as const,
+    spawn: accessSpawnSnapshot(spawned),
+  };
+  expect(accessWidenedBeyond(spawned, run)).toEqual([]);
+  expect(
+    accessWidenedBeyond(
+      agentAccessFixture({ connections: [], mode: "ask" }),
+      run,
+    ),
+  ).toEqual([]);
+  expect(
+    accessWidenedBeyond(
+      {
+        ...spawned,
+        connections: ["sentry", "logs"],
+        mode: "code",
+        hosts: [
+          ...spawned.hosts,
+          {
+            runner: "rn-prod",
+            runnerName: "prod-1",
+            ssh: "db",
+            access: "read-only",
+          },
+        ],
+        credentials: [{ ...spawned.credentials[0]!, mode: "standing" }],
+        egress: {
+          route: "server",
+          hosts: ["search.example.test", "status.example.test"],
+        },
+      },
+      run,
+    ),
+  ).toEqual([
+    { field: "connections", item: "logs" },
+    { field: "hosts", item: "db via prod-1" },
+    { field: "credentials", item: "status-api (standing)" },
+    { field: "egress", item: "status.example.test" },
+    { field: "mode", item: "editing" },
+  ]);
+  // Held to the run: the connections it mounts and its session's mode.
+  const held = clampToRun(
+    agentAccessFixture({ connections: ["sentry", "logs"], mode: "code" }),
+    { connections: ["sentry"], mode: "ask" },
+  );
+  expect(held).toMatchObject({ connections: ["sentry"], mode: "ask" });
+  expect(held.summary).toBe("Investigator · sentry · read-only on acme");
+});
+
+test("a run's access: narrowings, route changes, runners and lifted denials", () => {
+  const credential = {
+    credential: "kc-shared",
+    service: "status-api",
+    host: "status.example.test",
+    mode: "standing" as const,
+    scope: "workspace" as const,
+  };
+  const spawned = agentAccessFixture({
+    runners: ["rn-prod"],
+    deniedTools: { bash: "No shell for incident agents" },
+    hosts: [
+      { runner: "rn-prod", runnerName: "prod-1", access: "read-only" },
+      {
+        runner: "rn-prod",
+        runnerName: "prod-1",
+        ssh: "db",
+        access: "read-only",
+      },
+    ],
+    credentials: [credential],
+    egress: { route: "server", hosts: ["search.example.test"] },
+  });
+  const run = {
+    connections: [],
+    runners: ["rn-prod"],
+    mode: "code" as const,
+    spawn: accessSpawnSnapshot(spawned),
+  };
+  expect(run.spawn.deniedTools).toEqual(["bash"]);
+  // A credential standing → once and a host removed are narrower.
+  expect(
+    accessWidenedBeyond(
+      {
+        ...spawned,
+        credentials: [{ ...credential, mode: "once" }],
+        hosts: [spawned.hosts[0]!],
+      },
+      run,
+    ),
+  ).toEqual([]);
+  // The same hosts over another route are new.
+  expect(
+    accessWidenedBeyond(
+      {
+        ...spawned,
+        egress: {
+          route: "runner",
+          runner: "rn-prod",
+          runnerName: "prod-1",
+          hosts: ["search.example.test"],
+        },
+      },
+      run,
+    ),
+  ).toEqual([{ field: "egress", item: "search.example.test" }]);
+  // A Runner added and a denial lifted are wider.
+  expect(
+    accessWidenedBeyond(
+      { ...spawned, runners: ["rn-prod", "rn-stage"], deniedTools: {} },
+      run,
+    ),
+  ).toEqual([
+    { field: "runners", item: "rn-stage" },
+    { field: "deniedTools", item: "bash" },
+  ]);
+  // A snapshot without denials (an older one) has nothing to lift.
+  expect(accessSpawnSnapshot(agentAccessFixture()).deniedTools).toBeUndefined();
 });

@@ -360,6 +360,58 @@ test("agents start under plan 3's policy, on their own model, never reporting in
   expect(sessionId).not.toBe(h.creates[1]!.id);
 });
 
+test("an agent's run binding is read from its session, and a superseded one is archived", async () => {
+  const h = fakeWorld();
+  const spawn = { hosts: ["rn-prod"], credentials: [], egress: null };
+  h.sessions.set(
+    "child-9",
+    summary("child-9", {
+      parentSessionId: "coord",
+      mode: "ask",
+      automationDescendantPolicy: {
+        automationId: automation.id,
+        automationName: automation.name,
+        repo: "acme",
+        publicationRepo: "acme/web",
+        baseBranch: "main",
+        mcpServers: ["sentry"],
+        allowedRunners: [],
+        publication: "branch-pr-only",
+        incident: {
+          incidentId: "inc-1",
+          role: "investigator",
+          signalId: null,
+          accessRevision: "r1",
+          spawn,
+        },
+      },
+    }),
+  );
+  const archived: string[] = [];
+  const agents = createIncidentAgents(
+    incident,
+    { coordinatorSessionId: "coord", automation },
+    { ...h.deps, archive: async (id) => archived.push(id) },
+  );
+  expect(await agents.bound("child-9")).toEqual({
+    connections: ["sentry"],
+    runners: [],
+    mode: "ask",
+    spawn,
+  });
+  expect(await agents.bound("coord")).toBeUndefined();
+  expect(await agents.bound("gone")).toBeUndefined();
+  await agents.retire("child-9");
+  await agents.retire("gone");
+  expect(archived).toEqual(["child-9"]);
+  // One already archived is left alone, so retiring again is safe.
+  h.sessions.set("child-8", summary("child-8", { archived: true }));
+  h.sessions.set("child-7", summary("child-7", { state: "archived" }));
+  await agents.retire("child-8");
+  await agents.retire("child-7");
+  expect(archived).toEqual(["child-9"]);
+});
+
 test("an agent in This machine (container) asks for it by name", async () => {
   const h = fakeWorld();
   const agents = createIncidentAgents(

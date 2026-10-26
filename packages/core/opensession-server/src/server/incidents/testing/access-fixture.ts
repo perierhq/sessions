@@ -15,6 +15,9 @@ import {
   ownerRosterOf,
 } from "../access/environment";
 import type { TeamMember } from "../../config";
+import type { AgentRun } from "../../../shared/incident-response";
+import { createIncident, updateIncident } from "../incident-store";
+import { emptyResponse } from "../response/ledger";
 import { __setIdentitiesForTest } from "../../shared/user-mappings";
 
 export interface StaticAccessSpec {
@@ -180,3 +183,52 @@ export const descendantFixture: AutomationDescendantPolicy = {
   allowedRunners: [],
   publication: "branch-pr-only",
 };
+
+/**
+ * An incident in the store whose investigator run `sessionId` was taken
+ * over by `by`; returns the incident id. Needs useIncidentTestKernel.
+ */
+export async function supersededIncidentFixture(
+  sessionId: string,
+  by: string,
+): Promise<string> {
+  const at = new Date().toISOString();
+  const incident = await createIncident({
+    project: "acme",
+    title: "Search",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-a"],
+    primarySignalId: "sig-a",
+    at,
+    detail: "Search failing",
+  });
+  const run = (id: string, over: Partial<AgentRun> = {}): AgentRun => ({
+    role: "investigator",
+    round: 1,
+    attempt: 1,
+    sessionId: id,
+    model: "pi/anthropic/claude-opus-5-5",
+    provider: "anthropic",
+    workspace: { kind: "sandbox", provider: "daytona" },
+    accessSummary: "Investigator · no connections · can edit acme",
+    accessRevision: "r1",
+    status: "running",
+    startedAt: at,
+    turnSentAt: at,
+    costUsd: 0,
+    tokens: 0,
+    reminded: false,
+    ...over,
+  });
+  await updateIncident(incident.id, (c) => ({
+    ...c,
+    response: {
+      ...emptyResponse({ now: at, maxRounds: 3, phase: "investigating" }),
+      agents: [run(sessionId, { supersededBy: by }), run(by, { attempt: 2 })],
+    },
+  }));
+  return incident.id;
+}

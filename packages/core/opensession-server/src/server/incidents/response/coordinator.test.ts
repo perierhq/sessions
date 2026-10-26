@@ -21,7 +21,11 @@ import { transitionIncident } from "../lifecycle";
 import { emptyResponse } from "./ledger";
 import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
-import { AgentAccessError } from "../access/resolve";
+import {
+  AgentAccessError,
+  type IncidentRunBound,
+  accessSpawnSnapshot,
+} from "../access/resolve";
 import {
   __resetIncidentAccessGateForTest,
   incidentAccessGate,
@@ -264,6 +268,8 @@ async function world(
   let pr: PrShape = opts.pr ?? {};
   let merged = false;
   const merges: Array<{ ghRepo: string; n: number; sha: string }> = [];
+  const prComments: Array<{ ghRepo: string; n: number; body: string }> = [];
+  const prCloses: Array<{ ghRepo: string; n: number }> = [];
   const actions: Array<
     Parameters<CoordinatorDeps["runAction"]>[0] & { actionId: string }
   > = [];
@@ -287,12 +293,39 @@ async function world(
     ],
   ]);
   let next = 0;
+  const bound = new Map<string, IncidentRunBound>();
+  const retired: string[] = [];
+  let retireFailures = 0;
+  // Like the session controller, a request id already spawned returns its
+  // session instead of starting another.
+  const requests = new Map<string, string>();
   const agents: IncidentAgents = {
     async spawn(input) {
       spawns.push(input);
+      const key = `r${input.round}:${input.role}:a${input.attempt}`;
+      const known = requests.get(key);
+      if (known) return { sessionId: known };
       const id = `child-${++next}`;
+      requests.set(key, id);
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
+      bound.set(id, {
+        connections: [...input.access.connections],
+        runners: [...input.access.runners],
+        mode: input.access.mode,
+        spawn: accessSpawnSnapshot(input.access),
+      });
       return { sessionId: id };
+    },
+    async bound(id) {
+      return bound.get(id);
+    },
+    async retire(id) {
+      if (retireFailures > 0) {
+        retireFailures--;
+        throw new Error("The session store was busy");
+      }
+      // Archiving an archived session does nothing.
+      if (!retired.includes(id)) retired.push(id);
     },
     async status(id) {
       return live.get(id) ?? { status: "running", costUsd: 0, tokens: 0 };
@@ -321,6 +354,12 @@ async function world(
       return { ok: true, sha: "9f9f9f9" };
     },
     appCredential: async () => ({ env: {} }),
+    comment: async (ghRepo: string, n: number, body: string) => {
+      prComments.push({ ghRepo, n, body });
+    },
+    close: async (ghRepo: string, n: number) => {
+      prCloses.push({ ghRepo, n });
+    },
   } as unknown as MergeGithub;
   const deps: Partial<CoordinatorDeps> = {
     now: () => clock,
@@ -417,6 +456,12 @@ async function world(
     spawns,
     sends,
     cancels,
+    retired,
+    prComments,
+    prCloses,
+    failRetire(times: number) {
+      retireFailures = times;
+    },
     audits: kit.audits,
     get clock() {
       return clock;
@@ -1393,6 +1438,218 @@ test("stop and deploy now during the veto", async () => {
   expect(w.sends.at(-1)?.message).toContain(
     "Try the app's TLS fingerprint too",
   );
+});
+
+/** A world whose investigator's connections follow `granted`. */
+async function widenableWorld() {
+  const granted = { connections: [] as string[] };
+  const w = await world({
+    access: async (role, incident) =>
+      agentAccessFixture({
+        role,
+        incidentId: incident.id,
+        mode: role === "verifier" ? "ask" : "code",
+        connections: role === "investigator" ? [...granted.connections] : [],
+      }),
+  });
+  return { w, granted };
+}
+
+test("send it back with the investigator's access widened starts a fresh investigator", async () => {
+  const { w, granted } = await widenableWorld();
+  granted.connections = ["sentry"];
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence(investigatorReport), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-2", fence(goodVerifier));
+  await advanceIncident(w.incident.id, w.deps);
+  // The owner ticks two more connections, then sends the work back.
+  granted.connections = ["sentry", "logs", "tickets"];
+  const sendsBefore = w.sends.length;
+  await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs too",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+
+  // The old session gets no message; a new one takes round 2.
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  expect(fresh.access.connections).toEqual(["sentry", "logs", "tickets"]);
+  expect(fresh.branch).toMatch(/-a2$/);
+  // It carries the earlier round's findings and the owner's note.
+  expect(fresh.prompt).toContain("Check the search logs too");
+  expect(fresh.prompt).toContain(investigatorReport.summary);
+  expect(fresh.prompt).toContain("https://github.com/acme/web/pull/12");
+  expect(w.retired).toEqual(["child-1"]);
+  const i = await getIncident(w.incident.id);
+  const runs = i?.response?.agents ?? [];
+  expect(runs.find((a) => a.sessionId === "child-1")).toMatchObject({
+    round: 1,
+    supersededBy: "child-3",
+  });
+  expect(runs.at(-1)).toMatchObject({
+    sessionId: "child-3",
+    role: "investigator",
+    round: 2,
+    attempt: 2,
+    status: "running",
+  });
+  expect(i?.response?.sendBack).toBeUndefined();
+  expect(i?.response?.ledger.at(-1)?.detail).toContain("(logs and tickets)");
+  // It starts from round 1's work, and round 1's pull request is closed.
+  expect(fresh.baseSessionId).toBe("child-1");
+  expect(w.prComments).toEqual([
+    {
+      ghRepo: "acme/web",
+      n: 12,
+      body: expect.stringContaining("fresh session"),
+    },
+  ]);
+  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 12 }]);
+});
+
+/** A widenable world sent back after a certain verdict, with the
+ *  investigator's connections `before` at spawn and `after` at send-back. */
+async function sentBackWidened(
+  before: string[],
+  after: string[],
+  hooks: {
+    beforeSendBack?: (w: Awaited<ReturnType<typeof world>>) => void;
+  } = {},
+) {
+  const { w, granted } = await widenableWorld();
+  granted.connections = before;
+  await w.toCertain();
+  granted.connections = after;
+  hooks.beforeSendBack?.(w);
+  await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs too",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+  return w;
+}
+
+test("a widening with a narrowing starts the fresh investigator on the narrowed access", async () => {
+  const w = await sentBackWidened(["sentry", "logs"], ["sentry", "tickets"]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  expect(fresh.access.connections).toEqual(["sentry", "tickets"]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.ledger.at(-1)?.detail).toContain("(tickets)");
+  expect(i?.response?.ledger.at(-1)?.detail).not.toContain("logs");
+});
+
+test("a long widening is capped in the ledger", async () => {
+  const w = await sentBackWidened(
+    [],
+    ["logs", "tickets", "sentry", "metrics", "pager", "billing"],
+  );
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.ledger.at(-1)?.detail).toContain(
+    "(logs, tickets and 4 more)",
+  );
+});
+
+test("a fresh investigator whose record failed is not started twice", async () => {
+  let failed = false;
+  const w = await sentBackWidened([], ["logs"], {
+    beforeSendBack: (world) => {
+      const real = world.deps.updateIncident ?? updateIncident;
+      world.deps.updateIncident = async (id, mutate) => {
+        if (!failed) {
+          const current = await getIncident(id);
+          const out = current ? mutate(current) : null;
+          if (
+            out &&
+            !("error" in out) &&
+            out.response?.agents.some((a) => a.supersededBy)
+          ) {
+            failed = true;
+            return { error: "The store was busy" };
+          }
+        }
+        return real(id, mutate);
+      };
+    },
+  });
+  expect(failed).toBe(true);
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.agents.some((a) => a.supersededBy)).toBe(false);
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+
+  const fresh = w.spawns.filter((s) => s.round === 2);
+  expect(fresh.length).toBeGreaterThanOrEqual(2);
+  expect(
+    new Set(fresh.map((s) => `${s.role}:a${s.attempt}:${s.branch}`)),
+  ).toEqual(new Set(["investigator:a2:" + fresh[0]!.branch]));
+  i = await getIncident(w.incident.id);
+  const runs = i?.response?.agents ?? [];
+  expect(
+    runs.filter((a) => a.round === 2 && a.role === "investigator"),
+  ).toHaveLength(1);
+  expect(runs.find((a) => a.sessionId === "child-1")?.supersededBy).toBe(
+    "child-3",
+  );
+  expect(w.retired).toEqual(["child-1"]);
+});
+
+test("a superseded agent whose archive failed is archived on the next advance", async () => {
+  const w = await sentBackWidened([], ["logs"], {
+    beforeSendBack: (world) => world.failRetire(1),
+  });
+  expect(w.retired).toEqual([]);
+  const i = await getIncident(w.incident.id);
+  expect(
+    i?.response?.agents.find((a) => a.sessionId === "child-1")?.supersededBy,
+  ).toBe("child-3");
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.retired).toEqual(["child-1"]);
+});
+
+test("send it back with the same or narrower access goes to the same investigator", async () => {
+  for (const after of [["sentry"], []]) {
+    const { w, granted } = await widenableWorld();
+    granted.connections = ["sentry"];
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish("child-1", fence(investigatorReport), {
+      prUrl: "https://github.com/acme/web/pull/12",
+    });
+    await advanceIncident(w.incident.id, w.deps);
+    w.finish("child-2", fence(goodVerifier));
+    await advanceIncident(w.incident.id, w.deps);
+    granted.connections = after;
+    const spawned = w.spawns.length;
+    await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Check the search logs too",
+      w.deps,
+    );
+    await __waitForCoordinatorForTest();
+    expect(w.spawns).toHaveLength(spawned);
+    expect(w.sends.at(-1)).toMatchObject({
+      id: "child-1",
+      message: expect.stringContaining("Check the search logs too"),
+    });
+    expect(w.retired).toEqual([]);
+    __resetCoordinatorForTest();
+  }
 });
 
 /** An advance that is already running, held right after it started. */

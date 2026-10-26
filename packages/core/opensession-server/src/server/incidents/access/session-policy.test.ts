@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { AgentAccess } from "../../../shared/incident-access";
+import { supersededIncidentFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 import {
   auditIncidentSpawned,
   enforceIncidentSpawn,
   incidentDescendantPolicy,
+  incidentRunBound,
   incidentTurnScope,
   viewIncidentTurnScope,
 } from "./session-policy";
@@ -282,6 +284,62 @@ test.each([
     );
   },
 );
+test("a superseded agent's turn is refused", async () => {
+  const incidentId = await supersededIncidentFixture("os-1", "os-2");
+  current = access({ incidentId });
+  const policy = incidentDescendantPolicy(current, base);
+  await expect(
+    incidentTurnScope(bound({ automationDescendantPolicy: policy })),
+  ).rejects.toMatchObject({
+    code: "turn",
+    message: "This agent was superseded by os-2",
+  });
+  expect(kit.audits).toContainEqual(
+    expect.objectContaining({
+      kind: "incident_access_refused",
+      phase: "turn",
+      session_id: "os-1",
+      reason: "This agent was superseded by os-2",
+    }),
+  );
+  expect(
+    await viewIncidentTurnScope(bound({ automationDescendantPolicy: policy })),
+  ).toEqual({ refused: "This agent was superseded by os-2" });
+  // The session that took over runs.
+  expect(
+    await incidentTurnScope(
+      bound({ id: "os-2", automationDescendantPolicy: policy }),
+    ),
+  ).toMatchObject({ mcpServers: ["sentry"] });
+});
+test("a running agent never loses a denial it was spawned with", async () => {
+  const policy = incidentDescendantPolicy(
+    access({ deniedTools: { bash: "No shell" } }),
+    base,
+  );
+  current = access({ deniedTools: { web_fetch: "No web" } });
+  expect(
+    (await incidentTurnScope(bound({ automationDescendantPolicy: policy })))
+      ?.deniedTools,
+  ).toEqual({
+    bash: expect.stringContaining("denied when this agent started"),
+    web_fetch: "No web",
+  });
+});
+test("a run without a mode is bound to ask", () => {
+  const policy = incidentDescendantPolicy(access(), base);
+  expect(
+    incidentRunBound({ automationDescendantPolicy: policy }),
+  ).toMatchObject({
+    mode: "ask",
+    runners: ["rn-prod"],
+    connections: ["sentry"],
+  });
+  expect(
+    incidentRunBound({ mode: "code", automationDescendantPolicy: policy })
+      ?.mode,
+  ).toBe("code");
+});
 test("a refused resolution refuses the turn", async () => {
   __setBindingResolverForTest(async () => {
     throw new AgentAccessError(

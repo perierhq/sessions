@@ -1,4 +1,5 @@
-// The briefs Sessions sends incident agents: the investigator's prompt, the
+// The briefs Sessions sends incident agents: the investigator's prompt (with
+// the earlier round, for a fresh session that takes one over), the
 // verifier's prompt, send-back messages and the report reminder; plus the
 // note, runbook and branch names both sides agree on. Prompts carry the
 // redacted signal only (header names, the URL as origin and path template),
@@ -15,6 +16,7 @@ import {
   type CandidateState,
   type IncidentAction,
   type Independence,
+  type InvestigatorReport,
   type ProofResult,
   type ProofSample,
   type SendBackReason,
@@ -250,6 +252,55 @@ export interface InvestigatorPromptInput {
   round: number;
   maxRounds: number;
   rollbackFirst?: { releaseAt: string; ref?: string };
+  /** The earlier round this fresh session takes over, when there is one. */
+  earlier?: EarlierRound;
+}
+
+/** What a fresh investigator is told about the round before its own. */
+export interface EarlierRound {
+  round: number;
+  /** Why the work came back, when it was sent back. */
+  sendBack?: SendBackReason;
+  report?: InvestigatorReport;
+  prUrl?: string;
+}
+
+function earlierRoundLines(
+  earlier: EarlierRound,
+  round: number,
+  maxRounds: number,
+): string[] {
+  const out: string[] = ["## The earlier round", ""];
+  out.push(
+    `This is a fresh session. Round ${earlier.round} was worked in another session; build on what it found instead of starting over.`,
+    "",
+  );
+  if (earlier.sendBack)
+    out.push(sendBackHead(round, maxRounds, earlier.sendBack), "");
+  const report = earlier.report;
+  if (report) {
+    const lines = [
+      `Summary: ${dataText(report.summary)}`,
+      `Cause: ${dataText(report.cause)}`,
+      ...(report.noCandidateReason
+        ? [`No candidate: ${dataText(report.noCandidateReason)}`]
+        : []),
+      ...report.attempts.map(
+        (a) =>
+          `- ${dataText(a.step, 120)} · ${a.cost} · ${a.result} · ${dataText(a.evidence, 200)}`,
+      ),
+    ];
+    out.push(...dataBlock(`What round ${earlier.round} found`, lines), "");
+  }
+  if (earlier.prUrl)
+    out.push(
+      ...dataBlock(`Round ${earlier.round}'s pull request`, [
+        dataText(earlier.prUrl, 200),
+      ]),
+      "Read it and carry its fix, note and runbook update forward into your own pull request.",
+      "",
+    );
+  return out;
 }
 
 export function buildInvestigatorPrompt(
@@ -269,6 +320,9 @@ export function buildInvestigatorPrompt(
     `Project ${incident.project} · opened ${incident.openedAt} · Round ${round} of ${maxRounds}`,
     "",
   );
+
+  if (input.earlier)
+    out.push(...earlierRoundLines(input.earlier, round, maxRounds));
 
   if (input.rollbackFirst) {
     const ref = input.rollbackFirst.ref ?? "no ref";
@@ -465,6 +519,15 @@ export function buildSendBackMessage(
   maxRounds: number,
   why: SendBackReason,
 ): string {
+  return `${sendBackHead(round, maxRounds, why)}\n\n${SEND_BACK_TAIL}`;
+}
+
+/** Why the work came back, as a data block. */
+function sendBackHead(
+  round: number,
+  maxRounds: number,
+  why: SendBackReason,
+): string {
   const block = (title: string, lines: string[]) =>
     dataBlock(title, lines).join("\n");
   let head: string;
@@ -495,7 +558,7 @@ export function buildSendBackMessage(
       head = block("A required check failed on the PR", [dataText(why.detail)]);
       break;
   }
-  return `${head}\n\n${SEND_BACK_TAIL}`;
+  return head;
 }
 
 // ── Verifier ────────────────────────────────────────────────────────────────

@@ -8,7 +8,9 @@
 // exists. In This machine (container) the child asks for that sandbox by
 // name; on the host path its policy names the incident agent user its bash
 // runs as (host-agents.ts). Children never report back into the
-// coordinator: the coordinator reads their status and final text.
+// coordinator: the coordinator reads their status and final text, and
+// what each child's run is bound to, so a child another session took over
+// from is archived.
 import type { TranscriptEntry } from "@tellahq/opensession-protocol/session";
 import type { AgentAccess } from "../../../shared/incident-access";
 import type {
@@ -27,7 +29,11 @@ import {
   saveAutomation,
 } from "../../automations";
 import { newSessionId } from "../../paths";
-import { type SessionControl, getSessionControl } from "../../session-control";
+import {
+  type SessionControl,
+  type SessionSummary,
+  getSessionControl,
+} from "../../session-control";
 import { updateSessionFile } from "../../session-cache";
 import type { AutomationDescendantPolicy } from "../../types";
 import {
@@ -35,7 +41,11 @@ import {
   createWorkflowSessionController,
 } from "../../workflow-sessions";
 import { getRepo } from "../../worktree";
-import { incidentDescendantPolicy } from "../access/session-policy";
+import type { IncidentRunBound } from "../access/resolve";
+import {
+  incidentDescendantPolicy,
+  incidentRunBound,
+} from "../access/session-policy";
 import { startIncidentAccessGate } from "./access-gate";
 import { patchProjectSettings } from "./project-settings";
 
@@ -162,6 +172,8 @@ export interface AgentDeps {
   repo: (id: string) => { path: string; defaultBranch: string };
   newSessionId: () => string;
   now: () => number;
+  /** Archive a session the way a person does from the sidebar. */
+  archive: (id: string, session: SessionSummary) => Promise<unknown>;
   controllerDeps?: Partial<WorkflowSessionControllerDeps>;
 }
 
@@ -177,6 +189,10 @@ function agentDeps(over: Partial<AgentDeps> = {}): AgentDeps {
       }),
     newSessionId: over.newSessionId ?? newSessionId,
     now: over.now ?? Date.now,
+    archive:
+      over.archive ??
+      (async (id, session) =>
+        (await import("../../session-archive")).archiveSession(id, session)),
     ...(over.controllerDeps ? { controllerDeps: over.controllerDeps } : {}),
   };
 }
@@ -234,6 +250,12 @@ export interface IncidentAgents {
   finalText(id: string, since: string): Promise<string | undefined>;
   send(id: string, message: string, requestId: string): Promise<void>;
   cancel(id: string, requestId: string): Promise<void>;
+  /** What the agent's run is bound to (connections, mode, spawn
+   *  snapshot); undefined when its session or binding is gone. */
+  bound(id: string): Promise<IncidentRunBound | undefined>;
+  /** Archive an agent's session another one took over from; one already
+   *  archived is left alone. */
+  retire(id: string): Promise<void>;
 }
 
 function summarise(entry: TranscriptEntry): string {
@@ -370,6 +392,17 @@ export function createIncidentAgents(
 
     async send(id, message, requestId) {
       await controller.send(id, message, requestId);
+    },
+
+    async bound(id) {
+      const session = d.control.getSession(id);
+      return (session && incidentRunBound(session)) ?? undefined;
+    },
+
+    async retire(id) {
+      const session = d.control.getSession(id);
+      if (session && !session.archived && session.state !== "archived")
+        await d.archive(id, session);
     },
 
     async cancel(id, requestId) {

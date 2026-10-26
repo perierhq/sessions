@@ -4,10 +4,12 @@
 // Resolution either returns a whole AgentAccess or throws AgentAccessError;
 // it never returns a partial grant. Narrowing is recorded and audited once;
 // widening never happens here. A bound agent's access is also held to its
-// spawn snapshot (clampToSpawn), so settings widened mid-incident reach only
-// agents spawned afterwards.
+// spawn snapshot (clampToSpawn) and a running one to what its run mounts
+// (clampToRun), so settings widened mid-incident reach only agents spawned
+// afterwards; accessWidenedBeyond names what such an agent is missing.
 import { createHash } from "node:crypto";
 import {
+  type AccessMode,
   type AccessNarrowing,
   type AccessSpawnSnapshot,
   type AgentAccess,
@@ -20,6 +22,7 @@ import {
   type IncidentAgentBinding,
   type IncidentAgentRole,
   isIncidentAgentRole,
+  modeWithin,
   type ResolvedCredential,
   type ResolvedEgress,
   type ResolvedHost,
@@ -520,6 +523,9 @@ export function accessSpawnSnapshot(access: AgentAccess): AccessSpawnSnapshot {
           hosts: [...access.egress.hosts],
         }
       : null,
+    ...(Object.keys(access.deniedTools).length
+      ? { deniedTools: Object.keys(access.deniedTools).sort() }
+      : {}),
   };
 }
 
@@ -530,7 +536,9 @@ const EMPTY_SNAPSHOT: AccessSpawnSnapshot = {
 };
 
 /** A stored snapshot, or the empty one when it is missing or malformed. */
-function spawnSnapshotOf(binding: IncidentAgentBinding): AccessSpawnSnapshot {
+export function spawnSnapshotOf(
+  binding: IncidentAgentBinding,
+): AccessSpawnSnapshot {
   const raw = (binding as { spawn?: unknown }).spawn as
     | Partial<AccessSpawnSnapshot>
     | undefined;
@@ -540,7 +548,10 @@ function spawnSnapshotOf(binding: IncidentAgentBinding): AccessSpawnSnapshot {
     !Array.isArray(raw.hosts) ||
     !Array.isArray(raw.credentials) ||
     (raw.egress !== null &&
-      (typeof raw.egress !== "object" || !Array.isArray(raw.egress?.hosts)))
+      (typeof raw.egress !== "object" || !Array.isArray(raw.egress?.hosts))) ||
+    (raw.deniedTools !== undefined &&
+      (!Array.isArray(raw.deniedTools) ||
+        raw.deniedTools.some((t) => typeof t !== "string")))
   )
     return EMPTY_SNAPSHOT;
   return raw as AccessSpawnSnapshot;
@@ -594,6 +605,101 @@ export function clampToSpawn(
     revision: accessRevision(base),
     summary: describeAccess(base),
   };
+}
+
+/** What a running incident agent is bound to: the connections its run
+ *  mounts (the policy's mcpServers), the Runners it may use (the policy's
+ *  allowedRunners), its session's mode and its spawn snapshot. Settings
+ *  widened later never reach it. */
+export interface IncidentRunBound {
+  connections: string[];
+  runners: string[];
+  mode: AccessMode;
+  spawn: AccessSpawnSnapshot;
+}
+
+/**
+ * The access a run can actually use: the connections it mounts and its
+ * session's mode, on top of clampToSpawn. Revision and summary follow.
+ */
+export function clampToRun(
+  access: AgentAccess,
+  run: Pick<IncidentRunBound, "connections" | "mode">,
+): AgentAccess {
+  const { summary: _summary, revision: _revision, ...rest } = access;
+  const base = {
+    ...rest,
+    connections: access.connections.filter((c) => run.connections.includes(c)),
+    mode: modeWithin(access.mode, run.mode) ? access.mode : run.mode,
+  };
+  return {
+    ...base,
+    revision: accessRevision(base),
+    summary: describeAccess(base),
+  };
+}
+
+/** Something the access allows that a running agent was not bound to. */
+export interface AccessWidening {
+  field:
+    | "connections"
+    | "runners"
+    | "hosts"
+    | "credentials"
+    | "egress"
+    | "mode"
+    | "deniedTools";
+  item: string;
+}
+
+/**
+ * What `access` (resolved now, not clamped) allows beyond what the run is
+ * bound to: connections it does not mount, Runners it may not use, hosts
+ * and credentials it was not spawned with, a credential at a wider mode, an
+ * egress route or host it was not spawned with, code mode for an ask
+ * session, and tools denied at spawn that are no longer denied. Empty when
+ * the access is the same or narrower.
+ */
+export function accessWidenedBeyond(
+  access: AgentAccess,
+  run: IncidentRunBound,
+): AccessWidening[] {
+  const out: AccessWidening[] = [];
+  for (const c of access.connections)
+    if (!run.connections.includes(c))
+      out.push({ field: "connections", item: c });
+  for (const r of access.runners)
+    if (!run.runners.includes(r)) out.push({ field: "runners", item: r });
+  for (const h of access.hosts)
+    if (!run.spawn.hosts.includes(hostGrantKey(h)))
+      out.push({
+        field: "hosts",
+        item: h.ssh ? `${h.ssh} via ${h.runnerName}` : h.runnerName,
+      });
+  for (const c of access.credentials) {
+    const at = run.spawn.credentials.find((s) => s.credential === c.credential);
+    if (!at || narrowerMode(c.mode, at.mode) !== c.mode)
+      out.push({ field: "credentials", item: `${c.service} (${c.mode})` });
+  }
+  const now = access.egress;
+  const was = run.spawn.egress;
+  if (now) {
+    const sameRoute =
+      was &&
+      now.route === was.route &&
+      (now.runner ?? null) === (was.runner ?? null) &&
+      (now.proxyUrl ?? null) === (was.proxyUrl ?? null) &&
+      (now.proxyCredential ?? null) === (was.proxyCredential ?? null);
+    for (const host of now.hosts)
+      if (!sameRoute || !was.hosts.includes(host))
+        out.push({ field: "egress", item: host });
+  }
+  if (!modeWithin(access.mode, run.mode))
+    out.push({ field: "mode", item: "editing" });
+  for (const tool of run.spawn.deniedTools ?? [])
+    if (!(tool in access.deniedTools))
+      out.push({ field: "deniedTools", item: tool });
+  return out;
 }
 
 export interface BindingResolveOptions {

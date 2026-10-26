@@ -3,18 +3,22 @@
 // resolved AgentAccess; enforceIncidentSpawn re-resolves the binding when the
 // session is created, before it exists, and narrows the policy to the fresh
 // access. incidentTurnScope re-resolves it before every turn and never lets a
-// turn reach wider than the spawn snapshot. The binding is set only by
-// server-side callers.
+// turn reach wider than the spawn snapshot. An agent whose run a fresh
+// session took over (supersededRefusal) is refused every turn. The binding
+// is set only by server-side callers.
 import type {
   AgentAccess,
   IncidentAgentBinding,
 } from "../../../shared/incident-access";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentAudit } from "../audit-sink";
+import { getIncident } from "../incident-store";
 import {
   AgentAccessError,
+  type IncidentRunBound,
   accessSpawnSnapshot,
   resolveAgentAccessForBinding,
+  spawnSnapshotOf,
 } from "./resolve";
 
 export interface IncidentDescendantBase {
@@ -162,6 +166,43 @@ export function auditIncidentSpawned(
   });
 }
 
+/**
+ * What a bound incident agent's run is held to: the connections its policy
+ * mounts, the Runners it allows, its session's mode (code only when the
+ * session says code; a missing or unknown mode is ask) and its spawn
+ * snapshot. Null without a binding.
+ */
+export function incidentRunBound(session: {
+  mode?: string;
+  automationDescendantPolicy?: AutomationDescendantPolicy;
+}): IncidentRunBound | null {
+  const policy = session.automationDescendantPolicy;
+  if (!policy?.incident) return null;
+  return {
+    connections: [...policy.mcpServers],
+    runners: [...policy.allowedRunners],
+    mode: session.mode === "code" ? "code" : "ask",
+    spawn: spawnSnapshotOf(policy.incident),
+  };
+}
+
+/**
+ * Why an incident agent's session may no longer act: a fresh session took
+ * its run over (the run's `supersededBy`). Undefined while it may act, or
+ * when the incident or run is not found (resolution refuses those).
+ */
+export async function supersededRefusal(
+  incidentId: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  if (!sessionId) return undefined;
+  const incident = await getIncident(incidentId);
+  const by = incident?.response?.agents.find(
+    (a) => a.sessionId === sessionId,
+  )?.supersededBy;
+  return by ? `This agent was superseded by ${by}` : undefined;
+}
+
 export interface IncidentTurnScope {
   mcpServers: string[];
   deniedTools: Record<string, string>;
@@ -176,6 +217,9 @@ export interface IncidentTurnSession {
   automationDescendantPolicy?: AutomationDescendantPolicy;
 }
 
+const DENIED_AT_SPAWN =
+  "This tool was denied when this agent started; it stays denied until a fresh agent starts with the new access.";
+
 // (session, revision) pairs whose change was already audited in this process.
 const auditedChanges = new Set<string>();
 const MAX_AUDITED_CHANGES = 10_000;
@@ -183,7 +227,7 @@ const MAX_AUDITED_CHANGES = 10_000;
 /**
  * The scope of an incident agent's next turn, re-resolved from its binding:
  * the spawn snapshot of connections intersected with the fresh access, and
- * the fresh denials. Mode, repo and Runner are fixed at spawn; if the fresh
+ * the fresh denials on top of the spawn snapshot's. Mode, repo and Runner are fixed at spawn; if the fresh
  * access no longer allows them the turn is refused. Returns null for a
  * session without a binding; throws AgentAccessError otherwise.
  */
@@ -229,6 +273,12 @@ async function turnScope(
       phase: "turn",
       reason,
     });
+  const refuse = (reason: string): never => {
+    refusedTurn(reason);
+    throw new AgentAccessError(reason, "turn");
+  };
+  const superseded = await supersededRefusal(binding.incidentId, sessionId);
+  if (superseded) refuse(superseded);
   let access: AgentAccess;
   try {
     access = await resolveAgentAccessForBinding(
@@ -241,10 +291,6 @@ async function turnScope(
     );
     throw error;
   }
-  const refuse = (reason: string): never => {
-    refusedTurn(reason);
-    throw new AgentAccessError(reason, "turn");
-  };
   if (access.incidentId !== binding.incidentId || access.role !== binding.role)
     refuse("The agent's access does not match its binding");
   if (session.mode !== "ask" && access.mode === "ask")
@@ -277,7 +323,17 @@ async function turnScope(
     mcpServers: policy.mcpServers.filter((name) =>
       access.connections.includes(name),
     ),
-    deniedTools: { ...access.deniedTools },
+    // A denial the agent was spawned with stays, whatever the settings say
+    // now; lifting it reaches only a fresh agent.
+    deniedTools: {
+      ...Object.fromEntries(
+        (spawnSnapshotOf(binding).deniedTools ?? []).map((tool) => [
+          tool,
+          DENIED_AT_SPAWN,
+        ]),
+      ),
+      ...access.deniedTools,
+    },
     access,
   };
 }

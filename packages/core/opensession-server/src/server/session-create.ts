@@ -2070,6 +2070,7 @@ export async function openCreatedSession(
           spec.automationDescendantPolicy
           ? await incidentAccessMcpForSession({
               id: bksId,
+              mode: spec.mode,
               automationDescendantPolicy: spec.automationDescendantPolicy,
             })
           : {}

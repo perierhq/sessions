@@ -2,8 +2,12 @@
 // opensession-* server an incident agent gets. Each tool is mounted only when
 // the agent's access grants what it reaches, and every call re-resolves that
 // access from the binding first: a refusal returns "Access refused: ..." and
-// does nothing else, and a narrowing applies at once. Everything is audited
-// with the incident and role by the modules the tools call.
+// does nothing else, and a narrowing applies at once; an agent a fresh
+// session took over is refused everything. A widening never applies:
+// the access is held to what the run is bound to (clampToRun), and
+// describe_access names connections allowed after the agent started.
+// Everything is audited with the incident and role by the modules the tools
+// call.
 import { z } from "zod";
 import {
   type AgentAccess,
@@ -22,13 +26,26 @@ import { incidentCredentialCall } from "./credentials";
 import { egressFetch } from "./egress";
 import { runHostCommand } from "./host-exec";
 import { MAX_HOST_ARGS } from "./read-only-commands";
-import { resolveAgentAccessForBinding } from "./resolve";
+import {
+  type IncidentRunBound,
+  clampToRun,
+  resolveAgentAccessForBinding,
+} from "./resolve";
+import { incidentRunBound, supersededRefusal } from "./session-policy";
 import type { IncidentToolContext } from "./tool-context";
 
 type Ctx = {
   sessionId: string;
   binding: IncidentAgentBinding;
   access: AgentAccess;
+  /** What the run is bound to; absent for a preview, which is unclamped. */
+  run?: Pick<IncidentRunBound, "connections" | "mode">;
+};
+
+type Fresh = {
+  ctx: IncidentToolContext;
+  /** Connections allowed now that this run does not mount. */
+  allowedLater: string[];
 };
 
 const text = (value: string) => ({
@@ -36,24 +53,51 @@ const text = (value: string) => ({
 });
 const json = (value: unknown) => text(JSON.stringify(value, null, 2));
 
-/** The access for this call, re-resolved; a string is the refusal. */
+/** The access for this call, re-resolved and held to the run; a string is
+ *  the refusal. */
 async function freshContext(
-  ctx: Pick<Ctx, "sessionId" | "binding">,
-): Promise<IncidentToolContext | string> {
+  ctx: Pick<Ctx, "sessionId" | "binding" | "run">,
+): Promise<Fresh | string> {
   try {
-    const access = await resolveAgentAccessForBinding(ctx.binding);
+    const superseded = await supersededRefusal(
+      ctx.binding.incidentId,
+      ctx.sessionId,
+    );
+    if (superseded)
+      return `Access refused: ${superseded.charAt(0).toLowerCase()}${superseded.slice(1)}`;
+    const resolved = await resolveAgentAccessForBinding(ctx.binding);
     if (
-      access.incidentId !== ctx.binding.incidentId ||
-      access.role !== ctx.binding.role
+      resolved.incidentId !== ctx.binding.incidentId ||
+      resolved.role !== ctx.binding.role
     )
       return "Access refused: the agent's access does not match its binding";
-    return { sessionId: ctx.sessionId, binding: ctx.binding, access };
+    const run = ctx.run;
+    const access = run ? clampToRun(resolved, run) : resolved;
+    return {
+      ctx: { sessionId: ctx.sessionId, binding: ctx.binding, access },
+      allowedLater: run
+        ? resolved.connections.filter((c) => !run.connections.includes(c))
+        : [],
+    };
   } catch (error) {
     return `Access refused: ${error instanceof Error ? error.message : "access could not be resolved"}`;
   }
 }
 
-function describe(access: AgentAccess) {
+function listed(names: string[]): string {
+  return names.length > 1
+    ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+    : (names[0] ?? "");
+}
+
+/** The note for connections allowed after the agent started. */
+export function allowedLaterNote(names: string[]): string | undefined {
+  if (!names.length) return undefined;
+  return `${listed(names)} ${names.length > 1 ? "were" : "was"} allowed after this agent started. ${names.length > 1 ? "They apply" : "It applies"} from the next round.`;
+}
+
+function describe(access: AgentAccess, allowedLater: string[] = []) {
+  const note = allowedLaterNote(allowedLater);
   return {
     summary: access.summary,
     connections: access.connections,
@@ -72,6 +116,7 @@ function describe(access: AgentAccess) {
       ? { route: access.egress.route, hosts: access.egress.hosts }
       : null,
     narrowed: access.narrowed,
+    ...(note ? { note } : {}),
   };
 }
 
@@ -82,18 +127,24 @@ type AnyTool = InProcessToolDefinition<any>;
 
 export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
   const guarded =
-    <A>(run: (fresh: IncidentToolContext, args: A) => Promise<unknown>) =>
+    <A>(
+      run: (
+        fresh: IncidentToolContext,
+        args: A,
+        later: string[],
+      ) => Promise<unknown>,
+    ) =>
     async (args: A) => {
       const fresh = await freshContext(ctx);
       if (typeof fresh === "string") return text(fresh);
-      return json(await run(fresh, args));
+      return json(await run(fresh.ctx, args, fresh.allowedLater));
     };
   const tools: AnyTool[] = [
     tool(
       "describe_access",
       `What this incident agent may reach right now: connections, mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. ${AUDITED}`,
       {},
-      guarded(async (fresh) => describe(fresh.access)),
+      guarded(async (fresh, _args, later) => describe(fresh.access, later)),
     ),
   ];
   if (ctx.access.hosts.length)
@@ -155,17 +206,42 @@ export function createIncidentAccessMcpServer(ctx: Ctx): InProcessMcpServer {
   });
 }
 
+/** The context of a bound incident agent's session, held to its run; a
+ *  string is the refusal, null is no binding. */
+async function sessionContext(session: {
+  id: string;
+  mode?: string;
+  automationDescendantPolicy?: AutomationDescendantPolicy;
+}): Promise<Ctx | string | null> {
+  const binding = session.automationDescendantPolicy?.incident;
+  const bound = incidentRunBound(session);
+  if (!binding || !bound) return null;
+  const run = { connections: bound.connections, mode: bound.mode };
+  const fresh = await freshContext({ sessionId: session.id, binding, run });
+  return typeof fresh === "string" ? fresh : { ...fresh.ctx, run };
+}
+
 /**
  * The incident access server for a bound incident agent, keyed by its name;
  * `{}` without a binding or when its access is refused (no tools at all).
  */
 export async function incidentAccessMcpForSession(session: {
   id: string;
+  mode?: string;
   automationDescendantPolicy?: AutomationDescendantPolicy;
 }): Promise<Record<string, unknown>> {
-  const binding = session.automationDescendantPolicy?.incident;
-  if (!binding) return {};
-  const fresh = await freshContext({ sessionId: session.id, binding });
-  if (typeof fresh === "string") return {};
-  return { [INCIDENT_ACCESS_SERVER]: createIncidentAccessMcpServer(fresh) };
+  const ctx = await sessionContext(session);
+  if (!ctx || typeof ctx === "string") return {};
+  return { [INCIDENT_ACCESS_SERVER]: createIncidentAccessMcpServer(ctx) };
+}
+
+/** The tools incidentAccessMcpForSession mounts; `[]` when it mounts none. */
+export async function incidentAccessToolsForSession(session: {
+  id: string;
+  mode?: string;
+  automationDescendantPolicy?: AutomationDescendantPolicy;
+}): Promise<AnyTool[]> {
+  const ctx = await sessionContext(session);
+  if (!ctx || typeof ctx === "string") return [];
+  return incidentAccessToolDefinitions(ctx);
 }

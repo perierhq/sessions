@@ -37,7 +37,12 @@ import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
 import { getRepo } from "../../worktree";
-import { AgentAccessError, resolveAgentAccess } from "../access/resolve";
+import {
+  type AccessWidening,
+  AgentAccessError,
+  accessWidenedBeyond,
+  resolveAgentAccess,
+} from "../access/resolve";
 import { incidentAudit } from "../audit-sink";
 import {
   getIncident,
@@ -77,6 +82,7 @@ import {
   defaultMergeGithub,
   fetchPrSnapshot,
   mergeIncidentPr,
+  parsePrUrl,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { budgetProblem } from "./policy";
@@ -672,6 +678,7 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     let incident = await d.getIncident(incidentId);
     if (!incident) return;
     const settings = await d.settings(incident.project);
+    if (i === 0) await retireSuperseded(incident, d);
     incident = await syncAgents(incident, d, settings);
     for (const run of incident.response?.agents ?? [])
       sessionIndex.set(run.sessionId, incident.id);
@@ -690,6 +697,35 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
       return;
     }
     if (!more) return;
+  }
+}
+
+/**
+ * Archive every agent a fresh session took over from whose session is
+ * still open: the archive right after the takeover may have failed. Those
+ * sessions are refused every turn and tool call meanwhile.
+ */
+async function retireSuperseded(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<void> {
+  const superseded = (incident.response?.agents ?? []).filter(
+    (a) => a.supersededBy,
+  );
+  if (!superseded.length) return;
+  const agents = await agentsFor(incident, d);
+  if (!agents) return;
+  for (const run of superseded) await retire(agents, run.sessionId);
+}
+
+async function retire(agents: IncidentAgents, sessionId: string) {
+  try {
+    await agents.retire(sessionId);
+  } catch (error) {
+    console.warn(
+      `[incidents] Could not archive superseded agent ${sessionId}:`,
+      errorMessage(error),
+    );
   }
 }
 
@@ -861,10 +897,17 @@ async function init(
   return next !== null;
 }
 
+/** A run a fresh session takes over from, and the access that is wider. */
+interface Supersede {
+  run: AgentRun;
+  widened: AccessWidening[];
+}
+
 async function startAgent(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "start-agent" }>,
   d: CoordinatorDeps,
+  supersede?: Supersede,
 ): Promise<boolean> {
   const { incident, settings } = view;
   const r = incident.response!;
@@ -923,6 +966,12 @@ async function startAgent(
       ? skipParallelInvestigator(view, "unavailable", workspace.error, d)
       : setupProblem(view, d, workspace.error, "sandboxes");
 
+  // A new round in a fresh session carries the round before it: why the
+  // work came back, what was found and its pull request.
+  const earlier =
+    role === "investigator" && investigator && investigator.round < round
+      ? investigator
+      : undefined;
   let prompt: string;
   if (role === "investigator") {
     const release = r.candidate?.rollbackFirst
@@ -940,6 +989,18 @@ async function startAgent(
       baseBranch: d.defaultBranch(incident.project),
       round,
       maxRounds: r.maxRounds,
+      ...(earlier
+        ? {
+            earlier: {
+              round: earlier.round,
+              ...(r.sendBack ? { sendBack: r.sendBack } : {}),
+              ...(earlier.report?.role === "investigator"
+                ? { report: earlier.report }
+                : {}),
+              ...(earlier.prUrl ? { prUrl: earlier.prUrl } : {}),
+            },
+          }
+        : {}),
       ...(release
         ? {
             rollbackFirst: {
@@ -981,9 +1042,13 @@ async function startAgent(
       prompt,
       model,
       branch: branchFor(incident, role, round, attempt),
+      // The verifier reads the investigator's work; a fresh investigator
+      // starts from the work of the session it takes over from.
       ...(role === "verifier" && investigator
         ? { baseSessionId: investigator.sessionId }
-        : {}),
+        : supersede
+          ? { baseSessionId: supersede.run.sessionId }
+          : {}),
       access,
       workspace,
     }));
@@ -997,6 +1062,7 @@ async function startAgent(
   const next = await write(incident.id, d, settings, null, (c, base, at) => {
     if (base.agents.some((a) => a.sessionId === sessionId))
       return { incident: c, response: base };
+    const superseded = supersede?.run.sessionId;
     const run: AgentRun = {
       role,
       round,
@@ -1015,12 +1081,23 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
-    const detail = `${roleLabel(role)} started on ${label}, round ${round}`;
+    const detail = supersede
+      ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`
+      : `${roleLabel(role)} started on ${label}, round ${round}`;
     const response = ledger(
       patched(base, {
-        agents: [...base.agents, run],
+        agents: [
+          ...base.agents.map((a) =>
+            a.sessionId === superseded
+              ? patched(a, { supersededBy: sessionId })
+              : a,
+          ),
+          run,
+        ],
         retryRequested: undefined,
         parallelInvestigatorRetryAt: undefined,
+        // The send-back reason went into the fresh session's brief.
+        ...(earlier ? { sendBack: undefined } : {}),
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1039,8 +1116,88 @@ async function startAgent(
     independence,
     workspace: workspace.kind,
     accessRevision: access.revision,
+    ...(supersede ? { supersedes: supersede.run.sessionId } : {}),
   });
+  if (supersede) {
+    const agents = await agentsFor(next, d);
+    if (agents) await retire(agents, supersede.run.sessionId);
+    await closeSupersededPr(
+      view,
+      supersede.run,
+      { round, branch: branchFor(incident, role, round, attempt) },
+      d,
+    );
+  }
   return true;
+}
+
+/** Up to three items in a sentence; more are counted ("a, b and 4 more"). */
+function cappedList(items: string[]): string {
+  const unique = [...new Set(items)];
+  if (unique.length > 3)
+    return `${unique.slice(0, 2).join(", ")} and ${unique.length - 2} more`;
+  return unique.length > 1
+    ? `${unique.slice(0, -1).join(", ")} and ${unique.at(-1)}`
+    : (unique[0] ?? "");
+}
+
+/**
+ * Close the superseded run's pull request with a comment naming the fresh
+ * session's branch, which starts from its work. Best effort: a pull request
+ * in another repository, or one GitHub refuses to close, is left open.
+ */
+async function closeSupersededPr(
+  view: ResponseView,
+  run: AgentRun,
+  fresh: { round: number; branch: string },
+  d: CoordinatorDeps,
+): Promise<void> {
+  const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
+  const pr = prUrl ? parsePrUrl(prUrl) : null;
+  if (!pr) return;
+  try {
+    const own = d.ghRepoOf(view.incident.project);
+    if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase()) return;
+    const credential = await d.github.appCredential(pr.ghRepo);
+    await d.github.comment(
+      pr.ghRepo,
+      pr.number,
+      `Superseded: the investigator's access was widened after it started, so round ${fresh.round} continues in a fresh session on \`${fresh.branch}\`, which starts from this pull request's work. Closing this one.`,
+      credential,
+    );
+    await d.github.close(pr.ghRepo, pr.number, credential);
+  } catch (error) {
+    console.warn(
+      `[incidents] Could not close superseded pull request ${prUrl}:`,
+      errorMessage(error),
+    );
+  }
+}
+
+/**
+ * What the role's access allows now beyond what the run's session is bound
+ * to. A running agent never gains access, so a wider access is for a fresh
+ * session. Empty when it is the same or narrower, or when it can't be read:
+ * the message then goes as before and its turn re-resolves the access.
+ */
+async function widenedSinceStart(
+  view: ResponseView,
+  run: AgentRun,
+  agents: IncidentAgents,
+  d: CoordinatorDeps,
+): Promise<AccessWidening[]> {
+  const primary = view.signals.get(view.incident.primarySignalId);
+  if (!primary) return [];
+  try {
+    const bound = await agents.bound(run.sessionId);
+    if (!bound) return [];
+    const access = await d.access(run.role, view.incident, primary, {
+      audit: false,
+    });
+    return accessWidenedBeyond(access, bound);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1192,6 +1349,25 @@ async function messageAgent(
   const run = r.agents.find((a) => a.sessionId === step.sessionId);
   if (!run) return false;
   const sendBack = step.message === "send-back";
+  const agents = await agentsFor(incident, d);
+  if (!agents) return false;
+  // A new round for an agent whose access was widened since it started
+  // goes to a fresh session; the old one is archived.
+  if (sendBack) {
+    const widened = await widenedSinceStart(view, run, agents, d);
+    if (widened.length)
+      return startAgent(
+        view,
+        {
+          step: "start-agent",
+          role: run.role,
+          round: r.round,
+          attempt: run.attempt + 1,
+        },
+        d,
+        { run, widened },
+      );
+  }
   const text = sendBack
     ? buildSendBackMessage(
         r.round,
@@ -1199,8 +1375,6 @@ async function messageAgent(
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
       )
     : buildReminder(run.reportError ?? "No incident-report block", run.role);
-  const agents = await agentsFor(incident, d);
-  if (!agents) return false;
   await agents.send(
     run.sessionId,
     text,
