@@ -43,6 +43,7 @@ import {
   accessWidenedBeyond,
   resolveAgentAccess,
 } from "../access/resolve";
+import { type ConnectionProblem, connectionProblems } from "../access/mcp";
 import { incidentAudit } from "../audit-sink";
 import {
   getIncident,
@@ -126,6 +127,8 @@ export interface CoordinatorDeps {
   recent: (id: string) => Observation[];
   models: typeof resolveRoleModels;
   access: typeof resolveAgentAccess;
+  /** Granted connections an agent can't open now (an expired sign-in). */
+  connectionProblems: typeof connectionProblems;
   workspace: typeof incidentWorkspaceFor;
   automation: typeof ensureIncidentAutomation;
   coordinatorSession: (
@@ -164,6 +167,7 @@ function defaultDeps(): CoordinatorDeps {
     recent: (id) => recentObservations(id),
     models: resolveRoleModels,
     access: resolveAgentAccess,
+    connectionProblems,
     workspace: incidentWorkspaceFor,
     automation: ensureIncidentAutomation,
     coordinatorSession: (incident, automation) =>
@@ -963,6 +967,13 @@ async function startAgent(
         )
       : undefined;
 
+  // A granted connection it can't open is named in its brief and on the
+  // card, so nobody spends a round finding out.
+  const unavailable: ConnectionProblem[] = access.connections.length
+    ? await d.connectionProblems(access.connections).catch(() => [])
+    : [];
+  const connections = { connections: access.connections, unavailable };
+
   const workspace = await d.workspace(incident.project, model);
   if ("error" in workspace)
     return parallel
@@ -993,6 +1004,7 @@ async function startAgent(
       notePath: await incidentNotePath(incident, d),
       round,
       maxRounds: r.maxRounds,
+      connections,
       ...(earlier
         ? {
             earlier: {
@@ -1030,6 +1042,7 @@ async function startAgent(
       round,
       mode: access.mode,
       actions: settings.actions,
+      connections,
     });
   }
 
@@ -1088,11 +1101,15 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
-    const detail = !supersede
+    const started = !supersede
       ? `${roleLabel(role)} started on ${label}, round ${round}`
       : supersede.carry
         ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its branch is another incident's too (${supersede.carry.branch})`
         : `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
+    const detail = [
+      started,
+      ...unavailable.map((p) => `${p.connection} can't be used: ${p.reason}`),
+    ].join(". ");
     const response = ledger(
       patched(base, {
         agents: [

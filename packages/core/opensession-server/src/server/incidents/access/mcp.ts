@@ -97,18 +97,33 @@ export function allowedLaterNote(names: string[]): string | undefined {
   return `${listed(names)} ${names.length > 1 ? "were" : "was"} allowed after this agent started. ${names.length > 1 ? "They apply" : "It applies"} from the next round.`;
 }
 
-/** Connections the agent may use but can't open, each as
- *  "<name>: <reason>". Incident agents run with nobody behind them, so only
- *  workspace sign-ins count; one due for a refresh is refreshed first. */
-export async function unavailableConnections(
+/** A connection the agent may use but can't open, and why. */
+export interface ConnectionProblem {
+  connection: string;
+  reason: string;
+}
+
+/** Connections the agent may use but can't open. Incident agents run with
+ *  nobody behind them, so only workspace sign-ins count; one due for a
+ *  refresh is refreshed first. */
+export async function connectionProblems(
   connections: readonly string[],
-): Promise<string[]> {
+): Promise<ConnectionProblem[]> {
   await Promise.all(
     connections.map((name) => freshMcpAuthHeader(name).catch(() => undefined)),
   );
   const problems = await mcpSignInProblems(connections);
-  return connections.flatMap((name) =>
-    problems[name] ? [`${name}: ${problems[name]}`] : [],
+  return connections.flatMap((connection) =>
+    problems[connection] ? [{ connection, reason: problems[connection] }] : [],
+  );
+}
+
+/** connectionProblems, each as "<name>: <reason>". */
+export async function unavailableConnections(
+  connections: readonly string[],
+): Promise<string[]> {
+  return (await connectionProblems(connections)).map(
+    (p) => `${p.connection}: ${p.reason}`,
   );
 }
 

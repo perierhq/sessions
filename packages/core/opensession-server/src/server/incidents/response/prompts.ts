@@ -30,6 +30,8 @@ import type {
   SignalEvaluation,
   SignalRule,
 } from "../../../shared/incidents";
+import { MCP_SEARCH_TOOL } from "@tellahq/opensession-protocol/tool-presentation";
+import type { ConnectionProblem } from "../access/mcp";
 import { redactSignal } from "../signal-validation";
 import { REPORT_FENCE, RESULT_VALUES, cleanReportText } from "./reports";
 
@@ -262,6 +264,35 @@ export interface InvestigatorPromptInput {
   /** The incident's note, when another incident shares its title and day
    *  (notePathFor with the project's incidents). */
   notePath?: string;
+  connections?: ConnectionsBrief;
+}
+
+/** The connections an agent's access names, and the ones among them it
+ *  can't open now, so it does not spend a round finding out. */
+export interface ConnectionsBrief {
+  connections: readonly string[];
+  unavailable: readonly ConnectionProblem[];
+}
+
+function connectionLines(brief: ConnectionsBrief | undefined): string[] {
+  if (!brief?.connections.length) return [];
+  const broken = new Set(brief.unavailable.map((p) => p.connection));
+  const usable = brief.connections.filter((c) => !broken.has(c));
+  const out = ["## Connections", ""];
+  if (usable.length)
+    out.push(
+      `You can use ${usable.map((c) => dataText(c, 80)).join(", ")}. Find their tools with ${MCP_SEARCH_TOOL}.`,
+      "",
+    );
+  if (brief.unavailable.length)
+    out.push(
+      "These can't be used now, so don't spend attempts on them. If what you need is behind one, say so in your report so the owner can fix it:",
+      ...brief.unavailable.map(
+        (p) => `- ${dataText(p.connection, 80)}: ${p.reason}`,
+      ),
+      "",
+    );
+  return out;
 }
 
 /** What a fresh investigator is told about the round before its own. */
@@ -411,6 +442,8 @@ export function buildInvestigatorPrompt(
     "Sessions runs every action itself. You may propose actions by id; you cannot run them, deploy, merge or reach production.",
     "",
   );
+
+  out.push(...connectionLines(input.connections));
 
   out.push("## Actions you may propose", "");
   if (input.actions.length) {
@@ -614,6 +647,7 @@ export interface VerifierPromptInput {
   mode: "ask" | "code";
   /** The project's actions, for their labels; ids are shown otherwise. */
   actions?: IncidentAction[];
+  connections?: ConnectionsBrief;
 }
 
 function proofSamples(samples: ProofSample[]): string[] {
@@ -682,6 +716,8 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
     );
   }
   out.push("");
+
+  out.push(...connectionLines(input.connections));
 
   out.push("## What to check", "");
   out.push(

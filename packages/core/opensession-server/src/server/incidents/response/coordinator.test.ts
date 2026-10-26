@@ -253,6 +253,7 @@ async function world(
   opts: {
     workspace?: AgentWorkspace | { error: string };
     access?: CoordinatorDeps["access"];
+    connectionProblems?: CoordinatorDeps["connectionProblems"];
     pr?: PrShape;
     releasedMsBeforeOpen?: number;
   } = {},
@@ -399,6 +400,7 @@ async function world(
               ? "Verifier · no connections · read only"
               : "Investigator · no connections · can edit acme",
         })),
+    connectionProblems: opts.connectionProblems ?? (async () => []),
     workspace: async () =>
       opts.workspace ?? { kind: "sandbox", provider: "daytona" },
     automation: async () => automation,
@@ -1458,6 +1460,48 @@ test("stop and deploy now during the veto", async () => {
   await __waitForCoordinatorForTest();
   expect(w.sends.at(-1)?.message).toContain(
     "Try the app's TLS fingerprint too",
+  );
+});
+
+test("an agent is told which connections it can't use, and the card says so", async () => {
+  const checked: string[][] = [];
+  const w = await world({
+    access: async (role, incident) =>
+      agentAccessFixture({
+        role,
+        incidentId: incident.id,
+        mode: role === "verifier" ? "ask" : "code",
+        connections: role === "investigator" ? ["logs", "tickets"] : [],
+      }),
+    connectionProblems: async (names) => {
+      checked.push([...names]);
+      return names.includes("tickets")
+        ? [
+            {
+              connection: "tickets",
+              reason:
+                "sign-in expired. A person needs to reconnect it in Settings → Connections.",
+            },
+          ]
+        : [];
+    },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect(checked).toEqual([["logs", "tickets"]]);
+  const prompt = w.spawns.at(-1)!.prompt;
+  expect(prompt).toContain("## Connections");
+  expect(prompt).toContain(
+    "You can use logs. Find their tools with tool_search.",
+  );
+  expect(prompt).toContain(
+    "- tickets: sign-in expired. A person needs to reconnect it in Settings → Connections.",
+  );
+  const detail = (await getIncident(w.incident.id))?.response?.ledger.at(
+    -1,
+  )?.detail;
+  expect(detail).toContain("round 1");
+  expect(detail).toContain(
+    "tickets can't be used: sign-in expired. A person needs to reconnect it in Settings → Connections.",
   );
 });
 
