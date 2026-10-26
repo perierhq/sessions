@@ -51,6 +51,7 @@ import { DESK_NOTE } from "./desk";
 import { deskBriefingFor } from "./desk-state";
 import { personalOutputStyleNoteFor } from "./personal-output-style";
 import { personalPromptNoteFor } from "./personal-prompts";
+import { humanPrompter, sessionCreationOwner } from "./session-actors";
 import { PSTACK_MODE_NOTE } from "./pstack-mode";
 import {
   findSession,
@@ -355,14 +356,34 @@ export function attachedGithubRepos(session: UnifiedSession): string[] {
 }
 
 /**
+ * The person whose standing preferences a turn's session note carries: the
+ * one this session acts for (`sessionCreationOwner`), never a machine sender.
+ *
+ * The note rides in the system prompt, so it must read the same on every turn
+ * of a session. A turn nobody typed (a background wait's wake, an
+ * auto-continue, a worker's report, a scheduled check-back) used to render
+ * it for its sender, which has no output style, personal prompt or personal
+ * memory; the note dropped those sections and the next person's turn put them
+ * back, re-caching the whole conversation each time. Only another person
+ * prompting the session, or the person changing a setting, changes it now.
+ */
+function sessionNotePerson(
+  session: UnifiedSession,
+  user: string | undefined,
+): string | undefined {
+  return humanPrompter(sessionCreationOwner(user ?? "", session)) ?? undefined;
+}
+
+/**
  * The full per-session system-prompt note for an interactive run: repos/branch
  * discipline (buildReposNote) + the session's repo/user/team memory. Memory
  * failures never block a run — the note just goes out without it.
  */
 export async function buildSessionNote(
   session: UnifiedSession,
-  user?: string,
+  turnSender?: string,
 ): Promise<string | undefined> {
+  const user = sessionNotePerson(session, turnSender);
   return (
     [
       session.pstackMode ? PSTACK_MODE_NOTE : "",
