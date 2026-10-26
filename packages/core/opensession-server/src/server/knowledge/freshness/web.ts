@@ -119,20 +119,28 @@ function allowed(raw: string, hosts: readonly string[]): boolean {
   return linkAllowed(raw, hosts);
 }
 
+/** One response of the project's websites, read as it came. */
+export interface RawResponse {
+  /** The final URL, after redirects. */
+  url: string;
+  status: number;
+  contentType: string;
+  body: Uint8Array;
+}
+
 /**
- * Fetch one page of the project's websites and return its text and hash.
- * `hosts` is the project's Support websites list; only exact, non-wildcard
- * entries count. Any refusal, error status, non-text body or network
- * failure comes back as `{ error }`.
+ * One request to the project's websites, with web.ts's host rule on every
+ * hop: https and an exact, non-wildcard entry of `hosts`, checked before
+ * the name is resolved and again before it is dialled. Any refusal or
+ * network failure comes back as `{ error }`; every status is an answer.
+ * fetchPage reads pages through it; the crawler reads robots.txt,
+ * sitemaps and a page's links through it.
  */
-export async function fetchPage(
+export async function fetchRaw(
   url: string,
   hosts: string[],
   deps: WebFetchDeps = defaultDeps,
-): Promise<
-  | { url: string; title?: string; text: string; hash: string }
-  | { error: string }
-> {
+): Promise<RawResponse | { error: string }> {
   const start = withoutHash(url);
   if (!start || !allowed(start, hosts))
     return {
@@ -165,27 +173,67 @@ export async function fetchPage(
     );
     if (!allowed(finalUrl, hosts))
       return { error: `Redirected off the project's websites: ${finalUrl}` };
-    if (response.status < 200 || response.status >= 300)
-      return { error: `The page answered ${response.status}` };
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!HTML_TYPES.test(contentType) && !TEXT_TYPES.test(contentType))
-      return {
-        error: `Not a text page: ${contentType.split(";")[0] || "unknown type"}`,
-      };
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(
-      response.body,
-    );
-    const page = await normalizedPageText(body, contentType);
-    if (Buffer.byteLength(page.text) > MAX_TEXT_BYTES)
-      return { error: "The page has more than 256 KB of text" };
-    if (page.text.length < MIN_TEXT_CHARS)
-      return { error: "The page has almost no readable text" };
     return {
       url: finalUrl,
-      ...(page.title ? { title: page.title } : {}),
-      text: page.text,
-      hash: pageHash(page.text),
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "",
+      body: response.body,
     };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error ? error.message : "The page couldn't be read",
+    };
+  }
+}
+
+/** A fetched response as a page: its text and hash, or `{ error }` for an
+ *  error status, a non-text body, too little or too much text. */
+export async function pageOf(
+  raw: RawResponse,
+): Promise<
+  | { url: string; title?: string; text: string; hash: string }
+  | { error: string }
+> {
+  if (raw.status < 200 || raw.status >= 300)
+    return { error: `The page answered ${raw.status}` };
+  const contentType = raw.contentType;
+  if (!HTML_TYPES.test(contentType) && !TEXT_TYPES.test(contentType))
+    return {
+      error: `Not a text page: ${contentType.split(";")[0] || "unknown type"}`,
+    };
+  const body = new TextDecoder("utf-8", { fatal: false }).decode(raw.body);
+  const page = await normalizedPageText(body, contentType);
+  if (Buffer.byteLength(page.text) > MAX_TEXT_BYTES)
+    return { error: "The page has more than 256 KB of text" };
+  if (page.text.length < MIN_TEXT_CHARS)
+    return { error: "The page has almost no readable text" };
+  return {
+    url: raw.url,
+    ...(page.title ? { title: page.title } : {}),
+    text: page.text,
+    hash: pageHash(page.text),
+  };
+}
+
+/**
+ * Fetch one page of the project's websites and return its text and hash.
+ * `hosts` is the project's Support websites list; only exact, non-wildcard
+ * entries count. Any refusal, error status, non-text body or network
+ * failure comes back as `{ error }`.
+ */
+export async function fetchPage(
+  url: string,
+  hosts: string[],
+  deps: WebFetchDeps = defaultDeps,
+): Promise<
+  | { url: string; title?: string; text: string; hash: string }
+  | { error: string }
+> {
+  const raw = await fetchRaw(url, hosts, deps);
+  if ("error" in raw) return raw;
+  try {
+    return await pageOf(raw);
   } catch (error) {
     return {
       error:
