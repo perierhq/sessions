@@ -7,7 +7,9 @@
  * last `months` months (the folders' internal dates). The inbox's live
  * connection, its cursor and its conversations are never touched; no
  * support conversation is created. Automated mail (ours or theirs) is left
- * out. Threads become pairs (pairs.ts); each pair is stripped and rewritten
+ * out. Only Sent-folder mail from this inbox's own addresses is ours;
+ * mail in INBOX from any of our addresses is a loop or a spoof and is
+ * dropped, and without a Sent folder there are no answers. Threads become pairs (pairs.ts); each pair is stripped and rewritten
  * (extract.ts, a pair it can't prove clean is skipped) and gets its trust
  * from the time-aware rule (trust.ts): an answer written before the latest
  * relevant change is reference, with the reason as the body's first line.
@@ -110,23 +112,31 @@ function bind(over: Partial<MailboxDeps>): MailboxDeps {
 
 // ── Reading the mailbox ─────────────────────────────────────────────────
 
+/**
+ * A message as a pairing record; null when it is left out. Only mail in
+ * the Sent folder from one of this inbox's own addresses is ours. Mail in
+ * INBOX from any of our addresses (this inbox's or another's) is a loop
+ * or a spoof and never a question; a Sent message from another address
+ * is neither.
+ */
 function toRecord(
   m: InboundMessage,
-  inbox: InboxConfig,
-  own: string[],
+  folder: "sent" | "inbox",
+  addresses: { inbox: string; ours: string[]; all: string[] },
 ): MailRecord | null {
   const messageId = m.keys.messageId;
   const text = m.text.trim();
   if (!messageId || !text || m.oversize || m.unreadable) return null;
   const address = m.from.address.trim().toLowerCase();
   if (!address) return null;
-  const ours = own.includes(address);
-  // Our own address would count as automated: check ours for machine
-  // mail only (an automatic reply is no person's answer).
-  const automated = ours
-    ? isAutomatedMail(m, [], "").automated
-    : isAutomatedMail(m, own, inbox.address).automated;
-  if (automated) return null;
+  const ours = folder === "sent";
+  if (ours) {
+    if (!addresses.ours.includes(address)) return null;
+    // Header checks only: our own address would count as automated, and
+    // an automatic reply is no person's answer.
+    if (isAutomatedMail(m, [], "").automated) return null;
+  } else if (isAutomatedMail(m, addresses.all, addresses.inbox).automated)
+    return null;
   return {
     messageId,
     inReplyTo: m.keys.inReplyTo,
@@ -148,7 +158,11 @@ async function readMailbox(
   const others = (await listInboxes())
     .filter((i) => i.id !== inbox.id)
     .map((i) => i.address);
-  const own = ownMailAddresses(inbox, others);
+  const addresses = {
+    inbox: inbox.address,
+    ours: ownMailAddresses(inbox),
+    all: ownMailAddresses(inbox, others),
+  };
   let client: ImapFlow;
   try {
     const target = await resolveMailHost(inbox.imap.host, {
@@ -167,9 +181,14 @@ async function readMailbox(
     await client.connect();
     const folders = await client.list();
     const sent = folders.find((f) => f.specialUse === "\\Sent")?.path;
-    const paths = ["INBOX"];
-    if (sent && sent.toUpperCase() !== "INBOX") paths.push(sent);
-    for (const path of paths) {
+    // Without a Sent folder nothing is provably ours: no answers.
+    if (!sent || sent.toUpperCase() === "INBOX") return [];
+    // Sent first: a message in both folders counts as our copy.
+    const folderList: Array<[string, "sent" | "inbox"]> = [
+      [sent, "sent"],
+      ["INBOX", "inbox"],
+    ];
+    for (const [path, folder] of folderList) {
       const mailbox = await client.mailboxOpen(path, { readOnly: true });
       const found = await client.search(
         { since: new Date(since) },
@@ -211,7 +230,7 @@ async function readMailbox(
           } catch {
             continue;
           }
-          const record = toRecord(message, inbox, own);
+          const record = toRecord(message, folder, addresses);
           if (record) records.push(record);
         }
       }

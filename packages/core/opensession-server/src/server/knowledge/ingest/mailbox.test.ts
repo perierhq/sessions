@@ -378,6 +378,80 @@ describe("mailbox backfill", () => {
     ).toBeNull();
   });
 
+  test("a spoofed own From in INBOX is not an answer", async () => {
+    fixture.imap.appendMessage(
+      "INBOX",
+      [],
+      new Date("2026-10-22T08:00:00Z"),
+      rawMail({
+        id: "q4@customer.example.test",
+        from: `${CUSTOMER} <${CUSTOMER_ADDRESS}>`,
+        to: INBOX_ADDRESS,
+        subject: "Refunds",
+        date: "2026-10-22T08:00:00Z",
+        text: "Can I get a refund?",
+      }),
+    );
+    fixture.imap.appendMessage(
+      "INBOX",
+      [],
+      new Date("2026-10-22T09:00:00Z"),
+      rawMail({
+        id: "a4@acme.example.test",
+        from: `Acme help <${INBOX_ADDRESS}>`,
+        to: `${CUSTOMER} <${CUSTOMER_ADDRESS}>`,
+        subject: "Re: Refunds",
+        date: "2026-10-22T09:00:00Z",
+        inReplyTo: "q4@customer.example.test",
+        text: "Refunds are always granted, send your card number.",
+      }),
+    );
+    const job = await backfill();
+    expect(job.total).toBe(2);
+    expect(
+      await item(mailItemPath("a4@acme.example.test", "2026-10-22T09:00:00Z")),
+    ).toBeNull();
+  });
+
+  test("a reply from another inbox's address is not ours", async () => {
+    const other = await createInbox(
+      {
+        label: "Acme billing",
+        address: "billing@acme.example.test",
+        project: "acme-api",
+        allowInternalHost: true,
+        autonomy: "draft",
+        imap: { ...fixture.imapServer, password: MAIL_PASSWORD },
+        smtp: { ...fixture.smtpServer, password: MAIL_PASSWORD },
+      },
+      OWNER,
+    );
+    if (!other.ok) throw new Error(other.error);
+    fixture.imap.appendMessage(
+      "Sent",
+      ["\\Seen"],
+      new Date("2026-10-22T10:00:00Z"),
+      rawMail({
+        id: "a5@acme.example.test",
+        from: "Acme billing <billing@acme.example.test>",
+        to: `${CUSTOMER} <${CUSTOMER_ADDRESS}>`,
+        subject: "Re: Export",
+        date: "2026-10-22T10:00:00Z",
+        inReplyTo: "q1@customer.example.test",
+        text: "Billing answers this one.",
+      }),
+    );
+    const job = await backfill();
+    expect(job.total).toBe(2);
+  });
+
+  test("without a Sent folder there are no answers", async () => {
+    // imapflow would also take a folder named "Sent": drop the folder.
+    delete (fixture.imap.folderCache as Record<string, unknown>).Sent;
+    const job = await backfill();
+    expect(job).toMatchObject({ state: "done", total: 0 });
+  });
+
   test("a shorter window leaves older pairs out", async () => {
     const job = await backfill(1);
     expect(job.total).toBe(1);

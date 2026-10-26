@@ -47,6 +47,24 @@ describe("pairThreads", () => {
     ]);
   });
 
+  test("a reply to our own message makes no pair", () => {
+    // Our follow-up to our own reply: the customer's question further up
+    // References was already answered by that reply.
+    const q = mail("q1@customer.example.test");
+    const a1 = mail("a1@acme.example.test", {
+      ours: true,
+      inReplyTo: "q1@customer.example.test",
+    });
+    const a2 = mail("a2@acme.example.test", {
+      ours: true,
+      inReplyTo: "a1@acme.example.test",
+      references: ["q1@customer.example.test", "a1@acme.example.test"],
+    });
+    expect(ids(pairThreads([q, a1, a2]))).toEqual([
+      ["q1@customer.example.test", "a1@acme.example.test"],
+    ]);
+  });
+
   test("Message-IDs match however they are written", () => {
     const q = mail("<Q1@Customer.Example.Test>");
     const a = mail("a1@acme.example.test", {
@@ -64,8 +82,7 @@ describe("pairThreads", () => {
     });
     const a2 = mail("a2@acme.example.test", {
       ours: true,
-      inReplyTo: "a1@acme.example.test",
-      references: ["q1@customer.example.test", "a1@acme.example.test"],
+      inReplyTo: "q1@customer.example.test",
     });
     expect(ids(pairThreads([q, a1, a2]))).toEqual([
       ["q1@customer.example.test", "a1@acme.example.test"],
