@@ -75,6 +75,7 @@ import { join } from "node:path";
 import { $ } from "bun";
 import { githubRequest } from "../agents/github/github-rest";
 import { audit } from "./audit";
+import { recordHousekeepingRun, runHousekeeping } from "./housekeeping-health";
 import type { Repo } from "./config";
 import { configuredPaths } from "./config";
 import { stateDir } from "./paths";
@@ -898,17 +899,17 @@ export function startWorktreeReaper(
       sessions = getSessions();
     } catch (e) {
       console.error("[worktree-reaper] session snapshot failed; skipping:", e);
+      recordHousekeepingRun("worktree-reaper", { ok: false, error: e });
       return;
     }
     // Loaded on demand: the GitHub agent's pending-deploy store is an
     // optional extra guard, and a failure to read it only drops that guard.
-    void import("../agents/github/session-notify")
-      .then((m) => m.sessionsAwaitingDeploy())
-      .catch(() => new Set<string>())
-      .then((awaitingDeploy) =>
-        sweepWorktreeReaper({ sessions, awaitingDeploy }),
-      )
-      .catch((e) => console.error("[worktree-reaper] sweep failed:", e));
+    void runHousekeeping("worktree-reaper", async () => {
+      const awaitingDeploy = await import("../agents/github/session-notify")
+        .then((m) => m.sessionsAwaitingDeploy())
+        .catch(() => new Set<string>());
+      return sweepWorktreeReaper({ sessions, awaitingDeploy });
+    });
     // Session scratch dirs (session-scratch.ts) ride the same cadence and
     // session snapshot; scratch outlives its session only up to the same
     // horizons the worktrees do.
