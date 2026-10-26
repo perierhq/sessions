@@ -272,6 +272,10 @@ describe("ImapTransport", () => {
       days: 7,
       count: 1,
     });
+    // What came in is the inbox's last message, after a restart too.
+    expect(h.cursor.value?.lastMessageAt).toBe(
+      h.transport.health().lastMessageAt!,
+    );
 
     // New mail still flows, and the record stays with the cursor.
     f.deliver(mail(4));

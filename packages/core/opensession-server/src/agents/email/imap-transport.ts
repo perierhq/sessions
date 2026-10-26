@@ -318,7 +318,12 @@ export class ImapTransport {
         ...(this.cursor.existingMail ?? { at: this.iso(), unread: 0 }),
         broughtIn: { at: this.iso(), days, count: uids.length },
       };
-      const next: ImapCursor = { ...this.cursor, existingMail };
+      const lastMessageAt = this.current.lastMessageAt;
+      const next: ImapCursor = {
+        ...this.cursor,
+        existingMail,
+        ...(lastMessageAt ? { lastMessageAt } : {}),
+      };
       await this.persist(next);
       this.cursor = next;
       this.current = { ...this.current, existingMail };
