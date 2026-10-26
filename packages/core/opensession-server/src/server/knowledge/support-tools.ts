@@ -9,7 +9,8 @@
 // read_knowledge as read, so a draft's knowledge citations can be checked
 // against what the session actually read (knowledge/backing.ts). An
 // item's text is data: read_knowledge prints its trust, status and
-// citation first, then its front matter and text inside a wrapper with a
+// citation first (an issue item also that people outside the team wrote
+// it), then its front matter and text inside a wrapper with a
 // fresh nonce that neither can close; search_knowledge wraps each title
 // the same way. Nothing runs at import.
 
@@ -41,6 +42,8 @@ export const INTERNAL_NOTE = "internal: steer by it, never quote it";
 export const REFERENCE_NOTE =
   "reference: context only, a person must confirm it";
 export const CONTEXT_NOTE = "context only, a person must confirm it";
+/** Printed before the wrapper for an item copied from an issue. */
+export const OUTSIDER_NOTE = "Written by people outside the team.";
 export const CANT_BACK = "(can't back a reply alone)";
 export const BODY_CUT = "(cut: don't rely on parts you didn't see)";
 /** Entries of `sources` and `dependsOn` printed at most. */
@@ -279,6 +282,7 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
             ? `Cite as ${citation}`
             : `Cite as ${citation} ${CANT_BACK}`,
         );
+        if (item.origin === "issue") head.push(OUTSIDER_NOTE);
         const cut = body.length > MAX_KNOWLEDGE_BODY;
         // Unguessable, so the item's text can't name the closing tag. The
         // front matter is the item's data too.

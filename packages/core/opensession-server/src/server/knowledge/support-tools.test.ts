@@ -120,6 +120,19 @@ beforeAll(async () => {
         }),
         body: "There is no PDF export yet.\n",
       },
+      {
+        op: "put",
+        path: "sources/issues/7.md",
+        fm: fm({
+          title: "Login loops on Safari",
+          trust: "reference",
+          origin: "issue",
+          topics: [],
+          sources: ["issue:7"],
+          dependsOn: ["issue:7"],
+        }),
+        body: "Known problem, open: https://github.com/acme/app/issues/7\n",
+      },
     ],
     { message: "Add export articles", author: ADA },
   ))!;
@@ -411,6 +424,19 @@ test("read_knowledge marks an internal item", async () => {
     path: "articles/export-internals.md",
   });
   expect(out).toContain("internal: steer by it, never quote it");
+});
+
+test("read_knowledge says an issue item was written outside the team, before the wrapper", async () => {
+  const out = await call("s1", "read_knowledge", {
+    path: "sources/issues/7.md",
+  });
+  const note = out.indexOf("\nWritten by people outside the team.\n");
+  expect(note).toBeGreaterThan(0);
+  expect(note).toBeLessThan(out.indexOf("<knowledge_item_"));
+  const article = await call("s1", "read_knowledge", {
+    path: "articles/export.md",
+  });
+  expect(article).not.toContain("outside the team");
 });
 
 test("read_knowledge refuses attachments and paths outside the items", async () => {
