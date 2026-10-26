@@ -20,6 +20,7 @@ import {
 
 // The same options the server registers codemode with (piCodemodeExtension).
 let tool: ToolDefinition<any, any, any> | undefined;
+// SAFETY: the extension calls only these four ExtensionAPI members.
 createCodemodeExtension({ mode: "on", models: false })({
   registerTool: (definition: ToolDefinition<any, any, any>) => {
     tool = definition;
@@ -31,6 +32,8 @@ createCodemodeExtension({ mode: "on", models: false })({
 if (!tool) throw new Error("codemode-probe: pi registered no codemode tool");
 
 try {
+  // SAFETY: codemode's executor treats a missing context as "no callable
+  // tools", which is all `return 1+1` needs.
   const result = await tool.execute(
     "codemode-probe",
     { code: "return 1+1" },
@@ -38,7 +41,9 @@ try {
     undefined,
     undefined as never,
   );
-  const text = (result.content as Array<{ type: string; text?: string }>)
+  // SAFETY: a tool result's content is pi's text and image blocks.
+  const blocks = result.content as Array<{ type: string; text?: string }>;
+  const text = blocks
     .map((block) => (block.type === "text" ? (block.text ?? "") : ""))
     .join("\n");
   if (/^Script completed\b/.test(text) && /\nOutput:\s*2\s*$/.test(text)) {
