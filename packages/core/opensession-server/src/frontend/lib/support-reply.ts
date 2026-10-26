@@ -19,6 +19,7 @@ import type {
 import { API_BASE } from "./api/request";
 import { routePath } from "./app-route";
 import type { PlainTimelineEntry } from "./types";
+import { agentInProse } from "./brand";
 
 export type ReplyBoxMode =
   /** No live draft. */
@@ -79,7 +80,7 @@ function draftAuthor(draft: SupportDraft): string {
   const author = draft.author;
   switch (author.kind) {
     case "agent":
-      return "Draft by the agent";
+      return `Draft by ${agentInProse()}`;
     case "person":
       return `Draft by ${author.name}`;
     case "sessions":
@@ -89,7 +90,7 @@ function draftAuthor(draft: SupportDraft): string {
   }
 }
 
-/** "Draft by the agent · <rule>", or the countdown in a veto window. */
+/** "Draft by <persona> · <rule>", or the countdown in a veto window. */
 export function draftHeader(
   mode: Exclude<ReplyBoxMode, { kind: "compose" }>,
   now: number,

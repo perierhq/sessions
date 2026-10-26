@@ -21,7 +21,7 @@ export interface NeedsCheckGroup {
   key: string;
   /** The reason, as the items' check note says it. */
   reason: string;
-  /** `<reason> · <n> articles`. */
+  /** `<reason> · <n> items`. */
   line: string;
   items: KnowledgeItem[];
 }
@@ -43,13 +43,10 @@ function groupOf(item: KnowledgeItem): GroupOf {
   return { key: `reason:${check.reason}`, reason: check.reason };
 }
 
-/** `4 articles`, or `2 items` when anything isn't an article. */
+/** `4 items`: one noun for every group, whatever folders they sit in. */
 export function countLine(items: Array<{ path: string }>): string {
   const n = items.length;
-  const noun = items.every((i) => i.path.startsWith("articles/"))
-    ? "article"
-    : "item";
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+  return `${n} item${n === 1 ? "" : "s"}`;
 }
 
 /** Items grouped by why they need a check, in the order the first of each

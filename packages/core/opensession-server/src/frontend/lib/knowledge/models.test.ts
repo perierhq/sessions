@@ -145,6 +145,10 @@ test("filterLabel and emptyCopy cover every filter", () => {
   expect(filterLabel("needs-check")).toBe("Needs check");
   expect(filterLabel("answer")).toBe("Answer");
   expect(emptyCopy("needs-check")).toBe("Nothing needs a check");
+  // No persona in tests: the agent, not a hard-coded name.
+  expect(emptyCopy("suggestions")).toBe(
+    "No suggestions. The agent suggests articles from the replies your team sends",
+  );
   expect(emptyCopy("suggestions")).toContain("No suggestions");
 });
 

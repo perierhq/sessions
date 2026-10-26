@@ -55,8 +55,8 @@ describe("groupByReason", () => {
       item({ path: "articles/e.md" }),
     ]);
     expect(groups.map((g) => g.line)).toEqual([
-      "docs/export.md changed in 9c1d2e0 · 4 articles",
-      "Disagrees with Exporting (old) · 1 article",
+      "docs/export.md changed in 9c1d2e0 · 4 items",
+      "Disagrees with Exporting (old) · 1 item",
     ]);
     expect(groups[0]!.items.map((i) => i.path)).toEqual([
       "articles/a.md",
@@ -66,7 +66,7 @@ describe("groupByReason", () => {
     ]);
   });
 
-  test("anything but articles is counted as items", () => {
+  test("articles and other items are counted alike, as items", () => {
     const [group] = groupByReason([
       item({ path: "articles/a.md" }),
       item({ path: "sources/mail/2026-10/m1.md", origin: "mail" }),
@@ -79,9 +79,7 @@ describe("groupByReason", () => {
       item({ path: "articles/a.md", check: undefined, reviewBy: "2026-10-01" }),
       item({ path: "articles/b.md", check: undefined, reviewBy: "2026-09-01" }),
     ]);
-    expect(groups.map((g) => g.line)).toEqual([
-      "Review date passed · 2 articles",
-    ]);
+    expect(groups.map((g) => g.line)).toEqual(["Review date passed · 2 items"]);
   });
 
   test("a person's mark groups by its reason", () => {
@@ -216,7 +214,7 @@ describe("confirmGroupRequest", () => {
       calls.push([p, paths]);
       return { commit: "d".repeat(40) };
     });
-    expect(request.title).toBe("Mark 2 articles still true?");
+    expect(request.title).toBe("Mark 2 items still true?");
     expect(request.confirmLabel).toBe("Still true for all (2)");
     expect(calls).toEqual([]);
     await request.onConfirm();

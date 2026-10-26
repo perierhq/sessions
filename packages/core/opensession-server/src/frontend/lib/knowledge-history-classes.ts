@@ -18,4 +18,5 @@ export const HISTORY_LINE = "mt-0.5 block text-meta text-dim";
 export const HISTORY_SHA = "font-mono";
 export const HISTORY_ACTIONS = "flex shrink-0 items-center gap-2";
 export const HISTORY_REVERT = "phone:min-h-11";
-export const HISTORY_LOADING = "text-meta text-dim";
+/** The diff on its way, inside the row: the row already pads it. */
+export const HISTORY_LOADING = "px-0 py-2 text-meta text-dim";

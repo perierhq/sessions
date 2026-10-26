@@ -11,7 +11,9 @@ import {
   KNOWLEDGE_CHIP_ON,
   KNOWLEDGE_CHIPS,
   KNOWLEDGE_MORE,
+  KNOWLEDGE_ROW_ALERT,
   KNOWLEDGE_ROW_BUTTON,
+  KNOWLEDGE_ROW_GHOST,
   KNOWLEDGE_ROW_HEAD,
   KNOWLEDGE_ROW_LINE,
   KNOWLEDGE_ROW_TITLE,
@@ -33,7 +35,8 @@ import { Badge } from "../../../ui/badge";
 import { Button } from "../../../ui/button";
 import { Input } from "../../../ui/input";
 import { SettingCard, SettingCardSkeleton } from "../../../ui/settings";
-import { EmptyState, InlineAlert } from "../../../ui/state";
+import { EmptyState, InlineAlert, ListSkeleton } from "../../../ui/state";
+import { PlainButton } from "../../../ui/plain-button";
 import { IconPlus } from "../../icons";
 
 const PAGE = 50;
@@ -218,17 +221,24 @@ function LaterPage({
   );
   if (page.error && !page.data)
     return (
-      <div className="px-5 py-3">
-        <InlineAlert
-          {...knowledgeAlert(
-            page.error,
-            "Couldn't load the knowledge",
-            () => void page.mutate(),
-          )}
-        />
-      </div>
+      <InlineAlert
+        className={KNOWLEDGE_ROW_ALERT}
+        {...knowledgeAlert(
+          page.error,
+          "Couldn't load the knowledge",
+          () => void page.mutate(),
+        )}
+      />
     );
-  if (!page.data) return <SettingCardSkeleton rows={2} />;
+  // Rows inside the list's card, so ghost rows rather than a second card.
+  if (!page.data)
+    return (
+      <ListSkeleton
+        variant="rows"
+        rows={2}
+        rowClassName={KNOWLEDGE_ROW_GHOST}
+      />
+    );
   return <Rows items={page.data.items} onOpen={onOpen} />;
 }
 
@@ -241,9 +251,8 @@ function Rows({
 }) {
   const today = todayUtc();
   return items.map((item) => (
-    <button
+    <PlainButton
       key={item.path}
-      type="button"
       className={KNOWLEDGE_ROW_BUTTON}
       onClick={() => onOpen(item.path)}
     >
@@ -256,6 +265,6 @@ function Rows({
         ))}
       </span>
       <span className={KNOWLEDGE_ROW_LINE}>{listLine(item, today)}</span>
-    </button>
+    </PlainButton>
   ));
 }

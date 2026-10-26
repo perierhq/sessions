@@ -69,7 +69,7 @@ function today(): string {
 }
 
 /**
- * The Suggestions tab: what Pat proposed from replies, to approve as
+ * The Suggestions tab: what the agent proposed from replies, to approve as
  * articles in batches, edit and approve one, or discard. A checkbox per row
  * and "Select all" over the list; the batch actions sit beside "Select all"
  * on a desktop and in a bottom bar on a phone.

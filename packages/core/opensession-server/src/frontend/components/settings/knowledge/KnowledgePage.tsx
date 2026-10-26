@@ -167,8 +167,8 @@ export function KnowledgePage({
           </Button>
         </div>
         <SettingsHeader
-          title={repoLabel(project)}
-          description="Knowledge: what support replies can rely on"
+          title="Knowledge"
+          description="What support replies can rely on"
         />
         <div ref={tabsRef} className={KNOWLEDGE_TABS_SCROLL}>
           <Segmented

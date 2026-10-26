@@ -210,7 +210,7 @@ export function KnowledgeImport({ project }: { project: string }) {
               start("mailbox", { inboxId: inbox, months: Number(months) })
             }
           >
-            {actionLabel("mailbox", "Start")}
+            {actionLabel("mailbox", "Import")}
           </Button>
         </div>
 

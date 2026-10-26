@@ -34,7 +34,7 @@ import {
   SettingCardSkeleton,
   SettingsHeader,
 } from "../../../ui/settings";
-import { EmptyState, InlineAlert } from "../../../ui/state";
+import { EmptyState, InlineAlert, LoadingState } from "../../../ui/state";
 import { toast } from "../../../ui/toast";
 import { IconChevronRight } from "../../icons";
 import { CommitDiff } from "../CommitDiff";
@@ -157,7 +157,7 @@ export function KnowledgeHistoryRow({
       onReverted();
     } catch (error) {
       // A 409 says later changes touched the same lines.
-      setFailure(knowledgeErrorMessage(error, "Couldn't undo the change"));
+      setFailure(knowledgeErrorMessage(error, "Couldn't revert the change"));
     }
     setBusy(false);
   }
@@ -206,7 +206,9 @@ export function KnowledgeHistoryRow({
       {failure && <InlineAlert>{failure}</InlineAlert>}
       {open &&
         (diff === null ? (
-          <div className={HISTORY_LOADING}>Loading the change…</div>
+          <LoadingState placement="row" className={HISTORY_LOADING}>
+            Loading the change
+          </LoadingState>
         ) : (
           <CommitDiff diff={diff} path={path} />
         ))}

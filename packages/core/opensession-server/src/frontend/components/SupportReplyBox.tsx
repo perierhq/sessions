@@ -218,7 +218,7 @@ export function SupportReplyBox({
         <>
           {stateLine && (
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 pb-1.5">
-              <span className="min-w-0 text-label font-semibold text-fg">
+              <span className="min-w-0 text-label font-medium text-fg">
                 {stateLine}
               </span>
               {pinnedTo && (

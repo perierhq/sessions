@@ -159,7 +159,7 @@ function NeedsCheckQueue({
         disabled={checking}
         onClick={() => void checkNow()}
       >
-        {checking ? "Checking…" : "Check now"}
+        {checking ? "Checking" : "Check now"}
       </Button>
     </div>
   );

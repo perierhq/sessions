@@ -13,8 +13,10 @@ import { importLabel, jobLine } from "./models";
 export const BACKFILL_MONTH_CHOICES = [3, 6, 12, 24, 36] as const;
 export const DEFAULT_IMPORT_MONTHS = DEFAULT_BACKFILL_MONTHS;
 
+/** "Last 12 months": the select reads on its own, without its label (a
+ *  phone shows only the value). */
 export function monthsLabel(months: number): string {
-  return months === 1 ? "1 month" : `${months} months`;
+  return months === 1 ? "Last month" : `Last ${months} months`;
 }
 
 /** The window select's options. */

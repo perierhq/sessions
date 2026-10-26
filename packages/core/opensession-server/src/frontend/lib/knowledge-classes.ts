@@ -42,7 +42,13 @@ export const KNOWLEDGE_ROW_LINE = "text-supporting text-dim phone:text-meta";
 /** A row that opens its item: the whole row is the target, 44px and more,
  *  and the hover wash fills it to the card's corners. */
 export const KNOWLEDGE_ROW_BUTTON =
-  "focus-ring flex w-full min-h-11 cursor-pointer flex-col gap-1 border-0 bg-transparent px-5 py-3.5 text-left hover:bg-hover active:bg-pressed";
+  "flex w-full min-h-11 flex-col gap-1 px-5 py-3.5 hover:bg-hover active:bg-pressed";
+/** A later page's ghost rows, at a row's padding. */
+export const KNOWLEDGE_ROW_GHOST = "px-5 py-3.5";
+/** A later page that couldn't load, as a row of the list: the alert's text
+ *  and Retry without its own plate, which would be a card in the card. */
+export const KNOWLEDGE_ROW_ALERT =
+  "rounded-none border-0 bg-transparent px-5 py-3.5";
 
 /** The search box and the new-article button above the list, on the
  *  header's x. */

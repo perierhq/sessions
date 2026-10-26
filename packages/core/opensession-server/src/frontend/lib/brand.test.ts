@@ -18,3 +18,33 @@ describe("sessionSourceLabel", () => {
     }
   });
 });
+
+describe("agentInProse", () => {
+  test("an instance without a persona says the agent", async () => {
+    const { agentInProse } = await import("./brand");
+    expect(agentInProse()).toBe("the agent");
+    expect(agentInProse({ start: true })).toBe("The agent");
+  });
+
+  test("a named persona is used as is; the unnamed default is not", async () => {
+    const load = async (personaName: string, key: string) => {
+      // SAFETY: tests run without a DOM; `window` is only read by brand.ts
+      // at import time, and restored below.
+      const scope = globalThis as { window?: unknown };
+      const before = scope.window;
+      scope.window = { __OPENSESSION_INSTANCE__: { personaName } };
+      try {
+        // SAFETY: the same module, loaded again under another specifier so
+        // its import-time constants read this window.
+        return (await import(`./brand.ts?${key}`)) as typeof import("./brand");
+      } finally {
+        scope.window = before;
+      }
+    };
+    const named = await load("Pat", "named");
+    expect(named.agentInProse()).toBe("Pat");
+    expect(named.agentInProse({ start: true })).toBe("Pat");
+    const unnamed = await load("Assistant", "unnamed");
+    expect(unnamed.agentInProse({ start: true })).toBe("The agent");
+  });
+});

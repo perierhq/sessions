@@ -69,6 +69,7 @@ import { InlineAlert } from "../../../ui/state";
 import { Switch } from "../../../ui/switch";
 import { toast } from "../../../ui/toast";
 import { IconHistory, IconPaperclip } from "../../icons";
+import { agentInProse } from "../../../lib/brand";
 
 function kindOf(value: string): KnowledgeKind {
   return value === "internal" ? "internal" : "answer";
@@ -428,7 +429,6 @@ export function KnowledgeEditorForm({
         <div className={KNOWLEDGE_EDITOR_PAIR}>
           <Labeled label="Kind" labelId={labelId("kind")}>
             <Segmented
-              label="Kind"
               aria-labelledby={labelId("kind")}
               value={state.kind}
               onValueChange={(kind) => update({ kind: kindOf(kind) })}
@@ -450,7 +450,7 @@ export function KnowledgeEditorForm({
             <span className={KNOWLEDGE_EDITOR_HINT}>
               {state.kind === "internal"
                 ? "For the team only: a reply that quotes it waits for a person"
-                : "Pat may say this to a customer"}
+                : `${agentInProse({ start: true })} may say this to a customer`}
             </span>
           </Labeled>
           <Labeled label="Status" labelId={labelId("status")}>

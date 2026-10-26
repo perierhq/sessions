@@ -11,6 +11,7 @@ import {
   type KnowledgeOrigin,
 } from "../../../shared/knowledge";
 import { ApiError } from "../api/request";
+import { agentInProse } from "../brand";
 import { errorMessage } from "../error-message";
 
 export type KnowledgeBadgeLabel =
@@ -170,8 +171,7 @@ const EMPTY_COPY: Record<KnowledgeFilter, string> = {
   internal: "No internal notes",
   "needs-check": "Nothing needs a check",
   reference: "No reference material",
-  suggestions:
-    "No suggestions. Pat suggests articles from the replies your team sends",
+  suggestions: `No suggestions. ${agentInProse({ start: true })} suggests articles from the replies your team sends`,
   retired: "Nothing retired",
 };
 

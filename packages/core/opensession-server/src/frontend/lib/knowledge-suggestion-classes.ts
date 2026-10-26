@@ -34,7 +34,7 @@ export const SUGGESTIONS_PHONE_BAR_SPACE = "phone:pb-24";
 
 /** The approve-with-edits form. */
 export const SUGGESTION_EDIT_FORM = "flex flex-col gap-3.5 p-5";
-export const SUGGESTION_EDIT_TITLE = "text-item-title font-semibold text-fg";
+export const SUGGESTION_EDIT_TITLE = "text-item-title font-medium text-fg";
 export const SUGGESTION_EDIT_INPUT = "phone:min-h-11 phone:text-input-phone";
 export const SUGGESTION_EDIT_BODY =
   "min-h-48 resize-y py-2 phone:text-input-phone";

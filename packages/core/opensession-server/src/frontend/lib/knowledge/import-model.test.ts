@@ -97,7 +97,8 @@ test("a wildcard host is listed as skipped", () => {
 test("the mailbox window is 3 to 36 months, 12 by default", () => {
   expect(BACKFILL_MONTH_CHOICES).toEqual([3, 6, 12, 24, 36]);
   expect(DEFAULT_IMPORT_MONTHS).toBe(12);
-  expect(monthsLabel(12)).toBe("12 months");
+  expect(monthsLabel(12)).toBe("Last 12 months");
+  expect(monthsLabel(1)).toBe("Last month");
 });
 
 test("files the server would refuse are named with its reason", () => {

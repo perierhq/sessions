@@ -73,6 +73,7 @@ import { Switch } from "../../../ui/switch";
 import { toast } from "../../../ui/toast";
 import { FormField, FormSection } from "../incidents/FormParts";
 import { SettingsDialog } from "../incidents/SettingsDialog";
+import { agentInProse } from "../../../lib/brand";
 
 const TLS_LABELS: Record<MailTlsMode, string> = {
   implicit: "TLS",
@@ -88,8 +89,7 @@ const SERVER_TITLES: Record<MailServerKind, string> = {
 const CONNECTOR_WARNING =
   "Routine replies can carry what the project's connectors, web search and websites return. Draft is safer while you get to know the agent.";
 
-const LEARN_COPY =
-  "Pat reads the replies your team sent from this inbox and adds them to the project's knowledge. Answers older than the latest docs change or release come in as reference";
+const LEARN_COPY = `${agentInProse({ start: true })} reads the replies your team sent from this inbox and adds them to the project's knowledge. Answers older than the latest docs change or release come in as reference`;
 
 /**
  * Connect or edit one support inbox: the mailbox and its two servers (with
