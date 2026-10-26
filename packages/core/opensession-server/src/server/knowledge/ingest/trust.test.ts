@@ -31,6 +31,7 @@ function touches(path: string, asked: string[]): boolean {
 
 function fakeDeps(over: Partial<TrustDeps> = {}): TrustDeps {
   return {
+    now: () => Date.parse("2026-10-26T09:00:00Z"),
     latestRelease: async () => V130,
     latestChange: async (paths) => {
       const hits = HISTORY.filter(
@@ -164,6 +165,77 @@ describe("mailTrust", () => {
     expect(decision.trust).toBe("reference");
     expect(decision.reason).toBe("History couldn't be read");
     expect(decision.validAsOfCommit).toBeUndefined();
+  });
+
+  test("an answer time more than 5 minutes ahead of now is reference", async () => {
+    const now = Date.parse("2026-10-20T08:00:00Z");
+    const ahead = await mailTrust(
+      { answeredAt: "2026-10-20T08:06:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps({ now: () => now }),
+    );
+    expect(ahead.trust).toBe("reference");
+    expect(ahead.reason).toBe("History couldn't be read");
+    const skew = await mailTrust(
+      { answeredAt: "2026-10-20T08:04:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps({ now: () => now }),
+    );
+    expect(skew.trust).toBe("trusted");
+  });
+
+  test("an answer time without a zone is refused", async () => {
+    await expect(
+      mailTrust(
+        { answeredAt: "2026-10-20T08:00:00", touchedPaths: [] },
+        fakeDeps(),
+      ),
+    ).rejects.toThrow("Not a date");
+    const offset = await mailTrust(
+      {
+        answeredAt: "2026-10-20T10:00:00+02:00",
+        touchedPaths: ["docs/export.md"],
+      },
+      fakeDeps(),
+    );
+    expect(offset.trust).toBe("trusted");
+    expect(offset.validAsOf).toBe("2026-10-20");
+  });
+
+  test("a release or change at the answer's own second fails closed", async () => {
+    const release = await mailTrust(
+      { answeredAt: "2026-10-25T12:00:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps({
+        latestRelease: async () => ({
+          tag: "v1.4.0",
+          name: "v1.4.0",
+          at: "2026-10-25T12:00:00Z",
+          body: "",
+        }),
+      }),
+    );
+    expect(release.trust).toBe("reference");
+    const change = await mailTrust(
+      { answeredAt: "2026-10-06T10:00:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps(),
+    );
+    expect(change.trust).toBe("reference");
+  });
+
+  test("a change committed within 48 hours before the answer is reference", async () => {
+    // A commit's date is when it was made, not when it landed: it may have
+    // reached the default branch after the answer.
+    const near = await mailTrust(
+      { answeredAt: "2026-10-07T09:00:00Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps(),
+    );
+    expect(near.trust).toBe("reference");
+    expect(near.reason).toBe(
+      "Answered within 2 days of docs/export.md changing in 3333333 (2026-10-06)",
+    );
+    const clear = await mailTrust(
+      { answeredAt: "2026-10-08T10:00:01Z", touchedPaths: ["docs/export.md"] },
+      fakeDeps(),
+    );
+    expect(clear.trust).toBe("trusted");
   });
 
   test("an unreadable answer time is refused", async () => {
