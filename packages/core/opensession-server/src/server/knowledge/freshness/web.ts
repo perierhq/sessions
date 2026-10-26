@@ -1,0 +1,145 @@
+/**
+ * The web signal of knowledge freshness: a page's readable text and a hash
+ * of it. An item that depends on `url:<page>` goes stale when the page's
+ * hash no longer matches the one recorded in its sources.
+ *
+ * Pages are fetched with the pinned fetcher (web-fetch.ts fetchChecked:
+ * private addresses refused on every hop) and only from an exact,
+ * non-wildcard host of the project's Support websites, the rule an
+ * automatic reply's links follow (support/policy.ts linkAllowed). The host
+ * is checked before the first request and on every redirect hop before it
+ * is dialled, so a listed page can't lead the crawler anywhere else.
+ * Nothing runs at import.
+ */
+
+import { createHash } from "node:crypto";
+import { linkAllowed } from "../../support/policy";
+import {
+  fetchChecked,
+  htmlToText,
+  isBlockedAddress,
+  pinnedRequest,
+  type WebFetchDeps,
+} from "../../web-fetch";
+import { resolveWithDns } from "../../shared/pinned-fetch";
+
+const TEXT_TYPES =
+  /^(text\/(plain|markdown|x-markdown)|application\/(xhtml\+xml))\b/i;
+const HTML_TYPES = /\b(html|xhtml)\b/i;
+
+/** A page's readable text: HTML through htmlToText, plain text and
+ *  Markdown as they are; lines trimmed, runs of blank lines folded. */
+export async function normalizedPageText(
+  html: string,
+  contentType: string,
+): Promise<{ title?: string; text: string }> {
+  let title: string | undefined;
+  let text = html;
+  if (HTML_TYPES.test(contentType)) {
+    const extracted = await htmlToText(html);
+    title = extracted.title?.replace(/\s+/g, " ").trim() || undefined;
+    text = extracted.text;
+  }
+  const lines = text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v\u00a0]+/g, " ").trim());
+  const folded = lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return title ? { title, text: folded } : { text: folded };
+}
+
+/** sha256 (hex) of the text with every whitespace run collapsed, so a
+ *  reflowed page hashes the same and a changed word does not. */
+export function pageHash(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return createHash("sha256").update(collapsed).digest("hex");
+}
+
+const defaultDeps: WebFetchDeps = {
+  resolve: resolveWithDns,
+  isBlocked: isBlockedAddress,
+  request: pinnedRequest,
+};
+
+/** The URL with its fragment dropped: a fragment never reaches the server. */
+function withoutHash(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch one page of the project's websites and return its text and hash.
+ * `hosts` is the project's Support websites list; only exact, non-wildcard
+ * entries count. Any refusal, error status, non-text body or network
+ * failure comes back as `{ error }`.
+ */
+export async function fetchPage(
+  url: string,
+  hosts: string[],
+  deps: WebFetchDeps = defaultDeps,
+): Promise<
+  | { url: string; title?: string; text: string; hash: string }
+  | { error: string }
+> {
+  const start = withoutHash(url);
+  if (!start || !linkAllowed(start, hosts))
+    return { error: `Not on the project's websites: ${url.slice(0, 200)}` };
+  // Every hop, the first included, passes the host rule before it is
+  // dialled; fetchChecked resolves and address-checks it as usual.
+  const guarded: WebFetchDeps = {
+    ...deps,
+    request: (target, signal, inner) => {
+      if (!linkAllowed(withoutHash(target.url.toString()) ?? "", hosts))
+        throw new Error(
+          `Redirected off the project's websites: ${target.url.host}`,
+        );
+      return deps.request(target, signal, inner);
+    },
+  };
+  try {
+    const { response, finalUrl } = await fetchChecked(
+      start,
+      undefined,
+      guarded,
+    );
+    if (!linkAllowed(finalUrl, hosts))
+      return { error: `Redirected off the project's websites: ${finalUrl}` };
+    if (response.status < 200 || response.status >= 300)
+      return { error: `The page answered ${response.status}` };
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!HTML_TYPES.test(contentType) && !TEXT_TYPES.test(contentType))
+      return {
+        error: `Not a text page: ${contentType.split(";")[0] || "unknown type"}`,
+      };
+    const body = new TextDecoder("utf-8", { fatal: false }).decode(
+      response.body,
+    );
+    const page = await normalizedPageText(body, contentType);
+    return {
+      url: finalUrl,
+      ...(page.title ? { title: page.title } : {}),
+      text: page.text,
+      hash: pageHash(page.text),
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error ? error.message : "The page couldn't be read",
+    };
+  }
+}
+
+/** Whether fetchPage would try `url` at all (the crawler filters sitemap
+ *  entries with it). Query strings are refused, as in a reply's links. */
+export function crawlable(url: string, hosts: string[]): boolean {
+  const plain = withoutHash(url);
+  return !!plain && linkAllowed(plain, hosts);
+}
