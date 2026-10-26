@@ -70,7 +70,6 @@ import { duplicateContextSessionIds } from "./session-duplicate";
 import { onSessionIdle as onHumanAsksSessionIdle } from "./human-asks";
 import { parseTranscriptAsync } from "./jsonl-parser";
 import {
-  contextWindowFor,
   interactiveFallbackModel,
   modelLabel,
   providerFor,
@@ -216,6 +215,9 @@ import { markRecapPendingIfUnwatched } from "./recap";
 import { noteYouShouldKnowStep } from "./you-should-know";
 import { scheduleSessionHistoryIndex } from "./session-index";
 import { broadcastToSession, sessionWatchers } from "./ws-hub";
+import { foldSessionUsage, persistRunUsage } from "./session-usage";
+
+export { foldSessionUsage };
 import {
   earlyToolUseFrame,
   recoveredEventOpensLiveTurn,
@@ -1167,28 +1169,8 @@ export async function persistRecoveredRunUsage(
   runId?: string,
 ): Promise<void> {
   const session = findSession(osSessionId);
-  const turnUsage = event.usage;
-  if (!session || session.source !== "opensession" || !turnUsage) return;
-  let usage: SessionUsage | undefined;
-  await updateSessionFile(osSessionId, (data) => {
-    if (runId && data.usageRunId === runId) {
-      usage = data.usage;
-      return data;
-    }
-    usage = foldSessionUsage(data.usage, turnUsage, event.model || data.model);
-    return {
-      ...data,
-      usage,
-      ...(runId ? { usageRunId: runId } : {}),
-      lastActivity: new Date().toISOString(),
-    };
-  });
-  if (usage)
-    broadcastToSession(osSessionId, {
-      type: "usage_update",
-      sessionId: osSessionId,
-      usage,
-    });
+  if (!session || session.source !== "opensession" || !event.usage) return;
+  await persistRunUsage(osSessionId, event, runId);
 }
 
 export async function recordRecoveredRunEvent(
@@ -1840,41 +1822,6 @@ export async function abortTurnAndDrain(
 }
 
 /**
- * Fold a completed run's usage into a session's cumulative totals. Cost and
- * token counts accumulate; context size (contextTokens/contextWindow) reflects
- * the latest turn rather than a sum — it's the current window fill, not lifetime
- * throughput.
- */
-export function foldSessionUsage(
-  prev: SessionUsage | undefined,
-  turn: TurnUsage,
-  model?: string | null,
-): SessionUsage {
-  const base: SessionUsage = prev ?? {
-    costUsd: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    contextTokens: 0,
-    contextWindow: 0,
-    turns: 0,
-    updatedAt: "",
-  };
-  return {
-    costUsd: base.costUsd + (turn.costUsd ?? 0),
-    inputTokens: base.inputTokens + turn.inputTokens,
-    outputTokens: base.outputTokens + turn.outputTokens,
-    cacheReadTokens: base.cacheReadTokens + turn.cacheReadTokens,
-    cacheCreationTokens: base.cacheCreationTokens + turn.cacheCreationTokens,
-    contextTokens: turn.contextTokens || base.contextTokens,
-    contextWindow: contextWindowFor(model) || base.contextWindow,
-    turns: base.turns + 1,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-/**
  * Silent auto-push: when a session's turn ends idle, publish any local commits
  * that are ahead of an already-tracked upstream. This is the real "sessions push
  * automatically" mechanism — the agent's prompt-level `git push` is best-effort
@@ -2514,6 +2461,9 @@ export async function maybeQueueAutoContinue(opts: {
   toolUseCount: number;
   endedWithError: boolean;
   runFailure: string | null;
+  /** The turn died on a usage limit no account could serve (plan limits or
+   *  paid credits spent everywhere it may run). */
+  usageLimited?: boolean;
   /** Skip the lookup when the caller already holds the session. */
   session?: UnifiedSession | null;
 }): Promise<boolean> {
@@ -2547,6 +2497,12 @@ export async function maybeQueueAutoContinue(opts: {
   const endedOnFabricatedTranscript = looksLikeFabricatedToolTranscript(
     assistantText.slice(-2000),
   );
+  // Every account this session may use refused the turn. Another turn, a
+  // redelivery or a nudge, would only repeat the refusal and spend a
+  // request proving it (2026-10-19: six refusals in under an hour). The
+  // failure chip already tells the human; the next message they send runs
+  // as soon as an account is back.
+  if (opts.usageLimited) return suppressed("usage_limited");
   if (endedWithError) {
     // A failed/aborted turn can strand user messages the model never read: a
     // busy-send steer is a noReply history append the running turn only reads
@@ -3628,6 +3584,9 @@ async function runSessionPromptInner(
   // credit/API errors) — recorded on the session after the loop so the sidebar
   // surfaces it as "Needs input"; null (a clean finish) clears an earlier one.
   let runFailure: string | null = null;
+  // The failure was a usage limit with no account left to serve the turn
+  // (spent plan limits or paid credits on every account it could use).
+  let usageLimited = false;
   // How recordRunOutcome should word the failure's transcript chip, and
   // whether the runner already wrote a friendlier one itself (timeouts).
   let failureNoticeLabel: string | undefined;
@@ -3960,6 +3919,7 @@ async function runSessionPromptInner(
         // whose result is the limit notice (not an `error` event) — but it
         // still needs a human, so treat it as a failure.
         if (event.usageLimitExhausted) {
+          usageLimited = true;
           runFailure = event.result || "Usage limit reached on every account";
           // This one was a clean `done`, not an error — recordRunOutcome
           // writes the transcript chip below, worded as a stop.
@@ -4030,6 +3990,7 @@ async function runSessionPromptInner(
           });
         }
         endedWithError = true;
+        if (event.usageLimitExhausted) usageLimited = true;
         runFailure = event.content || "Run failed";
         // The transcript chip is written by recordRunOutcome below — this is
         // the choke point AFTER agent-runner's rotation/fallback walk, so only
@@ -4215,6 +4176,7 @@ async function runSessionPromptInner(
     toolUseCount,
     endedWithError,
     runFailure,
+    usageLimited,
   });
 
   // The session just finished a turn; if nothing's queued it's idle now, so fire

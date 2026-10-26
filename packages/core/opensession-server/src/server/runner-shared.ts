@@ -275,6 +275,17 @@ export function usageLimitResetAt(
  * limit rather than retrying the same account into a timeout. the previous runner's ai-sdk
  * treats it as retryable, so if it's not caught it manifests as a long hang.
  */
+/**
+ * Anthropic's refusal once an account's extra usage (paid credits) is spent:
+ * "You're out of extra usage. Add more at claude.ai/settings/usage and keep
+ * going." (HTTP 400, invalid_request_error). Plan headroom does not help and
+ * retrying cannot: the account serves again only once credits are added or
+ * the billing month resets. Callers bench the account and move on.
+ */
+export function isClaudeCreditsExhaustedError(message: string): boolean {
+  return /out of extra usage/i.test(message);
+}
+
 export function isClaudeSubscriptionError(message: string): boolean {
   const s = message.toLowerCase();
   return (

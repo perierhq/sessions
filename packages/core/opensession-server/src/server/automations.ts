@@ -64,6 +64,8 @@ import {
 import { engineSessionPatch } from "./sessions";
 import { githubRepoOwner } from "./github-app";
 import { recordRunOutcome, updateSessionFile } from "./session-cache";
+import { withRunUsageRecorded } from "./session-usage";
+import { automationLaunchRetry } from "./automation-launch-retry";
 import { sessionKernel } from "./session-kernel";
 import { resolvePlainWorkspace } from "./workspace-resolve";
 import { SUPPORT_EVENT_KEY } from "../shared/support";
@@ -2161,6 +2163,9 @@ export async function runAutomation(
      * model. Callers pass an already-resolved model id.
      */
     modelOverride?: string;
+    /** Which launch of this run this is; a launch the host refused for lack
+     *  of capacity is retried (automation-launch-retry.ts). */
+    launchAttempt?: number;
   },
 ): Promise<void> {
   const trigger = options?.trigger || "manual";
@@ -2692,6 +2697,12 @@ export async function runAutomation(
               journal: { osSessionId: bksId, kind: "automation" },
             });
     }
+    // Save what the run spent before its terminal settles the session. The
+    // run key matches the one boot recovery folds under, so a restart in
+    // between cannot count the run twice.
+    events = withRunUsageRecorded(bksId, events, {
+      runId: automationRunKey,
+    });
     for await (const event of events) {
       // The engine stream is now physically adopted by agent-runner accounting.
       automationPreparations.delete(bksId);
@@ -2844,6 +2855,13 @@ export async function runAutomation(
       endedWithError: true,
       runFailure: errorMessage,
     });
+    // The host had no room to start the engine: nothing ran. Requeue the
+    // same run after a backoff instead of waiting for the next schedule.
+    const launchRetry = automationLaunchRetry(
+      errorMessage,
+      options?.launchAttempt ?? 1,
+    );
+    const ledgerError = launchRetry?.error ?? errorMessage;
     // A throw is usually ambiguous. The host may still be executing, so the
     // journal stays and boot recovery owns settling it. A definitive launch
     // failure has neither a journal record nor a live engine. Retire that
@@ -2852,14 +2870,29 @@ export async function runAutomation(
     await settleAutomationLaunchFailure(
       bksId,
       automationRunKey,
-      errorMessage,
+      ledgerError,
       () =>
         settleRun(automation.id, bksId, {
           status: "error",
-          error: errorMessage,
+          error: ledgerError,
           durationMs: Date.now() - startedAt.getTime(),
         }),
     );
+    if (launchRetry)
+      scheduleAutomationLaunchRetry(
+        automation.id,
+        onSessionCreated,
+        {
+          trigger,
+          eventContext: options?.eventContext,
+          modelOverride: options?.modelOverride,
+          osSessionId: bksId,
+          acceptedAt,
+          deleteAutomationAfterRun: options?.deleteAutomationAfterRun,
+          launchAttempt: launchRetry.nextAttempt,
+        },
+        launchRetry.delayMs,
+      );
     // Keep the intent; boot reconciles its active journal or terminal receipt
     // before replay.
   } finally {
@@ -2992,6 +3025,46 @@ export async function fireAutomationsForEvent(
     fired++;
   }
   return fired;
+}
+
+/**
+ * Replay a refused run in its own session after `delayMs`: the durable intent
+ * is still on disk, so the replay reuses its identity, session and accepted
+ * time. Skipped when the automation was deleted, or switched off meanwhile.
+ * In memory only: after a restart the run waits for its next schedule.
+ */
+function scheduleAutomationLaunchRetry(
+  automationId: string,
+  onSessionCreated: ((sessionId: string) => void) | undefined,
+  options: NonNullable<Parameters<typeof runAutomation>[2]>,
+  delayMs: number,
+): void {
+  const timer = setTimeout(() => {
+    if (isShuttingDown()) return;
+    void (async () => {
+      const current = await getAutomation(automationId);
+      // Switched off meanwhile: drop a scheduled or event run. A manual run
+      // (allowed on a disabled automation) and a consumed one-off (disabled
+      // by design) still owe theirs.
+      if (
+        !current ||
+        (!current.enabled &&
+          options.trigger !== "manual" &&
+          !options.deleteAutomationAfterRun)
+      )
+        return;
+      console.log(
+        `[automations] Retrying "${current.name}" in ${options.osSessionId} (attempt ${options.launchAttempt})`,
+      );
+      await runAutomation(current, onSessionCreated, options);
+    })().catch((error) =>
+      console.error(
+        `[automations] Retry of ${options.osSessionId} failed:`,
+        error,
+      ),
+    );
+  }, delayMs);
+  timer.unref?.();
 }
 
 // ── Scheduler ────────────────────────────────────────────────

@@ -210,6 +210,26 @@ describe("DesiredReviewScheduler", () => {
     });
   });
 
+  test("a review refused for lack of host memory waits minutes, not seconds", async () => {
+    const h = harness();
+    h.setRunReview(async () => ({
+      findings: 0,
+      blocking: 0,
+      error:
+        "Run host launch refused: not enough free memory: 1266 MiB free, 2171 MiB needed",
+    }));
+    h.scheduler.admit(HEAD_A);
+
+    h.setNow(5_000);
+    await h.runNextTimer();
+    expect(h.state.pendingReview).toMatchObject({
+      phase: "queued",
+      attempts: 1,
+    });
+    // The first retry waits two minutes, beyond the ordinary 10 ms retry.
+    expect(Date.parse(h.state.pendingReview!.dueAt)).toBe(5_000 + 120_000);
+  });
+
   test("a push during a running review starts a fresh generation", async () => {
     const h = harness();
     let finishReview!: (result: ReviewResult | null) => void;
