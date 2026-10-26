@@ -538,7 +538,21 @@ test("terminal escapes, bidi and zero-width characters are stripped", () => {
   expect(r.summary).toBe("Upstream blocks us now");
   expect(r.cause).toBe("Line one\nLine two");
 });
-test("claim texts carry no backticks, so the verifier can quote them exactly", () => {
+test("the cause keeps its paragraphs and inline code", () => {
+  const r = parseInvestigatorReport(
+    fence({
+      ...good,
+      cause:
+        "The upstream refuses the default client.  \r\n\r\n\r\n\n- `curl -A app` gets 200\t\n- the default gets 403",
+    }),
+    ctx,
+  );
+  if ("error" in r) throw new Error(r.error);
+  expect(r.cause).toBe(
+    "The upstream refuses the default client.\n\n- `curl -A app` gets 200\n- the default gets 403",
+  );
+});
+test("claim texts keep inline code; the verifier's plain quotes still match", () => {
   const r = parseInvestigatorReport(
     fence({
       ...good,
@@ -547,24 +561,26 @@ test("claim texts carry no backticks, so the verifier can quote them exactly", (
     ctx,
   );
   if ("error" in r) throw new Error(r.error);
-  expect(r.claims[0]?.text).toBe("Run 'curl -A app' and see 200");
-  const v = parseVerifierReport(
-    fence({
-      role: "verifier",
-      verdict: "certain",
-      reasons: [],
-      proofAccepted: true,
-      claims: [
-        {
-          text: "Run `curl -A app` and see 200",
-          status: "verified",
-          evidence: "seen",
-        },
-      ],
-    }),
-    { claims: r.claims },
-  );
-  expect("error" in v ? v.error : v.claims[0]?.status).toBe("verified");
+  expect(r.claims[0]?.text).toBe("Run `curl -A app` and see 200");
+  // The verifier reads claims from a data block, where backticks are quotes.
+  for (const quoted of [
+    "Run `curl -A app` and see 200",
+    "Run 'curl -A app' and see 200",
+  ]) {
+    const v = parseVerifierReport(
+      fence({
+        role: "verifier",
+        verdict: "certain",
+        reasons: [],
+        proofAccepted: true,
+        claims: [{ text: quoted, status: "verified", evidence: "seen" }],
+      }),
+      { claims: r.claims },
+    );
+    expect("error" in v ? v.error : v.claims[0]?.text).toBe(
+      "Run `curl -A app` and see 200",
+    );
+  }
 });
 
 const searchLogs = {
