@@ -616,6 +616,47 @@ async function freeSuggestionPath(
   }
 }
 
+// ── Rejected suggestions ────────────────────────────────────────────────
+
+/** Most rejected mail sources kept per project (the newest). */
+const MAX_REJECTED = 5000;
+const REJECTED_PREFIX = "rejected:";
+
+let jobDocs: ReturnType<typeof catalogDocuments> | undefined;
+const jobsCatalog = () => (jobDocs ??= catalogDocuments("knowledge-jobs"));
+
+function rejectedList(value: unknown): string[] {
+  const v = value as { sources?: unknown } | null;
+  return v && Array.isArray(v.sources)
+    ? v.sources.filter((s): s is string => typeof s === "string")
+    : [];
+}
+
+/**
+ * A person discarded suggestions citing `sources`: remember their `mail:`
+ * sources (`rejected:<project>` in `knowledge-jobs`), so no suggestion is
+ * made again from a group that includes one.
+ */
+export async function rememberRejectedSources(
+  project: string,
+  sources: readonly string[],
+): Promise<void> {
+  const mail = sources.filter((s) => s.startsWith("mail:"));
+  if (!mail.length) return;
+  await jobsCatalog().update(`${REJECTED_PREFIX}${project}`, (value) => ({
+    project,
+    sources: [...new Set([...rejectedList(value), ...mail])].slice(
+      -MAX_REJECTED,
+    ),
+  }));
+}
+
+async function rejectedSources(project: string): Promise<Set<string>> {
+  return new Set(
+    rejectedList(await jobsCatalog().get(`${REJECTED_PREFIX}${project}`)),
+  );
+}
+
 type Outcome = { path: string; created: boolean } | null;
 
 /** One item's repeats as a suggestion, new or extended; null when there is
@@ -636,6 +677,9 @@ async function suggestOne(
   }
   if (threadCount(group.map((g) => g.item)) < 2) return null;
   const sources = mailSources(group.map((g) => g.item));
+  // A person discarded a suggestion made from one of these answers.
+  const rejected = await rejectedSources(project);
+  if (sources.some((s) => rejected.has(s))) return null;
   const pat = { author: PAT_AUTHOR, trailers: [PAT_TRAILER] };
 
   // A suggestion citing one of them gets the new sources.

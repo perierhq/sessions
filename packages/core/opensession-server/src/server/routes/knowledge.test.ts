@@ -15,6 +15,7 @@ import type {
   KnowledgeImportJob,
   KnowledgeItem,
 } from "../../shared/knowledge";
+import { catalogDocuments } from "../catalog-documents";
 import { git } from "../memory-repo/git";
 import { __setKnowledgeServiceForTest } from "../knowledge/client";
 import { __waitForJobForTest } from "../knowledge/ingest/jobs";
@@ -680,7 +681,11 @@ describe("discard and revert", () => {
     await seed([
       {
         path: "suggestions/export.md",
-        fm: fm({ origin: "suggestion", trust: "reference" }),
+        fm: fm({
+          origin: "suggestion",
+          trust: "reference",
+          sources: ["mail:a1@acme.example.test", "url:https://x.test/a"],
+        }),
         body: "Export it.\n",
       },
     ]);
@@ -695,6 +700,10 @@ describe("discard and revert", () => {
       { body: { paths: ["suggestions/export.md"] } },
     );
     expect(discarded.status).toBe(200);
+    // Its mail sources are remembered as rejected.
+    expect(
+      await catalogDocuments("knowledge-jobs").get("rejected:acme"),
+    ).toEqual({ project: "acme", sources: ["mail:a1@acme.example.test"] });
     const { commit } = (await discarded.json()) as { commit: string };
     expect(await service.read("acme", "suggestions/export.md", TODAY)).toBe(
       null,

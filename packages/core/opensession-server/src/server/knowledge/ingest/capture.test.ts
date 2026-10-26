@@ -33,7 +33,9 @@ import {
   type CaptureDeps,
   captureReply,
   installKnowledgeCapture,
+  rememberRejectedSources,
   retryPendingCaptures,
+  suggestFromRepeats,
 } from "./capture";
 
 const tb = useReplyTestbed();
@@ -285,6 +287,30 @@ test("the same question answered by hand in two conversations becomes one sugges
     `mail:${third.message.keys.messageId}`,
   );
   expect(suggestions[0]!.sources).toHaveLength(3);
+});
+
+test("answers behind a discarded suggestion make no suggestion again", async () => {
+  const first = await answeredByHand();
+  const second = await answeredByHand();
+  const [suggestion] = await listed("suggestions");
+  expect(suggestion).toBeDefined();
+  await rememberRejectedSources("acme", suggestion!.sources);
+  await knowledgeRepo.call(
+    "write",
+    "acme",
+    [{ op: "delete", path: suggestion!.path }],
+    {
+      message: "Discard",
+      author: { name: "Ada" },
+      expected: { [suggestion!.path]: suggestion!.blob },
+    },
+  );
+  expect(
+    await suggestFromRepeats("acme", [itemPath(second.message)], deps()),
+  ).toBeNull();
+  await answeredByHand();
+  expect(await listed("suggestions")).toEqual([]);
+  expect(first).toBeDefined();
 });
 
 test("a second reply in the same conversation is no repeat", async () => {

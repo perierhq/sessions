@@ -1006,6 +1006,14 @@ async function discard(ctx: RouteContext, project: string): Promise<Response> {
   const items = await Promise.all(
     paths.map(async (path) => (await readItem(project, path, today)).item),
   );
+  // Remembered first, so the answers behind it never make a suggestion
+  // again, even if the write below fails after landing.
+  await (
+    await import("../knowledge/ingest/capture")
+  ).rememberRejectedSources(
+    project,
+    items.flatMap((item) => item.sources),
+  );
   // A suggestion's attachments go with it (revert brings both back).
   const attached = await Promise.all(
     items.map((item) =>
