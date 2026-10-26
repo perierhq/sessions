@@ -6,7 +6,7 @@
  *
  * It exists to be compiled: `bun build --compile` reproduces the release
  * binary's layout, where Photon's WASM has to sit beside the executable (see
- * scripts/lib/photon-wasm.ts). The release workflow runs it beside the staged
+ * scripts/lib/pi-runtime-files.ts). The release workflow runs it beside the staged
  * Linux artefact's copy, and image-read-probe.test.ts runs it with and without
  * the file.
  *
@@ -22,7 +22,7 @@ import { createRequire } from "module";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { PHOTON_WASM } from "./lib/photon-wasm";
+import { PHOTON_WASM } from "./lib/pi-runtime-files";
 
 // Photon reads the WASM through the CommonJS `fs` object; pi wraps the same
 // object's readFileSync with its beside-the-executable fallback.

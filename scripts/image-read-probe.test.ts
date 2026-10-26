@@ -3,7 +3,7 @@
  * release shipped without the file, so pi replaced every image an agent read
  * with "[Image omitted: could not be resized below the inline image size
  * limit.]". This compiles the probe the release workflow runs and checks both
- * layouts: without the file the image is omitted, with copyPhotonWasm it is
+ * layouts: without the file the image is omitted, with copyRuntimeWasm it is
  * read.
  */
 
@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
-import { copyPhotonWasm } from "./lib/photon-wasm";
+import { copyRuntimeWasm } from "./lib/pi-runtime-files";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
@@ -62,8 +62,8 @@ describe("compiled image read", () => {
     expect(exitCode).toBe(1);
   });
 
-  test("reads the image once copyPhotonWasm puts the WASM beside it", () => {
-    copyPhotonWasm(dir);
+  test("reads the image once copyRuntimeWasm puts the WASM beside it", () => {
+    copyRuntimeWasm(dir);
     const { exitCode, output } = runProbe();
     expect(output).toContain("image-read-probe: ok (image/png)");
     expect(exitCode).toBe(0);
