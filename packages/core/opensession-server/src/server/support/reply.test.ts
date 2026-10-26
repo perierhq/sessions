@@ -1027,6 +1027,66 @@ describe("knowledge at the moment of sending", () => {
     expect(tb.fixture().sent).toHaveLength(0);
   });
 
+  test("the read proof stored at propose goes to the check at veto end", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });
+    const read = [{ path: "articles/export.md", commit: "3f2a1b0" }];
+    __setKnowledgeVerdictForTest(async (i) => ({ ...backing(i.now), read }));
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(
+      c.id,
+      DRAFT,
+      AGENT,
+      undefined,
+      KNOWLEDGE,
+    );
+    if (!proposed.ok) throw new Error(proposed.error);
+    expect(proposed.draft.check?.knowledge?.read).toEqual(read);
+    const asked: VerdictInput[] = [];
+    __setKnowledgeVerdictForTest(async (i) => {
+      asked.push(i);
+      return backing(i.now);
+    });
+    const deadline = Date.parse(proposed.draft.vetoDeadline!);
+    const result = await sendDueVeto(c.id, proposed.draft.id, deadline + 1);
+    expect(result.ok).toBe(true);
+    expect(asked.map((i) => i.read)).toEqual([read]);
+  });
+
+  test("an automatic send whose verdict wasn't computed refuses", async () => {
+    const { c, draft } = await vetoed();
+    const now = Date.now();
+    // A person's send is being retried: no knowledge check for it.
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: {
+        ...x.draft!,
+        state: "sending",
+        vetoDeadline: null,
+        attempts: 1,
+        nextAttemptAt: new Date(now - 1).toISOString(),
+        decidedBy: { kind: "person", name: "Ada" },
+      },
+    }));
+    let calls = 0;
+    __setKnowledgeVerdictForTest(async (i) => {
+      calls++;
+      return backing(i.now);
+    });
+    const retry = retrySend(c.id, draft.id, now);
+    // Meanwhile the send became automatic.
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      draft: { ...x.draft!, decidedBy: { kind: "sessions" } },
+    }));
+    expect(await retry).toMatchObject({
+      ok: false,
+      error: "The conversation changed. Try again",
+    });
+    expect(calls).toBe(0);
+    expect((await getConversation(c.id))!.draft!.state).toBe("sending");
+    expect(tb.fixture().sent).toHaveLength(0);
+  });
+
   test("a person sending the draft is not gated by knowledge", async () => {
     const { c, draft } = await vetoed();
     let calls = 0;

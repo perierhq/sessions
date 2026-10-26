@@ -239,19 +239,22 @@ test("search_knowledge records every item it printed as listed, not read", async
   expect(
     sessionSawKnowledge(
       "s1",
+      "acme",
       "articles/export.md",
       acmeHead.slice(0, 7),
       "listed",
     ),
   ).toBe(true);
   expect(
-    sessionSawKnowledge("s1", "articles/export.md", acmeHead, "listed"),
+    sessionSawKnowledge("s1", "acme", "articles/export.md", acmeHead, "listed"),
   ).toBe(true);
   // Listed is not read: citing it doesn't back a reply.
-  expect(sessionSawKnowledge("s1", "articles/export.md", acmeHead)).toBe(false);
-  expect(sessionReadKnowledge("s1")).toEqual([]);
   expect(
-    sessionSawKnowledge("s0", "articles/export.md", acmeHead, "listed"),
+    sessionSawKnowledge("s1", "acme", "articles/export.md", acmeHead),
+  ).toBe(false);
+  expect(sessionReadKnowledge("s1", "acme")).toEqual([]);
+  expect(
+    sessionSawKnowledge("s0", "acme", "articles/export.md", acmeHead, "listed"),
   ).toBe(false);
 });
 
@@ -283,13 +286,25 @@ test("read_knowledge shows the item and how to cite it", async () => {
   expect(out).toContain(">\nOpen the project, choose Export, then CSV.\n</");
   expect(out).toContain(`\nCite as knowledge:articles/export.md@${acmeHead}\n`);
   expect(acmeHead).toMatch(/^[0-9a-f]{40}$/);
-  expect(sessionSawKnowledge("s1", "articles/export.md", acmeHead)).toBe(true);
   expect(
-    sessionSawKnowledge("s1", "articles/export.md", acmeHead.slice(0, 7)),
+    sessionSawKnowledge("s1", "acme", "articles/export.md", acmeHead),
   ).toBe(true);
-  expect(sessionReadKnowledge("s1")).toEqual([
+  expect(
+    sessionSawKnowledge(
+      "s1",
+      "acme",
+      "articles/export.md",
+      acmeHead.slice(0, 7),
+    ),
+  ).toBe(true);
+  expect(sessionReadKnowledge("s1", "acme")).toEqual([
     { path: "articles/export.md", commit: acmeHead },
   ]);
+  // Evidence is per project: the same path in another project wasn't read.
+  expect(
+    sessionSawKnowledge("s1", "globex", "articles/export.md", acmeHead),
+  ).toBe(false);
+  expect(sessionReadKnowledge("s1", "globex")).toEqual([]);
 });
 
 test("read_knowledge prints trust, status and the citation before the wrapped body", async () => {
@@ -389,7 +404,7 @@ test("read_knowledge refuses attachments and paths outside the items", async () 
   ]) {
     const out = await call("s1", "read_knowledge", { path });
     expect(out).toStartWith("Not a knowledge item");
-    expect(sessionSawKnowledge("s1", path, acmeHead)).toBe(false);
+    expect(sessionSawKnowledge("s1", "acme", path, acmeHead)).toBe(false);
   }
 });
 

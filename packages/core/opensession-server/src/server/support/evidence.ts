@@ -29,8 +29,8 @@ interface Evidence {
   urls: Set<string>;
   /** `<connector>\0<id>` */
   records: Set<string>;
-  /** `<path>\0<commit>` → how the session saw it, the commit as printed
-   *  (7 or 40 hex). Most recent last. */
+  /** `<project>\0<path>\0<commit>` → how the session saw it, the commit
+   *  as printed (7 or 40 hex). Most recent last. */
   knowledge: Map<string, KnowledgeEvidenceLevel>;
 }
 
@@ -185,33 +185,46 @@ export function sessionReturnedRecord(
 
 const KNOWLEDGE_COMMIT = /^[0-9a-f]{7,64}$/;
 
-/** A knowledge tool of `sessionId` printed item `path` at `commit`: listed
- *  it (search_knowledge) or showed its text (read_knowledge). Listing an
- *  item already read keeps it read. */
+/** The evidence key of `path` in `project`'s knowledge, up to the commit. */
+function knowledgeKey(project: string, path: string): string {
+  return `${project}\u0000${path}\u0000`;
+}
+
+/** A knowledge tool of `sessionId` printed item `path` of `project`'s
+ *  knowledge at `commit`: listed it (search_knowledge) or showed its text
+ *  (read_knowledge). Listing an item already read keeps it read. */
 export function recordKnowledgeSeen(
   sessionId: string,
+  project: string,
   path: string,
   commit: string,
   level: KnowledgeEvidenceLevel,
 ): void {
   const sha = commit.toLowerCase();
-  if (!path || path.length > MAX_ID_CHARS || !KNOWLEDGE_COMMIT.test(sha))
+  if (
+    !project ||
+    project.length > MAX_ID_CHARS ||
+    !path ||
+    path.length > MAX_ID_CHARS ||
+    !KNOWLEDGE_COMMIT.test(sha)
+  )
     return;
   const seen = evidenceFor(sessionId).knowledge;
-  const key = `${path}\u0000${sha}`;
+  const key = `${knowledgeKey(project, path)}${sha}`;
   const was = seen.get(key);
   seen.delete(key);
   seen.set(key, was === "read" ? "read" : level);
   while (seen.size > MAX_IDS) seen.delete(seen.keys().next().value!);
 }
 
-/** Whether a knowledge tool of `sessionId` printed `path` at `commit` at
- *  `level` or more (default `read`: read_knowledge showed its text). A
- *  short commit (search_knowledge prints seven hex) and the full one name
- *  the same commit: either may be a prefix of the other, at least seven
- *  hex long. */
+/** Whether a knowledge tool of `sessionId` printed `path` of `project`'s
+ *  knowledge at `commit` at `level` or more (default `read`:
+ *  read_knowledge showed its text). A short commit (search_knowledge
+ *  prints seven hex) and the full one name the same commit: either may be
+ *  a prefix of the other, at least seven hex long. */
 export function sessionSawKnowledge(
   sessionId: string,
+  project: string,
   path: string,
   commit: string,
   level: KnowledgeEvidenceLevel = "read",
@@ -222,9 +235,9 @@ export function sessionSawKnowledge(
   if (!seen) return false;
   const enough = (l: KnowledgeEvidenceLevel) =>
     level === "listed" || l === "read";
-  const exact = seen.get(`${path}\u0000${sha}`);
+  const key = knowledgeKey(project, path);
+  const exact = seen.get(`${key}${sha}`);
   if (exact && enough(exact)) return true;
-  const key = `${path}\u0000`;
   for (const [entry, l] of seen) {
     if (!entry.startsWith(key) || !enough(l)) continue;
     const printed = entry.slice(key.length);
@@ -233,20 +246,23 @@ export function sessionSawKnowledge(
   return false;
 }
 
-/** The items read_knowledge showed `sessionId`, each path once at the
- *  commit it was last read at, most recent last. */
+/** The items of `project`'s knowledge read_knowledge showed `sessionId`,
+ *  each path once at the commit it was last read at, most recent last. */
 export function sessionReadKnowledge(
   sessionId: string,
+  project: string,
 ): Array<{ path: string; commit: string }> {
   const seen = sessions.get(sessionId)?.knowledge;
   if (!seen) return [];
+  const prefix = `${project}\u0000`;
   const latest = new Map<string, string>();
   for (const [entry, l] of seen) {
-    if (l !== "read") continue;
-    const cut = entry.indexOf("\u0000");
-    const path = entry.slice(0, cut);
+    if (l !== "read" || !entry.startsWith(prefix)) continue;
+    const rest = entry.slice(prefix.length);
+    const cut = rest.indexOf("\u0000");
+    const path = rest.slice(0, cut);
     latest.delete(path);
-    latest.set(path, entry.slice(cut + 1));
+    latest.set(path, rest.slice(cut + 1));
   }
   return [...latest].map(([path, commit]) => ({ path, commit }));
 }

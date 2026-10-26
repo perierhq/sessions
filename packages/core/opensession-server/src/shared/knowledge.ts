@@ -261,6 +261,15 @@ export interface KnowledgeVerdict {
   internalQuoted: { path: string; title: string } | null;
   /** The check itself failed; the draft waits (fail closed). */
   failed: boolean;
+  /** Why it failed, when the server can say (KNOWLEDGE_COPY.readTooMuch);
+   *  absent: KNOWLEDGE_COPY.unchecked. */
+  reason?: string;
+  /** The items the session had read (read_knowledge) when this verdict
+   *  was made, at the commit read. Stored with the draft's check and
+   *  passed back at send time as read proof, so a server restart that
+   *  forgot the session's evidence doesn't hold the draft. Server-written.
+   *  Absent when the session read nothing or the check failed. */
+  read?: Array<{ path: string; commit: string }>;
   at: string;
 }
 
@@ -273,6 +282,8 @@ export const KNOWLEDGE_COPY = {
   reviewPassed: (d: string) => `Review date passed (${d})`,
   notTrusted: "Reference material, not approved for replies",
   notRead: "This session didn't read it",
+  readTooMuch: (n: number) =>
+    `This session read more than ${n} knowledge items`,
 } as const;
 
 /** The Knowledge page's list filters. */

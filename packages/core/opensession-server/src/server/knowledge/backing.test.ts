@@ -89,7 +89,7 @@ async function project(
     { message: "Add articles", author: ADA },
   ))!;
   for (const path of Object.keys(items))
-    recordKnowledgeSeen(sessionFor(name), path, head, "read");
+    recordKnowledgeSeen(sessionFor(name), name, path, head, "read");
   return head;
 }
 
@@ -182,6 +182,7 @@ test("a fresh trusted article the session read backs the reply", async () => {
     blocked: [],
     internalQuoted: null,
     failed: false,
+    read: [{ path: "articles/export.md", commit: head }],
     at: new Date(NOW).toISOString(),
   });
   // The seven hex search_knowledge prints name the same commit.
@@ -317,12 +318,98 @@ test("a closed issue it depends on blocks it; GitHub is read fresh", async () =>
   expect(asked).toEqual([
     ["acme-issue", { type: "issue", number: 42 }, { fresh: true }],
   ]);
+  // Closed at a time GitHub didn't give: can't tell, fails closed.
+  const undated = await knowledgeVerdict(
+    input("acme-issue", [cite("articles/known.md", head)]),
+    { ...deps, refState: async () => ({ state: "closed", at: null }) },
+  );
+  expect(undated?.failed).toBe(true);
   // Unreadable: can't tell, so the check fails closed.
   const unread = await knowledgeVerdict(
     input("acme-issue", [cite("articles/known.md", head)]),
     { ...deps, refState: async () => null },
   );
   expect(unread?.failed).toBe(true);
+});
+
+test("the read proof stored with the draft counts after a restart", async () => {
+  const head = await project("acme-stored", {
+    "articles/export.md": {},
+    "suggestions/pdf.md": {
+      title: "PDF export",
+      trust: "reference",
+      origin: "suggestion",
+    },
+  });
+  const at = (path: string) => ({ path, commit: head });
+  // A session the server no longer remembers (restarted): only the proof
+  // stored at propose shows what it read.
+  const restarted = { sessionId: "os-restarted" };
+  const forgot = await knowledgeVerdict(
+    input("acme-stored", [cite("articles/export.md", head)], restarted),
+    deps,
+  );
+  expect(forgot?.blocked.map((b) => b.reason)).toEqual([
+    KNOWLEDGE_COPY.notRead,
+  ]);
+  const stored = await knowledgeVerdict(
+    input("acme-stored", [cite("articles/export.md", head.slice(0, 7))], {
+      ...restarted,
+      read: [at("articles/export.md")],
+    }),
+    deps,
+  );
+  expect(stored?.backing).toHaveLength(1);
+  expect(stored?.blocked).toEqual([]);
+  expect(stored?.read).toEqual([at("articles/export.md")]);
+  // A stored read of an item that can't back still holds the draft.
+  const used = await knowledgeVerdict(
+    input("acme-stored", [cite("articles/export.md", head)], {
+      ...restarted,
+      read: [at("articles/export.md"), at("suggestions/pdf.md")],
+    }),
+    deps,
+  );
+  expect(used?.blocked).toEqual([
+    {
+      ref: `suggestions/pdf.md@${head}`,
+      path: "suggestions/pdf.md",
+      title: "PDF export",
+      reason: KNOWLEDGE_COPY.notTrusted,
+      uncited: true,
+    },
+  ]);
+  // Stored and live evidence add up: the live session read the reference
+  // item, the stored proof only the article.
+  const both = await knowledgeVerdict(
+    input("acme-stored", [cite("articles/export.md", head)], {
+      read: [at("articles/export.md")],
+    }),
+    deps,
+  );
+  expect(both?.blocked.map((b) => b.path)).toEqual(["suggestions/pdf.md"]);
+  expect(both?.read).toEqual([
+    at("articles/export.md"),
+    at("suggestions/pdf.md"),
+  ]);
+});
+
+test("more read items than are checked fails with the reason", async () => {
+  const head = await project("acme-many", { "articles/export.md": {} });
+  const read = Array.from({ length: 21 }, (_, i) => ({
+    path: `articles/x${i}.md`,
+    commit: head,
+  }));
+  const v = await knowledgeVerdict(
+    input("acme-many", [cite("articles/export.md", head)], { read }),
+    deps,
+  );
+  expect(v).toMatchObject({
+    failed: true,
+    reason: "This session read more than 20 knowledge items",
+    backing: [],
+    blocked: [],
+  });
 });
 
 test("an item this session didn't read is blocked", async () => {
@@ -350,7 +437,13 @@ test("an item search only listed is not read", async () => {
     [{ op: "put", path: "articles/export.md", fm: fm(), body: "Export.\n" }],
     { message: "Add", author: ADA },
   ))!;
-  recordKnowledgeSeen("os-listed", "articles/export.md", listed, "listed");
+  recordKnowledgeSeen(
+    "os-listed",
+    "acme-listed",
+    "articles/export.md",
+    listed,
+    "listed",
+  );
   const v = await knowledgeVerdict(
     input("acme-listed", [cite("articles/export.md", listed.slice(0, 7))], {
       sessionId: "os-listed",
@@ -403,7 +496,13 @@ test("used but not cited: a read item that can't back always holds the draft", a
     },
   ]);
   // Another session that read only backing items: nothing held.
-  recordKnowledgeSeen("os-good", "articles/export.md", head, "read");
+  recordKnowledgeSeen(
+    "os-good",
+    "acme-used",
+    "articles/export.md",
+    head,
+    "read",
+  );
   const good = await knowledgeVerdict(
     input("acme-used", [], { sessionId: "os-good" }),
     deps,
@@ -472,12 +571,13 @@ test("no knowledge repo and no knowledge cited: no verdict", async () => {
     ),
   ).toBeNull();
   // A project with knowledge always gets a verdict.
-  await project("acme-has", { "articles/export.md": {} });
+  const has = await project("acme-has", { "articles/export.md": {} });
   expect(await knowledgeVerdict(input("acme-has", []), deps)).toEqual({
     backing: [],
     blocked: [],
     internalQuoted: null,
     failed: false,
+    read: [{ path: "articles/export.md", commit: has }],
     at: new Date(NOW).toISOString(),
   });
   // Cited without a repository: not found.
@@ -536,6 +636,7 @@ test("a draft quoting an internal note holds; cited or not", async () => {
   });
   recordKnowledgeSeen(
     sessionFor("acme-quote"),
+    "acme-quote",
     "articles/export.md",
     head,
     "read",

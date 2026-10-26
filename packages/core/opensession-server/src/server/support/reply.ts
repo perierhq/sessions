@@ -803,22 +803,30 @@ async function claimAndDeliver(
   const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
   // An automatic send of an agent's draft checks its knowledge again, now
   // and outside the compare-and-swap below (which stays synchronous): an
-  // article may have gone stale while the draft waited.
+  // article may have gone stale while the draft waited. The read proof
+  // stored with the draft's check counts along with the live evidence.
+  // `undefined`: not computed, as this isn't an automatic send; one the
+  // compare-and-swap finds automatic after all refuses (see `checked`).
   const d0 = current.draft;
   const automatic =
     opts.mode === "retry"
       ? d0?.decidedBy?.kind !== "person"
       : by.kind === "sessions";
-  const knowledge =
-    d0?.author.kind === "agent" && automatic
-      ? await knowledgeVerdict({
-          project: current.project,
-          sessionId: d0.author.sessionId,
-          sources: d0.sources ?? [],
-          text: d0.text,
-          now,
-        })
-      : null;
+  let knowledge: KnowledgeVerdict | null | undefined;
+  if (automatic)
+    knowledge =
+      d0?.author.kind === "agent"
+        ? await knowledgeVerdict({
+            project: current.project,
+            sessionId: d0.author.sessionId,
+            sources: d0.sources ?? [],
+            text: d0.text,
+            now,
+            ...(d0.check?.knowledge?.read
+              ? { read: d0.check.knowledge.read }
+              : {}),
+          })
+        : null;
 
   // The work index first (see the header); the claim below decides.
   const key = sendKey(conversationId, draftId);
@@ -847,6 +855,13 @@ async function claimAndDeliver(
     let decidedBy: SupportActor = by;
     let rule = d.rule;
     const pin = currentPin(c, own);
+    /** The verdict for an automatic decision; null (and `failure` set)
+     *  when it wasn't computed, as the draft read before changed since. */
+    const checked = (): { verdict: KnowledgeVerdict | null } | null => {
+      if (knowledge !== undefined) return { verdict: knowledge };
+      failure = fail(409, "The conversation changed. Try again");
+      return null;
+    };
     /** Back to a person, re-pinned to the target as it is now. */
     const toPerson = (why: string) => {
       failure = fail(409, why);
@@ -876,6 +891,8 @@ async function claimAndDeliver(
       if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
       if (decidedBy.kind !== "person") {
         // An automatic send: the policy must still let it go.
+        const k = checked();
+        if (!k) return null;
         const decision = decide(
           c,
           d.author,
@@ -885,7 +902,7 @@ async function claimAndDeliver(
           inboxSends,
           d,
           sites,
-          knowledge,
+          k.verdict,
         );
         if (decision.kind === "needs-person") return toPerson(decision.rule);
       }
@@ -916,6 +933,8 @@ async function claimAndDeliver(
               return null;
             }
             if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
+            const k = checked();
+            if (!k) return null;
             const decision = decide(
               c,
               d.author,
@@ -925,7 +944,7 @@ async function claimAndDeliver(
               inboxSends,
               d,
               sites,
-              knowledge,
+              k.verdict,
             );
             if (decision.kind === "needs-person")
               return toPerson(decision.rule);

@@ -177,7 +177,8 @@ export function decideReply(input: {
   if (heldInDraft) return needsPerson(topicRule(heldInDraft));
   if (check.promises) return needsPerson(RULES.draftPromise);
   const { knowledge } = input;
-  if (knowledge?.failed) return needsPerson(RULES.knowledgeUnchecked);
+  if (knowledge?.failed)
+    return needsPerson(knowledge.reason || RULES.knowledgeUnchecked);
   if (knowledge?.internalQuoted) return needsPerson(RULES.internalQuoted);
   const stale = knowledge?.blocked[0];
   if (stale) return needsPerson(knowledgeRule(stale.title));

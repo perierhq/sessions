@@ -18,9 +18,15 @@
 //     the daily run);
 //  5. this session's own read_knowledge showed it at that commit
 //     (support/evidence.ts); search_knowledge listing it is not enough.
-// Used but not cited: every item the session read and the draft doesn't
-// cite must pass 1–4 at the commit it was read at, or it holds the draft
-// too (`uncited`), since the reply may rest on it whatever else it cites.
+//     The items read when the draft was checked are stored with its
+//     verdict (`read`, server-written) and passed back at send time
+//     (`input.read`), so a restart that forgot the evidence doesn't hold
+//     every draft in a veto window; the live evidence still counts too.
+// Used but not cited: every item the session read (stored and live) and
+// the draft doesn't cite must pass 1–4 at the commit it was read at, or it
+// holds the draft too (`uncited`), since the reply may rest on it whatever
+// else it cites. Past MAX_READ_CHECKED such items the verdict fails with
+// that reason.
 // Quoted internal text: whenever the project has a knowledge repository,
 // cited or not, a draft holding INTERNAL_QUOTE_WORDS consecutive words of
 // an `internal` article body sets `internalQuoted` (quote-check.ts); the
@@ -65,7 +71,12 @@ export interface VerdictInput {
   sources: DraftSource[];
   text: string;
   now: number;
+  /** The read proof stored with the draft's verdict when it was checked
+   *  (`check.knowledge.read`). Server-written, never the agent's. */
+  read?: KnowledgeRead[];
 }
+
+type KnowledgeRead = NonNullable<KnowledgeVerdict["read"]>[number];
 
 export interface BackingDeps {
   call: typeof knowledgeRepo.call;
@@ -84,7 +95,7 @@ export const NOT_FOUND = "Not found in knowledge";
 export const RETIRED = "Retired";
 export const NEEDS_CHECK = "Needs a check";
 /** Items a session read and the draft doesn't cite that are checked;
- *  past it the check fails closed. */
+ *  past it the check fails closed (KNOWLEDGE_COPY.readTooMuch). */
 export const MAX_READ_CHECKED = 20;
 
 let override:
@@ -128,14 +139,29 @@ function notBackingReason(item: KnowledgeItem, today: string): string {
 
 type Blocked = KnowledgeVerdict["blocked"][number];
 
-/** One citation: null when it backs, else why not. `read: false` skips
- *  step 5 (an item the session read, checked at the commit it read). */
+/** Whether `read` holds `path` at `commit`: either commit may be a prefix
+ *  of the other (search prints seven hex), as evidence.ts compares them. */
+function readAt(read: KnowledgeRead[], path: string, commit: string): boolean {
+  const sha = commit.toLowerCase();
+  return read.some(
+    (r) =>
+      r.path === path && (r.commit.startsWith(sha) || sha.startsWith(r.commit)),
+  );
+}
+
+/** A check that fails with a reason people see instead of "Knowledge
+ *  couldn't be checked". */
+class VerdictFailure extends Error {}
+
+/** One citation: null when it backs, else why not. `read` is the read
+ *  proof (stored and live) step 5 checks; null skips step 5 (an item the
+ *  session read, checked at the commit it read). */
 async function checkCitation(
   input: VerdictInput,
   ref: string,
   today: string,
   d: BackingDeps,
-  opts: { read: boolean } = { read: true },
+  read: KnowledgeRead[] | null,
 ): Promise<Blocked | null> {
   const parsed = parseKnowledgeCitation(ref);
   if (!parsed) {
@@ -165,9 +191,9 @@ async function checkCitation(
     throw error;
   }
   if (!ancestor) return blocked(NOT_FOUND);
-  const read = await d.call("blobAt", project, path, commit);
-  if (!read) return blocked(NOT_FOUND);
-  if (!item || item.blob !== read)
+  const blob = await d.call("blobAt", project, path, commit);
+  if (!blob) return blocked(NOT_FOUND);
+  if (!item || item.blob !== blob)
     return blocked(KNOWLEDGE_COPY.changedSinceRead);
   if (!isBacking(item, today)) return blocked(notBackingReason(item, today));
 
@@ -181,7 +207,9 @@ async function checkCitation(
     releaseMentions: async () => true,
     refState: async (dep) => {
       const state = await d.refState(project, dep, { fresh: true });
-      if (!state)
+      // Closed or merged at a time GitHub didn't give: can't tell whether
+      // that was before the item was valid, so it can't be checked.
+      if (!state || (state.state !== "open" && !state.at))
         throw new Error(
           `${dep.type === "pr" ? "Pull request" : "Issue"} #${dep.number} couldn't be read`,
         );
@@ -192,8 +220,12 @@ async function checkCitation(
   if (verdict.stale) return blocked(verdict.reason);
 
   if (
-    opts.read &&
-    (!input.sessionId || !d.sawKnowledge(input.sessionId, path, commit, "read"))
+    read &&
+    !readAt(read, path, commit) &&
+    !(
+      input.sessionId &&
+      d.sawKnowledge(input.sessionId, project, path, commit, "read")
+    )
   )
     return blocked(KNOWLEDGE_COPY.notRead);
   return null;
@@ -223,6 +255,27 @@ async function internalQuote(
   if (head && (await d.call("head", project)) === head)
     shingledByProject.set(project, { head, shingled });
   return findQuote(text, shingled);
+}
+
+/** Read items without repeats, each path at every commit read (a short
+ *  commit and the full one it abbreviates are one). Malformed entries of
+ *  a stored verdict are dropped. */
+function readSet(entries: KnowledgeRead[]): KnowledgeRead[] {
+  const out: KnowledgeRead[] = [];
+  for (const r of entries) {
+    if (typeof r?.path !== "string" || typeof r.commit !== "string") continue;
+    const commit = r.commit.toLowerCase();
+    if (!/^[0-9a-f]{7,64}$/.test(commit) || !r.path) continue;
+    const same = out.findIndex(
+      (o) =>
+        o.path === r.path &&
+        (o.commit.startsWith(commit) || commit.startsWith(o.commit)),
+    );
+    if (same < 0) out.push({ path: r.path, commit });
+    else if (commit.length > out[same]!.commit.length)
+      out[same] = { path: r.path, commit };
+  }
+  return out;
 }
 
 function deps(over: Partial<BackingDeps>): BackingDeps {
@@ -266,29 +319,32 @@ export async function knowledgeVerdict(
       }
       return verdict;
     }
+    // What the session read: the proof stored with the draft and the
+    // live evidence, each path at every commit either knows.
+    const read = readSet([
+      ...(input.read ?? []),
+      ...(input.sessionId
+        ? d.readKnowledge(input.sessionId, input.project)
+        : []),
+    ]);
+    const citedPaths = new Set(
+      cited.map((ref) => parseKnowledgeCitation(ref)?.path),
+    );
+    const uncited = read.filter((r) => !citedPaths.has(r.path));
+    if (uncited.length > MAX_READ_CHECKED)
+      throw new VerdictFailure(KNOWLEDGE_COPY.readTooMuch(MAX_READ_CHECKED));
     verdict.internalQuoted = await internalQuote(input.project, input.text, d);
     for (const ref of cited) {
-      const blocked = await checkCitation(input, ref, today, d);
+      const blocked = await checkCitation(input, ref, today, d, read);
       if (blocked) verdict.blocked.push(blocked);
       else verdict.backing.push({ kind: "knowledge", ref });
     }
-    if (input.sessionId) {
-      const citedPaths = new Set(
-        cited.map((ref) => parseKnowledgeCitation(ref)?.path),
-      );
-      const read = d
-        .readKnowledge(input.sessionId)
-        .filter((r) => !citedPaths.has(r.path));
-      if (read.length > MAX_READ_CHECKED)
-        throw new Error(`The session read ${read.length} items`);
-      for (const r of read) {
-        const ref = `${r.path}@${r.commit}`;
-        const blocked = await checkCitation(input, ref, today, d, {
-          read: false,
-        });
-        if (blocked) verdict.blocked.push({ ...blocked, uncited: true });
-      }
+    for (const r of uncited) {
+      const ref = `${r.path}@${r.commit}`;
+      const blocked = await checkCitation(input, ref, today, d, null);
+      if (blocked) verdict.blocked.push({ ...blocked, uncited: true });
     }
+    if (read.length) verdict.read = read;
     return verdict;
   } catch (error) {
     console.warn(
@@ -299,6 +355,7 @@ export async function knowledgeVerdict(
       blocked: [],
       internalQuoted: null,
       failed: true,
+      ...(error instanceof VerdictFailure ? { reason: error.message } : {}),
       at,
     };
   }

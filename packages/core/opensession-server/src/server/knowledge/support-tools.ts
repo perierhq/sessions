@@ -213,7 +213,13 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
         if (!hits.length) return text(`No knowledge matches "${oneLine(q)}".`);
         const lines: string[] = [];
         for (const { item } of hits) {
-          recordKnowledgeSeen(ctx.sessionId, item.path, item.commit, "listed");
+          recordKnowledgeSeen(
+            ctx.sessionId,
+            current.c.project,
+            item.path,
+            item.commit,
+            "listed",
+          );
           lines.push(hitLine(item), ...notes(item, item.effective));
         }
         return text(lines.join("\n"));
@@ -251,7 +257,13 @@ export function knowledgeTools(ctx: { sessionId: string }): AnyTool[] {
         if (!found) return text(`No knowledge item at ${path}.`);
         const { item, body } = found;
         const effective = effectiveStatus(item, day);
-        recordKnowledgeSeen(ctx.sessionId, item.path, item.commit, "read");
+        recordKnowledgeSeen(
+          ctx.sessionId,
+          current.c.project,
+          item.path,
+          item.commit,
+          "read",
+        );
         const head = frontMatterLines(item);
         if (effective !== item.status)
           head.push(`effectiveStatus: ${effective}`);

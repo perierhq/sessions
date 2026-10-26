@@ -719,6 +719,20 @@ describe("knowledge", () => {
     expect(
       decideReply(input({ knowledge: verdict({ failed: true }) })),
     ).toEqual({ kind: "needs-person", rule: "Knowledge couldn't be checked" });
+    // With the reason the check gave.
+    expect(
+      decideReply(
+        input({
+          knowledge: verdict({
+            failed: true,
+            reason: "This session read more than 20 knowledge items",
+          }),
+        }),
+      ),
+    ).toEqual({
+      kind: "needs-person",
+      rule: "This session read more than 20 knowledge items",
+    });
   });
 
   test("an internal quote holds the draft", () => {
