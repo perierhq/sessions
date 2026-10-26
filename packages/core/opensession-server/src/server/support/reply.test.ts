@@ -16,6 +16,7 @@ import {
   INTERRUPTED_SEND,
   discardDraft,
   onReplySent,
+  onReplyStoring,
   proposeDraft,
   replyAsPerson,
   retrySend,
@@ -1116,6 +1117,7 @@ describe("reply-sent listener", () => {
     expect(seen).toEqual([
       {
         conversationId: c.id,
+        project: "acme",
         messageId: result.message.id,
         by: ADA,
         author: ADA,
@@ -1163,6 +1165,26 @@ describe("reply-sent listener", () => {
       knowledgeHold: "The reply quotes an internal note",
       citations: [ref],
     });
+  });
+
+  test("the storing hook runs before the message is stored; its failure doesn't fail the send", async () => {
+    const stored: boolean[] = [];
+    onReplyStoring(async (e) => {
+      const c = await getConversation(e.conversationId);
+      stored.push(c!.messages.some((m) => m.id === e.messageId));
+    });
+    const c = await tb.conversation();
+    expect((await replyAsPerson(c.id, "Answered by hand.", "Ada")).ok).toBe(
+      true,
+    );
+    expect(stored).toEqual([false]);
+    onReplyStoring(async () => {
+      throw new Error("hook broke");
+    });
+    await tb.customerReply(c.id);
+    expect((await replyAsPerson(c.id, "Again.", "Ada")).ok).toBe(true);
+    expect(tb.fixture().sent).toHaveLength(2);
+    onReplyStoring(null);
   });
 
   test("an automatic send fires it by sessions", async () => {

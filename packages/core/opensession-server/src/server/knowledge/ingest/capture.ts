@@ -4,12 +4,14 @@
  * item, and a question answered by hand in two or more conversations
  * becomes an article suggestion.
  *
- * support/reply.ts tells one listener (onReplySent) once a delivered reply
- * is stored. installKnowledgeCapture registers it: a send by a person
- * writes `capture:<message id>` to the catalog `knowledge-pending` first,
- * then processes it; a crash leaves the key and the hourly maintenance step
- * (retryPendingCaptures) picks it up. Automatic sends (`by: sessions`) are
- * never captured.
+ * support/reply.ts awaits one hook (onReplyStoring) just before a
+ * delivered reply is stored and tells one listener (onReplySent) once it
+ * is. installKnowledgeCapture registers both: a send by a person writes
+ * `capture:<message id>` to the catalog `knowledge-pending` before the
+ * message is stored, then processes it once it is; a crash leaves the key
+ * and the hourly maintenance step (retryPendingCaptures, one pass for every
+ * project) picks it up, dropping keys a week old. Automatic sends (`by:
+ * sessions`) are never captured.
  *
  * The item is the backfill's (mailbox.ts planMailItem): the customer
  * messages the reply answered (reply.ts messagesAnsweredBy) and the sent
@@ -48,6 +50,7 @@ import { catalogDocuments } from "../../catalog-documents";
 import type { classifyRoute } from "../../route-classifier";
 import {
   onReplySent,
+  onReplyStoring,
   messagesAnsweredBy,
   type ReplySent,
 } from "../../support/reply";
@@ -89,6 +92,8 @@ export const MAX_REPEAT_CALLS = 60;
 /** Tries of a pending capture before it is dropped. */
 export const MAX_CAPTURE_ATTEMPTS = 5;
 const RETRY_AFTER_MS = 60 * 60 * 1000;
+/** A pending capture queued longer ago than this is dropped. */
+export const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SEARCH_LIMIT = 20;
 const LIST_PAGE = 200;
 const MAX_TOPICS = 12;
@@ -168,6 +173,9 @@ function threadSenders(c: SupportConversation): Party[] {
 }
 
 type CaptureResult = "written" | "skipped" | "exists";
+/** The conversation is there but not the message (yet): a capture queued
+ *  just before the message was stored. */
+type CaptureState = CaptureResult | "missing";
 
 /** What the send said about the draft (support/reply.ts ReplySent). */
 export type SentDraft = Partial<Pick<ReplySent, "knowledgeHold" | "citations">>;
@@ -198,9 +206,10 @@ async function capture(
   messageId: string,
   deps: CaptureDeps,
   sent: SentDraft = {},
-): Promise<{ result: CaptureResult; project?: string; path?: string }> {
+): Promise<{ result: CaptureState; project?: string; path?: string }> {
   const c = await deps.conversation(conversationId);
   const reply = c?.messages.find((m) => m.id === messageId);
+  if (c && !reply) return { result: "missing" };
   // Only what a person sent; an automatic send never.
   if (!c || !reply || reply.direction !== "out") return { result: "skipped" };
   if (reply.sentBy?.kind !== "person") return { result: "skipped" };
@@ -316,7 +325,8 @@ export async function captureReply(
   over: Partial<CaptureDeps> = {},
   sent: SentDraft = {},
 ): Promise<CaptureResult> {
-  return (await capture(conversationId, messageId, bind(over), sent)).result;
+  const { result } = await capture(conversationId, messageId, bind(over), sent);
+  return result === "missing" ? "skipped" : result;
 }
 
 // ── Repeats ─────────────────────────────────────────────────────────────
@@ -943,70 +953,94 @@ async function processPending(
       knowledgeHold: entry.knowledgeHold ?? null,
       citations: entry.citations ?? [],
     });
+    // Queued just before the message was stored: it comes, or the key
+    // ages out.
+    if (done.result === "missing") return;
     if (done.result !== "skipped" && done.project && done.path)
       await suggestRepeats(done.project, [done.path], deps);
     await pending().delete(key);
   } catch (error) {
     console.warn("[knowledge] capturing a reply failed:", errorName(error));
     const attempts = entry.attempts + 1;
-    if (attempts >= MAX_CAPTURE_ATTEMPTS) await pending().delete(key);
-    else
-      await pending().set(key, {
-        ...entry,
-        attempts,
-        nextAt: new Date(deps.now() + RETRY_AFTER_MS).toISOString(),
-      });
+    try {
+      if (attempts >= MAX_CAPTURE_ATTEMPTS) await pending().delete(key);
+      else
+        await pending().set(key, {
+          ...entry,
+          attempts,
+          nextAt: new Date(deps.now() + RETRY_AFTER_MS).toISOString(),
+        });
+    } catch (setError) {
+      console.warn(
+        "[knowledge] recording a failed capture failed:",
+        errorName(setError),
+      );
+    }
   } finally {
     running.delete(key);
   }
 }
 
 /**
- * Process the captures a crash or a failure left in `knowledge-pending`
- * (of `project`, or all), skipping those not due yet, and the repeat
- * paths a spent budget queued. Run hourly by the knowledge maintenance
- * tick.
+ * Process what `knowledge-pending` holds for every project: the captures
+ * a crash or a failure left (skipping those not due yet, dropping those
+ * queued more than PENDING_MAX_AGE_MS ago) and the repeat paths a spent
+ * budget queued. One entry failing never stops the rest. Run hourly by the
+ * knowledge maintenance tick.
  */
 export async function retryPendingCaptures(
   now: number,
-  opts: { project?: string; deps?: Partial<CaptureDeps> } = {},
+  opts: { deps?: Partial<CaptureDeps> } = {},
 ): Promise<void> {
   const deps = bind(opts.deps ?? {});
   for (const { key, value } of await pending().list()) {
-    if (key.startsWith(REPEATS_PREFIX) && isQueuedRepeats(value)) {
-      if (opts.project && value.project !== opts.project) continue;
-      try {
+    try {
+      if (key.startsWith(REPEATS_PREFIX) && isQueuedRepeats(value)) {
         const run = await runRepeats(value.project, value.paths, deps);
         const reached = value.paths.filter((p) => !run.left.includes(p));
         await queueRepeats(value.project, [], reached);
-      } catch (error) {
-        console.warn("[knowledge] queued repeats failed:", errorName(error));
+        continue;
       }
-      continue;
+      if (!key.startsWith(PENDING_PREFIX)) continue;
+      const queued = isPendingCapture(value) ? Date.parse(value.at) : NaN;
+      if (!(now - queued <= PENDING_MAX_AGE_MS)) {
+        await pending().delete(key);
+        continue;
+      }
+      const entry = value as PendingCapture;
+      if (entry.nextAt && Date.parse(entry.nextAt) > now) continue;
+      await processPending(key, entry, deps);
+    } catch (error) {
+      console.warn("[knowledge] a pending entry failed:", errorName(error));
     }
-    if (!key.startsWith(PENDING_PREFIX) || !isPendingCapture(value)) continue;
-    if (opts.project && value.project !== opts.project) continue;
-    if (value.nextAt && Date.parse(value.nextAt) > now) continue;
-    await processPending(key, value, deps);
   }
 }
 
-/** Queue and process the capture of a person's sent reply. */
-async function enqueue(e: ReplySent, deps: CaptureDeps): Promise<void> {
-  const c = await deps.conversation(e.conversationId);
-  if (!c) return;
-  const key = `${PENDING_PREFIX}${e.messageId}`;
-  const entry: PendingCapture = {
+function pendingEntry(e: ReplySent, now: number): PendingCapture {
+  return {
     conversationId: e.conversationId,
     messageId: e.messageId,
-    project: c.project,
-    at: new Date(deps.now()).toISOString(),
+    project: e.project,
+    at: new Date(now).toISOString(),
     attempts: 0,
     knowledgeHold: e.knowledgeHold,
     citations: e.citations,
   };
-  await pending().set(key, entry);
-  await processPending(key, entry, deps);
+}
+
+/** Queue the capture of a person's reply (kept when queued already). */
+async function queue(e: ReplySent, deps: CaptureDeps) {
+  const fresh = pendingEntry(e, deps.now());
+  return pending().update<PendingCapture>(
+    `${PENDING_PREFIX}${e.messageId}`,
+    (value) => (isPendingCapture(value) ? value : fresh),
+  );
+}
+
+/** Queue (unless the storing hook did) and process the capture. */
+async function enqueue(e: ReplySent, deps: CaptureDeps): Promise<void> {
+  const entry = (await queue(e, deps)) ?? pendingEntry(e, deps.now());
+  await processPending(`${PENDING_PREFIX}${e.messageId}`, entry, deps);
 }
 
 /**
@@ -1015,6 +1049,11 @@ async function enqueue(e: ReplySent, deps: CaptureDeps): Promise<void> {
  */
 export function installKnowledgeCapture(over: Partial<CaptureDeps> = {}): void {
   const deps = bind(over);
+  // Queued before the message is stored, so a crash in between leaves the
+  // key for the hourly step.
+  onReplyStoring(async (e) => {
+    if (e.by.kind === "person") await queue(e, deps);
+  });
   onReplySent((e) => {
     if (e.by.kind !== "person") return;
     const job = enqueue(e, deps).catch((error: unknown) => {

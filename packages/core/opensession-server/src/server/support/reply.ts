@@ -183,6 +183,8 @@ export function sendingInProcess(conversationId: string): boolean {
 /** A delivered reply, as reply-sent listeners are told of it. */
 export interface ReplySent {
   conversationId: string;
+  /** The conversation's project. */
+  project: string;
   /** The stored message's id. */
   messageId: string;
   /** Who sent it: a person, or sessions for an automatic send. */
@@ -203,6 +205,29 @@ export interface ReplySent {
  *  (ingest/capture.ts). */
 export type ReplySentListener = (e: ReplySent) => void;
 
+/** Awaited just before a delivered reply is stored, with the event the
+ *  sent listener gets after: knowledge capture queues its work here, so a
+ *  crash between storing and telling leaves the work queued. Its failure
+ *  is logged by kind and never fails the send. */
+export type ReplyStoringHook = (e: ReplySent) => Promise<void>;
+
+let replyStoringHook: ReplyStoringHook | null = null;
+
+/** Set (or with null clear) the one reply-storing hook. */
+export function onReplyStoring(h: ReplyStoringHook | null): void {
+  replyStoringHook = h;
+}
+
+async function notifyReplyStoring(e: ReplySent): Promise<void> {
+  const hook = replyStoringHook;
+  if (!hook) return;
+  try {
+    await hook(e);
+  } catch (error) {
+    console.warn("[support] reply-storing hook failed:", errorName(error));
+  }
+}
+
 let replySentListener: ReplySentListener | null = null;
 
 /** Set (or with null clear) the one reply-sent listener. */
@@ -211,13 +236,14 @@ export function onReplySent(l: ReplySentListener | null): void {
 }
 
 function sentEvent(
-  conversationId: string,
+  c: SupportConversation,
   messageId: string,
   by: SupportActor,
   draft: SupportDraft,
 ): ReplySent {
   return {
-    conversationId,
+    conversationId: c.id,
+    project: c.project,
     messageId,
     by,
     author: draft.author,
@@ -1195,6 +1221,8 @@ async function deliverInFlight(
     draftId: draft.id,
   };
   const automatic = by.kind === "sessions";
+  const sentNote = sentEvent(c, message.id, by, draft);
+  await notifyReplyStoring(sentNote);
   const updated = await updateConversation(c.id, (x) => ({
     ...x,
     messages: [...x.messages, message],
@@ -1207,7 +1235,7 @@ async function deliverInFlight(
       ? { autoClarified: true }
       : {}),
   }));
-  if (updated) notifyReplySent(sentEvent(c.id, message.id, by, draft));
+  if (updated) notifyReplySent(sentNote);
   await Promise.allSettled([
     ourId !== draft.messageId
       ? rememberMessageIds(c.inboxId, c.id, [ourId], [])

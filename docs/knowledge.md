@@ -279,8 +279,10 @@ known problems: <n> open`. An approved article that relies on a known
    captured as reference with that reason; one that cited knowledge also
    depends on what the cited items depend on (reference, "Knowledge
    couldn't be checked", when a cited item can't be read). A capture is
-   queued first (`knowledge-pending`, `capture:<message id>`), so one a
-   restart or an error cut off is retried hourly (up to 5 tries). One commit
+   queued before the reply is stored (`knowledge-pending`,
+   `capture:<message id>`), so one a restart or an error cut off is retried
+   by one hourly pass for every project (up to 5 tries; a key a week old is
+   dropped). One commit
    by Pat: `Capture a reply a person sent (<trust>)`. The project's first
    captured reply creates its knowledge repository; a reply that can't be
    kept creates nothing.

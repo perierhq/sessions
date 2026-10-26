@@ -147,6 +147,34 @@ describe("runKnowledgeTick", () => {
     expect(seen).toEqual(["globex"]);
   });
 
+  test("a global step runs once per tick, also with no repository", async () => {
+    let calls = 0;
+    withRepo = new Set();
+    install({
+      steps: [
+        {
+          name: "captures",
+          everyMs: HOUR,
+          global: true,
+          run: async () => void calls++,
+        },
+      ],
+    });
+    await runKnowledgeTick(NOW);
+    expect(calls).toBe(1);
+    expect(marks.has("captures")).toBe(true);
+    await runKnowledgeTick(NOW + 10 * 60_000);
+    expect(calls).toBe(1);
+    await runKnowledgeTick(NOW + HOUR);
+    expect(calls).toBe(2);
+  });
+
+  test("the captures step is global", () => {
+    expect(
+      KNOWLEDGE_DAILY_STEPS.find((s) => s.name === "captures")?.global,
+    ).toBe(true);
+  });
+
   test("nothing runs while email support is off", async () => {
     enabled = false;
     await runKnowledgeTick(NOW);

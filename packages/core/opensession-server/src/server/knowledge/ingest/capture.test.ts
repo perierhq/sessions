@@ -17,7 +17,12 @@ import type {
   RouteClassification,
   RouteClassifierInput,
 } from "../../route-classifier";
-import { onReplySent, proposeDraft, replyAsPerson } from "../../support/reply";
+import {
+  onReplySent,
+  onReplyStoring,
+  proposeDraft,
+  replyAsPerson,
+} from "../../support/reply";
 import { getConversation, updateConversation } from "../../support/store";
 import {
   CITED,
@@ -167,6 +172,7 @@ beforeEach(() => {
 afterEach(async () => {
   await __waitForCapturesForTest();
   onReplySent(null);
+  onReplyStoring(null);
   __setKnowledgeServiceForTest(null);
 });
 
@@ -455,6 +461,7 @@ test("every sender of the thread is stripped from the question and the answer", 
 /** A conversation answered by Ada, not captured by the listener. */
 async function answeredUncaptured() {
   onReplySent(null);
+  onReplyStoring(null);
   const c = await tb.conversation({ text: QUESTION });
   const sent = await replyAsPerson(c.id, ANSWER, "Ada");
   if (!sent.ok) throw new Error(sent.error);
@@ -534,4 +541,50 @@ test("a reply citing knowledge depends on what the cited items depend on", async
     TODAY,
   );
   expect(gone!.item.trust).toBe("reference");
+});
+
+test("the capture is queued before the reply is stored; the hourly pass finishes it", async () => {
+  // A crash right after storing: the sent listener never runs.
+  onReplySent(null);
+  const c = await tb.conversation({ text: QUESTION });
+  const sent = await replyAsPerson(c.id, ANSWER, "Ada");
+  if (!sent.ok) throw new Error(sent.error);
+  expect(await pendingKeys()).toEqual([`capture:${sent.message.id}`]);
+  await retryPendingCaptures(Date.now(), { deps: deps() });
+  expect(
+    (await knowledgeRepo.call("read", "acme", itemPath(sent.message), TODAY))
+      ?.item.trust,
+  ).toBe("trusted");
+  expect(await pendingKeys()).toEqual([]);
+});
+
+test("the hourly pass drops week-old keys and goes on past a failing entry", async () => {
+  const { c, message } = await answeredUncaptured();
+  const docs = catalogDocuments("knowledge-pending");
+  const entry = (conversationId: string, messageId: string, ago: number) => ({
+    conversationId,
+    messageId,
+    project: "acme",
+    at: new Date(Date.now() - ago).toISOString(),
+    attempts: 0,
+  });
+  await docs.set("capture:sm_old", entry(c.id, "sm_old", 8 * DAY_MS));
+  await docs.set("capture:sm_aaa", entry("sc_broken", "sm_aaa", 0));
+  await docs.set(`capture:${message.id}`, entry(c.id, message.id, 0));
+  const base = deps();
+  await retryPendingCaptures(Date.now(), {
+    deps: {
+      ...base,
+      conversation: async (id) => {
+        if (id === "sc_broken") throw new Error("store down");
+        return getConversation(id);
+      },
+    },
+  });
+  expect(await docs.get("capture:sm_old")).toBeNull();
+  expect(await docs.get("capture:sm_aaa")).toMatchObject({ attempts: 1 });
+  expect(
+    await knowledgeRepo.call("read", "acme", itemPath(message), TODAY),
+  ).not.toBeNull();
+  expect(await docs.get(`capture:${message.id}`)).toBeNull();
 });

@@ -19,8 +19,9 @@
  * tell (an unreadable mark) counts as due. Nothing runs while email support
  * is off.
  *
- * Adding a step (C7 known problems, C8 captures (hourly), C5 website crawl with
- * `everyMs: WEB_REFRESH_MS`) is one entry in KNOWLEDGE_DAILY_STEPS.
+ * Adding a step (C7 known problems, C8 captures (hourly, `global`: once for
+ * all projects), C5 website crawl with `everyMs: WEB_REFRESH_MS`) is one
+ * entry in KNOWLEDGE_DAILY_STEPS.
  */
 
 import { KNOWLEDGE_REVALIDATE_MS } from "../../shared/knowledge";
@@ -38,13 +39,23 @@ export const KNOWLEDGE_TICK_MS = 60 * 60_000;
 /** The first tick after boot, once the server has settled. */
 const FIRST_TICK_MS = 5 * 60_000;
 
-export interface KnowledgeStep {
-  name: string;
-  /** How often it runs per project; KNOWLEDGE_REVALIDATE_MS (a day) when
-   *  unset. */
-  everyMs?: number;
-  run(project: string): Promise<unknown>;
-}
+export type KnowledgeStep =
+  | {
+      name: string;
+      /** How often it runs per project; KNOWLEDGE_REVALIDATE_MS (a day)
+       *  when unset. */
+      everyMs?: number;
+      global?: false;
+      run(project: string): Promise<unknown>;
+    }
+  | {
+      name: string;
+      everyMs?: number;
+      /** Runs once per tick for all projects (mark `<name>`), also before
+       *  a project has a knowledge repository. */
+      global: true;
+      run(): Promise<unknown>;
+    };
 
 export interface KnowledgeMaintenanceDeps {
   enabled(): boolean;
@@ -76,13 +87,14 @@ export const KNOWLEDGE_DAILY_STEPS: KnowledgeStep[] = [
       (await import("./ingest/known-problems")).syncKnownProblems(project),
   },
   {
-    // Replies a person sent that a crash or a failure left uncaptured.
+    // Replies a person sent that a crash or a failure left uncaptured, and
+    // repeat checks a spent budget queued; one pass for every project (the
+    // first capture creates a project's repository).
     name: "captures",
     everyMs: KNOWLEDGE_TICK_MS,
-    run: async (project) =>
-      (await import("./ingest/capture")).retryPendingCaptures(Date.now(), {
-        project,
-      }),
+    global: true,
+    run: async () =>
+      (await import("./ingest/capture")).retryPendingCaptures(Date.now()),
   },
 ];
 
@@ -257,6 +269,15 @@ async function due(
 export async function runKnowledgeTick(now: number): Promise<void> {
   const d = current();
   if (!d.enabled()) return;
+  for (const s of d.steps) {
+    if (!s.global || isShuttingDown()) continue;
+    if (!(await due(d, s.name, s.everyMs ?? KNOWLEDGE_REVALIDATE_MS, now)))
+      continue;
+    await step(s.name, async () => {
+      await s.run();
+      await d.marks.save(s.name, { at: new Date(now).toISOString() });
+    });
+  }
   for (const project of d.projects()) {
     if (isShuttingDown()) return;
     let has: boolean;
@@ -268,6 +289,7 @@ export async function runKnowledgeTick(now: number): Promise<void> {
     }
     if (!has) continue;
     for (const s of d.steps) {
+      if (s.global) continue;
       const key = `${s.name}:${project}`;
       if (!(await due(d, key, s.everyMs ?? KNOWLEDGE_REVALIDATE_MS, now)))
         continue;
