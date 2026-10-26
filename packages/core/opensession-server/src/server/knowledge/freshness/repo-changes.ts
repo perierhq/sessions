@@ -11,11 +11,17 @@
  * `docs/*` or `:/` mean those characters, not pathspec magic. A path that
  * ends in `/` is a folder and matches everything under it.
  *
- * An unknown project reads as nothing (`[]`, `null`, `false`). A git
- * failure on a known project throws, so callers that decide freshness fail
- * closed instead of reading "no change". Nothing runs at import.
+ * "Couldn't check" never reads as "unchanged": a project that can't be
+ * resolved (not configured any more, no local checkout, a default branch
+ * git refuses) makes commitsSince, latestChange, commitAt, showAt and
+ * patchFor throw RepoUnavailableError, and a git failure throws
+ * RepoGitError, so callers that decide freshness fail closed. `null` and
+ * `[]` only ever mean "none found". fetchDefaultBranch answers false and
+ * defaultHead null for an unresolvable project (neither reads as
+ * "unchanged"). Nothing runs at import.
  */
 
+import { stat } from "node:fs/promises";
 import { LITERAL_PATHSPECS } from "../../memory-repo/git-store";
 import { workloadArgv } from "../../workload-scope";
 
@@ -41,9 +47,20 @@ const GIT_TIMEOUT_MS = 10_000;
 /** A fetch talks to the remote; give it longer than a local read. */
 const FETCH_TIMEOUT_MS = 60_000;
 const SHA = /^[0-9a-f]{7,64}$/i;
-/** Branch names git accepts and that can't be read as an option. */
-const BRANCH = /^[A-Za-z0-9._/-]+$/;
 const FIELD = "\x1f";
+
+/** The project's repository can't be read at all: it isn't configured (any
+ *  more), has no local checkout, or its default branch is not a name git
+ *  accepts. Distinct from "nothing changed"; callers fail closed. */
+export class RepoUnavailableError extends Error {
+  constructor(
+    readonly project: string,
+    readonly reason: string,
+  ) {
+    super(`${project}'s repository can't be read: ${reason}`);
+    this.name = "RepoUnavailableError";
+  }
+}
 
 export class RepoGitError extends Error {
   constructor(
@@ -107,6 +124,42 @@ async function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
   return lock(fn);
 }
 
+/** Branch names `git check-ref-format --branch` accepted (it only
+ *  depends on the name, so it is asked once per name). */
+const validBranches = new Set<string>();
+
+async function validBranch(name: string): Promise<boolean> {
+  if (!name || name.startsWith("-") || name.includes("@{")) return false;
+  if (validBranches.has(name)) return true;
+  const proc = Bun.spawn(["git", "check-ref-format", "--branch", name], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  const timer = setTimeout(() => proc.kill("SIGKILL"), GIT_TIMEOUT_MS);
+  try {
+    const [out, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    if (code !== 0 || out.trim() !== name) return false;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (validBranches.size >= 256) validBranches.clear();
+  validBranches.add(name);
+  return true;
+}
+
+async function isDirectory(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 interface Resolved {
   git(args: string[]): Promise<string>;
   branch: string;
@@ -115,13 +168,24 @@ interface Resolved {
   serialize<T>(fn: () => Promise<T>): Promise<T>;
 }
 
+/** The project's checkout and default branch; throws RepoUnavailableError
+ *  when there is none to read. */
 async function resolve(
   project: string,
   deps: Partial<RepoChangeDeps> = {},
-): Promise<Resolved | null> {
+): Promise<Resolved> {
   const repo = deps.repo ? deps.repo(project) : await configuredRepo(project);
-  if (!repo || !repo.dir || !BRANCH.test(repo.defaultBranch)) return null;
-  if (repo.defaultBranch.startsWith("-")) return null;
+  if (!repo) throw new RepoUnavailableError(project, "not configured");
+  if (!repo.dir) throw new RepoUnavailableError(project, "no local checkout");
+  // An injected git may not touch the disk at all; the real one needs the
+  // checkout to exist.
+  if (!deps.git && !(await isDirectory(repo.dir)))
+    throw new RepoUnavailableError(project, "the checkout is missing");
+  if (!(await validBranch(repo.defaultBranch)))
+    throw new RepoUnavailableError(
+      project,
+      `not a branch name: ${repo.defaultBranch.slice(0, 80)}`,
+    );
   const git = deps.git ?? runGit;
   return {
     git: (args) => git(repo.dir, args),
@@ -191,9 +255,8 @@ export async function fetchDefaultBranch(
   project: string,
   deps?: Partial<RepoChangeDeps>,
 ): Promise<boolean> {
-  const r = await resolve(project, deps);
-  if (!r) return false;
   try {
+    const r = await resolve(project, deps);
     await r.serialize(() =>
       r.git(["fetch", "origin", `+refs/heads/${r.branch}:${r.ref}`, "--quiet"]),
     );
@@ -211,9 +274,8 @@ export async function defaultHead(
   project: string,
   deps?: Partial<RepoChangeDeps>,
 ): Promise<string | null> {
-  const r = await resolve(project, deps);
-  if (!r) return null;
   try {
+    const r = await resolve(project, deps);
     const out = (
       await r.git(["rev-parse", "--verify", "--quiet", `${r.ref}^{commit}`])
     ).trim();
@@ -232,7 +294,6 @@ export async function commitsSince(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<RepoCommit[]> {
   const r = await resolve(project, deps);
-  if (!r) return [];
   const from = checkSha(since);
   return log(r, [`${from}..${r.ref}`], paths);
 }
@@ -245,7 +306,6 @@ export async function latestChange(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<RepoCommit | null> {
   const r = await resolve(project, deps);
-  if (!r) return null;
   const commits = await log(r, ["-1", r.ref], paths);
   return commits[0] ?? null;
 }
@@ -258,7 +318,6 @@ export async function commitAt(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<string | null> {
   const r = await resolve(project, deps);
-  if (!r) return null;
   const time = Date.parse(at);
   if (!Number.isFinite(time)) throw new Error(`Not a date: ${at.slice(0, 80)}`);
   const out = (
@@ -272,7 +331,8 @@ export async function commitAt(
   return SHA.test(out) ? out : null;
 }
 
-/** A file's text at a commit; null when it isn't a file there. */
+/** A file's text at a commit; null when it isn't a file there. Throws
+ *  when the commit itself is unknown. */
 export async function showAt(
   project: string,
   sha: string,
@@ -280,15 +340,20 @@ export async function showAt(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<string | null> {
   const r = await resolve(project, deps);
-  if (!r) return null;
-  const object = `${checkSha(sha)}:${checkPath(path)}`;
+  const commit = checkSha(sha);
+  const object = `${commit}:${checkPath(path)}`;
+  await r.git(["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+  let type: string;
   try {
-    const type = (await r.git(["cat-file", "-t", object])).trim();
-    if (type !== "blob") return null;
-    return await r.git(["cat-file", "blob", object]);
-  } catch {
+    type = (await r.git(["cat-file", "-t", object])).trim();
+  } catch (error) {
+    // The commit exists, so a refused lookup means no such path; a
+    // timeout is still "couldn't check".
+    if (error instanceof RepoGitError && error.code === null) throw error;
     return null;
   }
+  if (type !== "blob") return null;
+  return r.git(["cat-file", "blob", object]);
 }
 
 /** What commit `sha` changed in `path` (a unified diff; empty when it
@@ -300,7 +365,6 @@ export async function patchFor(
   deps?: Partial<RepoChangeDeps>,
 ): Promise<string> {
   const r = await resolve(project, deps);
-  if (!r) return "";
   return r.git([
     LITERAL_PATHSPECS,
     "show",

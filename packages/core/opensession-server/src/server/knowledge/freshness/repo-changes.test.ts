@@ -11,6 +11,7 @@ import {
   latestChange,
   patchFor,
   type RepoChangeDeps,
+  RepoUnavailableError,
   showAt,
 } from "./repo-changes";
 
@@ -116,14 +117,70 @@ describe("repo change signals", () => {
     expect(since.map((c) => c.sha)).toEqual([c4]);
   });
 
-  test("an unknown project reads as nothing, without throwing", async () => {
-    expect(await fetchDefaultBranch("nope", deps)).toBe(false);
-    expect(await defaultHead("nope", deps)).toBeNull();
-    expect(await commitsSince("nope", sha.c1!, ["docs/"], deps)).toEqual([]);
-    expect(await latestChange("nope", ["docs/"], deps)).toBeNull();
-    expect(await commitAt("nope", "2026-09-15T00:00:00Z", deps)).toBeNull();
-    expect(await showAt("nope", sha.c1!, "docs/export.md", deps)).toBeNull();
-    expect(await patchFor("nope", sha.c1!, "docs/export.md", deps)).toBe("");
+  test("an unresolvable project throws RepoUnavailableError, never reads as unchanged", async () => {
+    const gone: Partial<RepoChangeDeps> = {
+      repo: (project) =>
+        project === "acme"
+          ? { dir: checkout, defaultBranch: "main" }
+          : project === "nocheckout"
+            ? { dir: "", defaultBranch: "main" }
+            : project === "missingdir"
+              ? { dir: join(base, "missing"), defaultBranch: "main" }
+              : project === "badbranch"
+                ? { dir: checkout, defaultBranch: "main..x" }
+                : project === "dashbranch"
+                  ? { dir: checkout, defaultBranch: "-main" }
+                  : null,
+    };
+    for (const p of [
+      "nope",
+      "nocheckout",
+      "missingdir",
+      "badbranch",
+      "dashbranch",
+    ]) {
+      await expect(
+        commitsSince(p, sha.c1!, ["docs/"], gone),
+      ).rejects.toBeInstanceOf(RepoUnavailableError);
+      await expect(latestChange(p, ["docs/"], gone)).rejects.toBeInstanceOf(
+        RepoUnavailableError,
+      );
+      await expect(
+        commitAt(p, "2026-09-15T00:00:00Z", gone),
+      ).rejects.toBeInstanceOf(RepoUnavailableError);
+      await expect(
+        showAt(p, sha.c1!, "docs/export.md", gone),
+      ).rejects.toBeInstanceOf(RepoUnavailableError);
+      await expect(
+        patchFor(p, sha.c1!, "docs/export.md", gone),
+      ).rejects.toBeInstanceOf(RepoUnavailableError);
+      // A fetch that couldn't run and a head that can't be read stay
+      // false/null: neither reads as "unchanged".
+      expect(await fetchDefaultBranch(p, gone)).toBe(false);
+      expect(await defaultHead(p, gone)).toBeNull();
+    }
+  });
+
+  test("branch names are checked by git, not a pattern", async () => {
+    const odd: Partial<RepoChangeDeps> = {
+      repo: () => ({ dir: checkout, defaultBranch: "release/v1.@{x" }),
+    };
+    await expect(latestChange("acme", [], odd)).rejects.toBeInstanceOf(
+      RepoUnavailableError,
+    );
+    const lock: Partial<RepoChangeDeps> = {
+      repo: () => ({ dir: checkout, defaultBranch: "main.lock" }),
+    };
+    await expect(latestChange("acme", [], lock)).rejects.toBeInstanceOf(
+      RepoUnavailableError,
+    );
+  });
+
+  test("an unknown commit for showAt throws, a missing path is null", async () => {
+    await expect(
+      showAt("acme", "0".repeat(40), "docs/export.md", deps),
+    ).rejects.toThrow();
+    expect(await showAt("acme", sha.c1!, "docs/", deps)).toBeNull();
   });
 
   test("an unknown or malformed since commit throws (callers fail closed)", async () => {
