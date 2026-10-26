@@ -175,3 +175,26 @@ describe("where agents run", () => {
     expect(html).toContain(", from the global default");
   });
 });
+
+describe("git access", () => {
+  test("a project whose fetches can't sign in says so at the top", () => {
+    const html = render({
+      ...READY_4_OF_6,
+      gitAccess: {
+        kind: "auth",
+        since: "2026-10-25T21:39:00.000Z",
+        lastError: "remote: Invalid username or token.",
+        failures: 4,
+        nextAttemptAt: "2026-10-25T22:59:00.000Z",
+      },
+    });
+    const notice = html.indexOf("Git can&#x27;t sign in to GitHub");
+    expect(notice).toBeGreaterThan(-1);
+    expect(notice).toBeLessThan(html.indexOf("Incidents for acme-web"));
+    expect(html).toContain("remote: Invalid username or token.");
+  });
+
+  test("a healthy project shows no notice", () => {
+    expect(render(READY_4_OF_6)).not.toContain("sign in to GitHub");
+  });
+});

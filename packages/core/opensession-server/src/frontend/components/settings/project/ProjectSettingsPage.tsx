@@ -52,6 +52,7 @@ import { IconPlus } from "../../icons";
 import { AccessSection } from "./AccessSection";
 import { ConnectSandboxForm } from "./ConnectSandboxForm";
 import { DriftNotice } from "./DriftNotice";
+import { GitAccessNotice } from "./GitAccessNotice";
 import { IncidentsSection } from "./IncidentsSection";
 import { ModelsSection } from "./ModelsSection";
 import { ProductionSection, type ProductionDialog } from "./ProductionSection";
@@ -267,6 +268,7 @@ export function ProjectSettingsPage({
   else
     body = (
       <>
+        {view.gitAccess && <GitAccessNotice issue={view.gitAccess} />}
         {view.drift && (
           <DriftNotice
             project={project}
