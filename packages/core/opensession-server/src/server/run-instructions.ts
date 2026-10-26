@@ -251,7 +251,9 @@ export function buildRunInstructions(input: {
         "label. `podman run` and `docker run` add it; elsewhere (compose) add the label " +
         "`opensession.session=$OPENSESSION_SESSION_ID`, or " +
         '`--description="$OPENSESSION_UNIT_LABEL"` to `systemd-run --user`. ' +
-        "Never stop ones you did not start.",
+        "Never stop ones you did not start. Stop a process you started by its PID (`$!`) or its " +
+        "own stop command (`agent-browser close`), never `pkill -f` or `pgrep -f`: a pattern " +
+        "also matches other sessions' processes.",
     );
   }
   if (!input.isAsk && inproc["opensession-portals"]) {
