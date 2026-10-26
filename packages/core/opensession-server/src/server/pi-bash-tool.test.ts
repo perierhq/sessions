@@ -177,7 +177,7 @@ describe("bash as the incident agent user", () => {
     });
     await run(tool, "ls");
     expect(h.spawned).toHaveLength(1);
-    expect(h.spawned[0]!.argv.slice(-3)).toEqual(["/bin/bash", "-c", "ls"]);
+    expect(h.spawned[0]!.argv.slice(-3, -1)).toEqual(["/bin/bash", "-c"]);
     expect(h.spawned[0]!.argv).not.toContain("sudo");
     expect(h.killed).toEqual([]);
   });
@@ -193,5 +193,50 @@ describe("bash as the incident agent user", () => {
       TMPDIR: "/tmp/opensession-incident-os____1/tmp",
       OPENSESSION_SCRATCH: "/tmp/opensession-incident-os____1/tmp",
     });
+  });
+});
+
+describe("the command line of the shell", () => {
+  const tool = () =>
+    makePiBashTool({
+      cwd: "/tmp",
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      gated: false,
+      unattended: false,
+    });
+
+  // `pkill -f <pattern>` matches every process whose command line holds the
+  // pattern. Linux's pkill spares only itself, so a shell whose argv is the
+  // command killed itself (exit 143) whenever the command ran pkill -f.
+  test("never carries the command", async () => {
+    const token = `os-self-kill-${crypto.randomUUID()}`;
+    const result = await run(
+      tool(),
+      `: "${token}"; ps -o args= -p $$; printf '%s' "\${OPENSESSION_BASH_COMMAND:-unset}"`,
+    );
+    const text = result.content[0]!.text;
+    expect(text).toContain("bash");
+    expect(text).not.toContain(token);
+    expect(text.endsWith("unset")).toBe(true);
+  });
+
+  test.skipIf(process.platform !== "linux" || !Bun.which("pkill"))(
+    "pkill -f with a pattern from the command spares the shell",
+    async () => {
+      const token = `os-self-kill-${crypto.randomUUID()}`;
+      const result = await run(tool(), `pkill -f "${token}"; echo alive`);
+      expect(result.content[0]!.text).toBe("alive\n");
+    },
+  );
+
+  test("the command keeps bash -c semantics: exit codes, lines and heredocs", async () => {
+    const result = await run(
+      tool(),
+      'set -e\ncat <<\'EOF\'\nline $LINENO\nEOF\necho "$LINENO" "$#"',
+    );
+    expect(result.content[0]!.text).toBe("line $LINENO\n4 0\n");
+    await expect(run(tool(), "echo out; exit 7")).rejects.toThrow(
+      "Command exited with code 7",
+    );
   });
 });
