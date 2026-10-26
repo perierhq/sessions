@@ -151,67 +151,24 @@ test("paths, slugs, branches", () => {
   );
   expect(slugify("!!!")).toBe("incident");
   expect(slugify("alpha beta gamma", 12)).toBe("alpha-beta");
+  expect(notePathFor(incident)).toBe(
+    "docs/incidents/2026-10-20-search-blocked-by-upstream.md",
+  );
   expect(runbookPathsFor({ name: "Search API" })).toEqual([
     "docs/incidents/runbook.md",
     "docs/incidents/runbooks/search-api.md",
   ]);
-  // A short part of the incident id keeps two incidents with one title on
-  // one day apart.
-  const uuid = { ...incident, id: "inc-01a1788a-72f3-7792-8a38-0faaa539863e" };
-  expect(notePathFor(uuid)).toBe(
-    "docs/incidents/2026-10-20-search-blocked-by-upstream-39863e.md",
+  expect(branchFor(incident, "investigator", 1, 1)).toBe(
+    "incident/2026-10-20-search-blocked-by-upstream",
   );
-  expect(branchFor(uuid, "investigator", 1, 1)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-39863e",
+  expect(branchFor(incident, "investigator", 2, 3)).toBe(
+    "incident/2026-10-20-search-blocked-by-upstream-a3",
   );
-  expect(branchFor(uuid, "investigator", 2, 3)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-39863e-a3",
+  expect(branchFor(incident, "verifier", 2, 1)).toBe(
+    "incident/2026-10-20-search-blocked-by-upstream-verify-r2",
   );
-  expect(branchFor(uuid, "verifier", 2, 1)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-39863e-verify-r2",
-  );
-  expect(branchFor(uuid, "verifier", 1, 2)).toBe(
-    "incident/2026-10-20-search-blocked-by-upstream-39863e-verify-r1-a2",
-  );
-  expect(notePathFor(incident)).toBe(
-    "docs/incidents/2026-10-20-search-blocked-by-upstream-1.md",
-  );
-  const afternoon = { ...uuid, id: "inc-01a1788a-72f3-7792-8a38-0faaa5398641" };
-  expect(branchFor(afternoon, "investigator", 1, 1)).not.toBe(
-    branchFor(uuid, "investigator", 1, 1),
-  );
-  expect(notePathFor(afternoon)).not.toBe(notePathFor(uuid));
-});
-test("investigator prompt: a fix it cannot publish is reported, not dropped", () => {
-  const base = {
-    incident,
-    signal,
-    otherSignals: [],
-    evaluation,
-    recent,
-    baseBranch: "main",
-    maxRounds: 2,
-    actions: [],
-  };
-  const p = buildInvestigatorPrompt({ ...base, round: 1 });
-  expect(p).toContain(
-    "If you committed a fix but cannot push it or open the pull request, keep the candidate and add unpublished: { commit, blocker }",
-  );
-  expect(p).toContain("Never set candidate to null because of it");
-  // A fresh session after a send-back is told about the commit.
-  const fresh = buildInvestigatorPrompt({
-    ...base,
-    round: 2,
-    earlier: {
-      round: 1,
-      report: {
-        ...report,
-        unpublished: { commit: "ae4a79c", blocker: "git push was refused" },
-      },
-    },
-  });
-  expect(fresh).toContain(
-    "Unpublished fix: commit ae4a79c · git push was refused",
+  expect(branchFor(incident, "verifier", 1, 2)).toBe(
+    "incident/2026-10-20-search-blocked-by-upstream-verify-r1-a2",
   );
 });
 test("investigator prompt: read first, cheapest-first, never secrets or commands", () => {
@@ -258,7 +215,7 @@ test("investigator prompt: read first, cheapest-first, never secrets or commands
     "rollback · rollback · Roll back · reversible · free · no secret",
   );
   expect(p).toContain(
-    "docs/incidents/2026-10-20-search-blocked-by-upstream-1.md",
+    "docs/incidents/2026-10-20-search-blocked-by-upstream.md",
   );
   expect(p).toContain("https://acme.example.test");
   expect(p).toContain("2026-10-20T10:40:00.000Z · fail · 403 Forbidden");

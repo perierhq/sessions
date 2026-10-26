@@ -720,13 +720,7 @@ function reports(view: ResponseView): ResponseStep | undefined {
           error: parsed.error,
           problem: parsed.problem,
         };
-      // A fix it could not publish is reported as such and goes to the
-      // owner (rule 17), not back to the agent as a missing PR.
-      if (
-        parsed.candidate !== null &&
-        !parsed.unpublished &&
-        !(live?.prUrl ?? run.prUrl)
-      )
+      if (parsed.candidate !== null && !(live?.prUrl ?? run.prUrl))
         return {
           step: "record-report",
           sessionId: run.sessionId,
@@ -883,15 +877,6 @@ function investigation(view: ResponseView): ResponseStep {
       kind: "no-candidate",
       reason: `No fix found: ${report.noCandidateReason ?? report.cause}`,
     };
-  // 17b. A fix the investigator committed but could not publish: the
-  // owner widens what stopped it and sends it back, or takes the commit.
-  const prUrl = view.agents.get(inv.sessionId)?.prUrl || inv.prUrl;
-  if (report.candidate !== null && report.unpublished && !prUrl)
-    return {
-      step: "needs-you",
-      kind: "unpublished",
-      reason: `Fix ready, couldn't publish: commit ${report.unpublished.commit.slice(0, 12)} is not on a pull request. ${report.unpublished.blocker}`,
-    };
   // 18. A candidate.
   return {
     step: "transition",
@@ -906,7 +891,9 @@ function investigation(view: ResponseView): ResponseStep {
         claims: report.claims,
         notePath: report.notePath,
         runbookPaths: report.runbookPaths,
-        ...(prUrl ? { prUrl } : {}),
+        ...(view.agents.get(inv.sessionId)?.prUrl || inv.prUrl
+          ? { prUrl: view.agents.get(inv.sessionId)?.prUrl ?? inv.prUrl }
+          : {}),
       },
       proof: undefined,
       verdict: undefined,

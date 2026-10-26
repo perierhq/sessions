@@ -56,29 +56,12 @@ function dateOf(iso: string): string {
     : new Date(iso).toISOString().slice(0, 10);
 }
 
-/** The last characters of the incident id: the random end of a UUIDv7,
- *  so two incidents opened together still differ. */
-const ID_SUFFIX_LENGTH = 6;
-
-function idSuffix(id: string): string {
-  const plain = id
-    .replace(/^inc-/, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-  return plain.slice(-ID_SUFFIX_LENGTH) || "incident";
-}
-
-/** Date, title and a short part of the id: an incident's own name for its
- *  note and branches. Two incidents with one title on one day (the same
- *  signal failing twice) never share a branch, its pull request or a note. */
-function incidentStem(
-  incident: Pick<Incident, "id" | "openedAt" | "title">,
-): string {
-  return `${dateOf(incident.openedAt)}-${slugify(incident.title)}-${idSuffix(incident.id)}`;
+function incidentStem(incident: Pick<Incident, "openedAt" | "title">): string {
+  return `${dateOf(incident.openedAt)}-${slugify(incident.title)}`;
 }
 
 export function notePathFor(
-  incident: Pick<Incident, "id" | "openedAt" | "title">,
+  incident: Pick<Incident, "openedAt" | "title">,
 ): string {
   return `docs/incidents/${incidentStem(incident)}.md`;
 }
@@ -88,7 +71,7 @@ export function runbookPathsFor(signal: Pick<Signal, "name">): string[] {
 }
 
 export function branchFor(
-  incident: Pick<Incident, "id" | "openedAt" | "title">,
+  incident: Pick<Incident, "openedAt" | "title">,
   role: AgentRole,
   round: number,
   attempt: number,
@@ -302,11 +285,6 @@ function earlierRoundLines(
       ...(report.noCandidateReason
         ? [`No candidate: ${dataText(report.noCandidateReason)}`]
         : []),
-      ...(report.unpublished
-        ? [
-            `Unpublished fix: commit ${dataText(report.unpublished.commit, 64)} · ${dataText(report.unpublished.blocker)}`,
-          ]
-        : []),
       ...report.attempts.map(
         (a) =>
           `- ${dataText(a.step, 120)} · ${a.cost} · ${a.result} · ${dataText(a.evidence, 200)}`,
@@ -415,8 +393,6 @@ export function buildInvestigatorPrompt(
     `Commit on this session's branch and open one pull request into ${input.baseBranch}. The PR holds the fix (if it is code), the incident note at ${notePath}, and an update to the runbook (${runbooks.join(" or ")}).`,
     "",
     "If the fix is an action rather than code, the PR contains only the note and the runbook update.",
-    "",
-    "If you committed a fix but cannot push it or open the pull request, keep the candidate and add unpublished: { commit, blocker } to the report: the fix commit's sha, and the refusal or error word for word. Never set candidate to null because of it: Sessions tells the owner the fix is ready and what stopped it. Add a send-back next step so the owner can send it back once it can be published.",
     "",
     "Declare how Sessions should prove the fix (the check field), one of:",
     origin

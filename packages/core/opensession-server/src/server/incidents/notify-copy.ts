@@ -51,7 +51,6 @@ export const NEEDS_YOU_PUSH: Record<NeedsYouKind, string> = {
   "agent-error": "An agent failed and needs a decision",
   "no-report": "An agent finished without a report",
   "no-candidate": "Agents found no fix to try",
-  unpublished: "A fix is ready but could not be published",
   question: "Agents have a question for you",
   "proof-stopped": "The proof stopped and needs a decision",
   merge: "The fix could not merge and needs you",

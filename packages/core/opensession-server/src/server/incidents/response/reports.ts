@@ -40,7 +40,6 @@ import {
   SEND_BACK_NOTE_MAX,
   type ReadFirst,
   type ReportProblem,
-  type UnpublishedFix,
   type VerifierReport,
 } from "../../../shared/incident-response";
 import { validateSource } from "../signal-validation";
@@ -818,39 +817,6 @@ function runbookPathsOf(value: unknown, warnings: string[]): string[] {
 }
 
 /**
- * A candidate's commit that could not be pushed or put on a pull request.
- * Anything unusable is dropped with a warning, never the report: without
- * it a candidate with no pull request is refused as before.
- */
-function unpublishedOf(
-  value: unknown,
-  candidate: CandidatePlan | null,
-  warnings: string[],
-): UnpublishedFix | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (candidate === null) {
-    warnings.push("unpublished was ignored, as there is no candidate");
-    return undefined;
-  }
-  const raw = value as { commit?: unknown; blocker?: unknown };
-  const commit =
-    typeof raw === "object" && typeof raw.commit === "string"
-      ? raw.commit.trim().toLowerCase()
-      : "";
-  const blocker = typeof raw === "object" ? cleanText(raw.blocker) : "";
-  if (!/^[0-9a-f]{7,64}$/.test(commit) || !blocker) {
-    warnings.push(
-      "unpublished needs { commit, blocker } with the commit's sha; dropped",
-    );
-    return undefined;
-  }
-  return {
-    commit,
-    blocker: fitted(blocker, 500, "unpublished.blocker", warnings),
-  };
-}
-
-/**
  * The investigator's report. Refused only when something essential is
  * missing or unusable: the block itself, the summary or cause, every row
  * of evidence, the candidate decision, a candidate's actions, check,
@@ -889,7 +855,6 @@ export function parseInvestigatorReport(
         "noCandidateReason was missing; the cause stands in for it",
       );
   }
-  const unpublished = unpublishedOf(value.unpublished, candidate, repaired);
   let check = checkOf(value.check, ctx, repaired);
   if (failed(check)) {
     if (candidate !== null) return check;
@@ -933,7 +898,6 @@ export function parseInvestigatorReport(
     attempts,
     candidate,
     ...(noCandidateReason !== undefined ? { noCandidateReason } : {}),
-    ...(unpublished ? { unpublished } : {}),
     check,
     claims: citedClaims,
     notePath,

@@ -532,8 +532,7 @@ test("an investigating incident starts its investigator with the brief", async (
       round: 1,
       attempt: 1,
       model: "pi/anthropic/claude-opus-5-5",
-      // Date, title and the end of the incident id.
-      branch: `incident/${w.incident.openedAt.slice(0, 10)}-search-${w.incident.id.replace(/-/g, "").slice(-6)}`,
+      branch: expect.stringMatching(/^incident\/\d{4}-\d{2}-\d{2}-search$/),
       prompt: expect.stringContaining("Before anything else, read these"),
     }),
   ]);
