@@ -142,6 +142,18 @@ describe("dispatchKnowledge", () => {
     );
   });
 
+  test("an index call prefers the service's own fail-closed method", async () => {
+    const target = service as unknown as Record<string, unknown>;
+    target.search = async (...args: unknown[]) => ({ wrapped: args });
+    try {
+      expect(
+        await dispatchKnowledge(service, "index.search", ["acme", "csv", {}]),
+      ).toEqual({ wrapped: ["acme", "csv", {}] });
+    } finally {
+      delete target.search;
+    }
+  });
+
   test("index calls need a project", async () => {
     await expect(
       dispatchKnowledge(service, "index.search", [42, "export", {}]),

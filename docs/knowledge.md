@@ -1,0 +1,211 @@
+# Knowledge
+
+Each project can have a private knowledge base for support: articles people
+wrote, answers people sent, the project's docs, releases and website, and
+imported files. The support agent searches and cites it. Nothing written
+before a change in the world can back an automatic reply: freshness is
+computed from what changed, and every citation is checked again at the
+moment a reply is sent.
+
+Knowledge is on only when email support is enabled. The code lives in
+`packages/core/opensession-server/src/server/knowledge/`; the shared types
+and the exact copy people see are in `src/shared/knowledge.ts`.
+
+## Repositories
+
+Every project gets one bare git repository, `knowledge-<project>`, next to the
+[memory repositories](memory-repos.md) and built on the same machinery
+(`GitRepoStore`: a bare repository, a locked service checkout, history, diff
+and revert). It runs on the memory worker thread, so git and the index never
+block the gateway.
+
+```text
+<memory dir>/
+  repos/knowledge-<project>.git   canonical bare repository
+  repo-work/knowledge-<project>   the service's own checkout
+  knowledge-index.sqlite          derived full-text index; delete it and it rebuilds
+```
+
+Only the server writes to a knowledge repository: people through the
+Knowledge page and its API, imports and capture as "Pat". Agents never get a
+checkout, file tools or a write tool, and there is no Dreaming. A knowledge
+repository has no remote and is never pushed anywhere; it never lands in the
+code repository or on GitHub. Backup is the server state directory.
+
+| Path                                     | Holds                                                                     | Default trust |
+| ---------------------------------------- | ------------------------------------------------------------------------- | ------------- |
+| `KNOWLEDGE.md`                           | Starter readme, written when the repository is created                    | not an item   |
+| `articles/<slug>.md`                     | Articles people wrote or approved                                         | trusted       |
+| `suggestions/<slug>.md`                  | Proposals from imports; approving moves them to `articles/`               | reference     |
+| `sources/mail/<yyyy-mm>/<message id>.md` | Questions and the replies people sent, customer data stripped             | time rule     |
+| `sources/repo/<repo path>.md`            | `docs/**`, `README.md` and `docs/incidents/**` at a default-branch commit | trusted       |
+| `sources/releases/<tag>.md`              | Release notes                                                             | trusted       |
+| `sources/web/<host>/<path>.md`           | Text of a page on the project's Support websites, with its hash           | trusted       |
+| `sources/issues/<n>.md`                  | Open issues labelled `bug` ("known problem")                              | reference     |
+| `sources/files/<slug>.md`                | Text of an uploaded PDF, Markdown file or export                          | reference     |
+| `attachments/<slug>/<name>`              | The uploaded files themselves                                             | not an item   |
+
+Every change is a commit. Its author is the signed-in person; imports are
+authored by `Pat` with a `Suggested-by: Pat` trailer, and approving a
+suggestion is a commit by the person, subject `Approve <title>`, with the same
+trailer.
+
+Before a commit the server checks every changed file: items are Markdown with
+valid front matter in the folder their `origin` names, at most 256 KB;
+attachments live under `attachments/`, at most 10 MB; symbolic links,
+submodules and executable files are refused; and anything that looks like a
+credential is refused ("Knowledge never stores credentials").
+
+## Items
+
+An item is a Markdown file with YAML front matter between `---` lines. The
+server writes the keys in this order and refuses unknown keys:
+
+```yaml
+title: Exporting a project as CSV # required, at most 200 characters
+kind: answer # answer | internal
+trust: trusted # trusted | reference
+status: active # active | needs-check | retired
+origin: article # article | suggestion | mail | repo | release | web | issue | file
+topics: [export, csv] # at most 12
+sources:
+  [
+    mail:sm_0192ab,
+    "repo:docs/export.md@<sha>",
+    "url:https://help.acme.example.test/export#sha256=<hex>",
+    issue:42,
+    release:v1.4.0,
+    file:handbook.pdf,
+  ]
+dependsOn:
+  [
+    repo:docs/export.md,
+    repo:docs/,
+    url:https://help.acme.example.test/export,
+    issue:42,
+    pr:57,
+    release:v1.4.0,
+  ]
+validAsOf: 2026-10-20 # required: the day the content was last confirmed true
+validAsOfCommit: <sha> # the code repository's default-branch commit it was checked against
+reviewBy: 2027-01-31 # optional, for prices, deadlines and other volatile facts
+check: {
+    reason: "docs/export.md changed in 9c1d2e0",
+    since: 2026-10-26,
+    source: "repo:docs/export.md@<sha>",
+  } # only with needs-check
+suggestedBy: Pat
+approvedBy: Ada
+answeredAt: 2026-10-19T08:12:00Z # mail items only
+```
+
+- `answer` may be paraphrased or quoted to a customer. `internal` steers the
+  agent and is never quoted.
+- `dependsOn` lists what would make the item wrong. `repo:docs/` (trailing
+  slash) covers everything under that folder.
+- When a person sets an item back to `active`, `check` goes away.
+
+## Trust
+
+There are two tiers.
+
+- **Trusted** items may back an automatic reply while they are fresh: replies
+  a person sent after the latest relevant change, the project's docs and
+  README at the default-branch commit, its own website pages, release notes,
+  and approved articles. A draft a person approved without editing counts as
+  a reply a person sent.
+- **Reference** items can be searched and read but never back a reply on
+  their own: older mail, uploaded files, Plain history exports, open bug
+  issues, and suggestions nobody approved. Reference material produces
+  suggestions; a person approves them.
+
+An item backs a reply only when it is `trusted`, `active` and not past its
+`reviewBy` date. An open bug issue alone never lets the agent tell a customer
+"known, we're on it"; that needs a person, unless an approved article links
+the issue.
+
+## Freshness
+
+1. Every item records when it was true: `validAsOf`, the code commit it was
+   checked against, the page's content hash, the message date.
+2. A re-validation run flips an item to `needs-check`, with a one-line reason,
+   when something it depends on changed: a default-branch commit after
+   `validAsOfCommit` touches a `dependsOn` path, a page's content hash
+   changed, a new release's notes mention the item's topics, or an issue or
+   pull request it references was closed or merged. The item is kept, never
+   deleted.
+3. Newer beats older. When two trusted items answer the same question and the
+   small model finds they disagree, both become `needs-check` and a person
+   sees them side by side.
+4. Imported mail is time-aware. A question-and-reply pair older than the
+   latest change to what it touches (the newest release, or a default-branch
+   commit touching those paths) is imported as reference. When the pair's
+   touched paths can't be told, it counts as touching all of `docs/` and
+   `README.md`.
+5. A `reviewBy` date in the past makes an item `needs-check`; the day itself
+   still counts as active.
+6. The run happens daily, after a push to the default branch, and on demand
+   from the Knowledge page. It re-fetches trusted pages, re-checks dependent
+   paths and re-runs the conflict check on changed items. The small model may
+   draft updated text for a `needs-check` item; a person still approves it.
+7. Only fresh, trusted, active items back a reply. Anything else makes the
+   draft wait for a person with "Knowledge may be out of date: <article
+   title>".
+
+## Using it
+
+The support agent has two tools, only in a support session:
+`search_knowledge(query)` (ranked, this project only) and
+`read_knowledge(path)`. Both print the knowledge commit they read, and a draft
+cites an item as `knowledge:<path>@<commit>`.
+
+When a reply is about to be sent (right away, at the end of the veto window,
+and on every retry) the server checks each knowledge citation again. The
+draft waits for a person when:
+
+- the cited item is gone or this session didn't read it ("This session didn't
+  read it");
+- the item changed after the agent read it ("Changed since the agent read
+  it");
+- it is reference material ("Reference material, not approved for replies");
+- it is `needs-check`, `retired` or past its review date ("Review date passed
+  (<date>)");
+- a default-branch commit after its `validAsOfCommit` touches one of its
+  `dependsOn` paths;
+- the knowledge service or index can't answer ("Knowledge couldn't be
+  checked"). This also applies to a draft that cites nothing on a project that
+  has a knowledge repository: the server never sends on data it couldn't
+  check;
+- the draft contains 12 or more consecutive words of an `internal` article
+  ("The reply quotes an internal note").
+
+The headline people see on such a draft is "Knowledge may be out of date:
+<article title>" (or the internal-note line), with the reasons per citation
+underneath.
+
+## Customer data
+
+Mail is stripped before anything is committed: addresses, the customer's
+display-name tokens, phone numbers and long tokens or secrets. When the strip
+can't show the text is clean, the pair is skipped. Items taken from a
+conversation stay after the conversation's retention ends, since they hold no
+customer data.
+
+## Erasure
+
+Deleting or retiring an item is a normal commit; history keeps it. The
+credential check and the mail strip prevent the common leak. If something that
+must not be kept reaches a knowledge repository anyway, an operator removes it
+by hand, as for memory:
+
+1. Stop the server, or turn email support off and restart, so nothing writes
+   to knowledge.
+2. Rewrite history in a clone of `repos/knowledge-<project>.git` (for example
+   with `git filter-repo`), then replace the bare repository with the
+   rewritten one.
+3. Delete `repo-work/knowledge-<project>`. There is no remote to force-push
+   and no session checkout to delete.
+4. Delete `knowledge-index.sqlite` so it rebuilds, and start the server.
+
+Agents never rewrite history, and the server has no button for it. Remember
+the server state directory backups: they hold the old history too.

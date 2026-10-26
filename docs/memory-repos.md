@@ -35,6 +35,11 @@ In the memory state directory (`~/.opensession-memory` on a default install):
   memory-repo-index.sqlite   derived index; delete it and it rebuilds
 ```
 
+Knowledge repositories (`knowledge-<project>`) share this machinery: the same
+bare repositories, service checkouts, locks and worker thread, with their own
+format, validator and index, and never a remote. See
+[knowledge.md](knowledge.md).
+
 ## Entries
 
 ```markdown

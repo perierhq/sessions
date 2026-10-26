@@ -2,9 +2,11 @@
  * Runs one knowledge call from the gateway against a KnowledgeService.
  * Used by memory-repo-worker.ts (and the in-process test backend), so the
  * method list is enforced in one place: anything not in KNOWLEDGE_METHODS
- * is refused. Index calls (`index.<method>`) first bring the project's index
- * up to date with `service.fresh`, which throws when it can't: a reader never
- * gets an answer from an index older than the repository.
+ * is refused. Index calls (`index.<method>`) never reach a stale index:
+ * when KnowledgeService has a method of that name (its fail-closed wrapper,
+ * which awaits `fresh` itself) that method runs; otherwise the project's
+ * index is brought up to date with `service.fresh` first. `fresh` throws
+ * when it can't reindex, so the reader gets an error, not old data.
  */
 
 import { MemoryRepoError } from "../memory-repo/git-store";
@@ -26,8 +28,10 @@ export async function dispatchKnowledge(
     const project = args[0];
     if (typeof project !== "string")
       throw new MemoryRepoError("A knowledge index call needs a project.");
-    await service.fresh(project);
     const name = method.slice("index.".length);
+    const wrapper = (service as unknown as Partial<Callable>)[name];
+    if (typeof wrapper === "function") return wrapper.apply(service, args);
+    await service.fresh(project);
     return (service.index as unknown as Callable)[name].apply(
       service.index,
       args,
