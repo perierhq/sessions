@@ -181,22 +181,34 @@ const ok = (raw: RawResponse) => raw.status >= 200 && raw.status < 300;
 
 // ── robots.txt ──────────────────────────────────────────────────────────
 
+/** robots.txt bytes read (the rest is ignored, as Google does). */
+export const MAX_ROBOTS_BYTES = 500 * 1024;
+/** Allow/Disallow rules kept per robots.txt. */
+export const MAX_ROBOTS_RULES = 1000;
+
 interface RobotsRule {
   allow: boolean;
-  pattern: RegExp;
+  /** The pattern split at `*`: the first part is a prefix, the rest are
+   *  found in order. */
+  parts: string[];
+  /** Ends in `$`: the last part must end the path. */
+  anchored: boolean;
   length: number;
 }
 
-/** The `Allow`/`Disallow` rules of the groups for every agent (`*`). */
+/** The `Allow`/`Disallow` rules of the groups for every agent (`*`), at
+ *  most MAX_ROBOTS_RULES. */
 export function robotsRules(text: string): RobotsRule[] {
   const rules: RobotsRule[] = [];
   let agents: string[] = [];
   let inRules = false;
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*([A-Za-z-]+)\s*:\s*(.*?)\s*$/.exec(line.replace(/#.*/, ""));
-    if (!m) continue;
-    const key = m[1]!.toLowerCase();
-    const value = m[2]!;
+  for (const raw of text.split("\n")) {
+    const hash = raw.indexOf("#");
+    const line = (hash < 0 ? raw : raw.slice(0, hash)).trim();
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const key = line.slice(0, colon).trim().toLowerCase();
+    const value = line.slice(colon + 1).trim();
     if (key === "user-agent") {
       if (inRules) agents = [];
       inRules = false;
@@ -207,18 +219,40 @@ export function robotsRules(text: string): RobotsRule[] {
     inRules = true;
     if (!agents.includes("*") || !value) continue;
     const anchored = value.endsWith("$");
-    const body = anchored ? value.slice(0, -1) : value;
-    const source = body
-      .split("*")
-      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-      .join(".*");
     rules.push({
       allow: key === "allow",
-      pattern: new RegExp(`^${source}${anchored ? "$" : ""}`),
+      parts: (anchored ? value.slice(0, -1) : value).split("*"),
+      anchored,
       length: value.length,
     });
+    if (rules.length >= MAX_ROBOTS_RULES) break;
   }
   return rules;
+}
+
+/** Whether `rule` matches `path` from its start: the first part as a
+ *  prefix, each later part at its leftmost place after the one before
+ *  (leftmost is always safe for `*`), and with `$` the last part ending
+ *  the path. No regular expression, no backtracking. */
+function ruleMatches(rule: RobotsRule, path: string): boolean {
+  const { parts, anchored } = rule;
+  const first = parts[0]!;
+  if (!path.startsWith(first)) return false;
+  if (parts.length === 1) return !anchored || path.length === first.length;
+  const last = parts[parts.length - 1]!;
+  // With `$` the last part is pinned to the end; the middle must fit before.
+  const end = anchored ? path.length - last.length : path.length;
+  if (anchored && (end < first.length || !path.endsWith(last))) return false;
+  let at = first.length;
+  const middle = anchored ? parts.length - 1 : parts.length;
+  for (let i = 1; i < middle; i++) {
+    const part = parts[i]!;
+    if (!part) continue;
+    const found = path.indexOf(part, at);
+    if (found < 0 || found + part.length > end) return false;
+    at = found + part.length;
+  }
+  return true;
 }
 
 /** Whether `path` may be crawled: the longest matching rule wins, Allow on
@@ -226,7 +260,7 @@ export function robotsRules(text: string): RobotsRule[] {
 export function robotsAllow(rules: RobotsRule[], path: string): boolean {
   let best: RobotsRule | null = null;
   for (const rule of rules) {
-    if (!rule.pattern.test(path)) continue;
+    if (!ruleMatches(rule, path)) continue;
     if (
       !best ||
       rule.length > best.length ||
@@ -239,6 +273,11 @@ export function robotsAllow(rules: RobotsRule[], path: string): boolean {
 
 // ── Sitemaps and links ──────────────────────────────────────────────────
 
+/** Sitemap bytes read at most (the sitemap protocol's own limit). */
+export const MAX_SITEMAP_BYTES = 10 * 1024 * 1024;
+/** URLs read per sitemap at most (the sitemap protocol's own limit). */
+export const MAX_SITEMAP_URLS = 50_000;
+
 const ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -247,15 +286,35 @@ const ENTITIES: Record<string, string> = {
   apos: "'",
 };
 
-/** The `<loc>` values of a sitemap or sitemap index. */
+/** ASCII letters lowered, so indexes match the original string. */
+const asciiLower = (text: string) =>
+  text.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+
+/** The `<loc>` values of a sitemap or sitemap index, at most
+ *  MAX_SITEMAP_URLS: a plain scan for `<loc>` … `</loc>`, trimmed, a CDATA
+ *  wrapper dropped, the five XML entities decoded. An unclosed `<loc>`
+ *  ends the scan. */
 export function sitemapLocs(xml: string): string[] {
+  const lower = asciiLower(xml);
   const locs: string[] = [];
-  for (const m of xml.matchAll(
-    /<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]*?)\s*(?:\]\]>)?\s*<\/loc>/gi,
-  ))
-    locs.push(
-      m[1]!.replace(/&(amp|lt|gt|quot|apos);/g, (_, e: string) => ENTITIES[e]!),
-    );
+  let at = 0;
+  while (locs.length < MAX_SITEMAP_URLS) {
+    const open = lower.indexOf("<loc>", at);
+    if (open < 0) break;
+    const start = open + "<loc>".length;
+    const close = lower.indexOf("</loc>", start);
+    if (close < 0) break;
+    at = close + "</loc>".length;
+    let value = xml.slice(start, close).trim();
+    if (value.startsWith("<![CDATA[") && value.endsWith("]]>"))
+      value = value.slice("<![CDATA[".length, -"]]>".length).trim();
+    else
+      value = value.replace(
+        /&(amp|lt|gt|quot|apos);/g,
+        (_, e: string) => ENTITIES[e]!,
+      );
+    if (value && !value.includes("<")) locs.push(value);
+  }
   return locs;
 }
 
@@ -329,7 +388,9 @@ export async function* crawlHosts(
       );
       continue;
     }
-    const rules = ok(robots) ? robotsRules(decoder().decode(robots.body)) : [];
+    const rules = ok(robots)
+      ? robotsRules(decoder().decode(robots.body.subarray(0, MAX_ROBOTS_BYTES)))
+      : [];
     const allowed = (url: string) =>
       crawlable(url, only) && robotsAllow(rules, new URL(url).pathname);
 
@@ -346,6 +407,10 @@ export async function* crawlHosts(
       maps.add(url);
       const raw = await get(url);
       if ("error" in raw || !ok(raw)) return;
+      if (raw.body.length > MAX_SITEMAP_BYTES) {
+        truncate();
+        return;
+      }
       const xml = decoder().decode(raw.body);
       const index = /<sitemapindex[\s>]/i.test(xml);
       for (const loc of sitemapLocs(xml)) {

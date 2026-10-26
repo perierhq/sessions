@@ -11,6 +11,11 @@ import {
   type CrawledPage,
   crawlHosts,
   crawlWebsites,
+  MAX_ROBOTS_RULES,
+  MAX_SITEMAP_URLS,
+  robotsAllow,
+  robotsRules,
+  sitemapLocs,
   startWebsiteCrawl,
   type WebsiteDeps,
 } from "./website";
@@ -74,6 +79,65 @@ async function collect(
   for await (const page of crawlHosts(hosts, deps)) pages.push(page);
   return pages;
 }
+
+describe("sitemapLocs", () => {
+  test("reads plain, CDATA and entity-escaped locs", () => {
+    expect(
+      sitemapLocs(
+        `<urlset><url><loc> https://a.test/x?a=1&amp;b=2 </loc></url><url><LOC><![CDATA[ https://a.test/y ]]></LOC></url><url><loc></loc></url></urlset>`,
+      ),
+    ).toEqual(["https://a.test/x?a=1&b=2", "https://a.test/y"]);
+  });
+
+  test("an unclosed <loc> followed by 100k spaces ends fast", () => {
+    const xml = `<urlset><loc>${" ".repeat(100_000)}`;
+    const start = performance.now();
+    expect(sitemapLocs(`${xml}<loc>${xml}`)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(200);
+  });
+
+  test("stops at MAX_SITEMAP_URLS", () => {
+    const xml = Array.from(
+      { length: MAX_SITEMAP_URLS + 5 },
+      (_, i) => `<loc>https://a.test/${i}</loc>`,
+    ).join("");
+    expect(sitemapLocs(xml)).toHaveLength(MAX_SITEMAP_URLS);
+  });
+});
+
+describe("robots.txt", () => {
+  test("matches wildcards and $ without regular expressions", () => {
+    const rules = robotsRules(
+      "User-agent: *\nDisallow: /*.pdf$\nDisallow: /private*/keys\nAllow: /private-ok/keys\nDisallow: /a*b*c\n",
+    );
+    expect(robotsAllow(rules, "/files/guide.pdf")).toBe(false);
+    expect(robotsAllow(rules, "/files/guide.pdf?x")).toBe(true);
+    expect(robotsAllow(rules, "/private-x/keys/1")).toBe(false);
+    expect(robotsAllow(rules, "/private-ok/keys")).toBe(true);
+    expect(robotsAllow(rules, "/axxbyyc")).toBe(false);
+    expect(robotsAllow(rules, "/axxcyyb")).toBe(true);
+    expect(robotsAllow(rules, "/export")).toBe(true);
+  });
+
+  test("a pathological pattern matches in linear time", () => {
+    const rules = robotsRules(
+      `User-agent: *\nDisallow: /${"*a".repeat(200)}*b\n`,
+    );
+    const start = performance.now();
+    expect(robotsAllow(rules, `/${"a".repeat(50_000)}`)).toBe(true);
+    expect(performance.now() - start).toBeLessThan(200);
+  });
+
+  test("keeps at most MAX_ROBOTS_RULES rules", () => {
+    const lines = Array.from(
+      { length: MAX_ROBOTS_RULES + 50 },
+      (_, i) => `Disallow: /p${i}`,
+    );
+    expect(robotsRules(`User-agent: *\n${lines.join("\n")}`)).toHaveLength(
+      MAX_ROBOTS_RULES,
+    );
+  });
+});
 
 describe("crawlHosts", () => {
   test("crawls the sitemap's pages on the listed host only", async () => {
