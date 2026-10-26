@@ -93,7 +93,9 @@ const ORG_FLOOR_RULES: CommandRule[] = [
   {
     // `--force-with-lease` only overwrites what the pusher last saw, so it
     // is not a blind force.
-    pattern: "\\bgit\\s+push\\b.*(?:--force(?:\\s|$)|(?:^|\\s)-[a-zA-Z]*f\\b)",
+    // Options of the same push only: `.*` used to reach a later `rm -f`.
+    pattern:
+      "\\bgit\\s+push\\b[^\\n;&|]*\\s(--force|-[a-z]*f[a-z]*)([\\s;&|)]|$)",
     decision: "require_approval",
     reason: "force push",
   },

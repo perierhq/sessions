@@ -143,6 +143,26 @@ describe("org floor", () => {
     );
   });
 
+  // Same flaw as the recursive-delete rule: the `-f` of a later `rm -f`
+  // made an ordinary push a "force push".
+  test("force push reads only the push invocation's own options", () => {
+    const p = orgFloorPolicy();
+    for (const c of [
+      "git push -q -u origin HEAD 2>&1 | tail -2; gh pr create --base main --title x; rm -f /tmp/body.md",
+      "git push origin feature && rm -f a.txt",
+      "git push -u origin HEAD; cp -f a b",
+    ]) {
+      expect(evaluateCommand(c, p).decision, c).toBe("allow");
+    }
+    for (const c of [
+      "git push origin feature -f",
+      "git push -uf origin feature",
+      "ls && git push --force origin main; echo done",
+    ]) {
+      expect(evaluateCommand(c, p).decision, c).toBe("require_approval");
+    }
+  });
+
   test("shared-checkout rollbacks are gated (our addition to qm's floor)", () => {
     const p = orgFloorPolicy();
     expect(evaluateCommand("git reset --hard origin/main", p).decision).toBe(
