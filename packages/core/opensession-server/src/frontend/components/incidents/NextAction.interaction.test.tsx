@@ -9,10 +9,9 @@ import type {
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
 import type { Incident, SignalView } from "../../../shared/incidents";
-import type {
-  ProjectSettingsInput,
-  SignalInput,
-} from "../../lib/api/incidents";
+import type { ProjectSettingsView } from "../../../shared/project-settings";
+import type { SignalInput } from "../../lib/api/incidents";
+import type { ProjectPatchBody } from "../../lib/project-settings/save";
 import {
   createHookHarness,
   find,
@@ -81,10 +80,7 @@ const decide =
   >();
 const updateSettings =
   mock<
-    (
-      project: string,
-      input: ProjectSettingsInput,
-    ) => Promise<RedactedProjectSettings>
+    (project: string, body: ProjectPatchBody) => Promise<ProjectSettingsView>
   >();
 const updateSignal =
   mock<(id: string, input: SignalInput) => Promise<SignalView>>();
@@ -92,12 +88,19 @@ const realApi = await import("../../lib/api/incidents");
 mock.module("../../lib/api/incidents", () => ({
   ...realApi,
   decideIncidentApi: decide,
-  updateProjectSettingsApi: updateSettings,
   updateSignalApi: updateSignal,
+}));
+// Pausing writes the project settings API; the old incident-projects path
+// answers 410.
+const realProjectsApi = await import("../../lib/api/projects");
+mock.module("../../lib/api/projects", () => ({
+  ...realProjectsApi,
+  updateProjectSettingsApi: updateSettings,
 }));
 
 const { ApiError } = await import("../../lib/api/request");
 const { apiSWRKey } = await import("../../lib/api-swr");
+const { projectSWRKey } = await import("../../hooks/useProjects");
 const { isIncidentKey } = await import("../../hooks/useIncidents");
 const { NextAction, NextActionView, StopButton } = await import("./NextAction");
 const { ConfirmDialog } = await import("../../ui/confirm");
@@ -375,18 +378,22 @@ test("a scheduled Deploy now is dropped when the card stops offering it", async 
 });
 
 test("Pause agents writes the setting and its Undo writes it back once", async () => {
-  updateSettings.mockResolvedValue(settings);
+  // SAFETY: the card reads nothing from the answer.
+  updateSettings.mockResolvedValue({} as ProjectSettingsView);
   const card = harness.mount(NextAction, props({ incident: working }));
   view(card.output()).onButton(button(card.output(), "pause-agents"));
   await settle();
-  expect(updateSettings).toHaveBeenCalledWith("acme", { agentsPaused: true });
+  expect(updateSettings).toHaveBeenCalledWith("acme", {
+    incidents: { agentsPaused: true },
+  });
   expect(swrCalls).toContainEqual([apiSWRKey.incidentProject("acme")]);
+  expect(swrCalls).toContainEqual([projectSWRKey.projectSettings("acme")]);
   expect(toasts[0]?.message).toBe("Agents paused for acme");
   expect(view(card.output()).busy).toBeNull();
   toasts[0]?.options?.action?.onClick();
   await settle();
   expect(updateSettings).toHaveBeenLastCalledWith("acme", {
-    agentsPaused: false,
+    incidents: { agentsPaused: false },
   });
   // The undo's own toast offers no second undo.
   expect(toasts[1]).toEqual({

@@ -12,6 +12,10 @@ import type {
   ProjectSettingsPatch,
   ProjectSettingsView,
 } from "../../../shared/project-settings";
+import {
+  type ProjectPatchBody,
+  sendProjectPatch,
+} from "../project-settings/save";
 import { request } from "./request";
 
 export { ApiError } from "./request";
@@ -42,6 +46,21 @@ export function patchProjectSettings(
     method: "PATCH",
     body: patch,
     label: "Failed to save settings",
+  });
+}
+
+/** One change from outside the settings page (an incident card's Pause):
+ *  read the current revision and send the change at it, the page's own
+ *  save rule for when another tab saved in between. */
+export async function updateProjectSettingsApi(
+  project: string,
+  body: ProjectPatchBody,
+): Promise<ProjectSettingsView> {
+  const current = await fetchProjectSettings(project);
+  return sendProjectPatch(body, current.document.revision, {
+    send: (patch) => patchProjectSettings(project, patch),
+    refetch: () => fetchProjectSettings(project).catch(() => undefined),
+    onRetry: () => {},
   });
 }
 
