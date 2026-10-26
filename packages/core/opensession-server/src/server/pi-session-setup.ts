@@ -268,7 +268,10 @@ export async function preparePiResources(input: PiResourcesInput) {
     // with no additionalSkillPaths loaded nothing at all, which left every
     // shipped skill dead in the product.
     noSkills: true,
-    additionalSkillPaths: skillSearchPaths(context.dir),
+    // A support session loads its project's skills only (projectSkillsOnly).
+    additionalSkillPaths: skillSearchPaths(context.dir, {
+      projectOnly: opts.projectSkillsOnly === true,
+    }),
     // The pstack family stays loaded but invisible to the model until the
     // session turns pstack mode on (composer toggle or /pstack). A mirrored
     // Sandbox skill is presented at its Sandbox path; its local copy only

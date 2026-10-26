@@ -145,6 +145,9 @@ export interface RunAgentOpts {
   speed?: SessionSpeed; // unset falls back to fastMode; "ultrafast" needs GPT-6 Astra and a Pro $500 login
   /** Pstack mode: the pstack skill family is visible to the model. */
   pstackMode?: boolean;
+  /** Only the checkout's own skills, never the instance's skills directory
+   *  (support sessions: skill-paths.ts skillSearchPaths). */
+  projectSkillsOnly?: boolean;
   /**
    * External MCP servers this run may mount. REQUIRED and with no implicit
    * default: pass an allowlist, `[]` for none, or `"all"` to mount every
@@ -2117,6 +2120,7 @@ export async function resumeInterruptedRuns(
                   selectedModel: run.selectedModel,
                   transientFallback: run.transientFallback,
                   effort: run.effort,
+                  projectSkillsOnly: run.projectSkillsOnly,
                   fastMode: run.fastMode,
                   speed: run.speed,
                   mcpServers: run.mcpServers ?? "all",
@@ -2233,6 +2237,7 @@ export async function resumeInterruptedRuns(
                 selectedModel: run.selectedModel,
                 transientFallback: run.transientFallback,
                 effort: run.effort,
+                projectSkillsOnly: run.projectSkillsOnly,
                 fastMode: run.fastMode,
                 speed: run.speed,
                 mcpServers: run.mcpServers ?? "all",
@@ -2341,6 +2346,7 @@ export async function resumeInterruptedRuns(
               selectedModel: run.selectedModel,
               transientFallback: run.transientFallback,
               effort: run.effort,
+              projectSkillsOnly: run.projectSkillsOnly,
               fastMode: run.fastMode,
               speed: run.speed,
               mcpServers: run.mcpServers ?? "all",

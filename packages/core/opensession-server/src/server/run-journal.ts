@@ -120,6 +120,7 @@ export interface ActiveRunRecord {
   fastMode?: boolean; // OpenAI priority service tier, preserved across resume
   speed?: SessionSpeed; // unset falls back to fastMode; "ultrafast" needs GPT-6 Astra and a Pro $500 login
   pstackMode?: boolean; // pstack skill family visible to the model, preserved across resume
+  projectSkillsOnly?: boolean; // only the checkout's skills (support sessions), preserved across resume
   accountId?: string; // pinned provider account, preserved across resume
   accountStrict?: boolean; // hard pin: never rotate into the pool (automation cost cap)
   usageCredits?: boolean; // may run on accounts spending usage-credits past their limits

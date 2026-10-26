@@ -2389,6 +2389,8 @@ export async function maybeLaunchSandboxedRun(
       fastMode: session.fastMode,
       speed: session.speed,
       pstackMode: session.pstackMode,
+      // Customer mail: the project's own skills, no instance-wide ones.
+      projectSkillsOnly: isSupportSession(session) || undefined,
       // A disposable automation resume carries the automation's hard pin for
       // its own turns; a person's takeover turn carries none (runAccountSpec).
       ...runAccountSpec(session, opts, owningAutomation),
@@ -3611,6 +3613,7 @@ async function runSessionPromptInner(
           fastMode: session.fastMode,
           speed: session.speed,
           pstackMode: session.pstackMode,
+          projectSkillsOnly: supportSession || undefined,
           // Session pin, except for a person's turn in an automation-owned
           // session: they pay personal-first with the pool as backup.
           ...runAccountSpec(session, runInputs),
@@ -3665,6 +3668,7 @@ async function runSessionPromptInner(
       fastMode: session.fastMode,
       speed: session.speed,
       pstackMode: session.pstackMode,
+      projectSkillsOnly: isSupportSession(session) || undefined,
       // Pinned subscription for this session (claude-runner prefers it, pool
       // fallback on exhaustion). Ignored by Codex models. A person's turn in
       // an automation-owned session carries no pin, so their own subscription
