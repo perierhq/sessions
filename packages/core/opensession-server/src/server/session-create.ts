@@ -1680,6 +1680,8 @@ export async function openCreatedSession(
   // Terminal failure the opening run died on — recorded after the loop so
   // the fresh session surfaces as "Needs input".
   let runFailure: string | null = null;
+  // A usage limit no account could serve; see maybeQueueAutoContinue.
+  let usageLimited = false;
   // The runner already wrote its own, friendlier transcript line.
   let failureNoticePersisted = false;
   // The opening turn's reply and tool count, for the announce-then-stop
@@ -2370,8 +2372,10 @@ export async function openCreatedSession(
           engineSessionId = event.sessionId || engineSessionId;
           if (event.provider) effectiveProvider = event.provider;
           if (event.model) effectiveModel = event.model;
-          if (event.usageLimitExhausted)
+          if (event.usageLimitExhausted) {
+            usageLimited = true;
             runFailure = event.result || "Usage limit reached on every account";
+          }
           if (event.usage) {
             latestUsage = foldSessionUsage(
               undefined,
@@ -2386,6 +2390,7 @@ export async function openCreatedSession(
             io.emit({ type: "cache_warning", sessionId: bksId });
         }
         if (event.type === "error") {
+          if (event.usageLimitExhausted) usageLimited = true;
           runFailure = event.content || "Run failed";
           if (event.noticePersisted) failureNoticePersisted = true;
           io.emit({ type: "error", message: event.content });
@@ -2447,6 +2452,7 @@ export async function openCreatedSession(
           toolUseCount,
           endedWithError: !!runFailure,
           runFailure,
+          usageLimited,
         })
       ) {
         watchExternalRunAndDrain(bksId);

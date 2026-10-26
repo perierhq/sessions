@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import type { KnowledgeImportJob } from "../../../shared/knowledge";
+import {
+  KNOWLEDGE_SKIP,
+  type KnowledgeImportJob,
+} from "../../../shared/knowledge";
 import {
   FILE_TOO_BIG_COPY,
   FILE_TYPES_COPY,
@@ -15,7 +18,9 @@ import {
   importChoices,
   jobError,
   jobTitle,
+  jobPhase,
   jobProgress,
+  jobSkips,
   monthsLabel,
   pollJobs,
   websiteCardLine,
@@ -75,6 +80,65 @@ test("jobs are polled every 2 s while one is queued or running, then not", () =>
   expect(pollJobs([job(), job({ state: "failed", error: "Cancelled." })])).toBe(
     0,
   );
+});
+
+test("with the live channel up nothing is polled; down, the 2 s poll comes back", () => {
+  const running = [job({ state: "running" })];
+  expect(pollJobs(running, true)).toBe(0);
+  expect(pollJobs(running, false)).toBe(2_000);
+});
+
+test("a running job's phase line, and its bar from the phase's own counts", () => {
+  const reading = job({
+    state: "running",
+    done: 0,
+    total: null,
+    phase: { text: "Reading INBOX 120 of 900", done: 120, total: 900 },
+  });
+  expect(jobPhase(reading)).toBe("Reading INBOX 120 of 900");
+  expect(jobProgress(reading)).toBe(13);
+  // A phase without a total is indeterminate, whatever the job's total.
+  const pairing = job({
+    state: "running",
+    done: 0,
+    total: 40,
+    phase: { text: "Pairing" },
+  });
+  expect(jobPhase(pairing)).toBe("Pairing");
+  expect(jobProgress(pairing)).toBeNull();
+  // Only while it runs.
+  expect(jobPhase(job({ phase: { text: "Committing" } }))).toBeNull();
+  expect(jobPhase(job({ state: "running" }))).toBeNull();
+});
+
+test("skip reasons read under the counts, most first", () => {
+  expect(
+    jobSkips(
+      job({
+        skippedReasons: {
+          [KNOWLEDGE_SKIP.notReusable]: 3,
+          [KNOWLEDGE_SKIP.alreadyImported]: 4,
+        },
+      }),
+    ),
+  ).toBe("Skipped: already imported (4), not a reusable answer (3)");
+  expect(
+    jobSkips(
+      job({
+        kind: "files",
+        skippedFiles: [
+          { name: "scan.pdf", reason: '"scan.pdf" has no text to import' },
+          {
+            name: "keys.md",
+            reason: '"keys.md" looks like it holds a credential',
+          },
+        ],
+      }),
+    ),
+  ).toBe(
+    'Skipped: "scan.pdf" has no text to import; "keys.md" looks like it holds a credential',
+  );
+  expect(jobSkips(job())).toBeNull();
 });
 
 test("a wildcard host is listed as skipped", () => {

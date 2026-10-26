@@ -102,6 +102,7 @@ import { receiveMention, receiveMentionsCleared } from "./lib/mentions";
 import { InboxPage } from "./components/notifications/InboxPage";
 import { useNotificationInbox } from "./hooks/useNotificationInbox";
 import { useIncidentLiveUpdates } from "./hooks/useIncidents";
+import { useKnowledgeLiveUpdates } from "./hooks/useKnowledgeLive";
 import type { NavigationActions } from "./lib/navigation";
 import {
   errorMatchesPendingCreate,
@@ -519,6 +520,7 @@ export function AppContent({
   }, [connected]);
   useNotificationInbox({ navigate, connected, addHandler });
   useIncidentLiveUpdates(addHandler);
+  useKnowledgeLiveUpdates(addHandler, connected);
   // When a session is created from the New Session form or Ask box, jump straight into it
   // The handler reads `inject`/`navigate` through effect events, so the
   // subscription doesn't re-arm just because their closures moved.

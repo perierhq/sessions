@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   decideRunHostAdmission,
+  hostAdmissionLimits,
+  isRunHostAdmissionRefusal,
+  runHostAdmissionRetryDelayMs,
   readCpuSomeAvg10,
   readMemAvailableMb,
   RunHostAdmissionError,
@@ -219,5 +222,70 @@ describe("waitForRunHostAdmission", () => {
         now: () => clock,
       }),
     ).rejects.toBeInstanceOf(RunHostAdmissionError);
+  });
+});
+
+describe("admission sized to the host", () => {
+  const GIB = 1024 ** 3;
+
+  test("the memory floor scales with the host instead of a fixed 4 GiB", () => {
+    // A 22.9 GB host keeps about 5% free, not 4096 MiB it rarely has.
+    const small = hostAdmissionLimits({}, 22.9e9);
+    expect(small.minAvailableMb).toBeGreaterThan(1_000);
+    expect(small.minAvailableMb).toBeLessThan(1_200);
+    // A small host still keeps 1 GiB; a big one never more than 4 GiB.
+    expect(hostAdmissionLimits({}, 8 * GIB).minAvailableMb).toBe(1_024);
+    expect(hostAdmissionLimits({}, 256 * GIB).minAvailableMb).toBe(4_096);
+    // An unknown total keeps the old ceiling.
+    expect(hostAdmissionLimits({}, 0).minAvailableMb).toBe(4_096);
+  });
+
+  test("an explicit floor still wins", () => {
+    expect(
+      hostAdmissionLimits(
+        { OPENSESSION_RUN_HOST_MIN_AVAILABLE_MB: "2048" },
+        22.9e9,
+      ).minAvailableMb,
+    ).toBe(2_048);
+  });
+
+  test("a full host refuses within a minute, not fifteen", () => {
+    expect(hostAdmissionLimits({}, 22.9e9).admissionTimeoutMs).toBe(60_000);
+    expect(
+      hostAdmissionLimits(
+        { OPENSESSION_RUN_HOST_ADMISSION_TIMEOUT_S: "300" },
+        22.9e9,
+      ).admissionTimeoutMs,
+    ).toBe(300_000);
+  });
+
+  test("the refusal says what was free and what the run needed", () => {
+    const decision = decideRunHostAdmission(
+      { ...roomy, memAvailableMb: 1_266 },
+      { ...limits, minAvailableMb: 1_147, reservedPerHostMb: 1_024 },
+    );
+    expect(decision.admit).toBe(false);
+    if (!decision.admit)
+      expect(decision.reason).toBe(
+        "not enough free memory: 1266 MiB free, 2171 MiB needed (1147 MiB kept free for the host + 1024 MiB for this run)",
+      );
+  });
+
+  test("callers can tell a refusal apart and back off", () => {
+    const error = new RunHostAdmissionError("not enough free memory");
+    expect(isRunHostAdmissionRefusal(error.message)).toBe(true);
+    expect(isRunHostAdmissionRefusal("pi: 429")).toBe(false);
+    expect(
+      [1, 2, 3, 4, 5, 6].map((attempt) =>
+        runHostAdmissionRetryDelayMs(attempt),
+      ),
+    ).toEqual([
+      2 * 60_000,
+      4 * 60_000,
+      8 * 60_000,
+      16 * 60_000,
+      30 * 60_000,
+      30 * 60_000,
+    ]);
   });
 });

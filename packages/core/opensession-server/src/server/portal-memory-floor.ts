@@ -14,19 +14,30 @@ export const PORTAL_MEMORY_FLOOR_SHARE = 0.15;
 export const MIN_PORTAL_MEMORY_FLOOR_MB = 2 * 1024;
 export const MAX_PORTAL_MEMORY_FLOOR_MB = 24 * 1024;
 
+/** A free-memory floor that scales with the host: `share` of total memory,
+ * clamped to [minMb, maxMb]. An unknown total keeps the ceiling. Run-host
+ * admission (host-admission.ts) sizes its floor the same way. */
+export function scaledMemoryFloorMb(
+  totalMemoryMb: number | undefined,
+  share: number,
+  minMb: number,
+  maxMb: number,
+): number {
+  if (!totalMemoryMb || !Number.isFinite(totalMemoryMb) || totalMemoryMb <= 0)
+    return maxMb;
+  return Math.min(maxMb, Math.max(minMb, Math.round(totalMemoryMb * share)));
+}
+
 /** Default floor for a host with `totalMemoryMb` of RAM. An unknown total keeps
  * the ceiling, the floor used before it scaled with the host. */
 export function defaultPortalMemoryFloorMb(
   totalMemoryMb: number | undefined,
 ): number {
-  if (!totalMemoryMb || !Number.isFinite(totalMemoryMb) || totalMemoryMb <= 0)
-    return MAX_PORTAL_MEMORY_FLOOR_MB;
-  return Math.min(
+  return scaledMemoryFloorMb(
+    totalMemoryMb,
+    PORTAL_MEMORY_FLOOR_SHARE,
+    MIN_PORTAL_MEMORY_FLOOR_MB,
     MAX_PORTAL_MEMORY_FLOOR_MB,
-    Math.max(
-      MIN_PORTAL_MEMORY_FLOOR_MB,
-      Math.round(totalMemoryMb * PORTAL_MEMORY_FLOOR_SHARE),
-    ),
   );
 }
 

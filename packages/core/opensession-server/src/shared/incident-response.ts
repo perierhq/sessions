@@ -189,6 +189,14 @@ export type ReportProblem =
   | "claims"
   | "note"
   | "pr";
+/** One thing wrong with a refused report: what the owner is told about it
+ *  and the parser's detail, which goes back to the agent. */
+export interface ReportIssue {
+  problem: ReportProblem;
+  error: string;
+  /** The rule it broke, as the server's report rules name it. */
+  rule?: string;
+}
 export type Independence = "other-provider" | "same-provider" | "same-model";
 
 export type EvidenceCost = "free" | "cheap" | "expensive";
@@ -357,6 +365,9 @@ export interface AgentRun {
   reportError?: string;
   /** What the owner is told about a refused report. */
   reportProblem?: ReportProblem;
+  /** Everything wrong with a refused report, so one reminder asks for
+   *  every fix; a missing pull request is one of them. */
+  reportIssues?: ReportIssue[];
   /** Values Sessions repaired in an otherwise valid report. */
   reportWarnings?: string[];
   reminded: boolean;

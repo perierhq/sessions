@@ -3,8 +3,8 @@
  * runs (docs/self-hosting-sandboxes.md).
  *
  * The workload never has root, so everything `bootstrapRemoteSandbox` would
- * install as root is baked at build time instead: the workspace packages,
- * the pinned Node, just and gh in /usr/local/bin, and the pinned bun in
+ * install as root is baked at build time instead: the workspace packages
+ * plus ffmpeg and ImageMagick, the pinned Node, just and gh in /usr/local/bin, and the pinned bun in
  * /home/ubuntu/.bun owned by the image's uid 1000. Every download is a
  * release archive checked by SHA-256 (Node, gh and bun against their
  * published sums, just and bun against sums pinned here); no install
@@ -46,6 +46,12 @@ export const PODMAN_BASE_IMAGE =
   "docker.io/library/ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac";
 
 export const PODMAN_IMAGE_REPO = "localhost/opensession-sandbox";
+
+/** Media tools the image adds to the workspace packages: ffmpeg for screen
+ *  recordings (agent-browser records through it) and ImageMagick for
+ *  resizing, cropping and comparing screenshots. Only this image carries
+ *  them; other providers' bootstrap installs the workspace packages alone. */
+export const PODMAN_MEDIA_PACKAGES = ["ffmpeg", "imagemagick"] as const;
 
 /** bun in the image (the repo's own packageManager version). */
 export const PODMAN_BUN_VERSION = "1.4.0";
@@ -107,9 +113,11 @@ export function podmanContainerfile(
     "ENV DEBIAN_FRONTEND=noninteractive",
     run([
       "apt-get update",
-      `apt-get install -y --no-install-recommends ${REMOTE_LINUX_PACKAGES.join(" ")}`,
+      `apt-get install -y --no-install-recommends ${[...REMOTE_LINUX_PACKAGES, ...PODMAN_MEDIA_PACKAGES].join(" ")}`,
       "apt-get clean",
       "rm -rf /var/lib/apt/lists/*",
+      "command -v ffmpeg",
+      "command -v convert",
     ]),
     run([
       ARCH_NODE,

@@ -16,6 +16,7 @@ import {
   callKnowledge,
 } from "../memory-repo/client";
 import type { KnowledgeMethod } from "../memory-repo/protocol";
+import { knowledgeChanged } from "./broadcast";
 import type { KnowledgeIndex } from "./index-store";
 import type { KnowledgeService } from "./service";
 
@@ -53,21 +54,29 @@ export function __setKnowledgeServiceForTest(
   setServiceForTest(...args);
 }
 
+/** Calls that change a project's items, lists or counts; each one that
+ *  succeeds tells the Knowledge page (broadcast.ts), as does ensureRepo. */
+const WRITES: ReadonlySet<KnowledgeMethod> = new Set(["write", "revert"]);
+
 export const knowledgeRepo = {
   call<M extends KnowledgeMethod>(
     method: M,
     ...args: KnowledgeArgs<M>
   ): Promise<KnowledgeResult<M>> {
+    const project = String(args[0]);
+    if (WRITES.has(method))
+      return (callKnowledge(method, args) as Promise<KnowledgeResult<M>>).then(
+        (value) => (knowledgeChanged(project, "items"), value),
+      );
     if (method !== "ensureRepo")
       return callKnowledge(method, args) as Promise<KnowledgeResult<M>>;
-    const project = String(args[0]);
     const forget = () => {
       generation++;
       noRepoUntil.delete(project);
     };
     forget();
     return (callKnowledge(method, args) as Promise<KnowledgeResult<M>>).then(
-      (value) => (forget(), value),
+      (value) => (forget(), knowledgeChanged(project, "items"), value),
       (error: unknown) => {
         forget();
         throw error;

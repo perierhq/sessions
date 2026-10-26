@@ -12,6 +12,7 @@ import type {
   NeedsYouKind,
   NextAction,
   OwnerDecision,
+  ReportIssue,
   ResponsePhase,
   SendBackReason,
   Verdict,
@@ -33,6 +34,7 @@ import { assessAutoMerge } from "./merge";
 import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
 import { projectAction, releaseToRollBack } from "./project-settings";
 import {
+  REPORT_RULES,
   checkKnowledge,
   effectiveVerdict,
   parseInvestigatorReport,
@@ -690,6 +692,28 @@ export function rereadsReport(r: IncidentResponse, run: AgentRun): boolean {
   );
 }
 
+/** A fix whose pull request Sessions has not seen. */
+const NO_PR: ReportIssue = {
+  rule: "pr",
+  problem: REPORT_RULES.pr.problem,
+  error: "Open a pull request with the note and the runbook update",
+};
+
+/** A refused report: every issue goes back to the agent, the first one
+ *  is what the owner reads. */
+function refused(
+  run: AgentRun,
+  issues: ReportIssue[],
+): Extract<ResponseStep, { step: "record-report" }> {
+  return {
+    step: "record-report",
+    sessionId: run.sessionId,
+    error: issues[0]!.error,
+    problem: issues[0]!.problem,
+    issues,
+  };
+}
+
 function reports(view: ResponseView): ResponseStep | undefined {
   const r = view.incident.response!;
   const runs = [
@@ -716,12 +740,13 @@ function reports(view: ResponseView): ResponseStep | undefined {
       if (reread) continue;
       // Finished without a word after its turn was sent.
       if (view.now - Date.parse(run.turnSentAt) > FINAL_TEXT_GRACE_MS)
-        return {
-          step: "record-report",
-          sessionId: run.sessionId,
-          error: "No incident-report block",
-          problem: "missing",
-        };
+        return refused(run, [
+          {
+            rule: "block",
+            problem: "missing",
+            error: "No incident-report block",
+          },
+        ]);
       continue;
     }
     if (run.role === "investigator") {
@@ -738,20 +763,18 @@ function reports(view: ResponseView): ResponseStep | undefined {
       });
       if ("error" in parsed) {
         if (reread) continue;
+        // A fix the report meant to propose needs its pull request too:
+        // the agent hears about both in one reminder.
         return {
-          step: "record-report",
-          sessionId: run.sessionId,
+          ...refused(run, [
+            ...parsed.issues,
+            ...(parsed.candidate && !prUrl ? [NO_PR] : []),
+          ]),
           error: parsed.error,
           problem: parsed.problem,
         };
       }
-      if (parsed.candidate !== null && !prUrl)
-        return {
-          step: "record-report",
-          sessionId: run.sessionId,
-          error: "Open a pull request with the note and the runbook update",
-          problem: "pr",
-        };
+      if (parsed.candidate !== null && !prUrl) return refused(run, [NO_PR]);
       return {
         step: "record-report",
         sessionId: run.sessionId,
@@ -768,8 +791,7 @@ function reports(view: ResponseView): ResponseStep | undefined {
     });
     return "error" in parsed
       ? {
-          step: "record-report",
-          sessionId: run.sessionId,
+          ...refused(run, parsed.issues),
           error: parsed.error,
           problem: parsed.problem,
         }

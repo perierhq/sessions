@@ -78,6 +78,14 @@ Fetches and asset loads still get the plain 401. The route registry is
 process-owned even though Caddy survives restarts: forward auth rejects a
 retained route until the restarted server has rediscovered that exact port.
 
+The agent's own shell has no web session either, so a curl or a headless
+browser in the session gets that 401 on the Portal URL. It uses loopback
+instead: `list_portals` gives each awake Portal a `local:` URL, and
+`start_portal` names it in its answer for a host Portal. A host Portal's is
+`http://localhost:<port>`; a Portal Sandbox's is its loopback relay on this
+machine when the agent's shell runs here. Neither is reachable from outside
+the machine, and the Portal URL keeps requiring sign-in.
+
 Portals follow the Sandbox lifecycle. While a Sandbox sleeps the panel still
 shows its Portals, without URLs and without waking anything; the next wake
 restarts every Portal that was awake, with the same command and port, after

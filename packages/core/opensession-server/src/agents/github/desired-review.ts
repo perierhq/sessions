@@ -1,3 +1,7 @@
+import {
+  isRunHostAdmissionRefusal,
+  runHostAdmissionRetryDelayMs,
+} from "../../server/host-admission";
 import type { PrAutomationDetails } from "../../server/pr-info";
 import { prKey } from "./constants";
 import {
@@ -494,6 +498,11 @@ export class DesiredReviewScheduler {
             exhaustedAt: new Date(now).toISOString(),
           };
         } else {
+          // The host had no room to start the review. Nothing ran; memory
+          // pressure outlasts a seconds-long retry, so wait minutes.
+          const admissionRetryAt = isRunHostAdmissionRefusal(message)
+            ? now + runHostAdmissionRetryDelayMs(attempts)
+            : 0;
           const retryAt = Math.max(
             now +
               reviewRetryDelay(
@@ -502,6 +511,7 @@ export class DesiredReviewScheduler {
                 this.options.retryMaxMs,
               ),
             notBefore,
+            admissionRetryAt,
           );
           next = {
             ...markerBase(pending),

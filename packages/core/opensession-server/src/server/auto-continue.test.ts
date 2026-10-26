@@ -223,3 +223,25 @@ describe("githubCredentialUser", () => {
     expect(githubCredentialUser(undefined, undefined)).toBeUndefined();
   });
 });
+
+describe("a turn no account could pay for", () => {
+  test("is never redelivered or nudged into the same refusal", async () => {
+    const source = await Bun.file(
+      new URL("./run-session.ts", import.meta.url),
+    ).text();
+    const guard = source.indexOf(
+      "export async function maybeQueueAutoContinue(",
+    );
+    const redelivery = source.indexOf(
+      'msg: "orphaned_steer_redelivery"',
+      guard,
+    );
+    const usageGate = source.indexOf("if (opts.usageLimited)", guard);
+    expect(usageGate).toBeGreaterThan(guard);
+    expect(usageGate).toBeLessThan(redelivery);
+    // Both terminal shapes (an error, or a `done` carrying the limit) set it,
+    // and the turn-end call passes it on.
+    expect(source).toContain("usageLimited = true;");
+    expect(source).toMatch(/maybeQueueAutoContinue\(\{[^}]*usageLimited,/s);
+  });
+});

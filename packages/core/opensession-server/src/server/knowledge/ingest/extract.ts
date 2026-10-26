@@ -18,6 +18,7 @@
  * logged here: the texts are customer data. Nothing runs at import.
  */
 import { randomBytes } from "node:crypto";
+import { KNOWLEDGE_SKIP } from "../../../shared/knowledge";
 import {
   classifyRoute,
   ROUTE_CLASSIFIER_MAX_CHARS,
@@ -313,11 +314,19 @@ function grounded(
   return true;
 }
 
-/** The pair as a reusable item, or null when it must not be imported. */
+/** The pair as a reusable item, or null when it must not be imported;
+ *  `deps.skipped` hears why (a KNOWLEDGE_SKIP reason). */
 export async function extractPair(
   input: PairInput,
-  deps: { classify?: typeof classifyRoute } = {},
+  deps: {
+    classify?: typeof classifyRoute;
+    skipped?: (reason: string) => void;
+  } = {},
 ): Promise<ExtractedPair | null> {
+  const skip = (reason: string) => {
+    deps.skipped?.(reason);
+    return null;
+  };
   const keepHosts = input.supportHosts;
   const question = stripCustomerData(input.question, input.customer, {
     keepHosts,
@@ -325,8 +334,9 @@ export async function extractPair(
   const answer = stripCustomerData(input.answer, input.customer, {
     keepHosts,
   });
-  if (!question.clean || !answer.clean) return null;
-  if (!question.text || !answer.text) return null;
+  // Not clean: secret-looking text (strip.ts fails closed).
+  if (!question.clean || !answer.clean) return skip(KNOWLEDGE_SKIP.credential);
+  if (!question.text || !answer.text) return skip(KNOWLEDGE_SKIP.notReusable);
 
   const classify = deps.classify ?? classifyRoute;
   const verdict = await classify({
@@ -336,9 +346,10 @@ export async function extractPair(
     routes: EXTRACT_ROUTES,
     label: "knowledge-extract",
   });
-  if (!verdict || verdict.route !== "pair") return null;
+  if (!verdict) return skip(KNOWLEDGE_SKIP.modelSilent);
+  if (verdict.route !== "pair") return skip(KNOWLEDGE_SKIP.notReusable);
   const raw = verdict.raw;
-  if (raw.generic !== true) return null;
+  if (raw.generic !== true) return skip(KNOWLEDGE_SKIP.notReusable);
 
   // The model's text is no mail: identity replacements only. Anything but
   // the customer's name turning into "the customer" means the rewrite
@@ -355,17 +366,17 @@ export async function extractPair(
     return s.text;
   };
   const fields = [raw.title, raw.question, raw.answer].map(text);
-  if (fields.some((f) => f === null)) return null;
+  if (fields.some((f) => f === null)) return skip(KNOWLEDGE_SKIP.notReusable);
   const [title, q, a] = fields.map((f) => identity(f!));
-  if (!title || !q || !a) return null;
-  if (title.length > MAX_TITLE) return null;
+  if (!title || !q || !a) return skip(KNOWLEDGE_SKIP.customerData);
+  if (title.length > MAX_TITLE) return skip(KNOWLEDGE_SKIP.notReusable);
   if (
     !grounded(
       { title, question: q, answer: a },
       { question: question.text, answer: answer.text },
     )
   )
-    return null;
+    return skip(KNOWLEDGE_SKIP.notReusable);
 
   // A topic the strip had to change named the customer, an id or a link.
   const cleanTopics = topics(raw.topics).filter((t) => identity(t) === t);

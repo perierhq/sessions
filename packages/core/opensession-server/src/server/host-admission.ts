@@ -19,8 +19,18 @@
  * opensession.service).
  */
 import { readFileSync } from "fs";
+import { totalmem } from "node:os";
 import { audit } from "./audit";
+import { scaledMemoryFloorMb } from "./portal-memory-floor";
 import { envCapacity } from "./shared/env-capacity";
+
+/** Default free-memory floor: 5% of the host, at least 1 GiB, at most 4 GiB.
+ *  A fixed 4 GiB refused most launches on a host that usually has 1–2.5 GiB
+ *  free; the share keeps the control plane's headroom proportional instead.
+ *  Same scaling as the Portal floor (portal-memory-floor.ts). */
+const RUN_HOST_MEMORY_FLOOR_SHARE = 0.05;
+const MIN_RUN_HOST_MEMORY_FLOOR_MB = 1_024;
+const MAX_RUN_HOST_MEMORY_FLOOR_MB = 4_096;
 
 export type HostAdmissionLimits = {
   /** Hard cap on concurrently active detached hosts. */
@@ -35,35 +45,55 @@ export type HostAdmissionLimits = {
   admissionTimeoutMs: number;
 };
 
-export function hostAdmissionLimits(): HostAdmissionLimits {
+export function hostAdmissionLimits(
+  env: Record<string, string | undefined> = process.env,
+  totalMemoryBytes: number = totalmem(),
+): HostAdmissionLimits {
   return {
     maxActiveHosts: envCapacity(
       "OPENSESSION_RUN_HOST_MAX_ACTIVE",
       128,
       1,
       4_096,
+      env,
     ),
     minAvailableMb: envCapacity(
       "OPENSESSION_RUN_HOST_MIN_AVAILABLE_MB",
-      4_096,
+      scaledMemoryFloorMb(
+        totalMemoryBytes / 1024 ** 2,
+        RUN_HOST_MEMORY_FLOOR_SHARE,
+        MIN_RUN_HOST_MEMORY_FLOOR_MB,
+        MAX_RUN_HOST_MEMORY_FLOOR_MB,
+      ),
       256,
       1_048_576,
+      env,
     ),
     reservedPerHostMb: envCapacity(
       "OPENSESSION_RUN_HOST_RESERVED_MB",
       1_024,
       0,
       65_536,
+      env,
     ),
     maxCpuPressure: envCapacity(
       "OPENSESSION_RUN_HOST_MAX_CPU_PRESSURE",
       85,
       1,
       100,
+      env,
     ),
+    // Short on purpose: a launch that waits holds its run open with nothing
+    // to show for it. A refusal fails fast with its reason, and the caller
+    // requeues the run with backoff (runHostAdmissionRetryDelayMs).
     admissionTimeoutMs:
-      envCapacity("OPENSESSION_RUN_HOST_ADMISSION_TIMEOUT_S", 900, 10, 86_400) *
-      1_000,
+      envCapacity(
+        "OPENSESSION_RUN_HOST_ADMISSION_TIMEOUT_S",
+        60,
+        10,
+        86_400,
+        env,
+      ) * 1_000,
   };
 }
 
@@ -123,7 +153,7 @@ export function decideRunHostAdmission(
   )
     return {
       admit: false,
-      reason: `MemAvailable ${snapshot.memAvailableMb}MiB would drop below the ${limits.minAvailableMb}MiB floor after reserving ${reservedMb}MiB`,
+      reason: `not enough free memory: ${snapshot.memAvailableMb} MiB free, ${limits.minAvailableMb + reservedMb} MiB needed (${limits.minAvailableMb} MiB kept free for the host + ${reservedMb} MiB for ${snapshot.pendingHosts ? `this and ${snapshot.pendingHosts} starting run${snapshot.pendingHosts === 1 ? "" : "s"}` : "this run"})`,
     };
   if (
     snapshot.cpuSomeAvg10 !== null &&
@@ -136,13 +166,30 @@ export function decideRunHostAdmission(
   return { admit: true };
 }
 
+const REFUSAL_PREFIX = "Run host launch refused: ";
+
 /** Launch was refused because capacity never appeared within the timeout.
  * Callers must fail the turn visibly, not fall back to an in-process run. */
 export class RunHostAdmissionError extends Error {
   constructor(reason: string) {
-    super(`Run host launch refused: ${reason}`);
+    super(`${REFUSAL_PREFIX}${reason}`);
     this.name = "RunHostAdmissionError";
   }
+}
+
+/** Whether a run's error text is an admission refusal: nothing ran, so the
+ *  run can be requeued as it was. Matches the text because the error often
+ *  reaches callers as a string (a run result or a ledger entry). */
+export function isRunHostAdmissionRefusal(
+  message: string | undefined,
+): boolean {
+  return !!message?.includes(REFUSAL_PREFIX);
+}
+
+/** Wait before requeueing a refused run: 2 minutes, doubling per attempt, at
+ *  most 30. Memory pressure usually outlasts a few seconds of backoff. */
+export function runHostAdmissionRetryDelayMs(attempt: number): number {
+  return Math.min(30 * 60_000, 2 * 60_000 * 2 ** Math.max(0, attempt - 1));
 }
 
 export type WaitForAdmissionOptions = {

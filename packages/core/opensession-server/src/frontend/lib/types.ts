@@ -1130,6 +1130,13 @@ export type WSServerMessage =
       state?: SignalState;
     }
   | { type: "incident_settings_changed"; project: string }
+  // A project's knowledge import jobs, or its items, changed. The project
+  // only: the Knowledge page refetches (lib/knowledge/live.ts).
+  | {
+      type: "knowledge_changed";
+      project: string;
+      what: "jobs" | "items";
+    }
   // One session's list row changed and is visible in this socket's subscribed
   // sidebar scope (sessions_subscribe). Replaces a whole-list refetch for the
   // common write. `session_row_removed` is the same change for a row the
