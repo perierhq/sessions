@@ -187,6 +187,12 @@ export type ReportProblem =
   | "claims"
   | "note"
   | "pr";
+/** One thing wrong with a refused report: what the owner is told about it
+ *  and the parser's detail, which goes back to the agent. */
+export interface ReportIssue {
+  problem: ReportProblem;
+  error: string;
+}
 export type Independence = "other-provider" | "same-provider" | "same-model";
 
 export type EvidenceCost = "free" | "cheap" | "expensive";

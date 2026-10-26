@@ -40,6 +40,7 @@ import {
   type ProofResult,
   SEND_BACK_NOTE_MAX,
   type ReadFirst,
+  type ReportIssue,
   type ReportProblem,
   type VerifierReport,
 } from "../../../shared/incident-response";
@@ -256,27 +257,48 @@ export const REPORT_REPAIRS: readonly string[] = [
   "unknown keys and unusable next steps are dropped",
 ];
 
-/** A refused report: the rule it broke, the parser's detail for the agent
- *  and the logs, and the kind of problem the owner is told about in plain
- *  words. */
+/** One broken rule: which, and the parser's detail for the agent. */
+export interface ReportRuleIssue extends ReportIssue {
+  rule: ReportRuleId;
+}
+
+/** A refused report, with every rule it broke found in one pass, so the
+ *  agent can fix them all at once. `error`, `problem` and `rule` are the
+ *  first issue's (all the errors, for `error`); `candidate` says whether
+ *  the report meant to propose a fix, which then needs its pull request. */
 export interface ReportRejection {
   error: string;
   problem: ReportProblem;
   rule: ReportRuleId;
+  issues: ReportRuleIssue[];
+  candidate: boolean;
 }
 
-type Result<T> = T | ReportRejection;
+type Result<T> = T | ReportRuleIssue;
 function reject(
   rule: ReportRuleId,
   error: string,
   problem: ReportProblem = REPORT_RULES[rule].problem,
-): ReportRejection {
-  return { error, problem, rule };
+): ReportRuleIssue {
+  return { rule, problem, error };
 }
-function failed<T>(r: Result<T>): r is ReportRejection {
+function failed<T>(r: Result<T>): r is ReportRuleIssue {
   return (
     typeof r === "object" && r !== null && !Array.isArray(r) && "error" in r
   );
+}
+function rejected(
+  issues: ReportRuleIssue[],
+  candidate: boolean,
+): ReportRejection {
+  const first = issues[0]!;
+  return {
+    error: issues.map((i) => i.error).join("; "),
+    problem: first.problem,
+    rule: first.rule,
+    issues,
+    candidate,
+  };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -329,7 +351,7 @@ export function plainReportProblem(
 /** Wrapped, so a report with its own `error` key is not taken for a failure. */
 function parseBlock(
   text: string,
-): { value: Record<string, unknown> } | ReportRejection {
+): { value: Record<string, unknown> } | ReportRuleIssue {
   const blocks = reportBlocks(text);
   if (blocks.length === 0) return reject("block", "No incident-report block");
   if (blocks.length > 1)
@@ -808,12 +830,19 @@ function candidateOf(
       "The candidate.actions field must be a list of action ids",
     );
   const actions: string[] = [];
+  const unknown: string[] = [];
+  let deployWithoutPr = false;
   for (const entry of raw) {
     const id = actionId(entry, ctx.actionIds, warnings);
-    if (id === null)
-      return reject("actions", `Unknown action "${String(entry)}"`);
+    if (id === null) {
+      unknown.push(`"${String(entry)}"`);
+      continue;
+    }
     if (ctx.actionKinds.get(id) === "deploy") {
-      if (!pr) return reject("actions", "Deploy runs only with the PR");
+      if (!pr) {
+        deployWithoutPr = true;
+        continue;
+      }
       warnings.push(
         `Action "${id}" is a deploy, which runs with the PR; dropped from the actions`,
       );
@@ -825,11 +854,16 @@ function candidateOf(
     }
     actions.push(id);
   }
-  if (actions.length > CANDIDATE_ACTIONS_MAX)
-    return reject(
-      "actions",
-      `Propose at most ${CANDIDATE_ACTIONS_MAX} actions`,
-    );
+  const wrong = [
+    ...(unknown.length
+      ? [`Unknown action${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}`]
+      : []),
+    ...(deployWithoutPr ? ["Deploy runs only with the PR"] : []),
+    ...(actions.length > CANDIDATE_ACTIONS_MAX
+      ? [`Propose at most ${CANDIDATE_ACTIONS_MAX} actions`]
+      : []),
+  ];
+  if (wrong.length) return reject("actions", wrong.join("; "));
   if (!pr && actions.length === 0)
     return reject(
       "candidate",
@@ -942,25 +976,31 @@ export function parseInvestigatorReport(
   ctx: InvestigatorReportContext,
 ): InvestigatorReport | ReportRejection {
   const parsed = parseBlock(report);
-  if ("error" in parsed) return parsed;
+  if ("error" in parsed) return rejected([parsed], false);
   const value = parsed.value;
   const repaired: string[] = [];
+  const issues: ReportRuleIssue[] = [];
   checkRole(value.role, "investigator", repaired);
   const rawSummary = cleanText(value.summary);
   if (!rawSummary)
-    return reject("summary", "The summary field must say what broke");
+    issues.push(reject("summary", "The summary field must say what broke"));
   const summary = fitted(rawSummary, 200, "summary", repaired);
   const rawCause = cleanText(value.cause, true);
   if (!rawCause)
-    return reject("cause", "The cause field must say what caused it");
+    issues.push(reject("cause", "The cause field must say what caused it"));
   const cause = fitted(rawCause, 1000, "cause", repaired);
   const readFirst = readFirstOf(value.readFirst, repaired);
-  const attempts = attemptsOf(value.attempts, repaired);
-  if (failed(attempts)) return attempts;
-  const candidate = candidateOf(value.candidate, ctx, repaired);
-  if (failed(candidate)) return candidate;
+  const table = attemptsOf(value.attempts, repaired);
+  if (failed(table)) issues.push(table);
+  const attempts = failed(table) ? [] : table;
+  const plan = candidateOf(value.candidate, ctx, repaired);
+  if (failed(plan)) issues.push(plan);
+  const candidate = failed(plan) ? null : plan;
+  // A candidate that is there but unusable still needs what every
+  // candidate needs, so those problems come back in the same reply.
+  const proposes = failed(plan) ? isRecord(value.candidate) : plan !== null;
   let noCandidateReason: string | undefined;
-  if (candidate === null) {
+  if (!proposes) {
     const reason = cleanText(value.noCandidateReason, true);
     if (reason)
       noCandidateReason = fitted(reason, 1000, "noCandidateReason", repaired);
@@ -971,16 +1011,16 @@ export function parseInvestigatorReport(
   }
   let check = checkOf(value.check, ctx, repaired);
   if (failed(check)) {
-    if (candidate !== null) return check;
-    if (value.check !== undefined && value.check !== null)
+    if (proposes) issues.push(check);
+    else if (value.check !== undefined && value.check !== null)
       repaired.push(
         `Ignored the check, as there is no candidate: ${check.error}`,
       );
     check = { kind: "after-deploy", reason: "No fix was proposed." };
   }
   const claims = claimsOf(value.claims, repaired);
-  if (candidate !== null && claims.length === 0)
-    return reject("claims", "Give at least one claim for the candidate");
+  if (proposes && claims.length === 0)
+    issues.push(reject("claims", "Give at least one claim for the candidate"));
   const cited = new Set(attempts.flatMap((a) => (a.source ? [a.source] : [])));
   const citedClaims = claims.map((claim, i) => {
     if (claim.source === undefined || cited.has(claim.source)) return claim;
@@ -991,16 +1031,20 @@ export function parseInvestigatorReport(
   });
   let notePath = repoPath(value.notePath);
   if (!NOTE_PATH.test(notePath)) {
-    if (candidate !== null)
-      return reject(
-        "note",
-        "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+    if (proposes)
+      issues.push(
+        reject(
+          "note",
+          "The notePath field must be docs/incidents/YYYY-MM-DD-<slug>.md",
+        ),
       );
-    repaired.push(
-      `notePath ${shownValue(value.notePath)} is not docs/incidents/YYYY-MM-DD-<slug>.md; ignored, as there is no candidate`,
-    );
+    else
+      repaired.push(
+        `notePath ${shownValue(value.notePath)} is not docs/incidents/YYYY-MM-DD-<slug>.md; ignored, as there is no candidate`,
+      );
     notePath = "";
   }
+  if (issues.length) return rejected(issues, proposes);
   const runbookPaths = runbookPathsOf(value.runbookPaths, repaired);
   const nextSteps = nextStepsOf(value.nextSteps, repaired);
   ctx.warnings?.push(...repaired);
@@ -1066,17 +1110,17 @@ export function parseVerifierReport(
   ctx: { claims: Claim[]; warnings?: string[] },
 ): VerifierReport | ReportRejection {
   const parsed = parseBlock(report);
-  if ("error" in parsed) return parsed;
+  if ("error" in parsed) return rejected([parsed], false);
   const value = parsed.value;
   const repaired: string[] = [];
+  const issues: ReportRuleIssue[] = [];
   checkRole(value.role, "verifier", repaired);
   const verdict = normaliseVerdict(value.verdict);
   if (verdict === null)
-    return reject(
-      "verdict",
-      "The verdict field must be certain or not-certain",
+    issues.push(
+      reject("verdict", "The verdict field must be certain or not-certain"),
     );
-  if (value.verdict !== verdict)
+  else if (value.verdict !== verdict)
     repaired.push(
       `verdict was ${shownValue(value.verdict)}; read as ${verdict}`,
     );
@@ -1163,9 +1207,15 @@ export function parseVerifierReport(
       ...(s ? { source: s } : {}),
     });
   }
-  for (const t of expected)
-    if (!checks.has(t))
-      return reject("rulings", `Check every claim: missing "${t}"`);
+  const missing = expected.filter((t) => !checks.has(t));
+  if (missing.length)
+    issues.push(
+      reject(
+        "rulings",
+        `Check every claim: missing ${missing.map((t) => `"${t}"`).join(", ")}`,
+      ),
+    );
+  if (verdict === null || issues.length) return rejected(issues, false);
   ctx.warnings?.push(...repaired);
   return {
     role: "verifier",
