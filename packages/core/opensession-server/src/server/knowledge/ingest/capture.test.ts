@@ -17,7 +17,7 @@ import type {
   RouteClassifierInput,
 } from "../../route-classifier";
 import { onReplySent, proposeDraft, replyAsPerson } from "../../support/reply";
-import { getConversation } from "../../support/store";
+import { getConversation, updateConversation } from "../../support/store";
 import {
   CITED,
   CUSTOMER,
@@ -99,12 +99,14 @@ afterAll(async () => {
 // ── The small model ────────────────────────────────────────────────────
 
 let labels: string[];
+let contents: string[];
 let repeatVerdict: (content: string) => "same" | "different";
 
 const classify = (async <R extends string>(
   input: RouteClassifierInput<R>,
 ): Promise<RouteClassification<R> | null> => {
   labels.push(input.label);
+  contents.push(input.content);
   if (input.label === "knowledge-extract") {
     const answer = /<our_answer_[0-9a-f]+>\n([\s\S]*?)\n<\/our_answer_/.exec(
       input.content,
@@ -151,6 +153,7 @@ function deps(): Partial<CaptureDeps> {
 
 beforeEach(() => {
   labels = [];
+  contents = [];
   repeatVerdict = () => "same";
   __setKnowledgeServiceForTest(
     new KnowledgeService({ base: join(tb.kernel.root(), "memory") }),
@@ -359,4 +362,48 @@ test("a capture a crash left pending is processed by the retry", async () => {
   );
   expect(read?.item.trust).toBe("trusted");
   expect(await pendingKeys()).toEqual([]);
+});
+
+test("every sender of the thread is stripped from the question and the answer", async () => {
+  const c = await tb.conversation({ text: QUESTION });
+  const dave = { name: "Dave Okafor", address: "dave@partner.example.test" };
+  await updateConversation(c.id, (x) => ({
+    ...x,
+    messages: [
+      ...x.messages,
+      {
+        ...x.messages[0]!,
+        id: "sm_test-dave",
+        from: dave,
+        text: "Dave Okafor here, Carol's colleague: we need the CSV too.",
+        keys: {
+          messageId: "dave-1@partner.example.test",
+          inReplyTo: null,
+          references: [],
+        },
+        providerId: "imap:1:dave",
+      },
+    ],
+  }));
+  const sent = await replyAsPerson(
+    c.id,
+    `Hi ${CUSTOMER.name} and Dave,\n\nOpen the project, press Export and pick CSV. Carol can forward it to Okafor.\n\nBest,\nAda`,
+    "Ada",
+  );
+  if (!sent.ok) throw new Error(sent.error);
+  await __waitForCapturesForTest();
+  const sentToModel = contents.join("\n");
+  expect(contents.length).toBeGreaterThan(0);
+  for (const word of ["Carol", "carol@", "Dave", "Okafor", "dave@"])
+    expect(sentToModel).not.toContain(word);
+  const read = await knowledgeRepo.call(
+    "read",
+    "acme",
+    itemPath(sent.message),
+    TODAY,
+  );
+  expect(read).not.toBeNull();
+  const all = JSON.stringify(read);
+  for (const word of ["Carol", "Dave", "Okafor"])
+    expect(all).not.toContain(word);
 });

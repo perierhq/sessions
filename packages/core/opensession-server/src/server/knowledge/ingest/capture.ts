@@ -57,7 +57,12 @@ import {
   planMailItem,
 } from "./mailbox";
 import type { MailRecord } from "./pairs";
-import { hasIdentifier, REMOVED_MARKERS, stripCustomerData } from "./strip";
+import {
+  hasIdentifier,
+  type Party,
+  REMOVED_MARKERS,
+  stripCustomerData,
+} from "./strip";
 
 export interface CaptureDeps extends Pick<
   MailboxDeps,
@@ -128,6 +133,28 @@ const isConflict = (error: unknown) =>
 
 // ── One reply ───────────────────────────────────────────────────────────
 
+/** Every sender of the conversation's customer messages (and the
+ *  addresses they asked replies to go to), the conversation's customer
+ *  first. */
+function threadSenders(c: SupportConversation): Party[] {
+  const parties: Party[] = [
+    c.customer,
+    ...c.messages.flatMap((m) =>
+      m.direction === "in" ? [m.from, ...(m.replyTo ?? [])] : [],
+    ),
+  ].map((p) => ({
+    ...(p.name ? { name: p.name } : {}),
+    address: p.address.trim().toLowerCase(),
+  }));
+  const seen = new Set<string>();
+  return parties.filter((p) => {
+    const key = `${p.name ?? ""}\0${p.address}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 type CaptureResult = "written" | "skipped" | "exists";
 
 /** The captured reply's item path and project, or skipped. */
@@ -165,15 +192,8 @@ async function capture(
     text: (m.text ?? "").trim(),
     ours,
   });
-  const question = {
-    ...record(last, false),
-    text: questions
-      .map((m) => (m.text ?? "").trim())
-      .filter(Boolean)
-      .join("\n\n"),
-  };
   const answer = { ...record(reply, true), messageId: mailId };
-  if (!question.text || !answer.text) return { result: "skipped" };
+  if (!answer.text) return { result: "skipped" };
 
   const mailboxDeps = bindMailboxDeps({
     now: deps.now,
@@ -190,12 +210,36 @@ async function capture(
     deps.supportHosts(project),
     mirroredPaths(project, today),
   ]);
-  const planned = await planMailItem(project, { question, answer }, path, {
-    hosts,
-    docPaths,
-    deps: mailboxDeps,
-    historyRead,
-  });
+  // Each question message loses its own sender first; then both texts
+  // lose every sender of the thread (extractPair).
+  const parts: string[] = [];
+  for (const m of questions) {
+    const text = (m.text ?? "").trim();
+    if (!text) continue;
+    const s = stripCustomerData(
+      text,
+      {
+        ...(m.from.name ? { name: m.from.name } : {}),
+        address: m.from.address,
+      },
+      { keepHosts: hosts },
+    );
+    if (!s.clean) return { result: "skipped" };
+    if (s.text) parts.push(s.text);
+  }
+  const question = { ...record(last, false), text: parts.join("\n\n") };
+  if (!question.text) return { result: "skipped" };
+  const planned = await planMailItem(
+    project,
+    { question, answer, senders: threadSenders(c) },
+    path,
+    {
+      hosts,
+      docPaths,
+      deps: mailboxDeps,
+      historyRead,
+    },
+  );
   if (!planned) return { result: "skipped" };
   const fm = planned.change.fm;
   fm.sources = [...fm.sources, `conversation:${c.id}`];

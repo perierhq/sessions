@@ -38,7 +38,9 @@ export type { Party } from "./strip";
 export interface PairInput {
   question: string;
   answer: string;
-  customer: Party;
+  /** The customer, or every sender of the thread: both texts lose each
+   *  one's name and address. */
+  customer: Party | readonly Party[];
   answeredAt: string;
   /** Exact hosts from the project's Support websites list; links there are
    *  kept, every other link is removed. */

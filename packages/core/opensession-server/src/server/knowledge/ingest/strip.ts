@@ -467,19 +467,19 @@ function dropPhones(text: string, onHit: () => void): string {
 
 function dropAddresses(
   text: string,
-  address: string,
+  addresses: readonly string[],
   onHit: () => void,
 ): string {
   const hit = (out: string, before: string) => {
     if (out !== before) onHit();
     return out;
   };
-  let out = address
-    ? hit(
-        text.replace(new RegExp(escapeRegExp(address), "gi"), EMAIL_REMOVED),
-        text,
-      )
-    : text;
+  let out = text;
+  for (const address of addresses)
+    out = hit(
+      out.replace(new RegExp(escapeRegExp(address), "gi"), EMAIL_REMOVED),
+      out,
+    );
   out = hit(stripEmailAddresses(out), out);
   out = hit(out.replace(EMAIL_LIKE, EMAIL_REMOVED), out);
   out = hit(out.replace(OBFUSCATED_BRACKET, EMAIL_REMOVED), out);
@@ -507,13 +507,17 @@ function tidy(text: string): string {
  * `keepHosts` (exact, non-wildcard entries as on the Support websites
  * list) and, with `structure` (the default), quoted replies, signatures
  * and a greeting line. `clean` is false when secret-looking text remains
- * or a removed address or link held one.
+ * or a removed address or link held one. `customer` may be every sender
+ * of a thread: each one's name and address words go.
  */
 export function stripCustomerData(
   text: string,
-  customer: Party,
+  customer: Party | readonly Party[],
   opts: StripOptions = {},
 ): StripResult {
+  const parties: readonly Party[] = Array.isArray(customer)
+    ? customer
+    : [customer as Party];
   const keepHosts = opts.keepHosts ?? [];
   const shown = visible(text);
   const body =
@@ -525,12 +529,14 @@ export function stripCustomerData(
   const secretBefore = draftHasSecret(body);
   const removed = new Set<StripKind>();
   const mark = (kind: StripKind) => () => removed.add(kind);
-  const address = visible(customer.address).trim();
+  const addresses = parties
+    .map((p) => visible(p.address).trim())
+    .filter(Boolean);
   const names = nameMatcher([
-    ...nameTokens(customer.name),
-    ...addressTokens(address, keepHosts),
+    ...parties.flatMap((p) => nameTokens(p.name)),
+    ...addresses.flatMap((a) => addressTokens(a, keepHosts)),
   ]);
-  let out = dropAddresses(body, address, mark("email"));
+  let out = dropAddresses(body, addresses, mark("email"));
   out = dropLinks(out, keepHosts, names, mark("link"));
   out = replaceIds(out, mark("id"));
   out = dropPhones(out, mark("phone"));

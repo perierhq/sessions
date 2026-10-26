@@ -35,12 +35,27 @@ export interface MailRecord {
 export interface QaPair {
   question: MailRecord;
   answer: MailRecord;
+  /** Every sender of the thread (the mailbox backfill sets it); the
+   *  texts lose each one's name and address. Absent: the question's. */
+  senders?: Party[];
 }
 
 /** How much later than its answer a question may be dated (clock skew). */
 export const QUESTION_SKEW_MS = 5 * 60_000;
 
 const AMBIGUOUS = Symbol("ambiguous");
+
+/** The thread a message belongs to: the root of its References, else the
+ *  message it is In-Reply-To, else itself (normalized Message-IDs). */
+export function threadRoot(
+  r: Pick<MailRecord, "messageId" | "inReplyTo" | "references">,
+): string | null {
+  return (
+    normalizeMessageId(r.references[0]) ??
+    normalizeMessageId(r.inReplyTo) ??
+    normalizeMessageId(r.messageId)
+  );
+}
 
 export function pairThreads(records: MailRecord[]): QaPair[] {
   // A message can sit in two folders; the first counts (mailbox.ts reads

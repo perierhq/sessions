@@ -274,3 +274,19 @@ describe("stripCustomerData", () => {
     expect(text).toBe("Ask the customer first.");
   });
 });
+
+describe("stripCustomerData with every sender of a thread", () => {
+  test("each sender's name and address go", () => {
+    const bob = { name: "Bob Builder", address: "bob@other.example.test" };
+    const { text, clean } = stripCustomerData(
+      "Alice asked first, then Bob wrote from bob@other.example.test. Builder agrees.",
+      [alice, bob],
+      { structure: false },
+    );
+    expect(text).not.toContain("Alice");
+    expect(text).not.toContain("Bob");
+    expect(text).not.toContain("Builder");
+    expect(text).not.toContain("bob@");
+    expect(clean).toBe(true);
+  });
+});

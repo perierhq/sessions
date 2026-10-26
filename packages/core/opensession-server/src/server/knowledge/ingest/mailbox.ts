@@ -71,7 +71,8 @@ import {
   startJob,
   stepper,
 } from "./jobs";
-import { type MailRecord, pairThreads, type QaPair } from "./pairs";
+import { type MailRecord, pairThreads, type QaPair, threadRoot } from "./pairs";
+import type { Party } from "./strip";
 import { HISTORY_UNREADABLE, mailTrust } from "./trust";
 
 export interface MailboxDeps {
@@ -401,11 +402,28 @@ async function readPairs(
     }
     // A pair whose question or answer didn't survive the full checks
     // (automated, unreadable) is left out, not re-paired.
+    // Every customer sender of a thread, so each pair's texts lose them
+    // all (names from the full reads where there are any).
+    const senders = new Map<string, Map<string, Party>>();
+    for (const record of seen.keys()) {
+      if (record.ours) continue;
+      const root = threadRoot(record);
+      if (!root) continue;
+      const from = full.get(record)?.from ?? record.from;
+      const list = senders.get(root) ?? new Map<string, Party>();
+      const known = list.get(from.address);
+      if (!known || (!known.name && from.name)) list.set(from.address, from);
+      senders.set(root, list);
+    }
     const kept: QaPair[] = [];
     for (const pair of pairs) {
       const question = full.get(pair.question);
       const answer = full.get(pair.answer);
-      if (question && answer) kept.push({ question, answer });
+      if (!question || !answer) continue;
+      const root = threadRoot(answer) ?? threadRoot(question);
+      const all = new Map(root ? senders.get(root) : undefined);
+      all.set(question.from.address, question.from);
+      kept.push({ question, answer, senders: [...all.values()] });
     }
     return { pairs: kept, truncated };
   } catch (error) {
@@ -489,7 +507,7 @@ export async function planMailItem(
     {
       question: question.text,
       answer: answer.text,
-      customer: question.from,
+      customer: pair.senders?.length ? pair.senders : question.from,
       answeredAt: answer.at,
       supportHosts: ctx.hosts,
       docPaths: ctx.docPaths,
