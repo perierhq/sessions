@@ -278,7 +278,10 @@ export function makePiBashTool(input: {
       const command = String((params as { command?: unknown })?.command ?? "");
       if (!command.trim()) throw new Error("Empty command");
       if (input.askReadOnly) {
-        const reason = askBashDenyReason(command);
+        const reason = askBashDenyReason(command, {
+          workspace: input.cwd,
+          scratchDir: input.env.OPENSESSION_SCRATCH,
+        });
         if (reason) throw new Error(reason);
       }
       const mergeDenial = input.mergeGuard

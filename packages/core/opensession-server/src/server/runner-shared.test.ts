@@ -306,8 +306,8 @@ describe("askBashDenyReason", () => {
     expect(reason).toContain("read-only allowlist");
     expect(askBashDenyReason("git push")).not.toBeNull();
     expect(askBashDenyReason("git add .")).not.toBeNull();
-    // sed stays denied even in -n form (see the allowlist's own note).
-    expect(askBashDenyReason("sed -n 1,5p file")).not.toBeNull();
+    // sed is allowed only as a print-only `sed -n` (see below).
+    expect(askBashDenyReason("sed -i 1,5p file")).not.toBeNull();
     expect(askBashDenyReason("python3 -c 'print(1)'")).not.toBeNull();
     expect(askBashDenyReason("gh api repos/o/r -X POST")).not.toBeNull();
     expect(askBashDenyReason("systemctl restart opensession")).not.toBeNull();
@@ -336,6 +336,161 @@ describe("askBashDenyReason", () => {
     expect(askBashDenyReason("jq '.a; .b' f.json")).toBeNull();
     // Literal $( inside single quotes is data too.
     expect(askBashDenyReason("grep -n '$(x)' file")).toBeNull();
+  });
+});
+
+// The read work PR reviews actually do: a third of their bash calls were
+// refused (`cd` into their own worktree, `| head`, `sed -n 1,40p`,
+// `git -C <worktree> diff`) and agents retried the same refusal.
+describe("askBashDenyReason: ordinary read work", () => {
+  const ws = "/srv/acme/worktrees/acme-review";
+  const ok = (command: string) =>
+    expect(askBashDenyReason(command, { workspace: ws }), command).toBeNull();
+  const refused = (command: string) =>
+    expect(
+      askBashDenyReason(command, { workspace: ws }),
+      command,
+    ).not.toBeNull();
+
+  test("cd within the workspace", () => {
+    ok(`cd ${ws} && git diff origin/main...HEAD`);
+    ok(`cd ${ws}; git log --oneline -5`);
+    ok(`cd "${ws}" && ls`);
+    ok("cd packages/web && ls");
+    ok(`cd ${ws}/packages/web/src && rg -n foo`);
+    refused("cd /etc && cat passwd");
+    refused(`cd ${ws}/../other && ls`);
+    refused("cd ~ && ls");
+    refused("cd $HOME && ls");
+    refused("cd && ls");
+    refused("cd - && ls");
+    // cd itself never writes, but the rest of the line is still screened.
+    refused(`cd ${ws} && rm -rf src`);
+    // The session's scratch dir is the other place its tools may work.
+    expect(
+      askBashDenyReason("cd /srv/acme/scratch/s1/memory && ls", {
+        workspace: ws,
+        scratchDir: "/srv/acme/scratch/s1",
+      }),
+    ).toBeNull();
+    refused("cd /srv/acme/scratch/s1/memory && ls");
+    // Without a known workspace, cd stays refused.
+    expect(askBashDenyReason(`cd ${ws} && ls`)).not.toBeNull();
+  });
+
+  test("a refused cd says where commands already run", () => {
+    const reason = askBashDenyReason("cd /etc && ls", { workspace: ws });
+    expect(reason).toContain(ws);
+  });
+
+  test("git -C into the workspace reads like plain git", () => {
+    ok(`git -C ${ws} diff origin/main...HEAD --stat`);
+    ok(`git -C ${ws} log --oneline -10`);
+    ok(`git -C ${ws} show HEAD:README.md`);
+    ok(`git -C ${ws} status --short`);
+    ok(`git --no-pager -C ${ws} log -3`);
+    refused(`git -C ${ws} push origin HEAD`);
+    refused(`git -C ${ws} commit -m x`);
+    refused("git -C /etc log");
+  });
+
+  test("bare pipeline filters", () => {
+    ok("git log --oneline | head");
+    ok("git diff --stat | tail");
+    ok("git ls-files | wc");
+    ok("git ls-files | sort");
+    ok("git ls-files | sort -u");
+    ok("rg -l foo | sort | uniq -c | sort -rn");
+    ok("git log --format=%an | sort -t'|' -k2 -rn");
+    ok("git diff | cat");
+    ok("echo");
+    ok("true");
+    ok("git log --format=%s | cut -c1-80");
+  });
+
+  test("sed prints, deletes or substitutes on stdout only", () => {
+    ok("sed -n '1,40p' src/a.ts");
+    ok("sed -n 80,125p src/a.ts");
+    ok("git show HEAD:src/a.ts | sed -n '1,8p'");
+    ok("sed -n '1,5p;20,25p' a.ts");
+    ok("sed -n '$p' a.ts");
+    ok("sed -n '/^export/p' a.ts");
+    ok("sed -n -e 1,5p -e 9p a.ts");
+    ok("sed -nE '/a|b/p' a.ts");
+    refused("sed -n -i 1,5p a.ts");
+    refused("sed -i -n 1,5p a.ts");
+    refused("sed -n --in-place 1,5p a.ts");
+    refused("sed -ni 1,5p a.ts");
+    refused("sed -n '1,5w out.txt' a.ts");
+    refused("sed -n '1,5p;w out.txt' a.ts");
+    refused("sed -n '1e touch x' a.ts");
+    refused("sed -n -f script.sed a.ts");
+    ok("sed '1,5p' a.ts");
+    ok("grep -h x a.css | sed 's/:.*//' | sort | uniq -c");
+    ok("sed -E 's/^ -\\s+\"([a-z]+)\".*/\\1/' a.json");
+    ok("sed 's#a#b#g; /^$/d' a.txt");
+    refused("sed 's/a/b/w out.txt' a.txt");
+    refused("sed 's/a/b/e' a.txt");
+    refused("sed '1r /etc/passwd' a.txt");
+    refused("sed '1q5' a.txt");
+    refused('sed -n "$X" a.ts');
+  });
+
+  test("awk without system, pipes or output redirection", () => {
+    ok("awk 'NR>=80 && NR<=110' a.ts");
+    ok("git log --format='%an' | awk '{print $NF}'");
+    ok("awk -F: '{ if ($3 > 5) print $1 }' a.txt");
+    ok("awk -v n=3 'NR<=n' a.txt");
+    ok('awk \'$1 == "x" || $2 == "y"\' a.txt');
+    refused("awk 'BEGIN { system(\"touch x\") }'");
+    refused("awk '{ print > \"out.txt\" }' a.txt");
+    refused("awk '{ print $1 >> \"out.txt\" }' a.txt");
+    refused("awk '{ print | \"sh\" }' a.txt");
+    refused("awk 'BEGIN { \"date\" | getline d }'");
+    refused("awk -f prog.awk a.txt");
+    refused("awk -i inplace '{print}' a.txt");
+    refused("awk -o out.txt '{print}' a.txt");
+    refused("awk '@load \"x\"; {print}' a.txt");
+    refused('awk "$PROG" a.txt');
+  });
+
+  test("sort and uniq without an output file", () => {
+    refused("sort -o out.txt a.txt");
+    refused("sort -uo out.txt a.txt");
+    refused("sort --output=out.txt a.txt");
+    refused("sort --compress-program=sh a.txt");
+    ok("uniq -c a.txt");
+    ok("uniq -f 2 a.txt");
+    refused("uniq a.txt out.txt");
+  });
+
+  test("find without -exec, -delete or file-writing actions", () => {
+    ok("find . -name '*.ts' -newer a.ts");
+    ok("find src -type f | head -20");
+    refused("find . -name '*.tmp' -delete");
+    refused("find . -exec rm {} ;");
+    refused("find . -execdir touch x {} +");
+    refused("find . -ok rm {} ;");
+    refused("find . -fprint out.txt");
+    refused("find . -fls out.txt");
+  });
+
+  test("read-only git and gh verbs seen in reviews", () => {
+    ok("git ls-tree -r --name-only origin/main");
+    ok("git range-diff origin/main..abc123 origin/main..HEAD");
+    ok("git tag --sort=-version:refname");
+    ok("git tag -l 'v0.*' --sort=-v:refname");
+    ok("git tag");
+    ok("git remote -v");
+    ok("git --version");
+    ok("gh pr diff 12 --repo acme/app");
+    ok("gh issue view 9 --json title,body,comments");
+    refused("git tag v1.0.0");
+    refused("git tag -d v1.0.0");
+    refused("git tag -a v1 -m x");
+    refused("git tag --sort=refname v1");
+    refused("git remote add x https://example.test/x.git");
+    refused("gh issue comment 9 --body x");
   });
 });
 

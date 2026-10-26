@@ -195,3 +195,37 @@ describe("bash as the incident agent user", () => {
     });
   });
 });
+
+describe("read-only ask mode", () => {
+  const cwd = "/srv/acme/worktrees/acme-review";
+  const scratch = "/srv/acme/scratch/s1";
+  const askTool = (h: ReturnType<typeof hooks>) =>
+    makePiBashTool({
+      cwd,
+      env: { PATH: "/usr/bin:/bin", OPENSESSION_SCRATCH: scratch },
+      gated: false,
+      askReadOnly: true,
+      unattended: true,
+      __testHooks: h.hooks,
+    });
+
+  test("cd into the session's own worktree or scratch runs", async () => {
+    const h = hooks();
+    const tool = askTool(h);
+    await run(tool, `cd ${cwd} && git diff origin/main...HEAD | head`);
+    await run(tool, `cd ${scratch} && ls`);
+    expect(h.spawned).toHaveLength(2);
+  });
+
+  test("cd elsewhere and writes are refused before anything runs", async () => {
+    const h = hooks();
+    const tool = askTool(h);
+    await expect(run(tool, "cd /etc && ls")).rejects.toThrow(
+      `Commands already run in ${cwd}`,
+    );
+    await expect(run(tool, `cd ${cwd} && rm -f a.txt`)).rejects.toThrow(
+      "read-only allowlist",
+    );
+    expect(h.spawned).toHaveLength(0);
+  });
+});
