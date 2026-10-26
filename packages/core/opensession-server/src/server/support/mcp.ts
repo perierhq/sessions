@@ -173,7 +173,9 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
         sources: z
           .array(
             z.object({
-              kind: z.enum(DRAFT_SOURCE_KINDS),
+              // No `knowledge` until the agent can read knowledge (D1):
+              // it would have no way to cite a real item and commit.
+              kind: z.enum(DRAFT_SOURCE_KINDS).exclude(["knowledge"]),
               ref: z
                 .string()
                 .describe(
