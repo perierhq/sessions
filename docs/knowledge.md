@@ -134,9 +134,17 @@ the issue.
    changed, a new release's notes mention the item's topics, or an issue or
    pull request it references was closed or merged. The item is kept, never
    deleted, and its text is not touched. When a check can't tell (the code
-   checkout is gone, GitHub can't say whether an issue is open), the item
-   becomes `needs-check` with "Knowledge couldn't be checked"; it is never
-   read as unchanged. Mirrors of the code repository and the website are
+   checkout is gone, GitHub can't list releases or say whether an issue is
+   open, a page has no recorded hash or has been unreadable for 3 runs in a
+   row, the code repository hasn't been fetched for 3 days, the run used up
+   its 20 release checks), the item becomes `needs-check` with "Knowledge
+   couldn't be checked"; it is never read as unchanged. A page that is gone
+   (404, 410) or no longer on the project's websites counts as changed. A
+   release check shows the small model the notes around each match and the
+   item's matching section; a trusted item whose own topic the notes name
+   stays only on a confident "unrelated", and a cleared release isn't asked
+   about again for the same item text. Items already waiting for a check
+   aren't checked again. Mirrors of the code repository and the website are
    rewritten from their changed source instead (a deleted file retires its
    mirror); the articles that depend on the same path or page are what flip.
    Each run is one commit by Pat: `Knowledge check: <n> need a check, <m>
@@ -152,9 +160,12 @@ check`. When the model gives no answer, nothing flips and the item is
    compared again on the next run.
 4. Imported mail is time-aware. A question-and-reply pair older than the
    latest change to what it touches (the newest release, or a default-branch
-   commit touching those paths) is imported as reference. When the pair's
-   touched paths can't be told, it counts as touching all of `docs/` and
-   `README.md`.
+   commit touching those paths, committed up to 2 days before the reply,
+   since a commit can land later than it was made) is imported as
+   reference. When the pair's touched paths can't be told, it counts as
+   touching all of `docs/` and `README.md`. When the history can't be read
+   (GitHub down, the reply's time is in the future), it is reference with
+   "History couldn't be read".
 
    The mailbox import reads the inbox's `INBOX` and Sent folders over its
    own read-only connection (no flags change; the inbox's live connection,

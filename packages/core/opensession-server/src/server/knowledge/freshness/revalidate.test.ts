@@ -11,7 +11,9 @@ import {
   revalidateProject,
   type ConflictMark,
   type RevalidateDeps,
+  type RevalidateState,
 } from "./revalidate";
+import type { ReleaseInfo } from "./github";
 import type { RepoChangeDeps } from "./repo-changes";
 
 const TODAY = "2026-10-26";
@@ -85,7 +87,19 @@ function deps(over: Partial<RevalidateDeps> = {}): Partial<RevalidateDeps> {
     pageHash: async () => null,
     classifyConflict: async () => "unrelated",
     conflictMarks: memoryMarks().conflictMarks,
+    state: memoryRunState(),
     ...over,
+  };
+}
+
+/** A run-state store kept in memory (never the catalog). */
+function memoryRunState(): RevalidateDeps["state"] {
+  let value: RevalidateState | null = null;
+  return {
+    load: async () => value,
+    save: async (next) => {
+      value = structuredClone(next);
+    },
   };
 }
 
@@ -547,5 +561,442 @@ describe("revalidateProject conflict check", () => {
     expect(a!.item.check?.conflictWith).toBe(B);
     const b = await knowledgeRepo.call("read", P, B, TODAY);
     expect(b!.item.check?.conflictWith).toBe(A);
+  });
+});
+
+describe("revalidateProject hardening", () => {
+  let n = 0;
+  const hRepo = (): Partial<RepoChangeDeps> => ({
+    repo: (project) =>
+      project.startsWith("acme-h")
+        ? { dir: checkout, defaultBranch: "main" }
+        : null,
+  });
+
+  /** A fresh project holding `files`. */
+  async function seed(
+    files: Array<{ path: string; fm: KnowledgeFrontMatter; body?: string }>,
+  ): Promise<string> {
+    const project = `acme-h${++n}`;
+    await knowledgeRepo.call("ensureRepo", project);
+    await knowledgeRepo.call(
+      "write",
+      project,
+      files.map((f) => ({
+        op: "put" as const,
+        path: f.path,
+        fm: f.fm,
+        body: f.body ?? "Some text.\n",
+      })),
+      { message: "Seed", author: ADA },
+    );
+    return project;
+  }
+
+  function memoryState(start: RevalidateState | null = null) {
+    const box = {
+      value: start,
+      state: {
+        load: async () => box.value,
+        save: async (value: RevalidateState) => {
+          box.value = structuredClone(value);
+        },
+      },
+    };
+    return box;
+  }
+
+  function hdeps(over: Partial<RevalidateDeps> = {}) {
+    return deps({
+      repoChanges: hRepo(),
+      fetchRepo: async () => true,
+      state: memoryState().state,
+      ...over,
+    });
+  }
+
+  const NOW = Date.parse(`${TODAY}T09:00:00Z`);
+  const V2: ReleaseInfo = {
+    tag: "v2.0.0",
+    name: "v2.0.0",
+    at: "2026-10-24T09:00:00Z",
+    body: "SSO now needs an admin.",
+  };
+
+  test("a failed fetch is an error; three days without one can't be checked", async () => {
+    const project = await seed([
+      {
+        path: "articles/a.md",
+        fm: fm({ dependsOn: ["repo:README.md"], validAsOfCommit: sha.c2 }),
+      },
+    ]);
+    const box = memoryState({
+      fetchedAt: "2026-10-25T09:00:00.000Z",
+      unreadable: {},
+      releaseClears: [],
+    });
+    const first = await revalidateProject(project, {
+      deps: hdeps({
+        now: () => NOW,
+        state: box.state,
+        fetchRepo: async () => false,
+      }),
+    });
+    expect(first.errors).toEqual([
+      "The code repository couldn't be fetched; checked against what was fetched on 2026-10-25",
+    ]);
+    expect(first.flipped).toEqual([]);
+    expect(box.value!.fetchedAt).toBe("2026-10-25T09:00:00.000Z");
+
+    const later = await revalidateProject(project, {
+      deps: hdeps({
+        now: () => NOW + 3 * 86_400_000,
+        state: box.state,
+        fetchRepo: async () => {
+          throw new Error("network down");
+        },
+      }),
+    });
+    expect(later.flipped).toEqual([
+      { path: "articles/a.md", reason: "Knowledge couldn't be checked" },
+    ]);
+    expect(later.errors).toContain(
+      "articles/a.md: The code repository hasn't been fetched since 2026-10-25",
+    );
+
+    await revalidateProject(project, {
+      deps: hdeps({ now: () => NOW + 4 * 86_400_000, state: box.state }),
+    });
+    expect(box.value!.fetchedAt).toBe(
+      new Date(NOW + 4 * 86_400_000).toISOString(),
+    );
+  });
+
+  test("without validAsOfCommit, commits from two days before validAsOf count", async () => {
+    // docs/export.md changed on 2026-10-25; the item says it is valid as of
+    // the 26th, but that day may not have seen the change land.
+    const project = await seed([
+      {
+        path: "articles/a.md",
+        fm: fm({ dependsOn: ["repo:docs/export.md"], validAsOf: TODAY }),
+      },
+    ]);
+    const result = await revalidateProject(project, { deps: hdeps() });
+    expect(result.flipped.map((f) => f.path)).toEqual(["articles/a.md"]);
+  });
+
+  test("a gone page flips at once; other unreadable pages after three runs", async () => {
+    const GONE = "https://help.acme.example.test/gone";
+    const FLAKY = "https://help.acme.example.test/flaky";
+    const hash = "a".repeat(64);
+    const project = await seed([
+      {
+        path: "articles/gone.md",
+        fm: fm({
+          sources: [`url:${GONE}#sha256=${hash}`],
+          dependsOn: [`url:${GONE}`],
+        }),
+      },
+      {
+        path: "articles/flaky.md",
+        fm: fm({
+          sources: [`url:${FLAKY}#sha256=${hash}`],
+          dependsOn: [`url:${FLAKY}`],
+        }),
+      },
+    ]);
+    const box = memoryState();
+    const fetchPage = async (url: string) =>
+      url === GONE
+        ? { error: "The page answered 404" }
+        : { error: "The page answered 503" };
+    const runOnce = () =>
+      revalidateProject(project, {
+        deps: hdeps({ state: box.state, fetchPage, pageHash: undefined }),
+      });
+    const first = await runOnce();
+    expect(first.flipped).toEqual([
+      {
+        path: "articles/gone.md",
+        reason: `${GONE} can't be read any more: The page answered 404`,
+      },
+    ]);
+    expect(box.value!.unreadable).toEqual({ [FLAKY]: 1 });
+    expect((await runOnce()).flipped).toEqual([]);
+    const third = await runOnce();
+    expect(third.flipped).toEqual([
+      { path: "articles/flaky.md", reason: "Knowledge couldn't be checked" },
+    ]);
+    expect(third.errors).toEqual([
+      `articles/flaky.md: ${FLAKY} couldn't be read for 3 runs: The page answered 503`,
+    ]);
+  });
+
+  test("a readable page resets its unreadable count", async () => {
+    const PAGE2 = "https://help.acme.example.test/ok";
+    const hash = "a".repeat(64);
+    const project = await seed([
+      {
+        path: "articles/ok.md",
+        fm: fm({
+          sources: [`url:${PAGE2}#sha256=${hash}`],
+          dependsOn: [`url:${PAGE2}`],
+        }),
+      },
+    ]);
+    const box = memoryState({
+      unreadable: { [PAGE2]: 2 },
+      releaseClears: [],
+    });
+    await revalidateProject(project, {
+      deps: hdeps({
+        state: box.state,
+        pageHash: undefined,
+        fetchPage: async (url) => ({ url, text: "Same.", hash }),
+      }),
+    });
+    expect(box.value!.unreadable).toEqual({});
+  });
+
+  test("the release check sees the notes around each match and the matching section", async () => {
+    const filler = "Faster sync. ".repeat(600);
+    const project = await seed([
+      {
+        path: "articles/sso.md",
+        fm: fm({ title: "Single sign-on", topics: ["sso"] }),
+        body: `${"Intro text. ".repeat(400)}\n\n## Turning on SSO\n\nAsk an owner to open Settings.\n`,
+      },
+    ]);
+    const asked: string[] = [];
+    await revalidateProject(project, {
+      deps: hdeps({
+        releasesSince: async () => [
+          { ...V2, body: `${filler}\nSSO now needs an admin.\n${filler}` },
+        ],
+        releaseMentions: undefined,
+        askRelease: async (content) => {
+          asked.push(content);
+          return { route: "unrelated", confidence: "high" };
+        },
+      }),
+    });
+    expect(asked.length).toBe(1);
+    expect(asked[0]).toContain("SSO now needs an admin.");
+    expect(asked[0]).toContain("## Turning on SSO");
+    expect(asked[0]).not.toContain("Intro text. Intro text.");
+    expect(asked[0]!.length).toBeLessThan(8000);
+  });
+
+  test("matches past what can be sent are 'affects' without a model call", async () => {
+    const many = Array.from(
+      { length: 40 },
+      (_, i) => `${"x".repeat(400)} sso change ${i}`,
+    ).join("\n");
+    const project = await seed([
+      {
+        path: "articles/sso.md",
+        fm: fm({ title: "Single sign-on", topics: ["sso"] }),
+      },
+    ]);
+    let calls = 0;
+    const result = await revalidateProject(project, {
+      deps: hdeps({
+        releasesSince: async () => [{ ...V2, body: many }],
+        releaseMentions: undefined,
+        askRelease: async () => {
+          calls++;
+          return { route: "unrelated", confidence: "high" };
+        },
+      }),
+    });
+    expect(calls).toBe(0);
+    expect(result.flipped).toEqual([
+      { path: "articles/sso.md", reason: "Release v2.0.0 mentions sso" },
+    ]);
+  });
+
+  test("a trusted item named by topic clears only on a high-confidence 'unrelated', once per release", async () => {
+    const project = await seed([
+      {
+        path: "articles/low.md",
+        fm: fm({ title: "Single sign-on", topics: ["sso"] }),
+      },
+      {
+        path: "articles/high.md",
+        fm: fm({ title: "Signing in with SSO", topics: ["sso"] }),
+      },
+      {
+        path: "articles/ref.md",
+        fm: fm({
+          title: "Admin roles",
+          trust: "reference",
+          topics: ["roles"],
+        }),
+      },
+    ]);
+    const box = memoryState();
+    let calls = 0;
+    const run = () =>
+      revalidateProject(project, {
+        deps: hdeps({
+          state: box.state,
+          releasesSince: async () => [
+            { ...V2, body: "SSO now needs an admin." },
+          ],
+          releaseMentions: undefined,
+          askRelease: async (content) => {
+            calls++;
+            return content.includes("Signing in with SSO")
+              ? { route: "unrelated", confidence: "high" }
+              : { route: "unrelated", confidence: "low" };
+          },
+        }),
+      });
+    const first = await run();
+    // "admin" is a title word of the reference item: a low-confidence
+    // "unrelated" is enough there.
+    expect(first.flipped).toEqual([
+      { path: "articles/low.md", reason: "Release v2.0.0 mentions sso" },
+    ]);
+    expect(calls).toBe(3);
+    await run();
+    // high.md and ref.md were cleared for v2.0.0 at their blobs.
+    expect(calls).toBe(3);
+  });
+
+  test("at most 20 model calls a run; past that items can't be checked", async () => {
+    const project = await seed(
+      Array.from({ length: 21 }, (_, i) => ({
+        path: `articles/sso-${String(i).padStart(2, "0")}.md`,
+        fm: fm({ title: `SSO ${i}`, topics: ["sso"] }),
+      })),
+    );
+    let calls = 0;
+    const result = await revalidateProject(project, {
+      deps: hdeps({
+        releasesSince: async () => [V2],
+        releaseMentions: undefined,
+        askRelease: async () => {
+          calls++;
+          return { route: "unrelated", confidence: "high" };
+        },
+      }),
+    });
+    expect(calls).toBe(20);
+    expect(result.flipped).toEqual([
+      { path: "articles/sso-20.md", reason: "Knowledge couldn't be checked" },
+    ]);
+    expect(result.errors).toEqual([
+      "articles/sso-20.md: Too many release checks in one run",
+    ]);
+  });
+
+  test("an item already waiting for a check is not evaluated again", async () => {
+    const project = await seed([
+      {
+        path: "articles/waiting.md",
+        fm: fm({
+          status: "needs-check",
+          check: { reason: "Earlier", since: "2026-10-01" },
+          dependsOn: ["issue:9"],
+        }),
+      },
+    ]);
+    const result = await revalidateProject(project, {
+      deps: hdeps({
+        refState: async () => {
+          throw new Error("must not be asked");
+        },
+      }),
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.flipped).toEqual([]);
+  });
+
+  test("a mirror whose own file didn't change flips instead of refreshing", async () => {
+    const project = await seed([
+      {
+        path: repoItemPath("docs/guide.md"),
+        fm: fm({
+          title: "docs/guide.md",
+          origin: "repo",
+          sources: [`repo:docs/guide.md@${sha.c2}`],
+          dependsOn: ["repo:docs/"],
+          validAsOfCommit: sha.c2,
+        }),
+        body: "Guide.\n",
+      },
+    ]);
+    const seeded = (await knowledgeRepo.call(
+      "index.get",
+      project,
+      repoItemPath("docs/guide.md"),
+      TODAY,
+    ))!;
+    const before = await knowledgeRepo.call(
+      "readAt",
+      project,
+      seeded.path,
+      seeded.commit,
+    );
+    const result = await revalidateProject(project, { deps: hdeps() });
+    expect(result.refreshed).toBe(0);
+    expect(result.flipped.map((f) => f.path)).toEqual([
+      repoItemPath("docs/guide.md"),
+    ]);
+    const mirror = await knowledgeRepo.call(
+      "read",
+      project,
+      repoItemPath("docs/guide.md"),
+    );
+    expect(mirror!.item.status).toBe("needs-check");
+    expect(mirror!.body.trim()).toBe("Guide.");
+    // Written from the git blob: the file keeps its exact text.
+    const atGit = await knowledgeRepo.call(
+      "readAt",
+      project,
+      repoItemPath("docs/guide.md"),
+      mirror!.item.commit,
+    );
+    expect(atGit!.body).toBe(before!.body);
+  });
+
+  test("a write that fails for another reason is retried with only the flips", async () => {
+    const hash = "a".repeat(64);
+    const project = await seed([
+      {
+        path: WEB,
+        fm: fm({
+          title: "Export",
+          origin: "web",
+          sources: [`url:${PAGE}#sha256=${hash}`],
+          dependsOn: [`url:${PAGE}`],
+        }),
+      },
+      {
+        path: "articles/b.md",
+        fm: fm({ reviewBy: "2026-10-01" }),
+      },
+    ]);
+    const writes: string[][] = [];
+    const result = await revalidateProject(project, {
+      deps: hdeps({
+        pageHash: async () => "b".repeat(64),
+        fetchPage: async (url) => ({ url, text: "New.", hash: "b".repeat(64) }),
+        write: async (p, changes, opts) => {
+          writes.push(changes.map((c) => ("path" in c ? c.path : "")));
+          if (writes.length === 1) throw new Error("disk full");
+          return knowledgeRepo.call("write", p, changes, opts);
+        },
+      }),
+    });
+    expect(writes).toEqual([["articles/b.md", WEB], ["articles/b.md"]]);
+    expect(result.refreshed).toBe(0);
+    expect(result.flipped).toEqual([
+      { path: "articles/b.md", reason: "Review date passed (2026-10-01)" },
+    ]);
+    expect(result.errors).toEqual([
+      "Writing the refreshed mirrors failed: disk full",
+    ]);
   });
 });
