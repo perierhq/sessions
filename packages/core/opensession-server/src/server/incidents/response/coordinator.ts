@@ -73,6 +73,7 @@ import {
   decideNextStep,
   manualRollbackAvailable,
   nextActionFor,
+  rereadsReport,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -601,14 +602,21 @@ export async function buildResponseView(
   );
 
   const agents = new Map<string, AgentLive & { finalText?: string }>();
-  const watched = (incident.response?.agents ?? []).filter(watchedRun);
+  const r = incident.response;
+  // A report refused for want of a pull request is read again on a Retry.
+  const reread = (run: AgentRun) => !!r && rereadsReport(r, run);
+  const watched = (r?.agents ?? []).filter(
+    (run) => watchedRun(run) || reread(run),
+  );
   const handle = watched.length ? await agentsFor(incident, d) : null;
   if (handle)
     for (const run of watched) {
       try {
         const live = await handle.status(run.sessionId);
         const finalText =
-          liveRunStatus(live) === "done" && !run.report && !run.reportError
+          liveRunStatus(live) === "done" &&
+          !run.report &&
+          (!run.reportError || (reread(run) && live.prUrl))
             ? await handle.finalText(run.sessionId, run.turnSentAt)
             : undefined;
         agents.set(run.sessionId, {
@@ -1494,11 +1502,15 @@ async function recordReport(
   );
   if (!run) return false;
   const report = step.report;
-  const detail = report
+  const reported = report
     ? report.role === "investigator"
       ? `Investigator reported: ${report.summary}`
       : `Verifier: ${report.verdict === "certain" ? "certain" : "not certain"}`
     : plainReportProblem(run.role, step.problem);
+  const detail =
+    report && step.reread && step.prUrl
+      ? `Found the investigator's pull request ${step.prUrl}. ${reported}`
+      : reported;
   if (!report)
     console.warn(
       `[incidents] ${incident.id}: ${run.role} report refused: ${step.error ?? "unknown"}`,
@@ -1522,6 +1534,10 @@ async function recordReport(
                 ? {
                     report,
                     reportWarnings: warnings.length ? warnings : undefined,
+                    // A report read again replaces the refusal.
+                    reportError: undefined,
+                    reportProblem: undefined,
+                    ...(step.prUrl ? { prUrl: step.prUrl } : {}),
                   }
                 : {
                     reportError: step.error ?? "Invalid",
@@ -1529,12 +1545,20 @@ async function recordReport(
                   },
             ),
       );
-      const response = ledger(patched(base, { agents: agentsNext }), at, {
-        actor: run.role,
-        kind: report?.role === "verifier" ? "verdict" : "agent-finished",
-        detail: shown,
-        sessionId: run.sessionId,
-      });
+      const response = ledger(
+        patched(base, {
+          agents: agentsNext,
+          // The Retry is answered: nothing starts over.
+          ...(report && step.reread ? { retryRequested: undefined } : {}),
+        }),
+        at,
+        {
+          actor: run.role,
+          kind: report?.role === "verifier" ? "verdict" : "agent-finished",
+          detail: shown,
+          sessionId: run.sessionId,
+        },
+      );
       const withEvent =
         report?.role === "verifier" ? event(c, "verdict", at, detail) : c;
       return { incident: withEvent, response };

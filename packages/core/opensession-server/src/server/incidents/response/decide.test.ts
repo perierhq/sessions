@@ -664,6 +664,58 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
   });
 });
 
+test("reports: on a Retry, a report refused for want of a PR is read again once the PR is found", () => {
+  const refused = (over: { prUrl?: string; retry?: boolean }) =>
+    view({
+      incident: incident(
+        "investigating",
+        response({
+          ...(over.retry === false ? {} : { retryRequested: true }),
+          agents: [
+            run("investigator", {
+              status: "done",
+              reminded: true,
+              reportError:
+                "Open a pull request with the note and the runbook update",
+              reportProblem: "pr",
+            }),
+          ],
+        }),
+      ),
+      agents: new Map([
+        [
+          "child-1",
+          {
+            status: "done",
+            costUsd: 1,
+            tokens: 10,
+            ...(over.prUrl ? { prUrl: over.prUrl } : {}),
+            finalText: fence(goodInvestigator),
+          },
+        ],
+      ]),
+    });
+  const pr = "https://github.com/acme/web/pull/469";
+  expect(decideNextStep(refused({ prUrl: pr }))).toMatchObject({
+    step: "record-report",
+    sessionId: "child-1",
+    report: { role: "investigator", summary: "Upstream blocks our user agent" },
+    prUrl: pr,
+    reread: true,
+  });
+  // Still no pull request: the Retry starts the investigator over.
+  expect(decideNextStep(refused({}))).toMatchObject({
+    step: "start-agent",
+    role: "investigator",
+    attempt: 2,
+  });
+  // Without a Retry nothing is read again.
+  expect(decideNextStep(refused({ prUrl: pr, retry: false }))).toMatchObject({
+    step: "needs-you",
+    kind: "no-report",
+  });
+});
+
 test("reports: an unknown attempt result is repaired with a warning, not refused", () => {
   const text = fence({
     ...goodInvestigator,

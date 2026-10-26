@@ -677,6 +677,19 @@ function starting(view: ResponseView): ResponseStep | undefined {
   return undefined;
 }
 
+/** Whether a Retry reads `run`'s refused report again rather than starting
+ *  the agent over: the report was refused only for want of a pull request,
+ *  which Sessions may have found since. */
+export function rereadsReport(r: IncidentResponse, run: AgentRun): boolean {
+  return (
+    r.retryRequested === true &&
+    run.role === "investigator" &&
+    run.reportProblem === "pr" &&
+    !run.report &&
+    currentAgent(r, run.role)?.sessionId === run.sessionId
+  );
+}
+
 function reports(view: ResponseView): ResponseStep | undefined {
   const r = view.incident.response!;
   const runs = [
@@ -684,13 +697,23 @@ function reports(view: ResponseView): ResponseStep | undefined {
     currentAgent(r, "verifier"),
   ].filter((a): a is AgentRun => a !== undefined);
 
-  // 12. A finished agent's report.
+  // 12. A finished agent's report; on a Retry, one refused for want of a
+  // pull request is read again once its pull request is found. Read again
+  // and still unusable, it is left to the Retry to start the agent over.
   for (const run of runs) {
-    if (statusOf(view, run) !== "done" || run.report || run.reportError)
+    const reread = rereadsReport(r, run);
+    if (
+      statusOf(view, run) !== "done" ||
+      run.report ||
+      (run.reportError && !reread)
+    )
       continue;
     const live = view.agents.get(run.sessionId);
+    const prUrl = live?.prUrl ?? run.prUrl;
+    if (reread && !prUrl) continue;
     const text = live?.finalText;
     if (text === undefined) {
+      if (reread) continue;
       // Finished without a word after its turn was sent.
       if (view.now - Date.parse(run.turnSentAt) > FINAL_TEXT_GRACE_MS)
         return {
@@ -713,14 +736,16 @@ function reports(view: ResponseView): ResponseStep | undefined {
           ? { method: target.method, path: target.path }
           : null,
       });
-      if ("error" in parsed)
+      if ("error" in parsed) {
+        if (reread) continue;
         return {
           step: "record-report",
           sessionId: run.sessionId,
           error: parsed.error,
           problem: parsed.problem,
         };
-      if (parsed.candidate !== null && !(live?.prUrl ?? run.prUrl))
+      }
+      if (parsed.candidate !== null && !prUrl)
         return {
           step: "record-report",
           sessionId: run.sessionId,
@@ -732,6 +757,8 @@ function reports(view: ResponseView): ResponseStep | undefined {
         sessionId: run.sessionId,
         report: parsed,
         ...(warnings.length ? { warnings } : {}),
+        ...(prUrl ? { prUrl } : {}),
+        ...(reread ? { reread: true } : {}),
       };
     }
     const warnings: string[] = [];
