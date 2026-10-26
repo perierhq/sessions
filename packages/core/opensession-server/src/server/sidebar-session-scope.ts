@@ -3,7 +3,7 @@ import {
   catalogNamespaceWriteCount,
 } from "./catalog-documents";
 import { documentField } from "./shared/catalog-user-store";
-import { canonicalRepoId, defaultRepo } from "./config";
+import { canonicalRepoId, defaultRepo, personaName } from "./config";
 import { getHides } from "./hides";
 import { getLanes } from "./lanes";
 import { listMentions } from "./mentions";
@@ -50,6 +50,11 @@ export interface SidebarSessionScopeContext {
 }
 
 const MAX_QUERY_VALUE_LENGTH = 256;
+
+/** The person key the assistant persona files under. */
+function agentPersonKey(): string {
+  return personaName().trim().toLowerCase();
+}
 export const TEAM_ACTIVITY_RECENT_MS = 15 * 60 * 1000;
 
 function cleanQueryValue(value: string | null): string | undefined {
@@ -295,7 +300,9 @@ function automationMatchesScope(
   if (scope.person === "me" && person.toLowerCase() === "anonymous")
     return true;
   const owner = automation.owner?.trim();
-  if (!owner) return person.toLowerCase() === "agent";
+  // One nobody owns is the assistant persona's, the lens the web sends as
+  // the persona's name (frontend automation-audience.ts AGENT_PERSON_KEY).
+  if (!owner) return person.trim().toLowerCase() === agentPersonKey();
   const a = owner.toLowerCase();
   const b = person.toLowerCase();
   return a === b || a.startsWith(b) || b.startsWith(a);

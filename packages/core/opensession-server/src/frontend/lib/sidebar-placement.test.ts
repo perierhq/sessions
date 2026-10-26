@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { AGENT_PERSON_KEY } from "./automation-audience";
 import type { UnifiedSession } from "./types";
 import type { WsRow } from "./sidebar-types";
+import { AGENT_NAME } from "./brand";
 import {
+  agentStartedLabel,
   classifySidebarPlacement,
   placeSidebarRows,
   rowAutoCreatedInLens,
@@ -434,5 +436,23 @@ describe("sidebar row placement", () => {
 
     expect(rowWasAutoCreated(mixed)).toBe(false);
     expect(rowAutoCreatedInLens(mixed, "me")).toBe(false);
+  });
+});
+
+describe("agentStartedLabel", () => {
+  test("names the persona on a session it started as itself", () => {
+    expect(agentStartedLabel({ startedBy: AGENT_NAME })).toBe(
+      `Started by ${AGENT_NAME}`,
+    );
+    expect(
+      agentStartedLabel({ startedBy: ` ${AGENT_NAME.toUpperCase()} ` }),
+    ).toBe(`Started by ${AGENT_NAME}`);
+  });
+
+  test("keeps the generic line for any other agent start", () => {
+    expect(agentStartedLabel({ startedBy: "Sessions" })).toBe(
+      "Started by an agent",
+    );
+    expect(agentStartedLabel({ startedBy: null })).toBe("Started by an agent");
   });
 });

@@ -52,6 +52,7 @@ import { settlePromptThrowRunState } from "./prompt-throw-settlement";
 import { retryOnKernelSaturation } from "./session-projection-executor";
 import {
   isSupportSession,
+  runCommitAuthor,
   resolveSessionRunInputs,
   runAccountSpec,
 } from "./session-run-inputs";
@@ -164,7 +165,6 @@ import {
   clearComposerPrediction,
   maybePredictComposer,
 } from "./composer-prediction";
-import { commitAuthorFor } from "./shared/user-mappings";
 import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { startWatching } from "./file-watcher";
 import {
@@ -591,10 +591,7 @@ setJournalSetListener(async (record) => {
   await acknowledgePromptDispatch(record.osSessionId, record.promptEntryId);
 });
 import { audit } from "./audit";
-import {
-  githubCredentialForLogin,
-  githubCredentialForRun,
-} from "./github-auth";
+import { sessionPushGithubCredential } from "./session-github-credential";
 import {
   announcesNextAction,
   AUTO_CONTINUE_FABRICATED_PROMPT,
@@ -1898,14 +1895,9 @@ export function foldSessionUsage(
 export async function autoPushSessionBranches(
   session: UnifiedSession,
 ): Promise<void> {
-  const githubGitEnv =
-    session.automation ||
-    session.automationId ||
-    session.automationDescendantPolicy
-      ? undefined
-      : session.createdByLogin
-        ? githubCredentialForLogin(session.createdByLogin)?.env
-        : githubCredentialForRun(session.createdBy || session.startedBy)?.env;
+  // Automations and support sessions push with the GitHub App's identity
+  // only (session-github-credential.ts).
+  const githubGitEnv = sessionPushGithubCredential(session)?.env;
   // Repo-less sessions (scratch, repo-less ask) have no primary branch to
   // push, and their worktreeDir is a plain dir repoForPath would throw on.
   // Attached repos still push: those carry their own repo and branch.
@@ -2383,7 +2375,8 @@ export async function maybeLaunchSandboxedRun(
       publicationPolicy: security.publicationPolicy,
       confirmTools: STRIPE_CONFIRM_TOOLS,
       aws: false,
-      author: commitAuthorFor(
+      author: runCommitAuthor(
+        session,
         opts.isAutomationSession ? undefined : opts.user,
         opts.isAutomationSession ? undefined : sessionPrincipal(session),
       ),
@@ -3607,7 +3600,7 @@ async function runSessionPromptInner(
             agentAwsCredsForUntrustedRuns(),
           readRepos: automationReadRepos,
           attachedRepos: attachedGhRepos,
-          author: commitAuthorFor(user, sessionPrincipal(session)),
+          author: runCommitAuthor(session, user, sessionPrincipal(session)),
           user: runInputs.user,
           accountUser: runInputs.accountUser,
           fallbackModel: interactiveFallbackModel(
@@ -3727,7 +3720,7 @@ async function runSessionPromptInner(
       // to the person the session acts for when nobody did (an auto-continue,
       // a restart resume, a queue drain): the last person who prompted it,
       // else its creator.
-      author: commitAuthorFor(user, sessionPrincipal(session)),
+      author: runCommitAuthor(session, user, sessionPrincipal(session)),
       // Gate per-user MCP servers (allowedUsers) to the prompt's author. Automation
       // sessions pass no user, so they never see a user-restricted server.
       user: runInputs.user,

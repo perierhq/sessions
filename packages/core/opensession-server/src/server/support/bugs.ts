@@ -30,7 +30,7 @@
 
 import type { SupportActor, SupportConversation } from "../../shared/support";
 import { catalogDocuments } from "../catalog-documents";
-import { configuredRepos } from "../config";
+import { configuredRepos, personaName } from "../config";
 import {
   createRepoIssue,
   neutralizeGithubRefs,
@@ -45,8 +45,18 @@ import { type SessionControl, getSessionControl } from "../session-control";
 import { getInbox } from "./inboxes";
 import { getConversation, updateConversation } from "./store";
 
-export const ISSUE_FOOTER =
-  "\n\nReported from a support conversation in Sessions.";
+/** The issue's attribution footer. Only the support agent reports bugs
+ *  (mcp.ts report_bug), so it names the assistant persona the support
+ *  session belongs to; the issue itself is posted with the GitHub App's
+ *  identity, never a person's token. */
+export function issueFooter(): string {
+  return `\n\nReported by ${personaName()} from a support conversation.`;
+}
+/** Any footer this code has prepared: today's, one naming an earlier
+ *  persona (a rename), or the one from before footers named the persona.
+ *  Taken off a stored body so an edit keeps exactly one footer. */
+const ISSUE_FOOTER_PATTERN =
+  /\n\nReported (?:by .+? )?from a support conversation(?: in Sessions)?\.\s*$/;
 export const HELD_PUBLIC = "Waiting for a person: the repository is public";
 export const HELD_QUOTE =
   "Waiting for a person: the report quotes the customer's email";
@@ -384,7 +394,7 @@ export function issueText(
     c,
     ownAddress,
   ).slice(0, MAX_SUMMARY);
-  return { title, body: `${summary}${ISSUE_FOOTER}` };
+  return { title, body: `${summary}${issueFooter()}` };
 }
 
 /** Lower-case words without accents. */
@@ -560,9 +570,7 @@ export function issueEditError(edit: IssueEdit): string | null {
 }
 
 function withoutFooter(body: string): string {
-  const trimmed = body.trimEnd();
-  const footer = ISSUE_FOOTER.trim();
-  return trimmed.endsWith(footer) ? trimmed.slice(0, -footer.length) : trimmed;
+  return body.trimEnd().replace(ISSUE_FOOTER_PATTERN, "").trimEnd();
 }
 
 /** The issue as it will be posted: the prepared one, with a person's
@@ -684,9 +692,7 @@ function fixTaskText(
   project: string,
   issue: { title: string; body: string },
 ): string {
-  const body = issue.body.endsWith(ISSUE_FOOTER)
-    ? issue.body.slice(0, -ISSUE_FOOTER.length)
-    : issue.body;
+  const body = withoutFooter(issue.body);
   return [
     `Fix this bug in ${project}: ${issue.title}`,
     "",

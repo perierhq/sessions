@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "path";
 import type {
   InboxConfig,
@@ -7,7 +9,13 @@ import type {
   SupportMessage,
   TriageRoute,
 } from "../../shared/support";
+import { getConfigAsync, personaName } from "../config";
 import type { CreateSessionOpts } from "../session-control";
+import { isMachineActor } from "../session-actors";
+import {
+  __setIdentitiesForTest,
+  gitIdentityFor,
+} from "../shared/user-mappings";
 import { registerChannelAdapter } from "./channel";
 import {
   __setInboxProjectCheckForTest,
@@ -18,6 +26,7 @@ import {
   MAX_NEW_SESSIONS_PER_HOUR,
   STRIKE_ONE,
   STRIKE_TWO,
+  SUPPORT_FALLBACK_USER,
   THANKS_CLOSED,
   TRIAGE_BUDGET_SPENT,
   __setRoutingDepsForTest,
@@ -27,6 +36,7 @@ import {
   startSupportSession,
   supportDelivery,
   supportOpeningPrompt,
+  supportSessionUser,
   wrapCustomerMessage,
 } from "./routing";
 import { supportToolDefinitions } from "./mcp";
@@ -147,7 +157,7 @@ beforeEach(async () => {
         }
         return {
           id,
-          createdBy: "Sessions",
+          createdBy: opts.user ?? "Anonymous",
           createdAt: new Date().toISOString(),
         };
       },
@@ -301,14 +311,17 @@ describe("new conversations", () => {
       expect(opts.model).toBe(spec.model);
       expect(opts.sandbox).toBe("daytona");
       expect(opts.agentStarted).toBe(true);
-      expect(opts.user).toBe("Sessions");
+      // The session belongs to the assistant persona, a machine actor.
+      expect(opts.user).toBe(personaName());
+      expect(isMachineActor(opts.user)).toBe(true);
+      expect(opts.createdByLogin).toBeUndefined();
       expect(opts.workspaceId).toBe(`ws-${c.id}`);
       expect(opts.requestId).toBe(`support-${c.id}-new`);
       expect(workspaces).toEqual([
         {
           // No customer text in the workspace.
           ref: { kind: "support", id: c.id, title: `Support ${c.id}` },
-          createdBy: "Sessions",
+          createdBy: personaName(),
           repo: "acme",
         },
       ]);
@@ -317,6 +330,53 @@ describe("new conversations", () => {
       expect(after.triage?.route).toBe(r);
     });
   }
+
+  test("a persona named like a teammate never credits the session to them", async () => {
+    // The roster has "Pat Smith"; the persona is "Pat", her first name, so
+    // the persona reads as her (isMachineActor gives a teammate precedence).
+    const restoreTeam = __setIdentitiesForTest([
+      { name: "Pat Smith", email: "pat@example.test", github: "pat-smith" },
+    ]);
+    const previousConfig = process.env.OPENSESSION_CONFIG;
+    const dir = mkdtempSync(join(tmpdir(), "support-persona-"));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      writeFileSync(
+        join(dir, "config.json"),
+        JSON.stringify({ persona: { name: "Pat" } }),
+      );
+      process.env.OPENSESSION_CONFIG = join(dir, "config.json");
+      await getConfigAsync();
+      expect(personaName()).toBe("Pat");
+      expect(isMachineActor("Pat")).toBe(false);
+      expect(supportSessionUser()).toBe(SUPPORT_FALLBACK_USER);
+
+      const c = await conversation();
+      await onInbound(c, c.messages[0], true);
+      expect(created).toHaveLength(1);
+      expect(created[0].user).toBe(SUPPORT_FALLBACK_USER);
+      expect(created[0].createdByLogin).toBeUndefined();
+      expect(workspaces.map((w) => w.createdBy)).toEqual([
+        SUPPORT_FALLBACK_USER,
+      ]);
+      for (const name of [created[0].user, workspaces[0].createdBy])
+        expect(gitIdentityFor(name)).toBeNull();
+      // Logged once, however many sessions start.
+      supportSessionUser();
+      expect(
+        warn.mock.calls.filter((args) =>
+          String(args[0]).includes("matches a teammate"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      restoreTeam();
+      if (previousConfig === undefined) delete process.env.OPENSESSION_CONFIG;
+      else process.env.OPENSESSION_CONFIG = previousConfig;
+      await getConfigAsync();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test("the opening prompt carries no customer text, only where to read it", async () => {
     const c = await conversation(

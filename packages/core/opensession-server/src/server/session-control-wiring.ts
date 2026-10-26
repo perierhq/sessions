@@ -83,6 +83,7 @@ import {
   type SessionSummary,
   registerSessionControl,
 } from "./session-control";
+import { createGithubCredential } from "./session-github-credential";
 import {
   type ResolvedCreate,
   actorCreationSetupPlan,
@@ -140,11 +141,7 @@ import {
   restoreResolvedCreate,
   snapshotOpeningCreate,
 } from "./session-create-plan";
-import {
-  githubCredentialForLogin,
-  githubCredentialForPrincipal,
-  githubCredentialForRun,
-} from "./github-auth";
+import { githubCredentialForPrincipal } from "./github-auth";
 import { existsSync, watch } from "fs";
 import { branchNameFromPrompt } from "./suggest-branch";
 import {
@@ -828,14 +825,6 @@ registerSessionControl({
       : resolvePinnedAccountId(model, accountIdInput, user);
     const images = parseImageDataUrls(imageUrls);
     const parentSession = parentSessionId ? findSession(parentSessionId) : null;
-    // opensession-sessions is withheld from automation-owned runs. Scope the
-    // server-owned worktree fetch to this trusted interactive creator.
-    const githubCredential = parentSession?.automation
-      ? null
-      : parentSession?.createdByLogin
-        ? githubCredentialForLogin(parentSession.createdByLogin)
-        : githubCredentialForRun(user || parentSession?.createdBy);
-    const githubGitEnv = githubCredential?.env;
     // Attribution only (CreateSessionInput.spawnedBy): the session whose agent
     // asked for this one, recorded even when the create was standalone and
     // carries no parent link. It is what lets the sidebar keep an agent's own
@@ -971,6 +960,16 @@ registerSessionControl({
     const contextWorkspace = joinedWorkspace ?? parentWorkspace;
     // A rejected join can still supply the ticket/feed that prompted the create.
     const openingContextWorkspace = sourceWorkspace ?? contextWorkspace;
+    // opensession-sessions is withheld from automation-owned runs. Scope the
+    // server-owned worktree fetch to this trusted interactive creator. A
+    // support session (or its child) uses the GitHub App's identity only
+    // (session-github-credential.ts).
+    const githubCredential = createGithubCredential({
+      user,
+      parentSession,
+      workspaceRefs: openingContextWorkspace?.externalRefs,
+    });
+    const githubGitEnv = githubCredential?.env;
     // Least privilege: sessions in feed-item workspaces default their MCP
     // allowlist to the feed's declared servers, else inherit the parent's
     // scoping — never widen back to the full mcp-config.
