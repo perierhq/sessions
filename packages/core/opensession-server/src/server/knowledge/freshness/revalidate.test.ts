@@ -351,11 +351,9 @@ describe("revalidateProject", () => {
       { message: "Add import", author: ADA },
     );
     const result = await revalidateProject("acme", {
-      deps: deps({
-        repoCommits: async () => {
-          throw new Error("The code repository isn't available");
-        },
-      }),
+      // The project's checkout is gone: repo-changes throws
+      // RepoUnavailableError.
+      deps: deps({ repoChanges: { repo: () => null } }),
     });
     // Every active item with a repo dependency, the mirror included.
     expect(result.flipped).toEqual([
@@ -363,7 +361,7 @@ describe("revalidateProject", () => {
       { path: MIRROR, reason: "Knowledge couldn't be checked" },
     ]);
     expect(result.errors).toContain(
-      "articles/import.md: The code repository isn't available",
+      "articles/import.md: acme's repository can't be read: not configured",
     );
   });
 
