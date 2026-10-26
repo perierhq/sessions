@@ -372,9 +372,16 @@ describe("MCP OAuth requests pin the address they connect to", () => {
     Response.json({
       access_token: "access-1",
       refresh_token: "refresh-1",
-      // Inside the refresh window, so the next header read refreshes.
       expires_in: 60,
     });
+
+  /** Date the grant's issue back, so its 60 seconds left are inside the
+   *  refresh window and the next header read refreshes. */
+  function backdate(name: string) {
+    const store = JSON.parse(readFileSync(storePath, "utf8"));
+    store[name].shared.updatedAt = new Date(0).toISOString();
+    writeFileSync(storePath, JSON.stringify(store));
+  }
 
   async function startFlow(name: string): Promise<string> {
     const { url } = await startMcpOauthFlow(name, server);
@@ -425,6 +432,7 @@ describe("MCP OAuth requests pin the address they connect to", () => {
     rebind("token.example.test", 3);
     mockAuthServer(tokens);
     await completeMcpOauthFlow(await startFlow("pin-refresh"), "code-1");
+    backdate("pin-refresh");
     expect(fetched.filter((f) => f.url === token)).toHaveLength(1);
     const failed = new Promise<string>((resolve) => {
       const spy = spyOn(console, "error").mockImplementation(
@@ -453,6 +461,7 @@ describe("MCP OAuth requests pin the address they connect to", () => {
       });
     });
     await completeMcpOauthFlow(await startFlow("pin-stable"), "code-1");
+    backdate("pin-stable");
     mcpSharedGrantHeader("pin-stable");
     for (let i = 0; i < 50 && issued < 2; i++)
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -618,6 +627,33 @@ describe("shared sign-ins for unattended runs", () => {
     } finally {
       clearInterval(g.__osMcpOauthTicker as ReturnType<typeof setInterval>);
     }
+  });
+
+  test("a short-lived token is refreshed at half its life, behind the call", async () => {
+    const pair = fixture.issue();
+    const issued = Date.now() - 4 * 60_000;
+    // A 5-minute token with a minute left: due, but still usable.
+    seed("acme", {
+      accessToken: "live",
+      refreshToken: pair.refreshToken,
+      expiresAt: issued + 5 * 60_000,
+    });
+    const store = JSON.parse(readFileSync(storePath, "utf8"));
+    store.acme.shared.updatedAt = new Date(issued).toISOString();
+    writeFileSync(storePath, JSON.stringify(store));
+    expect(await freshMcpAuthHeader("acme")).toBe("Bearer live");
+    await settled();
+    expect(fixture.tokenRequests).toHaveLength(1);
+    // The new token, two minutes into five, is not due again.
+    const next = stored("acme");
+    next.updatedAt = new Date(Date.now() - 2 * 60_000).toISOString();
+    next.tokens.expiresAt = Date.now() + 3 * 60_000;
+    const after = JSON.parse(readFileSync(storePath, "utf8"));
+    after.acme.shared = next;
+    writeFileSync(storePath, JSON.stringify(after));
+    await freshMcpAuthHeader("acme");
+    await settled();
+    expect(fixture.tokenRequests).toHaveLength(1);
   });
 
   test("a current grant is used as is", async () => {

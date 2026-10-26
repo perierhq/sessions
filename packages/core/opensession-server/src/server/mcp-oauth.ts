@@ -559,6 +559,19 @@ function grantExpired(grant: Grant, now = Date.now()): boolean {
   return !!exp && exp <= now;
 }
 
+/** How long before expiry a grant is refreshed: five minutes, or half the
+ *  token's lifetime when that is shorter (some providers issue 5-minute
+ *  tokens, which would otherwise be due the moment they are issued). */
+function refreshAheadMs(grant: Grant): number {
+  const exp = grant.tokens.expiresAt;
+  const issued = Date.parse(grant.updatedAt);
+  const lifetime = exp && Number.isFinite(issued) ? exp - issued : Infinity;
+  return Math.min(REFRESH_AHEAD_MS, Math.max(lifetime / 2, 0));
+}
+
+/** A grant this close to expiry is refreshed before use, not behind it. */
+const REFRESH_BEFORE_USE_MS = 30_000;
+
 /** Whether a grant should be refreshed now: close to or past expiry, with a
  *  refresh token that the provider has not already refused. */
 function refreshDue(grant: Grant, now = Date.now()): boolean {
@@ -567,7 +580,7 @@ function refreshDue(grant: Grant, now = Date.now()): boolean {
     !!grant.tokens.refreshToken &&
     !grant.refreshError &&
     !!exp &&
-    exp - now < REFRESH_AHEAD_MS
+    exp - now < refreshAheadMs(grant)
   );
 }
 
@@ -774,8 +787,9 @@ function slotsFor(users: readonly string[]): GrantSlot[] {
 
 /**
  * The Authorization header for a run by `users` (priority order; empty for a
- * run with nobody behind it), refreshing a grant first when it is expired or
- * about to be. Use before connecting to a server.
+ * run with nobody behind it). A grant that is expired or within 30 seconds of
+ * it is refreshed first; one merely close to expiry is refreshed behind the
+ * call. Use before connecting to a server.
  */
 export async function freshMcpAuthHeader(
   name: string,
@@ -787,8 +801,14 @@ export async function freshMcpAuthHeader(
   for (const slot of slotsFor(users)) {
     let ref = grantRef(auth, slot);
     if (!ref) continue;
-    if (refreshDue(ref.grant))
-      ref = await refreshSlot(name, slot).catch(() => ref);
+    if (refreshDue(ref.grant)) {
+      const exp = ref.grant.tokens.expiresAt!;
+      // Expired or about to be: wait for the new token. Otherwise refresh
+      // behind this request and use the current one.
+      if (exp - Date.now() < REFRESH_BEFORE_USE_MS)
+        ref = await refreshSlot(name, slot).catch(() => ref);
+      else refreshSlot(name, slot).catch(() => {});
+    }
     const header = headerOf(ref);
     if (header) return header;
   }
