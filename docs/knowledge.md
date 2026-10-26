@@ -39,8 +39,8 @@ code repository or on GitHub. Backup is the server state directory.
 | `suggestions/<slug>.md`                  | Proposals from imports; approving moves them to `articles/`               | reference     |
 | `sources/mail/<yyyy-mm>/<message id>.md` | Questions and the replies people sent, customer data stripped             | time rule     |
 | `sources/repo/<repo path>.md`            | `docs/**`, `README.md` and `docs/incidents/**` at a default-branch commit | trusted       |
-| `sources/releases/<tag>.md`              | Release notes                                                             | trusted       |
-| `sources/web/<host>/<path>.md`           | Text of a page on the project's Support websites, with its hash           | trusted       |
+| `sources/releases/<tag>.md`              | Release notes                                                             | reference     |
+| `sources/web/<host>/<path>.md`           | Text of a page on a Support website used as knowledge, with its hash      | trusted       |
 | `sources/issues/<n>.md`                  | Open issues labelled `bug` ("known problem")                              | reference     |
 | `sources/files/<slug>.md`                | Text of an uploaded PDF, Markdown file or export                          | reference     |
 | `attachments/<slug>/<name>`              | Attached files; uploads in `attachments/file+<slug>/`                     | not an item   |
@@ -121,13 +121,38 @@ There are two tiers.
 
 - **Trusted** items may back an automatic reply while they are fresh: replies
   a person sent after the latest relevant change, the project's docs and
-  README at the default-branch commit, its own website pages, release notes,
-  and approved articles. A draft a person approved without editing counts as
-  a reply a person sent.
+  README at the default-branch commit, pages of the Support websites switched
+  to "Use as knowledge", and approved articles. A draft a person approved
+  without editing counts as a reply a person sent.
 - **Reference** items can be searched and read but never back a reply on
-  their own: older mail, uploaded files, Plain history exports, open bug
-  issues, and suggestions nobody approved. Reference material produces
-  suggestions; a person approves them.
+  their own: older mail, release notes, uploaded files, Plain history
+  exports, open bug issues, and suggestions nobody approved. Reference
+  material produces suggestions; a person approves them.
+
+Imported text nobody reviewed never backs an automatic reply. Release notes
+carry pull request titles from outside contributors, so they are reference;
+a release mirrored as trusted by an older build is rewritten as reference on
+the next repository import.
+
+A Support website (Settings, the project, What agents may use) is a site
+replies may link to. Its "Use as knowledge" switch, off by default, is what
+makes it knowledge: only switched-on sites are crawled and their pages are
+trusted. The switch is the `knowledge: true` flag on the website's row in
+the project settings document (`access.websites[]`; a row without it is off)
+and is set with `access.websiteKnowledge: [{ host, on }]` in a settings
+patch. Turning it on gives replies more to rely on, so only a signed-in
+person may; anyone may turn it off. A wildcard entry stays skipped even when
+switched on. Turning a site's switch off (or unticking it for Support)
+retires its pages, text kept, on the next website import or daily
+re-validation; switching it back on brings them back on the next import.
+
+| Source                                   | Trust                                       |
+| ---------------------------------------- | ------------------------------------------- |
+| Repository docs and `README.md`          | trusted                                     |
+| Release notes                            | reference                                   |
+| Support website pages                    | trusted, only when "Use as knowledge" is on |
+| Replies a person sent                    | trusted after the latest relevant change    |
+| Open bug issues, uploaded files, exports | reference                                   |
 
 An item backs a reply only when it is `trusted`, `active` and not past its
 `reviewBy` date. An open bug issue alone never lets the agent tell a customer
@@ -219,7 +244,7 @@ the issue.
    under `docs/incidents/` at the fetched default-branch head as trusted
    `sources/repo/` items (runbooks under `docs/incidents/` are `internal`:
    they steer, and are never quoted), then the newest 30 GitHub releases as
-   `sources/releases/<tag>.md`. Text is copied as written: a file that looks
+   reference `sources/releases/<tag>.md` items. Text is copied as written: a file that looks
    like it holds a credential, is binary, empty or over the article size is
    skipped and counted, never redacted. A doc deleted upstream retires its
    item (text kept); an unchanged item is left alone, so running it again at
@@ -227,7 +252,8 @@ the issue.
 repository docs: <n> files` and `Import releases: <n>`.
 
    The website import crawls the exact hosts of the project's Support
-   websites (wildcard entries never), over https only. Per host it reads
+   websites switched to "Use as knowledge" (wildcard entries never), over
+   https only; mirrors of any other host are retired, text kept. Per host it reads
    `robots.txt` first and honours its `Disallow` and `Allow` rules for every
    agent (`*`); a host whose `robots.txt` can't be read is skipped. It then
    reads `/sitemap.xml` and nested sitemap indexes two levels deep; a host
@@ -238,7 +264,9 @@ repository docs: <n> files` and `Import releases: <n>`.
    content hash; an unchanged page is left alone, a page that answers 404 or
    410 is retired (text kept), and a page that looks like it holds a
    credential is skipped, never stored. One commit by Pat: `Import website:
-<n> pages`. The import needs at least one exact Support website.
+<n> pages`. The import needs at least one exact Support website used as
+   knowledge ("Turn on Use as knowledge for a Support website in Access
+   first.").
 
    The known-problems import (also run daily) turns each open GitHub issue
    labelled `bug` into a `sources/issues/<n>.md` item: reference, never
