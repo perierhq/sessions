@@ -3174,3 +3174,44 @@ test("a merged pull request, or one a person pushed to, is never closed", async 
     __resetCoordinatorForTest();
   }
 });
+
+test("the coordinator session is created only when an agent starts", async () => {
+  let fail = true;
+  let created = 0;
+  const w = await world();
+  w.deps.workspace = async () =>
+    fail
+      ? { error: "No sandbox" }
+      : { kind: "sandbox" as const, provider: "daytona" };
+  w.deps.coordinatorSession = async () => {
+    created++;
+    return "coord-1";
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // No agent could start: no empty coordinator session is left behind.
+  expect(i?.state).toBe("needs-you");
+  expect(created).toBe(0);
+  expect(i?.response?.coordinatorSessionId).toBeUndefined();
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  await __waitForCoordinatorForTest();
+  expect(created).toBe(0);
+  // Reopened once a sandbox exists: the first agent brings it.
+  fail = false;
+  await updateIncident(w.incident.id, (c) => {
+    const moved = transitionIncident(c, "investigating", {
+      by: "sessions",
+      detail: "3 failures in a row",
+      at: new Date(w.clock).toISOString(),
+    });
+    return "error" in moved ? moved : moved;
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(created).toBe(1);
+  expect(i?.response).toMatchObject({
+    coordinatorSessionId: "coord-1",
+    automationId: "auto-1",
+    agents: [{ role: "investigator", sessionId: "child-1", round: 1 }],
+  });
+});

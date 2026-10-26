@@ -220,8 +220,11 @@ function agentDeps(over: Partial<AgentDeps> = {}): AgentDeps {
 
 /**
  * The incident's coordinator session: the parent every agent is spawned
- * under. Reused while it exists; otherwise written as an ask session of the
- * incident automation. It runs no turn.
+ * under (the session controller's ownership, spawn depth and automation
+ * policy hang off it). Reused while it exists; otherwise written as an ask
+ * session of the incident automation, when the incident's first agent
+ * starts. It runs no turn: coordination is server code, so its transcript
+ * stays empty and its children hold the work.
  */
 export async function ensureCoordinatorSession(
   incident: Incident,

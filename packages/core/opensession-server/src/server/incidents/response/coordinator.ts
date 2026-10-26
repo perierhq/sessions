@@ -876,21 +876,9 @@ async function init(
   const { incident, settings } = view;
   const release = rollbackFirst ? releaseToRollBack(settings) : undefined;
   const rollback = projectAction(settings, "rollback");
-  let automation: Automation | undefined;
-  let coordinatorSessionId: string | undefined;
-  try {
-    automation = await d.automation(incident.project);
-    coordinatorSessionId = await d.coordinatorSession(incident, automation);
-  } catch (error) {
-    // The rollback needs no agent: it starts anyway, and the parallel
-    // investigator is skipped when it finds no coordinator session.
-    if (!release || !rollback)
-      return setupProblem(
-        view,
-        d,
-        `Incident agents could not start: ${errorMessage(error)}`,
-      );
-  }
+  // The coordinator session is created with the first agent
+  // (withCoordinator), so an incident no agent ever starts on leaves no
+  // empty session in the list.
   const primary = view.signals.get(incident.primarySignalId);
   const notePath = await incidentNotePath(incident, d);
   const next = await write(
@@ -904,8 +892,6 @@ async function init(
         now: at,
         maxRounds: settings.maxRounds,
         phase: release && rollback ? "deciding" : "investigating",
-        ...(coordinatorSessionId ? { coordinatorSessionId } : {}),
-        ...(automation ? { automationId: automation.id } : {}),
       });
       if (!release || !rollback) return { incident: c, response: r };
       const time = hhmm(release.at);
@@ -2952,8 +2938,8 @@ async function ownerDecision(
       ? { error: "Agents still can't start: fix the setup first", status: 409 }
       : refused;
 
-  // Effects first, the record after: cancelling agents, and a coordinator
-  // session for a retry whose start failed before it had one.
+  // Effects first, the record after: cancelling agents, closing pull
+  // requests.
   const cancelled =
     decision === "stop" || decision === "resolve" || decision === "close"
       ? await cancelWorking(
@@ -2979,23 +2965,6 @@ async function ownerDecision(
         prLines.push(`Could not close pull request #${pr.number}: ${closed}`);
       }
     }
-  let coordinator:
-    | { coordinatorSessionId: string; automationId: string }
-    | undefined;
-  if (decision === "retry" && !incident.response.coordinatorSessionId) {
-    try {
-      const automation = await d.automation(incident.project);
-      coordinator = {
-        coordinatorSessionId: await d.coordinatorSession(incident, automation),
-        automationId: automation.id,
-      };
-    } catch (error) {
-      return {
-        error: `Incident agents could not start: ${errorMessage(error)}`,
-        status: 409,
-      };
-    }
-  }
 
   const result = await writeOrError(
     incidentId,
@@ -3013,11 +2982,12 @@ async function ownerDecision(
       });
       if ("error" in moved) return moved;
       const detail = `${by}: ${decision}`;
-      let response = ledger(
-        { ...moved.response, ownerTouched: true, ...coordinator },
-        at,
-        { actor: "owner", kind: "decision", detail, by },
-      );
+      let response = ledger({ ...moved.response, ownerTouched: true }, at, {
+        actor: "owner",
+        kind: "decision",
+        detail,
+        by,
+      });
       for (const line of prLines)
         response = ledger(response, at, {
           actor: "sessions",
