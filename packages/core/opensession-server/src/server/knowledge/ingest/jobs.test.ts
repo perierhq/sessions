@@ -4,6 +4,8 @@ import { catalogDocuments } from "../../catalog-documents";
 import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import {
   __waitForJobForTest,
+  CANCELLED_COPY,
+  cancelJob,
   failInterruptedJobs,
   INTERRUPTED_COPY,
   JOB_RUNNING_COPY,
@@ -53,6 +55,37 @@ describe("knowledge import jobs", () => {
     expect(
       (await listJobs("acme")).filter((j) => j.kind === "mailbox"),
     ).toHaveLength(2);
+  });
+
+  test("a running job can be cancelled; its run sees the signal", async () => {
+    const g = gate();
+    let seen: AbortSignal | undefined;
+    const job = await startJob("acme", "mailbox", {}, async (handle) => {
+      seen = handle.signal;
+      await g.opened;
+      handle.signal.throwIfAborted();
+    });
+    await Promise.resolve();
+    const cancelled = await cancelJob("acme", job.id);
+    expect(cancelled?.id).toBe(job.id);
+    expect(seen?.aborted).toBe(true);
+    g.open();
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({ state: "failed", error: CANCELLED_COPY });
+    // Finished or unknown jobs can't be cancelled.
+    expect(await cancelJob("acme", job.id)).toBeNull();
+    expect(await cancelJob("acme", "kj_unknown")).toBeNull();
+    expect(await cancelJob("acme-api", job.id)).toBeNull();
+  });
+
+  test("a run can say it left part of the input out", async () => {
+    const job = await startJob("acme", "mailbox", {}, async (handle) => {
+      await handle.markTruncated();
+    });
+    await __waitForJobForTest(job.id);
+    const [done] = await listJobs("acme");
+    expect(done).toMatchObject({ state: "done", truncated: true });
   });
 
   test("two starts at the same moment run once", async () => {

@@ -114,6 +114,8 @@ export interface KnowledgeRouteDeps {
   revalidate(project: string): Promise<RevalidateResult>;
   startImport(request: KnowledgeImportRequest): Promise<KnowledgeImportJob>;
   listJobs(project: string): Promise<KnowledgeImportJob[]>;
+  /** Cancel a running job; null when none runs under that id. */
+  cancelJob(project: string, id: string): Promise<KnowledgeImportJob | null>;
 }
 
 const defaults: KnowledgeRouteDeps = {
@@ -133,6 +135,8 @@ const defaults: KnowledgeRouteDeps = {
   startImport: (request) => startImportOf(request),
   listJobs: async (project) =>
     (await import("../knowledge/ingest/jobs")).listJobs(project),
+  cancelJob: async (project, id) =>
+    (await import("../knowledge/ingest/jobs")).cancelJob(project, id),
 };
 
 /** The default starter of each import kind. Each sets the knowledge
@@ -956,6 +960,14 @@ export async function handleKnowledgeRoutes(
         return Response.json({ jobs: await deps.listJobs(project) });
       case "POST revalidate":
         return Response.json({ result: await deps.revalidate(project) });
+    }
+    const cancel = /^jobs\/([^/]+)\/cancel$/.exec(sub);
+    if (req.method === "POST" && cancel) {
+      const id = segment(cancel[1]!);
+      const job = id ? await deps.cancelJob(project, id) : null;
+      return job
+        ? Response.json({ job })
+        : json(404, "No such import is running");
     }
     if (req.method === "POST" && sub.startsWith("import/")) {
       const kind = sub.slice("import/".length);

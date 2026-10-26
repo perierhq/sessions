@@ -18,12 +18,18 @@ import { MemoryRepoError } from "../../memory-repo/git-store";
 
 export const JOB_RUNNING_COPY = "An import of this kind is running";
 export const INTERRUPTED_COPY = "Interrupted by a restart. Start it again.";
+export const CANCELLED_COPY = "Cancelled.";
 /** How many jobs per project are listed (and kept). */
 export const MAX_LISTED_JOBS = 20;
 const MAX_ERROR_CHARS = 300;
 
 export interface JobHandle {
   id: string;
+  /** Aborted when a person cancels the job; the run stops at its next
+   *  check (`signal.throwIfAborted()`). */
+  signal: AbortSignal;
+  /** Record that the run left part of its input out. */
+  markTruncated(): Promise<void>;
   setTotal(n: number): Promise<void>;
   progress(
     delta: Partial<KnowledgeImportJob["created"]> & { done?: number },
@@ -37,6 +43,8 @@ const docs = () => (jobDocs ??= catalogDocuments("knowledge-jobs"));
 const claimed = new Set<string>();
 /** Runs of this process, by job id. */
 const running = new Map<string, Promise<void>>();
+/** Their cancel switches, by job id. */
+const controllers = new Map<string, { project: string; ac: AbortController }>();
 let sequence = 0;
 
 const keyOf = (project: string, id: string) => `${project}:${id}`;
@@ -141,8 +149,13 @@ export async function startJob(
   }
 
   const id = job.id;
+  const ac = new AbortController();
+  controllers.set(id, { project, ac });
   const handle: JobHandle = {
     id,
+    signal: ac.signal,
+    markTruncated: () =>
+      update(project, id, (j) => ({ ...j, truncated: true })),
     setTotal: (n) =>
       update(project, id, (j) => ({ ...j, total: Math.max(0, n) })),
     progress: (delta) =>
@@ -173,12 +186,14 @@ export async function startJob(
       await Promise.resolve().then(() => run(handle));
       await finish("done");
     } catch (error) {
-      await finish("failed", errorText(error)).catch((e) =>
+      const why = ac.signal.aborted ? CANCELLED_COPY : errorText(error);
+      await finish("failed", why).catch((e) =>
         console.warn(`[knowledge] job ${id} not recorded:`, errorText(e)),
       );
     } finally {
       claimed.delete(slot);
       running.delete(id);
+      controllers.delete(id);
       await prune(project).catch(() => undefined);
     }
   })();
@@ -189,6 +204,20 @@ export async function startJob(
 /** The project's import jobs, newest first, at most MAX_LISTED_JOBS. */
 export async function listJobs(project: string): Promise<KnowledgeImportJob[]> {
   return (await allJobs(project)).slice(0, MAX_LISTED_JOBS);
+}
+
+/** Cancel `project`'s running job `id`; resolves with the job as recorded,
+ *  or null when no such job runs in this process. The job ends failed
+ *  with CANCELLED_COPY once its run stops. */
+export async function cancelJob(
+  project: string,
+  id: string,
+): Promise<KnowledgeImportJob | null> {
+  const run = controllers.get(id);
+  if (!run || run.project !== project) return null;
+  run.ac.abort();
+  const value = await docs().get(keyOf(project, id));
+  return isJob(value) ? value : null;
 }
 
 /** At boot: a job left running by the last process can't finish; mark it

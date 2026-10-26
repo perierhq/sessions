@@ -528,6 +528,26 @@ describe("imports", () => {
     expect(await service.hasRepo("acme")).toBe(false);
   });
 
+  test("a running job can be cancelled", async () => {
+    const asked: string[] = [];
+    __setKnowledgeRouteDepsForTest({
+      cancelJob: async (project, id) => {
+        asked.push(`${project}:${id}`);
+        return id === "kj_running"
+          ? ({ id, project, kind: "mailbox" } as KnowledgeImportJob)
+          : null;
+      },
+    });
+    const ok = await call("POST", "/api/knowledge/acme/jobs/kj_running/cancel");
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { job: { id: string } }).job.id).toBe(
+      "kj_running",
+    );
+    const gone = await call("POST", "/api/knowledge/acme/jobs/kj_done/cancel");
+    expect(gone.status).toBe(404);
+    expect(asked).toEqual(["acme:kj_running", "acme:kj_done"]);
+  });
+
   test("a repository import runs through the default starter", async () => {
     __setKnowledgeRouteDepsForTest({
       today: () => TODAY,

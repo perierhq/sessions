@@ -314,6 +314,8 @@ export interface KnowledgeImportJob {
     skipped: number;
   };
   error?: string;
+  /** The run left part of its input out (a cap was reached). */
+  truncated?: boolean;
   options: Record<string, unknown>;
 }
 
