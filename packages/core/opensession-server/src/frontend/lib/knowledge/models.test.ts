@@ -12,6 +12,7 @@ import {
   jobLine,
   listLine,
   originLabel,
+  runningJobLine,
   sectionCounts,
   knowledgeAlert,
   knowledgeErrorMessage,
@@ -183,6 +184,27 @@ describe("jobLine", () => {
         }),
       ),
     ).toBe("Website · 4 so far");
+  });
+
+  test("a running import with a phase leaves the count to the phase line", () => {
+    expect(jobLine(job({ phase: { text: "Writing answers 12 of 40" } }))).toBe(
+      "Mailbox · 80 trusted, 30 reference, 6 suggestions",
+    );
+    expect(
+      jobLine(
+        job({
+          phase: { text: "Reading INBOX" },
+          created: { trusted: 0, reference: 0, suggestions: 0, skipped: 0 },
+        }),
+      ),
+    ).toBe("Mailbox · Running");
+  });
+
+  test("the project page follows a running import's phase", () => {
+    expect(
+      runningJobLine(job({ phase: { text: "Reading INBOX 120 of 900" } })),
+    ).toBe("Mailbox · Reading INBOX 120 of 900");
+    expect(runningJobLine(job())).toBe(jobLine(job()));
   });
 
   test("queued and failed", () => {

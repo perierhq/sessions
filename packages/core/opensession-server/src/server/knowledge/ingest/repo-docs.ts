@@ -36,6 +36,7 @@ import { git, isolatedGitEnv } from "../../memory-repo/git";
 import { MemoryRepoError } from "../../memory-repo/git-store";
 import { findSecrets } from "../../memory-repo/secrets";
 import {
+  KNOWLEDGE_SKIP,
   type KnowledgeFrontMatter,
   type KnowledgeImportJob,
   type KnowledgeItem,
@@ -65,7 +66,15 @@ import {
 import { knowledgeRepoName, releaseItemPath, repoItemPath } from "../layout";
 import type { KnowledgeChange } from "../service";
 import { MAX_ARTICLE_BYTES } from "../validate";
-import { JOB_DEADLINE_MS, type Step, startJob, stepper } from "./jobs";
+import {
+  JOB_DEADLINE_MS,
+  type ReportPhase,
+  type ReportSkip,
+  type Step,
+  skipTally,
+  startJob,
+  stepper,
+} from "./jobs";
 import { lastWrittenByPat, needsCheckChange } from "./mirrors";
 
 export interface RepoDocsDeps {
@@ -85,6 +94,11 @@ export interface RepoDocsDeps {
   /** Throws when the run must stop (cancelled, past its deadline); called
    *  per file and release and before each write. The job sets it. */
   step: Step;
+  /** Hears what the run is doing now. The job sets it. */
+  phase: ReportPhase;
+  /** Hears why each skipped file or release was left out. The job sets
+   *  it. */
+  skipped: ReportSkip;
 }
 
 export interface MirrorResult {
@@ -126,6 +140,8 @@ function bind(over: Partial<RepoDocsDeps>): RepoDocsDeps {
     maxBytes: over.maxBytes ?? MAX_TOTAL_BYTES,
     deadlineMs: over.deadlineMs ?? JOB_DEADLINE_MS,
     step: over.step ?? (() => undefined),
+    phase: over.phase ?? (() => undefined),
+    skipped: over.skipped ?? (() => undefined),
   };
 }
 
@@ -248,16 +264,31 @@ function titleOf(text: string, fallback: string): string {
   return (heading || fallback).slice(0, 200);
 }
 
-/** Why text can't be stored as written; null when it can. */
-function unstorable(title: string, text: string): string | null {
-  if (!text.trim()) return "The file is now empty";
+/** Why text can't be stored as written (`why`, a needs-check reason, and
+ *  `skip`, a KNOWLEDGE_SKIP reason); null when it can. */
+function unstorable(
+  title: string,
+  text: string,
+): { why: string; skip: string } | null {
+  if (!text.trim())
+    return { why: "The file is now empty", skip: KNOWLEDGE_SKIP.empty };
   if (text.includes("\0") || text.includes("\uFFFD"))
-    return "The file is now binary";
-  if (text.startsWith(LFS_POINTER)) return "The file is now a Git LFS pointer";
+    return { why: "The file is now binary", skip: KNOWLEDGE_SKIP.binary };
+  if (text.startsWith(LFS_POINTER))
+    return {
+      why: "The file is now a Git LFS pointer",
+      skip: KNOWLEDGE_SKIP.binary,
+    };
   if (new TextEncoder().encode(text).length > BODY_BYTES)
-    return "The file is now too large to mirror";
+    return {
+      why: "The file is now too large to mirror",
+      skip: KNOWLEDGE_SKIP.tooLarge,
+    };
   if (findSecrets(`${title}\n${text}`).length)
-    return "The file now looks like it holds a credential";
+    return {
+      why: "The file now looks like it holds a credential",
+      skip: KNOWLEDGE_SKIP.credential,
+    };
   return null;
 }
 
@@ -273,11 +304,13 @@ async function commit(
   build: () => Promise<Plan>,
   message: (plan: Plan) => string,
   step: Step,
+  committing: () => void,
 ): Promise<Plan> {
   for (let attempt = 1; ; attempt++) {
     const plan = await build();
     if (!plan.changes.length) return plan;
     step();
+    committing();
     try {
       await knowledgeRepo.call("write", project, plan.changes, {
         message: message(plan),
@@ -311,6 +344,7 @@ export async function mirrorRepoDocs(
   const rc = deps.repoChanges;
   const today = deps.today();
   deps.step();
+  deps.phase("Fetching the repository");
   await fetchDefaultBranch(project, rc);
   const head = await latestChange(project, [], rc);
   if (!head) return { written: 0, retired: 0, skipped: 0, truncated: false };
@@ -328,9 +362,15 @@ export async function mirrorRepoDocs(
   let truncated = false;
   let files = 0;
   let bytes = 0;
-  for (const file of await listFiles(project, head.sha, rc)) {
-    const kind = mirroredKind(file.path);
-    if (!kind) continue;
+  const skip = (reason: string) => {
+    skipped++;
+    deps.skipped(reason);
+  };
+  const listed = (await listFiles(project, head.sha, rc)).filter((file) =>
+    mirroredKind(file.path),
+  );
+  for (const [i, file] of listed.entries()) {
+    const kind = mirroredKind(file.path)!;
     // Listed files count as present even past the cap: never retired
     // for being left unread.
     present.add(file.path);
@@ -340,31 +380,40 @@ export async function mirrorRepoDocs(
       continue;
     }
     deps.step();
+    deps.phase("Reading docs", { done: i, total: listed.length });
     let path: string;
     try {
       path = repoItemPath(file.path);
     } catch {
-      skipped++;
+      skip(KNOWLEDGE_SKIP.badName);
       continue;
     }
-    if (wanted.has(path) || !parseDependency(`repo:${file.path}`)) {
-      skipped++;
+    if (wanted.has(path)) {
+      skip(KNOWLEDGE_SKIP.duplicate);
+      continue;
+    }
+    if (!parseDependency(`repo:${file.path}`)) {
+      skip(KNOWLEDGE_SKIP.badName);
       continue;
     }
     if (file.size > BODY_BYTES) {
       unreadable.set(path, "The file is now too large to mirror");
-      skipped++;
+      skip(KNOWLEDGE_SKIP.tooLarge);
       continue;
     }
     files++;
     bytes += file.size;
     const raw = await showAt(project, head.sha, file.path, rc);
     const title = titleOf(raw ?? "", file.path);
-    const why =
-      raw === null ? "The file couldn't be read" : unstorable(title, raw);
-    if (raw === null || why) {
-      unreadable.set(path, why ?? "The file couldn't be read");
-      skipped++;
+    if (raw === null) {
+      unreadable.set(path, "The file couldn't be read");
+      skip(KNOWLEDGE_SKIP.unreadable);
+      continue;
+    }
+    const bad = unstorable(title, raw);
+    if (bad) {
+      unreadable.set(path, bad.why);
+      skip(bad.skip);
       continue;
     }
     wanted.set(path, { repoPath: file.path, kind, title, text: raw });
@@ -381,8 +430,10 @@ export async function mirrorRepoDocs(
       retired = 0;
       flipped = 0;
       personal = 0;
+      let checked = 0;
       for (const [path, doc] of wanted) {
         deps.step();
+        deps.phase("Writing docs", { done: checked++, total: wanted.size });
         const current = await knowledgeRepo.call("read", project, path, today);
         if (
           current &&
@@ -461,7 +512,9 @@ export async function mirrorRepoDocs(
         : `Import repository docs: ${files} files`;
     },
     deps.step,
+    () => deps.phase("Committing docs"),
   );
+  if (personal) deps.skipped(KNOWLEDGE_SKIP.editedByPerson, personal);
   return {
     written: plan.changes.length - retired - flipped,
     retired,
@@ -490,6 +543,7 @@ export async function mirrorReleases(
   const deps = bind(over);
   const today = deps.today();
   deps.step();
+  deps.phase("Reading releases");
   const listed = await deps.releases(project);
   const all = [...(listed ?? [])].filter((r) =>
     Number.isFinite(Date.parse(r.at)),
@@ -505,19 +559,31 @@ export async function mirrorReleases(
   const wanted: Array<{ path: string; release: ReleaseInfo; text: string }> =
     [];
   const seen = new Set<string>();
+  const skip = (reason: string) => {
+    skipped++;
+    deps.skipped(reason);
+  };
   for (const release of releases) {
     let path: string;
     try {
       path = releaseItemPath(release.tag);
     } catch {
-      skipped++;
+      skip(KNOWLEDGE_SKIP.badName);
       continue;
     }
     const title = (release.name || release.tag).slice(0, 200);
     const body = release.body.trim() || "No release notes were published.";
-    const why = unstorable(title, body);
-    if (seen.has(path) || !parseDependency(`release:${release.tag}`) || why) {
-      skipped++;
+    if (seen.has(path)) {
+      skip(KNOWLEDGE_SKIP.duplicate);
+      continue;
+    }
+    if (!parseDependency(`release:${release.tag}`)) {
+      skip(KNOWLEDGE_SKIP.badName);
+      continue;
+    }
+    const bad = unstorable(title, body);
+    if (bad) {
+      skip(bad.skip);
       continue;
     }
     seen.add(path);
@@ -533,8 +599,13 @@ export async function mirrorReleases(
       const expected: Record<string, string | null> = {};
       retired = 0;
       personal = 0;
+      let checked = 0;
       for (const { path, release, text } of wanted) {
         deps.step();
+        deps.phase("Writing releases", {
+          done: checked++,
+          total: wanted.length,
+        });
         const title = (release.name || release.tag).slice(0, 200);
         const current = await knowledgeRepo.call("read", project, path, today);
         if (
@@ -606,7 +677,9 @@ export async function mirrorReleases(
         ? `Import releases: ${p.changes.length - retired} (${retired} retired)`
         : `Import releases: ${p.changes.length}`,
     deps.step,
+    () => deps.phase("Committing releases"),
   );
+  if (personal) deps.skipped(KNOWLEDGE_SKIP.editedByPerson, personal);
   return {
     written: plan.changes.length - retired,
     retired,
@@ -630,15 +703,20 @@ export async function startRepoImport(
   const { project } = input;
   checkProject(project);
   return startJob(project, "repo", { by: input.by.name }, async (job) => {
+    const tally = skipTally();
     const run = {
       ...over,
       step: stepper(job.signal, over.deadlineMs ?? JOB_DEADLINE_MS),
+      phase: job.phase,
+      skipped: tally.skip,
     };
+    job.phase("Opening the knowledge repository");
     await knowledgeRepo.call("ensureRepo", project);
     const docs = await mirrorRepoDocs(project, run);
     await job.progress({
       trusted: docs.written,
       skipped: docs.skipped,
+      skippedBy: tally.take(),
       done: docs.written + docs.retired + docs.skipped,
     });
     if (docs.truncated) await job.markTruncated();
@@ -646,6 +724,7 @@ export async function startRepoImport(
     await job.progress({
       reference: releases.written,
       skipped: releases.skipped,
+      skippedBy: tally.take(),
       done: releases.written + releases.retired + releases.skipped,
     });
   });

@@ -22,6 +22,7 @@ import {
   type IncidentListFilter,
 } from "../lib/api/incidents";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
+import { createCoalescer } from "../lib/coalescer";
 import { miniRange, stripRefreshMs } from "../lib/incidents/signal-summary";
 import type { WSServerMessage } from "../lib/types";
 import type { AgentAuditView, ProjectSettingsView } from "../lib/api/incidents";
@@ -198,36 +199,6 @@ export function useIncidentLiveUpdates(
   }, [addHandler]);
 }
 
-export interface Coalescer {
-  request(): void;
-  cancel(): void;
-}
-
-/** Leading call, then at most one trailing call per window. */
-export function createCoalescer(
-  run: () => void,
-  windowMs: number,
-  now: () => number = Date.now,
-): Coalescer {
-  let last = -Infinity;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const fire = () => {
-    timer = null;
-    last = now();
-    run();
-  };
-  return {
-    request() {
-      if (timer) return;
-      const wait = last + windowMs - now();
-      if (wait <= 0) fire();
-      else timer = setTimeout(fire, wait);
-    },
-    cancel() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-    },
-  };
-}
+export { type Coalescer, createCoalescer } from "../lib/coalescer";
 
 const coalescer = createCoalescer(revalidateIncidents, INCIDENT_REVALIDATE_MS);

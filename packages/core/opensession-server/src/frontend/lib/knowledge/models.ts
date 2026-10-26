@@ -211,14 +211,25 @@ export function jobLine(job: KnowledgeImportJob): string {
   if (job.state === "queued") return `${head} · Waiting to start`;
   if (job.state === "failed")
     return job.error ? `${head} · Failed: ${job.error}` : `${head} · Failed`;
+  const made = created(job);
+  // A running job's phase line says where it is; this one says what it made.
+  if (job.state === "running" && job.phase)
+    return made ? `${head} · ${made}` : `${head} · Running`;
   const progress =
     job.state === "done"
       ? "Done"
       : job.total === null
         ? `${job.done} so far`
         : `${job.done} of ${job.total}`;
-  const made = created(job);
   return made ? `${head} · ${progress} · ${made}` : `${head} · ${progress}`;
+}
+
+/** The project page's line for the import running now: where it is
+ *  ("Mailbox · Reading INBOX 120 of 900"), else its jobLine. */
+export function runningJobLine(job: KnowledgeImportJob): string {
+  return job.state === "running" && job.phase?.text
+    ? `${importLabel(job.kind)} · ${job.phase.text}`
+    : jobLine(job);
 }
 
 /** The newest import still running or waiting, for the project page. */

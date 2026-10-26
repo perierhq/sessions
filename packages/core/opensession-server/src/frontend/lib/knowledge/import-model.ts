@@ -1,7 +1,7 @@
 // Pure view models for a project's Knowledge → Import tab: which inboxes a
 // mailbox import may read, the backfill windows, the websites a crawl
-// visits, the files the server would refuse, and how often the jobs list
-// is polled. No I/O, no React.
+// visits, the files the server would refuse, how often the jobs list is
+// polled, and how a job reads while it runs. No I/O, no React.
 
 import {
   DEFAULT_BACKFILL_MONTHS,
@@ -48,14 +48,18 @@ export function importChoices(
     }));
 }
 
-/** How often the jobs list is read while an import is under way. */
+/** How often the jobs list is read while an import is under way and the
+ *  live channel is down. */
 export const JOB_POLL_MS = 2_000;
 
-/** SWR's refreshInterval for the jobs list: every 2 s while any job is
- *  queued or running, otherwise no polling. */
+/** SWR's refreshInterval for the jobs list: none while the live channel
+ *  is up (`live`, lib/knowledge/live.ts: each job change revalidates the
+ *  list); without it every 2 s while any job is queued or running. */
 export function pollJobs(
   jobs: readonly KnowledgeImportJob[] | undefined,
+  live = false,
 ): number {
+  if (live) return 0;
   return jobs?.some((job) => job.state === "queued" || job.state === "running")
     ? JOB_POLL_MS
     : 0;
@@ -66,12 +70,42 @@ export function isActiveJob(job: KnowledgeImportJob): boolean {
   return job.state === "queued" || job.state === "running";
 }
 
-/** A job's progress, 0–100; null while the total is unknown. */
+/** A job's progress, 0–100; null while the total is unknown (an
+ *  indeterminate bar). A running job's phase carries its own counts: a
+ *  phase without a total is indeterminate, whatever the job's total. */
 export function jobProgress(job: KnowledgeImportJob): number | null {
   if (job.state === "done") return 100;
-  if (job.total === null) return null;
-  if (job.total <= 0) return 0;
-  return Math.min(100, Math.round((job.done / job.total) * 100));
+  const { done, total } =
+    job.state === "running" && job.phase
+      ? { done: job.phase.done ?? 0, total: job.phase.total ?? null }
+      : job;
+  if (total === null) return null;
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((done / total) * 100));
+}
+
+/** What a running job is doing now ("Reading INBOX 120 of 900"); null
+ *  once it ended, or from a server that doesn't say. */
+export function jobPhase(job: KnowledgeImportJob): string | null {
+  return job.state === "running" && job.phase?.text ? job.phase.text : null;
+}
+
+const lowerFirst = (text: string) =>
+  text.charAt(0).toLowerCase() + text.slice(1);
+
+/** What a job left out and why, under its counts: each named file with
+ *  its reason, else the reasons counted, most first; null when nothing
+ *  was skipped (or the server didn't say why). */
+export function jobSkips(job: KnowledgeImportJob): string | null {
+  if (job.skippedFiles?.length)
+    return `Skipped: ${job.skippedFiles.map((s) => s.reason).join("; ")}`;
+  const reasons = Object.entries(job.skippedReasons ?? {})
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!reasons.length) return null;
+  return `Skipped: ${reasons
+    .map(([reason, n]) => `${lowerFirst(reason)} (${n})`)
+    .join(", ")}`;
 }
 
 /** The note under a job that stopped at a limit. */
