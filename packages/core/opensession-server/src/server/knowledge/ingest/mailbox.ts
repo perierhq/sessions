@@ -13,6 +13,12 @@
  * (extract.ts, a pair it can't prove clean is skipped) and gets its trust
  * from the time-aware rule (trust.ts): an answer written before the latest
  * relevant change is reference, with the reason as the body's first line.
+ * A reply whose Date header and arrival are more than a day apart, and
+ * every answer of a run whose default-branch fetch failed, is reference.
+ * Envelopes are read first and full sources only for paired messages; a
+ * run looks at most MAX_SCANNED messages and imports at most MAX_PAIRS
+ * pairs (newest kept, the job marked `truncated`), fails past DEADLINE_MS
+ * and stops when a person cancels it.
  * Items already there are skipped, so a re-run adds only what's new.
  * Commits go in batches of 50, authored by Pat.
  *
@@ -56,7 +62,7 @@ import { knowledgeRepoName, mailItemPath } from "../layout";
 import { extractPair } from "./extract";
 import { type JobHandle, startJob } from "./jobs";
 import { type MailRecord, pairThreads, type QaPair } from "./pairs";
-import { mailTrust } from "./trust";
+import { HISTORY_UNREADABLE, mailTrust } from "./trust";
 
 export interface MailboxDeps {
   now(): number;
@@ -67,10 +73,24 @@ export interface MailboxDeps {
   /** The project's Support websites: links there survive the strip. */
   supportHosts(project: string): Promise<string[]>;
   maxSourceBytes: number;
+  /** Most messages looked at per run, newest kept (MAX_SCANNED). */
+  maxScanned: number;
+  /** Most pairs imported per run, newest kept (MAX_PAIRS). */
+  maxPairs: number;
+  /** How long a run may take before it fails (DEADLINE_MS). */
+  deadlineMs: number;
 }
 
 /** Items per commit. */
 export const BATCH_SIZE = 50;
+export const MAX_SCANNED = 20_000;
+export const MAX_PAIRS = 500;
+export const DEADLINE_MS = 30 * 60 * 1000;
+export const DEADLINE_COPY =
+  "The import took too long and stopped. Start it again to continue.";
+export const DATES_DISAGREE =
+  "The reply's Date header and arrival time are more than a day apart";
+const DAY_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 50;
 const LIST_PAGE = 200;
 const WRITE_ATTEMPTS = 3;
@@ -107,6 +127,9 @@ function bind(over: Partial<MailboxDeps>): MailboxDeps {
     github: over.github ?? {},
     supportHosts: over.supportHosts ?? defaultSupportHosts,
     maxSourceBytes: over.maxSourceBytes ?? MAX_SOURCE_BYTES,
+    maxScanned: over.maxScanned ?? MAX_SCANNED,
+    maxPairs: over.maxPairs ?? MAX_PAIRS,
+    deadlineMs: over.deadlineMs ?? DEADLINE_MS,
   };
 }
 
@@ -148,13 +171,54 @@ function toRecord(
   };
 }
 
-/** The window's mail of INBOX and the Sent folder, read-only. */
-async function readMailbox(
+/** Stops a run: cancelled, or past its deadline. Never wrapped. */
+class StopRun extends Error {}
+
+/** A run's cancel and deadline check, called between steps. */
+type Step = () => void;
+
+function stepper(signal: AbortSignal, deadlineMs: number): Step {
+  const end = performance.now() + deadlineMs;
+  return () => {
+    if (signal.aborted) throw new StopRun("Cancelled.");
+    if (performance.now() >= end) throw new StopRun(DEADLINE_COPY);
+  };
+}
+
+type Folder = "sent" | "inbox";
+
+/** What the first pass knows of a message (envelope and References). */
+interface Seen {
+  path: string;
+  folder: Folder;
+  uid: number;
+  record: MailRecord;
+}
+
+function addressOf(
+  list: Array<{ address?: string }> | undefined,
+): string | null {
+  const address = list?.[0]?.address?.trim().toLowerCase();
+  return address || null;
+}
+
+const MESSAGE_ID = /<[^<>\s]+>/g;
+
+/**
+ * The window's question/answer pairs of INBOX and the Sent folder,
+ * read-only, in two passes: envelopes and References first (at most
+ * `maxScanned` messages, newest kept), then the full source only of the
+ * messages of the newest `maxPairs` pairs. A message's time is the earlier
+ * of its arrival and its Date header; a reply whose two are more than a
+ * day apart is marked (`dateMismatch`). No Sent folder: no pairs.
+ */
+async function readPairs(
   inbox: InboxConfig,
   password: string,
   since: number,
   deps: MailboxDeps,
-): Promise<MailRecord[]> {
+  step: Step,
+): Promise<{ pairs: QaPair[]; truncated: boolean }> {
   const others = (await listInboxes())
     .filter((i) => i.id !== inbox.id)
     .map((i) => i.address);
@@ -176,66 +240,151 @@ async function readMailbox(
     );
   }
   client.on("error", () => undefined);
-  const records: MailRecord[] = [];
+  let truncated = false;
   try {
     await client.connect();
     const folders = await client.list();
     const sent = folders.find((f) => f.specialUse === "\\Sent")?.path;
     // Without a Sent folder nothing is provably ours: no answers.
-    if (!sent || sent.toUpperCase() === "INBOX") return [];
+    if (!sent || sent.toUpperCase() === "INBOX")
+      return { pairs: [], truncated };
     // Sent first: a message in both folders counts as our copy.
-    const folderList: Array<[string, "sent" | "inbox"]> = [
+    const folderList: Array<[string, Folder]> = [
       [sent, "sent"],
       ["INBOX", "inbox"],
     ];
+
+    // Pass 1: envelopes.
+    const seen = new Map<MailRecord, Seen>();
+    let scanned = 0;
     for (const [path, folder] of folderList) {
-      const mailbox = await client.mailboxOpen(path, { readOnly: true });
+      step();
+      await client.mailboxOpen(path, { readOnly: true });
       const found = await client.search(
         { since: new Date(since) },
         { uid: true },
       );
-      const uids = (found || []).sort((a, b) => a - b);
+      let uids = (found || []).sort((a, b) => a - b);
+      const budget = Math.max(0, deps.maxScanned - scanned);
+      if (uids.length > budget) {
+        uids = budget ? uids.slice(-budget) : [];
+        truncated = true;
+      }
+      scanned += uids.length;
       for (let i = 0; i < uids.length; i += PAGE_SIZE) {
-        const page: Array<{ uid: number; size: number; at: Date | null }> = [];
+        step();
         for await (const item of client.fetch(
           uids.slice(i, i + PAGE_SIZE).join(","),
-          { uid: true, size: true, internalDate: true },
+          {
+            uid: true,
+            size: true,
+            internalDate: true,
+            envelope: true,
+            headers: ["references"],
+          },
           { uid: true },
         )) {
-          const at = item.internalDate ? new Date(item.internalDate) : null;
-          page.push({
-            uid: item.uid,
-            size: item.size ?? 0,
-            at: at && Number.isFinite(at.getTime()) ? at : null,
-          });
-        }
-        for (const item of page) {
+          const arrived = item.internalDate
+            ? new Date(item.internalDate).getTime()
+            : NaN;
           // The SINCE search is by day; the window is exact.
-          if (!item.at || item.at.getTime() < since) continue;
-          if (item.size > deps.maxSourceBytes) continue;
-          const one = await client.fetchOne(
-            String(item.uid),
-            { uid: true, source: { maxLength: deps.maxSourceBytes + 1 } },
-            { uid: true },
-          );
-          if (!one || !one.source || one.source.length > deps.maxSourceBytes)
-            continue;
-          let message: InboundMessage;
-          try {
-            message = await parseInbound(one.source, {
-              inboxId: inbox.id,
-              providerId: `imap:${mailbox.uidValidity}:${item.uid}`,
-              receivedAt: item.at.toISOString(),
-            });
-          } catch {
-            continue;
-          }
-          const record = toRecord(message, folder, addresses);
-          if (record) records.push(record);
+          if (!Number.isFinite(arrived) || arrived < since) continue;
+          if ((item.size ?? 0) > deps.maxSourceBytes) continue;
+          const env = item.envelope;
+          const messageId = env?.messageId?.trim();
+          const address = addressOf(env?.from);
+          if (!messageId || !address) continue;
+          // Ours only from the Sent folder and this inbox's addresses;
+          // any of our addresses in INBOX is a loop or a spoof.
+          if (folder === "sent" && !addresses.ours.includes(address)) continue;
+          if (folder === "inbox" && addresses.all.includes(address)) continue;
+          const dated = env?.date ? new Date(env.date).getTime() : NaN;
+          const at = Number.isFinite(dated)
+            ? Math.min(arrived, dated)
+            : arrived;
+          const references =
+            (item.headers?.toString("utf8") ?? "")
+              .replace(/^references:/i, "")
+              .match(MESSAGE_ID) ?? [];
+          const record: MailRecord = {
+            messageId,
+            inReplyTo: env?.inReplyTo?.trim() || null,
+            references,
+            from: { address },
+            at: new Date(at).toISOString(),
+            text: "",
+            ours: folder === "sent",
+            ...(Number.isFinite(dated) && Math.abs(arrived - dated) > DAY_MS
+              ? { dateMismatch: true }
+              : {}),
+          };
+          seen.set(record, { path, folder, uid: item.uid, record });
         }
       }
     }
+
+    let pairs = pairThreads([...seen.keys()]).sort((a, b) =>
+      a.answer.at < b.answer.at ? -1 : a.answer.at > b.answer.at ? 1 : 0,
+    );
+    if (pairs.length > deps.maxPairs) {
+      pairs = deps.maxPairs ? pairs.slice(-deps.maxPairs) : [];
+      truncated = true;
+    }
+
+    // Pass 2: the sources of the paired messages, folder by folder.
+    const wanted = new Map<string, Seen[]>();
+    for (const pair of pairs)
+      for (const record of [pair.question, pair.answer]) {
+        const at = seen.get(record)!;
+        const list = wanted.get(at.path) ?? [];
+        if (!list.includes(at)) list.push(at);
+        wanted.set(at.path, list);
+      }
+    const full = new Map<MailRecord, MailRecord>();
+    for (const [path, list] of wanted) {
+      step();
+      const mailbox = await client.mailboxOpen(path, { readOnly: true });
+      for (const at of list) {
+        step();
+        // One byte past the cap: a source cut at maxLength is longer than
+        // the cap and skipped, never parsed half.
+        const one = await client.fetchOne(
+          String(at.uid),
+          { uid: true, source: { maxLength: deps.maxSourceBytes + 1 } },
+          { uid: true },
+        );
+        if (!one || !one.source || one.source.length > deps.maxSourceBytes)
+          continue;
+        let message: InboundMessage;
+        try {
+          message = await parseInbound(one.source, {
+            inboxId: inbox.id,
+            providerId: `imap:${mailbox.uidValidity}:${at.uid}`,
+            receivedAt: at.record.at,
+          });
+        } catch {
+          continue;
+        }
+        const record = toRecord(message, at.folder, addresses);
+        if (!record) continue;
+        full.set(at.record, {
+          ...record,
+          at: at.record.at,
+          ...(at.record.dateMismatch ? { dateMismatch: true } : {}),
+        });
+      }
+    }
+    // A pair whose question or answer didn't survive the full checks
+    // (automated, unreadable) is left out, not re-paired.
+    const kept: QaPair[] = [];
+    for (const pair of pairs) {
+      const question = full.get(pair.question);
+      const answer = full.get(pair.answer);
+      if (question && answer) kept.push({ question, answer });
+    }
+    return { pairs: kept, truncated };
   } catch (error) {
+    if (error instanceof StopRun) throw error;
     throw new Error(
       `Couldn't read the mailbox: ${classifyImapError(error).message}`,
     );
@@ -247,7 +396,6 @@ async function readMailbox(
     }
     client.close();
   }
-  return records;
 }
 
 // ── Writing items ───────────────────────────────────────────────────────
@@ -303,7 +451,13 @@ async function plan(
   project: string,
   pair: QaPair,
   path: string,
-  ctx: { hosts: string[]; docPaths: string[]; deps: MailboxDeps },
+  ctx: {
+    hosts: string[];
+    docPaths: string[];
+    deps: MailboxDeps;
+    /** False when the default branch couldn't be fetched. */
+    historyRead: boolean;
+  },
 ): Promise<Planned | null> {
   const { question, answer } = pair;
   const extracted = await extractPair(
@@ -333,6 +487,20 @@ async function plan(
     // Not a date the rule can place: skipped, not guessed.
     return null;
   }
+  // What the trust rule can't see makes the answer reference: history
+  // that couldn't be fetched, or a reply whose own dates disagree.
+  const forced = !ctx.historyRead
+    ? HISTORY_UNREADABLE
+    : answer.dateMismatch
+      ? DATES_DISAGREE
+      : null;
+  if (forced)
+    decision = {
+      ...decision,
+      trust: "reference" as const,
+      reason: forced,
+      validAsOfCommit: undefined,
+    };
   const fm: KnowledgeFrontMatter = {
     title: extracted.title,
     kind: "answer",
@@ -414,17 +582,21 @@ async function backfill(
   const today = utcDay(now);
   const since = windowStart(now, input.months);
 
-  const records = await readMailbox(input.inbox, input.password, since, deps);
-  const pairs = pairThreads(records).sort((a, b) =>
-    a.answer.at < b.answer.at ? -1 : a.answer.at > b.answer.at ? 1 : 0,
-  );
+  const step = stepper(job.signal, deps.deadlineMs);
+  step();
+  const read = await readPairs(input.inbox, input.password, since, deps, step);
+  if (read.truncated) await job.markTruncated();
+  const pairs = read.pairs;
   await job.setTotal(pairs.length);
   if (!pairs.length) return;
 
+  step();
   await knowledgeRepo.call("ensureRepo", project);
-  // The trust rule reads the default branch as last fetched; a failed
-  // fetch leaves that (older) state, which can only make more reference.
-  await fetchDefaultBranch(project, deps.repoChanges).catch(() => false);
+  // The trust rule reads the default branch as last fetched; when the
+  // fetch fails every answer is reference ("History couldn't be read").
+  const historyRead = await fetchDefaultBranch(project, deps.repoChanges).catch(
+    () => false,
+  );
   const [hosts, docPaths] = await Promise.all([
     deps.supportHosts(project),
     mirroredPaths(project, today),
@@ -443,10 +615,16 @@ async function backfill(
     batch = [];
   };
   for (const pair of pairs) {
+    step();
     const path = mailItemPath(pair.answer.messageId, pair.answer.at);
     const planned = (await exists(project, path, today))
       ? null
-      : await plan(project, pair, path, { hosts, docPaths, deps });
+      : await plan(project, pair, path, {
+          hosts,
+          docPaths,
+          deps,
+          historyRead,
+        });
     if (!planned) {
       await job.progress({ skipped: 1, done: 1 });
       continue;

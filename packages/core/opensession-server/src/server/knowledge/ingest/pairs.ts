@@ -23,6 +23,9 @@ export interface MailRecord {
   /** Read from the inbox's Sent folder, from one of this inbox's own
    *  addresses. */
   ours: boolean;
+  /** Its Date header and arrival are more than a day apart (`at` is the
+   *  earlier): its time can't be trusted. */
+  dateMismatch?: boolean;
 }
 
 export interface QaPair {

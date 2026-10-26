@@ -35,8 +35,19 @@ import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { RepoChangeDeps } from "../freshness/repo-changes";
 import { mailItemPath } from "../layout";
 import { KnowledgeService } from "../service";
-import { __waitForJobForTest, listJobs } from "./jobs";
-import { type MailboxDeps, startMailboxBackfill } from "./mailbox";
+import { HISTORY_UNREADABLE } from "./trust";
+import {
+  __waitForJobForTest,
+  CANCELLED_COPY,
+  cancelJob,
+  listJobs,
+} from "./jobs";
+import {
+  DATES_DISAGREE,
+  DEADLINE_COPY,
+  type MailboxDeps,
+  startMailboxBackfill,
+} from "./mailbox";
 
 const kernel = useSupportTestKernel();
 
@@ -206,7 +217,7 @@ let memory: string;
 let previousSecrets: string | undefined;
 let model: ReturnType<typeof classifier>;
 
-function deps(): Partial<MailboxDeps> {
+function deps(over: Partial<MailboxDeps> = {}): Partial<MailboxDeps> {
   const repoChanges: Partial<RepoChangeDeps> = {
     repo: (project) =>
       project === "acme" ? { dir: checkout, defaultBranch: "main" } : null,
@@ -217,13 +228,14 @@ function deps(): Partial<MailboxDeps> {
     repoChanges,
     github: { ghRepo: () => null },
     supportHosts: async () => ["docs.acme.example.test"],
+    ...over,
   };
 }
 
-async function backfill(months = 12) {
+async function backfill(months = 12, over: Partial<MailboxDeps> = {}) {
   const job = await startMailboxBackfill(
     { project: "acme", inboxId: inbox.id, months, by: ADA },
-    deps(),
+    deps(over),
   );
   await __waitForJobForTest(job.id);
   return (await listJobs("acme")).find((j) => j.id === job.id)!;
@@ -450,6 +462,96 @@ describe("mailbox backfill", () => {
     delete (fixture.imap.folderCache as Record<string, unknown>).Sent;
     const job = await backfill();
     expect(job).toMatchObject({ state: "done", total: 0 });
+  });
+
+  test("a reply whose Date header is days off its arrival is reference", async () => {
+    fixture.imap.appendMessage(
+      "INBOX",
+      [],
+      new Date("2026-10-21T08:00:00Z"),
+      rawMail({
+        id: "q6@customer.example.test",
+        from: `${CUSTOMER} <${CUSTOMER_ADDRESS}>`,
+        to: INBOX_ADDRESS,
+        subject: "Export",
+        date: "2026-10-21T08:00:00Z",
+        text: QUESTION,
+      }),
+    );
+    fixture.imap.appendMessage(
+      "Sent",
+      ["\\Seen"],
+      new Date("2026-10-21T10:00:00Z"),
+      rawMail({
+        id: "a6@acme.example.test",
+        from: `Acme help <${INBOX_ADDRESS}>`,
+        to: `${CUSTOMER} <${CUSTOMER_ADDRESS}>`,
+        subject: "Re: Export",
+        date: "2026-10-24T10:00:00Z",
+        inReplyTo: "q6@customer.example.test",
+        text: ANSWER,
+      }),
+    );
+    await backfill();
+    const found = await item(
+      mailItemPath("a6@acme.example.test", "2026-10-21T10:00:00Z"),
+    );
+    expect(found?.item).toMatchObject({
+      trust: "reference",
+      answeredAt: "2026-10-21T10:00:00.000Z",
+    });
+    expect(found?.item.validAsOfCommit).toBeUndefined();
+    expect(found?.body.split("\n")[0]).toBe(
+      `> Imported as reference: ${DATES_DISAGREE}`,
+    );
+  });
+
+  test("a failed fetch of the default branch makes every pair reference", async () => {
+    const job = await backfill(12, {
+      repoChanges: {
+        repo: (project) =>
+          project === "acme" ? { dir: checkout, defaultBranch: "main" } : null,
+        serialize: async () => {
+          throw new Error("offline");
+        },
+      },
+    });
+    expect(job.created).toMatchObject({ trusted: 0, reference: 2 });
+    const found = await item(path2);
+    expect(found?.item.trust).toBe("reference");
+    expect(found?.body.split("\n")[0]).toBe(
+      `> Imported as reference: ${HISTORY_UNREADABLE}`,
+    );
+  });
+
+  test("only the newest pairs are imported past the cap", async () => {
+    const job = await backfill(12, { maxPairs: 1 });
+    expect(job).toMatchObject({ state: "done", total: 1, truncated: true });
+    expect(await item(path1)).toBeNull();
+    expect(await item(path2)).not.toBeNull();
+  });
+
+  test("the scan stops at its cap and says so", async () => {
+    const job = await backfill(12, { maxScanned: 2 });
+    expect(job).toMatchObject({ state: "done", truncated: true });
+  });
+
+  test("a run past its deadline fails", async () => {
+    const job = await backfill(12, { deadlineMs: 0 });
+    expect(job).toMatchObject({ state: "failed", error: DEADLINE_COPY });
+    expect(await item(path2)).toBeNull();
+  });
+
+  test("a cancelled run stops", async () => {
+    const job = await startMailboxBackfill(
+      { project: "acme", inboxId: inbox.id, months: 12, by: ADA },
+      deps(),
+    );
+    await cancelJob("acme", job.id);
+    await __waitForJobForTest(job.id);
+    const done = (await listJobs("acme")).find((j) => j.id === job.id);
+    expect(done).toMatchObject({ state: "failed", error: CANCELLED_COPY });
+    expect(await item(path2)).toBeNull();
   });
 
   test("a shorter window leaves older pairs out", async () => {
