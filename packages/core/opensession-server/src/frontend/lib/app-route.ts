@@ -1,4 +1,8 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
+import {
+  KNOWLEDGE_FILTERS,
+  type KnowledgeFilter,
+} from "../../shared/knowledge";
 import type { OwnerDecision } from "../../shared/incident-response";
 import {
   parseSupportIntent,
@@ -27,6 +31,37 @@ export interface KnowledgeRoute {
   tab: KnowledgeTab;
   /** A repository path, e.g. `articles/export.md`. */
   path?: string;
+  /** The Articles list's filter chip (`?filter=`), absent for All. */
+  filter?: KnowledgeFilter;
+  /** The Articles list's search (`?q=`), trimmed, absent when empty. */
+  q?: string;
+}
+
+/** `?filter=&q=` for the Articles list, read back by
+ *  parseRouteWithSearch. */
+function knowledgeQuery(route: KnowledgeRoute): string {
+  const params = new URLSearchParams();
+  if (route.filter && route.filter !== "all")
+    params.set("filter", route.filter);
+  if (route.q) params.set("q", route.q);
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
+/** The Articles list's filter and search from the query; nothing for any
+ *  other tab, or an item open in the editor. */
+function withKnowledgeQuery(
+  route: KnowledgeRoute,
+  search: string,
+): KnowledgeRoute {
+  if (route.tab !== "articles" || route.path) return route;
+  const params = new URLSearchParams(search);
+  const next: KnowledgeRoute = { ...route };
+  const filter = KNOWLEDGE_FILTERS.find((f) => f === params.get("filter"));
+  if (filter && filter !== "all") next.filter = filter;
+  const q = params.get("q")?.trim();
+  if (q) next.q = q;
+  return next;
 }
 
 function knowledgeTab(raw: string): KnowledgeTab {
@@ -325,9 +360,11 @@ export function legacyRoutePath(pathname: string): string | null {
 }
 
 /** parseRoute plus what the query carries: a push intent on an incident
- *  or on an email conversation. */
+ *  or on an email conversation, the Knowledge list's filter and search. */
 export function parseRouteWithSearch(pathname: string, search: string): Route {
   const route = parseRoute(pathname);
+  if (route.view === "projectSettings" && route.knowledge)
+    return { ...route, knowledge: withKnowledgeQuery(route.knowledge, search) };
   if (route.view === "support") {
     if (!route.threadId.startsWith("email:")) return route;
     const intent = parseSupportIntent(
@@ -398,7 +435,7 @@ export function routePath(route: Route): string {
       const base = `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}`;
       if (route.knowledge) {
         const { tab, path } = route.knowledge;
-        return `${base}/knowledge/${tab}${path ? `/${encodeURIComponent(path)}` : ""}`;
+        return `${base}/knowledge/${tab}${path ? `/${encodeURIComponent(path)}` : ""}${knowledgeQuery(route.knowledge)}`;
       }
       return `${base}${route.section ? `/${route.section}` : ""}`;
     }
@@ -460,6 +497,18 @@ export function isSettingsRoute(route: Route): boolean {
 
 export function samePanel(a: Route, b: Route): boolean {
   if (a.view !== b.view) return false;
+  // The Knowledge list under another filter or search is the same place:
+  // the URL follows it without a history entry per keystroke.
+  if (a.view === "projectSettings" && b.view === "projectSettings") {
+    const [x, y] = [a.knowledge, b.knowledge];
+    return (
+      !!x &&
+      !!y &&
+      a.project === b.project &&
+      x.tab === y.tab &&
+      x.path === y.path
+    );
+  }
   const id = (route: Route) => ("id" in route ? route.id : undefined);
   return id(a) !== undefined && id(a) === id(b);
 }

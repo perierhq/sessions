@@ -9,6 +9,7 @@ import {
   parseRouteWithSearch,
   routePath,
   samePanel,
+  type KnowledgeRoute,
   type Route,
 } from "./app-route";
 
@@ -286,6 +287,65 @@ describe("project settings routes", () => {
     expect(
       isSettingsRoute({ view: "projectSettings", project: "acme-web" }),
     ).toBe(true);
+  });
+
+  test("the Articles list's filter and search ride in the query", () => {
+    const route = {
+      view: "projectSettings",
+      project: "acme",
+      section: "knowledge",
+      knowledge: { tab: "articles", filter: "reference", q: "export csv" },
+    } as const satisfies Route;
+    const path = routePath(route);
+    expect(path).toBe(
+      `${BASE_PATH}/settings/projects/acme/knowledge/articles?filter=reference&q=export+csv`,
+    );
+    const [pathname, search] = path.slice(BASE_PATH.length).split("?");
+    expect(parseRouteWithSearch(pathname!, `?${search}`)).toEqual(route);
+    // All is the default, an unknown filter is ignored, and an item open in
+    // the editor carries neither.
+    expect(
+      parseRouteWithSearch(
+        "/settings/projects/acme/knowledge/articles",
+        "?filter=all&q=%20",
+      ),
+    ).toEqual({ ...route, knowledge: { tab: "articles" } });
+    expect(
+      parseRouteWithSearch(
+        "/settings/projects/acme/knowledge/articles",
+        "?filter=nope",
+      ),
+    ).toEqual({ ...route, knowledge: { tab: "articles" } });
+    expect(
+      parseRouteWithSearch(
+        "/settings/projects/acme/knowledge/articles/articles%2Fexport.md",
+        "?filter=reference",
+      ),
+    ).toEqual({
+      ...route,
+      knowledge: { tab: "articles", path: "articles/export.md" },
+    });
+  });
+
+  test("another filter or search on the list is the same panel", () => {
+    const at = (knowledge: KnowledgeRoute): Route => ({
+      view: "projectSettings",
+      project: "acme",
+      section: "knowledge",
+      knowledge,
+    });
+    expect(
+      samePanel(at({ tab: "articles" }), at({ tab: "articles", q: "csv" })),
+    ).toBe(true);
+    expect(
+      samePanel(
+        at({ tab: "articles" }),
+        at({ tab: "articles", path: "articles/export.md" }),
+      ),
+    ).toBe(false);
+    expect(samePanel(at({ tab: "articles" }), at({ tab: "import" }))).toBe(
+      false,
+    );
   });
 
   test("the Knowledge page and its tabs", () => {

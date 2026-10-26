@@ -13,7 +13,10 @@ import {
   listLine,
   originLabel,
   sectionCounts,
+  knowledgeAlert,
+  knowledgeErrorMessage,
 } from "./models";
+import { ApiError } from "../api/request";
 
 const TODAY = "2026-10-26";
 
@@ -52,11 +55,11 @@ describe("itemBadges", () => {
     ]);
   });
 
-  test("an item past its review date is overdue and needs a check", () => {
+  test("an item past its review date is overdue, one warning badge", () => {
     const overdue = item({ reviewBy: "2026-10-01", effective: "needs-check" });
-    expect(labels(overdue)).toEqual(["Overdue", "Needs check"]);
-    const tones = itemBadges(overdue).map((b) => b.tone);
-    expect(tones).toEqual(["danger", "warning"]);
+    expect(itemBadges(overdue)).toEqual([
+      { label: "Overdue", tone: "warning" },
+    ]);
   });
 
   test("an item flipped by a change needs a check, not overdue", () => {
@@ -108,7 +111,7 @@ describe("freshnessLine", () => {
         }),
         TODAY,
       ),
-    ).toBe("Needs a check: docs/export.md changed in 9c1d2e0");
+    ).toBe("docs/export.md changed in 9c1d2e0");
   });
 
   test("review by", () => {
@@ -117,7 +120,16 @@ describe("freshnessLine", () => {
     );
   });
 
-  test("a passed review date", () => {
+  test("a passed review date beside the Overdue badge: the reason alone", () => {
+    expect(
+      freshnessLine(
+        item({ reviewBy: "2026-10-01", effective: "needs-check" }),
+        TODAY,
+      ),
+    ).toBe("Review date passed (1 Oct 2026)");
+  });
+
+  test("a passed review date the list hasn't caught up with yet", () => {
     expect(freshnessLine(item({ reviewBy: "2026-10-01" }), TODAY)).toBe(
       "Needs a check: Review date passed (1 Oct 2026)",
     );
@@ -205,4 +217,41 @@ test("sectionCounts", () => {
       retired: 1,
     }),
   ).toEqual({ articles: 9, needsCheck: 3, suggestions: 4, reference: 5 });
+});
+
+describe("knowledgeErrorMessage", () => {
+  test("the server's own words win", () => {
+    const e = new ApiError(
+      "The code repository can't be read right now. Try again",
+      503,
+    );
+    expect(knowledgeErrorMessage(e, "Couldn't load")).toBe(e.message);
+  });
+
+  test("a bare 503 says knowledge is unavailable", () => {
+    expect(
+      knowledgeErrorMessage(new ApiError("Couldn't load: 503", 503), "x"),
+    ).toBe("Knowledge is unavailable right now. Try again in a minute");
+  });
+
+  test("a bare 501 says it isn't set up, as info without Retry", () => {
+    const alert = knowledgeAlert(
+      new ApiError("Couldn't load: 501", 501),
+      "x",
+      () => {},
+    );
+    expect(alert).toEqual({
+      variant: "info",
+      children: "Knowledge isn't set up on this server",
+    });
+  });
+
+  test("anything else is an error with Retry, or the fallback", () => {
+    const retry = () => {};
+    expect(knowledgeAlert(new Error(""), "Couldn't load", retry)).toEqual({
+      variant: "error",
+      onRetry: retry,
+      children: "Couldn't load",
+    });
+  });
 });

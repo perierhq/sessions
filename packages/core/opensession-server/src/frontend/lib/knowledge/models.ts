@@ -10,6 +10,8 @@ import {
   type KnowledgeItem,
   type KnowledgeOrigin,
 } from "../../../shared/knowledge";
+import { ApiError } from "../api/request";
+import { errorMessage } from "../error-message";
 
 export type KnowledgeBadgeLabel =
   | "Internal"
@@ -47,8 +49,9 @@ export function itemBadges(item: BadgeItem): KnowledgeBadge[] {
     badges.push({ label: "Reference", tone: "neutral" });
   if (item.effective === "retired")
     badges.push({ label: "Retired", tone: "neutral" });
-  if (isOverdue(item)) badges.push({ label: "Overdue", tone: "danger" });
-  if (item.effective === "needs-check")
+  // One badge for the hold: Overdue says it needs a check, and why.
+  if (isOverdue(item)) badges.push({ label: "Overdue", tone: "warning" });
+  else if (item.effective === "needs-check")
     badges.push({ label: "Needs check", tone: "warning" });
   return badges;
 }
@@ -77,7 +80,9 @@ export function formatDay(day: string): string {
 }
 
 /** One line on how current an item is: why it needs a check, when it is
- *  due for review, or the day it was last known right. */
+ *  due for review, or the day it was last known right. Beside a Needs
+ *  check or Overdue badge the line is the reason alone; the badge already
+ *  says it needs a check. */
 export function freshnessLine(
   item: Pick<
     KnowledgeItem,
@@ -86,12 +91,11 @@ export function freshnessLine(
   today: string,
 ): string {
   if (item.status === "needs-check")
-    return item.check?.reason
-      ? `Needs a check: ${item.check.reason}`
-      : "Needs a check";
+    return item.check?.reason ?? "Needs a check";
   if (item.status === "active" && item.reviewBy) {
-    if (item.reviewBy < today || item.effective === "needs-check")
-      return `Needs a check: ${KNOWLEDGE_COPY.reviewPassed(formatDay(item.reviewBy))}`;
+    const passed = KNOWLEDGE_COPY.reviewPassed(formatDay(item.reviewBy));
+    if (item.effective === "needs-check") return passed;
+    if (item.reviewBy < today) return `Needs a check: ${passed}`;
     return `Review by ${formatDay(item.reviewBy)}`;
   }
   return `Valid as of ${formatDay(item.validAsOf)}`;
@@ -247,4 +251,42 @@ export function sectionCounts(
     suggestions: counts.suggestions,
     reference: counts.reference,
   };
+}
+
+/** The server gave no words of its own (request()'s `<label>: <status>`). */
+function bare(error: ApiError): boolean {
+  return /: \d{3}$/.test(error.message);
+}
+
+/** Not wired on this server (501): nothing to retry, so it reads as info. */
+export function knowledgeNotSetUp<Rejected>(error: Rejected): boolean {
+  return error instanceof ApiError && error.status === 501;
+}
+
+/** What a failed knowledge request says. The server's own words win; a
+ *  bare 503 (the worker is down or restarting) and a bare 501 get a
+ *  sentence that says what happened instead of a status code. */
+export function knowledgeErrorMessage<Rejected>(
+  error: Rejected,
+  fallback: string,
+): string {
+  if (error instanceof ApiError && bare(error)) {
+    if (error.status === 503)
+      return "Knowledge is unavailable right now. Try again in a minute";
+    if (error.status === 501) return "Knowledge isn't set up on this server";
+  }
+  return errorMessage(error, fallback);
+}
+
+/** InlineAlert's props for a pane that couldn't load: the error with
+ *  Retry, or an info notice without it when knowledge isn't set up. */
+export function knowledgeAlert<Rejected>(
+  error: Rejected,
+  fallback: string,
+  onRetry: () => void,
+): { variant: "info" | "error"; onRetry?: () => void; children: string } {
+  const children = knowledgeErrorMessage(error, fallback);
+  return knowledgeNotSetUp(error)
+    ? { variant: "info", children }
+    : { variant: "error", onRetry, children };
 }

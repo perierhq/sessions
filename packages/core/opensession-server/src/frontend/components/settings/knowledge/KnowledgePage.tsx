@@ -1,38 +1,21 @@
+import { useEffect, useRef } from "react";
 import useSWR from "swr";
-import type { KnowledgeFilter } from "../../../../shared/knowledge";
 import { apiSWRKey } from "../../../lib/api-swr";
 import type { KnowledgeRoute, KnowledgeTab } from "../../../lib/app-route";
 import { fetchKnowledge } from "../../../lib/api/knowledge";
-import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_EDITOR_FRAME,
   KNOWLEDGE_PAGE_BACK,
-  KNOWLEDGE_ROW,
-  KNOWLEDGE_ROW_HEAD,
-  KNOWLEDGE_ROW_LINE,
-  KNOWLEDGE_ROW_TITLE,
   KNOWLEDGE_TAB,
   KNOWLEDGE_TAB_COUNT,
   KNOWLEDGE_TABS_SCROLL,
 } from "../../../lib/knowledge-classes";
 import { NEW_ARTICLE } from "../../../lib/knowledge/editor-model";
-import {
-  emptyCopy,
-  freshnessLine,
-  itemBadges,
-} from "../../../lib/knowledge/models";
 import { PROJECT_PAGE_FRAME } from "../../../lib/project-settings-classes";
 import { repoLabel } from "../../../lib/repo-label";
-import { Badge } from "../../../ui/badge";
 import { Button } from "../../../ui/button";
 import { Segmented, SegmentedOption } from "../../../ui/segmented";
-import {
-  SettingCard,
-  SettingCardSkeleton,
-  SettingsHeader,
-  SettingsPanel,
-} from "../../../ui/settings";
-import { EmptyState, InlineAlert } from "../../../ui/state";
+import { SettingsHeader, SettingsPanel } from "../../../ui/settings";
 import { IconChevronLeft } from "../../icons";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeHistory } from "./KnowledgeHistory";
@@ -48,17 +31,6 @@ const TABS: Array<{ tab: KnowledgeTab; label: string }> = [
   { tab: "needs-check", label: "Needs check" },
   { tab: "import", label: "Import" },
 ];
-
-/** The list each list tab shows (Articles has its own, KnowledgeList). */
-const TAB_FILTERS: Partial<Record<KnowledgeTab, KnowledgeFilter>> = {
-  suggestions: "suggestions",
-  "needs-check": "needs-check",
-};
-
-/** The day, read in UTC, for the freshness lines. */
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 /**
  * A project's Knowledge: a back link to the project's page, the project's
@@ -89,8 +61,18 @@ export function KnowledgePage({
       : tab === "needs-check"
         ? counts?.["needs-check"]
         : undefined;
-  const filter = TAB_FILTERS[route.tab];
   const openPath = (path: string) => onNavigate({ tab: "articles", path });
+
+  // A tab opened from elsewhere (the project page's counts, a link) may sit
+  // past the phone's edge: bring it into view, again once the counts have
+  // widened the tabs.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const counted = counts !== undefined;
+  useEffect(() => {
+    tabsRef.current
+      ?.querySelector('[aria-pressed="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [route.tab, counted]);
 
   // An item open in the editor: the page is the item, and Back is the list.
   if (route.tab === "articles" && route.path)
@@ -188,7 +170,7 @@ export function KnowledgePage({
           title={repoLabel(project)}
           description="Knowledge: what support replies can rely on"
         />
-        <div className={KNOWLEDGE_TABS_SCROLL}>
+        <div ref={tabsRef} className={KNOWLEDGE_TABS_SCROLL}>
           <Segmented
             label="Knowledge"
             value={TABS.some((t) => t.tab === route.tab) ? route.tab : null}
@@ -216,6 +198,15 @@ export function KnowledgePage({
         {route.tab === "articles" ? (
           <KnowledgeList
             project={project}
+            filter={route.filter}
+            q={route.q}
+            onQuery={(filter, q) =>
+              onNavigate({
+                tab: "articles",
+                ...(filter !== "all" && { filter }),
+                ...(q && { q }),
+              })
+            }
             onOpen={openPath}
             onNew={() => openPath(NEW_ARTICLE)}
           />
@@ -223,51 +214,10 @@ export function KnowledgePage({
           <KnowledgeSuggestions project={project} />
         ) : route.tab === "needs-check" ? (
           <KnowledgeNeedsCheck project={project} onNavigate={onNavigate} />
-        ) : filter ? (
-          <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (
           <KnowledgeImport project={project} />
         ) : null}
       </SettingsPanel>
     </div>
-  );
-}
-
-function ItemList({
-  project,
-  filter,
-}: {
-  project: string;
-  filter: KnowledgeFilter;
-}) {
-  const list = useSWR(apiSWRKey.knowledge(project, filter), () =>
-    fetchKnowledge(project, { filter }),
-  );
-  if (list.error && !list.data)
-    return (
-      <InlineAlert onRetry={() => void list.mutate()}>
-        {errorMessage(list.error, "Couldn't load the knowledge")}
-      </InlineAlert>
-    );
-  if (!list.data) return <SettingCardSkeleton rows={4} />;
-  if (!list.data.items.length)
-    return <EmptyState placement="card">{emptyCopy(filter)}</EmptyState>;
-  const day = today();
-  return (
-    <SettingCard>
-      {list.data.items.map((item) => (
-        <div key={item.path} className={KNOWLEDGE_ROW}>
-          <div className={KNOWLEDGE_ROW_HEAD}>
-            <span className={KNOWLEDGE_ROW_TITLE}>{item.title}</span>
-            {itemBadges(item).map((badge) => (
-              <Badge key={badge.label} tone={badge.tone}>
-                {badge.label}
-              </Badge>
-            ))}
-          </div>
-          <div className={KNOWLEDGE_ROW_LINE}>{freshnessLine(item, day)}</div>
-        </div>
-      ))}
-    </SettingCard>
   );
 }

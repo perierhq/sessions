@@ -7,7 +7,6 @@ import {
   fetchKnowledge,
   fetchKnowledgeItem,
 } from "../../../lib/api/knowledge";
-import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_ROW_HEAD,
   KNOWLEDGE_ROW_LINE,
@@ -38,7 +37,12 @@ import {
   validateEditor,
   type EditorState,
 } from "../../../lib/knowledge/editor-model";
-import { emptyCopy, itemBadges } from "../../../lib/knowledge/models";
+import {
+  emptyCopy,
+  itemBadges,
+  knowledgeAlert,
+  knowledgeErrorMessage,
+} from "../../../lib/knowledge/models";
 import {
   selectionModel,
   suggestionBatch,
@@ -106,9 +110,13 @@ export function KnowledgeSuggestions({ project }: { project: string }) {
 
   if (list.error && !list.data)
     return (
-      <InlineAlert onRetry={() => void list.mutate()}>
-        {errorMessage(list.error, "Couldn't load the suggestions")}
-      </InlineAlert>
+      <InlineAlert
+        {...knowledgeAlert(
+          list.error,
+          "Couldn't load the suggestions",
+          () => void list.mutate(),
+        )}
+      />
     );
   if (!list.data) return <SettingCardSkeleton rows={4} />;
   if (!items.length)
@@ -247,9 +255,13 @@ function SuggestionEditor({
   if (read.error && !read.data)
     return (
       <div className={SUGGESTION_EDIT_FORM}>
-        <InlineAlert onRetry={() => void read.mutate()}>
-          {errorMessage(read.error, "Couldn't load the suggestion")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            read.error,
+            "Couldn't load the suggestion",
+            () => void read.mutate(),
+          )}
+        />
       </div>
     );
   if (!read.data)

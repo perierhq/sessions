@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import useSWR from "swr";
 import type {
   KnowledgeFilter,
@@ -6,7 +6,6 @@ import type {
 } from "../../../../shared/knowledge";
 import { apiSWRKey } from "../../../lib/api-swr";
 import { fetchKnowledge } from "../../../lib/api/knowledge";
-import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_CHIP,
   KNOWLEDGE_CHIP_ON,
@@ -25,6 +24,8 @@ import {
   emptyCopy,
   filterLabel,
   itemBadges,
+  knowledgeAlert,
+  knowledgeErrorMessage,
   listLine,
   todayUtc,
 } from "../../../lib/knowledge/models";
@@ -40,27 +41,41 @@ const PAGE = 50;
 /**
  * The Articles tab: a search box (250 ms after the last key), the filter
  * chips, and every item that matches, newest first, 50 at a time. A row
- * opens the item in the editor. Same component at both widths; on a phone
- * the chips scroll sideways and every row is a 44px target.
+ * opens the item in the editor. The filter and the search live in the URL
+ * (`filter`, `q`), so Back from an item and a shared link land on the same
+ * list. Same component at both widths; on a phone the chips scroll
+ * sideways and every row is a 44px target.
  */
 export function KnowledgeList({
   project,
+  filter = "all",
+  q = "",
+  onQuery,
   onOpen,
   onNew,
 }: {
   project: string;
+  /** The chip in effect, from the route. */
+  filter?: KnowledgeFilter;
+  /** The search in effect (trimmed), from the route. */
+  q?: string;
+  /** A new filter or search, written back to the route. */
+  onQuery: (filter: KnowledgeFilter, q: string) => void;
   onOpen: (path: string) => void;
   onNew: () => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<KnowledgeFilter>("all");
+  const [query, setQuery] = useState(q);
   const [pages, setPages] = useState(1);
+  const writeQuery = useEffectEvent((next: string) => {
+    if (next === q) return;
+    setPages(1);
+    onQuery(filter, next);
+  });
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setQ(query.trim());
-      setPages(1);
-    }, SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(
+      () => writeQuery(query.trim()),
+      SEARCH_DEBOUNCE_MS,
+    );
     return () => clearTimeout(timer);
   }, [query]);
 
@@ -95,8 +110,8 @@ export function KnowledgeList({
             aria-pressed={f === filter}
             className={f === filter ? KNOWLEDGE_CHIP_ON : KNOWLEDGE_CHIP}
             onClick={() => {
-              setFilter(f);
               setPages(1);
+              onQuery(f, q);
             }}
           >
             {filterLabel(f)}
@@ -136,9 +151,13 @@ function FirstPage({
   );
   if (list.error && !list.data)
     return (
-      <InlineAlert onRetry={() => void list.mutate()}>
-        {errorMessage(list.error, "Couldn't load the knowledge")}
-      </InlineAlert>
+      <InlineAlert
+        {...knowledgeAlert(
+          list.error,
+          "Couldn't load the knowledge",
+          () => void list.mutate(),
+        )}
+      />
     );
   if (!list.data) return <SettingCardSkeleton rows={4} />;
   const { items, total } = list.data;
@@ -200,9 +219,13 @@ function LaterPage({
   if (page.error && !page.data)
     return (
       <div className="px-5 py-3">
-        <InlineAlert onRetry={() => void page.mutate()}>
-          {errorMessage(page.error, "Couldn't load the knowledge")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            page.error,
+            "Couldn't load the knowledge",
+            () => void page.mutate(),
+          )}
+        />
       </div>
     );
   if (!page.data) return <SettingCardSkeleton rows={2} />;

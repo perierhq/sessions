@@ -16,7 +16,6 @@ import {
 } from "../../../lib/api/knowledge";
 import { relativeTime } from "../../../lib/api/request";
 import { fetchInboxes } from "../../../lib/api/support";
-import { errorMessage } from "../../../lib/error-message";
 import {
   IMPORT_HOST,
   IMPORT_HOST_SKIPPED,
@@ -52,7 +51,12 @@ import {
   pollJobs,
   websiteHosts,
 } from "../../../lib/knowledge/import-model";
-import { importLabel } from "../../../lib/knowledge/models";
+import {
+  importLabel,
+  knowledgeAlert,
+  knowledgeErrorMessage,
+  knowledgeNotSetUp,
+} from "../../../lib/knowledge/models";
 import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { MeterTrack } from "../../../ui/meter";
@@ -120,8 +124,9 @@ export function KnowledgeImport({ project }: { project: string }) {
   };
   const refusedStart = (cause: unknown) => {
     setStarting(null);
-    toast(errorMessage(cause, "Couldn't start the import"), {
-      variant: "error",
+    // An import this server hasn't wired (501) is a notice, not a failure.
+    toast(knowledgeErrorMessage(cause, "Couldn't start the import"), {
+      variant: knowledgeNotSetUp(cause) ? "default" : "error",
     });
   };
 
@@ -387,9 +392,13 @@ function Jobs({
   const [cancelling, setCancelling] = useState<string | null>(null);
   if (jobs.error && !jobs.data)
     return (
-      <InlineAlert onRetry={() => void jobs.mutate()}>
-        {errorMessage(jobs.error, "Couldn't load the imports")}
-      </InlineAlert>
+      <InlineAlert
+        {...knowledgeAlert(
+          jobs.error,
+          "Couldn't load the imports",
+          () => void jobs.mutate(),
+        )}
+      />
     );
   if (!jobs.data) return <SettingCardSkeleton rows={2} />;
   if (!jobs.data.length)
@@ -407,7 +416,7 @@ function Jobs({
       },
       (cause) => {
         setCancelling(null);
-        toast(errorMessage(cause, "Couldn't stop the import"), {
+        toast(knowledgeErrorMessage(cause, "Couldn't stop the import"), {
           variant: "error",
         });
         void jobs.mutate();

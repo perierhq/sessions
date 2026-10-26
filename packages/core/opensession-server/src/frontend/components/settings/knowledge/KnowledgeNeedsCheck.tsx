@@ -12,7 +12,6 @@ import {
   type KnowledgeRevalidateResult,
 } from "../../../lib/api/knowledge";
 import type { KnowledgeRoute } from "../../../lib/app-route";
-import { errorMessage } from "../../../lib/error-message";
 import {
   NC_ACTION,
   NC_ACTIONS,
@@ -42,7 +41,11 @@ import {
   KNOWLEDGE_ROW_LINE,
   KNOWLEDGE_ROW_TITLE,
 } from "../../../lib/knowledge-classes";
-import { emptyCopy } from "../../../lib/knowledge/models";
+import {
+  emptyCopy,
+  knowledgeAlert,
+  knowledgeErrorMessage,
+} from "../../../lib/knowledge/models";
 import {
   changePane,
   checkNowLine,
@@ -137,7 +140,7 @@ function NeedsCheckQueue({
       result = await revalidateKnowledge(project);
     } catch (failure) {
       setChecking(false);
-      toast(errorMessage(failure, "Couldn't check the knowledge"), {
+      toast(knowledgeErrorMessage(failure, "Couldn't check the knowledge"), {
         variant: "error",
       });
       return;
@@ -165,9 +168,13 @@ function NeedsCheckQueue({
     return (
       <>
         {toolbar}
-        <InlineAlert onRetry={onRetry}>
-          {errorMessage(error, "Couldn't load what needs a check")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            error,
+            "Couldn't load what needs a check",
+            onRetry,
+          )}
+        />
       </>
     );
   if (!items)
@@ -204,7 +211,7 @@ function NeedsCheckQueue({
                   return refresh(project);
                 })
                 .catch((failure: Error) =>
-                  toast(errorMessage(failure, "Couldn't confirm"), {
+                  toast(knowledgeErrorMessage(failure, "Couldn't confirm"), {
                     variant: "error",
                   }),
                 )
@@ -301,7 +308,7 @@ function NeedsCheckItem({
     } catch (failure) {
       setBusy(null);
       toast(
-        errorMessage(
+        knowledgeErrorMessage(
           failure,
           kind === "confirm" ? "Couldn't confirm" : "Couldn't retire",
         ),
@@ -327,7 +334,7 @@ function NeedsCheckItem({
         await confirmKnowledge(project, [savedPath]);
     } catch (failure) {
       toast(
-        `Saved, but not marked still true: ${errorMessage(failure, "try Still true again")}`,
+        `Saved, but not marked still true: ${knowledgeErrorMessage(failure, "try Still true again")}`,
         { variant: "error" },
       );
       setEditing(false);
@@ -376,9 +383,13 @@ function NeedsCheckItem({
     return (
       <>
         {back}
-        <InlineAlert onRetry={() => void read.mutate()}>
-          {errorMessage(read.error, "Couldn't load what changed")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            read.error,
+            "Couldn't load what changed",
+            () => void read.mutate(),
+          )}
+        />
       </>
     );
   if (!read.data)

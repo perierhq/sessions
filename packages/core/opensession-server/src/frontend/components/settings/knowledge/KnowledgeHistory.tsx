@@ -9,7 +9,6 @@ import {
   type KnowledgeCommit,
 } from "../../../lib/api/knowledge";
 import { relativeTime } from "../../../lib/api/request";
-import { errorMessage } from "../../../lib/error-message";
 import {
   HISTORY_ACTIONS,
   HISTORY_CHEVRON,
@@ -23,6 +22,10 @@ import {
   HISTORY_TOGGLE,
 } from "../../../lib/knowledge-history-classes";
 import { commitByline, revertCopy } from "../../../lib/knowledge/history";
+import {
+  knowledgeAlert,
+  knowledgeErrorMessage,
+} from "../../../lib/knowledge/models";
 import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { useConfirm } from "../../../ui/confirm";
@@ -67,9 +70,13 @@ export function KnowledgeHistory({
     return (
       <>
         {header}
-        <InlineAlert onRetry={() => void history.mutate()}>
-          {errorMessage(history.error, "Couldn't load the history")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            history.error,
+            "Couldn't load the history",
+            () => void history.mutate(),
+          )}
+        />
       </>
     );
   if (!history.data)
@@ -131,7 +138,7 @@ export function KnowledgeHistoryRow({
       setDiff(await fetchKnowledgeDiff(project, commit.sha));
     } catch (error) {
       setOpen(false);
-      setFailure(errorMessage(error, "Couldn't load the change"));
+      setFailure(knowledgeErrorMessage(error, "Couldn't load the change"));
     }
   }
 
@@ -150,7 +157,7 @@ export function KnowledgeHistoryRow({
       onReverted();
     } catch (error) {
       // A 409 says later changes touched the same lines.
-      setFailure(errorMessage(error, "Couldn't undo the change"));
+      setFailure(knowledgeErrorMessage(error, "Couldn't undo the change"));
     }
     setBusy(false);
   }

@@ -16,7 +16,6 @@ import {
   type KnowledgeRead,
 } from "../../../lib/api/knowledge";
 import { ApiError } from "../../../lib/api/request";
-import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_EDITOR_ACTION,
   KNOWLEDGE_EDITOR_ACTIONS,
@@ -50,7 +49,11 @@ import {
   type EditorField,
   type EditorState,
 } from "../../../lib/knowledge/editor-model";
-import { todayUtc } from "../../../lib/knowledge/models";
+import {
+  knowledgeAlert,
+  knowledgeErrorMessage,
+  todayUtc,
+} from "../../../lib/knowledge/models";
 import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { Input, Textarea } from "../../../ui/input";
@@ -126,9 +129,13 @@ export function KnowledgeEditor({
     return (
       <>
         <SettingsHeader title="Article" />
-        <InlineAlert onRetry={() => void read.mutate()}>
-          {errorMessage(read.error, "Couldn't load the article")}
-        </InlineAlert>
+        <InlineAlert
+          {...knowledgeAlert(
+            read.error,
+            "Couldn't load the article",
+            () => void read.mutate(),
+          )}
+        />
       </>
     );
   if (!read.data)
@@ -223,7 +230,7 @@ export function KnowledgeEditorForm({
     if (next.confirm && path)
       await confirmKnowledge(project, [path]).catch((error: Error) =>
         toast(
-          `Saved, but not confirmed: ${errorMessage(error, "the code repository couldn't be read")}`,
+          `Saved, but not confirmed: ${knowledgeErrorMessage(error, "the code repository couldn't be read")}`,
           { variant: "error" },
         ),
       );
@@ -240,7 +247,12 @@ export function KnowledgeEditorForm({
         setFailure(
           error instanceof ApiError && error.status === 409
             ? { conflict: true }
-            : { message: errorMessage(error, "Couldn't save the article") },
+            : {
+                message: knowledgeErrorMessage(
+                  error,
+                  "Couldn't save the article",
+                ),
+              },
         );
         setBusy(null);
       },
@@ -291,7 +303,7 @@ export function KnowledgeEditorForm({
         settled();
       },
       (error: Error) => {
-        toast(errorMessage(error, "Couldn't attach the file"), {
+        toast(knowledgeErrorMessage(error, "Couldn't attach the file"), {
           variant: "error",
         });
         settled();

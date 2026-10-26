@@ -19,9 +19,15 @@ export const KNOWLEDGE_SECTION_COUNT_LABEL = "text-meta text-dim";
 
 /** The back link and the tab bar under the page header. */
 export const KNOWLEDGE_PAGE_BACK = "mb-3 px-5";
-/** The tabs scroll sideways on a phone rather than wrapping or shrinking. */
+/** The tabs scroll sideways on a phone rather than wrapping or shrinking.
+ *  The trailing edge fades (ui/overflow-fade-text's mask) so a cut tab reads
+ *  as more to scroll; `pr-8` lets the last tab clear the fade once the bar
+ *  is scrolled to its end, and the scroll padding keeps a tab brought into
+ *  view clear of it too. */
 export const KNOWLEDGE_TABS_SCROLL =
-  "mb-5 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+  "mb-5 overflow-x-auto px-5 scroll-px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden " +
+  "phone:pr-8 phone:scroll-pr-8 phone:[-webkit-mask-image:linear-gradient(to_right,#000_0,#000_calc(100%_-_24px),transparent_100%)] " +
+  "phone:[mask-image:linear-gradient(to_right,#000_0,#000_calc(100%_-_24px),transparent_100%)]";
 export const KNOWLEDGE_TAB = "phone:min-h-11";
 /** A count beside a tab's name. */
 export const KNOWLEDGE_TAB_COUNT = "tabular-nums text-faint";

@@ -1,8 +1,7 @@
 import useSWR from "swr";
 import { apiSWRKey } from "../../../lib/api-swr";
-import type { KnowledgeRoute, KnowledgeTab } from "../../../lib/app-route";
+import type { KnowledgeRoute } from "../../../lib/app-route";
 import { fetchKnowledge, fetchKnowledgeJobs } from "../../../lib/api/knowledge";
-import { errorMessage } from "../../../lib/error-message";
 import {
   KNOWLEDGE_SECTION_COUNT,
   KNOWLEDGE_SECTION_COUNTS,
@@ -11,6 +10,8 @@ import {
 } from "../../../lib/knowledge-classes";
 import {
   jobLine,
+  knowledgeAlert,
+  knowledgeErrorMessage,
   runningJob,
   sectionCounts,
   type KnowledgeSectionCounts,
@@ -33,12 +34,17 @@ const JOB_POLL_MS = 5_000;
 const COUNTS: Array<{
   key: keyof KnowledgeSectionCounts;
   label: string;
-  tab: KnowledgeTab;
+  route: KnowledgeRoute;
 }> = [
-  { key: "articles", label: "Articles", tab: "articles" },
-  { key: "needsCheck", label: "Needs check", tab: "needs-check" },
-  { key: "suggestions", label: "Suggestions", tab: "suggestions" },
-  { key: "reference", label: "Reference", tab: "articles" },
+  { key: "articles", label: "Articles", route: { tab: "articles" } },
+  { key: "needsCheck", label: "Needs check", route: { tab: "needs-check" } },
+  { key: "suggestions", label: "Suggestions", route: { tab: "suggestions" } },
+  // Reference opens the list already filtered to it.
+  {
+    key: "reference",
+    label: "Reference",
+    route: { tab: "articles", filter: "reference" },
+  },
 ];
 
 /**
@@ -67,9 +73,13 @@ export function KnowledgeSection({
 
   if (list.error && !list.data)
     return (
-      <InlineAlert onRetry={() => void list.mutate()}>
-        {errorMessage(list.error, "Couldn't load the knowledge")}
-      </InlineAlert>
+      <InlineAlert
+        {...knowledgeAlert(
+          list.error,
+          "Couldn't load the knowledge",
+          () => void list.mutate(),
+        )}
+      />
     );
   if (!list.data) return <SettingCardSkeleton rows={2} />;
 
@@ -78,12 +88,12 @@ export function KnowledgeSection({
   return (
     <SettingCard>
       <div className={KNOWLEDGE_SECTION_COUNTS}>
-        {COUNTS.map(({ key, label, tab }) => (
+        {COUNTS.map(({ key, label, route }) => (
           <PlainButton
             key={key}
             className={KNOWLEDGE_SECTION_COUNT}
             aria-label={`${label}: ${counts[key]}`}
-            onClick={() => onOpen({ tab })}
+            onClick={() => onOpen(route)}
           >
             <span className={KNOWLEDGE_SECTION_COUNT_VALUE}>{counts[key]}</span>
             <span className={KNOWLEDGE_SECTION_COUNT_LABEL}>{label}</span>
