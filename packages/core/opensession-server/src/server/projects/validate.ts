@@ -343,8 +343,8 @@ export function settingsInvariantProblem(
 /**
  * The fields whose change gives agents more room: a higher autonomy, a
  * never-without-you entry removed, a shorter veto, a higher budget, more
- * rounds, the kill switch off, or the night rule off or changed. Tightening any of them
- * is open to every writer.
+ * rounds, the kill switch or the new-incident pause off, or the night rule
+ * off or changed. Tightening any of them is open to every writer.
  */
 export function loosenedFields(
   before: PolicyFields,
@@ -352,6 +352,8 @@ export function loosenedFields(
 ): PolicyField[] {
   const fields: PolicyField[] = [];
   if (before.agentsPaused && !after.agentsPaused) fields.push("agentsPaused");
+  if (before.incidentsPaused && !after.incidentsPaused)
+    fields.push("incidentsPaused");
   if (
     AUTONOMY_LEVELS.indexOf(after.autonomy) >
     AUTONOMY_LEVELS.indexOf(before.autonomy)
@@ -379,6 +381,7 @@ export function loosenedFields(
 /** The incident policy fields a caller may change. */
 export const POLICY_FIELDS = [
   "agentsPaused",
+  "incidentsPaused",
   "autonomy",
   "vetoMs",
   "watchMs",
@@ -406,6 +409,13 @@ export function validatePolicyFields(
     if (typeof input.agentsPaused !== "boolean")
       return { error: "Kill switch (agentsPaused) must be true or false" };
     patch.agentsPaused = input.agentsPaused;
+  }
+  if ("incidentsPaused" in input) {
+    if (typeof input.incidentsPaused !== "boolean")
+      return {
+        error: "Pause new incidents (incidentsPaused) must be true or false",
+      };
+    patch.incidentsPaused = input.incidentsPaused;
   }
   if ("autonomy" in input) {
     if (

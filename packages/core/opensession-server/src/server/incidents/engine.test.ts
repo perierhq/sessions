@@ -9,8 +9,15 @@ import type {
 import {
   type EngineSnapshot,
   type IncidentOp,
+  QUIET_BREAKTHROUGH_MS,
+  QUIET_FAILING_MS,
+  QUIET_HEALTHY_MS,
+  QUIET_WINDOW_MS,
+  type SignalRun,
   applyIncidentOps,
   decideIncidentOps,
+  nextSignalRun,
+  quietNeeds,
 } from "./engine";
 import { getIncident } from "./incident-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
@@ -357,11 +364,7 @@ describe("decide", () => {
         a,
         "ok",
         E("sig-a", "failing"),
-        snap(
-          [a],
-          [],
-          [I("inc-1", "closed-without-action", { closedAt: iso(600_000) })],
-        ),
+        snap([a], [], [I("inc-1", "resolved", { closedAt: iso(600_000) })]),
       ),
     ).toEqual([
       {
@@ -394,6 +397,223 @@ describe("decide", () => {
         snap([a], [], [I("inc-1", "resolved", { closedAt: iso(2_400_000) })]),
       )[0],
     ).toMatchObject({ op: "open" });
+  });
+
+  test("closed without action, a flapping signal stays quiet", () => {
+    const a = S("sig-a");
+    const closedAt = iso(7_200_000);
+    const closedMs = Date.parse(closedAt);
+    const closed = I("inc-1", "closed-without-action", { closedAt });
+    const quiet = (run?: SignalRun, state: SignalState = "failing") =>
+      decide(a, "ok", E("sig-a", state), {
+        ...snap([a], [E("sig-a", state)], [closed]),
+        runs: new Map(run ? [["sig-a", run]] : []),
+      });
+    const hold = (until?: number, since: number | null = NOW): IncidentOp[] => [
+      {
+        op: "hold",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        ...(since === null ? {} : { since: new Date(since).toISOString() }),
+        ...(until === undefined
+          ? {}
+          : { until: new Date(until).toISOString() }),
+      },
+    ];
+    const reopen: IncidentOp[] = [
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ];
+    // Ok 3 minutes, failing again: the same flap. Only failing for an hour
+    // would break through.
+    const flap = { badSince: NOW, problemSince: NOW, healthyBefore: 180_000 };
+    expect(quiet(flap)).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
+    // Nothing known about before: the same.
+    expect(quiet()).toEqual(hold(NOW + QUIET_BREAKTHROUGH_MS));
+    // Flaky after a flap is a flap, not counted; nothing to wait for.
+    expect(quiet({ badSince: NOW, healthyBefore: 180_000 }, "flaky")).toEqual(
+      hold(undefined, null),
+    );
+    // Ok 20 minutes, then failing: a new problem once it stays failing.
+    const settled = {
+      badSince: NOW - 300_000,
+      problemSince: NOW - 300_000,
+      healthyBefore: 1_200_000,
+    };
+    expect(quiet(settled)).toEqual(
+      hold(NOW - 300_000 + QUIET_FAILING_MS, NOW - 300_000),
+    );
+    expect(
+      quiet({
+        ...settled,
+        badSince: NOW - QUIET_FAILING_MS,
+        problemSince: NOW - QUIET_FAILING_MS,
+      }),
+    ).toEqual(reopen);
+    // Failing for an hour after a flap breaks through too.
+    expect(
+      quiet({
+        badSince: NOW - QUIET_BREAKTHROUGH_MS - 60_000,
+        problemSince: NOW - QUIET_BREAKTHROUGH_MS,
+        healthyBefore: 0,
+      }),
+    ).toEqual(reopen);
+    // A bad run that began before the close was closed knowingly: it never
+    // reopens, however long it lasts.
+    expect(
+      quiet({
+        badSince: closedMs - 60_000,
+        problemSince: closedMs - 60_000,
+        healthyBefore: 3_600_000,
+      }),
+    ).toEqual(hold(undefined, null));
+    // Its turns to failing after the close still count as flaps.
+    expect(
+      quiet({
+        badSince: closedMs - 60_000,
+        problemSince: NOW - 60_000,
+        healthyBefore: 0,
+      }),
+    ).toEqual(hold(undefined, NOW - 60_000));
+  });
+
+  test("the quiet outlasts the reopen window, and then ends", () => {
+    const a = S("sig-a");
+    const flap = new Map([
+      ["sig-a", { badSince: NOW, problemSince: NOW, healthyBefore: 60_000 }],
+    ]);
+    const after = (closedMsAgo: number) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap(
+          [a],
+          [],
+          [
+            I("inc-1", "closed-without-action", {
+              closedAt: iso(closedMsAgo),
+            }),
+          ],
+        ),
+        runs: flap,
+      });
+    // 40 minutes after the close: past the reopen window, no new incident.
+    expect(after(2_400_000)).toEqual([
+      {
+        op: "hold",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        since: iso(),
+        until: new Date(NOW + QUIET_BREAKTHROUGH_MS).toISOString(),
+      },
+    ]);
+    // A new problem there reopens the quiet incident rather than opening
+    // another.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap(
+          [a],
+          [],
+          [I("inc-1", "closed-without-action", { closedAt: iso(7_200_000) })],
+        ),
+        runs: new Map([
+          [
+            "sig-a",
+            {
+              badSince: NOW - QUIET_FAILING_MS,
+              healthyBefore: QUIET_HEALTHY_MS,
+            },
+          ],
+        ]),
+      })[0],
+    ).toMatchObject({ op: "transition", incidentId: "inc-1" });
+    // A run that begins past the quiet window is judged as before.
+    expect(after(QUIET_WINDOW_MS + 60_000)[0]).toMatchObject({ op: "open" });
+    // A resolved incident is not quiet: its signal reopens it at once.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [], [I("inc-1", "resolved", { closedAt: iso(600_000) })]),
+        runs: flap,
+      })[0],
+    ).toMatchObject({ op: "transition", incidentId: "inc-1" });
+  });
+
+  test("a project with new incidents paused opens and reopens nothing", () => {
+    const a = S("sig-a");
+    const paused = (incidents: Incident[]) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")], incidents),
+        incidentsPaused: new Set(["acme"]),
+      });
+    expect(paused([])).toEqual([]);
+    expect(
+      paused([I("inc-1", "resolved", { closedAt: iso(600_000) })]),
+    ).toEqual([]);
+    // An incident already open still hears from its signal.
+    expect(paused([I("inc-1", "investigating")])).toEqual([
+      {
+        op: "event",
+        incidentId: "inc-1",
+        signalId: "sig-a",
+        signalState: "failing",
+        detail: "3 failures in a row",
+      },
+    ]);
+    // Another project is not paused.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")]),
+        incidentsPaused: new Set(["other"]),
+      })[0],
+    ).toMatchObject({ op: "open" });
+  });
+
+  test("a signal's own debounce sets the floor of its quiet window", () => {
+    const slow = S("sig-a", {
+      intervalMs: 300_000,
+      rule: { kind: "consecutive", failures: 4, recoveries: 6 },
+    });
+    expect(quietNeeds(slow)).toEqual({
+      healthyMs: 1_800_000,
+      failingMs: 1_200_000,
+    });
+    expect(quietNeeds(S("sig-a"))).toEqual({
+      healthyMs: QUIET_HEALTHY_MS,
+      failingMs: QUIET_FAILING_MS,
+    });
+  });
+
+  test("a signal's run: how long it was healthy before it went bad", () => {
+    const at = (msAgo: number, state: SignalState) => ({
+      ...E("sig-a", state),
+      since: iso(msAgo),
+    });
+    let run = nextSignalRun(undefined, at(1_200_000, "ok"));
+    expect(run).toEqual({ okSince: NOW - 1_200_000, healthyBefore: 0 });
+    run = nextSignalRun(run, at(300_000, "failing"));
+    expect(run).toEqual({
+      badSince: NOW - 300_000,
+      problemSince: NOW - 300_000,
+      healthyBefore: 900_000,
+    });
+    expect(nextSignalRun(run, at(240_000, "slow"))).toBe(run);
+    // Flaky is still the same bad run, but no longer a problem.
+    run = nextSignalRun(run, at(120_000, "flaky"));
+    expect(run).toEqual({ badSince: NOW - 300_000, healthyBefore: 900_000 });
+    expect(nextSignalRun(run, at(60_000, "failing"))).toEqual({
+      badSince: NOW - 300_000,
+      problemSince: NOW - 60_000,
+      healthyBefore: 900_000,
+    });
+    // Unknown says nothing about health: the next run starts unsettled.
+    run = nextSignalRun(run, at(30_000, "unknown"));
+    expect(nextSignalRun(run, at(0, "failing"))).toEqual({
+      badSince: NOW,
+      problemSince: NOW,
+      healthyBefore: 0,
+    });
   });
 
   test("boot leaves alone an incident closed while the signal was already bad", () => {
@@ -1213,6 +1433,118 @@ describe("providers and disagreements", () => {
 
 describe("apply", () => {
   useIncidentTestKernel();
+
+  test("a hold counts each bad run a quiet incident stayed closed through", async () => {
+    const [opened] = await applyIncidentOps(
+      [
+        {
+          op: "open",
+          incident: {
+            project: "acme",
+            title: "Search",
+            state: "investigating",
+            severity: "major",
+            owner: "Ada",
+            openedBy: { kind: "rule", ref: "sig-a" },
+            signalIds: ["sig-a"],
+            primarySignalId: "sig-a",
+            at: iso(600_000),
+            detail: "x",
+          },
+        },
+      ],
+      iso(600_000),
+    );
+    const id = opened!.id;
+    await applyIncidentOps(
+      [
+        {
+          op: "transition",
+          incidentId: id,
+          to: "closed-without-action",
+          detail: "Closed",
+        },
+      ],
+      iso(500_000),
+    );
+    const hold = (since: string): IncidentOp => ({
+      op: "hold",
+      incidentId: id,
+      signalId: "sig-a",
+      since,
+    });
+    await applyIncidentOps([hold(iso(300_000))], iso(300_000));
+    // Decided again for the same run: not another flap.
+    await applyIncidentOps([hold(iso(300_000))], iso(200_000));
+    await applyIncidentOps([hold(iso(100_000))], iso(100_000));
+    const stored = await getIncident(id);
+    expect(stored?.quiet).toEqual({ flaps: 2, lastAt: iso(100_000) });
+    expect(stored?.events.map((e) => e.kind)).toEqual(["opened", "state"]);
+    expect(stored?.updatedAt).toBe(iso(500_000));
+  });
+
+  test("a finding that comes back is the same finding, counted", async () => {
+    const [opened] = await applyIncidentOps(
+      [
+        {
+          op: "open",
+          incident: {
+            project: "acme",
+            title: "Search",
+            state: "investigating",
+            severity: "major",
+            owner: "Ada",
+            openedBy: { kind: "rule", ref: "sig-a" },
+            signalIds: ["sig-a"],
+            primarySignalId: "sig-a",
+            at: iso(300_000),
+            detail: "x",
+          },
+        },
+      ],
+      iso(300_000),
+    );
+    const id = opened!.id;
+    const finding = (msAgo: number) => ({
+      kind: "disagreement" as const,
+      at: iso(msAgo),
+      signalId: "sig-r",
+      againstSignalId: "sig-a",
+      detail: "Health reports ok while Search is failing",
+    });
+    const resolve = {
+      op: "resolve-finding" as const,
+      incidentId: id,
+      kind: "disagreement" as const,
+      againstSignalId: "sig-a",
+    };
+    // Found, resolved, found again, twice over: one finding, seen 3 times.
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(240_000) }],
+      iso(240_000),
+    );
+    await applyIncidentOps([resolve], iso(180_000));
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(120_000) }],
+      iso(120_000),
+    );
+    await applyIncidentOps([resolve], iso(60_000));
+    await applyIncidentOps(
+      [{ op: "finding", incidentId: id, finding: finding(0) }],
+      iso(),
+    );
+    const stored = await getIncident(id);
+    expect(stored?.findings).toHaveLength(1);
+    expect(stored?.findings[0]).toMatchObject({
+      kind: "disagreement",
+      at: iso(240_000),
+      lastAt: iso(),
+      count: 3,
+    });
+    expect(stored?.findings[0]?.resolvedAt).toBeUndefined();
+    // Only the first sighting is an event.
+    expect(stored?.events.map((e) => e.kind)).toEqual(["opened", "finding"]);
+  });
 
   test("apply: open, attach, event, stale transition", async () => {
     const [opened] = await applyIncidentOps(

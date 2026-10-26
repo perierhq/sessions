@@ -51,6 +51,16 @@ test("project summary", () => {
       3,
     ),
   ).toBe("3 signals · Deploy after veto");
+  expect(
+    projectSummary(
+      partial({
+        autonomy: "watch",
+        agentsPaused: false,
+        incidentsPaused: true,
+      }),
+      2,
+    ),
+  ).toBe("2 signals · Watch · no new incidents");
   expect(projectSummary(null, 3)).toBe("3 signals");
   expect(projectSummary(null, 0)).toBe("No signals");
 });

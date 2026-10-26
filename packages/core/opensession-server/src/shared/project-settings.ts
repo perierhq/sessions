@@ -104,6 +104,8 @@ export type PreviewsChoice = "default" | "same" | (string & {});
 
 export interface ProjectIncidentPolicy {
   agentsPaused: boolean;
+  /** Signals keep checking but open and reopen no incident. */
+  incidentsPaused: boolean;
   autonomy: AutonomyLevel;
   vetoMs: number;
   watchMs: number;
@@ -485,6 +487,7 @@ export function defaultProjectDocument(
     models: {},
     incidents: {
       agentsPaused: false,
+      incidentsPaused: false,
       autonomy: DEFAULT_AUTONOMY,
       vetoMs: DEFAULT_VETO_MS,
       watchMs: DEFAULT_WATCH_MS,

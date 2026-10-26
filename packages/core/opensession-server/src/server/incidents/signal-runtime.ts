@@ -14,9 +14,12 @@ import {
 import { incidentAudit } from "./audit-sink";
 import {
   type EngineSnapshot,
+  QUIET_WINDOW_MS,
   REOPEN_WINDOW_MS,
+  type SignalRun,
   applyIncidentOps,
   decideIncidentOps,
+  nextSignalRun,
 } from "./engine";
 import { listIncidents } from "./incident-store";
 import {
@@ -25,11 +28,23 @@ import {
   hydrationLookbackMs,
   recentObservations,
 } from "./observation-store";
+import { getProjectSettings } from "./response/project-settings";
 import { evaluateSignal, replaySignal } from "./rules";
 import { signalOwner } from "./owner";
 import { getSignal, listSignals } from "./signal-store";
 
 let evaluations = new Map<string, SignalEvaluation>();
+/** Each signal's current healthy or bad run, for the engine's quiet. */
+let runs = new Map<string, SignalRun>();
+/**
+ * Signals bad while an incident closed without action stays quiet: the
+ * change the engine held, to decide again (unchanged state) once `until`
+ * has come. Without `until`, only the next change decides again.
+ */
+let held = new Map<
+  string,
+  { previous: SignalEvaluation | null; until?: number }
+>();
 /** The state last audited per signal. A change the engine failed on is
  *  undone and made again; it is audited once. */
 let auditedStates = new Map<string, SignalEvaluation["state"]>();
@@ -102,6 +117,8 @@ export function allSignalEvaluations(): ReadonlyMap<string, SignalEvaluation> {
 export function forgetSignal(id: string): void {
   evaluations.delete(id);
   auditedStates.delete(id);
+  runs.delete(id);
+  held.delete(id);
 }
 
 interface IncidentEngine {
@@ -123,6 +140,8 @@ export function __setIncidentEngineForTest(
 
 export function __resetSignalRuntimeForTest(): void {
   evaluations = new Map();
+  runs = new Map();
+  held = new Map();
   auditedStates = new Map();
   engineChain = Promise.resolve();
   booting = null;
@@ -135,9 +154,10 @@ function hydrate(signal: Signal, now: number): Promise<void> {
 }
 
 /**
- * Open incidents, those closed recently enough to reopen, and those holding
- * the changed signal that closed during its current run (from
- * `current.since` on): the engine reads the last as "closed knowingly".
+ * Open incidents, those closed recently enough to reopen, those holding the
+ * changed signal that closed during its current run (from `current.since`
+ * on): the engine reads the last as "closed knowingly", and those holding
+ * it whose quiet its bad run began in.
  */
 function engineIncidents(
   all: Incident[],
@@ -146,35 +166,43 @@ function engineIncidents(
   current: SignalEvaluation,
 ): Incident[] {
   const runStarted = Date.parse(current.since);
+  const badSince = runs.get(signalId)?.badSince ?? now;
   return all.filter((incident) => {
     if (isOpenIncident(incident)) return true;
     const closed = incident.closedAt ? Date.parse(incident.closedAt) : NaN;
     if (!Number.isFinite(closed)) return false;
     if (now - closed <= REOPEN_WINDOW_MS) return true;
-    return (
-      incident.signalIds.includes(signalId) &&
-      Number.isFinite(runStarted) &&
-      closed >= runStarted
-    );
+    if (!incident.signalIds.includes(signalId)) return false;
+    if (
+      incident.state === "closed-without-action" &&
+      badSince - closed <= QUIET_WINDOW_MS
+    )
+      return true;
+    return Number.isFinite(runStarted) && closed >= runStarted;
   });
 }
 
 async function snapshotAt(
   now: number,
-  signalId: string,
+  signal: Signal,
   current: SignalEvaluation,
 ): Promise<EngineSnapshot> {
-  const [signals, incidents] = await Promise.all([
+  const [signals, incidents, settings] = await Promise.all([
     listSignals(),
     listIncidents(),
+    getProjectSettings(signal.project),
   ]);
   return {
     // A disabled signal is as good as gone: its stale state must not hold
     // an incident open or correlate with anything.
     signals: new Map(signals.filter((s) => s.enabled).map((s) => [s.id, s])),
     evaluations,
-    incidents: engineIncidents(incidents, now, signalId, current),
+    incidents: engineIncidents(incidents, now, signal.id, current),
     now,
+    runs,
+    ...(settings.incidentsPaused
+      ? { incidentsPaused: new Set([signal.project]) }
+      : {}),
   };
 }
 
@@ -191,11 +219,18 @@ function runEngine(
 ): Promise<void> {
   const run = engineChain.then(async () => {
     try {
-      const snapshot = await snapshotAt(now, signal.id, current);
+      const snapshot = await snapshotAt(now, signal, current);
       // A person owns what it opens, never the principal that created it:
       // "" when there is nobody, which the notifier reports.
       const owned = { ...signal, owner: signalOwner(signal) };
       const ops = engine.decide(owned, previous, current, snapshot);
+      const hold = ops.find((op) => op.op === "hold");
+      if (hold?.op === "hold")
+        held.set(signal.id, {
+          previous,
+          ...(hold.until ? { until: Date.parse(hold.until) } : {}),
+        });
+      else held.delete(signal.id);
       if (ops.length) await engine.apply(ops, new Date(now).toISOString());
     } catch (error) {
       console.error(
@@ -231,6 +266,7 @@ export async function reevaluateSignal(
     now,
   );
   evaluations.set(signal.id, current);
+  runs.set(signal.id, nextSignalRun(runs.get(signal.id), current));
   const audited = auditedStates.get(signal.id);
   if (audited !== current.state) {
     auditedStates.set(signal.id, current.state);
@@ -243,8 +279,15 @@ export async function reevaluateSignal(
     });
     notifyStateChange(signal, current, previous);
   }
-  if (previous?.state !== current.state)
+  if (previous?.state !== current.state) {
+    held.delete(signal.id);
     await runEngine(signal, previous, current, now);
+  } else {
+    // Held by a quiet incident: the same change, decided again when due.
+    const hold = held.get(signal.id);
+    if (hold?.until !== undefined && now >= hold.until)
+      await runEngine(signal, hold.previous, current, now);
+  }
   return current;
 }
 
@@ -327,6 +370,7 @@ async function replayAll(now: number): Promise<void> {
       await hydrate(signal, now);
       const replayed = replaySignal(signal, recentObservations(signal.id), now);
       evaluations.set(signal.id, replayed);
+      runs.set(signal.id, nextSignalRun(undefined, replayed));
       // Taken back, not changed: later changes audit from here.
       auditedStates.set(signal.id, replayed.state);
     } catch (error) {

@@ -120,3 +120,22 @@ test("a pause that lands offers Undo, and a failed Undo toasts too", async () =>
     options: { variant: "error" },
   });
 });
+
+test("pausing new incidents saves the switch and offers Undo", async () => {
+  const section = mountSection();
+  const el = find(
+    section.output(),
+    Switch,
+    (p) => p["aria-label"] === "Pause new incidents",
+  );
+  if (!el?.props.onCheckedChange) throw new Error("No new-incident switch");
+  expect(String(el.props.className)).toContain("before:-inset-y-2.5");
+  // SAFETY: the handler reads only the checked value.
+  el.props.onCheckedChange(true, {} as Parameters<SwitchChange>[1]);
+  await settle();
+  expect(saves).toEqual([{ incidents: { incidentsPaused: true } }]);
+  expect(toasts[0]?.message).toBe("New incidents paused for acme-web");
+  toasts[0]?.options?.action?.onClick();
+  await settle();
+  expect(saves.at(-1)).toEqual({ incidents: { incidentsPaused: false } });
+});

@@ -20,6 +20,10 @@ import {
   reevaluateSignal,
 } from "./signal-runtime";
 import { __setOwnerRosterForTest } from "./owner";
+import {
+  __setProjectSettingsContextForTest,
+  patchProjectSettings,
+} from "./response/project-settings";
 import { createSignal, getSignal, updateSignal } from "./signal-store";
 import { useIncidentTestKernel } from "./testing/kernel-fixture";
 
@@ -144,16 +148,102 @@ test("flapping never opens a second incident", async () => {
   expect(await listIncidents()).toHaveLength(1);
 });
 
-test("a heads-up closes on recovery and reopens if it comes back", async () => {
+test("a heads-up closes on recovery and stays closed while it flaps", async () => {
   const s = await make();
   await feed(s.id, "ok", "fail", "ok", "fail", "ok", "fail");
   expect((await listIncidents())[0]!.state).toBe("heads-up");
   await feed(s.id, ...Array<"ok">(10).fill("ok"));
   expect((await listIncidents())[0]!.state).toBe("closed-without-action");
   await feed(s.id, "fail", "ok", "fail", "ok", "fail");
+  expect(getSignalEvaluation(s.id)?.state).toBe("flaky");
   const all = await listIncidents();
   expect(all).toHaveLength(1);
-  expect(all[0]!.state).toBe("heads-up");
+  expect(all[0]!.state).toBe("closed-without-action");
+});
+
+const closeByHand = async (id: string) => {
+  const closed = await updateIncident(id, (c) =>
+    transitionIncident(c, "closed-without-action", {
+      by: "Ada",
+      detail: "Closed by Ada",
+      at: new Date(clock).toISOString(),
+    }),
+  );
+  if (!closed || "error" in closed) throw new Error("close failed");
+  return closed;
+};
+
+test("a project that pauses new incidents opens none; resumed, it does", async () => {
+  __setProjectSettingsContextForTest({
+    projectExists: (id) => id === "acme",
+    runnerProblem: () => null,
+    modelProblem: () => null,
+  });
+  try {
+    await patchProjectSettings("acme", (s) => ({
+      ...s,
+      incidentsPaused: true,
+    }));
+    const s = await make();
+    await feed(s.id, "fail", "fail", "fail", "fail");
+    expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+    expect(await listIncidents()).toEqual([]);
+    await patchProjectSettings("acme", (s) => ({
+      ...s,
+      incidentsPaused: false,
+    }));
+    await feed(s.id, "ok", "ok", "fail", "fail", "fail");
+    expect(await listIncidents()).toHaveLength(1);
+  } finally {
+    __setProjectSettingsContextForTest(undefined);
+  }
+});
+
+test("closed without action, a flapping signal reopens and opens nothing", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "ok", "ok");
+  const [open] = await listIncidents();
+  await closeByHand(open!.id);
+  // 50 minutes of three failures, two passes: past the reopen window.
+  for (let i = 0; i < 10; i++)
+    await feed(s.id, "fail", "fail", "fail", "ok", "ok");
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.state).toBe("closed-without-action");
+  expect(all[0]!.events.filter((e) => e.kind === "reopened")).toEqual([]);
+  // Each flap it stayed closed through is counted, once.
+  expect(all[0]!.quiet?.flaps).toBe(10);
+});
+
+test("after a close, a new problem reopens once it stays failing", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "ok", "ok");
+  const [open] = await listIncidents();
+  await closeByHand(open!.id);
+  // Healthy a quarter of an hour, then failing.
+  await feed(s.id, ...Array<"ok">(15).fill("ok"));
+  await feed(s.id, "fail", "fail", "fail");
+  expect(getSignalEvaluation(s.id)?.state).toBe("failing");
+  // Still failing, not yet long enough: no change, nothing reopened.
+  await feed(s.id, ...Array<"fail">(9).fill("fail"));
+  expect((await listIncidents())[0]!.state).toBe("closed-without-action");
+  await feed(s.id, "fail");
+  const all = await listIncidents();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.state).toBe("investigating");
+  expect(all[0]!.events.at(-1)).toMatchObject({ kind: "reopened" });
+});
+
+test("after a close, failing for an hour reopens even after a flap", async () => {
+  const s = await make();
+  await feed(s.id, "fail", "fail", "fail", "ok", "ok");
+  const [open] = await listIncidents();
+  await closeByHand(open!.id);
+  await feed(s.id, "fail", "fail", "fail");
+  await feed(s.id, ...Array<"fail">(59).fill("fail"));
+  expect((await listIncidents())[0]!.state).toBe("closed-without-action");
+  await feed(s.id, "fail");
+  expect((await listIncidents())[0]!.state).toBe("investigating");
 });
 
 test("no duplicate and no new events after a restart", async () => {

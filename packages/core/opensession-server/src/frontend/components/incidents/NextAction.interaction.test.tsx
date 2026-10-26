@@ -8,8 +8,11 @@ import type {
   OwnerDecision,
   RedactedProjectSettings,
 } from "../../../shared/incident-response";
-import type { Incident } from "../../../shared/incidents";
-import type { ProjectSettingsInput } from "../../lib/api/incidents";
+import type { Incident, SignalView } from "../../../shared/incidents";
+import type {
+  ProjectSettingsInput,
+  SignalInput,
+} from "../../lib/api/incidents";
 import {
   createHookHarness,
   find,
@@ -83,11 +86,14 @@ const updateSettings =
       input: ProjectSettingsInput,
     ) => Promise<RedactedProjectSettings>
   >();
+const updateSignal =
+  mock<(id: string, input: SignalInput) => Promise<SignalView>>();
 const realApi = await import("../../lib/api/incidents");
 mock.module("../../lib/api/incidents", () => ({
   ...realApi,
   decideIncidentApi: decide,
   updateProjectSettingsApi: updateSettings,
+  updateSignalApi: updateSignal,
 }));
 
 const { ApiError } = await import("../../lib/api/request");
@@ -156,6 +162,7 @@ const veto = (deadlineMs: number) =>
 const settings: RedactedProjectSettings = {
   project: "acme",
   agentsPaused: false,
+  incidentsPaused: false,
   autonomy: "deploy-after-veto",
   vetoMs: 600_000,
   watchMs: 600_000,
@@ -197,6 +204,7 @@ beforeEach(() => {
   toasts.length = 0;
   decide.mockReset();
   updateSettings.mockReset();
+  updateSignal.mockReset();
 });
 afterEach(() => {
   harness.unmountAll();
@@ -691,4 +699,94 @@ test("a refused suggestion keeps the server's refusal, as any decision does", as
   await settle();
   expect(decide).toHaveBeenCalledWith("inc-1", "close", undefined);
   expect(toasts.map((t) => t.message)).toEqual(["Only an owner can decide"]);
+});
+
+test("a flapping signal's card makes its rule stricter, with Undo", async () => {
+  const signal: SignalView = {
+    id: "sig-a",
+    name: "Search",
+    project: "acme",
+    enabled: true,
+    severity: "major",
+    source: { kind: "http", url: "https://acme.example.test" },
+    intervalMs: 60_000,
+    rule: { kind: "consecutive", failures: 3 },
+    createdBy: "Ada",
+    createdAt: iso(-86_400_000),
+    updatedAt: iso(-86_400_000),
+    evaluation: null,
+  };
+  const closed: Incident = {
+    ...incident(
+      { kind: "done", detail: "", options: [] },
+      "closed-without-action",
+    ),
+    closedAt: iso(-600_000),
+    quiet: { flaps: 4, lastAt: iso(-300_000) },
+  };
+  updateSignal.mockResolvedValue(signal);
+  const card = harness.mount(
+    NextAction,
+    props({ incident: closed, signals: [signal] }),
+  );
+  const stricter = view(card.output()).card.buttons[0]!;
+  expect(stricter).toMatchObject({
+    kind: "signal-fix",
+    label: "Need 6 failures in a row",
+  });
+  view(card.output()).onButton(stricter);
+  await settle();
+  expect(updateSignal.mock.calls).toEqual([
+    ["sig-a", { rule: { kind: "consecutive", failures: 6 } }],
+  ]);
+  expect(toasts[0]?.message).toBe("Search now needs 6 failures in a row");
+  expect(swrCalls).toContainEqual([apiSWRKey.incidentSignals()]);
+  toasts[0]?.options?.action?.onClick();
+  await settle();
+  expect(updateSignal.mock.calls[1]).toEqual([
+    "sig-a",
+    { rule: { kind: "consecutive", failures: 3 } },
+  ]);
+  // The Undo offers no Undo of its own.
+  expect(toasts[1]?.options?.action).toBeUndefined();
+});
+
+test("a failed signal fix toasts the error and frees the button", async () => {
+  const signal: SignalView = {
+    id: "sig-a",
+    name: "Search",
+    project: "acme",
+    enabled: true,
+    severity: "major",
+    source: { kind: "http", url: "https://acme.example.test" },
+    rule: { kind: "consecutive", failures: 3 },
+    createdBy: "Ada",
+    createdAt: iso(-86_400_000),
+    updatedAt: iso(-86_400_000),
+    evaluation: null,
+  };
+  const closed: Incident = {
+    ...incident(
+      { kind: "done", detail: "", options: [] },
+      "closed-without-action",
+    ),
+    closedAt: iso(-600_000),
+    quiet: { flaps: 4, lastAt: iso(-300_000) },
+  };
+  updateSignal.mockRejectedValue(new Error("offline"));
+  const card = harness.mount(
+    NextAction,
+    props({ incident: closed, signals: [signal] }),
+  );
+  const mute = view(card.output()).card.buttons[1]!;
+  expect(mute.label).toBe("Mute for a day");
+  view(card.output()).onButton(mute);
+  await settle();
+  expect(toasts).toEqual([
+    {
+      message: "Couldn't change Search: offline",
+      options: { variant: "error" },
+    },
+  ]);
+  expect(view(card.output()).busy).toBeNull();
 });

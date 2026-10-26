@@ -12,6 +12,7 @@ import {
   type SignalState,
   isOpenIncident,
   isTerminalIncidentState,
+  stripIntervalMs,
 } from "../../shared/incidents";
 import {
   type NewIncident,
@@ -20,7 +21,7 @@ import {
   updateIncident,
 } from "./incident-store";
 import { appendEvent, transitionIncident } from "./lifecycle";
-import { PROBLEM_STATES, WARNING_STATES } from "./rules";
+import { PROBLEM_STATES, WARNING_STATES, recoveriesFor } from "./rules";
 
 /** An open incident takes a new problem in its project for this long after
  *  its last reported problem, and for as long as an attached signal is still
@@ -28,6 +29,35 @@ import { PROBLEM_STATES, WARNING_STATES } from "./rules";
 export const MERGE_WINDOW_MS = 1_800_000;
 /** A signal that turns bad this soon after its incident closed reopens it. */
 export const REOPEN_WINDOW_MS = 1_800_000;
+/**
+ * After an incident closes without action, its signals are quiet for up to
+ * this long. A bad run that begins in that time reopens it only once the
+ * signal shows a new problem: it had been ok for {@link QUIET_HEALTHY_MS}
+ * and then stayed bad for {@link QUIET_FAILING_MS} (each at least as long
+ * as its own rule takes, see {@link quietNeeds}), or it stayed failing for
+ * {@link QUIET_BREAKTHROUGH_MS} whatever came before. Until then a flapping
+ * signal reopens nothing and opens nothing. A run that began before the
+ * close never reopens it: it was closed knowingly.
+ */
+export const QUIET_WINDOW_MS = 86_400_000;
+/** Ok this long before a bad run: a new problem, not the same flap. */
+export const QUIET_HEALTHY_MS = 900_000;
+/** After that, bad this long reopens a quiet incident. */
+export const QUIET_FAILING_MS = 600_000;
+/** Failing or slow this long reopens a quiet incident, flap or not. */
+export const QUIET_BREAKTHROUGH_MS = 3_600_000;
+
+/** Where a signal is in its current healthy or bad run. */
+export interface SignalRun {
+  /** When its current bad run (problem or warning, any mix) began. */
+  badSince?: number;
+  /** When it last turned failing or slow, while it still is. */
+  problemSince?: number;
+  /** When its current ok run began. */
+  okSince?: number;
+  /** How long it had been ok right before its bad run; 0 when not known. */
+  healthyBefore: number;
+}
 
 export interface EngineSnapshot {
   signals: Map<string, Signal>;
@@ -38,6 +68,12 @@ export interface EngineSnapshot {
    *  evaluation's `since` (however long ago). */
   incidents: Incident[];
   now: number;
+  /** Each signal's current run ({@link nextSignalRun}); none known reads
+   *  as a bad run that starts now, unsettled. */
+  runs?: ReadonlyMap<string, SignalRun>;
+  /** Projects whose settings pause new incidents: their signals open and
+   *  reopen nothing; incidents already open still hear from them. */
+  incidentsPaused?: ReadonlySet<string>;
 }
 
 export type IncidentOp =
@@ -74,6 +110,16 @@ export type IncidentOp =
       kind: IncidentFinding["kind"];
       signalId?: string;
       againstSignalId?: string;
+    }
+  | {
+      /** The signal is bad but its quiet incident stays closed: decide
+       *  again at `until`, else at its next change. The incident counts
+       *  the turn to failing or slow at `since` once. */
+      op: "hold";
+      incidentId: string;
+      signalId: string;
+      since?: string;
+      until?: string;
     };
 
 const isProblem = (state: SignalState | undefined) =>
@@ -93,6 +139,113 @@ function newestFirst(incidents: Incident[]): Incident[] {
 function since(iso: string | undefined, now: number): number {
   const at = iso === undefined ? Number.NaN : Date.parse(iso);
   return Number.isFinite(at) ? now - at : Number.POSITIVE_INFINITY;
+}
+
+/** `run` after the signal's evaluation `current`. The same object while
+ *  nothing about the run changed. */
+export function nextSignalRun(
+  run: SignalRun | undefined,
+  current: Pick<SignalEvaluation, "state" | "since">,
+): SignalRun {
+  const at = Date.parse(current.since);
+  if (isBad(current.state)) {
+    const problem = isProblem(current.state);
+    const base: SignalRun =
+      run?.badSince !== undefined
+        ? run
+        : {
+            badSince: at,
+            healthyBefore:
+              run?.okSince !== undefined && Number.isFinite(at)
+                ? Math.max(0, at - run.okSince)
+                : 0,
+          };
+    if (problem === (base.problemSince !== undefined)) return base;
+    const { problemSince: _problemSince, ...rest } = base;
+    return problem ? { ...rest, problemSince: at } : rest;
+  }
+  if (current.state === "ok") {
+    if (run?.okSince !== undefined) return run;
+    return { okSince: at, healthyBefore: 0 };
+  }
+  return { healthyBefore: 0 };
+}
+
+/** How long a signal's rule takes to call it failing, and to call it
+ *  recovered, in ms; 0 for rules that count no checks. */
+function debounceMs(signal: Signal): { failing: number; healthy: number } {
+  const rule = signal.rule;
+  const interval = stripIntervalMs(signal);
+  switch (rule.kind) {
+    case "consecutive":
+      return {
+        failing: rule.failures * interval,
+        healthy: recoveriesFor(rule) * interval,
+      };
+    case "threshold":
+      return { failing: rule.forMs, healthy: recoveriesFor(rule) * interval };
+    case "rate":
+      return { failing: rule.windowMs, healthy: rule.windowMs };
+    default:
+      return { failing: 0, healthy: 0 };
+  }
+}
+
+/** How long `signal` must be healthy, then bad, to reopen a quiet
+ *  incident: the quiet constants, or as long again as its own rule takes,
+ *  whichever is longer. */
+export function quietNeeds(signal: Signal): {
+  healthyMs: number;
+  failingMs: number;
+} {
+  const own = debounceMs(signal);
+  return {
+    healthyMs: Math.max(QUIET_HEALTHY_MS, own.healthy),
+    failingMs: Math.max(QUIET_FAILING_MS, own.failing),
+  };
+}
+
+type Quiet =
+  /** Stay closed; decide again at `until`, or at the next change. A run
+   *  that began before the close was closed knowingly: it never reopens
+   *  the incident, so it has no `until`. */
+  | { kind: "hold"; incident: Incident; since?: number; until?: number }
+  /** A new problem: reopen this one. */
+  | { kind: "reopen"; incident: Incident };
+
+/** The newest incident with the signal closed without action whose quiet
+ *  the signal's bad run began in, and what that quiet says. */
+function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
+  const run = snapshot.runs?.get(signal.id);
+  const badSince = run?.badSince ?? snapshot.now;
+  const incident = newestFirst(snapshot.incidents).find((i) => {
+    if (i.state !== "closed-without-action" || !i.signalIds.includes(signal.id))
+      return false;
+    const closedAt = Date.parse(i.closedAt ?? "");
+    return Number.isFinite(closedAt) && badSince - closedAt <= QUIET_WINDOW_MS;
+  });
+  if (!incident) return undefined;
+  const closedAt = Date.parse(incident.closedAt!);
+  const problemSince =
+    run?.problemSince ??
+    (isProblem(snapshot.evaluations.get(signal.id)?.state)
+      ? badSince
+      : undefined);
+  // Each turn to failing or slow after the close is a flap, even inside
+  // one flaky run; a flaky spell alone is not counted.
+  const hold: Extract<Quiet, { kind: "hold" }> = { kind: "hold", incident };
+  if (problemSince !== undefined && problemSince >= closedAt)
+    hold.since = problemSince;
+  if (badSince < closedAt) return hold;
+  const needs = quietNeeds(signal);
+  const due: number[] = [];
+  if ((run?.healthyBefore ?? 0) >= needs.healthyMs)
+    due.push(badSince + needs.failingMs);
+  if (problemSince !== undefined)
+    due.push(problemSince + QUIET_BREAKTHROUGH_MS);
+  if (due.some((at) => snapshot.now >= at)) return { kind: "reopen", incident };
+  if (due.length) hold.until = Math.min(...due);
+  return hold;
 }
 
 /** Signals related to `signal` by a declared dependency, either direction,
@@ -321,7 +474,33 @@ function decideBad(
   const disagreements = problem
     ? disagreementsWith(signal, current.state, snapshot)
     : [];
-  const target = pickTarget(signal, snapshot);
+  let target = pickTarget(signal, snapshot);
+  if (
+    (!target || target.kind === "reopen") &&
+    snapshot.incidentsPaused?.has(signal.project)
+  )
+    return;
+  // A signal of an incident closed without action is quiet a while: it
+  // reopens or opens nothing until it shows a new problem.
+  if (!target || target.kind === "reopen") {
+    const quiet = quietFor(signal, snapshot);
+    if (quiet?.kind === "hold") {
+      ops.add({
+        op: "hold",
+        incidentId: quiet.incident.id,
+        signalId: signal.id,
+        ...(quiet.since === undefined
+          ? {}
+          : { since: new Date(quiet.since).toISOString() }),
+        ...(quiet.until === undefined
+          ? {}
+          : { until: new Date(quiet.until).toISOString() }),
+      });
+      return;
+    }
+    if (quiet?.kind === "reopen")
+      target = { kind: "reopen", incident: quiet.incident };
+  }
   if (!target) {
     const findings = [
       ...providers.map((p) => externalFinding(p, snapshot)),
@@ -679,6 +858,22 @@ function applyOp(
         )
       )
         return incident;
+      // Found again after it was resolved: a flap, not news. The one
+      // finding counts it; the event log has it from the first time.
+      const again = incident.findings.findLastIndex((f) =>
+        sameFinding(f, op.finding),
+      );
+      if (again !== -1) {
+        const findings = [...incident.findings];
+        const { resolvedAt: _resolvedAt, ...back } = findings[again]!;
+        findings[again] = {
+          ...back,
+          detail: op.finding.detail,
+          count: (back.count ?? 1) + 1,
+          lastAt: op.finding.at,
+        };
+        return { ...incident, findings, updatedAt: at };
+      }
       return appendEvent(
         {
           ...incident,
@@ -692,6 +887,16 @@ function applyOp(
           signalId: op.finding.signalId,
         },
       );
+    }
+    case "hold": {
+      // Counted once per turn: deciding the same one again is no flap.
+      if (op.since === undefined) return incident;
+      const last = incident.quiet ? Date.parse(incident.quiet.lastAt) : NaN;
+      if (Date.parse(op.since) <= last) return incident;
+      return {
+        ...incident,
+        quiet: { flaps: (incident.quiet?.flaps ?? 0) + 1, lastAt: op.since },
+      };
     }
     case "resolve-finding": {
       let changed = false;

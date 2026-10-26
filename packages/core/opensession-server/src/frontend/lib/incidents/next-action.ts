@@ -37,6 +37,11 @@ import type {
   AskQuestion,
 } from "../types";
 import { formatSpan } from "./copy";
+import {
+  type FlapSuggestion,
+  type SignalFix,
+  flapSuggestion,
+} from "./flapping";
 import { type DotTone, signalDotTone } from "./tone";
 
 export { DECISION_COPY };
@@ -47,7 +52,8 @@ export type CardButtonKind =
   | "stop"
   | "pause-agents"
   | "resume-agents"
-  | "open-settings";
+  | "open-settings"
+  | "signal-fix";
 
 export interface CardButton {
   key: string;
@@ -57,6 +63,9 @@ export interface CardButton {
   decision?: OwnerDecision;
   /** Open settings: the section where a setup problem is fixed. */
   section?: SetupFix;
+  /** Signal fix: the signal, and the change with its undo. */
+  signalId?: string;
+  fix?: SignalFix;
   /** The Stop button counts down to the end of the veto. */
   countdownTo?: string;
   /** What the Stop button reads once the veto has ended. */
@@ -265,6 +274,30 @@ function shell(
   return out;
 }
 
+/** A closed incident whose signal keeps coming back: a stricter rule or a
+ *  day's mute, one click each. */
+function flapCard(flap: FlapSuggestion): ShellCard {
+  const fixes = [flap.stricter, flap.mute].filter(
+    (fix): fix is SignalFix => fix !== null,
+  );
+  return shell({
+    tone: "faint",
+    eyebrow: "On and off",
+    headline: `${flap.signalName} failed ${flap.flaps} times and passed again each time`,
+    body: flap.stricter
+      ? "Closed without action. Make its rule stricter or mute it for a day"
+      : "Closed without action. Mute it for a day",
+    buttons: fixes.map((fix) => ({
+      key: `signal-fix:${fix.label}`,
+      kind: "signal-fix",
+      label: fix.label,
+      weight: "soft",
+      signalId: flap.signalId,
+      fix,
+    })),
+  });
+}
+
 export function nextCard(input: {
   incident: Incident;
   settings: RedactedProjectSettings | null;
@@ -275,8 +308,11 @@ export function nextCard(input: {
   now: number;
 }): NextCard {
   const { incident, settings, primaryName } = input;
+  // A closed incident whose signal keeps coming back, once nothing more
+  // pressing (its open pull requests) is asked.
+  const flap = flapSuggestion(incident, input.signals ?? [], input.now);
   const r = incident.response;
-  if (!r) return null;
+  if (!r) return flap ? flapCard(flap) : null;
   const next = r.next;
   const recovery = recoveryLine(incident, input.signals ?? [], input.now);
 
@@ -305,6 +341,7 @@ export function nextCard(input: {
         ],
       });
     }
+    if (flap) return flapCard(flap);
     if (incident.state !== "resolved" || !next.options.includes("roll-back"))
       return null;
     return shell({
@@ -315,7 +352,8 @@ export function nextCard(input: {
       buttons: [decisionButton("roll-back", "soft")],
     });
   }
-  if (isTerminalIncidentState(incident.state)) return null;
+  if (isTerminalIncidentState(incident.state))
+    return flap ? flapCard(flap) : null;
 
   if (incident.state === "paused" || settings?.agentsPaused)
     return shell({

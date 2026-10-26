@@ -89,6 +89,7 @@ export type ProjectSettingsInput = Partial<
   Pick<
     IncidentProjectSettings,
     | "agentsPaused"
+    | "incidentsPaused"
     | "autonomy"
     | "vetoMs"
     | "watchMs"

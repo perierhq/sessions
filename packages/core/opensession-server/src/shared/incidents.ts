@@ -304,11 +304,18 @@ export interface IncidentEvent {
 export interface IncidentFinding {
   id: string;
   kind: "disagreement" | "external";
+  /** When it was first found. */
   at: string;
   signalId: string;
   againstSignalId?: string;
   detail: string;
   resolvedAt?: string;
+  /** Times it was found: a finding that comes back after it was resolved
+   *  (a flapping signal) is the same finding again, not a new one. Absent
+   *  means once. */
+  count?: number;
+  /** When it was last found, once it has come back. */
+  lastAt?: string;
 }
 
 /** The impact of an incident as last measured from its signal's source. */
@@ -344,6 +351,10 @@ export interface Incident {
   /** The fix loop's record (agents, proof, policy, actions). */
   response?: IncidentResponse;
   findings: IncidentFinding[];
+  /** Closed without action: the bad runs of its signals it stayed closed
+   *  through while quiet (server/incidents/engine.ts), and when the latest
+   *  began. */
+  quiet?: { flaps: number; lastAt: string };
   events: IncidentEvent[];
   droppedEvents: number;
 }

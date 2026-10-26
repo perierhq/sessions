@@ -36,6 +36,7 @@ const NOW = Date.parse("2026-10-20T12:31:12Z");
 const settings: RedactedProjectSettings = {
   project: "acme",
   agentsPaused: false,
+  incidentsPaused: false,
   autonomy: "deploy-after-veto",
   vetoMs: 600_000,
   watchMs: 600_000,
@@ -818,6 +819,69 @@ test("every settings target opens a project settings section", () => {
     expect(NEXT_STEP_SECTION[target]).toBeTruthy();
   expect(NEXT_STEP_SECTION.signals).toBe("incidents");
   expect(NEXT_STEP_SECTION.sandbox).toBe("where");
+});
+
+test("closed without action, a flapping signal's card offers a stricter rule or a mute", () => {
+  const signal: SignalView = {
+    id: "sig-a",
+    name: "Search",
+    project: "acme",
+    enabled: true,
+    severity: "major",
+    source: { kind: "http", url: "https://acme.example.test" },
+    rule: { kind: "consecutive", failures: 3 },
+    createdBy: "Ada",
+    createdAt: "2026-10-19T12:00:00Z",
+    updatedAt: "2026-10-19T12:00:00Z",
+    evaluation: null,
+  };
+  const closed: Incident = {
+    ...inc("closed-without-action", {
+      next: { kind: "done", detail: "", options: [] },
+    }),
+    closedAt: "2026-10-20T12:00:00Z",
+    quiet: { flaps: 6, lastAt: "2026-10-20T12:20:00Z" },
+  };
+  const card = nextCard({ ...base, incident: closed, signals: [signal] });
+  expect(card).toMatchObject({
+    mode: "shell",
+    tone: "faint",
+    eyebrow: "On and off",
+    headline: "Search failed 7 times and passed again each time",
+    body: "Closed without action. Make its rule stricter or mute it for a day",
+  });
+  expect(
+    card?.mode === "shell" && card.buttons.map((b) => [b.kind, b.label]),
+  ).toEqual([
+    ["signal-fix", "Need 6 failures in a row"],
+    ["signal-fix", "Mute for a day"],
+  ]);
+  // Its open pull requests are asked about first.
+  const withPr: Incident = {
+    ...closed,
+    response: {
+      ...closed.response!,
+      openPrs: [
+        {
+          url: "https://github.com/acme/web/pull/465",
+          number: 465,
+          sessionId: "child-1",
+        },
+      ],
+      next: { kind: "done", detail: "", options: ["close-prs", "keep-prs"] },
+    },
+  };
+  expect(
+    nextCard({ ...base, incident: withPr, signals: [signal] }),
+  ).toMatchObject({ eyebrow: "Closed" });
+  // Without the flaps it is a closed incident like any other: no card.
+  expect(
+    nextCard({
+      ...base,
+      incident: { ...closed, quiet: undefined },
+      signals: [signal],
+    }),
+  ).toBeNull();
 });
 
 test("closed without action with a code fix still open asks what to do with it", () => {
