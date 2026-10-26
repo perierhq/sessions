@@ -18,6 +18,7 @@ import {
   type VerdictInput,
   __setKnowledgeVerdictForTest,
   knowledgeVerdict,
+  quotesInternal,
 } from "./backing";
 import { __setKnowledgeServiceForTest } from "./client";
 import { KnowledgeService } from "./service";
@@ -91,6 +92,35 @@ async function project(
     recordKnowledgeSeen(sessionFor(name), path, head, "read");
   return head;
 }
+
+/** Writes `items` (front matter and body) to `name`'s knowledge; returns
+ *  the new HEAD. */
+async function notes(
+  name: string,
+  items: Record<string, { fm: Partial<KnowledgeFrontMatter>; body: string }>,
+): Promise<string> {
+  await service.ensureRepo(name);
+  return (await service.write(
+    name,
+    Object.entries(items).map(([path, item]) => ({
+      op: "put" as const,
+      path,
+      fm: fm(item.fm),
+      body: item.body,
+    })),
+    { message: "Add notes", author: ADA },
+  ))!;
+}
+
+const OPS_NOTE =
+  "Restart the billing worker with the admin token before touching the customer ledger in production.\n";
+const OPS = { path: "articles/ops.md", title: "Ops", body: OPS_NOTE };
+/** Twelve consecutive words of OPS_NOTE, in another case and punctuation. */
+const QUOTE12 =
+  "Hi! To fix it: RESTART the billing-worker, with the Admin token — before touching the customer... Thanks.";
+/** Eleven of them; the twelfth differs. */
+const QUOTE11 =
+  "Hi! Restart the billing worker with the admin token before touching the client ledger.";
 
 const cite = (
   path: string,
@@ -454,4 +484,125 @@ test("a test override replaces the verdict", async () => {
       input("acme-fresh", [cite("articles/x.md", "abc1234")]),
     ),
   ).toBeNull();
+});
+
+test("quotesInternal: twelve consecutive words of an internal note, any case and punctuation", () => {
+  expect(quotesInternal(QUOTE12, [OPS])).toEqual({
+    path: "articles/ops.md",
+    title: "Ops",
+  });
+  expect(quotesInternal(QUOTE11, [OPS])).toBeNull();
+  expect(quotesInternal(QUOTE12, [])).toBeNull();
+  // Letters and digits of any script count as words.
+  const zh = {
+    path: "articles/zh.md",
+    title: "Zh",
+    body: "Ünïcode wörter 1 2 3 4 5 6 7 8 9 10",
+  };
+  expect(
+    quotesInternal("ÜNÏCODE Wörter: 1, 2, 3, 4, 5, 6, 7, 8, 9.", [zh]),
+  ).toBeNull();
+  expect(
+    quotesInternal("So: ÜNÏCODE wörter 1 2 3 4 5 6 7 8 9 10!", [zh]),
+  ).toEqual({ path: "articles/zh.md", title: "Zh" });
+  // The first internal item (in the order given) that the draft quotes.
+  const other = { ...OPS, path: "articles/ops-2.md", title: "Ops 2" };
+  expect(quotesInternal(QUOTE12, [other, OPS])?.path).toBe("articles/ops-2.md");
+  // A shorter window when asked.
+  expect(quotesInternal(QUOTE11, [OPS], 11)?.path).toBe("articles/ops.md");
+});
+
+test("a draft quoting an internal note holds; cited or not", async () => {
+  const head = await notes("acme-quote", {
+    "articles/ops.md": {
+      fm: { title: "Ops", kind: "internal", dependsOn: [] },
+      body: OPS_NOTE,
+    },
+    "articles/export.md": {
+      fm: {},
+      body: "Open the project, choose Export, then CSV.\n",
+    },
+  });
+  recordKnowledgeSeen(
+    sessionFor("acme-quote"),
+    "articles/export.md",
+    head,
+    "read",
+  );
+  const quoted = await knowledgeVerdict(
+    input("acme-quote", [], { text: QUOTE12 }),
+    deps,
+  );
+  expect(quoted?.internalQuoted).toEqual({
+    path: "articles/ops.md",
+    title: "Ops",
+  });
+  expect(quoted?.failed).toBe(false);
+  // Citing a backing article doesn't excuse the quote.
+  const cited = await knowledgeVerdict(
+    input("acme-quote", [cite("articles/export.md", head)], { text: QUOTE12 }),
+    deps,
+  );
+  expect(cited?.backing).toHaveLength(1);
+  expect(cited?.internalQuoted?.path).toBe("articles/ops.md");
+  // Eleven words are not a quote.
+  expect(
+    (await knowledgeVerdict(input("acme-quote", [], { text: QUOTE11 }), deps))
+      ?.internalQuoted,
+  ).toBeNull();
+  // A new HEAD is read again: the note was rewritten, the old words are
+  // no longer internal text.
+  await notes("acme-quote", {
+    "articles/ops.md": {
+      fm: { title: "Ops", kind: "internal", dependsOn: [] },
+      body: "Ask the on-call engineer.\n",
+    },
+  });
+  expect(
+    (await knowledgeVerdict(input("acme-quote", [], { text: QUOTE12 }), deps))
+      ?.internalQuoted,
+  ).toBeNull();
+});
+
+test("the same words from an answer article are no quote", async () => {
+  await notes("acme-answer", {
+    "articles/ops.md": { fm: { title: "Ops", dependsOn: [] }, body: OPS_NOTE },
+  });
+  expect(
+    (await knowledgeVerdict(input("acme-answer", [], { text: QUOTE12 }), deps))
+      ?.internalQuoted,
+  ).toBeNull();
+});
+
+test("a project without internal items has no quote", async () => {
+  await project("acme-plain", { "articles/export.md": {} });
+  const v = await knowledgeVerdict(
+    input("acme-plain", [], { text: QUOTE12 }),
+    deps,
+  );
+  expect(v?.internalQuoted).toBeNull();
+  expect(v?.failed).toBe(false);
+});
+
+test("the internal bodies can't be read: fails closed", async () => {
+  await notes("acme-nobodies", {
+    "articles/ops.md": {
+      fm: { title: "Ops", kind: "internal", dependsOn: [] },
+      body: OPS_NOTE,
+    },
+  });
+  const real = deps.call ?? (await import("./client")).knowledgeRepo.call;
+  const broken = (async (method: string, ...args: unknown[]) => {
+    if (method === "index.internalBodies")
+      throw new MemoryRepoError("The memory worker is unavailable.", 503);
+    return (real as (m: string, ...a: unknown[]) => Promise<unknown>)(
+      method,
+      ...args,
+    );
+  }) as unknown as BackingDeps["call"];
+  const v = await knowledgeVerdict(
+    input("acme-nobodies", [], { text: "Hello." }),
+    { ...deps, call: broken },
+  );
+  expect(v?.failed).toBe(true);
 });

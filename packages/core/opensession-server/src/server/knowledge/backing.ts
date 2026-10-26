@@ -21,6 +21,10 @@
 // Used but not cited: when the draft cites nothing that backs it, every
 // item the session read must pass 1–4 at the commit it was read at, or
 // it holds the draft too (`uncited`), since the reply may rest on it.
+// Quoted internal text: whenever the project has a knowledge repository,
+// cited or not, a draft holding INTERNAL_QUOTE_WORDS consecutive words of
+// an `internal` article body sets `internalQuoted` (quote-check.ts); the
+// shingled bodies are cached per project by knowledge HEAD.
 // Anything that throws (the worker, the index, git, GitHub) makes the
 // whole verdict `failed`: the draft waits with "Knowledge couldn't be
 // checked". Nothing runs at import.
@@ -45,6 +49,14 @@ import {
   commitsSince,
   latestChange,
 } from "./freshness/repo-changes";
+import {
+  type InternalWindows,
+  type QuotedNote,
+  findQuote,
+  internalWindows,
+} from "./quote-check";
+
+export { quotesInternal } from "./quote-check";
 
 export interface VerdictInput {
   project: string;
@@ -187,6 +199,32 @@ async function checkCitation(
   return null;
 }
 
+/** Shingled internal bodies per project, at the knowledge HEAD they were
+ *  read at. */
+const shingledByProject = new Map<
+  string,
+  { head: string; shingled: InternalWindows }
+>();
+
+/** The first internal note the draft quotes. The bodies come from the
+ *  index after its freshness check; they are cached only when HEAD didn't
+ *  move while they were read, so a cached set is exactly that HEAD's. */
+async function internalQuote(
+  project: string,
+  text: string,
+  d: BackingDeps,
+): Promise<QuotedNote | null> {
+  const head = await d.call("head", project);
+  const cached = shingledByProject.get(project);
+  if (head && cached?.head === head) return findQuote(text, cached.shingled);
+  const shingled = internalWindows(
+    await d.call("index.internalBodies", project),
+  );
+  if (head && (await d.call("head", project)) === head)
+    shingledByProject.set(project, { head, shingled });
+  return findQuote(text, shingled);
+}
+
 function deps(over: Partial<BackingDeps>): BackingDeps {
   return {
     call: over.call ?? knowledgeRepo.call,
@@ -200,8 +238,7 @@ function deps(over: Partial<BackingDeps>): BackingDeps {
 
 /** The draft's knowledge verdict (see the header). Null when the project
  *  has no knowledge repository and the draft cites no knowledge. Never
- *  throws: a check that fails is `failed`. `internalQuoted` stays null
- *  here (the internal-quote check is its own). */
+ *  throws: a check that fails is `failed`. */
 export async function knowledgeVerdict(
   input: VerdictInput,
   over: Partial<BackingDeps> = {},
@@ -229,6 +266,7 @@ export async function knowledgeVerdict(
       }
       return verdict;
     }
+    verdict.internalQuoted = await internalQuote(input.project, input.text, d);
     for (const ref of cited) {
       const blocked = await checkCitation(input, ref, today, d);
       if (blocked) verdict.blocked.push(blocked);
