@@ -229,7 +229,7 @@ function bindDeps(
 // ── The run ────────────────────────────────────────────────────────────
 
 /** The front matter of an indexed item, without the index's fields. */
-function frontMatterOf(item: KnowledgeItem): KnowledgeFrontMatter {
+export function frontMatterOf(item: KnowledgeItem): KnowledgeFrontMatter {
   const fm: KnowledgeFrontMatter = {
     title: item.title,
     kind: item.kind,
