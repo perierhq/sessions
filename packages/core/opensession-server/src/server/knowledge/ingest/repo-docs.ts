@@ -1,6 +1,6 @@
 /**
- * The repository import: the project's own documentation and releases as
- * trusted knowledge mirrors.
+ * The repository import: the project's own documentation as trusted
+ * knowledge mirrors, its release notes as reference.
  *
  * mirrorRepoDocs copies `README.md`, `docs/**\/*.md` and everything under
  * `docs/incidents/` from the fetched default branch
@@ -10,7 +10,10 @@
  * `sources: repo:<path>@<head>`) and depends on its own path, so B2's
  * re-validation refreshes it when the file changes. A file that is gone
  * retires its mirror (text kept). mirrorReleases copies the newest
- * RELEASES_KEPT GitHub releases to `sources/releases/<tag>.md`.
+ * RELEASES_KEPT GitHub releases to `sources/releases/<tag>.md` as
+ * `trust: reference`: release notes carry outsiders' PR titles, text nobody
+ * reviewed, so they never back an automatic reply. A release mirrored as
+ * trusted by an older build is rewritten as reference.
  *
  * Text is copied as written, never redacted: a file that looks like it
  * holds a credential, is binary, empty, a Git LFS pointer or too large is
@@ -538,6 +541,7 @@ export async function mirrorReleases(
           current &&
           current.item.status !== "retired" &&
           current.item.title === title &&
+          current.item.trust === "reference" &&
           sameText(current.body, text)
         )
           continue;
@@ -551,7 +555,7 @@ export async function mirrorReleases(
           fm: {
             title,
             kind: "answer",
-            trust: "trusted",
+            trust: "reference",
             status: "active",
             origin: "release",
             topics: [],
@@ -640,7 +644,7 @@ export async function startRepoImport(
     if (docs.truncated) await job.markTruncated();
     const releases = await mirrorReleases(project, run);
     await job.progress({
-      trusted: releases.written,
+      reference: releases.written,
       skipped: releases.skipped,
       done: releases.written + releases.retired + releases.skipped,
     });

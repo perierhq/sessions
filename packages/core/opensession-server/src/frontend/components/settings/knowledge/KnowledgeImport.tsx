@@ -272,8 +272,8 @@ export function KnowledgeImport({ project }: { project: string }) {
               Repository docs and releases
             </div>
             <div className={IMPORT_SOURCE_LINE}>
-              README, docs and the newest release notes on the default branch.
-              Incident notes stay internal
+              README and docs on the default branch. Release notes come in as
+              reference, incident notes stay internal
             </div>
           </div>
           <Button

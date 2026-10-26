@@ -15,7 +15,11 @@ import { useSupportTestKernel } from "../../support/testing/kernel-fixture";
 import { __setKnowledgeServiceForTest, knowledgeRepo } from "../client";
 import type { ReleaseInfo } from "../freshness/github";
 import type { RepoChangeDeps } from "../freshness/repo-changes";
-import { frontMatterOf } from "../freshness/revalidate";
+import {
+  frontMatterOf,
+  PAT_AUTHOR,
+  PAT_TRAILER,
+} from "../freshness/revalidate";
 import { releaseItemPath, repoItemPath } from "../layout";
 import { KnowledgeService } from "../service";
 import {
@@ -318,7 +322,8 @@ describe("releases mirror", () => {
     expect(newest?.item).toMatchObject({
       title: "Acme 1.31",
       kind: "answer",
-      trust: "trusted",
+      // Release notes carry outsiders' PR titles: never trusted text.
+      trust: "reference",
       status: "active",
       origin: "release",
       sources: ["release:v1.31.0"],
@@ -355,6 +360,34 @@ describe("releases mirror", () => {
     expect(none.retired).toBe(0);
   });
 
+  test("a release mirrored as trusted before is rewritten as reference", async () => {
+    await mirrorReleases("acme", deps());
+    const path = releaseItemPath("v1.31.0");
+    const current = (await read(path))!;
+    await knowledgeRepo.call(
+      "write",
+      "acme",
+      [
+        {
+          op: "put",
+          path,
+          fm: { ...frontMatterOf(current.item), trust: "trusted" },
+          body: current.body,
+        },
+      ],
+      {
+        message: "Import releases: 1",
+        trailers: [PAT_TRAILER],
+        author: PAT_AUTHOR,
+        expected: { [path]: current.item.blob },
+      },
+    );
+    expect((await read(path))?.item.trust).toBe("trusted");
+    const result = await mirrorReleases("acme", deps());
+    expect(result.written).toBe(1);
+    expect((await read(path))?.item.trust).toBe("reference");
+  });
+
   test("a release a person edited last is left alone", async () => {
     await mirrorReleases("acme", deps());
     const path = releaseItemPath("v1.31.0");
@@ -385,7 +418,7 @@ describe("repo import job", () => {
     expect(done).toMatchObject({
       kind: "repo",
       state: "done",
-      created: { trusted: 34, reference: 0, suggestions: 0, skipped: 2 },
+      created: { trusted: 4, reference: 30, suggestions: 0, skipped: 2 },
     });
   });
 
