@@ -80,7 +80,33 @@ export const apiSWRKey = {
   // Settings → Inboxes and the email pane (projects to move to, whether
   // the signed-in person is the instance owner).
   supportInboxes: () => ["api", "support-inboxes"] as const,
+  // A project's Knowledge: the list per filter and query, and its imports.
+  // Writes revalidate every key starting ["api", "knowledge", project].
+  knowledge: (project: string, filter: string, q = "", offset = 0) =>
+    ["api", "knowledge", project, "list", filter, q, offset] as const,
+  knowledgeJobs: (project: string) =>
+    ["api", "knowledge", project, "jobs"] as const,
+  knowledgeNeedsCheck: (project: string) =>
+    ["api", "knowledge", project, "needs-check"] as const,
+  knowledgeNeedsCheckChange: (project: string, path: string) =>
+    ["api", "knowledge", project, "needs-check", path] as const,
+  knowledgeHistory: (project: string, path = "") =>
+    ["api", "knowledge", project, "history", path] as const,
+  knowledgeItem: (project: string, path: string) =>
+    ["api", "knowledge", project, "item", path] as const,
 };
+
+/** Every key of one project's Knowledge, for `mutate(filter)` after a
+ *  write: the lists, counts, items, history and needs-check all move. */
+export function knowledgeKeyFilter(
+  project: string,
+): (key: Arguments) => boolean {
+  return (key) =>
+    Array.isArray(key) &&
+    key[0] === "api" &&
+    key[1] === "knowledge" &&
+    key[2] === project;
+}
 
 /**
  * Every resource keyed by one session, for `mutate(filter)` once the server

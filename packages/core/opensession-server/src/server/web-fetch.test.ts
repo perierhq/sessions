@@ -195,6 +195,12 @@ describe("htmlToText", () => {
     const { text } = await htmlToText("<p>a</p>\n\n\n\n\n<p>b</p>");
     expect(text).not.toMatch(/\n{3,}/);
   });
+
+  test("megabytes of unclosed `<` finish fast", async () => {
+    const started = performance.now();
+    await htmlToText(`<p>${"<".repeat(5_000_000)}</p>`);
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
 });
 
 describe("decodeEntities", () => {

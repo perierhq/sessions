@@ -14,6 +14,10 @@ import type {
   SupportMessage,
   TriageVerdict,
 } from "../../../shared/support";
+import {
+  __setKnowledgeVerdictForTest,
+  knowledgeVerdict,
+} from "../../knowledge/backing";
 import { registerChannelAdapter } from "../channel";
 import {
   __setInboxProjectCheckForTest,
@@ -97,14 +101,22 @@ export function useReplyTestbed() {
   beforeEach(async () => {
     __resetReplyStateForTest();
     __setProjectSitesForTest(async () => ({ ...TEST_SITES }));
+    // No knowledge, unless a test says otherwise (backing.test.ts covers
+    // the verdict itself).
+    __setKnowledgeVerdictForTest(async () => null);
     // Every cited source checks out and the text is clean, unless a test
-    // says otherwise (verify.test.ts covers the check itself).
-    __setDraftCheckForTest(async (input) => ({
-      verified: input.sources,
-      topics: [],
-      promises: false,
-      at: new Date(input.now).toISOString(),
-    }));
+    // says otherwise (verify.test.ts covers the check itself). Knowledge
+    // goes through the verdict, as in checkDraft.
+    __setDraftCheckForTest(async (input) => {
+      const knowledge = await knowledgeVerdict(input);
+      return {
+        verified: input.sources,
+        topics: [],
+        promises: false,
+        ...(knowledge ? { knowledge } : {}),
+        at: new Date(input.now).toISOString(),
+      };
+    });
     __setInboxProjectCheckForTest((id) => TEST_PROJECTS.includes(id));
     previousSecrets = process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;
     process.env.OPENSESSION_WORKSPACE_SECRETS_STORE = join(
@@ -139,6 +151,7 @@ export function useReplyTestbed() {
     __resetReplyStateForTest();
     __setProjectSitesForTest(undefined);
     __setDraftCheckForTest(undefined);
+    __setKnowledgeVerdictForTest(undefined);
     __setInboxProjectCheckForTest(undefined);
     if (previousSecrets === undefined)
       delete process.env.OPENSESSION_WORKSPACE_SECRETS_STORE;

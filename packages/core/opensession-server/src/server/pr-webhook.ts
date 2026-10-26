@@ -210,6 +210,21 @@ function scheduleBroadcast(
   );
 }
 
+function defaultKnowledgeNudge(repoId: string): void {
+  void import("./knowledge/maintenance")
+    .then((m) => m.nudgeKnowledge(repoId))
+    .catch((e) => console.error("[pr-webhook] knowledge nudge failed:", e));
+}
+
+let knowledgeNudge = defaultKnowledgeNudge;
+
+/** Replace the knowledge nudge (tests); null restores it. */
+export function __setKnowledgeNudgeForTest(
+  fn: ((repoId: string) => void) | null,
+): void {
+  knowledgeNudge = fn ?? defaultKnowledgeNudge;
+}
+
 /** Fire-and-forget from the webhook route; never throws. */
 export function handlePrWebhookEvent(event: string, payload: any): void {
   try {
@@ -229,6 +244,8 @@ export function handlePrWebhookEvent(event: string, payload: any): void {
       scheduleSandboxEnvironmentInvalidation(repoId);
       // The next Ask session waits for its checkout to reach the new head.
       invalidateAskCheckoutRefresh(repoId);
+      // Knowledge that depends on the code repository is checked again.
+      knowledgeNudge(repoId);
     }
     // Default-branch activity (deploy workflows on master/main) is not PR
     // activity — nudging every session parked on that branch would spend gh

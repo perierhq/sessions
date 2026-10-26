@@ -46,3 +46,9 @@ export const INBOX_AUTONOMY_CHOICES = "flex flex-col";
  *  row is the target, 44px under a finger. */
 export const INBOX_AUTONOMY_CHOICE =
   "flex min-h-11 cursor-pointer items-start gap-3 py-1.5";
+
+/** "Learn from past replies" after an inbox is connected: its words, then
+ *  the window and Import on one line under them; one per line on a phone. */
+export const INBOX_LEARN_ROW = "flex flex-col gap-3";
+export const INBOX_LEARN_CONTROLS =
+  "flex items-center gap-2 phone:flex-col phone:items-stretch";

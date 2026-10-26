@@ -375,6 +375,7 @@ describe("phone and desktop", () => {
       onAddingChange: () => {},
       onCellChange: () => {},
       onAllowAgents: () => {},
+      onKnowledgeChange: () => {},
       onSave: async () => {},
     };
     phone = true;

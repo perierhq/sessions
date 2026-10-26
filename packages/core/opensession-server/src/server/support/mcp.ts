@@ -6,8 +6,9 @@
 // <customer_email> wrapper (wrap.ts), as JSON data. draft_reply goes
 // through the one reply path (reply.ts); report_bug only prepares an issue
 // and a fix task for a person (bugs.ts), for the conversation's current
-// session. Moving a conversation is a person's action, never a tool.
-// Nothing runs at import.
+// session. search_knowledge and read_knowledge read the conversation
+// project's knowledge (knowledge/support-tools.ts). Moving a conversation
+// is a person's action, never a tool. Nothing runs at import.
 
 import { z } from "zod";
 import {
@@ -25,6 +26,7 @@ import {
   tool,
 } from "../inprocess-mcp";
 import type { ExternalRef } from "../types";
+import { knowledgeTools } from "../knowledge/support-tools";
 import { MAX_SUMMARY, MAX_TITLE, reportBug } from "./bugs";
 import { getInbox } from "./inboxes";
 import { proposeDraft } from "./reply";
@@ -192,7 +194,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
     ),
     tool(
       "draft_reply",
-      "Write the reply to the customer of this conversation: plain text, no HTML, no images, at most two links and only to the project's own websites, no query strings. Cite every source the facts come from: a file path in this repository, a page on the project's websites you read with web_fetch, or a record a Support connector returned, as <connector>:<record id>. Sources are checked. A reply without a source waits for a person, except one short clarifying question per conversation (purpose clarify). The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it. The answer says which. A new draft replaces your earlier one unless that one is already being sent.",
+      "Write the reply to the customer of this conversation: plain text, no HTML, no images, at most two links and only to the project's own websites, no query strings. Cite every source the facts come from: a file path in this repository, a page on the project's websites you read with web_fetch, a knowledge item you read with read_knowledge, as the ref it gave you (path@commit), or a record a Support connector returned, as <connector>:<record id>. Sources are checked. A reply without a source waits for a person, except one short clarifying question per conversation (purpose clarify). The inbox's settings decide whether it is sent now, after a veto window, or after a person approves it. The answer says which. A new draft replaces your earlier one unless that one is already being sent.",
       {
         text: z.string().describe("The reply, as plain text"),
         sources: z
@@ -202,7 +204,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
               ref: z
                 .string()
                 .describe(
-                  "repo: a path like docs/setup.md. url: an https URL. record: <connector>:<record id>",
+                  "repo: a path like docs/setup.md. url: an https URL. record: <connector>:<record id>. knowledge: path@commit as read_knowledge gave it, e.g. articles/export.md@3f2a1b0c…",
                 ),
             }),
           )
@@ -243,6 +245,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
         );
       },
     ),
+    ...knowledgeTools(ctx),
     ...bugTools(ctx),
   ];
 }
@@ -250,7 +253,7 @@ export function supportToolDefinitions(ctx: { sessionId: string }): AnyTool[] {
 /** The conversation `sessionId` currently answers, or why not: after a
  *  move the old session still carries the ref, but only the new one may
  *  act on the conversation. */
-async function currentConversation(
+export async function currentConversation(
   sessionId: string,
 ): Promise<{ ok: true; c: SupportConversation } | { ok: false; why: string }> {
   const c = await conversationForSession(sessionId);

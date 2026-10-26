@@ -13,22 +13,17 @@
  *                        derived index (memory-v2 MemoryStore schema);
  *                        delete it and it rebuilds from git
  *
+ * The generic git half (bare repositories, the locked service checkout,
+ * commit and push, history, diff, revert) is GitRepoStore (git-store.ts);
+ * this class adds memory's format, index, session checkouts and remotes.
+ *
  * This class is hosted by memory-repo-worker.ts, never on the gateway
  * thread: the index is synchronous SQLite. Git work is async subprocesses.
  * Construction has no side effects beyond opening the index.
  */
 
-import {
-  mkdir,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-  chmod,
-  appendFile,
-  readdir,
-} from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { MemoryStore } from "../memory-v2/store";
 import type { MemoryKind, MemoryRecord, MemoryState } from "../memory-v2/types";
 import {
@@ -70,9 +65,22 @@ import {
 } from "./layout";
 import { recordsForRepo, syntheticEntryId, type RepoFile } from "./records";
 import { assertNoSecrets } from "./secrets";
-import { formatProblems, MAX_FILE_BYTES, validateRepoFile } from "./validate";
+import {
+  cleanHookOutput,
+  exists,
+  GitRepoStore,
+  MemoryRepoError,
+  PUSH_LOG,
+  safePath,
+  type Author,
+  type HistoryCommit,
+  type WithWorkOptions,
+  type WorkContext,
+} from "./git-store";
+import { MAX_FILE_BYTES, validateRepoFile } from "./validate";
 
-export const PUSH_LOG = "opensession-pushes.jsonl";
+export { MemoryRepoError, PUSH_LOG, safePath };
+export type { Author, HistoryCommit, WorkContext };
 
 export interface MemoryRepoServiceOptions {
   /** The memory state directory (repos/, repo-work/, the index live here). */
@@ -85,31 +93,6 @@ export interface MemoryRepoServiceOptions {
   labels?: Record<string, string>;
   /** Index path override (tests). */
   indexPath?: string;
-}
-
-export interface Author {
-  name: string;
-  email?: string;
-}
-
-export interface WorkContext {
-  dir: string;
-  read(path: string): Promise<string | undefined>;
-  write(path: string, text: string): Promise<void>;
-  remove(path: string): Promise<void>;
-  list(): Promise<string[]>;
-  git(args: string[]): Promise<string>;
-}
-
-export interface HistoryCommit {
-  sha: string;
-  author: string;
-  date: string;
-  subject: string;
-  body: string;
-  files: Array<{ status: string; path: string }>;
-  sessionId?: string;
-  pushedBy?: string;
 }
 
 export interface RemoteStatus {
@@ -139,59 +122,29 @@ export interface EntryInput {
   details?: string;
 }
 
-export class MemoryRepoError extends Error {
-  constructor(
-    message: string,
-    public readonly status = 400,
-  ) {
-    super(message);
-    this.name = "MemoryRepoError";
-  }
-}
-
 const FOLD_LIMIT = 400;
-const LOCK_STALE_MS = 120_000;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export function newEntryId(): string {
   return `m-${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`;
 }
 
-function authorEnv(author?: Author): Record<string, string> {
-  const name = author?.name?.trim() || SERVICE_AUTHOR.name;
-  const email =
-    author?.email?.trim() ||
-    (author?.name
-      ? `${author.name
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9._-]+/g, "-")}@users.opensession.local`
-      : SERVICE_AUTHOR.email);
-  return isolatedGitEnv({ GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email });
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export class MemoryRepoService {
   readonly index: MemoryStore;
-  private readonly chains = new Map<string, Promise<unknown>>();
+  /** The git half: bare repositories, the service checkout, history. */
+  readonly store: GitRepoStore;
   private readonly checked = new Map<string, number>();
-  private readonly hooked = new Set<string>();
 
   constructor(readonly opts: MemoryRepoServiceOptions) {
     this.index = new MemoryStore(
       opts.indexPath ?? join(opts.base, "memory-repo-index.sqlite"),
     );
+    this.store = new GitRepoStore({
+      base: opts.base,
+      isValidName: isValidRepoName,
+      validate: (path, bytes) => validateRepoFile(path, bytes),
+      onPushed: (name) => this.refresh(name).then(() => {}),
+      hookCommand: opts.hookCommand,
+      label: "Memory",
+    });
   }
 
   close(): void {
@@ -199,15 +152,11 @@ export class MemoryRepoService {
   }
 
   bareDir(name: string): string {
-    return join(this.opts.base, "repos", `${name}.git`);
+    return this.store.bareDir(name);
   }
 
   workDir(name: string): string {
-    return join(this.opts.base, "repo-work", name);
-  }
-
-  private lockDir(name: string): string {
-    return join(this.opts.base, "repo-locks", `${name}.lock`);
+    return this.store.workDir(name);
   }
 
   sessionLink(sessionId: string): string {
@@ -223,39 +172,18 @@ export class MemoryRepoService {
   // ── Repositories ────────────────────────────────────────────────────
 
   async repoExists(name: string): Promise<boolean> {
-    return exists(join(this.bareDir(name), "HEAD"));
+    return this.store.repoExists(name);
   }
 
   async listRepos(): Promise<string[]> {
-    try {
-      return (await readdir(join(this.opts.base, "repos")))
-        .filter((entry) => entry.endsWith(".git"))
-        .map((entry) => entry.slice(0, -4))
-        .filter(isValidRepoName)
-        .sort();
-    } catch {
-      return [];
-    }
+    return this.store.listRepos();
   }
 
   /** Create the bare repository with a starter MEMORY.md. Idempotent. */
   async ensureRepo(name: string): Promise<void> {
     if (!isValidRepoName(name))
       throw new MemoryRepoError(`Invalid memory repository "${name}".`);
-    const bare = this.bareDir(name);
-    if (!(await this.repoExists(name))) {
-      await mkdir(dirname(bare), { recursive: true });
-      await git(["init", "--bare", "--quiet", "--initial-branch=main", bare]);
-      for (const [key, value] of [
-        ["receive.denyNonFastForwards", "true"],
-        ["receive.denyDeletes", "true"],
-        ["receive.advertisePushOptions", "true"],
-        ["http.receivepack", "true"],
-        ["core.logAllRefUpdates", "true"],
-      ]) {
-        await git(["--git-dir", bare, "config", key, value]);
-      }
-    }
+    await this.store.initBare(name);
     await this.installHooks(name);
     if (!(await this.head(name))) {
       const scopeKey = name === TEAM_REPO ? "workspace" : name;
@@ -275,21 +203,7 @@ export class MemoryRepoService {
 
   /** (Re)write the receive hooks so they run this release's validator. */
   async installHooks(name: string, force = false): Promise<void> {
-    if (!force && this.hooked.has(name)) return;
-    const command = this.opts.hookCommand;
-    if (!command?.length) return;
-    const hooks = join(this.bareDir(name), "hooks");
-    await mkdir(hooks, { recursive: true });
-    const quoted = command.map((part) => `'${part.replace(/'/g, `'\\''`)}'`);
-    for (const hook of ["pre-receive", "post-receive"]) {
-      const path = join(hooks, hook);
-      await writeFile(
-        path,
-        `#!/bin/sh\n# Installed by Open Session (memory-repo/service.ts).\nexec ${quoted.join(" ")} ${hook} "$@"\n`,
-      );
-      await chmod(path, 0o755);
-    }
-    this.hooked.add(name);
+    await this.store.installHooks(name, force);
   }
 
   /** Point every repository's hooks at this release's validator. */
@@ -301,21 +215,7 @@ export class MemoryRepoService {
 
   /** The commit `main` points at, read from the ref files (no subprocess). */
   async head(name: string): Promise<string | null> {
-    const bare = this.bareDir(name);
-    try {
-      const loose = (
-        await readFile(join(bare, "refs/heads/main"), "utf8")
-      ).trim();
-      if (/^[0-9a-f]{40,64}$/.test(loose)) return loose;
-    } catch {}
-    try {
-      const packed = await readFile(join(bare, "packed-refs"), "utf8");
-      const line = packed
-        .split("\n")
-        .find((row) => row.endsWith(" refs/heads/main"));
-      if (line) return line.split(" ")[0];
-    } catch {}
-    return null;
+    return this.store.head(name);
   }
 
   // ── Index ───────────────────────────────────────────────────────────
@@ -402,82 +302,6 @@ export class MemoryRepoService {
 
   // ── Writes through the service checkout ─────────────────────────────
 
-  private async lock(name: string): Promise<() => Promise<void>> {
-    const dir = this.lockDir(name);
-    await mkdir(dirname(dir), { recursive: true });
-    const deadline = Date.now() + 60_000;
-    for (;;) {
-      try {
-        await mkdir(dir);
-        return async () => {
-          await rm(dir, { recursive: true, force: true });
-        };
-      } catch {
-        try {
-          const info = await stat(dir);
-          if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
-            await rm(dir, { recursive: true, force: true });
-            continue;
-          }
-        } catch {
-          continue;
-        }
-        if (Date.now() > deadline)
-          throw new MemoryRepoError(
-            `Memory repository "${name}" is busy. Try again.`,
-            503,
-          );
-        await sleep(100);
-      }
-    }
-  }
-
-  /** Serialize work per repository in this process, and lock across processes. */
-  private serial<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.chains.get(name) ?? Promise.resolve();
-    const next = previous
-      .catch(() => {})
-      .then(async () => {
-        const release = await this.lock(name);
-        try {
-          return await fn();
-        } finally {
-          await release();
-        }
-      });
-    this.chains.set(name, next);
-    return next;
-  }
-
-  private async syncWork(
-    name: string,
-    env: Record<string, string>,
-  ): Promise<string> {
-    const dir = this.workDir(name);
-    if (!(await exists(join(dir, ".git")))) {
-      await rm(dir, { recursive: true, force: true });
-      await mkdir(dirname(dir), { recursive: true });
-      await git(["clone", "--quiet", this.bareDir(name), dir], { env });
-    }
-    await git(["fetch", "--quiet", "origin"], { cwd: dir, env });
-    const remoteHead = await git(
-      ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"],
-      { cwd: dir, env, check: false },
-    );
-    if (remoteHead.code === 0) {
-      await git(["checkout", "--quiet", "-B", "main", "origin/main"], {
-        cwd: dir,
-        env,
-      });
-      await git(["reset", "--quiet", "--hard", "origin/main"], {
-        cwd: dir,
-        env,
-      });
-    }
-    await git(["clean", "-fdq"], { cwd: dir, env });
-    return dir;
-  }
-
   /**
    * Run `fn` against a fresh service checkout of `name`, then commit what it
    * changed and push. A push that lost a race to a session retries on the
@@ -486,112 +310,9 @@ export class MemoryRepoService {
   withWork(
     name: string,
     fn: (work: WorkContext) => Promise<void>,
-    opts: {
-      message: string;
-      author?: Author;
-      trailers?: string[];
-      /** Session the change is made for; recorded by the push log. */
-      session?: string;
-    },
+    opts: WithWorkOptions,
   ): Promise<string | null> {
-    return this.serial(name, async () => {
-      const env = authorEnv(opts.author);
-      for (let attempt = 0; attempt < 4; attempt++) {
-        const dir = await this.syncWork(name, env);
-        const before = (
-          await git(["rev-parse", "--verify", "--quiet", "HEAD"], {
-            cwd: dir,
-            env,
-            check: false,
-          })
-        ).stdout.trim();
-        const touched = new Set<string>();
-        const context: WorkContext = {
-          dir,
-          read: async (path) => {
-            try {
-              return await readFile(join(dir, safePath(path)), "utf8");
-            } catch {
-              return undefined;
-            }
-          },
-          write: async (path, text) => {
-            const target = join(dir, safePath(path));
-            await mkdir(dirname(target), { recursive: true });
-            await writeFile(target, text);
-            touched.add(path);
-          },
-          remove: async (path) => {
-            await rm(join(dir, safePath(path)), { force: true });
-            touched.add(path);
-          },
-          list: async () => {
-            const { stdout } = await git(["ls-files", "-z"], { cwd: dir, env });
-            return stdout.split("\0").filter(Boolean);
-          },
-          git: async (args) => (await git(args, { cwd: dir, env })).stdout,
-        };
-        await fn(context);
-        for (const path of touched) {
-          const text = await context.read(path);
-          if (text === undefined) continue;
-          const problems = validateRepoFile(
-            path,
-            new TextEncoder().encode(text),
-          );
-          if (problems.length)
-            throw new MemoryRepoError(formatProblems(problems));
-        }
-        await git(["add", "-A"], { cwd: dir, env });
-        const status = await git(["status", "--porcelain"], { cwd: dir, env });
-        if (status.stdout.trim()) {
-          const message = [
-            opts.message,
-            ...(opts.trailers?.length ? ["", ...opts.trailers] : []),
-          ].join("\n");
-          await git(["commit", "--quiet", "--no-verify", "-m", message], {
-            cwd: dir,
-            env,
-          });
-        }
-        const after = (
-          await git(["rev-parse", "--verify", "--quiet", "HEAD"], {
-            cwd: dir,
-            env,
-            check: false,
-          })
-        ).stdout.trim();
-        if (!after || after === before) return null;
-        const push = await git(
-          [
-            "push",
-            "--quiet",
-            "-o",
-            `actor=${opts.author?.name || "service"}`,
-            ...(opts.session ? ["-o", `session=${opts.session}`] : []),
-            "origin",
-            "HEAD:main",
-          ],
-          { cwd: dir, env, check: false },
-        );
-        if (push.code === 0) {
-          await this.refresh(name);
-          return after;
-        }
-        const output = `${push.stderr}\n${push.stdout}`;
-        if (
-          !/non-fast-forward|fetch first|rejected.*stale|failed to update ref|cannot lock ref/i.test(
-            output,
-          )
-        )
-          throw new MemoryRepoError(cleanHookOutput(output));
-        await sleep(50 * (attempt + 1));
-      }
-      throw new MemoryRepoError(
-        `Memory repository "${name}" kept changing. Try again.`,
-        503,
-      );
-    });
+    return this.store.withWork(name, fn, opts);
   }
 
   // ── Entry operations (Settings, Slack, migration) ───────────────────
@@ -1110,87 +831,18 @@ export class MemoryRepoService {
   async pushLog(
     name: string,
   ): Promise<Map<string, { sessionId?: string; actor?: string }>> {
-    const out = new Map<string, { sessionId?: string; actor?: string }>();
-    try {
-      const text = await readFile(join(this.bareDir(name), PUSH_LOG), "utf8");
-      for (const line of text.split("\n").slice(-5000)) {
-        if (!line.trim()) continue;
-        try {
-          const row = JSON.parse(line) as {
-            commits?: string[];
-            session?: string;
-            actor?: string;
-          };
-          for (const sha of row.commits ?? [])
-            out.set(sha, { sessionId: row.session, actor: row.actor });
-        } catch {}
-      }
-    } catch {}
-    return out;
+    return this.store.pushLog(name);
   }
 
   async history(
     name: string,
     opts: { limit?: number; grep?: string; path?: string } = {},
   ): Promise<HistoryCommit[]> {
-    if (!(await this.head(name))) return [];
-    const args = [
-      "--git-dir",
-      this.bareDir(name),
-      "log",
-      `-n${Math.min(Math.max(opts.limit ?? 30, 1), 200)}`,
-      "--format=%x1e%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1f",
-      "--name-status",
-      "--no-renames",
-    ];
-    if (opts.grep) args.push("-S", opts.grep);
-    args.push("main");
-    if (opts.path) args.push("--", opts.path);
-    const { stdout } = await git(args);
-    const pushes = await this.pushLog(name);
-    return stdout
-      .split("\x1e")
-      .filter((chunk) => chunk.trim())
-      .map((chunk) => {
-        const [sha, author, date, subject, body, rest = ""] =
-          chunk.split("\x1f");
-        const files = rest
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            const [status, ...path] = line.split("\t");
-            return { status, path: path.join("\t") };
-          });
-        const pushed = pushes.get(sha);
-        const trailerSession = /^Session:\s*(\S+)/m.exec(body)?.[1];
-        return {
-          sha,
-          author,
-          date,
-          subject,
-          body: body.trim(),
-          files,
-          sessionId: pushed?.sessionId ?? sessionIdFromLink(trailerSession),
-          pushedBy: pushed?.actor,
-        };
-      });
+    return this.store.history(name, opts);
   }
 
   async diff(name: string, sha: string): Promise<string> {
-    if (!/^[0-9a-f]{7,64}$/.test(sha))
-      throw new MemoryRepoError("Invalid commit.");
-    const { stdout } = await git([
-      "--git-dir",
-      this.bareDir(name),
-      "show",
-      "--format=",
-      "--no-color",
-      "--stat",
-      "--patch",
-      sha,
-    ]);
-    return stdout.length > 200_000 ? `${stdout.slice(0, 200_000)}\n…` : stdout;
+    return this.store.diff(name, sha);
   }
 
   async revert(
@@ -1198,39 +850,12 @@ export class MemoryRepoService {
     sha: string,
     author?: Author,
   ): Promise<string | null> {
-    if (!/^[0-9a-f]{7,64}$/.test(sha))
-      throw new MemoryRepoError("Invalid commit.");
-    return this.withWork(
-      name,
-      async (work) => {
-        const result = await git(["revert", "--no-commit", sha], {
-          cwd: work.dir,
-          env: authorEnv(author),
-          check: false,
-        });
-        if (result.code !== 0) {
-          await git(["revert", "--abort"], { cwd: work.dir, check: false });
-          throw new MemoryRepoError(
-            "This change cannot be reverted automatically because later changes touched the same lines.",
-            409,
-          );
-        }
-      },
-      {
-        message: `Revert ${sha.slice(0, 10)}`,
-        author,
-        trailers: [`Reverts: ${sha}`],
-      },
-    );
+    return this.store.revert(name, sha, author);
   }
 
   /** Every file path at HEAD. */
   async listFiles(name: string): Promise<string[]> {
-    const head = await this.head(name);
-    if (!head) return [];
-    return (await listTree(this.bareDir(name), head))
-      .map((blob) => blob.path)
-      .sort();
+    return this.store.listFiles(name);
   }
 
   /**
@@ -1282,12 +907,7 @@ export class MemoryRepoService {
 
   /** Read one file at HEAD (Settings file view). */
   async readFile(name: string, path: string): Promise<string | null> {
-    const clean = safePath(path);
-    const result = await git(
-      ["--git-dir", this.bareDir(name), "show", `main:${clean}`],
-      { check: false },
-    );
-    return result.code === 0 ? result.stdout : null;
+    return this.store.readFile(name, path);
   }
 
   // ── Remotes ─────────────────────────────────────────────────────────
@@ -1369,8 +989,8 @@ export class MemoryRepoService {
     const env = isolatedGitEnv();
     const status: RemoteStatus = { url, lastSyncAt: new Date().toISOString() };
     try {
-      await this.serial(name, async () => {
-        const dir = await this.syncWork(name, env);
+      await this.store.serial(name, async () => {
+        const dir = await this.store.syncWork(name, env);
         await git(["remote", "remove", "upstream"], {
           cwd: dir,
           env,
@@ -1848,34 +1468,6 @@ export function shortSubject(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return clean.length > 72 ? `${clean.slice(0, 71)}…` : clean;
-}
-
-function sessionIdFromLink(link?: string): string | undefined {
-  if (!link) return undefined;
-  return /\/session\/([A-Za-z0-9._-]+)/.exec(link)?.[1] ?? link;
-}
-
-/** Repository-relative path without traversal. */
-export function safePath(path: string): string {
-  const clean = path.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (
-    !clean ||
-    clean
-      .split("/")
-      .some((part) => part === ".." || part === ".git" || part === "")
-  )
-    throw new MemoryRepoError(`Invalid path "${path}".`);
-  return clean;
-}
-
-function cleanHookOutput(output: string): string {
-  const lines = output
-    .split("\n")
-    .map((line) => line.replace(/^remote:\s?/, "").trimEnd())
-    .filter(
-      (line) => line.trim() && !/^To |^error: failed to push|^hint:/.test(line),
-    );
-  return lines.join("\n").slice(0, 4000) || "The push was rejected.";
 }
 
 /**

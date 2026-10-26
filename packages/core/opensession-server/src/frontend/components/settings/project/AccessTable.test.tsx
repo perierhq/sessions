@@ -12,18 +12,44 @@ import { Button } from "../../../ui/button";
 import { PlainButton } from "../../../ui/plain-button";
 
 import { AccessTable } from "./AccessTable";
+import { WebsiteKnowledgeSwitch } from "./WebsiteKnowledgeSwitch";
 
 type ButtonProps = React.ComponentProps<"button">;
 
 function table(
   onCellChange = (_: AccessCellChange) => {},
   onAllow = (_: string) => {},
+  onKnowledgeChange = (_host: string, _on: boolean) => {},
 ) {
   return AccessTable({
-    access: READY_4_OF_6.access,
+    access: withSupportSite(READY_4_OF_6.access),
     onCellChange,
     onAllowAgents: onAllow,
+    onKnowledgeChange,
   });
+}
+
+/** The fixture with help.acme.example.test ticked for Support. */
+function withSupportSite(
+  access: typeof READY_4_OF_6.access,
+): typeof READY_4_OF_6.access {
+  const groups = access.groups.map((g) => {
+    if (g.id !== "websites") return g;
+    const base = g.rows.at(-1)!;
+    return {
+      ...g,
+      rows: [
+        ...g.rows,
+        {
+          ...base,
+          key: { kind: "website" as const, host: "help.acme.example.test" },
+          title: "help.acme.example.test",
+          knowledge: false,
+        },
+      ],
+    };
+  });
+  return { ...access, groups };
 }
 
 /** Every row, cell or chip button in the tree, with its props. */
@@ -116,6 +142,27 @@ describe("AccessTable", () => {
     expect(
       labels.some((l) => l.startsWith("Cloudflare token for Support")),
     ).toBe(false);
+  });
+
+  test("a Support website carries its Use as knowledge switch, off", () => {
+    const changed: Array<[string, boolean]> = [];
+    const tree = table(undefined, undefined, (host, on) =>
+      changed.push([host, on]),
+    );
+    const switches = elements(tree).filter(
+      (el) => el.type === WebsiteKnowledgeSwitch,
+    );
+    expect(switches).toHaveLength(1);
+    // SAFETY: filtered to WebsiteKnowledgeSwitch elements just above.
+    const props = (
+      switches[0] as React.ReactElement<
+        React.ComponentProps<typeof WebsiteKnowledgeSwitch>
+      >
+    ).props;
+    expect(props.host).toBe("help.acme.example.test");
+    expect(props.on).toBe(false);
+    props.onChange(true);
+    expect(changed).toEqual([["help.acme.example.test", true]]);
   });
 
   test("markup: 6 equal columns, labels, 44px targets", () => {

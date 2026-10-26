@@ -203,7 +203,9 @@ export async function htmlToText(
     })
     .transform(new Response(html))
     .text();
-  const text = decodeEntities(stripped.replace(/<[^>]*>/g, ""))
+  // `[^<>]`, not `[^>]`: a run of `<` without a `>` would make each `<`
+  // scan to the end of the page (quadratic).
+  const text = decodeEntities(stripped.replace(/<[^<>]*>/g, ""))
     .replace(/[ \t ]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")

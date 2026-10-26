@@ -12,6 +12,7 @@ import {
   type EffectiveDeps,
   effectiveRoleModel,
   effectiveSandboxes,
+  knowledgeWebsites,
   resolveSessionSandbox,
   roleWebAccess,
 } from "./effective";
@@ -301,6 +302,48 @@ test("web search and websites for automations and reviews come from the table", 
     deniedTools: {},
     websites: ["status.example.test"],
   });
+});
+
+test("knowledge websites are the Support websites switched to 'Use as knowledge'", async () => {
+  deps({});
+  const site = (host: string) => ({
+    row: { kind: "website" as const, host },
+    role: "support" as const,
+    value: true,
+  });
+  const { revision } = await getProjectDocument("acme-web");
+  const out = await updateProjectDocument(
+    "acme-web",
+    {
+      expectedRevision: revision,
+      access: {
+        cells: [
+          site("help.acme.example.test"),
+          site("status.acme.example.test"),
+          {
+            row: { kind: "website", host: "docs.example.test" },
+            role: "reviews",
+            value: true,
+          },
+        ],
+        websiteKnowledge: [
+          { host: "help.acme.example.test", on: true },
+          // Not ticked for Support: the switch alone imports nothing.
+          { host: "docs.example.test", on: true },
+        ],
+      },
+    },
+    { name: "Ada", verified: true, login: "ada" },
+  );
+  if ("error" in out) throw new Error(out.error);
+  expect(await knowledgeWebsites("acme-web")).toEqual([
+    "help.acme.example.test",
+  ]);
+  // Every Support website stays one replies may link to.
+  expect((await roleWebAccess("acme-web", "support")).websites).toEqual([
+    "help.acme.example.test",
+    "status.acme.example.test",
+  ]);
 });
 
 test("Support runs where incident agents run", async () => {

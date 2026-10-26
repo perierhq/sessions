@@ -86,6 +86,9 @@ repo variable is `true`; until then they skip cleanly.
   - `server/incidents/response/`: the fix loop: agents (investigator,
     verifier), proof, policy, actions on production Runners, merge gate,
     coordinator; API in `server/routes/incident-response.ts`
+  - `server/knowledge/`: per-project support knowledge (`knowledge-<project>`
+    git repositories on the memory worker via `GitRepoStore`, format,
+    validator, FTS index, gateway client `client.ts`); see `docs/knowledge.md`
   - `server/pi-runner.ts`, `pi-runtime-binding.ts`, `runner-shared.ts`: how
     a pi turn runs and how each turn binds a provider account;
     `server/claude-account-pick.ts` picks the Claude pool account for

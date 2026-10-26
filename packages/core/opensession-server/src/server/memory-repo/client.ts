@@ -5,6 +5,10 @@
  * Nothing starts at import: the worker starts on the first call and is keyed
  * by the memory directory, so a repointed state root gets its own worker.
  * Tests can swap in an in-process service.
+ *
+ * Knowledge (knowledge/client.ts) runs on the same worker as a third call
+ * target, "knowledge", so it shares the thread, the directory key and the
+ * test seam shape.
  */
 
 import { dirname, join } from "node:path";
@@ -14,10 +18,16 @@ import { memoryDir } from "../../agents/slack/memory";
 import { configuredServer } from "../config";
 import { SLACK_ID_TO_NAME } from "../shared/user-mappings";
 import type { MemoryStore } from "../memory-v2/store";
+// Knowledge code loads only where it runs (the worker, or LocalBackend in
+// tests); the error class is all a memory client needs.
+import { KnowledgeConflictError } from "../knowledge/errors";
+import type { KnowledgeService } from "../knowledge/service";
 import type {
   IndexMethod,
+  KnowledgeMethod,
   MemoryRepoWorkerRequest,
   MemoryRepoWorkerResponse,
+  MemoryRepoWorkerTarget,
   ServiceMethod,
 } from "./protocol";
 import {
@@ -71,7 +81,7 @@ export function memoryRepoOptions(): MemoryRepoServiceOptions {
 
 interface Backend {
   call(
-    target: "service" | "index",
+    target: MemoryRepoWorkerTarget,
     method: string,
     args: unknown[],
   ): Promise<unknown>;
@@ -80,11 +90,22 @@ interface Backend {
 }
 
 class LocalBackend implements Backend {
-  constructor(readonly service: MemoryRepoService) {}
+  constructor(
+    readonly service: MemoryRepoService | null,
+    readonly knowledge: KnowledgeService | null = null,
+  ) {}
   get base() {
-    return this.service.opts.base;
+    return this.service?.opts.base ?? this.knowledge?.opts.base ?? "";
   }
-  async call(target: "service" | "index", method: string, args: unknown[]) {
+  async call(target: MemoryRepoWorkerTarget, method: string, args: unknown[]) {
+    if (target === "knowledge") {
+      if (!this.knowledge)
+        throw new MemoryRepoError("Knowledge isn't set up in this test.", 503);
+      const { dispatchKnowledge } = await import("../knowledge/dispatch");
+      return dispatchKnowledge(this.knowledge, method, args);
+    }
+    if (!this.service)
+      throw new MemoryRepoError("Memory isn't set up in this test.", 503);
     const owner = (target === "service"
       ? this.service
       : this.service.index) as unknown as Record<
@@ -144,7 +165,7 @@ class WorkerBackend implements Backend {
   }
 
   call(
-    target: "service" | "index",
+    target: MemoryRepoWorkerTarget,
     method: string,
     args: unknown[],
   ): Promise<unknown> {
@@ -198,6 +219,8 @@ class WorkerBackend implements Backend {
 }
 
 function rebuildError(name: string, message: string, status?: number): Error {
+  if (name === "KnowledgeConflictError")
+    return new KnowledgeConflictError(message);
   if (name === "MemoryNotFoundError") return new MemoryRepoError(message, 404);
   if (name === "DuplicateMemoryError") return new MemoryRepoError(message, 409);
   if (name === "MemoryRepoError" || name === "SecretInMemoryError")
@@ -208,12 +231,17 @@ function rebuildError(name: string, message: string, status?: number): Error {
 }
 
 const g = globalThis as typeof globalThis & {
-  __osMemoryRepo?: { override?: Backend; worker?: WorkerBackend };
+  __osMemoryRepo?: {
+    override?: Backend;
+    knowledge?: Backend;
+    worker?: WorkerBackend;
+  };
 };
 
-function backend(): Backend {
+function backend(target: MemoryRepoWorkerTarget): Backend {
   const state = (g.__osMemoryRepo ??= {});
-  if (state.override) return state.override;
+  const override = target === "knowledge" ? state.knowledge : state.override;
+  if (override) return override;
   const options = memoryRepoOptions();
   if (state.worker && state.worker.base !== options.base) {
     state.worker.close();
@@ -230,12 +258,30 @@ export function __setMemoryRepoServiceForTest(
   state.override = service ? new LocalBackend(service) : undefined;
 }
 
+/** Test seam: run the knowledge service in-process (or restore the worker
+ *  with null). Calls still go through dispatchKnowledge, so the method list
+ *  and the fresh-before-index-read rule apply as on the worker. */
+export function __setKnowledgeServiceForTest(
+  service: KnowledgeService | null,
+): void {
+  const state = (g.__osMemoryRepo ??= {});
+  state.knowledge = service ? new LocalBackend(null, service) : undefined;
+}
+
+/** One knowledge call on the memory worker (knowledge/client.ts types it). */
+export function callKnowledge(
+  method: KnowledgeMethod,
+  args: unknown[],
+): Promise<unknown> {
+  return backend("knowledge").call("knowledge", method, args);
+}
+
 export const memoryRepo = {
   service<M extends ServiceMethod>(
     method: M,
     ...args: Args<MemoryRepoService, M>
   ): Promise<Result<MemoryRepoService, M>> {
-    return backend().call("service", method, args) as Promise<
+    return backend("service").call("service", method, args) as Promise<
       Result<MemoryRepoService, M>
     >;
   },
@@ -243,7 +289,7 @@ export const memoryRepo = {
     method: M,
     ...args: Args<MemoryStore, M>
   ): Promise<Result<MemoryStore, M>> {
-    return backend().call("index", method, args) as Promise<
+    return backend("index").call("index", method, args) as Promise<
       Result<MemoryStore, M>
     >;
   },

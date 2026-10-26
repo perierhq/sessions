@@ -48,6 +48,21 @@ export const PRODUCT_MARK = INSTANCE.productMark || "OS";
 
 /** The agent's display name (server: personaName(), config persona.name). */
 export const AGENT_NAME = INSTANCE.personaName || "Assistant";
+
+/** The persona's name when the instance gave it one (config persona.name),
+ *  else null. The server's unnamed default, "Assistant", is a role rather
+ *  than a name, so it counts as unnamed. */
+const PERSONA_NAME =
+  INSTANCE.personaName && INSTANCE.personaName !== "Assistant"
+    ? INSTANCE.personaName
+    : null;
+
+/** The agent in a sentence: its persona's name ("Draft by Pat"), or "the
+ *  agent" where the instance has none. `start` capitalises the fallback for
+ *  the head of a sentence ("The agent suggests…"). */
+export function agentInProse({ start = false }: { start?: boolean } = {}) {
+  return PERSONA_NAME ?? (start ? "The agent" : "the agent");
+}
 export const PUBLIC_BASE_URL =
   INSTANCE.publicBaseUrl ||
   (typeof location === "undefined" ? "http://127.0.0.1:3850" : location.origin);

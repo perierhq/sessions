@@ -386,6 +386,19 @@ export async function roleWebAccess(
   }
 }
 
+/**
+ * The project's Support websites switched to "Use as knowledge": the hosts
+ * the knowledge import crawls and whose pages may back replies. Other
+ * Support websites stay links-only. Throws when the settings can't be
+ * read: callers retire mirrors of hosts not listed, so never guess.
+ */
+export async function knowledgeWebsites(project: string): Promise<string[]> {
+  const doc = await getProjectDocument(project);
+  return doc.access.websites
+    .filter((row) => row.roles.includes("support") && row.knowledge === true)
+    .map((row) => row.host);
+}
+
 /** The websites an automation on `project` may reach: the global list and
  *  the project's websites ticked for Automations. */
 export async function automationEgressHosts(

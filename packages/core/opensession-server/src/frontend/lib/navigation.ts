@@ -2,6 +2,7 @@ import type { UnreadChat } from "./unread-chats";
 import type { NewSessionPrefill } from "./new-session-link";
 import type { PortalTarget } from "./portals";
 import type { ReviewQueueItem } from "./review-queue";
+import type { KnowledgeRoute } from "./app-route";
 import type { ProjectSectionId } from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
 import type {
@@ -46,8 +47,13 @@ export interface NavigationActions {
   openArchived(): void;
   openIncidents(): void;
   openIncident(id: string): void;
-  /** A project's settings page, scrolled to `section` when given. */
-  openProjectSettings(project: string, section?: ProjectSectionId): void;
+  /** A project's settings page, scrolled to `section` when given; with
+   *  `knowledge`, the project's Knowledge page. */
+  openProjectSettings(
+    project: string,
+    section?: ProjectSectionId,
+    knowledge?: KnowledgeRoute,
+  ): void;
   /** Settings → Projects → Defaults. */
   openProjectDefaults(): void;
   openCatchUp(): void;

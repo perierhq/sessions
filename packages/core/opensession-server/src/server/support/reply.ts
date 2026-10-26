@@ -24,9 +24,13 @@
 // compares the pin with the conversation's current target: a newer target
 // sends the draft back to a person, re-pinned, so nobody's reply is
 // redirected by mail that came after they decided. An automatic retry
-// also runs the policy again. Nothing runs at import.
+// also runs the policy again. Every automatic send of an agent's draft (a
+// veto's end, a retry) checks the knowledge it cites again first
+// (knowledge/backing.ts), so knowledge that went stale while the draft
+// waited sends it to a person. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import { buildReply, newMessageId, replyTarget } from "../../agents/email/mime";
+import type { KnowledgeVerdict } from "../../shared/knowledge";
 import {
   AUTO_SENDS_PER_INBOX_PER_HOUR,
   MAX_TEXT_CHARS,
@@ -46,6 +50,7 @@ import {
 import { digest } from "../audit";
 import { catalogDocuments } from "../catalog-documents";
 import { personaName } from "../config";
+import { knowledgeVerdict } from "../knowledge/backing";
 import { supportAudit } from "./audit-sink";
 import {
   INTERRUPTED_SEND,
@@ -61,6 +66,7 @@ import {
   type ReplyDecision,
   RULES,
   decideReply,
+  knowledgeHoldRule,
   replyLabels,
 } from "./policy";
 import {
@@ -173,6 +179,96 @@ const inFlight = new Set<string>();
 
 export function sendingInProcess(conversationId: string): boolean {
   return inFlight.has(conversationId);
+}
+
+/** A delivered reply, as reply-sent listeners are told of it. */
+export interface ReplySent {
+  conversationId: string;
+  /** The conversation's project. */
+  project: string;
+  /** The stored message's id. */
+  messageId: string;
+  /** Who sent it: a person, or sessions for an automatic send. */
+  by: SupportActor;
+  /** Who wrote the draft. */
+  author: SupportActor;
+  /** The draft's rule as it went out ("Sent by Ada"). */
+  rule: string;
+  /** Why the draft's stored knowledge check held it (policy
+   *  knowledgeHoldRule: an internal note quoted, an item that can't back
+   *  it, a check that failed); null when it didn't or there was none. */
+  knowledgeHold: string | null;
+  /** The draft's knowledge citations (`<path>@<commit>` refs). */
+  citations: string[];
+}
+
+/** Told once a delivered reply is stored. Knowledge capture listens
+ *  (ingest/capture.ts). */
+export type ReplySentListener = (e: ReplySent) => void;
+
+/** Awaited just before a delivered reply is stored, with the event the
+ *  sent listener gets after: knowledge capture queues its work here, so a
+ *  crash between storing and telling leaves the work queued. Its failure
+ *  is logged by kind and never fails the send. */
+export type ReplyStoringHook = (e: ReplySent) => Promise<void>;
+
+let replyStoringHook: ReplyStoringHook | null = null;
+
+/** Set (or with null clear) the one reply-storing hook. */
+export function onReplyStoring(h: ReplyStoringHook | null): void {
+  replyStoringHook = h;
+}
+
+async function notifyReplyStoring(e: ReplySent): Promise<void> {
+  const hook = replyStoringHook;
+  if (!hook) return;
+  try {
+    await hook(e);
+  } catch (error) {
+    console.warn("[support] reply-storing hook failed:", errorName(error));
+  }
+}
+
+let replySentListener: ReplySentListener | null = null;
+
+/** Set (or with null clear) the one reply-sent listener. */
+export function onReplySent(l: ReplySentListener | null): void {
+  replySentListener = l;
+}
+
+function sentEvent(
+  c: SupportConversation,
+  messageId: string,
+  by: SupportActor,
+  draft: SupportDraft,
+): ReplySent {
+  return {
+    conversationId: c.id,
+    project: c.project,
+    messageId,
+    by,
+    author: draft.author,
+    rule: draft.rule,
+    knowledgeHold: knowledgeHoldRule(draft.check?.knowledge),
+    citations: (draft.sources ?? []).flatMap((s) =>
+      s.kind === "knowledge" ? [s.ref.trim()] : [],
+    ),
+  };
+}
+
+/** Never awaited and never fails a send: a listener's error (thrown or
+ *  rejected) is logged by its kind only. */
+function notifyReplySent(e: Parameters<ReplySentListener>[0]): void {
+  const listener = replySentListener;
+  if (!listener) return;
+  const warn = (error: unknown) =>
+    console.warn("[support] reply-sent listener failed:", errorName(error));
+  try {
+    const result = listener(e) as unknown;
+    if (result instanceof Promise) result.catch(warn);
+  } catch (error) {
+    warn(error);
+  }
 }
 
 /** Forget in-process state, as a restart would (tests). */
@@ -308,6 +404,31 @@ function answeredMessages(
     : answered;
 }
 
+/** The customer messages a stored reply answered, as answeredMessages
+ *  saw them when it was sent: those since the reply before it, and the one
+ *  it is In-Reply-To. Empty when `messageId` is no reply of ours. */
+export function messagesAnsweredBy(
+  c: SupportConversation,
+  messageId: string,
+): SupportMessage[] {
+  const at = c.messages.findIndex((m) => m.id === messageId);
+  const reply = c.messages[at];
+  if (!reply || reply.direction !== "out") return [];
+  const before = { ...c, messages: c.messages.slice(0, at) };
+  const inReplyTo = normalizeMessageId(reply.keys.inReplyTo);
+  const target = inReplyTo
+    ? before.messages.find(
+        (m) =>
+          m.direction === "in" &&
+          normalizeMessageId(m.keys.messageId) === inReplyTo,
+      )
+    : undefined;
+  return answeredMessages(before, {
+    answersMessageId: target?.id ?? null,
+    to: [],
+  });
+}
+
 /** What a draft says about itself, for the policy. */
 export interface DraftMeta {
   sources?: DraftSource[];
@@ -384,8 +505,9 @@ function autoSendsSince(c: SupportConversation, now: number): number {
 }
 
 /** decideReply for `author` on `c` answering `pin`; `inboxSends` is the
- *  inbox's automatic sends in the last hour (inboxAutoSends). A removed
- *  inbox counts as off. */
+ *  inbox's automatic sends in the last hour (inboxAutoSends); `knowledge`
+ *  the draft's knowledge verdict as of `now` (knowledge/backing.ts). A
+ *  removed inbox counts as off. */
 function decide(
   c: SupportConversation,
   author: SupportActor,
@@ -395,6 +517,7 @@ function decide(
   inboxSends: number,
   draft: { text: string; check?: DraftCheck | null } & DraftMeta,
   sites: ProjectSites,
+  knowledge: KnowledgeVerdict | null,
 ): ReplyDecision {
   return decideReply({
     author,
@@ -424,6 +547,7 @@ function decide(
     lastInboundTrust: pinTrust(c, pin),
     status: c.status,
     personStoppedLast: heldByPerson(c.draft),
+    knowledge,
   });
 }
 
@@ -525,6 +649,7 @@ async function propose(
     inboxSends,
     { text, ...meta },
     sites,
+    meta.check?.knowledge ?? null,
   );
   if (provisional.kind === "veto")
     await pending().update<PendingVeto>(vetoKey(conversationId), () => ({
@@ -564,6 +689,7 @@ async function propose(
         ...meta,
       },
       sites,
+      meta.check?.knowledge ?? null,
     );
     if (decision.kind === "send" && provisional.kind !== "send") {
       // Decided differently than the work index was written for: hold.
@@ -798,6 +924,32 @@ async function claimAndDeliver(
       : fail(404, "Draft not found");
   const { inbox, others, own, sites } = await context(current);
   const inboxSends = await inboxAutoSends(current.inboxId, now, draftId);
+  // An automatic send of an agent's draft checks its knowledge again, now
+  // and outside the compare-and-swap below (which stays synchronous): an
+  // article may have gone stale while the draft waited. The read proof
+  // stored with the draft's check counts along with the live evidence.
+  // `undefined`: not computed, as this isn't an automatic send; one the
+  // compare-and-swap finds automatic after all refuses (see `checked`).
+  const d0 = current.draft;
+  const automatic =
+    opts.mode === "retry"
+      ? d0?.decidedBy?.kind !== "person"
+      : by.kind === "sessions";
+  let knowledge: KnowledgeVerdict | null | undefined;
+  if (automatic)
+    knowledge =
+      d0?.author.kind === "agent"
+        ? await knowledgeVerdict({
+            project: current.project,
+            sessionId: d0.author.sessionId,
+            sources: d0.sources ?? [],
+            text: d0.text,
+            now,
+            ...(d0.check?.knowledge?.read
+              ? { read: d0.check.knowledge.read }
+              : {}),
+          })
+        : null;
 
   // The work index first (see the header); the claim below decides.
   const key = sendKey(conversationId, draftId);
@@ -826,6 +978,13 @@ async function claimAndDeliver(
     let decidedBy: SupportActor = by;
     let rule = d.rule;
     const pin = currentPin(c, own);
+    /** The verdict for an automatic decision; null (and `failure` set)
+     *  when it wasn't computed, as the draft read before changed since. */
+    const checked = (): { verdict: KnowledgeVerdict | null } | null => {
+      if (knowledge !== undefined) return { verdict: knowledge };
+      failure = fail(409, "The conversation changed. Try again");
+      return null;
+    };
     /** Back to a person, re-pinned to the target as it is now. */
     const toPerson = (why: string) => {
       failure = fail(409, why);
@@ -855,6 +1014,8 @@ async function claimAndDeliver(
       if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
       if (decidedBy.kind !== "person") {
         // An automatic send: the policy must still let it go.
+        const k = checked();
+        if (!k) return null;
         const decision = decide(
           c,
           d.author,
@@ -864,6 +1025,7 @@ async function claimAndDeliver(
           inboxSends,
           d,
           sites,
+          k.verdict,
         );
         if (decision.kind === "needs-person") return toPerson(decision.rule);
       }
@@ -894,6 +1056,8 @@ async function claimAndDeliver(
               return null;
             }
             if (!pinnedTo(d, pin)) return toPerson(RULES.newerMessage);
+            const k = checked();
+            if (!k) return null;
             const decision = decide(
               c,
               d.author,
@@ -903,6 +1067,7 @@ async function claimAndDeliver(
               inboxSends,
               d,
               sites,
+              k.verdict,
             );
             if (decision.kind === "needs-person")
               return toPerson(decision.rule);
@@ -1063,6 +1228,8 @@ async function deliverInFlight(
     draftId: draft.id,
   };
   const automatic = by.kind === "sessions";
+  const sentNote = sentEvent(c, message.id, by, draft);
+  await notifyReplyStoring(sentNote);
   const updated = await updateConversation(c.id, (x) => ({
     ...x,
     messages: [...x.messages, message],
@@ -1075,6 +1242,7 @@ async function deliverInFlight(
       ? { autoClarified: true }
       : {}),
   }));
+  if (updated) notifyReplySent(sentNote);
   await Promise.allSettled([
     ourId !== draft.messageId
       ? rememberMessageIds(c.inboxId, c.id, [ourId], [])

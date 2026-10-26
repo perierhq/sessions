@@ -40,6 +40,7 @@ import { SettingCard } from "../../../ui/settings";
 import { IconCheck, IconWarningTriangle } from "../../icons";
 import { CellFace } from "./CellFace";
 import { PlainButton } from "../../../ui/plain-button";
+import { WebsiteKnowledgeSwitch } from "./WebsiteKnowledgeSwitch";
 
 /**
  * What agents may use, on a phone: one role at a time, picked from a sticky
@@ -51,11 +52,14 @@ export function AccessRoleList({
   initialRole = "investigator",
   onCellChange,
   onAllowAgents,
+  onKnowledgeChange,
 }: {
   access: AccessTableView;
   initialRole?: ProjectRole;
   onCellChange: (change: AccessCellChange) => void;
   onAllowAgents: (server: string) => void;
+  /** A Support website's "Use as knowledge" switch changed. */
+  onKnowledgeChange: (host: string, on: boolean) => void;
 }) {
   const [role, setRole] = useState<ProjectRole>(initialRole);
   return (
@@ -95,7 +99,13 @@ export function AccessRoleList({
               <div className={ACCESS_GROUP_LABEL}>{group.label}</div>
             )}
             {group.rows.map((row) =>
-              roleRow(row, role, onCellChange, onAllowAgents),
+              roleRow(
+                row,
+                role,
+                onCellChange,
+                onAllowAgents,
+                onKnowledgeChange,
+              ),
             )}
           </div>
         ))}
@@ -109,6 +119,7 @@ function roleRow(
   role: ProjectRole,
   onCellChange: (change: AccessCellChange) => void,
   onAllowAgents: (server: string) => void,
+  onKnowledgeChange: (host: string, on: boolean) => void,
 ): React.ReactNode {
   const cell = row.cells[role];
   const name = `${row.title} for ${ROLE_LABELS[role]}: ${cellSpokenLabel(cell.value, cell.label)}`;
@@ -195,6 +206,21 @@ function roleRow(
           </Button>
         </div>
       )}
+      {/* Knowledge is Support's: the switch shows with Support's cells. */}
+      {role === "support" &&
+        row.key.kind === "website" &&
+        row.knowledge !== undefined && (
+          <div className="-mt-2 px-5 pb-2">
+            <WebsiteKnowledgeSwitch
+              host={row.key.host}
+              on={row.knowledge}
+              onChange={(on) =>
+                row.key.kind === "website" &&
+                onKnowledgeChange(row.key.host, on)
+              }
+            />
+          </div>
+        )}
     </div>
   );
 }

@@ -5,6 +5,11 @@
 // them.
 import { formatVetoRemaining } from "../../shared/incident-response";
 import {
+  KNOWLEDGE_COPY,
+  parseKnowledgeCitation,
+  type KnowledgeVerdict,
+} from "../../shared/knowledge";
+import {
   type DraftSource,
   type SupportActor,
   type SupportConversation,
@@ -14,7 +19,9 @@ import {
   newTextOf,
 } from "../../shared/support";
 import { API_BASE } from "./api/request";
+import { routePath } from "./app-route";
 import type { PlainTimelineEntry } from "./types";
+import { agentInProse } from "./brand";
 
 export type ReplyBoxMode =
   /** No live draft. */
@@ -75,7 +82,7 @@ function draftAuthor(draft: SupportDraft): string {
   const author = draft.author;
   switch (author.kind) {
     case "agent":
-      return "Draft by the agent";
+      return `Draft by ${agentInProse()}`;
     case "person":
       return `Draft by ${author.name}`;
     case "sessions":
@@ -85,7 +92,7 @@ function draftAuthor(draft: SupportDraft): string {
   }
 }
 
-/** "Draft by the agent · <rule>", or the countdown in a veto window. */
+/** "Draft by <persona> · <rule>", or the countdown in a veto window. */
 export function draftHeader(
   mode: Exclude<ReplyBoxMode, { kind: "compose" }>,
   now: number,
@@ -103,20 +110,129 @@ export function draftSendLabel(
   return mode.draft.purpose === "fixed-note" ? "Send fixed note" : "Send";
 }
 
+/** What the send-time knowledge check said about one knowledge row. */
+export interface SourceKnowledge {
+  /** The item's title as the check read it; its path when it couldn't. */
+  title: string;
+  /** `backing`: fresh, may back the reply; `blocked`: holds the draft
+   *  (`reason` says why); `unchecked`: the check itself failed. */
+  state: "backing" | "blocked" | "unchecked";
+  reason: string | null;
+  /** Not cited: the agent read it (or the reply quotes it), so the reply
+   *  may rest on it whatever the draft cites. */
+  uncited?: true;
+}
+
 export interface SourceRow {
   kind: DraftSource["kind"];
-  /** What the row reads: the URL without its scheme, the path, the id. */
+  /** What the row reads: the URL without its scheme, the path, the id,
+   *  `knowledge:<path>@<sha7>`. */
   label: string;
-  /** Opens in a new tab; only for an http(s) URL. */
+  /** A public link opens in a new tab; a knowledge item opens on the
+   *  project's Knowledge page. */
   href: string | null;
+  /** Knowledge rows only, when the draft was checked. */
+  knowledge?: SourceKnowledge;
+}
+
+/** A knowledge row's state as StatusChip draws it. A hold that isn't
+ *  about age names itself: "Reference" (not approved for replies, a
+ *  faint dot since nothing is wrong with the item), "Internal" (the reply
+ *  quotes an internal note), "Not read" (this session never read it).
+ *  Every other hold is "Out of date", as the draft's rule says it
+ *  (`Knowledge may be out of date: <title>`); the reason under it says
+ *  which. */
+export function knowledgeChip(k: SourceKnowledge) {
+  switch (k.state) {
+    case "backing":
+      return { label: "Fresh", dot: "var(--green)" };
+    case "blocked":
+      if (k.reason === KNOWLEDGE_COPY.notTrusted)
+        return { label: "Reference", dot: "var(--text-faint)" };
+      if (k.reason === KNOWLEDGE_COPY.internalQuoted)
+        return { label: "Internal", dot: "var(--yellow)" };
+      if (k.reason === KNOWLEDGE_COPY.notRead)
+        return { label: "Not read", dot: "var(--yellow)" };
+      return { label: "Out of date", dot: "var(--yellow)" };
+    default:
+      return { label: "Not checked", dot: "var(--text-faint)" };
+  }
+}
+
+function knowledgeHref(project: string, path: string): string {
+  return routePath({
+    view: "projectSettings",
+    project,
+    section: "knowledge",
+    knowledge: { tab: "articles", path },
+  });
+}
+
+/** `<path>@<commit>` with or without the `knowledge:` prefix, as one key. */
+function citationKey(ref: string): string {
+  const parsed = parseKnowledgeCitation(ref.trim());
+  return parsed ? `${parsed.path}@${parsed.commit}` : ref.trim();
+}
+
+function knowledgeRow(
+  ref: string,
+  project: string,
+  verdict: KnowledgeVerdict | undefined,
+): SourceRow {
+  const parsed = parseKnowledgeCitation(ref);
+  if (!parsed) return { kind: "knowledge", label: ref, href: null };
+  const { path, commit } = parsed;
+  const row: SourceRow = {
+    kind: "knowledge",
+    label: `knowledge:${path}@${commit.slice(0, 7)}`,
+    href: knowledgeHref(project, path),
+  };
+  if (!verdict) return row;
+  if (verdict.failed) {
+    row.knowledge = {
+      title: path,
+      state: "unchecked",
+      reason: verdict.reason || KNOWLEDGE_COPY.unchecked,
+    };
+    return row;
+  }
+  const key = citationKey(ref);
+  const blocked = verdict.blocked.find(
+    (b) => !b.uncited && citationKey(b.ref) === key,
+  );
+  if (blocked) {
+    row.knowledge = {
+      title: blocked.title,
+      state: "blocked",
+      reason: blocked.reason,
+    };
+    return row;
+  }
+  const backing = verdict.backing.find((b) => citationKey(b.ref) === key);
+  if (backing)
+    row.knowledge = {
+      title: backing.title || path,
+      state: "backing",
+      reason: null,
+    };
+  return row;
 }
 
 /** The sources a draft cites, as rows to show under it: a public link
- *  opens, a repository path and a connector record read as they are. */
-export function draftSources(draft: SupportDraft): SourceRow[] {
-  return (draft.sources ?? []).flatMap((source): SourceRow[] => {
+ *  opens, a repository path and a connector record read as they are, and
+ *  a knowledge item says whether it was fresh when the draft was checked.
+ *  Knowledge the agent read but didn't cite, or that the reply quotes,
+ *  follows when it holds the draft. */
+export function draftSources(
+  draft: SupportDraft,
+  project: string,
+): SourceRow[] {
+  const verdict = draft.check?.knowledge;
+  const rows = (draft.sources ?? []).flatMap((source): SourceRow[] => {
     const ref = source.ref.trim();
     if (!ref) return [];
+    if (source.kind === "knowledge")
+      return [knowledgeRow(ref, project, verdict)];
     if (source.kind !== "url")
       return [{ kind: source.kind, label: ref, href: null }];
     let url: URL;
@@ -131,6 +247,41 @@ export function draftSources(draft: SupportDraft): SourceRow[] {
       : ref;
     return [{ kind: source.kind, label, href: web ? url.href : null }];
   });
+  if (!verdict || verdict.failed) return rows;
+  for (const b of verdict.blocked) {
+    if (!b.uncited) continue;
+    const row = knowledgeRow(b.ref, project, undefined);
+    row.knowledge = {
+      title: b.title,
+      state: "blocked",
+      reason: b.reason,
+      uncited: true,
+    };
+    rows.push(row);
+  }
+  const quoted = verdict.internalQuoted;
+  if (quoted) {
+    const reason = KNOWLEDGE_COPY.internalQuoted;
+    const href = knowledgeHref(project, quoted.path);
+    const shown = rows.find((r) => r.kind === "knowledge" && r.href === href);
+    if (shown) {
+      const uncited = shown.knowledge?.uncited;
+      shown.knowledge = { title: quoted.title, state: "blocked", reason };
+      if (uncited) shown.knowledge.uncited = true;
+    } else
+      rows.push({
+        kind: "knowledge",
+        label: `knowledge:${quoted.path}`,
+        href,
+        knowledge: {
+          title: quoted.title,
+          state: "blocked",
+          reason,
+          uncited: true,
+        },
+      });
+  }
+  return rows;
 }
 
 /** Local draft storage (lib/drafts.ts): a person's own reply under the

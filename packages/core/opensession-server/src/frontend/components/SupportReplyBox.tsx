@@ -18,12 +18,17 @@ import {
   draftHeader,
   draftSendLabel,
   draftSources,
+  knowledgeChip,
   replyBoxMode,
   replyDraftKey,
   sendingDiscardable,
   supportIntentPlan,
 } from "../lib/support-reply";
 import {
+  DRAFT_KNOWLEDGE,
+  DRAFT_KNOWLEDGE_LINE,
+  DRAFT_KNOWLEDGE_ROW,
+  DRAFT_KNOWLEDGE_TITLE,
   DRAFT_SOURCES,
   DRAFT_SOURCE_LINK,
   DRAFT_SOURCE_REF,
@@ -32,6 +37,7 @@ import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { useConfirm } from "../ui/confirm";
 import { Spinner } from "../ui/spinner";
+import { StatusChip } from "../ui/settings";
 import { InlineAlert } from "../ui/state";
 import { toast } from "../ui/toast";
 import { useSavedDraft } from "../hooks/useSavedDraft";
@@ -186,7 +192,11 @@ export function SupportReplyBox({
             : 0,
         );
   const pinnedTo = draft?.to?.map((a) => a.address).join(", ");
-  const sources = draft ? draftSources(draft) : [];
+  const rows = draft ? draftSources(draft, conversation.project) : [];
+  // Checked knowledge reads as a list of items with their state; every
+  // other source stays on the one wrapping line.
+  const sources = rows.filter((row) => !row.knowledge);
+  const knowledge = rows.filter((row) => row.knowledge);
   const locked = mode.kind === "veto" || mode.kind === "sending" || !!busy;
 
   return (
@@ -208,7 +218,7 @@ export function SupportReplyBox({
         <>
           {stateLine && (
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 pb-1.5">
-              <span className="min-w-0 text-label font-semibold text-fg">
+              <span className="min-w-0 text-label font-medium text-fg">
                 {stateLine}
               </span>
               {pinnedTo && (
@@ -225,10 +235,18 @@ export function SupportReplyBox({
                 source.href ? (
                   <a
                     key={`${source.kind}:${source.label}`}
-                    className={DRAFT_SOURCE_LINK}
+                    className={cn(
+                      DRAFT_SOURCE_LINK,
+                      source.kind === "knowledge" && "font-mono",
+                    )}
                     href={source.href}
-                    target="_blank"
-                    rel="noreferrer noopener"
+                    // A knowledge item opens in the app, here.
+                    target={source.kind === "knowledge" ? undefined : "_blank"}
+                    rel={
+                      source.kind === "knowledge"
+                        ? undefined
+                        : "noreferrer noopener"
+                    }
                     title={source.href}
                   >
                     {source.label}
@@ -243,6 +261,52 @@ export function SupportReplyBox({
                   </span>
                 ),
               )}
+            </div>
+          )}
+          {knowledge.length > 0 && (
+            <div className={DRAFT_KNOWLEDGE} aria-label="Knowledge">
+              <span className="text-faint">Knowledge</span>
+              {knowledge.map(({ label, href, knowledge: k }) => {
+                if (!k) return null;
+                const chip = knowledgeChip(k);
+                const line = (
+                  <>
+                    <span className={DRAFT_KNOWLEDGE_LINE}>
+                      <span
+                        className={cn(
+                          DRAFT_KNOWLEDGE_TITLE,
+                          !href && "text-fg no-underline",
+                        )}
+                      >
+                        {k.title}
+                      </span>
+                      <StatusChip
+                        label={chip.label}
+                        dot={chip.dot}
+                        className="text-meta"
+                      />
+                      {k.uncited && (
+                        <span className="shrink-0 text-faint">Not cited</span>
+                      )}
+                    </span>
+                    {k.reason && <span className="text-dim">{k.reason}</span>}
+                  </>
+                );
+                return href ? (
+                  <a
+                    key={label}
+                    className={DRAFT_KNOWLEDGE_ROW}
+                    href={href}
+                    title={label}
+                  >
+                    {line}
+                  </a>
+                ) : (
+                  <span key={label} className={DRAFT_KNOWLEDGE_ROW}>
+                    {line}
+                  </span>
+                );
+              })}
             </div>
           )}
           {mode.kind === "failed" && (

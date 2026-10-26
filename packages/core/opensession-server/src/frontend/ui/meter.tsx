@@ -1,24 +1,41 @@
-import { USAGE_TONE_CLASSES, usageTone } from "../lib/usage-tone";
+import {
+  USAGE_TONE_CLASSES,
+  type UsageTone,
+  usageTone,
+} from "../lib/usage-tone";
 import { cn } from "./cn";
 
 /** The 4px track and its fill alone: a usage meter without the words, for a
- *  budget beside an amount. Colour follows usageTone; unknown is empty. */
+ *  budget beside an amount. Colour follows usageTone; unknown is empty.
+ *  `tone` fixes the fill for a meter that isn't usage (an import's
+ *  progress, where a full bar is good news, not a warning). */
 export function MeterTrack({
   pct,
+  tone,
   className,
+  ...aria
 }: {
   /** 0-100, or null when the value is unknown. */
   pct: number | null;
+  tone?: UsageTone;
   className?: string;
+  /** Names the track as a progress bar for assistive tech. */
+  "aria-label"?: string;
 }) {
+  const label = aria["aria-label"];
   return (
     <div
       className={cn("h-1 overflow-hidden rounded-full bg-active", className)}
+      role={label ? "progressbar" : undefined}
+      aria-label={label}
+      aria-valuemin={label ? 0 : undefined}
+      aria-valuemax={label ? 100 : undefined}
+      aria-valuenow={label && pct !== null ? Math.round(pct) : undefined}
     >
       <div
         className={cn(
           "h-full rounded-full transition-[width] duration-300",
-          USAGE_TONE_CLASSES[usageTone(pct)],
+          USAGE_TONE_CLASSES[tone ?? usageTone(pct)],
         )}
         style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }}
       />

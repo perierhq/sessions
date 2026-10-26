@@ -545,6 +545,28 @@ test("the opening prompt names the inbox and the rules", async () => {
   expect(prompt.toLowerCase()).toContain("refund");
 });
 
+test("the opening prompt sends the agent to the project's knowledge", async () => {
+  const c = await conversation();
+  const prompt = supportOpeningPrompt(c, inbox);
+  const lines = prompt.split("\n");
+  expect(lines).toContain(
+    "- Before answering, call search_knowledge with the customer's question and read_knowledge for anything relevant. Cite an item you used as a source of kind knowledge with the ref read_knowledge gave you (path@commit).",
+  );
+  expect(lines).toContain(
+    "- Knowledge marked reference or needs check is context only: don't rely on it without a person. Never quote an internal item.",
+  );
+  const draft = lines.find((l) =>
+    l.startsWith("- Reply only with draft_reply"),
+  );
+  expect(draft).toContain("a knowledge item");
+  // Both tools are on the support server.
+  const tools = new Set(
+    supportToolDefinitions({ sessionId: "os-1" }).map((t) => t.name),
+  );
+  expect(tools).toContain("search_knowledge");
+  expect(tools).toContain("read_knowledge");
+});
+
 async function addReply(id: string, text: string): Promise<SupportMessage> {
   const reply = message(text, "Re: Export is broken");
   await updateConversation(id, (x) => ({

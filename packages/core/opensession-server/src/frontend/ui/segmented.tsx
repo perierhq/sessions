@@ -80,7 +80,6 @@ export function Segmented({
   React.ComponentPropsWithoutRef<"div">,
   "value" | "onChange" | "defaultValue"
 > & {
-  label: string;
   /** The option in effect. `null` leaves every option unpressed — for a
    *  control whose value can also be set from outside it (a custom date
    *  range that matches no preset). */
@@ -94,7 +93,10 @@ export function Segmented({
   /** Every option, for a value fixed by something else (shown, not
    *  changeable). */
   disabled?: boolean;
-}) {
+} &
+  /** The group's accessible name: `label`, or a visible label's id in
+   *  `aria-labelledby` (then `label` would only repeat it). */
+  ({ label: string } | { label?: undefined; "aria-labelledby": string })) {
   const ownId = React.useId();
   const knobId = knobIdProp ?? ownId;
   return (

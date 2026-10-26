@@ -22,7 +22,6 @@
 // code or name only.
 import { getProjectDocument } from "../projects/store";
 import { configuredRepos } from "../config";
-import { activeIntegrations } from "../integrations/load";
 import type {
   InboxConfig,
   InboxHealth,
@@ -59,6 +58,7 @@ import {
   serverError,
   updateInbox,
 } from "../support/inboxes";
+import { emailSupportEnabled } from "../support/enabled";
 import { forgetCustomer } from "../support/retention";
 import { testImapLogin } from "../../agents/email/imap-transport";
 import {
@@ -92,26 +92,6 @@ function failed(action: string, error: unknown, message: string): Response {
 }
 
 const SAVE_FAILED = "Couldn't save the inbox. Try again";
-
-// ── Seams ───────────────────────────────────────────────────────────────
-
-let enabledOverride: boolean | undefined;
-
-/** Pretend the email integration is (or isn't) on; undefined restores. */
-export function __setEmailSupportEnabledForTest(
-  enabled: boolean | undefined,
-): void {
-  enabledOverride = enabled;
-}
-
-function emailSupportEnabled(): boolean {
-  if (enabledOverride !== undefined) return enabledOverride;
-  try {
-    return activeIntegrations().some((spec) => spec.id === "email");
-  } catch {
-    return false;
-  }
-}
 
 // ── Test limits ─────────────────────────────────────────────────────────
 

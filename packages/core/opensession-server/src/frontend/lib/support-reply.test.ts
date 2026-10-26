@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { KNOWLEDGE_COPY, type KnowledgeVerdict } from "../../shared/knowledge";
 import type { SupportConversation } from "../../shared/support";
 import { AT, conversation, draft, message } from "../tools/support-fixture";
 import {
   draftHeader,
   draftSendLabel,
   draftSources,
+  knowledgeChip,
   pendingIssueCopy,
   waitingFixedNote,
   sendingDiscardable,
@@ -342,6 +344,7 @@ describe("draft sources", () => {
           { kind: "repo", ref: "  " },
         ],
       }),
+      "acme",
     );
     expect(rows).toEqual([
       {
@@ -355,7 +358,224 @@ describe("draft sources", () => {
     ]);
   });
   test("a draft without sources has none", () => {
-    expect(draftSources(draft("needs-person"))).toEqual([]);
+    expect(draftSources(draft("needs-person"), "acme")).toEqual([]);
+  });
+});
+
+describe("knowledge sources", () => {
+  const SHA = "3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a";
+  const EXPORT = `articles/export.md@${SHA}`;
+  const REFUNDS = `articles/refunds.md@${SHA}`;
+  const exportHref =
+    "/settings/projects/acme/knowledge/articles/articles%2Fexport.md";
+  const verdict = (over: Partial<KnowledgeVerdict> = {}): KnowledgeVerdict => ({
+    backing: [],
+    blocked: [],
+    internalQuoted: null,
+    failed: false,
+    at: AT,
+    ...over,
+  });
+  const cited = (knowledge?: KnowledgeVerdict, refs = [EXPORT]) => {
+    const d = draft("needs-person", {
+      sources: refs.map((ref) => ({ kind: "knowledge" as const, ref })),
+    });
+    if (knowledge)
+      d.check = {
+        verified: [],
+        topics: [],
+        promises: false,
+        knowledge,
+        at: AT,
+      };
+    return d;
+  };
+
+  test("a backing citation shows its title and reads as fresh", () => {
+    const rows = draftSources(
+      cited(
+        verdict({
+          backing: [{ kind: "knowledge", ref: EXPORT, title: "Export" }],
+        }),
+      ),
+      "acme",
+    );
+    expect(rows).toEqual([
+      {
+        kind: "knowledge",
+        label: "knowledge:articles/export.md@3f2a1b0",
+        href: exportHref,
+        knowledge: { title: "Export", state: "backing", reason: null },
+      },
+    ]);
+  });
+
+  test("a blocked citation carries its reason", () => {
+    const rows = draftSources(
+      cited(
+        verdict({
+          backing: [{ kind: "knowledge", ref: EXPORT, title: "Export" }],
+          blocked: [
+            {
+              ref: `knowledge:${REFUNDS}`,
+              path: "articles/refunds.md",
+              title: "Refunds",
+              reason: "docs/billing.md changed in 9c1d2e0",
+            },
+          ],
+        }),
+        [EXPORT, `knowledge:${REFUNDS}`],
+      ),
+      "acme",
+    );
+    expect(rows.map((r) => [r.label, r.knowledge])).toEqual([
+      [
+        "knowledge:articles/export.md@3f2a1b0",
+        { title: "Export", state: "backing", reason: null },
+      ],
+      [
+        "knowledge:articles/refunds.md@3f2a1b0",
+        {
+          title: "Refunds",
+          state: "blocked",
+          reason: "docs/billing.md changed in 9c1d2e0",
+        },
+      ],
+    ]);
+  });
+
+  test("a draft without a knowledge check shows the row without state", () => {
+    expect(draftSources(cited(), "acme")).toEqual([
+      {
+        kind: "knowledge",
+        label: "knowledge:articles/export.md@3f2a1b0",
+        href: exportHref,
+      },
+    ]);
+  });
+
+  test("an item read but not cited that holds the draft is its own row", () => {
+    const rows = draftSources(
+      cited(
+        verdict({
+          backing: [{ kind: "knowledge", ref: EXPORT, title: "Export" }],
+          blocked: [
+            {
+              ref: REFUNDS,
+              path: "articles/refunds.md",
+              title: "Refunds",
+              reason: "Review date passed (2026-10-01)",
+              uncited: true,
+            },
+          ],
+        }),
+      ),
+      "acme",
+    );
+    expect(rows[1]).toEqual({
+      kind: "knowledge",
+      label: "knowledge:articles/refunds.md@3f2a1b0",
+      href: "/settings/projects/acme/knowledge/articles/articles%2Frefunds.md",
+      knowledge: {
+        title: "Refunds",
+        state: "blocked",
+        reason: "Review date passed (2026-10-01)",
+        uncited: true,
+      },
+    });
+  });
+
+  test("an internal note the reply quotes is named", () => {
+    const rows = draftSources(
+      cited(
+        verdict({
+          internalQuoted: { path: "articles/ops.md", title: "Ops" },
+        }),
+        [],
+      ),
+      "acme",
+    );
+    expect(rows).toEqual([
+      {
+        kind: "knowledge",
+        label: "knowledge:articles/ops.md",
+        href: "/settings/projects/acme/knowledge/articles/articles%2Fops.md",
+        knowledge: {
+          title: "Ops",
+          state: "blocked",
+          reason: "The reply quotes an internal note",
+          uncited: true,
+        },
+      },
+    ]);
+  });
+
+  test("a cited note the reply quotes holds the draft on its own row", () => {
+    const rows = draftSources(
+      cited(
+        verdict({
+          backing: [{ kind: "knowledge", ref: EXPORT, title: "Export" }],
+          internalQuoted: { path: "articles/export.md", title: "Export" },
+        }),
+      ),
+      "acme",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.knowledge).toEqual({
+      title: "Export",
+      state: "blocked",
+      reason: "The reply quotes an internal note",
+    });
+  });
+
+  test("a check that failed leaves every citation unchecked", () => {
+    const rows = draftSources(cited(verdict({ failed: true })), "acme");
+    expect(rows[0]?.knowledge).toEqual({
+      title: "articles/export.md",
+      state: "unchecked",
+      reason: "Knowledge couldn't be checked",
+    });
+  });
+
+  test("each state reads as a word and a dot", () => {
+    const chip = (state: "backing" | "blocked" | "unchecked") =>
+      knowledgeChip({ title: "Export", state, reason: null });
+    expect(chip("backing")).toEqual({ label: "Fresh", dot: "var(--green)" });
+    expect(chip("blocked")).toEqual({
+      label: "Out of date",
+      dot: "var(--yellow)",
+    });
+    expect(chip("unchecked")).toEqual({
+      label: "Not checked",
+      dot: "var(--text-faint)",
+    });
+  });
+
+  test("a hold that isn't about age names itself", () => {
+    const blocked = (reason: string) =>
+      knowledgeChip({ title: "Export", state: "blocked", reason });
+    expect(blocked(KNOWLEDGE_COPY.notTrusted)).toEqual({
+      label: "Reference",
+      dot: "var(--text-faint)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.internalQuoted)).toEqual({
+      label: "Internal",
+      dot: "var(--yellow)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.notRead)).toEqual({
+      label: "Not read",
+      dot: "var(--yellow)",
+    });
+    expect(blocked(KNOWLEDGE_COPY.changedSinceRead)).toEqual({
+      label: "Out of date",
+      dot: "var(--yellow)",
+    });
+  });
+
+  test("a citation that doesn't parse reads as written and links nowhere", () => {
+    expect(draftSources(cited(undefined, ["notes/x.md"]), "acme")).toEqual([
+      { kind: "knowledge", label: "notes/x.md", href: null },
+    ]);
   });
 });
 

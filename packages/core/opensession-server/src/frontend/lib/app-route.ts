@@ -1,4 +1,8 @@
 import { parseIncidentIntent } from "../../shared/incident-decision-copy";
+import {
+  KNOWLEDGE_FILTERS,
+  type KnowledgeFilter,
+} from "../../shared/knowledge";
 import type { OwnerDecision } from "../../shared/incident-response";
 import {
   parseSupportIntent,
@@ -11,6 +15,58 @@ import {
   type ProjectSectionId,
 } from "./project-settings/page-model";
 import type { SettingsSectionKey } from "./settings-sections";
+
+/** The Knowledge page's tabs (`/settings/projects/<p>/knowledge/<tab>`). */
+export const KNOWLEDGE_TABS = [
+  "articles",
+  "suggestions",
+  "needs-check",
+  "import",
+  "history",
+] as const;
+export type KnowledgeTab = (typeof KNOWLEDGE_TABS)[number];
+
+/** Where the Knowledge page is: a tab, and the item open in it. */
+export interface KnowledgeRoute {
+  tab: KnowledgeTab;
+  /** A repository path, e.g. `articles/export.md`. */
+  path?: string;
+  /** The Articles list's filter chip (`?filter=`), absent for All. */
+  filter?: KnowledgeFilter;
+  /** The Articles list's search (`?q=`), trimmed, absent when empty. */
+  q?: string;
+}
+
+/** `?filter=&q=` for the Articles list, read back by
+ *  parseRouteWithSearch. */
+function knowledgeQuery(route: KnowledgeRoute): string {
+  const params = new URLSearchParams();
+  if (route.filter && route.filter !== "all")
+    params.set("filter", route.filter);
+  if (route.q) params.set("q", route.q);
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
+/** The Articles list's filter and search from the query; nothing for any
+ *  other tab, or an item open in the editor. */
+function withKnowledgeQuery(
+  route: KnowledgeRoute,
+  search: string,
+): KnowledgeRoute {
+  if (route.tab !== "articles" || route.path) return route;
+  const params = new URLSearchParams(search);
+  const next: KnowledgeRoute = { ...route };
+  const filter = KNOWLEDGE_FILTERS.find((f) => f === params.get("filter"));
+  if (filter && filter !== "all") next.filter = filter;
+  const q = params.get("q")?.trim();
+  if (q) next.q = q;
+  return next;
+}
+
+function knowledgeTab(raw: string): KnowledgeTab {
+  return KNOWLEDGE_TABS.find((tab) => tab === raw) ?? "articles";
+}
 import { assetSuffix, splitSessionRef, subagentSuffix } from "./share-link";
 
 /**
@@ -49,7 +105,14 @@ export type Route =
   | { view: "security" }
   | { view: "goals"; id?: string }
   | { view: "incidents"; id?: string; intent?: OwnerDecision }
-  | { view: "projectSettings"; project: string; section?: ProjectSectionId }
+  /** `knowledge` (only with section "knowledge") opens the Knowledge page;
+   *  without it the section is an anchor on the project's page. */
+  | {
+      view: "projectSettings";
+      project: string;
+      section?: ProjectSectionId;
+      knowledge?: KnowledgeRoute;
+    }
   | { view: "settings"; section?: SettingsSectionKey }
   | { view: "archived" }
   | { view: "inbox" }
@@ -108,6 +171,15 @@ export function isToolView(
 
 function isSettingsSection(value: string): value is SettingsSectionKey {
   return SETTINGS_SECTIONS.has(value);
+}
+
+/** A decoded path segment; a malformed escape is kept as written. */
+function segment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function sessionRoute(rest: string): Route {
@@ -213,6 +285,22 @@ export function parseRoute(pathname: string): Route {
     if (incident[1]) route.id = decodeURIComponent(incident[1]);
     return route;
   }
+  // A project's Knowledge page: a tab, then the item's path as one
+  // encoded segment (a path written with plain slashes reads the same).
+  const knowledge = path.match(
+    /^\/settings\/projects\/([^/]+)\/knowledge\/([^/]+)(?:\/(.+))?$/,
+  );
+  if (knowledge) {
+    const [, project, tab, itemPath] = knowledge;
+    const route: KnowledgeRoute = { tab: knowledgeTab(segment(tab!)) };
+    if (itemPath) route.path = segment(itemPath);
+    return {
+      view: "projectSettings",
+      project: segment(project!),
+      section: "knowledge",
+      knowledge: route,
+    };
+  }
   // Before the generic /settings/<key>: a project and its section ride
   // after the key. /settings/incidents is the old incident settings page,
   // now the project pages.
@@ -272,9 +360,11 @@ export function legacyRoutePath(pathname: string): string | null {
 }
 
 /** parseRoute plus what the query carries: a push intent on an incident
- *  or on an email conversation. */
+ *  or on an email conversation, the Knowledge list's filter and search. */
 export function parseRouteWithSearch(pathname: string, search: string): Route {
   const route = parseRoute(pathname);
+  if (route.view === "projectSettings" && route.knowledge)
+    return { ...route, knowledge: withKnowledgeQuery(route.knowledge, search) };
   if (route.view === "support") {
     if (!route.threadId.startsWith("email:")) return route;
     const intent = parseSupportIntent(
@@ -341,8 +431,14 @@ export function routePath(route: Route): string {
       return route.id
         ? `${BASE_PATH}/incidents/${encodeURIComponent(route.id)}${route.intent ? `?intent=${route.intent}` : ""}`
         : `${BASE_PATH}/incidents`;
-    case "projectSettings":
-      return `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}${route.section ? `/${route.section}` : ""}`;
+    case "projectSettings": {
+      const base = `${BASE_PATH}/settings/projects/${encodeURIComponent(route.project)}`;
+      if (route.knowledge) {
+        const { tab, path } = route.knowledge;
+        return `${base}/knowledge/${tab}${path ? `/${encodeURIComponent(path)}` : ""}${knowledgeQuery(route.knowledge)}`;
+      }
+      return `${base}${route.section ? `/${route.section}` : ""}`;
+    }
     case "settings":
       if (route.section === "projectDefaults") {
         return `${BASE_PATH}/settings/projects`;
@@ -401,6 +497,18 @@ export function isSettingsRoute(route: Route): boolean {
 
 export function samePanel(a: Route, b: Route): boolean {
   if (a.view !== b.view) return false;
+  // The Knowledge list under another filter or search is the same place:
+  // the URL follows it without a history entry per keystroke.
+  if (a.view === "projectSettings" && b.view === "projectSettings") {
+    const [x, y] = [a.knowledge, b.knowledge];
+    return (
+      !!x &&
+      !!y &&
+      a.project === b.project &&
+      x.tab === y.tab &&
+      x.path === y.path
+    );
+  }
   const id = (route: Route) => ("id" in route ? route.id : undefined);
   return id(a) !== undefined && id(a) === id(b);
 }

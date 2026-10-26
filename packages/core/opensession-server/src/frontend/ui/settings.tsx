@@ -354,9 +354,22 @@ export function SettingRowControl({
  * the two apart at a glance. A row whose only difference is the verb on a
  * neutral button ("Connect" vs "Disconnect") reads as the same row twice.
  */
-export function StatusChip({ label, dot }: { label: string; dot: string }) {
+export function StatusChip({
+  label,
+  dot,
+  className,
+}: {
+  label: string;
+  dot: string;
+  className?: string;
+}) {
   return (
-    <span className="flex flex-shrink-0 items-center gap-1.5 text-label text-dim">
+    <span
+      className={cn(
+        "flex flex-shrink-0 items-center gap-1.5 text-label text-dim",
+        className,
+      )}
+    >
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: dot }} />
       {label}
     </span>

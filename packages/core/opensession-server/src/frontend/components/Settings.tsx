@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type { ProjectListItem } from "../../shared/project-settings";
 import { useIsPhone } from "../hooks/useIsPhone";
+import { useEmailSupport } from "../hooks/useEmailSupport";
 import { useProjects } from "../hooks/useProjects";
 import { useScrollEdge } from "../hooks/useScrollEdge";
 import { cn } from "../ui/cn";
@@ -24,7 +25,12 @@ import {
   SETTINGS_NAV_ROW,
   SETTINGS_NAV_SEARCH,
 } from "../lib/settings-classes";
-import type { ProjectSectionId } from "../lib/project-settings/page-model";
+import type { KnowledgeRoute } from "../lib/app-route";
+import {
+  visibleSections,
+  type ProjectSection,
+  type ProjectSectionId,
+} from "../lib/project-settings/page-model";
 import {
   firstProjectHit,
   matchProjectSections,
@@ -47,6 +53,7 @@ import { MyAccountsPanel } from "./MyAccounts";
 import { AuditPanel } from "./settings/AuditPanel";
 import { AuthenticationPanel } from "./settings/AuthenticationPanel";
 import { DefaultsPanel } from "./settings/DefaultsPanel";
+import { KnowledgePage } from "./settings/knowledge/KnowledgePage";
 import { ProjectSettingsPage } from "./settings/project/ProjectSettingsPage";
 import { DeploysPanel } from "./settings/DeploysPanel";
 import { DownloadsPanel } from "./settings/DownloadsPanel";
@@ -119,6 +126,13 @@ type FilteredGroup = { group: string; hits: SectionHit<Section>[] };
 /** The nav group that also lists every project under its Defaults row. */
 const PROJECTS_GROUP = "Projects";
 
+/** Open a project's page at a section, or its Knowledge page. */
+type OpenProject = (
+  project: string,
+  section?: ProjectSectionId,
+  knowledge?: KnowledgeRoute,
+) => void;
+
 /** Groups with their non-matching rows dropped, and empty groups gone with
  *  them. An empty query filters nothing, so both surfaces render one list.
  *  The Projects group stays while a project or one of its sections
@@ -127,6 +141,7 @@ function filterGroups(
   groups: SectionGroup[],
   query: string,
   projects: ProjectListItem[],
+  sections: readonly ProjectSection[],
 ): FilteredGroup[] {
   const out: FilteredGroup[] = [];
   for (const g of groups) {
@@ -135,7 +150,7 @@ function filterGroups(
       hits.length ||
       (g.group === PROJECTS_GROUP &&
         (matchProjects(projects, query).length > 0 ||
-          matchProjectSections(projects, query).length > 0))
+          matchProjectSections(projects, query, sections).length > 0))
     )
       out.push({ group: g.group, hits });
   }
@@ -319,7 +334,7 @@ export function Settings({
   /** Navigate to a section — App maps tool keys to their own routes. */
   onSelect: (key: SettingsSectionKey) => void;
   /** Open a project's settings page, at one of its sections. */
-  onOpenProject: (project: string, section?: ProjectSectionId) => void;
+  onOpenProject: OpenProject;
   /** Phone sheet's back-to-root (navigate to sectionless /settings). */
   onShowRoot?: () => void;
   onOpenOnboarding: () => void;
@@ -328,6 +343,7 @@ export function Settings({
 }) {
   const isPhone = useIsPhone();
   const projects = useProjects().data ?? [];
+  const sections = visibleSections({ emailSupport: useEmailSupport() });
 
   // No page-level Esc handler: Esc belongs to whatever is focused (cancelling
   // an inline edit, closing a menu), not to the settings page itself — losing
@@ -355,6 +371,7 @@ export function Settings({
         section={section}
         project={project}
         projects={projects}
+        sections={sections}
         onSelect={onSelect}
         onOpenProject={onOpenProject}
         onShowRoot={onShowRoot}
@@ -369,7 +386,7 @@ export function Settings({
   // Keep the section out of the URL so phones can stay at the nav root. A
   // project's page is no section, so no section row is marked on it.
   const active = section ?? "myAccounts";
-  const shown = filterGroups(groups, query, projects);
+  const shown = filterGroups(groups, query, projects, sections);
   const firstHit = shown[0]?.hits[0]?.item;
   const tool = !project && TOOL_SECTIONS.has(active);
 
@@ -393,7 +410,7 @@ export function Settings({
           onChange={setQuery}
           onSubmit={() => {
             if (firstHit) return onSelect(firstHit.key);
-            const hit = firstProjectHit(projects, query);
+            const hit = firstProjectHit(projects, query, sections);
             if (hit) onOpenProject(hit.project, hit.section);
           }}
           className={SETTINGS_NAV_SEARCH}
@@ -424,6 +441,7 @@ export function Settings({
               {g.group === PROJECTS_GROUP && (
                 <ProjectNavRows
                   projects={projects}
+                  sections={sections}
                   active={project ?? null}
                   query={query}
                   onOpen={onOpenProject}
@@ -487,23 +505,40 @@ export function Settings({
   );
 }
 
-/** A project's settings page. A new project is a new page: its scroll and
- *  pending edits do not carry over. */
+/** A project's settings page, or its Knowledge page. A new project is a
+ *  new page: its scroll and pending edits do not carry over. */
 function ProjectPane({
   project,
   onOpenProject,
   onSelect,
 }: {
   project: ActiveProject;
-  onOpenProject: (project: string, section?: ProjectSectionId) => void;
+  onOpenProject: OpenProject;
   onSelect: (key: SettingsSectionKey) => void;
 }) {
+  const emailSupport = useEmailSupport();
+  if (project.section === "knowledge" && project.knowledge)
+    return (
+      <KnowledgePage
+        key={project.project}
+        project={project.project}
+        route={project.knowledge}
+        onNavigate={(knowledge) =>
+          onOpenProject(project.project, "knowledge", knowledge)
+        }
+        onBack={() => onOpenProject(project.project, "knowledge")}
+      />
+    );
   return (
     <ProjectSettingsPage
       key={project.project}
       project={project.project}
       section={project.section}
       onOpenSection={(section) => onOpenProject(project.project, section)}
+      showKnowledge={emailSupport}
+      onOpenKnowledge={(knowledge) =>
+        onOpenProject(project.project, "knowledge", knowledge)
+      }
       onOpenSettings={onSelect}
     />
   );
@@ -525,6 +560,7 @@ function MobileSettings({
   section,
   project,
   projects,
+  sections,
   onSelect,
   onOpenProject,
   onShowRoot,
@@ -536,15 +572,16 @@ function MobileSettings({
   section?: SettingsSectionKey;
   project?: ActiveProject;
   projects: ProjectListItem[];
+  sections: readonly ProjectSection[];
   onSelect: (key: SettingsSectionKey) => void;
-  onOpenProject: (project: string, section?: ProjectSectionId) => void;
+  onOpenProject: OpenProject;
   onShowRoot?: () => void;
   onBack: () => void;
   onOpenOnboarding: () => void;
   children?: React.ReactNode;
 }) {
   const [query, setQuery] = useState("");
-  const shown = filterGroups(groups, query, projects);
+  const shown = filterGroups(groups, query, projects, sections);
   const firstHit = shown[0]?.hits[0]?.item;
   // A project's page is a detail page too, keyed "project" here.
   const current: SettingsSectionKey | "project" | null = project
@@ -654,6 +691,7 @@ function MobileSettings({
                       {g.group === PROJECTS_GROUP && (
                         <ProjectSheetRows
                           projects={projects}
+                          sections={sections}
                           query={query}
                           onOpen={onOpenProject}
                           rowClassName={SHEET_ROW}
@@ -680,7 +718,7 @@ function MobileSettings({
                 onChange={setQuery}
                 onSubmit={() => {
                   if (firstHit) return onSelect(firstHit.key);
-                  const hit = firstProjectHit(projects, query);
+                  const hit = firstProjectHit(projects, query, sections);
                   if (hit) onOpenProject(hit.project, hit.section);
                 }}
                 className={SETTINGS_SHEET_SEARCH_BAR}

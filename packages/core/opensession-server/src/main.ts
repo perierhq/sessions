@@ -5,7 +5,7 @@
  * same binary plays the roles that run as separate processes from source
  * (`opensession.ts`, `scripts/cli.ts`, `src/runner-host/host.ts`,
  * `src/runner-host/mcp-proxy.ts`, `src/server/transcript-search-worker.ts`,
- * `src/simulator-portal/main.ts`). A
+ * `src/server/knowledge/ingest/pdf-text.ts`, `src/simulator-portal/main.ts`). A
  * compiled process has no `bun`/`.ts` tree to re-exec, so it re-invokes itself
  * with a leading subcommand instead. The spawn
  * sites emit those subcommands via src/runner-host/exe.ts; this file routes
@@ -23,6 +23,8 @@
  *   opensession session-kernel-service → session-kernel-service.ts
  *   opensession transcript-search-worker
  *                                    → transcript-search-worker.ts (JSON via stdio)
+ *   opensession knowledge-pdf-text   → server/knowledge/ingest/pdf-text.ts
+ *                                      (a PDF on stdin, its text as JSON)
  *   opensession simulator-portal <flags>
  *                                    → simulator-portal/main.ts (viewer process,
  *                                      serves the embedded viewer assets)
@@ -107,6 +109,18 @@ if (sub === "runner-host") {
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  }
+} else if (sub === "knowledge-pdf-text") {
+  // The file import's PDF reader, a child the server kills on time or
+  // memory; it exits once its answer is written.
+  process.argv.splice(2, 1);
+  const { runPdfTextWorker } =
+    await import("./server/knowledge/ingest/pdf-text");
+  try {
+    await runPdfTextWorker();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
 } else if (sub === "simulator-portal") {
   // The supervised viewer process behind start_simulator_portal. Its flags

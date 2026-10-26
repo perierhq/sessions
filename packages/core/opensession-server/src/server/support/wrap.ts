@@ -26,15 +26,30 @@ export function wrapAttribute(value: string): string {
     .slice(0, 500);
 }
 
-/** Body text: context fences made inert, and every spelling of a wrapper
- *  tag (any case, spaces, attributes) loses its `<`, so text can neither
- *  open nor close one. */
-function body(text: string | null): string {
-  if (text === null) return "(Removed by retention)";
-  return neutralizeContextSentinels(fold(text)).replace(
-    /<(\s*\/?\s*(?:customer_email|our_reply)\b)/gi,
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Body text for any wrapper: context fences made inert, and every
+ *  spelling of one of `tags` (any case, spaces, attributes) loses its `<`,
+ *  so text can neither open nor close one. */
+export function wrapBody(text: string, tags: readonly string[]): string {
+  const folded = neutralizeContextSentinels(fold(text));
+  if (tags.length === 0) return folded;
+  const names = tags.map(escapeRegExp).join("|");
+  return folded.replace(
+    new RegExp(`<(\\s*\\/?\\s*(?:${names})\\b)`, "gi"),
     "&lt;$1",
   );
+}
+
+const SUPPORT_TAGS = ["customer_email", "our_reply"] as const;
+
+/** A support message body: no text can open or close <customer_email> or
+ *  <our_reply>. */
+function body(text: string | null): string {
+  if (text === null) return "(Removed by retention)";
+  return wrapBody(text, SUPPORT_TAGS);
 }
 
 /** A customer's message as untrusted data for a model. */

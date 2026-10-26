@@ -16,6 +16,7 @@
 
 import {
   PROJECT_SECTIONS,
+  type ProjectSection,
   type ProjectSectionId,
 } from "./project-settings/page-model";
 
@@ -296,6 +297,14 @@ export const PROJECT_SECTION_KEYWORDS: Record<ProjectSectionId, string[]> = {
     "web search",
     "allow agents",
   ],
+  knowledge: [
+    "knowledge",
+    "articles",
+    "suggestions",
+    "needs check",
+    "import",
+    "help center",
+  ],
   incidents: [
     "incidents",
     "signals",
@@ -325,13 +334,15 @@ export type ProjectSectionHit = {
 export function matchProjectSections(
   projects: ReadonlyArray<{ id: string; label: string }>,
   query: string,
+  /** The sections this server shows (visibleSections). */
+  sections: readonly ProjectSection[] = PROJECT_SECTIONS,
 ): ProjectSectionHit[] {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
   const hits: ProjectSectionHit[] = [];
   for (const project of projects) {
     const name = project.label.toLowerCase();
-    for (const [section, title] of PROJECT_SECTIONS) {
+    for (const [section, title] of sections) {
       const keywords = PROJECT_SECTION_KEYWORDS[section];
       let hint: string | undefined;
       let matchesSection = false;
@@ -376,10 +387,11 @@ export function matchProjects<T extends { label: string }>(
 export function firstProjectHit(
   projects: ReadonlyArray<{ id: string; label: string }>,
   query: string,
+  sections: readonly ProjectSection[] = PROJECT_SECTIONS,
 ): { project: string; section?: ProjectSectionId } | null {
   if (!query.trim()) return null;
   const project = matchProjects(projects, query)[0];
   if (project) return { project: project.id };
-  const hit = matchProjectSections(projects, query)[0];
+  const hit = matchProjectSections(projects, query, sections)[0];
   return hit ? { project: hit.project, section: hit.section } : null;
 }

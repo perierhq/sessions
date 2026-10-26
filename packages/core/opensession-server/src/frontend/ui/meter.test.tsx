@@ -29,3 +29,13 @@ test("a meter is its label, value, track and note", () => {
   expect(html).toContain("resets in 3h");
   expect(html).toContain("width:42%");
 });
+
+test("a progress track keeps its tone and names itself", () => {
+  const html = renderToStaticMarkup(
+    <MeterTrack pct={95} tone="normal" aria-label="Mailbox import" />,
+  );
+  expect(html).toContain("bg-faint");
+  expect(html).not.toContain("bg-red");
+  expect(html).toContain('role="progressbar"');
+  expect(html).toContain('aria-valuenow="95"');
+});

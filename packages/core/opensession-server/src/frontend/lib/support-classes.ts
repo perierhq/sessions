@@ -51,6 +51,28 @@ export const DRAFT_SOURCE_LINK =
 /** A repository path or a connector record id, read as it is. */
 export const DRAFT_SOURCE_REF = "max-w-full truncate font-mono text-dim";
 
+/** The knowledge a draft relied on, one item a row under "Knowledge". The
+ *  list is outdented by the rows' padding so their text lines up with the
+ *  "Sources" line above. */
+export const DRAFT_KNOWLEDGE =
+  "-mx-1.5 flex min-w-0 flex-col pb-1.5 text-meta [&>span]:px-1.5";
+
+/** One knowledge item: the whole row opens it on the Knowledge page, a
+ *  44px target on a phone. */
+export const DRAFT_KNOWLEDGE_ROW =
+  "group flex min-w-0 flex-col justify-center rounded-md px-1.5 py-1 " +
+  "no-underline transition-[background] hover:bg-hover phone:min-h-11";
+
+/** The title line: the title, its state, "Not cited". On a phone the
+ *  title wraps rather than losing most of itself to an ellipsis, and the
+ *  state follows it. */
+export const DRAFT_KNOWLEDGE_LINE =
+  "flex min-w-0 items-center gap-x-2 phone:flex-wrap phone:gap-y-0.5";
+
+/** The item's title, in link colour since the row is the link. */
+export const DRAFT_KNOWLEDGE_TITLE =
+  "min-w-0 truncate text-link group-hover:underline phone:whitespace-normal";
+
 /** A prepared action over the reply box (issue, fix task, fixed note). */
 export const PREPARED_CARD =
   "flex flex-col gap-2.5 rounded-xl bg-panel px-4 py-3";

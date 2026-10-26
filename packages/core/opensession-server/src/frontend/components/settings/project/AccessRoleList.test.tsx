@@ -21,6 +21,7 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 const { AccessRoleList } = await import("./AccessRoleList");
 const { CellFace } = await import("./CellFace");
 const { PlainButton } = await import("../../../ui/plain-button");
+const { WebsiteKnowledgeSwitch } = await import("./WebsiteKnowledgeSwitch");
 
 afterEach(() => harness.unmountAll());
 
@@ -70,6 +71,7 @@ const mount = (onCellChange = (_: AccessCellChange) => {}) =>
     access: READY_4_OF_6.access,
     onCellChange,
     onAllowAgents: () => {},
+    onKnowledgeChange: () => {},
   });
 
 describe("AccessRoleList", () => {
@@ -193,6 +195,45 @@ describe("AccessRoleList", () => {
         value: true,
       },
     ]);
+  });
+
+  test("on the Support chip a Support website shows its knowledge switch", async () => {
+    const changed: Array<[string, boolean]> = [];
+    const groups = READY_4_OF_6.access.groups.map((g) =>
+      g.id === "websites"
+        ? {
+            ...g,
+            rows: [
+              ...g.rows,
+              {
+                ...g.rows.at(-1)!,
+                key: {
+                  kind: "website" as const,
+                  host: "help.acme.example.test",
+                },
+                title: "help.acme.example.test",
+                knowledge: true,
+              },
+            ],
+          }
+        : g,
+    );
+    const list = harness.mount(AccessRoleList, {
+      access: { ...READY_4_OF_6.access, groups },
+      onCellChange: () => {},
+      onAllowAgents: () => {},
+      onKnowledgeChange: (host: string, on: boolean) =>
+        changed.push([host, on]),
+    });
+    // Investigator first: no switch there.
+    expect(find(list.output(), WebsiteKnowledgeSwitch)).toBeUndefined();
+    click(chips(list.output()).find((c) => text(c.children) === "Support"));
+    await settle();
+    const sw = find(list.output(), WebsiteKnowledgeSwitch);
+    expect(sw?.props.host).toBe("help.acme.example.test");
+    expect(sw?.props.on).toBe(true);
+    sw?.props.onChange(false);
+    expect(changed).toEqual([["help.acme.example.test", false]]);
   });
 
   test("You reads what your sessions may use, not the Models copy", async () => {

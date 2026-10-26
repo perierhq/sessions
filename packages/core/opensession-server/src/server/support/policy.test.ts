@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { KnowledgeVerdict } from "../../shared/knowledge";
 import {
   AUTO_SENDS_PER_INBOX_PER_HOUR,
   type InboxConfig,
@@ -11,7 +12,9 @@ import {
   draftHasSecret,
   draftLinkProblem,
   draftLinks,
+  knowledgeRule,
   replyLabels,
+  validSource,
 } from "./policy";
 
 const NOW = Date.parse("2026-10-25T10:00:00.000Z");
@@ -113,6 +116,7 @@ function input(over: Partial<Input> = {}): Input {
     inboxAutoSendsLastHour: 0,
     status: "open",
     personStoppedLast: false,
+    knowledge: null,
     ...over,
   };
 }
@@ -657,6 +661,202 @@ describe("one clarifying question", () => {
       kind: "needs-person",
       rule,
     });
+  });
+});
+
+describe("knowledge", () => {
+  const ARTICLE = "articles/export.md@3f2a1b0";
+  const cited = { kind: "knowledge" as const, ref: ARTICLE };
+  const verdict = (over: Partial<KnowledgeVerdict> = {}): KnowledgeVerdict => ({
+    backing: [],
+    blocked: [],
+    internalQuoted: null,
+    failed: false,
+    at: "2026-10-25T09:59:30.000Z",
+    ...over,
+  });
+  const stale = verdict({
+    blocked: [
+      {
+        ref: ARTICLE,
+        path: "articles/export.md",
+        title: "Export",
+        reason: "docs/export.md changed in 9c1d2e0",
+      },
+    ],
+  });
+
+  test("the copy", () => {
+    expect(RULES.knowledgeUnchecked).toBe("Knowledge couldn't be checked");
+    expect(RULES.internalQuoted).toBe("The reply quotes an internal note");
+    expect(knowledgeRule("Export")).toBe(
+      "Knowledge may be out of date: Export",
+    );
+  });
+
+  test("a stale article holds a draft that would send", () => {
+    expect(decideReply(input())).toEqual({
+      kind: "send",
+      rule: "Sent by the agent",
+    });
+    expect(decideReply(input({ knowledge: stale }))).toEqual({
+      kind: "needs-person",
+      rule: "Knowledge may be out of date: Export",
+    });
+  });
+
+  test("a stale article next to a verified repo source still holds", () => {
+    const sources = [{ kind: "repo" as const, ref: "docs/export.md" }, cited];
+    expect(
+      decideReply(input({ draft: draft({ sources }), knowledge: stale })),
+    ).toEqual({
+      kind: "needs-person",
+      rule: "Knowledge may be out of date: Export",
+    });
+  });
+
+  test("a check that failed holds the draft", () => {
+    expect(
+      decideReply(input({ knowledge: verdict({ failed: true }) })),
+    ).toEqual({ kind: "needs-person", rule: "Knowledge couldn't be checked" });
+    // With the reason the check gave.
+    expect(
+      decideReply(
+        input({
+          knowledge: verdict({
+            failed: true,
+            reason: "This session read more than 20 knowledge items",
+          }),
+        }),
+      ),
+    ).toEqual({
+      kind: "needs-person",
+      rule: "This session read more than 20 knowledge items",
+    });
+  });
+
+  test("an internal quote holds the draft", () => {
+    expect(
+      decideReply(
+        input({
+          knowledge: verdict({
+            internalQuoted: { path: "articles/ops.md", title: "Ops" },
+          }),
+        }),
+      ),
+    ).toEqual({
+      kind: "needs-person",
+      rule: "The reply quotes an internal note",
+    });
+  });
+
+  test("a backing article is a source of its own", () => {
+    const only = draft({ sources: [cited] });
+    expect(
+      decideReply(
+        input({ draft: only, knowledge: verdict({ backing: [cited] }) }),
+      ),
+    ).toEqual({ kind: "send", rule: "Sent by the agent" });
+    expect(
+      decideReply(
+        input({
+          draft: only,
+          knowledge: verdict({ backing: [cited] }),
+          inbox: inbox({ vetoMs: 60_000 }),
+        }),
+      ),
+    ).toEqual({
+      kind: "veto",
+      deadline: new Date(NOW + 60_000).toISOString(),
+      rule: RULES.veto,
+    });
+  });
+
+  test("a knowledge source counts only through the verdict", () => {
+    // Listed as verified by the check, but not backing now.
+    const only = draft({ sources: [cited] });
+    expect(decideReply(input({ draft: only }))).toEqual({
+      kind: "needs-person",
+      rule: RULES.noSource,
+    });
+    expect(decideReply(input({ draft: only, knowledge: verdict() }))).toEqual({
+      kind: "needs-person",
+      rule: RULES.noSource,
+    });
+  });
+
+  test("the draft check's rules come first", () => {
+    expect(
+      decideReply(
+        input({
+          draft: draft({
+            check: checked([{ kind: "repo", ref: "docs/export.md" }], {
+              promises: true,
+            }),
+          }),
+          knowledge: stale,
+        }),
+      ),
+    ).toEqual({ kind: "needs-person", rule: RULES.draftPromise });
+  });
+
+  test("an item read but not cited holds even a clarifying question", () => {
+    const used = verdict({
+      blocked: [
+        {
+          ref: "suggestions/pdf.md@3f2a1b0",
+          path: "suggestions/pdf.md",
+          title: "PDF export",
+          reason: "Reference material, not approved for replies",
+          uncited: true,
+        },
+      ],
+    });
+    const question = draft({
+      text: "Which browser do you use?",
+      sources: [],
+      purpose: "clarify",
+    });
+    expect(decideReply(input({ draft: question }))).toEqual({
+      kind: "send",
+      rule: "Sent by the agent",
+    });
+    expect(decideReply(input({ draft: question, knowledge: used }))).toEqual({
+      kind: "needs-person",
+      rule: "Knowledge may be out of date: PDF export",
+    });
+  });
+
+  test("a person's reply is unaffected", () => {
+    expect(
+      decideReply(
+        input({
+          author: { kind: "person", name: "Ada" },
+          knowledge: verdict({ failed: true }),
+        }),
+      ),
+    ).toEqual({ kind: "send", rule: "Sent by Ada" });
+  });
+
+  test("validSource takes a knowledge citation", () => {
+    const sites = { hosts: [], connectors: [] };
+    expect(validSource(cited, sites)).toBe(true);
+    expect(
+      validSource(
+        {
+          kind: "knowledge",
+          ref: "knowledge:sources/mail/2026-10/a@b.test.md@3f2a1b0",
+        },
+        sites,
+      ),
+    ).toBe(true);
+    for (const ref of [
+      "../x@abc1234",
+      "articles/x.md",
+      "KNOWLEDGE.md@abc1234",
+      "articles/x.md@xyz",
+    ])
+      expect(validSource({ kind: "knowledge", ref }, sites)).toBe(false);
   });
 });
 
