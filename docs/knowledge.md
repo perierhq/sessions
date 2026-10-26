@@ -133,7 +133,14 @@ the issue.
    `validAsOfCommit` touches a `dependsOn` path, a page's content hash
    changed, a new release's notes mention the item's topics, or an issue or
    pull request it references was closed or merged. The item is kept, never
-   deleted.
+   deleted, and its text is not touched. When a check can't tell (the code
+   checkout is gone, GitHub can't say whether an issue is open), the item
+   becomes `needs-check` with "Knowledge couldn't be checked"; it is never
+   read as unchanged. Mirrors of the code repository and the website are
+   rewritten from their changed source instead (a deleted file retires its
+   mirror); the articles that depend on the same path or page are what flip.
+   Each run is one commit by Pat: `Knowledge check: <n> need a check, <m>
+refreshed`.
 3. Newer beats older. When two trusted items answer the same question and the
    small model finds they disagree, both become `needs-check` and a person
    sees them side by side.
