@@ -37,12 +37,19 @@ export const SUPPORT_NOTIFICATION_KINDS = [
 export type SupportNotificationKind =
   (typeof SUPPORT_NOTIFICATION_KINDS)[number];
 
+/** A project's git credential stopped working: background fetches back off
+ *  until someone fixes it (git-access-health.ts). Owner alerts, so they
+ *  ride the incidents switch. */
+export const ACCESS_NOTIFICATION_KINDS = ["access_failing"] as const;
+export type AccessNotificationKind = (typeof ACCESS_NOTIFICATION_KINDS)[number];
+
 /**
  * People notify people: review requests and results, mentions, workspace
  * invites, and your own Desk reminders. Agent activity (questions, failed or
  * finished runs) does not; the sidebar already shows it. Incidents you own
  * and support replies waiting on you are the kinds the system raises for a
- * person, because the decision can be yours.
+ * person, because the decision can be yours; so is a project whose git
+ * credential broke, which only its owner can fix.
  */
 export const NOTIFICATION_KINDS = [
   "review_requested",
@@ -54,6 +61,7 @@ export const NOTIFICATION_KINDS = [
   "comment",
   ...INCIDENT_NOTIFICATION_KINDS,
   ...SUPPORT_NOTIFICATION_KINDS,
+  ...ACCESS_NOTIFICATION_KINDS,
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -64,7 +72,7 @@ export const ALERT_GROUPS = {
   mentions: ["mention", "comment"],
   collaborators: ["collaborator"],
   reminders: ["reminder"],
-  incidents: INCIDENT_NOTIFICATION_KINDS,
+  incidents: [...INCIDENT_NOTIFICATION_KINDS, ...ACCESS_NOTIFICATION_KINDS],
   support: SUPPORT_NOTIFICATION_KINDS,
 } as const satisfies Record<string, readonly NotificationKind[]>;
 export type AlertGroup = keyof typeof ALERT_GROUPS;
@@ -86,7 +94,8 @@ export type NotificationSubjectType =
   | "workspace"
   | "reminder"
   | "incident"
-  | "support";
+  | "support"
+  | "repo";
 
 const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "session",
@@ -95,6 +104,7 @@ const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "reminder",
   "incident",
   "support",
+  "repo",
 ]);
 
 export interface NotificationSubject {

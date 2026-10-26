@@ -54,6 +54,12 @@ import {
 } from "fs";
 import { dirname, join } from "path";
 import { configuredPaths, configuredRepos, type Repo } from "./config";
+import {
+  gitAccessDue,
+  gitErrorLine,
+  recordGitAccessFailure,
+  recordGitAccessOk,
+} from "./git-access-health";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
 import { readFile } from "fs/promises";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
@@ -503,8 +509,10 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
 
     stopIfRetired();
     // 2. Fetch; skip the expensive rebuild when nothing moved and the last
-    //    refresh was good.
-    await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`.nothrow();
+    //    refresh was good. A fetch that can't sign in backs off
+    //    (git-access-health.ts); "Refresh now" (force) tries regardless.
+    //    Either way the template keeps serving its last good build.
+    if (force || gitAccessDue(repo.id)) await fetchTemplate(repo, dir);
     const sha = (
       await $`git -C ${dir} rev-parse --short origin/${repo.defaultBranch}`
         .nothrow()
@@ -613,6 +621,25 @@ async function doRefresh(repoId: string, force: boolean): Promise<void> {
       unlinkSync(refreshLockFile(repoId));
     } catch {}
   }
+}
+
+/** Fetch the default branch into the template and report the outcome to
+ *  git-access-health.ts. Never throws: a failed fetch leaves the old
+ *  remote-tracking ref, which the caller compares against as before. */
+async function fetchTemplate(repo: Repo, dir: string): Promise<void> {
+  const fetched =
+    await $`${workloadArgv(["git", "-C", dir, "fetch", "origin", repo.defaultBranch, "--quiet"], "git")}`
+      .quiet()
+      .nothrow();
+  if (fetched.exitCode === 0) {
+    await recordGitAccessOk(repo);
+    return;
+  }
+  const stderr = fetched.stderr.toString();
+  if (!(await recordGitAccessFailure(repo, stderr)))
+    console.warn(
+      `[warm-template] ${repo.id}: fetch failed (exit ${fetched.exitCode}): ${gitErrorLine(stderr)}`,
+    );
 }
 
 // ── Seeding ──────────────────────────────────────────────────────────────────
