@@ -237,15 +237,24 @@ export interface SpawnAgentInput {
   attempt: number;
   prompt: string;
   model: string;
-  branch: string;
   /** The investigator's session, for a code-mode agent to branch from. */
   baseSessionId?: string;
   access: AgentAccess;
   workspace: AgentWorkspace;
 }
 
+export interface SessionWork {
+  branch: string;
+  checkpoint?: { ref: string; head: string };
+}
+
 export interface IncidentAgents {
-  spawn(i: SpawnAgentInput): Promise<{ sessionId: string }>;
+  /** Start an agent session. It takes a branch the way every session does
+   *  (session-control-wiring: named from the prompt, unique in the repo). */
+  spawn(i: SpawnAgentInput): Promise<{ sessionId: string; branch: string }>;
+  /** A session's branch and Sandbox checkpoint, from the session store;
+   *  undefined when the session is gone. */
+  work(id: string): Promise<SessionWork | undefined>;
   status(id: string): Promise<AgentLive>;
   finalText(id: string, since: string): Promise<string | undefined>;
   send(id: string, message: string, requestId: string): Promise<void>;
@@ -330,7 +339,6 @@ export function createIncidentAgents(
           repo: incident.project,
           mode: access.mode,
           model: input.model,
-          branch: input.branch,
           // An ask child cannot hold an isolated worktree; the verifier
           // reads the candidate from its pull request.
           ...(code
@@ -361,7 +369,19 @@ export function createIncidentAgents(
             : {}),
         },
       );
-      return { sessionId: spawned.id };
+      return { sessionId: spawned.id, branch: spawned.branch };
+    },
+
+    async work(id) {
+      const session = d.control.getSession(id);
+      if (!session) return undefined;
+      const checkpoint = session.sandboxCheckpoint;
+      return {
+        branch: session.branch || "",
+        ...(checkpoint?.ref && checkpoint.head
+          ? { checkpoint: { ref: checkpoint.ref, head: checkpoint.head } }
+          : {}),
+      };
     },
 
     async status(id) {

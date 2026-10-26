@@ -7,7 +7,11 @@ import type {
   InvestigatorReport,
   VerifierReport,
 } from "../../../shared/incident-response";
-import type { Signal, SignalEvaluation } from "../../../shared/incidents";
+import type {
+  Incident,
+  Signal,
+  SignalEvaluation,
+} from "../../../shared/incidents";
 import type { Automation } from "../../automations";
 import type { PrMergeVerdict } from "../../pr-merge-readiness";
 import {
@@ -15,7 +19,12 @@ import {
   registerRunner,
   createRunnerPairing,
 } from "../../runners";
-import { createIncident, getIncident, updateIncident } from "../incident-store";
+import {
+  createIncident,
+  getIncident,
+  listIncidents,
+  updateIncident,
+} from "../incident-store";
 import { setServiceReadiness } from "../../service-readiness";
 import { transitionIncident } from "../lifecycle";
 import { emptyResponse } from "./ledger";
@@ -296,6 +305,11 @@ async function world(
   const bound = new Map<string, IncidentRunBound>();
   const retired: string[] = [];
   let retireFailures = 0;
+  // Each session's branch and Sandbox checkpoint, as the session store has them.
+  const works = new Map<
+    string,
+    { branch: string; checkpoint?: { ref: string; head: string } }
+  >();
   // Like the session controller, a request id already spawned returns its
   // session instead of starting another.
   const requests = new Map<string, string>();
@@ -304,9 +318,11 @@ async function world(
       spawns.push(input);
       const key = `r${input.round}:${input.role}:a${input.attempt}`;
       const known = requests.get(key);
-      if (known) return { sessionId: known };
+      if (known)
+        return { sessionId: known, branch: works.get(known)?.branch ?? "" };
       const id = `child-${++next}`;
       requests.set(key, id);
+      works.set(id, { branch: `session-branch-${next}` });
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
       bound.set(id, {
         connections: [...input.access.connections],
@@ -314,7 +330,10 @@ async function world(
         mode: input.access.mode,
         spawn: accessSpawnSnapshot(input.access),
       });
-      return { sessionId: id };
+      return { sessionId: id, branch: works.get(id)!.branch };
+    },
+    async work(id) {
+      return works.get(id);
     },
     async bound(id) {
       return bound.get(id);
@@ -457,6 +476,7 @@ async function world(
     sends,
     cancels,
     retired,
+    works,
     prComments,
     prCloses,
     failRetire(times: number) {
@@ -532,10 +552,11 @@ test("an investigating incident starts its investigator with the brief", async (
       round: 1,
       attempt: 1,
       model: "pi/anthropic/claude-opus-5-5",
-      branch: expect.stringMatching(/^incident\/\d{4}-\d{2}-\d{2}-search$/),
       prompt: expect.stringContaining("Before anything else, read these"),
     }),
   ]);
+  // The session picks its own branch, as every session does.
+  expect(w.spawns[0]).not.toHaveProperty("branch");
   expect(i?.response).toMatchObject({
     phase: "investigating",
     round: 1,
@@ -1483,7 +1504,6 @@ test("send it back with the investigator's access widened starts a fresh investi
   const fresh = w.spawns.at(-1)!;
   expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
   expect(fresh.access.connections).toEqual(["sentry", "logs", "tickets"]);
-  expect(fresh.branch).toMatch(/-a2$/);
   // It carries the earlier round's findings and the owner's note.
   expect(fresh.prompt).toContain("Check the search logs too");
   expect(fresh.prompt).toContain(investigatorReport.summary);
@@ -1510,10 +1530,91 @@ test("send it back with the investigator's access widened starts a fresh investi
     {
       ghRepo: "acme/web",
       n: 12,
-      body: expect.stringContaining("fresh session"),
+      body: expect.stringContaining("fresh session on `session-branch-3`"),
     },
   ]);
   expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 12 }]);
+});
+
+test("send it back from a branch another incident uses: a fresh session carries the commit", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  // An older release named branches from the date and title only, so this
+  // investigator shares its branch with an earlier incident's investigator,
+  // whose pull request is open on it.
+  const shared = "incident/2026-10-20-search";
+  w.works.set("child-1", {
+    branch: shared,
+    checkpoint: {
+      ref: "refs/opensession/checkpoints/child-1",
+      head: "ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+    },
+  });
+  w.works.set("morning-1", { branch: shared });
+  const morning = {
+    id: "inc-morning",
+    project: "acme",
+    response: { agents: [{ role: "investigator", sessionId: "morning-1" }] },
+  } as unknown as Incident;
+  w.deps.listIncidents = async (filter) => [
+    ...(await listIncidents(filter)),
+    morning,
+  ];
+  // Its fix could not be pushed, so it reported no candidate. The session
+  // sees the earlier incident's pull request on the shared branch.
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      candidate: null,
+      noCandidateReason: "The push was refused; commit ae4a79c is local",
+    }),
+    { prUrl: "https://github.com/acme/web/pull/467" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.next).toMatchObject({
+    kind: "needs-you",
+    options: expect.arrayContaining(["send-back"]),
+  });
+  const sendsBefore = w.sends.length;
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Pushing is allowed now: open the pull request",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+
+  // Nothing goes to the old session, which would push the shared branch.
+  expect(w.sends.slice(sendsBefore)).toEqual([]);
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  // A session of its own, not stacked on the shared branch.
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain(
+    "Pushing is allowed now: open the pull request",
+  );
+  expect(fresh.prompt).toContain(
+    "git fetch origin refs/opensession/checkpoints/child-1",
+  );
+  expect(fresh.prompt).toContain(
+    "git cherry-pick ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+  );
+  expect(fresh.prompt).toContain(
+    `Never push ${shared} or open a pull request from it`,
+  );
+  expect(w.retired).toEqual(["child-1"]);
+  const runs = (await getIncident(w.incident.id))?.response?.agents ?? [];
+  expect(runs.find((a) => a.sessionId === "child-1")).toMatchObject({
+    supersededBy: "child-2",
+  });
+  expect(
+    (await getIncident(w.incident.id))?.response?.ledger.at(-1)?.detail,
+  ).toContain("its branch is another incident's");
+  // The other incident's pull request is left alone.
+  expect(w.prComments).toEqual([]);
+  expect(w.prCloses).toEqual([]);
 });
 
 /** A widenable world sent back after a certain verdict, with the
@@ -1593,9 +1694,9 @@ test("a fresh investigator whose record failed is not started twice", async () =
 
   const fresh = w.spawns.filter((s) => s.round === 2);
   expect(fresh.length).toBeGreaterThanOrEqual(2);
-  expect(
-    new Set(fresh.map((s) => `${s.role}:a${s.attempt}:${s.branch}`)),
-  ).toEqual(new Set(["investigator:a2:" + fresh[0]!.branch]));
+  expect(new Set(fresh.map((s) => `${s.role}:a${s.attempt}`))).toEqual(
+    new Set(["investigator:a2"]),
+  );
   i = await getIncident(w.incident.id);
   const runs = i?.response?.agents ?? [];
   expect(

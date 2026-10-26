@@ -96,7 +96,6 @@ import {
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
-  branchFor,
   buildInvestigatorPrompt,
   buildReminder,
   buildSendBackMessage,
@@ -104,6 +103,7 @@ import {
   notePathFor,
   runbookPathsFor,
 } from "./prompts";
+import type { CarriedWork } from "./prompts";
 import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
@@ -852,6 +852,7 @@ async function init(
       );
   }
   const primary = view.signals.get(incident.primarySignalId);
+  const notePath = await incidentNotePath(incident, d);
   const next = await write(
     incident.id,
     d,
@@ -876,7 +877,7 @@ async function init(
           reason: `Rolling back the release at ${time} UTC`,
         },
         claims: [],
-        notePath: notePathFor(c),
+        notePath,
         runbookPaths: runbookPathsFor(primary ?? { name: c.title }),
         rollbackFirst: true,
       };
@@ -897,10 +898,12 @@ async function init(
   return next !== null;
 }
 
-/** A run a fresh session takes over from, and the access that is wider. */
+/** A run a fresh session takes over from, and why: the access that is
+ *  wider, or (`carry`) its branch is another incident's too. */
 interface Supersede {
   run: AgentRun;
   widened: AccessWidening[];
+  carry?: CarriedWork;
 }
 
 async function startAgent(
@@ -987,6 +990,7 @@ async function startAgent(
       recent: view.primaryRecent,
       actions: settings.actions,
       baseBranch: d.defaultBranch(incident.project),
+      notePath: await incidentNotePath(incident, d),
       round,
       maxRounds: r.maxRounds,
       ...(earlier
@@ -998,6 +1002,7 @@ async function startAgent(
                 ? { report: earlier.report }
                 : {}),
               ...(earlier.prUrl ? { prUrl: earlier.prUrl } : {}),
+              ...(supersede?.carry ? { carry: supersede.carry } : {}),
             },
           }
         : {}),
@@ -1029,24 +1034,26 @@ async function startAgent(
   }
 
   let sessionId: string;
+  let branch: string;
   try {
     const agents = await agentsFor(
       await withCoordinator(incident, settings, d),
       d,
     );
     if (!agents) throw new Error("The incident has no coordinator session");
-    ({ sessionId } = await agents.spawn({
+    ({ sessionId, branch } = await agents.spawn({
       role,
       round,
       attempt,
       prompt,
       model,
-      branch: branchFor(incident, role, round, attempt),
       // The verifier reads the investigator's work; a fresh investigator
-      // starts from the work of the session it takes over from.
+      // starts from the work of the session it takes over from, unless
+      // that session's branch is another incident's too: then it starts
+      // clean and brings the commits over (its brief says how).
       ...(role === "verifier" && investigator
         ? { baseSessionId: investigator.sessionId }
-        : supersede
+        : supersede && !supersede.carry
           ? { baseSessionId: supersede.run.sessionId }
           : {}),
       access,
@@ -1081,9 +1088,11 @@ async function startAgent(
       tokens: 0,
       reminded: false,
     };
-    const detail = supersede
-      ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`
-      : `${roleLabel(role)} started on ${label}, round ${round}`;
+    const detail = !supersede
+      ? `${roleLabel(role)} started on ${label}, round ${round}`
+      : supersede.carry
+        ? `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its branch is another incident's too (${supersede.carry.branch})`
+        : `${roleLabel(role)} started in a fresh session on ${label}, round ${round}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const response = ledger(
       patched(base, {
         agents: [
@@ -1121,12 +1130,9 @@ async function startAgent(
   if (supersede) {
     const agents = await agentsFor(next, d);
     if (agents) await retire(agents, supersede.run.sessionId);
-    await closeSupersededPr(
-      view,
-      supersede.run,
-      { round, branch: branchFor(incident, role, round, attempt) },
-      d,
-    );
+    // A pull request on a shared branch is the other incident's: it stays.
+    if (!supersede.carry)
+      await closeSupersededPr(view, supersede.run, { round, branch }, d);
   }
   return true;
 }
@@ -1171,6 +1177,48 @@ async function closeSupersededPr(
       `[incidents] Could not close superseded pull request ${prUrl}:`,
       errorMessage(error),
     );
+  }
+}
+
+/**
+ * The run's branch and checkpoint when another incident's agent works on the
+ * same branch. An older release named incident branches from the date and
+ * title only, so the same signal failing twice in a day shared one branch
+ * and its pull request; sending such a run back would push onto the other
+ * incident's pull request. Sessions now take their own branches, so this
+ * only finds runs started before that.
+ */
+async function sharedBranch(
+  view: ResponseView,
+  run: AgentRun,
+  agents: IncidentAgents,
+  d: CoordinatorDeps,
+): Promise<CarriedWork | undefined> {
+  const work = await agents.work(run.sessionId);
+  if (!work?.branch) return undefined;
+  const { incident } = view;
+  for (const other of await d.listIncidents({ project: incident.project })) {
+    if (other.id === incident.id) continue;
+    for (const a of other.response?.agents ?? []) {
+      if (!a.sessionId || a.sessionId === run.sessionId) continue;
+      if ((await agents.work(a.sessionId))?.branch === work.branch) return work;
+    }
+  }
+  return undefined;
+}
+
+/** The incident's note path, next to the project's other incidents. */
+async function incidentNotePath(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<string> {
+  try {
+    return notePathFor(
+      incident,
+      await d.listIncidents({ project: incident.project }),
+    );
+  } catch {
+    return notePathFor(incident);
   }
 }
 
@@ -1355,7 +1403,8 @@ async function messageAgent(
   // goes to a fresh session; the old one is archived.
   if (sendBack) {
     const widened = await widenedSinceStart(view, run, agents, d);
-    if (widened.length)
+    const carry = await sharedBranch(view, run, agents, d);
+    if (widened.length || carry)
       return startAgent(
         view,
         {
@@ -1365,7 +1414,7 @@ async function messageAgent(
           attempt: run.attempt + 1,
         },
         d,
-        { run, widened },
+        { run, widened, ...(carry ? { carry } : {}) },
       );
   }
   const text = sendBack
@@ -1374,7 +1423,11 @@ async function messageAgent(
         r.maxRounds,
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
       )
-    : buildReminder(run.reportError ?? "No incident-report block", run.role);
+    : buildReminder(
+        run.reportError ?? "No incident-report block",
+        run.role,
+        run.reportProblem,
+      );
   await agents.send(
     run.sessionId,
     text,
