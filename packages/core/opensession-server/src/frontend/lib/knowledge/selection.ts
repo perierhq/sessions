@@ -83,10 +83,10 @@ export interface SuggestionBatchDeps {
     edits?: Record<string, SuggestionEdit>,
   ) => Promise<{ approved: string[] }>;
   /** discardSuggestions for the project. */
-  discard: (paths: string[]) => Promise<unknown>;
+  discard: (paths: string[]) => Promise<void>;
   confirm: (request: SuggestionConfirm) => void;
   /** Load the lists again (the suggestions and the counts). */
-  reload: () => Promise<unknown>;
+  reload: () => Promise<void>;
   /** A toast; `error` for a failure. */
   notify: (message: string, error: boolean) => void;
   /** The selection after a batch went through: empty. */

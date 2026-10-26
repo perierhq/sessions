@@ -42,6 +42,7 @@ import { EmptyState, InlineAlert } from "../../../ui/state";
 import { IconChevronLeft } from "../../icons";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeList } from "./KnowledgeList";
+import { KnowledgeSuggestions } from "./KnowledgeSuggestions";
 
 /** The tabs in the bar, in order. History opens from an item's page. */
 const TABS: Array<{ tab: KnowledgeTab; label: string }> = [
@@ -176,6 +177,8 @@ export function KnowledgePage({
             onOpen={openPath}
             onNew={() => openPath(NEW_ARTICLE)}
           />
+        ) : route.tab === "suggestions" ? (
+          <KnowledgeSuggestions project={project} />
         ) : filter ? (
           <ItemList key={filter} project={project} filter={filter} />
         ) : route.tab === "import" ? (

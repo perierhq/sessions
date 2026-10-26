@@ -5,6 +5,7 @@ import {
   suggestionBatch,
   type SuggestionBatchDeps,
   type SuggestionConfirm,
+  type SuggestionEdit,
 } from "./selection";
 
 const A = "suggestions/export.md";
@@ -57,15 +58,25 @@ test("approvedCopy counts articles", () => {
 });
 
 /** A batch with fakes that record every call. */
+interface Calls {
+  approve: Array<{ paths: string[]; edits?: Record<string, SuggestionEdit> }>;
+  discard: string[][];
+  confirm: SuggestionConfirm[];
+  reload: number;
+  notify: Array<{ message: string; error: boolean }>;
+  selection: string[][];
+  busy: boolean[];
+}
+
 function harness(over: Partial<SuggestionBatchDeps> = {}) {
-  const calls = {
-    approve: [] as Array<{ paths: string[]; edits?: unknown }>,
-    discard: [] as string[][],
-    confirm: [] as SuggestionConfirm[],
+  const calls: Calls = {
+    approve: [],
+    discard: [],
+    confirm: [],
     reload: 0,
-    notify: [] as Array<{ message: string; error: boolean }>,
-    selection: [] as string[][],
-    busy: [] as boolean[],
+    notify: [],
+    selection: [],
+    busy: [],
   };
   const deps: SuggestionBatchDeps = {
     approve: async (paths, edits) => {
@@ -174,13 +185,16 @@ describe("suggestionBatch", () => {
 
   test("approving one edited suggestion sends its edits", async () => {
     const { calls, batch } = harness();
-    const edit = {
+    const edit: SuggestionEdit = {
       fm: {
         title: "Exporting as CSV",
-        kind: "answer" as const,
-        trust: "reference" as const,
-        status: "active" as const,
+        kind: "answer",
+        trust: "reference",
+        status: "active",
         validAsOf: "2026-10-20",
+        topics: [],
+        sources: [],
+        dependsOn: [],
       },
       body: "Open Settings, then Export.",
     };
@@ -206,6 +220,9 @@ describe("suggestionBatch", () => {
         trust: "reference",
         status: "active",
         validAsOf: "2026-10-20",
+        topics: [],
+        sources: [],
+        dependsOn: [],
       },
       body: "",
     });
