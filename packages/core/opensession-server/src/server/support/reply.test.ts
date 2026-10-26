@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
 import {
   INTERRUPTED_SEND,
   discardDraft,
+  onReplySent,
   proposeDraft,
   replyAsPerson,
   retrySend,
@@ -1098,5 +1099,55 @@ describe("knowledge at the moment of sending", () => {
     expect(result.ok).toBe(true);
     expect(calls).toBe(0);
     expect(tb.fixture().sent).toHaveLength(1);
+  });
+});
+
+describe("reply-sent listener", () => {
+  type Sent = Parameters<Parameters<typeof onReplySent>[0] & object>[0];
+  afterEach(() => onReplySent(null));
+
+  test("a person's reply fires it once, by the person", async () => {
+    const seen: Sent[] = [];
+    onReplySent((e) => seen.push(e));
+    const c = await tb.conversation();
+    const result = await replyAsPerson(c.id, "Answered by hand.", "Ada");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(seen).toEqual([
+      {
+        conversationId: c.id,
+        messageId: result.message.id,
+        by: ADA,
+        author: ADA,
+      },
+    ]);
+  });
+
+  test("an automatic send fires it by sessions", async () => {
+    const seen: Sent[] = [];
+    onReplySent((e) => seen.push(e));
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const c = await tb.conversation();
+    const result = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    expect(result.ok && result.draft.state).toBe("sent");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.by).toEqual({ kind: "sessions" });
+    expect(seen[0]!.author).toEqual(AGENT);
+  });
+
+  test("a listener that throws doesn't fail the send", async () => {
+    onReplySent(() => {
+      throw new Error("listener broke");
+    });
+    const c = await tb.conversation();
+    const result = await replyAsPerson(c.id, "Answered by hand.", "Ada");
+    expect(result.ok).toBe(true);
+    expect(tb.fixture().sent).toHaveLength(1);
+    onReplySent(async () => {
+      throw new Error("async listener broke");
+    });
+    await tb.customerReply(c.id);
+    expect((await replyAsPerson(c.id, "Again.", "Ada")).ok).toBe(true);
+    expect(tb.fixture().sent).toHaveLength(2);
   });
 });

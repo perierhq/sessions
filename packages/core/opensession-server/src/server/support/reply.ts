@@ -179,6 +179,38 @@ export function sendingInProcess(conversationId: string): boolean {
   return inFlight.has(conversationId);
 }
 
+/** Told once a delivered reply is stored: its conversation, the stored
+ *  message's id, who sent it (a person, or sessions for an automatic send)
+ *  and who wrote the draft. Knowledge capture listens (ingest/capture.ts). */
+export type ReplySentListener = (e: {
+  conversationId: string;
+  messageId: string;
+  by: SupportActor;
+  author: SupportActor;
+}) => void;
+
+let replySentListener: ReplySentListener | null = null;
+
+/** Set (or with null clear) the one reply-sent listener. */
+export function onReplySent(l: ReplySentListener | null): void {
+  replySentListener = l;
+}
+
+/** Never awaited and never fails a send: a listener's error (thrown or
+ *  rejected) is logged by its kind only. */
+function notifyReplySent(e: Parameters<ReplySentListener>[0]): void {
+  const listener = replySentListener;
+  if (!listener) return;
+  const warn = (error: unknown) =>
+    console.warn("[support] reply-sent listener failed:", errorName(error));
+  try {
+    const result = listener(e) as unknown;
+    if (result instanceof Promise) result.catch(warn);
+  } catch (error) {
+    warn(error);
+  }
+}
+
 /** Forget in-process state, as a restart would (tests). */
 export function __resetReplyStateForTest(): void {
   inFlight.clear();
@@ -1117,6 +1149,13 @@ async function deliverInFlight(
       ? { autoClarified: true }
       : {}),
   }));
+  if (updated)
+    notifyReplySent({
+      conversationId: c.id,
+      messageId: message.id,
+      by,
+      author: draft.author,
+    });
   await Promise.allSettled([
     ourId !== draft.messageId
       ? rememberMessageIds(c.inboxId, c.id, [ourId], [])
