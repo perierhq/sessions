@@ -32,8 +32,16 @@ export const SHIPPED_SKILLS_DIR =
  * Every skills directory a run in `worktreeDir` loads, most specific first.
  * Missing directories are dropped: pi reports a diagnostic for a skill path
  * that does not exist, and most checkouts carry neither directory.
+ *
+ * `projectOnly` keeps the checkout's own directories and drops the shipped
+ * one: a support session answers customer mail for one project, and the
+ * shipped directory can be an installer-managed one full of a person's
+ * own skills (`OPENSESSION_SKILLS_DIR`).
  */
-export function skillSearchPaths(worktreeDir?: string): string[] {
+export function skillSearchPaths(
+  worktreeDir?: string,
+  opts: { projectOnly?: boolean } = {},
+): string[] {
   const candidates = [
     ...(worktreeDir
       ? [
@@ -41,7 +49,7 @@ export function skillSearchPaths(worktreeDir?: string): string[] {
           join(worktreeDir, ".agents", "skills"),
         ]
       : []),
-    SHIPPED_SKILLS_DIR,
+    ...(opts.projectOnly ? [] : [SHIPPED_SKILLS_DIR]),
   ];
   const seen = new Set<string>();
   const out: string[] = [];

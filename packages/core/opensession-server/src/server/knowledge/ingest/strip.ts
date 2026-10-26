@@ -449,15 +449,46 @@ function dropLinks(
   });
 }
 
+const DAY = String.raw`(?:0?[1-9]|[12]\d|3[01])`;
+const MONTH = String.raw`(?:0?[1-9]|1[0-2])`;
+/** Dates (2026-10-26, 26.10.2026, 10/26/2026) and clock times (09:03,
+ *  9:03:15), which a phone pattern would otherwise take for digit groups. */
+const DATE_OR_TIME = new RegExp(
+  [
+    String.raw`\d{4}-${MONTH}-${DAY}`,
+    String.raw`${DAY}[./-]${MONTH}[./-](?:\d{4}|\d{2})`,
+    String.raw`${MONTH}[./-]${DAY}[./-](?:\d{4}|\d{2})`,
+    String.raw`(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?`,
+  ]
+    // Whole: a "date" inside a longer digit run (601-12-12-34) is not one.
+    .map((p) => String.raw`(?<![\p{N}./:-])${p}(?![\p{N}]|[./:-]\p{N})`)
+    .join("|"),
+  "gu",
+);
+
+/** Whether `text[start, start + length)` overlaps a date or a clock time:
+ *  a phone-number match there is a timestamp, never a phone number. */
+export function overlapsDateOrTime(
+  text: string,
+  start: number,
+  length: number,
+): boolean {
+  for (const m of text.matchAll(DATE_OR_TIME)) {
+    const at = m.index ?? 0;
+    if (at >= start + length) return false;
+    if (at + m[0].length > start) return true;
+  }
+  return false;
+}
+
 /** Phone-like runs: digits with spaces, dashes, dots, parentheses or a
- *  leading `+`, seven digits or more. An ISO date is not one. */
+ *  leading `+`, seven digits or more. Dates and clock times are not. */
 const PHONE_LIKE =
   /(?<![\p{L}\p{N}_])\+?\(?\d[\d \t().-]{5,}\d(?![\p{L}\p{N}_])/gu;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function dropPhones(text: string, onHit: () => void): string {
-  return text.replace(PHONE_LIKE, (run) => {
-    if (ISO_DATE.test(run.trim())) return run;
+  return text.replace(PHONE_LIKE, (run, offset: number) => {
+    if (overlapsDateOrTime(text, offset, run.length)) return run;
     const digits = run.replace(/\D/g, "").length;
     if (digits < 7) return run;
     onHit();

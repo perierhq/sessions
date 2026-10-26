@@ -321,6 +321,8 @@ describe("new conversations", () => {
       expect(opts.createdByLogin).toBeUndefined();
       expect(opts.workspaceId).toBe(`ws-${c.id}`);
       expect(opts.requestId).toBe(`support-${c.id}-new`);
+      // Titled from the conversation's subject, never the prompt.
+      expect(opts.title).toBe("Export is broken");
       expect(workspaces).toEqual([
         {
           // No customer text in the workspace.
@@ -709,6 +711,24 @@ describe("Watch only and the hourly cap", () => {
   });
 });
 
+describe("the support session's title", () => {
+  test("is the subject without reply prefixes, on one short line", async () => {
+    const c = await conversation(
+      message("Hi", "Re: FWD:  Export\n is   broken " + "x".repeat(100)),
+    );
+    await onInbound(c, c.messages[0]!, true);
+    const title = created[0]!.title!;
+    expect(title.startsWith("Export is broken x")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("a conversation without a subject gets a plain name", async () => {
+    const c = await conversation(message("Hi", "  "));
+    await onInbound(c, c.messages[0]!, true);
+    expect(created[0]!.title).toBe("Support email");
+  });
+});
+
 describe("every customer message is labelled", () => {
   async function started(): Promise<SupportConversation> {
     const c = await conversation();
@@ -729,6 +749,49 @@ describe("every customer message is labelled", () => {
       route: "work",
       bug: true,
       injection: false,
+    });
+  });
+
+  test("the verdict follows the newest labelled message", async () => {
+    const c = await started();
+    const first = (await fresh(c.id)).triage!;
+    expect(first.messageId).toBe(c.messages[0]!.id);
+    route = "simple";
+    labels["Thanks, one more thing."] = { at: "2026-01-02T00:00:00.000Z" };
+    await reply(c.id, "Thanks, one more thing.");
+    route = "work";
+    labels["It crashes on save."] = {
+      bug: true,
+      at: "2026-01-03T00:00:00.000Z",
+    };
+    const last = await reply(c.id, "It crashes on save.");
+    const after = await fresh(c.id);
+    // Route, reason and time are the newest message's, never a mix.
+    expect(after.triage).toMatchObject({
+      route: "work",
+      bug: true,
+      at: "2026-01-03T00:00:00.000Z",
+      messageId: last.id,
+    });
+  });
+
+  test("an older message labelled late doesn't take the verdict back", async () => {
+    const c = await started();
+    labels["Any news?"] = { failed: true, topics: null };
+    const late = await reply(c.id, "Any news?");
+    labels["Hello?"] = { at: "2026-01-03T00:00:00.000Z" };
+    labels["Any news?"] = { topics: ["refund"], bug: true };
+    const newest = await reply(c.id, "Hello?");
+    const after = await fresh(c.id);
+    expect(after.messages.find((y) => y.id === late.id)!.triage!.failed).toBe(
+      undefined,
+    );
+    // The aggregate keeps every topic and the bug flag.
+    expect(after.triage).toMatchObject({
+      messageId: newest.id,
+      at: "2026-01-03T00:00:00.000Z",
+      topics: ["refund"],
+      bug: true,
     });
   });
 

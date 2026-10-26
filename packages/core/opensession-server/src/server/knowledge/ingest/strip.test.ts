@@ -60,6 +60,16 @@ describe("stripCustomerData", () => {
     );
   });
 
+  test("timestamps and clock times are not phone numbers", () => {
+    const { text } = stripCustomerData(
+      "It failed at 2026-10-26 09:03:00 UTC, again on 26-10-2026 14:05. Call +48 601 234 567.",
+      alice,
+    );
+    expect(text).toContain("2026-10-26 09:03:00 UTC");
+    expect(text).toContain("26-10-2026 14:05");
+    expect(text).not.toContain("601 234 567");
+  });
+
   test("drops quoted reply blocks", () => {
     const { text } = stripCustomerData(
       [

@@ -2,7 +2,9 @@
 // poll every pollMs when the server has no IDLE), and a UID cursor so only
 // new mail is fetched, never a full scan. The cursor moves past a message
 // only after the sink resolved, so a crash re-offers it (ingest dedupes).
-// A first connect starts at UIDNEXT and imports nothing; a UIDVALIDITY
+// A first connect starts at UIDNEXT and imports nothing: it counts the
+// unread mail already there, which a person may bring in later
+// (bringIn, through the same sink). A UIDVALIDITY
 // change offers the mail received since the old cursor (at most 7 days,
 // 500 messages; ingest dedupes by Message-ID) and then starts at UIDNEXT.
 // An untouched mailbox is opened read-only. Lost connections back off with
@@ -16,6 +18,7 @@ import {
   IMAP_POLL_MS,
   type InboundMessage,
   type InboxConfig,
+  type InboxExistingMail,
   type InboxHealth,
   type InboxHealthState,
   MAX_SOURCE_BYTES,
@@ -48,6 +51,12 @@ export interface ImapCursor {
   /** When the last offered message arrived (or when the cursor was set),
    *  ISO; where a UIDVALIDITY change looks back from. */
   lastReceivedAt?: string;
+  /** When we last took a message in, ISO: the inbox health's last message,
+   *  kept across restarts. */
+  lastMessageAt?: string;
+  /** Unread mail already there at the first connect, and what a person
+   *  brought in of it. */
+  existingMail?: InboxExistingMail;
 }
 
 export interface ImapTransportOptions {
@@ -265,7 +274,68 @@ export class ImapTransport {
     if (!this.stopped) return;
     this.stopped = false;
     this.attempt = 0;
+    // What the stored cursor knows, before the server answers.
+    const stored = await this.opts.loadCursor().catch(() => null);
+    this.remember(stored);
     await this.connect();
+  }
+
+  /** Takes the stored last-message time and existing-mail count into the
+   *  health when it doesn't know them yet. */
+  private remember(cursor: ImapCursor | null): void {
+    const at = cursor?.lastMessageAt;
+    if (!this.current.lastMessageAt && at && !Number.isNaN(Date.parse(at)))
+      this.current = { ...this.current, lastMessageAt: at };
+    if (!this.current.existingMail && cursor?.existingMail)
+      this.current = { ...this.current, existingMail: cursor.existingMail };
+  }
+
+  /** Offers the unread mail of the last `days` days that was already in
+   *  the inbox at the first connect (at most RECOVERY_MAX_MESSAGES, oldest
+   *  first) to the sink, which drops what it already has; newer mail
+   *  comes by the cursor. Resolves to how many were offered and records
+   *  it with the cursor. Rejects when not connected. */
+  bringIn(days: number): Promise<number> {
+    const client = this.client;
+    if (this.stopped || !client || !client.usable || !this.cursor)
+      return Promise.reject(new Error("The inbox is not connected"));
+    const gen = this.generation;
+    return this.exclusive(async () => {
+      const cursor = this.cursor;
+      if (gen !== this.generation || this.client !== client || !cursor)
+        throw new Error("The inbox is not connected");
+      const since = new Date(this.timers.now() - days * DAY_MS);
+      const found =
+        (await client.search({ seen: false, since }, { uid: true })) || [];
+      const uids = found
+        .filter((uid) => uid <= cursor.lastUid)
+        .sort((a, b) => a - b)
+        .slice(-RECOVERY_MAX_MESSAGES);
+      log(this.inboxId, "imap bring in", { days, offered: uids.length });
+      await this.offer(gen, client, cursor.uidValidity, uids, false);
+      if (gen !== this.generation || !this.cursor) return uids.length;
+      const existingMail: InboxExistingMail = {
+        ...(this.cursor.existingMail ?? { at: this.iso(), unread: 0 }),
+        broughtIn: { at: this.iso(), days, count: uids.length },
+      };
+      const lastMessageAt = this.current.lastMessageAt;
+      const next: ImapCursor = {
+        ...this.cursor,
+        existingMail,
+        ...(lastMessageAt ? { lastMessageAt } : {}),
+      };
+      await this.persist(next);
+      this.cursor = next;
+      this.current = { ...this.current, existingMail };
+      this.opts.onHealth(this.health());
+      return uids.length;
+    });
+  }
+
+  /** Unread messages up to `lastUid` (the mail already there). */
+  private async unreadUpTo(client: ImapFlow, lastUid: number): Promise<number> {
+    const unread = (await client.search({ seen: false }, { uid: true })) || [];
+    return unread.filter((uid) => uid <= lastUid).length;
   }
 
   /** Tries again now after a pause with no retry planned (a refused login
@@ -447,6 +517,7 @@ export class ImapTransport {
           : null;
       const stored = await this.opts.loadCursor();
       if (gen !== this.generation) return;
+      this.remember(stored);
       let cursor = stored;
       if (!cursor || cursor.uidValidity !== uidValidity) {
         const lastUid =
@@ -458,10 +529,28 @@ export class ImapTransport {
           );
         }
         if (gen !== this.generation) return;
-        cursor = { uidValidity, lastUid, lastReceivedAt: this.iso() };
+        const lastMessageAt = this.current.lastMessageAt;
+        // The first connect counts the mail it starts after; a UIDVALIDITY
+        // change keeps that count.
+        const existingMail: InboxExistingMail | undefined = cursor
+          ? cursor.existingMail
+          : { at: this.iso(), unread: await this.unreadUpTo(client, lastUid) };
+        if (gen !== this.generation) return;
+        cursor = {
+          uidValidity,
+          lastUid,
+          lastReceivedAt: this.iso(),
+          ...(lastMessageAt ? { lastMessageAt } : {}),
+          ...(existingMail ? { existingMail } : {}),
+        };
         await this.persist(cursor);
         if (gen !== this.generation) return;
-        log(this.inboxId, "imap cursor reset", { uidValidity, lastUid });
+        log(this.inboxId, "imap cursor reset", {
+          uidValidity,
+          lastUid,
+          ...(stored ? {} : { unreadAlready: existingMail?.unread ?? 0 }),
+        });
+        this.remember(cursor);
       }
       // UIDNEXT is current unless new mail was announced since the open.
       if (uidNext !== null && !sawExists) this.knownUidNext = uidNext;
@@ -608,19 +697,26 @@ export class ImapTransport {
         if (gen !== this.generation) return;
         if (message) await this.deliver(message, item.uid);
         if (gen !== this.generation) return;
+        const lastMessageAt = message
+          ? this.iso()
+          : (this.current.lastMessageAt ?? undefined);
         if (advance) {
           const next: ImapCursor = {
+            ...(this.cursor?.existingMail
+              ? { existingMail: this.cursor.existingMail }
+              : {}),
             uidValidity,
             lastUid: item.uid,
             lastReceivedAt:
               message?.receivedAt ?? this.cursor?.lastReceivedAt ?? this.iso(),
+            ...(lastMessageAt ? { lastMessageAt } : {}),
           };
           await this.persist(next);
           if (gen !== this.generation) return;
           this.cursor = next;
         }
         if (message) {
-          this.current = { ...this.current, lastMessageAt: this.iso() };
+          this.current = { ...this.current, lastMessageAt: lastMessageAt! };
           this.opts.onHealth(this.health());
         }
       }

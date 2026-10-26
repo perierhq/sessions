@@ -350,6 +350,62 @@ describe("sendDraft", () => {
   });
 });
 
+describe("the conversation's event log", () => {
+  const kinds = async (id: string) =>
+    (await getConversation(id))!.events.map((e) => [e.kind, e.detail]);
+
+  test("drafts and sends are logged, without the text", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    expect(await kinds(c.id)).toContainEqual([
+      "draft-written",
+      `${personaName()} wrote a draft. Drafts wait for a person`,
+    ]);
+    expect((await sendDraft(c.id, draft.id, ADA)).ok).toBe(true);
+    const second = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    if (!second.ok) throw new Error(second.error);
+    await sendDraft(c.id, second.draft.id, ADA, { text: "Edited reply." });
+    expect(await replyAsPerson(c.id, "On it.", "Ada")).toMatchObject({
+      ok: true,
+    });
+    const events = await kinds(c.id);
+    expect(events.filter(([k]) => k === "draft-written")).toHaveLength(2);
+    expect(events.filter(([k]) => k === "reply-sent")).toEqual([
+      ["reply-sent", "Ada sent the draft unchanged"],
+      ["reply-sent", "Ada sent the draft edited"],
+      ["reply-sent", "Ada replied"],
+    ]);
+    expect(JSON.stringify(events)).not.toContain("zebracache");
+  });
+
+  test("automatic sends, stops, discards and failed sends are logged", async () => {
+    await tb.setInbox({ autonomy: "routine", vetoMs: null });
+    const auto = await tb.conversation();
+    await proposeDraft(auto.id, DRAFT, AGENT, undefined, CITED);
+    // The send says how it went; the draft line names no rule.
+    expect(await kinds(auto.id)).toEqual([
+      ["draft-written", `${personaName()} wrote a draft`],
+      ["reply-sent", "Sent on its own"],
+    ]);
+
+    await tb.setInbox({ autonomy: "routine", vetoMs: 600_000 });
+    const c = await tb.conversation();
+    const proposed = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    if (!proposed.ok) throw new Error(proposed.error);
+    await stopVeto(c.id, proposed.draft.id, ADA);
+    await discardDraft(c.id, proposed.draft.id, ADA);
+    const events = await kinds(c.id);
+    expect(events).toContainEqual(["draft-stopped", "Stopped by Ada"]);
+    expect(events).toContainEqual(["draft-discarded", "Discarded by Ada"]);
+
+    await tb.setInbox({ autonomy: "draft" });
+    const { c: f, draft } = await draftNeedingPerson();
+    tb.fixture().smtpReply = { code: 550, message: "No such user" };
+    await sendDraft(f.id, draft.id, ADA);
+    const failed = (await kinds(f.id)).find(([k]) => k === "send-failed");
+    expect(failed?.[1]).toStartWith("The reply was not sent: ");
+  });
+});
+
 describe("veto, discard, person replies", () => {
   test("stopping a veto hands the draft to a person", async () => {
     await tb.setInbox({ autonomy: "routine" });

@@ -695,6 +695,7 @@ registerSessionControl({
     // projection while the opening effect waits for its session-file command.
     const {
       prompt,
+      title: titleInput,
       branch,
       baseRef,
       stackedOnBranch,
@@ -1130,6 +1131,7 @@ registerSessionControl({
     const sessionCreatedAt = new Date().toISOString();
     const namedPrompt = await nameKnownSessionReferencesForTitle(prompt);
     const title =
+      (titleInput ?? "").replace(/\s+/g, " ").trim().slice(0, 80) ||
       namedPrompt.trim().split("\n")[0].slice(0, 80) ||
       (Array.isArray(rawFiles) && rawFiles.length
         ? "Attached file"

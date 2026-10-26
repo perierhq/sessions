@@ -130,6 +130,15 @@ describe("skillSearchPaths", () => {
     expect(skillSearchPaths()).toEqual([SHIPPED_SKILLS_DIR]);
   });
 
+  test("a project-only run loads the checkout's skills and nothing of the instance's", () => {
+    const ws = workspace();
+    mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+    expect(skillSearchPaths(ws, { projectOnly: true })).toEqual([
+      join(ws, ".agents", "skills"),
+    ]);
+    expect(skillSearchPaths(workspace(), { projectOnly: true })).toEqual([]);
+  });
+
   test("the shipped directory is listed once, even for a session on this repo", () => {
     const paths = skillSearchPaths(join(SHIPPED_SKILLS_DIR, "..", ".."));
     expect(paths.length).toBe(new Set(paths).size);

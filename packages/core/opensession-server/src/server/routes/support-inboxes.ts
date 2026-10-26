@@ -33,6 +33,7 @@ import type {
   InboxesResponse,
   MailServerConfig,
 } from "../../shared/support";
+import { BRING_IN_DAYS } from "../../shared/support";
 import {
   type Actor,
   ForbiddenError,
@@ -48,6 +49,7 @@ import {
 import {
   ADDRESS,
   type NewInbox,
+  bringInRefusal,
   createInbox,
   deleteInbox,
   getInbox,
@@ -428,6 +430,49 @@ async function runTest(
   }
 }
 
+/** "Bring in the last N days": the unread mail that was already in the
+ *  inbox when it first connected goes through the inbox's own connection
+ *  and ingest, like any new mail. */
+async function bringIn(
+  actor: Actor,
+  person: string,
+  id: string,
+  raw: unknown,
+): Promise<Response> {
+  const days = isObject(raw) ? raw.days : undefined;
+  if (!BRING_IN_DAYS.includes(days as (typeof BRING_IN_DAYS)[number]))
+    return json(400, `Choose ${BRING_IN_DAYS.join(", ")} days`);
+  let inbox: InboxConfig | null;
+  try {
+    inbox = await getInbox(id);
+  } catch (error) {
+    return failed("read", error, "Couldn't load the inbox. Try again");
+  }
+  if (!inbox) return json(404, "Inbox not found");
+  const refused = bringInRefusal(actor, inbox);
+  if (refused) return json(403, refused);
+  const adapter = channelAdapterFor(inbox.id);
+  if (!adapter?.bringIn || !inbox.enabled)
+    return json(409, "The inbox isn't connected. Try again once it is");
+  let count: number;
+  try {
+    count = await adapter.bringIn(days as number);
+  } catch (error) {
+    const down = error instanceof Error && /not connected/i.test(error.message);
+    if (down)
+      return json(409, "The inbox isn't connected. Try again once it is");
+    return failed("bring in", error, "Couldn't bring in the mail. Try again");
+  }
+  await supportAudit({
+    type: "support_inbox_brought_in",
+    inboxId: inbox.id,
+    by: person,
+    days: days as number,
+    count,
+  });
+  return Response.json({ count, inbox: viewOf(inbox) });
+}
+
 async function forget(actor: Actor, raw: unknown): Promise<Response> {
   const email = isObject(raw) && typeof raw.email === "string" ? raw.email : "";
   if (!isOwnerActor(actor))
@@ -497,7 +542,8 @@ export async function handleSupportInboxRoutes(
         .slice(PREFIX.length + 1)
         .split("/")
         .filter(Boolean);
-  if (rest.length > 1) return undefined;
+  const bringingIn = rest.length === 2 && rest[1] === "bring-in";
+  if (rest.length > 1 && !bringingIn) return undefined;
 
   const person = verifiedPerson(ctx);
   if (!person) return json(401, "Sign in to change support inboxes");
@@ -561,6 +607,10 @@ export async function handleSupportInboxRoutes(
 
   const id = segment(rest[0]!);
   if (id === null) return json(400, "Invalid path");
+  if (bringingIn) {
+    if (req.method !== "POST") return undefined;
+    return bringIn(actor, person, id, await readBody(req));
+  }
   if (req.method === "PATCH") {
     const body = await readBody(req);
     if (!isObject(body) || typeof body.expectedRevision !== "number")

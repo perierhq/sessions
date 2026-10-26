@@ -215,6 +215,8 @@ describe("support session in a podman Sandbox (queue drain)", () => {
     expect(prompt).not.toContain("no session with this id");
     expect(opts.onAskUser).toBeUndefined();
     expect(opts.user).toBeUndefined();
+    // The project's own skills only, never the instance's skills directory.
+    expect(opts.projectSkillsOnly).toBe(true);
   });
 
   // OPENSESSION_TEST_IN_PROCESS_RUNS=1 runs the turn in this process, as on
@@ -249,5 +251,6 @@ describe("support session in a podman Sandbox (queue drain)", () => {
       "@session:bks-0190aaaa-0000 · no session with this id",
     );
     expect(opts.onAskUser).toBeDefined();
+    expect(opts.projectSkillsOnly).toBeUndefined();
   });
 });

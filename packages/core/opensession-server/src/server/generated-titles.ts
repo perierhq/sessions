@@ -175,9 +175,9 @@ export async function ensureGeneratedTitle(
       return null;
     }
     if (await getTitleOverrideAsync(id)) return null;
-    // Desk sessions keep their fixed title (direct file read — importing the
-    // sessions cache here would be an import cycle).
-    if ((await readSessionDoc(id))?.desk) return null;
+    // Desk and support sessions keep their fixed title (direct file read —
+    // importing the sessions cache here would be an import cycle).
+    if (fixedTitle(await readSessionDoc(id))) return null;
 
     const out = await oneShot(
       `Summarize this task as a short title of 3 to 6 words, phrased as an imperative like a git branch or PR title (e.g. "Add onboarding flow", "Fix layout thumbnails", "Raise timeline playhead"). Sentence case, no trailing punctuation, no quotes, no code. Always name the task, even when it is a question, an investigation or a discussion rather than a code change — never comment on the task itself. Output ONLY the title, nothing else.\n\nTask:\n"""\n${source}\n"""`,
@@ -195,6 +195,21 @@ export async function ensureGeneratedTitle(
     }
     return stored;
   });
+}
+
+/** A support session wears its conversation's subject (support/routing.ts). */
+function isSupport(
+  session:
+    | { externalRefs?: ReadonlyArray<{ kind: string }> }
+    | null
+    | undefined,
+): boolean {
+  return !!session?.externalRefs?.some((r) => r.kind === "support");
+}
+
+/** Sessions whose title is set on purpose and never generated. */
+function fixedTitle(doc: NativeSessionFile | null): boolean {
+  return !!doc?.desk || isSupport(doc);
 }
 
 async function readSessionDoc(id: string): Promise<NativeSessionFile | null> {
@@ -231,6 +246,7 @@ async function persistTitle(id: string, title: string): Promise<string | null> {
 export type TitleRefreshSession = {
   title?: string;
   desk?: boolean;
+  externalRefs?: Array<{ kind: string }>;
   goalId?: string;
   automationId?: string;
   automation?: string;
@@ -327,7 +343,7 @@ export async function refreshGeneratedTitle(
 ): Promise<string | null> {
   const { user, session } = opts;
   if (session?.desk || session?.goalId || session?.automationId) return null;
-  if (session?.automation) return null;
+  if (session?.automation || isSupport(session)) return null;
   if (isMachineActor(user)) return null;
   const message = stripContext(prompt).trim();
   if (!message || message.startsWith("<!--os:")) return null;
@@ -492,7 +508,7 @@ export async function sweepCandidates(): Promise<
   for (const d of await catalogNativeSessions()) {
     const id = d.id;
     if (!/^(os|bks)-[0-9a-f]{8}-/.test(id)) continue;
-    if (d.desk || d.goalId || d.automationId) continue;
+    if (d.desk || d.goalId || d.automationId || isSupport(d)) continue;
     const generated = getGeneratedTitle(id);
     if (generated && d.pendingWorkspaceTitle) {
       // A title can land before its workspace rename. Retry that durable marker

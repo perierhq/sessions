@@ -604,6 +604,7 @@ try {
     effort: spec.effort,
     fastMode: spec.fastMode,
     speed: spec.speed,
+    projectSkillsOnly: spec.projectSkillsOnly,
     accountId: spec.accountId,
     accountStrict: spec.accountStrict,
     usageCredits: spec.usageCredits,

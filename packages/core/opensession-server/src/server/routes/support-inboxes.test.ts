@@ -347,6 +347,104 @@ describe("support inbox routes", () => {
   });
 });
 
+describe("support inbox routes: mail already in the inbox", () => {
+  function connected(
+    inboxId: string,
+    bringIn: (days: number) => Promise<number>,
+  ) {
+    const calls: number[] = [];
+    registerChannelAdapter({
+      channel: "email",
+      inboxId,
+      connect: async () => {},
+      disconnect: async () => {},
+      health: () => ({
+        state: "live",
+        since: "2026-10-25T10:00:00.000Z",
+        reason: null,
+        retryAt: null,
+        lastMessageAt: null,
+        existingMail: { at: "2026-10-25T10:00:00.000Z", unread: 4 },
+      }),
+      send: async () => {
+        throw new Error("unused");
+      },
+      bringIn: async (days) => {
+        calls.push(days);
+        return bringIn(days);
+      },
+    });
+    return calls;
+  }
+
+  test("a person brings in the last days through the inbox's connection", async () => {
+    const inbox = await created();
+    const calls = connected(inbox.id, async () => 3);
+    const res = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 7 },
+      BEA,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ count: 3 });
+    expect(calls).toEqual([7]);
+    expect(
+      kernel.audits.find((a) => a.type === "support_inbox_brought_in"),
+    ).toMatchObject({ inboxId: inbox.id, days: 7, count: 3, by: "Bea" });
+  });
+
+  test("only the offered day counts, and a connection must be live", async () => {
+    const inbox = await created();
+    const odd = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 400 },
+    );
+    expect(odd.status).toBe(400);
+    const off = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 7 },
+    );
+    expect(off.status).toBe(409);
+    connected(inbox.id, async () => {
+      throw new Error("The inbox is not connected");
+    });
+    const down = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 7 },
+    );
+    expect(down.status).toBe(409);
+    const missing = await call(
+      "POST",
+      "/api/support/inboxes/inb_0000/bring-in",
+      { days: 7 },
+    );
+    expect(missing.status).toBe(404);
+  });
+
+  test("on an inbox that sends on its own, only the instance owner brings mail in", async () => {
+    const inbox = await created({ autonomy: "routine", vetoMs: null });
+    const calls = connected(inbox.id, async () => 1);
+    const teammate = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 3 },
+      BEA,
+    );
+    expect(teammate.status).toBe(403);
+    expect(calls).toEqual([]);
+    const owner = await call(
+      "POST",
+      `/api/support/inboxes/${inbox.id}/bring-in`,
+      { days: 3 },
+    );
+    expect(owner.status).toBe(200);
+  });
+});
+
 describe("support inbox routes: who may do what", () => {
   const AUTOMATION = {
     login: "automation",

@@ -489,6 +489,30 @@ test("a manual rename blocks the first generation too, before and during the cal
   expect(titles.getGeneratedTitle(id)).toBeUndefined();
 });
 
+test("support sessions keep their subject title on every path", async () => {
+  const id = sessionId();
+  const refs = [{ kind: "support", id: "sc_acme" }];
+  writeFileSync(
+    join(sessionsDir, `${id}.json`),
+    JSON.stringify({ id, title: "Export is broken", externalRefs: refs }),
+  );
+  answer = async () => "Answer support email";
+  expect(
+    await titles.ensureGeneratedTitle(id, "You answer support"),
+  ).toBeNull();
+  expect(
+    await titles.refreshGeneratedTitle(
+      id,
+      "Switch to the flaky login integration test and find out why it fails",
+      {
+        user: "ada",
+        session: { title: "Export is broken", externalRefs: refs },
+      },
+    ),
+  ).toBeNull();
+  expect(calls.length).toBe(0);
+});
+
 test("desk session files keep their fixed title on the ensure path", async () => {
   const id = sessionId();
   writeFileSync(

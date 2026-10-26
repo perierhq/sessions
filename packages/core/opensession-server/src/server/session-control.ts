@@ -87,6 +87,9 @@ export type SandboxRequest =
 
 export interface CreateSessionOpts {
   prompt: string;
+  /** Display title instead of the prompt's first line (a support session
+   *  wears its conversation's subject). Trimmed to one line of 80. */
+  title?: string;
   /** Trusted Slack ingress only, never accepted from model-authored create arguments. */
   slackOrigin?: import("./types").SlackSessionOrigin;
   /** Stable server-chosen id for an idempotent client create request. */

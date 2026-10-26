@@ -3,7 +3,11 @@ import type { InboxView } from "../../shared/support";
 import { SUPPORT_AUTONOMY_COPY } from "../../shared/support-copy";
 import {
   AUTONOMY_CHOICES,
+  bringInChoices,
+  bringInLabel,
+  broughtInLine,
   draftStatsLine,
+  existingMailOffer,
   emptyInboxForm,
   formChanged,
   formFromInbox,
@@ -461,5 +465,73 @@ describe("review fixes", () => {
     expect(
       formChanged(VIEW, { ...form, imap: { ...form.imap, password: "x" } }),
     ).toBe(true);
+  });
+});
+
+describe("mail already in the inbox", () => {
+  const AT = "2026-10-25T10:00:00.000Z";
+  const view = (existingMail?: InboxView["health"]["existingMail"]) => ({
+    ...VIEW,
+    health: { ...VIEW.health, state: "live" as const, existingMail },
+  });
+
+  test("unread mail at the first connect is offered, none is not", () => {
+    expect(existingMailOffer(view({ at: AT, unread: 3 }), true)).toEqual({
+      text: "3 unread messages were already here when this inbox connected. Sessions started with new mail",
+      canBringIn: true,
+    });
+    expect(existingMailOffer(view({ at: AT, unread: 1 }), true)?.text).toBe(
+      "1 unread message was already here when this inbox connected. Sessions started with new mail",
+    );
+    expect(existingMailOffer(view({ at: AT, unread: 0 }), true)).toBeNull();
+    expect(existingMailOffer(view(undefined), true)).toBeNull();
+    expect(
+      existingMailOffer(
+        { ...view({ at: AT, unread: 3 }), enabled: false },
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  test("once brought in, it says what came in and offers nothing", () => {
+    const done = view({
+      at: AT,
+      unread: 3,
+      broughtIn: { at: AT, days: 7, count: 2 },
+    });
+    expect(existingMailOffer(done, true)).toEqual({
+      text: "Brought in 2 messages from the last 7 days",
+      canBringIn: false,
+    });
+    expect(broughtInLine({ at: AT, days: 1, count: 0 })).toBe(
+      "No unread mail from the last day to bring in",
+    );
+    expect(broughtInLine({ at: AT, days: 3, count: 1 })).toBe(
+      "Brought in 1 message from the last 3 days",
+    );
+  });
+
+  test("on an inbox that sends on its own, only the instance owner may", () => {
+    const routine = {
+      ...view({ at: AT, unread: 2 }),
+      autonomy: "routine" as const,
+    };
+    expect(existingMailOffer(routine, false)).toEqual({
+      text: "2 unread messages were already here when this inbox connected. Only the instance owner can bring them in on an inbox that sends on its own",
+      canBringIn: false,
+    });
+    expect(existingMailOffer(routine, true)?.canBringIn).toBe(true);
+  });
+
+  test("the day choices and the button say how far back", () => {
+    expect(bringInChoices().map((c) => c.label)).toEqual([
+      "1 day",
+      "3 days",
+      "7 days",
+      "14 days",
+      "30 days",
+    ]);
+    expect(bringInLabel(7)).toBe("Bring in the last 7 days");
+    expect(bringInLabel(1)).toBe("Bring in the last day");
   });
 });

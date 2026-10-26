@@ -165,6 +165,9 @@ export interface RunHostSpec {
   speed?: SessionSpeed; // unset falls back to fastMode; "ultrafast" needs GPT-6 Astra and a Pro $500 login
   /** Pstack mode: the pstack skill family is visible to the model. */
   pstackMode?: boolean;
+  /** Only the checkout's own skills, never the instance's skills directory
+   *  (support sessions). */
+  projectSkillsOnly?: boolean;
   /** Pinned account in the active model provider's pool; pool fallback applies. */
   accountId?: string;
   /** Hard accountId pin — never rotate into the shared pool (cost cap). */

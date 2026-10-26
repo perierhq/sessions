@@ -12,6 +12,8 @@ import {
   DEFAULT_SEND_LIMIT_PER_MINUTE,
   DEFAULT_SUPPORT_AUTONOMY,
   type InboxDraftStats,
+  BRING_IN_DAYS,
+  type InboxExistingMail,
   type InboxHealth,
   type InboxPatch,
   type InboxTestBody,
@@ -384,6 +386,57 @@ export function inboxStatusLine(inbox: InboxView, locale?: string): string {
   if (!inbox.enabled) return "Turned off";
   if (inbox.health.state === "off") return "Not connected yet";
   return healthLine(inbox.health, locale);
+}
+
+// ── Mail already in the inbox ──────────────────────────────────────────
+
+const messages = (n: number) => (n === 1 ? "1 message" : `${n} messages`);
+const lastDays = (days: number) =>
+  days === 1 ? "the last day" : `the last ${days} days`;
+
+/** What the inbox's row says about the unread mail that was already there
+ *  when it first connected, and whether it offers to bring it in; null when
+ *  there was none or the inbox is off. */
+export function existingMailOffer(
+  inbox: InboxView,
+  isInstanceOwner: boolean,
+): { text: string; canBringIn: boolean } | null {
+  const existing = inbox.health.existingMail;
+  if (!inbox.enabled || !existing) return null;
+  if (existing.broughtIn)
+    return { text: broughtInLine(existing.broughtIn), canBringIn: false };
+  if (existing.unread <= 0) return null;
+  const there =
+    existing.unread === 1
+      ? "1 unread message was already here when this inbox connected"
+      : `${existing.unread} unread messages were already here when this inbox connected`;
+  if (inbox.autonomy === "routine" && !isInstanceOwner)
+    return {
+      text: `${there}. Only the instance owner can bring them in on an inbox that sends on its own`,
+      canBringIn: false,
+    };
+  return { text: `${there}. Sessions started with new mail`, canBringIn: true };
+}
+
+/** What a bring-in took in. */
+export function broughtInLine(
+  done: NonNullable<InboxExistingMail["broughtIn"]>,
+): string {
+  if (done.count === 0)
+    return `No unread mail from ${lastDays(done.days)} to bring in`;
+  return `Brought in ${messages(done.count)} from ${lastDays(done.days)}`;
+}
+
+/** "How far back" for Bring in. */
+export function bringInChoices(): { value: string; label: string }[] {
+  return BRING_IN_DAYS.map((days) => ({
+    value: String(days),
+    label: days === 1 ? "1 day" : `${days} days`,
+  }));
+}
+
+export function bringInLabel(days: number): string {
+  return `Bring in ${lastDays(days)}`;
 }
 
 /** The health line under an inbox's name. */

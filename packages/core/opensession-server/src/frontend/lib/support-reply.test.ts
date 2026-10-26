@@ -646,6 +646,36 @@ describe("quiet events", () => {
     );
     expect(person?.quiet).toBeUndefined();
   });
+
+  test("a draft written and a reply sent are quiet lines", () => {
+    const c = conversation({
+      events: [
+        {
+          at: "2026-10-25T10:05:00.000Z",
+          kind: "draft-written",
+          actor: { kind: "agent", sessionId: "os-1" },
+          detail: "Assistant wrote a draft. Drafts wait for a person",
+        },
+        {
+          at: "2026-10-25T10:06:00.000Z",
+          kind: "reply-sent",
+          actor: { kind: "person", name: "Ada" },
+          detail: "Ada sent the draft unchanged",
+        },
+        {
+          at: "2026-10-25T10:07:00.000Z",
+          kind: "send-failed",
+          actor: { kind: "person", name: "Ada" },
+          detail: "The reply was not sent: 550",
+        },
+      ],
+    });
+    const [, written, sent, failed] = timelineEntries(c);
+    expect(written?.quiet).toBe(true);
+    expect(sent?.quiet).toBe(true);
+    // A failed send is news: a note.
+    expect(failed?.quiet).toBeUndefined();
+  });
 });
 
 describe("sendingDiscardable", () => {
