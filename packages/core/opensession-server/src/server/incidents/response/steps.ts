@@ -10,6 +10,7 @@ import type {
   InvestigatorReport,
   NeedsYouKind,
   PolicyDecision,
+  ReportProblem,
   ResponsePhase,
   SetupFix,
   VerifierReport,
@@ -83,6 +84,7 @@ export type ResponseStep =
       sessionId: string;
       report?: InvestigatorReport | VerifierReport;
       error?: string;
+      problem?: ReportProblem;
       /** Values Sessions repaired in the report instead of refusing it. */
       warnings?: string[];
     }

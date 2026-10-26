@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import type { ReportProblem } from "../../../shared/incident-response";
 import {
   REPORT_FENCE,
+  plainReportProblem,
   checkKnowledge,
   effectiveVerdict,
   extractReportBlock,
@@ -79,7 +81,10 @@ test("exactly one report block, so quoted content cannot override it", () => {
       `${fence({ role: "investigator" })}\nlater\n${fence(good)}`,
       ctx,
     ),
-  ).toEqual({ error: "End with exactly one incident-report block" });
+  ).toMatchObject({
+    error: "End with exactly one incident-report block",
+    problem: "unreadable",
+  });
   const r = parseInvestigatorReport(`Quoted earlier.\n${fence(good)}`, ctx);
   expect("error" in r ? r.error : r.candidate).toEqual({
     pr: true,
@@ -91,15 +96,18 @@ test("only the end of a long message is read, and blocks are bounded", () => {
   const tail = parseInvestigatorReport(`${filler}${fence(good)}`, ctx);
   expect("error" in tail ? tail.error : tail.role).toBe("investigator");
   // A block that sits before the last 256 KB is not seen.
-  expect(parseInvestigatorReport(`${fence(good)}\n${filler}`, ctx)).toEqual({
-    error: "No incident-report block",
-  });
+  expect(
+    parseInvestigatorReport(`${fence(good)}\n${filler}`, ctx),
+  ).toMatchObject({ error: "No incident-report block", problem: "missing" });
   expect(
     parseInvestigatorReport(
       fence({ ...good, cause: "y".repeat(70 * 1024) }),
       ctx,
     ),
-  ).toEqual({ error: "The incident-report block is too large" });
+  ).toMatchObject({
+    error: "The incident-report block is too large",
+    problem: "unreadable",
+  });
 });
 test("a report's own error key is just an unknown key", () => {
   const r = parseInvestigatorReport(fence({ ...good, error: "x" }), ctx);
@@ -229,26 +237,44 @@ test("no warnings are kept from a report that is refused", () => {
   expect(warnings).toEqual([]);
 });
 test.each([
-  ["no block", "just text", "No incident-report block"],
-  ["bad json", "```incident-report\n{nope\n```", "not valid JSON"],
-  ["wrong role", fence({ ...good, role: "verifier" }), "role"],
+  ["no block", "just text", "No incident-report block", "missing"],
   [
-    "runbook not read",
-    fence({ ...good, readFirst: [{ path: "README.md", found: true }] }),
-    "readFirst",
+    "bad json",
+    "```incident-report\n{nope\n```",
+    "not valid JSON",
+    "unreadable",
   ],
+  [
+    "not an object",
+    "```incident-report\n[1]\n```",
+    "JSON object",
+    "unreadable",
+  ],
+  ["no summary", fence({ ...good, summary: "" }), "summary", "conclusion"],
+  ["no cause", fence({ ...good, cause: undefined }), "cause", "conclusion"],
   [
     "empty table",
     fence({ ...good, attempts: [] }),
     "The evidence table is empty",
+    "evidence",
   ],
   [
-    "expensive first",
-    fence({
-      ...good,
-      attempts: [{ ...good.attempts[1], cost: "expensive" }, good.attempts[0]],
-    }),
-    "Work cheapest-first: row 2 is free after expensive",
+    "no usable row",
+    fence({ ...good, attempts: [{ cost: "free", evidence: "x" }, "row"] }),
+    "No row of attempts has a step",
+    "evidence",
+  ],
+  [
+    "no candidate decision",
+    fence({ ...good, candidate: undefined }),
+    "Set candidate",
+    "decision",
+  ],
+  [
+    "unclear pr flag",
+    fence({ ...good, candidate: { pr: "maybe", actions: [] } }),
+    "candidate.pr",
+    "decision",
   ],
   [
     "foreign origin",
@@ -260,49 +286,42 @@ test.each([
       },
     }),
     "signal's own origin https://acme.example.test",
+    "check",
+  ],
+  [
+    "no check for a candidate",
+    fence({ ...good, check: undefined }),
+    "check field",
+    "check",
   ],
   [
     "unknown action",
     fence({ ...good, candidate: { pr: false, actions: ["scale-up"] } }),
     'Unknown action "scale-up"',
+    "action",
   ],
   [
-    "deploy as an action",
+    "deploy without the PR",
     fence({ ...good, candidate: { pr: false, actions: ["deploy"] } }),
     "Deploy runs only with the PR",
-  ],
-  [
-    "duplicate action",
-    fence({
-      ...good,
-      candidate: { pr: false, actions: ["rollback", "rollback"] },
-    }),
-    'List each action once: "rollback"',
+    "action",
   ],
   [
     "empty candidate",
     fence({ ...good, candidate: { pr: false, actions: [] } }),
     "candidate",
+    "decision",
   ],
   [
-    "no candidate reason",
-    fence({ ...good, candidate: null }),
-    "noCandidateReason",
+    "note path with a candidate",
+    fence({ ...good, notePath: "notes.md" }),
+    "notePath",
+    "note",
   ],
-  ["note path", fence({ ...good, notePath: "notes.md" }), "notePath"],
-  [
-    "runbook path",
-    fence({ ...good, runbookPaths: ["docs/runbook.md"] }),
-    "runbookPaths",
-  ],
-  [
-    "bad source",
-    fence({ ...good, claims: [{ text: "x", source: "/etc/passwd" }] }),
-    "source",
-  ],
-])("rejects %s", (_name, text, message) => {
+])("rejects %s", (_name, text, message, problem) => {
   expect(parseInvestigatorReport(text, ctx)).toEqual({
     error: expect.stringContaining(message),
+    problem: problem as ReportProblem,
   });
 });
 test("request checks need an http signal", () => {
@@ -310,6 +329,7 @@ test("request checks need an http signal", () => {
     parseInvestigatorReport(fence(good), { ...ctx, signalOrigin: null }),
   ).toEqual({
     error: "A request check needs an http signal",
+    problem: "check",
   });
   const after = parseInvestigatorReport(
     fence({
@@ -335,20 +355,14 @@ test("verifier must check every claim", () => {
   };
   expect(parseVerifierReport(fence(v), { claims })).toEqual({
     error: 'Check every claim: missing "B"',
+    problem: "claims",
   });
   expect(
-    parseVerifierReport(
-      fence({
-        ...v,
-        verdict: "not-certain",
-        claims: [
-          ...v.claims,
-          { text: "B", status: "verified", evidence: "seen" },
-        ],
-      }),
-      { claims },
-    ),
-  ).toEqual({ error: expect.stringContaining("reasons") });
+    parseVerifierReport(fence({ ...v, verdict: undefined }), { claims }),
+  ).toEqual({
+    error: "The verdict field must be certain or not-certain",
+    problem: "conclusion",
+  });
   const ok = parseVerifierReport(
     fence({
       ...v,
@@ -464,9 +478,10 @@ test("request checks read unless the signal itself sends that request", () => {
     });
   expect(
     parseInvestigatorReport(post("https://acme.example.test/search"), ctx),
-  ).toEqual({
+  ).toMatchObject({
     error:
       "A request check must use GET or HEAD unless the signal sends that method to that path",
+    problem: "check",
   });
   const same = parseInvestigatorReport(
     post("https://acme.example.test/search?q=y"),
@@ -478,23 +493,27 @@ test("request checks read unless the signal itself sends that request", () => {
       ...ctx,
       signalRequest: { method: "POST", path: "/search" },
     }),
-  ).toEqual({ error: expect.stringContaining("GET or HEAD") });
+  ).toMatchObject({ error: expect.stringContaining("GET or HEAD") });
 });
-test("a candidate needs claims, and each claim cites a source from the table", () => {
+test("a candidate needs claims; a source outside the table is dropped", () => {
   expect(parseInvestigatorReport(fence({ ...good, claims: [] }), ctx)).toEqual({
     error: "Give at least one claim for the candidate",
+    problem: "claims",
   });
-  expect(
-    parseInvestigatorReport(
-      fence({
-        ...good,
-        claims: [{ text: "x", source: "https://elsewhere.example.test/" }],
-      }),
-      ctx,
-    ),
-  ).toEqual({
-    error: "Claim 1 cites a source that is not in the evidence table",
-  });
+  const warnings: string[] = [];
+  const uncited = parseInvestigatorReport(
+    fence({
+      ...good,
+      claims: [{ text: "x", source: "https://elsewhere.example.test/" }],
+    }),
+    { ...ctx, warnings },
+  );
+  expect("error" in uncited ? uncited.error : uncited.claims).toEqual([
+    { text: "x" },
+  ]);
+  expect(warnings).toEqual([
+    "Claim 1 cites a source that is not in the evidence table; dropped the source",
+  ]);
   const none = parseInvestigatorReport(
     fence({
       ...good,
@@ -684,4 +703,289 @@ test("the verifier's report never carries next steps", () => {
   );
   if ("error" in r) throw new Error(r.error);
   expect(r).not.toHaveProperty("nextSteps");
+});
+
+// Rules that used to refuse a report and now repair it with a warning.
+const parsedWith = (report: unknown) => {
+  const warnings: string[] = [];
+  const r = parseInvestigatorReport(fence(report), { ...ctx, warnings });
+  if ("error" in r) throw new Error(r.error);
+  return { r, warnings };
+};
+
+test("attempts out of cost order are sorted cheapest-first, never refused", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    attempts: [
+      { ...good.attempts[1], step: "Cheap one" },
+      { ...good.attempts[0], step: "Free one" },
+      { ...good.attempts[1], step: "Expensive one", cost: "expensive" },
+      { ...good.attempts[0], step: "Free two" },
+    ],
+  });
+  expect(r.attempts.map((a) => `${a.cost} ${a.step}`)).toEqual([
+    "free Free one",
+    "free Free two",
+    "cheap Cheap one",
+    "expensive Expensive one",
+  ]);
+  expect(warnings).toEqual([
+    "The attempts were not cheapest-first; sorted by cost",
+  ]);
+});
+
+test("costs are matched loosely; an unknown cost is recorded as expensive", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    attempts: [
+      { ...good.attempts[0], cost: " Free " },
+      { ...good.attempts[1], cost: "LOW" },
+      { ...good.attempts[1], step: "Odd", cost: "medium" },
+    ],
+  });
+  expect(r.attempts.map((a) => a.cost)).toEqual(["free", "cheap", "expensive"]);
+  expect(warnings).toEqual([
+    'Attempt 3 (Odd) had cost "medium", not one of free, cheap, expensive; recorded as expensive',
+  ]);
+});
+
+test("repeated, stepless and long attempts are repaired", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    attempts: [
+      good.attempts[0],
+      good.attempts[0],
+      { cost: "free", result: "confirmed", evidence: "No step" },
+      { ...good.attempts[1], step: "s".repeat(250), evidence: "" },
+    ],
+  });
+  expect(r.attempts).toHaveLength(2);
+  expect(r.attempts[1].step).toHaveLength(200);
+  expect(r.attempts[1].step).toEndWith("\u2026");
+  expect(r.attempts[1].evidence).toBe("No evidence given.");
+  expect(warnings).toEqual([
+    "Attempt 2 (Read earlier notes) repeated an earlier attempt; dropped",
+    "Attempt 3 had no step; dropped",
+    "Attempt 4's step was longer than 200 characters; cut",
+    `Attempt 4 (${"s".repeat(199)}\u2026) had no evidence`,
+  ]);
+});
+
+test("a bad attempt source is dropped, not the report", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    attempts: [
+      { ...good.attempts[0], source: "/etc/passwd" },
+      good.attempts[1],
+    ],
+  });
+  expect(r.attempts[0]).not.toHaveProperty("source");
+  expect(warnings).toEqual([
+    "Attempt 1 had a source that is not an http(s) URL or a repository path; dropped the source",
+  ]);
+});
+
+test("a long summary or cause is cut", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    summary: "s".repeat(300),
+    cause: "c".repeat(1200),
+  });
+  expect(r.summary).toHaveLength(200);
+  expect(r.cause).toHaveLength(1000);
+  expect(warnings).toEqual([
+    "summary was longer than 200 characters; cut",
+    "cause was longer than 1000 characters; cut",
+  ]);
+});
+
+test("role, readFirst and runbookPaths are repaired, not refused", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    role: "verifier",
+    readFirst: [
+      { path: "./docs/incidents/runbook.md", found: "yes" },
+      { path: "docs/incidents/runbook.md", found: true },
+      { path: "README.md" },
+    ],
+    runbookPaths: ["docs/runbook.md"],
+  });
+  expect(r.readFirst).toEqual([
+    { path: "docs/incidents/runbook.md", found: true },
+  ]);
+  expect(r.runbookPaths).toEqual(["docs/incidents/runbook.md"]);
+  expect(warnings).toEqual([
+    'role was "verifier"; read as investigator',
+    "readFirst entry 2 (docs/incidents/runbook.md) was listed twice; kept once",
+    "readFirst entry 3 needs a path and found; dropped",
+    'runbookPaths "docs/runbook.md" is not docs/incidents/runbook.md or docs/incidents/runbooks/<slug>.md; dropped',
+    "runbookPaths named no runbook; read as docs/incidents/runbook.md",
+  ]);
+  const unread = parsedWith({ ...good, readFirst: undefined });
+  expect(unread.r.readFirst).toEqual([]);
+  expect(unread.warnings).toEqual([
+    "readFirst was missing",
+    "readFirst did not list docs/incidents/runbook.md",
+  ]);
+});
+
+test("repeated actions, a deploy beside the PR and action case are repaired", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    candidate: { pr: "true", actions: ["Rollback", "rollback", "deploy"] },
+  });
+  expect(r.candidate).toEqual({ pr: true, actions: ["rollback"] });
+  expect(warnings).toEqual([
+    'candidate.pr was "true"; read as true',
+    'Action "Rollback" read as "rollback"',
+    'Action "rollback" was listed twice; kept once',
+    'Action "deploy" is a deploy, which runs with the PR; dropped from the actions',
+  ]);
+});
+
+test("without a candidate, the reason, check and note are not required", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    candidate: null,
+    check: { kind: "request", source: { kind: "http", url: "http://x.test" } },
+    notePath: "notes.md",
+    claims: [],
+  });
+  expect(r.noCandidateReason).toBeUndefined();
+  expect(r.check).toEqual({
+    kind: "after-deploy",
+    reason: "No fix was proposed.",
+  });
+  expect(r.notePath).toBe("");
+  expect(warnings).toEqual([
+    "noCandidateReason was missing; the cause stands in for it",
+    "Ignored the check, as there is no candidate: A request check must use the signal's own origin https://acme.example.test",
+    'notePath "notes.md" is not docs/incidents/YYYY-MM-DD-<slug>.md; ignored, as there is no candidate',
+  ]);
+});
+
+test("an after-deploy check kind is matched loosely and its reason filled in", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    check: { kind: "After_Deploy" },
+  });
+  expect(r.check).toEqual({ kind: "after-deploy", reason: "No reason given." });
+  expect(warnings).toEqual(["check.reason was missing"]);
+});
+
+test("claims: a lone claim, bad sources and repeats are repaired", () => {
+  const { r, warnings } = parsedWith({
+    ...good,
+    claims: {
+      text: "Upstream returns 403 to the default user agent",
+      source: "file:///etc/passwd",
+    },
+  });
+  expect(r.claims).toEqual([
+    { text: "Upstream returns 403 to the default user agent" },
+  ]);
+  expect(warnings).toEqual([
+    "claims was not a list; read as a list of one",
+    "Claim 1 had a source that is not an http(s) URL or a repository path; dropped the source",
+  ]);
+  const twice = parsedWith({
+    ...good,
+    claims: [good.claims[0], good.claims[0]],
+  });
+  expect(twice.r.claims).toEqual([good.claims[0]]);
+  expect(twice.warnings).toEqual([
+    "Claim 2 repeated an earlier claim; kept once",
+  ]);
+});
+
+test("the verifier's report is repaired toward less certainty", () => {
+  const claims = [
+    { text: "Upstream returns 403." },
+    { text: "B" },
+    { text: "C" },
+  ];
+  const warnings: string[] = [];
+  const v = parseVerifierReport(
+    fence({
+      role: "VERIFIER",
+      verdict: "Not Certain",
+      proofAccepted: "maybe",
+      claims: [
+        { text: "upstream  returns 403", status: "Verified", evidence: "seen" },
+        { text: "B", status: "kinda", evidence: "half" },
+        { text: "C", status: "verified" },
+        { text: "C", status: "refuted", evidence: "no" },
+        { text: "D", status: "verified", evidence: "extra" },
+      ],
+    }),
+    { claims, warnings },
+  );
+  if ("error" in v) throw new Error(v.error);
+  expect(v.verdict).toBe("not-certain");
+  expect(v.reasons).toEqual(["The verifier gave no reason."]);
+  expect(v.proofAccepted).toBe(false);
+  expect(v.claims.map((c) => [c.text, c.status])).toEqual([
+    ["Upstream returns 403.", "verified"],
+    ["B", "unverifiable"],
+    ["C", "refuted"],
+  ]);
+  expect(warnings).toEqual([
+    'verdict was "Not Certain"; read as not-certain',
+    "A not-certain verdict gave no reason",
+    'proofAccepted was "maybe"; read as false',
+    'Claim 2 had status "kinda", not one of verified, refuted, unverifiable; recorded as unverifiable',
+    "Claim 3 had no evidence; recorded as unverifiable",
+    "Claim 4 ruled on a claim twice; kept the less certain ruling",
+    'Claim 5 ("D") is not one of the listed claims; dropped',
+  ]);
+  const unknown = parseVerifierReport(
+    fence({
+      verdict: "probably",
+      reasons: ["Looks fine"],
+      proofAccepted: true,
+      claims: claims.map((c) => ({ ...c, status: "verified", evidence: "x" })),
+    }),
+    { claims },
+  );
+  expect("error" in unknown ? unknown.error : unknown.verdict).toBe(
+    "not-certain",
+  );
+});
+
+test("a refused report reads plainly for the owner", () => {
+  expect(plainReportProblem("investigator", "conclusion")).toBe(
+    "The investigator's report was missing its conclusion. Try again so it finishes the report.",
+  );
+  expect(plainReportProblem("investigator", "missing")).toBe(
+    "The investigator finished without writing its report. Try again so it writes one.",
+  );
+  expect(plainReportProblem("investigator", "pr")).toBe(
+    "The investigator proposed a fix but did not open a pull request. Try again so it opens one.",
+  );
+  expect(plainReportProblem("investigator", undefined)).toBe(
+    "The investigator's report could not be used. Try again so it finishes the report.",
+  );
+  expect(plainReportProblem("verifier", "claims")).toBe(
+    "The verifier's report did not rule on every claim",
+  );
+  expect(plainReportProblem("verifier", "pr")).toBe(
+    "The verifier did not return a valid report",
+  );
+  for (const problem of [
+    "missing",
+    "unreadable",
+    "conclusion",
+    "evidence",
+    "decision",
+    "action",
+    "check",
+    "claims",
+    "note",
+    "pr",
+  ] as const) {
+    const copy = plainReportProblem("investigator", problem);
+    expect(copy).toStartWith("The investigator");
+    expect(copy).toMatch(/try again/i);
+    expect(copy).not.toMatch(/incident-report|field|\[|attempts/);
+  }
 });
