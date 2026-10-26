@@ -52,6 +52,7 @@
     "swr": "^2.3.6",
     "tailwind-merge": "^3.6.0",
     "typescript": "^5.7.0",
+    "unpdf": "1.9.1",
     "vega": "^6.4.0",
     "vega-interpreter": "^2.3.2",
     "vega-lite": "^6.4.3",
