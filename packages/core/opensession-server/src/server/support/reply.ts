@@ -294,6 +294,28 @@ function actorLabel(actor: SupportActor): string {
   return "the customer";
 }
 
+/** One line of the conversation's event log: what happened to a draft or
+ *  a send, never its text. */
+function logEvent(
+  kind: string,
+  actor: SupportActor,
+  detail: string,
+  now = Date.now(),
+): SupportConversation["events"][number] {
+  return { at: iso(now), kind, actor, detail };
+}
+
+/** The event-log line of a stored send. */
+function sentDetail(
+  draft: SupportDraft,
+  by: SupportActor,
+  edited: boolean,
+): string {
+  if (by.kind !== "person") return "Sent on its own";
+  if (draft.author.kind === "person") return `${by.name} replied`;
+  return `${by.name} sent the draft ${edited ? "edited" : "unchanged"}`;
+}
+
 /** Who acted, for audit rows: the signed-in login (else the name) and
  *  the display name. The agent and Sessions' own rules keep their kind as
  *  `by`, so a row never reads as a person's login, and name the persona. */
@@ -722,7 +744,20 @@ async function propose(
       to: pin.to,
       attemptStartedAt: decision.kind === "send" ? iso(now) : null,
     };
-    return { ...c, draft };
+    // A person's reply is logged once, when it is sent.
+    const events =
+      author.kind === "person"
+        ? c.events
+        : [
+            ...c.events,
+            logEvent(
+              "draft-written",
+              author,
+              `${actorLabel(author)} wrote a draft. ${decision.rule}`,
+              now,
+            ),
+          ];
+    return { ...c, draft, events };
   });
   const written = draft as SupportDraft | null;
   if (provisional.kind === "send" && written?.state !== "sending")
@@ -1241,6 +1276,15 @@ async function deliverInFlight(
     ...(automatic && draft.purpose === "clarify"
       ? { autoClarified: true }
       : {}),
+    events: [
+      ...x.events,
+      logEvent(
+        "reply-sent",
+        by,
+        sentDetail(draft, by, opts.edited || draft.edited === true),
+        opts.now,
+      ),
+    ],
   }));
   if (updated) notifyReplySent(sentNote);
   await Promise.allSettled([
@@ -1326,6 +1370,17 @@ async function failed(
             nextAttemptAt,
             lastError: err.message,
           },
+          events: permanent
+            ? [
+                ...x.events,
+                logEvent(
+                  "send-failed",
+                  draft.decidedBy ?? SESSIONS,
+                  `The reply was not sent: ${err.message}`,
+                  now,
+                ),
+              ]
+            : x.events,
         }
       : null,
   );
@@ -1366,7 +1421,18 @@ export async function failInterruptedSend(
       return null;
     changed = true;
     draft = { ...d, state: "failed", lastError: INTERRUPTED_SEND };
-    return { ...x, draft };
+    return {
+      ...x,
+      draft,
+      events: [
+        ...x.events,
+        logEvent(
+          "send-failed",
+          d.decidedBy ?? SESSIONS,
+          `The reply was not sent: ${INTERRUPTED_SEND}`,
+        ),
+      ],
+    };
   });
   await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
     () => {},
@@ -1414,23 +1480,29 @@ export async function discardDraft(
   by: SupportActor,
   now = Date.now(),
 ): Promise<Result<{}>> {
-  const result = await settleDraft(conversationId, draftId, by, (d) => {
-    if (
-      d.state !== "needs-person" &&
-      d.state !== "veto" &&
-      d.state !== "failed" &&
-      !(d.state === "sending" && discardableSend(conversationId, d, now))
-    )
-      return fail(409, "This draft can't be discarded now");
-    return {
-      ...d,
-      state: "discarded",
-      rule: `Discarded by ${actorLabel(by)}`,
-      vetoDeadline: null,
-      nextAttemptAt: null,
-      decidedBy: by,
-    };
-  });
+  const result = await settleDraft(
+    conversationId,
+    draftId,
+    by,
+    "draft-discarded",
+    (d) => {
+      if (
+        d.state !== "needs-person" &&
+        d.state !== "veto" &&
+        d.state !== "failed" &&
+        !(d.state === "sending" && discardableSend(conversationId, d, now))
+      )
+        return fail(409, "This draft can't be discarded now");
+      return {
+        ...d,
+        state: "discarded",
+        rule: `Discarded by ${actorLabel(by)}`,
+        vetoDeadline: null,
+        nextAttemptAt: null,
+        decidedBy: by,
+      };
+    },
+  );
   if (!result.ok) return result;
   await dropPendingKey(sendKey(conversationId, draftId), draftId).catch(
     () => {},
@@ -1454,16 +1526,22 @@ export async function stopVeto(
   draftId: string,
   by: SupportActor,
 ): Promise<Result<{ draft: SupportDraft }>> {
-  const result = await settleDraft(conversationId, draftId, by, (d) => {
-    if (d.state !== "veto") return fail(409, "No veto window is open");
-    return {
-      ...d,
-      state: "needs-person",
-      rule: `Stopped by ${actorLabel(by)}`,
-      vetoDeadline: null,
-      decidedBy: by,
-    };
-  });
+  const result = await settleDraft(
+    conversationId,
+    draftId,
+    by,
+    "draft-stopped",
+    (d) => {
+      if (d.state !== "veto") return fail(409, "No veto window is open");
+      return {
+        ...d,
+        state: "needs-person",
+        rule: `Stopped by ${actorLabel(by)}`,
+        vetoDeadline: null,
+        decidedBy: by,
+      };
+    },
+  );
   if (result.ok)
     await auditSettled(
       "support.reply.stopped",
@@ -1497,6 +1575,8 @@ async function settleDraft(
   conversationId: string,
   draftId: string,
   by: SupportActor,
+  /** The event-log kind; the settled draft's rule is its line. */
+  kind: string,
   change: (d: SupportDraft) => SupportDraft | Failure,
 ): Promise<Result<{ draft: SupportDraft }>> {
   if (by.kind !== "person") return fail(409, "Only a person can do this");
@@ -1517,7 +1597,11 @@ async function settleDraft(
       return null;
     }
     next = result;
-    return { ...c, draft: result };
+    return {
+      ...c,
+      draft: result,
+      events: [...c.events, logEvent(kind, by, result.rule)],
+    };
   });
   const draft = next as SupportDraft | null;
   if (!committed || !draft)

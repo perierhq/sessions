@@ -389,8 +389,18 @@ function hiddenPartsOf(
   return hidden.length ? { hiddenParts: hidden } : {};
 }
 
+/** Event kinds the thread already shows (the draft card, the sent
+ *  message), so their log line stays quiet. */
+const QUIET_KINDS = new Set([
+  "draft-written",
+  "reply-sent",
+  "draft-stopped",
+  "draft-discarded",
+]);
+
 /** Events that read as one quiet line rather than a note. */
 function quietEvent(e: SupportConversation["events"][number]): boolean {
+  if (QUIET_KINDS.has(e.kind)) return true;
   return e.kind === "closed" && e.actor.kind === "sessions";
 }
 
