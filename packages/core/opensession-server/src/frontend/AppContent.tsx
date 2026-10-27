@@ -936,6 +936,17 @@ export function AppContent({
   } = sessionTabs;
 
   const topbarTitle = appTopbarTitle(route, routeWorkspace);
+  // Review owns the phone screen, like GitHub's app: its own header carries
+  // the way back to the session, so the workspace tab strip steps aside.
+  const focusedPhoneReview =
+    isPhone &&
+    ((route.view === "pr" && route.branch !== undefined) ||
+      (reviewActive &&
+        ((route.view === "session" && !!currentSession) ||
+          (route.view === "workspace" &&
+            routeWorkspace &&
+            Boolean(routeWorkspace.branch || reviewFocusPr?.branch)))));
+  const tabStripShown = tabStripVisible && !focusedPhoneReview;
 
   // Whether the bar is holding that name yet. It stays quiet while the page
   // below heads itself with the same word, and picks the name up once that
@@ -1170,7 +1181,7 @@ export function AppContent({
           archiveWorkspaceFromHeader,
           deleteWorkspaceFromHeader,
         },
-        tabStripVisible,
+        tabStripVisible: tabStripShown,
       }}
     />
   );
@@ -1236,16 +1247,6 @@ export function AppContent({
     openDesktop,
     openCurrentWorkspace: () => setActiveViewTab(null),
   } satisfies NavigationActions;
-
-  // Review owns the phone header, but workspace tabs remain available.
-  const focusedPhoneReview =
-    isPhone &&
-    ((route.view === "pr" && route.branch !== undefined) ||
-      (reviewActive &&
-        ((route.view === "session" && !!currentSession) ||
-          (route.view === "workspace" &&
-            routeWorkspace &&
-            Boolean(routeWorkspace.branch || reviewFocusPr?.branch)))));
 
   const content = (
     <UserGate>
@@ -1473,16 +1474,8 @@ export function AppContent({
                         </TopBarTitle>
                       )}
                   </TopBar>
-                  {!activeTabSplit && tabStripVisible && (
-                    <div
-                      className={cn(
-                        "shrink-0",
-                        focusedPhoneReview &&
-                          "phone:relative phone:[--pane-header-h:env(safe-area-inset-top,0px)] phone:pt-[env(safe-area-inset-top,0px)]",
-                      )}
-                    >
-                      {renderTabBar(null)}
-                    </div>
+                  {!activeTabSplit && tabStripShown && (
+                    <div className="shrink-0">{renderTabBar(null)}</div>
                   )}
                   {splitDropSide && (
                     <div
@@ -1510,7 +1503,7 @@ export function AppContent({
                         workspace={routeWorkspace}
                         workspaceSessions={workspaceSessions}
                         sessions={sessions}
-                        tabStripVisible={tabStripVisible}
+                        tabStripVisible={tabStripShown}
                         onNewSession={
                           workspaceSessions.some((session) => session.desk)
                             ? undefined

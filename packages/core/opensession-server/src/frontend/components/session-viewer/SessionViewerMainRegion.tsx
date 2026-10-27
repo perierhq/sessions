@@ -798,6 +798,7 @@ export function SessionViewerMainRegion({
             }
             editGate={connected && !isBusy && !noEngine}
             onOpenSession={openCurrentWorkspace}
+            openSessionLabel="Back to session"
             onAddToInput={(text) =>
               setComposerPrefill((p) => ({
                 seq: (p?.seq ?? 0) + 1,
@@ -817,7 +818,7 @@ export function SessionViewerMainRegion({
               openCurrentWorkspace ? (
                 <PhoneTopBarAction
                   onClick={openCurrentWorkspace}
-                  aria-label="Back to workspace"
+                  aria-label="Back to session"
                   icon={<IconChevronLeft size={22} />}
                 />
               ) : undefined

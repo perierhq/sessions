@@ -151,6 +151,8 @@ interface Props {
   phoneNavigation?: React.ReactNode;
   /** When provided, the review action bar offers "Open workspace" (Reviews view). */
   onOpenSession?: () => void;
+  /** Menu label for `onOpenSession` where it returns rather than opens. */
+  openSessionLabel?: string;
   /** Append PR/check/comment context to this session's composer draft. */
   onAddToInput?: (text: string) => void;
   /**
@@ -238,6 +240,7 @@ export function PrPanel({
   sessionId,
   phoneNavigation,
   onOpenSession,
+  openSessionLabel = "Open workspace",
   onAddToInput,
   repos,
   linkedPrs,
@@ -1495,42 +1498,19 @@ export function PrPanel({
     else if (choice === "cancel-auto") void handleAutoMerge(false);
     else handleForceMerge(choices.bypasses);
   };
-  const phoneMergeAction =
-    pr.state === "OPEN" && pr.isDraft ? (
-      <Button
-        variant="soft"
-        className="min-h-11 shrink-0"
-        disabled={markingReady}
-        onClick={handleMarkReady}
-        title="Mark this pull request ready for review"
-      >
-        {markingReady ? "Marking ready…" : "Ready for review"}
-      </Button>
-    ) : pr.state === "OPEN" && choices.primary === "auto" && !mergeScheduled ? (
-      <Button
-        variant="soft"
-        className="min-h-11 shrink-0"
-        disabled={autoMergeBusy || merging}
-        onClick={() => chooseMerge("auto")}
-        title="Squash and merge automatically once checks and reviews pass"
-      >
-        {autoMergeBusy ? "Turning on…" : "Auto-merge"}
-      </Button>
-    ) : pr.state === "OPEN" ? (
-      <Button
-        variant="soft"
-        className="min-h-11 shrink-0"
-        disabled={merging || (!mergeScheduled && !canMergeAfterReview)}
-        onClick={handleMerge}
-        title={
-          !canMergeAfterReview
-            ? "Resolve conflicts and fix failing checks before merging"
-            : "Squash and merge"
-        }
-      >
-        {merging ? "Merging…" : mergeScheduled ? "Undo" : "Merge"}
-      </Button>
-    ) : null;
+  // The Files page's floating pill keeps review actions only. Merging lives on
+  // the overview and in the actions menu, but an undo still in its window is
+  // urgent enough to stay in reach.
+  const phoneMergeAction = mergeScheduled ? (
+    <Button
+      variant="soft"
+      className="min-h-11 shrink-0 rounded-[999px] px-4"
+      disabled={merging}
+      onClick={handleMerge}
+    >
+      Undo merge
+    </Button>
+  ) : null;
   const reviewSubmitLabel =
     reviewEvent === "APPROVE"
       ? mergeAfterReview && canMergeAfterReview
@@ -1579,7 +1559,7 @@ export function PrPanel({
             <Button
               variant="ghost"
               size="sm"
-              className="desktop:-mr-1.5 phone:size-11 phone:rounded-full phone:bg-panel"
+              className="desktop:-mr-1.5 phone:size-11 phone:rounded-full"
               aria-label="Code view settings"
               icon={<IconSliders size={18} />}
             />
@@ -1737,7 +1717,7 @@ export function PrPanel({
             <Button
               variant="ghost"
               size="sm"
-              className="desktop:-mr-1.5 phone:size-11 phone:rounded-full phone:bg-panel"
+              className="desktop:-mr-1.5 phone:size-11 phone:rounded-full"
               aria-label="Pull request actions"
               icon={<IconDotsHorizontal size={18} />}
             />
@@ -1755,7 +1735,7 @@ export function PrPanel({
         {onOpenSession && (
           <Menu.Item onClick={onOpenSession}>
             <IconBranches size={18} className={MENU_ICON} />
-            Open workspace
+            {openSessionLabel}
           </Menu.Item>
         )}
         {onStartSession &&
