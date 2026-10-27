@@ -580,6 +580,62 @@ describe("SessionKernel", () => {
     });
   });
 
+  test("a deletion refused while the run stops is executed again, not replayed", () => {
+    const input = {
+      sessionId: "delete-stopping",
+      requestId: "delete:delete-stopping",
+      operation: "delete_session" as const,
+      identity: { cleanWorktree: true },
+    };
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    store.failGatewayCommand({
+      sessionId: input.sessionId,
+      requestId: input.requestId,
+      operation: input.operation,
+      error: "The session is still stopping. Retry deletion shortly.",
+      retryable: true,
+    });
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    const done = { status: 200, body: { ok: true } };
+    store.completeGatewayCommand({ ...input, result: done });
+    expect(store.requestGatewayCommand(input)).toEqual({
+      status: "completed",
+      result: done,
+      duplicate: true,
+    });
+  });
+
+  test("a deletion completed with an earlier still-stopping refusal executes again", () => {
+    const input = {
+      sessionId: "delete-refused",
+      requestId: "delete:delete-refused",
+      operation: "delete_session" as const,
+      identity: { cleanWorktree: true },
+    };
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    store.completeGatewayCommand({
+      ...input,
+      result: {
+        status: 409,
+        body: {
+          error: "The session is still stopping. Retry deletion shortly.",
+        },
+      },
+    });
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    expect(store.requestGatewayCommand(input)).toEqual({
+      status: "in_progress",
+    });
+    const done = { status: 500, body: { error: "disk full" } };
+    store.completeGatewayCommand({ ...input, result: done });
+    // Any other completed result is still replayed.
+    expect(store.requestGatewayCommand(input)).toEqual({
+      status: "completed",
+      result: done,
+      duplicate: true,
+    });
+  });
+
   test("replays typed submit-prompt results under one immutable identity", async () => {
     const input = {
       sessionId: "typed-submit",
