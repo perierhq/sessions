@@ -660,11 +660,9 @@ export function PrFilesPage({
         diffSource === "pull-request" && (
           // One floating pill over the diff, the way GitHub's app does it: the
           // code keeps the full height and the review actions stay in reach.
-          // Merge lives on the overview and in the actions menu; only an undo
-          // still in its window rides along here.
+          // The green merge action rides at the end, beside Finish review.
           <div aria-label="Review actions" className={PHONE_REVIEW_PILL_DOCK}>
             <div className={PHONE_REVIEW_PILL}>
-              {mergeAction}
               <Button
                 variant="ghost"
                 className="min-h-11 rounded-[999px] px-3"
@@ -691,6 +689,7 @@ export function PrFilesPage({
                   Finish review{pendingCount > 0 ? ` (${pendingCount})` : ""}
                 </Button>
               )}
+              {mergeAction}
             </div>
           </div>
         )}

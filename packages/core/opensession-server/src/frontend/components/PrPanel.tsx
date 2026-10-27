@@ -54,6 +54,8 @@ import {
 import type { MergeOptions } from "../lib/api/prs";
 import {
   MERGE_CHOICE_LABEL,
+  MERGE_CHOICE_SHORT,
+  MERGE_CHOICE_TITLE,
   mergeChoices,
   type MergeChoice,
 } from "../lib/merge-choices";
@@ -1498,19 +1500,60 @@ export function PrPanel({
     else if (choice === "cancel-auto") void handleAutoMerge(false);
     else handleForceMerge(choices.bypasses);
   };
-  // The Files page's floating pill keeps review actions only. Merging lives on
-  // the overview and in the actions menu, but an undo still in its window is
-  // urgent enough to stay in reach.
-  const phoneMergeAction = mergeScheduled ? (
-    <Button
-      variant="soft"
-      className="min-h-11 shrink-0 rounded-[999px] px-4"
-      disabled={merging}
-      onClick={handleMerge}
-    >
-      Undo merge
-    </Button>
-  ) : null;
+  // The green landing action beside Finish review, in the desktop header and
+  // the phone Files pill: Ready on a draft, Auto-merge when that is the host's
+  // way in, otherwise Merge, and Undo while a merge waits in its window. Merge
+  // stays in the actions menu and on the overview too.
+  const landAction = (className: string, size?: "sm") =>
+    pr.state !== "OPEN" ? null : pr.isDraft ? (
+      <Button
+        variant="soft"
+        size={size}
+        className={className}
+        disabled={markingReady}
+        onClick={handleMarkReady}
+        title="Mark this pull request ready for review"
+      >
+        {markingReady ? "Marking…" : "Ready"}
+      </Button>
+    ) : mergeScheduled ? (
+      <Button
+        variant="soft"
+        size={size}
+        className={className}
+        disabled={merging}
+        onClick={handleMerge}
+      >
+        Undo
+      </Button>
+    ) : choices.primary === "auto" ? (
+      <Button
+        variant="success-strong"
+        size={size}
+        className={className}
+        disabled={autoMergeBusy || merging}
+        onClick={() => chooseMerge("auto")}
+        title={MERGE_CHOICE_TITLE.auto}
+      >
+        {autoMergeBusy ? "Turning on…" : MERGE_CHOICE_SHORT.auto}
+      </Button>
+    ) : (
+      <Button
+        variant="success-strong"
+        size={size}
+        className={className}
+        disabled={merging || !canMergeAfterReview}
+        onClick={handleMerge}
+        title={
+          canMergeAfterReview
+            ? MERGE_CHOICE_TITLE.merge
+            : "Resolve conflicts and fix failing checks before merging"
+        }
+      >
+        {merging ? "Merging…" : MERGE_CHOICE_SHORT.merge}
+      </Button>
+    );
+  const phoneMergeAction = landAction("min-h-11 shrink-0 rounded-[999px] px-4");
   const reviewSubmitLabel =
     reviewEvent === "APPROVE"
       ? mergeAfterReview && canMergeAfterReview
@@ -1989,6 +2032,9 @@ export function PrPanel({
                 Finish review{pending.length > 0 ? ` (${pending.length})` : ""}
               </Button>
             )}
+            {/* Landing the PR sits beside Finish review, one click from the
+            bar. Phone carries it in the Files pill and the overview card. */}
+            {!phoneLayout && landAction("shrink-0", "sm")}
             {sessionActionTarget === undefined &&
               !headerCompact &&
               sessionActionButton}

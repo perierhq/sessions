@@ -1,7 +1,7 @@
 /**
  * The phone review canvas' floating action pill (Files page): a dock that
  * spans the bottom edge without catching taps, and the raised pill inside it
- * holding the file count and "Finish review". The dock clears the home
+ * holding the file count, "Finish review" and the merge action. The dock clears the home
  * indicator; the diff's scroller reserves the same height underneath so its
  * last line can scroll out from behind the pill.
  */
