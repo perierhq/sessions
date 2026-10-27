@@ -36,7 +36,8 @@ function set(
   };
 }
 
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+const bytes = (value: FindingsSet | FindingsSet[]) =>
+  Buffer.byteLength(JSON.stringify(value));
 
 test("one set per role and round; a newer attempt replaces", () => {
   const first = upsertFindingSet(undefined, set("investigator", 1));
@@ -95,7 +96,10 @@ test("a set over 64 KB drops blocks from the end", () => {
   const blocks = Array.from({ length: 12 }, (_, i) =>
     question(`b${i + 1}`, "x".repeat(6000)),
   );
-  const result = upsertFindingSet(undefined, set("investigator", 1, { blocks }));
+  const result = upsertFindingSet(
+    undefined,
+    set("investigator", 1, { blocks }),
+  );
   const saved = result.saved;
   if (!saved) throw new Error("expected a saved set");
   expect(JSON.stringify(saved).length).toBeLessThanOrEqual(65536);
@@ -108,7 +112,9 @@ test("a set over 64 KB drops blocks from the end", () => {
     .map((b) => b.id)
     .reverse();
   expect(result.notes).toEqual(
-    dropped.map((id) => `Dropped block \`${id}\`: the findings are over 64 KB.`),
+    dropped.map(
+      (id) => `Dropped block \`${id}\`: the findings are over 64 KB.`,
+    ),
   );
   expect(result.notes).toContain(
     "Dropped block `b12`: the findings are over 64 KB.",
@@ -171,7 +177,9 @@ function incidentFixture(): Incident {
       phase: "investigating",
       round: 1,
       maxRounds: 3,
-      agents: [{ role: "investigator", sessionId: "os-inv", status: "running" }],
+      agents: [
+        { role: "investigator", sessionId: "os-inv", status: "running" },
+      ],
       actionRuns: [],
       costUsd: 0,
       ownerTouched: false,

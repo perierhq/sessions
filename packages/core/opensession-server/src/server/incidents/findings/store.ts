@@ -39,9 +39,23 @@ export function __queuedSessionsForTest(): number {
   return queues?.size ?? 0;
 }
 
+/** The sets after an upsert, the set as saved (null when refused) and the
+ *  notes for the agent. */
+export interface UpsertResult {
+  sets: FindingsSet[];
+  saved: FindingsSet | null;
+  notes: string[];
+}
+
+/** The set as saved (null when nothing was written) and the notes. */
+export interface SaveResult {
+  saved: FindingsSet | null;
+  notes: string[];
+}
+
 const ROLE_ORDER = { investigator: 0, verifier: 1 } as const;
 
-function bytes(value: unknown): number {
+function bytes(value: FindingsSet | readonly FindingsSet[]): number {
   return Buffer.byteLength(JSON.stringify(value));
 }
 
@@ -59,7 +73,7 @@ function bySetOrder(a: FindingsSet, b: FindingsSet): number {
 export function upsertFindingSet(
   sets: readonly FindingsSet[] | undefined,
   next: FindingsSet,
-): { sets: FindingsSet[]; saved: FindingsSet | null; notes: string[] } {
+): UpsertResult {
   const current = [...(sets ?? [])];
   const existing = current.find(
     (s) => s.role === next.role && s.round === next.round,
@@ -126,11 +140,8 @@ export async function saveFindingSet(
   incidentId: string,
   next: FindingsSet,
   deps: { updateIncident: typeof updateIncident } = { updateIncident },
-): Promise<{ saved: FindingsSet | null; notes: string[] }> {
-  let result: { saved: FindingsSet | null; notes: string[] } = {
-    saved: null,
-    notes: [],
-  };
+): Promise<SaveResult> {
+  let result: SaveResult = { saved: null, notes: [] };
   const committed = await deps.updateIncident(incidentId, (current) => {
     const response = current.response;
     if (!response) {
