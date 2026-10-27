@@ -57,6 +57,7 @@ touches an in-process tool:
 | [`opensession-walkthrough`](#opensession-walkthrough) | 2 | interactive | Needs a session id. |
 | [`opensession-slack`](#opensession-slack) | 1 | interactive | Needs a session id. |
 | [`opensession-scripts`](#opensession-scripts) | 3 | interactive | Needs a session id. |
+| [`opensession-gpu`](#opensession-gpu) | 3 | interactive | Needs a session id. |
 | [`opensession-local-files`](#opensession-local-files) | 1 | interactive | Needs a session id. |
 | [`opensession-local-folders`](#opensession-local-folders) | 10 | interactive | Needs a session id. |
 | [`opensession-plain-discussion`](#opensession-plain-discussion) | 2 | interactive | Only a session that answers a Plain discussion (plainDiscussionId): an Ask Sidekick session carries this server alone instead of the interactive set; an auto-triage session that reports into a discussion carries it beside the automation-bar set on its later turns. |
@@ -80,7 +81,7 @@ touches an in-process tool:
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-39 servers, 190 tools.
+40 servers, 193 tools.
 
 ## opensession-sessions
 
@@ -923,6 +924,33 @@ Check a script run started with start_script or run_with_credential: running/exi
 `mcp__opensession-scripts__stop_script` · input: `id` (string, required)
 
 Stop a running script run: its process group is sent SIGTERM, then SIGKILL after 10 seconds. The session is woken when it has ended, as for any other end.
+
+## opensession-gpu
+
+Jobs on an NVIDIA T4 or L4 machine.
+
+- **Source** `packages/core/opensession-server/src/server/gpu-mcp.ts`
+- **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`
+- **Runs** interactive
+- **Condition** Needs a session id.
+
+### `run_gpu_job`
+
+`mcp__opensession-gpu__run_gpu_job` · input: `job` (string), `command` (string), `gpu` ("T4" | "L4"), `timeoutMinutes` (number)
+
+Run work that needs an NVIDIA GPU (CUDA, Vulkan) on a GPU machine, from a session without one. Pass `job` to run one the repository declares in .agents/gpu-jobs.json (call with no arguments to list them), or `command` for any bash command, e.g. a single test. The session's work is checkpointed, uncommitted changes included, and landed on the session's own GPU machine (Modal, T4 or L4), which keeps its build cache between jobs and sleeps when idle. The command runs from the repository root with a read-only GitHub credential for the repository and its private build dependencies. It keeps running through Open Session restarts, and this session is woken with the exit code and the end of the output when it ends: start it, tell the person, and end your turn instead of polling. One job at a time per session.
+
+### `gpu_job_status`
+
+`mcp__opensession-gpu__gpu_job_status` · input: `id` (string)
+
+Check a GPU job started with run_gpu_job: preparing/running/exited/failed/timed_out/stopped/lost, exit code, the commit it ran on, and the end of its output. Without an id, lists this session's jobs.
+
+### `stop_gpu_job`
+
+`mcp__opensession-gpu__stop_gpu_job` · input: `id` (string, required)
+
+Stop a running GPU job: its process group gets SIGTERM, then SIGKILL. The session is woken when it has ended.
 
 ## opensession-local-files
 

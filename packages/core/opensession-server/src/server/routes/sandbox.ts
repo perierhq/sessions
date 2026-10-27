@@ -23,6 +23,7 @@ import {
   isRemoteSandboxProvider,
   isRetiredSandboxProvider,
   resolveRequestedSandbox,
+  resolveRequestedSandboxGpu,
 } from "../sandbox/config";
 import {
   recordedTrustPolicy,
@@ -76,7 +77,13 @@ type RecreateSession = Pick<
 
 type AttachSession = Pick<
   StoredSession,
-  "mode" | "repo" | "sandbox" | "runner" | "automation" | "automationId"
+  | "mode"
+  | "repo"
+  | "sandbox"
+  | "runner"
+  | "automation"
+  | "automationId"
+  | "sandboxGpu"
 >;
 
 /**
@@ -88,15 +95,20 @@ type AttachSession = Pick<
 export function sandboxAttachRefusal(
   session: AttachSession,
   provider?: string,
+  gpu?: string,
 ): string | null {
   // A recorded provider without a Sandbox id is a move that has not
   // materialized (still preparing, or failed); moving again retries it.
+  // Another GPU on the same provider is a move too (Modal without a GPU to
+  // Modal with a T4, a T4 to an L4).
   if (
     session.sandbox?.sandboxId &&
     session.sandbox.provider !== "local" &&
-    (!provider || session.sandbox.provider === provider)
+    (!provider ||
+      (session.sandbox.provider === provider &&
+        (session.sandboxGpu || undefined) === (gpu || undefined)))
   )
-    return `This session already runs on ${session.sandbox.provider}.`;
+    return `This session already runs on ${session.sandbox.provider}${session.sandboxGpu ? ` with a ${session.sandboxGpu} GPU` : ""}.`;
   if (session.runner?.id)
     return "This session runs on a Runner. Start a new session to use a Sandbox.";
   if (session.automationId || session.automation)
@@ -387,6 +399,7 @@ async function attachSandbox(
 ): Promise<Response> {
   const body = (await ctx.req.json().catch(() => ({}))) as {
     provider?: unknown;
+    gpu?: unknown;
     confirm?: unknown;
   };
   const resolved = resolveRequestedSandbox(
@@ -402,7 +415,12 @@ async function attachSandbox(
       { error: "Name the Sandbox provider to move to: daytona or box." },
       { status: 400 },
     );
-  const refusal = sandboxAttachRefusal(session, provider);
+  // A GPU for the machine being moved into (Modal only).
+  const gpuChoice = resolveRequestedSandboxGpu(body.gpu, provider);
+  if (!gpuChoice.ok)
+    return Response.json({ error: gpuChoice.error }, { status: 400 });
+  const gpu = gpuChoice.gpu;
+  const refusal = sandboxAttachRefusal(session, provider, gpu);
   if (refusal) return Response.json({ error: refusal }, { status: 409 });
 
   const fromSandbox =
@@ -471,6 +489,8 @@ async function attachSandbox(
   }
   await releaseSandbox(session, `moving to ${provider}`);
   await touchNativeSessionStrict(session.id, {
+    // The GPU the new machine carries; none clears an earlier one.
+    sandboxGpu: gpu,
     sandbox: {
       provider,
       lifecycle: "preparing",
@@ -485,6 +505,7 @@ async function attachSandbox(
     msg: "sandbox_attach",
     session_id: session.id,
     provider,
+    ...(gpu ? { gpu } : {}),
     from: fromSandbox ? session.sandbox?.provider : "local",
   });
   const moved = (await findSessionAsync(session.id)) || session;
@@ -570,6 +591,8 @@ async function detachSandbox(
   await releaseSandbox(session, "moving to this machine");
   await touchNativeSessionStrict(session.id, {
     sandbox: { provider: "local" },
+    // Back on this machine: the GPU went with the Sandbox.
+    sandboxGpu: undefined,
     worktreeDir: dir,
     // A move that carried nothing must not leave a checkpoint that predates
     // the work it left behind, or a later move would restore that instead.

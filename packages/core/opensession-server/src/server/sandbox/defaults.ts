@@ -6,11 +6,14 @@ import type { SandboxProviderId } from "./provider";
 import {
   RUNNABLE_SANDBOX_PROVIDERS,
   type RunnableSandboxProviderId,
+  parseSandboxChoice,
   sandboxConfig,
   sandboxProviderCertified,
   sandboxProviderConfigured,
+  formatSandboxChoice,
   setRepoPortalSandbox,
   setWorkspaceSandboxDefault,
+  type SandboxGpu,
 } from "./config";
 import {
   getSandboxConnection,
@@ -25,8 +28,9 @@ export interface SandboxDefaultsStatus {
   /** What a new session starts in, for `repo` when one was named. */
   effective: WorkspaceSandboxDefault;
   /** Per-repo overrides (the project settings' sandbox); a repo absent here
-   *  follows the workspace default. */
-  repos: Record<string, WorkspaceSandboxDefault>;
+   *  follows the workspace default. Modal with a GPU reads as the Machine
+   *  menu names it (`modal:T4`). */
+  repos: Record<string, string>;
   /** Repos whose Portals run in a Sandbox of their own for sessions on this
    * machine (repo id → provider); a repo absent here runs them beside the
    * session. */
@@ -45,15 +49,16 @@ export function workspaceSandboxDefault(): WorkspaceSandboxDefault {
   return runnable(value) ? value : "none";
 }
 
-/** The project documents' own sandbox choices, as workspace-style values. */
-async function projectSandboxDefaults(): Promise<
-  Record<string, WorkspaceSandboxDefault>
-> {
+/** The project documents' own sandbox choices, as workspace-style values
+ *  (Modal with a GPU stays `modal:T4`). */
+async function projectSandboxDefaults(): Promise<Record<string, string>> {
   const { listProjectDocuments } = await import("../projects/store");
-  const out: Record<string, WorkspaceSandboxDefault> = {};
+  const out: Record<string, string> = {};
   for (const doc of await listProjectDocuments()) {
+    const choice = parseSandboxChoice(doc.sandbox);
     if (doc.sandbox === "local") out[doc.project] = "none";
-    else if (runnable(doc.sandbox)) out[doc.project] = doc.sandbox;
+    else if (choice && runnable(choice.provider))
+      out[doc.project] = formatSandboxChoice(choice);
   }
   return out;
 }
@@ -66,7 +71,8 @@ async function projectSandboxDefault(
   const { getProjectDocument } = await import("../projects/store");
   const doc = await getProjectDocument(repoId);
   if (doc.sandbox === "local") return "none";
-  return runnable(doc.sandbox) ? doc.sandbox : null;
+  const provider = parseSandboxChoice(doc.sandbox)?.provider;
+  return runnable(provider) ? provider : null;
 }
 
 export function repoPortalSandboxes(): Record<
@@ -159,14 +165,17 @@ export async function saveRepoSandboxDefault(
   actor: { name: string; verified: boolean; login?: string },
 ): Promise<SandboxDefaultsStatus> {
   const normalized = value.trim().toLowerCase();
+  // Modal with a GPU is its own choice (`modal:T4`).
+  const choice = parseSandboxChoice(value);
+  if (!choice) throw new Error(`Unknown sandbox choice "${value}"`);
   if (normalized !== "workspace" && normalized !== "none")
-    assertAvailable(normalized);
+    assertAvailable(choice.provider);
   const sandbox =
     normalized === "workspace"
       ? "default"
       : normalized === "none"
         ? "local"
-        : normalized;
+        : formatSandboxChoice(choice);
   const { getProjectDocument, updateProjectDocument } =
     await import("../projects/store");
   const { revision } = await getProjectDocument(repoId);
@@ -204,4 +213,23 @@ export async function resolveInteractiveSandbox(
 > {
   const { resolveSessionSandbox } = await import("../projects/effective");
   return resolveSessionSandbox(requested, repoId, model, "interactive");
+}
+
+/** The GPU a new session gets when neither its Sandbox nor its GPU was
+ *  chosen and its project's own sandbox is Modal with a GPU (the project
+ *  settings' sandbox, `modal:T4`). */
+export async function defaultSandboxGpu(
+  requestedSandbox: unknown,
+  requestedGpu: unknown,
+  provider: string | null | undefined,
+  repoId?: string,
+): Promise<SandboxGpu | undefined> {
+  if (requestedSandbox !== undefined && requestedSandbox !== null)
+    return undefined;
+  if (requestedGpu !== undefined && requestedGpu !== null) return undefined;
+  if (provider !== "modal" || !repoId) return undefined;
+  const { getProjectDocument } = await import("../projects/store");
+  const doc = await getProjectDocument(repoId).catch(() => null);
+  const choice = doc ? parseSandboxChoice(doc.sandbox) : null;
+  return choice?.provider === "modal" ? choice.gpu : undefined;
 }

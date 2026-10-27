@@ -48,7 +48,11 @@ import { roleLockProblem } from "../incidents/access/fields";
 import { canonicalModelId, sameModel } from "../incidents/response/models";
 import { resolveModel } from "../models";
 import { parseAutomationEgressDomain } from "../sandbox/automation-egress";
-import { RUNNABLE_SANDBOX_PROVIDERS } from "../sandbox/config";
+import {
+  formatSandboxChoice,
+  parseSandboxChoice,
+  RUNNABLE_SANDBOX_PROVIDERS,
+} from "../sandbox/config";
 import {
   applyPolicyPatch,
   documentInvariantProblem,
@@ -785,13 +789,15 @@ function applyModels(
 function applySandbox(v: unknown): string {
   if (typeof v !== "string") refuse("Sandbox must be a provider id");
   const choice = v.trim().toLowerCase();
+  if (choice === "default" || choice === "local") return choice;
+  // Modal with a GPU is its own choice (`modal:T4`).
+  const parsed = parseSandboxChoice(v);
   if (
-    choice !== "default" &&
-    choice !== "local" &&
-    !(RUNNABLE_SANDBOX_PROVIDERS as readonly string[]).includes(choice)
+    !parsed ||
+    !(RUNNABLE_SANDBOX_PROVIDERS as readonly string[]).includes(parsed.provider)
   )
     refuse(`Unknown sandbox provider "${v}"`);
-  return choice;
+  return formatSandboxChoice(parsed);
 }
 
 /** `current` with `patch` applied, or a thrown `Refused`. */

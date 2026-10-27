@@ -1102,6 +1102,7 @@ if (!g.__opensessionBooted) {
     const keychainRuns = await import("./src/server/keychain-runs");
     keychainRuns.hookKeychainRuns();
     await (await import("./src/server/script-runs")).startScriptRuns();
+    await (await import("./src/server/gpu-jobs")).startGpuJobs();
     await keychainRuns.startKeychainRuns();
   })().catch((e) => console.error("[scripts] recovery failed:", e));
 

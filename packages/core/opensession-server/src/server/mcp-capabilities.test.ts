@@ -63,9 +63,9 @@ describe("renderInternalMcpCapabilities", () => {
     // Every server mounted at once is the ceiling; keep it a section, not
     // a manual. Raised from 7,300 for opensession-local-folders, whose
     // per-turn note names its tools instead, and from 7,500 for
-    // opensession-html, one more server at the usual ~150 chars. The
-    // incident access and support servers are only ever mounted alone, so
-    // they are left out.
+    // opensession-html, one more server at the usual ~150 chars, and from
+    // 7,700 for opensession-gpu. The incident access and support servers
+    // are only ever mounted alone, so they are left out.
     const mountedAlone = new Set([
       "opensession-incident-access",
       "opensession-support",
@@ -77,7 +77,7 @@ describe("renderInternalMcpCapabilities", () => {
           .map((name) => [name, {}]),
       ),
     );
-    expect(together.length).toBeLessThan(7_700);
+    expect(together.length).toBeLessThan(7_850);
   });
 
   test("is empty when nothing internal is mounted", () => {

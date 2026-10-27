@@ -17,6 +17,7 @@ import {
   roleWebAccess,
 } from "./effective";
 import { setGlobalRoleDefault } from "./global-defaults";
+import { defaultSandboxGpu } from "../sandbox/defaults";
 import { __setLegacyEnvironmentForTest } from "./legacy";
 import {
   __setProjectStoreContextForTest,
@@ -199,6 +200,42 @@ test("new sessions ignore a personal default; the project and then the global de
   expect(
     await resolveSessionSandbox("local", "acme-web", MODEL, "interactive"),
   ).toEqual({ ok: true, provider: null });
+});
+
+test("a project's Modal sandbox may carry a GPU, which only an unchosen Machine follows", async () => {
+  deps({ global: () => "none" });
+  await setSandbox("modal:t4");
+  expect((await getProjectDocument("acme-web")).sandbox).toBe("modal:T4");
+  // The provider is Modal; the GPU rides along to new sessions only.
+  expect(
+    await resolveSessionSandbox(undefined, "acme-web", MODEL, "interactive"),
+  ).toEqual({ ok: true, provider: "modal" });
+  const where = await effectiveSandboxes("acme-web");
+  expect(where.you).toMatchObject({
+    state: "ok",
+    provider: "modal",
+    label: "Modal · T4 GPU",
+  });
+  expect(
+    await defaultSandboxGpu(undefined, undefined, "modal", "acme-web"),
+  ).toBe("T4");
+  expect(await defaultSandboxGpu("modal", undefined, "modal", "acme-web")).toBe(
+    undefined,
+  );
+  expect(await defaultSandboxGpu(undefined, "L4", "modal", "acme-web")).toBe(
+    undefined,
+  );
+  expect(
+    await defaultSandboxGpu(undefined, undefined, "daytona", "acme-web"),
+  ).toBe(undefined);
+  // Plain Modal drops the GPU.
+  await setSandbox("modal");
+  expect(
+    await defaultSandboxGpu(undefined, undefined, "modal", "acme-web"),
+  ).toBe(undefined);
+  // A GPU only rides on Modal, and only a known one.
+  for (const bad of ["daytona:T4", "modal:H100"])
+    await expect(setSandbox(bad)).rejects.toThrow(/Unknown sandbox provider/);
 });
 
 test("unreadable project settings fall back to the global default for new sessions", async () => {

@@ -587,6 +587,28 @@ export function sandboxGpu(value: unknown): SandboxGpu | undefined {
     : undefined;
 }
 
+/** A stored Machine choice: a provider id, or Modal with a GPU as the
+ *  Machine menu names it (`modal:T4`). Null when the GPU part is unknown or
+ *  on a provider other than Modal. */
+export function parseSandboxChoice(
+  value: string,
+): { provider: string; gpu?: SandboxGpu } | null {
+  const [provider = "", gpuName, ...rest] = value.trim().split(":");
+  if (rest.length) return null;
+  const normalized = provider.toLowerCase();
+  if (gpuName === undefined) return { provider: normalized };
+  const gpu = sandboxGpu(gpuName);
+  return gpu && normalized === "modal" ? { provider: normalized, gpu } : null;
+}
+
+/** A choice as stored: the provider lower case, the GPU upper case. */
+export function formatSandboxChoice(choice: {
+  provider: string;
+  gpu?: SandboxGpu;
+}): string {
+  return choice.gpu ? `${choice.provider}:${choice.gpu}` : choice.provider;
+}
+
 /** Check a create request's GPU against the Sandbox it chose: absent is
  *  fine anywhere; a GPU needs a Modal Sandbox and a known GPU name. */
 export function resolveRequestedSandboxGpu(

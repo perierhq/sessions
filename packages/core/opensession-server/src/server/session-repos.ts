@@ -392,6 +392,8 @@ export async function buildSessionNote(
       // (deskStateContext, run-session.ts).
       session.desk ? DESK_NOTE : "",
       buildReposNote(session),
+      // GPU jobs the repository declares, for a session without a GPU.
+      await (await import("./gpu-jobs")).gpuJobsNote(session).catch(() => ""),
       await memoryNoteFor(
         user,
         sessionRepoIds(session),

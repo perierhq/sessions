@@ -93,6 +93,15 @@ export function destroySessionSandbox(
       () => touchNativeSession(session.id, { portalSandbox: undefined }),
       `${session.id}--portals`,
     );
+  // The GPU machine its GPU jobs ran on (gpu-jobs.ts), if it ever had one.
+  void import("./gpu-jobs")
+    .then(({ retireGpuMachine }) => retireGpuMachine(session.id))
+    .catch((e) =>
+      console.warn(
+        `[sandbox] GPU machine of ${session.id} (${why}) not retired:`,
+        e,
+      ),
+    );
 }
 
 /** A failed ensure still owns a provider machine before the session has an

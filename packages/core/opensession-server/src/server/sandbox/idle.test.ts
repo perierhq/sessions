@@ -36,6 +36,31 @@ function deps(overrides: Partial<IdleSweepDeps> = {}) {
 }
 
 describe("two idle timers", () => {
+  test("a GPU job machine sleeps five minutes after its job, whatever the session does", async () => {
+    const t0 = 500_000;
+    noteSessionHumanActivity("g1", t0);
+    noteSandboxActivity(
+      { sandboxId: "md-g1--gpu", sessionId: "g1--gpu" },
+      "agent",
+      t0,
+    );
+    noteSandboxActivity(
+      { sandboxId: "md-g1--gpu", sessionId: "g1" },
+      "human",
+      t0,
+    );
+    noteSessionHumanActivity("g1", t0 + 4 * MIN);
+    expect(idleSessionId("g1--gpu")).toBe("g1");
+    // The session's own turn keeps running; the GPU machine still sleeps.
+    const d = deps({ busy: () => true });
+    expect(await sweepIdleSandboxes({ ...d.value, now: t0 + 4 * MIN })).toEqual(
+      [],
+    );
+    expect(await sweepIdleSandboxes({ ...d.value, now: t0 + 5 * MIN })).toEqual(
+      ["md-g1--gpu"],
+    );
+  });
+
   test("agent work alone: asleep five minutes after the last tool call", async () => {
     const t0 = 1_000_000;
     noteSandboxActivity({ sandboxId: "bx_1", sessionId: "s1" }, "agent", t0);

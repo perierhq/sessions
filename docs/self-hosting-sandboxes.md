@@ -862,6 +862,54 @@ A Terminal tab is a Modal exec with a PTY. There is no Desktop. Portals ride
 the outbound relay. The Sandbox agent is not on by default here; add
 `"modal"` to `agent.providers` to try it.
 
+A session can get a GPU three ways:
+
+- **Start on one:** pick **Modal · T4 GPU** or **Modal · L4 GPU** as the
+  Machine. A project's sandbox (the project's settings, Where agents run)
+  may be one of these too; an unchosen Machine then starts there, whether
+  the session comes from the composer, the REST API, an MCP create or a
+  sibling.
+- **Move onto one:** **Move to Sandbox** (or **Move session**) lists the same
+  three Modal entries. Moving between them replaces the container with one
+  carrying the new GPU; moving back to this machine drops it.
+- **Run GPU jobs from anywhere:** a session on this machine or in a CPU
+  Sandbox keeps running where it is and sends GPU work to a GPU machine of
+  its own with `run_gpu_job` (`opensession-gpu`, interactive runs only). The
+  job checkpoints the session's work, uncommitted changes included, lands it
+  on the session's GPU machine (`md-<session>--gpu`, created on first use,
+  woken after), and runs the command from the repository root with a
+  read-only GitHub credential for the repository and its `readRepos`. The
+  command runs detached inside the machine and writes its log and exit code
+  there, so it survives a restart of this server; the registry
+  (`gpu-jobs.json` in the state dir) is reattached at boot. When the job
+  ends, its log is copied to the session's scratch folder and the session is
+  woken once with the exit code and the end of the output. The machine keeps
+  its build output between jobs (a landing never removes ignored files) and
+  sleeps five minutes after its last job, whatever the session itself is
+  doing; archiving the session puts it to sleep and deleting it destroys it.
+
+A repository names its GPU jobs in `.agents/gpu-jobs.json`, and sessions on
+this machine are told about them each turn, so asking for "the GPU tests"
+needs no setup:
+
+```json
+{
+  "jobs": {
+    "gpu-tests": {
+      "description": "Render tests on a real GPU",
+      "command": "scripts/gpu-tests.sh",
+      "gpu": "T4",
+      "timeoutMinutes": 60
+    }
+  }
+}
+```
+
+`gpu` is `T4` (default) or `L4`; `timeoutMinutes` defaults to 60 and is
+capped at 360. The agent may pass its own `command` (one test) instead. The
+command sees `OPENSESSION_GPU`, `OPENSESSION_GPU_JOB_ID`, `CI=1` and
+`RUNNER_TEMP=/tmp`.
+
 ## Security posture
 
 A Sandbox isolates the agent's filesystem, processes, and network from this

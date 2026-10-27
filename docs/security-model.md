@@ -545,6 +545,17 @@ vault access, item enumeration, raw export, Apple Passwords/iCloud access, or
 Keychain mutation. Native tests use a new disposable keychain with interaction
 disabled, never the default search list or real user credentials.
 
+## GPU jobs
+
+The interactive-only `opensession-gpu` server runs a command on the session's
+own Modal GPU machine (`src/server/gpu-jobs.ts`). Like a script run, a job
+outlives the call and bills compute, so automation runs and workflow scripts
+cannot start one. The machine receives the session's checkpoint and a
+read-only GitHub App token for the repository and its configured
+`readRepos`, answered by an in-shell credential helper and never written to
+disk: a job can fetch but not push. Nothing else from this host enters it.
+The log copied back into the session's scratch folder is untrusted output.
+
 ## Script runs
 
 The interactive-only `opensession-scripts` server starts a long shell command

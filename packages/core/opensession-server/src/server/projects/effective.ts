@@ -27,6 +27,7 @@ import type { SandboxProviderId } from "../sandbox/provider";
 import {
   resolveRequestedSandbox,
   sandboxAutomationAvailability,
+  parseSandboxChoice,
   sandboxConfig,
 } from "../sandbox/config";
 import {
@@ -103,6 +104,10 @@ function deps(): EffectiveDeps {
 
 /** How a run place reads: a provider's name, or this machine. */
 export function sandboxLabel(provider: string | null): string {
+  // Modal with a GPU (`modal:T4`) reads "Modal · T4 GPU".
+  const gpuChoice = provider ? parseSandboxChoice(provider) : null;
+  if (gpuChoice?.gpu)
+    return `${sandboxLabel(gpuChoice.provider)} · ${gpuChoice.gpu} GPU`;
   switch (provider) {
     case null:
     case "local":
@@ -127,12 +132,20 @@ export function sandboxLabel(provider: string | null): string {
 }
 
 /** The project's own choice as a provider (`null` = this machine), or
- *  undefined when it follows the global default. */
+ *  undefined when it follows the global default. A GPU on the choice
+ *  (`modal:T4`) is left out: it rides along to new sessions only
+ *  (sandbox/defaults.ts defaultSandboxGpu). */
 function projectChoice(
   doc: ProjectSettingsDocument,
 ): string | null | undefined {
   if (doc.sandbox === "default") return undefined;
-  return doc.sandbox === "local" ? null : doc.sandbox;
+  if (doc.sandbox === "local") return null;
+  return parseSandboxChoice(doc.sandbox)?.provider ?? doc.sandbox;
+}
+
+/** The GPU the project's own Modal choice carries, if any. */
+function projectGpu(doc: ProjectSettingsDocument): string | undefined {
+  return parseSandboxChoice(doc.sandbox)?.gpu;
 }
 
 function globalChoice(d: EffectiveDeps): string | null {
@@ -186,6 +199,14 @@ async function automationPlace(
 /** Where interactive sessions start when nobody chose. */
 function youPlace(doc: ProjectSettingsDocument, d: EffectiveDeps): RunPlace {
   const own = projectChoice(doc);
+  const gpu = projectGpu(doc);
+  if (own && gpu)
+    return {
+      state: "ok",
+      provider: own,
+      label: sandboxLabel(`${own}:${gpu}`),
+      source: "project",
+    };
   if (own !== undefined) return place(own, "project");
   return place(globalChoice(d), "default");
 }

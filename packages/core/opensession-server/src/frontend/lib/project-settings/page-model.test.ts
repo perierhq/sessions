@@ -19,6 +19,8 @@ import {
   modelChip,
   monthSpendCopy,
   nextCellValue,
+  sandboxName,
+  sandboxOptions,
   sandboxRowCopy,
   stepSummary,
 } from "./page-model";
@@ -382,5 +384,29 @@ describe("monthSpendCopy", () => {
     expect(monthSpendCopy(1234.5, new Date(2026, 9, 3))).toBe(
       "$1,234.50 spent in October",
     );
+  });
+});
+
+describe("sandbox choices", () => {
+  test("Modal is offered once more per GPU, after the container", () => {
+    expect(
+      sandboxOptions({
+        ready: ["modal", "podman"],
+        current: "modal:T4",
+        defaultLabel: null,
+      }),
+    ).toEqual([
+      { value: "default", label: "Use default" },
+      { value: "local", label: "This machine" },
+      { value: "podman", label: "This machine · container" },
+      { value: "modal", label: "Modal" },
+      { value: "modal:T4", label: "Modal · T4 GPU" },
+      { value: "modal:L4", label: "Modal · L4 GPU" },
+    ]);
+  });
+
+  test("a GPU choice reads with its GPU", () => {
+    expect(sandboxName("modal:L4")).toBe("Modal · L4 GPU");
+    expect(sandboxName("daytona", "eu")).toBe("Daytona eu");
   });
 });
