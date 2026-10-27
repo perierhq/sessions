@@ -256,10 +256,7 @@ function hhmmUtc(iso: string): string {
 
 /** A findings set's blocks as data lines (`briefLine`), with the agent's
  *  prose only when `prose`; nothing for a missing or cleared set. */
-function findingLines(
-  set: FindingsSet | undefined,
-  prose: boolean,
-): string[] {
+function findingLines(set: FindingsSet | undefined, prose: boolean): string[] {
   return (set?.blocks ?? []).map((b) => dataText(briefLine(b, { prose })));
 }
 

@@ -25,10 +25,7 @@ import {
   type SetupFix,
   roundOfMax,
 } from "../../../shared/incident-response";
-import {
-  findingSetOf,
-  previousFindingSet,
-} from "../../../shared/findings";
+import { findingSetOf, previousFindingSet } from "../../../shared/findings";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
   type Incident,
