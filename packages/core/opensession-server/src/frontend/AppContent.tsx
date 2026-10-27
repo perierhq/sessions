@@ -174,6 +174,7 @@ export function AppContent({
     openFirstMile,
     finishFirstMileNavigation,
     restoredSessionId,
+    returnsToSession,
     forgetLastSession,
     canonicalizePath,
   } = useAppRoute({ serviceWorker, currentUser: getCurrentUser });
@@ -1280,6 +1281,7 @@ export function AppContent({
                 addHandler={addHandler}
                 navigate={navigate}
                 goBack={goBack}
+                returnsToSession={returnsToSession}
                 topbarTitle={topbarTitle}
                 phoneTitleHandedOver={phoneTitleHandedOver}
                 commandMenuRef={commandMenuRef}
