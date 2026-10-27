@@ -7,7 +7,8 @@
 // the access is held to what the run is bound to (clampToRun), and
 // describe_access names connections allowed after the agent started.
 // Everything is audited with the incident and role by the modules the tools
-// call.
+// call. Every bound agent also gets show_findings, which puts its findings
+// blocks on the incident page (findings/apply.ts) for its own session only.
 import { z } from "zod";
 import {
   type AgentAccess,
@@ -21,6 +22,8 @@ import {
   tool,
 } from "../../inprocess-mcp";
 import { BROKER_METHODS } from "../../keychain-broker";
+import { applyFindings } from "../findings/apply";
+import { SHOW_FINDINGS_TOOL } from "../findings/tool-calls";
 import { freshMcpAuthHeader, mcpSignInProblems } from "../../mcp-oauth";
 import type { AutomationDescendantPolicy } from "../../types";
 import { incidentCredentialCall } from "./credentials";
@@ -158,6 +161,16 @@ function describe(
 
 const AUDITED = "Every call is audited with your incident and role.";
 
+const SHOW_FINDINGS_DESCRIPTION =
+  'Show what you found on the incident page as blocks from the catalog in your brief\'s Findings section. Each call replaces your blocks for this round; keep one unchanged with {"id": "…", "keep": true}. Returns what was saved and what was dropped, so you can fix it and call again.';
+
+let applyFindingsImpl: typeof applyFindings = applyFindings;
+
+/** Replaces applyFindings for show_findings (tests only); undefined restores it. */
+export function __setApplyFindingsForTest(fn?: typeof applyFindings): void {
+  applyFindingsImpl = fn ?? applyFindings;
+}
+
 // Each tool's own zod shape types its handler; the list holds them all.
 type AnyTool = InProcessToolDefinition<any>;
 
@@ -187,6 +200,25 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
           await unavailableConnections(fresh.access.connections),
         ),
       ),
+    ),
+    // The session, incident and role come from the binding, never from the
+    // arguments: an agent can only cite and change its own findings.
+    tool(
+      SHOW_FINDINGS_TOOL,
+      SHOW_FINDINGS_DESCRIPTION,
+      { blocks: z.array(z.unknown()).max(64) },
+      async (args) => {
+        const fresh = await freshContext(ctx);
+        if (typeof fresh === "string") return text(fresh);
+        const result = await applyFindingsImpl({
+          incidentId: fresh.ctx.binding.incidentId,
+          role: fresh.ctx.binding.role,
+          sessionId: fresh.ctx.sessionId,
+          input: { blocks: args.blocks },
+          source: "tool",
+        });
+        return text(result.text);
+      },
     ),
   ];
   if (ctx.access.hosts.length)
