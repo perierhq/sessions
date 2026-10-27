@@ -15,11 +15,13 @@ import { join } from "path";
 import { getConfigAsync } from "./config";
 import {
   privateAppCaddySite,
+  privateAppCaddySnippet,
   privateAppCertificateDomains,
   privateAppCertificateHealth,
   privateAppDomainStatus,
   renewPrivateAppCertificate,
   upsertPrivateAppCaddy,
+  withRuntimeCaddyServers,
 } from "./private-app-domain";
 import { NEW_CERT, OLD_CERT } from "./private-app-renewal.fixtures";
 
@@ -414,7 +416,8 @@ describe("private app Caddy sites", () => {
       "os.example.test",
       "100.64.0.20",
     );
-    expect(next.match(/^os\.example\.test \{/gm)).toHaveLength(1);
+    expect(next.match(/^https:\/\/os\.example\.test \{/gm)).toHaveLength(1);
+    expect(next.match(/^http:\/\/os\.example\.test \{/gm)).toHaveLength(1);
     expect(next.match(/^os2\.example\.test \{/gm)).toHaveLength(1);
     expect(next.split("os.example.test {")[1]).toContain("bind 100.64.0.20");
     expect(next.split("os.example.test {")[0]).toContain("bind 100.64.0.10");
@@ -426,6 +429,88 @@ describe("private app Caddy sites", () => {
     expect(() =>
       upsertPrivateAppCaddy(source, "os.example.test", "100.64.0.10"),
     ).toThrow("unmanaged Caddy site");
+  });
+
+  test("updating one domain keeps another domain's HTTP redirect", () => {
+    const both = ["os2.example.test", "os.example.test"]
+      .map((domain) =>
+        privateAppCaddySnippet(
+          domain,
+          "100.64.0.10",
+          undefined,
+          undefined,
+          "linux",
+        ),
+      )
+      .join("\n\n");
+    const again = upsertPrivateAppCaddy(
+      both,
+      "os.example.test",
+      "100.64.0.20",
+      undefined,
+      "linux",
+    );
+    for (const domain of ["os.example.test", "os2.example.test"]) {
+      const escaped = domain.replaceAll(".", "\\.");
+      expect(
+        again.match(new RegExp(`^https://${escaped} \\{`, "gm")),
+      ).toHaveLength(1);
+      expect(
+        again.match(new RegExp(`^http://${escaped} \\{`, "gm")),
+      ).toHaveLength(1);
+    }
+    expect(again).toContain("bind 100.64.0.20");
+  });
+
+  test("renaming a lone marked site drops the old name's HTTP redirect", () => {
+    const old = upsertPrivateAppCaddy(
+      "",
+      "os2.example.test",
+      "100.64.0.10",
+      undefined,
+      "linux",
+    );
+    const renamed = upsertPrivateAppCaddy(
+      old,
+      "os.example.test",
+      "100.64.0.10",
+      undefined,
+      "linux",
+    );
+    expect(renamed).not.toContain("os2.example.test");
+    expect(renamed).toContain("https://os.example.test {");
+    expect(renamed).toContain("http://os.example.test {");
+  });
+
+  test("applying a Caddyfile keeps the Portal servers added at runtime", () => {
+    const adapted = {
+      admin: { listen: "localhost:2019" },
+      apps: { http: { servers: { srv0: { listen: [":443"] } } } },
+    };
+    expect(
+      withRuntimeCaddyServers(adapted, {
+        apps: {
+          http: {
+            servers: {
+              srv0: { listen: [":8443"] },
+              srv9: { listen: [":9000"] },
+              preview_4001: { listen: [":4001"] },
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      admin: { listen: "localhost:2019" },
+      apps: {
+        http: {
+          servers: {
+            srv0: { listen: [":443"] },
+            preview_4001: { listen: [":4001"] },
+          },
+        },
+      },
+    });
+    expect(withRuntimeCaddyServers(adapted, null)).toBe(adapted);
   });
 
   test("lists the primary domain first, without duplicates", () => {
