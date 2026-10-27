@@ -2063,7 +2063,12 @@ export type RemoteSandboxOwner = Pick<
   "sessionId" | "cwd" | "repoId" | "trustProfile"
 >;
 
-export interface RemoteSandboxParts extends RemoteSandboxOwner {
+/** A handle's parts: the container on this machine (Podman) states no repo
+ *  or trust profile, so its run lease stays as it was. */
+type RemoteSandboxPartsOwner = Pick<RemoteSandboxOwner, "sessionId" | "cwd"> &
+  Partial<Pick<RemoteSandboxOwner, "repoId" | "trustProfile">>;
+
+export interface RemoteSandboxParts extends RemoteSandboxPartsOwner {
   providerId: SandboxProviderId;
   sandboxId: string;
   driver: RemoteDriver;
@@ -2115,7 +2120,9 @@ export function makeRemoteSandbox(parts: RemoteSandboxParts): Sandbox {
                 // A grant scoped to a repository or trust profile matches
                 // ordinary commands too, not only lifecycle hooks and Portals.
                 ...(parts.repoId ? { repoId: parts.repoId } : {}),
-                trustProfile: parts.trustProfile,
+                ...(parts.trustProfile
+                  ? { trustProfile: parts.trustProfile }
+                  : {}),
               })),
           ...opts?.env,
         },
