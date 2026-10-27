@@ -21,7 +21,6 @@ import { journalSet, buildRunJournalRecord, journalClear } from "./run-journal";
 import { pickClaudeAccount } from "./claude-account-pick";
 import { modelProviders, readModelProviderConfig } from "./model-providers";
 import { bindXaiAccount } from "./xai-accounts";
-import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { pickOpenaiAccount, buildSeededOpenaiAuth } from "./openai-auth";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import { logInjectedContext } from "./context-log";
@@ -56,6 +55,7 @@ import { persistEntries, piAppend } from "./pi-transcript";
 import {
   buildPiThirdPartyProviderPlan,
   piModelResolutionError,
+  piModelUnservableReason,
   resolvePiRoutedModel,
 } from "./pi-model-routing";
 import {
@@ -299,23 +299,12 @@ async function* runPiAttempt(
     };
     return;
   }
-  const configuredProvider = modelProviders()[parsed.providerID];
-  if (
-    parsed.providerID !== "anthropic" &&
-    parsed.providerID !== "openai" &&
-    parsed.providerID !== XAI_OAUTH_PROVIDER &&
-    !configuredProvider?.apiKey
-  ) {
-    yield {
-      type: "error",
-      content:
-        `The Pi engine has no credentials for provider "${parsed.providerID}" ` +
-        `(got "${model}"). Configure that model provider first.`,
-      provider: PROVIDER,
-      model,
-    };
+  const unservable = piModelUnservableReason(model);
+  if (unservable) {
+    yield { type: "error", content: unservable, provider: PROVIDER, model };
     return;
   }
+  const configuredProvider = modelProviders()[parsed.providerID];
 
   const { prompt, cwd, mode, mcpServers, confirmTools, journal, user } = opts;
   // `user` remains the exact prompt sender for MCP/GitHub policy and audit.

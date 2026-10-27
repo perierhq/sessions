@@ -22,6 +22,7 @@ import {
   type SessionControl,
 } from "../../server/session-control";
 import { audit } from "../../server/audit";
+import { sessionModelRunnable } from "../../server/pi-model-routing";
 import { configuredRepos, getConfigAsync } from "../../server/config";
 import { SESSION_BRANCH_MATCH_LIMIT } from "../../server/session-list-protocol";
 import { githubRequest } from "./github-rest";
@@ -133,6 +134,13 @@ async function deliver(
   deliveryKey: string,
 ): Promise<void> {
   for (const id of sessionIds) {
+    // A session pinned to a model this instance can't serve would only fail
+    // the run an FYI starts there.
+    const session = control.getSession(id);
+    if (session && !sessionModelRunnable(session)) {
+      console.log(`[github] session notify → ${id}: skipped, model can't run`);
+      continue;
+    }
     try {
       // Default busy behavior: fold into the running turn as a steer. Steering
       // is a non-interrupting history append the turn picks up at its next

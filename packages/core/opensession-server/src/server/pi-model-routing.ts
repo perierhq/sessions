@@ -3,11 +3,13 @@ import {
   FALLBACK_CONTEXT_WINDOW,
   FALLBACK_MAX_TOKENS,
   configuredProviderCatalog,
+  modelProviders,
   piProviderCatalog,
   type ModelProviderConfig,
   type PiProviderCatalog,
 } from "./model-providers";
-import { toPiModel } from "./models";
+import { getDefaultModel, toPiModel } from "./models";
+import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 
 /** The extension-registration config shape ModelRuntime.registerProvider
  *  accepts (ProviderConfigInput — not re-exported by the package index). */
@@ -38,6 +40,35 @@ export function resolvePiRoutedModel(model: string): PiResolvedModel | null {
 /** Explain why a model id could not be resolved to a Pi model. */
 export function piModelResolutionError(model: string): string {
   return `Not a pi model id: "${model}" (expected pi/<provider>/<model>)`;
+}
+
+/** Providers whose accounts come from their own pools, not a configured
+ *  API key. */
+const ACCOUNT_POOL_PROVIDERS = new Set([
+  "anthropic",
+  "openai",
+  XAI_OAUTH_PROVIDER,
+]);
+
+/** Why this instance can't serve `model` (not a Pi model, or a provider with
+ *  no credentials configured), or null when it can. The Pi runner refuses a
+ *  turn on this; run start and automatic notices check it first. */
+export function piModelUnservableReason(model: string): string | null {
+  const parsed = resolvePiRoutedModel(model);
+  if (!parsed) return piModelResolutionError(model);
+  if (ACCOUNT_POOL_PROVIDERS.has(parsed.providerID)) return null;
+  if (modelProviders()[parsed.providerID]?.apiKey) return null;
+  return (
+    `The Pi engine has no credentials for provider "${parsed.providerID}" ` +
+    `(got "${model}"). Configure that model provider first.`
+  );
+}
+
+/** Whether a session's model (the instance default when it names none)
+ *  can run here. */
+export function sessionModelRunnable(session: { model?: string }): boolean {
+  const model = session.model || getDefaultModel();
+  return !!model && piModelUnservableReason(model) === null;
 }
 
 export interface PiResolvedModel {

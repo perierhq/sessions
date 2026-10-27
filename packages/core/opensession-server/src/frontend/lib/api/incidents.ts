@@ -399,16 +399,6 @@ export function fetchProjectSettings(
   );
 }
 
-export function updateProjectSettingsApi(
-  project: string,
-  input: ProjectSettingsInput,
-): Promise<RedactedProjectSettings> {
-  return request<RedactedProjectSettings>(
-    `/incident-projects/${seg(project)}`,
-    { method: "PUT", body: input, label: "Failed to save settings" },
-  );
-}
-
 export function startProductionPairingApi(
   project: string,
 ): Promise<ProductionPairing> {

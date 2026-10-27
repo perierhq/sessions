@@ -26,6 +26,7 @@
  * (session-repos.ts buildConflictNote), not here. Nothing here touches git.
  */
 import type { UnifiedSession } from "../../server/types";
+import { sessionModelRunnable } from "../../server/pi-model-routing";
 import type { PrInfo } from "../../server/pr-cache";
 import { stateDir } from "../../server/paths";
 import { writeJsonAtomic } from "../../server/shared/atomic-write";
@@ -171,8 +172,10 @@ export function settleConflictIntent(event: PrConflictEvent): void {
 }
 
 /** Whether a session can be handed work on its PR: live, not one of the PR
- *  agent's own review/fix runs, not an automation run, and able to change
- *  code. */
+ *  agent's own review/fix runs, not an automation run, able to change code,
+ *  and on a model this instance can serve (a session pinned to a provider
+ *  whose credentials were removed would only fail the run the notice
+ *  starts; the next owner of the branch takes it instead). */
 export function canOwnPrWork(
   session: UnifiedSession & { state?: string },
 ): boolean {
@@ -182,7 +185,8 @@ export function canOwnPrWork(
     !session.id.startsWith("bks-ghpr-") &&
     !session.automation &&
     session.mode !== "ask" &&
-    session.mode !== "scratch"
+    session.mode !== "scratch" &&
+    sessionModelRunnable(session)
   );
 }
 

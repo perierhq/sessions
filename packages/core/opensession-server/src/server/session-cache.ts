@@ -62,7 +62,11 @@ import {
   isAgentSessionBusy,
 } from "./agent-runner";
 import { audit } from "./audit";
-import { getDefaultModel, SESSION_EFFORTS as MODEL_EFFORTS } from "./models";
+import {
+  getDefaultModel,
+  modelLabel,
+  SESSION_EFFORTS as MODEL_EFFORTS,
+} from "./models";
 import { writeJsonAtomicAsync } from "./shared/atomic-write";
 import type { UnifiedSession, NativeSessionFile } from "./types";
 import { humanPrompter } from "./session-actors";
@@ -1396,14 +1400,23 @@ export async function reconcileSessionMetadataExports(
   return repaired;
 }
 
+/** `keepLastActivity`: the write records state, not activity (a turn that
+ *  failed before the model produced anything). */
+export interface TouchOptions {
+  keepLastActivity?: boolean;
+}
+
 export function touchNativeSessionStrict(
   bksId: string,
   patch: Partial<NativeSessionFile>,
+  options: TouchOptions = {},
 ): Promise<void> {
   return updateSessionFile(bksId, (data) => ({
     ...data,
     ...patch,
-    lastActivity: new Date().toISOString(),
+    ...(options.keepLastActivity
+      ? {}
+      : { lastActivity: new Date().toISOString() }),
   }));
 }
 
@@ -1417,8 +1430,9 @@ function projectNativeRunErrorStrict(
 export function touchNativeSession(
   bksId: string,
   patch: Partial<NativeSessionFile>,
+  options: TouchOptions = {},
 ): Promise<void> {
-  return touchNativeSessionStrict(bksId, patch).catch((e) => {
+  return touchNativeSessionStrict(bksId, patch, options).catch((e) => {
     console.error(`Failed to update opensession session ${bksId}:`, e);
   });
 }
@@ -1549,6 +1563,65 @@ export async function retryAutoFallbackModel(
     };
   });
   return retry;
+}
+
+export interface UnservableModelSwitch {
+  fromModel: string;
+  model: string;
+  /** Why `fromModel` can't be served. */
+  reason: string;
+}
+
+/**
+ * Move a session off a model this instance can no longer serve (its
+ * provider's credentials were removed, or the id is retired) onto the
+ * instance default, before a run starts on it. The switch is permanent: the
+ * displaced model is not kept for the auto-retry, which would only put the
+ * dead model back. Nothing changes when the default can't be served either,
+ * and `lastActivity` stays: switching is not activity.
+ */
+export async function fallBackFromUnservableModel(
+  sessionId: string,
+  unservable: (model: string) => string | null,
+): Promise<UnservableModelSwitch | undefined> {
+  if (!isNativeSessionId(sessionId) && !isAgentSessionId(sessionId))
+    return undefined;
+  let result: UnservableModelSwitch | undefined;
+  const plan = (data: NativeSessionFile) => {
+    const fromModel = data.model || getDefaultModel();
+    const reason = fromModel ? unservable(fromModel) : null;
+    if (!reason) return undefined;
+    const model = getDefaultModel();
+    if (!model || model === fromModel || unservable(model)) return undefined;
+    return { fromModel, model, reason };
+  };
+  let observed: NativeSessionFile | undefined;
+  try {
+    observed = await currentSessionDocument(sessionId);
+  } catch {
+    return undefined;
+  }
+  if (!observed || !plan(observed)) return undefined;
+  await updateSessionFile(sessionId, (data) => {
+    // A CAS conflict re-runs this mutator. Report only the attempt that commits.
+    result = plan(data);
+    if (!result) return data;
+    return {
+      ...data,
+      model: result.model,
+      autoFallbackModel: undefined,
+      modelHistory: [
+        ...(data.modelHistory || []),
+        {
+          model: result.model,
+          from: result.fromModel,
+          at: new Date().toISOString(),
+          by: `auto-switch — ${modelLabel(result.fromModel)} can't be used: ${result.reason}`,
+        },
+      ],
+    };
+  });
+  return result;
 }
 
 // Reasoning-effort values the composer/new-session pill can send. Model-specific

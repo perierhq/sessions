@@ -110,7 +110,7 @@ describe("GitHub ownership gateway boundary", () => {
         );
     });
     const run = source("server/run-session.ts").text;
-    expect(run).toContain("await ownedWorktreeHeadBranch(session.worktreeDir)");
+    expect(run).toContain("await ownedWorktreeWorkBranch(session.worktreeDir)");
     expect(run).not.toContain("worktreeHeadBranch(");
   });
 

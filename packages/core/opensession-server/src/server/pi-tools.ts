@@ -24,6 +24,10 @@ import {
   shippedSkillRoots,
 } from "./pi-guarded-tools";
 import { makePiBashTool } from "./pi-bash-tool";
+import {
+  reinstallWorktreeDeps,
+  withDepsRefresh,
+} from "./worktree-deps-refresh";
 import { piSteeringBoundaryTools } from "./pi-steering";
 import { createWebFetchTool, createWebSearchTool } from "./pi-web-search";
 
@@ -211,37 +215,50 @@ export function buildPiToolset(input: {
           }) as ToolDefinition<any, any, any>,
         );
         break;
-      case "bash":
+      case "bash": {
+        const bash = makePiBashTool({
+          cwd,
+          env: commandEnv,
+          remote,
+          gated: bashGated,
+          ...(ownWorktree ? { ownWorktree } : {}),
+          askReadOnly: isAsk,
+          unattended: policy.unattended,
+          sessionId: journal?.osSessionId,
+          runKind: journal?.kind,
+          publicationPolicy: opts.publicationPolicy,
+          // A remote workspace is its own boundary.
+          ...(opts.bashRunAs && !remote ? { runAs: opts.bashRunAs } : {}),
+          mergeGuard,
+          privateTermsGuard,
+          runSignal: abort.signal,
+          onAudit: (event) =>
+            audit({
+              msg: `pi_command_${event.phase}`,
+              request_id: requestId,
+              run_key: runKey,
+              session_id: journal?.osSessionId,
+              run_kind: journal?.kind,
+              model,
+              ...event,
+            }),
+        });
+        // The run's own worktree on this machine: a command that moves it
+        // onto other code and changes the lockfile sets up its
+        // dependencies again (a sub-task's reset to an integration branch).
         baseCustomTools.push(
-          makePiBashTool({
-            cwd,
-            env: commandEnv,
-            remote,
-            gated: bashGated,
-            ...(ownWorktree ? { ownWorktree } : {}),
-            askReadOnly: isAsk,
-            unattended: policy.unattended,
-            sessionId: journal?.osSessionId,
-            runKind: journal?.kind,
-            publicationPolicy: opts.publicationPolicy,
-            // A remote workspace is its own boundary.
-            ...(opts.bashRunAs && !remote ? { runAs: opts.bashRunAs } : {}),
-            mergeGuard,
-            privateTermsGuard,
-            runSignal: abort.signal,
-            onAudit: (event) =>
-              audit({
-                msg: `pi_command_${event.phase}`,
-                request_id: requestId,
-                run_key: runKey,
-                session_id: journal?.osSessionId,
-                run_kind: journal?.kind,
-                model,
-                ...event,
-              }),
-          }),
+          ownWorktree && !remote && !isAsk && !opts.bashRunAs
+            ? withDepsRefresh(bash, {
+                dir: ownWorktree,
+                reinstall: reinstallWorktreeDeps(
+                  ownWorktree,
+                  journal?.osSessionId,
+                ),
+              })
+            : bash,
         );
         break;
+      }
     }
   }
   // Web search and fetch run on this side of any Sandbox, so it needs no Sandbox

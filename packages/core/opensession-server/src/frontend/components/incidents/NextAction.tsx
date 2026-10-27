@@ -12,12 +12,10 @@ import {
   useDeferredMergePhase,
 } from "../../hooks/useDeferredMerge";
 import { isIncidentKey } from "../../hooks/useIncidents";
+import { projectSWRKey } from "../../hooks/useProjects";
 import { useSecondsLeft } from "../../hooks/useSecondsLeft";
-import {
-  decideIncidentApi,
-  updateProjectSettingsApi,
-  updateSignalApi,
-} from "../../lib/api/incidents";
+import { decideIncidentApi, updateSignalApi } from "../../lib/api/incidents";
+import { updateProjectSettingsApi } from "../../lib/api/projects";
 import { apiSWRKey } from "../../lib/api-swr";
 import { ASK_CARD_PLATE } from "../../lib/ask-card-classes";
 import { formatCountdown } from "../../lib/countdown";
@@ -332,9 +330,10 @@ export function NextAction({
     setBusy(key);
     try {
       await updateProjectSettingsApi(incident.project, {
-        agentsPaused: paused,
+        incidents: { agentsPaused: paused },
       });
       void mutate(apiSWRKey.incidentProject(incident.project));
+      void mutate(projectSWRKey.projectSettings(incident.project));
       toast(
         paused
           ? `Agents paused for ${project}`

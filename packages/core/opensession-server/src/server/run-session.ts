@@ -16,7 +16,14 @@ import {
 import { registerMemoryGauge } from "./memory-gauges";
 import { localFoldersContextNote } from "./local-folders";
 import { portalAutostarting, portalsContextNote } from "./portal-autostart";
-import { ownedWorktreeHeadBranch } from "./session-branch-ownership";
+import { ownedWorktreeWorkBranch } from "./session-branch-ownership";
+import { piModelUnservableReason } from "./pi-model-routing";
+import { logDetail, reported } from "./reported-errors";
+import {
+  readShutdownSnapshot,
+  shutdownSnapshotPath,
+  writeShutdownSnapshot,
+} from "./shutdown-snapshot";
 import {
   mirrorSlackSessionReply,
   SLACK_SESSION_NOTE,
@@ -28,7 +35,7 @@ import {
 
 import { deskTextNavigation } from "./desk-text-navigation";
 import type { McpScope } from "./runner-shared";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import {
   runAgent,
   isAgentSessionBusy,
@@ -164,7 +171,6 @@ import {
   clearComposerPrediction,
   maybePredictComposer,
 } from "./composer-prediction";
-import { writeFileAtomic, writeJsonAtomic } from "./shared/atomic-write";
 import { startWatching } from "./file-watcher";
 import {
   getRepo,
@@ -203,6 +209,7 @@ import {
   publishSessionChange,
   persistAutoModelSwitch,
   retryAutoFallbackModel,
+  fallBackFromUnservableModel,
   recordRunOutcome,
   applyRunOutcomeProjection,
   touchNativeSession,
@@ -787,7 +794,10 @@ export async function steerQueuedPrompt(
       promptEntryId,
       [item.id],
     ).catch(async (e) => {
-      console.error(`[queue] Send-now delivery failed for ${sessionId}:`, e);
+      console.error(
+        `[queue] Send-now delivery failed for ${sessionId}:`,
+        logDetail(e),
+      );
       await failPromptDispatch(sessionId, promptEntryId);
     });
     return true;
@@ -1029,13 +1039,11 @@ export async function restorePromptQueues(
 // SIGTERM arrives (before the drain) and, on boot, nudge any that the journal
 // resume didn't already cover. Crash (no graceful shutdown) still falls back to
 // the journal, so both paths are covered.
-const RESUME_SNAPSHOT_PATH = `${SESSIONS_DIR}/active-at-shutdown.json`;
-
+// The snapshot lives beside the session store (shutdown-snapshot.ts).
 export function readActiveShutdownSnapshot(): ActiveRunRecord[] {
   try {
-    if (!existsSync(RESUME_SNAPSHOT_PATH)) return [];
-    const records = JSON.parse(readFileSync(RESUME_SNAPSHOT_PATH, "utf-8"));
-    return Array.isArray(records) ? records : [];
+    // SAFETY: only snapshotActiveSessions writes this list, of run records.
+    return readShutdownSnapshot(SESSIONS_DIR) as ActiveRunRecord[];
   } catch (e) {
     console.error("[resume] Failed to read active-session snapshot:", e);
     return [];
@@ -1064,11 +1072,11 @@ export function snapshotActiveSessions(): void {
   try {
     const records = activeRunRecords();
     if (records.length === 0) {
-      if (existsSync(RESUME_SNAPSHOT_PATH))
-        writeFileAtomic(RESUME_SNAPSHOT_PATH, "[]");
+      if (existsSync(shutdownSnapshotPath(SESSIONS_DIR)))
+        writeShutdownSnapshot(SESSIONS_DIR, []);
       return;
     }
-    writeJsonAtomic(RESUME_SNAPSHOT_PATH, records, false);
+    writeShutdownSnapshot(SESSIONS_DIR, records);
     console.log(
       `[resume] Snapshotted ${records.length} active session(s) for wake-up on restart`,
     );
@@ -1087,7 +1095,7 @@ export function resumeDrainedSessions(
   if (!records.length) return;
   // Consume the snapshot so the next (non-graceful) boot doesn't replay it.
   try {
-    writeFileAtomic(RESUME_SNAPSHOT_PATH, "[]");
+    writeShutdownSnapshot(SESSIONS_DIR, []);
   } catch {}
 
   let woken = 0;
@@ -1118,7 +1126,9 @@ export function resumeDrainedSessions(
       id,
       restartContinuationPrompt(r.prompt),
       SYSTEM_RESTART_USER,
-    ).catch((e) => console.error(`[resume] Wake failed for ${id}:`, e));
+    ).catch((e) =>
+      console.error(`[resume] Wake failed for ${id}:`, logDetail(e)),
+    );
   }
   if (woken > 0)
     console.log(
@@ -1769,7 +1779,7 @@ export function watchExternalRunAndDrain(sessionId: string): void {
       watcher.failures += 1;
       console.error(
         `[queue] Drain after external run failed for ${sessionId}; retrying:`,
-        error,
+        logDetail(error),
       );
       schedule(drainWatcherDelay(watcher.failures));
     }
@@ -2425,9 +2435,13 @@ export async function maybeLaunchSandboxedRun(
     });
     // A provider's refusal (a workspace it cannot hold, an unsupported run)
     // stays a refusal, so the queue reports it once instead of retrying it.
+    // Logged above with its cause; the queue's retry line repeats only
+    // the message (reported-errors.ts).
     if (isRunSetupRefusal(e))
-      throw new RunSetupRefusedError(`Sandbox unavailable: ${reason}`);
-    throw new Error(`Sandbox unavailable: ${reason}`);
+      throw reported(
+        new RunSetupRefusedError(`Sandbox unavailable: ${reason}`),
+      );
+    throw reported(new Error(`Sandbox unavailable: ${reason}`));
   }
 }
 
@@ -2841,6 +2855,13 @@ async function runSessionPromptInner(
   slackProgress?: SlackTurnProgress,
 ): Promise<void> {
   const autoRetry = await retryAutoFallbackModel(sessionId);
+  // A model this instance can no longer serve (its provider's credentials
+  // were removed) fails every run; move the session to the default model
+  // first, the way a usage fallback switches it, and say so.
+  const unservable = await fallBackFromUnservableModel(
+    sessionId,
+    piModelUnservableReason,
+  );
   const session = findSession(sessionId);
   if (!session) return;
   // Admission: a repository being removed takes no new turns, and one that
@@ -2863,6 +2884,24 @@ async function runSessionPromptInner(
       from: autoRetry.fromModel,
       by: autoRetry.by,
     });
+  }
+  const unservableNotice = unservable
+    ? `${modelLabel(unservable.fromModel)} can't be used here anymore (${unservable.reason}). This session now uses ${modelLabel(unservable.model)}, the default model.`
+    : null;
+  if (unservable) {
+    broadcastToSession(sessionId, {
+      type: "notice",
+      sessionId,
+      message: unservableNotice,
+    });
+    broadcastToSession(sessionId, {
+      type: "model_changed",
+      sessionId,
+      model: unservable.model,
+      from: unservable.fromModel,
+      by: `auto-switch — ${modelLabel(unservable.fromModel)} can't be used`,
+    });
+    await publishSessionChange(sessionId);
   }
 
   // A fresh human prompt re-arms the announce-then-stop guard (the nudge's
@@ -2939,6 +2978,13 @@ async function runSessionPromptInner(
       { required: true },
     );
   }
+  // The switch off a model that can't be served, kept in the transcript
+  // under the prompt it happened on, where the reason still reads later.
+  if (unservableNotice)
+    await storeAppendUserLineEarly(
+      sessionId,
+      transcriptLineRunnerNotice(unservableNotice),
+    ).catch(() => {});
 
   // Cross-provider handoff: the session's model was switched to the other engine
   // (Fable orchestrator → gpt-5.5 executor, or back) since the last run. The
@@ -4038,26 +4084,37 @@ async function runSessionPromptInner(
     // handoff keep resolving this session. Shared checkouts (a repo's main
     // or ask checkout) are exempt: no session owns their HEAD, so syncing
     // would stamp whatever branch another flow left parked there onto this
-    // session (bks-019f97ec, 2026-07-25).
+    // session (bks-019f97ec, 2026-07-25). A sub-task session that reset its
+    // own branch onto another one and pushed there records that branch, the
+    // one its PR and CI are under (ownedWorktreeWorkBranch).
     const headBranch = session.branch
-      ? await ownedWorktreeHeadBranch(session.worktreeDir)
+      ? await ownedWorktreeWorkBranch(session.worktreeDir)
       : null;
+    // A turn that failed before the model wrote or did anything (a notice
+    // delivered into a session whose run could not start) is not activity:
+    // "last active" stays on the last real exchange.
+    const nothingRan =
+      endedWithError && firstTokenMs === undefined && toolUseCount === 0;
     // Export the engine identity and usage before settling or draining the
     // next prompt, whose resume inputs can still come from the session file.
-    await touchNativeSession(session.id, {
-      ...engineSessionPatch(effectiveProvider, finalSessionId),
-      lastEngineProvider: effectiveProvider,
-      ...(effectiveModel ? { lastEngineModel: effectiveModel } : {}),
-      ...(latestUsage
-        ? {
-            usage: latestUsage,
-            ...(startToken ? { usageRunId: startToken } : {}),
-          }
-        : {}),
-      ...(headBranch && headBranch !== session.branch
-        ? { branch: headBranch }
-        : {}),
-    });
+    await touchNativeSession(
+      session.id,
+      {
+        ...engineSessionPatch(effectiveProvider, finalSessionId),
+        lastEngineProvider: effectiveProvider,
+        ...(effectiveModel ? { lastEngineModel: effectiveModel } : {}),
+        ...(latestUsage
+          ? {
+              usage: latestUsage,
+              ...(startToken ? { usageRunId: startToken } : {}),
+            }
+          : {}),
+        ...(headBranch && headBranch !== session.branch
+          ? { branch: headBranch }
+          : {}),
+      },
+      { keepLastActivity: nothingRan },
+    );
   } else if (finalSessionId) {
     syncAgentSessionEngine(
       session,
@@ -4363,7 +4420,10 @@ export function startLoopTicker(): void {
         loopTickMessage(loop.prompt, loopTickNote(loop)),
         loopActor(loop.setBy),
       ).catch((e) =>
-        console.error(`[loop] Loop prompt failed for ${session.id}:`, e),
+        console.error(
+          `[loop] Loop prompt failed for ${session.id}:`,
+          logDetail(e),
+        ),
       );
     }
   }, 60_000);
