@@ -11,10 +11,14 @@ import {
   findingSetOf,
   type HypothesisStatus,
 } from "../../../shared/findings";
+import {
+  claimRows,
+  hypothesisStatus,
+  roundReportRuns,
+} from "../../../shared/findings-status";
 import type {
   AgentRole,
   AgentRun,
-  InvestigatorReport,
   IncidentResponse,
 } from "../../../shared/incident-response";
 import {
@@ -97,20 +101,6 @@ function investigatorRun(
   );
 }
 
-/** The round's newest investigator report. */
-function investigatorReport(
-  response: IncidentResponse | undefined,
-  round: number,
-): { run: AgentRun; report: InvestigatorReport } | null {
-  let best: { run: AgentRun; report: InvestigatorReport } | null = null;
-  for (const run of response?.agents ?? []) {
-    if (run.round !== round || run.report?.role !== "investigator") continue;
-    if (!best || run.attempt >= best.run.attempt)
-      best = { run, report: run.report };
-  }
-  return best;
-}
-
 /** Consecutive `half` blocks pair up; a `half` without a partner spans the
  *  full width, so the grid never leaves a hole. */
 export function findingSpans(
@@ -135,6 +125,12 @@ export function findingsPage(
   const round = opts.round ?? pageRound(sets);
   if (round === null) return null;
 
+  // Statuses and claim rows come from this round's reports, so an earlier
+  // round's page keeps the checks it had.
+  const reports = roundReportRuns(response, round);
+  const verifier = reports.verifier?.report;
+  const rows = () => claimRows(reports.investigator?.report, verifier);
+
   type Draft = Omit<FindingItem, "span">;
   const drafts: Draft[] = [];
   for (const role of ROLES) {
@@ -143,14 +139,15 @@ export function findingsPage(
     const byline = FINDINGS_COPY.byline(role, clockTime(s.updatedAt));
     for (const block of s.blocks) {
       const item: Draft = { key: `${role}:${block.id}`, role, block, byline };
-      if (block.kind === "hypothesis") item.status = "unchecked"; // D1 replaces this
-      if (block.kind === "claims") item.claims = []; // D1 replaces this
+      if (block.kind === "hypothesis")
+        item.status = hypothesisStatus(block.claims, verifier);
+      if (block.kind === "claims") item.claims = rows();
       drafts.push(item);
     }
   }
   if (drafts.length === 0) return null;
 
-  const report = investigatorReport(response, round);
+  const report = reports.investigator;
   if (
     report &&
     report.report.claims.length > 0 &&
@@ -166,7 +163,7 @@ export function findingsPage(
       block: { id: "claims", kind: "claims", size: "full" },
       byline: FINDINGS_COPY.byline("investigator", clockTime(updatedAt)),
       auto: true,
-      claims: [], // D1 replaces this
+      claims: rows(),
     });
   }
 

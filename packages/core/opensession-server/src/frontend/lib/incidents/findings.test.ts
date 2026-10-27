@@ -8,6 +8,7 @@ import type {
   AgentRole,
   AgentRun,
   Claim,
+  ClaimCheck,
   IncidentResponse,
 } from "../../../shared/incident-response";
 import type { Incident } from "../../../shared/incidents";
@@ -246,29 +247,127 @@ test("an automatic claims block is added when the report has claims", () => {
   expect(none?.items.map((i) => i.key)).toEqual(["investigator:a"]);
 });
 
-test("hypothesis and claims items carry D1's placeholders", () => {
-  const page = findingsPage(
+const POOL = "The pool is too small.";
+const RETRIES = "Retries pile up on example.test.";
+
+const hypothesis = (id: string, claims: string[]): FindingBlock => ({
+  id,
+  kind: "hypothesis",
+  size: "full",
+  statement: POOL,
+  confidence: "medium",
+  evidence: [],
+  claims,
+});
+
+const verRun = (round: number, claims: ClaimCheck[], attempt = 1): AgentRun =>
+  run({
+    role: "verifier",
+    round,
+    attempt,
+    sessionId: "os-ver",
+    report: {
+      role: "verifier",
+      verdict: "not-certain",
+      reasons: [],
+      claims,
+      proofAccepted: false,
+    },
+  });
+
+test("hypothesis items carry the derived status", () => {
+  const sets = [
+    set("investigator", 1, [
+      hypothesis("pool", [POOL]),
+      hypothesis("both", [POOL, RETRIES]),
+      hypothesis("none", []),
+    ]),
+  ];
+  const statuses = (agents: AgentRun[], round = 1) =>
+    findingsPage(open(response({ round, agents, findingSets: sets })))
+      ?.items.filter((i) => i.block.kind === "hypothesis")
+      .map((i) => i.status);
+
+  const inv = invRun(1, [{ text: POOL }, { text: RETRIES }]);
+  expect(statuses([inv])).toEqual(["unchecked", "unchecked", "unchecked"]);
+  expect(
+    statuses([
+      inv,
+      verRun(1, [
+        {
+          text: "the pool is too small",
+          status: "verified",
+          evidence: "40 slots",
+        },
+        { text: RETRIES, status: "refuted", evidence: "no retries" },
+      ]),
+    ]),
+  ).toEqual(["verified", "refuted", "cant-tell"]);
+  // Another round's verifier does not set this round's status.
+  expect(
+    statuses(
+      [inv, verRun(2, [{ text: POOL, status: "verified", evidence: "x" }])],
+      2,
+    ),
+  ).toEqual(["unchecked", "unchecked", "unchecked"]);
+  // The newest verifier attempt with a report decides.
+  expect(
+    statuses([
+      inv,
+      verRun(1, [{ text: POOL, status: "refuted", evidence: "a" }], 1),
+      verRun(1, [{ text: POOL, status: "verified", evidence: "b" }], 2),
+    ]),
+  ).toEqual(["verified", "cant-tell", "cant-tell"]);
+});
+
+test("claims items carry the rows", () => {
+  const agents = [
+    invRun(1, [{ text: POOL }, { text: RETRIES }]),
+    verRun(1, [{ text: POOL, status: "verified", evidence: "saw it" }]),
+  ];
+  const rows = [
+    { text: POOL, status: "verified", evidence: "saw it" },
+    { text: RETRIES, status: "unchecked" },
+  ];
+  const auto = findingsPage(
     open(
       response({
-        agents: [invRun(1, [{ text: "The pool is too small." }])],
+        agents,
+        findingSets: [set("investigator", 1, [question("a")])],
+      }),
+    ),
+  );
+  expect(auto?.items.at(-1)?.key).toBe("auto:claims");
+  expect(auto?.items.at(-1)?.claims).toEqual(rows);
+
+  const placed = findingsPage(
+    open(
+      response({
+        agents,
+        findingSets: [
+          set("investigator", 1, [question("a")]),
+          set("verifier", 1, [{ id: "checks", kind: "claims", size: "full" }]),
+        ],
+      }),
+    ),
+  );
+  expect(
+    placed?.items.find((i) => i.key === "verifier:checks")?.claims,
+  ).toEqual(rows);
+
+  // A claims block placed before any report has no rows yet.
+  const early = findingsPage(
+    open(
+      response({
         findingSets: [
           set("investigator", 1, [
-            {
-              id: "h",
-              kind: "hypothesis",
-              size: "full",
-              statement: "The pool is too small.",
-              confidence: "medium",
-              evidence: [],
-              claims: ["The pool is too small."],
-            },
+            { id: "checks", kind: "claims", size: "full" },
           ]),
         ],
       }),
     ),
   );
-  expect(page?.items[0]?.status).toBe("unchecked");
-  expect(page?.items[1]?.claims).toEqual([]);
+  expect(early?.items[0]?.claims).toEqual([]);
 });
 
 test("half blocks pair up; a lone half spans full", () => {
