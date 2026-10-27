@@ -8,10 +8,10 @@ disagree.
 ## Fork rules
 
 - **Upstream is read-only.** `upstream` (tellahq/opensession) has push disabled.
-  Never merge, rebase onto, or cherry-pick from it. To take an upstream feature
-  or fix, read its diff and reimplement it here; name the source in the commit
-  message as `Upstream: tellahq/opensession@<sha>`. The fork point is in
-  [`NOTICE.md`](NOTICE.md).
+  Never merge, rebase onto, or cherry-pick from it. **Upstream sync:** before
+  porting any upstream commit, read [`docs/upstream-sync.md`](docs/upstream-sync.md)
+  (take everything by default, how to port, the `Upstream:` trailer, the
+  skipped list). The fork point is in [`NOTICE.md`](NOTICE.md).
 - **Keep the licences.** Never remove `LICENSE`, `NOTICE.md`,
   `THIRD-PARTY-NOTICES.md` or `THIRD-PARTY-LICENSES`.
 - **Public repo.** No secrets, client data or internal hostnames in commits,
