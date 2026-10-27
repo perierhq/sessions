@@ -25,6 +25,10 @@ import {
   type SetupFix,
   roundOfMax,
 } from "../../../shared/incident-response";
+import {
+  findingSetOf,
+  previousFindingSet,
+} from "../../../shared/findings";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
   type Incident,
@@ -1087,6 +1091,9 @@ async function startAgent(
       round,
       maxRounds: r.maxRounds,
       connections,
+      // The page keeps the previous round's blocks until this agent's
+      // first show_findings call; it may keep or edit them by id.
+      findings: { previous: previousFindingSet(r, "investigator", round) },
       ...(earlier
         ? {
             earlier: {
@@ -1127,6 +1134,9 @@ async function startAgent(
       mode: access.mode,
       actions: settings.actions,
       connections,
+      // Ids, kinds and references only: buildVerifierPrompt never shows
+      // the investigator's prose.
+      findings: { investigator: findingSetOf(r, "investigator", round) },
     });
   }
 
@@ -1557,6 +1567,11 @@ async function messageAgent(
         r.round,
         r.maxRounds,
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
+        // The send-back raised the round before this message, so the
+        // round sent back is the one before r.round.
+        run.role === "investigator"
+          ? previousFindingSet(r, "investigator", r.round)
+          : undefined,
       )
     : buildReminder(
         // A run refused before every issue was kept has its first one.
