@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  type ClaimRow,
   FINDINGS_COPY,
   type FindingBlock,
   type FindingsSet,
@@ -325,7 +326,7 @@ test("claims items carry the rows", () => {
     invRun(1, [{ text: POOL }, { text: RETRIES }]),
     verRun(1, [{ text: POOL, status: "verified", evidence: "saw it" }]),
   ];
-  const rows = [
+  const rows: ClaimRow[] = [
     { text: POOL, status: "verified", evidence: "saw it" },
     { text: RETRIES, status: "unchecked" },
   ];
