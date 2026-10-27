@@ -41,7 +41,7 @@ touches an in-process tool:
 | Server | Tools | Runs | Condition |
 | --- | --- | --- | --- |
 | [`opensession-sessions`](#opensession-sessions) | 23 | interactive, Slack loop, automation | Automation runs get it ONLY with the human-set `selfImprove` flag, and then in the `automationSelf` build below. |
-| [`opensession-admin`](#opensession-admin) | 14 | interactive, Slack loop | – |
+| [`opensession-admin`](#opensession-admin) | 15 | interactive, Slack loop | – |
 | [`opensession-runners`](#opensession-runners) | 5 | interactive | – |
 | [`opensession-goals`](#opensession-goals) | 8 | interactive | – |
 | [`opensession-search`](#opensession-search) | 2 | interactive, automation | – |
@@ -80,7 +80,7 @@ touches an in-process tool:
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-39 servers, 190 tools.
+39 servers, 191 tools.
 
 ## opensession-sessions
 
@@ -269,7 +269,13 @@ Forget a remembered entry by its id (from list_memory).
 
 `mcp__opensession-admin__list_automations` · input: none
 
-List all of Assistant's automations (routines): scheduled, event- and webhook-triggered jobs.
+List all of Assistant's automations (routines): scheduled, event- and webhook-triggered jobs. Prompts are omitted; read one with get_automation.
+
+### `get_automation`
+
+`mcp__opensession-admin__get_automation` · input: `id` (string, required)
+
+Read one automation's full record by id: its prompt and every setting (schedule, mode, repo, model, MCP allowlist, inputs, outputs, triggers), plus its five most recent runs. Read it before update_automation so a prompt edit starts from the stored text. The webhook secret is never shown.
 
 ### `create_automation`
 
