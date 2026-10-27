@@ -10,7 +10,6 @@
 // built on first use, never at import.
 
 import type { TranscriptEntry } from "@tellahq/opensession-protocol/session";
-import { unwrapMcpDispatcher } from "@tellahq/opensession-protocol/tool-presentation";
 import {
   FINDINGS_LIMITS,
   type FindingBlock,
@@ -35,7 +34,7 @@ import {
   resolveRef,
 } from "./refs";
 import { saveFindingSet, withSessionQueue } from "./store";
-import { checkQuotes, matchToolCall } from "./tool-calls";
+import { checkQuotes, matchToolCall, provenanceOf } from "./tool-calls";
 import {
   type FindingBlockDraft,
   type RefInput,
@@ -229,16 +228,6 @@ function notesText(notes: readonly string[]): string[] {
   return notes.length === 0
     ? ["No notes."]
     : ["Notes:", ...notes.map((n) => `- ${n}`)];
-}
-
-/**
- * The text a quoted line must sit in: the tool result as stored.
- * TODO(genui-fix-a2): swap for `quoteSource(toolName, input, content)` from
- * tool-calls.ts once it lands, so a JSON tool result (host_command's
- * stdout) is checked line by line.
- */
-function sourceText(_tool: string, _input: unknown, content: string): string {
-  return content;
 }
 
 /** Resolves one call's drafts against the incident and the caller's
@@ -454,18 +443,26 @@ class Resolver {
       .catch(() => null);
     if (!entry) return (note("the source's result couldn't be read."), null);
     const use = (await this.loadTail())?.find((e) => e.id === source.useId);
-    const input = use?.toolName
-      ? unwrapMcpDispatcher(use.toolName, use.toolInput).input
-      : undefined;
+    if (!use?.toolName)
+      return (note("the source's call couldn't be read."), null);
     const checked = checkQuotes(
-      sourceText(source.tool, input, entry.content),
+      { toolName: use.toolName, input: use.toolInput, content: entry.content },
       draft.lines,
       draft.highlight,
     );
+    for (const n of checked.notes) note(n);
     if (checked.lines.length === 0)
       return (note("none of the lines are in the source; left off."), null);
     if (checked.dropped > 0) note(`${droppedLinesCopy(checked.dropped)}.`);
-    return { source, ...checked };
+    // The tail's copy of the result may be clamped; the full entry says
+    // where the output really came from.
+    const provenance = provenanceOf(use.toolName, use.toolInput, entry);
+    return {
+      source: { ...source, provenance },
+      lines: checked.lines,
+      highlight: checked.highlight,
+      dropped: checked.dropped,
+    };
   }
 }
 

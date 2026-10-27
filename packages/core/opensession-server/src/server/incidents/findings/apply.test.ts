@@ -80,6 +80,7 @@ function hostCall(useId: string, stdout: string): TranscriptEntry[] {
       content: JSON.stringify(
         {
           ok: true,
+          runner: "prod-1",
           exitCode: 0,
           timedOut: false,
           stdout,
@@ -211,7 +212,7 @@ test("a log block keeps real lines and drops invented ones", async () => {
           {
             id: "errors",
             kind: "log",
-            source: { type: "tool", tool: "Bash" },
+            source: { type: "tool", tool: "host_command" },
             lines: [REAL, "invented line that never printed"],
             highlight: [0],
           },
@@ -233,9 +234,9 @@ test("a log block keeps real lines and drops invented ones", async () => {
   expect(block.lines).toEqual([REAL]);
   expect(block.highlight).toEqual([0]);
   expect(block.dropped).toBe(1);
-  expect(block.source.provenance).toEqual({ kind: "shell" });
+  expect(block.source.provenance).toEqual({ kind: "host", label: "prod-1" });
   expect(block.source.sessionId).toBe("os-inv");
-  expect(block.source.resultId).toBe("tr-toolu_2");
+  expect(block.source.resultId).toBe("call_1-result");
 });
 
 test("the result text lists what was saved and the notes", async () => {
@@ -488,7 +489,7 @@ test("compare log sides get the same quote check", async () => {
   const h = harness();
   const side = (label: string, lines: string[]) => ({
     label,
-    log: { source: { type: "tool", tool: "Bash" }, lines },
+    log: { source: { type: "tool", tool: "host_command" }, lines },
   });
   await applyFindings(
     request({
@@ -520,7 +521,7 @@ test("compare log sides get the same quote check", async () => {
   if (!("log" in before)) throw new Error("expected a log side");
   expect(before.log.lines).toHaveLength(1);
   expect(before.log.dropped).toBe(1);
-  expect(before.log.source.resultId).toBe("tr-toolu_2");
+  expect(before.log.source.resultId).toBe("call_1-result");
 });
 
 test("refs that fail inside evidence are left off; a failing change drops its block", async () => {
@@ -687,4 +688,38 @@ test("the store's notes are appended to the reply", async () => {
   expect(out.text).toBe(
     "A newer attempt owns round 1's findings; nothing saved.",
   );
+});
+
+test("a failed call has nothing to quote", async () => {
+  const h = harness();
+  const failed = hostCall("call_2", "");
+  failed[1]!.content = JSON.stringify({
+    ok: false,
+    error: "prod-2 is not one of this agent's hosts",
+  });
+  h.deps.transcriptTail = async () => failed;
+  h.deps.fullEntry = async (_s, id) => failed.find((e) => e.id === id) ?? null;
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          question("q"),
+          {
+            id: "errors",
+            kind: "log",
+            source: { type: "tool", tool: "host_command" },
+            lines: ["prod-2 is not one of this agent's hosts"],
+          },
+        ],
+      },
+    }),
+    h.deps,
+  );
+  expect(out.notes).toContain(
+    "Block `errors`: That call failed, so it has no output to quote.",
+  );
+  expect(out.notes).toContain(
+    "Block `errors`: none of the lines are in the source; left off.",
+  );
+  expect(savedSet(h)?.blocks.map((b) => b.id)).toEqual(["q"]);
 });
