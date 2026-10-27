@@ -65,7 +65,7 @@ const PRIMARY_MODEL_IDS = [
   "claude-haiku-5-5",
   "gpt-6-astra",
   "gpt-6.1-sol",
-  "gpt-5.6-terra",
+  "gpt-6.1-terra",
   "gpt-6-luna",
 ] as const;
 const PRIMARY_MODEL_ID_SET = new Set<string>(PRIMARY_MODEL_IDS);
@@ -220,7 +220,7 @@ const MODEL_TAIL_ORDER = [
   "claude-haiku-4-5",
   "gpt-6-astra",
   "gpt-6.1-sol",
-  "gpt-5.6-terra",
+  "gpt-6.1-terra",
   "gpt-6-luna",
   "kimi-k3",
   "gpt-oss-120b",

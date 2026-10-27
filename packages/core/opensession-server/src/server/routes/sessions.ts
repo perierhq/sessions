@@ -8,13 +8,10 @@ import { handleAgentMessageSummaryRoutes } from "./agent-message-summary";
  * next handler (see routes/index.ts for the dispatch order).
  */
 
-import {
-  executeArchiveOverrideProjection,
-  executeSessionProjection,
-} from "../session-projection-executor";
+import { executeSessionProjection } from "../session-projection-executor";
 import { transcriptSearchWorkerArgv } from "../../runner-host/exe";
 import { requestUser, type RouteContext } from "./context";
-import { archiveOlderThan, isArchivedId, setArchived } from "../archive";
+import { archiveOlderThan, isArchivedId } from "../archive";
 import {
   pendingAskAwaitingAnswerSync,
   pendingAskIdsAwaitingAnswer,
@@ -31,8 +28,6 @@ import {
   type WorkspaceGroup,
 } from "@tellahq/opensession-protocol/workspace-group";
 import { transcript } from "../actor-transcript";
-import { clearSessionFileArchive } from "../plain-archive";
-import { archiveSession } from "../session-archive";
 
 import {
   clientVisibleQueuedCount,
@@ -71,7 +66,10 @@ import { MAX_PROMPT_IMAGES } from "@tellahq/opensession-protocol/session";
 import { SessionKernelActorError } from "../session-kernel/actor-client";
 import { notifyMentions } from "../mentions";
 import { unarchiveForHumanTurn } from "../session-unarchive";
-import { sessionRepoBlocker } from "../repo-removal-guard";
+import {
+  SessionArchiveRefused,
+  setSessionArchivedState,
+} from "../session-archive-action";
 import {
   sessionChangesSince,
   sessionKernel,
@@ -1815,27 +1813,20 @@ export async function handleSessionsRoutes(
       return Response.json({ error: "Session not found" }, { status: 404 });
     const body = await req.json().catch(() => ({}));
     const archived = body.archived !== false;
-    if (archived) {
-      // Stops an owned in-flight run, commits the archive and drops the pins
-      // it made stale (session-archive.ts, shared with repository removal).
-      const { stoppedRun } = await archiveSession(sessionId, session);
+    try {
+      const { stoppedRun } = await setSessionArchivedState(
+        session,
+        archived,
+        sessionId,
+      );
       return Response.json({ ok: true, stoppedRun });
+    } catch (error) {
+      // A session whose repository was removed can't run, so it stays
+      // archived until the repository is registered again.
+      if (error instanceof SessionArchiveRefused)
+        return Response.json({ error: error.message }, { status: 409 });
+      throw error;
     }
-    // A session whose repository was removed can't run, so it stays
-    // archived until the repository is registered again.
-    const repoBlocker = sessionRepoBlocker(session);
-    if (repoBlocker)
-      return Response.json({ error: repoBlocker }, { status: 409 });
-    await executeArchiveOverrideProjection(sessionId, () =>
-      setArchived(sessionId, false),
-    );
-    // Plain done-tickets are archived via a file-level flag, not the
-    // registry; clearing only the registry would leave them archived. On
-    // unarchive, also clear the file flag so the session returns to "My
-    // sessions".
-    clearSessionFileArchive(sessionId);
-    await publishSessionChange(sessionId);
-    return Response.json({ ok: true, stoppedRun: false });
   }
 
   // Rename a session (manual display title; empty/blank clears it back to

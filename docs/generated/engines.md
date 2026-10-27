@@ -51,7 +51,8 @@ engine and dispatch id `routeModel()` returns for it.
 | `gpt-6.1-sol` | GPT-6.1 Sol | pi | `pi/openai/gpt-6.1-sol` |
 | `gpt-6-sol` | GPT-6 Sol | pi | `pi/openai/gpt-6.1-sol` |
 | `gpt-5.6-sol` | GPT-5.6 Sol | pi | `pi/openai/gpt-6.1-sol` |
-| `gpt-5.6-terra` | GPT-5.6 Terra | pi | `pi/openai/gpt-5.6-terra` |
+| `gpt-6.1-terra` | GPT-6.1 Terra | pi | `pi/openai/gpt-6.1-terra` |
+| `gpt-5.6-terra` | GPT-5.6 Terra | pi | `pi/openai/gpt-6.1-terra` |
 | `gpt-6-luna` | GPT-6 Luna | pi | `pi/openai/gpt-6-luna` |
 | `gpt-5.6-luna` | GPT-5.6 Luna | pi | `pi/openai/gpt-6-luna` |
 | `gpt-5.5` | GPT-5.5 (Codex) | pi | `pi/openai/gpt-6.1-sol` |

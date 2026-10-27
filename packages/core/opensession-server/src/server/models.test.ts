@@ -320,9 +320,9 @@ describe("Pi-only model routing", () => {
     ]);
   });
 
-  test("upgrades Sol and Luna without changing historical labels", () => {
-    for (const name of ["sol", "luna"]) {
-      const current = name === "sol" ? "gpt-6.1-sol" : `gpt-6-${name}`;
+  test("upgrades Sol, Terra and Luna without changing historical labels", () => {
+    for (const name of ["sol", "terra", "luna"]) {
+      const current = name === "luna" ? "gpt-6-luna" : `gpt-6.1-${name}`;
       const previous = `gpt-5.6-${name}`;
       expect(resolveModel(name)?.id).toBe(current);
       for (const prefix of ["", "openai/", "pi/openai/", "codex/openai/"]) {
@@ -341,11 +341,11 @@ describe("Pi-only model routing", () => {
         ]);
         expect(contextWindowFor(`${prefix}${current}`)).toBe(272_000);
       }
-      const label = name === "sol" ? "Sol" : "Luna";
+      const label = name.charAt(0).toUpperCase() + name.slice(1);
       expect(modelLabel(previous)).toBe(`GPT-5.6 ${label}`);
       expect(modelLabel(`pi/openai/${previous}`)).toBe(`GPT-5.6 ${label}`);
       expect(modelLabel(current)).toBe(
-        name === "sol" ? "GPT-6.1 Sol" : `GPT-6 ${label}`,
+        name === "luna" ? "GPT-6 Luna" : `GPT-6.1 ${label}`,
       );
       expect(accountProviderForModel(current)).toBe("codex");
       expect(fallbackTier(current)).toBe(3);

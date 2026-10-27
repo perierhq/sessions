@@ -22,7 +22,11 @@ import {
   automationDeniedTools,
   automationMcpServersByName,
 } from "./automations";
-import { humanPrompter, interactivePrompter } from "./session-actors";
+import {
+  humanPrompter,
+  interactivePrompter,
+  waitContinuationOwner,
+} from "./session-actors";
 import { type GitIdentity, commitAuthorFor } from "./shared/user-mappings";
 import {
   plainDiscussionDeniedTools,
@@ -55,6 +59,12 @@ export type InProcessMcpBranch =
    *  automation's own ticks, a scheduled /loop tick sent in a person's name,
    *  or a sandboxed descendant. */
   | "automation+human-spawn"
+  /** Automation-owned, woken by a background wait that a person's own turn
+   *  registered (`waitActor` sender): the automation-bar set plus
+   *  `opensession-sessions` in its `waitContinuation` shape (the waits and
+   *  task_status, never spawning), so the turn can follow up on what the
+   *  person asked it to watch. */
+  | "automation+wait-continuation"
   /** Plain discussion session: only the approval server
    *  (opensession-plain-discussion), never the interactive siblings. */
   | "plain-discussion"
@@ -103,7 +113,9 @@ export interface SessionRunInputs {
    *  even though `accountUser` keeps the name. This, not `accountUser`, is
    *  what an automation-owned session's `automation+human-spawn` branch and
    *  the run token's `humanPrompter` read: a capability a present person
-   *  unlocks must not fire from scheduled prompt text. */
+   *  unlocks must not fire from scheduled prompt text. The one exception is
+   *  a `waitActor` wake (`"<person> (wait)"`), kept here so
+   *  automationSessionMcp can mount its narrower continuation shape. */
   humanPrompter: string | undefined;
   inProcessMcpBranch: InProcessMcpBranch;
   /** Whether the run gets the repos/memory/personal-prompt note. Automation
@@ -206,7 +218,11 @@ export function sessionInProcessMcpBranch(
 ): InProcessMcpBranch {
   if (session.automationDescendantPolicy) return "automation-self-improve";
   if (session.automation)
-    return humanPrompter ? "automation+human-spawn" : "automation-self-improve";
+    return humanPrompter
+      ? waitContinuationOwner(humanPrompter)
+        ? "automation+wait-continuation"
+        : "automation+human-spawn"
+      : "automation-self-improve";
   if (isSupportSession(session)) return "support";
   if (session.plainDiscussionId) return "plain-discussion";
   return session.goalId ? "interactive+goal-self" : "interactive";
@@ -306,9 +322,12 @@ export async function resolveSessionRunInputs(
   const accountUser = supportScope
     ? undefined
     : (humanPrompter(opts.user) ?? undefined);
+  // A wait's wake sent in a person's name rides the same field, so every
+  // launch path hands it to automationSessionMcp, which tells the two apart.
   const prompter = supportScope
     ? undefined
-    : (interactivePrompter(opts.user) ?? undefined);
+    : (interactivePrompter(opts.user) ??
+      (waitContinuationOwner(opts.user) ? opts.user!.trim() : undefined));
   return {
     isAutomationSession,
     mcpServers,
