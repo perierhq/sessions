@@ -40,6 +40,7 @@ import {
 import { ingestObservations } from "../incidents/signal-runtime";
 import { createSignal, listSignals } from "../incidents/signal-store";
 import { runSignalSource, type SourceRun } from "../incidents/sources";
+import { DEMO_REPLICA_CLAIM, demoFindingSets } from "./findings";
 import { DEMO_GH_REPO, DEMO_PR_NUMBER, DEMO_REPO_ID } from "./fixtures";
 
 const MINUTE_MS = 60_000;
@@ -367,7 +368,11 @@ function baseResponse(
 }
 
 /** The search fix: found, proved, verified, deploying after the veto. */
-function vetoResponse(openedAt: number, now: number): IncidentResponse {
+function vetoResponse(
+  openedAt: number,
+  now: number,
+  signalId: string,
+): IncidentResponse {
   const found = openedAt + 14 * MINUTE_MS;
   const verified = openedAt + 26 * MINUTE_MS;
   const vetoStart = now - 30_000;
@@ -394,12 +399,7 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
             kind: "request",
             source: { kind: "http", url: `https://${host}/search?q=demo` },
           },
-          claims: [
-            {
-              text: "The replica was removed in the release config",
-              source: `${prUrl}/files`,
-            },
-          ],
+          claims: [{ text: DEMO_REPLICA_CLAIM, source: `${prUrl}/files` }],
           notePath: "docs/incidents/search-replica.md",
           runbookPaths: [],
         },
@@ -409,10 +409,24 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
         role: "verifier",
         verdict: "certain",
         reasons: ["The proof request passes against the fix"],
-        claims: [],
+        claims: [
+          {
+            text: DEMO_REPLICA_CLAIM,
+            status: "verified",
+            evidence: "The PR's diff sets `search.replicas` from 0 back to 2",
+            source: `${prUrl}/files`,
+          },
+        ],
         proofAccepted: true,
       }),
     ],
+    findingSets: demoFindingSets({
+      kind: "veto",
+      signalId,
+      openedAt,
+      now,
+      prUrl,
+    }),
     candidate: {
       round: 1,
       plan: { pr: true, actions: [] },
@@ -491,7 +505,11 @@ function vetoResponse(openedAt: number, now: number): IncidentResponse {
   });
 }
 
-function needsYouResponse(openedAt: number, now: number): IncidentResponse {
+function needsYouResponse(
+  openedAt: number,
+  now: number,
+  signalId: string,
+): IncidentResponse {
   const found = openedAt + 22 * MINUTE_MS;
   const since = openedAt + 41 * MINUTE_MS;
   const reason =
@@ -520,6 +538,12 @@ function needsYouResponse(openedAt: number, now: number): IncidentResponse {
         proofAccepted: true,
       }),
     ],
+    findingSets: demoFindingSets({
+      kind: "needs-you",
+      signalId,
+      openedAt,
+      now,
+    }),
     verdict: {
       round: 1,
       at: iso(since),
@@ -655,7 +679,7 @@ async function seedIncidents(
     "3 failures in a row",
   );
   await updateIncident(search.id, (incident) => {
-    const response = vetoResponse(searchOpened, now);
+    const response = vetoResponse(searchOpened, now, id("search"));
     return {
       ...incident,
       state: "veto",
@@ -687,7 +711,7 @@ async function seedIncidents(
     "3 failures in a row",
   );
   await updateIncident(checkout.id, (incident) => {
-    const response = needsYouResponse(checkoutOpened, now);
+    const response = needsYouResponse(checkoutOpened, now, id("checkout"));
     return {
       ...incident,
       state: "needs-you",
