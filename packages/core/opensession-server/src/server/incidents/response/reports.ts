@@ -44,6 +44,7 @@ import {
   type ReportProblem,
   type VerifierReport,
 } from "../../../shared/incident-response";
+import { claimKey } from "../../../shared/findings";
 import { validateSource } from "../signal-validation";
 
 export const REPORT_FENCE = "incident-report";
@@ -1062,18 +1063,6 @@ export function parseInvestigatorReport(
     runbookPaths,
     ...(nextSteps.length ? { nextSteps } : {}),
   };
-}
-
-/** A claim's text for matching the verifier's quote to the listed claim:
- *  case, curly quotes, spacing and a closing full stop do not matter. */
-function claimKey(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[\u2018\u2019`]/g, "'")
-    .replace(/[\u201c\u201d]/g, '"')
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.\s]+$/, "");
 }
 
 /** How far a ruling is from verified; the less certain ruling wins. */

@@ -2,6 +2,7 @@
 // actions), shared by the server and the frontend. Types, constant lists
 // and small pure helpers only.
 
+import type { FindingsSet } from "./findings";
 import type { HttpSource, ObservationResult } from "./incidents";
 
 export const AUTONOMY_LEVELS = [
@@ -674,6 +675,8 @@ export interface IncidentResponse {
   next: NextAction;
   ledger: LedgerEntry[];
   droppedLedger: number;
+  /** Agent-composed findings, one set per (role, round); see shared/findings.ts. */
+  findingSets?: FindingsSet[];
   startedAt: string;
   updatedAt: string;
 }
