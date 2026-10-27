@@ -6,20 +6,26 @@ import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { RunPlace } from "../../shared/project-settings";
 
-const PLACES: Record<string, RunPlace> = {
-  "acme-web": {
-    state: "ok",
-    provider: "daytona",
-    label: "Daytona eu",
-    source: "default",
-  },
-  "acme-api": {
-    state: "ok",
-    provider: "podman",
-    label: "This machine",
-    source: "project",
-  },
-};
+const PLACES = new Map<string, RunPlace>([
+  [
+    "acme-web",
+    {
+      state: "ok",
+      provider: "daytona",
+      label: "Daytona eu",
+      source: "default",
+    },
+  ],
+  [
+    "acme-api",
+    {
+      state: "ok",
+      provider: "podman",
+      label: "This machine",
+      source: "project",
+    },
+  ],
+]);
 
 mock.module("../hooks/useSettingsResources", () => ({
   useRepoList: () => ({ data: undefined }),
@@ -27,7 +33,7 @@ mock.module("../hooks/useSettingsResources", () => ({
 mock.module("../hooks/useProjects", () => ({
   useProjectSettings: (project: string | null) => ({
     data: project
-      ? { effective: { sandbox: { automations: PLACES[project] } } }
+      ? { effective: { sandbox: { automations: PLACES.get(project) } } }
       : undefined,
   }),
 }));

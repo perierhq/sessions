@@ -39,6 +39,57 @@ export function automationProject(
 }
 
 /**
+ * The project an automation's form starts on. Editing: the automation's own
+ * project (its repo, else the instance default), kept disposable sandbox or
+ * not, since the project still sets its model. Creating: the draft's project,
+ * else the one the person is in (the sidebar's project filter, which a new
+ * session starts from too), else the default. Names that aren't registered
+ * are skipped. `null` while the repos load.
+ */
+export function automationStartProject(
+  source: {
+    initial?: AutomationPlaceInput | null;
+    prefillRepo?: string;
+    lens?: string;
+  },
+  repos: ReadonlyArray<{ id: string; default?: boolean }> | undefined,
+): string | null {
+  if (source.initial)
+    return automationProject({ repo: source.initial.repo }, repos);
+  if (!repos) return null;
+  const registered = (id?: string) =>
+    id && repos.some((repo) => repo.id === id) ? id : null;
+  return (
+    registered(source.prefillRepo) ??
+    registered(source.lens) ??
+    automationProject({}, repos)
+  );
+}
+
+/** The part of a create or update call that names the project. */
+export interface AutomationRepoPatch {
+  repo?: string;
+}
+
+/**
+ * The `repo` a save sends. A new automation names its project. An edit sends
+ * it only when the person picked a different one, so an automation that
+ * follows the default project keeps following it, and one whose repo is no
+ * longer registered still saves its other fields.
+ */
+export function automationRepoPayload(
+  initial: AutomationPlaceInput | null,
+  project: string | null,
+  repos: ReadonlyArray<{ id: string; default?: boolean }> | undefined,
+): AutomationRepoPatch {
+  if (!project) return {};
+  if (!initial) return { repo: project };
+  return project === automationStartProject({ initial }, repos)
+    ? {}
+    : { repo: project };
+}
+
+/**
  * One line on where an automation runs. `project` is `automationProject`;
  * `place` is that project's automations cell once it has loaded.
  */

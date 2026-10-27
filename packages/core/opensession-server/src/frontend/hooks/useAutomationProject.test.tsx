@@ -6,10 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 let repos: Array<{ id: string; default?: boolean }> | undefined;
 let lens = "all";
-const MODELS: Record<string, string> = {
-  "acme-web": "Opus 5",
-  "acme-api": "Sonnet 5",
-};
+const MODELS = new Map([
+  ["acme-web", "Opus 5"],
+  ["acme-api", "Sonnet 5"],
+]);
 
 mock.module("./useSettingsResources", () => ({
   useRepoList: () => ({ data: repos }),
@@ -19,7 +19,7 @@ mock.module("./useProjects", () => ({
     data: project
       ? {
           effective: {
-            models: { automations: { label: MODELS[project] } },
+            models: { automations: { label: MODELS.get(project) } },
           },
         }
       : undefined,
@@ -57,6 +57,7 @@ function read(
   const html = renderToStaticMarkup(
     <Probe initial={initial} prefillRepo={prefillRepo} />,
   );
+  // SAFETY: Probe renders exactly this JSON shape and nothing else.
   return JSON.parse(
     html.replace(/^<output>|<\/output>$/g, "").replaceAll("&quot;", '"'),
   ) as {

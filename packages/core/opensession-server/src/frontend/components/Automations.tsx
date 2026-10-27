@@ -48,7 +48,6 @@ import {
   docTitle,
   DEFAULT_DOC_TITLE,
 } from "../lib/brand";
-import { PlainButton } from "../ui/plain-button";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { cn } from "../ui/cn";
@@ -66,15 +65,12 @@ import {
   sandboxProviderLabel,
 } from "../lib/automation-form";
 import { AutomationDataFlowEditor } from "./AutomationDataFlowEditor";
-import { useNavigation } from "../hooks/useNavigation";
-import { useProjectSettings } from "../hooks/useProjects";
-import { useRepoList } from "../hooks/useSettingsResources";
+import { useAutomationProject } from "../hooks/useAutomationProject";
 import {
   automationDefaultModelLabel,
-  automationPlaceCopy,
-  automationProject,
   visibleAutomations,
 } from "../lib/automation-environment";
+import { AutomationPlace, AutomationProjectField } from "./AutomationProject";
 
 /* The old .automation-form family, as utilities. Two of its rules reached in
    from the form to the fields inside it and have to stay descendant selectors:
@@ -813,40 +809,6 @@ export function Automations({ onOpenSession, selectedId, onSelect }: Props) {
  * watched channel) are what you scan for, and they now show up without
  * reading the line under the name.
  */
-/**
- * Where an automation runs, in one line: its project's place for
- * automations, or the disposable sandbox it kept from before projects had
- * their own. `link` adds the way to change it.
- */
-function AutomationPlace({
-  automation,
-  link = false,
-}: {
-  automation: Pick<Automation, "sandbox" | "repo">;
-  link?: boolean;
-}) {
-  const navigation = useNavigation();
-  const repos = useRepoList();
-  const repo = automationProject(automation, repos.data);
-  const place = useProjectSettings(repo).data?.effective.sandbox.automations;
-  const copy = automationPlaceCopy(automation, place, repo);
-  if (!link || automation.sandbox || !repo) return <>{copy}</>;
-  return (
-    <>
-      {copy}{" "}
-      <PlainButton
-        className={cn(
-          LINK,
-          "relative border-0 bg-transparent p-0 text-supporting before:absolute before:-inset-x-1 before:-inset-y-3 before:content-['']",
-        )}
-        onClick={() => navigation.openProjectSettings(repo, "where")}
-      >
-        Change
-      </PlainButton>
-    </>
-  );
-}
-
 function TriggerIcon({ automation }: { automation: Automation }) {
   // Normalize each glyph's drawn height, not just its SVG box. These icons
   // occupy different proportions of the shared 24px viewBox.
@@ -1489,10 +1451,10 @@ function AutomationForm({
   // automation saved with `sandbox: true` before that keeps its disposable
   // profile; there is no control to set it any more.
   const sandbox = !!initial?.sandbox;
-  const repoList = useRepoList();
-  const projectModel = useProjectSettings(
-    automationProject({ sandbox: false, repo: initial?.repo }, repoList.data),
-  ).data?.effective.models.automations;
+  // The project it runs in. Its place line and the default model below
+  // follow whichever one is picked.
+  const { project, setProject, repos, projectModel, repoPayload } =
+    useAutomationProject(initial, prefill?.repo);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
@@ -1566,6 +1528,7 @@ function AutomationForm({
           accountStrict,
           usageCredits,
           sandbox,
+          ...repoPayload(),
           mcpServers: mcpServers ?? null,
           slackWatch,
           webhookEnabled: isWatch ? false : webhookEnabled,
@@ -1587,6 +1550,7 @@ function AutomationForm({
           accountStrict: accountId && !accountStrict ? false : undefined,
           usageCredits: usageCredits || undefined,
           sandbox: sandbox || undefined,
+          ...repoPayload(),
           mcpServers,
           slackWatch,
           webhookEnabled: isWatch ? false : webhookEnabled,
@@ -1616,6 +1580,13 @@ function AutomationForm({
           }
         />
       </label>
+
+      <AutomationProjectField
+        value={project}
+        repos={repos}
+        sandbox={sandbox}
+        onChange={setProject}
+      />
 
       <div className="flex gap-3">
         <label className={FIELD_LABEL}>
@@ -1788,21 +1759,11 @@ function AutomationForm({
             </Select>
           </label>
 
-          <div className={cn(FIELD_LABEL, "desktop:w-full desktop:flex-none")}>
-            Where it runs
-            <span className="text-supporting font-normal leading-snug text-dim">
-              <AutomationPlace
-                automation={{ sandbox, repo: initial?.repo }}
-                link
-              />
-            </span>
-          </div>
-
           <label className={FIELD_LABEL}>
             Model
             <Select value={model} onChange={(e) => setModel(e.target.value)}>
               <option value="">
-                {automationDefaultModelLabel(projectModel?.label, defaultModel)}
+                {automationDefaultModelLabel(projectModel, defaultModel)}
               </option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
