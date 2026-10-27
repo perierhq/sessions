@@ -1278,7 +1278,12 @@ describe("renderPrCommentMarkdown bot markup", () => {
 
   it("renders the avatar link instead of showing its tags", () => {
     const html = renderPrCommentMarkdown(table);
-    expect(html).toContain('<sup><img src="https://vercel.com/api/www/avatar');
+    // The avatar lives on another host, so it is named, not fetched; the
+    // link around it already opens the deployment.
+    expect(html).toContain(
+      '<sup><span class="md-remote-media md-remote-media-inline" title="vercel.com">',
+    );
+    expect(html).not.toContain("<img");
     expect(html).toContain('<a href="https://vercel.com/tella/internal"');
     expect(html).not.toContain("&lt;a href");
     expect(html).not.toContain("&lt;sup&gt;");
@@ -1488,9 +1493,18 @@ describe("GitHub user-attachment media", () => {
     expect(html).toContain(`src="${proxied}"`);
   });
 
-  it("leaves the URL alone without a repo to authorize through", () => {
+  it("does not load the URL without a repo to authorize through", () => {
     const html = renderPrCommentMarkdown(`![shot](${url})`);
-    expect(html).toContain(`src="${url}"`);
+    expect(html).not.toContain("<img");
+    expect(html).toContain(`<a href="${url}" class="md-remote-media"`);
+  });
+
+  it("proxies a raw <img> attachment in PR prose", () => {
+    const html = renderPrCommentMarkdown(
+      `<img width="600" alt="shot" src="${url}" />`,
+      { repo: "opensession" },
+    );
+    expect(html).toContain(`<img width="600" alt="shot" src="${proxied}"`);
   });
 
   it("links rather than video-ifies a bare attachment URL in transcript prose", () => {
@@ -1628,10 +1642,84 @@ describe("session media placed in the body", () => {
   });
 
   it("keeps any other image, and an image beside text, inline", () => {
-    expect(renderMarkdown("![shot](https://example.com/a.png)")).toContain(
-      '<p><a href="https://example.com/a.png"',
+    expect(renderMarkdown("![shot](/uploads/a.png)")).toContain(
+      '<p><a href="/uploads/a.png"',
     );
     expect(renderMarkdown(`See ![x](${shot})`)).toContain("<p>See <a href");
+  });
+});
+
+describe("images from other hosts", () => {
+  const remote = "https://acme.example.test/pixel.png?q=1";
+  const placeholder = (href: string) =>
+    `<a href="${href}" class="md-remote-media" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"`;
+
+  it("names the host instead of loading a transcript image", () => {
+    const html = renderMarkdown(`Here.\n\n![chart](${remote})`);
+    expect(html).not.toContain("<img");
+    expect(html).toContain(placeholder(remote));
+    expect(html).toContain("Image from acme.example.test");
+  });
+
+  it("does the same on every markdown surface", () => {
+    for (const html of [
+      renderMarkdown(`![chart](${remote})`, { rawHtml: "sanitize" }),
+      renderPrCommentMarkdown(`![chart](${remote})`, { repo: "opensession" }),
+      renderPrCommentMarkdown(
+        `<details><summary>Shots</summary>\n\n![chart](${remote})\n\n</details>`,
+      ),
+    ]) {
+      expect(html).not.toContain("<img");
+      expect(html).toContain("Image from acme.example.test");
+    }
+  });
+
+  it("does not preload a video from another host", () => {
+    const html = renderMarkdown("![demo](https://acme.example.test/a.mp4)");
+    expect(html).not.toContain("<video");
+    expect(html).toContain("Video from acme.example.test");
+  });
+
+  it("keeps an image inside a link from becoming a second link", () => {
+    const html = renderMarkdown(
+      `[![status](${remote})](https://acme.example.test/build)`,
+    );
+    expect(html).not.toContain("<img");
+    expect(html).toContain(
+      '<a href="https://acme.example.test/build" target="_blank" rel="noopener noreferrer"><span class="md-remote-media md-remote-media-inline"',
+    );
+  });
+
+  it("catches scheme-relative and backslash spellings", () => {
+    for (const src of [
+      "//acme.example.test/a.png",
+      "/\\acme.example.test/a.png",
+    ])
+      expect(renderMarkdown(`![x](${src})`)).not.toContain("<img");
+  });
+
+  it("still renders this app's own and data: images inline", () => {
+    expect(
+      renderMarkdown("![x](http://127.0.0.1:3850/media?path=%2Ftmp%2Fa.png)"),
+    ).toContain('<img class="md-image" src="/media?path=%2Ftmp%2Fa.png"');
+    const data = "data:image/png;base64,iVBORw0KGgo=";
+    expect(renderMarkdown(`![x](${data})`)).toContain(
+      `<img class="md-image" src="${data}"`,
+    );
+  });
+
+  it("names a raw <img> in PR prose, linked when it stands alone", () => {
+    const html = renderPrCommentMarkdown(`<img src="${remote}" alt="chart">`);
+    expect(html).not.toContain("<img");
+    expect(html).toContain(placeholder(remote.replace("&", "&amp;")));
+  });
+
+  it("drops a picture source from another host", () => {
+    const html = renderPrCommentMarkdown(
+      '<picture><source media="(prefers-color-scheme: dark)" srcset="https://acme.example.test/dark.png"><img src="/uploads/light.png"></picture>',
+    );
+    expect(html).not.toContain("srcset");
+    expect(html).toContain('<img src="/uploads/light.png"');
   });
 });
 

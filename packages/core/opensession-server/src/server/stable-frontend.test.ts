@@ -13,6 +13,7 @@ import {
   publishStableFrontendSnapshot,
   stableFrontendHttpResponse,
 } from "./stable-frontend";
+import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -59,6 +60,11 @@ describe("stable frontend ingress", () => {
     const page = stableFrontendHttpResponse(state, request("/workspace/demo"));
     expect(page?.toString()).toContain("HTTP/1.1 200 OK");
     expect(body(page!)).toContain("App-hash.js");
+    // The same policy the gateway sends, so a shell served while it restarts
+    // cannot load images from anywhere the live one would refuse.
+    expect(page?.toString()).toContain(
+      `Content-Security-Policy: ${SPA_CONTENT_SECURITY_POLICY}\r\n`,
+    );
 
     const asset = stableFrontendHttpResponse(
       state,
