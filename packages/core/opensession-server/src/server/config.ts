@@ -492,8 +492,10 @@ function parseRepoSection(v: unknown): RepoSection | undefined {
     color: str(o.color),
     worktreeSetup: str(o.worktreeSetup),
     depsInstall: str(o.depsInstall),
+    // `setupTimeoutMinutes` is upstream Open Session's name for the same
+    // limit; read it too so a config brought over keeps its bound.
     worktreeSetupTimeoutMinutes: setupTimeoutMinutes(
-      o.worktreeSetupTimeoutMinutes,
+      o.worktreeSetupTimeoutMinutes ?? o.setupTimeoutMinutes,
     ),
     prCache: bool(o.prCache),
     prCacheOpenLimit: num(o.prCacheOpenLimit),

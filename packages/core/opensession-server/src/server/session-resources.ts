@@ -352,7 +352,9 @@ export function hasSessionOwnedResources(): boolean {
  * or labelled; callers skip loading the session list when not. */
 export async function mayHaveSessionOwnedResources(): Promise<boolean> {
   return (
-    hasSessionOwnedResources() || (await listLabelledResources()).length > 0
+    hasSessionOwnedResources() ||
+    [...pendingSetups].some((pending) => pending.sessionOwned) ||
+    (await listLabelledResources()).length > 0
   );
 }
 
@@ -392,6 +394,68 @@ export async function canonicalResourceDir(dir: string): Promise<string> {
   } catch {
     return resolve(dir);
   }
+}
+
+// ── Pending setup ────────────────────────────────────────────────────────────
+
+/**
+ * A setup pipeline between its start and its next command. Warm-template
+ * seeding can wait minutes on a refresh or its lock before any command runs,
+ * and nothing is recorded until a command spawns, so the stop paths cancel
+ * these instead: a session archived in that window never starts its setup.
+ */
+export type PendingSetup = {
+  /** Canonical worktree directory (canonicalResourceDir). */
+  dir: Promise<string>;
+  sessionId?: string;
+  sessionOwned: boolean;
+  /** Set once a stop path cancelled it; no further command starts. */
+  cancelled?: Exclude<SessionResourceStopReason, "timeout">;
+};
+
+const pendingSetups = new Set<PendingSetup>();
+
+/** Register a setup pipeline before its first await; end it when done. */
+export function beginPendingSetup(input: {
+  dir: string;
+  sessionId?: string;
+  sessionOwned: boolean;
+}): PendingSetup {
+  const pending: PendingSetup = {
+    dir: canonicalResourceDir(input.dir),
+    sessionOwned: input.sessionOwned,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  };
+  pendingSetups.add(pending);
+  return pending;
+}
+
+export function endPendingSetup(pending: PendingSetup): void {
+  pendingSetups.delete(pending);
+}
+
+/** Cancel the pending setups `match` selects; returns how many it cancelled. */
+async function cancelPendingSetups(
+  match: (pending: PendingSetup, dir: string) => boolean,
+  reason: Exclude<SessionResourceStopReason, "timeout">,
+): Promise<number> {
+  let cancelled = 0;
+  for (const pending of [...pendingSetups]) {
+    if (pending.cancelled) continue;
+    if (!match(pending, await pending.dir)) continue;
+    pending.cancelled = reason;
+    cancelled++;
+  }
+  if (cancelled)
+    console.log(
+      `[session-resources] cancelled ${cancelled} setup(s) waiting to start (${reason})`,
+    );
+  return cancelled;
+}
+
+/** Test seam: the pipelines still waiting or running. */
+export function __pendingSetupsForTest(): PendingSetup[] {
+  return [...pendingSetups];
 }
 
 // ── Process handles ──────────────────────────────────────────────────────────
@@ -596,6 +660,9 @@ export type RunSessionResourceInput = {
   sessionOwned: boolean;
   timeoutMs: number;
   label?: string;
+  /** The setup pipeline this command belongs to: once a stop path cancels
+   * it, the command does not start (or is stopped as soon as it is). */
+  pending?: PendingSetup;
 };
 
 export type RunSessionResourceResult = {
@@ -619,6 +686,14 @@ const STDERR_TAIL_BYTES = 4096;
 export async function runSessionResource(
   input: RunSessionResourceInput,
 ): Promise<RunSessionResourceResult> {
+  if (input.pending?.cancelled)
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      stopped: input.pending.cancelled,
+      stderr: "",
+    };
   // Decide on scoping once: the argv and the record must agree.
   const unit = workloadScopingActive()
     ? workloadUnitName(input.kind)
@@ -678,6 +753,11 @@ export async function runSessionResource(
       `[session-resources] could not record ${record.label ?? record.kind}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+
+  // Cancelled between the check above and the record: nothing could stop
+  // it by record yet, so stop it here.
+  if (input.pending?.cancelled && !exitedYet)
+    void stopResource(record, input.pending.cancelled);
 
   let timedOut = false;
   const timer = setTimeout(
@@ -905,6 +985,7 @@ export async function stopSessionOwnedResources(
   const reason = options.reason ?? "archived";
   const shouldContinue = options.shouldContinue ?? (() => true);
   const stopped: StoppedSessionResource[] = [];
+  await cancelSessionPendingSetups(session, others, reason);
   for (const record of await sessionOwnedRecords(session, others)) {
     if (!shouldContinue()) return stopped;
     stopped.push(await stopResource(record, reason));
@@ -950,6 +1031,35 @@ export async function sessionOwnedRecords(
   );
 }
 
+/**
+ * Cancel the setups `session` owns that have not started their next command:
+ * tagged with its id (or an alias), or untagged in one of its worktrees,
+ * unless another live session in `others` uses that worktree.
+ */
+async function cancelSessionPendingSetups(
+  session: SessionResourceOwner,
+  others: readonly SessionResourceOwner[],
+  reason: Exclude<SessionResourceStopReason, "timeout">,
+): Promise<number> {
+  if (![...pendingSetups].some((pending) => pending.sessionOwned)) return 0;
+  const ids = new Set(ownerIds(session));
+  const dirs = new Set(
+    await Promise.all(ownerDirs(session).map(canonicalResourceDir)),
+  );
+  const live = await ownersByDir(
+    others.filter(
+      (other) => !other.archived && !ownerIds(other).some((id) => ids.has(id)),
+    ),
+  );
+  return cancelPendingSetups(
+    (pending, dir) =>
+      pending.sessionOwned &&
+      (pending.sessionId ? ids.has(pending.sessionId) : dirs.has(dir)) &&
+      !live.get(dir)?.size,
+    reason,
+  );
+}
+
 /** Every id a resource of `session` may carry: its own and its aliases. */
 export function sessionResourceOwnerIds(
   session: Pick<SessionResourceOwner, "id" | "aliasIds">,
@@ -962,6 +1072,7 @@ export async function stopSessionResourcesInDir(
   dir: string,
 ): Promise<StoppedSessionResource[]> {
   const key = await canonicalResourceDir(dir);
+  await cancelPendingSetups((_, pendingDir) => pendingDir === key, "removed");
   const stopped: StoppedSessionResource[] = [];
   for (const record of readRegistry()) {
     if (record.worktreeDir !== key) continue;
@@ -992,8 +1103,14 @@ export async function stopArchivedSessionResources(
   const session = sessions.find(
     (s) => s.id === sessionId || s.aliasIds?.includes(sessionId),
   );
-  // Not listed yet or any more: its labels still name it.
-  if (!session) return stopLabelledForSession(new Set([sessionId]), "archived");
+  // Not listed yet or any more: its labels and tagged setups still name it.
+  if (!session) {
+    await cancelPendingSetups(
+      (pending) => pending.sessionOwned && pending.sessionId === sessionId,
+      "archived",
+    );
+    return stopLabelledForSession(new Set([sessionId]), "archived");
+  }
   return stopSessionOwnedResources(
     session,
     sessions.map((s) => (isArchived(s.id) ? { ...s, archived: true } : s)),
@@ -1060,7 +1177,20 @@ export async function reapSessionResources(
   const stopped: StoppedSessionResource[] = [];
   let forgotten = 0;
   const records = readRegistry();
-  const owners = records.length ? await ownersByDir(sessions) : new Map();
+  const owners =
+    records.length || pendingSetups.size
+      ? await ownersByDir(sessions)
+      : new Map();
+  // A setup still waiting to start for an archived session never starts,
+  // unless a live session uses its worktree.
+  await cancelPendingSetups(
+    (pending, dir) =>
+      pending.sessionOwned &&
+      !!pending.sessionId &&
+      archivedById.get(pending.sessionId) === true &&
+      !hasLiveOwner(owners.get(dir)),
+    "archived",
+  );
   for (const record of records) {
     // Started here and still running: its in-process timer bounds it, and
     // its session may not list the worktree yet.

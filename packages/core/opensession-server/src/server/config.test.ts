@@ -331,6 +331,8 @@ describe("config loader", () => {
           absurd: { repo: "/srv/absurd", worktreeSetupTimeoutMinutes: 1e12 },
           zero: { repo: "/srv/zero", worktreeSetupTimeoutMinutes: 0 },
           text: { repo: "/srv/text", worktreeSetupTimeoutMinutes: "10" },
+          // Upstream Open Session's name for the same setting.
+          upstream: { repo: "/srv/upstream", setupTimeoutMinutes: 20 },
           unset: { repo: "/srv/unset" },
         },
       }),
@@ -341,6 +343,7 @@ describe("config loader", () => {
     expect(repos.absurd?.worktreeSetupTimeoutMinutes).toBe(1440);
     expect(repos.zero?.worktreeSetupTimeoutMinutes).toBeUndefined();
     expect(repos.text?.worktreeSetupTimeoutMinutes).toBeUndefined();
+    expect(repos.upstream?.worktreeSetupTimeoutMinutes).toBe(20);
     expect(repos.unset?.worktreeSetupTimeoutMinutes).toBeUndefined();
   });
 

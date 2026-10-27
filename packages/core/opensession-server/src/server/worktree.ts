@@ -24,8 +24,11 @@ import { assertRepoNotBeingRemoved } from "./repo-removal-guard";
 import { stateDir } from "./paths";
 import { workloadArgv } from "./workload-scope";
 import {
+  beginPendingSetup,
+  endPendingSetup,
   runSessionResource,
   stopSessionResourcesInDir,
+  type PendingSetup,
   type RunSessionResourceResult,
 } from "./session-resources";
 import {
@@ -342,27 +345,37 @@ export interface WorktreeInfo {
  * seeded tree). Both halves are best-effort; a cold install is always the
  * fallback.
  */
-async function seedAndInstallWorktree(
+export async function seedAndInstallWorktree(
   repo: Repo,
   wtPath: string,
   branchLabel: string,
   setup: WorktreeSetupOwner = {},
+  seed: (repo: Repo, wtPath: string) => Promise<unknown> = async (r, p) =>
+    (await import("./warm-template")).seedWorktreeFromWarmTemplate(r, p),
 ): Promise<void> {
+  // Registered before the first await: archiving while seeding waits on the
+  // warm template's lock must still keep the setup commands from starting.
+  const pending = beginPendingSetup({
+    dir: wtPath,
+    sessionOwned: true,
+    ...(setup.sessionId ? { sessionId: setup.sessionId } : {}),
+  });
   try {
-    const { seedWorktreeFromWarmTemplate } = await import("./warm-template");
-    await seedWorktreeFromWarmTemplate(repo, wtPath);
-  } catch (e) {
-    console.warn(
-      `[worktree] warm-template seeding failed for ${branchLabel} (continuing):`,
-      e,
-    );
+    try {
+      await seed(repo, wtPath);
+    } catch (e) {
+      console.warn(
+        `[worktree] warm-template seeding failed for ${branchLabel} (continuing):`,
+        e,
+      );
+    }
+    await installWorktreeDeps(repo, wtPath, branchLabel, {
+      ...(setup.sessionId ? { sessionId: setup.sessionId } : {}),
+      pending,
+    });
+  } finally {
+    endPendingSetup(pending);
   }
-  await installWorktreeDeps(
-    repo,
-    wtPath,
-    branchLabel,
-    setup.sessionId ? { sessionId: setup.sessionId } : {},
-  );
 }
 
 /** Who a new worktree's setup runs for. With a session id, archive and the
@@ -458,7 +471,38 @@ export async function installWorktreeDeps(
     timeoutMs?: number;
     /** The session the setup runs for, when the caller knows it. */
     sessionId?: string;
+    /** The caller's pipeline, registered before its own awaits; one is
+     * registered here otherwise. */
+    pending?: PendingSetup;
   } = {},
+): Promise<WorktreeSetupResult> {
+  const pending =
+    options.pending ??
+    beginPendingSetup({
+      dir: wtPath,
+      sessionOwned: options.sessionOwned ?? true,
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    });
+  try {
+    return await runWorktreeSetupSteps(repo, wtPath, branchLabel, {
+      ...options,
+      pending,
+    });
+  } finally {
+    if (!options.pending) endPendingSetup(pending);
+  }
+}
+
+async function runWorktreeSetupSteps(
+  repo: Repo,
+  wtPath: string,
+  branchLabel: string,
+  options: {
+    sessionOwned?: boolean;
+    timeoutMs?: number;
+    sessionId?: string;
+    pending: PendingSetup;
+  },
 ): Promise<WorktreeSetupResult> {
   const timeoutMs = Math.min(
     options.timeoutMs ?? worktreeSetupTimeoutMs(repo),
@@ -503,6 +547,7 @@ export async function installWorktreeDeps(
               timeoutMs: remaining,
               label: `${step.label} for ${branchLabel}`,
               ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+              pending: options.pending,
             })
           : null;
       if (run?.stopped) {
