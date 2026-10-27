@@ -169,6 +169,68 @@ export const INCIDENT_STRIP_ERROR =
  *  label sits on its rows. */
 export const INCIDENT_SECTION_LABEL = `${WS_SUMMARY_PAGE_SECTION} mb-0`;
 
+/** The Findings blocks: one column on a phone, two on a desktop, where a
+ *  half block takes one and a full block both. Outdented by the blocks' own
+ *  padding so their text lines up with the section label. */
+export const FINDINGS_GRID =
+  "-mx-2 grid min-w-0 grid-cols-1 gap-x-4 gap-y-2 desktop:grid-cols-2";
+
+/** One block: no fill and no border, separated by spacing. The padding is
+ *  room for the highlight's tint, which fades on the background colour
+ *  only and not at all with reduced motion. */
+export const FINDINGS_BLOCK =
+  "flex min-w-0 flex-col gap-2 rounded-xl px-2 py-2 transition-colors duration-[var(--dur)] ease-[var(--ease)] motion-reduce:transition-none";
+
+/** The short tint on a block whose content just changed. */
+export const FINDINGS_HIGHLIGHT = "bg-accent-soft";
+
+/** A block's heading: its title, or the kind's name. */
+export const FINDINGS_BLOCK_TITLE =
+  "m-0 text-item-title font-medium text-fg [overflow-wrap:anywhere]";
+
+/** Who put the block there and when ("from the investigator, 14:32"). */
+export const FINDINGS_BYLINE = "m-0 text-meta text-dim tabular-nums";
+
+/** Agent prose in a block: content, so it is selectable. */
+export const FINDINGS_PROSE =
+  "markdown select-text text-body text-fg [overflow-wrap:anywhere]";
+
+/** Prose one step quieter (what would answer a question, why a change). */
+export const FINDINGS_PROSE_QUIET =
+  "markdown select-text text-supporting text-dim [overflow-wrap:anywhere]";
+
+/** A small label inside a block ("What would answer it", "Rests on"). */
+export const FINDINGS_LABEL = "m-0 text-label text-faint";
+
+/** Quoted log lines: the code well, one line per row, wrapping anywhere so
+ *  a long line never scrolls the page sideways. */
+export const FINDINGS_LOG =
+  "m-0 max-h-80 overflow-auto rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text phone:max-h-64";
+
+/** A highlighted line (`<mark>`): a tint across the well and a stripe on
+ *  its leading edge, so the mark never rests on the colour alone. */
+export const FINDINGS_LOG_MARK =
+  "-mx-3 block border-l-2 border-yellow bg-yellow-soft pr-3 pl-2.5 text-inherit";
+
+/** Where a quote came from ("from Datadog"). */
+export const FINDINGS_SOURCE = "m-0 text-meta text-dim";
+
+/** The same, quieter, when the agent could have produced the output
+ *  itself (its shell, its workspace). */
+export const FINDINGS_SOURCE_QUIET = "m-0 text-meta text-faint";
+
+/** A hypothesis or claim status, in words with the colour behind them. */
+export const FINDINGS_STATUS_TONE = {
+  verified: "text-green",
+  refuted: "text-red",
+  "cant-tell": "text-dim",
+  unchecked: "text-faint",
+} as const;
+
+/** A claim row: the claim, then its status and evidence under it. */
+export const FINDINGS_CLAIM_ROW =
+  "flex min-w-0 flex-col gap-0.5 border-b border-line py-2 last:border-b-0";
+
 /** A sidebar incident row: the workspace row's shape without the room it
  *  clears for hover actions, because the trailing state never hides. */
 export const SIDEBAR_INCIDENT_ROW = "flex items-center gap-[7px]";

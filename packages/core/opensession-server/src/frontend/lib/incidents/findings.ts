@@ -4,6 +4,7 @@
 import {
   type ClaimRow,
   type FindingBlock,
+  type FindingKind,
   type FindingRef,
   FINDINGS_COPY,
   type FindingsSet,
@@ -253,3 +254,33 @@ export function sourceTarget(
       return null;
   }
 }
+
+/** A block's heading when the agent gave it no title. */
+export const BLOCK_TITLES: Record<FindingKind, string> = {
+  hypothesis: "Hypothesis",
+  timeline: "Timeline",
+  signal: "Signal",
+  log: "Log",
+  change: "Change",
+  claims: "Claims",
+  compare: "Compare",
+  question: "Open question",
+};
+
+export const CONFIDENCE_COPY: Record<
+  Extract<FindingBlock, { kind: "hypothesis" }>["confidence"],
+  string
+> = {
+  low: "Low confidence",
+  medium: "Medium confidence",
+  high: "High confidence",
+};
+
+/** A claim row's status in words; "unverifiable" reads as the hypothesis
+ *  status does. */
+export const CLAIM_STATUS_COPY: Record<ClaimRow["status"], string> = {
+  verified: FINDINGS_COPY.status.verified,
+  refuted: FINDINGS_COPY.status.refuted,
+  unverifiable: FINDINGS_COPY.status["cant-tell"],
+  unchecked: FINDINGS_COPY.status.unchecked,
+};
