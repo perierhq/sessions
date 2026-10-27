@@ -313,7 +313,8 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   copying a message still yields what the agent actually wrote — and a path in
   backticks loses them, because the renderer keeps a code span's own styling
   over the link's and a tappable thing has to look tappable. This reaches the
-  rows that render markdown; a user bubble and a recap are plain `Text`.
+  rows that render markdown; a user bubble is plain `Text`. Recap notices are
+  not shown.
 - **Assets** — the session's scratch artifacts (`GET /api/sessions/:id/assets`)
   reached five ways: the "Open" chip on a `write_asset` tool row (straight to
   that file), the chips under the turn's answer, the name of the file in the
