@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { getConfigAsync } from "./config";
 import {
+  automationSessionRepo,
   createAutomation,
   getAutomation,
   updateAutomation,
@@ -106,5 +107,20 @@ describe("an automation's project", () => {
       error: 'Unknown repo "acme-missing" — registered: acme-web, acme-api',
     });
     expect((await getAutomation(automation.id))?.repo).toBe("acme-api");
+  });
+});
+
+describe("a run's session", () => {
+  test("records the project it runs in", () => {
+    expect(automationSessionRepo({ mode: "ask" }, "acme-api")).toEqual({
+      repo: "acme-api",
+    });
+    expect(automationSessionRepo({ mode: "code" }, "acme-api")).toEqual({
+      repo: "acme-api",
+    });
+  });
+
+  test("a scratch run has no checkout, so names no project", () => {
+    expect(automationSessionRepo({ mode: "scratch" }, "acme-api")).toEqual({});
   });
 });

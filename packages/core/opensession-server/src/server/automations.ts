@@ -726,6 +726,18 @@ function sanitizeRepo(repo?: unknown): string | { error: string } | undefined {
 }
 
 /**
+ * The repo a run's session records: the project it runs in. Without it the
+ * session showed under the default project while it ran in another one's
+ * checkout. A scratch run has no checkout, so it names none.
+ */
+export function automationSessionRepo(
+  automation: Pick<Automation, "mode">,
+  repoId: string,
+): Pick<NativeSessionFile, "repo"> {
+  return automation.mode === "scratch" ? {} : { repo: repoId };
+}
+
+/**
  * Normalize a PR reviewer spec into the comma-separated form `gh pr create
  * --reviewer` takes: individual logins and/or `org/team` slugs. Rejects
  * anything that isn't shaped like one, so a typo fails at config time rather
@@ -2509,6 +2521,7 @@ export async function runAutomation(
           createdAt: startedAt.toISOString(),
           title: eventTitle || `${automation.name} — ${stamp}`,
           mode: automation.mode,
+          ...automationSessionRepo(automation, repo.id),
           automation: automation.name,
           automationId: automation.id,
           // Keep the automation's account pin on the session so interactive
