@@ -4,6 +4,8 @@ import {
   automationDefaultModelLabel,
   automationPlaceCopy,
   automationProject,
+  automationRepoPayload,
+  automationStartProject,
   visibleAutomations,
 } from "./automation-environment";
 
@@ -89,4 +91,93 @@ test("the empty model choice names the project's default", () => {
     "Default · Opus 5.5",
   );
   expect(automationDefaultModelLabel(undefined, "")).toBe("Default");
+});
+
+describe("automationStartProject", () => {
+  const repos = [
+    { id: "acme-api" },
+    { id: "acme-web", default: true },
+    { id: "acme-docs" },
+  ];
+
+  test("editing starts on the automation's own project", () => {
+    expect(
+      automationStartProject(
+        { initial: { repo: "acme-api" }, lens: "acme-docs" },
+        repos,
+      ),
+    ).toBe("acme-api");
+  });
+
+  test("editing one without a repo starts on the default project", () => {
+    expect(automationStartProject({ initial: {} }, repos)).toBe("acme-web");
+  });
+
+  test("a kept disposable sandbox still names a project", () => {
+    expect(
+      automationStartProject(
+        { initial: { sandbox: true, repo: "acme-api" } },
+        repos,
+      ),
+    ).toBe("acme-api");
+  });
+
+  test("a new one starts on the project the person is in", () => {
+    expect(automationStartProject({ lens: "acme-docs" }, repos)).toBe(
+      "acme-docs",
+    );
+  });
+
+  test("a draft's own project wins over the one the person is in", () => {
+    expect(
+      automationStartProject(
+        { prefillRepo: "acme-api", lens: "acme-docs" },
+        repos,
+      ),
+    ).toBe("acme-api");
+  });
+
+  test("names that aren't registered fall back to the default project", () => {
+    expect(
+      automationStartProject({ prefillRepo: "gone", lens: "all" }, repos),
+    ).toBe("acme-web");
+    expect(automationStartProject({}, repos)).toBe("acme-web");
+  });
+
+  test("nothing while the projects load", () => {
+    expect(automationStartProject({ lens: "acme-docs" }, undefined)).toBeNull();
+  });
+});
+
+describe("automationRepoPayload", () => {
+  const repos = [{ id: "acme-api" }, { id: "acme-web", default: true }];
+
+  test("a new automation names its project", () => {
+    expect(automationRepoPayload(null, "acme-api", repos)).toEqual({
+      repo: "acme-api",
+    });
+    expect(automationRepoPayload(null, "acme-web", repos)).toEqual({
+      repo: "acme-web",
+    });
+  });
+
+  test("an edit sends the project the person picked", () => {
+    expect(
+      automationRepoPayload({ repo: "acme-api" }, "acme-web", repos),
+    ).toEqual({ repo: "acme-web" });
+    expect(automationRepoPayload({}, "acme-api", repos)).toEqual({
+      repo: "acme-api",
+    });
+  });
+
+  test("an untouched project is left as it was", () => {
+    // Still following the default project, so it keeps following it.
+    expect(automationRepoPayload({}, "acme-web", repos)).toEqual({});
+    // A repo that is no longer registered must not block saving the rest.
+    expect(automationRepoPayload({ repo: "gone" }, "gone", repos)).toEqual({});
+  });
+
+  test("nothing to send before a project is known", () => {
+    expect(automationRepoPayload(null, null, undefined)).toEqual({});
+  });
 });

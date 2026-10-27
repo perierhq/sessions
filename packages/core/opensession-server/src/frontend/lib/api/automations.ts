@@ -305,6 +305,9 @@ export interface AutomationDraft {
   mode: "ask" | "code";
   mcpServers?: string[];
   eventKey?: string;
+  /** The project it runs in, when the draft names one. Without it the form
+   *  starts on the project the person is in. */
+  repo?: string;
 }
 
 /** Draft an automation config from a free-text description (backend Haiku
@@ -516,6 +519,7 @@ export async function createAutomationApi(input: {
   accountStrict?: boolean;
   usageCredits?: boolean;
   sandbox?: boolean;
+  repo?: string;
   mcpServers?: string[];
   slackWatch?: { channel: string };
   webhookEnabled?: boolean;
