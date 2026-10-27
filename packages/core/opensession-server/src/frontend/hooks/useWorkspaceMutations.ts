@@ -1,10 +1,12 @@
 import {
   archiveSessionApi,
+  archiveWorkspaceApi,
   deleteWorkspaceApi,
   discardWorkspaceDraftApi,
   updateWorkspaceApi,
 } from "../lib/api";
 import type { Route } from "../lib/app-route";
+import { archiveWorkspaceSessions } from "../lib/archive-workspace-sessions";
 import type {
   DeleteWorkspaceOptions,
   OpenNextSidebarItem,
@@ -55,31 +57,23 @@ export function useWorkspaceMutations({
     });
   };
 
+  const archiveMembers = (sessions: UnifiedSession[]) =>
+    archiveWorkspaceSessions(sessions, {
+      patch,
+      archiveSession: async (id) => {
+        await archiveSessionApi(id, true);
+      },
+      archiveWorkspace: archiveWorkspaceApi,
+      rememberArchived,
+      dropStalePins,
+      refreshSessions,
+    });
+
   const archiveWorkspaceFromHeader = (members: UnifiedSession[]) => {
     if (!members.length) return;
     confirmRunningCloses(members, () => {
-      void (async () => {
-        goBack();
-        for (const member of members) {
-          patch(member.id, { archived: true, archivedReason: "manual" });
-        }
-        try {
-          await Promise.all(
-            members.map((member) => archiveSessionApi(member.id, true)),
-          );
-          rememberArchived(members.map((member) => member.id));
-          dropStalePins(members);
-          refreshSessions();
-        } catch (error) {
-          console.error("Archive workspace failed:", error);
-          for (const member of members) {
-            patch(member.id, {
-              archived: false,
-              archivedReason: undefined,
-            });
-          }
-        }
-      })();
+      goBack();
+      void archiveMembers(members);
     });
   };
 
@@ -96,31 +90,9 @@ export function useWorkspaceMutations({
       if (openSessionId && !openNext?.()) goBack();
       // The archive registry is per-session; the workspace row disappears once
       // no live sessions remain.
-      for (const session of sessions) {
-        patch(session.id, {
-          archived: true,
-          archivedReason: "manual",
-        });
-      }
-      try {
-        await Promise.all(
-          sessions.map((session) => archiveSessionApi(session.id, true)),
-        );
-        // One entry for the whole row, so ⌘Z restores the workspace in one press.
-        rememberArchived(sessions.map((session) => session.id));
-      } catch (error) {
-        console.error("Archive workspace failed:", error);
-        for (const session of sessions) {
-          patch(session.id, {
-            archived: false,
-            archivedReason: undefined,
-          });
-        }
-        if (openSessionId) navigate({ view: "session", id: openSessionId });
-        return;
-      }
-      dropStalePins(sessions);
-      refreshSessions();
+      const ok = await archiveMembers(sessions);
+      if (!ok && openSessionId)
+        navigate({ view: "session", id: openSessionId });
     };
     confirmRunningCloses(sessions, () => void archive());
   };

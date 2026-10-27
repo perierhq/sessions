@@ -157,6 +157,21 @@ export async function deleteWorkspaceApi(id: string): Promise<void> {
 }
 
 /**
+ * Archive every live session of a workspace on the server, including the ones
+ * the sidebar row does not render (PR reviews and other automation runs,
+ * workers). Returns the ids it archived and any it could not.
+ */
+export async function archiveWorkspaceApi(
+  id: string,
+): Promise<{ archived: string[]; failed: string[] }> {
+  const res = await request<{ archived?: string[]; failed?: string[] }>(
+    `/workspaces/${encodeURIComponent(id)}/archive`,
+    { method: "POST", label: "Failed to archive workspace" },
+  );
+  return { archived: res?.archived ?? [], failed: res?.failed ?? [] };
+}
+
+/**
  * Discard a sidebar draft. Unlike deleteWorkspaceApi this never deletes
  * sessions: the server clears the draft, and removes the workspace only when
  * it has no sessions at all, archived ones included.
