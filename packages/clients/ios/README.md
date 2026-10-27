@@ -448,6 +448,14 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   (iPhone Settings > Action Button > Shortcut > OS > Start an
   Agent) — those all read the app's label, which is OS. Settings >
   Shortcuts inside the app signposts all of it.
+- **Action Button / Siri / Spotlight — "Talk to Desk"** — a second App Intent
+  (`Intents/TalkToDeskIntent.swift`) for talking instead of typing: the press
+  opens the app, presents the Desk sheet, and starts the live voice call
+  (`DeskVoiceEngine.open()`). It parks on `DeskCallRequest`; the sessions list
+  opens the Desk when it sees one and the Desk sheet takes it. Running the
+  intent is the opt-in, so it works with the Desk voice preference off, and
+  the Desk header keeps its mic button while that call runs so a minimized
+  call can be reopened. `AgentShortcuts` registers it beside "Start an Agent".
 - **Widgets** (`OS1Widgets/`, its own iOS app-extension target) — the same
   press from three more places: a Home Screen widget (systemSmall), a Lock
   Screen one (accessoryCircular/accessoryRectangular), and a Control Center

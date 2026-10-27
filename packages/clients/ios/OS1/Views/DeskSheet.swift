@@ -21,6 +21,7 @@ struct DeskSheet: View {
 
     @State private var loadState: LoadState = .loading
     @State private var engine = DeskVoiceEngine()
+    @State private var deskCall = DeskCallRequest.shared
 
     var body: some View {
         @Bindable var engine = engine
@@ -45,8 +46,11 @@ struct DeskSheet: View {
                 engine.open()
             }
             #endif
+            startRequestedCall()
             await load()
         }
+        // "Talk to Desk" pressed while the sheet is already up.
+        .onChange(of: deskCall.request?.id) { startRequestedCall() }
         .onDisappear {
             // A full-screen cover takes its presenter off screen, so this
             // fires when the CALL opens — hanging up the call it just
@@ -166,7 +170,9 @@ struct DeskSheet: View {
                 .foregroundStyle(OS1VisualStyle.text)
             Spacer(minLength: 8)
             voiceStatusLabel
-            if deskVoice == "on" {
+            // A call started by "Talk to Desk" runs with the preference
+            // off, and this button is the way back to it once minimized.
+            if deskVoice == "on" || engine.active {
                 micButton
             }
             Button {
@@ -240,6 +246,13 @@ struct DeskSheet: View {
             )
         }
         .accessibilityLabel(engine.active ? "Return to the voice call" : "Start a voice call")
+    }
+
+    /// Start the call a "Talk to Desk" press asked for. The call does not
+    /// need the transcript to have loaded.
+    private func startRequestedCall() {
+        guard deskCall.take() != nil else { return }
+        engine.open()
     }
 
     private func load() async {

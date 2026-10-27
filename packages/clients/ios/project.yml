@@ -112,8 +112,10 @@ targets:
           - Info.plist
       # The one file shared with the app. The widget's button and control both
       # run this intent, and an intent must be compiled into every target that
-      # references it.
+      # references it. Its `AgentShortcuts` also lists "Talk to Desk", so that
+      # intent comes along.
       - path: OS1/Intents/StartAgentIntent.swift
+      - path: OS1/Intents/TalkToDeskIntent.swift
       - path: OS1/Intents/OpenSessionIntent.swift
       - path: OS1/Models/ActiveSessionsActivity.swift
     settings:

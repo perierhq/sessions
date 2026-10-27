@@ -1544,7 +1544,7 @@ struct PersonalPromptSection: View {
     }
 }
 
-/// Where "Start an Agent" is explained and handed over to the system.
+/// Where "Start an Agent" and "Talk to Desk" are explained and handed over to the system.
 ///
 /// It needs no setup — an `AppShortcutsProvider` registers it the moment the
 /// app is installed (see `AgentShortcuts`), and the widgets ship with it — but
@@ -1563,6 +1563,14 @@ struct ShortcutsSettingsView: View {
                     detail: """
                     Opens the composer with the mic listening, so you can speak \
                     the idea and still change repo, mode or model before sending.
+                    """
+                )
+                shortcut(
+                    icon: "waveform",
+                    title: "Talk to Desk",
+                    detail: """
+                    Opens the Desk and starts a live voice call, so you can \
+                    ask what\u{2019}s running or hand over work by talking.
                     """
                 )
             } footer: {
@@ -1614,7 +1622,7 @@ struct ShortcutsSettingsView: View {
                 #endif
             } footer: {
                 #if os(iOS)
-                Text("To put it on the Action Button: iPhone Settings → Action Button → swipe to Shortcut → Choose a Shortcut → \(AppBrand.appName) → Start an Agent.")
+                Text("To put it on the Action Button: iPhone Settings → Action Button → swipe to Shortcut → Choose a Shortcut → \(AppBrand.appName) → Start an Agent or Talk to Desk.")
                 #else
                 Text("Run it from Spotlight, or say it to Siri.")
                 #endif
