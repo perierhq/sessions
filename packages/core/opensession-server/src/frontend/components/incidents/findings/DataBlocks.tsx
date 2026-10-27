@@ -19,6 +19,7 @@ import {
   FINDINGS_PROSE_QUIET,
   FINDINGS_STRIP_SUMMARY,
 } from "../../../lib/incident-classes";
+import { ApiError } from "../../../lib/api/request";
 import type { FindingItem } from "../../../lib/incidents/findings";
 import { httpUrl } from "../../../lib/incidents/links";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
@@ -309,6 +310,10 @@ function PrChange({
     },
   );
   const loading = pr.data === undefined && !pr.error;
+  // A 404 (the session or its PR is gone) leaves the ref's number and link;
+  // Try again could not bring it back. Anything else is a failed load.
+  const failed = (e: Error | undefined) =>
+    !!e && !(e instanceof ApiError && e.status === 404);
   const title = loading
     ? null
     : same && pr.data
@@ -321,7 +326,7 @@ function PrChange({
       kind="pr"
       why={why}
       url={change.url}
-      error={!!pr.error || (same && !!diff.error && !diff.data)}
+      error={failed(pr.error) || (same && failed(diff.error) && !diff.data)}
       onRetry={() => {
         void pr.mutate();
         void diff.mutate();
