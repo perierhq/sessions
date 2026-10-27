@@ -172,9 +172,7 @@ test("the store's own notes keep their place when the call's notes fill the set"
   );
   expect(result.notes.length).toBeGreaterThan(0);
   expect(result.saved?.notes).toHaveLength(20);
-  expect(result.saved?.notes.slice(-result.notes.length)).toEqual(
-    result.notes,
-  );
+  expect(result.saved?.notes.slice(-result.notes.length)).toEqual(result.notes);
   expect(result.saved?.notes.slice(0, 20 - result.notes.length)).toEqual(
     notes.slice(0, 20 - result.notes.length),
   );
@@ -253,11 +251,9 @@ test("saveFindingSet never moves the incident's updatedAt back", async () => {
   });
   expect(fake.stored()?.updatedAt).toBe(LATER);
   const newest = "2026-10-27T10:09:00.000Z";
-  await saveFindingSet(
-    "inc-1",
-    set("investigator", 1, { updatedAt: newest }),
-    { updateIncident: fake.update },
-  );
+  await saveFindingSet("inc-1", set("investigator", 1, { updatedAt: newest }), {
+    updateIncident: fake.update,
+  });
   expect(fake.stored()?.updatedAt).toBe(newest);
 });
 

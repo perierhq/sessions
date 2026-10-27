@@ -463,7 +463,11 @@ test("observationTimes lists one lane's times on one UTC day, from memory or fil
       Date.parse("2026-10-20T10:00:00.700Z"),
     ]);
     expect(
-      await observationTimes("sig-a", Date.parse("2026-10-22T00:00:00Z"), MAIN_LANE),
+      await observationTimes(
+        "sig-a",
+        Date.parse("2026-10-22T00:00:00Z"),
+        MAIN_LANE,
+      ),
     ).toEqual([]);
   }
 });

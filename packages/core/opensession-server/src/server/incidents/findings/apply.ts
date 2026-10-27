@@ -104,7 +104,9 @@ const ROUND_OVER = "This round is over; nothing saved.";
 type Note = (message: string) => void;
 /** A cited result as quotes are checked: its cleaned output and where it
  *  came from, or the note when it couldn't be read. */
-type Source = { quotes: PreparedQuotes; provenance: Provenance } | string;
+type Source =
+  | { quotes: PreparedQuotes; provenance: Provenance }
+  | { note: string };
 type Draft<K extends FindingBlock["kind"]> = Extract<
   FindingBlockDraft,
   { kind: K }
@@ -297,11 +299,7 @@ async function applyInOrder(
 function replyNotes(own: string[], store: readonly string[]): string[] {
   if (own.length + store.length <= NOTES_MAX) return [...own, ...store];
   const room = Math.max(0, NOTES_MAX - store.length);
-  return [
-    ...own.slice(0, room),
-    `…and ${own.length - room} more.`,
-    ...store,
-  ];
+  return [...own.slice(0, room), `…and ${own.length - room} more.`, ...store];
 }
 
 function notesText(notes: readonly string[]): string[] {
@@ -586,16 +584,17 @@ class Resolver {
     const known = this.sources.get(ref.resultId);
     if (known) return known;
     if (this.sources.size >= RESULT_READS_PER_CALL)
-      return Promise.resolve(
-        `the source's result wasn't read: one call reads at most ${RESULT_READS_PER_CALL} tool results.`,
-      );
+      return Promise.resolve({
+        note: `the source's result wasn't read: one call reads at most ${RESULT_READS_PER_CALL} tool results.`,
+      });
     const answer = (async (): Promise<Source> => {
       const entry = await this.d
         .fullEntry(this.req.sessionId, ref.resultId)
         .catch(() => null);
-      if (!entry) return "the source's result couldn't be read.";
+      if (!entry) return { note: "the source's result couldn't be read." };
       const use = (await this.loadTail())?.find((e) => e.id === ref.useId);
-      if (!use?.toolName) return "the source's call couldn't be read.";
+      if (!use?.toolName)
+        return { note: "the source's call couldn't be read." };
       return {
         quotes: prepareQuotes({
           toolName: use.toolName,
@@ -620,7 +619,7 @@ class Resolver {
     const source = await this.toolRef(draft.source);
     if (typeof source === "string") return (note(source), null);
     const full = await this.source(source);
-    if (typeof full === "string") return (note(full), null);
+    if ("note" in full) return (note(full.note), null);
     const checked = checkQuotes(full.quotes, draft.lines, draft.highlight);
     for (const n of checked.notes) note(n);
     if (checked.lines.length === 0)

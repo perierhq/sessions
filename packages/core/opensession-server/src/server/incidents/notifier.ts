@@ -102,7 +102,7 @@ function tellable(incident: Incident): Incident | null {
 
 /** The incident without what a findings write touches (`updatedAt` and
  *  `response.findingSets`). */
-function withoutFindings(incident: Incident): unknown {
+function withoutFindings(incident: Incident): Omit<Incident, "updatedAt"> {
   const { updatedAt: _updatedAt, ...rest } = incident;
   if (!rest.response) return rest;
   const { findingSets: _findingSets, ...response } = rest.response;

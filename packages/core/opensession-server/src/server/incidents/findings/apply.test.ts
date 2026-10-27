@@ -936,7 +936,10 @@ test("a kept block's reference to a block no longer in the set is left off", asy
     ...when,
     events: [{ at: AT, text: "Search started timing out." }, when.events[1]],
   } as FindingBlock);
-  expect(saved?.[1]).toEqual({ ...h, evidence: [{ type: "ledger", id: "led_1" }] });
+  expect(saved?.[1]).toEqual({
+    ...h,
+    evidence: [{ type: "ledger", id: "led_1" }],
+  });
 });
 
 test("the verifier's claims default to the candidate of its own round", async () => {
