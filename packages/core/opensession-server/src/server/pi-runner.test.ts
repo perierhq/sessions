@@ -744,6 +744,14 @@ describe("isPiUsageLimitShape (provider-aware)", () => {
         "anthropic",
       ),
     ).toBe(true);
+    // An organization that refuses OAuth: this account can't serve, the
+    // next one in the pool may.
+    expect(
+      isPiUsageLimitShape(
+        '403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}}}',
+        "anthropic",
+      ),
+    ).toBe(true);
     for (const message of [
       '429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}',
       "You've hit your limit · resets 3am (UTC)",
