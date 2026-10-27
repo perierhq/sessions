@@ -130,23 +130,46 @@ export function useIncidentStrip(id: string): SWRResponse<StripResponse> {
   );
 }
 
+/** A findings window refreshes on its bucket only while it reaches past
+ *  now; a closed window's data never changes. */
+export function signalWindowRefreshMs(
+  to: string,
+  latest: StripResponse | undefined,
+  now: number,
+): number {
+  return Date.parse(to) > now ? stripRefreshMs(latest) : 0;
+}
+
+function signalWindowConfig(
+  w: Pick<SignalWindow, "to">,
+): SWRConfiguration<StripResponse> {
+  return {
+    ...apiResourceSWRConfig<StripResponse>(0),
+    refreshInterval: (latest: StripResponse | undefined) =>
+      signalWindowRefreshMs(w.to, latest, Date.now()),
+  };
+}
+
+/** A commit's patch never changes: no refetch on focus either. */
+export function findingsCommitConfig(): SWRConfiguration<CommitDetails | null> {
+  return {
+    ...apiResourceSWRConfig<CommitDetails | null>(0),
+    revalidateOnFocus: false,
+  };
+}
+
 /**
  * A findings block's signal window: every lane of the signal from `from` to
- * `to` (the block narrows to its lane with `windowStrip`). A window that
- * reaches past now keeps refreshing on its bucket; a closed one does not.
+ * `to` (the block narrows to its lane with `windowStrip`). Its key is not an
+ * incident key, so incident writes don't refetch it.
  */
 export function useSignalWindow(
   w: SignalWindow | null,
 ): SWRResponse<StripResponse> {
-  const to = w ? Date.parse(w.to) : 0;
   return useSWR<StripResponse>(
-    w ? apiSWRKey.incidentSignalWindow(w.signalId, w.from, w.to) : null,
+    w ? apiSWRKey.findingsWindow(w.signalId, w.from, w.to) : null,
     () => fetchSignalStrip(w!.signalId, { from: w!.from, to: w!.to }),
-    {
-      ...apiResourceSWRConfig<StripResponse>(0),
-      refreshInterval: (latest: StripResponse | undefined) =>
-        to > Date.now() ? stripRefreshMs(latest) : 0,
-    },
+    signalWindowConfig(w ?? { to: "" }),
   );
 }
 
@@ -156,9 +179,9 @@ export function useIncidentCommit(
   repo: string,
 ): SWRResponse<CommitDetails | null> {
   return useSWR<CommitDetails | null>(
-    sha ? apiSWRKey.incidentCommit(sha, repo) : null,
+    sha ? apiSWRKey.findingsCommit(sha, repo) : null,
     () => fetchCommit(sha!, repo, { includeChanges: true }),
-    apiResourceSWRConfig<CommitDetails | null>(0),
+    findingsCommitConfig(),
   );
 }
 

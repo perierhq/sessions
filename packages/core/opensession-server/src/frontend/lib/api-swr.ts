@@ -69,12 +69,13 @@ export const apiSWRKey = {
     ["api", "incidents", status, project || "", closedWithinMs ?? ""] as const,
   incident: (id: string) => ["api", "incident", id] as const,
   incidentStrip: (id: string) => ["api", "incident-strip", id] as const,
-  // A findings block's signal window and change; the "incident" prefix
-  // revalidates them with the incident.
-  incidentSignalWindow: (signalId: string, from: string, to: string) =>
-    ["api", "incident-signal-window", signalId, from, to] as const,
-  incidentCommit: (sha: string, repo: string) =>
-    ["api", "incident-commit", sha, repo] as const,
+  // A findings block's signal window and change. Deliberately outside the
+  // "incident" prefix: an incident write must not refetch every block's
+  // data; a window refreshes on its own bucket and a commit never changes.
+  findingsWindow: (signalId: string, from: string, to: string) =>
+    ["api", "findings-window", signalId, from, to] as const,
+  findingsCommit: (sha: string, repo: string) =>
+    ["api", "findings-commit", sha, repo] as const,
   incidentAccess: (id: string) => ["api", "incident-access", id] as const,
   incidentAgentAudit: (id: string) =>
     ["api", "incident-agent-audit", id] as const,
