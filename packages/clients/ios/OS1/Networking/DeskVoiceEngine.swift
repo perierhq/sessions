@@ -70,12 +70,28 @@ final class DeskVoiceEngine {
         self.session = session
     }
 
+    /// The one Desk call. It is shared rather than owned by the Desk sheet
+    /// because "Talk to Desk" starts it with no sheet on screen, and on iOS
+    /// it keeps running in the Dynamic Island after the sheet goes away.
+    static let desk = DeskVoiceEngine()
+
+    /// Called whenever `state` or `muted` changes. The Desk's Live Activity
+    /// follows the call through this.
+    var onCallChange: (@MainActor () -> Void)?
+    /// The call is showing outside the app (the iOS Live Activity), so it may
+    /// outlive the Desk sheet and keep running in the background. Without
+    /// one, a call that leaves the screen would be a hot mic nobody can see,
+    /// so the sheet still hangs it up.
+    var shownOutsideApp = false
+
     /// The call screen's title: the Desk, or the thread being discussed.
     var callTitle: String { session?.title ?? "Desk" }
     /// Who the captions say spoke.
     var counterpartName: String { session == nil ? "Desk" : "Voice" }
 
-    private(set) var state: DeskVoiceState = .idle
+    private(set) var state: DeskVoiceState = .idle {
+        didSet { if state != oldValue { onCallChange?() } }
+    }
     private(set) var errorMessage: String?
     /// A non-fatal note under the status — "the call is up but I can't hear
     /// you". Fatal problems use `errorMessage` and end the call; this is for
@@ -91,7 +107,10 @@ final class DeskVoiceEngine {
     private(set) var caption: DeskVoiceCaption?
     /// Mic muted locally: capture keeps running, frames stop going up.
     private(set) var muted = false {
-        didSet { rt.muted = muted }
+        didSet {
+            rt.muted = muted
+            if muted != oldValue { onCallChange?() }
+        }
     }
     /// Whether the full-screen call is on screen. It lives on the engine
     /// rather than in the Desk sheet because a minimized call is still a

@@ -1554,6 +1554,15 @@ struct PersonalPromptSection: View {
 /// what the shortcut does, where its widgets live, a `ShortcutsLink` into the
 /// Shortcuts app, and the paths Apple gives no deep link for.
 struct ShortcutsSettingsView: View {
+    #if os(iOS)
+    private static let talkToDeskDetail = """
+    Starts a live voice call with your Desk. It stays in the Dynamic Island, \
+    so you can keep using your phone.
+    """
+    #else
+    private static let talkToDeskDetail = "Opens the Desk on a live voice call."
+    #endif
+
     var body: some View {
         Form {
             Section {
@@ -1568,10 +1577,7 @@ struct ShortcutsSettingsView: View {
                 shortcut(
                     icon: "waveform",
                     title: "Talk to Desk",
-                    detail: """
-                    Opens the Desk and starts a live voice call, so you can \
-                    ask what\u{2019}s running or hand over work by talking.
-                    """
+                    detail: Self.talkToDeskDetail
                 )
             } footer: {
                 // No section header: the navigation title above already says

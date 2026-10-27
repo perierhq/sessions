@@ -7,29 +7,89 @@ import AppIntents
 /// dictation for an idea you want to read before it runs; this one is for
 /// talking it through. Running it is the opt-in, so it does not need the Desk
 /// voice preference to be on.
+///
+/// On iOS it runs in the BACKGROUND: the press leaves you where you were and
+/// the call lives in the Dynamic Island and on the Lock Screen
+/// (`DeskCallLiveActivity`). `AudioRecordingIntent` is what lets a background
+/// app open the mic, and the system holds it to one rule: a Live Activity is
+/// up for as long as the call is. When the call cannot start from the
+/// background (the app is already open, the mic was never allowed, Live
+/// Activities are off), the app comes forward on the Desk instead.
 struct TalkToDeskIntent: AppIntent {
     static let title: LocalizedStringResource = "Talk to Desk"
 
     static let description = IntentDescription(
-        "Opens the Desk and starts a live voice call with it.",
+        "Starts a live voice call with your Desk. On iPhone the call stays in the Dynamic Island, so you can keep using your phone.",
         categoryName: "Sessions",
         searchKeywords: ["desk", "voice", "call", "talk", "assistant"]
     )
 
-    /// The call needs the mic, and a backgrounded app never holds it open.
-    static let openAppWhenRun = true
+    #if os(iOS)
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+    #else
+    static let supportedModes: IntentModes = .foreground
+    #endif
+
+    /// The Desk can do real work on your behalf; a locked phone in someone
+    /// else's hand must not be able to talk to it.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        DeskCallRequest.shared.ask()
+        if let start = DeskCallHooks.start {
+            try await start(self)
+        } else {
+            DeskCallRequest.shared.ask()
+        }
         return .result()
     }
 }
 
-/// The hand-off between the intent and the Desk. The intent can run before
-/// any view exists (cold launch), so the request is parked here. The sessions
-/// list opens the Desk sheet when it sees one, and the sheet takes it and
-/// starts the call.
+#if os(iOS)
+extension TalkToDeskIntent: AudioRecordingIntent {}
+
+/// The Live Activity's mute button. It runs in the app, where the call is.
+struct DeskCallMuteIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Mute the Desk Call"
+    static let isDiscoverable = false
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        DeskCallHooks.toggleMute?()
+        return .result()
+    }
+}
+
+/// The Live Activity's hang-up button.
+struct DeskCallHangUpIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "End the Desk Call"
+    static let isDiscoverable = false
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        DeskCallHooks.hangUp?()
+        return .result()
+    }
+}
+#endif
+
+/// Where the app plugs the call into these intents. This file is also
+/// compiled into the widget extension, which has no voice engine, so the
+/// intents call through here and the app fills it in at launch
+/// (`DeskCallActivityController.install()`). Left empty, "Talk to Desk" falls
+/// back to opening the Desk in the app.
+@MainActor
+enum DeskCallHooks {
+    static var start: (@MainActor (TalkToDeskIntent) async throws -> Void)?
+    static var toggleMute: (@MainActor () -> Void)?
+    static var hangUp: (@MainActor () -> Void)?
+}
+
+/// The hand-off between the intent and the Desk sheet, for calls that open
+/// in the app. The intent can run before any view exists (cold launch), so
+/// the request is parked here. The sessions list opens the Desk sheet when it
+/// sees one, and the sheet takes it and shows the call, starting it unless
+/// one is already running.
 @MainActor
 @Observable
 final class DeskCallRequest {

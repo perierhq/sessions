@@ -1710,6 +1710,11 @@ struct SessionsListView: View {
     private func openFile(_ url: URL) {
         // Back from the Tailscale switch shortcut: nothing to import, and
         // the list's own poll notices the server answering again.
+        // The Desk call's Live Activity, tapped: back to the call screen.
+        if DeskCallLink.matches(url) {
+            DeskCallRequest.shared.ask()
+            return
+        }
         if TailscaleHandoff.isReturn(url) { return }
         Task {
             do {

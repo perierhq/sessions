@@ -20,7 +20,7 @@ struct DeskSheet: View {
     @AppStorage("os1.desk.voice") private var deskVoice = "off"
 
     @State private var loadState: LoadState = .loading
-    @State private var engine = DeskVoiceEngine()
+    private let engine = DeskVoiceEngine.desk
     @State private var deskCall = DeskCallRequest.shared
 
     var body: some View {
@@ -54,7 +54,9 @@ struct DeskSheet: View {
         .onDisappear {
             // A full-screen cover takes its presenter off screen, so this
             // fires when the CALL opens — hanging up the call it just
-            // presented. Only a sheet that is really going away stops it.
+            // presented. Only a sheet that is really going away stops it. The
+            // Dynamic Island does not save it here: the system hides it while
+            // the app is open, so the call would have nothing on screen.
             if !engine.callPresented { engine.stop() }
         }
         .task {
@@ -63,8 +65,9 @@ struct DeskSheet: View {
             ) {
                 // A backgrounded app must never hold the mic open. Inactive is
                 // not backgrounded: a notification banner or Control Center
-                // must not silently end a conversation.
-                engine.stop()
+                // must not silently end a conversation. A call in the Dynamic
+                // Island is not a hidden mic, so it keeps going.
+                if !engine.shownOutsideApp { engine.stop() }
             }
         }
         .fullScreenCoverCompat(isPresented: $engine.callPresented) {
