@@ -74,7 +74,10 @@ export interface SandboxAgentConfig {
 
 /** Providers whose Sandboxes run the agent unless sandbox.json says
  *  otherwise. Boat first: it is the provider the agent was certified on. */
-export const DEFAULT_SANDBOX_AGENT_PROVIDERS: readonly string[] = ["box"];
+export const DEFAULT_SANDBOX_AGENT_PROVIDERS: readonly string[] = [
+  "box",
+  "usecomputer",
+];
 
 /** When an awake Sandbox goes to sleep: once the agent has done no work for
  *  `agentMinutes` AND nobody has interacted with it for `humanMinutes`. */

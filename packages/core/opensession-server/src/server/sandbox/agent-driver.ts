@@ -57,7 +57,9 @@ export function sandboxAgentPrepareScript(input: {
     `test -x ${shellQuoteWord(input.bun)} || { echo 'bun is not installed yet' >&2; exit 3; }`,
     `mkdir -p ${shellQuoteWord(`${input.home}/.opensession/agent`)}`,
     `mkdir -p -m 700 ${run} && chmod 700 ${run}`,
-    `if [ -f ${run}/pid ]; then kill "$(cat ${run}/pid)" 2>/dev/null || true; rm -f ${run}/pid; fi`,
+    // A pid from before a reboot may now belong to anything: kill it only
+    // while it is still an agent.
+    `if [ -f ${run}/pid ]; then p="$(cat ${run}/pid)"; if ps -p "$p" -o args= 2>/dev/null | grep -q sandbox-agent; then kill "$p" 2>/dev/null || true; fi; rm -f ${run}/pid; fi`,
   ].join(" && ");
 }
 

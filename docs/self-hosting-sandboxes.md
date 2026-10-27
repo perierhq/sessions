@@ -150,8 +150,9 @@ shrinks to creating, starting, stopping, snapshotting and deleting machines;
   connected. A missing agent can make a Sandbox only as slow as it was
   before, never unusable.
 
-Boat Sandboxes run the agent by default. `agent.providers` in `sandbox.json`
-lists the providers that do (`["box"]` when absent), and
+Boat and use.computer Sandboxes run the agent by default. `agent.providers`
+in `sandbox.json` lists the providers that do (`["box", "usecomputer"]` when
+absent), and
 `OPENSESSION_SANDBOX_AGENT=0` in the server's environment turns it off
 everywhere. The Sandbox badge says whether commands go through the agent or
 the provider's API, and the agent logs to `~/.opensession/agent/agent.log`
@@ -452,7 +453,7 @@ settings below. Read fresh per call, no restart needed except where noted.
 | `idleStopMinutes`                   | The provider's own idle backstop (default 30); the two timers below decide when a machine in use sleeps.                                                                 |
 | `idle.agentMinutes`                 | Sleep once the agent has done no work for this long (default 5)...                                                                                                       |
 | `idle.humanMinutes`                 | ...and nobody has interacted for this long (default 20). See [Sleep and wake](#sleep-and-wake).                                                                          |
-| `agent.providers`                   | Providers whose Sandboxes run the [Sandbox agent](#the-sandbox-agent) (default `["box"]`; `[]` turns it off).                                                            |
+| `agent.providers`                   | Providers whose Sandboxes run the [Sandbox agent](#the-sandbox-agent) (default `["box", "usecomputer"]`; `[]` turns it off).                                             |
 | `workspaceResumeScript`             | Runs before `.agents/resume` in every Linux Sandbox. Managed by Workspace → Sandboxes.                                                                                   |
 | `perRepo.<id>.preSetupScript`       | Runs before `.agents/setup` for that project. Managed by a project's settings, Where agents run.                                                                         |
 | `callbackBaseUrl`                   | Dial-back URL when the public ingress origin should not be used (tailnet setups).                                                                                        |
