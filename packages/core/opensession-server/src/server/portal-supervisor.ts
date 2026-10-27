@@ -52,9 +52,9 @@ import {
   shellQuoteWord,
 } from "./sandbox/adapters/bootstrap";
 import { sandboxHttpsPortFor } from "./sandbox/preview-ports";
+import { sandboxPortalAgentSource } from "./sandbox/sandbox-portal-agent-source";
 import { warmSandboxPortal } from "./sandbox-portal-warm";
 import { cacheSandboxPortalRecords } from "./sandbox-portals";
-import { REPO_ROOT } from "../runner-host/protocol";
 import {
   previewScopeCommand,
   stopUserScopeAndWait,
@@ -163,8 +163,6 @@ const hostPortalReservations =
 /** A Sandbox that just woke fetches its files on first read, so the relay's
  * bun start can take a while. */
 const SANDBOX_PORTAL_RELAY_CONNECT_MS = 45_000;
-
-export const SANDBOX_PORTAL_AGENT_ENTRY = `${REPO_ROOT}/packages/core/opensession-server/src/runner-host/sandbox-portal-agent.ts`;
 
 function portalKey(name: string): string {
   return `PORTAL_${name.toUpperCase().replace(/-/g, "_")}_PORT`;
@@ -2055,9 +2053,9 @@ export async function ensureRemoteSandboxPortalAgent(input: {
     // mutate the prepared project. Copy this small, self-contained sidecar
     // into session scratch on every launch; the app workspace stays untouched.
     const agentPath = `${logDir}/sandbox-portal-agent.ts`;
-    const agentPayload = Buffer.from(
-      readFileSync(SANDBOX_PORTAL_AGENT_ENTRY, "utf8"),
-    ).toString("base64");
+    const agentPayload = Buffer.from(sandboxPortalAgentSource()).toString(
+      "base64",
+    );
     const relayLaunch = `mkdir -p ${shellQuoteWord(logDir)} && printf %s ${shellQuoteWord(agentPayload)} | base64 -d > ${shellQuoteWord(agentPath)} && OPENSESSION_SANDBOX_PORTAL_WS_URL=${shellQuoteWord(endpoint)} OPENSESSION_SANDBOX_PORTAL_TOKEN=${shellQuoteWord(grant.token)} OPENSESSION_SANDBOX_PORTAL_PORT=${shellQuoteWord(String(input.port))} OPENSESSION_SANDBOX_PORTAL_EXPIRES_AT=${shellQuoteWord(String(grant.expiresAt))} exec ${guest.bun} run ${shellQuoteWord(agentPath)} </dev/null >${shellQuoteWord(logPath)} 2>&1`;
     const started = await input.sandbox.exec(["bash", "-c", relayLaunch], {
       background: true,
