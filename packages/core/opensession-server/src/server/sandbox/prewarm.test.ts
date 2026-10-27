@@ -852,6 +852,37 @@ describe("sweepPrewarms", () => {
       expect(destroyed).not.toContain("pw-foreign");
     },
   );
+
+  test.skipIf(killSwitch)(
+    "a provider whose destroy hangs does not hold another's audit",
+    async () => {
+      await connectSandboxProvider("modal", { secret: "ak-test:as-test" });
+      setSandboxConnectionQualification("modal", { status: "ready" });
+      const modalDestroyed: string[] = [];
+      _setPrewarmAdapterForTest("daytona", {
+        async create() {
+          throw new Error("unused");
+        },
+        destroy: () => new Promise<void>(() => {}),
+        async listPrewarmed() {
+          return [{ id: "pw-stuck", key: "daytona:tella-fusion" }];
+        },
+      });
+      _setPrewarmAdapterForTest("modal", {
+        async create() {
+          throw new Error("unused");
+        },
+        async destroy(id: string) {
+          modalDestroyed.push(id);
+        },
+        async listPrewarmed() {
+          return [{ id: "sb-orphan", key: "modal:tella-fusion" }];
+        },
+      });
+      void sweepPrewarms();
+      await until(() => modalDestroyed.includes("sb-orphan"));
+    },
+  );
 });
 
 describe("provider orphan protection", () => {

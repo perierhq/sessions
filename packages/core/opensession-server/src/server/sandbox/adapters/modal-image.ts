@@ -23,6 +23,9 @@ export const MODAL_BASE_IMAGE_COMMANDS: readonly string[] = [
   "RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends " +
     "ca-certificates git curl unzip xz-utils zip ripgrep coreutils sed jq sudo " +
     "python3 build-essential pkg-config cmake ninja-build clang lld " +
+    // What a GitHub-hosted Ubuntu runner ships and native crates assume:
+    // openssl-sys needs the headers, x264 builds need nasm.
+    "libssl-dev nasm " +
     "direnv lsof procps less openssh-client " +
     "libvulkan1 vulkan-tools libglvnd0 libgl1 libglx0 libegl1 libxext6 libx11-6 " +
     "&& rm -rf /var/lib/apt/lists/*",
