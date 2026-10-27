@@ -6,8 +6,10 @@
 // the set is saved through the per-session queue (store.ts). The reply text
 // tells the agent what was saved and what was left off, so it can fix it and
 // call again. Kept blocks (`keep: true`) are stored blocks and are not
-// resolved again. All I/O goes through `ApplyDeps`; the default deps are
-// built on first use, never at import.
+// resolved again, except that a reference to a block no longer in the set
+// is left off. One call looks each tool call, result, observation day and
+// commit up once, within per-call caps. All I/O goes through `ApplyDeps`;
+// the default deps are built on first use, never at import.
 
 import type { TranscriptEntry } from "@tellahq/opensession-protocol/session";
 import {
@@ -96,6 +98,8 @@ export const RESULT_READS_PER_CALL = 12;
 const TOO_BIG = `The findings are over ${FINDINGS_LIMITS.inputBytes / 1024} KB; nothing saved. Send fewer or shorter blocks.`;
 const UNREADABLE = 'Send {"blocks": [...]}.';
 const NO_TAIL = "your session's transcript couldn't be read right now.";
+const SAVE_FAILED = "Couldn't save the findings right now.";
+const ROUND_OVER = "This round is over; nothing saved.";
 
 type Note = (message: string) => void;
 /** A cited result as quotes are checked: its cleaned output and where it
@@ -177,19 +181,29 @@ function runOf(
   return best;
 }
 
+/** The run's own report claims (investigator), or the claims of the
+ *  candidate of the verifier's round; none (claims unchecked) otherwise. */
 function defaultClaims(incident: Incident, run: AgentRun): string[] {
   if (run.role === "investigator")
     return run.report?.role === "investigator"
       ? run.report.claims.map((c) => c.text)
       : [];
-  return (incident.response?.candidate?.claims ?? []).map((c) => c.text);
+  const candidate = incident.response?.candidate;
+  return candidate?.round === run.round
+    ? candidate.claims.map((c) => c.text)
+    : [];
 }
 
 async function applyInOrder(
   req: ApplyRequest,
   d: ApplyDeps,
 ): Promise<ApplyResult> {
-  const incident = await d.getIncident(req.incidentId);
+  let incident: Incident | null;
+  try {
+    incident = await d.getIncident(req.incidentId);
+  } catch {
+    return refusal(SAVE_FAILED);
+  }
   if (!incident) return refusal(`No incident ${req.incidentId}.`);
   const run = runOf(incident, req.sessionId, req.role);
   if (!run)
@@ -201,6 +215,10 @@ async function applyInOrder(
       `This session no longer works on incident ${req.incidentId}.`,
     );
   const response = incident.response;
+  // A tool call from a round the loop has moved past would show stale
+  // findings as the new round's; a final report still lands on its round.
+  if (req.source === "tool" && run.round < (response?.round ?? run.round))
+    return refusal(ROUND_OVER);
   const current = findingSetOf(response, req.role, run.round);
   if (
     req.onlyIfNoToolSet &&
@@ -244,7 +262,12 @@ async function applyInOrder(
     blocks: resolved.blocks,
     notes,
   };
-  const result = await d.save(req.incidentId, next);
+  let result: Awaited<ReturnType<ApplyDeps["save"]>>;
+  try {
+    result = await d.save(req.incidentId, next);
+  } catch {
+    return refusal(SAVE_FAILED);
+  }
   if (!result.saved)
     return {
       saved: false,
@@ -358,7 +381,10 @@ class Resolver {
     const blocks = await Promise.all(
       first.map((stage, i) => {
         if (!stage) return Promise.resolve(null);
-        if ("block" in stage) return Promise.resolve(stage.block);
+        if ("block" in stage)
+          return drafts[i]?.kept
+            ? this.keptBlockRefs(stage.block, scope, noteFor(i, stage.block.id))
+            : Promise.resolve(stage.block);
         return this.resolveRefs(
           stage.pending,
           scope,
@@ -457,6 +483,46 @@ class Resolver {
         );
         return { ...draft, events };
       }
+    }
+  }
+
+  /** A kept block is not resolved again, but its references to other
+   *  blocks must still point into this call's set (or the round's
+   *  investigator set): one that doesn't is left off with a note. */
+  private async keptBlockRefs(
+    block: FindingBlock,
+    scope: RefScope,
+    note: Note,
+  ): Promise<FindingBlock> {
+    const check = (ref: FindingRef): Promise<FindingRef | string> =>
+      ref.type === "block"
+        ? resolveRef({ type: "block", id: ref.id }, scope, this.refDeps)
+        : Promise.resolve(ref);
+    switch (block.kind) {
+      case "hypothesis": {
+        const refs = await Promise.all(block.evidence.map(check));
+        const evidence: FindingRef[] = [];
+        refs.forEach((ref, i) => {
+          if (typeof ref === "string")
+            note(`evidence ${i + 1} left off: ${ref}`);
+          else evidence.push(ref);
+        });
+        return { ...block, evidence };
+      }
+      case "timeline": {
+        const events = await Promise.all(
+          block.events.map(async (event, i) => {
+            if (!event.ref) return event;
+            const ref = await check(event.ref);
+            if (typeof ref !== "string") return { ...event, ref };
+            note(`event ${i + 1} reference left off: ${ref}`);
+            return { at: event.at, text: event.text };
+          }),
+        );
+        return { ...block, events };
+      }
+      default:
+        return block;
     }
   }
 

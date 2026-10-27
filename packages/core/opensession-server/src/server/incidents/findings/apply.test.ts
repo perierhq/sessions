@@ -836,3 +836,144 @@ test("the reply lists at most 40 notes and counts the rest", async () => {
   expect(lines.at(-1)).toBe("- …and 10 more.");
   expect(out.notes).toHaveLength(41);
 });
+
+test("a tool call from a round that is over saves nothing", async () => {
+  const h = harness(
+    incident({
+      round: 2,
+      agents: [run(), run({ round: 2, sessionId: "os-inv-2" })],
+    }),
+  );
+  const out = await applyFindings(
+    request({ input: { blocks: [question("q")] } }),
+    h.deps,
+  );
+  expect(out).toEqual({
+    saved: false,
+    blocks: 0,
+    notes: [],
+    text: "This round is over; nothing saved.",
+  });
+  expect(h.calls.save).toBe(0);
+  // A final report still lands on its own round.
+  const report = await applyFindings(
+    request({ source: "report", input: { blocks: [question("q")] } }),
+    h.deps,
+  );
+  expect(report.saved).toBe(true);
+});
+
+test("a store that fails becomes a reply, never a throw", async () => {
+  const failing = async (): Promise<never> => {
+    throw new Error("disk on fire");
+  };
+  for (const over of [{ getIncident: failing }, { save: failing }]) {
+    const h = harness(undefined, over);
+    const out = await applyFindings(
+      request({ input: { blocks: [question("q")] } }),
+      h.deps,
+    );
+    expect(out).toEqual({
+      saved: false,
+      blocks: 0,
+      notes: [],
+      text: "Couldn't save the findings right now.",
+    });
+  }
+});
+
+test("a kept block's reference to a block no longer in the set is left off", async () => {
+  const when: FindingBlock = {
+    id: "when",
+    kind: "timeline",
+    size: "full",
+    events: [
+      {
+        at: AT,
+        text: "Search started timing out.",
+        ref: { type: "block", id: "gone", role: "investigator" },
+      },
+      {
+        at: AT,
+        text: "The pool drained.",
+        ref: { type: "block", id: "q", role: "investigator" },
+      },
+    ],
+  };
+  const h: FindingBlock = {
+    id: "h",
+    kind: "hypothesis",
+    size: "half",
+    statement: "The pool is too small.",
+    confidence: "high",
+    claims: [],
+    evidence: [
+      { type: "block", id: "gone", role: "investigator" },
+      { type: "ledger", id: "led_1" },
+    ],
+  };
+  const harnessed = harness(
+    incident({ findingSets: [storedSet({ blocks: [when, h] })] }),
+  );
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          { id: "when", keep: true },
+          { id: "h", keep: true },
+          question("q"),
+        ],
+      },
+    }),
+    harnessed.deps,
+  );
+  expect(out.notes).toEqual([
+    'Block `when`: event 1 reference left off: No block "gone" in your findings.',
+    'Block `h`: evidence 1 left off: No block "gone" in your findings.',
+  ]);
+  const saved = savedSet(harnessed)?.blocks;
+  expect(saved?.[0]).toEqual({
+    ...when,
+    events: [{ at: AT, text: "Search started timing out." }, when.events[1]],
+  } as FindingBlock);
+  expect(saved?.[1]).toEqual({ ...h, evidence: [{ type: "ledger", id: "led_1" }] });
+});
+
+test("the verifier's claims default to the candidate of its own round", async () => {
+  const verifier = run({ role: "verifier", round: 2, sessionId: "os-ver" });
+  const block = {
+    id: "h",
+    kind: "hypothesis",
+    statement: "The pool is too small.",
+    confidence: "high",
+    claims: ["made up"],
+  };
+  for (const [round, expected] of [
+    [1, ["made up"]],
+    [2, []],
+  ] as const) {
+    const h = harness(
+      incident({
+        round: 2,
+        agents: [run({ round: 2 }), verifier],
+        candidate: {
+          round,
+          claims: [{ text: "The pool is too small." }],
+        } as IncidentResponse["candidate"],
+      }),
+    );
+    await applyFindings(
+      request({
+        role: "verifier",
+        sessionId: "os-ver",
+        input: { blocks: [block] },
+      }),
+      h.deps,
+    );
+    const saved = h
+      .state()
+      .response?.findingSets?.find((s) => s.role === "verifier")?.blocks[0];
+    if (saved?.kind !== "hypothesis") throw new Error("expected hypothesis");
+    expect(saved.claims).toEqual([...expected]);
+  }
+});
