@@ -752,8 +752,12 @@ describe("single session ownership", () => {
     // Deletion lives in its own module, shared with support retention.
     const deletion = read("session-delete.ts");
     expect(deletion).toContain("await cancelAgentRunAndWait(runIds)");
-    // Archive's run stop is shared with repository removal.
-    expect(routes).toContain("archiveSession(sessionId, session)");
+    // Archive's run stop is shared with repository removal and the
+    // opensession-sessions archive tools.
+    expect(routes).toContain("setSessionArchivedState(");
+    expect(read("session-archive-action.ts")).toContain(
+      "archiveSession(sessionId, session)",
+    );
     expect(read("session-archive.ts")).toContain(
       "requestTurnCancel(session.id, session",
     );

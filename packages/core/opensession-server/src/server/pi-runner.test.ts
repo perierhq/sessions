@@ -2600,6 +2600,11 @@ describe("local-tool path containment", () => {
         (await ops.read.readFile(join(scratch, "shot.png"))).toString(),
       ).toBe("png");
       expect(await ops.ls.readdir(scratch)).toContain("shot.png");
+      await ops.write.mkdir(join(scratch, "shots"));
+      await ops.write.writeFile(join(scratch, "shots", "a.txt"), "shot");
+      expect(
+        (await ops.read.readFile(join(scratch, "shots", "a.txt"))).toString(),
+      ).toBe("shot");
       // The working directory still works, and nothing else opened up.
       expect(await ops.ls.readdir(ws)).toContain("sub");
       await expect(ops.read.readFile("/etc/passwd")).rejects.toThrow(
@@ -2608,6 +2613,13 @@ describe("local-tool path containment", () => {
       await expect(
         ops.read.readFile(join(scratch, "..", "elsewhere.png")),
       ).rejects.toThrow(/outside/);
+      await expect(ops.read.readFile(join(tmpdir(), "x.txt"))).rejects.toThrow(
+        /\$TMPDIR/,
+      );
+      // A scratch root never opens the blocked system roots.
+      await expect(ops.read.access("/proc/self/environ")).rejects.toThrow(
+        /not accessible/,
+      );
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }

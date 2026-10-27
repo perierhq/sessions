@@ -50,6 +50,8 @@ interface AppMobileHeaderProps {
   addHandler: ReturnType<typeof useWebSocket>["addHandler"];
   navigate: ReturnType<typeof useAppRoute>["navigate"];
   goBack: () => void;
+  /** Back returns to the session a PR or workspace link was opened from. */
+  returnsToSession: boolean;
   topbarTitle: string;
   phoneTitleHandedOver: boolean;
   commandMenuRef: RefObject<CommandMenuHandle | null>;
@@ -81,6 +83,7 @@ export function AppMobileHeader({
   addHandler,
   navigate,
   goBack,
+  returnsToSession,
   topbarTitle,
   phoneTitleHandedOver,
   commandMenuRef,
@@ -123,7 +126,9 @@ export function AppMobileHeader({
                   aria-label={
                     route.view === "session" && currentSession?.parentSessionId
                       ? "Back to the session that started this one"
-                      : "Back to sidebar"
+                      : returnsToSession
+                        ? "Back to session"
+                        : "Back to sidebar"
                   }
                 />
               ) : (
