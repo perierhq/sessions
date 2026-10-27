@@ -313,6 +313,7 @@ export function ProjectSettingsPage({
             view={view}
             defaults={defaults.data}
             onSave={saveNow}
+            onOpenSandboxes={() => openSettings("sandboxes")}
           />
         </Section>
         <Section id="models">

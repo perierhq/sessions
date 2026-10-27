@@ -200,7 +200,7 @@ export async function buildProjectList(
         id: ids[i]!,
         label: ids[i]!,
         status: view.readiness.status,
-        sandboxForYou: you.state === "ok" ? you.provider : null,
+        sandboxForYou: you.state !== "cant-start" ? you.provider : null,
         modelForYou: view.effective.models.you.model,
       },
     ];

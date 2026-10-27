@@ -239,7 +239,7 @@ function defaultLabel(e: EffectiveSandbox): string | null {
     e.reviews,
   ];
   for (const p of places) {
-    if (p.state === "ok" && p.source === "default") return p.label;
+    if (p.state !== "cant-start" && p.source === "default") return p.label;
   }
   return null;
 }
@@ -261,10 +261,12 @@ export interface SandboxRowCopy {
 
 export function sandboxRowCopy(e: EffectiveSandbox): SandboxRowCopy {
   const chip: SettingChip =
-    e.you.state === "ok" && e.you.source === "default" ? "Default" : "Set here";
+    e.you.state !== "cant-start" && e.you.source === "default"
+      ? "Default"
+      : "Set here";
   const fallback = defaultLabel(e);
   if (chip === "Default") {
-    const label = e.you.state === "ok" ? e.you.label : fallback;
+    const label = e.you.state !== "cant-start" ? e.you.label : fallback;
     return {
       chip,
       description: label

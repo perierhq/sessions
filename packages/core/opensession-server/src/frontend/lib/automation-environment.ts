@@ -102,8 +102,7 @@ export function automationPlaceCopy(
   if (!project) return "Runs where the default project says";
   const where = `Set in ${project} → Where agents run`;
   if (!place) return `Runs where ${project} says. ${where}`;
-  if (place.state === "cant-start")
-    return `Can't start: ${place.reason}. ${where}`;
+  if (place.state !== "ok") return `Can't start: ${place.reason}. ${where}`;
   return `Runs on ${place.label}. ${where}`;
 }
 

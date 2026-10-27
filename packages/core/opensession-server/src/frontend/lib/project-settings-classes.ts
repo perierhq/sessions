@@ -99,6 +99,12 @@ export const ROLE_GRID_VALUE_BAD = "text-red";
 /** The note under the role grid: plain secondary text, never a banner. */
 export const ROLE_GRID_NOTE =
   "px-5 pb-4 text-supporting text-dim phone:text-meta";
+/** The note and its way out when a role's sandbox provider isn't set up:
+ *  side by side on a desktop, the button under the note on a phone. */
+export const ROLE_GRID_FIX =
+  "flex items-center gap-4 px-5 pb-4 phone:flex-col phone:items-stretch phone:gap-3";
+export const ROLE_GRID_FIX_NOTE =
+  "m-0 min-w-0 flex-1 text-supporting text-dim phone:text-meta";
 
 // ── Production ───────────────────────────────────────────────────────────
 

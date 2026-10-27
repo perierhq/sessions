@@ -21,7 +21,9 @@ const legacy = (automations: () => Promise<never[]>) =>
     defaultReviewServers: async () => [],
   });
 
-function sandboxes(over: { global?: string; podman?: boolean } = {}): void {
+function sandboxes(
+  over: { global?: string; podman?: boolean; notConnected?: string } = {},
+): void {
   __setEffectiveDepsForTest({
     global: () => over.global ?? "none",
     automationCapable: () => false,
@@ -30,6 +32,8 @@ function sandboxes(over: { global?: string; podman?: boolean } = {}): void {
     hostProblem: async () => "no user",
     automations: async () => [],
     automationProvider: () => "daytona",
+    providerUsability: (p) =>
+      p === over.notConnected ? "not_configured" : "usable",
     requested: (r) => ({
       ok: true,
       provider: !r || r === "local" ? null : (r as never),
@@ -85,6 +89,13 @@ test("no sandbox and no host agents: the agent can't start", async () => {
   const spec = await supportRunSpec("acme");
   expect(spec.sandbox.ok).toBe(false);
   if (!spec.sandbox.ok) expect(spec.sandbox.reason).toContain("sandbox");
+});
+
+test("a sandbox provider that isn't connected: can't start, saying so", async () => {
+  await storeProject(() => {});
+  sandboxes({ global: "modal", notConnected: "modal" });
+  const spec = await supportRunSpec("acme");
+  expect(spec.sandbox).toEqual({ ok: false, reason: "Modal isn't connected" });
 });
 
 test("unreadable settings: read-only, no connectors, can't start", async () => {

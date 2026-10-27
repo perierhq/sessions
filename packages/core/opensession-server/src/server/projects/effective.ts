@@ -23,12 +23,17 @@ import {
   podmanReadyForIncident,
 } from "../incidents/response/host-agents";
 import { resolveRoleModels } from "../incidents/response/models";
-import type { SandboxProviderId } from "../sandbox/provider";
+import type {
+  SandboxProviderId,
+  SandboxProviderUsability,
+} from "../sandbox/provider";
 import {
+  isRunnableSandboxProvider,
   resolveRequestedSandbox,
   sandboxAutomationAvailability,
   parseSandboxChoice,
   sandboxConfig,
+  sandboxProviderUsability,
 } from "../sandbox/config";
 import {
   globalRoleDefault,
@@ -60,6 +65,9 @@ export interface EffectiveDeps {
   automations: (project: string) => Promise<Array<{ sandbox?: boolean }>>;
   /** The provider of the disposable automation sandbox. */
   automationProvider: () => string;
+  /** Whether a provider can take new runs now: the same authority session
+   *  create checks (sandbox/config.ts sandboxProviderUsability). */
+  providerUsability: (provider: string) => SandboxProviderUsability["state"];
 }
 
 const REVIEW_EVENT_KEY = "github:pull_request";
@@ -99,6 +107,28 @@ function deps(): EffectiveDeps {
     automationProvider:
       depsOverride?.automationProvider ??
       (() => sandboxAutomationAvailability().provider),
+    providerUsability:
+      depsOverride?.providerUsability ??
+      ((provider) =>
+        isRunnableSandboxProvider(provider)
+          ? sandboxProviderUsability(provider).state
+          : "usable"),
+  };
+}
+
+/** Each provider's usability read once per view, not once per role. */
+function withUsabilityMemo(d: EffectiveDeps): EffectiveDeps {
+  const seen = new Map<string, SandboxProviderUsability["state"]>();
+  return {
+    ...d,
+    providerUsability: (provider) => {
+      let state = seen.get(provider);
+      if (!state) {
+        state = d.providerUsability(provider);
+        seen.set(provider, state);
+      }
+      return state;
+    },
   };
 }
 
@@ -153,11 +183,41 @@ function globalChoice(d: EffectiveDeps): string | null {
   return g === "none" ? null : g;
 }
 
+/** A provider as a not-ready reason names it. */
+function providerName(provider: string): string {
+  return provider === "podman"
+    ? "This machine (container)"
+    : sandboxLabel(provider);
+}
+
+/** Why runs on `provider` can't start now, in the words Settings,
+ *  Sandboxes uses for its state, or null when it can take them. */
+function notReadyReason(provider: string, d: EffectiveDeps): string | null {
+  const name = providerName(provider);
+  switch (d.providerUsability(provider)) {
+    case "usable":
+      return null;
+    case "not_configured":
+      return `${name} isn't connected`;
+    case "unqualified":
+      return `${name} needs attention`;
+    case "unavailable":
+      return `${name} isn't available`;
+  }
+}
+
+/** A role's place on `provider`, not ready when the provider can't take
+ *  runs: session create would refuse it (resolveRequestedSandbox). */
 function place(
   provider: string | null,
   source: "project" | "default" | "fallback",
+  d: EffectiveDeps,
+  label = sandboxLabel(provider),
 ): RunPlace {
-  return { state: "ok", provider, label: sandboxLabel(provider), source };
+  const reason = provider ? notReadyReason(provider, d) : null;
+  if (provider && reason)
+    return { state: "not-ready", provider, label, source, reason };
+  return { state: "ok", provider, label, source };
 }
 
 export const AUTOMATIONS_AS_BEFORE = "This machine, as before";
@@ -179,21 +239,35 @@ async function automationPlace(
     );
   }
   const boxed = automations.filter((a) => a.sandbox === true).length;
-  if (boxed > 0 && boxed === automations.length)
+  const label = boxed
+    ? `${AUTOMATIONS_AS_BEFORE} (${boxed} of ${automations.length} in a disposable sandbox)`
+    : AUTOMATIONS_AS_BEFORE;
+  const all = boxed > 0 && boxed === automations.length;
+  if (boxed > 0) {
+    // The ones that ask for a disposable sandbox can't launch without it
+    // (automations.ts validateSandboxAutomation).
+    const provider = d.automationProvider();
+    const reason = d.automationCapable(provider)
+      ? null
+      : (notReadyReason(provider, d) ??
+        "Disposable sandboxes need a dial-back URL");
+    if (reason)
+      return {
+        state: "not-ready",
+        provider,
+        label: all ? AUTOMATIONS_DISPOSABLE : label,
+        source: "fallback",
+        reason,
+      };
+  }
+  if (all)
     return {
       state: "ok",
       provider: d.automationProvider(),
       label: AUTOMATIONS_DISPOSABLE,
       source: "fallback",
     };
-  return {
-    state: "ok",
-    provider: null,
-    label: boxed
-      ? `${AUTOMATIONS_AS_BEFORE} (${boxed} of ${automations.length} in a disposable sandbox)`
-      : AUTOMATIONS_AS_BEFORE,
-    source: "fallback",
-  };
+  return { state: "ok", provider: null, label, source: "fallback" };
 }
 
 /** Where interactive sessions start when nobody chose. */
@@ -201,14 +275,9 @@ function youPlace(doc: ProjectSettingsDocument, d: EffectiveDeps): RunPlace {
   const own = projectChoice(doc);
   const gpu = projectGpu(doc);
   if (own && gpu)
-    return {
-      state: "ok",
-      provider: own,
-      label: sandboxLabel(`${own}:${gpu}`),
-      source: "project",
-    };
-  if (own !== undefined) return place(own, "project");
-  return place(globalChoice(d), "default");
+    return place(own, "project", d, sandboxLabel(`${own}:${gpu}`));
+  if (own !== undefined) return place(own, "project", d);
+  return place(globalChoice(d), "default", d);
 }
 
 async function incidentPlace(
@@ -218,10 +287,11 @@ async function incidentPlace(
 ): Promise<RunPlace> {
   const own = projectChoice(doc);
   const chosen = own === undefined ? globalChoice(d) : own;
-  if (chosen) return place(chosen, own === undefined ? "default" : "project");
-  if (d.podmanReady(doc.project, model)) return place("podman", "fallback");
+  if (chosen)
+    return place(chosen, own === undefined ? "default" : "project", d);
+  if (d.podmanReady(doc.project, model)) return place("podman", "fallback", d);
   if (d.hostEnabled() && (await d.hostProblem()) === null)
-    return place(null, "fallback");
+    return place(null, "fallback", d);
   return { state: "cant-start", reason: NO_SANDBOX_REASON };
 }
 
@@ -243,7 +313,37 @@ function sameProvider(a: RunPlace, b: RunPlace): boolean {
   return a.state === "ok" && b.state === "ok" && a.provider === b.provider;
 }
 
+const NOT_READY_ROLES = [
+  ["you", "sessions"],
+  ["automations", "automations"],
+  ["incidentAgents", "incident agents"],
+  ["support", "Support"],
+] as const;
+
+/** "a", "a and b", "a, b and c". */
+function listRoles(items: string[]): string {
+  if (items.length <= 2) return items.join(" and ");
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/** What can't start on a provider that isn't ready: "Modal isn't
+ *  connected, so sessions and incident agents can't start". */
+function notReadyNote(s: Omit<EffectiveSandbox, "note">): string | null {
+  const byReason = new Map<string, string[]>();
+  for (const [key, role] of NOT_READY_ROLES) {
+    const p = s[key];
+    if (p.state !== "not-ready") continue;
+    byReason.set(p.reason, [...(byReason.get(p.reason) ?? []), role]);
+  }
+  if (!byReason.size) return null;
+  return [...byReason]
+    .map(([reason, roles]) => `${reason}, so ${listRoles(roles)} can't start`)
+    .join(". ");
+}
+
 function sandboxNote(s: Omit<EffectiveSandbox, "note">): string | null {
+  const notReady = notReadyNote(s);
+  if (notReady) return notReady;
   if (s.incidentAgents.state === "cant-start")
     return "No sandbox provider is connected, so incident agents can't start. Connect one in the checklist above";
   if (s.support.state === "cant-start")
@@ -258,7 +358,7 @@ export async function effectiveSandboxes(
   project: string,
   doc?: ProjectSettingsDocument,
 ): Promise<EffectiveSandbox> {
-  const d = deps();
+  const d = withUsabilityMemo(deps());
   const document = doc ?? (await getProjectDocument(project));
   const model = await effectiveRoleModel(project, "investigator", document);
   const you = youPlace(document, d);
@@ -266,7 +366,7 @@ export async function effectiveSandboxes(
   const supportModel = await effectiveRoleModel(project, "support", document);
   const support = await supportPlace(document, supportModel, d);
   // Reviews run on this machine in v1 (D4).
-  const reviews = place(null, "fallback");
+  const reviews = place(null, "fallback", d);
   const automations = await automationPlace(project, d);
   const base = { you, reviews, automations, incidentAgents, support };
   return { ...base, note: sandboxNote(base) };
