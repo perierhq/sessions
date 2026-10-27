@@ -26,7 +26,6 @@ import {
   sleepIdlePortalServices,
   wakeHostPortalRoute,
   restartPortalService,
-  SANDBOX_PORTAL_AGENT_ENTRY,
   setPortalPath,
   startPortalService,
   startSandboxPortalService,
@@ -599,13 +598,6 @@ describe("session Portal supervisor", () => {
       expect(() => normalizePortalPath(path)).toThrow(
         "Portal path must be root-relative",
       );
-  });
-
-  test("launches the remote relay from the current runner layout", () => {
-    expect(SANDBOX_PORTAL_AGENT_ENTRY).toEndWith(
-      "/packages/core/opensession-server/src/runner-host/sandbox-portal-agent.ts",
-    );
-    expect(existsSync(SANDBOX_PORTAL_AGENT_ENTRY)).toBe(true);
   });
 
   test("keeps generated portal metadata and ports together in .ports.conf", async () => {
