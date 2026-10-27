@@ -197,8 +197,8 @@ const hits = new Map<string, Entry>();
 const misses = new Map<string, number>();
 const inFlight = new Map<string, Promise<CommitLookup | null>>();
 
-function cacheKey(sha: string, repoHint?: string): string {
-  return `${repoHint ?? ""}\u0000${sha.toLowerCase()}`;
+function cacheKey(sha: string, repoHint?: string, strict = false): string {
+  return `${strict ? "in" : "hint"}\u0000${repoHint ?? ""}\u0000${sha.toLowerCase()}`;
 }
 
 function remember(key: string, entry: Entry): void {
@@ -222,7 +222,29 @@ export async function lookupCommit(
   repoHint?: string,
 ): Promise<CommitLookup | null> {
   if (!isCommitSha(sha)) return null;
-  const key = cacheKey(sha, repoHint);
+  return cachedLookup(sha, repoHint, false);
+}
+
+/**
+ * The commit a sha names in repo `repoId`'s own checkout, or null. Unlike
+ * {@link lookupCommit} no other checkout is searched, so a hit is always a
+ * commit of that repo (shared object stores aside: a worktree of the repo
+ * is the repo).
+ */
+export async function lookupCommitIn(
+  sha: string,
+  repoId: string,
+): Promise<CommitLookup | null> {
+  if (!isCommitSha(sha)) return null;
+  return cachedLookup(sha, repoId, true);
+}
+
+async function cachedLookup(
+  sha: string,
+  repoHint: string | undefined,
+  strict: boolean,
+): Promise<CommitLookup | null> {
+  const key = cacheKey(sha, repoHint, strict);
 
   const cached = hits.get(key);
   if (cached) {
@@ -243,7 +265,7 @@ export async function lookupCommit(
   const pending = inFlight.get(key);
   if (pending) return pending;
 
-  const request = resolve(sha, repoHint, cached?.commit)
+  const request = resolve(sha, repoHint, cached?.commit, strict)
     .then((commit) => {
       if (commit) remember(key, { commit, branchCheckedAt: Date.now() });
       else misses.set(key, Date.now());
@@ -282,6 +304,7 @@ async function resolve(
   sha: string,
   repoHint: string | undefined,
   known: CommitLookup | undefined,
+  strict = false,
 ): Promise<CommitLookup | null> {
   const repos = Object.values(configuredRepos()).filter((repo) => repo.repo);
   // Only the branch answer went stale: the commit itself cannot change, so
@@ -300,7 +323,7 @@ async function resolve(
   }
   const ordered = [
     ...repos.filter((repo) => repo.id === repoHint),
-    ...repos.filter((repo) => repo.id !== repoHint),
+    ...(strict ? [] : repos.filter((repo) => repo.id !== repoHint)),
   ];
   for (const repo of ordered) {
     const found = await readCommitAt(repo, sha).catch(() => null);
