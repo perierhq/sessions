@@ -62,7 +62,10 @@ import {
   resolveRequestedSandbox,
 } from "./sandbox/config";
 import { isShuttingDown } from "./shutdown-state";
-import { resolveInteractiveSandbox } from "./sandbox/defaults";
+import {
+  defaultSandboxGpu,
+  resolveInteractiveSandbox,
+} from "./sandbox/defaults";
 import { resolveRequestedSandboxGpu } from "./sandbox/config";
 import { sessionSpeed } from "@tellahq/opensession-protocol/session";
 import {
@@ -915,8 +918,19 @@ registerSessionControl({
         : await resolveInteractiveSandbox(sandbox, user, repo.id, model);
     if (!sandboxResolved.ok) throw new Error(sandboxResolved.error);
     const sandboxProvider = sandboxResolved.provider;
+    // An unchosen Machine follows the project's default, GPU included.
     const gpuResolved = resolveRequestedSandboxGpu(
-      forkFrom ? undefined : sandboxGpuInput,
+      forkFrom
+        ? undefined
+        : (sandboxGpuInput ??
+            (requestedRunnerId
+              ? undefined
+              : await defaultSandboxGpu(
+                  sandbox,
+                  sandboxGpuInput,
+                  sandboxProvider,
+                  repo.id,
+                ))),
       sandboxProvider,
     );
     if (!gpuResolved.ok) throw new Error(gpuResolved.error);
