@@ -601,6 +601,13 @@ The check passes when the owned files are covered and either:
 - someone with write access, other than the author and not a bot, has
   approved.
 
+The merge-risk level comes from how long it takes to recover every user if
+the change is wrong: minutes is low, hours is medium, days or irreversible is
+high. It goes up one level when nothing in the PR proves the changed behavior
+works (no tests that reach it and, for a visible change, no screenshots or
+recording) and a mistake would not surface by itself (swallowed errors,
+fallbacks, plausible but wrong output). Good evidence never lowers it.
+
 Merge risk is shown in the check but does not decide unless the repository
 sets `maxRisk` (`low`, `medium` or `high`): then the automatic path also
 needs a review risk at or below it, and a review without a risk score does
