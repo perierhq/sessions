@@ -87,6 +87,7 @@ interface ClaudeAccountInfo {
   noUsageScope: boolean;
   credentialsPath?: string;
   exhaustedUntil: string | null;
+  unusableReason?: "oauth-refused" | null;
   usable: boolean;
 }
 
@@ -381,12 +382,21 @@ function ExtraUsageRow({
 
 // ── Claude accounts ────────────────────────────────────────────────────────
 
+const CLAUDE_OAUTH_REFUSED =
+  "This account's organization doesn't allow sign-in with OAuth, so runs skip it. Reconnect it once the organization allows it, or remove it.";
+
 /**
  * The one thing that needs attention, never stacked, so nothing collides. A
  * healthy account gets no status: its meters already say it is fine, and nine
  * green "In rotation" labels down a page hid the two accounts that weren't.
  */
 function ClaudeAccountStatus({ a }: { a: ClaudeAccountInfo }) {
+  if (a.unusableReason === "oauth-refused")
+    return (
+      <AccountStatus tone="red" title={CLAUDE_OAUTH_REFUSED}>
+        Sign-in refused
+      </AccountStatus>
+    );
   if (a.usage?.error && a.usage.errorStatus === 401)
     return (
       <AccountStatus tone="red" title={a.usage.error}>
@@ -556,6 +566,11 @@ function ClaudeAccountRows({ state }: { state: ClaudeAccountsState }) {
                     ? ` · ${account.plan.replace("default_claude_", "")}`
                     : ""}
                 </SettingRowDescription>
+                {account.unusableReason === "oauth-refused" && (
+                  <div className="mt-1.5 text-meta leading-relaxed text-red">
+                    {CLAUDE_OAUTH_REFUSED}
+                  </div>
+                )}
                 {account.noUsageScope && !account.usage ? (
                   <div className="mt-1.5 text-meta leading-relaxed text-faint">
                     Sign in with Claude from the account menu to show usage.

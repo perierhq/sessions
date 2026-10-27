@@ -7,6 +7,7 @@ import { pickClaudeAccount } from "./claude-account-pick";
 import {
   markCreditsExhausted as markClaudeCreditsExhausted,
   markExhausted as markClaudeExhausted,
+  markOauthRefused as markClaudeOauthRefused,
   type ClaudeAccount,
 } from "./claude-accounts";
 import { markCodexExhausted, type CodexAccount } from "./codex-accounts";
@@ -27,6 +28,7 @@ import {
 import type { StreamEvent, TurnUsage } from "./run-events";
 import {
   isClaudeCreditsExhaustedError,
+  isClaudeOauthRefusedError,
   usageLimitResetAt,
 } from "./runner-shared";
 import {
@@ -270,6 +272,10 @@ export class PiAttemptAccounts {
     const account = this.sidelineableAccount;
     if (!account) return;
     if (account.pool === "openai") markCodexExhausted(account.id, this.modelID);
+    else if (account.pool === "claude" && isClaudeOauthRefusedError(message))
+      // Its organization refuses OAuth sign-in: no reset frees it, so it
+      // waits for a successful usage poll or a reconnect.
+      markClaudeOauthRefused(account.id);
     else if (
       account.pool === "claude" &&
       isClaudeCreditsExhaustedError(message)
