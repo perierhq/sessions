@@ -248,12 +248,14 @@ function parseLine(line: string): Observation | null {
 /**
  * Stream a day file line by line, handing each readable observation to
  * `visit`. Torn or garbage lines are skipped; a missing file is empty.
+ * Reading stops as soon as `done()` returns true.
  */
 async function scanDayFile(
   directory: string,
   signalId: string,
   day: string,
   visit: (observation: Observation) => void,
+  done: () => boolean = () => false,
 ): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
@@ -272,7 +274,7 @@ async function scanDayFile(
       const observation = parseLine(line);
       if (observation) visit(observation);
     };
-    for (;;) {
+    while (!done()) {
       const { bytesRead } = await handle.read(
         buffer,
         0,
@@ -291,6 +293,7 @@ async function scanDayFile(
         if (!skipping) take(carry.slice(start, newline));
         skipping = false;
         start = newline + 1;
+        if (done()) return;
       }
       carry = carry.slice(start);
       if (carry.length > MAX_LINE_CHARS) {
@@ -298,6 +301,7 @@ async function scanDayFile(
         skipping = true;
       }
     }
+    if (done()) return;
     carry += decoder.end();
     if (!skipping) take(carry);
   } finally {
@@ -418,18 +422,24 @@ export interface ObservationQueryOptions {
   lane?: string;
 }
 
+export interface ObservationScanOptions extends ObservationQueryOptions {
+  /** Checked after each observation handed to `visit` (and before each
+   *  read): once it returns true the scan stops reading and resolves. */
+  until?: () => boolean;
+}
+
 /**
  * Hand every observation of `[from, to]` (and of the lane asked for) to
  * `visit`, streaming day files rather than loading them, in no promised
  * order. Feed a strip bucketer with it so a long range is never held in
- * memory. Spans at most 31 days.
+ * memory. Spans at most 31 days. `until` ends the scan early.
  */
 export async function scanObservations(
   signalId: string,
   from: number,
   to: number,
   visit: (observation: Observation) => void,
-  opts: ObservationQueryOptions = {},
+  opts: ObservationScanOptions = {},
 ): Promise<void> {
   assertSignalId(signalId);
   if (!Number.isFinite(from) || !Number.isFinite(to))
@@ -445,20 +455,86 @@ export async function scanObservations(
   const filtered = (observation: Observation) => {
     if (wanted(observation)) visit(observation);
   };
+  const until = opts.until ?? (() => false);
   const oldest = rings.get(signalId)?.get(lane === "*" ? MAIN : lane)?.[0];
   if (hydrated.has(signalId) && oldest && Date.parse(oldest.at) <= from) {
-    for (const observation of recentObservations(signalId, lane))
+    for (const observation of recentObservations(signalId, lane)) {
+      if (until()) return;
       filtered(observation);
+    }
     return;
   }
   await flushObservations();
   const directory = await observationDirectory();
   for (
     let day = Date.parse(`${utcDay(from)}T00:00:00Z`);
-    day <= to;
+    day <= to && !until();
     day += DAY_MS
   )
-    await scanDayFile(directory, signalId, utcDay(day), filtered);
+    await scanDayFile(directory, signalId, utcDay(day), filtered, until);
+}
+
+/** Whether `lane` ({@link MAIN_LANE} for the main lane) has an observation
+ *  in `[from, to]`: the in-memory ring first, then a scan that stops at the
+ *  first match. Spans at most 31 days. */
+export async function hasObservation(
+  signalId: string,
+  from: number,
+  to: number,
+  lane: string,
+): Promise<boolean> {
+  assertSignalId(signalId);
+  const inRange = (observation: Observation) => {
+    const at = Date.parse(observation.at);
+    return at >= from && at <= to;
+  };
+  if (rings.get(signalId)?.get(lane)?.some(inRange)) return true;
+  let found = false;
+  await scanObservations(
+    signalId,
+    from,
+    to,
+    () => {
+      found = true;
+    },
+    { lane, until: () => found },
+  );
+  return found;
+}
+
+/** The observation of `lane` ({@link MAIN_LANE} for the main lane) closest
+ *  to `at`, at most `toleranceMs` away, or null: the in-memory ring first,
+ *  then a scan of that span that stops at an exact match. */
+export async function nearestObservation(
+  signalId: string,
+  at: number,
+  toleranceMs: number,
+  lane: string,
+): Promise<Observation | null> {
+  assertSignalId(signalId);
+  let best: Observation | null = null;
+  let bestGap = Number.POSITIVE_INFINITY;
+  const consider = (observation: Observation) => {
+    const gap = Math.abs(Date.parse(observation.at) - at);
+    if (gap <= toleranceMs && gap < bestGap) {
+      best = observation;
+      bestGap = gap;
+    }
+  };
+  for (const observation of rings.get(signalId)?.get(lane) ?? [])
+    consider(observation);
+  if (bestGap === 0) return best;
+  await scanObservations(
+    signalId,
+    at - toleranceMs,
+    at + toleranceMs,
+    consider,
+    {
+      lane,
+      until: () => bestGap === 0,
+    },
+  );
+  return best;
 }
 
 /** {@link scanObservations}, collected and sorted by `at`. */
