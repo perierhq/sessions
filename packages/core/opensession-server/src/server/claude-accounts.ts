@@ -15,6 +15,7 @@
  * other processes already took.
  */
 
+import { registerMemoryGauge } from "./memory-gauges";
 import { homeDir } from "./paths";
 import { chmodSync, existsSync, readFileSync } from "fs";
 import { writeFileAtomic } from "./shared/atomic-write";
@@ -156,6 +157,13 @@ const exhaustedUntil = new Map<string, number>();
 // usage for every other account in the dashboard.
 const usageRateLimitedUntil = new Map<string, number>();
 const credentialsRefreshBlockedUntil = new Map<string, number>();
+registerMemoryGauge(
+  "claude-accounts.backoffs",
+  () =>
+    usageRateLimitedUntil.size +
+    credentialsRefreshBlockedUntil.size +
+    nearLimitRefreshAt.size,
+);
 const MAX_RATE_LIMIT_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_WAIT_MS = 10 * 60 * 1000;
 const FAILED_REFRESH_WAIT_MS = 60 * 60 * 1000;

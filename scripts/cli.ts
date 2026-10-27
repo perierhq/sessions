@@ -100,6 +100,7 @@ ${bold("Running")}
   memory [--json]          the server's memory use and largest in-process
                            collections
   memory snapshot          write a heap snapshot under the state dir
+                           (also --snapshot)
 
 ${bold("Maintenance")}
   update [--channel <ref>] pull upstream (ff, or merge on a fork with local
@@ -427,7 +428,10 @@ async function main(): Promise<number> {
       );
 
     case "memory":
-      return await memory(positional, { json: flags.has("--json") });
+      return await memory(positional, {
+        json: flags.has("--json"),
+        snapshot: flags.has("--snapshot"),
+      });
 
     case "service":
       if (positional[0] === "install") {

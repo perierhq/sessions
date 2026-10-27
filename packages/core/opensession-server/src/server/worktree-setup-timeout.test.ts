@@ -4,16 +4,19 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { Repo } from "./config";
 import {
+  __pendingSetupsForTest,
   listSessionResources,
   ORPHANED_RESOURCE_GRACE_MS,
   reapSessionResources,
   stopArchivedSessionResources,
+  stopSessionResourcesInDir,
 } from "./session-resources";
 import { __setWorkloadScopingForTest } from "./workload-scope";
 import {
   __setSetupOutcomePublisherForTest,
   DEFAULT_WORKTREE_SETUP_TIMEOUT_MS,
   installWorktreeDeps,
+  seedAndInstallWorktree,
   worktreeSetupTimeoutMs,
 } from "./worktree";
 import {
@@ -226,4 +229,105 @@ test("a session reads the setup failure of an attached repo too", () => {
   expect(
     existsSync(join(state, ".opensession-worktree-setup-status.json")),
   ).toBe(true);
+});
+
+/** A warm-template seed that waits until released, like one queued on the
+ * template's refresh lock. */
+function heldSeed() {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let started!: () => void;
+  const seeding = new Promise<void>((resolve) => (started = resolve));
+  return {
+    seed: async () => {
+      started();
+      await released;
+    },
+    seeding,
+    release,
+  };
+}
+
+test("archiving while seeding waits keeps the setup from starting", async () => {
+  const held = heldSeed();
+  const setup = seedAndInstallWorktree(
+    repo({ worktreeSetup: "touch started" }),
+    worktree,
+    "feat-seeding",
+    { sessionId: "bks-seeding" },
+    held.seed,
+  );
+  await held.seeding;
+  // Nothing has spawned, so there is no record to stop; the pipeline is
+  // still known.
+  expect(listSessionResources()).toEqual([]);
+  expect(__pendingSetupsForTest()).toHaveLength(1);
+  await stopArchivedSessionResources("bks-seeding", {
+    listSessions: async () => [
+      { id: "bks-seeding", worktreeDir: worktree, archived: true },
+    ],
+    isArchived: () => true,
+  });
+  held.release();
+  await setup;
+  expect(existsSync(join(worktree, "started"))).toBe(false);
+  expect(worktreeSetupFailure(worktree)?.message).toBe(
+    "Setup was stopped (worktreeSetup) because its session was archived.",
+  );
+  expect(__pendingSetupsForTest()).toEqual([]);
+});
+
+test("a live sibling in the worktree keeps a waiting setup", async () => {
+  const held = heldSeed();
+  const setup = seedAndInstallWorktree(
+    repo({ worktreeSetup: "touch started" }),
+    worktree,
+    "feat-shared",
+    {},
+    held.seed,
+  );
+  await held.seeding;
+  await stopArchivedSessionResources("bks-owner", {
+    listSessions: async () => [
+      { id: "bks-owner", worktreeDir: worktree, archived: true },
+      { id: "bks-sibling", worktreeDir: worktree },
+    ],
+    isArchived: (id) => id === "bks-owner",
+  });
+  held.release();
+  await setup;
+  expect(existsSync(join(worktree, "started"))).toBe(true);
+});
+
+test("the reaper cancels a waiting setup whose session is archived", async () => {
+  const held = heldSeed();
+  const setup = seedAndInstallWorktree(
+    repo({ worktreeSetup: "touch started" }),
+    worktree,
+    "feat-reaped",
+    { sessionId: "bks-gone" },
+    held.seed,
+  );
+  await held.seeding;
+  await reapSessionResources([{ id: "bks-gone", archived: true }]);
+  held.release();
+  await setup;
+  expect(existsSync(join(worktree, "started"))).toBe(false);
+  expect(worktreeSetupFailure(worktree)?.reason).toBe("stopped");
+});
+
+test("removing the worktree cancels a waiting setup", async () => {
+  const held = heldSeed();
+  const setup = seedAndInstallWorktree(
+    repo({ worktreeSetup: "touch started" }),
+    worktree,
+    "feat-removed",
+    {},
+    held.seed,
+  );
+  await held.seeding;
+  await stopSessionResourcesInDir(worktree);
+  held.release();
+  await setup;
+  expect(existsSync(join(worktree, "started"))).toBe(false);
 });

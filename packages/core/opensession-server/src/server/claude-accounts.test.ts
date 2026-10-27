@@ -663,6 +663,7 @@ describe("a usage poll releases model-scoped sidelines it disproves", () => {
           blind("weekly-headroom"),
           blind("weekly-spent"),
           blind("fable-scoped"),
+          blind("fable-unknown"),
           blind("no-weekly-window"),
           blind("five-hour-missing"),
         ],
@@ -719,6 +720,19 @@ describe("a usage poll releases model-scoped sidelines it disproves", () => {
     // Fable headroom releases it even with the 7-day window full.
     accounts.__applyUsagePollForTest("fable-scoped", poll(100, 40));
     expect(sidelinedFor("fable-scoped", fable)).toBeLessThan(1000);
+  });
+
+  test("a model with a scoped limit of unknown utilization stays sidelined", () => {
+    accounts.markExhausted("fable-unknown", fable, statedReset());
+    // Its own cap is listed without a number: account-wide headroom does not
+    // stand in for it.
+    accounts.__applyUsagePollForTest("fable-unknown", {
+      ...poll(27),
+      scopedLimits: [{ label: "Fable", utilization: null, resetsAt: null }],
+    });
+    expect(sidelinedFor("fable-unknown", fable)).toBeGreaterThan(
+      40 * 60 * 60 * 1000,
+    );
   });
 });
 

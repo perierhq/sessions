@@ -489,7 +489,9 @@ function enrichSession(
 ) {
   // The materialized row may still say a completed run is active. Reconcile
   // both edges from live runtime state before serializing any list or detail.
-  enrichSessionRuntime([s], signals?.runtime);
+  enrichSessionRuntime([s], signals?.runtime, {
+    repairIndex: overlays === "row",
+  });
   const prSession = enrichSessionPrRefs(s, {
     defaultRepoId: context.defaultRepoId,
     prsByRepo: context.prsByRepo,
@@ -1072,6 +1074,8 @@ export async function handleSessionsRoutes(
       sandbox?: unknown;
       sandboxGpu?: unknown;
       forkFrom?: unknown;
+      accountId?: unknown;
+      fixedSubscription?: unknown;
       requestId?: unknown;
       clientId?: unknown;
     } | null;
@@ -1177,6 +1181,15 @@ export async function handleSessionsRoutes(
           ? { effort: body.effort }
           : {}),
         ...(body?.autoFallback === false ? { autoFallback: false } : {}),
+        // Provider account pin, validated against the creator like the web
+        // palette's. `fixedSubscription: true` makes it a hard, immutable
+        // funding pin (fixed-subscription.ts); the create fails without one.
+        ...(typeof body?.accountId === "string" && body.accountId
+          ? { accountId: body.accountId }
+          : {}),
+        ...(body?.fixedSubscription === true
+          ? { fixedSubscription: true }
+          : {}),
         ...(createSpeed && createSpeed !== "standard"
           ? { fastMode: true, speed: createSpeed }
           : {}),

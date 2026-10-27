@@ -26,3 +26,17 @@ test("rebuilds a response invalidated while it is in flight", async () => {
   expect(result).toBe(2);
   expect(builds).toBe(2);
 });
+
+test("answers with the newest build when every build overlaps a mutation", async () => {
+  let builds = 0;
+
+  const result = await buildAtCurrentSessionListRevision(async () => {
+    builds++;
+    advanceSessionListResponseRevision();
+    await Promise.resolve();
+    return builds;
+  });
+
+  expect(result).toBe(3);
+  expect(builds).toBe(3);
+});

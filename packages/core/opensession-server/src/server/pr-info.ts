@@ -5,6 +5,7 @@
  * data; and wired into the shared rate-limit gate (github-limit.ts) so a
  * throttled quota serves stale snapshots instead of errors.
  */
+import { PR_DIFF_CACHE_LIMITS, setBounded } from "./bounded-cache";
 import { registerMemoryGauge } from "./memory-gauges";
 import { homeDir } from "./paths";
 import { statePath } from "./paths";
@@ -652,6 +653,21 @@ const cacheKey = (repo: string, branch: string) => `${repo}\u0000${branch}`;
 const diffCache = new Map<string, { data: PrDiffData | null; ts: number }>();
 registerMemoryGauge("pr-info.diffCache", () => diffCache.size);
 
+function rememberDiff(
+  key: string,
+  entry: { data: PrDiffData | null; ts: number },
+): void {
+  setBounded(diffCache, key, entry, PR_DIFF_CACHE_LIMITS);
+}
+
+/** Test seam for the diff cache bound. */
+export function __prDiffCacheForTest(): Map<
+  string,
+  { data: PrDiffData | null; ts: number }
+> {
+  return diffCache;
+}
+
 /**
  * Pin a PR patch into the diff cache. For the demo dataset only: its PR does
  * not exist on GitHub, and unlike the details cache the diff cache is never
@@ -664,7 +680,7 @@ export function seedPrDiff(
   branch: string,
   data: PrDiffData,
 ): void {
-  diffCache.set(cacheKey(repo, branch), {
+  rememberDiff(cacheKey(repo, branch), {
     data: {
       ...data,
       diffVersion:
@@ -953,7 +969,7 @@ export async function getPrDiff(
             .digest("base64url"),
           ...(skippedFiles ? { skippedFiles } : {}),
         };
-        if (!maxPatchBytes) diffCache.set(key, { data, ts: Date.now() });
+        if (!maxPatchBytes) rememberDiff(key, { data, ts: Date.now() });
         return data;
       }
       throw new Error("Pull request changed while loading its diff");
@@ -966,7 +982,7 @@ export async function getPrDiff(
         if (hit) return hit.data; // stale beats an error
         throw new Error(prApiErrorMessage(msg));
       }
-      diffCache.set(key, { data: null, ts: Date.now() });
+      rememberDiff(key, { data: null, ts: Date.now() });
       return null;
     }
   })().finally(() => diffInflight.delete(inflightKey));

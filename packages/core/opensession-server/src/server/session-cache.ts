@@ -374,10 +374,75 @@ export function sessionRuntimeSnapshot(): SessionRuntimeSnapshot {
   return { runStarts, journalBusy, claimedJournalSessions };
 }
 
+/** Index rows already sent to the stale-run repair, in insertion order.
+ * Never cleared when a repair finishes: a row the repair cannot heal (an
+ * alias, a non-native id, a missing file) is found stale again by every list
+ * build, and re-queueing it each time turned list reads into a loop of
+ * repairs. An id is forgotten only when a later read sees it genuinely
+ * running, so the end of that run gets one fresh repair. Bounded so a long
+ * process cannot grow it without limit; the oldest ids go first. */
+const staleIndexedRunRepairs: Set<string> = (g.__staleIndexedRunRepairs ??=
+  new Set());
+const MAX_STALE_INDEXED_RUN_REPAIRS = 4096;
+let staleIndexedRunRepairChain: Promise<void> = Promise.resolve();
+
+/**
+ * Rewrite stored list rows whose materialized run fields outlived the run, so
+ * the `is_running` column and payload heal instead of waiting for an unrelated
+ * write. Each repair re-reads the session under its projection lock, so it
+ * cannot overwrite a newer row. Repairs run one at a time and each id is
+ * attempted at most once per process (until it is seen running again).
+ */
+function repairStaleIndexedRunState(ids: string[]): void {
+  for (const id of ids) {
+    if (staleIndexedRunRepairs.has(id)) continue;
+    staleIndexedRunRepairs.add(id);
+    if (staleIndexedRunRepairs.size > MAX_STALE_INDEXED_RUN_REPAIRS) {
+      const oldest = staleIndexedRunRepairs.values().next().value;
+      if (oldest !== undefined) staleIndexedRunRepairs.delete(oldest);
+    }
+    staleIndexedRunRepairChain = staleIndexedRunRepairChain.then(() =>
+      repairIndexedRunRow(id),
+    );
+  }
+}
+
+/**
+ * Heal one stored row's run fields. List response builders call this through
+ * enrichSessionRuntime while fenced on the list revision, so it must only
+ * mark the list stale (which advances that revision) when the stored row
+ * actually changes; a no-op repair would otherwise make every build retry.
+ */
+function repairIndexedRunRow(sessionId: string): Promise<void> {
+  const identity = knownSessionIdentity(sessionId);
+  return withSessionMutationLock(identity.id, async () => {
+    const stored = await indexedSession(identity.id);
+    if (!stored || (!stored.isRunning && !stored.runState)) return;
+    const row = await targetedSessionListRow(identity);
+    if (!row) return;
+    enrichSessionRuntime([row]);
+    if (
+      !!row.isRunning === !!stored.isRunning &&
+      (row.runState ?? null) === (stored.runState ?? null)
+    )
+      return;
+    await upsertIndexedSession(row);
+    markSessionListStale();
+    publishSessionRow(row.id);
+  }).catch((error) => {
+    console.warn(
+      `[session-cache] stale run repair failed for ${sessionId}:`,
+      error instanceof Error ? error.message : error,
+    );
+  });
+}
+
 export function enrichSessionRuntime(
   data: UnifiedSession[],
   snapshot = sessionRuntimeSnapshot(),
+  opts: { repairIndex?: boolean } = {},
 ): UnifiedSession[] {
+  const staleIds: string[] = [];
   const { runStarts, journalBusy } = snapshot;
   // Full session lists must not make one compatibility RPC per historical
   // session. Take the actor client's mirrored projection once; missing rows are
@@ -404,6 +469,7 @@ export function enrichSessionRuntime(
       s.codexThreadId,
       s.id,
     );
+    const storedRunning = !!s.isRunning || !!s.runState;
     const recoveryBusy =
       journalBusy.has(s.id) ||
       (!!s.claudeSessionId && journalBusy.has(s.claudeSessionId)) ||
@@ -430,9 +496,15 @@ export function enrichSessionRuntime(
     }
     if (sessionHasRunningScript(s.id)) s.scriptRunning = true;
     else delete s.scriptRunning;
+    // Like isRunning, runState is reconciled in both directions: a row
+    // materialized mid-run must not keep reporting "running" once idle.
     if (rs !== "idle") s.runState = rs;
+    else delete s.runState;
+    if (storedRunning && !s.isRunning && !s.runState) staleIds.push(s.id);
+    else if (s.isRunning) staleIndexedRunRepairs.delete(s.id);
     checkRunStateWedge(s.id, rs, liveEngineBusy || recoveryBusy);
   }
+  if (opts.repairIndex && staleIds.length) repairStaleIndexedRunState(staleIds);
   return data;
 }
 
@@ -440,7 +512,7 @@ function enrichCachedSessions(
   slice: SessionArchiveSlice,
   data: UnifiedSession[],
 ): UnifiedSession[] {
-  enrichSessionRuntime(data);
+  enrichSessionRuntime(data, undefined, { repairIndex: true });
   const ts = Date.now();
   sessionsCaches[slice] = { data, ts, invalidated: false };
   // An internal/legacy whole-list scan already paid for both halves. Seed the
@@ -1307,6 +1379,16 @@ export async function primeSessionListIndex(): Promise<void> {
       );
     throw error;
   }
+}
+
+/** Settles once every queued stale-row repair has run. */
+export function __staleIndexedRunRepairsForTest(): Promise<void> {
+  return staleIndexedRunRepairChain;
+}
+
+/** Test-only: forget which rows the stale-run repair already attempted. */
+export function __resetStaleIndexedRunRepairsForTest(): void {
+  staleIndexedRunRepairs.clear();
 }
 
 /** Test-only: forget catalog completeness, the unavailable reason and every

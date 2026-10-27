@@ -20,8 +20,16 @@
  * module-level ones registered through memory-gauges.ts.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { MEMORY_GAUGES_GLOBAL_KEY, memoryGauges } from "./memory-gauges";
 import { statePath } from "./paths";
 
@@ -268,32 +276,97 @@ export interface HeapSnapshotResult {
   durationMs: number;
 }
 
+/** Snapshots kept in `<state>/diagnostics/`; older ones are deleted. */
+export const KEEP_HEAP_SNAPSHOTS = 3;
+/** Free space left after a snapshot is written, so it cannot fill the disk
+ *  the gateway's own state lives on. */
+export const SNAPSHOT_FREE_SPACE_MARGIN_BYTES = 256 * 1024 * 1024;
+const PARTIAL_SUFFIX = ".partial";
+const SNAPSHOT_NAME = /^heap-.*\.heapsnapshot$/;
+
 /**
  * Write a V8-format heap snapshot to `<state>/diagnostics/` with mode 0600
  * and return where it went. One at a time: a second call while one is in
  * flight throws HeapSnapshotBusyError. `generate` is injectable for tests.
+ *
+ * Written under a `.partial` name and renamed on success, so a failed write
+ * never leaves a truncated snapshot; a snapshot that would leave less than
+ * SNAPSHOT_FREE_SPACE_MARGIN_BYTES free is refused. Snapshots hold every
+ * string on the heap, credentials included, so only the newest
+ * KEEP_HEAP_SNAPSHOTS are kept.
  */
 export async function writeHeapSnapshot(
   generate: () => string = () => Bun.generateHeapSnapshot("v8"),
+  options: {
+    /** Bytes free in `dir`; defaults to statfs. */
+    freeBytes?: (dir: string) => Promise<number>;
+    write?: (path: string, data: string) => Promise<void>;
+  } = {},
 ): Promise<HeapSnapshotResult> {
   const state = diagnosticsState();
   if (state.snapshotRunning) throw new HeapSnapshotBusyError();
   state.snapshotRunning = true;
+  const startedAt = new Date();
+  const path = statePath(
+    `diagnostics/heap-${startedAt.toISOString().replace(/[:.]/g, "-")}-${process.pid}-${crypto.randomUUID().slice(0, 8)}.heapsnapshot`,
+  );
+  const dir = dirname(path);
   try {
-    const startedAt = new Date();
-    const path = statePath(
-      `diagnostics/heap-${startedAt.toISOString().replace(/[:.]/g, "-")}-${process.pid}-${crypto.randomUUID().slice(0, 8)}.heapsnapshot`,
-    );
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const snapshot = generate();
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    let snapshot: string | null = generate();
+    const bytes = Buffer.byteLength(snapshot);
+    const freeBytes =
+      options.freeBytes ??
+      (async (target: string) => {
+        const fs = await statfs(target);
+        return fs.bavail * fs.bsize;
+      });
+    if ((await freeBytes(dir)) < bytes + SNAPSHOT_FREE_SPACE_MARGIN_BYTES)
+      throw new Error(
+        `Not enough free disk space for a ${Math.ceil(bytes / 1024 / 1024)} MB heap snapshot`,
+      );
     // "wx": never follow or overwrite an existing file at that path.
-    await writeFile(path, snapshot, { mode: 0o600, flag: "wx" });
+    const write =
+      options.write ??
+      ((target: string, data: string) =>
+        writeFile(target, data, { mode: 0o600, flag: "wx" }));
+    const partial = `${path}${PARTIAL_SUFFIX}`;
+    try {
+      await write(partial, snapshot);
+      snapshot = null;
+      await rename(partial, path);
+    } catch (error) {
+      await rm(partial, { force: true }).catch(() => {});
+      throw error;
+    }
     return {
       path,
-      bytes: Buffer.byteLength(snapshot),
+      bytes,
       durationMs: Date.now() - startedAt.getTime(),
     };
   } finally {
+    await pruneHeapSnapshots(dir).catch((error) =>
+      console.warn("[memory] heap snapshot cleanup failed:", error),
+    );
     state.snapshotRunning = false;
   }
+}
+
+/** Keep the newest snapshots and drop partial files a failed write left.
+ *  Only this module's own `heap-*` files are touched. */
+async function pruneHeapSnapshots(dir: string): Promise<void> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  for (const name of names)
+    if (
+      name.endsWith(PARTIAL_SUFFIX) &&
+      SNAPSHOT_NAME.test(name.slice(0, -PARTIAL_SUFFIX.length))
+    )
+      await rm(join(dir, name), { force: true });
+  const files = names.filter((name) => SNAPSHOT_NAME.test(basename(name)));
+  files.sort();
+  for (const old of files.slice(
+    0,
+    Math.max(0, files.length - KEEP_HEAP_SNAPSHOTS),
+  ))
+    await rm(join(dir, old), { force: true });
 }

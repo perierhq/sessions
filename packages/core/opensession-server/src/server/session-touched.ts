@@ -18,6 +18,7 @@
  * inputs; this only needs the paths. Keep the tool-name list in step with
  * TOOL_ALIASES in ToolCallBlock.tsx.
  */
+import { pruneWhere, setBounded } from "./bounded-cache";
 import { registerMemoryGauge } from "./memory-gauges";
 import { isAbsolute, relative, resolve } from "path";
 import { mergedSessionTranscriptAsync } from "./sessions";
@@ -85,6 +86,9 @@ interface CacheEntry {
 // all; a file this session writes during the window shows up on the next poll.
 const CACHE_TTL = 30_000;
 const cache = new Map<string, CacheEntry>();
+// Keyed by session and checkout, so expired entries are dropped on write
+// instead of accumulating for every session whose git panel was ever opened.
+export const TOUCHED_CACHE_MAX_ENTRIES = 256;
 registerMemoryGauge("session-touched.cache", () => cache.size);
 
 /** What mergedSessionTranscriptAsync needs to find a session's entries. */
@@ -119,8 +123,19 @@ export async function sessionTouchedPaths(
     // callers treat that as "this session wrote nothing here", which keeps
     // another session's work out of this one's count.
   }
-  cache.set(key, { at: Date.now(), paths });
+  const at = Date.now();
+  pruneWhere(cache, (entry) => at - entry.at >= CACHE_TTL);
+  setBounded(
+    cache,
+    key,
+    { at, paths },
+    { maxEntries: TOUCHED_CACHE_MAX_ENTRIES },
+  );
   return paths;
+}
+
+export function __touchedCacheSizeForTest(): number {
+  return cache.size;
 }
 
 export function __clearTouchedCacheForTest(): void {

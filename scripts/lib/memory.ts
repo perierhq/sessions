@@ -5,6 +5,10 @@
  *
  *   opensession memory [--json]   process + heap figures, largest collections
  *   opensession memory snapshot   write a heap snapshot on the server box
+ *                                 (`--snapshot` also works, upstream's form)
+ *
+ * With --json, stdout carries one JSON document: progress and errors go to
+ * stderr.
  */
 
 import type { MemoryReport } from "../../packages/core/opensession-server/src/server/memory-diagnostics";
@@ -44,17 +48,36 @@ export function formatMemoryReport(report: MemoryReport): string[] {
   return lines;
 }
 
+type ServerCall = typeof localServerCall;
+
+/** Run `fn` with console.log sent to stderr (the --json progress and error
+ *  lines the shared helpers print). */
+async function onStderr<T>(fn: () => Promise<T>): Promise<T> {
+  const log = console.log;
+  console.log = console.error;
+  try {
+    return await fn();
+  } finally {
+    console.log = log;
+  }
+}
+
 export async function memory(
   positional: string[],
-  options: { json: boolean },
+  options: { json: boolean; snapshot?: boolean },
+  call: ServerCall = localServerCall,
 ): Promise<number> {
-  if (positional[0] === "snapshot") {
-    info(dim("writing a heap snapshot; the server pauses while it runs"));
-    const result = await localServerCall(
-      "/api/admin/memory/heap-snapshot",
-      { method: "POST" },
-      SNAPSHOT_TIMEOUT_MS,
-    );
+  const quiet = <T>(fn: () => Promise<T>) =>
+    options.json ? onStderr(fn) : fn();
+  if (positional[0] === "snapshot" || options.snapshot) {
+    const result = await quiet(async () => {
+      info(dim("writing a heap snapshot; the server pauses while it runs"));
+      return await call(
+        "/api/admin/memory/heap-snapshot",
+        { method: "POST" },
+        SNAPSHOT_TIMEOUT_MS,
+      );
+    });
     if (!result?.ok) return 1;
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
@@ -73,7 +96,7 @@ export async function memory(
     return 1;
   }
 
-  const report = (await localServerCall("/api/admin/memory")) as
+  const report = (await quiet(() => call("/api/admin/memory"))) as
     | MemoryReport
     | undefined;
   if (!report) return 1;

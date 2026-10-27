@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,8 @@ import {
   memoryLogLine,
   memoryReport,
   parseProcStatus,
+  KEEP_HEAP_SNAPSHOTS,
+  SNAPSHOT_FREE_SPACE_MARGIN_BYTES,
   writeHeapSnapshot,
 } from "./memory-diagnostics";
 import { registerMemoryGauge } from "./memory-gauges";
@@ -156,5 +158,42 @@ describe("writeHeapSnapshot", () => {
     expect(generated).toBe(1);
     // And the lock is released afterwards.
     await expect(writeHeapSnapshot(() => "{}")).resolves.toHaveProperty("path");
+  });
+
+  test("keeps only the newest snapshots", async () => {
+    const paths: string[] = [];
+    for (let i = 0; i < KEEP_HEAP_SNAPSHOTS + 2; i++) {
+      paths.push((await writeHeapSnapshot(() => "{}")).path);
+      await Bun.sleep(2);
+    }
+    const kept = readdirSync(join(dir, "diagnostics")).sort();
+    expect(kept).toEqual(
+      paths
+        .slice(-KEEP_HEAP_SNAPSHOTS)
+        .map((path) => path.split("/").at(-1)!)
+        .sort(),
+    );
+  });
+
+  test("a failed write leaves no partial file and releases the lock", async () => {
+    await expect(
+      writeHeapSnapshot(() => "{}", {
+        write: async (path) => {
+          await Bun.write(path, "{");
+          throw new Error("disk went away");
+        },
+      }),
+    ).rejects.toThrow("disk went away");
+    expect(readdirSync(join(dir, "diagnostics"))).toEqual([]);
+    await expect(writeHeapSnapshot(() => "{}")).resolves.toHaveProperty("path");
+  });
+
+  test("refuses a snapshot that would nearly fill the disk", async () => {
+    await expect(
+      writeHeapSnapshot(() => "{}", {
+        freeBytes: async () => SNAPSHOT_FREE_SPACE_MARGIN_BYTES,
+      }),
+    ).rejects.toThrow("Not enough free disk space");
+    expect(readdirSync(join(dir, "diagnostics"))).toEqual([]);
   });
 });
