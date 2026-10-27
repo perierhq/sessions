@@ -100,7 +100,7 @@ export function modelEfforts(
 
   if (
     provider === "openai" &&
-    /^(?:gpt-6\.1-sol|gpt-6-sol|gpt-6-luna)$/.test(slug)
+    /^(?:gpt-6\.1-sol|gpt-6\.1-terra|gpt-6-sol|gpt-6-luna)$/.test(slug)
   )
     return [...OPENAI_EFFORTS, "max"];
   if (
@@ -173,7 +173,7 @@ export const DEFAULT_BRIDGE_PICKER_MODELS = [
   "claude-haiku-5-5",
   "gpt-6-astra",
   "gpt-6.1-sol",
-  "gpt-5.6-terra",
+  "gpt-6.1-terra",
   "gpt-6-luna",
 ] as const;
 
@@ -276,10 +276,18 @@ export const KNOWN_MODELS: ModelInfo[] = [
     aliases: ["sol5.6", "gpt5.6"],
   },
   {
+    id: "gpt-6.1-terra",
+    provider: "codex",
+    label: "GPT-6.1 Terra",
+    aliases: ["terra", "terra6.1"],
+  },
+  // Superseded by GPT-6.1 Terra. Kept resolvable for persisted sessions;
+  // dispatch upgrades it through RETIRED_CODEX_REROUTE.
+  {
     id: "gpt-5.6-terra",
     provider: "codex",
     label: "GPT-5.6 Terra",
-    aliases: ["terra"],
+    aliases: ["terra5.6"],
   },
   {
     id: "gpt-6-luna",
@@ -497,7 +505,7 @@ export const DEFAULT_CLAUDE_MODEL = "claude-fable-5-1";
 export const DEFAULT_CODEX_MODEL = "gpt-6.1-sol";
 export const BEST_AVAILABLE_CODEX_MODEL = "codex-best-available";
 
-const CODEX_MODEL_ORDER = ["gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-luna"];
+const CODEX_MODEL_ORDER = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"];
 
 /**
  * Fallback ROUTING tiers (higher = smarter). NOT an absolute capability
@@ -517,6 +525,7 @@ const FALLBACK_TIER: Record<string, number> = {
   "gpt-6-sol": 3,
   "claude-opus-5-5": 3,
   "claude-opus-5": 3,
+  "gpt-6.1-terra": 3,
   "gpt-5.6-terra": 3,
   "gpt-6-luna": 3,
   "claude-opus-4-8": 2,
@@ -546,7 +555,7 @@ const FALLBACK_DESTINATIONS = [
   // Prefer Opus before Terra/Luna once Sol is unavailable.
   "claude-opus-5-5",
   // Terra/Luna remain automatic top-tier fallbacks after Opus.
-  "gpt-5.6-terra",
+  "gpt-6.1-terra",
   "gpt-6-luna",
   // gpt-5.5 / gpt-5.4 / gpt-5.4-mini / spark removed 2026-07-25: retired
   // 272k-window models (RETIRED_CODEX_REROUTE) — falling back onto them would
@@ -824,6 +833,7 @@ export function interactiveFallbackModel(
 const RETIRED_CODEX_REROUTE: Record<string, string> = {
   "gpt-6-sol": "gpt-6.1-sol",
   "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-terra": "gpt-6.1-terra",
   "gpt-5.6-luna": "gpt-6-luna",
   "gpt-5.5": "gpt-6.1-sol",
   "gpt-5.4": "gpt-6.1-sol",
@@ -1158,6 +1168,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   // Pi's catalog caps GPT-6 at 272K (the long-context price tier starts
   // there), so the engine compacts at that ceiling.
   "gpt-6.1-sol": 272_000,
+  "gpt-6.1-terra": 272_000,
   "gpt-6-sol": 272_000,
   "gpt-6-luna": 272_000,
   // Older Codex/GPT — approximate.

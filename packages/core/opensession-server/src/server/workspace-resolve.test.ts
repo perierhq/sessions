@@ -43,6 +43,7 @@ const { __resetWorkspaceProjectionForTest, createWorkspace, getWorkspace } =
   await import("./workspaces");
 const {
   __setPrLookupForTest,
+  __setSessionLookupForTest,
   resolveExternalWorkspace,
   resolvePrWorkspace,
   workspaceBacksOpenPr,
@@ -71,6 +72,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   __setPrLookupForTest(undefined);
+  __setSessionLookupForTest(undefined);
   __setSessionListStoreForTest(previousIndex);
   index.close();
   invalidateSessionsCache();
@@ -228,6 +230,69 @@ describe("resolvePrWorkspace", () => {
     expect(resolved?.workspace.id).toBe(workspace.id);
     expect(resolved?.workspace.branch).toBe("late-branch");
     expect(resolved?.workspace.name).toBe(`#${number} Late title`);
+  });
+
+  test("files a PR under the workspace of the session its footer names", async () => {
+    const number = 9133;
+    const home = await createWorkspace({
+      name: "Cross-repo work",
+      repo: "other-repo",
+      createdBy: "Kent",
+    });
+    const now = new Date().toISOString();
+    __setSessionLookupForTest(async (id) =>
+      id === "os-footer-session"
+        ? ({
+            id,
+            source: "opensession",
+            repo: "other-repo",
+            branch: "elsewhere",
+            worktreeDir: null,
+            startedBy: null,
+            title: "Cross-repo work",
+            workspaceId: home.id,
+            createdAt: now,
+            lastActivity: now,
+            isRunning: false,
+          } as never)
+        : undefined,
+    );
+    __setPrLookupForTest(async () => ({
+      branch: "footer-branch",
+      title: "Footer PR",
+      sessionId: "os-footer-session",
+    }));
+
+    const resolved = await resolvePrWorkspace({
+      repoId,
+      number,
+      branch: "footer-branch",
+      createdBy: "GitHub (automation)",
+    });
+
+    expect(resolved?.created).toBe(false);
+    expect(resolved?.workspace.id).toBe(home.id);
+  });
+
+  test("an empty keyed PR workspace still wins without a footer session", async () => {
+    const number = 9134;
+    const keyed = await createWorkspace({
+      name: `#${number}`,
+      repo: repoId,
+      key: `ghpr-${prKey(number, ghRepo)}`,
+      prNumber: number,
+      branch: "no-footer",
+      createdBy: "GitHub (automation)",
+    });
+
+    const resolved = await resolvePrWorkspace({
+      repoId,
+      number,
+      branch: "no-footer",
+      createdBy: "Kent",
+    });
+
+    expect(resolved?.workspace.id).toBe(keyed.id);
   });
 
   test("mints nothing for a PR number GitHub does not know", async () => {

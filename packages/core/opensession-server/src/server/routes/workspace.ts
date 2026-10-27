@@ -69,6 +69,7 @@ import {
   type WorkspaceDraft,
   createWorkspace,
   deleteWorkspace,
+  discardWorkspaceDraft,
   getWorkspace,
   listWorkspaces,
   updateWorkspace,
@@ -151,6 +152,40 @@ export async function deleteWorkspaceMemberSessions(
     });
     if (response && !response.ok && response.status !== 404) return response;
   }
+}
+
+/**
+ * Archive every listed session through the normal archive route, so running
+ * agents are stopped, pins dropped and drafts cleared exactly as for one
+ * session. Keeps going past a failure and reports which ids failed; a session
+ * that vanished meanwhile (404) counts as done.
+ */
+export async function archiveWorkspaceMemberSessions(
+  ctx: RouteContext,
+  sessionIds: readonly string[],
+  handleSessionRoute: typeof handleSessionsRoutes = handleSessionsRoutes,
+): Promise<{ archived: string[]; failed: string[] }> {
+  const archived: string[] = [];
+  const failed: string[] = [];
+  for (const sessionId of sessionIds) {
+    const sessionPath = `/api/sessions/${encodeURIComponent(sessionId)}/archive`;
+    const sessionUrl = new URL(ctx.url);
+    sessionUrl.pathname = sessionPath;
+    sessionUrl.search = "";
+    const response = await handleSessionRoute({
+      ...ctx,
+      req: new Request(sessionUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      }),
+      url: sessionUrl,
+      path: sessionPath,
+    }).catch(() => undefined);
+    if (response?.ok) archived.push(sessionId);
+    else if (response?.status !== 404) failed.push(sessionId);
+  }
+  return { archived, failed };
 }
 
 function findNativeSessionForFileMentions(
@@ -640,6 +675,39 @@ export async function handleWorkspaceRoutes(
       { error: "pr, plainThreadId or externalRef required" },
       { status: 400 },
     );
+  }
+
+  // Archive a whole workspace: every live member, including the ones the
+  // sidebar row does not render (automation runs such as PR reviews, workers,
+  // sessions outside the current lens). Archiving only the rendered sessions
+  // left those live, so the workspace never went away.
+  const archiveMatch = path.match(/^\/api\/workspaces\/([^/]+)\/archive$/);
+  if (archiveMatch && req.method === "POST") {
+    const id = decodeURIComponent(archiveMatch[1]);
+    // No workspace-record check: sessions can outlive their workspace record,
+    // and they still need archiving.
+    const members = (await getSessionListSnapshotAsync("exclude")).filter(
+      (session) => session.workspaceId === id && !session.archived,
+    );
+    const result = await archiveWorkspaceMemberSessions(
+      ctx,
+      members.map((member) => member.id),
+    );
+    return Response.json({ ok: result.failed.length === 0, ...result });
+  }
+
+  // Discard a sidebar draft. Never deletes sessions: the draft may sit on a
+  // workspace whose sessions are all archived, and those stay.
+  const draftMatch = path.match(/^\/api\/workspaces\/([^/]+)\/draft$/);
+  if (draftMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(draftMatch[1]);
+    const hasSessions = (await getSessionListSnapshotAsync()).some(
+      (session) => session.workspaceId === id,
+    );
+    const result = await discardWorkspaceDraft(id, hasSessions);
+    if (result === "missing")
+      return Response.json({ error: "Workspace not found" }, { status: 404 });
+    return Response.json({ ok: true, result });
   }
 
   const workspaceMatch = path.match(/^\/api\/workspaces\/(.+)$/);

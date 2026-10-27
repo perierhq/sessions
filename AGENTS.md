@@ -8,10 +8,10 @@ disagree.
 ## Fork rules
 
 - **Upstream is read-only.** `upstream` (tellahq/opensession) has push disabled.
-  Never merge, rebase onto, or cherry-pick from it. To take an upstream feature
-  or fix, read its diff and reimplement it here; name the source in the commit
-  message as `Upstream: tellahq/opensession@<sha>`. The fork point is in
-  [`NOTICE.md`](NOTICE.md).
+  Never merge, rebase onto, or cherry-pick from it. **Upstream sync:** before
+  porting any upstream commit, read [`docs/upstream-sync.md`](docs/upstream-sync.md)
+  (take everything by default, how to port, the `Upstream:` trailer, the
+  skipped list). The fork point is in [`NOTICE.md`](NOTICE.md).
 - **Keep the licences.** Never remove `LICENSE`, `NOTICE.md`,
   `THIRD-PARTY-NOTICES.md` or `THIRD-PARTY-LICENSES`.
 - **Public repo.** No secrets, client data or internal hostnames in commits,
@@ -61,11 +61,16 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 Upstream's release workflows are kept. The signing ones run only when their
 repo variable is `true`; until then they skip cleanly.
 
-| Variable                 | Workflows                               | Needs first                                                                                                                                       |
-| ------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IOS_RELEASE_ENABLED`    | `os1-ios-testflight`                    | ASC API key, iOS distribution cert, own bundle IDs and team in `packages/clients/ios/project.yml`                                                 |
-| `MAC_RELEASE_ENABLED`    | `os1-mac-testflight`, `os1-mac-release` | Mac installer and Developer ID certs, provisioning profile, Apple ID, `APPLE_TEAM_ID`, own `appId` in `packages/clients/mac/electron-builder.yml` |
-| `CHROME_RELEASE_ENABLED` | `os1-chrome-release`                    | A new extension signing key and the extension ID pinned in the server                                                                             |
+| Variable                 | Workflows                                         | Needs first                                                                                                                                       |
+| ------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IOS_RELEASE_ENABLED`    | `os1-ios-testflight`, `os1-ios-testflight-status` | ASC API key, iOS distribution cert, own bundle IDs and team in `packages/clients/ios/project.yml`                                                 |
+| `MAC_RELEASE_ENABLED`    | `os1-mac-testflight`, `os1-mac-release`           | Mac installer and Developer ID certs, provisioning profile, Apple ID, `APPLE_TEAM_ID`, own `appId` in `packages/clients/mac/electron-builder.yml` |
+| `CHROME_RELEASE_ENABLED` | `os1-chrome-release`                              | A new extension signing key and the extension ID pinned in the server                                                                             |
+
+`os1-ios-testflight-status` is a manual, read-only check of Apple's processing
+verdict on the latest uploads; it reuses the TestFlight App Store Connect key
+(`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY_P8_BASE64`) and the OS1 bundle id
+from `project.yml`, so it needs nothing of its own.
 
 `release.yml` (server binaries on `v*` tags), `release-finalize.yml`,
 `bun-dependency-submission.yml` and `os1-native-ci.yml` need no secrets.
