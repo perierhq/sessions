@@ -1,4 +1,7 @@
-# Tella's client release pipeline — fork and rebrand (see packages/clients/mac/README).
+# Inherited from upstream Open Session. Nothing here names an Apple account:
+# the bundle id comes from packages/clients/mac/electron-builder.yml, the team
+# and server (and so the universal-link host) from repository variables.
+# AGENTS.md "Release workflows" lists what to set before MAC_RELEASE_ENABLED.
 name: Release Open Session for Mac
 
 # Builds, signs, notarizes and uploads the vendored Electron shell to the
@@ -26,8 +29,33 @@ jobs:
     if: vars.MAC_RELEASE_ENABLED == 'true'
     runs-on: macos-26
     timeout-minutes: 45
+    env:
+      # electron-builder's notarize step reads APPLE_TEAM_ID from the env too.
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      OS1_SERVER_URL: ${{ vars.OS1_SERVER_URL }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      # Fails before any signing work when a repository variable is missing.
+      # The universal-link host is the server's: it serves
+      # /.well-known/apple-app-site-association.
+      - name: Read signing identities
+        id: ids
+        run: |
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+            || { echo '::error::Set the APPLE_TEAM_ID repository variable to your 10-character Apple team id'; exit 1; }
+          [[ "$OS1_SERVER_URL" =~ ^https://[^[:space:]/|:]+(:[0-9]+)?(/[^[:space:]|]*)?$ ]] \
+            || { echo '::error::Set the OS1_SERVER_URL repository variable to the https:// server the app opens by default'; exit 1; }
+          APP_ID=$(awk '$1 == "appId:" { print $2 }' electron-builder.yml)
+          test -n "$APP_ID" || { echo '::error::No appId in electron-builder.yml'; exit 1; }
+          HOST=${OS1_SERVER_URL#https://}
+          HOST=${HOST%%/*}
+          HOST=${HOST%%:*}
+          {
+            echo "app-id=$APP_ID"
+            echo "applinks-host=$HOST"
+          } >> "$GITHUB_OUTPUT"
+          echo "Team $APPLE_TEAM_ID: $APP_ID, universal links on $HOST"
 
       - name: Prepare release draft
         if: github.ref_type == 'tag'
@@ -66,25 +94,45 @@ jobs:
       - name: Install Developer ID provisioning profile
         env:
           PROFILE_BASE64: ${{ secrets.OS1_PROVISIONING_PROFILE_BASE64 }}
+          APP_ID: ${{ steps.ids.outputs.app-id }}
+          HOST: ${{ steps.ids.outputs.applinks-host }}
         run: |
           test -n "$PROFILE_BASE64"
           printf '%s' "$PROFILE_BASE64" | base64 -D > build/os1.provisionprofile
           security cms -D -i build/os1.provisionprofile > /tmp/os1-profile.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' /tmp/os1-profile.plist)" = "$APPLE_TEAM_ID.$APP_ID" \
+            || { echo "::error::OS1_PROVISIONING_PROFILE_BASE64 is not a profile for $APPLE_TEAM_ID.$APP_ID"; exit 1; }
           if ! DOMAINS=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' /tmp/os1-profile.plist); then
             echo '::error::Provisioning profile does not include the Associated Domains entitlement'
             exit 1
           fi
           printf '%s\n' "$DOMAINS"
-          grep -Eq '(^|[[:space:]])(\*|applinks:os\.tella\.dev)($|[[:space:]])' <<< "$DOMAINS" || { echo '::error::Provisioning profile does not authorize applinks:os.tella.dev'; exit 1; }
+          grep -Fxq -e '*' -e "applinks:$HOST" <<< "$(tr -s '[:space:]' '\n' <<< "$DOMAINS")" \
+            || { echo "::error::Provisioning profile does not authorize applinks:$HOST"; exit 1; }
+
+      # build/entitlements.mac.applinks.plist ships an empty domain list; the
+      # signed app claims the server's host, in both forms the README
+      # describes ("Universal links").
+      - name: Stamp universal-link domains
+        env:
+          HOST: ${{ steps.ids.outputs.applinks-host }}
+        run: |
+          PLIST=build/entitlements.mac.applinks.plist
+          KEY=com.apple.developer.associated-domains
+          /usr/libexec/PlistBuddy -c "Delete :$KEY" -c "Add :$KEY array" \
+            -c "Add :$KEY:0 string applinks:$HOST" \
+            -c "Add :$KEY:1 string applinks:$HOST?mode=developer" "$PLIST"
+          plutil -lint "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :$KEY" "$PLIST"
 
       # The repository ships a portable default (localhost) so a fresh clone does
-      # not point at someone else's server. Release builds stamp the real one in.
-      # Set the OS1_SERVER_URL repository variable to override.
+      # not point at someone else's server. Release builds stamp the
+      # OS1_SERVER_URL repository variable in.
       - name: Stamp release metadata
         env:
-          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev/' }}
           TAG: ${{ github.ref_name }}
         run: |
+          SERVER="${OS1_SERVER_URL%/}/"
           version="$(jq -r .version package.json)"
           if [[ "$TAG" == v[0-9]* ]]; then version="${TAG#v}"; fi
           jq --arg s "$SERVER" --arg v "$version" \
@@ -95,7 +143,8 @@ jobs:
       - name: Generate license inventory and SBOM
         run: |
           rm -rf build/release-metadata
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
           bun ../../../scripts/generate-release-metadata.ts \
             --lock bun.lock \
             --node-modules node_modules \
@@ -137,16 +186,17 @@ jobs:
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || '6GUXT43C8B' }}
 
       - name: Verify universal-link signing
+        env:
+          HOST: ${{ steps.ids.outputs.applinks-host }}
         run: |
           APP="dist/mac-arm64/$(jq -r .productName package.json).app"
           test -f "$APP/Contents/embedded.provisionprofile" || { echo '::error::Signed app has no embedded provisioning profile'; ls -la "$APP/Contents"; exit 1; }
           codesign -d --entitlements :- "$APP" > /tmp/os1-entitlements.plist
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.associated-domains' /tmp/os1-entitlements.plist | grep -q 'applinks:os.tella.dev'
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.associated-domains' /tmp/os1-entitlements.plist | tr -s '[:space:]' '\n' | grep -Fxq "applinks:$HOST"
           security cms -D -i "$APP/Contents/embedded.provisionprofile" > /tmp/os1-embedded-profile.plist
-          /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' /tmp/os1-embedded-profile.plist | grep -Eq '(^|[[:space:]])(\*|applinks:os\.tella\.dev)($|[[:space:]])'
+          /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' /tmp/os1-embedded-profile.plist | tr -s '[:space:]' '\n' | grep -Fxq -e '*' -e "applinks:$HOST"
           # The Electron helpers inherit entitlements.mac.plist and have no
           # provisioning profile, so none of them may claim associated-domains —
           # macOS SIGKILLs a helper that does ("GPU process isn't usable.
@@ -196,7 +246,6 @@ jobs:
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || '6GUXT43C8B' }}
 
       - name: Verify Gatekeeper acceptance
         run: |

@@ -1,4 +1,7 @@
-# Tella's client release pipeline — fork and rebrand (see packages/clients/ios/README).
+# Inherited from upstream Open Session. Nothing here names an Apple account:
+# bundle ids and profile names come from packages/clients/ios/project.yml, the
+# team and server from repository variables. AGENTS.md "Release workflows"
+# lists what to set before IOS_RELEASE_ENABLED.
 name: Release OS1 for iOS (TestFlight)
 
 # Builds, signs and uploads the native SwiftUI OS1 iOS client to TestFlight
@@ -37,10 +40,35 @@ jobs:
     timeout-minutes: 45
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
+      # Also read by `xcodegen generate`: project.yml's DEVELOPMENT_TEAM is
+      # ${APPLE_TEAM_ID}.
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      OS1_SERVER_URL: ${{ vars.OS1_SERVER_URL }}
       OS1_DERIVED_DATA: ${{ github.workspace }}/.xcode-derived-data/ios
       OS1_COMPILATION_CACHE: ${{ github.workspace }}/.xcode-compilation-cache/ios
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      # Fails before any signing work when a repository variable is missing,
+      # and reads every bundle id and profile name from project.yml once.
+      - name: Read signing identities
+        id: ids
+        run: |
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+            || { echo '::error::Set the APPLE_TEAM_ID repository variable to your 10-character Apple team id'; exit 1; }
+          [[ "$OS1_SERVER_URL" =~ ^https?://[^[:space:]|]+$ ]] \
+            || { echo '::error::Set the OS1_SERVER_URL repository variable to the server the app opens by default (https://...)'; exit 1; }
+          APP_ID=$(node ci/project-settings.mjs OS1 PRODUCT_BUNDLE_IDENTIFIER)
+          APP_PROFILE=$(node ci/project-settings.mjs OS1 PROVISIONING_PROFILE_SPECIFIER Release)
+          WIDGETS_ID=$(node ci/project-settings.mjs OS1Widgets PRODUCT_BUNDLE_IDENTIFIER)
+          WIDGETS_PROFILE=$(node ci/project-settings.mjs OS1Widgets PROVISIONING_PROFILE_SPECIFIER Release)
+          {
+            echo "app-id=$APP_ID"
+            echo "app-profile=$APP_PROFILE"
+            echo "widgets-id=$WIDGETS_ID"
+            echo "widgets-profile=$WIDGETS_PROFILE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Team $APPLE_TEAM_ID: $APP_ID ($APP_PROFILE), $WIDGETS_ID ($WIDGETS_PROFILE)"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -86,62 +114,71 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          APP_ID: ${{ steps.ids.outputs.app-id }}
+          APP_PROFILE: ${{ steps.ids.outputs.app-profile }}
         run: |
           ASC_PRIVATE_KEY=$(printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 -D)
           export ASC_PRIVATE_KEY
           PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES"
           node ci/fetch-provisioning-profile.mjs \
-            "OS1 App Store Push" "$PROFILES/OS1_App_Store_Push.mobileprovision"
+            "$APP_PROFILE" "$PROFILES/OS1_App_Store_Push.mobileprovision"
           # Sanity: it must be the app profile and authorize production APNs.
           security cms -D -i "$PROFILES/OS1_App_Store_Push.mobileprovision" > /tmp/os1-ios-profile.plist
-          /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/os1-ios-profile.plist | grep -q 'dev.tella.os1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/os1-ios-profile.plist)" = "$APPLE_TEAM_ID.$APP_ID" \
+            || { echo "::error::Profile \"$APP_PROFILE\" is not for $APPLE_TEAM_ID.$APP_ID"; exit 1; }
           test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:aps-environment' /tmp/os1-ios-profile.plist)" = production
 
-      # The widget extension is a second bundle id (dev.tella.os1.widgets), so
-      # the app's profile cannot sign it. This one is fetched from App Store
-      # Connect with the API key the upload job already uses, rather than
-      # carried as another secret — one less thing to rotate by hand.
+      # The widget extension is a second bundle id, so the app's profile
+      # cannot sign it. This one is fetched from App Store Connect with the
+      # API key the upload job already uses, rather than carried as another
+      # secret — one less thing to rotate by hand.
       - name: Install widget extension provisioning profile
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          WIDGETS_ID: ${{ steps.ids.outputs.widgets-id }}
+          WIDGETS_PROFILE: ${{ steps.ids.outputs.widgets-profile }}
         run: |
           ASC_PRIVATE_KEY=$(printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 -D)
           export ASC_PRIVATE_KEY
           PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES"
           node ci/fetch-provisioning-profile.mjs \
-            "OS1 Widgets App Store" "$PROFILES/OS1_Widgets_App_Store.mobileprovision"
+            "$WIDGETS_PROFILE" "$PROFILES/OS1_Widgets_App_Store.mobileprovision"
           security cms -D -i "$PROFILES/OS1_Widgets_App_Store.mobileprovision" > /tmp/os1-widgets-profile.plist
-          /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/os1-widgets-profile.plist | grep -q 'dev.tella.os1.widgets'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/os1-widgets-profile.plist)" = "$APPLE_TEAM_ID.$WIDGETS_ID" \
+            || { echo "::error::Profile \"$WIDGETS_PROFILE\" is not for $APPLE_TEAM_ID.$WIDGETS_ID"; exit 1; }
 
       - name: Compute build number
         id: build
         run: |
-          # Builds 1 and 2 were uploaded manually before this pipeline existed;
-          # offset by 2 so CI build numbers stay strictly increasing.
+          # Upstream uploaded builds 1 and 2 by hand before this pipeline
+          # existed. The offset is harmless on a new app record: build numbers
+          # only have to keep increasing.
           BN=$(( 2 + GITHUB_RUN_NUMBER ))
           echo "number=$BN" >> "$GITHUB_OUTPUT"
           echo "iOS build number: $BN"
 
       # The repository ships a portable default (localhost) so a fresh clone does
-      # not point at someone else's server. Release builds stamp the real one in.
-      # Set the OS1_SERVER_URL repository variable to override.
+      # not point at someone else's server. Release builds stamp the
+      # OS1_SERVER_URL repository variable in: the iOS target's `info`
+      # property and the Mac target's INFOPLIST_KEY_ setting.
       - name: Stamp deployment server
-        env:
-          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev' }}
         run: |
-          grep -q 'INFOPLIST_KEY_OS1DefaultServerURL:' project.yml \
-            || { echo '::error::OS1DefaultServerURL key missing from project.yml'; exit 1; }
-          sed -i '' "s|INFOPLIST_KEY_OS1DefaultServerURL: .*|INFOPLIST_KEY_OS1DefaultServerURL: $SERVER|" project.yml
-          grep 'INFOPLIST_KEY_OS1DefaultServerURL' project.yml
+          SERVER="${OS1_SERVER_URL%/}"
+          grep -q '^ *OS1DefaultServerURL:' project.yml \
+            || { echo '::error::iOS OS1DefaultServerURL key missing from project.yml'; exit 1; }
+          sed -i '' "s|OS1DefaultServerURL: .*|OS1DefaultServerURL: $SERVER|" project.yml
+          grep 'OS1DefaultServerURL' project.yml
 
       - name: Generate Xcode project
         run: |
           echo "Compilation cache restored: ${{ steps.compilation-cache.outputs.cache-matched-key || 'none' }}" >> "$GITHUB_STEP_SUMMARY"
           xcodegen generate
+          grep -q "DEVELOPMENT_TEAM = $APPLE_TEAM_ID;" OS1.xcodeproj/project.pbxproj \
+            || { echo '::error::xcodegen did not apply APPLE_TEAM_ID'; exit 1; }
 
       - name: Run unit tests on macOS
         run: |
@@ -177,27 +214,36 @@ jobs:
           # apply to every target, and SwiftPM package targets reject
           # provisioning profiles, failing the archive.
 
+      # "Apple Distribution" is Xcode's automatic selector: the newest
+      # distribution certificate for teamID in the keychain, so the
+      # certificate's holder name never has to be spelled out here.
       - name: Export signed IPA
+        env:
+          APP_ID: ${{ steps.ids.outputs.app-id }}
+          APP_PROFILE: ${{ steps.ids.outputs.app-profile }}
+          WIDGETS_ID: ${{ steps.ids.outputs.widgets-id }}
+          WIDGETS_PROFILE: ${{ steps.ids.outputs.widgets-profile }}
         run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>teamID</key><string>6GUXT43C8B</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key><string>manual</string>
-            <key>signingCertificate</key><string>Apple Distribution: Tella HQ Inc. (6GUXT43C8B)</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>dev.tella.os1</key><string>OS1 App Store Push</string>
-              <key>dev.tella.os1.widgets</key><string>OS1 Widgets App Store</string>
+              <key>$APP_ID</key><string>$APP_PROFILE</string>
+              <key>$WIDGETS_ID</key><string>$WIDGETS_PROFILE</string>
             </dict>
             <key>destination</key><string>export</string>
             <key>uploadSymbols</key><true/>
           </dict>
           </plist>
           PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/OS1.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \

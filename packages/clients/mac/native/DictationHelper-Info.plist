@@ -3,7 +3,7 @@
 <plist version="1.0">
   <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.tella.os1.shell.dictation</string>
+    <string>pl.sessions.os1.shell.dictation</string>
     <key>CFBundleName</key>
     <string>OS Dictation</string>
     <key>CFBundleVersion</key>

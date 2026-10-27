@@ -382,15 +382,16 @@ persists in Electron's default session.
   protocol while leaving the web page in place when the app is not installed.
   That button still uses `os1://`, because copies of the app older than
   `os://` support only register `os1://`.
-- **Universal links** (plain `https://os.tella.dev/…` links opening the app,
-  e.g. from Slack — Tella's host; see the rebrand note under Signing & release):
+- **Universal links** (plain `https://<server>/…` links opening the app, e.g.
+  from Slack; the host is `OS1_SERVER_URL`'s, see Signing & release):
   Open Session exposes `/.well-known/apple-app-site-association` from the
-  server's `integrations.clients.appleAppIds` setting. Tella uses
-  `["6GUXT43C8B.dev.tella.os1", "6GUXT43C8B.dev.tella.os1.shell"]` for the iOS
+  server's `integrations.clients.appleAppIds` setting, e.g.
+  `["<team>.pl.sessions.os1", "<team>.pl.sessions.os1.shell"]` for the iOS
   and Mac App Store pair plus this shell. Without that setting, the route
   returns an empty app-ID list. Signed CI builds install the
   Developer ID profile from the `OS1_PROVISIONING_PROFILE_BASE64` repository
-  secret and sign the top-level app with `build/entitlements.mac.applinks.plist`;
+  secret and sign the top-level app with `build/entitlements.mac.applinks.plist`,
+  whose domain list the workflow fills from `OS1_SERVER_URL`;
   the release fails if either the signed entitlement or embedded profile is
   missing. The Electron helpers keep inheriting `build/entitlements.mac.plist`
   (no associated-domains): they carry no provisioning profile, and macOS
@@ -398,32 +399,30 @@ persists in Electron's default session.
   one — which surfaces as `GPU process isn't usable. Goodbye.` at launch. Local
   unsigned builds use `build/entitlements.mac.plist` for both and need no
   profile.
-  Caveat: os.tella.dev resolves to a tailnet IP, so Apple's AASA CDN cannot
-  fetch the association file. The entitlement therefore also lists the
+  Caveat: a server on a tailnet IP is out of reach of Apple's AASA CDN, so it
+  cannot fetch the association file. The entitlement therefore also lists the
   `?mode=developer` alternate, which fetches directly — each team device must
   enable Associated Domains development mode for native Universal Links. The
   **Open** action above is the fallback on Macs without that setting.
 
 ## Signing & release
 
-This section (and the universal-links app IDs above) documents **Tella's own
-release setup** — Apple team `6GUXT43C8B` and the `dev.tella.os1.*` bundle ids.
-Forks must rebrand the package metadata, entitlements, workflow checks, server
-URL and `integrations.clients.appleAppIds`, then supply their own signing
-secrets.
+The workflow names no Apple account: the bundle id is `appId` in
+`electron-builder.yml`, the team is the `APPLE_TEAM_ID` repository variable,
+and the server (and so the universal-link host) is `OS1_SERVER_URL`. The full
+checklist is in the repository's `AGENTS.md`, "Release workflows".
 
 CI (`../../../.github/workflows/os1-mac-release.yml`) builds, signs, notarizes and
 publishes a GitHub Release for matching version tags. Manual "Run workflow" does a dry
-run with artifacts attached to the run. Repository secrets (the values below
-are Tella's — supply your own):
+run with artifacts attached to the run. Repository secrets:
 
-| Secret                            | Value                                                                                                        |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `APPLE_CERTIFICATES_P12`          | "Developer ID Application: Tella HQ Inc. (6GUXT43C8B)" as base64 .p12                                        |
-| `APPLE_CERTIFICATES_PASSWORD`     | password of that .p12 export                                                                                 |
-| `OS1_PROVISIONING_PROFILE_BASE64` | Developer ID provisioning profile for `dev.tella.os1.shell`, including Associated Domains, encoded as base64 |
-| `APPLE_ID`                        | Apple ID with app access                                                                                     |
-| `APPLE_APP_PASSWORD`              | app-specific password for that Apple ID                                                                      |
+| Secret                            | Value                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `APPLE_CERTIFICATES_P12`          | your "Developer ID Application" certificate as base64 .p12                                         |
+| `APPLE_CERTIFICATES_PASSWORD`     | password of that .p12 export                                                                       |
+| `OS1_PROVISIONING_PROFILE_BASE64` | Developer ID provisioning profile for the `appId`, including Associated Domains, encoded as base64 |
+| `APPLE_ID`                        | Apple ID with app access                                                                           |
+| `APPLE_APP_PASSWORD`              | app-specific password for that Apple ID                                                            |
 
 Set `version` in `packages/clients/mac/package.json` to the intended `X.Y.Z`
 and commit it, then run `git tag vX.Y.Z && git push origin vX.Y.Z`. The package

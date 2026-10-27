@@ -382,7 +382,8 @@ function apnsConfig(): ApnsConfig | null {
     keyId,
     teamId,
     privateKeyPath,
-    bundleId: process.env.OPENSESSION_APNS_BUNDLE_ID?.trim() || "dev.tella.os1",
+    bundleId:
+      process.env.OPENSESSION_APNS_BUNDLE_ID?.trim() || "pl.sessions.os1",
     origin:
       process.env.OPENSESSION_APNS_ENV === "sandbox"
         ? "https://api.sandbox.push.apple.com"
