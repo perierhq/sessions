@@ -491,6 +491,69 @@ describe("validateFindings", () => {
     expect(out.blocks).toEqual([{ kept: true, block: stored }]);
     expect(out.notes).toEqual(["Block `zz`: nothing to keep under that id."]);
   });
+  test("notes are capped", () => {
+    const out = run(Array.from({ length: 60 }, () => ({ id: "Bad Id" })));
+    expect(out.notes).toHaveLength(41);
+    expect(out.notes[39]).toBe(
+      "Block 40: id must be lowercase letters, digits and dashes, at most 40.",
+    );
+    expect(out.notes[40]).toBe("…and 20 more.");
+    // At the cap exactly, nothing is added.
+    expect(
+      run(Array.from({ length: 40 }, () => ({ id: "Bad Id" }))).notes,
+    ).toHaveLength(40);
+  });
+
+  test("values repeated in notes are clipped", () => {
+    const kind = "k".repeat(200);
+    expect(only([{ id: "a", kind }]).notes).toEqual([
+      `Block \`a\`: unknown kind "${"k".repeat(39)}…". Use one of: hypothesis, timeline, signal, log, change, claims, compare, question.`,
+    ]);
+    const type = `\u001b[31m${"t".repeat(100)}`;
+    const ref = parseRefInput({ type });
+    expect(ref).toBe(
+      `unknown reference type "${"t".repeat(39)}…". Use one of: observation, ledger, event, action, release, pr, commit, tool, block.`,
+    );
+    const log = only([
+      {
+        id: "l",
+        kind: "log",
+        source: { type: "tool", tool: "Bash" },
+        lines: ["acme-api ERROR pool exhausted"],
+        highlight: [{ x: "h".repeat(100) }],
+      },
+    ]);
+    const note = log.notes.find((n) => n.includes("highlight"));
+    expect(note).toBe(
+      `Block \`l\`: highlight ${JSON.stringify({ x: "h".repeat(100) }).slice(0, 39)}… is not one of the lines; ignored.`,
+    );
+  });
+
+  test("clipping never splits a surrogate pair", () => {
+    const lone =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const title = only([
+      {
+        ...FIXTURES.claims,
+        id: "a",
+        title: `${"x".repeat(78)}\u{1F600}${"y".repeat(10)}`,
+      },
+    ]).block?.title;
+    expect(title).toBe(`${"x".repeat(78)}…`);
+    const line = only([
+      {
+        id: "l",
+        kind: "log",
+        source: { type: "tool", tool: "Bash" },
+        lines: [`${"x".repeat(499)}\u{1F600}tail`],
+      },
+    ]).block;
+    const kept = line?.kind === "log" ? line.lines[0] : undefined;
+    expect(kept).toBe("x".repeat(499));
+    expect(lone.test(title ?? "")).toBe(false);
+    const kind = `${"k".repeat(38)}\u{1F600}${"k".repeat(10)}`;
+    expect(lone.test(only([{ id: "a", kind }]).notes[0]!)).toBe(false);
+  });
 });
 
 describe("parseRefInput", () => {
@@ -548,5 +611,49 @@ describe("parseRefInput", () => {
       type: "event",
       id: "ev_1",
     });
+  });
+  test("times need a zone", () => {
+    const obs = (at: string) =>
+      parseRefInput({ type: "observation", signal: "sig-a", at });
+    for (const at of [
+      "2026-10-27T11:00:00",
+      "2026-10-27",
+      "2026-10-27 11:00:00",
+      "2026-10-27T11:00:00+0200",
+    ])
+      expect(typeof obs(at)).toBe("string");
+    expect(obs("2026-10-27T11:00:00+02:00")).toEqual({
+      type: "observation",
+      signal: "sig-a",
+      at: "2026-10-27T09:00:00.000Z",
+    });
+    expect(obs("2026-10-27T11:00Z")).toEqual({
+      type: "observation",
+      signal: "sig-a",
+      at: "2026-10-27T11:00:00.000Z",
+    });
+    expect(obs("2026-10-27T11:00:00.250-05:30")).toEqual({
+      type: "observation",
+      signal: "sig-a",
+      at: "2026-10-27T16:30:00.250Z",
+    });
+    const tl = only([
+      {
+        id: "t",
+        kind: "timeline",
+        events: [{ at: "2026-10-27T11:00:00", text: "No zone given here" }],
+      },
+    ]);
+    expect(tl.block).toBeUndefined();
+  });
+
+  test("contains must keep some text once cleaned", () => {
+    expect(
+      typeof parseRefInput({
+        type: "tool",
+        tool: "Bash",
+        contains: "\u001b[0m\u200b \u2060",
+      }),
+    ).toBe("string");
   });
 });

@@ -62,10 +62,17 @@ const BAD_ID = "id must be lowercase letters, digits and dashes, at most 40.";
 const BAD_COMMIT = "commit must be 7 to 40 hex characters.";
 const BAD_SOURCE = 'source must be a {"type":"tool"} reference.';
 const COMMIT_SHA = /^[0-9a-f]{7,40}$/i;
-const ISO_START = /^\d{4}-\d{2}-\d{2}/;
+/** A full ISO time with its zone: `Z` or `±hh:mm`. Without one, the time
+ *  would be read in the server's own zone. */
+const ISO_TIME =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/i;
 /** Ids of ledger entries, events, signals and the like. */
 const NAME_MAX = 200;
 const CONTAINS_MAX = 500;
+/** Notes returned per call; the rest are counted. */
+const NOTES_MAX = 40;
+/** How much of an agent's value a note repeats. */
+const ECHO_MAX = 40;
 
 type Note = (message: string) => void;
 type Body<K extends FindingKind> = Omit<
@@ -90,16 +97,37 @@ function cleanText(value: unknown, multiline = false): string | null {
     : null;
 }
 
+/** The first `max` UTF-16 units of `value`, one fewer when the cut would
+ *  split a surrogate pair. */
+function head(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const code = value.charCodeAt(max - 1);
+  return value.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
+}
+
+/** `value` cut to `max` characters with an ellipsis, without a note. */
+function ellipsis(value: string, max: number): string {
+  return value.length <= max ? value : `${head(value, max - 1).trimEnd()}…`;
+}
+
 /** `value` cut to `max` characters with an ellipsis; a cut is noted. */
 function clip(value: string, max: number, what: string, note: Note): string {
   if (value.length <= max) return value;
   note(`${what} cut to ${max} characters.`);
-  return `${value.slice(0, max - 1).trimEnd()}…`;
+  return ellipsis(value, max);
 }
 
-/** An ISO time normalised to `toISOString`, or null. */
+/** An agent's value as a note repeats it: JSON, cleaned, at most
+ *  `ECHO_MAX` characters. */
+function shown(value: unknown): string {
+  if (typeof value === "string")
+    return JSON.stringify(ellipsis(cleanReportText(value, false), ECHO_MAX));
+  return ellipsis(String(JSON.stringify(value)), ECHO_MAX);
+}
+
+/** An ISO time with a zone, normalised to `toISOString`, or null. */
 function isoTime(value: unknown): string | null {
-  if (typeof value !== "string" || !ISO_START.test(value.trim())) return null;
+  if (typeof value !== "string" || !ISO_TIME.test(value.trim())) return null;
   const ms = Date.parse(value.trim());
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
@@ -176,7 +204,7 @@ export function parseRefInput(value: unknown): RefInput | string {
       if (value.contains === undefined) return { type, tool, nth };
       if (
         typeof value.contains !== "string" ||
-        !value.contains.trim() ||
+        !cleanReportText(value.contains, true).trim() ||
         value.contains.length > CONTAINS_MAX
       )
         return `"contains" must be text of at most ${CONTAINS_MAX} characters.`;
@@ -190,7 +218,7 @@ export function parseRefInput(value: unknown): RefInput | string {
     }
     default:
       return typeof type === "string"
-        ? `unknown reference type ${JSON.stringify(type)}. Use one of: ${REF_TYPES.join(", ")}.`
+        ? `unknown reference type ${shown(type)}. Use one of: ${REF_TYPES.join(", ")}.`
         : `a reference needs a "type". Use one of: ${REF_TYPES.join(", ")}.`;
   }
 }
@@ -274,7 +302,7 @@ function parseExcerpt(
     if (!line.trim() || lines.length >= L.logLines) return;
     if (line.length > L.logLineChars) {
       note(`line ${i + 1} cut to ${L.logLineChars} characters.`);
-      line = line.slice(0, L.logLineChars);
+      line = head(line, L.logLineChars);
     }
     index.set(i, lines.length);
     lines.push(line);
@@ -298,9 +326,7 @@ function parseExcerpt(
             ? index.get(h)
             : undefined;
         if (kept === undefined)
-          note(
-            `highlight ${JSON.stringify(h)} is not one of the lines; ignored.`,
-          );
+          note(`highlight ${shown(h)} is not one of the lines; ignored.`);
         else highlight.add(kept);
       }
   }
@@ -554,6 +580,15 @@ function isKind(value: unknown): value is FindingKind {
   return (FINDING_KINDS as readonly unknown[]).includes(value);
 }
 
+/** At most `NOTES_MAX` notes, then one line counting the rest. */
+function capNotes(notes: string[]): string[] {
+  if (notes.length <= NOTES_MAX) return notes;
+  return [
+    ...notes.slice(0, NOTES_MAX),
+    `…and ${notes.length - NOTES_MAX} more.`,
+  ];
+}
+
 /** Checks the agent's block list for shape and limits. `cleared` is true
  *  when the agent sent an empty list on purpose. */
 export function validateFindings(
@@ -585,7 +620,7 @@ export function validateFindings(
       const kinds = `Use one of: ${FINDING_KINDS.join(", ")}.`;
       return note(
         typeof rec.kind === "string"
-          ? `unknown kind ${JSON.stringify(rec.kind)}. ${kinds}`
+          ? `unknown kind ${shown(rec.kind)}. ${kinds}`
           : `kind is missing. ${kinds}`,
       );
     }
@@ -611,7 +646,7 @@ export function validateFindings(
     notes.push(`Kept the first ${L.blocks} blocks.`);
   return {
     blocks: blocks.slice(0, L.blocks),
-    notes,
+    notes: capNotes(notes),
     cleared: input.blocks.length === 0,
   };
 }
