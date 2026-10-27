@@ -48,6 +48,8 @@ import {
   type FindingBlockDraft,
   type RefInput,
   type ToolRefInput,
+  NOTES_MAX,
+  capNotes,
   validateFindings,
 } from "./validate";
 
@@ -218,15 +220,18 @@ async function applyInOrder(
   const resolved = await resolver.resolve(validated.blocks);
   const notes = [...validated.notes, ...resolved.notes];
 
-  if (!validated.cleared && resolved.blocks.length === 0)
+  if (!validated.cleared && resolved.blocks.length === 0) {
+    const shownNotes = capNotes(notes);
     return {
       saved: false,
       blocks: 0,
-      notes,
-      text: ["Nothing saved: no block was valid.", ...notesText(notes)].join(
-        "\n",
-      ),
+      notes: shownNotes,
+      text: [
+        "Nothing saved: no block was valid.",
+        ...notesText(shownNotes),
+      ].join("\n"),
     };
+  }
 
   const next: FindingsSet = {
     role: req.role,
@@ -244,10 +249,10 @@ async function applyInOrder(
     return {
       saved: false,
       blocks: 0,
-      notes: [...notes, ...result.notes],
+      notes: replyNotes(notes, result.notes),
       text: result.notes.join("\n"),
     };
-  const all = [...notes, ...result.notes];
+  const all = replyNotes(notes, result.notes);
   const count = result.saved.blocks.length;
   const head =
     count === 0
@@ -261,6 +266,19 @@ async function applyInOrder(
     notes: all,
     text: [head, ...notesText(all)].join("\n"),
   };
+}
+
+/** The call's notes then the store's, at most `NOTES_MAX` lines and one
+ *  counting the call's notes left out; the store's notes (what it dropped
+ *  or refused) are never the ones left out. */
+function replyNotes(own: string[], store: readonly string[]): string[] {
+  if (own.length + store.length <= NOTES_MAX) return [...own, ...store];
+  const room = Math.max(0, NOTES_MAX - store.length);
+  return [
+    ...own.slice(0, room),
+    `…and ${own.length - room} more.`,
+    ...store,
+  ];
 }
 
 function notesText(notes: readonly string[]): string[] {

@@ -99,11 +99,16 @@ export function upsertFindingSet(
 
   const blocks = [...next.blocks];
   const notes: string[] = [];
+  // The store's own notes (dropped blocks) keep their place: the call's
+  // notes fill only the room they leave.
   const build = (): FindingsSet => ({
     ...next,
     calls: previousCalls + 1,
     blocks: [...blocks],
-    notes: [...next.notes, ...notes].slice(0, FINDINGS_LIMITS.notes),
+    notes: [
+      ...next.notes.slice(0, Math.max(0, FINDINGS_LIMITS.notes - notes.length)),
+      ...notes,
+    ].slice(0, FINDINGS_LIMITS.notes),
   });
   let saved = build();
   while (bytes(saved) > FINDINGS_LIMITS.setBytes && blocks.length > 0) {
@@ -134,7 +139,8 @@ export function upsertFindingSet(
 /**
  * Saves `next` on the incident through a CAS update that writes only
  * `response.findingSets` and `incident.updatedAt` (never
- * `response.updatedAt`, the ledger or events). A refused set writes nothing.
+ * `response.updatedAt`, the ledger or events); `incident.updatedAt` becomes
+ * the later of its own and `next.updatedAt`. A refused set writes nothing.
  */
 export async function saveFindingSet(
   incidentId: string,
@@ -152,7 +158,10 @@ export async function saveFindingSet(
     result = { saved: upserted.saved, notes: upserted.notes };
     if (!upserted.saved) return { error: "refused" };
     response.findingSets = upserted.sets;
-    current.updatedAt = next.updatedAt;
+    // Never back: another write may have stamped a later time since this
+    // call read its clock.
+    if (!(Date.parse(current.updatedAt) > Date.parse(next.updatedAt)))
+      current.updatedAt = next.updatedAt;
     return current;
   });
   if (committed === null)

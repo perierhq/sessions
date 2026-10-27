@@ -70,7 +70,7 @@ const ISO_TIME =
 const NAME_MAX = 200;
 const CONTAINS_MAX = 500;
 /** Notes returned per call; the rest are counted. */
-const NOTES_MAX = 40;
+export const NOTES_MAX = 40;
 /** How much of an agent's value a note repeats. */
 const ECHO_MAX = 40;
 
@@ -581,7 +581,7 @@ function isKind(value: unknown): value is FindingKind {
 }
 
 /** At most `NOTES_MAX` notes, then one line counting the rest. */
-function capNotes(notes: string[]): string[] {
+export function capNotes(notes: string[]): string[] {
   if (notes.length <= NOTES_MAX) return notes;
   return [
     ...notes.slice(0, NOTES_MAX),

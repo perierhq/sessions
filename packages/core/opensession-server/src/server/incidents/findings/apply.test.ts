@@ -810,3 +810,29 @@ test("one call looks up at most 12 tool calls", async () => {
     "toolu_b13",
   ]);
 });
+
+test("the reply lists at most 40 notes and counts the rest", async () => {
+  const h = harness();
+  const hypothesis = (id: string) => ({
+    id,
+    kind: "hypothesis",
+    statement: "The replica pool drained.",
+    confidence: "medium",
+    evidence: Array.from({ length: 10 }, (_, i) => ({
+      type: "ledger",
+      id: `led_${id}_${i}`,
+    })),
+  });
+  const out = await applyFindings(
+    request({
+      input: { blocks: ["h1", "h2", "h3", "h4", "h5"].map(hypothesis) },
+    }),
+    h.deps,
+  );
+  expect(out.saved).toBe(true);
+  const lines = out.text.split("\n");
+  expect(lines[1]).toBe("Notes:");
+  expect(lines).toHaveLength(2 + 41);
+  expect(lines.at(-1)).toBe("- …and 10 more.");
+  expect(out.notes).toHaveLength(41);
+});

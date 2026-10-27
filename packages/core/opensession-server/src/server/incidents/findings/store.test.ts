@@ -161,6 +161,25 @@ test("notes are capped at 20", () => {
   expect(result.saved?.notes).toEqual(notes.slice(0, 20));
 });
 
+test("the store's own notes keep their place when the call's notes fill the set", () => {
+  const notes = Array.from({ length: 25 }, (_, i) => `Note ${i + 1}.`);
+  const blocks = Array.from({ length: 12 }, (_, i) =>
+    question(`b${i + 1}`, "x".repeat(6000)),
+  );
+  const result = upsertFindingSet(
+    undefined,
+    set("investigator", 1, { notes, blocks }),
+  );
+  expect(result.notes.length).toBeGreaterThan(0);
+  expect(result.saved?.notes).toHaveLength(20);
+  expect(result.saved?.notes.slice(-result.notes.length)).toEqual(
+    result.notes,
+  );
+  expect(result.saved?.notes.slice(0, 20 - result.notes.length)).toEqual(
+    notes.slice(0, 20 - result.notes.length),
+  );
+});
+
 function incidentFixture(): Incident {
   return {
     id: "inc-1",
@@ -224,6 +243,22 @@ test("saveFindingSet writes only findingSets and the incident's updatedAt", asyn
   const { response: _a, updatedAt: _b, ...topAfter } = after;
   const { response: _c, updatedAt: _d, ...topBefore } = fixture;
   expect(topAfter).toEqual(topBefore);
+});
+
+test("saveFindingSet never moves the incident's updatedAt back", async () => {
+  const fixture = { ...incidentFixture(), updatedAt: LATER };
+  const fake = fakeUpdate(fixture);
+  await saveFindingSet("inc-1", set("investigator", 1, { updatedAt: AT }), {
+    updateIncident: fake.update,
+  });
+  expect(fake.stored()?.updatedAt).toBe(LATER);
+  const newest = "2026-10-27T10:09:00.000Z";
+  await saveFindingSet(
+    "inc-1",
+    set("investigator", 1, { updatedAt: newest }),
+    { updateIncident: fake.update },
+  );
+  expect(fake.stored()?.updatedAt).toBe(newest);
 });
 
 test("saveFindingSet refuses without writing", async () => {
