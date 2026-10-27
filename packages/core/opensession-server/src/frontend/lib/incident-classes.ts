@@ -308,3 +308,16 @@ export const FINDINGS_COMPARE = "grid min-w-0 grid-cols-1 gap-x-4 gap-y-4";
  *  is held while the change loads. */
 export const FINDINGS_CHANGE_TITLE =
   "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
+
+/** The Findings section's heading and its "Round 2 under way" line,
+ *  outdented like the Cause section's so the label's text lines up with
+ *  the blocks' text and the rest of the page. */
+export const FINDINGS_SECTION_HEAD = "-mx-2 flex min-w-0 flex-col";
+
+/** "Round 2 under way": quiet, under the heading. */
+export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
+
+/** A cell of the Findings grid: one column on a phone; a half block takes
+ *  one desktop column, a full block both. */
+export const FINDINGS_CELL_HALF = "min-w-0 desktop:col-span-1";
+export const FINDINGS_CELL_FULL = "min-w-0 desktop:col-span-2";

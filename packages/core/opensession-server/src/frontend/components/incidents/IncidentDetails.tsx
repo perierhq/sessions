@@ -3,11 +3,21 @@ import type {
   AccessPreview,
   IncidentAgentsAccessView,
 } from "../../../shared/incident-access";
-import type { Incident, IncidentSummary } from "../../../shared/incidents";
+import { FINDINGS_COPY } from "../../../shared/findings";
+import type {
+  Incident,
+  IncidentSummary,
+  StripLane,
+} from "../../../shared/incidents";
 import { useSessionPrResource } from "../../hooks/useApiResources";
 import { useIncidentAccess } from "../../hooks/useIncidents";
 import { useIsPhone } from "../../hooks/useIsPhone";
 import { dayMonth, FIXED_BY_LABEL, formatUsd } from "../../lib/incidents/copy";
+import {
+  type FindingSource,
+  findingsPage,
+} from "../../lib/incidents/findings";
+import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import {
   agentsWorkspaceNote,
@@ -54,10 +64,14 @@ import {
 import { RunLedger } from "../RunLedger";
 import { LineStats } from "../TurnFooter";
 import { PlainButton } from "../../ui/plain-button";
+import { FindingsGrid } from "./findings/FindingsGrid";
 
 const BANDS = ["Fix", "Agents", "History"] as const;
 
-const GLYPH: Record<DetailRowKey, typeof IconPerson> = {
+const GLYPH: Record<
+  Exclude<DetailRowKey, `findings-${number}`>,
+  typeof IconPerson
+> = {
   change: IconPullRequest,
   note: IconFileText2,
   investigator: IconPerson,
@@ -110,8 +124,15 @@ function RowValue({ row }: { row: DetailRow }) {
   );
 }
 
+const isFindingsRow = (key: DetailRowKey): key is `findings-${number}` =>
+  key.startsWith("findings-");
+
+/** An earlier round's findings are history, like earlier incidents. */
+const glyphOf = (key: DetailRowKey) =>
+  isFindingsRow(key) ? IconHistory : GLYPH[key];
+
 function RowBody({ row }: { row: DetailRow }) {
-  const Glyph = GLYPH[row.key];
+  const Glyph = glyphOf(row.key);
   return (
     <>
       <span className={WS_SUMMARY_RAIL}>
@@ -197,7 +218,10 @@ export function IncidentDetailsView({
   );
 }
 
-function DetailSheet({
+/** A sheet the summary rows open: a centred dialog on a desktop, a bottom
+ *  sheet on a phone, with a visible Close. The Findings section opens the
+ *  agents' cost in one too. */
+export function DetailSheet({
   title,
   open,
   onClose,
@@ -376,13 +400,15 @@ function EarlierSheetBody({
   );
 }
 
-type Sheet = "cost" | "access" | "earlier";
+type Sheet = "cost" | "access" | "earlier" | "findings";
+const NO_HIGHLIGHT: ReadonlySet<string> = new Set();
 type PrTarget = Extract<DetailTarget, { kind: "pr" }>;
 
 /**
  * The summary rows with their data: the investigator's PR, the agents'
- * access, and the three sheets the rows open (Agent cost, Access, Earlier
- * incidents). Agent rows open the agent's own session.
+ * access, and the sheets the rows open (Agent cost, Access, Earlier
+ * incidents, an earlier round's findings). Agent rows open the agent's own
+ * session.
  */
 export function IncidentDetails({
   incident,
@@ -392,6 +418,8 @@ export function IncidentDetails({
   onOpenPr,
   onOpenIncident,
   onOpenSettings,
+  meta,
+  signalName,
 }: {
   incident: Incident;
   earlier: IncidentSummary[];
@@ -400,9 +428,13 @@ export function IncidentDetails({
   onOpenPr: (target: PrTarget) => void;
   onOpenIncident: (id: string) => void;
   onOpenSettings: (project: string, section?: ProjectSectionId) => void;
+  /** For signal blocks in an earlier round's findings. */
+  meta: (lane: StripLane) => StripLaneMeta;
+  signalName: (id: string) => string;
 }) {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [shown, setShown] = useState<Sheet>("cost");
+  const [round, setRound] = useState(0);
   const prSession = incident.response?.agents.findLast(
     (run) => run.role === "investigator" && run.prUrl,
   )?.sessionId;
@@ -417,6 +449,7 @@ export function IncidentDetails({
     budgetUsd,
     access,
     now: Date.now(),
+    findingRounds: findingsPage(incident)?.earlierRounds ?? [],
   });
 
   const onRow = (row: DetailRow) => {
@@ -425,6 +458,7 @@ export function IncidentDetails({
     if (target.kind === "pr") onOpenPr(target);
     else if (target.kind === "session") onOpenSession(target.sessionId);
     else if (target.kind === "sheet") {
+      if (target.sheet === "findings") setRound(target.round);
       setShown(target.sheet);
       setSheet(target.sheet);
     }
@@ -434,6 +468,21 @@ export function IncidentDetails({
     cost: "Agent cost",
     access: "Access",
     earlier: "Earlier incidents",
+    findings: FINDINGS_COPY.earlierRow(round),
+  };
+  const roundPage = shown === "findings" ? findingsPage(incident, { round }) : null;
+  const openSource = (target: FindingSource) => {
+    if (target.kind === "ledger") {
+      setShown("cost");
+      return;
+    }
+    if (target.kind === "url") {
+      window.open(target.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    close();
+    if (target.kind === "session") onOpenSession(target.sessionId);
+    else if (target.kind === "pr") onOpenPr(target);
   };
 
   return (
@@ -461,6 +510,19 @@ export function IncidentDetails({
                 close();
                 onOpenSettings(incident.project, "access");
               }}
+            />
+          )
+        ) : shown === "findings" ? (
+          roundPage && (
+            <FindingsGrid
+              page={roundPage}
+              incident={incident}
+              highlighted={NO_HIGHLIGHT}
+              animate={false}
+              meta={meta}
+              signalName={signalName}
+              onOpenSource={openSource}
+              columns={1}
             />
           )
         ) : (

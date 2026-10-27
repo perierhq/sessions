@@ -228,13 +228,19 @@ export function timelineRows(
   return [...anchors, ...events].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 }
 
+/** Somewhere a block's "Show source" opens. */
+export type FindingSource = DetailTarget | { kind: "ledger"; id: string };
+
+/** How long a block whose content changed keeps its tint, in ms. */
+export const FINDINGS_HIGHLIGHT_MS = 1200;
+
 /** Where a block's "Show source" leads: the agent session behind a tool
  *  call, the PR, the cost ledger. Null when the page has nothing to open
  *  (commit links come from the loaded commit). */
 export function sourceTarget(
   ref: FindingRef,
   incident: Pick<Incident, "project" | "response">,
-): DetailTarget | { kind: "ledger"; id: string } | null {
+): FindingSource | null {
   switch (ref.type) {
     case "tool":
       return { kind: "session", sessionId: ref.sessionId };
@@ -250,6 +256,53 @@ export function sourceTarget(
     }
     case "ledger":
       return { kind: "ledger", id: ref.id };
+    default:
+      return null;
+  }
+}
+
+/** What a block's content is, for telling a changed block from one the
+ *  agent only sent again: the block itself and what the page derived for it
+ *  (status, claim rows), not the byline, whose time moves on every call. */
+const contentOf = (item: FindingItem) =>
+  JSON.stringify([item.block, item.status ?? null, item.claims ?? null]);
+
+/** The keys of blocks on both pages whose content changed. A block that is
+ *  new, or only re-sent unchanged, is not in the set; without a previous
+ *  page nothing is. */
+export function changedKeys(
+  prev: readonly FindingItem[] | null,
+  next: readonly FindingItem[],
+): Set<string> {
+  const changed = new Set<string>();
+  if (!prev) return changed;
+  const before = new Map(prev.map((item) => [item.key, contentOf(item)]));
+  for (const item of next) {
+    const was = before.get(item.key);
+    if (was !== undefined && was !== contentOf(item)) changed.add(item.key);
+  }
+  return changed;
+}
+
+/** Ref types the page has somewhere to open (`sourceTarget`). */
+const OPENS: ReadonlySet<FindingRef["type"]> = new Set(["tool", "pr", "ledger"]);
+
+/** The data behind a block's "Show source": the quoted call of a log (or
+ *  of a compare's first log side), a change's PR, a hypothesis's first
+ *  evidence that opens. Null when nothing opens (signals, questions,
+ *  timelines, claims, commits). */
+export function itemSource(item: FindingItem): FindingRef | null {
+  const block = item.block;
+  switch (block.kind) {
+    case "log":
+      return block.source;
+    case "change":
+      return block.change.type === "pr" ? block.change : null;
+    case "hypothesis":
+      return block.evidence.find((ref) => OPENS.has(ref.type)) ?? null;
+    case "compare":
+      for (const side of block.sides) if ("log" in side) return side.log.source;
+      return null;
     default:
       return null;
   }

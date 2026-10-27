@@ -13,8 +13,11 @@ import type {
 import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
+  changedKeys,
+  type FindingItem,
   findingSpans,
   findingsPage,
+  itemSource,
   sourceTarget,
   timelineRows,
 } from "./findings";
@@ -410,4 +413,133 @@ test("show source opens the owner of the data", () => {
       incident,
     ),
   ).toBeNull();
+});
+
+test("an unchanged block keeps its key and gets no highlight", () => {
+  const inc = open(
+    response({
+      findingSets: [
+        set("investigator", 1, [question("a"), question("b")]),
+        set("verifier", 1, [question("c")]),
+      ],
+    }),
+  );
+  const items = findingsPage(inc)!.items;
+  expect(changedKeys(items, structuredClone(items)).size).toBe(0);
+
+  // A new call rewrites the set's time: the bylines change, the blocks don't.
+  const resent = findingsPage(
+    open(
+      response({
+        findingSets: [
+          set("investigator", 1, [question("a"), question("b")], {
+            updatedAt: T("12:40"),
+            calls: 2,
+          }),
+          set("verifier", 1, [question("c")]),
+        ],
+      }),
+    ),
+  )!.items;
+  expect(resent.map((item) => item.key)).toEqual(
+    items.map((item) => item.key),
+  );
+  expect(changedKeys(items, resent).size).toBe(0);
+
+  const edited = structuredClone(items);
+  const block = edited[0]!.block;
+  if (block.kind === "question") block.text = "What changed in acme?";
+  expect([...changedKeys(items, edited)]).toEqual(["investigator:a"]);
+
+  const added: FindingItem[] = [
+    ...structuredClone(items),
+    { ...structuredClone(items[0]!), key: "investigator:new" },
+  ];
+  expect(changedKeys(items, added).has("investigator:new")).toBe(false);
+  expect(changedKeys(null, items).size).toBe(0);
+});
+
+test("a block's source is its data: the quoted call, the PR, the first evidence that opens", () => {
+  const tool = {
+    type: "tool" as const,
+    sessionId: "os-inv",
+    useId: "toolu_1",
+    resultId: "tr-toolu_1",
+    tool: "Bash",
+    at: T("12:05"),
+    provenance: { kind: "shell" as const },
+  };
+  const pr = {
+    type: "pr" as const,
+    number: 12,
+    url: "https://github.com/acme/web/pull/12",
+    sessionId: "os-inv",
+  };
+  const asItem = (block: FindingBlock): FindingItem => ({
+    key: `investigator:${block.id}`,
+    role: "investigator",
+    block,
+    span: "full",
+    byline: "",
+  });
+  expect(
+    itemSource(
+      asItem({
+        id: "errors",
+        kind: "log",
+        size: "full",
+        source: tool,
+        lines: ["ERROR acme db timeout"],
+        highlight: [],
+        dropped: 0,
+      }),
+    ),
+  ).toEqual(tool);
+  expect(
+    itemSource(
+      asItem({ id: "fix", kind: "change", size: "full", change: pr, why: "" }),
+    ),
+  ).toEqual(pr);
+  expect(
+    itemSource(
+      asItem({
+        id: "slow-db",
+        kind: "hypothesis",
+        size: "full",
+        statement: "The pool is too small.",
+        confidence: "medium",
+        evidence: [
+          { type: "observation", signal: "sig-a", at: T("12:05") },
+          pr,
+          tool,
+        ],
+        claims: [],
+      }),
+    ),
+  ).toEqual(pr);
+  expect(
+    itemSource(
+      asItem({
+        id: "before-after",
+        kind: "compare",
+        size: "full",
+        sides: [
+          {
+            label: "before",
+            signal: { signalId: "sig-a", from: T("11:00"), to: T("12:00") },
+          },
+          {
+            label: "after",
+            log: {
+              source: tool,
+              lines: ["ERROR acme db timeout"],
+              highlight: [],
+              dropped: 0,
+            },
+          },
+        ],
+      }),
+    ),
+  ).toEqual(tool);
+  expect(itemSource(asItem(question("q")))).toBeNull();
 });
