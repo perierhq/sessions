@@ -792,3 +792,104 @@ describe("an account out of paid credits", () => {
     expect(benched("credits-added")).toBe(false);
   });
 });
+
+describe("an account whose organization refuses OAuth", () => {
+  // Blind accounts: no usage refresh reaches the network.
+  const blind = (id: string) => ({
+    ...mkAccount(id),
+    usageScope: "missing" as const,
+  });
+  const originalStore = readFileSync(storePath, "utf-8");
+  const poll = (fetchedAt: number) => ({
+    fetchedAt: new Date(fetchedAt).toISOString(),
+    fiveHour: { utilization: 5, resetsAt: null },
+    sevenDay: { utilization: 5, resetsAt: null },
+  });
+  const find = (id: string) =>
+    accounts.listAccountsPublic().find((a) => a.id === id);
+  const others = new Set([
+    "fresh",
+    "maxed",
+    "credits-spent",
+    "credits-added",
+    "reboot",
+  ]);
+
+  beforeAll(() => {
+    const parsed = JSON.parse(originalStore);
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        accounts: [
+          ...parsed.accounts,
+          blind("refused-kept"),
+          blind("refused-polled"),
+          blind("refused-reconnected"),
+          blind("refused-removed"),
+        ],
+      }),
+    );
+  });
+
+  afterAll(() => writeFileSync(storePath, originalStore));
+
+  test("stays out of the pool through plan headroom and a restart, and says why", () => {
+    const now = Date.now();
+    accounts.markOauthRefused("refused-kept", now);
+    accounts.__reloadSidelinesForTest();
+    // A snapshot from before the refusal says nothing about it.
+    accounts.__applyUsagePollForTest("refused-kept", poll(now - 60_000));
+    const account = find("refused-kept");
+    expect(account?.usable).toBe(false);
+    expect(account?.unusableReason).toBe("oauth-refused");
+    // Not a limit: there is no reset to count down to.
+    expect(account?.exhaustedUntil).toBeNull();
+    expect(
+      accounts.pickAccount(
+        new Set([
+          ...others,
+          "refused-polled",
+          "refused-reconnected",
+          "refused-removed",
+        ]),
+      ),
+    ).toBeUndefined();
+    expect(
+      accounts.getUsableAccountById("refused-kept", "claude-haiku-5-5"),
+    ).toBeUndefined();
+  });
+
+  test("benching it again does not move the bench", () => {
+    const now = Date.now();
+    accounts.markOauthRefused("refused-kept", now);
+    const first = accounts.oauthRefusedSince("refused-kept");
+    accounts.markOauthRefused("refused-kept", now + 60_000);
+    expect(accounts.oauthRefusedSince("refused-kept")).toBe(first);
+  });
+
+  test("comes back once a later usage poll succeeds", () => {
+    const now = Date.now();
+    accounts.markOauthRefused("refused-polled", now - 60_000);
+    expect(find("refused-polled")?.usable).toBe(false);
+    accounts.__applyUsagePollForTest("refused-polled", poll(now));
+    expect(find("refused-polled")?.usable).toBe(true);
+    expect(find("refused-polled")?.unusableReason).toBeNull();
+  });
+
+  test("comes back once the account is reconnected", () => {
+    accounts.markOauthRefused("refused-reconnected");
+    expect(find("refused-reconnected")?.unusableReason).toBe("oauth-refused");
+    accounts.setAccountUsageCredentials(
+      "refused-reconnected",
+      join(dir, "missing-credentials.json"),
+    );
+    expect(find("refused-reconnected")?.unusableReason).toBeNull();
+  });
+
+  test("removing the account drops the bench, so adding it back starts clean", () => {
+    accounts.markOauthRefused("refused-removed");
+    expect(accounts.oauthRefusedSince("refused-removed")).not.toBeNull();
+    expect(accounts.removeAccount("refused-removed")).toBe(true);
+    expect(accounts.oauthRefusedSince("refused-removed")).toBeNull();
+  });
+});

@@ -2318,6 +2318,63 @@ describe("runPi pi/anthropic account walk (fake engine, no network)", () => {
     expect(fake.usedTokens).toEqual([a.token, b.token, b.token, b.token]);
   });
 
+  /** Anthropic's refusal for an account whose organization turned OAuth off. */
+  const oauthRefused = {
+    error:
+      '403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}}}',
+    response: { status: 403, headers: {} },
+  };
+
+  test("an account whose organization refuses OAuth hands the turn to the next account and stays benched", async () => {
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const fake = fakeNativeSdk((token) =>
+      token === a.token ? oauthRefused : undefined,
+    );
+    const affinity = `affinity-${suffix}`;
+    const first = await runNativeTurn(fake.sdk, {
+      sessionId: `pi-claude-native-${suffix}-1`,
+      accountAffinityKey: affinity,
+    });
+    expect(first.errors).toHaveLength(0);
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+    // Its own bench, not a usage-window sideline: no reset frees it.
+    expect(sidelines()[`${a.id}#oauth-refused`]).toBeGreaterThan(
+      Date.now() + 24 * 60 * 60_000,
+    );
+    expect(sidelines()[`${a.id}:${model}`]).toBeUndefined();
+    // The same session, and any other caller, never try it again.
+    for (const key of [affinity, `other-${suffix}`]) {
+      const { errors } = await runNativeTurn(fake.sdk, {
+        sessionId: `pi-claude-native-${suffix}-${key}`,
+        accountAffinityKey: key,
+      });
+      expect(errors).toHaveLength(0);
+    }
+    expect(fake.usedTokens).toEqual([a.token, b.token, b.token, b.token]);
+  });
+
+  test("a one-shot call moves off an account whose organization refuses OAuth", async () => {
+    // One-shots run with no session affinity, a private run key and the
+    // "prompt" journal kind (one-shot.ts).
+    const {
+      suffix,
+      accounts: [a, b],
+    } = writePool(2);
+    const fake = fakeNativeSdk((token) =>
+      token === a.token ? oauthRefused : undefined,
+    );
+    const { errors, events } = await runNativeTurn(fake.sdk, {
+      sessionId: `oneshot-${suffix}`,
+    });
+    expect(errors).toHaveLength(0);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(fake.usedTokens).toEqual([a.token, b.token]);
+    expect(sidelines()[`${a.id}#oauth-refused`]).toBeDefined();
+  });
+
   test("a session keeps its account from turn to turn", async () => {
     const { suffix, accounts } = writePool(2);
     const fake = fakeNativeSdk(() => undefined);

@@ -286,6 +286,23 @@ export function isClaudeCreditsExhaustedError(message: string): boolean {
   return /out of extra usage/i.test(message);
 }
 
+/**
+ * Anthropic's refusal for an account whose organization does not allow OAuth
+ * sign-in: HTTP 403 permission_error, "OAuth authentication is currently not
+ * allowed for this organization." with error_code
+ * oauth_not_allowed_for_organization. It is an organization policy, not a
+ * limit or an outage: no reset frees it and retrying cannot help. One of the
+ * subscription errors below; the account walk tells it apart to bench the
+ * account until there is evidence it may sign in again.
+ */
+export function isClaudeOauthRefusedError(message: string): boolean {
+  const s = message.toLowerCase();
+  return (
+    s.includes("oauth_not_allowed_for_organization") ||
+    s.includes("oauth authentication is currently not allowed")
+  );
+}
+
 export function isClaudeSubscriptionError(message: string): boolean {
   const s = message.toLowerCase();
   return (
@@ -297,8 +314,7 @@ export function isClaudeSubscriptionError(message: string): boolean {
     // A 403 permission_error for an account whose organization refuses
     // OAuth sign-in: that account can't serve any request, another
     // account in the pool may.
-    s.includes("oauth_not_allowed_for_organization") ||
-    s.includes("oauth authentication is currently not allowed")
+    isClaudeOauthRefusedError(message)
   );
 }
 

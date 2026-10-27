@@ -13,7 +13,8 @@
  *  - Pool Claude accounts and all codex accounts → DM the instance owner.
  *
  * Detected issues: unreadable/expired Claude OAuth credential files, revoked
- * setup-tokens (401 from the usage endpoint), failed Claude OAuth refreshes,
+ * setup-tokens (401 from the usage endpoint), Claude accounts whose
+ * organization refuses OAuth sign-in, failed Claude OAuth refreshes,
  * and codex ChatGPT access tokens expired or within a day of expiry. Claude
  * refresh-token expiry is deliberately not predicted: the stored
  * `refreshTokenExpiresAt` is not extended when a refresh rotates the token,
@@ -125,6 +126,14 @@ function claudeIssues(): Issue[] {
         ? `Re-login on the VPS: \`CLAUDE_CONFIG_DIR=${a.credentialsPath.replace(/\/credentials\.json$/, "")} claude login\`, or switch to the web flow in Settings → Providers → account menu → "Connect usage".`
         : "Generate a fresh token with `claude setup-token` and update it in Settings → Providers.";
 
+    if (a.unusableReason === "oauth-refused") {
+      issues.push({
+        key: `claude:${a.id}:oauth-refused`,
+        message: `It's ${personaName()}. ${label} can't run models: its organization doesn't allow sign-in with OAuth, so runs skip it. Remove it in Settings → Providers, or reconnect it once the organization allows OAuth.`,
+        notify: who,
+      });
+      continue;
+    }
     if (a.usage?.errorStatus === 401) {
       issues.push({
         key: `claude:${a.id}:${a.credentialsPath ? "usage-revoked" : "revoked"}`,

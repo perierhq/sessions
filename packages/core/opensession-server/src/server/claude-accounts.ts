@@ -64,6 +64,11 @@ const EXHAUSTED_UTILIZATION = 97;
 const SCOPED_EXHAUSTED_UTILIZATION = 100;
 // The account-wide 7-day window counts as spent only when full.
 const WEEKLY_EXHAUSTED_UTILIZATION = 100;
+// An account whose organization refuses OAuth sign-in is benched until a later
+// usage poll succeeds or the account is reconnected. This only bounds the
+// persisted entry: past it the account gets one more request, which benches it
+// again if the policy still stands.
+const OAUTH_REFUSED_BENCH_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface ClaudeAccount {
   id: string;
@@ -135,6 +140,9 @@ export interface ClaudeAccountPublic {
   noUsageScope: boolean;
   credentialsPath?: string;
   exhaustedUntil: string | null;
+  /** Why the account cannot serve at all, apart from usage limits.
+   *  "oauth-refused": its organization does not allow sign-in with OAuth. */
+  unusableReason: "oauth-refused" | null;
   usable: boolean;
 }
 
@@ -211,6 +219,19 @@ function creditsKey(id: string): string {
   return `${id}#credits`;
 }
 
+/** The account-wide bench for an organization that refuses OAuth sign-in.
+ *  Its own key: no usage window or reset time says anything about it. */
+function oauthRefusedKey(id: string): string {
+  return `${id}#oauth-refused`;
+}
+
+/** When the account was benched for a refused OAuth sign-in, if it is. */
+export function oauthRefusedSince(id: string): number | null {
+  if (!isExhaustionKeyActive(oauthRefusedKey(id))) return null;
+  const until = sidelines().get(oauthRefusedKey(id));
+  return until === undefined ? null : until - OAUTH_REFUSED_BENCH_MS;
+}
+
 /** Start of the next calendar month (UTC), when monthly credit caps reset. */
 function nextMonthStart(now: number): number {
   const d = new Date(now);
@@ -254,6 +275,16 @@ function releaseDisprovenSidelines(
 ): void {
   const map = sidelines();
   let changed = false;
+  // Any poll that succeeded after the refusal is evidence the account may
+  // sign in again; a snapshot from before it says nothing.
+  const refusedSince = oauthRefusedSince(account.id);
+  if (refusedSince !== null && Date.parse(usage.fetchedAt) > refusedSince) {
+    map.delete(oauthRefusedKey(account.id));
+    changed = true;
+    console.log(
+      `[claude-accounts] ${account.name} usable again (a usage poll signed in with OAuth${via})`,
+    );
+  }
   if (map.has(creditsKey(account.id)) && hasCreditEvidence(usage)) {
     map.delete(creditsKey(account.id));
     changed = true;
@@ -719,7 +750,8 @@ export function startUsagePoller(): void {
 function isExhausted(id: string): boolean {
   return (
     isExhaustionKeyActive(exhaustionKey(id)) ||
-    isExhaustionKeyActive(creditsKey(id))
+    isExhaustionKeyActive(creditsKey(id)) ||
+    isExhaustionKeyActive(oauthRefusedKey(id))
   );
 }
 
@@ -904,6 +936,9 @@ function toPublic(a: ClaudeAccount): ClaudeAccountPublic {
     noUsageScope: a.usageScope === "missing" && !a.credentialsPath,
     credentialsPath: a.credentialsPath,
     exhaustedUntil: until > Date.now() ? new Date(until).toISOString() : null,
+    unusableReason: isExhaustionKeyActive(oauthRefusedKey(a.id))
+      ? "oauth-refused"
+      : null,
     usable:
       !isExhausted(a.id) &&
       (fiveHour === null || fiveHour < EXHAUSTED_UTILIZATION),
@@ -1029,6 +1064,8 @@ export function setAccountOwner(
     if (accounts[idx].credentialsPath)
       credentialsRefreshBlockedUntil.delete(accounts[idx].credentialsPath);
     if (trimmedPath) credentialsRefreshBlockedUntil.delete(trimmedPath);
+    // New sign-in credentials: give the account another chance.
+    clearOauthRefused(id);
   }
   accounts[idx] = next;
   writeStore(accounts);
@@ -1062,6 +1099,8 @@ export function setAccountUsageCredentials(
   writeStore(accounts);
   usageCache.delete(id);
   credentialsRefreshBlockedUntil.delete(path);
+  // Reconnected: give the account another chance.
+  clearOauthRefused(id);
   void refreshAccountUsage(next);
   return toPublic(next);
 }
@@ -1075,6 +1114,7 @@ export function removeAccount(id: string): boolean {
   const map = sidelines();
   map.delete(exhaustionKey(id));
   map.delete(creditsKey(id));
+  map.delete(oauthRefusedKey(id));
   for (const key of [...map.keys()]) {
     if (key.startsWith(`${id}:`)) map.delete(key);
   }
@@ -1445,6 +1485,32 @@ export function markCreditsExhausted(id: string, now = Date.now()): void {
 }
 
 /**
+ * Bench an account whose organization refuses OAuth sign-in (403
+ * oauth_not_allowed_for_organization). Every request on it fails the same way
+ * until the organization's policy changes, so it stays out of the pool until a
+ * later usage poll succeeds or the account is reconnected. Account-wide, and
+ * benching it again keeps the first bench, so the time it was first refused
+ * stays the line a usage poll has to be newer than. No immediate usage
+ * refresh: the poll is the evidence that releases it.
+ */
+export function markOauthRefused(id: string, now = Date.now()): void {
+  if (oauthRefusedSince(id) !== null) return;
+  const account = readStore().find((a) => a.id === id);
+  sidelines().set(oauthRefusedKey(id), now + OAUTH_REFUSED_BENCH_MS);
+  persistSidelines();
+  console.warn(
+    `[claude-accounts] ${account?.name || id} (${id.slice(0, 8)}) benched: its organization doesn't allow sign-in with OAuth. ` +
+      `It returns after a successful usage poll or a reconnect; otherwise remove it in Settings.`,
+  );
+}
+
+function clearOauthRefused(id: string): void {
+  const map = sidelines();
+  if (!map.delete(oauthRefusedKey(id))) return;
+  persistSidelines();
+}
+
+/**
  * Briefly sideline an account whose engine bridge wedged (new provider
  * requests hang while established streams keep flowing). The wedge is
  * account-scoped — every model through the same bridge hangs — so retries and
@@ -1516,6 +1582,7 @@ export function earliestPoolReset(
     if (isAccountUsableFor(a, model, allowExtraUsage)) return now;
     consider(sidelines().get(exhaustionKey(a.id)));
     consider(sidelines().get(creditsKey(a.id)));
+    consider(sidelines().get(oauthRefusedKey(a.id)));
     for (const required of requiredModels(model)) {
       if (required) {
         consider(sidelines().get(exhaustionKey(a.id, required)));
