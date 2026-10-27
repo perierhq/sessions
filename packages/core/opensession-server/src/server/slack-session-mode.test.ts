@@ -97,7 +97,7 @@ test("continuation and detached host forward mode to the credential selector", a
   ).text();
   expect(client).toContain("mode: opts.mode,");
   const host = await Bun.file(
-    new URL("../runner-host/host.ts", import.meta.url),
+    new URL("../runner-host/run-opts.ts", import.meta.url),
   ).text();
   expect(host).toContain("mode: spec.mode,");
   const runner = await Bun.file(

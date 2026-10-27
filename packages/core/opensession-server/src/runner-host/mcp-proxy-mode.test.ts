@@ -57,7 +57,7 @@ describe("every launcher gets the mode through the spec", () => {
 
   test("the host closes the shared client after the run, before lingering", async () => {
     const host = await source("./host.ts");
-    const run = host.indexOf("for await (const event of runAgent({");
+    const run = host.indexOf("for await (const event of runAgent(");
     const close = host.indexOf("opensessionMcp?.close();");
     const linger = host.indexOf("shutdownAcked = resolveWait;");
     expect(run).toBeGreaterThan(0);

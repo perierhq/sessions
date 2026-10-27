@@ -28,6 +28,7 @@ mkdirSync(process.env.OPENSESSION_SESSIONS_DIR, { recursive: true });
 const {
   HostHandle,
   hostedEventsWithJournal,
+  hostedRunRecord,
   localRunHostsSupported,
   reconcileUncertainHostEvents,
   retryHostedKernelCall,
@@ -140,6 +141,49 @@ describe("hosted kernel retry", () => {
 });
 
 describe("hosted run journal", () => {
+  test("journals every option restart recovery starts the run with", () => {
+    const options = {
+      mode: "code",
+      mcpServers: ["acme-docs"],
+      user: "ada@example.test",
+      accountUser: "owner@example.test",
+      mcpGrantUser: "owner@example.test",
+      author: { name: "Ada Acme", email: "ada@example.test" },
+      deniedTools: { deploy: "not in this run" },
+      webFetchHosts: ["docs.example.test"],
+      publicationPolicy: {
+        repo: "acme/app",
+        branch: "main",
+        headBranch: "fix-build",
+      },
+      bashRunAs: "acme-agent",
+      confirmTools: { release: "confirm first" },
+      aws: true,
+      claudeCliEnv: true,
+      codexCliEnv: true,
+      effort: "high",
+      fastMode: true,
+      speed: "fast",
+      pstackMode: true,
+      projectSkillsOnly: true,
+      accountId: "account-acme",
+      accountStrict: true,
+      usageCredits: true,
+      fallbackModel: "none",
+      prReviewer: "acme/reviewers",
+      readRepos: ["acme/shared"],
+      attachedRepos: ["acme/web"],
+    } satisfies Partial<RunHostSpec>;
+    const record = hostedRunRecord({
+      hostId: "rh-acme",
+      osSessionId: "session-acme",
+      prompt: "fix the build",
+      cwd: "/work/acme",
+      ...options,
+    });
+    expect(record).toMatchObject(options);
+  });
+
   test("retires a cancelled host that ends without a terminal event", async () => {
     const root = mkdtempSync(join(tmpdir(), "host-quiet-cancel-test-"));
     roots.push(root);

@@ -669,7 +669,7 @@ export async function* hostedEventsWithJournal(
   }
 }
 
-function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
+export function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
   return {
     runKey: spec.hostId,
     hostId: spec.hostId,
@@ -683,6 +683,8 @@ function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
     mcpServers: spec.mcpServers,
     user: spec.user,
     accountUser: spec.accountUser,
+    mcpGrantUser: spec.mcpGrantUser,
+    author: spec.author,
     deniedTools: spec.deniedTools,
     webFetchHosts: spec.webFetchHosts,
     publicationPolicy: spec.publicationPolicy,

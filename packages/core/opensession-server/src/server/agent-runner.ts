@@ -1600,6 +1600,46 @@ async function recoveryRemoteWorkspace(run: ActiveRunRecord): Promise<{
   };
 }
 
+/**
+ * The options a journaled run was started with. Every restart-recovery path
+ * starts its replacement run with these, so a resumed turn runs as the
+ * original did (host-client.ts hostedRunRecord and pi-runner.ts write them).
+ */
+function journaledRunOptions(run: ActiveRunRecord) {
+  return {
+    cwd: run.cwd,
+    mode: run.mode,
+    model: run.model,
+    selectedModel: run.selectedModel,
+    transientFallback: run.transientFallback,
+    effort: run.effort,
+    fastMode: run.fastMode,
+    speed: run.speed,
+    pstackMode: run.pstackMode,
+    projectSkillsOnly: run.projectSkillsOnly,
+    mcpServers: run.mcpServers ?? "all",
+    mcpGrantUser: run.mcpGrantUser,
+    author: run.author,
+    user: run.user,
+    accountUser: run.accountUser,
+    deniedTools: run.deniedTools,
+    webFetchHosts: run.webFetchHosts,
+    publicationPolicy: run.publicationPolicy,
+    bashRunAs: run.bashRunAs,
+    confirmTools: run.confirmTools,
+    aws: run.aws,
+    claudeCliEnv: run.claudeCliEnv,
+    codexCliEnv: run.codexCliEnv,
+    fallbackModel: run.fallbackModel,
+    accountId: run.accountId,
+    accountStrict: run.accountStrict,
+    usageCredits: run.usageCredits,
+    prReviewer: run.prReviewer,
+    readRepos: run.readRepos,
+    attachedRepos: run.attachedRepos,
+  } satisfies Partial<RunAgentOpts>;
+}
+
 export async function resumeInterruptedRuns(
   onResumed?: (
     osSessionId?: string,
@@ -2112,36 +2152,15 @@ export async function resumeInterruptedRuns(
                     ? undefined
                     : run.promptEntryId,
                   startToken: run.runKey,
+                  ...journaledRunOptions(run),
                   sessionId: run.claudeSessionId || undefined,
-                  cwd: run.cwd,
                   remoteWorkspace: recovered.remoteWorkspace,
-                  mode: run.mode,
-                  model: run.model,
-                  selectedModel: run.selectedModel,
-                  transientFallback: run.transientFallback,
-                  effort: run.effort,
-                  projectSkillsOnly: run.projectSkillsOnly,
-                  fastMode: run.fastMode,
-                  speed: run.speed,
-                  mcpServers: run.mcpServers ?? "all",
                   inProcessMcp: run.osSessionId
                     ? await inProcessMcpFor?.(run.osSessionId, run.user)
                     : undefined,
                   reposNote: run.osSessionId
                     ? reposNoteFor?.(run.osSessionId)
                     : undefined,
-                  user: run.user,
-                  accountUser: run.accountUser,
-                  deniedTools: run.deniedTools,
-                  webFetchHosts: run.webFetchHosts,
-                  publicationPolicy: run.publicationPolicy,
-                  bashRunAs: run.bashRunAs,
-                  confirmTools: run.confirmTools,
-                  aws: run.aws,
-                  fallbackModel: run.fallbackModel,
-                  accountId: run.accountId,
-                  accountStrict: run.accountStrict,
-                  usageCredits: run.usageCredits,
                   journal: {
                     osSessionId: run.osSessionId,
                     kind: recoveryKind(run.kind, "resume"),
@@ -2230,40 +2249,14 @@ export async function resumeInterruptedRuns(
                 prompt: run.prompt!,
                 promptEntryId: run.promptEntryId,
                 startToken: run.runKey,
-                cwd: run.cwd,
+                ...journaledRunOptions(run),
                 remoteWorkspace: recovered.remoteWorkspace,
-                mode: run.mode,
-                model: run.model,
-                selectedModel: run.selectedModel,
-                transientFallback: run.transientFallback,
-                effort: run.effort,
-                projectSkillsOnly: run.projectSkillsOnly,
-                fastMode: run.fastMode,
-                speed: run.speed,
-                mcpServers: run.mcpServers ?? "all",
                 inProcessMcp: run.osSessionId
                   ? await inProcessMcpFor?.(run.osSessionId, run.user)
                   : undefined,
                 reposNote: run.osSessionId
                   ? reposNoteFor?.(run.osSessionId)
                   : undefined,
-                user: run.user,
-                accountUser: run.accountUser,
-                deniedTools: run.deniedTools,
-                webFetchHosts: run.webFetchHosts,
-                publicationPolicy: run.publicationPolicy,
-                bashRunAs: run.bashRunAs,
-                confirmTools: run.confirmTools,
-                aws: run.aws,
-                claudeCliEnv: run.claudeCliEnv,
-                codexCliEnv: run.codexCliEnv,
-                fallbackModel: run.fallbackModel,
-                accountId: run.accountId,
-                accountStrict: run.accountStrict,
-                usageCredits: run.usageCredits,
-                prReviewer: run.prReviewer,
-                readRepos: run.readRepos,
-                attachedRepos: run.attachedRepos,
                 journal: {
                   osSessionId: run.osSessionId,
                   kind: recoveryKind(run.kind, "rerun"),
@@ -2338,41 +2331,15 @@ export async function resumeInterruptedRuns(
                   )
                 : restartContinuationPrompt(run.prompt),
               startToken: run.runKey,
+              ...journaledRunOptions(run),
               sessionId: run.claudeSessionId,
-              cwd: run.cwd,
               remoteWorkspace: recovered.remoteWorkspace,
-              mode: run.mode,
-              model: run.model,
-              selectedModel: run.selectedModel,
-              transientFallback: run.transientFallback,
-              effort: run.effort,
-              projectSkillsOnly: run.projectSkillsOnly,
-              fastMode: run.fastMode,
-              speed: run.speed,
-              mcpServers: run.mcpServers ?? "all",
               inProcessMcp: run.osSessionId
                 ? await inProcessMcpFor?.(run.osSessionId, run.user)
                 : undefined,
               reposNote: run.osSessionId
                 ? reposNoteFor?.(run.osSessionId)
                 : undefined,
-              user: run.user,
-              accountUser: run.accountUser,
-              deniedTools: run.deniedTools,
-              webFetchHosts: run.webFetchHosts,
-              publicationPolicy: run.publicationPolicy,
-              bashRunAs: run.bashRunAs,
-              confirmTools: run.confirmTools,
-              aws: run.aws,
-              claudeCliEnv: run.claudeCliEnv,
-              codexCliEnv: run.codexCliEnv,
-              fallbackModel: run.fallbackModel,
-              accountId: run.accountId,
-              accountStrict: run.accountStrict,
-              usageCredits: run.usageCredits,
-              prReviewer: run.prReviewer,
-              readRepos: run.readRepos,
-              attachedRepos: run.attachedRepos,
               journal: {
                 osSessionId: run.osSessionId,
                 kind: recoveryKind(run.kind, "resume"),

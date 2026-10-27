@@ -920,6 +920,24 @@ describe("run journal", () => {
     });
   });
 
+  it("journals the MCP grant identity and commit author for recovery", () => {
+    const author = { name: "Ada Acme", email: "ada@example.test" };
+    const record = mod.buildRunJournalRecord(
+      { mcpGrantUser: "owner@example.test", author },
+      { runKey: "identity", cwd: "/tmp" },
+    );
+    expect(record).toMatchObject({
+      mcpGrantUser: "owner@example.test",
+      author,
+    });
+    expect(
+      mod.buildRunJournalRecord(
+        { author: null },
+        { runKey: "no-author", cwd: "/tmp" },
+      ).author,
+    ).toBeNull();
+  });
+
   it("settles headless journal-owned runs on their terminal event", async () => {
     const sessionId = `headless-${crypto.randomUUID()}`;
     const fake = makeFakeEngine([{ kind: "clean" }]);
@@ -2141,4 +2159,104 @@ describe("restart recovery reattach", () => {
       await clearRunState(sessionId);
     }
   });
+});
+
+describe("restart recovery keeps the run's options", () => {
+  // What a journaled run was started with. Recovery must start the
+  // replacement with the same options, whichever path it takes.
+  const runOptions = {
+    mode: "code",
+    mcpServers: ["acme-docs"],
+    user: "ada@example.test",
+    accountUser: "owner@example.test",
+    mcpGrantUser: "owner@example.test",
+    author: { name: "Ada Acme", email: "ada@example.test" },
+    deniedTools: { deploy: "not in this run" },
+    webFetchHosts: ["docs.example.test"],
+    publicationPolicy: {
+      repo: "acme/app",
+      branch: "main",
+      headBranch: "fix-build",
+    },
+    bashRunAs: "acme-agent",
+    confirmTools: { release: "confirm first" },
+    aws: true,
+    claudeCliEnv: true,
+    codexCliEnv: true,
+    effort: "high",
+    fastMode: true,
+    speed: "fast",
+    pstackMode: true,
+    projectSkillsOnly: true,
+    accountId: "account-acme",
+    accountStrict: true,
+    usageCredits: true,
+    fallbackModel: "none",
+    prReviewer: "acme/reviewers",
+    readRepos: ["acme/shared"],
+    attachedRepos: ["acme/web"],
+  } satisfies Partial<mod.ActiveRunRecord>;
+
+  const paths = [
+    {
+      name: "a local host that is gone resumes in-process",
+      localHost: true,
+      engineSession: true,
+    },
+    {
+      name: "a run without an engine session re-runs from scratch",
+      localHost: false,
+      engineSession: false,
+    },
+    {
+      name: "a run with an engine session resumes",
+      localHost: false,
+      engineSession: true,
+    },
+  ];
+
+  for (const path of paths) {
+    it(`${path.name} with the run's options`, async () => {
+      const sessionId = `recovery-options-${crypto.randomUUID()}`;
+      const runKey = path.localHost
+        ? `rh-${crypto.randomUUID()}`
+        : `run-${crypto.randomUUID()}`;
+      const fake = makeFakeEngine([{ kind: "clean" }]);
+      agent.__setEngineForTest(fake.engine);
+      if (path.localHost) agent.__setLocalHostResumeForTest(async () => null);
+      const run: mod.ActiveRunRecord = {
+        runKey,
+        ...(path.localHost ? { hostId: runKey } : {}),
+        osSessionId: sessionId,
+        ...(path.engineSession
+          ? { claudeSessionId: `pi-${crypto.randomUUID()}` }
+          : {}),
+        prompt: "fix the build",
+        cwd: "/tmp",
+        model: "pi/anthropic/claude-sonnet-5",
+        kind: "prompt",
+        startedAt: new Date().toISOString(),
+        ...runOptions,
+      };
+      if (!path.localHost) await mod.journalSet(run);
+      await clearRunState(sessionId);
+      const terminal = Promise.withResolvers<StreamEvent>();
+      try {
+        await agent.resumeInterruptedRuns(
+          (_id, event) => event && terminal.resolve(event),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          path.localHost ? [run] : [],
+        );
+        await terminal.promise;
+        expect(fake.calls).toHaveLength(1);
+        expect(fake.calls[0].opts).toMatchObject(runOptions);
+      } finally {
+        mod.journalClear(runKey);
+        await clearRunState(sessionId);
+      }
+    });
+  }
 });
