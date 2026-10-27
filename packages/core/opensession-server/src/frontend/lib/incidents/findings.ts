@@ -219,12 +219,11 @@ export function timelineRows(
   if (response?.merge?.status === "merged" && mergeRound === round)
     anchors.push({ at: response.merge.at, text: "Merged", anchor: true });
 
-  const events: TimelineRow[] = block.events.map((event) => ({
-    at: event.at,
-    text: event.text,
-    anchor: false,
-    ...(event.ref ? { ref: event.ref } : {}),
-  }));
+  const events = block.events.map((event) => {
+    const row: TimelineRow = { at: event.at, text: event.text, anchor: false };
+    if (event.ref) row.ref = event.ref;
+    return row;
+  });
   return [...anchors, ...events].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 }
 
@@ -239,13 +238,14 @@ export function sourceTarget(
     case "tool":
       return { kind: "session", sessionId: ref.sessionId };
     case "pr": {
-      const url = httpUrl(ref.url);
-      return {
+      const target: DetailTarget = {
         kind: "pr",
         repo: incident.project,
         number: ref.number,
-        ...(url ? { url } : {}),
       };
+      const url = httpUrl(ref.url);
+      if (url) target.url = url;
+      return target;
     }
     case "ledger":
       return { kind: "ledger", id: ref.id };

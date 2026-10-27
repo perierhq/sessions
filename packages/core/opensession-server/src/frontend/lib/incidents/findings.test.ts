@@ -57,7 +57,10 @@ const invRun = (round: number, claims: Claim[]): AgentRun =>
     },
   });
 
-const question = (id: string, size: "full" | "half" = "full"): FindingBlock => ({
+const question = (
+  id: string,
+  size: "full" | "half" = "full",
+): FindingBlock => ({
   id,
   kind: "question",
   size,
@@ -131,18 +134,12 @@ test("investigator blocks come first, then the verifier's", () => {
       ],
     }),
   );
-  expect(keys(inc)).toEqual([
-    "investigator:a",
-    "investigator:b",
-    "verifier:c",
-  ]);
+  expect(keys(inc)).toEqual(["investigator:a", "investigator:b", "verifier:c"]);
 });
 
 test("round selection keeps the previous round until the new investigator shows findings", () => {
   const r1 = set("investigator", 1, [question("a")]);
-  const first = findingsPage(
-    open(response({ round: 2, findingSets: [r1] })),
-  );
+  const first = findingsPage(open(response({ round: 2, findingSets: [r1] })));
   expect(first?.round).toBe(1);
   expect(first?.underWay).toBe(2);
 
@@ -201,7 +198,10 @@ test("earlier rounds are listed for details", () => {
 });
 
 test("an automatic claims block is added when the report has claims", () => {
-  const claims = [{ text: "The pool is too small." }, { text: "Retries pile up." }];
+  const claims = [
+    { text: "The pool is too small." },
+    { text: "Retries pile up." },
+  ];
   const withClaims = findingsPage(
     open(
       response({
@@ -395,7 +395,10 @@ test("show source opens the owner of the data", () => {
   ).toEqual({ kind: "session", sessionId: "os-inv" });
   const url = "https://github.com/acme/web/pull/12";
   expect(
-    sourceTarget({ type: "pr", number: 12, url, sessionId: "os-inv" }, incident),
+    sourceTarget(
+      { type: "pr", number: 12, url, sessionId: "os-inv" },
+      incident,
+    ),
   ).toEqual({ kind: "pr", repo: "acme", number: 12, url });
   expect(sourceTarget({ type: "ledger", id: "led_1" }, incident)).toEqual({
     kind: "ledger",
