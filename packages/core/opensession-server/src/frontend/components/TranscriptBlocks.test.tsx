@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TranscriptEntry } from "../lib/types";
+import { MessageLinkProvider } from "../lib/message-link";
 import {
   setThinkingMessagesPref,
   setTurnPrefs,
@@ -179,6 +180,40 @@ describe("TranscriptBlocks sent message actions", () => {
     );
     expect(html.match(/aria-label="Edit and send again"/g)).toHaveLength(1);
     expect(html.match(/aria-label="Copy message"/g)).toHaveLength(1);
+  });
+
+  test("offers a message link on every stored person turn", () => {
+    const html = renderToStaticMarkup(
+      <MessageLinkProvider value={(id) => `https://example.test/s#${id}`}>
+        <TranscriptBlocks
+          owner="Anonymous"
+          entries={[
+            {
+              id: "mine",
+              type: "user",
+              content: "Fix the typo",
+              timestamp: "2026-08-12T12:00:00Z",
+            },
+            {
+              id: "theirs",
+              type: "user",
+              content: "A teammate's message",
+              timestamp: "2026-08-12T12:01:00Z",
+              sender: "Ada",
+            },
+          ]}
+          optimisticEntries={[
+            {
+              id: "sending",
+              type: "user",
+              content: "Not stored yet",
+              timestamp: "2026-08-12T12:02:00Z",
+            },
+          ]}
+        />
+      </MessageLinkProvider>,
+    );
+    expect(html.match(/aria-label="Copy link"/g)).toHaveLength(2);
   });
 
   test("does not animate a sent message when delivery settles", () => {

@@ -758,6 +758,7 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
                       ? undefined
                       : onEditMessage
                   }
+                  optimistic={optimisticEntryIds.has(inner.entry.id)}
                 />
               ) : null}
             </React.Fragment>
@@ -850,6 +851,7 @@ const LoadedTranscriptBlocks = function LoadedTranscriptBlocks({
             onEdit={
               optimisticEntryIds.has(block.entry.id) ? undefined : onEditMessage
             }
+            optimistic={optimisticEntryIds.has(block.entry.id)}
             onContinue={i === groupedBlocks.length - 1 ? onContinue : undefined}
           />
         );

@@ -17,6 +17,7 @@ import { duration, ease } from "../../ui/motion";
 import { EmptyState, InlineAlert } from "../../ui/state";
 import { AGENT_NAME } from "../../lib/brand";
 import { withQuotes, type Quote } from "../../lib/quotes";
+import { messageLink } from "../../lib/message-link";
 import {
   fetchFileMentions,
   fetchMentionSuggestions,
@@ -671,6 +672,9 @@ export function SessionViewerMainRegion({
     !showVideo &&
     !showTerminal;
   const autocompleteEnabled = useComposerAutocompleteEnabled();
+  const sessionWorkspaceId = session.workspaceId;
+  const linkToMessage = (entryId: string) =>
+    messageLink({ id: session.id, workspaceId: sessionWorkspaceId }, entryId);
   const voice = useSessionVoice({
     sessionId: session.id,
     title: session.title,
@@ -1022,6 +1026,7 @@ export function SessionViewerMainRegion({
                     toolPathRoots={toolPathRoots}
                     liveSubagents={liveSubagents}
                     openAsset={openAssetFromTranscript}
+                    messageLink={linkToMessage}
                     onRender={onTranscriptRender}
                     entries={entries}
                     optimisticEntries={optimisticTranscriptEntries}
