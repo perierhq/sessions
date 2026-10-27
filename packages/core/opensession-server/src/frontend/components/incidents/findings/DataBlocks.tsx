@@ -22,7 +22,10 @@ import {
   FINDINGS_STRIP_SUMMARY,
 } from "../../../lib/incident-classes";
 import { ApiError } from "../../../lib/api/request";
-import type { FindingItem } from "../../../lib/incidents/findings";
+import {
+  type FindingItem,
+  FINDINGS_MARKDOWN,
+} from "../../../lib/incidents/findings";
 import { httpUrl } from "../../../lib/incidents/links";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
 import {
@@ -264,7 +267,7 @@ export function ChangeView({
       )}
       {why.trim() ? (
         <MarkdownBody
-          html={renderMarkdown(why)}
+          html={renderMarkdown(why, FINDINGS_MARKDOWN)}
           enhance={false}
           className={FINDINGS_PROSE_QUIET}
         />

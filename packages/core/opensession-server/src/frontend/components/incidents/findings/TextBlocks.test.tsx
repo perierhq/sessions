@@ -96,6 +96,10 @@ test("frame: heading, byline and show source", () => {
   const labelledBy = /aria-labelledby="([^"]+)"/.exec(html)?.[1];
   expect(labelledBy).toBeTruthy();
   expect(html).toContain(`id="${labelledBy}"`);
+  // "Show source" says which block it opens.
+  expect(html).toMatch(
+    new RegExp(`<button[^>]*aria-describedby="${labelledBy}"[^>]*>`),
+  );
 
   const plain = renderToStaticMarkup(
     <BlockFrame item={item(hypothesis())} highlight={false} onOpenSource={null}>
@@ -133,6 +137,24 @@ test("agent prose is Markdown, never raw HTML", () => {
   );
   expect(html).toContain("<strong>Pool</strong>");
   expect(html).not.toContain("<img src=x");
+});
+
+test("agent prose has no headings or embeds of its own", () => {
+  const html = renderToStaticMarkup(
+    <HypothesisBlock
+      item={item(
+        hypothesis({
+          statement:
+            "# Pool\n\n![graph](https://example.test/graph.png)\n\nhttps://www.tella.tv/video/my-demo-3592",
+        }),
+        { status: "unchecked" },
+      )}
+    />,
+  );
+  expect(html).not.toMatch(/<h\d/);
+  expect(html).toContain("<p>Pool</p>");
+  expect(html).not.toContain("<img");
+  expect(html).not.toContain("<iframe");
 });
 
 test("log lines render as text with highlights and the dropped count", () => {

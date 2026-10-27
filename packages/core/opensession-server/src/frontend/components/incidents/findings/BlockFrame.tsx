@@ -16,7 +16,8 @@ import { cn } from "../../../ui/cn";
 /**
  * One block of the Findings section: a section named by its heading, who
  * put it there and when, and a "Show source" link when the block's data
- * has somewhere to open. The link only opens; nothing in a block acts.
+ * has somewhere to open, described by the block's heading so each one
+ * says which block it opens. The link only opens; nothing in a block acts.
  * `highlight` tints the block for a moment after its content changed.
  */
 export function BlockFrame({
@@ -49,6 +50,7 @@ export function BlockFrame({
             variant="ghost"
             size="sm"
             className="-mr-2 shrink-0 phone:min-h-11"
+            aria-describedby={headingId}
             onClick={onOpenSource}
           >
             {FINDINGS_COPY.showSource}

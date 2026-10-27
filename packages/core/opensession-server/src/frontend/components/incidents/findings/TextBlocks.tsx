@@ -12,6 +12,7 @@ import {
   CLAIM_STATUS_COPY,
   CONFIDENCE_COPY,
   type FindingItem,
+  FINDINGS_MARKDOWN,
   timelineRows,
 } from "../../../lib/incidents/findings";
 import {
@@ -43,7 +44,7 @@ type BlockOf<K extends FindingBlock["kind"]> = Extract<
 function Prose({ text, quiet = false }: { text: string; quiet?: boolean }) {
   return (
     <MarkdownBody
-      html={renderMarkdown(text)}
+      html={renderMarkdown(text, FINDINGS_MARKDOWN)}
       enhance={false}
       className={quiet ? FINDINGS_PROSE_QUIET : FINDINGS_PROSE}
     />
@@ -55,7 +56,7 @@ function Prose({ text, quiet = false }: { text: string; quiet?: boolean }) {
 function InlineProse({ text, className }: { text: string; className: string }) {
   return (
     <MarkdownBody
-      html={renderMarkdown(text)}
+      html={renderMarkdown(text, FINDINGS_MARKDOWN)}
       enhance={false}
       className={cn(FINDINGS_INLINE_PROSE, className)}
     />
@@ -151,7 +152,7 @@ export function TimelineBlock({
             <span className="min-w-0 [overflow-wrap:anywhere]">{row.text}</span>
           ) : (
             <MarkdownBody
-              html={renderMarkdown(row.text)}
+              html={renderMarkdown(row.text, FINDINGS_MARKDOWN)}
               enhance={false}
               className={FINDINGS_INLINE_PROSE}
             />

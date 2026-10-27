@@ -255,6 +255,10 @@ export function timelineRows(
   return [...anchors, ...events].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 }
 
+/** How findings prose renders (`renderMarkdown`): it sits under its
+ *  block's own heading, so no headings and no embeds of its own. */
+export const FINDINGS_MARKDOWN = Object.freeze({ plain: true });
+
 /** Somewhere a block's "Show source" opens. */
 export type FindingSource = DetailTarget | { kind: "ledger"; id: string };
 
