@@ -6,8 +6,10 @@ import {
 } from "@tellahq/opensession-protocol/tool-presentation";
 import { FINDINGS_LIMITS } from "../../../shared/findings";
 import {
+  type MatchCache,
   checkQuotes,
   matchToolCall,
+  prepareQuotes,
   provenanceOf,
   quoteSource,
 } from "./tool-calls";
@@ -812,4 +814,53 @@ describe("checkQuotes", () => {
     const joined = "ab\u00adcd\u00adef\u00ad";
     expect(checkQuotes(bash(`x ${joined} y`), [joined], []).dropped).toBe(1);
   });
+});
+
+test("a shared cache cleans each tail result once across contains searches", () => {
+  let reads = 0;
+  const result = {
+    id: "tr-toolu_1",
+    type: "tool_result",
+    timestamp: "2026-10-27T10:00:00.000Z",
+    toolUseId: "toolu_1",
+    get content() {
+      reads += 1;
+      return "api.example.test GET /search 503\nreplica pool: 0 of 2 healthy";
+    },
+  } as unknown as TranscriptEntry;
+  const tail: TranscriptEntry[] = [
+    {
+      id: "toolu_1",
+      type: "tool_use",
+      content: "",
+      timestamp: "2026-10-27T10:00:00.000Z",
+      toolName: "Bash",
+      toolInput: { command: "cat app.log" },
+      toolUseId: "toolu_1",
+    },
+    result,
+  ];
+  const cache: MatchCache = new Map();
+  for (const contains of ["GET /search 503", "0 of 2 healthy", "not there"])
+    matchToolCall(tail, SESSION, { tool: "Bash", nth: 1, contains }, { cache });
+  expect(reads).toBe(1);
+  reads = 0;
+  for (const contains of ["GET /search 503", "0 of 2 healthy"])
+    matchToolCall(tail, SESSION, { tool: "Bash", nth: 1, contains });
+  expect(reads).toBe(2);
+});
+
+test("prepared quotes check the same as the call they came from", () => {
+  const call = bash(
+    "2026-10-27T11:58:03Z \u001b[31mERROR\u001b[0m db timeout after 30s\r\nok",
+    "echo ERROR db timeout",
+  );
+  const lines = ["ERROR db timeout after 30s", "made up line, never printed"];
+  expect(checkQuotes(prepareQuotes(call), lines, [0, 1])).toEqual(
+    checkQuotes(call, lines, [0, 1]),
+  );
+  const failed = { ...call, toolName: `${ACCESS}host_command`, content: "{}" };
+  expect(checkQuotes(prepareQuotes(failed), lines, [])).toEqual(
+    checkQuotes(failed, lines, []),
+  );
 });

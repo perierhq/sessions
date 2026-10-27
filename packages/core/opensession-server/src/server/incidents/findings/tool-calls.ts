@@ -75,6 +75,26 @@ export interface ProvenanceOptions {
   mcpServers?: readonly string[];
 }
 
+/** The tail results' searchable text (`quoteSource`, its first
+ *  `FINDINGS_LIMITS.sourceBytes`, cleaned line by line), by call and result
+ *  id; null when the call has nothing to quote. Share one across one
+ *  `show_findings` call's `matchToolCall`s so each result is cleaned once. */
+export type MatchCache = Map<string, { text: string; cut: boolean } | null>;
+
+export interface MatchOptions extends ProvenanceOptions {
+  cache?: MatchCache;
+}
+
+/** A call's quotable output, cleaned once for {@link checkQuotes}. */
+export interface PreparedQuotes {
+  /** The source's cleaned lines; null when the call has nothing to quote. */
+  sourceLines: string[] | null;
+  /** Whether the source was cut at `FINDINGS_LIMITS.sourceBytes`. */
+  cut: boolean;
+  /** The cleaned, non-blank lines of every string the call itself sent. */
+  sent: string[];
+}
+
 interface Call {
   name: string;
   input: unknown;
@@ -247,6 +267,25 @@ function resultPairs(
   };
 }
 
+/** What `contains` is searched in for a tail result: its quotable text,
+ *  cut and cleaned, from `cache` when it was cleaned before. */
+function searchText(
+  use: { id: string; toolName: string; toolInput: unknown },
+  result: TranscriptEntry,
+  cache: MatchCache | undefined,
+): { text: string; cut: boolean } | null {
+  const key = `${use.id}\n${result.id}`;
+  const known = cache?.get(key);
+  if (known !== undefined) return known;
+  const source = quoteSource(use.toolName, use.toolInput, result.content);
+  const head = source === null ? null : headOf(source);
+  const searched = head
+    ? { text: cleanLines(head.text).join("\n"), cut: head.cut }
+    : null;
+  cache?.set(key, searched);
+  return searched;
+}
+
 /** `contains` as it is searched for: each line cleaned, then trimmed. */
 function containsText(value: string): string {
   return cleanLines(value).join("\n").trim();
@@ -258,12 +297,13 @@ function containsText(value: string): string {
  * line by line, first `FINDINGS_LIMITS.sourceBytes`) contains `contains`.
  * Only `tail`, the caller's own transcript, is searched; `show_findings`
  * calls never count. Returns the note to show the agent when nothing fits.
+ * `opts.cache` keeps each result's cleaned text for the next search.
  */
 export function matchToolCall(
   tail: readonly TranscriptEntry[],
   sessionId: string,
   ref: { tool: string; nth: number; contains?: string },
-  opts: ProvenanceOptions = {},
+  opts: MatchOptions = {},
 ): ToolRef | string {
   const wanted = ref.tool.toLowerCase();
   const wantedCanonical = canonicalOf(ref.tool).toLowerCase();
@@ -283,10 +323,13 @@ export function matchToolCall(
     const result = resultOf(i, use.toolUseId ?? use.id);
     if (!result) continue;
     if (contains !== undefined) {
-      const source = quoteSource(use.toolName, use.toolInput, result.content);
-      const head = source === null ? null : headOf(source);
-      if (!head || !cleanLines(head.text).join("\n").includes(contains)) {
-        if (result.contentClamped || head?.cut) cutShort = true;
+      const searched = searchText(
+        { id: use.id, toolName: use.toolName, toolInput: use.toolInput },
+        result,
+        opts.cache,
+      );
+      if (!searched?.text.includes(contains)) {
+        if (result.contentClamped || searched?.cut) cutShort = true;
         continue;
       }
     }
@@ -424,6 +467,19 @@ function ownInputCopy(n: number): string {
     : `${n} lines are in the call's own input, so its output can't prove them.`;
 }
 
+/** A call's output as {@link checkQuotes} searches it, cleaned once, so a
+ *  result quoted by several blocks is cleaned (and held) once. */
+export function prepareQuotes(call: QuoteCall): PreparedQuotes {
+  const source = quoteSource(call.toolName, call.input, call.content);
+  if (source === null) return { sourceLines: null, cut: false, sent: [] };
+  const head = headOf(source);
+  return {
+    sourceLines: cleanLines(head.text),
+    cut: head.cut,
+    sent: inputLines(call.input),
+  };
+}
+
 /**
  * The quoted lines that really are in a call's output. The source is
  * `quoteSource(call)`, its first `FINDINGS_LIMITS.sourceBytes`, split into
@@ -432,23 +488,22 @@ function ownInputCopy(n: number): string {
  * sits inside one source line, and is not inside a string the call itself
  * sent (an `echo` proves nothing). Kept quotes are returned cleaned (NFC);
  * highlights are renumbered to them. `notes` say why lines went missing
- * when it isn't simply "not in the source".
+ * when it isn't simply "not in the source". Pass {@link prepareQuotes}'s
+ * answer instead of the call to reuse its cleaned lines.
  */
 export function checkQuotes(
-  call: QuoteCall,
+  call: QuoteCall | PreparedQuotes,
   lines: string[],
   highlight: number[],
 ): { lines: string[]; highlight: number[]; dropped: number; notes: string[] } {
   const notes: string[] = [];
-  const source = quoteSource(call.toolName, call.input, call.content);
-  if (source === null) {
+  const { sourceLines, cut, sent } =
+    "sourceLines" in call ? call : prepareQuotes(call);
+  if (sourceLines === null) {
     if (lines.length)
       notes.push("That call failed, so it has no output to quote.");
     return { lines: [], highlight: [], dropped: lines.length, notes };
   }
-  const head = headOf(source);
-  const sourceLines = cleanLines(head.text);
-  const sent = inputLines(call.input);
   const kept: string[] = [];
   const keptIndex = new Map<number, number>();
   let unseen = 0;
@@ -468,7 +523,7 @@ export function checkQuotes(
     kept.push(quote);
   });
   if (echoed) notes.push(ownInputCopy(echoed));
-  if (head.cut && unseen)
+  if (cut && unseen)
     notes.push(`Only the first ${SOURCE_MB} MB of the result was searched.`);
   const marks: number[] = [];
   for (const i of highlight) {

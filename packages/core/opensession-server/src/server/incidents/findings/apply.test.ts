@@ -6,7 +6,12 @@ import type {
   IncidentResponse,
 } from "../../../shared/incident-response";
 import type { Incident } from "../../../shared/incidents";
-import { type ApplyDeps, type ApplyRequest, applyFindings } from "./apply";
+import {
+  type ApplyDeps,
+  type ApplyRequest,
+  TOOL_REFS_PER_CALL,
+  applyFindings,
+} from "./apply";
 import { upsertFindingSet } from "./store";
 
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
@@ -729,4 +734,79 @@ test("apply.ts imports no route module", async () => {
   // constant would close an import cycle through them.
   const source = await Bun.file(new URL("./apply.ts", import.meta.url)).text();
   expect(source).not.toMatch(/from "(\.\.\/)+routes\//);
+});
+
+test("one call reads each cited result once", async () => {
+  const h = harness();
+  const read: string[] = [];
+  const fullEntry = h.deps.fullEntry;
+  h.deps.fullEntry = (sessionId, entryId) => {
+    read.push(entryId);
+    return fullEntry(sessionId, entryId);
+  };
+  const log = (id: string) => ({
+    id,
+    kind: "log",
+    source: { type: "tool", tool: "host_command" },
+    lines: [REAL],
+  });
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          log("a"),
+          log("b"),
+          {
+            id: "c",
+            kind: "compare",
+            sides: [
+              { label: "before", log: log("x") },
+              { label: "after", log: log("y") },
+            ],
+          },
+        ],
+      },
+    }),
+    h.deps,
+  );
+  expect(out.blocks).toBe(3);
+  expect(read).toEqual(["call_1-result"]);
+});
+
+test("one call looks up at most 12 tool calls", async () => {
+  const tail: TranscriptEntry[] = [];
+  for (let i = 1; i <= 13; i++)
+    tail.push(...bashCall(`toolu_b${i}`, `line ${i}: ${LOG}`));
+  const h = harness(undefined, { transcriptTail: async () => tail });
+  const ref = (nth: number) => ({ type: "tool", tool: "Bash", nth });
+  const hypothesis = (id: string, nths: number[]) => ({
+    id,
+    kind: "hypothesis",
+    statement: "The replica pool drained.",
+    confidence: "medium",
+    evidence: nths.map(ref),
+  });
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          hypothesis("h1", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+          // A ref repeated within the call is one lookup.
+          hypothesis("h2", [11, 12, 13, 1]),
+        ],
+      },
+    }),
+    h.deps,
+  );
+  expect(TOOL_REFS_PER_CALL).toBe(12);
+  expect(out.notes).toEqual([
+    'Block `h2`: evidence 3 left off: "Bash" call wasn\'t looked up: one call looks up at most 12 tool calls.',
+  ]);
+  const h2 = savedSet(h)?.blocks.find((b) => b.id === "h2");
+  if (h2?.kind !== "hypothesis") throw new Error("expected a hypothesis");
+  expect(h2.evidence.map((r) => (r.type === "tool" ? r.useId : ""))).toEqual([
+    "toolu_b3",
+    "toolu_b2",
+    "toolu_b13",
+  ]);
 });

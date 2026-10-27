@@ -17,6 +17,7 @@ import {
   type FindingsSet,
   type CompareSide,
   type LogExcerpt,
+  type Provenance,
   type ToolRef,
   claimKey,
   droppedLinesCopy,
@@ -32,9 +33,17 @@ import {
   checkWindow,
   createRefMemo,
   resolveRef,
+  shown,
 } from "./refs";
 import { saveFindingSet, withSessionQueue } from "./store";
-import { checkQuotes, matchToolCall, provenanceOf } from "./tool-calls";
+import {
+  type MatchCache,
+  type PreparedQuotes,
+  checkQuotes,
+  matchToolCall,
+  prepareQuotes,
+  provenanceOf,
+} from "./tool-calls";
 import {
   type FindingBlockDraft,
   type RefInput,
@@ -75,11 +84,21 @@ export interface ApplyResult {
   text: string;
 }
 
+/** Distinct tool-call refs (tool, nth, contains) one call may look up. */
+export const TOOL_REFS_PER_CALL = 12;
+/** Distinct full tool results one call may read. Every read comes from a
+ *  distinct tool ref, so this only guards against a future caller that
+ *  reads more per ref. */
+export const RESULT_READS_PER_CALL = 12;
+
 const TOO_BIG = `The findings are over ${FINDINGS_LIMITS.inputBytes / 1024} KB; nothing saved. Send fewer or shorter blocks.`;
 const UNREADABLE = 'Send {"blocks": [...]}.';
 const NO_TAIL = "your session's transcript couldn't be read right now.";
 
 type Note = (message: string) => void;
+/** A cited result as quotes are checked: its cleaned output and where it
+ *  came from, or the note when it couldn't be read. */
+type Source = { quotes: PreparedQuotes; provenance: Provenance } | string;
 type Draft<K extends FindingBlock["kind"]> = Extract<
   FindingBlockDraft,
   { kind: K }
@@ -257,6 +276,12 @@ class Resolver {
   private readonly refDeps: RefDeps;
   private tail: Promise<TranscriptEntry[] | null> | undefined;
   private readonly claims: ReadonlySet<string>;
+  /** This call's tool-call lookups, by (tool, nth, contains). */
+  private readonly toolRefs = new Map<string, Promise<ToolRef | string>>();
+  /** The tail results' cleaned text, shared by those lookups. */
+  private readonly matchCache: MatchCache = new Map();
+  /** This call's full-result reads, by result id. */
+  private readonly sources = new Map<string, Promise<Source>>();
 
   constructor(
     incident: Incident,
@@ -444,10 +469,62 @@ class Resolver {
     return this.tail;
   }
 
-  private async toolRef(ref: ToolRefInput): Promise<ToolRef | string> {
-    const tail = await this.loadTail();
-    if (!tail) return NO_TAIL;
-    return matchToolCall(tail, this.req.sessionId, ref);
+  /** The call a tool ref cites, looked up once per (tool, nth, contains);
+   *  at most {@link TOOL_REFS_PER_CALL} distinct refs per call. */
+  private toolRef(ref: ToolRefInput): Promise<ToolRef | string> {
+    const key = JSON.stringify([ref.tool, ref.nth, ref.contains ?? null]);
+    const known = this.toolRefs.get(key);
+    if (known) return known;
+    if (this.toolRefs.size >= TOOL_REFS_PER_CALL)
+      return Promise.resolve(
+        `${shown(ref.tool)} call wasn't looked up: one call looks up at most ${TOOL_REFS_PER_CALL} tool calls.`,
+      );
+    const answer = this.loadTail().then((tail) =>
+      tail
+        ? matchToolCall(tail, this.req.sessionId, ref, {
+            cache: this.matchCache,
+          })
+        : NO_TAIL,
+    );
+    this.toolRefs.set(key, answer);
+    return answer;
+  }
+
+  /**
+   * The cited call's full result, read once per result id (at most
+   * {@link RESULT_READS_PER_CALL} per call) and held only as its cleaned
+   * quotable lines. The whole entry is read: the transcript store has no
+   * prefix read (`getFullEntry` parses the stored row), and an access
+   * tool's answer is a JSON envelope that a prefix couldn't parse anyway;
+   * `prepareQuotes` searches only its first `FINDINGS_LIMITS.sourceBytes`.
+   */
+  private source(ref: ToolRef): Promise<Source> {
+    const known = this.sources.get(ref.resultId);
+    if (known) return known;
+    if (this.sources.size >= RESULT_READS_PER_CALL)
+      return Promise.resolve(
+        `the source's result wasn't read: one call reads at most ${RESULT_READS_PER_CALL} tool results.`,
+      );
+    const answer = (async (): Promise<Source> => {
+      const entry = await this.d
+        .fullEntry(this.req.sessionId, ref.resultId)
+        .catch(() => null);
+      if (!entry) return "the source's result couldn't be read.";
+      const use = (await this.loadTail())?.find((e) => e.id === ref.useId);
+      if (!use?.toolName) return "the source's call couldn't be read.";
+      return {
+        quotes: prepareQuotes({
+          toolName: use.toolName,
+          input: use.toolInput,
+          content: entry.content,
+        }),
+        // The tail's copy of the result may be clamped; the full entry says
+        // where the output really came from.
+        provenance: provenanceOf(use.toolName, use.toolInput, entry),
+      };
+    })();
+    this.sources.set(ref.resultId, answer);
+    return answer;
   }
 
   /** The quoted lines that are in the cited call's full result; null after
@@ -458,27 +535,15 @@ class Resolver {
   ): Promise<LogExcerpt | null> {
     const source = await this.toolRef(draft.source);
     if (typeof source === "string") return (note(source), null);
-    const entry = await this.d
-      .fullEntry(this.req.sessionId, source.resultId)
-      .catch(() => null);
-    if (!entry) return (note("the source's result couldn't be read."), null);
-    const use = (await this.loadTail())?.find((e) => e.id === source.useId);
-    if (!use?.toolName)
-      return (note("the source's call couldn't be read."), null);
-    const checked = checkQuotes(
-      { toolName: use.toolName, input: use.toolInput, content: entry.content },
-      draft.lines,
-      draft.highlight,
-    );
+    const full = await this.source(source);
+    if (typeof full === "string") return (note(full), null);
+    const checked = checkQuotes(full.quotes, draft.lines, draft.highlight);
     for (const n of checked.notes) note(n);
     if (checked.lines.length === 0)
       return (note("none of the lines are in the source; left off."), null);
     if (checked.dropped > 0) note(`${droppedLinesCopy(checked.dropped)}.`);
-    // The tail's copy of the result may be clamped; the full entry says
-    // where the output really came from.
-    const provenance = provenanceOf(use.toolName, use.toolInput, entry);
     return {
-      source: { ...source, provenance },
+      source: { ...source, provenance: full.provenance },
       lines: checked.lines,
       highlight: checked.highlight,
       dropped: checked.dropped,
