@@ -289,3 +289,17 @@ export const PAST_NUMBER =
 /** A home button (`Add a signal`, `Show 20 more`): a finger-sized target on
  *  a phone. */
 export const HOME_BUTTON = "phone:min-h-11";
+
+/** A findings signal window's bars in words, under the chart: one line,
+ *  kept while the window loads so the block does not grow when it lands. */
+export const FINDINGS_STRIP_SUMMARY =
+  "m-0 text-meta text-dim tabular-nums [overflow-wrap:anywhere]";
+
+/** A compare block's two sides; the caller adds the desktop's two columns
+ *  when the block spans both. */
+export const FINDINGS_COMPARE = "grid min-w-0 grid-cols-1 gap-x-4 gap-y-4";
+
+/** A change block's line: `PR #12 · title` or `abc1234 · title`. Its height
+ *  is held while the change loads. */
+export const FINDINGS_CHANGE_TITLE =
+  "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
