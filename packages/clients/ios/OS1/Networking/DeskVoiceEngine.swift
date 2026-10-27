@@ -213,6 +213,7 @@ final class DeskVoiceEngine {
         heardSpeech = false
         eventsReceived = 0
         callStartedAt = Date()
+        rt.resetLifetimeStats()
         responding = false
         pendingResponse = false
         awaitingHelper = false
@@ -915,8 +916,16 @@ final class DeskVoiceEngine {
         }
 
         if window.buffers == 0 {
-            // The capture tap stopped firing. Nothing recovers on its own.
-            recoverCapture(reason: "capture tap delivered no buffers")
+            // Buffers that arrive but cannot be converted mean the
+            // voice-processing input is in a shape we cannot use: drop echo
+            // cancellation straight away. A tap that stays dead after one
+            // plain rebuild gets the same treatment, since voice processing
+            // is the usual reason a device's tap never starts.
+            let unusable = window.taps > 0
+            recoverCapture(
+                reason: unusable ? "capture buffers could not be converted" : "capture tap delivered no buffers",
+                disableVoiceProcessing: unusable || captureRebuilds >= 1
+            )
             return
         }
 
@@ -1008,6 +1017,12 @@ final class DeskVoiceEngine {
     /// that fails does so on the user's device with nothing to look at; these
     /// counters are what turn the next "it just says Listening" report into
     /// something answerable.
+    #if os(iOS)
+    private static let platformName = "ios"
+    #else
+    private static let platformName = "macos"
+    #endif
+
     private func reportDiagnostics(outcome: String) {
         // The diagnostics endpoint belongs to Desk voice.
         guard !injectedAudio, session == nil else { return }
@@ -1018,6 +1033,10 @@ final class DeskVoiceEngine {
             "connected": farEndAlive,
             "events": eventsReceived,
             "heardSpeech": heardSpeech,
+            "platform": Self.platformName,
+            "tapBuffers": stats.taps,
+            "convertFailures": stats.convertFailures,
+            "inputFormat": stats.inputFormat,
             "framesCaptured": stats.buffers,
             "framesSent": stats.sent,
             "sendFailures": stats.sendFailures,
@@ -1156,6 +1175,7 @@ private final class DeskVoiceAudioBridge: @unchecked Sendable {
     func resetWindow() { stats.resetWindow() }
     func takeWindow() -> UplinkWindow { stats.takeWindow() }
     func lifetimeStats() -> UplinkTotals { stats.totals() }
+    func resetLifetimeStats() { stats.resetLifetime() }
 
     /// Runs on the player's tap thread.
     func noteOutputLevel(_ buffer: AVAudioPCMBuffer) {
@@ -1178,13 +1198,25 @@ private final class DeskVoiceAudioBridge: @unchecked Sendable {
     /// Runs on Core Audio's realtime tap thread — convert to PCM16 mono
     /// 24kHz and ship it upstream. Server-side VAD handles turn-taking, so
     /// this only ever appends; it never sends a commit.
-    func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let uplinkFormat else { return }
+    func handleCapturedBuffer(_ tapped: AVAudioPCMBuffer) {
+        stats.noteTap(format: tapped.format)
+        guard let uplinkFormat, tapped.frameLength > 0 else { return }
+        // Converted from one channel, never from the tap's own layout: the
+        // voice-processing input can hand over several channels with no
+        // channel layout, and AVAudioConverter refuses to be built for that.
+        // A nil converter dropped every buffer, so the call never heard you.
+        guard let buffer = Self.firstChannel(of: tapped) else {
+            stats.noteConvertFailure()
+            return
+        }
         if converterInputFormat?.isEqual(buffer.format) != true {
             converter = AVAudioConverter(from: buffer.format, to: uplinkFormat)
             converterInputFormat = buffer.format
         }
-        guard let converter else { return }
+        guard let converter else {
+            stats.noteConvertFailure()
+            return
+        }
 
         let ratio = uplinkFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
@@ -1201,10 +1233,12 @@ private final class DeskVoiceAudioBridge: @unchecked Sendable {
             inputStatus.pointee = .haveData
             return buffer
         }
-        guard status != .error,
-              outBuffer.frameLength > 0,
-              let int16 = outBuffer.int16ChannelData
-        else { return }
+        guard status != .error, let int16 = outBuffer.int16ChannelData else {
+            stats.noteConvertFailure()
+            return
+        }
+        // A resampler can hold back its first few frames; that is not a failure.
+        guard outBuffer.frameLength > 0 else { return }
 
         var sum: Float = 0
         var peak: Float = 0
@@ -1227,6 +1261,35 @@ private final class DeskVoiceAudioBridge: @unchecked Sendable {
         let audioData = Data(bytes: UnsafeRawPointer(int16[0]), count: byteCount)
         stats.noteSent()
         send(["type": "input_audio_buffer.append", "audio": audioData.base64EncodedString()])
+    }
+
+    /// Channel 0 of a tap buffer as mono Float32 at the buffer's own rate. A
+    /// buffer that is already mono Float32 is returned as is.
+    private static func firstChannel(of buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let format = buffer.format
+        if format.channelCount == 1, format.commonFormat == .pcmFormatFloat32 {
+            return buffer
+        }
+        guard let mono = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate,
+            channels: 1, interleaved: false
+        ),
+            let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength)
+        else { return nil }
+        let frames = Int(buffer.frameLength)
+        let stride = format.isInterleaved ? Int(format.channelCount) : 1
+        guard let target = out.floatChannelData?[0] else { return nil }
+        if let source = buffer.floatChannelData?[0] {
+            for index in 0..<frames { target[index] = source[index * stride] }
+        } else if let source = buffer.int16ChannelData?[0] {
+            for index in 0..<frames { target[index] = Float(source[index * stride]) / 32_768 }
+        } else if let source = buffer.int32ChannelData?[0] {
+            for index in 0..<frames { target[index] = Float(source[index * stride]) / 2_147_483_648 }
+        } else {
+            return nil
+        }
+        out.frameLength = buffer.frameLength
+        return out
     }
 
     /// Decode a base64 PCM16 mono 24kHz delta into Float32 and schedule it.
@@ -1300,6 +1363,8 @@ private final class DeskVoiceAudioBridge: @unchecked Sendable {
 
 /// One health window's worth of uplink activity.
 private struct UplinkWindow {
+    /// Buffers the mic tap delivered, before conversion.
+    var taps = 0
     var buffers: Int
     var nonZeroSamples: Int
     var peak: Float
@@ -1308,6 +1373,10 @@ private struct UplinkWindow {
 
 /// Whole-call totals, for the diagnostics beacon.
 private struct UplinkTotals {
+    var taps = 0
+    var convertFailures = 0
+    /// The tap's format, e.g. "48000Hz/3ch/f32/deint", for diagnostics.
+    var inputFormat = ""
     var buffers: Int
     var sent: Int
     var sendFailures: Int
@@ -1328,6 +1397,37 @@ private final class LockedUplinkStats: @unchecked Sendable {
         window.peak = max(window.peak, peak)
         lifetime.buffers += 1
         lifetime.peak = max(lifetime.peak, peak)
+        lock.unlock()
+    }
+
+    func noteTap(format: AVAudioFormat) {
+        lock.lock()
+        window.taps += 1
+        lifetime.taps += 1
+        if lifetime.inputFormat.isEmpty {
+            let kind = switch format.commonFormat {
+            case .pcmFormatFloat32: "f32"
+            case .pcmFormatInt16: "i16"
+            case .pcmFormatInt32: "i32"
+            case .pcmFormatFloat64: "f64"
+            default: "other"
+            }
+            lifetime.inputFormat = "\(Int(format.sampleRate))Hz/\(format.channelCount)ch/\(kind)/"
+                + (format.isInterleaved ? "int" : "deint")
+        }
+        lock.unlock()
+    }
+
+    func noteConvertFailure() {
+        lock.lock()
+        lifetime.convertFailures += 1
+        lock.unlock()
+    }
+
+    /// A new call starts its totals from zero: the Desk engine is shared.
+    func resetLifetime() {
+        lock.lock()
+        lifetime = UplinkTotals(buffers: 0, sent: 0, sendFailures: 0, peak: 0)
         lock.unlock()
     }
 
