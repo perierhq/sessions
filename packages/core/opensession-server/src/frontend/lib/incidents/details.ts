@@ -1,7 +1,8 @@
 // The incident page's summary rows (spec 4.1, workspace-summary grammar):
 // Fix (the change, the incident note), Agents (investigator, verifier,
-// cost, access) and History (earlier incidents). Change, Agent cost and
-// Earlier incidents always render; the rest only with data. Pure.
+// cost, access) and History (earlier rounds' findings, earlier incidents).
+// Change, Agent cost and Earlier incidents always render; the rest only with
+// data. Pure.
 import {
   type IncidentAgentsAccessView,
   incidentAllowsAgents,
@@ -13,6 +14,7 @@ import {
   describeWorkspace,
   type IncidentResponse,
 } from "../../../shared/incident-response";
+import { FINDINGS_COPY } from "../../../shared/findings";
 import {
   type Incident,
   type IncidentSummary,
@@ -31,7 +33,8 @@ export type DetailRowKey =
   | "verifier"
   | "cost"
   | "access"
-  | "earlier";
+  | "earlier"
+  | `findings-${number}`;
 
 export type DetailTarget =
   | {
@@ -44,7 +47,9 @@ export type DetailTarget =
     }
   | { kind: "url"; url: string }
   | { kind: "session"; sessionId: string }
-  | { kind: "sheet"; sheet: "cost" | "access" | "earlier" };
+  | { kind: "sheet"; sheet: "cost" | "access" | "earlier" }
+  /** An earlier round's findings, in a sheet. */
+  | { kind: "sheet"; sheet: "findings"; round: number };
 
 export interface DetailRow {
   key: DetailRowKey;
@@ -295,6 +300,18 @@ function earlierRow(earlier: IncidentSummary[]): DetailRow {
   };
 }
 
+/** One row per earlier round with findings: this incident's own history,
+ *  so it comes before other incidents. */
+function findingRoundRows(rounds: readonly number[]): DetailRow[] {
+  return rounds.map((round) => ({
+    key: `findings-${round}`,
+    band: "History",
+    label: FINDINGS_COPY.earlierRow(round),
+    value: "",
+    target: { kind: "sheet", sheet: "findings", round },
+  }));
+}
+
 export function detailRows(input: {
   incident: Incident;
   earlier: IncidentSummary[];
@@ -302,6 +319,8 @@ export function detailRows(input: {
   budgetUsd: number | null;
   access: IncidentAgentsAccessView | null;
   now: number;
+  /** Rounds before the page's with findings (`findingsPage().earlierRounds`). */
+  findingRounds?: readonly number[];
 }): DetailRow[] {
   const response = input.incident.response;
   return [
@@ -311,6 +330,7 @@ export function detailRows(input: {
     verifierRow(response),
     costRow(response, input.budgetUsd),
     accessRow(input.access, input.incident.state),
+    ...findingRoundRows(input.findingRounds ?? []),
     earlierRow(input.earlier),
   ].filter((row): row is DetailRow => row !== null);
 }

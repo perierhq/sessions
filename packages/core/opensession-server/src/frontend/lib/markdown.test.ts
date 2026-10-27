@@ -1903,3 +1903,35 @@ describe("renderMarkdown tables", () => {
     ]);
   });
 });
+
+describe("plain prose (findings blocks)", () => {
+  it("renders headings as paragraphs and embeds nothing", () => {
+    const src = [
+      "# Cause",
+      "",
+      "See ![graph](https://example.test/graph.png) and ![shot](/media?path=a.png).",
+      "",
+      "![shot](/media?path=b.png)",
+      "",
+      "https://www.tella.tv/video/my-demo-3592",
+    ].join("\n");
+    const html = renderMarkdown(src, { plain: true });
+    expect(html).not.toMatch(/<h\d/);
+    expect(html).toContain("<p>Cause</p>");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<iframe");
+    expect(html).not.toContain("<video");
+    expect(html).not.toContain("<figure");
+    expect(html).toContain(
+      '<a href="https://example.test/graph.png" target="_blank" rel="noopener noreferrer">graph</a>',
+    );
+    expect(html).toContain(
+      '<a href="https://www.tella.tv/video/my-demo-3592" target="_blank" rel="noopener noreferrer">',
+    );
+    // The same source renders in full elsewhere: the option is part of the
+    // cache key.
+    const full = renderMarkdown(src);
+    expect(full).toContain("<h1");
+    expect(full).toContain("<iframe");
+  });
+});

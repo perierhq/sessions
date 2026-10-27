@@ -56,6 +56,8 @@ export interface LaidMarker {
   x: number;
   text: string;
   future: boolean;
+  /** An agent's note rather than checked data: drawn quieter. */
+  note?: true;
   /** `null`: no room for the label; the line still draws. */
   row: 0 | 1 | null;
   anchor: "start" | "middle" | "end";
@@ -262,6 +264,10 @@ export function layoutStrip(input: {
   meta: (lane: StripLane) => StripLaneMeta;
   verification?: StripLane[];
   future?: Array<{ at: string; label: string }>;
+  /** Labelled times a findings block adds: past markers keyed `note:<i>`,
+   *  drawn only inside [from, to], labelled with the text as given.
+   *  `note`: the agent's own, with no checked reference behind it. */
+  annotations?: Array<{ at: string; label: string; note?: boolean }>;
   width: number;
   live: boolean;
 }): StripLayout {
@@ -349,7 +355,7 @@ export function layoutStrip(input: {
     });
   }
 
-  const past = strip.markers
+  const past: Array<Omit<LaidMarker, "row" | "anchor">> = strip.markers
     .map((m, i) => ({ m, i }))
     .filter(({ m }) => Date.parse(m.at) <= to)
     .map(({ m, i }) => ({
@@ -359,6 +365,19 @@ export function layoutStrip(input: {
       text: `${m.label} ${clockTime(m.at)}`,
       future: false,
     }));
+  for (const [i, note] of (input.annotations ?? []).entries()) {
+    const at = Date.parse(note.at);
+    if (!(at >= from && at <= to)) continue;
+    const marker: (typeof past)[number] = {
+      key: `note:${i}`,
+      at: note.at,
+      x: xAt(note.at),
+      text: note.label,
+      future: false,
+    };
+    if (note.note) marker.note = true;
+    past.push(marker);
+  }
   const ahead = future.map((m, i) => ({
     key: `future:${i}`,
     at: m.at,

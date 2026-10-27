@@ -169,6 +169,73 @@ export const INCIDENT_STRIP_ERROR =
  *  label sits on its rows. */
 export const INCIDENT_SECTION_LABEL = `${WS_SUMMARY_PAGE_SECTION} mb-0`;
 
+/** The Findings blocks: one column on a phone, two on a desktop, where a
+ *  half block takes one and a full block both. Outdented by the blocks' own
+ *  padding so their text lines up with the section label. */
+export const FINDINGS_GRID =
+  "-mx-2 grid min-w-0 grid-cols-1 gap-x-4 gap-y-2 desktop:grid-cols-2";
+
+/** One block: no fill and no border, separated by spacing. The padding is
+ *  room for the highlight's tint, which fades on the background colour
+ *  only and not at all with reduced motion. */
+export const FINDINGS_BLOCK =
+  "flex min-w-0 flex-col gap-2 rounded-xl px-2 py-2 transition-colors duration-[var(--dur)] ease-[var(--ease)] motion-reduce:transition-none";
+
+/** The short tint on a block whose content just changed. */
+export const FINDINGS_HIGHLIGHT = "bg-accent-soft";
+
+/** A block's heading: its title, or the kind's name. */
+export const FINDINGS_BLOCK_TITLE =
+  "m-0 text-item-title font-medium text-fg [overflow-wrap:anywhere]";
+
+/** Who put the block there and when ("from the investigator, 14:32"). */
+export const FINDINGS_BYLINE = "m-0 text-meta text-dim tabular-nums";
+
+/** Agent prose in a block: content, so it is selectable. */
+export const FINDINGS_PROSE =
+  "markdown select-text text-body text-fg [overflow-wrap:anywhere]";
+
+/** Prose one step quieter (what would answer a question, why a change). */
+export const FINDINGS_PROSE_QUIET =
+  "markdown select-text text-supporting text-dim [overflow-wrap:anywhere]";
+
+/** One line of agent prose inside a row (a timeline event): Markdown for
+ *  inline code and emphasis, in the row's own size and colour. */
+export const FINDINGS_INLINE_PROSE =
+  "markdown min-w-0 select-text [overflow-wrap:anywhere] [&_p]:m-0";
+
+/** A small label inside a block ("What would answer it", "Rests on"). */
+export const FINDINGS_LABEL = "m-0 text-label text-faint";
+
+/** Quoted log lines: the code well, one line per row, wrapping anywhere so
+ *  a long line never scrolls the page sideways. */
+export const FINDINGS_LOG =
+  "m-0 max-h-80 overflow-auto rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text phone:max-h-64";
+
+/** A highlighted line (`<mark>`): a tint across the well and a stripe on
+ *  its leading edge, so the mark never rests on the colour alone. */
+export const FINDINGS_LOG_MARK =
+  "-mx-3 block border-l-2 border-yellow bg-yellow-soft pr-3 pl-2.5 text-inherit";
+
+/** Where a quote came from ("from Datadog"). */
+export const FINDINGS_SOURCE = "m-0 text-meta text-dim";
+
+/** The same, quieter, when the agent could have produced the output
+ *  itself (its shell, its workspace). */
+export const FINDINGS_SOURCE_QUIET = "m-0 text-meta text-faint";
+
+/** A hypothesis or claim status, in words with the colour behind them. */
+export const FINDINGS_STATUS_TONE = {
+  verified: "text-green",
+  refuted: "text-red",
+  "cant-tell": "text-dim",
+  unchecked: "text-faint",
+} as const;
+
+/** A claim row: the claim, then its status and evidence under it. */
+export const FINDINGS_CLAIM_ROW =
+  "flex min-w-0 flex-col gap-0.5 border-b border-line py-2 last:border-b-0";
+
 /** A sidebar incident row: the workspace row's shape without the room it
  *  clears for hover actions, because the trailing state never hides. */
 export const SIDEBAR_INCIDENT_ROW = "flex items-center gap-[7px]";
@@ -227,3 +294,37 @@ export const PAST_NUMBER =
 /** A home button (`Add a signal`, `Show 20 more`): a finger-sized target on
  *  a phone. */
 export const HOME_BUTTON = "phone:min-h-11";
+
+/** A findings signal window's bars in words, under the chart: one line,
+ *  kept while the window loads so the block does not grow when it lands. */
+export const FINDINGS_STRIP_SUMMARY =
+  "m-0 text-meta text-dim tabular-nums [overflow-wrap:anywhere]";
+
+/** A compare block's two sides; the caller adds the desktop's two columns
+ *  when the block spans both. */
+export const FINDINGS_COMPARE = "grid min-w-0 grid-cols-1 gap-x-4 gap-y-4";
+
+/** A change block's line: `PR #12 · title` or `abc1234 · title`. Its height
+ *  is held while the change loads. */
+export const FINDINGS_CHANGE_TITLE =
+  "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
+
+/** The Findings section's heading and its "Round 2 under way" line,
+ *  outdented like the Cause section's so the label's text lines up with
+ *  the blocks' text and the rest of the page. */
+export const FINDINGS_SECTION_HEAD = "-mx-2 flex min-w-0 flex-col";
+
+/** "Round 2 under way": quiet, under the heading. */
+export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
+
+/** A cell of the Findings grid: one column on a phone; a half block takes
+ *  one desktop column, a full block both. */
+export const FINDINGS_CELL_HALF = "min-w-0 desktop:col-span-1";
+export const FINDINGS_CELL_FULL = "min-w-0 desktop:col-span-2";
+
+/** A findings marker the agent added without a checked reference: its
+ *  own note, so a dashed, lighter line and a quieter label than the
+ *  strip's checked markers. */
+export const STRIP_NOTE_LINE =
+  "pointer-events-none absolute w-0 border-l border-dashed border-line";
+export const STRIP_NOTE_LABEL = "text-faint";

@@ -1057,6 +1057,18 @@ let renderRepo: string | undefined;
 /** What the renderer does with raw HTML for the duration of one `md.parse()`. */
 let renderRawHtml: "escape" | "sanitize" = "escape";
 
+/** Plain prose for the duration of one `md.parse()` (`MarkdownContext.plain`). */
+let renderPlain = false;
+
+/** An image in plain prose: a link to it named by its alt text, never
+ *  loaded; outside http(s), only the alt text. */
+function plainImage(token: Tokens.Image): string {
+  const name = attr(String(token.text ?? "").trim() || "Image");
+  const href = token.href ?? "";
+  if (renderInLink || !/^https?:\/\//i.test(href)) return name;
+  return `<a href="${attr(href)}" target="_blank" rel="noopener noreferrer">${name}</a>`;
+}
+
 /** Raw `<a>` tags still open in the PR prose being rendered: marked hands the
  *  sanitizer one tag at a time, and an image inside one must not be a link. */
 let renderRawLinks = { depth: 0 };
@@ -1668,7 +1680,15 @@ md.use({
         return `<code><span class="md-color-chip" style="background:${swatch}"></span>${attr(t)}</code>`;
       return `<code>${attr(t)}</code>`;
     },
+    // Plain prose sits under a block's own heading: a heading in it is just
+    // a line of text.
+    heading(token: Tokens.Heading) {
+      if (!renderPlain) return false;
+      return `<p>${this.parser.parseInline(token.tokens)}</p>\n`;
+    },
     paragraph(token: Tokens.Paragraph) {
+      if (renderPlain)
+        return `<p>${this.parser.parseInline(token.tokens)}</p>\n`;
       const figure = sessionMediaFigure(token);
       if (figure) return figure;
       const embeds = tellaEmbedsIn(token.tokens);
@@ -1693,12 +1713,13 @@ md.use({
     // but the <p>), which is where an agent most often hands back a link.
     // Inline text tokens carry no child tokens and fall through untouched.
     text(token: Tokens.Text | Tokens.Escape) {
-      if (!("tokens" in token) || !token.tokens) return false;
+      if (renderPlain || !("tokens" in token) || !token.tokens) return false;
       const embeds = tellaEmbedsIn(token.tokens);
       if (embeds.size === 0) return false;
       return this.parser.parseInline(token.tokens) + tellaFigures(embeds);
     },
     image(token: Tokens.Image) {
+      if (renderPlain) return plainImage(token);
       const title = token.title ? ` title="${attr(token.title)}"` : "";
       const video = VIDEO_HREF_RE.test(token.href ?? "");
       // Image syntax around a GitHub user attachment is an image (a video
@@ -1932,7 +1953,7 @@ const mdCache = new Map<string, string>();
 const MD_CACHE_MAX = 500;
 const MD_CACHE_INPUT_MAX = 32 * 1024;
 /** The context key an empty context produces, which caches under `src` alone. */
-const EMPTY_CONTEXT_KEY = ["", "", "", ""].join("\u0000");
+const EMPTY_CONTEXT_KEY = ["", "", "", "", ""].join("\u0000");
 // The last source rendered under each context. A streaming message renders a
 // longer prefix of itself every frame, and each one is a fresh key: without
 // this, one message inserts hundreds of dead entries and evicts every other
@@ -1960,6 +1981,12 @@ export interface MarkdownContext {
    * which is what PR prose needs and what only PR prose should ask for.
    */
   rawHtml?: "escape" | "sanitize";
+  /**
+   * Prose that sits inside a page block under the block's own heading
+   * (incident findings): headings render as paragraphs, and nothing is
+   * embedded: no players, figures or inline images (an image is a link).
+   */
+  plain?: boolean;
 }
 
 /** Render session markdown to HTML (links open in a new tab, images inline). */
@@ -1973,6 +2000,7 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
     ctx?.sessionId ?? "",
     assets?.key ?? "",
     ctx?.rawHtml ?? "",
+    ctx?.plain ? "plain" : "",
   ].join("\u0000");
   const cacheKey =
     contextKey === EMPTY_CONTEXT_KEY ? src : `${contextKey}\u0000${src}`;
@@ -1990,6 +2018,7 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
   const previousAssets = renderAssetReferences;
   const previousAssetSessionId = renderAssetSessionId;
   const previousRawHtml = renderRawHtml;
+  const previousPlain = renderPlain;
   const previousTellaVideos = renderedTellaVideos;
   const previousPrRefs = renderedPrRefs;
   const previousRawLinks = renderRawLinks;
@@ -1997,6 +2026,7 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
   renderAssetReferences = assets;
   renderAssetSessionId = ctx?.sessionId;
   renderRawHtml = ctx?.rawHtml ?? "escape";
+  renderPlain = ctx?.plain ?? false;
   renderedTellaVideos = new Set();
   renderedPrRefs = new Set();
   renderRawLinks = { depth: 0 };
@@ -2012,6 +2042,7 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
     renderAssetReferences = previousAssets;
     renderAssetSessionId = previousAssetSessionId;
     renderRawHtml = previousRawHtml;
+    renderPlain = previousPlain;
     renderedTellaVideos = previousTellaVideos;
     renderedPrRefs = previousPrRefs;
     renderRawLinks = previousRawLinks;

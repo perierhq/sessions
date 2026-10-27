@@ -11,6 +11,14 @@ describe("internal MCP capability metadata", () => {
       MCP_SERVER_CATALOG.map((entry) => entry.name).sort(),
     );
   });
+
+  test("the incident access guidance names show_findings", () => {
+    expect(
+      INTERNAL_MCP_CAPABILITIES["opensession-incident-access"].guidance,
+    ).toEndWith(
+      " show_findings puts what you know on the incident page as checked blocks; call it early and again as you learn more.",
+    );
+  });
 });
 
 describe("renderInternalMcpCapabilities", () => {

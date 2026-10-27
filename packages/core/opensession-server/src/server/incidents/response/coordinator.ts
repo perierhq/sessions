@@ -19,12 +19,14 @@ import {
   type LedgerEntry,
   OWNER_DECISIONS,
   type OwnerDecision,
+  type PastRound,
   type ProjectSpend,
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
   type SetupFix,
   roundOfMax,
 } from "../../../shared/incident-response";
+import { findingSetOf, previousFindingSet } from "../../../shared/findings";
 import { closesWhenRecovered } from "../../../shared/incident-recovery";
 import {
   type Incident,
@@ -47,6 +49,7 @@ import {
   resolveAgentAccess,
 } from "../access/resolve";
 import { type ConnectionProblem, connectionProblems } from "../access/mcp";
+import { applyFindings } from "../findings/apply";
 import { incidentAudit } from "../audit-sink";
 import {
   getIncident,
@@ -160,6 +163,15 @@ export interface CoordinatorDeps {
   /** The service finished recovery and is not shutting down. Until then
    *  the tick and wake-ups do nothing. */
   ready: () => boolean;
+  /** Saves the findings an accepted report carries, unless the run already
+   *  showed some with `show_findings` this round. Never throws. */
+  applyReportFindings: (req: {
+    incidentId: string;
+    sessionId: string;
+    role: AgentRole;
+    input: unknown;
+    claims: string[];
+  }) => Promise<void>;
 }
 
 function defaultDeps(): CoordinatorDeps {
@@ -195,6 +207,19 @@ function defaultDeps(): CoordinatorDeps {
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
+    applyReportFindings: async (req) => {
+      try {
+        await applyFindings({
+          ...req,
+          source: "report",
+          onlyIfNoToolSet: true,
+        });
+      } catch (error) {
+        console.warn(
+          `[incidents] ${req.incidentId}: ${req.role} report findings not saved: ${errorMessage(error)}`,
+        );
+      }
+    },
   };
 }
 
@@ -1064,6 +1089,9 @@ async function startAgent(
       round,
       maxRounds: r.maxRounds,
       connections,
+      // The page keeps the previous round's blocks until this agent's
+      // first show_findings call; it may keep or edit them by id.
+      findings: { previous: previousFindingSet(r, "investigator", round) },
       ...(earlier
         ? {
             earlier: {
@@ -1104,6 +1132,9 @@ async function startAgent(
       mode: access.mode,
       actions: settings.actions,
       connections,
+      // Ids, kinds and references only: buildVerifierPrompt never shows
+      // the investigator's prose.
+      findings: { investigator: findingSetOf(r, "investigator", round) },
     });
   }
 
@@ -1479,6 +1510,17 @@ async function deferParallelInvestigator(
   return next !== null;
 }
 
+/** The round a run is finishing, as a send-back keeps it. */
+function pastRoundOf(run: AgentRun): PastRound {
+  const past: PastRound = {
+    round: run.round,
+    startedAt: run.roundStartedAt ?? run.startedAt,
+  };
+  if (run.endedAt) past.endedAt = run.endedAt;
+  if (run.report) past.report = run.report;
+  return past;
+}
+
 async function messageAgent(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "message-agent" }>,
@@ -1534,6 +1576,11 @@ async function messageAgent(
         r.round,
         r.maxRounds,
         r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
+        // The send-back raised the round before this message, so the
+        // round sent back is the one before r.round.
+        run.role === "investigator"
+          ? previousFindingSet(r, "investigator", r.round)
+          : undefined,
       )
     : buildReminder(
         // A run refused before every issue was kept has its first one.
@@ -1561,6 +1608,10 @@ async function messageAgent(
         return sendBack
           ? patched(a, {
               round: base.round,
+              // Round `a.round`'s report and times stay with that round's
+              // findings; the run's own fields are the new round's.
+              pastRounds: [...(a.pastRounds ?? []), pastRoundOf(a)],
+              roundStartedAt: at,
               status: "running",
               turnSentAt: at,
               endedAt: undefined,
@@ -1678,6 +1729,22 @@ async function recordReport(
     },
   );
   if (!next) return false;
+  // Saved after the report, so the run's report claims are in place. A
+  // verifier checks its own round's candidate, never another round's.
+  const candidate = next.response?.candidate;
+  if (report && step.findings !== undefined)
+    await d.applyReportFindings({
+      incidentId: incident.id,
+      sessionId: run.sessionId,
+      role: run.role,
+      input: step.findings,
+      claims: (report.role === "investigator"
+        ? report.claims
+        : candidate?.round === run.round
+          ? candidate.claims
+          : []
+      ).map((c) => c.text),
+    });
   if (report?.role === "verifier")
     incidentAudit({
       kind: "incident_verdict",
@@ -2579,12 +2646,24 @@ export async function runResponseTick(
   return scheduled;
 }
 
-/** Everything but `impact` and `updatedAt`, to ignore impact-only writes. */
-function moved(next: Incident, previous: Incident | null): boolean {
+/**
+ * Whether a write should wake the fix loop: everything but `impact`,
+ * `updatedAt` and `response.findingSets`, so impact-only and findings-only
+ * writes never wake it.
+ */
+export function responseMoved(
+  next: Incident,
+  previous: Incident | null,
+): boolean {
   if (!previous) return true;
-  const { impact: _a, updatedAt: _b, ...a } = next;
-  const { impact: _c, updatedAt: _d, ...b } = previous;
-  return JSON.stringify(a) !== JSON.stringify(b);
+  return JSON.stringify(loopView(next)) !== JSON.stringify(loopView(previous));
+}
+
+function loopView(incident: Incident): Omit<Incident, "impact" | "updatedAt"> {
+  const { impact: _impact, updatedAt: _updatedAt, ...rest } = incident;
+  if (!rest.response) return rest;
+  const { findingSets: _findingSets, ...response } = rest.response;
+  return { ...rest, response };
 }
 
 /**
@@ -2594,7 +2673,7 @@ function moved(next: Incident, previous: Incident | null): boolean {
 export function watchResponseWakeups(): () => void {
   const offIncident = onIncidentChange((next, previous) => {
     if (!isOpenIncident(next) && next.response?.phase !== "documenting") return;
-    if (moved(next, previous)) scheduleAdvance(next.id);
+    if (responseMoved(next, previous)) scheduleAdvance(next.id);
   });
   const offSession = onSessionStateChange((event) => {
     const incidentId = sessionIndex.get(event.sessionId);

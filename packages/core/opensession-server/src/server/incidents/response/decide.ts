@@ -41,6 +41,7 @@ import {
   parseInvestigatorReport,
   parseVerifierReport,
   plainReportProblem,
+  reportFindingsInput,
 } from "./reports";
 import {
   AGENT_MAX_MS,
@@ -728,6 +729,17 @@ function refused(
   };
 }
 
+/** An accepted report's step, carrying the block's raw `findings` when it
+ *  has the key. */
+function withFindings(
+  step: Extract<ResponseStep, { step: "record-report" }>,
+  text: string,
+): Extract<ResponseStep, { step: "record-report" }> {
+  const findings = reportFindingsInput(text);
+  if (findings !== undefined) step.findings = findings;
+  return step;
+}
+
 function reports(view: ResponseView): ResponseStep | undefined {
   const r = view.incident.response!;
   const runs = [
@@ -789,14 +801,17 @@ function reports(view: ResponseView): ResponseStep | undefined {
         };
       }
       if (parsed.candidate !== null && !prUrl) return refused(run, [NO_PR]);
-      return {
-        step: "record-report",
-        sessionId: run.sessionId,
-        report: parsed,
-        ...(warnings.length ? { warnings } : {}),
-        ...(prUrl ? { prUrl } : {}),
-        ...(reread ? { reread: true } : {}),
-      };
+      return withFindings(
+        {
+          step: "record-report",
+          sessionId: run.sessionId,
+          report: parsed,
+          ...(warnings.length ? { warnings } : {}),
+          ...(prUrl ? { prUrl } : {}),
+          ...(reread ? { reread: true } : {}),
+        },
+        text,
+      );
     }
     const warnings: string[] = [];
     const parsed = parseVerifierReport(text, {
@@ -809,12 +824,15 @@ function reports(view: ResponseView): ResponseStep | undefined {
           error: parsed.error,
           problem: parsed.problem,
         }
-      : {
-          step: "record-report",
-          sessionId: run.sessionId,
-          report: parsed,
-          ...(warnings.length ? { warnings } : {}),
-        };
+      : withFindings(
+          {
+            step: "record-report",
+            sessionId: run.sessionId,
+            report: parsed,
+            ...(warnings.length ? { warnings } : {}),
+          },
+          text,
+        );
   }
 
   // 13. One reminder for a missing or invalid report.

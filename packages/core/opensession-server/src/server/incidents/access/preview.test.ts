@@ -36,6 +36,7 @@ test("tools: mode, denials, granted access tools, connections", () => {
     "grep",
     "glob",
     "mcp__opensession-incident-access__describe_access",
+    "mcp__opensession-incident-access__show_findings",
     "mcp__sentry__*",
   ]);
   expect(
@@ -54,6 +55,7 @@ test("tools: mode, denials, granted access tools, connections", () => {
     "edit",
     "patch",
     "mcp__opensession-incident-access__describe_access",
+    "mcp__opensession-incident-access__show_findings",
     "mcp__opensession-incident-access__egress_fetch",
   ]);
 });

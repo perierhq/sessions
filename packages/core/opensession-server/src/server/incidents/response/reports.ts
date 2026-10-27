@@ -44,6 +44,7 @@ import {
   type ReportProblem,
   type VerifierReport,
 } from "../../../shared/incident-response";
+import { claimKey } from "../../../shared/findings";
 import { validateSource } from "../signal-validation";
 
 export const REPORT_FENCE = "incident-report";
@@ -372,6 +373,16 @@ function parseBlock(
   if (!isRecord(value))
     return reject("json", "The incident-report block must be a JSON object");
   return { value };
+}
+
+/** The raw `findings` value of the message's one incident-report block;
+ *  undefined when absent or unreadable. The report's own parser ignores the
+ *  key, so a report reads the same with or without it. */
+export function reportFindingsInput(text: string): unknown {
+  const block = parseBlock(text);
+  if (!("value" in block) || !Object.hasOwn(block.value, "findings"))
+    return undefined;
+  return block.value.findings;
 }
 
 const ANSI_ESCAPE =
@@ -1062,18 +1073,6 @@ export function parseInvestigatorReport(
     runbookPaths,
     ...(nextSteps.length ? { nextSteps } : {}),
   };
-}
-
-/** A claim's text for matching the verifier's quote to the listed claim:
- *  case, curly quotes, spacing and a closing full stop do not matter. */
-function claimKey(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[\u2018\u2019`]/g, "'")
-    .replace(/[\u201c\u201d]/g, '"')
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.\s]+$/, "");
 }
 
 /** How far a ruling is from verified; the less certain ruling wins. */

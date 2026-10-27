@@ -2,6 +2,7 @@
 // actions), shared by the server and the frontend. Types, constant lists
 // and small pure helpers only.
 
+import type { FindingsSet } from "./findings";
 import type { HttpSource, ObservationResult } from "./incidents";
 
 export const AUTONOMY_LEVELS = [
@@ -350,6 +351,16 @@ export type CancelReason =
  * `accessSummary` and `accessRevision` are plan 3's `AgentAccess.summary`
  * and `revision` at spawn.
  */
+/** A round a session already finished, kept when a send-back moves the same
+ *  session on to the next round (the run's own report and times are then
+ *  the new round's). */
+export interface PastRound {
+  round: number;
+  startedAt: string;
+  endedAt?: string;
+  report?: InvestigatorReport | VerifierReport;
+}
+
 export interface AgentRun {
   role: AgentRole;
   round: number;
@@ -384,6 +395,11 @@ export interface AgentRun {
   /** The session that took over the next round, when this one's access
    *  was widened after it started. */
   supersededBy?: string;
+  /** When a send-back moved this session to its current round; `startedAt`
+   *  stays the session's own start. */
+  roundStartedAt?: string;
+  /** The rounds this session finished before a send-back, oldest first. */
+  pastRounds?: PastRound[];
 }
 
 export interface ProofSample {
@@ -674,6 +690,8 @@ export interface IncidentResponse {
   next: NextAction;
   ledger: LedgerEntry[];
   droppedLedger: number;
+  /** Agent-composed findings, one set per (role, round); see shared/findings.ts. */
+  findingSets?: FindingsSet[];
   startedAt: string;
   updatedAt: string;
 }

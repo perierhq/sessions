@@ -553,3 +553,32 @@ test("a closed incident without a change says No change", () => {
   });
   expect(rows[0]).toMatchObject({ key: "change", value: "No change" });
 });
+
+test("earlier rounds get a findings row", () => {
+  const input = {
+    incident: withResponse({ round: 2 }),
+    earlier: [],
+    pr: null,
+    budgetUsd: null,
+    access: null,
+    now: NOW,
+  };
+  const rows = detailRows({ ...input, findingRounds: [1] });
+  const row = rows.find((r) => r.key === "findings-1");
+  expect(row).toMatchObject({
+    key: "findings-1",
+    band: "History",
+    label: "Round 1 findings",
+    target: { kind: "sheet", sheet: "findings", round: 1 },
+  });
+  // This incident's own rounds come before other incidents.
+  expect(rows.filter((r) => r.band === "History").map((r) => r.key)).toEqual([
+    "findings-1",
+    "earlier",
+  ]);
+  expect(
+    detailRows({ ...input, findingRounds: [] }).some((r) =>
+      r.key.startsWith("findings-"),
+    ),
+  ).toBe(false);
+});

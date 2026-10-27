@@ -4,7 +4,8 @@
 // note, runbook and branch names both sides agree on. Prompts carry the
 // redacted signal only (header names, the URL as origin and path template),
 // never an action's command, and the verifier's never carries the
-// investigator's summary, cause or attempts. Text Sessions did not write
+// investigator's summary, cause, attempts or findings prose (its blocks by
+// id, kind and references only). Text Sessions did not write
 // (titles, observation details, reasons, claims, notes, Runner labels) goes
 // in fenced data blocks, cleaned and with its backticks defused, under a
 // line that says it is data, not instructions.
@@ -23,6 +24,7 @@ import {
   type SendBackReason,
   roundOfMax,
 } from "../../../shared/incident-response";
+import type { FindingsSet } from "../../../shared/findings";
 import type {
   Incident,
   Observation,
@@ -33,6 +35,7 @@ import type {
 } from "../../../shared/incidents";
 import { MCP_SEARCH_TOOL } from "@tellahq/opensession-protocol/tool-presentation";
 import type { ConnectionProblem } from "../access/mcp";
+import { briefLine, findingsBrief } from "../findings/catalog";
 import { redactSignal } from "../signal-validation";
 import {
   REPORT_FENCE,
@@ -251,6 +254,23 @@ function hhmmUtc(iso: string): string {
     : iso;
 }
 
+/** A findings set's blocks as data lines (`briefLine`), with the agent's
+ *  prose only when `prose`; nothing for a missing or cleared set. */
+function findingLines(set: FindingsSet | undefined, prose: boolean): string[] {
+  return (set?.blocks ?? []).map((b) => dataText(briefLine(b, { prose })));
+}
+
+/** The "## Findings" section: the catalog brief, then the blocks this
+ *  agent may keep or refer to, as data. */
+function findingsSection(
+  role: AgentRole,
+  list: { title: string; lines: string[] } | null,
+): string[] {
+  const out = findingsBrief(role);
+  if (list?.lines.length) out.push(...dataBlock(list.title, list.lines), "");
+  return out;
+}
+
 function jsonBlock(tag: string, value: unknown): string {
   return ["```" + tag, JSON.stringify(value, null, 2), "```"].join("\n");
 }
@@ -277,6 +297,8 @@ export interface InvestigatorPromptInput {
    *  (notePathFor with the project's incidents). */
   notePath?: string;
   connections?: ConnectionsBrief;
+  /** The previous round's set this investigator's blocks start from. */
+  findings?: { previous?: FindingsSet };
 }
 
 /** The connections an agent's access names, and the ones among them it
@@ -557,6 +579,19 @@ export function buildInvestigatorPrompt(
     "",
   );
 
+  const previous = input.findings?.previous;
+  out.push(
+    ...findingsSection(
+      "investigator",
+      previous
+        ? {
+            title: `Round ${previous.round} findings on the page now. Keep or edit them by id; the page keeps showing them until your first show_findings call this round`,
+            lines: findingLines(previous, true),
+          }
+        : null,
+    ),
+  );
+
   out.push("## Report", "");
   out.push(
     ...refusalLines("investigator"),
@@ -641,12 +676,17 @@ const NEXT_STEPS_BRIEF = [
   }),
 ];
 
+/** `previous` is the investigator's set of the round sent back: its
+ *  blocks stay on the page until the next show_findings call. */
 export function buildSendBackMessage(
   round: number,
   maxRounds: number,
   why: SendBackReason,
+  previous?: FindingsSet,
 ): string {
-  return `${sendBackHead(round, maxRounds, why)}\n\n${SEND_BACK_TAIL}`;
+  const text = `${sendBackHead(round, maxRounds, why)}\n\n${SEND_BACK_TAIL}`;
+  if (!previous?.blocks.length) return text;
+  return `${text}\n\nYour round ${previous.round} findings stay on the page until you call show_findings for this round. Keep a block with {"id": "…", "keep": true}.`;
 }
 
 /** Why the work came back, as a data block. */
@@ -703,6 +743,9 @@ export interface VerifierPromptInput {
   /** The project's actions, for their labels; ids are shown otherwise. */
   actions?: IncidentAction[];
   connections?: ConnectionsBrief;
+  /** The round's investigator set, listed by id, kind and references
+   *  only: never its prose. */
+  findings?: { investigator?: FindingsSet };
 }
 
 function proofSamples(samples: ProofSample[]): string[] {
@@ -800,6 +843,13 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
     ),
   );
   out.push("");
+
+  out.push(
+    ...findingsSection("verifier", {
+      title: "The investigator's blocks (refer to them by id; read-only)",
+      lines: findingLines(input.findings?.investigator, false),
+    }),
+  );
 
   out.push("## Report", "");
   out.push(

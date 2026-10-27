@@ -13,8 +13,12 @@ import {
   appendObservations,
   flushObservations,
   forgetObservations,
+  hasObservation,
   hydrateObservations,
   hydrationLookbackMs,
+  MAIN_LANE,
+  nearestObservation,
+  observationTimes,
   pruneObservations,
   queryObservations,
   recentObservations,
@@ -334,4 +338,136 @@ test("forgetting a signal drops its memory, not its files", async () => {
       Date.parse("2026-10-20T00:05:00Z"),
     ),
   ).toHaveLength(1);
+});
+
+test("a scan stops reading once the caller has what it needs", async () => {
+  await mkdir(dir(), { recursive: true });
+  const day = (date: string) =>
+    Array.from({ length: 300 }, (_, i) =>
+      JSON.stringify({
+        at: new Date(
+          Date.parse(`${date}T00:00:00Z`) + i * 60_000,
+        ).toISOString(),
+        result: "ok",
+        detail: "x".repeat(400),
+      }),
+    ).join("\n");
+  await writeFile(join(dir(), "2026-10-20.jsonl"), day("2026-10-20"));
+  await writeFile(join(dir(), "2026-10-21.jsonl"), day("2026-10-21"));
+  let seen = 0;
+  await scanObservations(
+    "sig-a",
+    Date.parse("2026-10-20T00:00:00Z"),
+    Date.parse("2026-10-21T23:59:59Z"),
+    () => {
+      seen++;
+    },
+    { until: () => seen >= 3 },
+  );
+  expect(seen).toBe(3);
+
+  // The in-memory path stops the same way.
+  appendObservations("sig-a", [
+    ob("2026-10-22T00:00:00Z"),
+    ob("2026-10-22T00:01:00Z"),
+    ob("2026-10-22T00:02:00Z"),
+  ]);
+  await hydrateObservations("sig-a", Date.parse("2026-10-22T00:05:00Z"));
+  seen = 0;
+  await scanObservations(
+    "sig-a",
+    Date.parse("2026-10-22T00:00:00Z"),
+    Date.parse("2026-10-22T00:05:00Z"),
+    () => {
+      seen++;
+    },
+    { until: () => seen >= 1 },
+  );
+  expect(seen).toBe(1);
+});
+
+test("hasObservation answers from memory first, then the day files, per lane", async () => {
+  appendObservations("sig-a", [
+    ob("2026-10-20T10:00:00Z"),
+    ob("2026-10-20T11:00:00Z", "fail", "API"),
+  ]);
+  await flushObservations();
+  const from = Date.parse("2026-10-20T09:00:00Z");
+  const to = Date.parse("2026-10-20T12:00:00Z");
+  // Memory answers without reading the files.
+  await chmod(dir(), 0o000);
+  try {
+    expect(await hasObservation("sig-a", from, to, MAIN_LANE)).toBe(true);
+    expect(await hasObservation("sig-a", from, to, "API")).toBe(true);
+  } finally {
+    await chmod(dir(), 0o700);
+  }
+  __resetObservationsForTest();
+  expect(await hasObservation("sig-a", from, to, MAIN_LANE)).toBe(true);
+  expect(await hasObservation("sig-a", from, to, "API")).toBe(true);
+  expect(await hasObservation("sig-a", from, to, "web")).toBe(false);
+  expect(
+    await hasObservation(
+      "sig-a",
+      Date.parse("2026-10-20T10:30:00Z"),
+      to,
+      MAIN_LANE,
+    ),
+  ).toBe(false);
+});
+
+test("nearestObservation picks the closest within the tolerance, per lane", async () => {
+  appendObservations("sig-a", [
+    ob("2026-10-20T10:00:00.000Z"),
+    ob("2026-10-20T10:00:00.800Z"),
+    ob("2026-10-20T10:00:00.700Z", "fail", "API"),
+  ]);
+  await flushObservations();
+  for (const reset of [false, true]) {
+    if (reset) __resetObservationsForTest();
+    const at = Date.parse("2026-10-20T10:00:00.600Z");
+    expect((await nearestObservation("sig-a", at, 1000, MAIN_LANE))?.at).toBe(
+      "2026-10-20T10:00:00.800Z",
+    );
+    expect((await nearestObservation("sig-a", at, 1000, "API"))?.at).toBe(
+      "2026-10-20T10:00:00.700Z",
+    );
+    expect(
+      await nearestObservation(
+        "sig-a",
+        Date.parse("2026-10-20T10:00:05Z"),
+        1000,
+        MAIN_LANE,
+      ),
+    ).toBeNull();
+  }
+});
+
+test("observationTimes lists one lane's times on one UTC day, from memory or files", async () => {
+  appendObservations("sig-a", [
+    ob("2026-10-19T23:59:59.900Z"),
+    ob("2026-10-20T10:00:00.800Z"),
+    ob("2026-10-20T00:00:00.000Z"),
+    ob("2026-10-20T10:00:00.700Z", "fail", "API"),
+    ob("2026-10-21T00:00:00.000Z"),
+  ]);
+  await flushObservations();
+  const day = Date.parse("2026-10-20T13:00:00Z");
+  for (const reset of [false, true]) {
+    if (reset) __resetObservationsForTest();
+    expect(await observationTimes("sig-a", day, MAIN_LANE)).toEqual([
+      Date.parse("2026-10-20T00:00:00.000Z"),
+      Date.parse("2026-10-20T10:00:00.800Z"),
+    ]);
+    expect(await observationTimes("sig-a", day, "API")).toEqual([
+      Date.parse("2026-10-20T10:00:00.700Z"),
+    ]);
+    expect(
+      await observationTimes(
+        "sig-a",
+        Date.parse("2026-10-22T00:00:00Z"),
+        MAIN_LANE,
+      ),
+    ).toEqual([]);
+  }
 });

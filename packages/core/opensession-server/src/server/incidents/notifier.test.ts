@@ -241,6 +241,32 @@ test("a failing notifier never breaks the incident flow", async () => {
   expect(pushes).toEqual([]);
 });
 
+test("a change to the findings alone loads no facts", async () => {
+  __resetIncidentNotifierForTest();
+  let loaded = 0;
+  startIncidentNotifications({
+    ...deps,
+    facts: async (incident, now) => {
+      loaded += 1;
+      return deps.facts(incident, now);
+    },
+  });
+  const i = await open();
+  await move(i.id, "fix-ready", {
+    response: { round: 1, agents: [] } as unknown as IncidentResponse,
+  });
+  await settle();
+  const before = loaded;
+  expect(before).toBeGreaterThan(0);
+  await updateIncident(i.id, (c) => {
+    if (c.response) c.response.findingSets = [];
+    c.updatedAt = new Date(clock + 1000).toISOString();
+    return c;
+  });
+  await settle();
+  expect(loaded).toBe(before);
+});
+
 test("idempotent start subscribes once", async () => {
   startIncidentNotifications(deps);
   await open();

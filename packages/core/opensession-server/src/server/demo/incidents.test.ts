@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import {
+  FINDING_ID,
+  FINDING_KINDS,
+  FINDINGS_LIMITS,
+  type FindingBlock,
+  type SignalWindow,
+} from "../../shared/findings";
 import { listIncidents } from "../incidents/incident-store";
 import {
   __resetObservationsForTest,
   flushObservations,
+  queryObservations,
   recentObservations,
 } from "../incidents/observation-store";
 import {
@@ -131,4 +139,112 @@ test("after a restart the demo fills the gap and its states come back", async ()
   // No duplicates across the seam.
   const ats = recentObservations(byName("Sign-in").id).map((o) => o.at);
   expect(new Set(ats).size).toBe(ats.length);
+});
+
+test("demo findings are well-formed", async () => {
+  await seedDemoIncidents(NOW);
+  const incidents = await listIncidents();
+  const veto = incidents.find((i) => i.state === "veto")!;
+  const needsYou = incidents.find((i) => i.state === "needs-you")!;
+  for (const incident of [veto, needsYou]) {
+    const sets = incident.response?.findingSets ?? [];
+    expect(sets.length).toBeGreaterThan(0);
+    const investigator = incident.response!.agents.find(
+      (a) => a.role === "investigator",
+    )!;
+    for (const set of sets) {
+      expect(set.blocks.length).toBeGreaterThan(0);
+      expect(set.blocks.length).toBeLessThanOrEqual(FINDINGS_LIMITS.blocks);
+      expect(
+        new TextEncoder().encode(JSON.stringify(set)).length,
+      ).toBeLessThanOrEqual(65536);
+      const run = incident.response!.agents.find(
+        (a) => a.role === set.role && a.round === set.round,
+      );
+      expect(set.sessionId).toBe(run!.sessionId);
+      const windows: SignalWindow[] = [];
+      const ids = new Set<string>();
+      for (const block of set.blocks as FindingBlock[]) {
+        expect(block.id).toMatch(FINDING_ID);
+        expect(ids.has(block.id)).toBe(false);
+        ids.add(block.id);
+        expect(FINDING_KINDS).toContain(block.kind);
+        if (block.kind === "signal") windows.push(block);
+        if (block.kind === "compare")
+          for (const side of block.sides)
+            if ("signal" in side) windows.push(side.signal);
+        if (block.kind === "change" && block.change.type === "pr")
+          expect(block.change.sessionId).toBe(investigator.sessionId);
+        // No log blocks: demo sessions have no transcripts to open.
+        expect(block.kind).not.toBe("log");
+      }
+      for (const w of windows) {
+        expect(w.signalId).toBe(incident.primarySignalId!);
+        const span = Date.parse(w.to) - Date.parse(w.from);
+        expect(span).toBeGreaterThan(0);
+        expect(span).toBeLessThanOrEqual(FINDINGS_LIMITS.windowMs);
+        expect(Date.parse(w.to)).toBeLessThanOrEqual(NOW);
+        const seen = await queryObservations(
+          w.signalId,
+          Date.parse(w.from),
+          Date.parse(w.to),
+        );
+        expect(seen.length).toBeGreaterThan(0);
+      }
+    }
+  }
+
+  const vetoSets = veto.response!.findingSets!;
+  expect(vetoSets.map((s) => s.role)).toEqual(["investigator", "verifier"]);
+  const kinds = (role: string) =>
+    vetoSets.find((s) => s.role === role)!.blocks.map((b) => b.kind);
+  expect(kinds("investigator")).toEqual([
+    "hypothesis",
+    "question",
+    "timeline",
+    "signal",
+    "change",
+  ]);
+  expect(kinds("verifier")).toEqual(["compare"]);
+  // The window's markers: the release is the agent's note (the demo has
+  // no release on record); the first timeout cites its stored observation.
+  const window = vetoSets[0]!.blocks.find((b) => b.kind === "signal");
+  const markers = window?.kind === "signal" ? window.markers : [];
+  expect(markers.map((m) => [m.label, m.ref?.type])).toEqual([
+    ["release", undefined],
+    ["first timeout", "observation"],
+  ]);
+  const cited = markers[1]!;
+  const at = Date.parse(cited.at);
+  const [observed] = await queryObservations(veto.primarySignalId!, at, at);
+  expect(observed).toMatchObject({ at: cited.at, result: "fail" });
+  expect(cited.ref).toEqual({
+    type: "observation",
+    signal: veto.primarySignalId,
+    at: cited.at,
+  });
+  const before = await queryObservations(
+    veto.primarySignalId!,
+    at - 10 * 60_000,
+    at - 1,
+  );
+  expect(before.every((o) => o.result === "ok")).toBe(true);
+
+  const hypothesis = vetoSets[0]!.blocks.find((b) => b.kind === "hypothesis");
+  const claim = "The replica was removed in the release config";
+  expect(hypothesis).toMatchObject({ claims: [claim], size: "half" });
+  const verifier = veto.response!.agents.find((a) => a.role === "verifier")!;
+  expect(verifier.report).toMatchObject({
+    claims: [{ text: claim, status: "verified" }],
+  });
+
+  const needsYouSets = needsYou.response!.findingSets!;
+  expect(needsYouSets.map((s) => s.role)).toEqual(["investigator"]);
+  expect(needsYouSets[0]!.blocks.map((b) => b.kind)).toEqual([
+    "hypothesis",
+    "question",
+  ]);
+  expect(needsYouSets[0]!.blocks[1]).toMatchObject({
+    text: "Can the migration be applied before the deploy?",
+  });
 });

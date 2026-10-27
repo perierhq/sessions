@@ -241,7 +241,7 @@ export const INTERNAL_MCP_CAPABILITIES = {
     summary:
       "Read-only host commands, egress requests and borrowed credentials for one incident agent.",
     guidance:
-      "Only incident agents have this. Call describe_access first to see what you may reach. host_command runs read-only programs on your granted hosts, egress_fetch sends a request through your granted route (production's own egress when it is a Runner), call_credential uses a credential the project granted you. Everything is audited with your incident and role; anything else you need goes in your findings for the owner.",
+      "Only incident agents have this. Call describe_access first to see what you may reach. host_command runs read-only programs on your granted hosts, egress_fetch sends a request through your granted route (production's own egress when it is a Runner), call_credential uses a credential the project granted you. Everything is audited with your incident and role; anything else you need goes in your findings for the owner. show_findings puts what you know on the incident page as checked blocks; call it early and again as you learn more.",
   },
 } as const satisfies Record<string, InternalMcpCapability>;
 

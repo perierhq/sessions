@@ -26,6 +26,7 @@ import {
 } from "../../shared/incident-response";
 import { configuredRepos } from "../config";
 import { getIncident } from "../incidents/incident-store";
+import { AGENT_AUDIT_TAIL } from "../incidents/response/agent-audit";
 import { agentToolCalls } from "../incidents/response/agents";
 import {
   applyOwnerDecision,
@@ -45,9 +46,6 @@ import {
 } from "../incidents/response/runners";
 import { webAuthRequired } from "../web-auth";
 import { type RouteContext, requestUser, verifiedPerson } from "./context";
-
-/** Transcript entries read per agent for its tool calls. */
-export const AGENT_AUDIT_TAIL = 2000;
 
 const PROJECTS_PATH = "/api/incident-projects";
 const PROJECT_PATH = /^\/api\/incident-projects\/([^/]+)$/;

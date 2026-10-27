@@ -61,7 +61,7 @@ import {
 } from "../../ui/top-bar";
 import { IconChevronLeft, IconChevronRight } from "../icons";
 import { RepoTile } from "../RepoTile";
-import { IncidentCause } from "./IncidentCause";
+import { FindingsSection } from "./FindingsSection";
 import { IncidentDetails } from "./IncidentDetails";
 import { NextAction } from "./NextAction";
 import { SignalStrip } from "./SignalStrip";
@@ -135,6 +135,8 @@ function Sections({
   const { incident, model, strip } = body;
   const response = incident.response;
   const verification = strip ? proofLane(response?.proof, strip) : null;
+  const signalName = (id: string) =>
+    body.signals.find((signal) => signal.id === id)?.name ?? id;
   return (
     <>
       <StatusLine
@@ -178,9 +180,14 @@ function Sections({
           onIntentHandled={actions.onIntentHandled}
         />
       )}
-      <IncidentCause
+      <FindingsSection
+        incident={incident}
         cause={causeOf(response)}
         waiting={!!response && isOpenIncident(incident)}
+        meta={model.laneMeta}
+        signalName={signalName}
+        onOpenSession={actions.onOpenSession}
+        onOpenPr={actions.onOpenPr}
       />
       <IncidentDetails
         incident={incident}
@@ -190,6 +197,8 @@ function Sections({
         onOpenPr={actions.onOpenPr}
         onOpenIncident={actions.onOpenIncident}
         onOpenSettings={actions.onOpenSettings}
+        meta={model.laneMeta}
+        signalName={signalName}
       />
     </>
   );
@@ -197,7 +206,7 @@ function Sections({
 
 /**
  * The incident page (spec 4.1): status line, signal strip, next action,
- * cause and summary rows in one column under the page's own bar.
+ * findings (or the cause) and summary rows in one column under the page's own bar.
  * Presentational over `body`; the containers inside load their own extras.
  */
 export function IncidentPageView({

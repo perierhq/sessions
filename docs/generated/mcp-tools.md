@@ -78,9 +78,9 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-incident-access`](#opensession-incident-access) | 4 | automation | incident agents only (automation descendants with an incident binding) |
+| [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-39 servers, 189 tools.
+39 servers, 190 tools.
 
 ## opensession-sessions
 
@@ -1559,6 +1559,12 @@ Read-only host commands, egress requests and borrowed credentials for one incide
 `mcp__opensession-incident-access__describe_access` · input: none
 
 What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. Every call is audited with your incident and role.
+
+### `show_findings`
+
+`mcp__opensession-incident-access__show_findings` · input: `blocks` (any[], required)
+
+Show what you found on the incident page as blocks from the catalog in your brief's Findings section. Each call replaces your blocks for this round; keep one unchanged with {"id": "…", "keep": true}. Returns what was saved and what was dropped, so you can fix it and call again.
 
 ### `host_command`
 

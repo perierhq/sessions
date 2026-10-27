@@ -95,6 +95,9 @@ export type ResponseStep =
       /** A report refused for want of a pull request, read again on a
        *  Retry now that its pull request is found. */
       reread?: boolean;
+      /** The accepted report's raw `findings` value, for `applyFindings`;
+       *  absent when the report has no such key. */
+      findings?: unknown;
     }
   | { step: "cancel-agents"; reason: string; for: CancelReason }
   | { step: "run-proof" }

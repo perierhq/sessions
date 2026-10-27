@@ -11,6 +11,7 @@ import {
 } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import {
+  __setApplyFindingsForTest,
   incidentAccessMcpForSession,
   incidentAccessToolDefinitions,
   incidentAccessToolsForSession,
@@ -18,7 +19,10 @@ import {
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 
 useIncidentTestKernel();
-afterEach(() => __setBindingResolverForTest(undefined));
+afterEach(() => {
+  __setBindingResolverForTest(undefined);
+  __setApplyFindingsForTest(undefined);
+});
 
 const binding = {
   incidentId: "inc-1",
@@ -35,7 +39,10 @@ const textOf = (out: { content: unknown[] }) =>
   (out.content[0] as { text: string }).text;
 
 test("tools follow the access", () => {
-  expect(names(agentAccessFixture())).toEqual(["describe_access"]);
+  expect(names(agentAccessFixture())).toEqual([
+    "describe_access",
+    "show_findings",
+  ]);
   expect(
     names(
       agentAccessFixture({
@@ -56,10 +63,88 @@ test("tools follow the access", () => {
     ),
   ).toEqual([
     "describe_access",
+    "show_findings",
     "host_command",
     "egress_fetch",
     "call_credential",
   ]);
+});
+test("show_findings is mounted for every bound agent", () => {
+  for (const role of ["investigator", "verifier"] as const)
+    expect(
+      incidentAccessToolDefinitions({
+        sessionId: "os-1",
+        binding: { ...binding, role },
+        access: agentAccessFixture({ role }),
+      }).map((t) => t.name),
+    ).toContain("show_findings");
+});
+test("show_findings uses the binding's session, not its arguments", async () => {
+  const seen: unknown[] = [];
+  __setApplyFindingsForTest(async (req) => {
+    seen.push(req);
+    return { saved: true, blocks: 0, notes: [], text: "Cleared." };
+  });
+  __setBindingResolverForTest(async () => agentAccessFixture());
+  const show = incidentAccessToolDefinitions({
+    sessionId: "os-1",
+    binding,
+    access: agentAccessFixture(),
+  }).find((t) => t.name === "show_findings")!;
+  const out = await show.handler({ blocks: [], sessionId: "os-evil" }, {});
+  expect(textOf(out)).toBe("Cleared.");
+  expect(seen).toEqual([
+    {
+      incidentId: "inc-1",
+      role: "investigator",
+      sessionId: "os-1",
+      input: { blocks: [] },
+      source: "tool",
+    },
+  ]);
+
+  __setBindingResolverForTest(async () => {
+    throw new AgentAccessError(
+      "Incident inc-1 is resolved; its agents have no access",
+      "incident",
+    );
+  });
+  const refused = await show.handler({ blocks: [] }, {});
+  expect(textOf(refused)).toBe(
+    "Access refused: Incident inc-1 is resolved; its agents have no access",
+  );
+  expect(seen).toHaveLength(1);
+});
+test("show_findings applies one session's calls in call order", async () => {
+  // Review Focus 2 through the real tool: the first call's access check is
+  // slower, and the second call still applies after it.
+  const applied: string[] = [];
+  __setApplyFindingsForTest(async (req) => {
+    const blocks = (req.input as { blocks: Array<{ id: string }> }).blocks;
+    applied.push(blocks.map((b) => b.id).join(","));
+    return { saved: true, blocks: blocks.length, notes: [], text: "Saved." };
+  });
+  let release: () => void = () => {};
+  const slow = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let resolves = 0;
+  __setBindingResolverForTest(async () => {
+    resolves += 1;
+    if (resolves === 1) await slow;
+    return agentAccessFixture();
+  });
+  const show = incidentAccessToolDefinitions({
+    sessionId: "os-1",
+    binding,
+    access: agentAccessFixture(),
+  }).find((t) => t.name === "show_findings")!;
+  const first = show.handler({ blocks: [{ id: "a" }] }, {});
+  const second = show.handler({ blocks: [{ id: "b" }] }, {});
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  release();
+  await Promise.all([first, second]);
+  expect(applied).toEqual(["a", "b"]);
 });
 test("describe_access reports the fresh access and no secrets", async () => {
   const tools = incidentAccessToolDefinitions({

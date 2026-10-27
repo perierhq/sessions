@@ -21,6 +21,7 @@ import {
   fetchSignalStrip,
   type IncidentListFilter,
 } from "../lib/api/incidents";
+import { type CommitDetails, fetchCommit } from "../lib/api/prs";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
 import { createCoalescer } from "../lib/coalescer";
 import { miniRange, stripRefreshMs } from "../lib/incidents/signal-summary";
@@ -30,6 +31,7 @@ import type {
   IncidentAccessSettingsView,
   IncidentAgentsAccessView,
 } from "../../shared/incident-access";
+import type { SignalWindow } from "../../shared/findings";
 import type { RedactedProjectSettings } from "../../shared/incident-response";
 import type {
   Incident,
@@ -125,6 +127,61 @@ export function useIncidentStrip(id: string): SWRResponse<StripResponse> {
     apiSWRKey.incidentStrip(id),
     () => fetchIncidentStrip(id),
     stripConfig(),
+  );
+}
+
+/** A findings window refreshes on its bucket only while it reaches past
+ *  now; a closed window's data never changes. */
+export function signalWindowRefreshMs(
+  to: string,
+  latest: StripResponse | undefined,
+  now: number,
+): number {
+  return Date.parse(to) > now ? stripRefreshMs(latest) : 0;
+}
+
+function signalWindowConfig(
+  w: Pick<SignalWindow, "to">,
+): SWRConfiguration<StripResponse> {
+  return {
+    ...apiResourceSWRConfig<StripResponse>(0),
+    refreshInterval: (latest: StripResponse | undefined) =>
+      signalWindowRefreshMs(w.to, latest, Date.now()),
+  };
+}
+
+/** A commit's patch never changes: no refetch on focus either. */
+export function findingsCommitConfig(): SWRConfiguration<CommitDetails | null> {
+  return {
+    ...apiResourceSWRConfig<CommitDetails | null>(0),
+    revalidateOnFocus: false,
+  };
+}
+
+/**
+ * A findings block's signal window: every lane of the signal from `from` to
+ * `to` (the block narrows to its lane with `windowStrip`). Its key is not an
+ * incident key, so incident writes don't refetch it.
+ */
+export function useSignalWindow(
+  w: SignalWindow | null,
+): SWRResponse<StripResponse> {
+  return useSWR<StripResponse>(
+    w ? apiSWRKey.findingsWindow(w.signalId, w.from, w.to) : null,
+    () => fetchSignalStrip(w!.signalId, { from: w!.from, to: w!.to }),
+    signalWindowConfig(w ?? { to: "" }),
+  );
+}
+
+/** A findings block's commit, with its patch. `null` data: no checkout has it. */
+export function useIncidentCommit(
+  sha: string | null,
+  repo: string,
+): SWRResponse<CommitDetails | null> {
+  return useSWR<CommitDetails | null>(
+    sha ? apiSWRKey.findingsCommit(sha, repo) : null,
+    () => fetchCommit(sha!, repo, { includeChanges: true }),
+    findingsCommitConfig(),
   );
 }
 
