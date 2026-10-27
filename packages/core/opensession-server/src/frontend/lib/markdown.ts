@@ -1712,7 +1712,7 @@ md.use({
         return remoteMediaMarkup(token.href ?? "", {
           kind: video ? "video" : "image",
           alt: token.text,
-          inLink: renderInLink,
+          inLink: renderInLink || renderRawLinks.depth > 0,
         });
       // Video files pasted with image syntax would render as a broken <img>
       // linking to a new tab — play them inline instead. Clicks on .md-image

@@ -1690,6 +1690,17 @@ describe("images from other hosts", () => {
     );
   });
 
+  it("keeps an image inside a raw HTML link in PR prose from becoming a link", () => {
+    const html = renderPrCommentMarkdown(
+      `<a href="https://acme.example.test/build">![status](${remote})</a>`,
+    );
+    expect(html).not.toContain("<img");
+    expect(html).toContain(
+      '<span class="md-remote-media md-remote-media-inline"',
+    );
+    expect(html).not.toContain('class="md-remote-media" target');
+  });
+
   it("catches scheme-relative and backslash spellings", () => {
     for (const src of [
       "//acme.example.test/a.png",
