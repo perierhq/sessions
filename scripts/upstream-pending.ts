@@ -62,7 +62,8 @@ function git(args: string[], cwd: string): string {
 function main() {
   const root = git(["rev-parse", "--show-toplevel"], process.cwd()).trim();
   const args = new Set(process.argv.slice(2));
-  if (!args.has("--no-fetch")) git(["fetch", "-q", "upstream", "origin"], root);
+  if (!args.has("--no-fetch"))
+    git(["fetch", "-q", "--multiple", "upstream", "origin"], root);
 
   const fork = FORK_POINT.exec(readFileSync(join(root, "NOTICE.md"), "utf8"));
   if (!fork) throw new Error("NOTICE.md does not name the fork point");
