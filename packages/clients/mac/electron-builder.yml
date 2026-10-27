@@ -1,7 +1,8 @@
-# NOT dev.tella.os1. That id belongs to the App Store pair (the iOS app and
-# the native OS1Mac target in os1-ios, one universal-purchase record). Two
-# different Mac apps must never share a bundle id, so the Electron shell has
-# its own.
+# NOT pl.sessions.os1. That id belongs to the App Store pair (the iOS app and
+# the native OS1Mac target in packages/clients/ios/project.yml, one
+# universal-purchase record). Two different Mac apps must never share a bundle
+# id, so the Electron shell has its own. The release workflow reads this line
+# to check the provisioning profile, so it is the only place the id lives.
 #
 # productName is the app's LABEL, and on macOS it is one knob for four things:
 # the .app and executable names, CFBundleName (the menu-bar title), Electron's
@@ -13,7 +14,7 @@
 #
 # The FULL name stays Open Session: the App Store record, the download, the
 # website and prose all keep it. This is only the label.
-appId: dev.tella.os1.shell
+appId: pl.sessions.os1.shell
 productName: OS
 # Deliberately NOT renamed with the app: this is a URL path segment in the
 # update feed, and isMacReleaseAsset in src/server/routes/os1-update.ts matches
@@ -62,7 +63,7 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   # Universal links: once the Developer ID provisioning profile for
-  # dev.tella.os1.shell exists (README "Universal links"), switch ONLY `entitlements`
+  # the appId above exists (README "Universal links"), switch ONLY `entitlements`
   # above to build/entitlements.mac.applinks.plist and add:
   # provisioningProfile: build/os1.provisionprofile
   # Leave `entitlementsInherit` on entitlements.mac.plist — the Electron helpers

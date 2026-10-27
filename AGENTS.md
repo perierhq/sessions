@@ -59,13 +59,75 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 ## Release workflows
 
 Upstream's release workflows are kept. The signing ones run only when their
-repo variable is `true`; until then they skip cleanly.
+repo variable is `true`; until then they skip cleanly. No Apple account of
+upstream's is left in them: bundle ids and profile names come from
+`packages/clients/ios/project.yml` (read by `ci/project-settings.mjs`) and
+`packages/clients/mac/electron-builder.yml`, the team and server from repo
+variables. `scripts/apple-release-identities.test.ts` keeps it that way.
 
-| Variable                 | Workflows                                         | Needs first                                                                                                                                       |
-| ------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IOS_RELEASE_ENABLED`    | `os1-ios-testflight`, `os1-ios-testflight-status` | ASC API key, iOS distribution cert, own bundle IDs and team in `packages/clients/ios/project.yml`                                                 |
-| `MAC_RELEASE_ENABLED`    | `os1-mac-testflight`, `os1-mac-release`           | Mac installer and Developer ID certs, provisioning profile, Apple ID, `APPLE_TEAM_ID`, own `appId` in `packages/clients/mac/electron-builder.yml` |
-| `CHROME_RELEASE_ENABLED` | `os1-chrome-release`                              | A new extension signing key and the extension ID pinned in the server                                                                             |
+| Variable                 | Workflows                                         | Needs first                                                                                                                                                                                                                                        |
+| ------------------------ | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IOS_RELEASE_ENABLED`    | `os1-ios-testflight`, `os1-ios-testflight-status` | the iOS checklist below                                                                                                                                                                                                                            |
+| `MAC_RELEASE_ENABLED`    | `os1-mac-testflight`, `os1-mac-release`           | the iOS checklist's shared items, then the Mac one                                                                                                                                                                                                 |
+| `CHROME_RELEASE_ENABLED` | `os1-chrome-release`                              | `OS1_SERVER_URL`; a new signing key (`OS1_CHROME_CRX_KEY` secret) whose public key replaces `key` in `packages/clients/chrome/manifest.json` (the workflow checks the two match); the new extension ID in the server's `chromeExtensionId` setting |
+
+The fork's bundle ids are `pl.sessions.os1` (iOS app and native Mac app, one
+universal-purchase record), `pl.sessions.os1.widgets` (widget extension) and
+`pl.sessions.os1.shell` (Electron shell). No file edits are needed to ship with
+them. To pick different ones, change them before registering anything, all in
+one PR: `PRODUCT_BUNDLE_IDENTIFIER` (and `bundleIdPrefix`) in
+`packages/clients/ios/project.yml`, `appId` in
+`packages/clients/mac/electron-builder.yml` (must stay `<app id>.shell`), the
+helper ids in `packages/clients/mac/native/*-Info.plist`, and the APNs default
+in `packages/core/opensession-server/src/server/live-activities.ts`.
+
+**iOS (`IOS_RELEASE_ENABLED`)**
+
+1. Apple Developer: register App IDs `pl.sessions.os1` (with Push
+   Notifications) and `pl.sessions.os1.widgets`.
+2. App Store Connect: create the app record for `pl.sessions.os1`.
+3. Create an Apple Distribution certificate for the team and export it as a
+   .p12.
+4. Create App Store provisioning profiles with exactly the names in
+   `project.yml`'s Release configs: `OS1 App Store Push` (`pl.sessions.os1`)
+   and `OS1 Widgets App Store` (`pl.sessions.os1.widgets`). CI fetches them by
+   name, so no profile secret.
+5. Create an App Store Connect API key (Admin or App Manager) that can read
+   provisioning profiles and upload builds.
+6. Repo secrets: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY_P8_BASE64`
+   (base64 of the .p8), `OS1_IOS_DIST_P12_BASE64`, `OS1_IOS_DIST_P12_PASSWORD`.
+7. Repo variables: `APPLE_TEAM_ID` (10 characters), `OS1_SERVER_URL` (the
+   server the app opens by default, `https://…`).
+8. Set `IOS_RELEASE_ENABLED` to `true`, then run "Release OS1 for iOS
+   (TestFlight)" by hand; later pushes under `packages/clients/ios/` ship on
+   their own. "OS1 iOS TestFlight status" shows Apple's verdict on the upload.
+9. Optional, push-driven Live Activities: `OPENSESSION_APNS_KEY_ID`,
+   `OPENSESSION_APNS_TEAM_ID` and `OPENSESSION_APNS_PRIVATE_KEY_PATH` on the
+   server (`docs/instance-configuration.md`).
+
+**Mac (`MAC_RELEASE_ENABLED`)** gates both Mac workflows, so set up both
+before turning it on. It reuses iOS items 2, 3, 5, 6 and 7.
+
+1. Native app to TestFlight (`os1-mac-testflight`): add the macOS platform to
+   the `pl.sessions.os1` record; create a Mac Installer Distribution
+   certificate for the same team (.p12); create a Mac App Store profile named
+   `OS1 Mac App Store` for `pl.sessions.os1`.
+2. Electron shell (`os1-mac-release`, on `v*` tags or by hand): register App ID
+   `pl.sessions.os1.shell` with Associated Domains; create a Developer ID
+   Application certificate (.p12) and a Developer ID provisioning profile for
+   `pl.sessions.os1.shell` that includes Associated Domains; create an
+   app-specific password for the Apple ID that notarizes.
+3. Repo secrets: `OS1_MAC_INSTALLER_P12_BASE64`,
+   `OS1_MAC_INSTALLER_P12_PASSWORD`, `OS1_MAC_PROVISIONING_PROFILE_BASE64`
+   (the Mac App Store profile), `APPLE_CERTIFICATES_P12`,
+   `APPLE_CERTIFICATES_PASSWORD`, `OS1_PROVISIONING_PROFILE_BASE64` (the
+   Developer ID profile), `APPLE_ID`, `APPLE_APP_PASSWORD`.
+4. `OS1_SERVER_URL` must be `https://`: its host becomes the universal-link
+   domain (`applinks:<host>` and `?mode=developer`). On that server set
+   `integrations.clients.appleAppIds` to
+   `["<team>.pl.sessions.os1", "<team>.pl.sessions.os1.shell"]` so it serves
+   the association file.
+5. Set `MAC_RELEASE_ENABLED` to `true`.
 
 `os1-ios-testflight-status` is a manual, read-only check of Apple's processing
 verdict on the latest uploads; it reuses the TestFlight App Store Connect key

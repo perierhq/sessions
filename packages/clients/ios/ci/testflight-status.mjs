@@ -4,8 +4,8 @@
 //   node testflight-status.mjs [bundle id] [count]
 //
 // Without a bundle id (or with an empty one) it reads the OS1 app target's
-// PRODUCT_BUNDLE_IDENTIFIER from ../project.yml, the same id the release
-// archive is signed with.
+// PRODUCT_BUNDLE_IDENTIFIER from ../project.yml (project-settings.mjs), the
+// same id the release archive is signed with.
 //
 // The release workflow uploads without waiting for Apple's processing, so a
 // green run only means the upload worked. Apple can still mark the build
@@ -14,7 +14,7 @@
 // Read-only: uses the same API key as the upload (ASC_KEY_ID /
 // ASC_ISSUER_ID / ASC_PRIVATE_KEY).
 import crypto from "node:crypto";
-import fs from "node:fs";
+import { readTargetSetting } from "./project-settings.mjs";
 
 const [bundleArg, countArg = "6"] = process.argv.slice(2);
 const bundleId = bundleArg || appBundleId();
@@ -33,16 +33,9 @@ function required(key) {
   return value;
 }
 
-// The first PRODUCT_BUNDLE_IDENTIFIER inside the `OS1:` target block.
 function appBundleId() {
-  const path = new URL("../project.yml", import.meta.url);
-  const lines = fs.readFileSync(path, "utf8").split("\n");
-  const start = lines.findIndex((line) => /^  OS1:\s*$/.test(line));
-  for (let i = start + 1; start >= 0 && i < lines.length; i++) {
-    if (/^  \S/.test(lines[i])) break;
-    const match = lines[i].match(/^\s+PRODUCT_BUNDLE_IDENTIFIER:\s*(\S+)/);
-    if (match) return match[1];
-  }
+  const id = readTargetSetting("OS1", "PRODUCT_BUNDLE_IDENTIFIER");
+  if (id) return id;
   console.error(
     "::error::No PRODUCT_BUNDLE_IDENTIFIER for the OS1 target in project.yml",
   );

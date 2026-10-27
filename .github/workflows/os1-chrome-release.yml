@@ -1,4 +1,5 @@
-# Tella's client release pipeline — fork and rebrand (see packages/clients/chrome/README).
+# Inherited from upstream Open Session. AGENTS.md "Release workflows" lists
+# what to set before CHROME_RELEASE_ENABLED.
 name: Release OS¹ for Chrome
 
 # Packs and publishes the internal Chrome extension (packages/clients/chrome/) on every
@@ -68,12 +69,14 @@ jobs:
 
       # The repository ships a portable default (localhost) so a fresh clone does
       # not point at someone else's server. Release builds stamp the real one in.
-      # Set the OS1_SERVER_URL repository variable to override.
+      # Set the OS1_SERVER_URL repository variable; the release fails without it.
       - name: Stamp deployment server
         if: steps.exists.outputs.skip != 'true'
         env:
-          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev' }}
+          SERVER: ${{ vars.OS1_SERVER_URL }}
         run: |
+          test -n "$SERVER" || { echo '::error::Set the OS1_SERVER_URL repository variable'; exit 1; }
+          SERVER="${SERVER%/}"
           jq --arg s "$SERVER" '.defaultServer = $s' packages/clients/chrome/deployment.json > /tmp/dep.json
           mv /tmp/dep.json packages/clients/chrome/deployment.json
           jq -r '"default server: " + .defaultServer' packages/clients/chrome/deployment.json
@@ -85,12 +88,15 @@ jobs:
         run: |
           test -n "$OS1_CHROME_CRX_KEY" || { echo '::error::OS1_CHROME_CRX_KEY secret is not set'; exit 1; }
           printf '%s' "$OS1_CHROME_CRX_KEY" | base64 -d > /tmp/os1-chrome-key.pem
-          # The extension ID is derived from the key; assert it matches what the
-          # server (CHROME_EXTENSION_ID) and manifest ("key") pin, so a wrong
-          # secret fails the build instead of shipping an unupdatable ID.
-          ID=$(openssl rsa -in /tmp/os1-chrome-key.pem -pubout -outform DER 2>/dev/null | sha256sum | head -c 32 | tr '0123456789abcdef' 'abcdefghijklmnop')
-          echo "extension id: $ID"
-          test "$ID" = "paoolggkbjkobjblpjgncolaaikcmboe" || { echo '::error::Signing key does not match the pinned extension ID'; exit 1; }
+          # The extension ID is derived from the key; assert it matches the one
+          # the manifest's "key" pins (and the server's CHROME_EXTENSION_ID
+          # with it), so a wrong secret fails the build instead of shipping an
+          # unupdatable ID.
+          to_id() { sha256sum | head -c 32 | tr '0123456789abcdef' 'abcdefghijklmnop'; }
+          ID=$(openssl rsa -in /tmp/os1-chrome-key.pem -pubout -outform DER 2>/dev/null | to_id)
+          PINNED=$(jq -r .key packages/clients/chrome/manifest.json | base64 -d | to_id)
+          echo "extension id: $ID (manifest pins $PINNED)"
+          test "$ID" = "$PINNED" || { echo '::error::Signing key does not match the extension ID pinned by manifest.json "key"'; exit 1; }
           npx -y crx3 -p /tmp/os1-chrome-key.pem -o "os1-chrome-${{ steps.v.outputs.version }}.crx" packages/clients/chrome
           head -c 4 "os1-chrome-${{ steps.v.outputs.version }}.crx" | grep -q 'Cr24' || { echo '::error::Packed file is not a CRX'; exit 1; }
           rm /tmp/os1-chrome-key.pem
@@ -99,10 +105,11 @@ jobs:
         if: steps.exists.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          SERVER: ${{ vars.OS1_SERVER_URL }}
         run: |
           gh release create "${{ steps.v.outputs.tag }}" \
             "os1-chrome-${{ steps.v.outputs.version }}.crx" \
             --repo "$GITHUB_REPOSITORY" \
             --prerelease \
             --title "OS¹ for Chrome ${{ steps.v.outputs.version }}" \
-            --notes "Internal Chrome extension build from $GITHUB_SHA. Served to Chrome's updater via os.tella.dev/api/packages/clients/chrome/updates.xml."
+            --notes "Internal Chrome extension build from $GITHUB_SHA. Served to Chrome's updater via ${SERVER%/}/api/packages/clients/chrome/updates.xml."

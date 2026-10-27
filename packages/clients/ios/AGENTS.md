@@ -40,10 +40,12 @@ WS protocol notes) — keep it updated alongside changes.
 - Pure SwiftUI. SwiftStreamingMarkdown is the deliberate exception to the
   no-third-party-dependencies default; discuss any additional dependency first.
 - Both targets share one bundle id (one App Store Connect record, universal
-  purchase) — Tella ships `dev.tella.os1`, set in `project.yml`; forks rebrand
-  to their own team id and bundle-id prefix. The Electron shell uses a
-  distinct `.shell`-suffixed id (Tella: `dev.tella.os1.shell`); two Mac apps
-  must never share a bundle id.
+  purchase): `pl.sessions.os1`, set in `project.yml`, which is the only place
+  bundle ids live (the release workflows read them with
+  `ci/project-settings.mjs`). The team is not committed: `DEVELOPMENT_TEAM` is
+  `${APPLE_TEAM_ID}`, filled by XcodeGen from the environment. The Electron
+  shell uses a distinct `.shell`-suffixed id (`pl.sessions.os1.shell`); two
+  Mac apps must never share a bundle id.
 
 ## Building and testing (from a non-Mac host)
 
@@ -146,15 +148,15 @@ filter). There is no separate release step — treat every push as shipping to
 TestFlight.
 
 Every embedded target needs its own App Store provisioning profile, because
-each is its own bundle id. The app's comes from a repository secret; the
-widget extension's ("OS1 Widgets App Store", `dev.tella.os1.widgets`) is
-fetched during the build with `ci/fetch-provisioning-profile.mjs`, using the
+each is its own bundle id. The iOS app's ("OS1 App Store Push") and the
+widget extension's ("OS1 Widgets App Store", `pl.sessions.os1.widgets`) are
+fetched by the names in `project.yml`'s Release configs during the build with `ci/fetch-provisioning-profile.mjs`, using the
 App Store Connect API key the upload job already holds — do the same for any
 further extension rather than adding a secret. Profiles expire a year after
 the signing certificate is issued; the fetch fails loudly with the expiry
 date, and a replacement is one `POST /v1/profiles` away. Adding an extension
-also means adding its bundle id to the `provisioningProfiles` map in the
-workflow's ExportOptions.plist, or the export fails after a green archive —
+also means reading its bundle id and profile name from `project.yml` into the
+`provisioningProfiles` map in the workflow's ExportOptions.plist, or the export fails after a green archive —
 verify both steps on a Mac node (`xcodebuild archive -configuration Release`
 then `-exportArchive`) before pushing, since a push IS the release.
 

@@ -12,14 +12,13 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
     <!-- Universal links. Requires a Developer ID provisioning profile for
-         dev.tella.os1.shell (restricted entitlement) — see README "Universal links".
-         The ?mode=developer alternate is listed because os.tella.dev is
-         tailnet-only: Apple's AASA CDN can't fetch it, so team devices verify
-         the association directly with development mode enabled. -->
+         electron-builder.yml's appId (restricted entitlement) — see README
+         "Universal links". Left empty here: the release workflow fills in
+         applinks:<host> and applinks:<host>?mode=developer from the
+         OS1_SERVER_URL repository variable. The ?mode=developer alternate is
+         for a tailnet-only host, which Apple's AASA CDN can't fetch, so
+         devices verify the association directly with development mode on. -->
     <key>com.apple.developer.associated-domains</key>
-    <array>
-      <string>applinks:os.tella.dev</string>
-      <string>applinks:os.tella.dev?mode=developer</string>
-    </array>
+    <array/>
   </dict>
 </plist>
