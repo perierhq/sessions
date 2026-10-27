@@ -243,6 +243,9 @@ export interface SandboxProvider {
   /** The same desktop for the agent: screenshots plus mouse and keyboard.
    *  Rejects while the sandbox is asleep. */
   desktopControl?(sandboxId: string): Promise<SandboxDesktopControl>;
+  /** Push the provider's own idle timer out while the machine is in use
+   *  (sandbox/idle.ts). Providers without one leave this undefined. */
+  keepAlive?(sandboxId: string): Promise<void>;
   /** Wake a paused sandbox and return its live handle. */
   resume?(sandboxId: string): Promise<Sandbox | null>;
   /** Persist a session-owned filesystem checkpoint after a clean turn.

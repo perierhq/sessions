@@ -43,6 +43,8 @@ import { Switch } from "../../ui/switch";
 import { toast } from "../../ui/toast";
 import { IconCheck, IconPlus, IconX } from "../icons";
 import { SandboxProviderLogo } from "./SandboxProviderLogo";
+import { SandboxSleepSettings } from "./SandboxSleepSettings";
+import { sandboxSleepSummary } from "../../lib/sandbox-sleep";
 
 const PROVIDERS: Array<{
   id: SandboxConnectionInfo["provider"];
@@ -802,6 +804,9 @@ function ConnectionCard({
               <p className="m-0 mt-1 text-supporting leading-relaxed text-dim">
                 {provider.description}
               </p>
+              <p className="m-0 mt-1 text-meta text-faint">
+                {sandboxSleepSummary(connection.provider)}
+              </p>
               {macHosts.length > 0 && (
                 <p className="m-0 mt-1 text-meta text-faint">
                   {macHosts.length === 1 ? "Host" : "Hosts"}:{" "}
@@ -1270,6 +1275,7 @@ export function SandboxesPanel({
         )}
         . A choice in the new session menu beats both.
       </SettingsHint>
+      <SandboxSleepSettings />
       {reusableEnvironments.length > 0 && (
         <>
           <SettingsGroupLabel

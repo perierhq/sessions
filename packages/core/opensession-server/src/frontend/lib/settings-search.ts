@@ -182,6 +182,10 @@ export const SETTINGS_KEYWORDS = {
     "podman",
     "isolation",
     "compute",
+    "idle sleep",
+    "resume script",
+    "setup script",
+    "sandbox agent",
   ],
   integrations: [
     "tools",

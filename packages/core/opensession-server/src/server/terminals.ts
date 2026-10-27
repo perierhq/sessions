@@ -267,6 +267,13 @@ async function resolveTarget(
     return hostShellTarget(session);
   }
   const cwd = session?.worktreeDir || HOME;
+  // Opening a Terminal on the machine is an interaction (sandbox/idle.ts).
+  const sessionId = session?.id;
+  const sandboxId = sb.sandboxId;
+  if (sessionId)
+    void import("./sandbox/idle").then(({ noteSandboxActivity }) =>
+      noteSandboxActivity({ sandboxId, sessionId }, "human"),
+    );
   try {
     const { sandboxesEnabled, sandboxProviderConfigured } =
       await import("./sandbox/config");

@@ -39,6 +39,7 @@
  *    host-local key; the Runner resolves the guest address from the VM name.
  */
 
+import { SandboxCapacityError } from "../reliability";
 import { basename, dirname } from "path";
 import { getRepo, worktreePathFor } from "../../worktree";
 import {
@@ -323,7 +324,8 @@ async function pickTartHost(
   const down = roster.unavailable.map(
     (host) => `${host.runner}: ${host.reason}`,
   );
-  throw new Error(
+  const Failure = candidates.length ? SandboxCapacityError : Error;
+  throw new Failure(
     `${candidates.length ? "Every Mac host is full" : "No Mac host is available"}: ${[
       ...full,
       ...down,
@@ -471,7 +473,7 @@ export function assertTartCapacity(
 ): void {
   const running = runningLocalVms(vms).filter((vm) => vm.name !== name);
   if (running.length >= maxVms) {
-    throw new Error(
+    throw new SandboxCapacityError(
       `Mac host ${hostName} is full: ${running.length} of ${maxVms} VMs running (${running
         .map((vm) => vm.name)
         .join(

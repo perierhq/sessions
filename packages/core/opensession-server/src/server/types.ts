@@ -371,6 +371,8 @@ export interface UnifiedSession {
       | "waking"
       | "needs_attention";
     lastLifecycleError?: string;
+    /** Why a start is taking longer, e.g. waiting for a free Mac host. */
+    lifecycleNote?: string;
   };
   /** The last workspace checkpoint a Sandbox session pushed to origin
    * (sandbox/checkpoint.ts). Kept beside `sandbox` rather than inside it so
@@ -753,6 +755,8 @@ export interface NativeSessionFile {
       | "waking"
       | "needs_attention";
     lastLifecycleError?: string;
+    /** Why a start is taking longer, e.g. waiting for a free Mac host. */
+    lifecycleNote?: string;
   };
   /** See UnifiedSession.sandboxCheckpoint. */
   sandboxCheckpoint?: SandboxCheckpointRecord;
@@ -788,6 +792,8 @@ export interface PortalSandboxRecord {
   sandboxId?: string;
   lifecycle?: "preparing" | "awake" | "sleeping" | "waking" | "needs_attention";
   lastLifecycleError?: string;
+  /** Why a start is taking longer, e.g. waiting for a free Mac host. */
+  lifecycleNote?: string;
   syncedCommit?: string;
 }
 
