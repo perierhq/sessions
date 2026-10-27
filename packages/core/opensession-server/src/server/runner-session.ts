@@ -43,6 +43,7 @@ import type { StagedAttachment } from "./prompt-attachments";
 import { readPromptFiles } from "./uploads";
 import type { ImageInput } from "./run-events";
 import {
+  isSupportSession,
   resolveSessionRunInputs,
   runAccountSpec,
   runCommitAuthor,
@@ -181,6 +182,9 @@ export async function maybeLaunchRunnerRun(
     effort: session.effort,
     fastMode: session.fastMode,
     speed: session.speed,
+    pstackMode: session.pstackMode,
+    // Customer mail: the project's own skills, no instance-wide ones.
+    projectSkillsOnly: isSupportSession(session) || undefined,
     // A person's turn in an automation-owned session carries no pin, so the
     // Runner tries their own subscription before the automation's account.
     ...runAccountSpec(session, runInputs),
