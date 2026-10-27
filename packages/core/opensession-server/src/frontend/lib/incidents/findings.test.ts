@@ -541,9 +541,7 @@ test("an unchanged block keeps its key and gets no highlight", () => {
       }),
     ),
   )!.items;
-  expect(resent.map((item) => item.key)).toEqual(
-    items.map((item) => item.key),
-  );
+  expect(resent.map((item) => item.key)).toEqual(items.map((item) => item.key));
   expect(changedKeys(items, resent).size).toBe(0);
 
   const edited = structuredClone(items);

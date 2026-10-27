@@ -282,7 +282,11 @@ export function changedKeys(
 }
 
 /** Ref types the page has somewhere to open (`sourceTarget`). */
-const OPENS: ReadonlySet<FindingRef["type"]> = new Set(["tool", "pr", "ledger"]);
+const OPENS: ReadonlySet<FindingRef["type"]> = new Set([
+  "tool",
+  "pr",
+  "ledger",
+]);
 
 /** The data behind a block's "Show source": the quoted call of a log (or
  *  of a compare's first log side), a change's PR, a hypothesis's first

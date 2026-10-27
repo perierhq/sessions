@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type {
-  FindingBlock,
-  FindingsSet,
-} from "../../../shared/findings";
+import type { FindingBlock, FindingsSet } from "../../../shared/findings";
 import type { IncidentResponse } from "../../../shared/incident-response";
 import type { Incident } from "../../../shared/incidents";
 import type { IncidentCauseView } from "../../lib/incidents/cause";
@@ -112,9 +109,7 @@ test("no findings shows the Cause view exactly as today", () => {
   const today = renderToStaticMarkup(<IncidentCause cause={cause} waiting />);
   expect(render(incident(undefined))).toBe(today);
   expect(render(incident(response()))).toBe(today);
-  expect(render(incident(response({ findingSets: [set(1, [])] })))).toBe(
-    today,
-  );
+  expect(render(incident(response({ findingSets: [set(1, [])] })))).toBe(today);
 });
 
 test("findings take Cause's place", () => {

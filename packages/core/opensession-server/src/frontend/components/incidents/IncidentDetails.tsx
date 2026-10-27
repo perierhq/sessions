@@ -13,10 +13,7 @@ import { useSessionPrResource } from "../../hooks/useApiResources";
 import { useIncidentAccess } from "../../hooks/useIncidents";
 import { useIsPhone } from "../../hooks/useIsPhone";
 import { dayMonth, FIXED_BY_LABEL, formatUsd } from "../../lib/incidents/copy";
-import {
-  type FindingSource,
-  findingsPage,
-} from "../../lib/incidents/findings";
+import { type FindingSource, findingsPage } from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import {
@@ -470,7 +467,8 @@ export function IncidentDetails({
     earlier: "Earlier incidents",
     findings: FINDINGS_COPY.earlierRow(round),
   };
-  const roundPage = shown === "findings" ? findingsPage(incident, { round }) : null;
+  const roundPage =
+    shown === "findings" ? findingsPage(incident, { round }) : null;
   const openSource = (target: FindingSource) => {
     if (target.kind === "ledger") {
       setShown("cost");

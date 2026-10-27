@@ -139,10 +139,12 @@ export function FindingsGrid({
     );
   });
   return (
-    <div
-      className={cn(FINDINGS_GRID, columns === 1 && "desktop:grid-cols-1")}
-    >
-      {animate ? <AnimatePresence initial={false}>{cells}</AnimatePresence> : cells}
+    <div className={cn(FINDINGS_GRID, columns === 1 && "desktop:grid-cols-1")}>
+      {animate ? (
+        <AnimatePresence initial={false}>{cells}</AnimatePresence>
+      ) : (
+        cells
+      )}
     </div>
   );
 }
