@@ -577,6 +577,76 @@ html[data-theme="light"] .composer-hl .cmp-fence {
     max-height: 400px;
   }
 }
+/* An image or video on another host, drawn instead of fetched
+   (lib/remote-image.ts). It stands where the picture would have, so it is a
+   control of its own: a quiet fill, the host named in full, and an Open that
+   follows the link in a new tab. 44px on a phone, where it is tapped. Inside a
+   link or a table cell it shrinks to a word-sized tag with no action, since
+   the link around it owns the click and a badge must not break the row. */
+.md-remote-media {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 4px 0;
+  padding: 0 10px 0 8px;
+  border-radius: calc(12px * var(--rf));
+  corner-shape: var(--cs);
+  background: var(--hover);
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 16px;
+  vertical-align: middle;
+  text-decoration: none;
+  transition: background var(--dur-micro) var(--ease);
+}
+.markdown a.md-remote-media,
+a.md-remote-media {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+a.md-remote-media:hover {
+  background: var(--hover-strong);
+  text-decoration: none;
+}
+a.md-remote-media:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.md-remote-media-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-faint);
+}
+.md-remote-media-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-remote-media-action {
+  flex: none;
+  color: var(--link);
+  font-weight: 500;
+}
+.md-remote-media-inline,
+.markdown td .md-remote-media,
+.markdown th .md-remote-media {
+  min-height: 0;
+  margin: 0;
+  padding: 1px 6px 1px 4px;
+  gap: 4px;
+  border-radius: calc(7px * var(--rf));
+  font-size: 0.9em;
+  line-height: 1.15;
+}
+@media (max-width: 720px) {
+  .md-remote-media:not(.md-remote-media-inline) {
+    min-height: 44px;
+    padding: 0 12px 0 10px;
+  }
+}
 /* An <img> written as raw HTML in PR prose (html-sanitize.ts tags them). The
    block treatment above is right for a pasted screenshot and wrong here: bots
    use raw images for 16px avatars and status badges inside a table cell, where

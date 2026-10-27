@@ -2,6 +2,7 @@ import { Marked, type Token, type TokenizerThis, type Tokens } from "marked";
 import { type CalloutIconKind, calloutIconMarkup } from "../components/icons";
 import { BASE_PATH } from "./base";
 import { sanitizeHtmlFragment } from "./html-sanitize";
+import { inlineImageSrc, remoteMediaMarkup } from "./remote-image";
 import { hexSwatchColor } from "./palette-block";
 import {
   displayMathBlockStart,
@@ -23,8 +24,9 @@ import { expandIconMarkup } from "../components/icons";
 //  - external links open in a new tab (target=_blank + safe rel); links into
 //    OS1 itself navigate in place — session URLs become session-link
 //    chips handled client-side, other internal paths load in the same tab
-//  - images/videos render inline, capped in size; clicks open the media
-//    lightbox (see MediaLightbox.tsx)
+//  - images/videos from this app render inline, capped in size; clicks open
+//    the media lightbox (see MediaLightbox.tsx). Media on any other host is
+//    drawn as a named link instead of being fetched (remote-image.ts)
 const md = new Marked({ async: false, breaks: true });
 
 function attr(v: string | null | undefined): string {
@@ -1055,6 +1057,10 @@ let renderRepo: string | undefined;
 /** What the renderer does with raw HTML for the duration of one `md.parse()`. */
 let renderRawHtml: "escape" | "sanitize" = "escape";
 
+/** Raw `<a>` tags still open in the PR prose being rendered: marked hands the
+ *  sanitizer one tag at a time, and an image inside one must not be a link. */
+let renderRawLinks = { depth: 0 };
+
 /** Whether the renderer is inside an explicit link's own text, where a chip
  *  would nest one anchor in another. Scoped to that link, not to the parse. */
 let renderInLink = false;
@@ -1522,7 +1528,11 @@ md.use({
     html(token: Tokens.HTML | Tokens.Tag) {
       const raw = String(token.text ?? token.raw ?? "");
       return renderRawHtml === "sanitize"
-        ? sanitizeHtmlFragment(raw)
+        ? sanitizeHtmlFragment(raw, {
+            imageSrc: ghAttachmentProxyHref,
+            links: renderRawLinks,
+            inLink: renderInLink,
+          })
         : attr(raw);
     },
     // A GitHub callout renders as a titled block in its kind's colour
@@ -1690,17 +1700,25 @@ md.use({
     },
     image(token: Tokens.Image) {
       const title = token.title ? ` title="${attr(token.title)}"` : "";
+      const video = VIDEO_HREF_RE.test(token.href ?? "");
+      // Image syntax around a GitHub user attachment is an image (a video
+      // attachment is always embedded as a bare URL) — swap in the proxy
+      // href so it loads.
+      const href = inlineImageSrc(
+        ghAttachmentProxyHref(token.href) ?? token.href,
+      );
+      // Media on another host is named, not fetched (remote-image.ts).
+      if (href === null)
+        return remoteMediaMarkup(token.href ?? "", {
+          kind: video ? "video" : "image",
+          alt: token.text,
+          inLink: renderInLink,
+        });
       // Video files pasted with image syntax would render as a broken <img>
       // linking to a new tab — play them inline instead. Clicks on .md-image
       // open the media lightbox (delegated handler in MediaLightbox.tsx); the
       // wrapping <a> stays for cmd/middle-click open-in-tab.
-      if (VIDEO_HREF_RE.test(token.href ?? "")) {
-        return videoMarkup(token.href, title);
-      }
-      // Image syntax around a GitHub user attachment is an image (a video
-      // attachment is always embedded as a bare URL) — swap in the proxy
-      // href so it loads.
-      const href = ghAttachmentProxyHref(token.href) ?? token.href;
+      if (video) return videoMarkup(href, title);
       return (
         `<a href="${attr(href)}" target="_blank" rel="noopener noreferrer" class="md-image-link">` +
         `<img class="md-image" src="${attr(href)}" alt="${attr(token.text)}"${title} loading="lazy" />` +
@@ -1974,18 +1992,21 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
   const previousRawHtml = renderRawHtml;
   const previousTellaVideos = renderedTellaVideos;
   const previousPrRefs = renderedPrRefs;
+  const previousRawLinks = renderRawLinks;
   renderRepo = ctx?.repo;
   renderAssetReferences = assets;
   renderAssetSessionId = ctx?.sessionId;
   renderRawHtml = ctx?.rawHtml ?? "escape";
   renderedTellaVideos = new Set();
   renderedPrRefs = new Set();
+  renderRawLinks = { depth: 0 };
   try {
     const parsed = md.parse(collapseDuplicatePrReferences(src));
     if (parsed instanceof Promise) throw new Error("Unexpected async markdown");
     out = parsed;
   } catch {
-    out = src;
+    // Never hand unparsed source to innerHTML: it may hold raw markup.
+    out = `<p>${attr(src)}</p>`;
   } finally {
     renderRepo = previousRepo;
     renderAssetReferences = previousAssets;
@@ -1993,6 +2014,7 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
     renderRawHtml = previousRawHtml;
     renderedTellaVideos = previousTellaVideos;
     renderedPrRefs = previousPrRefs;
+    renderRawLinks = previousRawLinks;
   }
   if (cacheable) {
     dropStreamedPrefix(contextKey, src);

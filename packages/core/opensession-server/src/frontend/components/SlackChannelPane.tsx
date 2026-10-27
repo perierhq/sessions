@@ -14,6 +14,7 @@ import {
 import { noAutofill } from "../lib/composer-autofill";
 import { IconArrowUp } from "./icons";
 import { errorMessage } from "../lib/error-message";
+import { isSlackHostedImage } from "../lib/remote-image";
 
 interface MessageReaction {
   name: string;
@@ -46,7 +47,11 @@ function MessageText({ text }: { text: string }) {
   let key = 0;
   while ((m = re.exec(text))) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[2] !== undefined) {
+    if (m[2] !== undefined && !isSlackHostedImage(m[2])) {
+      // Only Slack's own emoji CDN loads inline: image syntax for any other
+      // host stays as the text it was written as (lib/remote-image.ts).
+      parts.push(m[0]);
+    } else if (m[2] !== undefined) {
       // Custom emoji image, sized to ride inline with the text.
       parts.push(
         <img

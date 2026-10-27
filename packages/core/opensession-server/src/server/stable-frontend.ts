@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { writeFileAtomic } from "./shared/atomic-write";
+import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
 
 export type StableFrontendSnapshot = {
   releaseRoot: string;
@@ -324,7 +325,7 @@ export function createStableFrontendResponder(
       {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        "Content-Security-Policy": "frame-ancestors 'none'",
+        "Content-Security-Policy": SPA_CONTENT_SECURITY_POLICY,
         "X-Frame-Options": "DENY",
       },
       head,

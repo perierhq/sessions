@@ -20,6 +20,7 @@ import { EMBEDDED_FRONTEND } from "./embedded-frontend";
 import { activeRunRecords } from "./run-journal";
 import { writeFileAtomic } from "./shared/atomic-write";
 import { publishStableFrontendSnapshot } from "./stable-frontend";
+import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
 import { stateDir } from "./paths";
 import { gitIdentityFor } from "./shared/user-mappings";
 import { broadcastToAll } from "./ws-hub";
@@ -1018,7 +1019,7 @@ export const SPA_HEADERS = {
   // cache must never pin an older content-hashed bundle name, especially in an
   // installed iOS PWA where reloads still pass through the worker.
   "Cache-Control": "no-store",
-  "Content-Security-Policy": "frame-ancestors 'none'",
+  "Content-Security-Policy": SPA_CONTENT_SECURITY_POLICY,
   "X-Frame-Options": "DENY",
 };
 

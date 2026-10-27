@@ -319,5 +319,8 @@ test("plain text shows the question as typed and loads nothing", () => {
       onAnswer={() => {}}
     />,
   );
-  expect(markdown).toContain("<img");
+  // Markdown renders the image syntax, but an image on another host is
+  // named rather than fetched (lib/remote-image.ts).
+  expect(markdown).not.toContain("<img");
+  expect(markdown).toContain("Image from example.test");
 });
