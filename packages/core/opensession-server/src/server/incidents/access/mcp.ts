@@ -22,7 +22,8 @@ import {
   tool,
 } from "../../inprocess-mcp";
 import { BROKER_METHODS } from "../../keychain-broker";
-import { applyFindings } from "../findings/apply";
+import { applyFindingsNow } from "../findings/apply";
+import { withSessionQueue } from "../findings/store";
 import { SHOW_FINDINGS_TOOL } from "../findings/tool-calls";
 import { freshMcpAuthHeader, mcpSignInProblems } from "../../mcp-oauth";
 import type { AutomationDescendantPolicy } from "../../types";
@@ -164,11 +165,12 @@ const AUDITED = "Every call is audited with your incident and role.";
 const SHOW_FINDINGS_DESCRIPTION =
   'Show what you found on the incident page as blocks from the catalog in your brief\'s Findings section. Each call replaces your blocks for this round; keep one unchanged with {"id": "…", "keep": true}. Returns what was saved and what was dropped, so you can fix it and call again.';
 
-let applyFindingsImpl: typeof applyFindings = applyFindings;
+let applyFindingsImpl: typeof applyFindingsNow = applyFindingsNow;
 
-/** Replaces applyFindings for show_findings (tests only); undefined restores it. */
-export function __setApplyFindingsForTest(fn?: typeof applyFindings): void {
-  applyFindingsImpl = fn ?? applyFindings;
+/** Replaces applyFindingsNow for show_findings (tests only); undefined
+ *  restores it. The replacement runs inside the session's queue. */
+export function __setApplyFindingsForTest(fn?: typeof applyFindingsNow): void {
+  applyFindingsImpl = fn ?? applyFindingsNow;
 }
 
 // Each tool's own zod shape types its handler; the list holds them all.
@@ -202,23 +204,27 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
       ),
     ),
     // The session, incident and role come from the binding, never from the
-    // arguments: an agent can only cite and change its own findings.
+    // arguments: an agent can only cite and change its own findings. The
+    // call takes its place in the session's queue before its first await,
+    // so parallel calls apply in the order they were made however long
+    // each one's access check takes.
     tool(
       SHOW_FINDINGS_TOOL,
       SHOW_FINDINGS_DESCRIPTION,
       { blocks: z.array(z.unknown()).max(64) },
-      async (args) => {
-        const fresh = await freshContext(ctx);
-        if (typeof fresh === "string") return text(fresh);
-        const result = await applyFindingsImpl({
-          incidentId: fresh.ctx.binding.incidentId,
-          role: fresh.ctx.binding.role,
-          sessionId: fresh.ctx.sessionId,
-          input: { blocks: args.blocks },
-          source: "tool",
-        });
-        return text(result.text);
-      },
+      (args) =>
+        withSessionQueue(ctx.sessionId, async () => {
+          const fresh = await freshContext(ctx);
+          if (typeof fresh === "string") return text(fresh);
+          const result = await applyFindingsImpl({
+            incidentId: fresh.ctx.binding.incidentId,
+            role: fresh.ctx.binding.role,
+            sessionId: fresh.ctx.sessionId,
+            input: { blocks: args.blocks },
+            source: "tool",
+          });
+          return text(result.text);
+        }),
     ),
   ];
   if (ctx.access.hosts.length)

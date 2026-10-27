@@ -115,6 +115,37 @@ test("show_findings uses the binding's session, not its arguments", async () => 
   );
   expect(seen).toHaveLength(1);
 });
+test("show_findings applies one session's calls in call order", async () => {
+  // Review Focus 2 through the real tool: the first call's access check is
+  // slower, and the second call still applies after it.
+  const applied: string[] = [];
+  __setApplyFindingsForTest(async (req) => {
+    const blocks = (req.input as { blocks: Array<{ id: string }> }).blocks;
+    applied.push(blocks.map((b) => b.id).join(","));
+    return { saved: true, blocks: blocks.length, notes: [], text: "Saved." };
+  });
+  let release: () => void = () => {};
+  const slow = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let resolves = 0;
+  __setBindingResolverForTest(async () => {
+    resolves += 1;
+    if (resolves === 1) await slow;
+    return agentAccessFixture();
+  });
+  const show = incidentAccessToolDefinitions({
+    sessionId: "os-1",
+    binding,
+    access: agentAccessFixture(),
+  }).find((t) => t.name === "show_findings")!;
+  const first = show.handler({ blocks: [{ id: "a" }] }, {});
+  const second = show.handler({ blocks: [{ id: "b" }] }, {});
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  release();
+  await Promise.all([first, second]);
+  expect(applied).toEqual(["a", "b"]);
+});
 test("describe_access reports the fresh access and no secrets", async () => {
   const tools = incidentAccessToolDefinitions({
     sessionId: "os-1",

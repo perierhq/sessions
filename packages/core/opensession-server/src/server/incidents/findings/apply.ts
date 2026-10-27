@@ -101,20 +101,40 @@ function inputBytes(input: unknown): number {
   }
 }
 
+/** The refusal for an input that is unreadable or too big, else null. */
+function inputRefusal(input: unknown): ApplyResult | null {
+  const bytes = inputBytes(input);
+  if (Number.isNaN(bytes)) return refusal(UNREADABLE);
+  if (bytes > FINDINGS_LIMITS.inputBytes) return refusal(TOO_BIG);
+  return null;
+}
+
 /**
  * Validates, resolves and saves one call's findings for the run that owns
  * `sessionId` in `role`. Calls from one session apply in the order they
- * were made.
+ * were made: the call joins the session's queue before its first await.
  */
-export async function applyFindings(
+export function applyFindings(
   req: ApplyRequest,
   deps?: ApplyDeps,
 ): Promise<ApplyResult> {
-  const bytes = inputBytes(req.input);
-  if (Number.isNaN(bytes)) return refusal(UNREADABLE);
-  if (bytes > FINDINGS_LIMITS.inputBytes) return refusal(TOO_BIG);
-  const d = deps ?? (await defaultApplyDeps());
-  return withSessionQueue(req.sessionId, () => applyInOrder(req, d));
+  const refused = inputRefusal(req.input);
+  if (refused) return Promise.resolve(refused);
+  return withSessionQueue(req.sessionId, () => applyFindingsNow(req, deps));
+}
+
+/**
+ * {@link applyFindings} without the session queue, for a caller that already
+ * holds the session's place in it (`withSessionQueue`), like show_findings,
+ * which checks the agent's access inside its turn.
+ */
+export async function applyFindingsNow(
+  req: ApplyRequest,
+  deps?: ApplyDeps,
+): Promise<ApplyResult> {
+  const refused = inputRefusal(req.input);
+  if (refused) return refused;
+  return applyInOrder(req, deps ?? (await defaultApplyDeps()));
 }
 
 /** The newest run of `sessionId` in `role`. */
