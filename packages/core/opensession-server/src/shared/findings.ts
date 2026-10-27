@@ -40,6 +40,9 @@ export const FINDINGS_LIMITS = {
   sets: 12,
   notes: 20,
   quoteMinChars: 8,
+  /** How much of one tool result a quote or `contains` is checked against:
+   *  only the first 1 MB (UTF-8) is searched, and a cut is noted. */
+  sourceBytes: 1024 * 1024,
 } as const;
 
 /** A block id: a lowercase slug of at most `FINDINGS_LIMITS.idMax` chars. */

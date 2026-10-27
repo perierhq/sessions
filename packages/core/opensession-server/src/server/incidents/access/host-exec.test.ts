@@ -75,6 +75,7 @@ test("runs a normalized argv on stdin, as nobody and without AWS", async () => {
   );
   expect(out).toEqual({
     ok: true,
+    runner: "prod-1",
     exitCode: 0,
     timedOut: false,
     stdout: "ok",
@@ -128,6 +129,21 @@ test("metacharacters stay data", async () => {
   expect(calls[0]!.opts.stdin).toBe(
     "{ grep -c '403; rm -rf /' /var/log/app/access.log\n} </dev/null\n",
   );
+});
+test("the answer names the host the server resolved, not the agent's spelling", async () => {
+  const byId = await runHostCommand(
+    ctx(),
+    { runner: "rn-prod", program: "ls" },
+    deps(),
+  );
+  expect(byId).toMatchObject({ ok: true, runner: "prod-1" });
+  expect("ssh" in byId).toBe(false);
+  const viaSsh = await runHostCommand(
+    ctx(),
+    { runner: "rn-prod", ssh: "db-1", program: "ls" },
+    deps(),
+  );
+  expect(viaSsh).toMatchObject({ ok: true, runner: "prod-1", ssh: "db-1" });
 });
 test("ssh hosts go through the Runner with a fixed option set", async () => {
   await runHostCommand(

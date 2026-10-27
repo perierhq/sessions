@@ -62,6 +62,10 @@ export interface HostCommandInput {
 export type HostCommandResult =
   | {
       ok: true;
+      /** The granted host's Runner name as the server resolved it (the
+       *  agent may have named it by id), and its SSH alias when it has one. */
+      runner: string;
+      ssh?: string;
       exitCode: number;
       timedOut: boolean;
       stdout: string;
@@ -199,6 +203,8 @@ export async function runHostCommand(
   });
   return {
     ok: true,
+    runner: host.runnerName,
+    ...(host.ssh ? { ssh: host.ssh } : {}),
     exitCode: result.code,
     timedOut,
     stdout: stdout.text,
