@@ -52,6 +52,7 @@ import {
   projectMonthSpend,
   recoverIncidentResponses,
   resolveCoordinatorDeps,
+  responseMoved,
   runResponseTick,
   scheduleAdvance,
 } from "./coordinator";
@@ -1215,6 +1216,43 @@ test("coalesced wake-ups never run two advances for one incident at once", async
   expect(maxInFlight).toBe(1);
   expect(w.spawns).toHaveLength(1);
   expect(calls).toBeLessThan(5 * 8);
+});
+
+test("findings-only writes do not wake the fix loop", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  const base = await getIncident(w.incident.id);
+  const run = base?.response?.agents[0];
+  if (!base?.response || !run) throw new Error("expected a started agent");
+  const withSets = structuredClone(base);
+  withSets.updatedAt = new Date(w.clock + 60_000).toISOString();
+  withSets.response!.findingSets = [
+    {
+      role: "investigator",
+      round: 1,
+      attempt: run.attempt,
+      sessionId: run.sessionId,
+      source: "tool",
+      updatedAt: withSets.updatedAt,
+      calls: 1,
+      blocks: [
+        {
+          id: "why",
+          kind: "question",
+          size: "full",
+          text: "Why does acme time out?",
+          wouldAnswer: "",
+        },
+      ],
+      notes: [],
+    },
+  ];
+  expect(responseMoved(withSets, base)).toBe(false);
+  expect(responseMoved(base, withSets)).toBe(false);
+  const agentMoved = structuredClone(withSets);
+  agentMoved.response!.agents[0]!.status = "done";
+  expect(responseMoved(agentMoved, withSets)).toBe(true);
+  expect(responseMoved(base, null)).toBe(true);
 });
 
 test("upstream block: certain → veto → merged as the App → deployed → watched → resolved", async () => {

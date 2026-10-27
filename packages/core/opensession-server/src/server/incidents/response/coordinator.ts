@@ -2579,12 +2579,24 @@ export async function runResponseTick(
   return scheduled;
 }
 
-/** Everything but `impact` and `updatedAt`, to ignore impact-only writes. */
-function moved(next: Incident, previous: Incident | null): boolean {
+/**
+ * Whether a write should wake the fix loop: everything but `impact`,
+ * `updatedAt` and `response.findingSets`, so impact-only and findings-only
+ * writes never wake it.
+ */
+export function responseMoved(
+  next: Incident,
+  previous: Incident | null,
+): boolean {
   if (!previous) return true;
-  const { impact: _a, updatedAt: _b, ...a } = next;
-  const { impact: _c, updatedAt: _d, ...b } = previous;
-  return JSON.stringify(a) !== JSON.stringify(b);
+  return JSON.stringify(loopView(next)) !== JSON.stringify(loopView(previous));
+}
+
+function loopView(incident: Incident): Omit<Incident, "impact" | "updatedAt"> {
+  const { impact: _impact, updatedAt: _updatedAt, ...rest } = incident;
+  if (!rest.response) return rest;
+  const { findingSets: _findingSets, ...response } = rest.response;
+  return { ...rest, response };
 }
 
 /**
@@ -2594,7 +2606,7 @@ function moved(next: Incident, previous: Incident | null): boolean {
 export function watchResponseWakeups(): () => void {
   const offIncident = onIncidentChange((next, previous) => {
     if (!isOpenIncident(next) && next.response?.phase !== "documenting") return;
-    if (moved(next, previous)) scheduleAdvance(next.id);
+    if (responseMoved(next, previous)) scheduleAdvance(next.id);
   });
   const offSession = onSessionStateChange((event) => {
     const incidentId = sessionIndex.get(event.sessionId);
