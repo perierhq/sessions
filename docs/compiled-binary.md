@@ -14,12 +14,13 @@ self-development and contributor path.
 ## Build
 
 ```bash
-# Full release: target binary, sharp sidecar, four Worker sidecars, three
-# service templates, deploy policy/helper files and release.json, tarred.
+# Full release: target binary, sharp sidecar, Worker sidecars, pi runtime
+# files (Photon and QuickJS wasm, codemode worker), three service templates,
+# deploy policy/helper files and release.json, tarred.
 bun scripts/build-compile.ts --os linux --arch arm64 --out ~/.cache/opensession-release
 
-# Local host build: binary plus all four Worker sidecars in dist/. Omits sharp,
-# service templates, deploy files and release.json.
+# Local host build: binary plus Worker sidecars and pi runtime files in dist/.
+# Omits sharp, service templates, deploy files and release.json.
 bun scripts/build-compile.ts --outfile dist/opensession
 ```
 
@@ -89,6 +90,16 @@ returns `501` (the Open Graph meta tags still emit). To enable social cards,
 place a minimal `node_modules` with `sharp` + the platform `@img/sharp-*`
 beside the binary — e.g. copy `node_modules/sharp` and
 `node_modules/@img/sharp-<platform>` (+ its `sharp-libvips-<platform>`).
+
+**External: pi runtime files.** Pi resizes every image it sends to a model
+with Photon (`@silvia-odwyer/photon-node`), which reads `photon_rs_bg.wasm`
+from its package directory. That read cannot be embedded, so Pi falls back to
+the file beside the executable (then `photon/photon_rs_bg.wasm`, then the
+working directory). Codemode's QuickJS wasm and worker follow the same layout.
+`scripts/lib/pi-runtime-files.ts` lists them; both build modes copy them beside
+the binary, and the release workflow fails a tarball that lacks one. Without
+Photon's wasm Pi drops every image from turns ("Image omitted"), so a compiled
+server logs a warning naming the paths it checked when Pi first loads.
 
 **External: session-kernel service and sidecars.** The independently supervised
 `opensession session-kernel-service` process loads `session-kernel-worker.js`.
