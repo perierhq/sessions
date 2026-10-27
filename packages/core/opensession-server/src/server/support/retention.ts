@@ -64,9 +64,18 @@ export interface RetentionDeps {
   maxActions: number;
 }
 
+/** How often a deletion refused because the session's run is still
+ *  stopping (409) is tried. Each try already cancels the run and waits up
+ *  to 10 s for it; a support turn in a sandbox can take longer to wind
+ *  down, so forgetting a customer right after their mail waits a little
+ *  longer instead of asking the person to try again. */
+const STOPPING_ATTEMPTS = 4;
+const STOPPING_PAUSE_MS = 2_000;
+
 /** The whole session deletion the sessions route runs. A session already
- *  gone is fine; a refused deletion throws. `seam` replaces the lookup and
- *  the deletion (tests). */
+ *  gone is fine; a session still stopping is tried again a few times; any
+ *  other refusal, or one that outlasts the tries, throws. `seam` replaces
+ *  the lookup, the deletion and the pause (tests). */
 export async function deleteSupportSession(
   sessionId: string,
   cleanWorktree: boolean,
@@ -76,22 +85,32 @@ export async function deleteSupportSession(
       session: UnifiedSession,
       cleanWorktree: boolean,
     ): Promise<SessionDeleteResult>;
+    pause?(ms: number): Promise<void>;
   },
 ): Promise<void> {
   const find =
     seam?.find ?? (await import("../session-cache")).findSessionAsync;
-  const session = await find(sessionId);
-  if (!session) return;
   const remove =
     seam?.remove ?? (await import("../session-delete")).deleteSessionCompletely;
-  const { status, body } = await remove(session, cleanWorktree);
-  if (status >= 200 && status < 300) return;
-  const error = (body as { error?: unknown } | null)?.error;
-  throw new Error(
-    typeof error === "string"
-      ? error
-      : `Session ${sessionId} not deleted (${status})`,
-  );
+  const pause =
+    seam?.pause ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; ; attempt += 1) {
+    const session = await find(sessionId);
+    if (!session) return;
+    const { status, body } = await remove(session, cleanWorktree);
+    if (status >= 200 && status < 300) return;
+    if (status === 409 && attempt < STOPPING_ATTEMPTS) {
+      await pause(STOPPING_PAUSE_MS);
+      continue;
+    }
+    const error = (body as { error?: unknown } | null)?.error;
+    throw new Error(
+      typeof error === "string"
+        ? error
+        : `Session ${sessionId} not deleted (${status})`,
+    );
+  }
 }
 
 /** Deletes the workspace routing made for the conversation (key

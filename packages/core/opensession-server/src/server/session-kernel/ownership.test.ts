@@ -761,6 +761,11 @@ describe("single session ownership", () => {
     expect(prRoutes).toContain("requestTurnCancel(bksId, reviewSession");
     expect(prRoutes).not.toContain("cancelAgentRun(");
     expect(deletion).toContain('operation: "delete_session"');
+    // A deletion refused while the run stops stays retryable instead of
+    // completing its request id with the refusal.
+    expect(deletion).toMatch(
+      /result\.status === STILL_STOPPING\) \{\s*await sessionGatewayCommand\(\{\s*op: "fail",[^}]*retryable: true,/,
+    );
     expect(deletion).toContain("withSessionMutationLock(session.id");
   });
 

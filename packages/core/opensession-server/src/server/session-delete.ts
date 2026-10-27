@@ -34,6 +34,12 @@ export interface SessionDeleteResult {
   body: unknown;
 }
 
+/** The status of a deletion refused because the session's run did not
+ *  stop in time. Nothing was deleted; a later attempt may succeed. */
+const STILL_STOPPING = 409;
+const STILL_STOPPING_ERROR =
+  "The session is still stopping. Retry deletion shortly.";
+
 /** The whole session deletion: stop its runs, remove its record, transcript,
  *  sandbox, checkpoint and (with `cleanWorktree`) its worktrees. Resolves to
  *  the status and body the DELETE route answers with; a deletion already in
@@ -211,11 +217,8 @@ export async function deleteSessionCompletely(
               !(await cancelAgentRunAndWait(runIds))
             ) {
               return {
-                status: 409,
-                body: {
-                  error:
-                    "The session is still stopping. Retry deletion shortly.",
-                },
+                status: STILL_STOPPING,
+                body: { error: STILL_STOPPING_ERROR },
               };
             }
             // Local Portals are their own detached process groups. Stop them before
@@ -245,6 +248,20 @@ export async function deleteSessionCompletely(
         }),
     );
     deletePhysicalFinished = true;
+    // A run that did not stop in time left everything in place: the
+    // request stays retryable, so "Retry deletion shortly" retries rather
+    // than replaying this refusal under the same request id.
+    if (result.status === STILL_STOPPING) {
+      await sessionGatewayCommand({
+        op: "fail",
+        sessionId: session.id,
+        requestId: deleteRequestId,
+        operation: "delete_session",
+        error: STILL_STOPPING_ERROR,
+        retryable: true,
+      });
+      return result;
+    }
     await sessionGatewayCommand({
       op: "complete",
       sessionId: session.id,

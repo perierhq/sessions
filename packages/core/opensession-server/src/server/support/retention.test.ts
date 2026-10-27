@@ -469,17 +469,65 @@ describe("deleteSupportSession", () => {
     expect(calls).toEqual([["ses_a", false]]);
   });
 
-  test("a refused deletion throws its error", async () => {
-    const { remove } = removed({
-      status: 409,
-      body: { error: "The session is still stopping. Retry deletion shortly." },
+  const stopping: SessionDeleteResult = {
+    status: 409,
+    body: { error: "The session is still stopping. Retry deletion shortly." },
+  };
+
+  test("a session still stopping is tried again until it goes", async () => {
+    const results = [stopping, stopping, { status: 200, body: { ok: true } }];
+    const calls: string[] = [];
+    const pauses: number[] = [];
+    await deleteSupportSession("ses_a", true, {
+      find: async () => session,
+      remove: async (s) => {
+        calls.push(s.id);
+        return results.shift()!;
+      },
+      pause: async (ms) => {
+        pauses.push(ms);
+      },
+    });
+    expect(calls).toEqual(["ses_a", "ses_a", "ses_a"]);
+    expect(pauses).toHaveLength(2);
+  });
+
+  test("a session that stopped and went between tries is fine", async () => {
+    const found: Array<UnifiedSession | null> = [session, null];
+    const { calls, remove } = removed(stopping);
+    await deleteSupportSession("ses_a", true, {
+      find: async () => found.shift() ?? null,
+      remove,
+      pause: async () => {},
+    });
+    expect(calls).toEqual([["ses_a", true]]);
+  });
+
+  test("a session that never stops throws after the last try", async () => {
+    const { calls, remove } = removed(stopping);
+    await expect(
+      deleteSupportSession("ses_a", true, {
+        find: async () => session,
+        remove,
+        pause: async () => {},
+      }),
+    ).rejects.toThrow("still stopping");
+    expect(calls).toHaveLength(4);
+  });
+
+  test("any other refusal throws at once", async () => {
+    const { calls, remove } = removed({
+      status: 500,
+      body: { error: "disk full" },
     });
     await expect(
       deleteSupportSession("ses_a", true, {
         find: async () => session,
         remove,
+        pause: async () => {},
       }),
-    ).rejects.toThrow("still stopping");
+    ).rejects.toThrow("disk full");
+    expect(calls).toHaveLength(1);
   });
 });
 
