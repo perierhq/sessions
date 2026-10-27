@@ -194,8 +194,9 @@ describe("buildRunInstructions", () => {
     // into another session's checkout to read them. The stop rule in
     // "Background work" adds ~170: agents stopped what they started with
     // `pkill -f`, which on a shared host also matches other sessions'
-    // processes.
-    expect(prompt.length).toBeLessThan(5_350);
+    // processes. Linking child sessions in a report adds ~100: a PR summary
+    // without them left the person hunting for the session that owns each PR.
+    expect(prompt.length).toBeLessThan(5_450);
   });
 
   test("tells a code run it may start dev servers in its workspace", () => {
