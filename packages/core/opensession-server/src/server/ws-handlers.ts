@@ -159,7 +159,10 @@ import {
 } from "./ws-hub";
 import { existsSync, readFileSync, statSync, watch } from "fs";
 import { stateDir } from "./paths";
-import { isInternalKernelDispatch } from "./session-kernel/ws-command-bridge";
+import {
+  isInternalKernelDispatch,
+  recordInternalKernelResult,
+} from "./session-kernel/ws-command-bridge";
 import { withSessionMutationLock } from "./session-mutation-lock";
 import {
   acknowledgeSessionCommand,
@@ -1706,8 +1709,12 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
               ? { item: queueItemForClient(item) }
               : { message: "That queued message could not be edited." }),
           };
-          if (typeof msg.__sessionKernelToken === "string")
-            kernelDispatchResults.set(msg.__sessionKernelToken, response);
+          recordInternalKernelResult(
+            kernelDispatchTokens,
+            kernelDispatchResults,
+            msg.__sessionKernelToken,
+            response,
+          );
           ws.send(JSON.stringify(response));
           if (item) watchExternalRunAndDrain(sessionId);
           break;
@@ -1736,8 +1743,12 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
               ? { item: queueItemForClient(item) }
               : { message: "That steering message has already been sent." }),
           };
-          if (typeof msg.__sessionKernelToken === "string")
-            kernelDispatchResults.set(msg.__sessionKernelToken, response);
+          recordInternalKernelResult(
+            kernelDispatchTokens,
+            kernelDispatchResults,
+            msg.__sessionKernelToken,
+            response,
+          );
           ws.send(JSON.stringify(response));
           break;
         }
@@ -1917,8 +1928,13 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
 
         case "create_session": {
           const response = await handleCreateSessionMessage(ws, msg);
-          if (typeof msg.__sessionKernelToken === "string" && response)
-            kernelDispatchResults.set(msg.__sessionKernelToken, response);
+          if (response)
+            recordInternalKernelResult(
+              kernelDispatchTokens,
+              kernelDispatchResults,
+              msg.__sessionKernelToken,
+              response,
+            );
           break;
         }
       }

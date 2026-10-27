@@ -622,6 +622,16 @@ Unit choices worth knowing (comments in the file itself):
   rewritten per box by `opensession service install`; the values checked into
   the repo are Tella's.
 
+If the gateway's memory keeps growing, run `opensession memory` on the server
+box as the service user. It reports the process RSS, the JavaScript heap, and
+the size of each long-lived in-process map and cache (`--json` prints the
+whole report). `opensession memory snapshot` (or `--snapshot`) writes a heap
+snapshot you can load in Chrome DevTools to the `diagnostics` folder in the
+state directory. The gateway pauses while it writes the snapshot, and refuses
+one that would leave less than 256 MB free on that disk. The file holds every
+string in memory, including secrets, so it is readable only by the service
+user and only the newest three are kept.
+
 ## 10. Frontend rebuilds vs restart
 
 The production unit intentionally does not use `bun --hot`: failed backend
