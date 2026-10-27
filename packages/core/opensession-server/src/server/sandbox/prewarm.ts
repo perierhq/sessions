@@ -1096,16 +1096,24 @@ export function restoreReadyPrewarms(now = Date.now()): number {
 
 export function sessionOwnedSandboxIds(
   states: Array<
-    Pick<ReturnType<typeof listRemoteStates>[number], "sessionId" | "sandboxId">
+    Pick<
+      ReturnType<typeof listRemoteStates>[number],
+      "sessionId" | "sandboxId" | "remoteId"
+    >
   >,
 ): Set<string> {
+  // Providers that name the machine apart from the stable Sandbox id (Modal,
+  // use.computer) record the current one as `remoteId`: an adopted prewarm
+  // whose relabel failed still carries the prewarm label under that id.
   return new Set(
     states
       .filter(
         (state) =>
           !state.sessionId.startsWith("__prewarm__:") && state.sandboxId,
       )
-      .map((state) => state.sandboxId),
+      .flatMap((state) =>
+        state.remoteId ? [state.sandboxId, state.remoteId] : [state.sandboxId],
+      ),
   );
 }
 
@@ -1292,7 +1300,7 @@ async function auditProviderOrphans(now: number): Promise<void> {
   const g = globalThis as unknown as { __prewarmOrphanAuditAt?: number };
   if (now - (g.__prewarmOrphanAuditAt || 0) < ORPHAN_AUDIT_INTERVAL_MS) return;
   g.__prewarmOrphanAuditAt = now;
-  for (const provider of ["daytona", "box"] as const) {
+  for (const provider of ["daytona", "box", "modal"] as const) {
     if (!sandboxProviderConfigured(provider)) continue;
     // A create in flight has a live sandbox with no recorded id yet — skip
     // this provider's audit round rather than destroy it mid-bootstrap.

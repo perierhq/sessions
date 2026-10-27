@@ -850,6 +850,13 @@ Sandbox a failed start leaves behind, on any provider that reports it, is
 recorded on the session: **Sleep** works on it, and the idle timers put it to
 sleep like any other machine.
 
+A new container counts as started once it runs a command; until then it may
+be waiting for a GPU, and the start waits up to ten minutes for one. A
+prewarm or project-snapshot container left behind by a server restart is found
+by the prewarm orphan audit (every ten minutes) and terminated. Opening a
+sleeping session's files or diff wakes its Sandbox like **Wake** does: the
+session shows it awake, and the idle timers count it as an interaction.
+
 A Terminal tab is a Modal exec with a PTY. There is no Desktop. Portals ride
 the outbound relay. The Sandbox agent is not on by default here; add
 `"modal"` to `agent.providers` to try it.

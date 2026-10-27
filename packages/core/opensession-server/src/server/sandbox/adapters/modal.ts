@@ -117,6 +117,9 @@ const TEMPLATE_IMAGE_TTL_MS = 90 * 24 * 60 * 60_000;
  *  being created from it at that moment still starts. */
 const TEMPLATE_RETIRE_DELAY_MS = 10 * 60_000;
 const CONTROL_TIMEOUT_MS = 30_000;
+/** How long a new container may wait for a machine (a GPU) before it runs
+ *  its first command. */
+const START_TIMEOUT_MS = 10 * 60_000;
 
 const L = remoteLayout("linux");
 
@@ -388,7 +391,7 @@ export function modalDriver(
     });
     return container;
   };
-  return {
+  const driver: RemoteDriver = {
     os: "linux",
     home: L.home,
     async exec(cmd: string, opts?: RemoteExecOpts) {
@@ -480,18 +483,34 @@ export function modalDriver(
       }
     },
     async ensureStarted() {
+      // A container that has not exited may still be waiting for a machine:
+      // a GPU can take minutes to schedule. It is started once it runs a
+      // command; until then every exec launch times out.
       const sandbox = await resolveContainer();
-      const exit = await withDeadline(
-        sandbox.poll(),
-        CONTROL_TIMEOUT_MS,
-        "Modal poll",
-      );
-      if (exit !== null)
-        throw new Error(
-          `Modal Sandbox ${remoteId} is not running (exit ${exit})`,
+      const deadline = Date.now() + START_TIMEOUT_MS;
+      let lastError = "";
+      while (true) {
+        const exit = await withDeadline(
+          sandbox.poll(),
+          CONTROL_TIMEOUT_MS,
+          "Modal poll",
         );
+        if (exit !== null)
+          throw new Error(
+            `Modal Sandbox ${remoteId} is not running (exit ${exit})`,
+          );
+        const probe = await driver.exec("true", { timeoutMs: 20_000 });
+        if (probe.exitCode === 0) return;
+        lastError = probe.stderr.trim().slice(0, 200);
+        if (Date.now() >= deadline)
+          throw new Error(
+            `Modal Sandbox ${remoteId} did not start within ${START_TIMEOUT_MS / 60_000} minutes: ${lastError}`,
+          );
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
     },
   };
+  return driver;
 }
 
 /** A session container's driver: the Sandbox agent's socket while it is

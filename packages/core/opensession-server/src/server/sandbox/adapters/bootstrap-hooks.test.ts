@@ -81,88 +81,106 @@ function hook(name: string, body: string) {
   chmodSync(path, 0o755);
 }
 
+/** These run real shells with sleeps (2 to 4 s); a loaded host needs room. */
+const SLOW_HOOK_TEST_MS = 20_000;
 describe("setup", () => {
-  test("a settings pre-setup script runs before .agents/setup", async () => {
-    hook("setup", 'echo repo setup ran >> "$HOME/order"');
-    const result = await runRemoteLifecycleHook(
-      local,
-      repo,
-      "setup",
-      "fresh",
-      "with-pre-setup",
-      {
-        sandboxId: "sbx",
-        provider: "box",
-        repoId: "with-pre-setup",
-      },
-    );
-    expect(result.ran).toBe(true);
-    expect(readFileSync(join(home, "order"), "utf8")).toBe(
-      "pre-setup ran\nrepo setup ran\n",
-    );
-    // Once per disk.
-    expect(
-      (
-        await runRemoteLifecycleHook(
-          local,
-          repo,
-          "setup",
-          "fresh",
-          "with-pre-setup",
-        )
-      ).ran,
-    ).toBe(false);
-    rmSync(join(home, "order"));
-  });
+  test(
+    "a settings pre-setup script runs before .agents/setup",
+    async () => {
+      hook("setup", 'echo repo setup ran >> "$HOME/order"');
+      const result = await runRemoteLifecycleHook(
+        local,
+        repo,
+        "setup",
+        "fresh",
+        "with-pre-setup",
+        {
+          sandboxId: "sbx",
+          provider: "box",
+          repoId: "with-pre-setup",
+        },
+      );
+      expect(result.ran).toBe(true);
+      expect(readFileSync(join(home, "order"), "utf8")).toBe(
+        "pre-setup ran\nrepo setup ran\n",
+      );
+      // Once per disk.
+      expect(
+        (
+          await runRemoteLifecycleHook(
+            local,
+            repo,
+            "setup",
+            "fresh",
+            "with-pre-setup",
+          )
+        ).ran,
+      ).toBe(false);
+      rmSync(join(home, "order"));
+    },
+    SLOW_HOOK_TEST_MS,
+  );
 
-  test("processes setup leaves running are stopped when it ends", async () => {
-    const tag = `setup-leftover-${Date.now()}`;
-    hook(
-      "setup",
-      `nohup bash -c 'exec -a ${tag} sleep 300' >/dev/null 2>&1 &\n(setsid bash -c 'exec -a ${tag} sleep 300' &)\necho done`,
-    );
-    const result = await runRemoteLifecycleHook(
-      local,
-      repo,
-      "setup",
-      "fresh",
-      "leftovers",
-    );
-    expect(result.ran).toBe(true);
-    const left = Bun.spawnSync(["pgrep", "-f", tag]);
-    expect(left.stdout.toString().trim()).toBe("");
-  });
+  test(
+    "processes setup leaves running are stopped when it ends",
+    async () => {
+      const tag = `setup-leftover-${Date.now()}`;
+      hook(
+        "setup",
+        `nohup bash -c 'exec -a ${tag} sleep 300' >/dev/null 2>&1 &\n(setsid bash -c 'exec -a ${tag} sleep 300' &)\necho done`,
+      );
+      const result = await runRemoteLifecycleHook(
+        local,
+        repo,
+        "setup",
+        "fresh",
+        "leftovers",
+      );
+      expect(result.ran).toBe(true);
+      const left = Bun.spawnSync(["pgrep", "-f", tag]);
+      expect(left.stdout.toString().trim()).toBe("");
+    },
+    SLOW_HOOK_TEST_MS,
+  );
 
-  test("the kill script spares processes without the marker", async () => {
-    const bystander = Bun.spawn(["sleep", "30"]);
-    const run = await local.exec(setupLeftoversKillScript("not-a-real-run"));
-    expect(run.exitCode).toBe(0);
-    expect(run.stdout).toBe("");
-    expect(bystander.killed).toBe(false);
-    bystander.kill();
-  });
+  test(
+    "the kill script spares processes without the marker",
+    async () => {
+      const bystander = Bun.spawn(["sleep", "30"]);
+      const run = await local.exec(setupLeftoversKillScript("not-a-real-run"));
+      expect(run.exitCode).toBe(0);
+      expect(run.stdout).toBe("");
+      expect(bystander.killed).toBe(false);
+      bystander.kill();
+    },
+    SLOW_HOOK_TEST_MS,
+  );
 });
 
 describe("resume", () => {
-  test("a slow .agents/resume does not hold the wake past the bound", async () => {
-    hook("resume", `sleep 3; echo resumed >> "$HOME/order"`);
-    const started = Date.now();
-    await runResumeHook(
-      local,
-      "box",
-      "sbx",
-      { cwd: repo, sessionId: "s", repoId: "r" },
-      500,
-    );
-    expect(Date.now() - started).toBeLessThan(2_500);
-    // The workspace script ran first; the hook keeps going.
-    expect(readFileSync(join(home, "order"), "utf8")).toBe("workspace\n");
-    await Bun.sleep(3_500);
-    expect(readFileSync(join(home, "order"), "utf8")).toBe(
-      "workspace\nresumed\n",
-    );
-    expect(
-      existsSync(join(home, ".opensession/lifecycle/workspace-resume.log")),
-    ).toBe(true);
-  });
+  test(
+    "a slow .agents/resume does not hold the wake past the bound",
+    async () => {
+      hook("resume", `sleep 3; echo resumed >> "$HOME/order"`);
+      const started = Date.now();
+      await runResumeHook(
+        local,
+        "box",
+        "sbx",
+        { cwd: repo, sessionId: "s", repoId: "r" },
+        500,
+      );
+      expect(Date.now() - started).toBeLessThan(2_500);
+      // The workspace script ran first; the hook keeps going.
+      expect(readFileSync(join(home, "order"), "utf8")).toBe("workspace\n");
+      await Bun.sleep(3_500);
+      expect(readFileSync(join(home, "order"), "utf8")).toBe(
+        "workspace\nresumed\n",
+      );
+      expect(
+        existsSync(join(home, ".opensession/lifecycle/workspace-resume.log")),
+      ).toBe(true);
+    },
+    SLOW_HOOK_TEST_MS,
+  );
 });

@@ -90,9 +90,9 @@ describe("buildRunInstructions", () => {
       buildRunInstructions({ isAsk: false, hasSession: true }),
     ).not.toContain("GH_READ_TOKEN");
 
-    // Only automations carry the list. The one interactive path that may
-    // mint it is a turn resuming an automation-owned session (a Slack thread
-    // reply), and only with that automation's own list.
+    // Two sources only: an automation's own list (a turn resuming an
+    // automation-owned session keeps it) and the repository's operator
+    // configured list (RepoSection.readRepos, a private build dependency).
     const automationSource = await Bun.file(
       new URL("./automations.ts", import.meta.url),
     ).text();
@@ -100,8 +100,19 @@ describe("buildRunInstructions", () => {
       new URL("./run-session.ts", import.meta.url),
     ).text();
     expect(automationSource).toContain("readRepos: automation.readRepos");
-    expect(interactiveSource.match(/readRepos:/g)).toEqual(["readRepos:"]);
-    expect(interactiveSource).toContain("readRepos: automationReadRepos");
+    // The hosted turn and the Sandbox turn, both through sessionReadRepos.
+    expect(interactiveSource.match(/readRepos:/g)).toEqual([
+      "readRepos:",
+      "readRepos:",
+    ]);
+    expect(interactiveSource).toContain(
+      "readRepos: sessionReadRepos(session, owningAutomation?.readRepos)",
+    );
+    expect(interactiveSource).toContain(
+      "readRepos: sessionReadRepos(session, automationReadRepos)",
+    );
+    expect(interactiveSource).toContain("...(automationReadRepos || []),");
+    expect(interactiveSource).toContain("REPOS[session.repo]?.readRepos");
     expect(interactiveSource).toContain(
       "(await getAutomation(session.automationId))?.readRepos",
     );

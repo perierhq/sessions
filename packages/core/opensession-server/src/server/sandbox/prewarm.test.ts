@@ -866,6 +866,14 @@ describe("provider orphan protection", () => {
       ]),
     ).toEqual(new Set(["sandbox-adopted"]));
   });
+
+  test("protects the machine a stable Sandbox id currently names", () => {
+    expect(
+      sessionOwnedSandboxIds([
+        { sessionId: "os-live", sandboxId: "md-os-live", remoteId: "sb-123" },
+      ]),
+    ).toEqual(new Set(["md-os-live", "sb-123"]));
+  });
 });
 
 describe("prewarmRateLimited", () => {
