@@ -9,7 +9,7 @@ import {
   checkWindow,
   COMMITS_PER_CALL,
   createRefMemo,
-  OBSERVATION_TOLERANCE_MS,
+  OBSERVATIONS_PER_CALL,
   parseIsoTime,
   prOwner,
   type RefDeps,
@@ -82,7 +82,7 @@ function deps(over: Partial<RefDeps> = {}): RefDeps {
   return {
     lookupCommitIn: async () => null,
     hasObservation: async () => false,
-    nearestObservation: async () => null,
+    observationTimes: async () => [],
     releases: async () => [],
     nowMs: NOW,
     ...over,
@@ -168,9 +168,9 @@ test("times must be ISO 8601 with a time zone", () => {
 test("observation refs snap to a stored observation, main lane by default", async () => {
   const asked: unknown[] = [];
   const found = deps({
-    nearestObservation: async (signalId, atMs, toleranceMs, lane) => {
-      asked.push([signalId, atMs, toleranceMs, lane]);
-      return { at: AT };
+    observationTimes: async (signalId, dayMs, lane) => {
+      asked.push([signalId, dayMs, lane]);
+      return [Date.parse(AT) - 1, Date.parse(AT), Date.parse(AT) + 1_500];
     },
   });
   expect(
@@ -194,8 +194,8 @@ test("observation refs snap to a stored observation, main lane by default", asyn
     ),
   ).toEqual({ type: "observation", signal: "sig-a", at: AT });
   expect(asked).toEqual([
-    ["sig-a", Date.parse(AT), OBSERVATION_TOLERANCE_MS, "p95"],
-    ["sig-a", Date.parse(AT) + 400, OBSERVATION_TOLERANCE_MS, MAIN_LANE],
+    ["sig-a", Date.parse("2026-10-27T00:00:00Z"), "p95"],
+    ["sig-a", Date.parse("2026-10-27T00:00:00Z"), MAIN_LANE],
   ]);
 
   expect(
@@ -234,9 +234,9 @@ test("one call looks each observation and window up once", async () => {
   let nearest = 0;
   let has = 0;
   const d = deps({
-    nearestObservation: async () => {
+    observationTimes: async () => {
       nearest++;
-      return { at: AT };
+      return [Date.parse(AT), Date.parse(AT) + 60_000];
     },
     hasObservation: async () => {
       has++;
@@ -246,13 +246,21 @@ test("one call looks each observation and window up once", async () => {
   const s = scope();
   const ref = { type: "observation", signal: "sig-a", at: AT } as const;
   const w = { signalId: "sig-a", from: "2026-10-27T09:00:00Z", to: AT };
-  await Promise.all([
+  const later = { ...ref, at: "2026-10-27T10:01:00Z" };
+  const answers = await Promise.all([
     resolveRef(ref, s, d),
     resolveRef(ref, s, d),
+    // Another time on the same day is answered from the same scan.
+    resolveRef(later, s, d),
     checkWindow(w, s, d),
     checkWindow({ ...w, from: "2026-10-27T09:00:00.000Z" }, s, d),
   ]);
   expect([nearest, has]).toEqual([1, 1]);
+  expect(answers[2]).toEqual({
+    type: "observation",
+    signal: "sig-a",
+    at: "2026-10-27T10:01:00.000Z",
+  });
   // A new call starts with a fresh memo.
   await checkWindow(w, scope(), d);
   expect(has).toBe(2);
@@ -623,7 +631,7 @@ test("a dependency that fails becomes a note, never a throw", async () => {
   const d = deps({
     lookupCommitIn: boom,
     hasObservation: boom,
-    nearestObservation: boom,
+    observationTimes: boom,
     releases: boom,
   });
   const s = scope();
@@ -656,4 +664,48 @@ test("a dependency that fails becomes a note, never a throw", async () => {
       sync,
     ),
   ).toBe('Couldn\'t check observations of "sig-a" right now.');
+});
+
+test("an observation near midnight reads both days, and one call reads at most 12 days", async () => {
+  const midnight = Date.parse("2026-10-27T00:00:00Z");
+  const asked: number[] = [];
+  const d = deps({
+    observationTimes: async (_signalId, dayMs) => {
+      asked.push(dayMs);
+      return dayMs === midnight ? [midnight + 200] : [];
+    },
+  });
+  const s = scope();
+  expect(
+    await resolveRef(
+      { type: "observation", signal: "sig-a", at: iso(midnight - 300) },
+      s,
+      d,
+    ),
+  ).toEqual({ type: "observation", signal: "sig-a", at: iso(midnight + 200) });
+  expect(asked).toEqual([midnight - DAY, midnight]);
+
+  // Ten more days fill the cap; the next new day is refused, a known one
+  // still answers.
+  for (let i = 1; i <= OBSERVATIONS_PER_CALL - 2; i++)
+    await resolveRef(
+      { type: "observation", signal: "sig-a", at: iso(midnight + i * DAY) },
+      s,
+      d,
+    );
+  expect(asked).toHaveLength(OBSERVATIONS_PER_CALL);
+  const late = iso(midnight + 20 * DAY);
+  expect(
+    await resolveRef({ type: "observation", signal: "sig-a", at: late }, s, d),
+  ).toBe(
+    `Observation of "sig-a" at "${late}" wasn't checked: one call reads at most ${OBSERVATIONS_PER_CALL} days of observations.`,
+  );
+  expect(
+    await resolveRef(
+      { type: "observation", signal: "sig-a", at: iso(midnight + 300) },
+      s,
+      d,
+    ),
+  ).toEqual({ type: "observation", signal: "sig-a", at: iso(midnight + 200) });
+  expect(asked).toHaveLength(OBSERVATIONS_PER_CALL);
 });

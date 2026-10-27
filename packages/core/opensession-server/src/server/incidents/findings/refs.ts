@@ -28,6 +28,9 @@ const DAY_MS = 86_400_000;
 export const OBSERVATION_TOLERANCE_MS = 1_000;
 /** Distinct commits one call may look up. */
 export const COMMITS_PER_CALL = 12;
+/** Distinct (signal, lane, UTC day) observation scans one call may make;
+ *  every observation ref on a day already scanned is answered from it. */
+export const OBSERVATIONS_PER_CALL = 12;
 /** Longest agent value quoted back in a note. */
 const SHOWN_MAX = 60;
 
@@ -49,14 +52,13 @@ export interface RefDeps {
     toMs: number,
     lane: string,
   ) => Promise<boolean>;
-  /** `nearestObservation` (observation-store.ts): the observation of
-   *  `lane` closest to `atMs`, at most `toleranceMs` away. */
-  nearestObservation: (
+  /** `observationTimes` (observation-store.ts): the sorted epoch-ms times
+   *  of `lane`'s observations on the UTC day holding `dayMs`. */
+  observationTimes: (
     signalId: string,
-    atMs: number,
-    toleranceMs: number,
+    dayMs: number,
     lane: string,
-  ) => Promise<{ at: string } | null>;
+  ) => Promise<readonly number[]>;
   releases: (project: string) => Promise<Array<{ at: string; ref?: string }>>;
   nowMs: number;
 }
@@ -184,6 +186,48 @@ function memoKey(...parts: Array<string | number>): string {
   return JSON.stringify(parts);
 }
 
+/** How many questions of `kind` the memo has asked. */
+function askedOf(memo: RefMemo, kind: string): number {
+  const prefix = `[${JSON.stringify(kind)},`;
+  let asked = 0;
+  for (const key of memo.keys()) if (key.startsWith(prefix)) asked++;
+  return asked;
+}
+
+/** Start (epoch ms) of every UTC day that `[fromMs, toMs]` touches. */
+function utcDays(fromMs: number, toMs: number): number[] {
+  const days: number[] = [];
+  for (
+    let day = Math.floor(fromMs / DAY_MS) * DAY_MS;
+    day <= toMs;
+    day += DAY_MS
+  )
+    days.push(day);
+  return days;
+}
+
+/** The time in sorted `times` closest to `atMs`, at most `toleranceMs`
+ *  away (the earlier one on a tie), or null. */
+function nearestTime(
+  times: readonly number[],
+  atMs: number,
+  toleranceMs: number,
+): number | null {
+  let low = 0;
+  let high = times.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (times[mid]! < atMs) low = mid + 1;
+    else high = mid;
+  }
+  let best: number | null = null;
+  for (const t of [times[low - 1], times[low]]) {
+    if (t === undefined || Math.abs(t - atMs) > toleranceMs) continue;
+    if (best === null || Math.abs(t - atMs) < Math.abs(best - atMs)) best = t;
+  }
+  return best;
+}
+
 /** Resolves every non-tool ref; tool refs are A5's (they need the transcript). */
 export async function resolveRef(
   ref: DataRefInput,
@@ -238,23 +282,55 @@ function resolveObservation(
   const atMs = parseIsoTime(ref.at);
   if (atMs === null) return Promise.resolve(badTime(ref.at));
   const lane = ref.lane ?? MAIN_LANE;
+  const key = memoKey("observation", ref.signal, lane, atMs);
+  const days = utcDays(
+    atMs - OBSERVATION_TOLERANCE_MS,
+    atMs + OBSERVATION_TOLERANCE_MS,
+  );
+  const dayKey = (day: number) =>
+    memoKey("observation-day", ref.signal, lane, day);
+  if (!scope.memo.has(key)) {
+    const unread = days.filter((day) => !scope.memo.has(dayKey(day))).length;
+    if (
+      unread > 0 &&
+      askedOf(scope.memo, "observation-day") + unread > OBSERVATIONS_PER_CALL
+    )
+      return Promise.resolve(
+        `Observation of ${shown(ref.signal)}${laneNote(lane)} at ${shown(ref.at)} wasn't checked: one call reads at most ${OBSERVATIONS_PER_CALL} days of observations.`,
+      );
+  }
   return once<FindingRef | string>(
     scope.memo,
-    memoKey("observation", ref.signal, lane, atMs),
+    key,
     async () => {
-      const found = await deps.nearestObservation(
-        ref.signal,
+      // Each day is scanned once per call; every `at` on it is answered
+      // from that scan. The day keys are set before the first await, so
+      // the cap above counts them in call order.
+      const scans = await Promise.all(
+        days.map((day) =>
+          once<readonly number[] | null>(
+            scope.memo,
+            dayKey(day),
+            () => deps.observationTimes(ref.signal, day, lane),
+            null,
+          ),
+        ),
+      );
+      if (scans.some((times) => times === null))
+        return cantCheck(`observations of ${shown(ref.signal)}`);
+      const found = nearestTime(
+        scans.flatMap((times) => times ?? []),
         atMs,
         OBSERVATION_TOLERANCE_MS,
-        lane,
       );
-      if (!found)
+      if (found === null)
         return `No observation of ${shown(ref.signal)}${laneNote(lane)} at ${shown(ref.at)}.`;
-      // No lane on the stored ref means the main lane, as on a window.
+      // No lane on the stored ref means the main lane, as on a window. The
+      // store keeps `at` as an ISO instant, so this is its stored text.
       const stored: FindingRef = {
         type: "observation",
         signal: ref.signal,
-        at: found.at,
+        at: new Date(found).toISOString(),
       };
       if (lane !== MAIN_LANE) stored.lane = lane;
       return stored;
@@ -303,10 +379,7 @@ function resolveCommit(
   const short = sha.slice(0, 7);
   const key = memoKey("commit", sha);
   if (!scope.memo.has(key)) {
-    let checked = 0;
-    for (const k of scope.memo.keys())
-      if (k.startsWith('["commit",')) checked++;
-    if (checked >= COMMITS_PER_CALL)
+    if (askedOf(scope.memo, "commit") >= COMMITS_PER_CALL)
       return Promise.resolve(
         `Commit ${short} wasn't checked: one call checks at most ${COMMITS_PER_CALL} commits.`,
       );

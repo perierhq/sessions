@@ -18,6 +18,7 @@ import {
   hydrationLookbackMs,
   MAIN_LANE,
   nearestObservation,
+  observationTimes,
   pruneObservations,
   queryObservations,
   recentObservations,
@@ -439,5 +440,30 @@ test("nearestObservation picks the closest within the tolerance, per lane", asyn
         MAIN_LANE,
       ),
     ).toBeNull();
+  }
+});
+
+test("observationTimes lists one lane's times on one UTC day, from memory or files", async () => {
+  appendObservations("sig-a", [
+    ob("2026-10-19T23:59:59.900Z"),
+    ob("2026-10-20T10:00:00.800Z"),
+    ob("2026-10-20T00:00:00.000Z"),
+    ob("2026-10-20T10:00:00.700Z", "fail", "API"),
+    ob("2026-10-21T00:00:00.000Z"),
+  ]);
+  await flushObservations();
+  const day = Date.parse("2026-10-20T13:00:00Z");
+  for (const reset of [false, true]) {
+    if (reset) __resetObservationsForTest();
+    expect(await observationTimes("sig-a", day, MAIN_LANE)).toEqual([
+      Date.parse("2026-10-20T00:00:00.000Z"),
+      Date.parse("2026-10-20T10:00:00.800Z"),
+    ]);
+    expect(await observationTimes("sig-a", day, "API")).toEqual([
+      Date.parse("2026-10-20T10:00:00.700Z"),
+    ]);
+    expect(
+      await observationTimes("sig-a", Date.parse("2026-10-22T00:00:00Z"), MAIN_LANE),
+    ).toEqual([]);
   }
 });

@@ -537,6 +537,27 @@ export async function nearestObservation(
   return best;
 }
 
+/** The times (epoch ms, sorted) of every observation of `lane`
+ *  ({@link MAIN_LANE} for the main lane) on the UTC day holding `dayMs`:
+ *  one scan of that day (the in-memory ring when it reaches back that far,
+ *  else the day file), so a caller with many times on one day asks once. */
+export async function observationTimes(
+  signalId: string,
+  dayMs: number,
+  lane: string,
+): Promise<number[]> {
+  const from = Date.parse(`${utcDay(dayMs)}T00:00:00Z`);
+  const times: number[] = [];
+  await scanObservations(
+    signalId,
+    from,
+    from + DAY_MS - 1,
+    (observation) => times.push(Date.parse(observation.at)),
+    { lane },
+  );
+  return times.sort((a, b) => a - b);
+}
+
 /** {@link scanObservations}, collected and sorted by `at`. */
 export async function queryObservations(
   signalId: string,

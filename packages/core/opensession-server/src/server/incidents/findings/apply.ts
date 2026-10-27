@@ -558,7 +558,7 @@ async function defaultApplyDeps(): Promise<ApplyDeps> {
     { getSessionControl },
     { transcript },
     { lookupCommitIn },
-    { hasObservation, nearestObservation },
+    { hasObservation, observationTimes },
     { getProjectSettings },
     { getRepo },
   ] = await Promise.all([
@@ -579,7 +579,7 @@ async function defaultApplyDeps(): Promise<ApplyDeps> {
     ghRepoOf: (project) => getRepo(project).ghRepo,
     lookupCommitIn,
     hasObservation,
-    nearestObservation,
+    observationTimes,
     releases: async (project) => (await getProjectSettings(project)).releases,
     save: saveFindingSet,
     now: Date.now,

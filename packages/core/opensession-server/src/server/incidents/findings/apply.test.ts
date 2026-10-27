@@ -140,7 +140,7 @@ function harness(
   const deps: ApplyDeps = {
     lookupCommitIn: async () => null,
     hasObservation: async () => true,
-    nearestObservation: async () => ({ at: AT }),
+    observationTimes: async () => [Date.parse(AT)],
     releases: async () => [],
     ghRepoOf: () => "acme/web",
     now: () => NOW,
