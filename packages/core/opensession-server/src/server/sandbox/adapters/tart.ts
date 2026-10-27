@@ -66,6 +66,7 @@ import {
   findRemoteStateBySession,
   listRemoteStates,
   makeRemoteSandbox,
+  type RemoteSandboxOwner,
   readRemoteState,
   remoteCloneUrl,
   remoteLayout,
@@ -1255,7 +1256,17 @@ export class TartProvider implements SandboxProvider {
     }
     writeRemoteState({ ...state, lastActivityAt: new Date().toISOString() });
     return Object.assign(
-      this.makeHandle(host, vmName, spec.sessionId, cwd, machine),
+      this.makeHandle(
+        host,
+        vmName,
+        {
+          sessionId: spec.sessionId,
+          cwd,
+          repoId: repo.id,
+          trustProfile: trust.trustProfile,
+        },
+        machine,
+      ),
       { wokeFromSleep: resuming, bootMode },
     );
   }
@@ -1263,17 +1274,18 @@ export class TartProvider implements SandboxProvider {
   private makeHandle(
     host: TartHost,
     vmName: string,
-    sessionId: string,
-    cwd: string,
+    owner: RemoteSandboxOwner,
     machine: { cpu: number; memoryMb: number },
   ): Sandbox {
     const providerId = this.id;
-    const driver = tartDriver(host, vmName, { machine, sessionId });
+    const driver = tartDriver(host, vmName, {
+      machine,
+      sessionId: owner.sessionId,
+    });
     return makeRemoteSandbox({
+      ...owner,
       providerId,
       sandboxId: vmName,
-      sessionId,
-      cwd,
       driver,
       // Guest ports are reachable only from the Mac; every Portal rides the
       // outbound relay, which needs no published port.
@@ -1298,13 +1310,7 @@ export class TartProvider implements SandboxProvider {
         ? sandboxEnvironmentSettings(state.repoId, "tart")
         : undefined,
     );
-    return this.makeHandle(
-      host,
-      sandboxId,
-      state.sessionId,
-      state.cwd,
-      machine,
-    );
+    return this.makeHandle(host, sandboxId, state, machine);
   }
 
   async get(sandboxId: string): Promise<Sandbox | null> {
@@ -1370,10 +1376,9 @@ export class TartProvider implements SandboxProvider {
     });
     await driver.ensureStarted();
     if (woke) await runResumeHook(driver, this.id, sandboxId, state);
-    return Object.assign(
-      this.makeHandle(host, sandboxId, state.sessionId, state.cwd, machine),
-      { wokeFromSleep: woke },
-    );
+    return Object.assign(this.makeHandle(host, sandboxId, state, machine), {
+      wokeFromSleep: woke,
+    });
   }
 
   async destroy(

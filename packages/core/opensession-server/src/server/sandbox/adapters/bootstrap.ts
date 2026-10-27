@@ -2056,11 +2056,16 @@ export async function runResumeHook(
 
 // ── The Sandbox handle ────────────────────────────────────────────────────────
 
-export interface RemoteSandboxParts {
+/** Who a Sandbox handle runs for: the session, its workspace, and the
+ *  repository and trust profile its commands' workload identity carries. */
+export type RemoteSandboxOwner = Pick<
+  RemoteSandboxState,
+  "sessionId" | "cwd" | "repoId" | "trustProfile"
+>;
+
+export interface RemoteSandboxParts extends RemoteSandboxOwner {
   providerId: SandboxProviderId;
   sandboxId: string;
-  sessionId: string;
-  cwd: string;
   driver: RemoteDriver;
   ports(requestedPorts?: number[]): Promise<PortMap>;
   status(): Promise<SandboxStatus>;
@@ -2107,6 +2112,10 @@ export function makeRemoteSandbox(parts: RemoteSandboxParts): Sandbox {
                 provider: parts.providerId,
                 lifecycle: "run" as const,
                 sessionId: parts.sessionId,
+                // A grant scoped to a repository or trust profile matches
+                // ordinary commands too, not only lifecycle hooks and Portals.
+                ...(parts.repoId ? { repoId: parts.repoId } : {}),
+                trustProfile: parts.trustProfile,
               })),
           ...opts?.env,
         },
