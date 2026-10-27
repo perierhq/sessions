@@ -81,6 +81,9 @@ describe("shared findings contracts", () => {
     for (const id of ["Slow", "-a", "a_b", "x".repeat(41), ""]) {
       expect(FINDING_ID.test(id)).toBe(false);
     }
+    // The pattern follows the limit, so the two can't drift apart.
+    expect(FINDING_ID.test("x".repeat(FINDINGS_LIMITS.idMax))).toBe(true);
+    expect(FINDING_ID.test("x".repeat(FINDINGS_LIMITS.idMax + 1))).toBe(false);
   });
 
   test("provenance labels", () => {
@@ -127,5 +130,10 @@ describe("shared findings contracts", () => {
       "cant-tell": "Can't tell",
       unchecked: "Not checked yet",
     });
+  });
+
+  test("copy is frozen", () => {
+    expect(Object.isFrozen(FINDINGS_COPY)).toBe(true);
+    expect(Object.isFrozen(FINDINGS_COPY.status)).toBe(true);
   });
 });

@@ -42,7 +42,10 @@ export const FINDINGS_LIMITS = {
   quoteMinChars: 8,
 } as const;
 
-export const FINDING_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** A block id: a lowercase slug of at most `FINDINGS_LIMITS.idMax` chars. */
+export const FINDING_ID = new RegExp(
+  `^[a-z0-9][a-z0-9-]{0,${FINDINGS_LIMITS.idMax - 1}}$`,
+);
 
 /** Where a quoted tool result came from. */
 export type Provenance =
@@ -208,23 +211,23 @@ export function droppedLinesCopy(n: number): string {
   return `${n} ${n === 1 ? "line" : "lines"} couldn't be found in the source`;
 }
 
-export const FINDINGS_COPY: {
+export const FINDINGS_COPY: Readonly<{
   heading: "Findings";
   showSource: "Show source";
   underWay: (round: number) => string;
   byline: (role: AgentRole, clock: string) => string;
   earlierRow: (round: number) => string;
-  status: Record<HypothesisStatus, string>;
-} = {
+  status: Readonly<Record<HypothesisStatus, string>>;
+}> = Object.freeze({
   heading: "Findings",
   showSource: "Show source",
-  underWay: (round) => `Round ${round} under way`,
-  byline: (role, clock) => `from the ${role}, ${clock}`,
-  earlierRow: (round) => `Round ${round} findings`,
-  status: {
+  underWay: (round: number) => `Round ${round} under way`,
+  byline: (role: AgentRole, clock: string) => `from the ${role}, ${clock}`,
+  earlierRow: (round: number) => `Round ${round} findings`,
+  status: Object.freeze({
     verified: "Verified",
     refuted: "Refuted",
     "cant-tell": "Can't tell",
     unchecked: "Not checked yet",
-  },
-};
+  }),
+});
