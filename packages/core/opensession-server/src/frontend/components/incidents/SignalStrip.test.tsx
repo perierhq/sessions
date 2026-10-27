@@ -236,3 +236,38 @@ test("marker labels sit on the page fill above the marker lines", () => {
   expect(STRIP_MARKER_LABEL).toContain("bg-bg");
   expect(STRIP_MARKER_LABEL).toContain("z-10");
 });
+
+test("annotations render with the strip's markers", () => {
+  const annotations = [{ at: iso(10 * 60_000), label: "deploy" }];
+  const html = renderToStaticMarkup(
+    <SignalStripView
+      layout={layoutStrip({
+        strip: fixtureStrip(),
+        meta: () => ({ kind: "passfail", label: "Search", format: String }),
+        width: 720,
+        live: false,
+        annotations,
+      })}
+      title="Search"
+      live={null}
+      onOpen={noop}
+      activeIndex={null}
+      onActiveIndexChange={noop}
+    />,
+  );
+  expect(html).toContain("Detected");
+  expect(html).toContain(">deploy<");
+
+  // The measuring strip passes them through to its layout.
+  const measured = renderToStaticMarkup(
+    <SignalStrip
+      strip={fixtureStrip()}
+      meta={() => ({ kind: "passfail", label: "Search", format: String })}
+      live={false}
+      title="Search"
+      liveLine={null}
+      annotations={annotations}
+    />,
+  );
+  expect(measured).toContain(">deploy<");
+});

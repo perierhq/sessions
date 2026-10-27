@@ -355,6 +355,7 @@ export function SignalStrip({
   meta,
   verification,
   future,
+  annotations,
   live,
   title,
   liveLine,
@@ -363,6 +364,8 @@ export function SignalStrip({
   meta: (lane: StripLane) => StripLaneMeta;
   verification?: StripLane[];
   future?: Array<{ at: string; label: string }>;
+  /** Labelled times inside the strip's range, drawn with its markers. */
+  annotations?: Array<{ at: string; label: string }>;
   live: boolean;
   title: string;
   liveLine: StripLiveLine | null;
@@ -381,6 +384,7 @@ export function SignalStrip({
       : () => ({ kind: "passfail", label: title, format: String }),
     verification: strip ? verification : undefined,
     future,
+    annotations: strip ? annotations : undefined,
     width,
     live,
   });

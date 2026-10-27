@@ -262,6 +262,9 @@ export function layoutStrip(input: {
   meta: (lane: StripLane) => StripLaneMeta;
   verification?: StripLane[];
   future?: Array<{ at: string; label: string }>;
+  /** Labelled times a findings block adds: past markers keyed `note:<i>`,
+   *  drawn only inside [from, to], labelled with the text as given. */
+  annotations?: Array<{ at: string; label: string }>;
   width: number;
   live: boolean;
 }): StripLayout {
@@ -359,6 +362,17 @@ export function layoutStrip(input: {
       text: `${m.label} ${clockTime(m.at)}`,
       future: false,
     }));
+  for (const [i, note] of (input.annotations ?? []).entries()) {
+    const at = Date.parse(note.at);
+    if (!(at >= from && at <= to)) continue;
+    past.push({
+      key: `note:${i}`,
+      at: note.at,
+      x: xAt(note.at),
+      text: note.label,
+      future: false,
+    });
+  }
   const ahead = future.map((m, i) => ({
     key: `future:${i}`,
     at: m.at,

@@ -276,6 +276,45 @@ test("a finished strip drops future markers", () => {
   expect(l.markers).toEqual([]);
 });
 
+test("annotations draw as markers inside the window", () => {
+  const s = strip(
+    ["ok", "fail", "fail", "ok"],
+    [
+      {
+        at: iso(3 * 60_000),
+        kind: "detected",
+        label: "Detected",
+        incidentId: "inc-1",
+      },
+    ],
+  );
+  const l = layoutStrip({
+    strip: s,
+    meta: meta("passfail"),
+    width: 400,
+    live: false,
+    annotations: [
+      { at: iso(150_000), label: "deploy" },
+      { at: iso(10 * 60_000), label: "too early" },
+      { at: new Date(T + 60_000).toISOString(), label: "too late" },
+    ],
+  });
+  const notes = l.markers.filter((m) => m.key.startsWith("note:"));
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toMatchObject({
+    key: "note:0",
+    at: iso(150_000),
+    text: "deploy",
+    future: false,
+  });
+  expect(notes[0].x).toBe(150);
+  // They share the past rows with the strip's own markers: too close to
+  // "Detected" for row 0, so the note takes row 1.
+  const detected = l.markers.find((m) => m.key === "past:0");
+  expect(detected?.row).toBe(0);
+  expect(notes[0].row).toBe(1);
+});
+
 test("label packing anchors at the edges and fills the first free row", () => {
   expect(
     packMarkerLabels(

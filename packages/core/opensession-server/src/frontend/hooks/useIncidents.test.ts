@@ -11,6 +11,16 @@ test("incident keys are recognised by prefix", () => {
   expect(isIncidentKey(apiSWRKey.incidents("open"))).toBe(true);
   expect(isIncidentKey(apiSWRKey.incidentAccessSettings("acme"))).toBe(true);
   expect(isIncidentKey(apiSWRKey.incidentProject("acme"))).toBe(true);
+  expect(
+    isIncidentKey(
+      apiSWRKey.incidentSignalWindow(
+        "sig-a",
+        "2026-10-27T14:00:00.000Z",
+        "2026-10-27T15:00:00.000Z",
+      ),
+    ),
+  ).toBe(true);
+  expect(isIncidentKey(apiSWRKey.incidentCommit("abc1234", "acme"))).toBe(true);
   expect(isIncidentKey(apiSWRKey.session("s1"))).toBe(false);
   expect(isIncidentKey("api")).toBe(false);
   expect(isIncidentKey(null)).toBe(false);

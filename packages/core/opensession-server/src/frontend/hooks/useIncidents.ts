@@ -21,6 +21,7 @@ import {
   fetchSignalStrip,
   type IncidentListFilter,
 } from "../lib/api/incidents";
+import { type CommitDetails, fetchCommit } from "../lib/api/prs";
 import { apiResourceSWRConfig, apiSWRKey } from "../lib/api-swr";
 import { createCoalescer } from "../lib/coalescer";
 import { miniRange, stripRefreshMs } from "../lib/incidents/signal-summary";
@@ -30,6 +31,7 @@ import type {
   IncidentAccessSettingsView,
   IncidentAgentsAccessView,
 } from "../../shared/incident-access";
+import type { SignalWindow } from "../../shared/findings";
 import type { RedactedProjectSettings } from "../../shared/incident-response";
 import type {
   Incident,
@@ -125,6 +127,38 @@ export function useIncidentStrip(id: string): SWRResponse<StripResponse> {
     apiSWRKey.incidentStrip(id),
     () => fetchIncidentStrip(id),
     stripConfig(),
+  );
+}
+
+/**
+ * A findings block's signal window: every lane of the signal from `from` to
+ * `to` (the block narrows to its lane with `windowStrip`). A window that
+ * reaches past now keeps refreshing on its bucket; a closed one does not.
+ */
+export function useSignalWindow(
+  w: SignalWindow | null,
+): SWRResponse<StripResponse> {
+  const to = w ? Date.parse(w.to) : 0;
+  return useSWR<StripResponse>(
+    w ? apiSWRKey.incidentSignalWindow(w.signalId, w.from, w.to) : null,
+    () => fetchSignalStrip(w!.signalId, { from: w!.from, to: w!.to }),
+    {
+      ...apiResourceSWRConfig<StripResponse>(0),
+      refreshInterval: (latest: StripResponse | undefined) =>
+        to > Date.now() ? stripRefreshMs(latest) : 0,
+    },
+  );
+}
+
+/** A findings block's commit, with its patch. `null` data: no checkout has it. */
+export function useIncidentCommit(
+  sha: string | null,
+  repo: string,
+): SWRResponse<CommitDetails | null> {
+  return useSWR<CommitDetails | null>(
+    sha ? apiSWRKey.incidentCommit(sha, repo) : null,
+    () => fetchCommit(sha!, repo, { includeChanges: true }),
+    apiResourceSWRConfig<CommitDetails | null>(0),
   );
 }
 
