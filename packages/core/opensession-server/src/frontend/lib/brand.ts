@@ -29,6 +29,10 @@ type InstanceBrand = {
   defaultRepoId?: string;
   plainWorkspaceId?: string;
   agentationEnabled?: boolean;
+  /** The private app's own addresses (server: configuredInstanceOrigins). */
+  appOrigins?: string[];
+  /** Its public ingress and PR screenshot host: other origins it owns. */
+  mediaOrigins?: string[];
 };
 
 declare global {
@@ -67,6 +71,40 @@ export const PUBLIC_BASE_URL =
   INSTANCE.publicBaseUrl ||
   (typeof location === "undefined" ? "http://127.0.0.1:3850" : location.origin);
 export const WEBHOOK_BASE_URL = INSTANCE.webhookBaseUrl || PUBLIC_BASE_URL;
+
+/** The origins this instance owns besides the page's own (see below). */
+export interface InstanceOrigins {
+  /** Its private app addresses. */
+  app: Set<string>;
+  /** Its public ingress and PR screenshot host. */
+  media: Set<string>;
+}
+
+const WEB_ORIGIN = /^https?:\/\/[^/?#\s]+$/i;
+
+function webOrigins(list: InstanceBrand["appOrigins"]): Set<string> {
+  return new Set(
+    (Array.isArray(list) ? list : []).filter((origin) =>
+      WEB_ORIGIN.test(String(origin)),
+    ),
+  );
+}
+
+/**
+ * The origins this instance owns besides the page's own, as the server
+ * configured them. Unlike the constants above, this reads the instance blob
+ * when asked rather than at import, so a test can set the blob it checks
+ * against. An entry that is not a list of http(s) origins is ignored.
+ */
+export function instanceOrigins(): InstanceOrigins {
+  const blob: InstanceBrand =
+    (typeof window === "undefined" ? null : window.__OPENSESSION_INSTANCE__) ||
+    {};
+  return {
+    app: webOrigins(blob.appOrigins),
+    media: webOrigins(blob.mediaOrigins),
+  };
+}
 export const GITHUB_BOT_LOGINS = new Set(
   (INSTANCE.githubBotLogins || []).map((login) => login.toLowerCase()),
 );

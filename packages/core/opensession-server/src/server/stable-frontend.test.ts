@@ -76,6 +76,36 @@ describe("stable frontend ingress", () => {
     expect(body(asset!)).toBe("window.loaded = true;");
   });
 
+  test("sends the policy the gateway rendered the shell under", () => {
+    const { state, releaseRoot } = fixture();
+    const policy = `${SPA_CONTENT_SECURITY_POLICY} https://ingress.acme.example.test`;
+    publishStableFrontendSnapshot(state, {
+      releaseRoot,
+      version: "App-hash.js|styles.css",
+      indexHtml: '<!doctype html><script src="/App-hash.js"></script>',
+      contentSecurityPolicy: policy,
+    });
+    const page = stableFrontendHttpResponse(state, request("/"));
+    expect(page?.toString()).toContain(
+      `Content-Security-Policy: ${policy}\r\n`,
+    );
+  });
+
+  test("falls back to the base policy for one that cannot be a header", () => {
+    const { state, releaseRoot } = fixture();
+    publishStableFrontendSnapshot(state, {
+      releaseRoot,
+      version: "App-hash.js|styles.css",
+      indexHtml: '<!doctype html><script src="/App-hash.js"></script>',
+      contentSecurityPolicy: "img-src *\r\nSet-Cookie: a=b",
+    });
+    const page = stableFrontendHttpResponse(state, request("/"))!.toString();
+    expect(page).toContain(
+      `Content-Security-Policy: ${SPA_CONTENT_SECURITY_POLICY}\r\n`,
+    );
+    expect(page).not.toContain("Set-Cookie");
+  });
+
   test("serves HEAD metadata without reading an asset body into the response", () => {
     const { state } = fixture();
     const result = stableFrontendHttpResponse(

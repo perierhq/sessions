@@ -8,8 +8,20 @@ export type StableFrontendSnapshot = {
   fallbackRoots: string[];
   version: string;
   indexHtml: string;
+  /** The SPA policy the gateway rendered this shell under (spa-csp.ts), so
+   *  the stable ingress sends the instance's own origins without reading
+   *  config. Absent in snapshots from older gateways. */
+  contentSecurityPolicy?: string;
   publishedAt: string;
 };
+
+/** A published policy goes out as a raw header line: printable ASCII only. */
+function snapshotPolicy(snapshot: StableFrontendSnapshot): string {
+  const policy = snapshot.contentSecurityPolicy;
+  return typeof policy === "string" && /^[\x20-\x7e]+$/.test(policy)
+    ? policy
+    : SPA_CONTENT_SECURITY_POLICY;
+}
 
 export type StableFrontendResponder = (request: Buffer) => Buffer | null;
 
@@ -325,7 +337,7 @@ export function createStableFrontendResponder(
       {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        "Content-Security-Policy": SPA_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": snapshotPolicy(selected),
         "X-Frame-Options": "DENY",
       },
       head,

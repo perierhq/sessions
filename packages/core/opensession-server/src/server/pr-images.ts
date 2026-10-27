@@ -38,7 +38,7 @@ import { existsSync, mkdirSync, copyFileSync, statSync } from "fs";
 import { basename } from "path";
 import { randomBytes } from "crypto";
 import { UPLOADS_DIR } from "./uploads";
-import { configuredIntegration, configuredServer } from "./config";
+import { configuredPrImagesBaseUrl } from "./config";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 const CONTENT_TYPES: Record<string, string> = {
@@ -50,13 +50,6 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 /** Camo historically caps proxied images around 5MB — stay under it. */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-
-/** Public origin the webhook server is reachable on (Caddy vhost). */
-const PUBLIC_BASE =
-  process.env.OPENSESSION_PR_IMAGES_BASE ||
-  (typeof configuredIntegration("media").publicBaseUrl === "string"
-    ? (configuredIntegration("media").publicBaseUrl as string)
-    : configuredServer().publicBaseUrl);
 
 const PR_IMAGES_DIR = `${UPLOADS_DIR}/pr-images`;
 const HOME = process.env.HOME || "";
@@ -125,6 +118,7 @@ export function uploadPrImages(images: PrImageInput[]): UploadedPrImage[] {
         `image too large (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB — GitHub's camo proxy won't serve bigger): ${p}`,
       );
   }
+  const publicBase = configuredPrImagesBaseUrl();
   return images.map((img) => {
     const token = randomBytes(16).toString("hex");
     const name = safeName(img.path.trim());
@@ -133,7 +127,7 @@ export function uploadPrImages(images: PrImageInput[]): UploadedPrImage[] {
     copyFileSync(img.path.trim(), `${dir}/${name}`);
     return {
       alt: img.alt?.trim() || basename(img.path).replace(/\.[^.]+$/, ""),
-      url: `${PUBLIC_BASE}/pr-images/${token}/${name}`,
+      url: `${publicBase}/pr-images/${token}/${name}`,
       stagedPath: `${dir}/${name}`,
     };
   });

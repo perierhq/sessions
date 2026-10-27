@@ -1649,6 +1649,34 @@ describe("session media placed in the body", () => {
   });
 });
 
+describe("images on this instance's public origins", () => {
+  // SAFETY: tests run without a DOM; the instance blob is read when an image
+  // is checked, and restored after each case.
+  const scope = globalThis as { window?: unknown };
+  const before = scope.window;
+  afterEach(() => {
+    scope.window = before;
+  });
+  const shot =
+    "https://ingress.acme.example.test/pr-images/0123456789abcdef0123456789abcdef/after.png";
+
+  it("renders a PR screenshot hosted on the public ingress inline", () => {
+    scope.window = {
+      __OPENSESSION_INSTANCE__: {
+        mediaOrigins: ["https://ingress.acme.example.test"],
+      },
+    };
+    for (const html of [
+      renderMarkdown(`![After](${shot})`),
+      renderPrCommentMarkdown(`![After](${shot})`, { repo: "opensession" }),
+      renderPrCommentMarkdown(`<img src="${shot}" width="400" alt="After">`),
+    ]) {
+      expect(html).toContain(`src="${shot}"`);
+      expect(html).not.toContain("md-remote-media");
+    }
+  });
+});
+
 describe("images from other hosts", () => {
   const remote = "https://acme.example.test/pixel.png?q=1";
   const placeholder = (href: string) =>

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   inlineImageSrc,
   isSlackHostedImage,
@@ -51,6 +51,62 @@ describe("inlineImageSrc", () => {
     expect(inlineImageSrc("")).toBeNull();
     expect(inlineImageSrc(undefined)).toBeNull();
     expect(inlineImageSrc("http://[::1")).toBeNull();
+  });
+});
+
+describe("inlineImageSrc on this instance's other origins", () => {
+  // SAFETY: tests run without a DOM. The instance blob is read when an image
+  // is checked, so setting a window here stands in for the served page.
+  const scope = globalThis as { window?: unknown };
+  const before = scope.window;
+  // What a served page could hold, malformed entries included.
+  type Blob = {
+    appOrigins?: string | readonly (string | number)[];
+    mediaOrigins?: string | readonly (string | number)[];
+  };
+  const instance = (blob: Blob) => {
+    scope.window = { __OPENSESSION_INSTANCE__: blob };
+  };
+  afterEach(() => {
+    scope.window = before;
+  });
+
+  const INGRESS = "https://ingress.acme.example.test";
+  const MEDIA = "https://media.acme.example.test";
+  const shot = "/pr-images/0123456789abcdef0123456789abcdef/after.png";
+
+  it("loads a PR screenshot from the public ingress or image host as written", () => {
+    instance({ mediaOrigins: [INGRESS, MEDIA] });
+    expect(inlineImageSrc(`${INGRESS}${shot}`)).toBe(`${INGRESS}${shot}`);
+    expect(inlineImageSrc(`${MEDIA}${shot}?v=2`)).toBe(`${MEDIA}${shot}?v=2`);
+  });
+
+  it("serves a private app alias from the current origin", () => {
+    instance({ appOrigins: ["https://os.acme.example.test"] });
+    expect(
+      inlineImageSrc("https://os.acme.example.test/media?path=%2Ftmp%2Fa.png"),
+    ).toBe("/media?path=%2Ftmp%2Fa.png");
+  });
+
+  it("matches the whole origin, not a host that starts the same", () => {
+    instance({
+      appOrigins: ["https://os.acme.example.test"],
+      mediaOrigins: [INGRESS],
+    });
+    for (const href of [
+      `http://ingress.acme.example.test${shot}`,
+      `${INGRESS}:8443${shot}`,
+      `${INGRESS}.example.test${shot}`,
+      "https://acme.example.test/a.png",
+    ])
+      expect(inlineImageSrc(href)).toBeNull();
+  });
+
+  it("ignores a blob entry that is not a list of web origins", () => {
+    instance({ mediaOrigins: "https://acme.example.test" });
+    expect(inlineImageSrc("https://acme.example.test/a.png")).toBeNull();
+    instance({ mediaOrigins: ["javascript:alert(1)", 7] });
+    expect(inlineImageSrc("javascript:alert(1)")).toBeNull();
   });
 });
 

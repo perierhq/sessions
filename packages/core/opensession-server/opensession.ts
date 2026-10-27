@@ -45,7 +45,6 @@ import { startXaiUsagePoller } from "./src/server/xai-accounts";
 import {
   FRONTEND_SRC,
   IS_DEV,
-  SPA_HEADERS,
   ensureFrontendBuilt,
   frontend,
   isPrebuiltFrontend,
@@ -53,6 +52,7 @@ import {
   scheduleFrontendRebuild,
   sharedCheckoutEditors,
   spaEntry,
+  spaHeaders,
 } from "./src/server/frontend-build";
 import {
   configuredIntegration,
@@ -408,7 +408,7 @@ const sessionSpaEntry = (() => {
       session
         ? await sessionHtmlWithSocialMeta(bundle.indexHtml, session, pathname)
         : bundle.indexHtml,
-      { headers: SPA_HEADERS },
+      { headers: spaHeaders() },
     );
   };
 })();
@@ -738,7 +738,7 @@ const server: import("bun").Server<WSClientData> = hotServe({
       !path.startsWith("/api/")
     ) {
       return new Response(frontend.indexHtml, {
-        headers: SPA_HEADERS,
+        headers: spaHeaders(),
       });
     }
 

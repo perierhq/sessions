@@ -20,11 +20,12 @@ import { EMBEDDED_FRONTEND } from "./embedded-frontend";
 import { activeRunRecords } from "./run-journal";
 import { writeFileAtomic } from "./shared/atomic-write";
 import { publishStableFrontendSnapshot } from "./stable-frontend";
-import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
+import { spaContentSecurityPolicy } from "./spa-csp";
 import { stateDir } from "./paths";
 import { gitIdentityFor } from "./shared/user-mappings";
 import { broadcastToAll } from "./ws-hub";
 import {
+  configuredInstanceOrigins,
   configuredServer,
   defaultRepo,
   githubBotLogins,
@@ -519,6 +520,7 @@ export function bundleVersion(meta: BundleMeta): string {
  *  the SPA needs before its first fetch. Kept as one helper so the boot render
  *  and any inputs it feeds never drift on which fields the instance carries. */
 function frontendInstance() {
+  const origins = configuredInstanceOrigins();
   return {
     productName: productName(),
     productMark: productMark(),
@@ -529,6 +531,10 @@ function frontendInstance() {
     defaultRepoId: defaultRepo().id,
     plainWorkspaceId: plainWorkspaceId() || undefined,
     agentationEnabled: process.env.OPENSESSION_AGENTATION === "1" || undefined,
+    // Images on these load inline in rendered Markdown
+    // (frontend/lib/remote-image.ts); the same list is in the image policy.
+    appOrigins: origins.app,
+    mediaOrigins: origins.public,
   };
 }
 
@@ -599,6 +605,7 @@ function publishStableShell(activated = false): void {
         (g.__opensessionFrontendFallbackRoots as string[] | undefined) ?? [],
       version: store.version,
       indexHtml: store.indexHtml,
+      contentSecurityPolicy: spaHeaders()["Content-Security-Policy"],
     });
     // Full backend deploys start a fresh process, so their in-memory fallback
     // list is empty. The stable snapshot carries the preceding release chain
@@ -1013,15 +1020,23 @@ export function ensureFrontendBuilt(): Promise<void> {
   return g.__opensessionFrontendBuild as Promise<void>;
 }
 
-export const SPA_HEADERS = {
-  "Content-Type": "text/html; charset=utf-8",
-  // The service worker owns the offline shell. The browser's separate HTTP
-  // cache must never pin an older content-hashed bundle name, especially in an
-  // installed iOS PWA where reloads still pass through the worker.
-  "Cache-Control": "no-store",
-  "Content-Security-Policy": SPA_CONTENT_SECURITY_POLICY,
-  "X-Frame-Options": "DENY",
-};
+/** Headers for the SPA document. The image policy names this instance's own
+ *  origins as configured when the page is served (spa-csp.ts). */
+export function spaHeaders(): Record<string, string> {
+  const origins = configuredInstanceOrigins();
+  return {
+    "Content-Type": "text/html; charset=utf-8",
+    // The service worker owns the offline shell. The browser's separate HTTP
+    // cache must never pin an older content-hashed bundle name, especially in
+    // an installed iOS PWA where reloads still pass through the worker.
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": spaContentSecurityPolicy([
+      ...origins.app,
+      ...origins.public,
+    ]),
+    "X-Frame-Options": "DENY",
+  };
+}
 
 // SPA entry: the HMR bundle in dev, the prebuilt index.html in prod. Reads
 // `frontend.indexHtml` fresh on each request so an in-process rebuild is served
@@ -1036,7 +1051,7 @@ export const spaEntry = frontend
       // ensureFrontendBuilt before binding); saying so out loud beats
       // serving an empty document to whatever got here another way.
       frontend.version
-        ? new Response(frontend.indexHtml, { headers: SPA_HEADERS })
+        ? new Response(frontend.indexHtml, { headers: spaHeaders() })
         : new Response("Frontend is still building", { status: 503 })
   : (homepage ??
     (() => new Response("Hosted frontend unavailable", { status: 503 })));

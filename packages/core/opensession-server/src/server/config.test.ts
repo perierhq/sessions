@@ -9,6 +9,8 @@ import {
   configuredPaths,
   configuredServer,
   configuredIdentity,
+  configuredInstanceOrigins,
+  configuredPrImagesBaseUrl,
   configPath,
   defaultRepo,
   personaName,
@@ -28,6 +30,9 @@ const ENV_KEYS = [
   "OPENSESSION_MCP_CONFIG",
   "OPENSESSION_UI_BASE",
   "OPENSESSION_INGRESS_BASE",
+  "OPENSESSION_PR_IMAGES_BASE",
+  "HOST",
+  "PORT",
   "PREVIEW_HOST",
   "OPENSESSION_IDLE_WORKLOAD_STOP_HOURS",
 ] as const;
@@ -106,6 +111,101 @@ describe("config loader", () => {
     delete process.env.OPENSESSION_INGRESS_BASE;
 
     expect(configuredServer().webhookBaseUrl).toBe("https://ui.example.test");
+  });
+
+  test("serves PR screenshots from the public ingress unless a media host is set", async () => {
+    for (const k of ENV_KEYS.slice(1)) delete process.env[k];
+    await withConfig(
+      JSON.stringify({
+        server: { publicBaseUrl: "https://os.acme.example.test" },
+      }),
+    );
+    expect(configuredPrImagesBaseUrl()).toBe("https://os.acme.example.test");
+
+    await withConfig(
+      JSON.stringify({
+        server: { publicBaseUrl: "https://os.acme.example.test" },
+        ingress: {
+          publicBaseUrl: "https://ingress.acme.example.test/",
+          exposure: "custom",
+        },
+      }),
+    );
+    // GET /pr-images/* answers only on the public ingress.
+    expect(configuredPrImagesBaseUrl()).toBe(
+      "https://ingress.acme.example.test",
+    );
+
+    await withConfig(
+      JSON.stringify({
+        server: { publicBaseUrl: "https://os.acme.example.test" },
+        ingress: { publicBaseUrl: "https://ingress.acme.example.test" },
+        integrations: {
+          media: { publicBaseUrl: "https://media.acme.example.test/" },
+        },
+      }),
+    );
+    expect(configuredPrImagesBaseUrl()).toBe("https://media.acme.example.test");
+
+    process.env.OPENSESSION_PR_IMAGES_BASE = "https://shots.acme.example.test";
+    expect(configuredPrImagesBaseUrl()).toBe("https://shots.acme.example.test");
+  });
+
+  test("lists the origins this instance answers on, private and public", async () => {
+    for (const k of ENV_KEYS.slice(1)) delete process.env[k];
+    await withConfig(
+      JSON.stringify({
+        server: {
+          host: "100.64.0.7",
+          port: 3850,
+          publicBaseUrl: "https://os.acme.example.test/",
+        },
+        ingress: {
+          publicBaseUrl: "https://ingress.acme.example.test",
+          exposure: "custom",
+        },
+        integrations: {
+          media: { publicBaseUrl: "https://media.acme.example.test/shots" },
+        },
+      }),
+    );
+    expect(configuredInstanceOrigins()).toEqual({
+      app: ["https://os.acme.example.test", "http://100.64.0.7:3850"],
+      public: [
+        "https://ingress.acme.example.test",
+        "https://media.acme.example.test",
+      ],
+    });
+
+    // A saved address the boot environment has not caught up with yet is
+    // still this app, and so is the environment's.
+    process.env.OPENSESSION_UI_BASE = "https://next.acme.example.test";
+    process.env.OPENSESSION_INGRESS_BASE = "https://in.acme.example.test";
+    process.env.HOST = "0.0.0.0";
+    expect(configuredInstanceOrigins()).toEqual({
+      app: ["https://next.acme.example.test", "https://os.acme.example.test"],
+      public: [
+        "https://in.acme.example.test",
+        "https://ingress.acme.example.test",
+        "https://media.acme.example.test",
+      ],
+    });
+  });
+
+  test("lists no public origin when the app has none of its own", async () => {
+    for (const k of ENV_KEYS.slice(1)) delete process.env[k];
+    await withConfig(
+      JSON.stringify({
+        server: { host: "::", publicBaseUrl: "https://os.acme.example.test" },
+        integrations: {
+          media: { publicBaseUrl: "ftp://media.acme.example.test" },
+        },
+      }),
+    );
+    expect(configuredInstanceOrigins()).toEqual({
+      app: ["https://os.acme.example.test"],
+      public: [],
+    });
   });
 
   test("defaults preview portals to the public UI hostname", async () => {
