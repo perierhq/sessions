@@ -14,6 +14,8 @@ import type { ProjectPatchBody } from "../../../lib/project-settings/save";
 import {
   ROLE_GRID,
   ROLE_GRID_LABEL,
+  ROLE_GRID_FIX,
+  ROLE_GRID_FIX_NOTE,
   ROLE_GRID_NOTE,
   ROLE_GRID_VALUE,
   ROLE_GRID_VALUE_BAD,
@@ -39,7 +41,7 @@ import {
   SettingRowText,
   SettingRowTitle,
 } from "../../../ui/settings";
-import { IconCheck, IconX } from "../../icons";
+import { IconCheck, IconWarningTriangle, IconX } from "../../icons";
 import { SandboxScriptDialog } from "../SandboxScriptDialog";
 import { SettingChip } from "./SettingChip";
 
@@ -51,10 +53,13 @@ export function WhereAgentsRunSection({
   view,
   defaults,
   onSave,
+  onOpenSandboxes,
 }: {
   view: ProjectSettingsView;
   defaults: ProjectDefaultsView | undefined;
   onSave: (body: ProjectPatchBody) => void;
+  /** Settings, Sandboxes: where a provider gets connected. */
+  onOpenSandboxes: () => void;
 }) {
   const status = useSandboxStatus();
   const ready = readySandboxProviders(status.data);
@@ -72,6 +77,9 @@ export function WhereAgentsRunSection({
         ? "This machine"
         : null;
   const sandbox = view.document.sandbox;
+  const notReady = RUN_PLACES.some(
+    ([key]) => effective[key].state === "not-ready",
+  );
   return (
     <SettingCard>
       <SettingGroup>
@@ -109,7 +117,22 @@ export function WhereAgentsRunSection({
             <RunPlaceCell key={key} label={label} place={effective[key]} />
           ))}
         </div>
-        {effective.note && <p className={ROLE_GRID_NOTE}>{effective.note}</p>}
+        {notReady ? (
+          <div className={ROLE_GRID_FIX}>
+            {effective.note && (
+              <p className={ROLE_GRID_FIX_NOTE}>{effective.note}</p>
+            )}
+            <Button
+              size="sm"
+              className="shrink-0 phone:min-h-11"
+              onClick={onOpenSandboxes}
+            >
+              Open sandbox settings
+            </Button>
+          </div>
+        ) : (
+          effective.note && <p className={ROLE_GRID_NOTE}>{effective.note}</p>
+        )}
       </SettingGroup>
       <SettingRow>
         <SettingRowText>
@@ -189,14 +212,18 @@ function SetupScriptRow({ project }: { project: string }) {
 }
 
 /** One role's place: a check where it can run, a cross where it can't
- *  start. Where it comes from the global default, screen readers hear so;
- *  the Sandbox row above already shows it. */
+ *  start, a warning with the reason where its sandbox provider isn't set
+ *  up yet. Where it comes from the global default, screen readers hear
+ *  so; the Sandbox row above already shows it. */
 function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
   let mark;
   let text: string;
   if (place.state === "cant-start") {
     mark = <IconX size={14} dense className="text-red" />;
     text = "Can't start";
+  } else if (place.state === "not-ready") {
+    mark = <IconWarningTriangle size={14} dense className="text-yellow" />;
+    text = place.reason;
   } else {
     mark = <IconCheck size={14} dense className="text-green" />;
     text = joinDots(place.label);
@@ -214,7 +241,7 @@ function RunPlaceCell({ label, place }: { label: string; place: RunPlace }) {
           {mark}
         </span>
         <span className="min-w-0 text-balance">{text}</span>
-        {place.state === "ok" && place.source === "default" && (
+        {place.state !== "cant-start" && place.source === "default" && (
           <span className="sr-only">, from the global default</span>
         )}
       </div>

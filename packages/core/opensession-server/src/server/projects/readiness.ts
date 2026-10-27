@@ -137,6 +137,15 @@ function whereStep(input: ReadinessInput): ReadinessStep {
       fix: { kind: "connect-sandbox" },
     };
   }
+  if (place.state === "not-ready") {
+    return {
+      id: "where",
+      state: "blocked",
+      title: "Where agents run",
+      detail: `${place.reason}, so incident agents can't start`,
+      fix: { kind: "connect-sandbox" },
+    };
+  }
   return {
     id: "where",
     state: "ready",

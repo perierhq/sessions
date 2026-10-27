@@ -256,6 +256,25 @@ describe("computeReadiness", () => {
     });
   });
 
+  test("a sandbox provider that isn't set up blocks the project, with the reason", () => {
+    const place: RunPlace = {
+      state: "not-ready",
+      provider: "modal",
+      label: "Modal",
+      source: "project",
+      reason: "Modal isn't connected",
+    };
+    const r = computeReadiness(input({ incidentWorkspace: place }));
+    expect(r.blocking?.id).toBe("where");
+    expect(r.steps.find((s) => s.id === "where")).toEqual({
+      id: "where",
+      state: "blocked",
+      title: "Where agents run",
+      detail: "Modal isn't connected, so incident agents can't start",
+      fix: { kind: "connect-sandbox" },
+    });
+  });
+
   test("an ok workspace on this machine without a sandbox reads plainly", () => {
     const place: RunPlace = {
       state: "ok",

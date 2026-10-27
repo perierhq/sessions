@@ -176,6 +176,57 @@ describe("where agents run", () => {
   });
 });
 
+describe("where agents run on a provider that isn't set up", () => {
+  const where = (html: string) =>
+    html.slice(
+      html.indexOf('id="project-where"'),
+      html.indexOf('id="project-models"'),
+    );
+  const modal = {
+    state: "not-ready",
+    provider: "modal",
+    label: "Modal",
+    source: "project",
+    reason: "Modal isn't connected",
+  } as const;
+  const unconnected: ProjectSettingsView = {
+    ...READY_4_OF_6,
+    document: { ...READY_4_OF_6.document, sandbox: "modal:T4" },
+    effective: {
+      ...READY_4_OF_6.effective,
+      sandbox: {
+        ...READY_4_OF_6.effective.sandbox,
+        you: { ...modal, label: "Modal · T4 GPU" },
+        incidentAgents: modal,
+        support: modal,
+        note: "Modal isn't connected, so sessions, incident agents and Support can't start",
+      },
+    },
+  };
+
+  test("each role on it reads the reason, never a check", () => {
+    const html = where(render(unconnected));
+    expect(html.split("Modal isn&#x27;t connected<").length - 1).toBe(3);
+    // Reviews and automations stay on this machine: two checks, no more.
+    expect(html.split('d="M5.75 12.75L9.5 16.25L18.25 7.75"').length - 1).toBe(
+      2,
+    );
+  });
+
+  test("one button opens the sandbox settings, with a 44px target on a phone", () => {
+    const html = where(render(unconnected));
+    const button = html.match(
+      /<button[^>]*>(?:(?!<\/button>).)*Open sandbox settings(?:(?!<\/button>).)*<\/button>/s,
+    );
+    expect(button?.[0]).toContain("phone:min-h-11");
+    expect(html.split("Open sandbox settings").length - 1).toBe(1);
+  });
+
+  test("a project whose places are ready shows no such button", () => {
+    expect(where(render(READY_4_OF_6))).not.toContain("Open sandbox settings");
+  });
+});
+
 describe("git access", () => {
   test("a project whose fetches can't sign in says so at the top", () => {
     const html = render({

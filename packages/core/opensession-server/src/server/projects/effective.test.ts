@@ -37,6 +37,7 @@ function deps(over: Partial<EffectiveDeps>): void {
     hostProblem: async () => "no user",
     automations: async () => [],
     automationProvider: () => "daytona",
+    providerUsability: () => "usable",
     requested: (r) => ({
       ok: true,
       provider: !r || r === "local" ? null : (r as never),
@@ -428,6 +429,68 @@ test("Support never runs unsandboxed on the host, where incident agents may", as
   expect(s.note).toBe(
     "Support reads customer mail, so it never runs on this machine without a sandbox and can't start. Connect a sandbox provider in the checklist above",
   );
+});
+
+test("a provider that isn't set up is not ready, with the reason, wherever a role would run on it", async () => {
+  // Modal has no connection: what Settings, Sandboxes calls Not configured.
+  deps({
+    global: () => "none",
+    providerUsability: (p) => (p === "modal" ? "not_configured" : "usable"),
+  });
+  await setSandbox("modal:T4");
+  const where = await effectiveSandboxes("acme-web");
+  const modal = {
+    state: "not-ready",
+    provider: "modal",
+    source: "project",
+    reason: "Modal isn't connected",
+  } as const;
+  expect(where.you).toEqual({ ...modal, label: "Modal · T4 GPU" });
+  expect(where.incidentAgents).toEqual({ ...modal, label: "Modal" });
+  expect(where.support).toEqual({ ...modal, label: "Modal" });
+  // This machine needs no provider.
+  expect(where.reviews.state).toBe("ok");
+  expect(where.automations.state).toBe("ok");
+  expect(where.note).toBe(
+    "Modal isn't connected, so sessions, incident agents and Support can't start",
+  );
+
+  // A connection that failed its test needs attention; one turned off or
+  // uncertified isn't available.
+  deps({
+    global: () => "daytona",
+    providerUsability: (p) => (p === "daytona" ? "unqualified" : "usable"),
+  });
+  await setSandbox("default");
+  expect((await effectiveSandboxes("acme-web")).you).toMatchObject({
+    state: "not-ready",
+    source: "default",
+    reason: "Daytona needs attention",
+  });
+  deps({
+    global: () => "none",
+    providerUsability: (p) => (p === "podman" ? "unavailable" : "usable"),
+  });
+  await setSandbox("podman");
+  expect((await effectiveSandboxes("acme-web")).incidentAgents).toMatchObject({
+    state: "not-ready",
+    reason: "This machine (container) isn't available",
+  });
+});
+
+test("automations that ask for a disposable sandbox it can't start are not ready", async () => {
+  deps({
+    automationCapable: () => false,
+    providerUsability: (p) => (p === "daytona" ? "not_configured" : "usable"),
+    automations: async () => [{ sandbox: true }],
+  });
+  expect((await effectiveSandboxes("acme-web")).automations).toEqual({
+    state: "not-ready",
+    provider: "daytona",
+    label: "Disposable sandbox",
+    source: "fallback",
+    reason: "Daytona isn't connected",
+  });
 });
 
 test("Support's model: the project's, else the global Support default, else the automation model", async () => {

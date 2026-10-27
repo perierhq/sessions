@@ -254,6 +254,17 @@ export type RunPlace =
       label: string;
       source: "project" | "default" | "fallback";
     }
+  /** It would run on a sandbox provider that can't take runs now (not
+   *  connected, needing attention or unavailable, as Settings, Sandboxes
+   *  shows it), so runs there fail to start until it is set up. */
+  | {
+      state: "not-ready";
+      provider: string;
+      label: string;
+      source: "project" | "default" | "fallback";
+      /** "Modal isn't connected" */
+      reason: string;
+    }
   | { state: "cant-start"; reason: string };
 
 export interface EffectiveSandbox {
