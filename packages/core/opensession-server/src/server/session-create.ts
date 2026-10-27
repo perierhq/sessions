@@ -131,7 +131,11 @@ import {
   sandboxConfig,
   sandboxesEnabled,
 } from "./sandbox/config";
-import { resolveInteractiveSandbox } from "./sandbox/defaults";
+import {
+  defaultSandboxGpu,
+  resolveInteractiveSandbox,
+} from "./sandbox/defaults";
+import { resolveRequestedSandboxGpu, type SandboxGpu } from "./sandbox/config";
 import {
   getRunner,
   runnerAvailableForSession,
@@ -302,6 +306,8 @@ export interface CreateSessionMessage {
   /** Repos to work in beside `repo` (the palette's multi-select picker). */
   attachRepos?: unknown;
   sandbox?: unknown;
+  /** A GPU for a Modal Sandbox ("T4" or "L4"). */
+  sandboxGpu?: unknown;
   runner?: unknown;
   worktreeMode?: unknown;
   checkoutMode?: unknown;
@@ -477,6 +483,8 @@ export interface ResolvedCreate {
    */
   runMcpServers?: McpScope;
   sandboxProvider: ResolvedSandboxProvider;
+  /** The GPU the session's Modal Sandbox carries. */
+  sandboxGpu?: SandboxGpu;
   /** Explicit persistent-machine target. Mutually exclusive with Sandbox. */
   runnerTarget?: {
     id: string;
@@ -873,6 +881,7 @@ function createdSessionFileDefaults(spec: ResolvedCreate): NativeSessionFile {
           },
         }
       : {}),
+    ...(spec.sandboxGpu ? { sandboxGpu: spec.sandboxGpu } : {}),
     ...(spec.runnerTarget
       ? {
           runner: {
@@ -2811,6 +2820,23 @@ export async function handleCreateSessionMessage(
   }
   // null = host (no sandbox recorded on the session).
   const createSandboxProvider = sandboxResolved.provider;
+  // An unchosen Machine follows the project's default, GPU included.
+  const gpuResolved = resolveRequestedSandboxGpu(
+    forkSource
+      ? undefined
+      : (msg.sandboxGpu ??
+          (await defaultSandboxGpu(
+            msg.sandbox,
+            msg.sandboxGpu,
+            createSandboxProvider,
+            repo.id,
+          ))),
+    createSandboxProvider,
+  );
+  if (!gpuResolved.ok) {
+    failCreate(gpuResolved.error);
+    return;
+  }
   const requestedRunnerId =
     typeof msg.runner === "string" && msg.runner.trim()
       ? msg.runner.trim()
@@ -3398,6 +3424,7 @@ export async function handleCreateSessionMessage(
         ? createMcpServers
         : feedMcpServers) as McpScope | undefined,
       sandboxProvider: createSandboxProvider,
+      ...(gpuResolved.gpu ? { sandboxGpu: gpuResolved.gpu } : {}),
       runnerTarget: selectedRunner
         ? {
             id: selectedRunner.id,

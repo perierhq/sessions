@@ -684,6 +684,8 @@ export interface UnifiedSession {
   }>;
   /** Cumulative token/cost accounting for this session's runs. */
   usage?: SessionUsage;
+  /** The GPU its Modal Sandbox carries ("T4" or "L4"), if any. */
+  sandboxGpu?: string;
   /** Sandbox opt-in (the sandbox rollout plan): the session's runs execute in an
    *  isolated container via the named provider. `sandboxId` is set once the
    *  provider materialized it; `workspace: "volume"` means the workspace lives
@@ -1173,6 +1175,7 @@ export type WSServerMessage =
         | "tart"
         | "usecomputer"
         | "podman"
+        | "modal"
         | "runner";
       cwd?: string;
     }

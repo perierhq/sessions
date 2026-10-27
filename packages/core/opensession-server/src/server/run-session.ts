@@ -140,6 +140,7 @@ import {
   workspaceExecFor,
 } from "./sandbox";
 import { automationWebFetchHosts } from "./sandbox/automation-egress";
+import { noteSandboxActivity } from "./sandbox/idle";
 import {
   isRemoteSandboxProvider,
   isRunnableSandboxProvider,
@@ -175,6 +176,7 @@ import {
 import { startWatching } from "./file-watcher";
 import {
   getRepo,
+  REPOS,
   repoForPath,
   repoForPathOrNull,
   reviveWorktree,
@@ -2019,6 +2021,22 @@ export function sandboxRunSecuritySpec(
   };
 }
 
+/** Repositories a session's runs may read beside their own: the owning
+ *  automation's list and the repository's configured one
+ *  (RepoSection.readRepos, such as a private dependency fork). */
+function sessionReadRepos(
+  session: Pick<UnifiedSession, "repo">,
+  automationReadRepos: readonly string[] | undefined,
+): string[] | undefined {
+  const repos = [
+    ...new Set([
+      ...(automationReadRepos || []),
+      ...((session.repo ? REPOS[session.repo]?.readRepos : undefined) || []),
+    ]),
+  ];
+  return repos.length ? repos : undefined;
+}
+
 export async function maybeLaunchSandboxedRun(
   session: UnifiedSession,
   opts: {
@@ -2170,6 +2188,8 @@ export async function maybeLaunchSandboxedRun(
               )
                 ? {}
                 : { seedPrivateFiles: false }),
+              // A GPU the session asked its Modal Sandbox for.
+              ...(session.sandboxGpu ? { gpu: session.sandboxGpu } : {}),
               // Bind-mode containers mount attached repos too (a changed set
               // recreates the container); volume mode rejects them in ensure().
               attachedDirs: (session.attachedRepos || [])
@@ -2347,6 +2367,7 @@ export async function maybeLaunchSandboxedRun(
       publicationPolicy: security.publicationPolicy,
       confirmTools: STRIPE_CONFIRM_TOOLS,
       aws: false,
+      readRepos: sessionReadRepos(session, owningAutomation?.readRepos),
       author: runCommitAuthor(
         session,
         opts.isAutomationSession ? undefined : opts.user,
@@ -2416,13 +2437,31 @@ export async function maybeLaunchSandboxedRun(
       session.source === "opensession" &&
       session.sandbox
     ) {
+      // A machine the provider created before the failure (a repository
+      // setup script failed) is recorded, so the session can pause it and
+      // the idle sweep puts it to sleep instead of leaving it billing.
+      const machineId =
+        session.sandbox.sandboxId ||
+        (() => {
+          try {
+            return getSandboxProvider(sbProvider).machineFor?.(session.id);
+          } catch {
+            return undefined;
+          }
+        })();
       touchNativeSession(session.id, {
         sandbox: {
           ...session.sandbox,
+          ...(machineId ? { sandboxId: machineId } : {}),
           lifecycle: "needs_attention",
           lastLifecycleError: reason,
         },
       });
+      if (machineId)
+        noteSandboxActivity(
+          { sandboxId: machineId, sessionId: session.id },
+          "agent",
+        );
     }
     audit({
       kind: "sandbox_turn_metric",
@@ -3620,7 +3659,7 @@ async function runSessionPromptInner(
               !session.plainDiscussionId &&
               !supportSession) ||
             agentAwsCredsForUntrustedRuns(),
-          readRepos: automationReadRepos,
+          readRepos: sessionReadRepos(session, automationReadRepos),
           attachedRepos: attachedGhRepos,
           author: runCommitAuthor(session, user, sessionPrincipal(session)),
           user: runInputs.user,

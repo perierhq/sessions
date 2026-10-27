@@ -42,6 +42,7 @@ function providerName(id: string): string {
   if (id === "usecomputer") return "use.computer";
   // Reads as "a container Sandbox" in the lines below.
   if (id === "podman") return "container";
+  if (id === "modal") return "Modal";
   return id;
 }
 

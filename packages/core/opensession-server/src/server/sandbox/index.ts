@@ -15,6 +15,7 @@ import { BoxProvider } from "./adapters/box";
 import { TartProvider } from "./adapters/tart";
 import { UseComputerProvider } from "./adapters/usecomputer";
 import { PodmanProvider } from "./adapters/podman";
+import { ModalProvider } from "./adapters/modal";
 import { effectiveSandboxProvider, isRetiredSandboxProvider } from "./config";
 import type { SandboxProvider, SandboxProviderId } from "./provider";
 
@@ -52,6 +53,7 @@ const boxProvider = new BoxProvider();
 const tartProvider = new TartProvider();
 const useComputerProvider = new UseComputerProvider();
 const podmanProvider = new PodmanProvider();
+const modalProvider = new ModalProvider();
 
 /**
  * Resolve a SandboxProvider. `spec` (a provider id, e.g. from a session file's
@@ -76,6 +78,8 @@ export function getSandboxProvider(
       return useComputerProvider;
     case "podman":
       return podmanProvider;
+    case "modal":
+      return modalProvider;
     default:
       if (isRetiredSandboxProvider(id))
         throw new Error(

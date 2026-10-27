@@ -32,6 +32,7 @@ import { createAskUserMcpServer } from "../agents/slack/ask-tools";
 import { createReposMcpServer } from "../agents/slack/repos-tools";
 import { createPortalsMcpServer } from "./portals-mcp";
 import { createScriptsMcpServer } from "./scripts-mcp";
+import { createGpuMcpServer } from "./gpu-mcp";
 import { createDesktopMcpServer } from "./desktop-mcp";
 import { getSandboxProvider } from "./sandbox";
 import { createWalkthroughMcpServer } from "../agents/slack/walkthrough-tools";
@@ -449,6 +450,13 @@ export function interactiveMcpServers(
           // the call, and automation text must not leave one behind.
           "opensession-scripts": () =>
             createScriptsMcpServer({
+              sessionId,
+              user: createdBy,
+            }),
+          // GPU jobs on the session's GPU machine (gpu-jobs.ts). Interactive
+          // only: a job outlives the call and bills a GPU.
+          "opensession-gpu": () =>
+            createGpuMcpServer({
               sessionId,
               user: createdBy,
             }),

@@ -27,6 +27,14 @@ import { sandboxIdlePolicy } from "./config";
 /** Portal Sandboxes are keyed by `<session>--portals` at the provider
  *  (portal-sandbox.ts PORTAL_SANDBOX_SUFFIX). */
 const PORTAL_SUFFIX = "--portals";
+/** A session's GPU job machine (gpu-jobs.ts GPU_MACHINE_SUFFIX). It bills a
+ *  GPU and runs only jobs, so only its jobs keep it awake: not the person
+ *  chatting, not the session's other turns. */
+const GPU_SUFFIX = "--gpu";
+
+function jobsOnly(sandboxId: string): boolean {
+  return sandboxId.endsWith(GPU_SUFFIX);
+}
 
 export type SandboxActivityKind = "agent" | "human";
 
@@ -61,9 +69,10 @@ const humanBySession = (g.__opensessionSandboxIdleHuman ??= new Map());
 
 /** The session a provider-side session id belongs to. */
 export function idleSessionId(providerSessionId: string): string {
-  return providerSessionId.endsWith(PORTAL_SUFFIX)
-    ? providerSessionId.slice(0, -PORTAL_SUFFIX.length)
-    : providerSessionId;
+  for (const suffix of [PORTAL_SUFFIX, GPU_SUFFIX])
+    if (providerSessionId.endsWith(suffix))
+      return providerSessionId.slice(0, -suffix.length);
+  return providerSessionId;
 }
 
 /** Record activity on one Sandbox. `sessionId` may be the provider's
@@ -75,9 +84,11 @@ export function noteSandboxActivity(
 ): void {
   if (!input.sandboxId || !input.sessionId) return;
   const sessionId = idleSessionId(input.sessionId);
+  const ownOnly = jobsOnly(input.sandboxId);
+  if (ownOnly && kind === "human") kind = "agent";
   let entry = entries.get(input.sandboxId);
   if (!entry) {
-    const prompted = humanBySession.get(sessionId) ?? 0;
+    const prompted = ownOnly ? 0 : (humanBySession.get(sessionId) ?? 0);
     entry = {
       sandboxId: input.sandboxId,
       sessionId,
@@ -98,7 +109,7 @@ export function noteSessionHumanActivity(sessionId: string, now = Date.now()) {
   if (!sessionId) return;
   humanBySession.set(sessionId, now);
   for (const entry of entries.values())
-    if (entry.sessionId === sessionId)
+    if (entry.sessionId === sessionId && !jobsOnly(entry.sandboxId))
       entry.humanAt = Math.max(entry.humanAt, now);
 }
 
@@ -114,7 +125,7 @@ function idleNow(
 ): boolean {
   return (
     now - entry.agentAt >= policy.agentMs &&
-    now - entry.humanAt >= policy.humanMs
+    (jobsOnly(entry.sandboxId) || now - entry.humanAt >= policy.humanMs)
   );
 }
 
@@ -165,7 +176,8 @@ export async function sweepIdleSandboxes(
   const policy = deps.policy ?? sandboxIdlePolicy();
   const slept: string[] = [];
   for (const entry of [...entries.values()]) {
-    if (deps.busy(entry.sessionId)) entry.agentAt = now;
+    const ownOnly = jobsOnly(entry.sandboxId);
+    if (!ownOnly && deps.busy(entry.sessionId)) entry.agentAt = now;
     if (!idleNow(entry, policy, now)) {
       if (now - entry.keptAliveAt >= KEEP_ALIVE_EVERY_MS) {
         entry.keptAliveAt = now;
@@ -186,7 +198,7 @@ export async function sweepIdleSandboxes(
         const current = entries.get(sandboxId);
         return Boolean(
           current &&
-          !deps.busy(current.sessionId) &&
+          (jobsOnly(sandboxId) || !deps.busy(current.sessionId)) &&
           idleNow(current, policy, Date.now()),
         );
       };
@@ -251,6 +263,10 @@ async function defaultSweep(): Promise<string[]> {
     busy: (sessionId) =>
       hostRunBusy(sessionId) || isAgentSessionBusy(sessionId),
     async sleep(sessionId, sandboxId, stillIdle) {
+      // A session's GPU job machine is not on its record (gpu-jobs.ts).
+      const gpu = await import("../gpu-jobs");
+      if (gpu.isGpuJobMachine(sandboxId))
+        return stillIdle(sandboxId) && (await gpu.sleepGpuMachine(sessionId));
       const slept = await sleepModule.sleepSessionSandboxes(sessionId, {
         reason: "idle",
         sandboxId,
@@ -259,6 +275,10 @@ async function defaultSweep(): Promise<string[]> {
       return slept.length > 0;
     },
     async keepAlive(sessionId, sandboxId) {
+      if ((await import("../gpu-jobs")).isGpuJobMachine(sandboxId)) {
+        await index.getSandboxProvider("modal").keepAlive?.(sandboxId);
+        return;
+      }
       const session = await sessions.findSessionAsync(sessionId);
       const record =
         session?.sandbox?.sandboxId === sandboxId

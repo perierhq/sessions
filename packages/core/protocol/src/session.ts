@@ -463,6 +463,8 @@ export type ProtocolClientMessage =
       executor?: ExecutorProvider;
       /** @deprecated Transitional pre-Executor selection. Use executor. */
       sandbox?: boolean | string;
+      /** A GPU for a Modal Sandbox ("T4" or "L4"); needs `sandbox: "modal"`. */
+      sandboxGpu?: string;
       images?: string[];
       /** Non-image composer attachments, staged server-side or kept inline. */
       files?: unknown;

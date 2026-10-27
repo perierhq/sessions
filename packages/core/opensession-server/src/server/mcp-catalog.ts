@@ -61,6 +61,7 @@ import { createRunnersMcpServer } from "./runners-mcp";
 import { createLocalFoldersMcpServer } from "./local-folders-mcp";
 import { createScheduleMcpServer } from "./schedule-mcp";
 import { createScriptsMcpServer } from "./scripts-mcp";
+import { createGpuMcpServer } from "./gpu-mcp";
 import { createPortalsMcpServer } from "./portals-mcp";
 import { createChartsMcpServer } from "./charts-mcp";
 import { createHtmlMcpServer } from "./html-mcp";
@@ -396,6 +397,15 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     runClasses: ["interactive"],
     condition: "Needs a session id.",
     build: () => createScriptsMcpServer({ sessionId: SESSION_ID }),
+  },
+  {
+    name: "opensession-gpu",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-gpu"].summary,
+    source: "packages/core/opensession-server/src/server/gpu-mcp.ts",
+    wiring: ["packages/core/opensession-server/src/server/interactive-mcp.ts"],
+    runClasses: ["interactive"],
+    condition: "Needs a session id.",
+    build: () => createGpuMcpServer({ sessionId: SESSION_ID }),
   },
   {
     name: "opensession-local-files",

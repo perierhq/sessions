@@ -89,7 +89,7 @@ export async function runGithubEnv(input: {
   githubKindRun: boolean;
   launcherEnv?: Record<string, string>;
   cwd: string;
-  /** Automation.readRepos; only automation runs carry it. */
+  /** Automation.readRepos plus the repository's own (RepoSection.readRepos). */
   readRepos?: string[];
   /** `owner/name` of the session's attached repositories: the App token
    *  reaches them too (githubAppRepositoryToken). */
@@ -101,10 +101,14 @@ export async function runGithubEnv(input: {
 }): Promise<Record<string, string>> {
   const primary = await runPrimaryGithubEnv(input);
   if (!input.readRepos?.length) return primary;
-  return {
-    ...primary,
-    ...(await githubReadReposRunEnv(input.cwd, input.readRepos)),
-  };
+  const { withReadRepoCredentials } = await import("./github-git-credential");
+  return withReadRepoCredentials(
+    {
+      ...primary,
+      ...(await githubReadReposRunEnv(input.cwd, input.readRepos)),
+    },
+    input.readRepos,
+  );
 }
 
 async function runPrimaryGithubEnv(input: {

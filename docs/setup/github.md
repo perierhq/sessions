@@ -195,6 +195,16 @@ honors only `GH_TOKEN`, so a script opts in per command:
 `GH_TOKEN=$GH_READ_TOKEN gh pr list --repo owner/name`. The run's
 instructions name the token and the repositories it covers.
 
+A repository can list the same way the repositories its builds read, such
+as a private dependency fork: `readRepos` on its entry in `config.json`'s
+`repos`. Every run on that repository then gets `GH_READ_TOKEN` for them,
+interactive runs and Sandbox runs included, and git uses it for exactly
+those URLs: a credential helper scoped to `https://github.com/owner/name`
+(with and without `.git`) answers with the read token, placed ahead of the
+run's own helper, so `cargo` or `git` fetches of the dependency work while
+every other github.com URL keeps the primary credential. An automation's
+list and its repository's list are combined.
+
 The App must be installed on every repository in `readRepos` (organization
 settings, the Open Session App, repository access). GitHub refuses the whole
 mint when the installation cannot see one of them; the server then logs a

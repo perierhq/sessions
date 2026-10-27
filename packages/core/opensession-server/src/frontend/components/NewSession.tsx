@@ -67,6 +67,7 @@ import {
   readySandboxProviders,
   sandboxProviderLabel,
   sandboxProviderNote,
+  splitSandboxChoice,
 } from "../lib/ready-sandbox-providers";
 import {
   newSessionSandboxDefault,
@@ -573,8 +574,10 @@ export function NewSession({
   }, [preselect, sandboxStatus]);
   const readyProviders = readySandboxProviders(sandboxStatus);
   const sandboxAvailable = readyProviders.length > 0;
+  // The Machine choice: a provider, or Modal with a GPU (`modal:T4`).
+  const sandboxChoice = splitSandboxChoice(sandboxProvider);
   const selectedSandboxAvailable =
-    !sandboxProvider || readyProviders.includes(sandboxProvider);
+    !sandboxProvider || readyProviders.includes(sandboxChoice.provider);
   const showSandboxPicker =
     !!sandboxStatus && (sandboxAvailable || !!sandboxProvider);
   const sandboxLabel = (id: string) =>
@@ -655,7 +658,9 @@ export function NewSession({
   // Sandbox sessions adopt a full-runner prewarm that starts on the first
   // keystroke. Strictly fire-and-forget: failure must never surface or block
   // typing.
-  const shouldPrewarm = sandboxProvider !== "" && selectedSandboxAvailable;
+  // A GPU machine is never prewarmed: it would hold a GPU while you type.
+  const shouldPrewarm =
+    sandboxProvider !== "" && selectedSandboxAvailable && !sandboxChoice.gpu;
   const [sandboxWarmed, setSandboxWarmed] = useState(false);
   const lastPrewarmAtRef = useRef(0);
   useEffect(() => {
@@ -669,10 +674,10 @@ export function NewSession({
     if (!shouldPrewarm || !hasPromptText || busy) return;
     if (Date.now() - lastPrewarmAtRef.current < 60_000) return;
     lastPrewarmAtRef.current = Date.now();
-    requestSandboxPrewarm(sandboxProvider, repo, getCurrentUser())
+    requestSandboxPrewarm(sandboxChoice.provider, repo, getCurrentUser())
       .then((r) => setSandboxWarmed(r.state === "ready"))
       .catch(() => {});
-  }, [hasPromptText, shouldPrewarm, sandboxProvider, repo, busy]);
+  }, [hasPromptText, shouldPrewarm, sandboxChoice.provider, repo, busy]);
 
   // An empty selection means every available service; one or more picks narrow
   // the session to those services. Command-menu shortcuts seed this same state
@@ -1192,7 +1197,10 @@ export function NewSession({
     if (accountProvider && accountId) createMessage.accountId = accountId;
     // Once defaults have loaded, Host is an explicit override ("local").
     // Omitting the field would make the server re-apply the user's default.
-    if (sandboxStatus) createMessage.sandbox = sandboxProvider || "local";
+    if (sandboxStatus) {
+      createMessage.sandbox = sandboxChoice.provider || "local";
+      if (sandboxChoice.gpu) createMessage.sandboxGpu = sandboxChoice.gpu;
+    }
     if (selectedMcpServers.length) {
       createMessage.mcpServers = selectedMcpServers;
     }

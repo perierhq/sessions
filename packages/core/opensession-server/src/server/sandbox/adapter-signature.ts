@@ -9,7 +9,8 @@ export type WorkspaceSandboxProvider =
   | "box"
   | "tart"
   | "usecomputer"
-  | "podman";
+  | "podman"
+  | "modal";
 
 /** Providers whose connection is a paired Runner or this host rather than an
  *  account credential: nothing is stored in the workspace secret store for

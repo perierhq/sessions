@@ -382,6 +382,10 @@ export interface UnifiedSession {
    * (sandbox/checkpoint.ts). Kept beside `sandbox` rather than inside it so
    * lifecycle writers that replace the whole `sandbox` object cannot drop it. */
   sandboxCheckpoint?: SandboxCheckpointRecord;
+  /** The GPU the session asked its Modal Sandbox for ("T4" or "L4"). Kept
+   *  beside `sandbox` for the same reason as `sandboxCheckpoint`; every
+   *  start of the session's machine passes it to the provider. */
+  sandboxGpu?: string;
   /** The Sandbox that runs this session's Portals while the session itself
    * stays on this machine (portal-sandbox.ts). Never set beside a workspace
    * Sandbox, whose Portals run in it. */
@@ -781,6 +785,8 @@ export interface NativeSessionFile {
   };
   /** See UnifiedSession.sandboxCheckpoint. */
   sandboxCheckpoint?: SandboxCheckpointRecord;
+  /** See UnifiedSession.sandboxGpu. */
+  sandboxGpu?: string;
   /** See UnifiedSession.portalSandbox. */
   portalSandbox?: PortalSandboxRecord;
   runner?: {

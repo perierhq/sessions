@@ -57,6 +57,7 @@ touches an in-process tool:
 | [`opensession-walkthrough`](#opensession-walkthrough) | 2 | interactive | Needs a session id. |
 | [`opensession-slack`](#opensession-slack) | 1 | interactive | Needs a session id. |
 | [`opensession-scripts`](#opensession-scripts) | 3 | interactive | Needs a session id. |
+| [`opensession-gpu`](#opensession-gpu) | 3 | interactive | Needs a session id. |
 | [`opensession-local-files`](#opensession-local-files) | 1 | interactive | Needs a session id. |
 | [`opensession-local-folders`](#opensession-local-folders) | 10 | interactive | Needs a session id. |
 | [`opensession-plain-discussion`](#opensession-plain-discussion) | 2 | interactive | Only a session that answers a Plain discussion (plainDiscussionId): an Ask Sidekick session carries this server alone instead of the interactive set; an auto-triage session that reports into a discussion carries it beside the automation-bar set on its later turns. |
@@ -80,7 +81,7 @@ touches an in-process tool:
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-39 servers, 193 tools.
+40 servers, 196 tools.
 
 ## opensession-sessions
 
@@ -160,7 +161,7 @@ Change a native Open Session session's parent/orchestrator link, or detach it by
 
 ### `create_session`
 
-`mcp__opensession-sessions__create_session` · input: `prompt` (string, required), `repo` (string), `mode` ("ask" | "code"), `branch` (string), `model` (string), `mcpServers` (string[]), `parentSessionId` (string), `reportBack` (boolean), `standalone` (boolean), `isolatedWorktree` (boolean), `sandbox` (boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman"), `accountId` (string), `forkFrom` (object)
+`mcp__opensession-sessions__create_session` · input: `prompt` (string, required), `repo` (string), `mode` ("ask" | "code"), `branch` (string), `model` (string), `mcpServers` (string[]), `parentSessionId` (string), `reportBack` (boolean), `standalone` (boolean), `isolatedWorktree` (boolean), `sandbox` (boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman" | "modal"), `sandboxGpu` ("T4" | "L4"), `accountId` (string), `forkFrom` (object)
 
 Spin up a visible Open Session session and start it on a prompt. When a PERSON asks for a new session ("start a new session", "open a new session", "kick off a session for X", "spin one up on Y"), they mean a new TOP-LEVEL session: call this tool with standalone true. That creates a detached session with no parent link and no report-back that appears in their sidebar and outlives the current run; never an in-process subagent or task agent. Reply with the new session's URL. Only create a child session (standalone omitted) when YOU are delegating for yourself, such as fanning out focused sub-tasks whose results this session will consume, or when the person explicitly asks for a worker, child, or sub-session. A child defaults to this session as its parent, shares its workspace, and is instructed to report back here. mode 'ask' (default) runs read-only on the selected repo checkout; mode 'code' can edit files / open PRs (never merges). A child targeting one of the parent's repos shares that exact primary or attached worktree, so reviewers see current/uncommitted work; pass repo explicitly for attached-repo tasks. Pass isolatedWorktree true to instead give the child its own worktree and branch (child/report-back linkage is kept); use it when fanning work out across separate workspaces. `branch` is only used when there is nothing to share, a standalone session or a child targeting a repo the parent does not carry, and is generated from the prompt when omitted. Repo defaults to the parent session's repo (example when standalone); pass another registered repo id to override. For sessions that only need filesystem/code access, pass mcpServers: [] to avoid unrelated MCP startup cost/failures.
 
@@ -172,7 +173,7 @@ Migrate an existing session onto the Pi engine by flipping its model to a pi/* i
 
 ### `spawn_task`
 
-`mcp__opensession-sessions__spawn_task` · input: `prompt` (string, required), `repo` (string), `branch` (string), `isolatedWorktree` (boolean), `model` (string), `mode` ("ask" | "code" | "scratch"), `sandbox` (boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman")
+`mcp__opensession-sessions__spawn_task` · input: `prompt` (string, required), `repo` (string), `branch` (string), `isolatedWorktree` (boolean), `model` (string), `mode` ("ask" | "code" | "scratch"), `sandbox` (boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman" | "modal"), `sandboxGpu` ("T4" | "L4")
 
 Delegate a self-contained task to a child session and return IMMEDIATELY with {taskId, url} — the lightweight alternative to create_session + send_to_session choreography when you just want work done and a handle to poll. The child is created through the same code path as create_session (it shares this session's worktree in code mode when repos match, inherits your user, is linked as a child, and is told to report back here); poll it with task_status and stop it with cancel_task. Mode defaults to 'code' (pass a branch, or isolatedWorktree true for a generated one, unless the child can share this session's code worktree); use 'ask' for read-only investigation. Loop guard: spawned children may delegate one further level, then spawn_task refuses (depth ≥ 2). This tool ALWAYS creates a child of this session, so it is not the tool for a person's "start a new session" request; that means a top-level session, which is create_session with standalone true wherever create_session is offered. Not available from automation sessions.
 
@@ -945,6 +946,33 @@ Check a script run started with start_script or run_with_credential: running/exi
 `mcp__opensession-scripts__stop_script` · input: `id` (string, required)
 
 Stop a running script run: its process group is sent SIGTERM, then SIGKILL after 10 seconds. The session is woken when it has ended, as for any other end.
+
+## opensession-gpu
+
+Jobs on an NVIDIA T4 or L4 machine.
+
+- **Source** `packages/core/opensession-server/src/server/gpu-mcp.ts`
+- **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`
+- **Runs** interactive
+- **Condition** Needs a session id.
+
+### `run_gpu_job`
+
+`mcp__opensession-gpu__run_gpu_job` · input: `job` (string), `command` (string), `gpu` ("T4" | "L4"), `timeoutMinutes` (number)
+
+Run work that needs an NVIDIA GPU (CUDA, Vulkan) on a GPU machine, from a session without one. Pass `job` to run one the repository declares in .agents/gpu-jobs.json (call with no arguments to list them), or `command` for any bash command, e.g. a single test. The session's work is checkpointed, uncommitted changes included, and landed on the session's own GPU machine (Modal, T4 or L4), which keeps its build cache between jobs and sleeps when idle. The command runs from the repository root with a read-only GitHub credential for the repository and its private build dependencies. It keeps running through Open Session restarts, and this session is woken with the exit code and the end of the output when it ends: start it, tell the person, and end your turn instead of polling. One job at a time per session.
+
+### `gpu_job_status`
+
+`mcp__opensession-gpu__gpu_job_status` · input: `id` (string)
+
+Check a GPU job started with run_gpu_job: preparing/running/exited/failed/timed_out/stopped/lost, exit code, the commit it ran on, and the end of its output. Without an id, lists this session's jobs.
+
+### `stop_gpu_job`
+
+`mcp__opensession-gpu__stop_gpu_job` · input: `id` (string, required)
+
+Stop a running GPU job: its process group gets SIGTERM, then SIGKILL. The session is woken when it has ended.
 
 ## opensession-local-files
 

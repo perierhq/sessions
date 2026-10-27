@@ -69,6 +69,8 @@ export function fetchSessionSandbox(
  * unpushed work behind on this machine. */
 interface AttachSandboxBody {
   provider: string;
+  /** A GPU for a Modal Sandbox ("T4" or "L4"). */
+  gpu?: string;
   confirm?: true;
 }
 
@@ -78,9 +80,10 @@ interface AttachSandboxBody {
 export function attachSandbox(
   sessionId: string,
   provider: string,
-  opts: { confirm?: boolean } = {},
+  opts: { confirm?: boolean; gpu?: string | undefined } = {},
 ): Promise<SessionSandboxStatus> {
   const body: AttachSandboxBody = { provider };
+  if (opts.gpu) body.gpu = opts.gpu;
   if (opts.confirm) body.confirm = true;
   return request(`/sessions/${encodeURIComponent(sessionId)}/sandbox/attach`, {
     method: "POST",

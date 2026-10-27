@@ -25,6 +25,10 @@ import {
   type UnattendedRole,
 } from "../../../shared/project-settings";
 import { formatUsd } from "../incidents/copy";
+import {
+  sandboxMachineChoices,
+  splitSandboxChoice,
+} from "../ready-sandbox-providers";
 
 export const PROJECT_SECTIONS = [
   ["where", "Where agents run"],
@@ -486,19 +490,24 @@ const PROVIDER_NAMES = new Map([
   ["tart", "Mac VM"],
   ["usecomputer", "use.computer"],
   ["podman", "This machine · container"],
+  ["modal", "Modal"],
 ]);
 
 /** A sandbox provider by name, with its region when it has one
- *  ("Daytona eu"). `none` and `local` are this machine. */
+ *  ("Daytona eu"), and Modal with a GPU as "Modal · T4 GPU". `none` and
+ *  `local` are this machine. */
 export function sandboxName(id: string, region?: string): string {
   if (id === "none" || id === "local" || id === "") return "This machine";
-  const name = PROVIDER_NAMES.get(id) ?? id;
+  const { provider, gpu } = splitSandboxChoice(id);
+  const name = PROVIDER_NAMES.get(provider) ?? provider;
+  if (gpu) return `${name} · ${gpu} GPU`;
   return region && id !== "podman" ? `${name} ${region}` : name;
 }
 
 /** The project's sandbox choices: the default, this machine, the
- *  container when it is ready, and each other ready provider. The current
- *  choice stays listed even when it is no longer ready. */
+ *  container when it is ready, and each other ready provider (Modal once
+ *  more per GPU, `modal:T4`). The current choice stays listed even when it
+ *  is no longer ready. */
 export function sandboxOptions(opts: {
   ready: string[];
   current: string;
@@ -514,15 +523,17 @@ export function sandboxOptions(opts: {
     },
     { value: "local", label: "This machine" },
   ];
-  const providers = [...opts.ready];
+  // The container sits beside this machine, then the remote providers.
+  const ready = [...opts.ready].sort(
+    (a, b) => Number(b === "podman") - Number(a === "podman"),
+  );
+  const providers = sandboxMachineChoices(ready);
   if (
     opts.current !== "default" &&
     opts.current !== "local" &&
     !providers.includes(opts.current)
   )
     providers.push(opts.current);
-  // The container sits beside this machine, then the remote providers.
-  providers.sort((a, b) => Number(b === "podman") - Number(a === "podman"));
   for (const id of providers)
     out.push({ value: id, label: sandboxName(id, opts.regions?.[id]) });
   return out;

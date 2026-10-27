@@ -108,7 +108,10 @@ import { startMemoryDiagnosticsLog } from "./src/server/memory-diagnostics";
 import { startDerivedCatalogRepair } from "./src/server/catalog-documents";
 import { ensureWarmTemplateScheduler } from "./src/server/warm-template";
 import { handleRunnerWsUpgrade } from "./src/server/runner-ws";
-import { handleSandboxPortalRelayUpgrade } from "./src/server/sandbox-portal-relay";
+import {
+  handleSandboxPortalRelayUpgrade,
+  startSandboxPortalRelays,
+} from "./src/server/sandbox-portal-relay";
 import {
   handleSandboxAgentUpgrade,
   SANDBOX_AGENT_PATH,
@@ -861,6 +864,9 @@ if (!g.__opensessionBooted) {
         const { startPodmanIdleSweep } =
           await import("./src/server/sandbox/adapters/podman");
         startPodmanIdleSweep();
+        const { startModalIdleSweep } =
+          await import("./src/server/sandbox/adapters/modal");
+        startModalIdleSweep();
         // Every provider but Podman (its own sweep above): sleep idle
         // Sandboxes on the two idle timers.
         const { startSandboxIdleSweep } =
@@ -1029,6 +1035,15 @@ if (!g.__opensessionBooted) {
     // durable owner records immediately and keep reaping deleted-session husks.
     startPortalReaper(getSessionListSnapshotAsync);
     startRunnerPortalReaper();
+    // Sandbox Portals' loopback addresses (and the Caddy routes on them) keep
+    // their ports across this restart; the first request reconnects them.
+    void startSandboxPortalRelays()
+      .then((count) => {
+        if (count) console.log(`[sandbox-portal] rebound ${count} relays`);
+      })
+      .catch((error) =>
+        console.warn("[sandbox-portal] could not rebind relays:", error),
+      );
 
     // Desk todo reminders: push + Slack DM when a remindAt passes (todos.ts)
     startTodoReminderTicker();
@@ -1099,6 +1114,7 @@ if (!g.__opensessionBooted) {
     const keychainRuns = await import("./src/server/keychain-runs");
     keychainRuns.hookKeychainRuns();
     await (await import("./src/server/script-runs")).startScriptRuns();
+    await (await import("./src/server/gpu-jobs")).startGpuJobs();
     await keychainRuns.startKeychainRuns();
   })().catch((e) => console.error("[scripts] recovery failed:", e));
 

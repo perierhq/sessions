@@ -309,7 +309,15 @@ export interface RemoteSandboxState extends SandboxTrustPolicy {
    *  VM currently holding the session; absent while asleep). */
   remoteId?: string;
   repoId?: string;
-  resources?: { cpu?: number; memoryMb?: number; diskGb?: number };
+  resources?: {
+    cpu?: number;
+    memoryMb?: number;
+    diskGb?: number;
+    gpu?: string;
+  };
+  /** When the current `remoteId` container started, for providers whose
+   *  containers have a maximum lifetime (modal: 24 hours). */
+  remoteStartedAt?: string;
   branch?: string;
   /** Session-private provider image used when ephemeral compute disappears. */
   checkpointArtifactId?: string;
@@ -2048,11 +2056,21 @@ export async function runResumeHook(
 
 // ── The Sandbox handle ────────────────────────────────────────────────────────
 
-export interface RemoteSandboxParts {
+/** Who a Sandbox handle runs for: the session, its workspace, and the
+ *  repository and trust profile its commands' workload identity carries. */
+export type RemoteSandboxOwner = Pick<
+  RemoteSandboxState,
+  "sessionId" | "cwd" | "repoId" | "trustProfile"
+>;
+
+/** A handle's parts: the container on this machine (Podman) states no repo
+ *  or trust profile, so its run lease stays as it was. */
+type RemoteSandboxPartsOwner = Pick<RemoteSandboxOwner, "sessionId" | "cwd"> &
+  Partial<Pick<RemoteSandboxOwner, "repoId" | "trustProfile">>;
+
+export interface RemoteSandboxParts extends RemoteSandboxPartsOwner {
   providerId: SandboxProviderId;
   sandboxId: string;
-  sessionId: string;
-  cwd: string;
   driver: RemoteDriver;
   ports(requestedPorts?: number[]): Promise<PortMap>;
   status(): Promise<SandboxStatus>;
@@ -2099,6 +2117,12 @@ export function makeRemoteSandbox(parts: RemoteSandboxParts): Sandbox {
                 provider: parts.providerId,
                 lifecycle: "run" as const,
                 sessionId: parts.sessionId,
+                // A grant scoped to a repository or trust profile matches
+                // ordinary commands too, not only lifecycle hooks and Portals.
+                ...(parts.repoId ? { repoId: parts.repoId } : {}),
+                ...(parts.trustProfile
+                  ? { trustProfile: parts.trustProfile }
+                  : {}),
               })),
           ...opts?.env,
         },

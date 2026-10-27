@@ -64,7 +64,19 @@ export function sleepArchivedSessionSandboxes(
   sessionId: string,
 ): Promise<void> {
   return sleepSessionSandboxes(sessionId, { reason: "archived" }).then(
-    () => undefined,
+    async () => {
+      // The GPU machine its GPU jobs ran on (gpu-jobs.ts).
+      const gpu = await import("./gpu-jobs");
+      if (gpu.sessionHasGpuMachine(sessionId))
+        await gpu
+          .sleepGpuMachine(sessionId)
+          .catch((error) =>
+            console.warn(
+              `[sandbox] ${sessionId}: GPU machine not put to sleep:`,
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
+    },
   );
 }
 

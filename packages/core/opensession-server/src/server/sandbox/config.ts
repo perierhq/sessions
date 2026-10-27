@@ -217,6 +217,7 @@ const PROVIDER_IDS = new Set<string>([
   "tart",
   "usecomputer",
   "podman",
+  "modal",
 ]);
 
 function asProviderId(v: unknown): SandboxProviderId | undefined {
@@ -569,16 +570,72 @@ export const RUNNABLE_SANDBOX_PROVIDERS = [
   "tart",
   "usecomputer",
   "podman",
+  "modal",
 ] as const;
 export type RunnableSandboxProviderId =
   (typeof RUNNABLE_SANDBOX_PROVIDERS)[number];
+
+/** The GPUs a Sandbox can carry, and the one provider that offers them. */
+export const SANDBOX_GPUS = ["T4", "L4"] as const;
+export type SandboxGpu = (typeof SANDBOX_GPUS)[number];
+
+export function sandboxGpu(value: unknown): SandboxGpu | undefined {
+  if (typeof value !== "string") return undefined;
+  const upper = value.trim().toUpperCase();
+  return (SANDBOX_GPUS as readonly string[]).includes(upper)
+    ? (upper as SandboxGpu)
+    : undefined;
+}
+
+/** A stored Machine choice: a provider id, or Modal with a GPU as the
+ *  Machine menu names it (`modal:T4`). Null when the GPU part is unknown or
+ *  on a provider other than Modal. */
+export function parseSandboxChoice(
+  value: string,
+): { provider: string; gpu?: SandboxGpu } | null {
+  const [provider = "", gpuName, ...rest] = value.trim().split(":");
+  if (rest.length) return null;
+  const normalized = provider.toLowerCase();
+  if (gpuName === undefined) return { provider: normalized };
+  const gpu = sandboxGpu(gpuName);
+  return gpu && normalized === "modal" ? { provider: normalized, gpu } : null;
+}
+
+/** A choice as stored: the provider lower case, the GPU upper case. */
+export function formatSandboxChoice(choice: {
+  provider: string;
+  gpu?: SandboxGpu;
+}): string {
+  return choice.gpu ? `${choice.provider}:${choice.gpu}` : choice.provider;
+}
+
+/** Check a create request's GPU against the Sandbox it chose: absent is
+ *  fine anywhere; a GPU needs a Modal Sandbox and a known GPU name. */
+export function resolveRequestedSandboxGpu(
+  value: unknown,
+  provider: string | null | undefined,
+): { ok: true; gpu?: SandboxGpu } | { ok: false; error: string } {
+  if (value === undefined || value === null || value === "")
+    return { ok: true };
+  const gpu = sandboxGpu(value);
+  if (!gpu)
+    return {
+      ok: false,
+      error: `Unknown GPU "${String(value)}". Choose ${SANDBOX_GPUS.join(" or ")}.`,
+    };
+  if (provider !== "modal")
+    return {
+      ok: false,
+      error: "A GPU needs a Modal Sandbox: choose Modal as the Machine.",
+    };
+  return { ok: true, gpu };
+}
 
 /** Provider ids Open Session once shipped. A persisted session may still name
  *  one; it can no longer be selected, woken, or recreated. */
 export const RETIRED_SANDBOX_PROVIDERS = new Set<string>([
   "docker",
   "e2b",
-  "modal",
   "microvm",
   "lambda-microvm",
 ]);
@@ -644,6 +701,11 @@ export const SANDBOX_PROVIDER_CERTIFICATIONS: Record<
     behavioralPassedAt: "2026-10-24",
     warmRestorePassedAt: "2026-10-24",
     note: "rootless Podman 5 with SELinux enforcing: live qualification passed (prerequisites, image, firewalled start with the egress table verified in the workload's namespace, full isolation self-test with host-side nft counter proof, user-service cgroup placement, cleanup); no snapshots, so a warm restore is a fresh firewalled start of the stopped pod",
+  }),
+  modal: certification({
+    behavioralPassedAt: "2026-10-26",
+    warmRestorePassedAt: "2026-10-26",
+    note: "Linux container with an optional T4 or L4 GPU: live qualification, exec and upload, Vulkan and CUDA on both GPUs, and filesystem-image sleep/wake passed",
   }),
 };
 
@@ -1113,7 +1175,7 @@ function sandboxProviderSelectionError(
     }
     return `Sandbox provider "${id}" is not currently available.`;
   }
-  return `Sandbox provider "${id}" is not configured: connect ${id === "box" ? "Boat" : id === "tart" ? "a Mac VM host" : id === "usecomputer" ? "use.computer" : id === "podman" ? "This machine (container)" : "Daytona"} in Workspace > Sandboxes.`;
+  return `Sandbox provider "${id}" is not configured: connect ${id === "box" ? "Boat" : id === "tart" ? "a Mac VM host" : id === "usecomputer" ? "use.computer" : id === "podman" ? "This machine (container)" : id === "modal" ? "Modal" : "Daytona"} in Workspace > Sandboxes.`;
 }
 
 /** Whether the provider has enabled connection configuration. */

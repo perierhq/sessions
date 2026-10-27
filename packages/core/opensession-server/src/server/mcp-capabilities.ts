@@ -107,6 +107,11 @@ export const INTERNAL_MCP_CAPABILITIES = {
     guidance:
       "Run a long script or migration with `start_script`, not a background shell job: it survives restarts, shows as a card in the session, and wakes this session when it ends.",
   },
+  "opensession-gpu": {
+    summary: "Jobs on an NVIDIA T4 or L4 machine.",
+    guidance:
+      "Run GPU work (CUDA, Vulkan, GPU tests) with `run_gpu_job`, not here.",
+  },
   "opensession-desktop": {
     summary:
       "See and drive the Sandbox desktop: screenshot, click, type, keys, windows.",

@@ -6,6 +6,7 @@ import { parseAutomationEgressDomain } from "../../../server/sandbox/automation-
 import {
   readySandboxProviders,
   type SandboxAvailability,
+  splitSandboxChoice,
 } from "../ready-sandbox-providers";
 import {
   PROJECT_ROLES,
@@ -194,5 +195,9 @@ export function newSessionSandboxPreselect(
   repo: string,
 ): string {
   const value = newSessionSandboxDefault(status, repo);
-  return value && readySandboxProviders(status).includes(value) ? value : "";
+  // A Modal default may carry a GPU (`modal:T4`).
+  return value &&
+    readySandboxProviders(status).includes(splitSandboxChoice(value).provider)
+    ? value
+    : "";
 }

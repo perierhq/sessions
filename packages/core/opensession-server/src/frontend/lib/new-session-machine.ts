@@ -1,6 +1,12 @@
 // The New Session "Machine" choices: this machine, every ready sandbox
-// provider, and a selected provider that is no longer ready (a project
-// default), so the choice stays visible. `""` is this machine.
+// provider (Modal once more per GPU, `modal:T4`), and a selected provider
+// that is no longer ready (a project default), so the choice stays visible.
+// `""` is this machine.
+
+import {
+  sandboxMachineChoices,
+  splitSandboxChoice,
+} from "./ready-sandbox-providers";
 
 export interface MachineChoice {
   id: string;
@@ -20,14 +26,15 @@ export function machineChoices({
   /** `newSessionSandboxDefault`: the project's, else the global default. */
   defaultId: string;
 }): MachineChoice[] {
+  const offered = sandboxMachineChoices(ready);
   const ids = [
     "",
-    ...ready,
-    ...(selected && !ready.includes(selected) ? [selected] : []),
+    ...offered,
+    ...(selected && !offered.includes(selected) ? [selected] : []),
   ];
   return ids.map((id) => ({
     id,
-    available: id === "" || ready.includes(id),
+    available: id === "" || ready.includes(splitSandboxChoice(id).provider),
     isDefault: id === defaultId,
   }));
 }
