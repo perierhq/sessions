@@ -57,7 +57,8 @@ process.env.OPENSESSION_PORTAL_MIN_AVAILABLE_MEMORY_MB = "1";
 // The ready settle window is covered in portal-ready-settle.test.ts.
 process.env.OPENSESSION_PORTAL_READY_SETTLE_MS = "0";
 const processTools = mkdtempSync(join(tmpdir(), "os-process-tools-"));
-let testSetsid = Bun.which("setsid");
+const hostSetsid = Bun.which("setsid");
+let testSetsid = hostSetsid;
 if (!testSetsid) {
   const shim = join(processTools, "setsid");
   writeFileSync(
@@ -1126,6 +1127,46 @@ describe("session Portal supervisor", () => {
       }),
     ]);
   }, 10_000);
+
+  // util-linux `setsid` forks when its caller already leads a process group;
+  // the Python shim used where it is missing cannot model that.
+  test.skipIf(!hostSetsid)(
+    "tracks a Sandbox Portal whose detached lane starts it as a group leader",
+    async () => {
+      const previousSettle = process.env.OPENSESSION_PORTAL_READY_SETTLE_MS;
+      process.env.OPENSESSION_PORTAL_READY_SETTLE_MS = "300";
+      try {
+        const port = await freePort();
+        const sandbox = sandboxFor(worktree, port, true);
+        const portal = await startSandboxPortalService({
+          sessionId: "os-sandbox-portal-leader-test",
+          sandbox,
+          name: "leader-app",
+          port,
+          command: `${process.execPath} -e 'Bun.serve({port:Number(process.env.PORT),fetch(){return new Response("leader")}})'`,
+        });
+        expect(portal.state).toBe("awake");
+        expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe(
+          "leader",
+        );
+        await stopSandboxPortalService({
+          sessionId: "os-sandbox-portal-leader-test",
+          sandbox,
+          name: "leader-app",
+        });
+        const closed = await fetch(`http://127.0.0.1:${port}`).then(
+          () => false,
+          () => true,
+        );
+        expect(closed).toBe(true);
+      } finally {
+        if (previousSettle === undefined)
+          delete process.env.OPENSESSION_PORTAL_READY_SETTLE_MS;
+        else process.env.OPENSESSION_PORTAL_READY_SETTLE_MS = previousSettle;
+      }
+    },
+    10_000,
+  );
 });
 
 function PREFIX(record: unknown): string {
@@ -1147,7 +1188,13 @@ async function freePort(): Promise<number> {
   throw new Error("no free Portal test port");
 }
 
-function sandboxFor(cwd: string, port: number): Sandbox {
+function sandboxFor(
+  cwd: string,
+  port: number,
+  // Run background commands as a session leader, the way Podman's
+  // `exec -d` starts them: `setsid` inside then forks.
+  backgroundAsLeader = false,
+): Sandbox {
   // The fake runs Sandbox commands on the host. Translate the guest's fixed
   // scratch root so macOS and non-root Linux tests do not write /home/ubuntu.
   const guestScratchRoot = "/home/ubuntu/.opensession/session-scratch";
@@ -1168,13 +1215,17 @@ function sandboxFor(cwd: string, port: number): Sandbox {
     cwd,
     async exec(command, options) {
       if (options?.background) {
-        const proc = Bun.spawn(commandForHarness(command), {
-          cwd,
-          env: { ...process.env, ...options.env },
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-        });
+        const argv = commandForHarness(command);
+        const proc = Bun.spawn(
+          backgroundAsLeader && hostSetsid ? [hostSetsid, ...argv] : argv,
+          {
+            cwd,
+            env: { ...process.env, ...options.env },
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          },
+        );
         proc.unref();
         return { exitCode: 0, stdout: "", stderr: "" };
       }

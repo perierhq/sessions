@@ -2423,7 +2423,13 @@ async function startSandboxPortalServiceInner(
         // synchronous shell returns. Start the service through the provider's
         // native detached lane. Logs and the short-lived PID marker live in
         // session scratch, never in the user's Git workspace.
-        const launch = `rm -f ${shellQuoteWord(legacyLogPath)} ${shellQuoteWord(legacyPidPath)} && mkdir -p ${shellQuoteWord(runtimeDir)} && printf '%s\\n' $$ > ${shellQuoteWord(pidPath)} && HOME=${guest.home} PATH=${shellQuoteWord(guest.path)} PORT=${shellQuoteWord(String(port))} PORTAL_URL=${shellQuoteWord(url)} OPENSESSION_PORTAL=${shellQuoteWord(name)} exec ${detach}bash -c ${shellQuoteWord(`exec ${command}`)} >${shellQuoteWord(logPath)} 2>&1`;
+        //
+        // The PID is written after `setsid`, by the shell that becomes the
+        // service. A lane that starts the command as a process group leader
+        // (Podman's `exec -d`) makes `setsid` fork, so the launching shell's
+        // own PID would name a process that has already exited: the start
+        // was reported as exited and a stop missed the running server.
+        const launch = `rm -f ${shellQuoteWord(legacyLogPath)} ${shellQuoteWord(legacyPidPath)} ${shellQuoteWord(pidPath)} && mkdir -p ${shellQuoteWord(runtimeDir)} && HOME=${guest.home} PATH=${shellQuoteWord(guest.path)} PORT=${shellQuoteWord(String(port))} PORTAL_URL=${shellQuoteWord(url)} OPENSESSION_PORTAL=${shellQuoteWord(name)} exec ${detach}bash -c ${shellQuoteWord(`printf '%s\n' $$ > ${shellQuoteWord(pidPath)}; exec ${command}`)} >${shellQuoteWord(logPath)} 2>&1`;
         const launched = await input.sandbox.exec(["bash", "-c", launch], {
           env: input.env,
           background: true,
