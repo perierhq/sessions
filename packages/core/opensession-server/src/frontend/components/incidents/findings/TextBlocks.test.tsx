@@ -252,7 +252,10 @@ test("claims rows say each status in words", () => {
 test("a claims block with no rows yet says so", () => {
   const html = renderToStaticMarkup(
     <ClaimsBlock
-      item={item({ id: "claims", kind: "claims", size: "full" }, { claims: [] })}
+      item={item(
+        { id: "claims", kind: "claims", size: "full" },
+        { claims: [] },
+      )}
     />,
   );
   expect(html).toContain("No claims yet");

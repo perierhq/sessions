@@ -177,7 +177,11 @@ export function LogLines({ excerpt }: { excerpt: LogExcerpt }) {
                   <span dangerouslySetInnerHTML={html} />
                 </mark>
               ) : (
-                <span key={i} className="block" dangerouslySetInnerHTML={html} />
+                <span
+                  key={i}
+                  className="block"
+                  dangerouslySetInnerHTML={html}
+                />
               );
             })}
           </code>
