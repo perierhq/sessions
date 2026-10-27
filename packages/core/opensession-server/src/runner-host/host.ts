@@ -90,6 +90,7 @@ const {
 const { WsFrameBuffer, replayStartFor } = await import("./ws-buffer");
 const { runRpcMcpMounts } = await import("./mcp-mounts");
 const { hostMcpProxyMode } = await import("./mcp-proxy-mode");
+const { runAgentOptsFromSpec } = await import("./run-opts");
 const { OPENSESSION_SESSIONS_DIR } = await import("../server/paths");
 
 type RunHostSpec = import("./protocol").RunHostSpec;
@@ -567,61 +568,12 @@ process.on("SIGTERM", () => {
 let opensessionMcp: ReturnType<typeof proxyMcpConfigs>;
 try {
   opensessionMcp = proxyMcpConfigs();
-  for await (const event of runAgent({
-    prompt: spec.prompt,
-    promptEntryId: spec.promptEntryId,
-    seedTranscriptEntries: spec.seedTranscriptEntries,
-    sessionId: spec.engineSessionId || undefined,
-    cwd: spec.cwd,
-    remoteWorkspace: spec.remoteWorkspace
-      ? { ...spec.remoteWorkspace, rpcToken: spec.rpcToken || "" }
-      : undefined,
-    mode: spec.mode,
-    mcpGrantUser: spec.mcpGrantUser,
-    model: spec.model,
-    selectedModel: spec.selectedModel,
-    transientFallback: spec.transientFallback,
-    images: spec.images,
-    files: spec.files,
-    forkSession: spec.forkSession,
-    resumeSessionAt: spec.resumeSessionAt,
-    mcpServers: spec.mcpServers ?? "all",
-    inProcessMcp: opensessionMcp?.mounts,
-    reposNote: spec.reposNote,
-    deniedTools: spec.deniedTools,
-    webFetchHosts: spec.webFetchHosts,
-    publicationPolicy: spec.publicationPolicy,
-    bashRunAs: spec.bashRunAs,
-    confirmTools: spec.confirmTools,
-    aws: spec.aws,
-    claudeCliEnv: spec.claudeCliEnv,
-    codexCliEnv: spec.codexCliEnv,
-    author: spec.author,
-    user: spec.user,
-    accountUser: spec.accountUser,
-    fallbackModel: spec.fallbackModel,
-    accountAffinityKey: spec.accountAffinityKey,
-    effort: spec.effort,
-    fastMode: spec.fastMode,
-    speed: spec.speed,
-    projectSkillsOnly: spec.projectSkillsOnly,
-    accountId: spec.accountId,
-    accountStrict: spec.accountStrict,
-    usageCredits: spec.usageCredits,
-    prReviewer: spec.prReviewer,
-    readRepos: spec.readRepos,
-    attachedRepos: spec.attachedRepos,
-    journal: {
-      ...(spec.lifecycle === "auxiliary"
-        ? {}
-        : { osSessionId: spec.osSessionId }),
-      kind: spec.journalKind || "prompt",
-      firstJournaledAt: spec.firstJournaledAt,
-      resumeAttempts: spec.resumeAttempts,
-      lastResumeAt: spec.lastResumeAt,
-    },
-    onAskUser,
-  })) {
+  for await (const event of runAgent(
+    runAgentOptsFromSpec(spec, {
+      inProcessMcp: opensessionMcp?.mounts,
+      onAskUser,
+    }),
+  )) {
     if (event.type === "init" && event.sessionId) {
       meta.engineSessionId = event.sessionId;
       saveMeta();

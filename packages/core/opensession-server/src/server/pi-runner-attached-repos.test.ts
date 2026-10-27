@@ -103,7 +103,7 @@ test("run options carry attached repositories to the credential selector", async
   expect(client).toContain("attachedRepos: opts.attachedRepos,");
   expect(client).toContain("attachedRepos: spec.attachedRepos,");
   const host = await Bun.file(
-    new URL("../runner-host/host.ts", import.meta.url),
+    new URL("../runner-host/run-opts.ts", import.meta.url),
   ).text();
   expect(host).toContain("attachedRepos: spec.attachedRepos,");
   const runner = await Bun.file(
