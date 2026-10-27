@@ -18,9 +18,14 @@
 // queued behind a running turn; one that arrived while the conversation was
 // being routed is announced once the session exists. Topics only ever add
 // up (reply.ts holds automatic sends until every message a reply answers is
-// labelled). Labelling is capped per inbox and hour (TRIAGE_CALLS_PER_HOUR):
-// over it, a message is stored as failed and waits for a person; failed
-// labels are tried again from the tick (`relabel:<id>` keys). A reply that
+// labelled). A failed labelling call is tried once more right away
+// (TRIAGE_TRIES). Labelling is capped per inbox and hour
+// (TRIAGE_CALLS_PER_HOUR): over it, a message is stored as failed and
+// waits for a person; failed labels are tried again from the tick
+// (`relabel:<id>` keys). A new conversation whose first message is still
+// unlabelled starts no agent: it waits for a person with the reason on the
+// conversation (TRIAGE_HOLD), and is routed once a later try labels it. A
+// later message that is still unlabelled is noted (LABELS_FAILED). A reply that
 // only says thanks closes the conversation when nothing else is going on
 // (thanksOnlyClose); a second injection flag, counted with the sender's
 // earlier ones in this inbox (strikes.ts), stops the agent and leaves the
@@ -125,6 +130,21 @@ export function __setRoutingDepsForTest(deps?: Partial<RoutingDeps>): void {
 export const TRIAGE_CALLS_PER_HOUR = 200;
 export const TRIAGE_BUDGET_SPENT =
   "Too many messages to label this hour. A person decides";
+
+/** Calls one message's labelling makes at most per hand-off: a failed
+ *  call is tried once more right away. */
+export const TRIAGE_TRIES = 2;
+
+/** Why a new conversation whose first message couldn't be labelled has
+ *  no agent yet (an "agent-cant-start" event, which the rail shows). */
+export const TRIAGE_HOLD =
+  "Support agent can't start: the message couldn't be labelled. A person decides";
+const TRIAGE_HOLD_BUDGET = `Support agent can't start: ${TRIAGE_BUDGET_SPENT.charAt(0).toLowerCase()}${TRIAGE_BUDGET_SPENT.slice(1)}`;
+
+/** A later customer message that couldn't be labelled: the session still
+ *  reads it, and every send waits for a person. */
+export const LABELS_FAILED =
+  "Couldn't label the customer's message. Replies wait for a person";
 
 /** Triage call times by inbox, within the last hour. */
 const recentTriage = new Map<string, number[]>();
@@ -629,18 +649,23 @@ async function classifyPending(
     const current = c.messages.find((z) => z.id === y.id) ?? y;
     if (current.triage && !current.triage.failed) continue;
     const now = new Date(d.now()).toISOString();
-    const { triage, reason } = takeTriage(c.inboxId, d.now())
-      ? await d.classify({
-          subject: current.subject,
-          // What the customer wrote this time, and apart from it the
-          // history it quotes: topics and injection read both.
-          text: newTextOf(current) ?? "",
-          quoted: foldedTextOf(current),
-          from: current.from.address,
-          earlierReply: replyBefore(c, current.id),
-          now,
-        })
-      : failedTriage(now, TRIAGE_BUDGET_SPENT);
+    // A failed call is tried once more right away; each call takes one of
+    // the hourly calls, and without one the message stays failed.
+    let result = failedTriage(now, TRIAGE_BUDGET_SPENT);
+    for (let tries = 0; tries < TRIAGE_TRIES && result.triage.failed; tries++) {
+      if (!takeTriage(c.inboxId, d.now())) break;
+      result = await d.classify({
+        subject: current.subject,
+        // What the customer wrote this time, and apart from it the
+        // history it quotes: topics and injection read both.
+        text: newTextOf(current) ?? "",
+        quoted: foldedTextOf(current),
+        from: current.from.address,
+        earlierReply: replyBefore(c, current.id),
+        now,
+      });
+    }
+    const { triage, reason } = result;
     // The sender's strikes in this inbox, this message's added.
     const senderFlags = triage.injection
       ? await addSenderStrike(c.inboxId, current.from.address)
@@ -816,6 +841,17 @@ export async function retrySupportRouting(now: number): Promise<number> {
       await stopAgent(after.id, after.sessionId);
     if (failedLabels(after).length === 0 || after.personOnly) {
       await pendingIndex().delete(key);
+      await resumeHeld(after).catch(async (error: unknown) => {
+        console.warn(
+          `[support] support agent for ${after.id} didn't start:`,
+          error instanceof Error ? error.name : typeof error,
+        );
+        await addEvent(
+          after.id,
+          "agent-cant-start",
+          "Support agent can't start: the session couldn't be created",
+        );
+      });
       continue;
     }
     const attempts = relabel.attempts + 1;
@@ -894,6 +930,79 @@ export function thanksOnlyClose(c: SupportConversation, id: string): boolean {
   return true;
 }
 
+/** What marks the "agent-cant-start" event of a conversation held for
+ *  its labels. */
+const HELD_FOR_LABELS = "labels";
+
+function heldForLabels(c: SupportConversation): boolean {
+  const last = c.events.findLast((e) => e.kind.startsWith("agent-"));
+  return (
+    last?.kind === "agent-cant-start" &&
+    "heldFor" in last &&
+    last.heldFor === HELD_FOR_LABELS
+  );
+}
+
+/** A new conversation whose first message is still unlabelled after its
+ *  retry: no agent starts and a person decides, with the reason on the
+ *  conversation. Labels that work later (the tick, or the customer's next
+ *  message) route it then (resumeHeld). Watch only keeps its own note. */
+async function holdForLabels(c: SupportConversation): Promise<boolean> {
+  if (!c.triage?.failed) return false;
+  const inbox = await getInbox(c.inboxId);
+  if (inbox?.autonomy === "watch") return false;
+  if (heldForLabels(c)) return true;
+  const detail =
+    c.triage.reason === TRIAGE_BUDGET_SPENT ? TRIAGE_HOLD_BUDGET : TRIAGE_HOLD;
+  await updateConversation(c.id, (x) => ({
+    ...x,
+    events: [
+      ...x.events,
+      { ...event("agent-cant-start", detail), heldFor: HELD_FOR_LABELS },
+    ],
+  }));
+  return true;
+}
+
+/** Routes a held conversation once its labels work, as a new one: spam is
+ *  filed, anything else starts its agent. Not when a person answered or
+ *  closed it meanwhile, or another start already happened. */
+async function resumeHeld(c: SupportConversation): Promise<void> {
+  if (c.sessionId || c.personOnly || c.status !== "open") return;
+  if (!heldForLabels(c) || c.triage?.failed) return;
+  if (c.messages.some((y) => y.direction === "out")) return;
+  if (c.triage?.route === "spam") {
+    await fileAsSpam(c);
+    return;
+  }
+  await startSupportSession(c, "new");
+}
+
+/** Notes a later customer message whose labels still failed after the
+ *  retry, once per message: the session reads it, but every send waits
+ *  for a person. */
+async function noteLabelsFailed(
+  c: SupportConversation,
+  m: SupportMessage,
+): Promise<void> {
+  const t = c.messages.find((y) => y.id === m.id)?.triage;
+  if (!t?.failed) return;
+  await updateConversation(c.id, (x) =>
+    x.events.some(
+      (e) =>
+        e.kind === "labels-failed" && "messageId" in e && e.messageId === m.id,
+    )
+      ? null
+      : {
+          ...x,
+          events: [
+            ...x.events,
+            { ...event("labels-failed", LABELS_FAILED), messageId: m.id },
+          ],
+        },
+  );
+}
+
 /** The pipeline step for one stored customer message. */
 export async function onInbound(
   c: SupportConversation,
@@ -914,7 +1023,8 @@ export async function onInbound(
       await fileAsSpam(labelled);
       return;
     }
-    if (!labelled.sessionId) await startSupportSession(labelled, "new");
+    if (!labelled.sessionId && !(await holdForLabels(labelled)))
+      await startSupportSession(labelled, "new");
     // A reply that arrived while the conversation was being routed shares
     // its hand-off: if the opening prompt didn't show it, deliver it.
     const now = await getConversation(c.id);
@@ -931,7 +1041,11 @@ export async function onInbound(
     await deps().close(labelled.id, THANKS_CLOSED);
     return;
   }
-  if (!labelled.sessionId) return;
+  if (!labelled.sessionId) {
+    await resumeHeld(labelled);
+    return;
+  }
+  await noteLabelsFailed(labelled, m);
   await deliver(labelled.sessionId, m);
 }
 

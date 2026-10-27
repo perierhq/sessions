@@ -29,6 +29,8 @@ import {
   SUPPORT_FALLBACK_USER,
   THANKS_CLOSED,
   TRIAGE_BUDGET_SPENT,
+  TRIAGE_HOLD,
+  LABELS_FAILED,
   __setRoutingDepsForTest,
   __setTriageBudgetForTest,
   onInbound,
@@ -47,6 +49,7 @@ import {
   updateConversation,
 } from "./store";
 import { TEST_PROJECTS, useSupportTestKernel } from "./testing/kernel-fixture";
+import { failedTriage } from "./triage";
 
 const kernel = useSupportTestKernel();
 
@@ -60,6 +63,8 @@ let classifyCalls: string[] = [];
 let classifyQuoted: Array<string | null | undefined> = [];
 /** Labels by message text, over the defaults (route, no topics, no flag). */
 let labels: Record<string, Partial<MessageTriage>> = {};
+/** How many more calls fail for a message text before its labels apply. */
+let failures: Record<string, number> = {};
 let cancelled: string[] = [];
 /** What cancelSession answers. */
 let cancelTakes = true;
@@ -89,6 +94,10 @@ let sessionsByRequest = new Map<string, string>();
 let duringCreate: (() => Promise<void>) | null = null;
 
 function classified(text: string): { reason: string; triage: MessageTriage } {
+  if ((failures[text] ?? 0) > 0) {
+    failures[text]!--;
+    return failedTriage(new Date().toISOString(), "Triage failed");
+  }
   return {
     reason: "test",
     triage: {
@@ -111,6 +120,7 @@ beforeEach(async () => {
   classifyCalls = [];
   classifyQuoted = [];
   labels = {};
+  failures = {};
   cancelled = [];
   cancelTakes = true;
   earlierReplies = [];
@@ -824,6 +834,92 @@ describe("every customer message is labelled", () => {
     );
   });
 
+  test("a failed label is tried once more right away", async () => {
+    failures["The CSV export fails since Monday."] = 1;
+    const after = await started();
+    expect(classifyCalls).toEqual([
+      "The CSV export fails since Monday.",
+      "The CSV export fails since Monday.",
+    ]);
+    expect(after.messages[0]!.triage?.failed).toBeUndefined();
+    expect(after.triage?.failed).toBeUndefined();
+    expect(created).toHaveLength(1);
+  });
+
+  test("a first message that still can't be labelled waits for a person", async () => {
+    failures["The CSV export fails since Monday."] = 2;
+    const c = await started();
+    // Tried twice, then held: no agent, and the reason is on the
+    // conversation, where the rail shows it.
+    expect(classifyCalls).toHaveLength(2);
+    expect(c.messages[0]!.triage).toMatchObject({ failed: true, topics: null });
+    expect(created).toEqual([]);
+    expect(c.sessionId).toBeNull();
+    expect(c.events.at(-1)).toMatchObject({
+      kind: "agent-cant-start",
+      detail: TRIAGE_HOLD,
+    });
+    // A later try from the tick labels it, and the agent starts then.
+    await retrySupportRouting(Date.now() + 301_000);
+    const after = await fresh(c.id);
+    expect(after.messages[0]!.triage?.failed).toBeUndefined();
+    expect(created).toHaveLength(1);
+    expect(after.sessionId).toBe("os-1");
+  });
+
+  test("a held conversation labelled spam later is filed as spam", async () => {
+    failures["The CSV export fails since Monday."] = 2;
+    const c = await started();
+    route = "spam";
+    await retrySupportRouting(Date.now() + 301_000);
+    const after = await fresh(c.id);
+    expect(after.status).toBe("spam");
+    expect(created).toEqual([]);
+  });
+
+  test("a held conversation a person answered gets no agent later", async () => {
+    failures["The CSV export fails since Monday."] = 2;
+    const c = await started();
+    const ours: SupportMessage = {
+      ...message("We are looking into it."),
+      direction: "out",
+    };
+    await updateConversation(c.id, (x) => ({
+      ...x,
+      messages: [...x.messages, ours],
+    }));
+    // The customer's message before our reply is labelled on its next
+    // hand-off; the person who answered keeps it.
+    await reply(c.id, "Thanks, any update?");
+    expect(created).toEqual([]);
+  });
+
+  test("a reply to a held conversation starts the agent once labels work", async () => {
+    failures["The CSV export fails since Monday."] = 2;
+    const c = await started();
+    await reply(c.id, "Also the PDF export.");
+    const after = await fresh(c.id);
+    expect(after.messages[0]!.triage?.failed).toBeUndefined();
+    expect(created).toHaveLength(1);
+    expect(after.sessionId).toBe("os-1");
+  });
+
+  test("a later message that still can't be labelled is noted", async () => {
+    const c = await started();
+    failures["Any news?"] = 2;
+    const m = await reply(c.id, "Any news?");
+    const after = await fresh(c.id);
+    expect(after.messages.find((y) => y.id === m.id)!.triage!.failed).toBe(
+      true,
+    );
+    expect(after.events.at(-1)).toMatchObject({
+      kind: "labels-failed",
+      detail: LABELS_FAILED,
+    });
+    // The session still reads it; sends wait for a person.
+    expect(delivered).toHaveLength(1);
+  });
+
   test("the classifier sees our last reply for repeats", async () => {
     const c = await started();
     const ours: SupportMessage = {
@@ -1089,6 +1185,23 @@ describe("every customer message is labelled", () => {
       });
       expect(classifyCalls).toEqual(["The CSV export fails since Monday."]);
       expect(TRIAGE_BUDGET_SPENT).not.toContain(";");
+    } finally {
+      __setTriageBudgetForTest(undefined);
+    }
+  });
+
+  test("over the budget a first message is not tried again and waits for a person", async () => {
+    __setTriageBudgetForTest(0);
+    try {
+      const c = await started();
+      expect(classifyCalls).toEqual([]);
+      expect(c.messages[0]!.triage).toMatchObject({ failed: true });
+      expect(created).toEqual([]);
+      expect(c.events.at(-1)).toMatchObject({
+        kind: "agent-cant-start",
+        detail:
+          "Support agent can't start: too many messages to label this hour. A person decides",
+      });
     } finally {
       __setTriageBudgetForTest(undefined);
     }

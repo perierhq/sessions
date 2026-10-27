@@ -8,9 +8,10 @@
  * survives only when nothing else in the answer asks for something
  * (thanksOnlyHolds).
  *
- * Fails open on routing (a failure is "work", never dropped or filed as spam)
- * and closed on autonomy (a failed message has unknown topics, so every send
- * waits for a person).
+ * A failure is "work", never dropped or filed as spam, and closed on
+ * autonomy: a failed message has unknown topics, so every send waits for a
+ * person (routing.ts tries a failed call once more, then holds a new
+ * conversation for a person).
  */
 import {
   type MessageTriage,
