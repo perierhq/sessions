@@ -88,6 +88,8 @@ function schemaType(spec: any): string {
   if (spec.type === "array") return `${schemaType(spec.items)}[]`;
   if (Array.isArray(spec.anyOf)) return spec.anyOf.map(schemaType).join(" | ");
   if (typeof spec.type === "string") return spec.type;
+  // Zod 4.6+ writes a union of primitives as one `type` array.
+  if (Array.isArray(spec.type)) return spec.type.join(" | ");
   if (spec.properties) return "object";
   return "any";
 }
