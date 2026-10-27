@@ -58,7 +58,36 @@ export interface SandboxRepoOverride {
    *  The compile cache can hold the app's dev secrets, which is why only the
    *  operator can turn it on. */
   prebuildPortal?: boolean;
+  /** A setup script kept in Workspace settings instead of the repository.
+   *  Runs from the checkout right before `.agents/setup`, and is part of
+   *  the project snapshot's inputs. */
+  preSetupScript?: string;
 }
+
+/** Longest lifecycle script the settings accept. */
+export const MAX_SETTINGS_SCRIPT_BYTES = 64 * 1024;
+
+/** The Sandbox agent (agent-driver.ts): which providers' Sandboxes run it. */
+export interface SandboxAgentConfig {
+  providers?: string[];
+}
+
+/** Providers whose Sandboxes run the agent unless sandbox.json says
+ *  otherwise. Boat first: it is the provider the agent was certified on. */
+export const DEFAULT_SANDBOX_AGENT_PROVIDERS: readonly string[] = [
+  "box",
+  "usecomputer",
+];
+
+/** When an awake Sandbox goes to sleep: once the agent has done no work for
+ *  `agentMinutes` AND nobody has interacted with it for `humanMinutes`. */
+export interface SandboxIdleConfig {
+  agentMinutes?: number;
+  humanMinutes?: number;
+}
+
+export const DEFAULT_IDLE_AGENT_MINUTES = 5;
+export const DEFAULT_IDLE_HUMAN_MINUTES = 20;
 
 /** How remote providers authenticate `git clone` inside the sandbox (they
  *  can't mount host creds). "none" = public clone; "https-token" injects the
@@ -165,6 +194,13 @@ export interface SandboxConfig {
   prewarm?: Partial<SandboxPrewarmConfig>;
   /** "This machine (container)" (adapters/podman.ts). */
   podman?: SandboxPodmanConfig;
+  /** The Sandbox agent's providers (absent = DEFAULT_SANDBOX_AGENT_PROVIDERS). */
+  agent?: SandboxAgentConfig;
+  /** The two idle timers (absent = 5 and 20 minutes). */
+  idle?: SandboxIdleConfig;
+  /** Runs in every Linux Sandbox right before `.agents/resume`, whatever the
+   *  repository: a fleet-wide fix that repositories cannot deliver. */
+  workspaceResumeScript?: string;
 }
 
 export interface SandboxPodmanConfig {
@@ -214,12 +250,20 @@ export function sandboxConfig(): SandboxConfig {
             ? o.portalSandbox
             : undefined;
           const prebuildPortal = o?.prebuildPortal === true;
-          if (provider || sessionDefault || portalSandbox || prebuildPortal)
+          const preSetupScript = settingsScript(o?.preSetupScript);
+          if (
+            provider ||
+            sessionDefault ||
+            portalSandbox ||
+            prebuildPortal ||
+            preSetupScript
+          )
             perRepo[repoId] = {
               ...(provider ? { provider } : {}),
               ...(sessionDefault ? { sessionDefault } : {}),
               ...(portalSandbox ? { portalSandbox } : {}),
               ...(prebuildPortal ? { prebuildPortal } : {}),
+              ...(preSetupScript ? { preSetupScript } : {}),
             };
         }
       }
@@ -334,10 +378,120 @@ export function sandboxConfig(): SandboxConfig {
                   : undefined,
               }
             : undefined,
+        agent:
+          raw?.agent && typeof raw.agent === "object"
+            ? {
+                providers: Array.isArray(raw.agent.providers)
+                  ? raw.agent.providers.filter(
+                      (value: unknown): value is string =>
+                        typeof value === "string",
+                    )
+                  : undefined,
+              }
+            : undefined,
+        idle:
+          raw?.idle && typeof raw.idle === "object"
+            ? {
+                agentMinutes: positiveMinutes(raw.idle.agentMinutes),
+                humanMinutes: positiveMinutes(raw.idle.humanMinutes),
+              }
+            : undefined,
+        workspaceResumeScript: settingsScript(raw?.workspaceResumeScript),
       };
     }
   } catch {}
   return { provider: "local" };
+}
+
+function positiveMinutes(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+/** A stored lifecycle script, or undefined when blank or oversized. */
+function settingsScript(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return Buffer.byteLength(value, "utf8") <= MAX_SETTINGS_SCRIPT_BYTES
+    ? value
+    : undefined;
+}
+
+/** Whether `provider`'s Sandboxes run the Sandbox agent. The environment's
+ *  `OPENSESSION_SANDBOX_AGENT=0` turns it off everywhere. */
+export function sandboxAgentEnabled(provider: string): boolean {
+  if (process.env.OPENSESSION_SANDBOX_AGENT === "0") return false;
+  const providers =
+    sandboxConfig().agent?.providers ?? DEFAULT_SANDBOX_AGENT_PROVIDERS;
+  return providers.includes(provider);
+}
+
+/** The two idle timers, in milliseconds. */
+export function sandboxIdlePolicy(): { agentMs: number; humanMs: number } {
+  const idle = sandboxConfig().idle;
+  return {
+    agentMs: (idle?.agentMinutes ?? DEFAULT_IDLE_AGENT_MINUTES) * 60_000,
+    humanMs: (idle?.humanMinutes ?? DEFAULT_IDLE_HUMAN_MINUTES) * 60_000,
+  };
+}
+
+/** The project's settings-held pre-setup script, if any. */
+export function repoPreSetupScript(repoId: string | undefined): string | null {
+  if (!repoId) return null;
+  return sandboxConfig().perRepo?.[repoId]?.preSetupScript ?? null;
+}
+
+/** The workspace-wide resume script, if any. */
+export function workspaceResumeScript(): string | null {
+  return sandboxConfig().workspaceResumeScript ?? null;
+}
+
+function validatedSettingsScript(value: string | null): string | null {
+  if (value === null || !value.trim()) return null;
+  if (Buffer.byteLength(value, "utf8") > MAX_SETTINGS_SCRIPT_BYTES)
+    throw new Error(
+      `Scripts are limited to ${MAX_SETTINGS_SCRIPT_BYTES / 1024} KB`,
+    );
+  return value;
+}
+
+/** Store (or clear, with null or blank) a project's pre-setup script. */
+export function setRepoPreSetupScript(
+  repoId: string,
+  value: string | null,
+): string | null {
+  const script = validatedSettingsScript(value);
+  if (!script && !existsSync(configPath())) return null;
+  updateSandboxConfigFile((raw) => {
+    const perRepo =
+      raw.perRepo &&
+      typeof raw.perRepo === "object" &&
+      !Array.isArray(raw.perRepo)
+        ? (raw.perRepo as Record<string, Record<string, unknown>>)
+        : {};
+    const entry =
+      perRepo[repoId] && typeof perRepo[repoId] === "object"
+        ? { ...perRepo[repoId] }
+        : {};
+    if (script) entry.preSetupScript = script;
+    else delete entry.preSetupScript;
+    if (Object.keys(entry).length) perRepo[repoId] = entry;
+    else delete perRepo[repoId];
+    if (Object.keys(perRepo).length) raw.perRepo = perRepo;
+    else delete raw.perRepo;
+  });
+  return script;
+}
+
+/** Store (or clear) the workspace-wide resume script. */
+export function setWorkspaceResumeScript(value: string | null): string | null {
+  const script = validatedSettingsScript(value);
+  if (!script && !existsSync(configPath())) return null;
+  updateSandboxConfigFile((raw) => {
+    if (script) raw.workspaceResumeScript = script;
+    else delete raw.workspaceResumeScript;
+  });
+  return script;
 }
 
 /**

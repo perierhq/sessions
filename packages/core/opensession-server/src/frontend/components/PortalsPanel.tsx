@@ -1,3 +1,4 @@
+import { sandboxSleepKeeps, sleepsInLabel } from "../lib/sandbox-sleep";
 import { useState } from "react";
 import type {
   PreviewPortalRecipe,
@@ -52,7 +53,9 @@ function portalSandboxNote(
   const name = providerName(portalSandbox.provider);
   switch (portalSandbox.lifecycle) {
     case "preparing":
-      return `Preparing a ${name} Sandbox for this project's Portals…`;
+      return portalSandbox.note
+        ? `${portalSandbox.note.replace(/\.$/, "")}. The ${name} Sandbox starts once there is room.`
+        : `Preparing a ${name} Sandbox for this project's Portals…`;
     case "waking":
       return `Waking the ${name} Sandbox that runs this project's Portals…`;
     case "sleeping":
@@ -140,6 +143,18 @@ export function PortalsPage({
             {status.portalSandbox ? (
               <div className="px-2 text-label text-dim">
                 {portalSandboxNote(status.portalSandbox)}
+                {status.portalSandbox.lifecycle === "awake" ? (
+                  <div className="mt-0.5 text-meta text-faint">
+                    {[
+                      sleepsInLabel(status.portalSandbox.sleepsAt),
+                      sandboxSleepKeeps(status.portalSandbox.provider).memory
+                        ? null
+                        : "Dev servers start again when it wakes.",
+                    ]
+                      .filter(Boolean)
+                      .join(". ")}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {recipes.length ? (

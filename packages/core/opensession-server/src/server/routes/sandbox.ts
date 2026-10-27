@@ -1,5 +1,16 @@
 /** Per-session sandbox status and explicit lifecycle controls. */
 
+import { noteSandboxActivity, sandboxSleepsAt } from "../sandbox/idle";
+import { sandboxAgentStatus } from "../sandbox/agent-channel";
+
+/** When the idle timers would put the machine to sleep, if it is tracked. */
+function idleSleepsAtIso(
+  sandboxId: string,
+  provider?: string,
+): string | undefined {
+  const at = sandboxSleepsAt(sandboxId, provider);
+  return at ? new Date(at).toISOString() : undefined;
+}
 import { existsSync } from "node:fs";
 import { isAgentSessionBusy } from "../agent-runner";
 import { audit } from "../audit";
@@ -657,6 +668,7 @@ async function sandboxView(
       status: "gone" as const,
       lifecycle: recorded.lifecycle ?? ("preparing" as const),
       lastLifecycleError: recorded.lastLifecycleError,
+      lifecycleNote: recorded.lifecycleNote,
       materialized: false,
       ...checkpointView(session),
     };
@@ -691,12 +703,17 @@ async function sandboxView(
     status,
     lifecycle,
     lastLifecycleError: recorded.lastLifecycleError,
+    lifecycleNote: recorded.lifecycleNote,
     materialized: status !== "gone",
     busy: hostRunBusy(session.id),
     cwd: sandbox?.cwd || session.worktreeDir || null,
     canPause: Boolean(provider.pause),
     canResume: Boolean(provider.resume),
     canDesktop: Boolean(provider.desktop),
+    // Commands reach the machine through its Sandbox agent while that is
+    // connected, through the provider's own lane otherwise.
+    agentConnected: sandboxAgentStatus(recorded.sandboxId).connected,
+    sleepsAt: idleSleepsAtIso(recorded.sandboxId, recorded.provider),
     logs,
     ...checkpointView(session),
   };
@@ -770,6 +787,10 @@ export async function handleSandboxRoutes(
       );
     try {
       const desktop = await provider.desktop(recorded.sandboxId);
+      noteSandboxActivity(
+        { sandboxId: recorded.sandboxId, sessionId: session.id },
+        "human",
+      );
       audit({
         msg: "sandbox_desktop",
         session_id: session.id,
@@ -870,6 +891,10 @@ async function runSandboxLifecycleAction(
         },
       });
       await provider.resume(recorded.sandboxId);
+      noteSandboxActivity(
+        { sandboxId: recorded.sandboxId, sessionId: session.id },
+        "human",
+      );
     } else {
       const body = (await ctx.req.json().catch(() => ({}))) as {
         confirm?: boolean;

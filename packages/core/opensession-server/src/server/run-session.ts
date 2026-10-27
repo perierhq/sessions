@@ -149,7 +149,7 @@ import {
 } from "./sandbox/config";
 import { disposeAutomationSandbox } from "./sandbox/automation-disposal";
 import { isRunSetupRefusal, RunSetupRefusedError } from "./run-setup-refusal";
-import { ensureSandboxWithTransientRetry } from "./sandbox/reliability";
+import { ensureSandboxWaitingForCapacity } from "./sandbox/reliability";
 import {
   automationUnderProject,
   getAutomation,
@@ -2145,7 +2145,7 @@ export async function maybeLaunchSandboxedRun(
           ).automationEgressHosts(getRepo(owningAutomation?.repo).id),
         }
       : undefined;
-    const sandbox = await ensureSandboxWithTransientRetry(
+    const sandbox = await ensureSandboxWaitingForCapacity(
       provider,
       {
         sessionId: session.id,
@@ -2198,6 +2198,19 @@ export async function maybeLaunchSandboxedRun(
             kind: "sandbox_start_retry",
             session_id: session.id,
             provider: sbProvider,
+          });
+        },
+        // A full provider (every Mac host at its VM budget) is waited out,
+        // not failed: the record says why the start is taking longer.
+        onWaiting(error) {
+          if (session.source !== "opensession" || !session.sandbox) return;
+          touchNativeSession(session.id, {
+            sandbox: {
+              ...session.sandbox,
+              lifecycle: session.sandbox.sandboxId ? "waking" : "preparing",
+              lastLifecycleError: undefined,
+              lifecycleNote: `Waiting for room: ${error instanceof Error ? error.message : String(error)}`,
+            },
           });
         },
       },

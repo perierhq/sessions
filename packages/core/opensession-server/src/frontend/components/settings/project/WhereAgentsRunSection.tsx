@@ -1,9 +1,15 @@
+import { useEffect, useState } from "react";
 import type {
   ProjectDefaultsView,
   ProjectSettingsView,
   RunPlace,
 } from "../../../../shared/project-settings";
 import { useSandboxStatus } from "../../../hooks/useSettingsResources";
+import {
+  fetchSandboxLifecycle,
+  saveRepoPreSetupScript,
+  type SandboxLifecycleSettings,
+} from "../../../lib/api/sandboxes";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
 import {
   ROLE_GRID,
@@ -22,6 +28,7 @@ import {
   sandboxRowCopy,
 } from "../../../lib/project-settings/page-model";
 import { readySandboxProviders } from "../../../lib/ready-sandbox-providers";
+import { Button } from "../../../ui/button";
 import { cn } from "../../../ui/cn";
 import { OptionSelect } from "../../../ui/select";
 import {
@@ -33,6 +40,7 @@ import {
   SettingRowTitle,
 } from "../../../ui/settings";
 import { IconCheck, IconX } from "../../icons";
+import { SandboxScriptDialog } from "../SandboxScriptDialog";
 import { SettingChip } from "./SettingChip";
 
 /**
@@ -124,7 +132,59 @@ export function WhereAgentsRunSection({
           />
         </div>
       </SettingRow>
+      <SetupScriptRow project={view.document.project} />
     </SettingCard>
+  );
+}
+
+/** The project's setup script, kept in settings: it runs before
+ *  `.agents/setup` in every new Sandbox and is part of the project
+ *  snapshot's inputs. */
+function SetupScriptRow({ project }: { project: string }) {
+  const [lifecycle, setLifecycle] = useState<SandboxLifecycleSettings | null>(
+    null,
+  );
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    fetchSandboxLifecycle()
+      .then(setLifecycle)
+      .catch(() => {});
+  }, []);
+  if (!lifecycle) return null;
+  const script = lifecycle.preSetupScripts[project] ?? null;
+  return (
+    <>
+      <SettingRow>
+        <SettingRowText>
+          <SettingRowTitle>Setup script</SettingRowTitle>
+          <SettingRowDescription>
+            {script
+              ? "Runs before .agents/setup in every new sandbox. Changing it refreshes the project snapshot."
+              : "Optional. Sets up sandboxes for this project without committing anything."}
+          </SettingRowDescription>
+        </SettingRowText>
+        <div className={ROW_CONTROLS}>
+          <Button
+            size="sm"
+            className="phone:min-h-11"
+            onClick={() => setEditing(true)}
+          >
+            {script ? "Edit" : "Add"}
+          </Button>
+        </div>
+      </SettingRow>
+      <SandboxScriptDialog
+        open={editing}
+        onOpenChange={setEditing}
+        title="Setup script"
+        description="Runs from the checkout right before .agents/setup, once per new sandbox. Keep secrets in environment settings, not here."
+        value={script}
+        placeholder={"#!/usr/bin/env bash\nset -euo pipefail\nbun install"}
+        onSave={async (next) => {
+          setLifecycle(await saveRepoPreSetupScript(project, next));
+        }}
+      />
+    </>
   );
 }
 

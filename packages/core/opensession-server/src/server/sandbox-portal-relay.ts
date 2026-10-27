@@ -11,6 +11,7 @@ import { portalNavigationRequest } from "./portal-sign-in";
 import { portalWaitingResponse } from "./portal-waiting-page";
 import { sandboxHttpsPortFor } from "./sandbox/preview-ports";
 import { hostSessionScratchDir } from "./session-scratch";
+import { noteSandboxActivity } from "./sandbox/idle";
 
 export type SandboxPortalGrant = {
   sessionId: string;
@@ -785,6 +786,9 @@ export async function ensureSandboxPortalRelay(input: {
       // four-minute app fetch timeout.
       idleTimeout: 255,
       fetch: (request, relayServer) => {
+        // Any request to a Portal, whoever makes it, keeps its Sandbox
+        // around for the interaction window (sandbox/idle.ts).
+        noteSandboxActivity(input, "human");
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
           return relayFetch(input, request);
         const connection = connections.get(id);

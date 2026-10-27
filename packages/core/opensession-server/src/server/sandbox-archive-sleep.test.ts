@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { archiveSleepSkipReason } from "./sandbox-archive-sleep";
+import {
+  archiveSleepSkipReason,
+  sandboxSleepSkipReason,
+} from "./sandbox-archive-sleep";
 
 describe("archived session Sandbox sleep", () => {
   const awake = { provider: "box", sandboxId: "bx_1", lifecycle: "awake" };
@@ -37,5 +40,20 @@ describe("archived session Sandbox sleep", () => {
     expect(archiveSleepSkipReason({ ...base, canPause: false })).toBe(
       "no sleep support",
     );
+  });
+
+  test("the idle timers leave the container on this machine to its own sweep", () => {
+    const pod = { provider: "podman", sandboxId: "pod_1", lifecycle: "awake" };
+    expect(
+      sandboxSleepSkipReason({
+        ...base,
+        archived: false,
+        reason: "idle",
+        record: pod,
+        stillIdle: true,
+      }),
+    ).toBe("own idle sweep");
+    // Archiving still puts it to sleep.
+    expect(archiveSleepSkipReason({ ...base, record: pod })).toBeNull();
   });
 });

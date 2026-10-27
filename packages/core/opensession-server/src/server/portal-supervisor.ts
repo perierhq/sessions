@@ -52,9 +52,9 @@ import {
   shellQuoteWord,
 } from "./sandbox/adapters/bootstrap";
 import { sandboxHttpsPortFor } from "./sandbox/preview-ports";
+import { sandboxPortalAgentSource } from "./sandbox/sandbox-portal-agent-source";
 import { warmSandboxPortal } from "./sandbox-portal-warm";
 import { cacheSandboxPortalRecords } from "./sandbox-portals";
-import { REPO_ROOT } from "../runner-host/protocol";
 import {
   previewScopeCommand,
   stopUserScopeAndWait,
@@ -163,8 +163,6 @@ const hostPortalReservations =
 /** A Sandbox that just woke fetches its files on first read, so the relay's
  * bun start can take a while. */
 const SANDBOX_PORTAL_RELAY_CONNECT_MS = 45_000;
-
-export const SANDBOX_PORTAL_AGENT_ENTRY = `${REPO_ROOT}/packages/core/opensession-server/src/runner-host/sandbox-portal-agent.ts`;
 
 function portalKey(name: string): string {
   return `PORTAL_${name.toUpperCase().replace(/-/g, "_")}_PORT`;
@@ -488,8 +486,13 @@ type PortalProcess = Pick<
   "pid" | "scopeUnit" | "shutdownGraceMs"
 >;
 
+type PortalLivenessOps = Pick<
+  PortalOps,
+  "probePort" | "pidAlive" | "groupAlive" | "scopeAlive"
+>;
+
 async function portalProcessAlive(
-  ops: PortalOps,
+  ops: PortalLivenessOps,
   processRef: PortalProcess,
 ): Promise<boolean> {
   // The systemd-run client remains in the gateway cgroup while its detached
@@ -504,15 +507,33 @@ async function portalProcessAlive(
   return ops.pidAlive(processRef.pid);
 }
 
-async function waitForPortalPort(
-  ops: PortalOps,
+/** How long a Portal must keep listening, with its process alive, after the
+ *  port first answers. Dev servers such as Next bind before they load their
+ *  config, so one that crashes on it answered once and was reported ready. */
+export const PORTAL_READY_SETTLE_MS = 3_000;
+
+function portalReadySettleMs(): number {
+  const override = Number(process.env.OPENSESSION_PORTAL_READY_SETTLE_MS);
+  return Number.isFinite(override) && override >= 0
+    ? override
+    : PORTAL_READY_SETTLE_MS;
+}
+
+export async function waitForPortalPort(
+  ops: PortalLivenessOps,
   port: number,
   processRef: PortalProcess,
   timeoutMs = 15_000,
+  settleMs = portalReadySettleMs(),
 ): Promise<"ready" | "exited" | "timeout"> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
-    if (await ops.probePort(port)) return "ready";
+    if (await ops.probePort(port)) {
+      await Bun.sleep(settleMs);
+      if (!(await portalProcessAlive(ops, processRef))) return "exited";
+      if (await ops.probePort(port)) return "ready";
+      continue;
+    }
     if (!(await portalProcessAlive(ops, processRef))) return "exited";
     await Bun.sleep(200);
   }
@@ -587,12 +608,25 @@ async function portalLogHint(logPath: string | undefined): Promise<string> {
     : " Read its output with read_portal_log.";
 }
 
+/** Starts this process is still driving, by port and start time. The start
+ *  owns its record until it settles: a status read must not promote a server
+ *  that answered once (and may crash on its config) to awake meanwhile. */
+const startsInFlight: Set<string> = ((
+  globalThis as { __opensessionPortalStartsInFlight?: Set<string> }
+).__opensessionPortalStartsInFlight ??= new Set());
+
+function startKey(record: Pick<PortalRecord, "port" | "startedAt">): string {
+  return `${record.port}@${record.startedAt ?? ""}`;
+}
+
 async function listPortals(ops: PortalOps): Promise<PortalRecord[]> {
   const records = await ops.readRegistry();
   let changed = false;
   const checked = await Promise.all(
     records.map(async (record) => {
       if (record.state === "stopped" || record.state === "sleeping")
+        return record;
+      if (record.state === "starting" && startsInFlight.has(startKey(record)))
         return record;
       // A remote probe can fail transiently while the same app still runs.
       // Recheck failed records only while their original owner is alive;
@@ -747,54 +781,60 @@ async function startPortal(
     state: "starting",
     startedAt: new Date().toISOString(),
   };
-  await ops.writeRegistry(upsert(records, base));
-  let processRef: Required<Pick<PortalRecord, "pid">> & PortalProcess;
+  const inFlight = startKey(base);
+  startsInFlight.add(inFlight);
   try {
-    processRef = await input.launch({ name, command, port, url });
-  } catch (error) {
-    const failed = {
-      ...base,
-      state: "failed" as const,
-      lastError: (error as Error).message,
-    };
-    await ops.writeRegistry(upsert(records, failed));
-    throw error;
+    await ops.writeRegistry(upsert(records, base));
+    let processRef: Required<Pick<PortalRecord, "pid">> & PortalProcess;
+    try {
+      processRef = await input.launch({ name, command, port, url });
+    } catch (error) {
+      const failed = {
+        ...base,
+        state: "failed" as const,
+        lastError: (error as Error).message,
+      };
+      await ops.writeRegistry(upsert(records, failed));
+      throw error;
+    }
+    const record = { ...base, ...processRef };
+    await ops.writeRegistry(upsert(records, record));
+    const readyTimeoutMs = Math.min(
+      MAX_PORTAL_READY_MS,
+      Math.max(5_000, input.readyTimeoutMs ?? 15_000),
+    );
+    const readiness = await waitForPortalPort(
+      ops,
+      port,
+      processRef,
+      readyTimeoutMs,
+    );
+    if (readiness !== "ready") {
+      const lastError =
+        (readiness === "exited"
+          ? "The Portal process exited before it started listening."
+          : `Nothing listened on port ${port} within ${Math.round(readyTimeoutMs / 1_000)} seconds.`) +
+        (await portalLogHint(input.logPath));
+      // A timed-out process may still be compiling and can leave watchers or
+      // lock files behind. Never lose its PID by overwriting the failed record
+      // before the complete process group has been terminated.
+      await terminatePortalProcess(ops, processRef);
+      const failed = {
+        ...record,
+        pid: undefined,
+        scopeUnit: undefined,
+        state: "failed" as const,
+        lastError,
+      };
+      await ops.writeRegistry(upsert(records, failed));
+      throw new Error(lastError);
+    }
+    const awake = { ...record, state: "awake" as const };
+    await ops.writeRegistry(upsert(records, awake));
+    return { ...awake, url };
+  } finally {
+    startsInFlight.delete(inFlight);
   }
-  const record = { ...base, ...processRef };
-  await ops.writeRegistry(upsert(records, record));
-  const readyTimeoutMs = Math.min(
-    MAX_PORTAL_READY_MS,
-    Math.max(5_000, input.readyTimeoutMs ?? 15_000),
-  );
-  const readiness = await waitForPortalPort(
-    ops,
-    port,
-    processRef,
-    readyTimeoutMs,
-  );
-  if (readiness !== "ready") {
-    const lastError =
-      (readiness === "exited"
-        ? "The Portal process exited before it started listening."
-        : `Nothing listened on port ${port} within ${Math.round(readyTimeoutMs / 1_000)} seconds.`) +
-      (await portalLogHint(input.logPath));
-    // A timed-out process may still be compiling and can leave watchers or
-    // lock files behind. Never lose its PID by overwriting the failed record
-    // before the complete process group has been terminated.
-    await terminatePortalProcess(ops, processRef);
-    const failed = {
-      ...record,
-      pid: undefined,
-      scopeUnit: undefined,
-      state: "failed" as const,
-      lastError,
-    };
-    await ops.writeRegistry(upsert(records, failed));
-    throw new Error(lastError);
-  }
-  const awake = { ...record, state: "awake" as const };
-  await ops.writeRegistry(upsert(records, awake));
-  return { ...awake, url };
 }
 
 async function terminatePortalProcess(
@@ -2013,9 +2053,9 @@ export async function ensureRemoteSandboxPortalAgent(input: {
     // mutate the prepared project. Copy this small, self-contained sidecar
     // into session scratch on every launch; the app workspace stays untouched.
     const agentPath = `${logDir}/sandbox-portal-agent.ts`;
-    const agentPayload = Buffer.from(
-      readFileSync(SANDBOX_PORTAL_AGENT_ENTRY, "utf8"),
-    ).toString("base64");
+    const agentPayload = Buffer.from(sandboxPortalAgentSource()).toString(
+      "base64",
+    );
     const relayLaunch = `mkdir -p ${shellQuoteWord(logDir)} && printf %s ${shellQuoteWord(agentPayload)} | base64 -d > ${shellQuoteWord(agentPath)} && OPENSESSION_SANDBOX_PORTAL_WS_URL=${shellQuoteWord(endpoint)} OPENSESSION_SANDBOX_PORTAL_TOKEN=${shellQuoteWord(grant.token)} OPENSESSION_SANDBOX_PORTAL_PORT=${shellQuoteWord(String(input.port))} OPENSESSION_SANDBOX_PORTAL_EXPIRES_AT=${shellQuoteWord(String(grant.expiresAt))} exec ${guest.bun} run ${shellQuoteWord(agentPath)} </dev/null >${shellQuoteWord(logPath)} 2>&1`;
     const started = await input.sandbox.exec(["bash", "-c", relayLaunch], {
       background: true,
@@ -2381,7 +2421,13 @@ async function startSandboxPortalServiceInner(
         // synchronous shell returns. Start the service through the provider's
         // native detached lane. Logs and the short-lived PID marker live in
         // session scratch, never in the user's Git workspace.
-        const launch = `rm -f ${shellQuoteWord(legacyLogPath)} ${shellQuoteWord(legacyPidPath)} && mkdir -p ${shellQuoteWord(runtimeDir)} && printf '%s\\n' $$ > ${shellQuoteWord(pidPath)} && HOME=${guest.home} PATH=${shellQuoteWord(guest.path)} PORT=${shellQuoteWord(String(port))} PORTAL_URL=${shellQuoteWord(url)} OPENSESSION_PORTAL=${shellQuoteWord(name)} exec ${detach}bash -c ${shellQuoteWord(`exec ${command}`)} >${shellQuoteWord(logPath)} 2>&1`;
+        //
+        // The PID is written after `setsid`, by the shell that becomes the
+        // service. A lane that starts the command as a process group leader
+        // (Podman's `exec -d`) makes `setsid` fork, so the launching shell's
+        // own PID would name a process that has already exited: the start
+        // was reported as exited and a stop missed the running server.
+        const launch = `rm -f ${shellQuoteWord(legacyLogPath)} ${shellQuoteWord(legacyPidPath)} ${shellQuoteWord(pidPath)} && mkdir -p ${shellQuoteWord(runtimeDir)} && HOME=${guest.home} PATH=${shellQuoteWord(guest.path)} PORT=${shellQuoteWord(String(port))} PORTAL_URL=${shellQuoteWord(url)} OPENSESSION_PORTAL=${shellQuoteWord(name)} exec ${detach}bash -c ${shellQuoteWord(`printf '%s\n' $$ > ${shellQuoteWord(pidPath)}; exec ${command}`)} >${shellQuoteWord(logPath)} 2>&1`;
         const launched = await input.sandbox.exec(["bash", "-c", launch], {
           env: input.env,
           background: true,

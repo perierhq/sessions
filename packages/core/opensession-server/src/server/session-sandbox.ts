@@ -5,6 +5,9 @@
  */
 
 import { forgetWorkspaceSandbox } from "./sandbox/workspace-rpc";
+import { revokeSandboxAgent } from "./sandbox/agent-channel";
+import { forgetSandboxAgentLaunch } from "./sandbox/agent-driver";
+import { forgetSandboxIdle } from "./sandbox/idle";
 import { getSandboxProvider, type Sandbox } from "./sandbox";
 import {
   isRemoteSandboxProvider,
@@ -126,6 +129,10 @@ export async function teardownSandbox(
   sandboxId: string,
 ): Promise<void> {
   revokeWorkloadIdentityForSandbox(sandboxId);
+  // Its agent can no longer authenticate or receive commands.
+  revokeSandboxAgent(sandboxId, "retired");
+  forgetSandboxAgentLaunch(sandboxId);
+  forgetSandboxIdle(sandboxId);
   // No run's tool call may reach the machine from here on.
   forgetWorkspaceSandbox(sandboxId);
   await dropSandboxPreviewRoutes(sandboxId);

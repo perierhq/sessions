@@ -1,3 +1,4 @@
+import { noteSessionHumanActivity } from "../sandbox/idle";
 import { handleAgentMessageSummaryRoutes } from "./agent-message-summary";
 /**
  * Session listing, transcripts, transcript search/images, archive/title/status/review overrides, delete.
@@ -1459,6 +1460,8 @@ export async function handleSessionsRoutes(
       }
       if (session && result.status !== "handled") {
         await unarchiveForHumanTurn(session);
+        // A person's turn keeps the session's Sandboxes around (sandbox/idle.ts).
+        noteSessionHumanActivity(session.id);
       }
       // A message sent while the run waits on its question skips the
       // question, so the run takes the message instead of hanging on the card.

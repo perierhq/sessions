@@ -76,10 +76,11 @@ Every Sandbox session gets its own machine. Open Session:
   the agent makes runs in the VM (see [Where the agent runs](#where-the-agent-runs));
 - exposes services as **Portals**: authenticated HTTPS routes on this host
   that relay to the Sandbox. The browser never sees a provider URL;
-- lets the Sandbox sleep after the provider's idle interval (30 minutes by
-  default). Sleeping costs no compute. Sends while asleep persist in the
-  durable queue; the first one wakes the Sandbox, `.agents/resume` runs, the
-  Portals that were awake are restarted, and only then does the queue drain.
+- puts the Sandbox to sleep once it is idle (see [Sleep and wake](#sleep-and-wake)).
+  Sleeping costs no compute. Sends while asleep persist in the durable queue;
+  the first one wakes the Sandbox, `.agents/resume` runs (the wake waits for
+  it up to 10 seconds), the Portals that were awake are restarted, and then
+  the queue drains.
 
 The session's **Sandbox** badge shows Preparing, Awake, Sleeping, Waking, or
 Needs attention, with manual sleep, wake, checkpoint, and rebuild, plus the
@@ -114,7 +115,48 @@ skills are read from the Sandbox at the start of each turn.
 
 A tool call costs one provider round trip: about 25 to 110 ms on Boat over
 its SSH lane and 120 to 300 ms on Daytona. `deploy/sandbox/verify-remote-workspace.ts`
-measures it against a live provider.
+measures it against a live provider. With the Sandbox agent connected (below)
+it is one frame on a socket the Sandbox opened itself.
+
+### The Sandbox agent
+
+A Sandbox can run a small agent (`src/runner-host/sandbox-agent.ts`) that
+dials out to this server's public ingress at `/sandbox-agent-ws`. While it is
+connected, the Sandbox's commands, background processes and file writes
+travel over that socket instead of the provider's command API or SSH. Nothing
+has to reach into the machine, so the provider-specific part of an adapter
+shrinks to creating, starting, stopping, snapshotting and deleting machines;
+`withSandboxAgent` in `sandbox/agent-driver.ts` wraps any adapter's driver.
+
+- The server copies the agent into the Sandbox and starts it with the base
+  runtime's bun once the machine is up, and again whenever it is not
+  connected when a command needs the machine. It runs as the Sandbox user.
+- It authenticates with a token minted for that one Sandbox. The token
+  reaches the machine in a file under `/tmp` that the agent reads once and
+  deletes, so it is never on disk while the agent runs, never in a project
+  snapshot, and never in the environment of a command the agent starts.
+  The server keeps only its hash, in memory.
+- A new token revokes the previous one and closes its socket, so a Sandbox
+  restored from another's snapshot can never answer for it. Retiring a
+  Sandbox revokes its token with its workload identity leases.
+- After a server restart the old tokens are unknown: each agent's probe gets
+  a 403 and the agent exits, instead of retrying against the public ingress.
+  The next command that needs the Sandbox starts a fresh one.
+- Each command runs in its own process group with a timeout that reaches
+  every process it started. Background processes are detached and outlive
+  the agent.
+- The provider's own lane stays: it bootstraps the machine (the agent needs
+  bun), starts the agent, and carries every command while the agent is not
+  connected. A missing agent can make a Sandbox only as slow as it was
+  before, never unusable.
+
+Boat and use.computer Sandboxes run the agent by default. `agent.providers`
+in `sandbox.json` lists the providers that do (`["box", "usecomputer"]` when
+absent), and
+`OPENSESSION_SANDBOX_AGENT=0` in the server's environment turns it off
+everywhere. The Sandbox badge says whether commands go through the agent or
+the provider's API, and the agent logs to `~/.opensession/agent/agent.log`
+inside the Sandbox.
 
 ## Checkpoints
 
@@ -309,6 +351,13 @@ affect setup change; a repository can declare extra inputs in
 and session credentials are injected only after a restore, never into the
 shared image.
 
+A provider may restore only the home directory from a snapshot (Boat brings
+back `/home/user` over a fresh base image), so the base runtime installed
+outside it (Node, just, gh in `/usr/local`) is checked on every start and
+reinstalled when missing. Before a snapshot is sealed, the Bun package cache
+is checked for packages that lost their executables; a damaged cache is
+cleared and setup runs again, so the damage never reaches the next image.
+
 Typing a new-session prompt also starts a **prewarm**: Open Session begins
 provisioning a Sandbox before Create is pressed and adopts it at create time.
 Prewarms expire after ten minutes when unused; at most two are live at once.
@@ -328,6 +377,34 @@ with those resources; Boat exposes three fixed machine types.
 This machine (container) has no project snapshots, prewarms or Keep one
 ready: every session starts from the sandbox image and clones on first use.
 
+## Sleep and wake
+
+A Sandbox sleeps once **both** are true:
+
+- the agent has done no work in it for 5 minutes (`idle.agentMinutes`): no
+  tool call and no turn running for the session;
+- nobody has interacted with it for 20 minutes (`idle.humanMinutes`): a
+  person's prompt, any request to one of its Portals (whoever makes it), a
+  Terminal or Desktop opened on it, or a manual wake.
+
+So a turn somebody sent keeps the machine around while they look at the
+result, and a turn an automation started lets it sleep five minutes after the
+work ends. Sleeping goes through the same path as the badge's Sleep action:
+on the session's lifecycle lane, the workspace is checkpointed first, Portal
+routes are suspended so opening one wakes the machine, and only then is the
+provider stopped. A host session's Portal Sandbox sleeps the same way. While a
+machine is in use the server keeps the provider's own idle timer (Boat's
+countdown, `idleStopMinutes`) from firing, which stays as the backstop for a
+machine nothing has touched since the server started.
+
+Asleep, every provider keeps the disk but not memory: files, installed tools
+and the checkout are there on wake; dev servers, Terminal shells and Desktop
+apps start again. The Sandbox badge, the Portals panel and
+Workspace → Sandboxes say so, and the badge counts down to the next sleep.
+
+A start that finds the provider full (every Mac host at its VM budget)
+waits for room instead of failing, for up to 15 minutes.
+
 ## Repo lifecycle hooks
 
 Sandboxes honor the repository contract in [repo-lifecycle.md](repo-lifecycle.md):
@@ -336,6 +413,15 @@ Portal starts from the Portals panel or through `start_declared_portal`; the
 agent can also expose any process with `start_portal`. Portal processes
 receive `PORT` and `PORTAL_URL`. Logs live under
 `~/.opensession/lifecycle/` inside the Sandbox.
+
+Setup is capped at 20 minutes and every process it leaves running is stopped
+before the disk can become a project snapshot. A wake waits at most 10
+seconds for `.agents/resume`. Two scripts can live in settings instead of a
+repository: a project's **setup script** (the project's settings, Where
+agents run), run right before `.agents/setup` and part of the snapshot's
+inputs, and the workspace **resume script** (Workspace → Sandboxes), run
+before `.agents/resume` in every Linux Sandbox (for a fix every machine needs
+and no repository can deliver). Changing either needs a signed-in person.
 
 ## Workload identity
 
@@ -365,20 +451,25 @@ move it. The project page's "Where agents run" shows this per project as
 Workspace → Sandboxes writes this file; hand-edit only for the operator
 settings below. Read fresh per call, no restart needed except where noted.
 
-| Key                                 | Meaning                                                                                                                                                                 |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `connections`                       | Provider connections and their qualification state. Managed by Workspace → Sandboxes.                                                                                   |
-| `sessionDefault`                    | `"daytona"`, `"box"`, `"tart"`, `"usecomputer"`, `"podman"`, or `"none"`: where new sessions run when nobody chose.                                                     |
-| `provider`, `perRepo.<id>.provider` | Legacy default and per-repo override for API creates that pass `sandbox: true`.                                                                                         |
-| `perRepo.<id>.sessionDefault`       | `"daytona"`, `"box"`, or `"none"`: where new sessions on that repo run, ahead of the workspace and personal defaults. Managed by Workspace → Sandboxes → Projects.      |
-| `idleStopMinutes`                   | Sleep after this much idle time (default 30).                                                                                                                           |
-| `callbackBaseUrl`                   | Dial-back URL when the public ingress origin should not be used (tailnet setups).                                                                                       |
-| `publicIngress`                     | Advanced bind override for the `:3860` listener. Needs a restart.                                                                                                       |
-| `daytona.snapshot`                  | Org snapshot new Daytona sandboxes start from when no project snapshot exists (sizing lives in it).                                                                     |
-| `cloneCredential`                   | `{type: "none"}` or `{type: "https-token", token}` for repository clones inside Sandboxes. The live GitHub App wins.                                                    |
-| `prewarm`                           | `enabled`, `ttlMinutes`, `maxLive` for the warm-on-typing pool; `keepReady` lists `{provider, repoId}` targets kept prepared (Keep one ready in Workspace → Sandboxes). |
-| `automation.egressAllowlist`        | Extra hosts unattended runs may reach.                                                                                                                                  |
-| `podman.extraHostAddresses`         | IPv4 addresses that reach this host without being on its interfaces; This machine (container) refuses them too (see its notes).                                         |
+| Key                                 | Meaning                                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `connections`                       | Provider connections and their qualification state. Managed by Workspace → Sandboxes.                                                                                    |
+| `sessionDefault`                    | `"daytona"`, `"box"`, `"tart"`, `"usecomputer"`, `"podman"`, or `"none"`: where new sessions run when nobody chose.                                                      |
+| `provider`, `perRepo.<id>.provider` | Legacy default and per-repo override for API creates that pass `sandbox: true`.                                                                                          |
+| `perRepo.<id>.sessionDefault`       | `"daytona"`, `"box"`, or `"none"`: where new sessions on that repo run, ahead of the workspace and personal defaults. Managed by a project's settings, Where agents run. |
+| `idleStopMinutes`                   | The provider's own idle backstop (default 30); the two timers below decide when a machine in use sleeps.                                                                 |
+| `idle.agentMinutes`                 | Sleep once the agent has done no work for this long (default 5)...                                                                                                       |
+| `idle.humanMinutes`                 | ...and nobody has interacted for this long (default 20). See [Sleep and wake](#sleep-and-wake).                                                                          |
+| `agent.providers`                   | Providers whose Sandboxes run the [Sandbox agent](#the-sandbox-agent) (default `["box", "usecomputer"]`; `[]` turns it off).                                             |
+| `workspaceResumeScript`             | Runs before `.agents/resume` in every Linux Sandbox. Managed by Workspace → Sandboxes.                                                                                   |
+| `perRepo.<id>.preSetupScript`       | Runs before `.agents/setup` for that project. Managed by a project's settings, Where agents run.                                                                         |
+| `callbackBaseUrl`                   | Dial-back URL when the public ingress origin should not be used (tailnet setups).                                                                                        |
+| `publicIngress`                     | Advanced bind override for the `:3860` listener. Needs a restart.                                                                                                        |
+| `daytona.snapshot`                  | Org snapshot new Daytona sandboxes start from when no project snapshot exists (sizing lives in it).                                                                      |
+| `cloneCredential`                   | `{type: "none"}` or `{type: "https-token", token}` for repository clones inside Sandboxes. The live GitHub App wins.                                                     |
+| `prewarm`                           | `enabled`, `ttlMinutes`, `maxLive` for the warm-on-typing pool; `keepReady` lists `{provider, repoId}` targets kept prepared (Keep one ready in Workspace → Sandboxes).  |
+| `automation.egressAllowlist`        | Extra hosts unattended runs may reach.                                                                                                                                   |
+| `podman.extraHostAddresses`         | IPv4 addresses that reach this host without being on its interfaces; This machine (container) refuses them too (see its notes).                                          |
 
 Retired keys (`image`, `workspace`, `transport`, `previewPorts`, `snapshots`,
 `e2b`, `modal`, `awsLambdaMicrovm`, and the runner payload's
@@ -499,8 +590,10 @@ already holds the repo's project snapshot; ties keep the configured order.
 The VM's state file records which Runner holds it, so sleep, wake, the
 Desktop tab, and Terminal tabs return to that Mac. Offline hosts are skipped
 for new VMs; a VM whose Mac is offline waits for it rather than being
-recreated elsewhere. When every host is full, the error lists each Mac's
-running VMs. Project snapshots (`tpl-<repo>-<hash>`) live on the Mac that
+recreated elsewhere. When every host is full, the start waits for a free
+slot (up to 15 minutes, checking every 15 to 60 seconds) and the Sandbox
+badge says so; after that the error lists each Mac's running VMs. Project
+snapshots (`tpl-<repo>-<hash>`) live on the Mac that
 sealed them; a session placed on another Mac clones the base instead, and
 the snapshot stays valid where it is.
 
@@ -521,8 +614,9 @@ its own. A Terminal tab is a shell inside the guest, opened by the Runner
 over SSH with the same host-local key. Both are typed Runner operations that
 name only the VM (the Runner resolves the port and the guest address itself)
 and ride the `commands` permission the provider already needs; they require
-the Runner to run this release or later. A full host refuses to start another VM and
-says which sessions hold the slots.
+the Runner to run this release or later. A full host does not start another
+VM; the start waits for a slot as above and then says which sessions hold
+them.
 
 Portals ride the outbound relay like every remote provider. The agent's
 `opensession-desktop` tools work (`screencapture` and `cliclick` inside the
