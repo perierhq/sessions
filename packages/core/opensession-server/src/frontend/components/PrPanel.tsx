@@ -20,6 +20,7 @@ import type {
 import { WalkthroughCard } from "./WalkthroughCard";
 import { PrOverviewPage } from "./pr/PrOverviewPage";
 import { PhoneReviewHeader } from "./pr/PhoneReviewHeader";
+import { DiffStat } from "./DiffStat";
 import { PrFilesPage } from "./pr/PrFilesPage";
 import { FinishReviewDialog } from "./pr/FinishReviewDialog";
 import {
@@ -1883,14 +1884,7 @@ export function PrPanel({
             }
             subtitle={
               page === "files" && diffSource === "pull-request" ? (
-                <span className="tabular-nums">
-                  <span className="text-green">
-                    +{files.reduce((sum, file) => sum + file.additions, 0)}
-                  </span>{" "}
-                  <span className="text-red">
-                    −{files.reduce((sum, file) => sum + file.deletions, 0)}
-                  </span>
-                </span>
+                <DiffStat files={files} />
               ) : active?.repo ? (
                 repoLabel(active.repo)
               ) : (
