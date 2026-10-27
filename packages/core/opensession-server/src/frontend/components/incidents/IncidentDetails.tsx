@@ -13,7 +13,11 @@ import { useSessionPrResource } from "../../hooks/useApiResources";
 import { useIncidentAccess } from "../../hooks/useIncidents";
 import { useIsPhone } from "../../hooks/useIsPhone";
 import { dayMonth, FIXED_BY_LABEL, formatUsd } from "../../lib/incidents/copy";
-import { type FindingSource, findingsPage } from "../../lib/incidents/findings";
+import {
+  earlierFindingRounds,
+  type FindingSource,
+  findingsPage,
+} from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import type { ProjectSectionId } from "../../lib/project-settings/page-model";
 import {
@@ -446,7 +450,7 @@ export function IncidentDetails({
     budgetUsd,
     access,
     now: Date.now(),
-    findingRounds: findingsPage(incident)?.earlierRounds ?? [],
+    findingRounds: earlierFindingRounds(incident),
   });
 
   const onRow = (row: DetailRow) => {

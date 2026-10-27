@@ -19,6 +19,7 @@ import {
   type LedgerEntry,
   OWNER_DECISIONS,
   type OwnerDecision,
+  type PastRound,
   type ProjectSpend,
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
@@ -1509,6 +1510,17 @@ async function deferParallelInvestigator(
   return next !== null;
 }
 
+/** The round a run is finishing, as a send-back keeps it. */
+function pastRoundOf(run: AgentRun): PastRound {
+  const past: PastRound = {
+    round: run.round,
+    startedAt: run.roundStartedAt ?? run.startedAt,
+  };
+  if (run.endedAt) past.endedAt = run.endedAt;
+  if (run.report) past.report = run.report;
+  return past;
+}
+
 async function messageAgent(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "message-agent" }>,
@@ -1596,6 +1608,10 @@ async function messageAgent(
         return sendBack
           ? patched(a, {
               round: base.round,
+              // Round `a.round`'s report and times stay with that round's
+              // findings; the run's own fields are the new round's.
+              pastRounds: [...(a.pastRounds ?? []), pastRoundOf(a)],
+              roundStartedAt: at,
               status: "running",
               turnSentAt: at,
               endedAt: undefined,
@@ -1713,7 +1729,9 @@ async function recordReport(
     },
   );
   if (!next) return false;
-  // Saved after the report, so the run's report claims are in place.
+  // Saved after the report, so the run's report claims are in place. A
+  // verifier checks its own round's candidate, never another round's.
+  const candidate = next.response?.candidate;
   if (report && step.findings !== undefined)
     await d.applyReportFindings({
       incidentId: incident.id,
@@ -1722,7 +1740,9 @@ async function recordReport(
       input: step.findings,
       claims: (report.role === "investigator"
         ? report.claims
-        : (next.response?.candidate?.claims ?? [])
+        : candidate?.round === run.round
+          ? candidate.claims
+          : []
       ).map((c) => c.text),
     });
   if (report?.role === "verifier")

@@ -13,6 +13,7 @@ import type {
   SignalEvaluation,
 } from "../../../shared/incidents";
 import type { FindingsSet } from "../../../shared/findings";
+import { roundReports } from "../../../shared/findings-status";
 import type { Automation } from "../../automations";
 import type { PrMergeVerdict } from "../../pr-merge-readiness";
 import {
@@ -1129,6 +1130,39 @@ test("a send-back to the same investigator says its findings stay; round 2's ver
   expect(verifier.prompt).not.toContain("r1-why");
 });
 
+test("a send-back keeps the investigator's round 1 report for round 1's findings", async () => {
+  const w = await world();
+  await w.runToVerifier();
+  w.finish(
+    "child-2",
+    fence({
+      ...goodVerifier,
+      verdict: "not-certain",
+      reasons: ["The 403 also happens with the new agent"],
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends.at(-1)?.id).toBe("child-1");
+  const i = await getIncident(w.incident.id);
+  const run = i!.response!.agents.find((a) => a.sessionId === "child-1")!;
+  // The session moved on to round 2 with no report yet...
+  expect(run).toMatchObject({ round: 2, status: "running" });
+  expect(run.report).toBeUndefined();
+  expect(run.roundStartedAt).toBe(run.turnSentAt);
+  // ...and round 1's report is still there for round 1's page.
+  expect(run.pastRounds).toEqual([
+    expect.objectContaining({
+      round: 1,
+      startedAt: run.startedAt,
+      report: expect.objectContaining({ claims: goodInvestigator.claims }),
+    }),
+  ]);
+  expect(roundReports(i!.response, 1).investigator?.claims).toEqual(
+    goodInvestigator.claims,
+  );
+  expect(roundReports(i!.response, 2).investigator).toBeUndefined();
+});
+
 test("rollback-first: the candidate is the rollback and waits for the next steps", async () => {
   const w = await world();
   w.settings.releases = [
@@ -1424,6 +1458,26 @@ test("report findings are saved after the report", async () => {
     reportStored: true,
   });
   expect(calls).toHaveLength(2);
+});
+
+test("a verifier's report findings check only its own round's candidate claims", async () => {
+  const w = await world();
+  const claims: string[][] = [];
+  w.deps.applyReportFindings = async (req) => {
+    claims.push(req.claims ?? []);
+  };
+  await w.runToVerifier();
+  // The candidate on file belongs to another round.
+  await updateIncident(w.incident.id, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      candidate: { ...c.response!.candidate!, round: 9 },
+    },
+  }));
+  w.finish("child-2", fence({ ...goodVerifier, findings: { blocks: [] } }));
+  await advanceIncident(w.incident.id, w.deps);
+  expect(claims.at(-1)).toEqual([]);
 });
 
 test("a report without findings saves none", async () => {

@@ -16,6 +16,7 @@ import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
   changedKeys,
+  earlierFindingRounds,
   type FindingItem,
   findingSpans,
   findingsPage,
@@ -246,6 +247,88 @@ test("an automatic claims block is added when the report has claims", () => {
     ),
   );
   expect(none?.items.map((i) => i.key)).toEqual(["investigator:a"]);
+});
+
+test("a send-back keeps round 1's claims on round 1's page", () => {
+  const claims = [{ text: "The pool is too small." }];
+  const round1 = invRun(1, claims);
+  // The same session sent back: round 2 under way, its report cleared.
+  const sentBack = run({
+    round: 2,
+    status: "running",
+    startedAt: T("12:01"),
+    roundStartedAt: T("12:40"),
+    pastRounds: [
+      {
+        round: 1,
+        startedAt: T("12:01"),
+        endedAt: T("12:20"),
+        report: round1.report!,
+      },
+    ],
+  });
+  const checks = verRun(1, [
+    { text: "The pool is too small.", status: "refuted", evidence: "80 free" },
+  ]);
+  const inc = open(
+    response({
+      round: 2,
+      agents: [sentBack, checks],
+      findingSets: [
+        set("investigator", 1, [question("a")]),
+        set("investigator", 2, [question("b")]),
+      ],
+    }),
+  );
+  const earlier = findingsPage(inc, { round: 1 });
+  const auto = earlier?.items.find((i) => i.key === "auto:claims");
+  expect(auto?.claims).toEqual([
+    { text: "The pool is too small.", status: "refuted", evidence: "80 free" },
+  ]);
+  expect(auto?.byline).toBe(
+    FINDINGS_COPY.byline("investigator", clockTime(T("12:20"))),
+  );
+  // Round 2 has no report yet: no claims block there.
+  expect(keys(inc)).toEqual(["investigator:b"]);
+
+  // Each round's timeline starts the investigator at that round's start.
+  const block: Extract<FindingBlock, { kind: "timeline" }> = {
+    id: "when",
+    kind: "timeline",
+    size: "full",
+    events: [],
+  };
+  const started = (round: number, r = inc.response!) =>
+    timelineRows(block, { openedAt: T("12:00"), response: r }, round)
+      .filter((row) => row.text === "Investigator started")
+      .map((row) => row.at);
+  expect(started(1)).toEqual([T("12:01")]);
+  expect(started(2)).toEqual([T("12:40")]);
+  // Sent back before rounds were kept: the session's start predates round
+  // 2 (round 1's verifier started after it), so no anchor.
+  const legacy = response({
+    round: 2,
+    agents: [
+      run({ round: 2, startedAt: T("12:01") }),
+      { ...checks, startedAt: T("12:10") },
+    ],
+  });
+  expect(started(2, legacy)).toEqual([]);
+});
+
+test("earlier rounds are listed even when the page falls back to Cause", () => {
+  const inc = open(
+    response({
+      round: 2,
+      findingSets: [
+        set("investigator", 1, [question("a")]),
+        set("investigator", 2, []),
+      ],
+    }),
+  );
+  expect(findingsPage(inc)).toBeNull();
+  expect(earlierFindingRounds(inc)).toEqual([1]);
+  expect(earlierFindingRounds(open(response({})))).toEqual([]);
 });
 
 const POOL = "The pool is too small.";

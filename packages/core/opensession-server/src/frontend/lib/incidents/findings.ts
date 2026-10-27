@@ -15,6 +15,7 @@ import {
   claimRows,
   hypothesisStatus,
   roundReportRuns,
+  runsInRound,
 } from "../../../shared/findings-status";
 import type {
   AgentRole,
@@ -82,14 +83,14 @@ function pageRound(sets: readonly FindingsSet[]): number | null {
   return investigator ?? any;
 }
 
-/** The round's investigator run: the attempt behind its findings when
- *  there are some, else the newest attempt. */
+/** The round's investigator run, as it was in that round: the attempt
+ *  behind its findings when there are some, else the newest attempt. */
 function investigatorRun(
   response: IncidentResponse | undefined,
   round: number,
 ): AgentRun | undefined {
-  const runs = (response?.agents ?? []).filter(
-    (run) => run.role === "investigator" && run.round === round,
+  const runs = runsInRound(response, round).filter(
+    (run) => run.role === "investigator",
   );
   const attempt = findingSetOf(response, "investigator", round)?.attempt;
   return (
@@ -114,6 +115,25 @@ export function findingSpans(
     } else spans.push("full");
   }
   return spans;
+}
+
+/** Rounds before `round` with findings, oldest first. */
+function roundsBefore(sets: readonly FindingsSet[], round: number): number[] {
+  return [
+    ...new Set(
+      sets.filter((s) => s.round < round && hasBlocks(s)).map((s) => s.round),
+    ),
+  ].sort((a, b) => a - b);
+}
+
+/** The earlier rounds the details list, also when the page round has no
+ *  blocks and the page shows Cause instead (`findingsPage` is null). */
+export function earlierFindingRounds(
+  incident: Pick<Incident, "response">,
+): number[] {
+  const sets = incident.response?.findingSets ?? [];
+  const round = pageRound(sets);
+  return round === null ? [] : roundsBefore(sets, round);
 }
 
 export function findingsPage(
@@ -170,11 +190,7 @@ export function findingsPage(
   const spans = findingSpans(drafts.map((item) => item.block.size));
   const items = drafts.map((item, i) => ({ ...item, span: spans[i]! }));
 
-  const earlierRounds = [
-    ...new Set(
-      sets.filter((s) => s.round < round && hasBlocks(s)).map((s) => s.round),
-    ),
-  ].sort((a, b) => a - b);
+  const earlierRounds = roundsBefore(sets, round);
 
   const current = response?.round ?? round;
   const underWay =
@@ -192,6 +208,20 @@ const timeOf = (iso: string) => {
   return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
 };
 
+/** A start time older than a run of an earlier round: a session sent back
+ *  before its rounds were kept, whose start is its first round's. */
+function predatesRound(
+  at: string,
+  response: IncidentResponse | undefined,
+  round: number,
+): boolean {
+  const ms = timeOf(at);
+  for (let earlier = 1; earlier < round; earlier++)
+    for (const run of runsInRound(response, earlier))
+      if (timeOf(run.startedAt) > ms) return true;
+  return false;
+}
+
 /** The agent's events with the incident's own moments for that round,
  *  sorted by time; on a tie the incident's moment comes first. */
 export function timelineRows(
@@ -204,7 +234,7 @@ export function timelineRows(
     { at: incident.openedAt, text: "Incident opened", anchor: true },
   ];
   const started = investigatorRun(response, round)?.startedAt;
-  if (started)
+  if (started && !predatesRound(started, response, round))
     anchors.push({ at: started, text: "Investigator started", anchor: true });
   if (response?.proof?.round === round)
     anchors.push({

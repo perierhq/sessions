@@ -15,14 +15,44 @@ export interface RoundReportRuns {
   verifier?: { run: AgentRun; report: VerifierReport };
 }
 
+/** Each run as it was in `round`. A run still in it starts at the
+ *  send-back that moved it there; a run a send-back moved past it shows that
+ *  round's report and times, so an earlier round keeps its claims. */
+export function runsInRound(
+  r: Pick<IncidentResponse, "agents"> | undefined,
+  round: number,
+): AgentRun[] {
+  const out: AgentRun[] = [];
+  for (const run of r?.agents ?? []) {
+    const { pastRounds, roundStartedAt, ...rest } = run;
+    if (run.round === round) {
+      out.push(roundStartedAt ? { ...rest, startedAt: roundStartedAt } : rest);
+      continue;
+    }
+    const past = pastRounds?.find((p) => p.round === round);
+    if (!past) continue;
+    const view: AgentRun = {
+      ...rest,
+      round,
+      status: "done",
+      startedAt: past.startedAt,
+    };
+    delete view.endedAt;
+    delete view.report;
+    if (past.endedAt) view.endedAt = past.endedAt;
+    if (past.report) view.report = past.report;
+    out.push(view);
+  }
+  return out;
+}
+
 /** Each role's newest attempt in `round` that has a report, with its run. */
 export function roundReportRuns(
   r: Pick<IncidentResponse, "agents"> | undefined,
   round: number,
 ): RoundReportRuns {
   const out: RoundReportRuns = {};
-  for (const run of r?.agents ?? []) {
-    if (run.round !== round) continue;
+  for (const run of runsInRound(r, round)) {
     const report = run.report;
     if (report?.role === "investigator" && run.role === "investigator") {
       if (!out.investigator || run.attempt >= out.investigator.run.attempt)
