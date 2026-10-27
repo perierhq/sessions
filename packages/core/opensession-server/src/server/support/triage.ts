@@ -4,11 +4,14 @@
  * spam, simple or work (routing uses the route of a conversation's first
  * message), lists the topics that need a person, and flags bug reports,
  * attempts to instruct the agent (injection), a request for a person, anger,
- * a repeated question and a message that only says thanks.
+ * a repeated question and a message that only says thanks. "Thanks only"
+ * survives only when nothing else in the answer asks for something
+ * (thanksOnlyHolds).
  *
- * Fails open on routing (a failure is "work", never dropped or filed as spam)
- * and closed on autonomy (a failed message has unknown topics, so every send
- * waits for a person).
+ * A failure is "work", never dropped or filed as spam, and closed on
+ * autonomy: a failed message has unknown topics, so every send waits for a
+ * person (routing.ts tries a failed call once more, then holds a new
+ * conversation for a person).
  */
 import {
   type MessageTriage,
@@ -150,6 +153,26 @@ export interface ClassifiedMessage {
 
 const flag = (value: unknown) => value === true;
 
+/** Longest new text that still reads as a thanks on its own. */
+export const THANKS_MAX_CHARS = 300;
+
+/**
+ * "Only thanks" holds only when nothing else in the answer says the
+ * customer wants something: no topic (and topics known), no bug, no
+ * injection, no request for a person, no anger, no repeat, and new text
+ * no longer than a short thanks. The small model sometimes answers
+ * thanks_only next to a refund request; that contradiction reads as not
+ * thanks.
+ */
+export function thanksOnlyHolds(
+  t: Omit<MessageTriage, "thanksOnly" | "at" | "route">,
+  newText: string,
+): boolean {
+  if (!Array.isArray(t.topics) || t.topics.length > 0) return false;
+  if (t.bug || t.injection || t.wantsHuman || t.angry || t.repeat) return false;
+  return newText.trim().length < THANKS_MAX_CHARS;
+}
+
 /** A message whose labelling failed (or was not tried): work, unknown
  *  topics, so every send waits for a person until a later try works. */
 export function failedTriage(now: string, reason: string): ClassifiedMessage {
@@ -193,17 +216,20 @@ export async function classifyMessage(input: {
   if (!verdict)
     return failedTriage(input.now, "Triage failed, treated as work");
   const raw = verdict.raw;
+  const labels = {
+    topics: readTopics(raw.topics),
+    bug: flag(raw.bug),
+    injection: flag(raw.injection),
+    wantsHuman: flag(raw.wants_human),
+    angry: flag(raw.angry),
+    repeat: flag(raw.repeat),
+  };
   return {
     reason: verdict.reason,
     triage: {
       route: verdict.route,
-      topics: readTopics(raw.topics),
-      bug: flag(raw.bug),
-      injection: flag(raw.injection),
-      wantsHuman: flag(raw.wants_human),
-      angry: flag(raw.angry),
-      repeat: flag(raw.repeat),
-      thanksOnly: flag(raw.thanks_only),
+      ...labels,
+      thanksOnly: flag(raw.thanks_only) && thanksOnlyHolds(labels, input.text),
       at: input.now,
     },
   };

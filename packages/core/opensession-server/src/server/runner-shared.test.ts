@@ -46,6 +46,25 @@ describe("isClaudeSubscriptionError", () => {
     ).toBe(true);
     expect(isClaudeSubscriptionError("ordinary tool failure")).toBe(false);
   });
+
+  test("recognizes an organization that refuses OAuth sign-in", () => {
+    // The account itself can't serve: the walk benches it and moves on.
+    expect(
+      isClaudeSubscriptionError(
+        '403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}}}',
+      ),
+    ).toBe(true);
+    expect(
+      isClaudeSubscriptionError(
+        "OAuth authentication is currently not allowed for this organization.",
+      ),
+    ).toBe(true);
+    expect(
+      isClaudeSubscriptionError(
+        '403 {"type":"error","error":{"type":"permission_error","message":"Not allowed to use this tool"}}',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("isClaudeBridgeLaunchError", () => {

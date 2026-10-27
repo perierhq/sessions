@@ -293,7 +293,12 @@ export function isClaudeSubscriptionError(message: string): boolean {
     s.includes("check your subscription") ||
     (s.includes("claude max") && s.includes("subscription")) ||
     (s.includes("organization has disabled") &&
-      s.includes("subscription access"))
+      s.includes("subscription access")) ||
+    // A 403 permission_error for an account whose organization refuses
+    // OAuth sign-in: that account can't serve any request, another
+    // account in the pool may.
+    s.includes("oauth_not_allowed_for_organization") ||
+    s.includes("oauth authentication is currently not allowed")
   );
 }
 
