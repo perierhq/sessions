@@ -445,12 +445,14 @@ export function IconPlayOutline(p: IconProps) {
   );
 }
 
+const PLAY_RECTANGLE_TRIANGLE = "M10 9L15 12L10 15V9Z";
+
 /** Play inside a screen outline, matching Apple's `play.rectangle`. */
 export function IconPlayRectangle(p: IconProps) {
   return (
     <Svg {...p}>
       <rect {...stroke} x="3.75" y="6" width="16.5" height="12" rx="2.25" />
-      <path {...stroke} d="M10 9L15 12L10 15V9Z" />
+      <path {...stroke} d={PLAY_RECTANGLE_TRIANGLE} />
     </Svg>
   );
 }
@@ -473,22 +475,22 @@ export function IconCamera(p: IconProps) {
 // Picture: a framed photo, where IconCamera is the act of taking one. Both
 // exist because a profile picture is a FILE you replace, not a shot the app
 // captures. Frame spans the set's 4.75 → 19.25.
+// The ridge runs into the frame's lower corners rather than stopping inside
+// it: a hill floating in the middle of the box reads as a shape on a card, not
+// as a photograph.
+const IMAGE_RIDGE_PATHS = [
+  "M5.25 17.25L9.6 12.65C10.1 12.12 10.94 12.12 11.44 12.65L15.75 17.25",
+  "M13.5 14.85L15.1 13.2C15.6 12.68 16.43 12.68 16.93 13.2L18.75 15.1",
+];
+
 export function IconImage(p: IconProps) {
   return (
     <Svg {...p}>
       <rect {...stroke} x="4.75" y="4.75" width="14.5" height="14.5" rx="3" />
       <circle {...stroke} cx="9.5" cy="9.5" r="1.25" fill="none" />
-      {/* The ridge runs into the frame's lower corners rather than stopping
-          inside it: a hill floating in the middle of the box reads as a shape
-          on a card, not as a photograph. */}
-      <path
-        {...stroke}
-        d="M5.25 17.25L9.6 12.65C10.1 12.12 10.94 12.12 11.44 12.65L15.75 17.25"
-      />
-      <path
-        {...stroke}
-        d="M13.5 14.85L15.1 13.2C15.6 12.68 16.43 12.68 16.93 13.2L18.75 15.1"
-      />
+      {IMAGE_RIDGE_PATHS.map((d) => (
+        <path key={d} {...stroke} d={d} />
+      ))}
     </Svg>
   );
 }
@@ -1190,6 +1192,25 @@ export function chevronLeftIconMarkup(size = MIN_ICON_SIZE): string {
 /** <IconChevronRight> as markup: the fold caret on a JSON tree row. */
 export function chevronRightIconMarkup(size = MIN_ICON_SIZE): string {
   return iconMarkup(pathsMarkup([CHEVRON_RIGHT_PATH]), size);
+}
+
+/** <IconImage> as markup: the placeholder for a picture on another host. */
+export function imageIconMarkup(size = MIN_ICON_SIZE): string {
+  return iconMarkup(
+    `<rect x="4.75" y="4.75" width="14.5" height="14.5" rx="3" ${STROKE_MARKUP}/>` +
+      `<circle cx="9.5" cy="9.5" r="1.25" ${STROKE_MARKUP}/>` +
+      pathsMarkup(IMAGE_RIDGE_PATHS),
+    size,
+  );
+}
+
+/** <IconPlayRectangle> as markup: the placeholder for a video on another host. */
+export function playRectangleIconMarkup(size = MIN_ICON_SIZE): string {
+  return iconMarkup(
+    `<rect x="3.75" y="6" width="16.5" height="12" rx="2.25" ${STROKE_MARKUP}/>` +
+      pathsMarkup([PLAY_RECTANGLE_TRIANGLE]),
+    size,
+  );
 }
 
 /** <IconFile> as markup. */

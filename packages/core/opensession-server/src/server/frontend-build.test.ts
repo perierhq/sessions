@@ -24,6 +24,7 @@ import {
 } from "./frontend-build";
 import { __setIdentitiesForTest } from "./shared/user-mappings";
 import { publishStableFrontendSnapshot } from "./stable-frontend";
+import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
 
 let restore: (() => void) | null = null;
 let scratch: string | null = null;
@@ -101,6 +102,27 @@ describe("frontendInputsHash", () => {
 describe("SPA_HEADERS", () => {
   it("leaves offline shell caching to the service worker", () => {
     expect(SPA_HEADERS["Cache-Control"]).toBe("no-store");
+  });
+
+  it("loads images only from this app and the hosts its own UI draws from", () => {
+    const csp = SPA_HEADERS["Content-Security-Policy"];
+    expect(csp).toBe(SPA_CONTENT_SECURITY_POLICY);
+    expect(csp).toContain("frame-ancestors 'none'");
+    const imgSrc = csp
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/))
+      .find(([name]) => name === "img-src");
+    expect(imgSrc).toEqual([
+      "img-src",
+      "'self'",
+      "data:",
+      "blob:",
+      "https://github.com",
+      "https://avatars.githubusercontent.com",
+      "https://private-user-images.githubusercontent.com",
+      "https://*.slack-edge.com",
+      "https://secure.gravatar.com",
+    ]);
   });
 });
 

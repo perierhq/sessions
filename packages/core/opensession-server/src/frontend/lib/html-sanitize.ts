@@ -19,10 +19,29 @@
  *    stripped of the whitespace and control characters browsers ignore when
  *    they parse a URL.
  *
+ *  - An image loads only from this app (see remote-image.ts). An `<img>` from
+ *    another host becomes a named placeholder instead, and a `<source>` that
+ *    would fetch from one is dropped, so a `<picture>` falls back to its
+ *    `<img>`, which is then held to the same rule.
+ *
  * This is a fragment sanitizer, not a document one: it never balances tags. An
  * unclosed `<a>` swallows the rest of the comment into the link, which is what
  * GitHub does too, and the damage stops at the container the HTML is set on.
  */
+
+import { inlineImageSrc, remoteMediaMarkup } from "./remote-image";
+
+export interface SanitizeOptions {
+  /** Maps an image source before the host check: the Markdown renderer
+   *  routes GitHub attachment URLs through this app's proxy here. */
+  imageSrc?: (src: string) => string | null;
+  /** Raw `<a>` elements open across the fragments of one document. marked
+   *  hands inline HTML over a tag at a time, so the caller keeps one of these
+   *  per render; an image placeholder inside a link must not be a link. */
+  links?: { depth: number };
+  /** The fragment sits inside a link the caller rendered itself. */
+  inLink?: boolean;
+}
 
 /** Tag → the attributes it may keep. */
 const allowedEntries = {
@@ -131,20 +150,36 @@ function isSafeSrcset(value: string): boolean {
   return candidates.length > 0 && candidates.every(isSafeUrl);
 }
 
+/** Every candidate in a `srcset` list loads from this app. */
+function srcsetIsInline(value: string): boolean {
+  return value
+    .split(",")
+    .map((candidate) => candidate.trim().split(/\s+/)[0])
+    .filter(Boolean)
+    .every((url) => inlineImageSrc(url) !== null);
+}
+
 function sanitizeTag(
   raw: string,
   closing: boolean,
   tag: string,
   attrs: string,
   selfClosing: boolean,
+  options: SanitizeOptions,
 ): string {
   const allowed = ALLOWED.get(tag);
   if (!allowed) return escapeText(raw);
   const isVoid = VOID_TAGS.has(tag);
-  if (closing) return isVoid ? "" : `</${tag}>`;
+  if (closing) {
+    if (tag === "a" && options.links && options.links.depth > 0)
+      options.links.depth--;
+    return isVoid ? "" : `</${tag}>`;
+  }
 
   let out = `<${tag}`;
   let href: string | undefined;
+  let alt: string | undefined;
+  let remote: string | undefined;
   if (allowed.length > 0 && attrs) {
     ATTR.lastIndex = 0;
     const seen = new Set<string>();
@@ -161,11 +196,34 @@ function sanitizeTag(
       // `srcset` is a candidate list ("a.png 1x, b.png 2x"), so each URL
       // in it has to clear the same bar as a lone src.
       if (name === "srcset" && !isSafeSrcset(value)) continue;
+      if (tag === "source" && (name === "src" || name === "srcset")) {
+        if (name === "src" ? !inlineImageSrc(value) : !srcsetIsInline(value))
+          return "";
+      }
+      if (tag === "img" && name === "src") {
+        const src = options.imageSrc?.(value) ?? value;
+        if (!inlineImageSrc(src)) {
+          remote = value;
+          continue;
+        }
+        seen.add(name);
+        out += ` src="${escapeAttr(src)}"`;
+        continue;
+      }
       seen.add(name);
       if (name === "href") href = value;
+      if (name === "alt") alt = value;
       out += ` ${name}="${escapeAttr(value)}"`;
     }
   }
+  if (remote !== undefined)
+    return remoteMediaMarkup(remote, {
+      kind: "image",
+      alt,
+      inLink: options.inLink || (options.links?.depth ?? 0) > 0,
+    });
+  // HTML ignores a self-closing slash on <a>, so `<a/>` opens a link too.
+  if (tag === "a" && options.links) options.links.depth++;
   // A hand-written link is still a link off this app: send it to a new tab
   // the way the markdown renderer sends its own, so a deploy table can't
   // navigate the session out from under you. An in-page `#anchor` stays put.
@@ -184,8 +242,13 @@ function sanitizeTag(
  * through with its angle brackets escaped, so nothing that failed to parse as
  * an allowed tag can reach the DOM as markup.
  */
-export function sanitizeHtmlFragment(html: string): string {
+export function sanitizeHtmlFragment(
+  html: string,
+  options: SanitizeOptions = {},
+): string {
   if (!html) return "";
+  // Track links within this fragment even when the caller keeps no state.
+  options = { ...options, links: options.links ?? { depth: 0 } };
   // Comments can hide an unclosed `<` that would otherwise re-open the
   // scanner mid-fragment, and they render as nothing anyway.
   const src = html.replace(HTML_COMMENT, "");
@@ -201,6 +264,7 @@ export function sanitizeHtmlFragment(html: string): string {
       match[2].toLowerCase(),
       match[3] ?? "",
       match[4] === "/",
+      options,
     );
     last = start + match[0].length;
   }

@@ -8,11 +8,23 @@ describe("sanitizeHtmlFragment allowed markup", () => {
     );
     expect(html).toContain('<a href="https://vercel.com/tella/internal"');
     expect(html).toContain("<sup>");
+    // The avatar is on another host: named, not fetched, and not a second
+    // link inside the deployment link.
+    expect(html).not.toContain("<img");
+    expect(html).toContain(
+      '<sup><span class="md-remote-media md-remote-media-inline" title="vercel.com">',
+    );
+    expect(html).toContain("</sup></a>");
+  });
+
+  it("keeps a raw same-origin image with the author's sizing", () => {
+    const html = sanitizeHtmlFragment(
+      '<img src="/uploads/a.png?s=32&v=2" width="16" height="16" align="middle" alt="" />',
+    );
     expect(html).toContain('width="16"');
     expect(html).toContain('align="middle"');
     // A raw ampersand in a query string is not an entity to preserve.
-    expect(html).toContain("projectId=prj_x&amp;teamId=team_y&amp;s=32");
-    expect(html).toContain("</sup></a>");
+    expect(html).toContain('src="/uploads/a.png?s=32&amp;v=2"');
   });
 
   it("sends an external link to a new tab, leaves an anchor in place", () => {
@@ -25,8 +37,42 @@ describe("sanitizeHtmlFragment allowed markup", () => {
   });
 
   it("tags raw images so they render inline", () => {
-    expect(sanitizeHtmlFragment('<img src="https://x/a.svg">')).toBe(
-      '<img src="https://x/a.svg" class="md-inline-image" loading="lazy" />',
+    expect(sanitizeHtmlFragment('<img src="/uploads/a.svg">')).toBe(
+      '<img src="/uploads/a.svg" class="md-inline-image" loading="lazy" />',
+    );
+  });
+
+  it("names a raw image from another host instead of loading it", () => {
+    const html = sanitizeHtmlFragment(
+      '<img src="https://acme.example.test/a.png?q=1" alt="chart">',
+    );
+    expect(html).not.toContain("<img");
+    expect(html).toStartWith(
+      '<a href="https://acme.example.test/a.png?q=1" class="md-remote-media"',
+    );
+    expect(html).toContain("Image from acme.example.test");
+  });
+
+  it("tracks raw links across fragments of one document", () => {
+    const links = { depth: 0 };
+    sanitizeHtmlFragment('<a href="https://acme.example.test">', { links });
+    expect(links.depth).toBe(1);
+    expect(
+      sanitizeHtmlFragment('<img src="https://acme.example.test/a.png">', {
+        links,
+      }),
+    ).toStartWith('<span class="md-remote-media md-remote-media-inline"');
+    sanitizeHtmlFragment("</a>", { links });
+    expect(links.depth).toBe(0);
+  });
+
+  it("rewrites an image source before deciding", () => {
+    expect(
+      sanitizeHtmlFragment('<img src="https://acme.example.test/a.png">', {
+        imageSrc: () => "/gh-asset/abc?repo=acme",
+      }),
+    ).toBe(
+      '<img src="/gh-asset/abc?repo=acme" class="md-inline-image" loading="lazy" />',
     );
   });
 
@@ -38,12 +84,21 @@ describe("sanitizeHtmlFragment allowed markup", () => {
 
   it("keeps a theme-aware picture", () => {
     const html = sanitizeHtmlFragment(
-      '<picture><source media="(prefers-color-scheme: dark)" srcset="https://x/dark.png 1x, https://x/dark@2x.png 2x"><img src="https://x/light.png"></picture>',
+      '<picture><source media="(prefers-color-scheme: dark)" srcset="/uploads/dark.png 1x, /uploads/dark@2x.png 2x"><img src="/uploads/light.png"></picture>',
     );
     expect(html).toContain("<picture>");
     expect(html).toContain('media="(prefers-color-scheme: dark)"');
-    expect(html).toContain("https://x/dark@2x.png 2x");
+    expect(html).toContain("/uploads/dark@2x.png 2x");
     expect(html).toContain("</picture>");
+  });
+
+  it("drops a picture source that would load from another host", () => {
+    const html = sanitizeHtmlFragment(
+      '<picture><source srcset="/uploads/a.png 1x, https://acme.example.test/a@2x.png 2x"><img src="/uploads/a.png"></picture>',
+    );
+    expect(html).toBe(
+      '<picture><img src="/uploads/a.png" class="md-inline-image" loading="lazy" /></picture>',
+    );
   });
 
   it("keeps the relative timestamp in Vercel deployment tables", () => {
