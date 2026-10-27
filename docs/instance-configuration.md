@@ -49,10 +49,9 @@ sections the example omits, including `storage` and `organization`.
 Client distributions have their own packaging configuration. Their committed
 server default is deliberately portable: `http://127.0.0.1:3850`, so a fresh
 clone points at your own machine rather than somebody else's server. The Chrome,
-Electron, and native macOS distribution workflows stamp the deployment address
-from the `OS1_SERVER_URL` repository variable, falling back to
-`https://os.tella.dev`. The current iOS TestFlight workflow edits only the native
-macOS setting and leaves the iOS default at localhost.
+Electron, iOS and native macOS distribution workflows stamp the deployment
+address from the `OS1_SERVER_URL` repository variable, and fail when it is
+unset.
 
 Every client also lets the user change the server at runtime, so a wrong default
 is an inconvenience rather than a dead end:
@@ -72,7 +71,9 @@ Packaging configuration:
 
 Bundle identifiers, signing teams, provisioning profiles, update feeds,
 deployment destinations, and infrastructure log destinations are
-distributor-specific values. Change those values in the existing packaging
+distributor-specific values. The Apple release workflows read bundle ids and
+profile names from `project.yml` and `electron-builder.yml` and the team from
+the `APPLE_TEAM_ID` repository variable (`AGENTS.md` "Release workflows"). Change those values in the existing packaging
 files rather than replacing the files wholesale. Preserve entry points, targets,
 sources, dependencies, required entitlements, permissions, and usage
 descriptions.
@@ -85,7 +86,7 @@ credentials, but the app still needs a configured Open Session account.
 Background updates require `OPENSESSION_APNS_KEY_ID`,
 `OPENSESSION_APNS_TEAM_ID`, and `OPENSESSION_APNS_PRIVATE_KEY_PATH` pointing to
 an existing Apple `.p8` ES256 key. `OPENSESSION_APNS_BUNDLE_ID` is optional and
-defaults to `dev.tella.os1`; set `OPENSESSION_APNS_ENV=sandbox` for development,
+defaults to `pl.sessions.os1`, the app's id in `project.yml`; set `OPENSESSION_APNS_ENV=sandbox` for development,
 otherwise production is used.
 
 The iOS App ID and provisioning profile must include Push Notifications. The
