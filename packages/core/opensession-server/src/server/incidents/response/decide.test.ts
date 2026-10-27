@@ -677,6 +677,79 @@ test("reports: a valid block is parsed; a candidate without a PR is refused", ()
   });
 });
 
+test("a report's findings ride on the record-report step", () => {
+  const findings = {
+    blocks: [{ id: "unknown", kind: "question", text: "Why only some?" }],
+  };
+  const investigatorDone = (report: object) =>
+    view({
+      incident: incident(
+        "investigating",
+        response({ agents: [run("investigator")] }),
+      ),
+      agents: new Map([
+        [
+          "child-1",
+          {
+            status: "done",
+            costUsd: 1,
+            tokens: 10,
+            prUrl: "https://github.com/acme/web/pull/12",
+            finalText: fence(report),
+          },
+        ],
+      ]),
+    });
+  const verifierDone = (report: object) =>
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "verifying",
+          candidate: candidate(),
+          agents: [
+            run("investigator", { status: "done", report: goodInvestigator }),
+            run("verifier", { sessionId: "child-2" }),
+          ],
+        }),
+      ),
+      agents: new Map([
+        [
+          "child-2",
+          { status: "done", costUsd: 1, tokens: 10, finalText: fence(report) },
+        ],
+      ]),
+    });
+  const inv = decideNextStep(
+    investigatorDone({ ...goodInvestigator, findings }),
+  );
+  expect(inv).toMatchObject({
+    step: "record-report",
+    sessionId: "child-1",
+    report: { role: "investigator" },
+  });
+  expect(inv).toHaveProperty("findings", findings);
+  const ver = decideNextStep(verifierDone({ ...goodVerifier, findings }));
+  expect(ver).toMatchObject({
+    step: "record-report",
+    sessionId: "child-2",
+    report: { role: "verifier" },
+  });
+  expect(ver).toHaveProperty("findings", findings);
+  expect(decideNextStep(investigatorDone(goodInvestigator))).not.toHaveProperty(
+    "findings",
+  );
+  expect(decideNextStep(verifierDone(goodVerifier))).not.toHaveProperty(
+    "findings",
+  );
+  // A refused report carries none: nothing is saved from it.
+  expect(
+    decideNextStep(
+      investigatorDone({ ...goodInvestigator, summary: "", findings }),
+    ),
+  ).not.toHaveProperty("findings");
+});
+
 test("reports: a refused fix without its PR names the block's problems and the PR at once", () => {
   const v = view({
     incident: incident(

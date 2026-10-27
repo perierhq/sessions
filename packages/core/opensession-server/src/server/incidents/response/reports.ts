@@ -375,6 +375,16 @@ function parseBlock(
   return { value };
 }
 
+/** The raw `findings` value of the message's one incident-report block;
+ *  undefined when absent or unreadable. The report's own parser ignores the
+ *  key, so a report reads the same with or without it. */
+export function reportFindingsInput(text: string): unknown {
+  const block = parseBlock(text);
+  if (!("value" in block) || !Object.hasOwn(block.value, "findings"))
+    return undefined;
+  return block.value.findings;
+}
+
 const ANSI_ESCAPE =
   /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g;
 // C0 and C1 controls except the newline, bidi marks, embeddings, overrides

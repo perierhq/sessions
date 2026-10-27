@@ -1255,6 +1255,87 @@ test("findings-only writes do not wake the fix loop", async () => {
   expect(responseMoved(base, null)).toBe(true);
 });
 
+test("a refused report saves no findings", async () => {
+  const w = await world();
+  const calls: Array<
+    Parameters<CoordinatorDeps["applyReportFindings"]>[0] & {
+      reportStored: boolean;
+    }
+  > = [];
+  w.deps.applyReportFindings = async (req) => {
+    const i = await getIncident(req.incidentId);
+    const run = i?.response?.agents.find((a) => a.sessionId === req.sessionId);
+    calls.push({ ...req, reportStored: run?.report !== undefined });
+  };
+  const findings = {
+    blocks: [{ id: "unknown", kind: "question", text: "Why only acme?" }],
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  // A refused report saves no findings.
+  w.finish("child-1", fence({ ...investigatorReport, summary: "", findings }), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect(calls).toEqual([]);
+  // Refused and reminded in the same advance.
+  expect(w.sends.map((m) => m.id)).toEqual(["child-1"]);
+});
+
+test("report findings are saved after the report", async () => {
+  const w = await world();
+  const calls: Array<
+    Parameters<CoordinatorDeps["applyReportFindings"]>[0] & {
+      reportStored: boolean;
+    }
+  > = [];
+  w.deps.applyReportFindings = async (req) => {
+    const i = await getIncident(req.incidentId);
+    const run = i?.response?.agents.find((a) => a.sessionId === req.sessionId);
+    calls.push({ ...req, reportStored: run?.report !== undefined });
+  };
+  const findings = {
+    blocks: [{ id: "unknown", kind: "question", text: "Why only acme?" }],
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence({ ...investigatorReport, findings }), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  expect(calls).toEqual([
+    {
+      incidentId: w.incident.id,
+      sessionId: "child-1",
+      role: "investigator",
+      input: findings,
+      claims: ["Upstream returns 403 to the default user agent"],
+      reportStored: true,
+    },
+  ]);
+  // The verifier's report: its claims are the candidate's.
+  const verifierFindings = { blocks: [] };
+  w.finish("child-2", fence({ ...goodVerifier, findings: verifierFindings }));
+  await advanceIncident(w.incident.id, w.deps);
+  expect(calls[1]).toEqual({
+    incidentId: w.incident.id,
+    sessionId: "child-2",
+    role: "verifier",
+    input: verifierFindings,
+    claims: ["Upstream returns 403 to the default user agent"],
+    reportStored: true,
+  });
+  expect(calls).toHaveLength(2);
+});
+
+test("a report without findings saves none", async () => {
+  const w = await world();
+  let called = 0;
+  w.deps.applyReportFindings = async () => {
+    called++;
+  };
+  await w.toCertain();
+  expect(called).toBe(0);
+});
+
 test("upstream block: certain → veto → merged as the App → deployed → watched → resolved", async () => {
   const w = await world();
   await w.toCertain();

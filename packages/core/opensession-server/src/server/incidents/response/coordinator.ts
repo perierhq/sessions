@@ -47,6 +47,7 @@ import {
   resolveAgentAccess,
 } from "../access/resolve";
 import { type ConnectionProblem, connectionProblems } from "../access/mcp";
+import { applyFindings } from "../findings/apply";
 import { incidentAudit } from "../audit-sink";
 import {
   getIncident,
@@ -160,6 +161,15 @@ export interface CoordinatorDeps {
   /** The service finished recovery and is not shutting down. Until then
    *  the tick and wake-ups do nothing. */
   ready: () => boolean;
+  /** Saves the findings an accepted report carries, unless the run already
+   *  showed some with `show_findings` this round. Never throws. */
+  applyReportFindings: (req: {
+    incidentId: string;
+    sessionId: string;
+    role: AgentRole;
+    input: unknown;
+    claims: string[];
+  }) => Promise<void>;
 }
 
 function defaultDeps(): CoordinatorDeps {
@@ -195,6 +205,19 @@ function defaultDeps(): CoordinatorDeps {
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
+    applyReportFindings: async (req) => {
+      try {
+        await applyFindings({
+          ...req,
+          source: "report",
+          onlyIfNoToolSet: true,
+        });
+      } catch (error) {
+        console.warn(
+          `[incidents] ${req.incidentId}: ${req.role} report findings not saved: ${errorMessage(error)}`,
+        );
+      }
+    },
   };
 }
 
@@ -1678,6 +1701,18 @@ async function recordReport(
     },
   );
   if (!next) return false;
+  // Saved after the report, so the run's report claims are in place.
+  if (report && step.findings !== undefined)
+    await d.applyReportFindings({
+      incidentId: incident.id,
+      sessionId: run.sessionId,
+      role: run.role,
+      input: step.findings,
+      claims: (report.role === "investigator"
+        ? report.claims
+        : (next.response?.candidate?.claims ?? [])
+      ).map((c) => c.text),
+    });
   if (report?.role === "verifier")
     incidentAudit({
       kind: "incident_verdict",

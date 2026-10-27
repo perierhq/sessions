@@ -8,6 +8,7 @@ import {
   extractReportBlock,
   parseInvestigatorReport,
   parseVerifierReport,
+  reportFindingsInput,
 } from "./reports";
 
 const fence = (o: unknown) =>
@@ -112,6 +113,35 @@ test("only the end of a long message is read, and blocks are bounded", () => {
 test("a report's own error key is just an unknown key", () => {
   const r = parseInvestigatorReport(fence({ ...good, error: "x" }), ctx);
   expect("role" in r && r.role).toBe("investigator");
+});
+test("the findings key is read raw and the report still parses", () => {
+  const findings = {
+    blocks: [
+      { id: "unknown", kind: "question", text: "Why only some users?" },
+      { id: "when", keep: true },
+    ],
+  };
+  const withFindings = fence({ ...good, findings });
+  const without = parseInvestigatorReport(fence(good), ctx);
+  expect(parseInvestigatorReport(withFindings, ctx)).toEqual(without);
+  expect(reportFindingsInput(withFindings)).toEqual(findings);
+  // Any JSON value is passed on raw, for the validator to judge.
+  expect(reportFindingsInput(fence({ ...good, findings: "x" }))).toBe("x");
+  expect(reportFindingsInput(fence(good))).toBeUndefined();
+  expect(
+    reportFindingsInput(`${withFindings}\n\n${withFindings}`),
+  ).toBeUndefined();
+  expect(reportFindingsInput("no block")).toBeUndefined();
+  expect(
+    reportFindingsInput("```incident-report\n{not json\n```"),
+  ).toBeUndefined();
+  expect(reportFindingsInput("```incident-report\n[1]\n```")).toBeUndefined();
+  const huge = fence({
+    ...good,
+    findings,
+    pad: "x".repeat(64 * 1024),
+  });
+  expect(reportFindingsInput(huge)).toBeUndefined();
 });
 test("drops unknown keys", () => {
   const r = parseInvestigatorReport(
