@@ -203,6 +203,14 @@ const resultRecord = (value: unknown) => {
       (value as Record<string, unknown>).__sessionKernelFailure === true,
   };
 };
+/** A delete_session completed with the 409 refusal an earlier gateway
+ *  recorded when the session's run had not stopped in time. Nothing was
+ *  deleted then, so the request runs again rather than replaying the
+ *  refusal for as long as the command is kept. The gateway now fails such
+ *  a refusal as retryable instead (session-delete.ts). */
+const deleteRefusedWhileStopping = (result: unknown): boolean =>
+  (result as { status?: unknown } | null | undefined)?.status === 409;
+
 const parsed = <T>(value: string | null | undefined): T | undefined => {
   if (value == null) return undefined;
   return JSON.parse(value) as T;
@@ -3177,7 +3185,13 @@ export class SessionKernelStore {
         input.operation,
       ),
     });
-    if (record.status === "completed")
+    if (
+      record.status === "completed" &&
+      !(
+        input.operation === "delete_session" &&
+        deleteRefusedWhileStopping(record.result)
+      )
+    )
       return { status: "completed", result: record.result, duplicate: true };
     if (record.status === "processing") return { status: "in_progress" };
     if (

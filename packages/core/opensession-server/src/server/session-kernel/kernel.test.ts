@@ -605,6 +605,37 @@ describe("SessionKernel", () => {
     });
   });
 
+  test("a deletion completed with an earlier still-stopping refusal executes again", () => {
+    const input = {
+      sessionId: "delete-refused",
+      requestId: "delete:delete-refused",
+      operation: "delete_session" as const,
+      identity: { cleanWorktree: true },
+    };
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    store.completeGatewayCommand({
+      ...input,
+      result: {
+        status: 409,
+        body: {
+          error: "The session is still stopping. Retry deletion shortly.",
+        },
+      },
+    });
+    expect(store.requestGatewayCommand(input)).toEqual({ status: "execute" });
+    expect(store.requestGatewayCommand(input)).toEqual({
+      status: "in_progress",
+    });
+    const done = { status: 500, body: { error: "disk full" } };
+    store.completeGatewayCommand({ ...input, result: done });
+    // Any other completed result is still replayed.
+    expect(store.requestGatewayCommand(input)).toEqual({
+      status: "completed",
+      result: done,
+      duplicate: true,
+    });
+  });
+
   test("replays typed submit-prompt results under one immutable identity", async () => {
     const input = {
       sessionId: "typed-submit",
