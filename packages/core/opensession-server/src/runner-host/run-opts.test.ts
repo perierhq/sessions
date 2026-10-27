@@ -198,3 +198,24 @@ describe("runAgentOptsFromSpec", () => {
     );
   });
 });
+
+// The launchers build their specs inline from a live session (no seam to
+// call here), so this reads them the way mcp-proxy-mode.test.ts does.
+describe("launchers that write a run host spec", () => {
+  const source = (path: string) =>
+    Bun.file(new URL(path, import.meta.url)).text();
+
+  test("the local launcher carries pstack mode and the skills scope", async () => {
+    const client = await source("../server/host-client.ts");
+    expect(client).toMatch(
+      /const spec: RunHostSpec = \{[\s\S]*?pstackMode: opts\.pstackMode,\s*projectSkillsOnly: opts\.projectSkillsOnly,/,
+    );
+  });
+
+  test("the Runner launcher carries pstack mode and the skills scope", async () => {
+    const runner = await source("../server/runner-session.ts");
+    expect(runner).toMatch(
+      /const spec: RunHostSpec = priorSpec \?\? \{[\s\S]*?pstackMode: session\.pstackMode,[\s\S]*?projectSkillsOnly: isSupportSession\(session\) \|\| undefined,[\s\S]*?\n {2}\};/,
+    );
+  });
+});
