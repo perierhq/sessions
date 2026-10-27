@@ -7,6 +7,7 @@
 import type { SessionSpeed } from "@tellahq/opensession-protocol/session";
 import type { McpScope } from "./runner-shared";
 import type { RemoteWorkspaceSpec } from "@tellahq/opensession-protocol/runner";
+import type { GitIdentity } from "@tellahq/opensession-protocol/identity";
 import { existsSync, readFileSync } from "fs";
 import { readJsonFileShared } from "./shared/json-file-cache";
 import { OPENSESSION_SESSIONS_DIR } from "./paths";
@@ -105,6 +106,12 @@ export interface ActiveRunRecord {
    *  Preserved across resume so recovery does not fall back to pool-only;
    *  read by provider account selection only, never by MCP or GitHub policy. */
   accountUser?: string;
+  /** MCP OAuth identity (the session creator), preserved across resume so a
+   *  resumed turn mounts the same granted MCP servers. */
+  mcpGrantUser?: string;
+  /** Person credited on the run's commits (Co-authored-by), preserved across
+   *  resume. Null: credit no one. */
+  author?: GitIdentity | null;
   deniedTools?: Record<string, string>; // per-run tool denials, preserved across resume
   webFetchHosts?: string[]; // unattended run's web_fetch allowlist (egress hosts), preserved across resume
   publicationPolicy?: { repo: string; branch: string; headBranch: string };
@@ -229,6 +236,8 @@ function writeRunJournal(journal: Record<string, ActiveRunRecord>): void {
  */
 export function buildRunJournalRecord(
   opts: {
+    mcpGrantUser?: string;
+    author?: GitIdentity | null;
     deniedTools?: Record<string, string>;
     webFetchHosts?: string[];
     publicationPolicy?: { repo: string; branch: string; headBranch: string };
@@ -260,6 +269,8 @@ export function buildRunJournalRecord(
     | "firstJournaledAt"
     | "resumeAttempts"
     | "lastResumeAt"
+    | "mcpGrantUser"
+    | "author"
     | "deniedTools"
     | "webFetchHosts"
     | "publicationPolicy"
@@ -285,6 +296,8 @@ export function buildRunJournalRecord(
     // A Sandbox run's recovery must act on the same Sandbox (never on this
     // machine). The bearer is per process and is not journaled.
     remoteWorkspace: site.remoteWorkspace ?? withoutToken(opts.remoteWorkspace),
+    mcpGrantUser: opts.mcpGrantUser,
+    author: opts.author,
     deniedTools: opts.deniedTools,
     ...(opts.webFetchHosts ? { webFetchHosts: [...opts.webFetchHosts] } : {}),
     publicationPolicy: opts.publicationPolicy,
