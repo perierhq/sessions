@@ -18,8 +18,10 @@ import AppIntents
 struct TalkToDeskIntent: AppIntent {
     static let title: LocalizedStringResource = "Talk to Desk"
 
+    /// No Apple product names here ("iPhone", "Siri"…): App Store processing
+    /// rejects a build whose intent metadata contains one (ITMS-90626).
     static let description = IntentDescription(
-        "Starts a live voice call with your Desk. On iPhone the call stays in the Dynamic Island, so you can keep using your phone.",
+        "Starts a live voice call with your Desk that keeps running while you use other apps.",
         categoryName: "Sessions",
         searchKeywords: ["desk", "voice", "call", "talk", "assistant"]
     )
