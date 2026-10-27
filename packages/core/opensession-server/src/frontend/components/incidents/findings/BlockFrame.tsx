@@ -48,7 +48,7 @@ export function BlockFrame({
           <Button
             variant="ghost"
             size="sm"
-            className="-mr-2.5 shrink-0 phone:min-h-11"
+            className="-mr-2 shrink-0 phone:min-h-11"
             onClick={onOpenSource}
           >
             {FINDINGS_COPY.showSource}

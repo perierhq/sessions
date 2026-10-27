@@ -17,6 +17,7 @@ import {
 import {
   AUDIT_ROW,
   FINDINGS_CLAIM_ROW,
+  FINDINGS_INLINE_PROSE,
   FINDINGS_LABEL,
   FINDINGS_LOG,
   FINDINGS_LOG_MARK,
@@ -129,7 +130,15 @@ export function TimelineBlock({
           >
             {clockTime(row.at)}
           </time>
-          <span className="min-w-0 [overflow-wrap:anywhere]">{row.text}</span>
+          {row.anchor ? (
+            <span className="min-w-0 [overflow-wrap:anywhere]">{row.text}</span>
+          ) : (
+            <MarkdownBody
+              html={renderMarkdown(row.text)}
+              enhance={false}
+              className={FINDINGS_INLINE_PROSE}
+            />
+          )}
         </li>
       ))}
     </ol>

@@ -199,6 +199,11 @@ export const FINDINGS_PROSE =
 export const FINDINGS_PROSE_QUIET =
   "markdown select-text text-supporting text-dim [overflow-wrap:anywhere]";
 
+/** One line of agent prose inside a row (a timeline event): Markdown for
+ *  inline code and emphasis, in the row's own size and colour. */
+export const FINDINGS_INLINE_PROSE =
+  "markdown min-w-0 select-text [overflow-wrap:anywhere] [&_p]:m-0";
+
 /** A small label inside a block ("What would answer it", "Rests on"). */
 export const FINDINGS_LABEL = "m-0 text-label text-faint";
 

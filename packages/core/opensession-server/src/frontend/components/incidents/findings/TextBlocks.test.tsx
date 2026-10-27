@@ -194,7 +194,7 @@ test("timeline lists anchors and events in order", () => {
     size: "full",
     events: [
       { at: T("12:10"), text: "Errors peak at acme" },
-      { at: T("12:03"), text: "Release v1.2.0 goes out" },
+      { at: T("12:03"), text: "Release v1.2.0 goes out with `replicas: 0`" },
     ],
   };
   const html = renderToStaticMarkup(
@@ -208,6 +208,8 @@ test("timeline lists anchors and events in order", () => {
   expect(opened).toBeGreaterThan(-1);
   expect(opened).toBeLessThan(release);
   expect(release).toBeLessThan(peak);
+  // Agent event text is Markdown; the page's own anchors are plain text.
+  expect(html).toContain("<code>replicas: 0</code>");
 });
 
 test("question says what would answer it", () => {
