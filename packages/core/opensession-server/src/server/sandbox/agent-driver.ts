@@ -192,6 +192,17 @@ export function withSandboxAgent(
   if (!sandboxAgentEnabled(options.providerId)) return inner;
   const { sandboxId } = options;
   const compose = options.compose ?? composeAgentShell;
+  // The env travels in the frame and reaches spawn directly: folded into the
+  // script (as the provider lanes must) it would sit in argv, readable by
+  // anything that lists the Sandbox's processes.
+  const agentFrame = (cmd: string, opts?: RemoteExecOpts) => {
+    const env =
+      opts?.env && Object.keys(opts.env).length ? opts.env : undefined;
+    return {
+      script: compose(cmd, opts && { ...opts, env: undefined }),
+      ...(env ? { env } : {}),
+    };
+  };
   const kick = async (waitMs: number) => {
     if (sandboxAgentConnected(sandboxId)) return;
     const state = launches.get(sandboxId);
@@ -215,7 +226,7 @@ export function withSandboxAgent(
       const timeoutMs = opts?.timeoutMs ?? 120_000;
       const viaAgent = sandboxAgentRequest(
         sandboxId,
-        { t: "exec", script: compose(cmd, opts), timeoutMs },
+        { t: "exec", ...agentFrame(cmd, opts), timeoutMs },
         timeoutMs + 15_000,
       );
       return viaAgent ? viaAgent : inner.exec(cmd, opts);
@@ -223,7 +234,7 @@ export function withSandboxAgent(
     async execBackground(cmd, opts) {
       const viaAgent = sandboxAgentRequest(
         sandboxId,
-        { t: "spawn", script: compose(cmd, opts) },
+        { t: "spawn", ...agentFrame(cmd, opts) },
         30_000,
       );
       if (!viaAgent) return inner.execBackground(cmd, opts);

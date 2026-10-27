@@ -52,6 +52,31 @@ export function commandEnv(
 
 type Send = (frame: Record<string, unknown>) => void;
 
+/** One timestamped line on stdout, which the launch sends to agent.log.
+ *  Never a command, its output, or a credential. */
+export function agentLog(message: string): void {
+  console.log(`${new Date().toISOString()} ${message}`);
+}
+
+/** A request's own environment on top of the agent's. Passed to spawn, never
+ *  folded into the command line, so a token in it is not visible to anything
+ *  that can list processes. */
+export function frameEnv(
+  base: Record<string, string>,
+  extra: unknown,
+): Record<string, string> {
+  if (!extra || typeof extra !== "object") return base;
+  const env = { ...base };
+  for (const [key, value] of Object.entries(extra))
+    if (
+      typeof value === "string" &&
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+      !key.startsWith("OPENSESSION_SANDBOX_AGENT_")
+    )
+      env[key] = value;
+  return env;
+}
+
 /** Run one shell script in its own process group, so a timeout reaches every
  *  process it started. Never throws. */
 export async function runScript(
@@ -131,9 +156,13 @@ export async function handleFrame(
         Number.isFinite(message.timeoutMs) && message.timeoutMs > 0
           ? Number(message.timeoutMs)
           : 120_000;
-      send({ t: "result", id, ...(await runScript(script, timeoutMs, env)) });
+      send({
+        t: "result",
+        id,
+        ...(await runScript(script, timeoutMs, frameEnv(env, message.env))),
+      });
     } else if (message.t === "spawn") {
-      spawnDetached(String(message.script || ""), env);
+      spawnDetached(String(message.script || ""), frameEnv(env, message.env));
       send({ t: "result", id, exitCode: 0, stdout: "", stderr: "" });
     } else if (message.t === "write") {
       const path = String(message.path || "");
@@ -203,6 +232,7 @@ function connectOnce(endpoint: string, token: string): Promise<boolean> {
     }, PING_INTERVAL_MS);
     socket.addEventListener("open", () => {
       opened = true;
+      agentLog("connected");
       lastPong = Date.now();
       send({
         t: "hello",
@@ -224,8 +254,9 @@ function connectOnce(endpoint: string, token: string): Promise<boolean> {
     });
     socket.addEventListener(
       "close",
-      () => {
+      (event) => {
         clearInterval(pinger);
+        if (opened) agentLog(`disconnected (${event.code})`);
         resolve(opened);
       },
       { once: true },
@@ -246,7 +277,11 @@ export async function runSandboxAgent(
   let failed = 0;
   while (true) {
     const probe = await probeToken(endpoint, token);
-    if (probe === "rejected") return;
+    if (probe === "rejected") {
+      agentLog("token rejected by the server; exiting");
+      return;
+    }
+    if (probe === "unreachable") agentLog("server unreachable; retrying");
     if (probe === "valid") {
       const opened = await connectOnce(endpoint, token);
       failed = opened ? 0 : failed + 1;
@@ -263,7 +298,11 @@ if (import.meta.main) {
     token = (await readFile(tokenFile, "utf8")).trim();
   } catch {}
   await unlink(tokenFile).catch(() => {});
-  if (!endpoint || !token) process.exit(2);
+  if (!endpoint || !token) {
+    agentLog("no endpoint or token; exiting");
+    process.exit(2);
+  }
+  agentLog(`started (pid ${process.pid}, protocol ${SANDBOX_AGENT_PROTOCOL})`);
   for (const key of Object.keys(process.env))
     if (key.startsWith("OPENSESSION_SANDBOX_AGENT_")) delete process.env[key];
   await runSandboxAgent(endpoint, token);

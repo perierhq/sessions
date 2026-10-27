@@ -218,6 +218,12 @@ test("the driver takes the provider lane until the agent is connected", async ()
     env: { GREETING: "from the agent" },
   });
   expect(viaAgent.stdout).toBe("from the agent\n");
+  // The env reaches the process, not its command line.
+  const argv = await driver.exec("cat /proc/$$/cmdline | tr '\\0' ' '", {
+    env: { GH_TOKEN: "ghu_secret_value" },
+  });
+  expect(argv.exitCode).toBe(0);
+  expect(argv.stdout).not.toContain("ghu_secret_value");
   expect(calls).toHaveLength(2);
 });
 
