@@ -59,7 +59,7 @@ import { personaName } from "../config";
 import { isMachineActor } from "../session-actors";
 import { getConversation, updateConversation } from "./store";
 import { addSenderStrike, senderStrikes } from "./strikes";
-import { classifyMessage, failedTriage } from "./triage";
+import { THANKS_MAX_CHARS, classifyMessage, failedTriage } from "./triage";
 import { wrapAttribute } from "./wrap";
 
 /** New support sessions one inbox may start in an hour; the rest wait for
@@ -836,8 +836,8 @@ export async function retrySupportRouting(now: number): Promise<number> {
 export const THANKS_CLOSED =
   "The customer only said thanks. Closed without a reply";
 
-/** Longest thanks that closes a conversation on its own. */
-export const THANKS_MAX_CHARS = 300;
+// The longest thanks that closes a conversation on its own (triage.ts).
+export { THANKS_MAX_CHARS };
 
 const sameAddress = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();

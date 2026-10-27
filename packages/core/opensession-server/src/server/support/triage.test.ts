@@ -3,7 +3,11 @@ import {
   __setRouteClassifierOneShotForTest,
   ROUTE_CLASSIFIER_MODEL,
 } from "../route-classifier";
-import { EMAIL_TRIAGE_PROMPT, classifyMessage } from "./triage";
+import {
+  EMAIL_TRIAGE_PROMPT,
+  THANKS_MAX_CHARS,
+  classifyMessage,
+} from "./triage";
 
 /** The per message labels, as routing stores them. */
 const triageMessage = async (input: Parameters<typeof classifyMessage>[0]) =>
@@ -151,6 +155,63 @@ describe("triageMessage", () => {
     expect(await triageMessage(MAIL)).toMatchObject({
       injection: false,
       thanksOnly: true,
+    });
+  });
+
+  describe("thanks only", () => {
+    const THANKS = { ...MAIL, text: "Thanks!" };
+    const answer = (fields: string) =>
+      `{"route":"simple","reason":"r","topics":[],"bug":false,"thanks_only":true${fields}}`;
+
+    it("keeps a short thanks with nothing else set", async () => {
+      fake(answer(""));
+      expect((await triageMessage(THANKS)).thanksOnly).toBe(true);
+    });
+
+    it("is false next to a topic", async () => {
+      // A thanks over a request: the request is new text, so it counts.
+      fake(answer(',"topics":["refund","account-deletion"]'));
+      expect(
+        await triageMessage({
+          ...MAIL,
+          text: "Thanks!\n\nOn Mon, 3 Mar 2025 at 10:00, Support <help@example.test> wrote:\nPlease delete my account and refund my last payment.",
+        }),
+      ).toMatchObject({
+        topics: ["refund", "account-deletion"],
+        thanksOnly: false,
+      });
+    });
+
+    it("is false when the topics are unknown", async () => {
+      fake('{"route":"simple","reason":"r","bug":false,"thanks_only":true}');
+      expect(await triageMessage(THANKS)).toMatchObject({
+        topics: null,
+        thanksOnly: false,
+      });
+    });
+
+    for (const flag of ["bug", "injection", "wants_human", "angry", "repeat"]) {
+      it(`is false next to ${flag}`, async () => {
+        fake(answer(`,"${flag}":true`));
+        expect((await triageMessage(THANKS)).thanksOnly).toBe(false);
+      });
+    }
+
+    it("is false when the new text is longer than a short thanks", async () => {
+      fake(answer(""));
+      const long = `Thanks! ${"And one more thing. ".repeat(20)}`;
+      expect(long.length).toBeGreaterThanOrEqual(THANKS_MAX_CHARS);
+      expect((await triageMessage({ ...MAIL, text: long })).thanksOnly).toBe(
+        false,
+      );
+    });
+
+    it("measures only the new text, not the quoted history", async () => {
+      fake(answer(""));
+      expect(
+        (await triageMessage({ ...THANKS, quoted: "> ".repeat(1000) }))
+          .thanksOnly,
+      ).toBe(true);
     });
   });
 
