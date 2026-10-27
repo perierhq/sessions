@@ -118,5 +118,6 @@ table below in the same PR.
 Upstream commits deliberately not ported. `scripts/upstream-pending.ts`
 reads the first column.
 
-| Upstream sha | Subject | Why |
-| ------------ | ------- | --- |
+| Upstream sha                             | Subject                                                                 | Why                                                                                                                                                                                                                                              |
+| ---------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 19a1fdebf5b12a5ac1cef13a14969f19d5b50d9a | Pi: pass thinking level and summarized thinking to the Claude Agent SDK | The fork has no Claude Agent SDK provider: Claude turns run on pi's own Anthropic provider, which already maps the thinking level to `effort` (with the model's `thinkingLevelMap`) and requests adaptive thinking with `display: "summarized"`. |
