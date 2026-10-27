@@ -1,10 +1,14 @@
-# Tella's client release pipeline — fork and rebrand (see packages/clients/ios/README).
+# Inherited from upstream Open Session. Nothing here names an Apple account:
+# the bundle id and profile name come from packages/clients/ios/project.yml,
+# the team and server from repository variables. AGENTS.md "Release
+# workflows" lists what to set before MAC_RELEASE_ENABLED.
 name: Release OS1 for macOS (TestFlight)
 
 # Builds, signs and uploads the native SwiftUI OS1 client's macOS target
 # (OS1Mac in packages/clients/ios/project.yml) to TestFlight whenever os1-ios code lands on
 # main — the sibling of os1-ios-testflight.yml, sharing the same app record
-# (dev.tella.os1, universal purchase) and the same Apple Distribution cert.
+# (OS1Mac's bundle id is the iOS app's, universal purchase) and the same
+# Apple Distribution cert.
 #
 # The Mac wrinkle: the App Store .pkg must be signed by a Mac Installer
 # Distribution identity, and both identities share ONE private key — a second
@@ -45,10 +49,31 @@ jobs:
     timeout-minutes: 45
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
+      # Also read by `xcodegen generate`: project.yml's DEVELOPMENT_TEAM is
+      # ${APPLE_TEAM_ID}.
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      OS1_SERVER_URL: ${{ vars.OS1_SERVER_URL }}
       OS1_DERIVED_DATA: ${{ github.workspace }}/.xcode-derived-data/macos
       OS1_COMPILATION_CACHE: ${{ github.workspace }}/.xcode-compilation-cache/macos
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      # Fails before any signing work when a repository variable is missing,
+      # and reads the bundle id and profile name from project.yml once.
+      - name: Read signing identities
+        id: ids
+        run: |
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+            || { echo '::error::Set the APPLE_TEAM_ID repository variable to your 10-character Apple team id'; exit 1; }
+          [[ "$OS1_SERVER_URL" =~ ^https?://[^[:space:]|]+$ ]] \
+            || { echo '::error::Set the OS1_SERVER_URL repository variable to the server the app opens by default (https://...)'; exit 1; }
+          APP_ID=$(node ci/project-settings.mjs OS1Mac PRODUCT_BUNDLE_IDENTIFIER)
+          APP_PROFILE=$(node ci/project-settings.mjs OS1Mac PROVISIONING_PROFILE_SPECIFIER Release)
+          {
+            echo "app-id=$APP_ID"
+            echo "app-profile=$APP_PROFILE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Team $APPLE_TEAM_ID: $APP_ID ($APP_PROFILE)"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -108,21 +133,31 @@ jobs:
           security set-key-partition-list -S "apple-tool:,apple:" -s -k "$KCPW" "$KC" > /dev/null
           security list-keychains -d user -s "$KC" login.keychain-db
           security find-identity -v "$KC"
-          security find-identity -v "$KC" | grep -q "Apple Distribution: Tella HQ Inc."
-          security find-identity -v "$KC" | grep -q "3rd Party Mac Developer Installer: Tella HQ Inc."
+          # Both identities must belong to APPLE_TEAM_ID; the export step
+          # picks them by type, not by holder name.
+          security find-identity -v "$KC" | grep -q "\"Apple Distribution: .* ($APPLE_TEAM_ID)\"" \
+            || { echo "::error::No Apple Distribution identity for team $APPLE_TEAM_ID in OS1_IOS_DIST_P12_BASE64"; exit 1; }
+          security find-identity -v "$KC" | grep -Eq "\"(3rd Party Mac Developer Installer|Mac Installer Distribution): .* \($APPLE_TEAM_ID\)\"" \
+            || { echo "::error::No Mac installer identity for team $APPLE_TEAM_ID in OS1_MAC_INSTALLER_P12_BASE64"; exit 1; }
           echo "OS1_KEYCHAIN=$KC" >> "$GITHUB_ENV"
 
       - name: Install Mac App Store provisioning profile
         env:
           PROFILE_BASE64: ${{ secrets.OS1_MAC_PROVISIONING_PROFILE_BASE64 }}
+          APP_ID: ${{ steps.ids.outputs.app-id }}
+          APP_PROFILE: ${{ steps.ids.outputs.app-profile }}
         run: |
           test -n "$PROFILE_BASE64"
           PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES"
           printf '%s' "$PROFILE_BASE64" | base64 -D > "$PROFILES/OS1_Mac_App_Store.provisionprofile"
-          # Sanity: it must be the Mac App Store profile for our bundle id.
+          # Sanity: it must be the Mac App Store profile project.yml names,
+          # for our team and bundle id.
           security cms -D -i "$PROFILES/OS1_Mac_App_Store.provisionprofile" > /tmp/os1-mac-profile.plist
-          grep -aq 'dev.tella.os1' /tmp/os1-mac-profile.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/os1-mac-profile.plist)" = "$APP_PROFILE" \
+            || { echo "::error::OS1_MAC_PROVISIONING_PROFILE_BASE64 is not the profile named \"$APP_PROFILE\" in project.yml"; exit 1; }
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' /tmp/os1-mac-profile.plist)" = "$APPLE_TEAM_ID.$APP_ID" \
+            || { echo "::error::Profile \"$APP_PROFILE\" is not for $APPLE_TEAM_ID.$APP_ID"; exit 1; }
 
       - name: Install App Store Connect API key
         env:
@@ -137,29 +172,30 @@ jobs:
       - name: Compute build number
         id: build
         run: |
-          # macOS build 3 was uploaded manually before this pipeline existed
-          # (1 and 2 are the iOS platform's); offset so CI numbers stay
-          # strictly increasing on the macOS platform.
+          # Upstream uploaded macOS build 3 by hand before this pipeline
+          # existed. The offset is harmless on a new app record: build numbers
+          # only have to keep increasing.
           BN=$(( 3 + GITHUB_RUN_NUMBER ))
           echo "number=$BN" >> "$GITHUB_OUTPUT"
           echo "macOS build number: $BN"
 
       # The repository ships a portable default (localhost) so a fresh clone does
-      # not point at someone else's server. Release builds stamp the real one in.
-      # Set the OS1_SERVER_URL repository variable to override.
+      # not point at someone else's server. Release builds stamp the
+      # OS1_SERVER_URL repository variable in.
       - name: Stamp deployment server
-        env:
-          SERVER: ${{ vars.OS1_SERVER_URL || 'https://os.tella.dev' }}
         run: |
+          SERVER="${OS1_SERVER_URL%/}"
           grep -q 'INFOPLIST_KEY_OS1DefaultServerURL:' project.yml \
             || { echo '::error::OS1DefaultServerURL key missing from project.yml'; exit 1; }
-          sed -i '' "s|INFOPLIST_KEY_OS1DefaultServerURL: .*|INFOPLIST_KEY_OS1DefaultServerURL: $SERVER|" project.yml
-          grep 'INFOPLIST_KEY_OS1DefaultServerURL' project.yml
+          sed -i '' "s|OS1DefaultServerURL: .*|OS1DefaultServerURL: $SERVER|" project.yml
+          grep 'OS1DefaultServerURL' project.yml
 
       - name: Generate Xcode project
         run: |
           echo "Compilation cache restored: ${{ steps.compilation-cache.outputs.cache-matched-key || 'none' }}" >> "$GITHUB_STEP_SUMMARY"
           xcodegen generate
+          grep -q "DEVELOPMENT_TEAM = $APPLE_TEAM_ID;" OS1.xcodeproj/project.pbxproj \
+            || { echo '::error::xcodegen did not apply APPLE_TEAM_ID'; exit 1; }
 
       - name: Archive
         run: |
@@ -184,26 +220,33 @@ jobs:
           # stays here — it's runner-specific and profile-free, so package
           # targets don't object to it.
 
+      # "Apple Distribution" and "Mac Installer Distribution" are Xcode's
+      # automatic selectors: the newest certificate of that type for teamID
+      # in the keychain, so no holder name has to be spelled out here.
       - name: Export signed pkg
+        env:
+          APP_ID: ${{ steps.ids.outputs.app-id }}
+          APP_PROFILE: ${{ steps.ids.outputs.app-profile }}
         run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>teamID</key><string>6GUXT43C8B</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key><string>manual</string>
-            <key>signingCertificate</key><string>Apple Distribution: Tella HQ Inc. (6GUXT43C8B)</string>
-            <key>installerSigningCertificate</key><string>3rd Party Mac Developer Installer: Tella HQ Inc. (6GUXT43C8B)</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>installerSigningCertificate</key><string>Mac Installer Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>dev.tella.os1</key><string>OS1 Mac App Store</string>
+              <key>$APP_ID</key><string>$APP_PROFILE</string>
             </dict>
             <key>destination</key><string>export</string>
           </dict>
           </plist>
           PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/OS1Mac.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \

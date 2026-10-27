@@ -3,7 +3,7 @@
 <plist version="1.0">
   <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.tella.os1.shell.voice-audio</string>
+    <string>pl.sessions.os1.shell.voice-audio</string>
     <key>CFBundleName</key>
     <string>OS Voice Audio</string>
     <key>CFBundleVersion</key>

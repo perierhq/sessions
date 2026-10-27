@@ -1,6 +1,13 @@
 name: OS1
+# Signing identities. Bundle ids live here and nowhere else: the release
+# workflows read them (and the Release profile names) through
+# ci/project-settings.mjs. The Apple team is not committed. XcodeGen fills
+# ${APPLE_TEAM_ID} from the environment at generate time (CI passes the
+# APPLE_TEAM_ID repository variable); left unset it resolves to no team, which
+# is all unsigned and simulator builds need. Locally:
+#   APPLE_TEAM_ID=<your team id> xcodegen generate
 options:
-  bundleIdPrefix: dev.tella
+  bundleIdPrefix: pl.sessions
   deploymentTarget:
     iOS: "26.0"
     macOS: "26.0"
@@ -82,8 +89,8 @@ targets:
       base:
         # PRODUCT_NAME deliberately stays OS1: it names the bundle, archive and
         # .ipa that CI refers to. The Home Screen label lives in `info` above.
-        PRODUCT_BUNDLE_IDENTIFIER: dev.tella.os1
-        DEVELOPMENT_TEAM: 6GUXT43C8B
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.os1
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
@@ -127,8 +134,8 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: OS1Widgets/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: dev.tella.os1.widgets
-        DEVELOPMENT_TEAM: 6GUXT43C8B
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.os1.widgets
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
@@ -201,10 +208,10 @@ targets:
         # OS1` stopped resolving. The module is an identifier: it stays OS1.
         PRODUCT_MODULE_NAME: OS1
         # Same id as the iOS target: one App Store Connect record (universal
-        # purchase) hosts both platforms. The Electron shell (os1-mac) moved
-        # to dev.tella.os1.shell so no two Mac apps share a bundle id.
-        PRODUCT_BUNDLE_IDENTIFIER: dev.tella.os1
-        DEVELOPMENT_TEAM: 6GUXT43C8B
+        # purchase) hosts both platforms. The Electron shell (os1-mac) uses
+        # pl.sessions.os1.shell so no two Mac apps share a bundle id.
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.os1
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIconMac
         SWIFT_VERSION: "5.9"
@@ -239,7 +246,7 @@ targets:
       base:
         BUNDLE_LOADER: $(TEST_HOST)
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: dev.tella.os1.tests
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.os1.tests
         SWIFT_VERSION: "5.9"
         # Follows OS1Mac's PRODUCT_NAME.
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/OS.app/Contents/MacOS/OS
