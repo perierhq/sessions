@@ -140,6 +140,7 @@ import {
   workspaceExecFor,
 } from "./sandbox";
 import { automationWebFetchHosts } from "./sandbox/automation-egress";
+import { noteSandboxActivity } from "./sandbox/idle";
 import {
   isRemoteSandboxProvider,
   isRunnableSandboxProvider,
@@ -2417,13 +2418,31 @@ export async function maybeLaunchSandboxedRun(
       session.source === "opensession" &&
       session.sandbox
     ) {
+      // A machine the provider created before the failure (a repository
+      // setup script failed) is recorded, so the session can pause it and
+      // the idle sweep puts it to sleep instead of leaving it billing.
+      const machineId =
+        session.sandbox.sandboxId ||
+        (() => {
+          try {
+            return getSandboxProvider(sbProvider).machineFor?.(session.id);
+          } catch {
+            return undefined;
+          }
+        })();
       touchNativeSession(session.id, {
         sandbox: {
           ...session.sandbox,
+          ...(machineId ? { sandboxId: machineId } : {}),
           lifecycle: "needs_attention",
           lastLifecycleError: reason,
         },
       });
+      if (machineId)
+        noteSandboxActivity(
+          { sandboxId: machineId, sessionId: session.id },
+          "agent",
+        );
     }
     audit({
       kind: "sandbox_turn_metric",

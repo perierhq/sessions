@@ -844,6 +844,12 @@ changes. The Sandbox id a session records is stable (`md-<session>`); the
 state file maps it to the current container. Project snapshots are kept 90
 days, and a replaced one is deleted ten minutes later.
 
+If a GPU container's start fails after it was created (the repository's setup
+script, a dial-back), it sleeps at once so it stops holding the GPU. Any
+Sandbox a failed start leaves behind, on any provider that reports it, is
+recorded on the session: **Sleep** works on it, and the idle timers put it to
+sleep like any other machine.
+
 A Terminal tab is a Modal exec with a PTY. There is no Desktop. Portals ride
 the outbound relay. The Sandbox agent is not on by default here; add
 `"modal"` to `agent.providers` to try it.

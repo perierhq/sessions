@@ -573,6 +573,40 @@ export async function pauseModalSandbox(sandboxId: string): Promise<void> {
   if (previous !== image.imageId) deleteImage(c, previous);
 }
 
+/** Sleep a container whose preparation failed, so it stops billing; if the
+ *  snapshot fails too, terminate it (the session continues from its last
+ *  checkpoint, as after any lost machine). */
+async function releaseFailedContainer(
+  c: ModalClient,
+  sandboxId: string,
+  remoteId: string,
+  mark: (stage: string) => void,
+): Promise<void> {
+  try {
+    await pauseModalSandbox(sandboxId);
+    mark("preparation failed; container asleep");
+  } catch (error) {
+    console.warn(
+      `[sandbox:modal] could not sleep ${sandboxId} after a failed start; terminating it:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    await terminateContainer(c, remoteId).catch((terminateError) =>
+      console.error(
+        `[sandbox:modal] could not terminate ${remoteId}:`,
+        terminateError,
+      ),
+    );
+    const state = readState(sandboxId);
+    if (state)
+      writeRemoteState({
+        ...state,
+        remoteId: undefined,
+        remoteStartedAt: undefined,
+      });
+    mark("preparation failed; container terminated");
+  }
+}
+
 /** A new container from the sleep image, or null when the image is gone. */
 async function restoreFromSleep(
   c: ModalClient,
@@ -736,6 +770,62 @@ export class ModalProvider implements SandboxProvider {
     };
     writeRemoteState(state);
 
+    try {
+      return await this.prepareContainer(c, spec, {
+        sandboxId,
+        remoteId,
+        sameContainer,
+        resuming,
+        bootMode,
+        prevState,
+        repo,
+        branch,
+        cwd,
+        gpu,
+        trust,
+        mark,
+      });
+    } catch (error) {
+      // A GPU bills by the second. A container whose preparation failed
+      // (a repository setup script, a dial-back) does no work, so it sleeps
+      // now instead of holding the GPU until the idle sweep.
+      if (gpu) await releaseFailedContainer(c, sandboxId, remoteId, mark);
+      throw error;
+    }
+  }
+
+  private async prepareContainer(
+    c: ModalClient,
+    spec: SandboxSessionSpec,
+    ctx: {
+      sandboxId: string;
+      remoteId: string;
+      sameContainer: boolean;
+      resuming: boolean;
+      bootMode: "fresh" | "snapshot-restore";
+      prevState: RemoteSandboxState | null;
+      repo: ReturnType<typeof getRepo>;
+      branch: string;
+      cwd: string;
+      gpu: ModalGpu | undefined;
+      trust: ReturnType<typeof resolveTrustPolicy>;
+      mark: (stage: string) => void;
+    },
+  ): Promise<Sandbox> {
+    const {
+      sandboxId,
+      remoteId,
+      sameContainer,
+      resuming,
+      bootMode,
+      prevState,
+      repo,
+      branch,
+      cwd,
+      gpu,
+      trust,
+      mark,
+    } = ctx;
     const driver = modalDriver(c, remoteId);
     await driver.ensureStarted();
     await assertDialbackReachable(driver, this.id);
@@ -832,6 +922,10 @@ export class ModalProvider implements SandboxProvider {
 
   async pause(sandboxId: string): Promise<void> {
     await pauseModalSandbox(sandboxId);
+  }
+
+  machineFor(sessionId: string): string | undefined {
+    return findState(sessionId)?.sandboxId;
   }
 
   /** Any exec resets Modal's own idle timer. */
