@@ -723,3 +723,10 @@ test("a failed call has nothing to quote", async () => {
   );
   expect(savedSet(h)?.blocks.map((b) => b.id)).toEqual(["q"]);
 });
+
+test("apply.ts imports no route module", async () => {
+  // Routes import the incident stores; the findings tool reading a route's
+  // constant would close an import cycle through them.
+  const source = await Bun.file(new URL("./apply.ts", import.meta.url)).text();
+  expect(source).not.toMatch(/from "(\.\.\/)+routes\//);
+});

@@ -25,7 +25,7 @@ import {
 } from "../../../shared/findings";
 import type { AgentRole, AgentRun } from "../../../shared/incident-response";
 import type { Incident } from "../../../shared/incidents";
-import { AGENT_AUDIT_TAIL } from "../../routes/incident-response";
+import { AGENT_AUDIT_TAIL } from "../response/agent-audit";
 import {
   type RefDeps,
   type RefScope,
