@@ -94,6 +94,8 @@ export interface SandboxMachineSettings {
   cpu?: number;
   memoryMb?: number;
   diskGb?: number;
+  /** Modal: the GPU a session's container carries ("T4" or "L4"). */
+  gpu?: string;
 }
 
 export interface PrewarmEntry {
@@ -267,7 +269,9 @@ function prewarmSignature(
         ? "named-snapshot"
         : provider === "usecomputer"
           ? "snapshot"
-          : "";
+          : provider === "modal"
+            ? "filesystem-image"
+            : "";
   return `${baseRuntimeSignature()}|${shape}|${JSON.stringify(resources || {})}`;
 }
 
@@ -358,6 +362,10 @@ async function adapterFor(provider: string): Promise<PrewarmAdapter | null> {
     const { useComputerPrewarmAdapter } =
       await import("./adapters/usecomputer");
     return useComputerPrewarmAdapter;
+  }
+  if (provider === "modal") {
+    const { modalPrewarmAdapter } = await import("./adapters/modal");
+    return modalPrewarmAdapter;
   }
   return null;
 }

@@ -506,7 +506,15 @@ export interface SpawnTaskArgs {
   /** Give the child its own worktree/branch instead of sharing the parent's. */
   isolatedWorktree?: boolean;
   /** true = config default provider; or an explicit configured provider id. */
-  sandbox?: boolean | "daytona" | "box" | "tart" | "usecomputer" | "podman";
+  sandbox?:
+    | boolean
+    | "daytona"
+    | "box"
+    | "tart"
+    | "usecomputer"
+    | "podman"
+    | "modal";
+  sandboxGpu?: "T4" | "L4";
 }
 
 export type SpawnTaskResult =
@@ -594,6 +602,7 @@ export async function spawnTaskImpl(
     reportBack: Boolean(caller),
     user: await creationOwnerOf(ctx),
     sandbox: args.sandbox,
+    ...(args.sandboxGpu ? { sandboxGpu: args.sandboxGpu } : {}),
   });
   const depth = myDepth + 1;
   const map = spawnDepthMap();
@@ -1392,11 +1401,24 @@ export function createSessionsMcpServer(
           sandbox: z
             .union([
               z.boolean(),
-              z.enum(["daytona", "box", "tart", "usecomputer", "podman"]),
+              z.enum([
+                "daytona",
+                "box",
+                "tart",
+                "usecomputer",
+                "podman",
+                "modal",
+              ]),
             ])
             .optional()
             .describe(
               "Run the session in an isolated sandbox: true = the server's default provider, or an explicit provider id (must be configured server-side, else the create fails with a clear error). Omit for a host run.",
+            ),
+          sandboxGpu: z
+            .enum(["T4", "L4"])
+            .optional()
+            .describe(
+              'A GPU for the Sandbox: NVIDIA T4 (16 GB) or L4 (24 GB), with CUDA and Vulkan. Needs sandbox "modal". Use it for GPU work such as GPU render tests; it costs more than a plain Sandbox.',
             ),
           accountId: z
             .string()
@@ -1435,7 +1457,9 @@ export function createSessionsMcpServer(
               | "box"
               | "tart"
               | "usecomputer"
-              | "podman";
+              | "podman"
+              | "modal";
+            sandboxGpu?: "T4" | "L4";
             accountId?: string;
             forkFrom?: { sourceId: string; messageId?: string };
           },
@@ -1479,6 +1503,7 @@ export function createSessionsMcpServer(
               reportBack: shouldReportBack,
               user: await creationOwnerOf(ctx),
               sandbox: args.sandbox,
+              ...(args.sandboxGpu ? { sandboxGpu: args.sandboxGpu } : {}),
               accountId: args.accountId,
               forkFrom: args.forkFrom,
             });
@@ -1591,11 +1616,24 @@ export function createSessionsMcpServer(
           sandbox: z
             .union([
               z.boolean(),
-              z.enum(["daytona", "box", "tart", "usecomputer", "podman"]),
+              z.enum([
+                "daytona",
+                "box",
+                "tart",
+                "usecomputer",
+                "podman",
+                "modal",
+              ]),
             ])
             .optional()
             .describe(
               "Run the child in an isolated sandbox: true = the server's default provider, or an explicit configured provider id.",
+            ),
+          sandboxGpu: z
+            .enum(["T4", "L4"])
+            .optional()
+            .describe(
+              'A GPU for the Sandbox: NVIDIA T4 (16 GB) or L4 (24 GB), with CUDA and Vulkan. Needs sandbox "modal". Use it for GPU work such as GPU render tests; it costs more than a plain Sandbox.',
             ),
         },
         async (args: SpawnTaskArgs, extra: any) => {

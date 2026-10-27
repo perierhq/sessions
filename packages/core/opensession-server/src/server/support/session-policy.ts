@@ -34,6 +34,7 @@ const SANDBOX_REQUESTS = new Set<string>([
   "tart",
   "usecomputer",
   "podman",
+  "modal",
 ]);
 
 /** A run place's provider as a create request, or null when Support can't

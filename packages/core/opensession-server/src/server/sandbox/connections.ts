@@ -31,6 +31,7 @@ export const WORKSPACE_SANDBOX_PROVIDERS = [
   "tart",
   "usecomputer",
   "podman",
+  "modal",
 ] as const;
 export type WorkspaceSandboxProvider =
   (typeof WORKSPACE_SANDBOX_PROVIDERS)[number];
@@ -62,6 +63,8 @@ export interface SandboxConnectionSettings {
   /** usecomputer: the Mac reservation to use when the account holds more
    *  than one active reservation. */
   reservation?: string;
+  /** modal: the token id; its secret is the stored credential. */
+  tokenId?: string;
   /** podman: the workload's pids limit. */
   pidsLimit?: number;
   /** podman: the only DNS resolvers a sandbox may reach (public IPv4). */
@@ -256,6 +259,7 @@ function settings(value: unknown): SandboxConnectionSettings {
     ...(string(raw.reservation)
       ? { reservation: string(raw.reservation) }
       : {}),
+    ...(string(raw.tokenId) ? { tokenId: string(raw.tokenId) } : {}),
     ...(number(raw.pidsLimit)
       ? { pidsLimit: Math.round(number(raw.pidsLimit)!) }
       : {}),
@@ -558,7 +562,9 @@ export async function connectSandboxProvider(
   }
   if (!credentialRef && sandboxProviderNeedsCredential(provider)) {
     throw new Error(
-      `${provider === "box" ? "Boat" : provider === "usecomputer" ? "use.computer" : "Daytona"} API key is required`,
+      provider === "modal"
+        ? "A Modal token secret is required"
+        : `${provider === "box" ? "Boat" : provider === "usecomputer" ? "use.computer" : "Daytona"} API key is required`,
     );
   }
   const nextSettings = mergeSettings(

@@ -861,6 +861,9 @@ if (!g.__opensessionBooted) {
         const { startPodmanIdleSweep } =
           await import("./src/server/sandbox/adapters/podman");
         startPodmanIdleSweep();
+        const { startModalIdleSweep } =
+          await import("./src/server/sandbox/adapters/modal");
+        startModalIdleSweep();
         // Every provider but Podman (its own sweep above): sleep idle
         // Sandboxes on the two idle timers.
         const { startSandboxIdleSweep } =

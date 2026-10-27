@@ -1168,6 +1168,7 @@ export function nativeSessionRow(data: NativeSessionFile): UnifiedSession {
     slackOrigin: data.slackOrigin,
     sandbox: data.sandbox,
     sandboxCheckpoint: data.sandboxCheckpoint,
+    sandboxGpu: data.sandboxGpu,
     portalSandbox: data.portalSandbox,
     lastActivity: data.lastActivity,
     createdAt: data.createdAt,

@@ -1159,6 +1159,7 @@ export type WSServerMessage =
         | "tart"
         | "usecomputer"
         | "podman"
+        | "modal"
         | "runner";
       cwd?: string;
     }

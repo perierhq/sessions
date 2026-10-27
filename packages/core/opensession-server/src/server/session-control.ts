@@ -83,7 +83,8 @@ export type SandboxRequest =
   | "box"
   | "tart"
   | "usecomputer"
-  | "podman";
+  | "podman"
+  | "modal";
 
 export interface CreateSessionOpts {
   prompt: string;
@@ -185,6 +186,8 @@ export interface CreateSessionOpts {
    * control that claims otherwise.
    */
   sandbox?: SandboxRequest;
+  /** A GPU for a Modal Sandbox ("T4" or "L4"); needs `sandbox: "modal"`. */
+  sandboxGpu?: "T4" | "L4";
   /**
    * Pin a Claude/Codex provider account for the session's runs. Soft pin
    * (falls back to the pool when exhausted), validated like the web palette:

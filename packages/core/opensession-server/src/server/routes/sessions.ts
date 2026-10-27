@@ -1072,6 +1072,7 @@ export async function handleSessionsRoutes(
       user?: unknown;
       workspaceId?: unknown;
       sandbox?: unknown;
+      sandboxGpu?: unknown;
       forkFrom?: unknown;
       requestId?: unknown;
       clientId?: unknown;
@@ -1190,6 +1191,9 @@ export async function handleSessionsRoutes(
         // rather than silently running somewhere else.
         ...(typeof body?.sandbox === "string" && body.sandbox
           ? { sandbox: body.sandbox as SandboxRequest }
+          : {}),
+        ...(body?.sandboxGpu === "T4" || body?.sandboxGpu === "L4"
+          ? { sandboxGpu: body.sandboxGpu }
           : {}),
         // Image and file attachments from the native create path.
         ...(imageUrls.length ? { images: imageUrls } : {}),

@@ -71,6 +71,7 @@ type RecreateSession = Pick<
   | "automation"
   | "automationId"
   | "sandboxCheckpoint"
+  | "sandboxGpu"
 >;
 
 type AttachSession = Pick<
@@ -249,6 +250,7 @@ async function provisionAttachedSandbox(
           .map((r) => r.dir)
           .filter(Boolean),
         ...restoreSpec(session.sandboxCheckpoint),
+        ...(session.sandboxGpu ? { gpu: session.sandboxGpu } : {}),
       },
     );
     await withSessionLifecycleLane(session.id, async () => {
@@ -613,6 +615,7 @@ export function recreateSandboxSpec(
     branch: session.branch || undefined,
     mode: session.mode,
     cwd: session.worktreeDir || undefined,
+    ...(session.sandboxGpu ? { gpu: session.sandboxGpu } : {}),
     ...(trustProfile ? { trustProfile } : {}),
     ...(trust ? { egressAllowlist: trust.egressAllowlist } : {}),
     ...restoreSpec(session.sandboxCheckpoint),

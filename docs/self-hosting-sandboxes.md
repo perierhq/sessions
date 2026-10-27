@@ -12,8 +12,9 @@ Portals, and the conversation intact. Companion to
 
 **Default = This machine.** The new-session menu's **Machine** row offers
 This machine plus every Ready Sandbox provider by name (Boat, Daytona,
-use.computer, Mac VM, This machine (container)), each with a line saying
-whether it is Linux or a Mac.
+use.computer, Mac VM, This machine (container), Modal), each with a line
+saying whether it is Linux or a Mac. Modal also appears as **Modal · T4 GPU**
+and **Modal · L4 GPU**.
 The workspace or personal default is marked there and can make a Sandbox the
 norm, and a project can be pinned under **Workspace → Sandboxes → Projects** so
 every new session on it starts in a Sandbox whatever the workspace or person
@@ -36,7 +37,8 @@ only the workspace is in the Sandbox (see [Where the agent runs](#where-the-agen
    `:3850` is never part of it.
 2. **Connect a provider.** In **Workspace → Sandboxes**, connect Daytona,
    Boat, or **use.computer** (macOS on reserved Macs; see
-   [use.computer](#usecomputer) below) with an API key, or **Mac VM** with a
+   [use.computer](#usecomputer) below) with an API key, **Modal** (Linux
+   with an optional GPU; see [Modal](#modal) below) with a token, or **Mac VM** with a
    paired macOS Runner (no credential; see
    [Mac VM](#mac-vm-tart-on-a-mac-runner) below), or **This machine
    (container)** on a Linux server with rootless Podman (no credential; see
@@ -495,7 +497,8 @@ and incident agents do not start in it.
 
 All providers passed the live conformance matrix (Daytona 2026-08-11, Boat
 2026-08-13, then called Box; Mac VM 2026-09-20 on the office Mac mini;
-use.computer 2026-09-21 on a reserved Mac): workspace tool round trip, exec
+use.computer 2026-09-21 on a reserved Mac; Modal 2026-10-26, qualification,
+exec, GPUs, and sleep/wake only): workspace tool round trip, exec
 semantics, in-sandbox workspace git, Portal relay, sleep/wake, snapshot
 restore with credential scrub, and cleanup.
 Re-run it with `bun run deploy/sandbox/conformance.ts [daytona] [box]`; it
@@ -804,6 +807,46 @@ no default sandbox and This machine (container) is Ready, before the
 experimental host path ([incident-host-agents.md](incident-host-agents.md)).
 See [Security posture](#security-posture) for what it holds and what it can
 reach.
+
+### Modal
+
+Provider id `modal`. Each session gets a Linux container in your
+[Modal](https://modal.com) account, optionally with one NVIDIA GPU: **T4**
+(16 GB) or **L4** (24 GB). Pick the GPU per session in the Machine menu, or
+pass `sandboxGpu: "T4" | "L4"` with `sandbox: "modal"` to the
+`create_session` and `spawn_task` tools. A GPU on any other provider fails the
+create. The GPU is for work that needs one, such as GPU render tests; it is
+billed per second while the container is awake.
+
+**Connect** takes a token id (`ak-…`) and its secret (`as-…`) from Modal's
+token settings, or both pasted into the secret field as `ak-…:as-…`.
+Qualification builds the base image, starts a small container without a GPU,
+proves exec and file upload, restores a filesystem snapshot into a second
+container, and terminates both (about 40 seconds once the image is cached).
+
+The base image is Ubuntu 24.04 with build tools, clang, CMake, Ninja, Rust
+(rustup under `/home/ubuntu`), and the Vulkan and GL loader libraries. Modal
+injects the NVIDIA driver with every capability, so with those libraries
+`vulkaninfo` lists the GPU as a discrete device instead of falling back to
+llvmpipe, and CUDA works as well. Commands run as root with
+`HOME=/home/ubuntu`.
+
+Sizes: project snapshots use Small (2 CPU, 8 GB), Medium (4 CPU, 16 GB, the
+default) or Large (8 CPU, 32 GB). A GPU session gets at least 8 CPU and 32 GB.
+Prewarms never hold a GPU; a GPU session starts from the project snapshot.
+
+Sleep takes a filesystem snapshot (kept 30 days) and terminates the container;
+wake starts a new container from it, with the GPU the session asked for, and
+deletes the old image only once the new container answers. Memory and running
+processes do not survive. Modal caps a container at 24 hours, so an awake
+container is replaced the same way after 22 hours, or when the session's GPU
+changes. The Sandbox id a session records is stable (`md-<session>`); the
+state file maps it to the current container. Project snapshots are kept 90
+days, and a replaced one is deleted ten minutes later.
+
+A Terminal tab is a Modal exec with a PTY. There is no Desktop. Portals ride
+the outbound relay. The Sandbox agent is not on by default here; add
+`"modal"` to `agent.providers` to try it.
 
 ## Security posture
 

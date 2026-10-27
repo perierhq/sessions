@@ -309,7 +309,15 @@ export interface RemoteSandboxState extends SandboxTrustPolicy {
    *  VM currently holding the session; absent while asleep). */
   remoteId?: string;
   repoId?: string;
-  resources?: { cpu?: number; memoryMb?: number; diskGb?: number };
+  resources?: {
+    cpu?: number;
+    memoryMb?: number;
+    diskGb?: number;
+    gpu?: string;
+  };
+  /** When the current `remoteId` container started, for providers whose
+   *  containers have a maximum lifetime (modal: 24 hours). */
+  remoteStartedAt?: string;
   branch?: string;
   /** Session-private provider image used when ephemeral compute disappears. */
   checkpointArtifactId?: string;

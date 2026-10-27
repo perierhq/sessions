@@ -26,8 +26,14 @@ import {
 import { getSandboxConnection } from "./connections";
 import { configuredRepos } from "../config";
 import { repoPreSetupScript } from "./config";
+import { MODAL_BASE_IMAGE_REVISION } from "./adapters/modal-image";
 
-export type RemoteTemplateProvider = "daytona" | "box" | "tart" | "usecomputer";
+export type RemoteTemplateProvider =
+  | "daytona"
+  | "box"
+  | "tart"
+  | "usecomputer"
+  | "modal";
 
 export interface RemoteRepoTemplate {
   provider: RemoteTemplateProvider;
@@ -461,7 +467,12 @@ export function remoteRepoTemplateSignature(
           ? // Snapshots must match the reservation's VM layout; the service
             // picks the image.
             { reservation: settings.reservation || "default" }
-          : { machineProfile: settings.profile || "default" };
+          : provider === "modal"
+            ? // Built on the base image; a new base retires it.
+              {
+                image: `${settings.image || "default"}|${MODAL_BASE_IMAGE_REVISION}`,
+              }
+            : { machineProfile: settings.profile || "default" };
   return createHash("sha256")
     .update(
       `repo-template-v4|${baseRuntimeSignature()}|${JSON.stringify(shape)}`,

@@ -355,7 +355,7 @@ function idleTtlSeconds(): number {
 
 const BOX_MACHINE_PROFILES: Record<
   BoxMachineType,
-  Required<SandboxMachineSettings>
+  Required<Omit<SandboxMachineSettings, "gpu">>
 > = {
   small: { cpu: 2, memoryMb: 4_096, diskGb: 40 },
   default: { cpu: 4, memoryMb: 8_192, diskGb: 80 },

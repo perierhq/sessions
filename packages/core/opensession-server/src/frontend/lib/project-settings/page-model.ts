@@ -486,6 +486,7 @@ const PROVIDER_NAMES = new Map([
   ["tart", "Mac VM"],
   ["usecomputer", "use.computer"],
   ["podman", "This machine · container"],
+  ["modal", "Modal"],
 ]);
 
 /** A sandbox provider by name, with its region when it has one

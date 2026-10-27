@@ -119,6 +119,8 @@ export function sandboxLabel(provider: string | null): string {
       return "Mac VM";
     case "usecomputer":
       return "use.computer";
+    case "modal":
+      return "Modal";
     default:
       return provider;
   }

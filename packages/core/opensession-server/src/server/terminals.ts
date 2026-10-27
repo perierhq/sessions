@@ -128,6 +128,7 @@ type TermTargetKind =
   | "tart"
   | "usecomputer"
   | "podman"
+  | "modal"
   | "microvm"
   | "runner";
 
@@ -339,6 +340,18 @@ async function resolveTarget(
         argv: target.argv,
         // Keeps the idle sweep off a pod with an open shell.
         onActivity: target.touch,
+      };
+    }
+
+    if (sb.provider === "modal" && sandboxProviderConfigured("modal")) {
+      // Modal has no SSH: the shell is an exec with a PTY.
+      const { modalPtySession } = await import("./sandbox/adapters/modal");
+      const sandboxId = sb.sandboxId;
+      return {
+        kind: "remote",
+        target: "modal",
+        displayCwd: cwd,
+        connect: (io) => modalPtySession(sandboxId, cwd, io),
       };
     }
 
