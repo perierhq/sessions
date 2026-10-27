@@ -100,12 +100,32 @@ function tellable(incident: Incident): Incident | null {
   return fallback ? { ...incident, owner: fallback } : null;
 }
 
+/** The incident without what a findings write touches (`updatedAt` and
+ *  `response.findingSets`). */
+function withoutFindings(incident: Incident): unknown {
+  const { updatedAt: _updatedAt, ...rest } = incident;
+  if (!rest.response) return rest;
+  const { findingSets: _findingSets, ...response } = rest.response;
+  return { ...rest, response };
+}
+
+/** Whether only the agents' findings changed: nothing the owner is told
+ *  about, so no facts are loaded for it. */
+function onlyFindingsChanged(next: Incident, previous: Incident | null) {
+  return (
+    previous !== null &&
+    JSON.stringify(withoutFindings(next)) ===
+      JSON.stringify(withoutFindings(previous))
+  );
+}
+
 /** Plan and deliver the notification for one committed change. */
 export function handleIncidentChange(
   next: Incident,
   previous: Incident | null,
   deps: NotifierDeps = defaultDeps,
 ): Promise<void> {
+  if (onlyFindingsChanged(next, previous)) return Promise.resolve();
   return enqueue(next.id, async () => {
     try {
       const incident = tellable(next);
