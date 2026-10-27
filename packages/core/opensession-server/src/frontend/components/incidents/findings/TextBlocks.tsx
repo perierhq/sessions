@@ -50,6 +50,18 @@ function Prose({ text, quiet = false }: { text: string; quiet?: boolean }) {
   );
 }
 
+/** One line of agent prose inside a row (a claim, its evidence): the same
+ *  Markdown path, without paragraph margins. */
+function InlineProse({ text, className }: { text: string; className: string }) {
+  return (
+    <MarkdownBody
+      html={renderMarkdown(text)}
+      enhance={false}
+      className={cn(FINDINGS_INLINE_PROSE, className)}
+    />
+  );
+}
+
 /** The block's own fields when `item` holds that kind, else null; the
  *  section only hands each component its own kind. */
 function blockOf<K extends FindingBlock["kind"]>(
@@ -88,7 +100,12 @@ export function HypothesisBlock({ item }: { item: FindingItem }) {
           <ul className="m-0 flex list-disc flex-col gap-0.5 pl-5 text-supporting text-dim [overflow-wrap:anywhere]">
             {block.claims.map((claim, i) => (
               // Claims are free text and may repeat; the list never reorders.
-              <li key={i}>{claim}</li>
+              <li key={i}>
+                <InlineProse
+                  text={claim}
+                  className="text-supporting text-dim"
+                />
+              </li>
             ))}
           </ul>
         </div>
@@ -219,16 +236,12 @@ function ClaimRowView({ row }: { row: ClaimRow }) {
       : FINDINGS_STATUS_TONE[row.status];
   return (
     <li className={FINDINGS_CLAIM_ROW}>
-      <span className="text-supporting text-fg [overflow-wrap:anywhere]">
-        {row.text}
-      </span>
+      <InlineProse text={row.text} className="text-supporting text-fg" />
       <span className={cn("text-meta", tone)}>
         {CLAIM_STATUS_COPY[row.status]}
       </span>
       {row.evidence ? (
-        <span className="text-meta text-faint [overflow-wrap:anywhere]">
-          {row.evidence}
-        </span>
+        <InlineProse text={row.evidence} className="text-meta text-faint" />
       ) : null}
     </li>
   );

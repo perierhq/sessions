@@ -251,6 +251,36 @@ test("claims rows say each status in words", () => {
   );
 });
 
+test("claim rows render their text and evidence as Markdown", () => {
+  const claims: ClaimRow[] = [
+    {
+      text: "The acme release set `search.replicas` to 0",
+      status: "verified",
+      evidence: "The diff sets `search.replicas` from 0 back to 2",
+    },
+  ];
+  const html = renderToStaticMarkup(
+    <ClaimsBlock
+      item={item({ id: "claims", kind: "claims", size: "full" }, { claims })}
+    />,
+  );
+  expect(html).toContain("set <code>search.replicas</code> to 0");
+  expect(html).toContain("sets <code>search.replicas</code> from 0");
+  expect(html).not.toContain("`");
+});
+
+test("a hypothesis lists the claims it rests on as Markdown", () => {
+  const html = renderToStaticMarkup(
+    <HypothesisBlock
+      item={item(
+        hypothesis({ claims: ["The acme release set `search.replicas` to 0"] }),
+      )}
+    />,
+  );
+  expect(html).toContain("set <code>search.replicas</code> to 0");
+  expect(html).not.toContain("`");
+});
+
 test("a claims block with no rows yet says so", () => {
   const html = renderToStaticMarkup(
     <ClaimsBlock
