@@ -351,6 +351,13 @@ affect setup change; a repository can declare extra inputs in
 and session credentials are injected only after a restore, never into the
 shared image.
 
+A provider may restore only the home directory from a snapshot (Boat brings
+back `/home/user` over a fresh base image), so the base runtime installed
+outside it (Node, just, gh in `/usr/local`) is checked on every start and
+reinstalled when missing. Before a snapshot is sealed, the Bun package cache
+is checked for packages that lost their executables; a damaged cache is
+cleared and setup runs again, so the damage never reaches the next image.
+
 Typing a new-session prompt also starts a **prewarm**: Open Session begins
 provisioning a Sandbox before Create is pressed and adopts it at create time.
 Prewarms expire after ten minutes when unused; at most two are live at once.

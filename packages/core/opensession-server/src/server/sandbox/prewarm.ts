@@ -64,6 +64,7 @@ import {
   bootstrapRemoteSandbox,
   baseRuntimeSignature,
   bunCacheDamaged,
+  bunCacheEmptyBins,
   clearRemoteBunInstall,
   listRemoteStates,
   remoteCloneUrl,
@@ -735,6 +736,43 @@ async function runPrewarmBootstrap(
     if (!current()) {
       void destroyRecord(record, "superseded mid-warm");
       return;
+    }
+    if (
+      adapter.publishTemplate &&
+      (!restoredFromTemplate || entry.refreshTemplate) &&
+      (record.waiters || 0) === 0
+    ) {
+      // Setup can succeed on a Bun cache whose packages lost their
+      // executables (an image sealed from a lazily restored disk): it links
+      // the empty files and finds nothing to do. Sealing that again carries
+      // the damage into every later image, so repair it here, once.
+      const emptyBins = await bunCacheEmptyBins(driver);
+      if (emptyBins.length) {
+        console.warn(
+          `[sandbox-prewarm] ${entry.key} Bun cache lost executables (${emptyBins.slice(0, 5).join(", ")}); clearing it and running setup again`,
+        );
+        setPrewarmStage(entry, "Repairing the package cache", 81);
+        const warmDir = remoteWarmWorkspaceDir(repo.id);
+        await clearRemoteBunInstall(driver, warmDir);
+        await resetRemoteSetupLifecycleStamp(driver, repo.id);
+        await runRemoteLifecycleHook(
+          driver,
+          warmDir,
+          "setup",
+          "fresh",
+          repo.id,
+          {
+            sandboxId: entry.sandboxId || `prewarm:${entry.key}`,
+            provider: entry.provider,
+            repoId: repo.id,
+          },
+        );
+        const still = await bunCacheEmptyBins(driver);
+        if (still.length)
+          throw new Error(
+            `the Bun cache still has packages without executables after a clean install (${still.slice(0, 5).join(", ")}); not sealing it`,
+          );
+      }
     }
     // Compile the Portal into the image, when the operator opted the repo
     // in. Only for an image about to be sealed: a standby handed straight to

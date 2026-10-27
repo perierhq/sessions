@@ -1062,6 +1062,23 @@ function baseRuntimeMarker(L: RemoteLayout): string {
   return `${L.home}/.opensession-base-runtime`;
 }
 
+/**
+ * Print the marker only while the runtime it vouches for is still there.
+ * The marker lives in the home directory, but Node, just and gh are installed
+ * outside it (/usr/local), and some providers restore only the home from a
+ * snapshot: Boat brings back /home/user over a fresh base image. A marker
+ * trusted on its own then skipped the install and left the image's own,
+ * older Node first on PATH.
+ */
+export function baseRuntimeMarkerCheck(L: RemoteLayout): string {
+  return (
+    `[ "$(/usr/local/bin/node -p 'process.versions.node' 2>/dev/null)" = ${shellQuoteWord(REMOTE_NODE_VERSION)} ] && ` +
+    `PATH=${shellQuoteWord(L.path)} command -v just >/dev/null && ` +
+    `PATH=${shellQuoteWord(L.path)} command -v gh >/dev/null && ` +
+    `cat ${shellQuoteWord(baseRuntimeMarker(L))} 2>/dev/null`
+  );
+}
+
 async function installWorkloadIdentityClient(
   driver: RemoteDriver,
   L: RemoteLayout,
@@ -1096,9 +1113,7 @@ export async function ensureRemoteBaseRuntime(
 ): Promise<void> {
   const L = layoutFor(driver);
   const signature = baseRuntimeSignature();
-  const marker = await driver.exec(
-    `cat ${shellQuoteWord(baseRuntimeMarker(L))} 2>/dev/null`,
-  );
+  const marker = await driver.exec(baseRuntimeMarkerCheck(L));
   if (marker.exitCode === 0 && marker.stdout.trim() === signature) {
     const repaired = await driver.exec(workloadIdentityClientInstallCommand(L));
     if (repaired.exitCode === 0) return;
@@ -1892,6 +1907,32 @@ export function bunCacheDamaged(message: string): boolean {
   return /downloaded package was not found in the cache|failed copying files from cache/i.test(
     message,
   );
+}
+
+/** Shell that lists (up to 20) packages in the guest's Bun cache whose
+ *  `bin/` directory is empty. An executable-shipping package (esbuild's
+ *  platform binary, for one) never has an empty one; a disk restored lazily
+ *  and sealed into an image again can, and every install linked from that
+ *  cache then lacks the binary while setup still succeeds. */
+export function bunCacheEmptyBinsScript(L: RemoteLayout): string {
+  const cache = shellQuoteWord(`${L.home}/.bun/install/cache`);
+  return `[ -d ${cache} ] || exit 0; find ${cache} -mindepth 2 -maxdepth 4 -type d -name bin -empty 2>/dev/null | head -20`;
+}
+
+/** Packages in the guest's Bun cache that lost their executables. */
+export async function bunCacheEmptyBins(
+  driver: RemoteDriver,
+): Promise<string[]> {
+  const L = layoutFor(driver);
+  const listed = await driver.exec(bunCacheEmptyBinsScript(L), {
+    timeoutMs: 5 * 60_000,
+  });
+  if (listed.exitCode !== 0) return [];
+  const cache = `${L.home}/.bun/install/cache/`;
+  return listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(cache));
 }
 
 /** Drop the guest's Bun package cache and a workspace's installed packages,
