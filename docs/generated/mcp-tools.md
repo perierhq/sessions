@@ -743,7 +743,7 @@ Read more of a page fetched earlier in this session, by its handle. Prefer `find
 
 `mcp__opensession-web__clone_repo` · input: `repo` (string, required)
 
-Shallow-clone a public GitHub repository and return the local path, its file list and the head of its README. Use this instead of fetching GitHub pages when you want to read a project's actual source: the clone is real files, so read/grep/find work on it normally. The clone lands in scratch, not in the session's worktree.
+Shallow-clone a public GitHub repository and return the local path, its file list and the head of its README. Use this instead of fetching GitHub pages when you want to read a project's actual source: the clone is real files, so read/grep/find work on it normally. The clone lands in scratch, not in the session's worktree. It is for reading only: to change a repository, attach it with opensession-repos `attach_repo` and work in that worktree, so later turns hold a GitHub token for it.
 
 ## opensession-portals
 
