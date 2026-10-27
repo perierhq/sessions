@@ -613,6 +613,7 @@ export async function spawnTaskImpl(
     model: args.model,
     isolatedWorktree,
     parentSessionId: caller,
+    invokingSessionId: ctx.currentSessionId || undefined,
     reportBack: Boolean(caller),
     user: await creationOwnerOf(ctx),
     sandbox: args.sandbox,
@@ -1560,6 +1561,9 @@ export function createSessionsMcpServer(
               ...(args.sandboxGpu ? { sandboxGpu: args.sandboxGpu } : {}),
               accountId: args.accountId,
               forkFrom: args.forkFrom,
+              // A fixed-subscription caller's policy follows the work even
+              // into a standalone session (fixed-subscription.ts).
+              invokingSessionId: ctx.currentSessionId || undefined,
             });
           return text(
             [
