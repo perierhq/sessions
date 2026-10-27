@@ -321,3 +321,10 @@ export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
  *  one desktop column, a full block both. */
 export const FINDINGS_CELL_HALF = "min-w-0 desktop:col-span-1";
 export const FINDINGS_CELL_FULL = "min-w-0 desktop:col-span-2";
+
+/** A findings marker the agent added without a checked reference: its
+ *  own note, so a dashed, lighter line and a quieter label than the
+ *  strip's checked markers. */
+export const STRIP_NOTE_LINE =
+  "pointer-events-none absolute w-0 border-l border-dashed border-line";
+export const STRIP_NOTE_LABEL = "text-faint";

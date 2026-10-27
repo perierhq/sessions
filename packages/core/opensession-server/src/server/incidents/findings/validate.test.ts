@@ -383,6 +383,52 @@ describe("validateFindings", () => {
     expect(many.notes).toEqual(["Block `w`: kept the first 10 markers."]);
   });
 
+  test("a marker may cite a release, an observation or an event", () => {
+    const base = {
+      id: "w",
+      kind: "signal",
+      signal: "sig-a",
+      from: iso(NOW - 3 * HOUR),
+      to: iso(NOW - HOUR),
+    };
+    const at = iso(NOW - 2 * HOUR);
+    const out = only([
+      {
+        ...base,
+        markers: [
+          { at, label: "release", ref: { type: "release", at } },
+          {
+            at,
+            label: "first error",
+            ref: { type: "observation", signal: "sig-a", at },
+          },
+          { at, label: "paged", ref: { type: "event", id: "ev_1" } },
+          { at, label: "guess" },
+          { at, label: "a PR", ref: { type: "pr", number: 12 } },
+          { at, label: "broken", ref: { type: "release" } },
+        ],
+      },
+    ]);
+    expect(
+      (out.block as Extract<FindingBlock, { kind: "signal" }>).markers,
+    ).toEqual([
+      { at, label: "release", ref: { type: "release", at } },
+      {
+        at,
+        label: "first error",
+        ref: { type: "observation", signal: "sig-a", at },
+      },
+      { at, label: "paged", ref: { type: "event", id: "ev_1" } },
+      { at, label: "guess" },
+      { at, label: "a PR" },
+      { at, label: "broken" },
+    ]);
+    expect(out.notes).toEqual([
+      "Block `w`: marker 5 reference left off: a marker can cite a release, an observation or an event.",
+      'Block `w`: marker 6 reference left off: a release reference needs "at" as an ISO time.',
+    ]);
+  });
+
   test("log caps lines and highlight", () => {
     const lines = Array.from({ length: 41 }, (_, i) => `line ${i} of acme`);
     const many = only([{ id: "l", kind: "log", source: toolRef, lines }]);

@@ -13,6 +13,7 @@ import {
   type FindingBlockOf,
   type FindingKind,
   type LogExcerptOf,
+  type MarkerRef,
   type SignalWindow,
 } from "../../../shared/findings";
 import { cleanReportText } from "../response/reports";
@@ -422,6 +423,20 @@ function parseTimeline(
   };
 }
 
+/** A marker's optional ref: a release, an observation or an event. */
+function markerRef(ref: RefInput | string): MarkerRef | string {
+  if (typeof ref === "string") return ref;
+  switch (ref.type) {
+    case "release":
+    case "observation":
+      return ref;
+    case "event":
+      return { type: "event", id: ref.id };
+    default:
+      return "a marker can cite a release, an observation or an event.";
+  }
+}
+
 function parseSignal(
   value: Record<string, unknown>,
   note: Note,
@@ -441,10 +456,17 @@ function parseSignal(
         return note(
           `marker ${n} dropped: it needs "at" (an ISO time) and "label".`,
         );
-      markers.push({
+      const marker: Body<"signal">["markers"][number] = {
         at,
         label: clip(label, L.markerLabel, `marker ${n} label`, note),
-      });
+      };
+      if (isRecord(raw) && raw.ref !== undefined) {
+        const ref = markerRef(parseRefInput(raw.ref));
+        if (typeof ref === "string")
+          note(`marker ${n} reference left off: ${ref}`);
+        else marker.ref = ref;
+      }
+      markers.push(marker);
     });
   return {
     kind: "signal",

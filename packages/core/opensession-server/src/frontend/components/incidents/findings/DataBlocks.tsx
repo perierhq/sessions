@@ -1,7 +1,9 @@
-import type {
-  CompareSide,
-  FindingBlock,
-  SignalWindow,
+import {
+  type CompareSide,
+  type FindingBlock,
+  FINDINGS_COPY,
+  type SignalMarker,
+  type SignalWindow,
 } from "../../../../shared/findings";
 import type { StripLane, StripResponse } from "../../../../shared/incidents";
 import {
@@ -43,9 +45,10 @@ type ChangeRef = Extract<FindingBlock, { kind: "change" }>["change"];
 /**
  * A signal window as a block: the strip the page already draws, narrowed to
  * the window's lane, with the agent's markers among its own, and under it the
- * same bars in words (the chart's text alternative). The summary's line
- * holds a space while the window loads so the block does not grow when the
- * data lands.
+ * same bars in words (the chart's text alternative). A marker with a checked
+ * reference draws like the strip's own; one without is the agent's note,
+ * drawn dashed and named so in the summary. The summary's line holds a space
+ * while the window loads so the block does not grow when the data lands.
  */
 export function SignalWindowView({
   strip,
@@ -59,7 +62,7 @@ export function SignalWindowView({
   strip: StripResponse | undefined;
   error: boolean;
   onRetry: () => void;
-  markers: Array<{ at: string; label: string }>;
+  markers: SignalMarker[];
   title: string;
   meta: Meta;
   lane?: string;
@@ -69,18 +72,27 @@ export function SignalWindowView({
       <InlineAlert onRetry={onRetry}>Couldn&apos;t load the signal</InlineAlert>
     );
   const shown = strip ? windowStrip(strip, lane) : undefined;
+  const annotations = markers.map((m) => ({
+    at: m.at,
+    label: m.label,
+    note: !m.ref,
+  }));
+  const notes = annotations.some((m) => m.note);
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <SignalStrip
         strip={shown}
         meta={meta}
-        annotations={markers}
+        annotations={annotations}
         live={false}
         title={title}
         liveLine={null}
       />
       <p className={FINDINGS_STRIP_SUMMARY}>
-        {shown ? stripSummary(shown, { format: laneFormat(shown, meta) }) : " "}
+        {shown
+          ? stripSummary(shown, { format: laneFormat(shown, meta) }) +
+            (notes ? ` ${FINDINGS_COPY.markerNotes}` : "")
+          : " "}
       </p>
     </div>
   );
@@ -100,7 +112,7 @@ function LoadedWindow({
   signalName,
 }: {
   range: SignalWindow;
-  markers: Array<{ at: string; label: string }>;
+  markers: SignalMarker[];
   meta: Meta;
   signalName: (id: string) => string;
 }) {

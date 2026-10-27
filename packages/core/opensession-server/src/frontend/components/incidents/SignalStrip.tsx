@@ -13,6 +13,8 @@ import {
   STRIP_MARKER_LABEL,
   STRIP_MARKER_LINE,
   STRIP_MARKER_ROW,
+  STRIP_NOTE_LABEL,
+  STRIP_NOTE_LINE,
   STRIP_THRESHOLD_LABEL,
   STRIP_VERIFY_LANE,
 } from "../../lib/incident-classes";
@@ -59,7 +61,12 @@ function MarkerLabels({ markers }: { markers: LaidMarker[] }) {
       {markers.map((m) => (
         <span
           key={m.key}
-          className={cn(STRIP_MARKER_LABEL, "px-1", ANCHOR[m.anchor])}
+          className={cn(
+            STRIP_MARKER_LABEL,
+            "px-1",
+            ANCHOR[m.anchor],
+            m.note && STRIP_NOTE_LABEL,
+          )}
           style={{ left: m.x }}
         >
           {m.text}
@@ -311,7 +318,7 @@ export function SignalStripView({
           <span
             key={m.key}
             aria-hidden
-            className={STRIP_MARKER_LINE}
+            className={m.note ? STRIP_NOTE_LINE : STRIP_MARKER_LINE}
             style={{
               left: m.x,
               top: m.row === 1 ? MARKER_ROW_PX : MARKER_ROW_PX * 2,

@@ -74,6 +74,18 @@ export type FindingRef =
   | { type: "block"; id: string; role: AgentRole };
 export type ToolRef = Extract<FindingRef, { type: "tool" }>;
 
+/** What a signal marker may cite (the same shape before and after the
+ *  server checks it). A stored marker with a ref is checked data; one
+ *  without is the agent's own note. */
+export type MarkerRef =
+  | Extract<FindingRef, { type: "release" | "observation" }>
+  | { type: "event"; id: string };
+export interface SignalMarker {
+  at: string;
+  label: string;
+  ref?: MarkerRef;
+}
+
 export interface SignalWindow {
   signalId: string;
   lane?: string;
@@ -109,7 +121,7 @@ export type FindingBlockOf<R extends { type: string }, T> = BlockBase &
     | { kind: "timeline"; events: Array<{ at: string; text: string; ref?: R }> }
     | ({
         kind: "signal";
-        markers: Array<{ at: string; label: string }>;
+        markers: SignalMarker[];
       } & SignalWindow)
     | ({ kind: "log" } & LogExcerptOf<T>)
     | {
@@ -220,6 +232,7 @@ export const FINDINGS_COPY: Readonly<{
   underWay: (round: number) => string;
   byline: (role: AgentRole, clock: string) => string;
   earlierRow: (round: number) => string;
+  markerNotes: "Dashed markers are the agent's notes, not checked data.";
   status: Readonly<Record<HypothesisStatus, string>>;
 }> = Object.freeze({
   heading: "Findings",
@@ -227,6 +240,7 @@ export const FINDINGS_COPY: Readonly<{
   underWay: (round: number) => `Round ${round} under way`,
   byline: (role: AgentRole, clock: string) => `from the ${role}, ${clock}`,
   earlierRow: (round: number) => `Round ${round} findings`,
+  markerNotes: "Dashed markers are the agent's notes, not checked data.",
   status: Object.freeze({
     verified: "Verified",
     refuted: "Refuted",

@@ -20,6 +20,7 @@ import {
   type CompareSide,
   type LogExcerpt,
   type Provenance,
+  type SignalMarker,
   type ToolRef,
   claimKey,
   droppedLinesCopy,
@@ -412,7 +413,9 @@ class Resolver {
       case "signal": {
         const ok = await checkWindow(draft, this.scope, this.refDeps);
         if (ok !== true) return (note(ok), null);
-        return { block: draft };
+        return {
+          block: { ...draft, markers: await this.markers(draft, note) },
+        };
       }
       case "log": {
         const excerpt = await this.excerpt(draft, note);
@@ -536,6 +539,27 @@ class Resolver {
       if (!kept.includes(claim))
         note(`claim ${JSON.stringify(claim)} isn't in the report; left off.`);
     return kept;
+  }
+
+  /** A marker's ref resolved; one that fails is left off with a note and
+   *  the marker stays, shown as the agent's note. */
+  private markers(draft: Draft<"signal">, note: Note): Promise<SignalMarker[]> {
+    return Promise.all(
+      draft.markers.map(async (marker, i) => {
+        const plain: SignalMarker = { at: marker.at, label: marker.label };
+        if (!marker.ref) return plain;
+        const ref = await resolveRef(marker.ref, this.scope, this.refDeps);
+        if (typeof ref === "string") {
+          note(`marker ${i + 1} reference left off: ${ref}`);
+          return plain;
+        }
+        if (ref.type === "release" || ref.type === "observation")
+          plain.ref = ref;
+        else if (ref.type === "event")
+          plain.ref = { type: "event", id: ref.id };
+        return plain;
+      }),
+    );
   }
 
   private ref(ref: RefInput, scope: RefScope): Promise<FindingRef | string> {

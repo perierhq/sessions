@@ -315,6 +315,24 @@ test("annotations draw as markers inside the window", () => {
   expect(notes[0].row).toBe(1);
 });
 
+test("an annotation marked as a note keeps the flag", () => {
+  const l = layoutStrip({
+    strip: strip(["ok", "fail", "fail", "ok"]),
+    meta: meta("passfail"),
+    width: 400,
+    live: false,
+    annotations: [
+      { at: iso(60_000), label: "release" },
+      { at: iso(150_000), label: "my guess", note: true },
+    ],
+  });
+  const notes = l.markers.filter((m) => m.key.startsWith("note:"));
+  expect(notes.map((m) => [m.text, m.note ?? false])).toEqual([
+    ["release", false],
+    ["my guess", true],
+  ]);
+});
+
 test("label packing anchors at the edges and fills the first free row", () => {
   expect(
     packMarkerLabels(

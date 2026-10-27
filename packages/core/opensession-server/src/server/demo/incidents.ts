@@ -146,6 +146,19 @@ const SEARCH_DOWN_FOR = 34 * MINUTE_MS;
 const CHECKOUT_DOWN_FOR = 72 * MINUTE_MS;
 const SIGNIN_DOWN = { from: 5 * HOUR_MS, to: 3 * HOUR_MS };
 
+/** The first failed check of a scripted failure in the seeded history:
+ *  history checks sit on multiples of the signal's interval, and the
+ *  failure covers checks younger than `downFor` at `now`. */
+function firstScriptedFailure(
+  key: DemoKey,
+  downFor: number,
+  now: number,
+): number {
+  const interval =
+    DEMO_SIGNALS.find((s) => s.key === key)?.intervalMs ?? MINUTE_MS;
+  return (Math.floor((now - downFor) / interval) + 1) * interval;
+}
+
 /** A stable 0–1 from a number, so latencies wobble the same on every run. */
 function noise(n: number): number {
   const x = Math.sin(n * 12.9898) * 43758.5453;
@@ -426,6 +439,7 @@ function vetoResponse(
       openedAt,
       now,
       prUrl,
+      firstFailureAt: firstScriptedFailure("search", SEARCH_DOWN_FOR, now),
     }),
     candidate: {
       round: 1,

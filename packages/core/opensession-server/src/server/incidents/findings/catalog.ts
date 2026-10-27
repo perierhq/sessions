@@ -39,7 +39,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   {
     kind: "signal",
     use: "a window of one of this incident's signals, drawn from the stored checks",
-    fields: `signal (the signal id), lane (optional), from and to (ISO times, at most ${L.windowMs / 86_400_000} days apart), markers (up to ${L.markers}): {"at": "<ISO time>", "label": "deploy"}`,
+    fields: `signal (the signal id), lane (optional), from and to (ISO times, at most ${L.windowMs / 86_400_000} days apart), markers (up to ${L.markers}): {"at": "<ISO time>", "label": "deploy", "ref": <ref>} with ref optional: a release, an observation or an event; a marker without one shows as your note, not as checked data`,
   },
   {
     kind: "log",

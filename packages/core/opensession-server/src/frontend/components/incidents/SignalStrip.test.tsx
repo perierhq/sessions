@@ -5,7 +5,10 @@ import {
   STRIP_LANE,
   STRIP_LANES_SCROLL,
   STRIP_MARKER_LABEL,
+  STRIP_MARKER_LINE,
   STRIP_MARKER_ROW,
+  STRIP_NOTE_LABEL,
+  STRIP_NOTE_LINE,
 } from "../../lib/incident-classes";
 import { layoutStrip, liveLineText } from "../../lib/incidents/strip-layout";
 import { clockTime } from "../../lib/time";
@@ -235,6 +238,34 @@ test("no future markers: no empty row under the lanes", () => {
 test("marker labels sit on the page fill above the marker lines", () => {
   expect(STRIP_MARKER_LABEL).toContain("bg-bg");
   expect(STRIP_MARKER_LABEL).toContain("z-10");
+});
+
+test("an agent's note marker draws dashed with a quieter label", () => {
+  const html = renderToStaticMarkup(
+    <SignalStripView
+      layout={layoutStrip({
+        strip: fixtureStrip(),
+        meta: () => ({ kind: "passfail", label: "Search", format: String }),
+        width: 720,
+        live: false,
+        annotations: [
+          { at: iso(6 * 60_000), label: "checked" },
+          { at: iso(10 * 60_000), label: "guess", note: true },
+        ],
+      })}
+      title="Search"
+      live={null}
+      onOpen={noop}
+      activeIndex={null}
+      onActiveIndexChange={noop}
+    />,
+  );
+  expect(html.split(STRIP_NOTE_LINE).length - 1).toBe(1);
+  expect(html.split(STRIP_MARKER_LINE).length - 1).toBe(2);
+  const label = (text: string) =>
+    html.match(new RegExp(`class="([^"]*)"[^>]*>${text}<`))?.[1] ?? "";
+  expect(label("guess")).toContain(STRIP_NOTE_LABEL);
+  expect(label("checked")).not.toContain(STRIP_NOTE_LABEL);
 });
 
 test("annotations render with the strip's markers", () => {

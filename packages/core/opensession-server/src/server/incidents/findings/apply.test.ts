@@ -593,6 +593,65 @@ test("a signal window without data drops its block", async () => {
   expect(savedSet(h)?.blocks.map((b) => b.id)).toEqual(["q"]);
 });
 
+test("signal markers resolve their refs; a ref that fails leaves the marker as a note", async () => {
+  const release = "2026-10-27T10:30:00.000Z";
+  const h = harness(undefined, {
+    releases: async () => [{ at: release, source: "hook", ref: "v1.2.0" }],
+  });
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          {
+            id: "w",
+            kind: "signal",
+            signal: "sig-a",
+            from: "2026-10-27T09:00:00Z",
+            to: "2026-10-27T11:00:00Z",
+            markers: [
+              {
+                at: release,
+                label: "release",
+                ref: { type: "release", at: release },
+              },
+              {
+                at: AT,
+                label: "first error",
+                ref: { type: "observation", signal: "sig-a", at: AT },
+              },
+              {
+                at: "2026-10-27T10:45:00Z",
+                label: "rollback",
+                ref: { type: "release", at: "2026-10-27T10:45:00Z" },
+              },
+              { at: "2026-10-27T10:50:00Z", label: "my guess" },
+            ],
+          },
+        ],
+      },
+    }),
+    h.deps,
+  );
+  const block = savedSet(h)?.blocks[0];
+  expect(block?.kind === "signal" && block.markers).toEqual([
+    {
+      at: release,
+      label: "release",
+      ref: { type: "release", at: release, ref: "v1.2.0" },
+    },
+    {
+      at: AT,
+      label: "first error",
+      ref: { type: "observation", signal: "sig-a", at: AT },
+    },
+    { at: "2026-10-27T10:45:00.000Z", label: "rollback" },
+    { at: "2026-10-27T10:50:00.000Z", label: "my guess" },
+  ]);
+  expect(out.notes).toEqual([
+    'Block `w`: marker 3 reference left off: No release at "2026-10-27T10:45:00.000Z" in acme.',
+  ]);
+});
+
 test("hypothesis claims are matched to the report", async () => {
   const h = harness();
   const hypothesis = (claims: string[]) => ({

@@ -6,7 +6,11 @@
  * the PR ref points at the demo investigator's own pull request. No log
  * blocks: demo sessions have no transcripts to quote from.
  */
-import type { FindingBlock, FindingsSet } from "../../shared/findings";
+import type {
+  FindingBlock,
+  FindingsSet,
+  SignalMarker,
+} from "../../shared/findings";
 import type { AgentRole } from "../../shared/incident-response";
 import { DEMO_PR_NUMBER } from "./fixtures";
 
@@ -26,6 +30,8 @@ export interface DemoFindingsInput {
   openedAt: number;
   now: number;
   prUrl?: string;
+  /** When the first failed check was stored (veto): its marker cites it. */
+  firstFailureAt?: number;
 }
 
 function set(
@@ -49,7 +55,7 @@ function set(
 
 /** The search incident: a release dropped the read replica; fix deploying. */
 function vetoSets(input: DemoFindingsInput): FindingsSet[] {
-  const { signalId, openedAt, now, prUrl } = input;
+  const { signalId, openedAt, now, prUrl, firstFailureAt } = input;
   // The scripted search failures start four minutes before the incident
   // opens (three failed checks two minutes apart); the release lands a
   // minute before the first one.
@@ -65,6 +71,16 @@ function vetoSets(input: DemoFindingsInput): FindingsSet[] {
         sessionId: sessionOf("investigator"),
       } as const)
     : null;
+
+  // The release is the agent's own note: the demo has no release on
+  // record to cite. The first timeout cites its stored check.
+  const markers: SignalMarker[] = [{ at: iso(releaseAt), label: "release" }];
+  if (firstFailureAt !== undefined)
+    markers.push({
+      at: iso(firstFailureAt),
+      label: "first timeout",
+      ref: { type: "observation", signal: signalId, at: iso(firstFailureAt) },
+    });
 
   const investigator: FindingBlock[] = [
     {
@@ -118,7 +134,7 @@ function vetoSets(input: DemoFindingsInput): FindingsSet[] {
       signalId,
       from: iso(openedAt - 30 * MINUTE_MS),
       to: iso(now),
-      markers: [{ at: iso(releaseAt), label: "release" }],
+      markers,
     },
   ];
   if (pr)

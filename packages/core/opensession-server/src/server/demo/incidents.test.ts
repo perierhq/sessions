@@ -206,6 +206,30 @@ test("demo findings are well-formed", async () => {
     "change",
   ]);
   expect(kinds("verifier")).toEqual(["compare"]);
+  // The window's markers: the release is the agent's note (the demo has
+  // no release on record); the first timeout cites its stored observation.
+  const window = vetoSets[0]!.blocks.find((b) => b.kind === "signal");
+  const markers = window?.kind === "signal" ? window.markers : [];
+  expect(markers.map((m) => [m.label, m.ref?.type])).toEqual([
+    ["release", undefined],
+    ["first timeout", "observation"],
+  ]);
+  const cited = markers[1]!;
+  const at = Date.parse(cited.at);
+  const [observed] = await queryObservations(veto.primarySignalId!, at, at);
+  expect(observed).toMatchObject({ at: cited.at, result: "fail" });
+  expect(cited.ref).toEqual({
+    type: "observation",
+    signal: veto.primarySignalId,
+    at: cited.at,
+  });
+  const before = await queryObservations(
+    veto.primarySignalId!,
+    at - 10 * 60_000,
+    at - 1,
+  );
+  expect(before.every((o) => o.result === "ok")).toBe(true);
+
   const hypothesis = vetoSets[0]!.blocks.find((b) => b.kind === "hypothesis");
   const claim = "The replica was removed in the release config";
   expect(hypothesis).toMatchObject({ claims: [claim], size: "half" });

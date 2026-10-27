@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FindingBlock, ToolRef } from "../../../../shared/findings";
+import type {
+  FindingBlock,
+  SignalMarker,
+  ToolRef,
+} from "../../../../shared/findings";
 import type { StripResponse } from "../../../../shared/incidents";
+import { STRIP_NOTE_LINE } from "../../../lib/incident-classes";
 import type { FindingItem } from "../../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
 import {
@@ -100,6 +105,30 @@ test("a signal window shows its summary and markers", () => {
   expect(html).toContain(summary);
   expect(html).toContain(">deploy<");
   expect(html).not.toContain("Couldn&#x27;t load the signal");
+});
+
+test("a marker without a checked ref is called the agent's note", () => {
+  const view = (markers: SignalMarker[]) =>
+    renderToStaticMarkup(
+      <SignalWindowView
+        strip={strip()}
+        error={false}
+        onRetry={noop}
+        markers={markers}
+        title="Checkout"
+        meta={meta}
+      />,
+    );
+  const checked: SignalMarker = {
+    at: at(25),
+    label: "release",
+    ref: { type: "release", at: at(25), ref: "abc1234" },
+  };
+  const NOTES = "Dashed markers are the agent&#x27;s notes, not checked data.";
+  expect(view([checked])).not.toContain(NOTES);
+  const both = view([checked, { at: at(30), label: "guess" }]);
+  expect(both).toContain(NOTES);
+  expect(both).toContain(STRIP_NOTE_LINE);
 });
 
 test("a signal window that failed to load offers a retry", () => {
