@@ -102,20 +102,19 @@ for (const build of builds.data ?? []) {
 // Build uploads carry Apple's validation errors for builds that never became
 // a build at all, which is what an invalid binary looks like.
 console.log(`\n== Build uploads (validation results)`);
-const uploads = await get(`/v1/apps/${app.id}/buildUploads`, {
-  limit: String(count),
-  sort: "-uploadedDate",
-});
-if (uploads.error) {
-  const retry = await get(`/v1/apps/${app.id}/buildUploads`, {
-    limit: String(count),
-  });
-  if (retry.error) console.log(`buildUploads: ${uploads.error}`);
-  else uploads.data = retry.data;
-}
-for (const upload of uploads.data ?? []) {
+// The endpoint ignores sort, so read a page and sort here, newest first.
+const uploads = await get(`/v1/apps/${app.id}/buildUploads`, { limit: "200" });
+if (uploads.error) console.log(`buildUploads: ${uploads.error}`);
+const newest = (uploads.data ?? [])
+  .sort((a, b) =>
+    String(b.attributes?.createdDate).localeCompare(
+      String(a.attributes?.createdDate),
+    ),
+  )
+  .slice(0, count);
+for (const upload of newest) {
   const a = upload.attributes ?? {};
   console.log(
-    `${a.cfBundleVersion ?? "?"}  ${JSON.stringify(a.state ?? a)}  created ${a.createdDate ?? "?"}`,
+    `${a.cfBundleVersion ?? "?"}  ${a.platform ?? ""}  created ${a.createdDate ?? "?"}  ${JSON.stringify(a.state ?? a)}`,
   );
 }
