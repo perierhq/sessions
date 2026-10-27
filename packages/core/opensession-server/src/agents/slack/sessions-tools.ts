@@ -14,13 +14,15 @@
  * Gating: the read tools (list/get) are available to any whitelisted user who
  * can talk to the bot; the control tools (answer/send/cancel/create, the
  * spawn_task/task_status/cancel_task task primitives, and the reviewer and
- * collaborator tools in collaboration-tools.ts) are gated to the trusted user
+ * collaborator tools in collaboration-tools.ts, and the archive tools in
+ * archive-tools.ts) are gated to the trusted user
  * via `isAdmin`, matching opensession-admin. The spawn suite and the
  * background waits (wait_for without its timer kind) also reach the
  * `humanResume` and `automationSelf` shapes, and the waits plus task_status
  * reach `waitContinuation`, the turn a `humanResume` wait wakes.
  */
 import { audit } from "../../server/audit";
+import { archiveTools } from "./archive-tools";
 import { collaborationTools } from "./collaboration-tools";
 import {
   cancelAgentWait,
@@ -1708,6 +1710,15 @@ export function createSessionsMcpServer(
       }),
     );
   }
+
+  // Archive and unarchive sessions or whole workspaces: trusted user only.
+  if (ctx.isAdmin)
+    tools.push(
+      ...archiveTools({
+        createdBy: ctx.createdBy,
+        currentSessionId: ctx.currentSessionId,
+      }),
+    );
 
   // The wake of a person's wait (waitContinuation) checks on the children
   // that person's turn spawned, but spawns and cancels nothing itself.
