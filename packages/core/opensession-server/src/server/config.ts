@@ -844,6 +844,80 @@ export function configuredIngress(): ResolvedIngress {
   };
 }
 
+/**
+ * The public origin PR screenshots are served from: `GET /pr-images/*`
+ * (pr-images.ts), which answers only on the public ingress, so GitHub's camo
+ * proxy can fetch it. `OPENSESSION_PR_IMAGES_BASE`, then
+ * `integrations.media.publicBaseUrl` (a host fronting that listener), then
+ * the public ingress, then the app itself on an instance with no ingress.
+ */
+export function configuredPrImagesBaseUrl(): string {
+  const media = configuredIntegration("media").publicBaseUrl;
+  return (
+    process.env.OPENSESSION_PR_IMAGES_BASE ||
+    (typeof media === "string" && media) ||
+    configuredServer().webhookBaseUrl
+  ).replace(/\/+$/, "");
+}
+
+function webOrigin(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every origin this instance itself answers on, as configured now.
+ *
+ * - `app`: the private web app. Its configured address (environment first),
+ *   the address saved in config.json when a restart has not picked it up yet,
+ *   and the address the gateway binds when that is one host rather than a
+ *   wildcard. Each serves the same routes, so the page can load any of them
+ *   from its own origin.
+ * - `public`: the separately exposed public origins: the public ingress
+ *   (environment and config.json) and the PR screenshot host. These serve
+ *   only their own allowlisted routes, so a URL on one stays absolute.
+ *
+ * The SPA's image policy (spa-csp.ts) and the Markdown renderer
+ * (frontend/lib/remote-image.ts) treat all of them as this app.
+ */
+export function configuredInstanceOrigins(): {
+  app: string[];
+  public: string[];
+} {
+  const server = configuredServer();
+  const config = getConfig();
+  const bindHost = server.host.includes(":") ? `[${server.host}]` : server.host;
+  const wildcard = ["", "0.0.0.0", "::", "[::]"].includes(server.host);
+  const app = new Set<string>();
+  for (const value of [
+    server.publicBaseUrl,
+    config.server?.publicBaseUrl,
+    wildcard ? "" : `http://${bindHost}:${server.port}`,
+  ]) {
+    const origin = webOrigin(value);
+    if (origin) app.add(origin);
+  }
+  const media = configuredIntegration("media").publicBaseUrl;
+  const pub = new Set<string>();
+  for (const value of [
+    server.webhookBaseUrl,
+    config.ingress?.publicBaseUrl,
+    process.env.OPENSESSION_PR_IMAGES_BASE,
+    media,
+  ]) {
+    const origin = webOrigin(value);
+    if (origin && !app.has(origin)) pub.add(origin);
+  }
+  return { app: [...app], public: [...pub] };
+}
+
 // PATH lookups walk ~10 directories with a syscall each, and configuredPaths
 // is called on hot paths that never use claudeBin. Resolve once per PATH.
 let claudeOnPath: { path: string | undefined; bin: string | null } | null =

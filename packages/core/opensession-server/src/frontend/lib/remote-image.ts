@@ -8,8 +8,9 @@
  * request leaves from the viewer's machine, outside any network policy the
  * run that wrote the text was under.
  *
- * So rendered Markdown loads images only from this app (and data:/blob:,
- * which fetch nothing). Any other image is drawn as a named placeholder that
+ * So rendered Markdown loads images only from this app, including the
+ * public origins it serves its own screenshots from (and data:/blob:, which
+ * fetch nothing). Any other image is drawn as a named placeholder that
  * links to it: the host is visible, and nothing is fetched until someone
  * chooses to open it in a new tab. The SPA's `img-src` policy
  * (server/spa-csp.ts) backs this up for anything rendered some other way.
@@ -17,7 +18,7 @@
 
 import { imageIconMarkup, playRectangleIconMarkup } from "../components/icons";
 import { INTERNAL_ORIGINS } from "./session-url";
-import { PUBLIC_BASE_URL } from "./brand";
+import { PUBLIC_BASE_URL, instanceOrigins } from "./brand";
 
 function escapeAttr(value: string): string {
   return value
@@ -46,22 +47,33 @@ const ABSOLUTE = /^[\s\u0000-\u001f]*(?:[a-z][a-z\d+.-]*:|[\\/]{2})/i;
 /**
  * The source an image may load from inline, or null when it would fetch from
  * another host. A same-origin source comes back as written; an absolute URL
- * on one of this app's other origins (its configured public address, viewed
- * through another entry URL) comes back as a path, so it loads from the
- * origin the page is on. The URL parser is the browser's own, so a
- * scheme-relative or backslash spelling resolves here exactly as it would in
- * the `<img>`; an absolute spelling of this app is rewritten to its path, so
- * the browser never has to resolve a host for it at all.
+ * on one of this app's other addresses (its configured public address, viewed
+ * through another entry URL, or another address the server lists for it)
+ * comes back as a path, so it loads from the origin the page is on. An image
+ * on one of the instance's public origins, its ingress or PR screenshot host,
+ * comes back as an absolute URL: those serve `/pr-images/…`, which the app
+ * does not. The URL parser is the browser's own, so a scheme-relative or
+ * backslash spelling resolves here exactly as it would in the `<img>`; an
+ * absolute spelling of this app is rewritten to its path, so the browser
+ * never has to resolve a host for it at all.
  */
 export function inlineImageSrc(href: string | null | undefined): string | null {
   if (!href) return null;
   const url = parse(href);
   if (!url) return null;
   if (url.protocol === "data:" || url.protocol === "blob:") return href;
-  const own = parse(documentBase())?.origin;
   if (url.origin === "null") return null;
-  if (url.origin !== own && !INTERNAL_ORIGINS.has(url.origin)) return null;
-  return ABSOLUTE.test(href) ? `${url.pathname}${url.search}${url.hash}` : href;
+  const own = parse(documentBase())?.origin;
+  const instance = instanceOrigins();
+  if (
+    url.origin === own ||
+    INTERNAL_ORIGINS.has(url.origin) ||
+    instance.app.has(url.origin)
+  )
+    return ABSOLUTE.test(href)
+      ? `${url.pathname}${url.search}${url.hash}`
+      : href;
+  return instance.media.has(url.origin) ? url.href : null;
 }
 
 /** Whether a URL is a picture Slack serves from its own CDN (workspace emoji). */

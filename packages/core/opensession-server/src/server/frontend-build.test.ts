@@ -19,12 +19,12 @@ import {
   frontendInputsHash,
   isPrebuiltFrontend,
   renderIndexHtml,
-  SPA_HEADERS,
+  spaHeaders,
   staticImportClosure,
 } from "./frontend-build";
+import { configuredInstanceOrigins } from "./config";
 import { __setIdentitiesForTest } from "./shared/user-mappings";
 import { publishStableFrontendSnapshot } from "./stable-frontend";
-import { SPA_CONTENT_SECURITY_POLICY } from "./spa-csp";
 
 let restore: (() => void) | null = null;
 let scratch: string | null = null;
@@ -99,21 +99,37 @@ describe("frontendInputsHash", () => {
   });
 });
 
-describe("SPA_HEADERS", () => {
+function imgSources(csp: string): string[] | undefined {
+  return csp
+    .split(";")
+    .map((directive) => directive.trim().split(/\s+/))
+    .find(([name]) => name === "img-src")
+    ?.slice(1);
+}
+
+const previousIngressBase = process.env.OPENSESSION_INGRESS_BASE;
+const previousPrImagesBase = process.env.OPENSESSION_PR_IMAGES_BASE;
+function restoreInstanceOrigins() {
+  if (previousIngressBase === undefined)
+    delete process.env.OPENSESSION_INGRESS_BASE;
+  else process.env.OPENSESSION_INGRESS_BASE = previousIngressBase;
+  if (previousPrImagesBase === undefined)
+    delete process.env.OPENSESSION_PR_IMAGES_BASE;
+  else process.env.OPENSESSION_PR_IMAGES_BASE = previousPrImagesBase;
+}
+
+describe("spaHeaders", () => {
+  afterEach(restoreInstanceOrigins);
+
   it("leaves offline shell caching to the service worker", () => {
-    expect(SPA_HEADERS["Cache-Control"]).toBe("no-store");
+    expect(spaHeaders()["Cache-Control"]).toBe("no-store");
   });
 
   it("loads images only from this app and the hosts its own UI draws from", () => {
-    const csp = SPA_HEADERS["Content-Security-Policy"];
-    expect(csp).toBe(SPA_CONTENT_SECURITY_POLICY);
+    const csp = spaHeaders()["Content-Security-Policy"];
     expect(csp).toContain("frame-ancestors 'none'");
-    const imgSrc = csp
-      .split(";")
-      .map((directive) => directive.trim().split(/\s+/))
-      .find(([name]) => name === "img-src");
-    expect(imgSrc).toEqual([
-      "img-src",
+    const own = configuredInstanceOrigins();
+    expect(imgSources(csp)).toEqual([
       "'self'",
       "data:",
       "blob:",
@@ -122,7 +138,23 @@ describe("SPA_HEADERS", () => {
       "https://private-user-images.githubusercontent.com",
       "https://*.slack-edge.com",
       "https://secure.gravatar.com",
+      ...own.app,
+      ...own.public,
     ]);
+  });
+
+  it("names this instance's public ingress and PR image host as configured now", () => {
+    process.env.OPENSESSION_INGRESS_BASE = "https://ingress.acme.example.test";
+    process.env.OPENSESSION_PR_IMAGES_BASE = "https://media.acme.example.test";
+    const sources = imgSources(spaHeaders()["Content-Security-Policy"]);
+    expect(sources).toContain("https://ingress.acme.example.test");
+    expect(sources).toContain("https://media.acme.example.test");
+
+    delete process.env.OPENSESSION_INGRESS_BASE;
+    delete process.env.OPENSESSION_PR_IMAGES_BASE;
+    const after = imgSources(spaHeaders()["Content-Security-Policy"]);
+    expect(after).not.toContain("https://ingress.acme.example.test");
+    expect(after).not.toContain("https://media.acme.example.test");
   });
 });
 
@@ -151,6 +183,24 @@ describe("renderIndexHtml", () => {
     expect(html).toContain(`<link rel="stylesheet" href="/tailwind-ghi.css">`);
     expect(html).toMatch(/window\.__OPENSESSION_INSTANCE__ = \{"productName":/);
     expect(html).not.toContain("window.__OPENSESSION_INSTANCE__ || {}");
+  });
+
+  it("tells the page which origins are this instance", () => {
+    process.env.OPENSESSION_INGRESS_BASE = "https://ingress.acme.example.test";
+    process.env.OPENSESSION_PR_IMAGES_BASE = "https://media.acme.example.test";
+    try {
+      const html = renderIndexHtml(meta);
+      const blob = JSON.parse(
+        html.match(/window\.__OPENSESSION_INSTANCE__ = (\{.*?\});/)![1],
+      ) as { appOrigins: string[]; mediaOrigins: string[] };
+      expect(blob.appOrigins).toEqual(configuredInstanceOrigins().app);
+      expect(blob.mediaOrigins).toEqual([
+        "https://ingress.acme.example.test",
+        "https://media.acme.example.test",
+      ]);
+    } finally {
+      restoreInstanceOrigins();
+    }
   });
 
   it("omits the Tailwind link when no sheet compiled", () => {
@@ -316,6 +366,9 @@ describe("activateFrontendRelease", () => {
       releaseRoot,
       fallbackRoots: [previousRoot],
       version,
+      // The stable ingress serves the shell with the policy it was rendered
+      // under; it reads no config of its own.
+      contentSecurityPolicy: spaHeaders()["Content-Security-Policy"],
     });
     expect(await frontendDistFile("Settings-old.js")?.exists()).toBe(true);
 

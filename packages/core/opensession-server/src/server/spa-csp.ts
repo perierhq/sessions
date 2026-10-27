@@ -19,6 +19,12 @@
  *
  * A redirect is checked against the policy too, so none of these can bounce
  * an image on to a host that is not listed.
+ *
+ * The instance's own origins come last, read from config by the caller
+ * (config.ts configuredInstanceOrigins): its private app addresses, and its
+ * public ingress and PR screenshot host, which serve `/pr-images/…` from an
+ * origin other than the app's. This module reads no config itself, because
+ * the stable ingress (stable-frontend.ts) imports it outside the gateway.
  */
 const IMAGE_SOURCES = [
   "'self'",
@@ -31,7 +37,20 @@ const IMAGE_SOURCES = [
   "https://secure.gravatar.com",
 ];
 
-export const SPA_CONTENT_SECURITY_POLICY = [
-  "frame-ancestors 'none'",
-  `img-src ${IMAGE_SOURCES.join(" ")}`,
-].join("; ");
+/** Only a plain web origin may join the policy: anything else could add a
+ *  source or a directive. */
+const ORIGIN =
+  /^https?:\/\/[a-z0-9.-]+(?::\d{1,5})?$|^https?:\/\/\[[0-9a-f:.]+\](?::\d{1,5})?$/i;
+
+export function spaContentSecurityPolicy(
+  ownOrigins: readonly string[] = [],
+): string {
+  const sources = [...IMAGE_SOURCES];
+  for (const origin of ownOrigins)
+    if (ORIGIN.test(origin) && !sources.includes(origin)) sources.push(origin);
+  return ["frame-ancestors 'none'", `img-src ${sources.join(" ")}`].join("; ");
+}
+
+/** The policy with no instance origins: what the stable ingress sends for a
+ *  shell published before the gateway recorded its own. */
+export const SPA_CONTENT_SECURITY_POLICY = spaContentSecurityPolicy();
