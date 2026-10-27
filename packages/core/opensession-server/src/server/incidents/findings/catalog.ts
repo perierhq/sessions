@@ -12,6 +12,7 @@ import {
   type LogExcerpt,
   type SignalWindow,
 } from "../../../shared/findings";
+import { REPORT_BLOCK_MAX_BYTES } from "../response/reports";
 import type { REF_TYPES } from "./validate";
 
 type RefType = (typeof REF_TYPES)[number];
@@ -202,7 +203,7 @@ export function findingsBrief(role: AgentRole): string[] {
     `Prefer a few precise blocks: 3 to 8, at most ${L.blocks}.`,
     "Cite real data: every chart, quote and change must point at something Sessions can load, and a block whose data can't be found is dropped.",
     "Quote log lines exactly as the tool printed them; lines that aren't in the result are dropped.",
-    'If you never called show_findings, put the same list under "findings" in your incident-report block.',
+    `If you never called show_findings, put the same list under "findings" in your incident-report block. They count toward the block's ${REPORT_BLOCK_MAX_BYTES / 1024} KB, so keep them short there.`,
     "",
     `Every block has id (lowercase letters, digits and dashes, at most ${L.idMax}, unique in your list), kind, an optional title and size (full or half; two half blocks share a row).`,
     "Kinds:",
@@ -213,6 +214,7 @@ export function findingsBrief(role: AgentRole): string[] {
     "References:",
     ...REF_CATALOG.map((r) => `- ${r.shape}: ${r.use}.`),
     "",
+    "Times are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
     `Limits: title at most ${L.title} characters; prose fields at most ${L.prose}; a statement or question at most ${L.statement}; timeline events at most ${L.eventText} characters; marker labels and compare labels at most ${L.markerLabel}; a log at most ${L.logLines} lines of ${L.logLineChars} characters; a signal window at most ${days} days.`,
     "",
     "Example:",

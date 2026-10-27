@@ -62,6 +62,8 @@ describe("findings catalog", () => {
       "600",
       "40 lines",
       "31 days",
+      "They count toward the block's 64 KB, so keep them short there.",
+      "Times are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
     ])
       expect(brief).toContain(s);
     expect(brief).toContain("```json\n");
